@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use j2k::{
+use j2k::adapter::encode_stage::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
     J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardDwt97Job,
     J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
@@ -9,7 +9,7 @@ use j2k::{
     J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(feature = "cuda-runtime")]
-use j2k::{
+use j2k::adapter::encode_stage::{
     J2kForwardDwt53Level, J2kForwardDwt97Level, J2kPacketizationPacketDescriptor,
     J2kPacketizationSubband,
 };
@@ -3568,15 +3568,18 @@ mod tests {
     };
     use j2k::adapter::encode_stage::NativeEncodeStageAdapter;
     #[cfg(feature = "cuda-runtime")]
+    use j2k::adapter::encode_stage::{J2kDeinterleaveToF32Job, J2kHtCodeBlockEncodeJob};
+    use j2k::adapter::encode_stage::{
+        J2kEncodeStageAccelerator, J2kHtSubbandEncodeJob, J2kPacketizationBlockCodingMode,
+        J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+        J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
+        J2kQuantizeSubbandJob,
+    };
+    #[cfg(feature = "cuda-runtime")]
     use j2k::{encode_j2k_lossy_with_accelerator, J2kLossyEncodeOptions, J2kLossySamples};
     use j2k::{
         EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions,
         J2kLosslessSamples,
-    };
-    use j2k::{
-        J2kEncodeStageAccelerator, J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock,
-        J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
-        J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
     };
     #[cfg(feature = "cuda-runtime")]
     use j2k_core::BackendKind;
@@ -4282,7 +4285,7 @@ mod tests {
         let pixels = [0u8, 128, 255, 64, 32, 16];
         let mut accelerator = CudaEncodeStageAccelerator::default();
         let components = accelerator
-            .encode_deinterleave(j2k::J2kDeinterleaveToF32Job {
+            .encode_deinterleave(J2kDeinterleaveToF32Job {
                 pixels: &pixels,
                 num_pixels: 2,
                 num_components: 3,
@@ -4305,7 +4308,7 @@ mod tests {
             .prefer_cpu_ht_subband(true)
             .prefer_cpu_quantize_subband(true);
         let output = accelerator
-            .encode_ht_subband(j2k::J2kHtSubbandEncodeJob {
+            .encode_ht_subband(J2kHtSubbandEncodeJob {
                 coefficients: &[0.0; 16],
                 width: 4,
                 height: 4,
@@ -4326,7 +4329,7 @@ mod tests {
         assert_eq!(accelerator.dispatch_report().total(), 0);
 
         let quantized = accelerator
-            .encode_quantize_subband(j2k::J2kQuantizeSubbandJob {
+            .encode_quantize_subband(J2kQuantizeSubbandJob {
                 coefficients: &[0.0; 16],
                 step_exponent: 8,
                 step_mantissa: 0,
@@ -5025,7 +5028,7 @@ mod tests {
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
         let encoded = accelerator
-            .encode_ht_code_block(j2k::J2kHtCodeBlockEncodeJob {
+            .encode_ht_code_block(J2kHtCodeBlockEncodeJob {
                 coefficients: &coefficients,
                 width: 4,
                 height: 4,

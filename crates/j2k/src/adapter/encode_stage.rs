@@ -287,8 +287,8 @@ impl<A: J2kEncodeStageAccelerator + ?Sized> j2k_native::J2kEncodeStageAccelerato
 
 #[cfg(test)]
 mod tests {
+    use super::J2kEncodeStageAccelerator;
     use super::{J2kEncodeDispatchReport, NativeEncodeStageAdapter};
-    use crate::J2kEncodeStageAccelerator;
 
     #[derive(Default)]
     struct ReportingAccelerator {

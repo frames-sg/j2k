@@ -18,7 +18,7 @@ mod report_format;
 
 use std::{path::PathBuf, time::Instant};
 
-use j2k::IrreversibleQuantizationSubbandScales;
+use j2k::adapter::encode_stage::IrreversibleQuantizationSubbandScales;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 use j2k_cuda::CudaEncodeStageAccelerator;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]

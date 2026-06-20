@@ -14,7 +14,7 @@ use crate::dct_grid::validate_dct_block_grid;
 use crate::reversible53::{
     reversible_lift_53_high_at, reversible_lift_53_i32, reversible_lift_53_low_at,
 };
-pub use j2k::{
+pub use j2k::adapter::encode_stage::{
     EncodedHtJ2kCodeBlock, IrreversibleQuantizationSubbandScales, J2kSubBandType,
     PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
     PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,

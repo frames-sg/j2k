@@ -17,67 +17,18 @@ pub use j2k::BufferError
 pub use j2k::CodecError
 pub use j2k::CompressedPayloadKind
 pub use j2k::CompressedTransferSyntax
-pub use j2k::CpuOnlyJ2kEncodeStageAccelerator
 pub use j2k::DecodeOutcome
 pub use j2k::DecodeRowsError
 pub use j2k::DecoderContext
 pub use j2k::Downscale
-pub use j2k::EncodedHtJ2kCodeBlock
-pub use j2k::EncodedJ2kCodeBlock
 pub use j2k::ImageCodec
 pub use j2k::ImageDecode
 pub use j2k::ImageDecodeRows
-pub use j2k::IrreversibleQuantizationStep
-pub use j2k::IrreversibleQuantizationSubbandScales
-pub use j2k::J2kCodeBlockSegment
-pub use j2k::J2kCodeBlockStyle
-pub use j2k::J2kDeinterleaveToF32Job
-pub use j2k::J2kEncodeDispatchReport
-pub use j2k::J2kForwardDwt53Job
-pub use j2k::J2kForwardDwt53Level
-pub use j2k::J2kForwardDwt53Output
-pub use j2k::J2kForwardDwt97Job
-pub use j2k::J2kForwardDwt97Level
-pub use j2k::J2kForwardDwt97Output
-pub use j2k::J2kForwardIctJob
-pub use j2k::J2kForwardRctJob
-pub use j2k::J2kHtCodeBlockEncodeJob
-pub use j2k::J2kHtSubbandEncodeJob
-pub use j2k::J2kHtj2kTileEncodeJob
-pub use j2k::J2kPacketizationBlockCodingMode
-pub use j2k::J2kPacketizationCodeBlock
-pub use j2k::J2kPacketizationEncodeJob
-pub use j2k::J2kPacketizationPacketDescriptor
-pub use j2k::J2kPacketizationProgressionOrder
-pub use j2k::J2kPacketizationResolution
-pub use j2k::J2kPacketizationSubband
-pub use j2k::J2kQuantizeSubbandJob
-pub use j2k::J2kSubBandType
-pub use j2k::J2kTier1CodeBlockEncodeJob
 pub use j2k::PassthroughCandidate
 pub use j2k::PassthroughDecision
 pub use j2k::PassthroughRejectReason
 pub use j2k::PassthroughRequirements
 pub use j2k::PixelFormat
-pub use j2k::PrecomputedHtj2k53Component
-pub use j2k::PrecomputedHtj2k53Image
-pub use j2k::PrecomputedHtj2k97Component
-pub use j2k::PrecomputedHtj2k97Image
-pub use j2k::PreencodedHtj2k97CodeBlock
-pub use j2k::PreencodedHtj2k97CompactCodeBlock
-pub use j2k::PreencodedHtj2k97CompactComponent
-pub use j2k::PreencodedHtj2k97CompactImage
-pub use j2k::PreencodedHtj2k97CompactResolution
-pub use j2k::PreencodedHtj2k97CompactSubband
-pub use j2k::PreencodedHtj2k97Component
-pub use j2k::PreencodedHtj2k97Image
-pub use j2k::PreencodedHtj2k97Resolution
-pub use j2k::PreencodedHtj2k97Subband
-pub use j2k::PrequantizedHtj2k97CodeBlock
-pub use j2k::PrequantizedHtj2k97Component
-pub use j2k::PrequantizedHtj2k97Image
-pub use j2k::PrequantizedHtj2k97Resolution
-pub use j2k::PrequantizedHtj2k97Subband
 pub use j2k::Rect
 pub use j2k::RowSink
 pub use j2k::TileBatchDecode
@@ -450,69 +401,6 @@ pub enum j2k::EncodeBackendPreference
 pub j2k::EncodeBackendPreference::Auto
 pub j2k::EncodeBackendPreference::CpuOnly
 pub j2k::EncodeBackendPreference::RequireDevice
-pub enum j2k::J2kAdaptiveBackendRequest
-pub j2k::J2kAdaptiveBackendRequest::Accelerated
-pub j2k::J2kAdaptiveBackendRequest::CpuOnly
-pub j2k::J2kAdaptiveBackendRequest::StrictDevice(j2k_core::backend::BackendKind)
-impl j2k::adapter::adaptive_route::J2kAdaptiveBackendRequest
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveBackendRequest::from_backend_request(j2k_core::backend::BackendRequest) -> Self
-pub enum j2k::J2kAdaptiveBenchmarkScope
-pub j2k::J2kAdaptiveBenchmarkScope::EndToEnd
-pub j2k::J2kAdaptiveBenchmarkScope::Stage(j2k::adapter::adaptive_route::J2kAdaptiveStage)
-pub enum j2k::J2kAdaptiveCodecMode
-pub j2k::J2kAdaptiveCodecMode::ClassicJ2k
-pub j2k::J2kAdaptiveCodecMode::Htj2k
-pub enum j2k::J2kAdaptiveOperation
-pub j2k::J2kAdaptiveOperation::Decode
-pub j2k::J2kAdaptiveOperation::Encode
-pub j2k::J2kAdaptiveOperation::Transcode
-pub enum j2k::J2kAdaptiveOutputResidency
-pub j2k::J2kAdaptiveOutputResidency::Device
-pub j2k::J2kAdaptiveOutputResidency::Host
-pub enum j2k::J2kAdaptiveQualityMode
-pub j2k::J2kAdaptiveQualityMode::Lossless
-pub j2k::J2kAdaptiveQualityMode::Lossy
-pub enum j2k::J2kAdaptiveRcaReason
-pub j2k::J2kAdaptiveRcaReason::AlgorithmicMismatch
-pub j2k::J2kAdaptiveRcaReason::BenchmarkMismatch
-pub j2k::J2kAdaptiveRcaReason::CpuGenuinelyBetter
-pub j2k::J2kAdaptiveRcaReason::MissingBatching
-pub j2k::J2kAdaptiveRcaReason::MissingResidency
-pub j2k::J2kAdaptiveRcaReason::TooSmallWorkload
-pub j2k::J2kAdaptiveRcaReason::TransferSyncOverhead
-pub enum j2k::J2kAdaptiveRouteKind
-pub j2k::J2kAdaptiveRouteKind::CpuOnly
-pub j2k::J2kAdaptiveRouteKind::Hybrid
-pub j2k::J2kAdaptiveRouteKind::StrictDevice
-pub enum j2k::J2kAdaptiveStage
-pub j2k::J2kAdaptiveStage::CodestreamAssembly
-pub j2k::J2kAdaptiveStage::CopySync
-pub j2k::J2kAdaptiveStage::Dwt
-pub j2k::J2kAdaptiveStage::HtBlockCoding
-pub j2k::J2kAdaptiveStage::Idwt
-pub j2k::J2kAdaptiveStage::MarkerParsing
-pub j2k::J2kAdaptiveStage::Mct
-pub j2k::J2kAdaptiveStage::Packetization
-pub j2k::J2kAdaptiveStage::PcrdRateControl
-pub j2k::J2kAdaptiveStage::Quantization
-pub j2k::J2kAdaptiveStage::Tier1
-pub j2k::J2kAdaptiveStage::Validation
-impl j2k::adapter::adaptive_route::J2kAdaptiveStage
-pub const j2k::adapter::adaptive_route::J2kAdaptiveStage::ALL: [Self; 12]
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveStage::profile_label(self) -> &'static str
-pub enum j2k::J2kAdaptiveStageGateStatus
-pub j2k::J2kAdaptiveStageGateStatus::Approved
-pub j2k::J2kAdaptiveStageGateStatus::BenchmarkGateMissing
-pub j2k::J2kAdaptiveStageGateStatus::BlockedNeedsRca
-pub j2k::J2kAdaptiveStageGateStatus::CpuShaped
-pub j2k::J2kAdaptiveStageGateStatus::EndToEndGateBlocked
-pub j2k::J2kAdaptiveStageGateStatus::ReclassifiedCpu
-pub j2k::J2kAdaptiveStageGateStatus::StrictDeviceProof
-pub j2k::J2kAdaptiveStageGateStatus::VariableCpuDefault
-pub enum j2k::J2kAdaptiveStageOwner
-pub j2k::J2kAdaptiveStageOwner::Cpu
-pub j2k::J2kAdaptiveStageOwner::Gpu
-pub j2k::J2kAdaptiveStageOwner::Variable
 pub enum j2k::J2kBlockCodingMode
 pub j2k::J2kBlockCodingMode::Classic
 pub j2k::J2kBlockCodingMode::HighThroughput
@@ -601,79 +489,6 @@ pub j2k::EncodedLossyJ2k::height: u32
 pub j2k::EncodedLossyJ2k::report: j2k::J2kLossyEncodeReport
 pub j2k::EncodedLossyJ2k::signed: bool
 pub j2k::EncodedLossyJ2k::width: u32
-pub struct j2k::J2kAdaptiveBenchmarkEvidence
-pub j2k::J2kAdaptiveBenchmarkEvidence::accelerated_ns: u64
-pub j2k::J2kAdaptiveBenchmarkEvidence::backend: j2k_core::backend::BackendKind
-pub j2k::J2kAdaptiveBenchmarkEvidence::cpu_ns: u64
-pub j2k::J2kAdaptiveBenchmarkEvidence::criterion_noise_percent: f64
-pub j2k::J2kAdaptiveBenchmarkEvidence::scope: j2k::adapter::adaptive_route::J2kAdaptiveBenchmarkScope
-impl j2k::adapter::adaptive_route::J2kAdaptiveBenchmarkEvidence
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveBenchmarkEvidence::end_to_end(j2k_core::backend::BackendKind, u64, u64, f64) -> Self
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveBenchmarkEvidence::improvement_percent(self) -> f64
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveBenchmarkEvidence::stage(j2k::adapter::adaptive_route::J2kAdaptiveStage, j2k_core::backend::BackendKind, u64, u64, f64) -> Self
-pub struct j2k::J2kAdaptiveBenchmarks
-impl j2k::adapter::adaptive_route::J2kAdaptiveBenchmarks
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveBenchmarks::push_end_to_end(&mut self, j2k::adapter::adaptive_route::J2kAdaptiveBenchmarkEvidence)
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveBenchmarks::push_stage(&mut self, j2k::adapter::adaptive_route::J2kAdaptiveBenchmarkEvidence)
-pub struct j2k::J2kAdaptiveGatePolicy
-pub j2k::J2kAdaptiveGatePolicy::min_speedup_percent: f64
-impl core::default::Default for j2k::adapter::adaptive_route::J2kAdaptiveGatePolicy
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveGatePolicy::default() -> Self
-pub struct j2k::J2kAdaptiveRcaFinding
-pub j2k::J2kAdaptiveRcaFinding::backend: j2k_core::backend::BackendKind
-pub j2k::J2kAdaptiveRcaFinding::reason: j2k::adapter::adaptive_route::J2kAdaptiveRcaReason
-pub j2k::J2kAdaptiveRcaFinding::reclassify_cpu: bool
-pub j2k::J2kAdaptiveRcaFinding::stage: j2k::adapter::adaptive_route::J2kAdaptiveStage
-impl j2k::adapter::adaptive_route::J2kAdaptiveRcaFinding
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveRcaFinding::reclassify_cpu(j2k::adapter::adaptive_route::J2kAdaptiveStage, j2k_core::backend::BackendKind, j2k::adapter::adaptive_route::J2kAdaptiveRcaReason) -> Self
-pub struct j2k::J2kAdaptiveRoutePlanner
-impl j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner::compile_time_defaults() -> Self
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner::lossless_encode(j2k_core::backend::BackendCapabilities) -> Self
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner::lossless_encode_benchmarks(j2k::adapter::adaptive_route::J2kAdaptiveWorkload) -> j2k::adapter::adaptive_route::J2kAdaptiveBenchmarks
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner::lossless_encode_workload(j2k::J2kLosslessSamples<'_>, j2k::J2kLosslessEncodeOptions) -> j2k::adapter::adaptive_route::J2kAdaptiveWorkload
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner::new(j2k_core::backend::BackendCapabilities) -> Self
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner::plan(&self, j2k::adapter::adaptive_route::J2kAdaptiveWorkload, j2k::adapter::adaptive_route::J2kAdaptiveBackendRequest, &j2k::adapter::adaptive_route::J2kAdaptiveBenchmarks) -> core::result::Result<j2k::adapter::adaptive_route::J2kAdaptiveRouteReport, j2k::error::J2kError>
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner::plan_lossless_encode(&self, j2k::J2kLosslessSamples<'_>, j2k::J2kLosslessEncodeOptions) -> core::result::Result<j2k::adapter::adaptive_route::J2kAdaptiveRouteReport, j2k::error::J2kError>
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner::with_lossless_encode_policy(self) -> Self
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner::with_policy(self, j2k::adapter::adaptive_route::J2kAdaptiveGatePolicy) -> Self
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRoutePlanner::with_rca_finding(self, j2k::adapter::adaptive_route::J2kAdaptiveRcaFinding) -> Self
-pub struct j2k::J2kAdaptiveRouteReport
-pub j2k::J2kAdaptiveRouteReport::request: j2k::adapter::adaptive_route::J2kAdaptiveBackendRequest
-pub j2k::J2kAdaptiveRouteReport::route_kind: j2k::adapter::adaptive_route::J2kAdaptiveRouteKind
-pub j2k::J2kAdaptiveRouteReport::selected_device: core::option::Option<j2k_core::backend::BackendKind>
-pub j2k::J2kAdaptiveRouteReport::stages: alloc::vec::Vec<j2k::adapter::adaptive_route::J2kAdaptiveStageDecision>
-impl j2k::adapter::adaptive_route::J2kAdaptiveRouteReport
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRouteReport::has_unresolved_rca(&self) -> bool
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveRouteReport::stage(&self, j2k::adapter::adaptive_route::J2kAdaptiveStage) -> core::option::Option<&j2k::adapter::adaptive_route::J2kAdaptiveStageDecision>
-pub struct j2k::J2kAdaptiveStageDecision
-pub j2k::J2kAdaptiveStageDecision::gate_status: j2k::adapter::adaptive_route::J2kAdaptiveStageGateStatus
-pub j2k::J2kAdaptiveStageDecision::improvement_percent: core::option::Option<f64>
-pub j2k::J2kAdaptiveStageDecision::logical_owner: j2k::adapter::adaptive_route::J2kAdaptiveStageOwner
-pub j2k::J2kAdaptiveStageDecision::rca_reason: core::option::Option<j2k::adapter::adaptive_route::J2kAdaptiveRcaReason>
-pub j2k::J2kAdaptiveStageDecision::selected_backend: j2k_core::backend::BackendKind
-pub j2k::J2kAdaptiveStageDecision::stage: j2k::adapter::adaptive_route::J2kAdaptiveStage
-impl j2k::adapter::adaptive_route::J2kAdaptiveStageDecision
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveStageDecision::requires_rca(&self) -> bool
-pub struct j2k::J2kAdaptiveWorkload
-pub j2k::J2kAdaptiveWorkload::batch_size: u16
-pub j2k::J2kAdaptiveWorkload::bit_depth: u8
-pub j2k::J2kAdaptiveWorkload::codec_mode: j2k::adapter::adaptive_route::J2kAdaptiveCodecMode
-pub j2k::J2kAdaptiveWorkload::components: u8
-pub j2k::J2kAdaptiveWorkload::operation: j2k::adapter::adaptive_route::J2kAdaptiveOperation
-pub j2k::J2kAdaptiveWorkload::output_residency: j2k::adapter::adaptive_route::J2kAdaptiveOutputResidency
-pub j2k::J2kAdaptiveWorkload::quality_layers: u16
-pub j2k::J2kAdaptiveWorkload::quality_mode: j2k::adapter::adaptive_route::J2kAdaptiveQualityMode
-pub j2k::J2kAdaptiveWorkload::roi: bool
-pub j2k::J2kAdaptiveWorkload::scaled: bool
-pub j2k::J2kAdaptiveWorkload::tile_size: (u32, u32)
-impl j2k::adapter::adaptive_route::J2kAdaptiveWorkload
-pub fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::logical_owner_for(self, j2k::adapter::adaptive_route::J2kAdaptiveStage) -> j2k::adapter::adaptive_route::J2kAdaptiveStageOwner
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::new(j2k::adapter::adaptive_route::J2kAdaptiveOperation, j2k::adapter::adaptive_route::J2kAdaptiveCodecMode, j2k::adapter::adaptive_route::J2kAdaptiveQualityMode, u8, u8, (u32, u32), u16) -> Self
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::with_output_residency(self, j2k::adapter::adaptive_route::J2kAdaptiveOutputResidency) -> Self
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::with_quality_layers(self, u16) -> Self
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::with_roi(self, bool) -> Self
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::with_scaled(self, bool) -> Self
 pub struct j2k::J2kCodec
 impl j2k_core::traits::ImageCodec for j2k::view::J2kCodec
 pub type j2k::view::J2kCodec::Error = j2k::error::J2kError
@@ -847,40 +662,6 @@ pub fn j2k::view::J2kView<'a>::passthrough_candidate(&self) -> core::option::Opt
 pub struct j2k::ReencodedHtj2k
 pub j2k::ReencodedHtj2k::bytes: alloc::vec::Vec<u8>
 pub j2k::ReencodedHtj2k::report: j2k::J2kToHtj2kReport
-pub trait j2k::J2kEncodeStageAccelerator
-pub fn j2k::J2kEncodeStageAccelerator::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport
-pub fn j2k::J2kEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::J2kDeinterleaveToF32Job<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_forward_dwt53(&mut self, j2k_types::J2kForwardDwt53Job<'_>) -> core::result::Result<core::option::Option<j2k_types::J2kForwardDwt53Output>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_forward_dwt97(&mut self, j2k_types::J2kForwardDwt97Job<'_>) -> core::result::Result<core::option::Option<j2k_types::J2kForwardDwt97Output>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_forward_ict(&mut self, j2k_types::J2kForwardIctJob<'_>) -> core::result::Result<bool, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_forward_rct(&mut self, j2k_types::J2kForwardRctJob<'_>) -> core::result::Result<bool, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_ht_code_block(&mut self, j2k_types::J2kHtCodeBlockEncodeJob<'_>) -> core::result::Result<core::option::Option<j2k_types::EncodedHtJ2kCodeBlock>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_ht_code_blocks(&mut self, &[j2k_types::J2kHtCodeBlockEncodeJob<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::EncodedHtJ2kCodeBlock>>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_ht_subband(&mut self, j2k_types::J2kHtSubbandEncodeJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::EncodedHtJ2kCodeBlock>>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_htj2k_tile(&mut self, j2k_types::J2kHtj2kTileEncodeJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_packetization(&mut self, j2k_types::J2kPacketizationEncodeJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_quantize_subband(&mut self, j2k_types::J2kQuantizeSubbandJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<i32>>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_tier1_code_block(&mut self, j2k_types::J2kTier1CodeBlockEncodeJob<'_>) -> core::result::Result<core::option::Option<j2k_types::EncodedJ2kCodeBlock>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::encode_tier1_code_blocks(&mut self, &[j2k_types::J2kTier1CodeBlockEncodeJob<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::EncodedJ2kCodeBlock>>, &'static str>
-pub fn j2k::J2kEncodeStageAccelerator::prefer_parallel_cpu_code_block_fallback(&self) -> bool
-pub fn j2k::J2kEncodeStageAccelerator::prefer_parallel_cpu_tile_encode(&self) -> bool
-impl j2k::adapter::encode_stage::J2kEncodeStageAccelerator for j2k_types::CpuOnlyJ2kEncodeStageAccelerator
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::J2kDeinterleaveToF32Job<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_forward_dwt53(&mut self, j2k_types::J2kForwardDwt53Job<'_>) -> core::result::Result<core::option::Option<j2k_types::J2kForwardDwt53Output>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_forward_dwt97(&mut self, j2k_types::J2kForwardDwt97Job<'_>) -> core::result::Result<core::option::Option<j2k_types::J2kForwardDwt97Output>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_forward_ict(&mut self, j2k_types::J2kForwardIctJob<'_>) -> core::result::Result<bool, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_forward_rct(&mut self, j2k_types::J2kForwardRctJob<'_>) -> core::result::Result<bool, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_ht_code_block(&mut self, j2k_types::J2kHtCodeBlockEncodeJob<'_>) -> core::result::Result<core::option::Option<j2k_types::EncodedHtJ2kCodeBlock>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_ht_code_blocks(&mut self, &[j2k_types::J2kHtCodeBlockEncodeJob<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::EncodedHtJ2kCodeBlock>>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_ht_subband(&mut self, j2k_types::J2kHtSubbandEncodeJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::EncodedHtJ2kCodeBlock>>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_htj2k_tile(&mut self, j2k_types::J2kHtj2kTileEncodeJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_packetization(&mut self, j2k_types::J2kPacketizationEncodeJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_quantize_subband(&mut self, j2k_types::J2kQuantizeSubbandJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<i32>>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_tier1_code_block(&mut self, j2k_types::J2kTier1CodeBlockEncodeJob<'_>) -> core::result::Result<core::option::Option<j2k_types::EncodedJ2kCodeBlock>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_tier1_code_blocks(&mut self, &[j2k_types::J2kTier1CodeBlockEncodeJob<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::EncodedJ2kCodeBlock>>, &'static str>
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::prefer_parallel_cpu_code_block_fallback(&self) -> bool
-pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::prefer_parallel_cpu_tile_encode(&self) -> bool
 pub fn j2k::decode_tile_into_in_context(&[u8], &mut j2k_core::context::DecoderContext<j2k::context::J2kContext>, &mut j2k::scratch::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>
 pub fn j2k::decode_tile_region_into_in_context(&[u8], &mut j2k_core::context::DecoderContext<j2k::context::J2kContext>, &mut j2k::scratch::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>
 pub fn j2k::decode_tile_region_scaled_into_in_context(&[u8], &mut j2k_core::context::DecoderContext<j2k::context::J2kContext>, &mut j2k::scratch::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>

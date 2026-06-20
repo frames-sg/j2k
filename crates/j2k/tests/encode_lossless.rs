@@ -2,14 +2,17 @@
 
 use std::path::PathBuf;
 
+use j2k::adapter::encode_stage::{
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kCodeBlockSegment, J2kCodeBlockStyle,
+    J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    J2kHtCodeBlockEncodeJob, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob, J2kSubBandType,
+    J2kTier1CodeBlockEncodeJob,
+};
 use j2k::{
     encode_j2k_lossless, encode_j2k_lossless_with_accelerator, j2k_lossless_decomposition_levels,
     j2k_lossless_decomposition_levels_for_options,
-    j2k_lossless_decomposition_levels_for_progression, EncodeBackendPreference,
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kBlockCodingMode, J2kCodeBlockSegment,
-    J2kCodeBlockStyle, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
-    J2kEncodeValidation, J2kHtCodeBlockEncodeJob, J2kLosslessEncodeOptions, J2kLosslessSamples,
-    J2kPacketizationEncodeJob, J2kProgressionOrder, J2kQuantizeSubbandJob, J2kSubBandType,
+    j2k_lossless_decomposition_levels_for_progression, EncodeBackendPreference, J2kBlockCodingMode,
+    J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
     ReversibleTransform,
 };
 use j2k_core::{BackendKind, CodecError};
@@ -694,8 +697,8 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
 
         fn encode_tier1_code_block(
             &mut self,
-            job: j2k::J2kTier1CodeBlockEncodeJob<'_>,
-        ) -> core::result::Result<Option<j2k::EncodedJ2kCodeBlock>, &'static str> {
+            job: J2kTier1CodeBlockEncodeJob<'_>,
+        ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
             self.tier1_code_block = self.tier1_code_block.saturating_add(1);
             j2k_native::encode_j2k_code_block_scalar_with_style(
                 job.coefficients,

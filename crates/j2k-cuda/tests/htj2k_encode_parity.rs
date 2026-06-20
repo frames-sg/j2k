@@ -681,7 +681,7 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_tile_encode_hook_rejects_subsampling_with_typed_err_when_cuda_runtime_required() {
-    use j2k::{
+    use j2k::adapter::encode_stage::{
         J2kEncodeStageAccelerator as _, J2kHtj2kTileEncodeJob, J2kPacketizationProgressionOrder,
     };
     use j2k_cuda::CudaEncodeStageAccelerator;

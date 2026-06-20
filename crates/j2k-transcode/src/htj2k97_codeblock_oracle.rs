@@ -13,7 +13,7 @@
 
 use crate::accelerator::Htj2k97CodeBlockOptions;
 use crate::dct97_2d::Dwt97TwoDimensional;
-use j2k::{
+use j2k::adapter::encode_stage::{
     J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
     PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
@@ -271,7 +271,9 @@ fn htj2k97_code_block_dim(exp_minus_two: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use j2k::{IrreversibleQuantizationSubbandScales, PrequantizedHtj2k97Image};
+    use j2k::adapter::encode_stage::{
+        IrreversibleQuantizationSubbandScales, PrequantizedHtj2k97Image,
+    };
     use j2k_native::{
         encode_precomputed_htj2k_97, encode_prequantized_htj2k_97, EncodeOptions,
         J2kForwardDwt97Level, J2kForwardDwt97Output, PrecomputedHtj2k97Component,

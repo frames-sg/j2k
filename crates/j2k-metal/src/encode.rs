@@ -1434,7 +1434,7 @@ fn encode_cpu_codestream_from_prepacketized_ht_tile(
     Ok(EncodedJ2k {
         codestream,
         backend: BackendKind::Cpu,
-        dispatch_report: j2k::J2kEncodeDispatchReport::default(),
+        dispatch_report: j2k::adapter::encode_stage::J2kEncodeDispatchReport::default(),
         width: samples.width,
         height: samples.height,
         components: samples.components,
