@@ -84,6 +84,8 @@ fn dct97_benchmark_emits_transcode_batch_profile_rows() {
         "extract_processor=cpu",
         "transform_processor=metal",
         "encode_processor=cpu",
+        "pipeline_map",
+        "debug_report",
         "jpeg_dct_extract_us",
         "dct_to_wavelet_total_us",
         "htj2k_encode_us",

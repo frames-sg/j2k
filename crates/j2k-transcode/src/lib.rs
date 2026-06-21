@@ -18,6 +18,7 @@ pub mod htj2k97_codeblock_oracle;
 mod jpeg_to_htj2k;
 #[doc(hidden)]
 pub mod metrics;
+mod pipeline_map;
 mod reversible53;
 
 pub use j2k::J2kProgressionOrder as EncodeProgressionOrder;
@@ -30,4 +31,8 @@ pub use jpeg_to_htj2k::{
     TranscodeComponentReport, TranscodeReport, TranscodeTimingReport,
     TranscodeValidationClassification, TranscodeValidationMetrics,
     JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
+};
+pub use pipeline_map::{
+    TranscodePipelineMap, TranscodePipelineStageKind, TranscodePipelineStageReport,
+    TranscodeResidentStageRecommendation, TranscodeStageProcessor,
 };

@@ -852,6 +852,7 @@ fn emit_transcode_batch_profile(batch: &EncodedTranscodeBatch, context: &'static
         timings.accelerator_dispatched_jobs,
         timings.cpu_fallback_jobs,
     );
+    eprint!("{}", report.pipeline_map().debug_report());
 }
 
 fn metal_available() -> bool {
