@@ -117,6 +117,31 @@ pub(crate) fn decision_error(decision: RouteDecision) -> Option<Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use j2k_jpeg::adapter::{
+        build_fast420_packet_for_decoder, build_fast422_packet_for_decoder,
+        build_fast444_packet_for_decoder,
+    };
+
+    const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
+    const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
+    const BASELINE_444: &[u8] = include_bytes!("../fixtures/jpeg/baseline_444_8x8.jpg");
+    const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
+
+    fn capabilities_for(bytes: &[u8], fmt: PixelFormat) -> JpegMetalCapabilities {
+        let decoder = CpuDecoder::new(bytes).expect("decoder");
+        let fast444_packet = build_fast444_packet_for_decoder(&decoder).ok();
+        let fast422_packet = build_fast422_packet_for_decoder(&decoder).ok();
+        let fast420_packet = build_fast420_packet_for_decoder(&decoder).ok();
+
+        JpegMetalCapabilities::for_request(
+            &decoder,
+            fmt,
+            BatchOp::Full,
+            fast444_packet.as_ref(),
+            fast422_packet.as_ref(),
+            fast420_packet.as_ref(),
+        )
+    }
 
     #[test]
     fn cuda_route_reports_unsupported_backend() {
@@ -150,6 +175,40 @@ mod tests {
             decide_route(BackendRequest::Metal, capabilities),
             RouteDecision::RejectExplicitMetal { reason }
                 if reason.contains("Gray8, Rgb8, or Rgba8")
+        ));
+    }
+
+    #[test]
+    fn explicit_metal_accepts_fast_baseline_sampling_families() {
+        for (name, bytes) in [
+            ("fast420", BASELINE_420),
+            ("fast422", BASELINE_422),
+            ("fast444", BASELINE_444),
+        ] {
+            let capabilities = capabilities_for(bytes, PixelFormat::Rgb8);
+
+            assert!(capabilities.has_fast_packet(), "{name}");
+            assert!(capabilities.supports_output_format(), "{name}");
+            assert!(
+                matches!(
+                    decide_route(BackendRequest::Metal, capabilities),
+                    RouteDecision::MetalKernel | RouteDecision::MetalUnavailable
+                ),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_metal_rejects_supported_output_when_fast_packet_is_missing() {
+        let capabilities = capabilities_for(GRAYSCALE, PixelFormat::Gray8);
+
+        assert!(!capabilities.has_fast_packet());
+        assert!(capabilities.supports_output_format());
+        assert!(matches!(
+            decide_route(BackendRequest::Metal, capabilities),
+            RouteDecision::RejectExplicitMetal { reason }
+                if reason.contains("fast 4:2:0, 4:2:2, or 4:4:4 baseline packets")
         ));
     }
 

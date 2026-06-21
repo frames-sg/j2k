@@ -6,9 +6,12 @@ use j2k_core::{
     Rect, TileBatchDecodeSubmit,
 };
 use j2k_jpeg::{
-    adapter::summarize_device_batch, decode_tile_region_scaled_into_in_context,
-    decode_tile_scaled_into_in_context, Decoder as CpuDecoder,
-    DecoderContext as JpegDecoderContext, ScratchPool as CpuScratchPool,
+    adapter::{
+        build_fast420_packet_for_decoder, build_fast422_packet_for_decoder,
+        build_fast444_packet_for_decoder, summarize_device_batch,
+    },
+    decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context,
+    Decoder as CpuDecoder, DecoderContext as JpegDecoderContext, ScratchPool as CpuScratchPool,
 };
 use j2k_jpeg_metal::viewport::{
     compose_viewport_cpu, compose_viewport_cpu_to_surface, compose_viewport_hybrid,
@@ -70,12 +73,39 @@ struct DistinctTileBatch<'a> {
     tiles: Vec<&'a BenchInput>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FastPacketPlan {
+    matches_fast_420: bool,
+    matches_fast_422: bool,
+    matches_fast_444: bool,
+}
+
+impl FastPacketPlan {
+    fn has_fast_packet(self) -> bool {
+        self.matches_fast_420 || self.matches_fast_422 || self.matches_fast_444
+    }
+}
+
 fn load_bench_inputs() -> Vec<BenchInput> {
     let mut inputs = vec![
         BenchInput {
             name: "repo/baseline_420_16x16".to_string(),
             bytes: include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg").to_vec(),
             dimensions: (16, 16),
+            mode: DecodeMode::Rgb,
+            input_class: CorpusInputClass::BoundedFullFrame,
+        },
+        BenchInput {
+            name: "repo/baseline_422_16x8".to_string(),
+            bytes: include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg").to_vec(),
+            dimensions: (16, 8),
+            mode: DecodeMode::Rgb,
+            input_class: CorpusInputClass::BoundedFullFrame,
+        },
+        BenchInput {
+            name: "repo/baseline_444_8x8".to_string(),
+            bytes: include_bytes!("../fixtures/jpeg/baseline_444_8x8.jpg").to_vec(),
+            dimensions: (8, 8),
             mode: DecodeMode::Rgb,
             input_class: CorpusInputClass::BoundedFullFrame,
         },
@@ -88,14 +118,28 @@ fn load_bench_inputs() -> Vec<BenchInput> {
         },
         BenchInput {
             name: "generated/fast420_256x256".to_string(),
-            bytes: generated_rgb_jpeg(256, 256, None),
+            bytes: generated_rgb_jpeg(256, 256, SamplingFactor::F_2_2, None),
             dimensions: (256, 256),
             mode: DecodeMode::Rgb,
             input_class: CorpusInputClass::BoundedFullFrame,
         },
         BenchInput {
             name: "generated/fast420_restart2_256x256".to_string(),
-            bytes: generated_rgb_jpeg(256, 256, Some(2)),
+            bytes: generated_rgb_jpeg(256, 256, SamplingFactor::F_2_2, Some(2)),
+            dimensions: (256, 256),
+            mode: DecodeMode::Rgb,
+            input_class: CorpusInputClass::BoundedFullFrame,
+        },
+        BenchInput {
+            name: "generated/fast422_256x256".to_string(),
+            bytes: generated_rgb_jpeg(256, 256, SamplingFactor::F_2_1, None),
+            dimensions: (256, 256),
+            mode: DecodeMode::Rgb,
+            input_class: CorpusInputClass::BoundedFullFrame,
+        },
+        BenchInput {
+            name: "generated/fast444_256x256".to_string(),
+            bytes: generated_rgb_jpeg(256, 256, SamplingFactor::F_1_1, None),
             dimensions: (256, 256),
             mode: DecodeMode::Rgb,
             input_class: CorpusInputClass::BoundedFullFrame,
@@ -113,12 +157,17 @@ fn load_bench_inputs() -> Vec<BenchInput> {
     inputs
 }
 
-fn generated_rgb_jpeg(width: u16, height: u16, restart_interval: Option<u16>) -> Vec<u8> {
+fn generated_rgb_jpeg(
+    width: u16,
+    height: u16,
+    sampling: SamplingFactor,
+    restart_interval: Option<u16>,
+) -> Vec<u8> {
     let rgb = j2k_test_support::gpu_bench_rgb8(u32::from(width), u32::from(height));
 
     let mut jpeg = Vec::new();
     let mut encoder = Encoder::new(&mut jpeg, 90);
-    encoder.set_sampling_factor(SamplingFactor::F_2_2);
+    encoder.set_sampling_factor(sampling);
     if let Some(interval) = restart_interval {
         encoder.set_restart_interval(interval);
     }
@@ -246,6 +295,71 @@ fn device_batch_key(input: &BenchInput) -> Option<DeviceBatchKey> {
         matches_fast_422: summary.matches_fast_422,
         matches_fast_444: summary.matches_fast_444,
     })
+}
+
+fn fast_packet_plan(bytes: &[u8]) -> Option<FastPacketPlan> {
+    let decoder = CpuDecoder::new(bytes).ok()?;
+    Some(FastPacketPlan {
+        matches_fast_444: build_fast444_packet_for_decoder(&decoder).is_ok(),
+        matches_fast_422: build_fast422_packet_for_decoder(&decoder).is_ok(),
+        matches_fast_420: build_fast420_packet_for_decoder(&decoder).is_ok(),
+    })
+}
+
+fn fast_packet_family_label(plan: FastPacketPlan) -> &'static str {
+    if plan.matches_fast_420 {
+        "fast420"
+    } else if plan.matches_fast_422 {
+        "fast422"
+    } else if plan.matches_fast_444 {
+        "fast444"
+    } else {
+        "no_fast_packet"
+    }
+}
+
+fn checkpoint_label(key: DeviceBatchKey) -> &'static str {
+    if key.restart_interval.is_some() {
+        "restart"
+    } else if key.checkpoint_count > 0 {
+        "checkpointed"
+    } else {
+        "unchunked"
+    }
+}
+
+fn fast_packet_scope_label(input: &BenchInput) -> String {
+    let Some(plan) = fast_packet_plan(&input.bytes) else {
+        return "reject/not_jpeg".to_string();
+    };
+    let checkpoint = device_batch_key(input).map_or("unknown", checkpoint_label);
+
+    let family = fast_packet_family_label(plan);
+    let disposition = if plan.has_fast_packet() {
+        "accept"
+    } else {
+        "reject"
+    };
+    format!("{disposition}/{family}/{checkpoint}")
+}
+
+fn bench_fast_packet_planning(c: &mut Criterion, inputs: &[BenchInput]) {
+    let mut group = c.benchmark_group("jpeg_metal_fast_packet_planning");
+    for input in inputs
+        .iter()
+        .filter(|input| input.input_class == CorpusInputClass::BoundedFullFrame)
+    {
+        let scope = fast_packet_scope_label(input);
+        group.bench_function(format!("{scope}/{}", input.name), |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    fast_packet_plan(std::hint::black_box(input.bytes.as_slice()))
+                        .expect("fast packet plan"),
+                );
+            });
+        });
+    }
+    group.finish();
 }
 
 fn digest_bytes(bytes: &[u8]) -> u64 {
@@ -995,6 +1109,8 @@ fn bench_compare(c: &mut Criterion) {
     let distinct_batches = distinct_region_scaled_batches(&inputs, 64, 256);
     let coalesced_hit_rate = coalesce_hit_rate_label(63, 64);
     let has_metal = metal_available();
+
+    bench_fast_packet_planning(c, &inputs);
 
     let mut decode_rgb = c.benchmark_group("decode_rgb");
     for input in inputs.iter().filter(|input| {
