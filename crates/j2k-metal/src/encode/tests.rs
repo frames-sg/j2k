@@ -3,11 +3,11 @@
 use super::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
 use crate::compute;
-#[cfg(target_os = "macos")]
-use j2k::adapter::encode_stage::J2kForwardDwt53Job;
 use j2k::adapter::encode_stage::{
     J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardRctJob,
 };
+#[cfg(target_os = "macos")]
+use j2k::adapter::encode_stage::{J2kForwardDwt53Job, NativeEncodeStageAdapter};
 use j2k::{
     encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
     J2kLosslessEncodeOptions, J2kLosslessSamples,
@@ -21,7 +21,7 @@ use j2k_core::DeviceSubmission;
 #[cfg(target_os = "macos")]
 use j2k_core::{BackendKind, PixelFormat};
 #[cfg(target_os = "macos")]
-use j2k_native::{forward_dwt53_reference, J2kCodeBlockStyle};
+use j2k_native::{forward_dwt53_reference, EncodeOptions, J2kCodeBlockStyle};
 use j2k_native::{DecodeSettings, Image};
 #[cfg(target_os = "macos")]
 use metal::foreign_types::ForeignType;
@@ -3049,6 +3049,37 @@ fn metal_htj2k_lossy_facade_require_device_dispatches_supported_stages() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn metal_htj2k_lossy_facade_reports_forward_dwt97_dispatch() {
+    let width = 64;
+    let height = 64;
+    let pixels: Vec<u8> = (0..width * height)
+        .map(|idx| ((idx * 23 + idx / 11 + 31) & 0xFF) as u8)
+        .collect();
+    let samples =
+        J2kLossySamples::new(&pixels, width, height, 1, 8, false).expect("valid gray samples");
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let encoded = encode_j2k_lossy_with_accelerator(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_max_decomposition_levels(Some(2))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("Metal-accelerated HTJ2K lossy encode with DWT 9/7");
+
+    assert_eq!(encoded.backend, BackendKind::Metal);
+    assert!(accelerator.forward_dwt97_attempts() > 0);
+    assert!(accelerator.forward_dwt97_dispatches() > 0);
+    assert!(encoded.dispatch_report.forward_dwt97 > 0);
+    assert!(accelerator.ht_code_block_dispatches() > 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn metal_classic_tier1_kernel_matches_scalar_oracle() {
     let coeffs: Vec<i32> = (0..64)
         .map(|idx| {
@@ -3731,4 +3762,73 @@ fn metal_forward_dwt53_matches_reference_for_fractional_stage_samples() {
         assert_slice_near(&actual.lh, &expected.lh, "LH");
         assert_slice_near(&actual.hh, &expected.hh, "HH");
     }
+}
+
+#[cfg(target_os = "macos")]
+fn native_lossy_dwt97_options(num_decomposition_levels: u8) -> EncodeOptions {
+    EncodeOptions {
+        num_decomposition_levels,
+        reversible: false,
+        guard_bits: 2,
+        use_ht_block_coding: true,
+        ..Default::default()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn assert_metal_dwt97_matches_native_encode(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    num_decomposition_levels: u8,
+) {
+    let options = native_lossy_dwt97_options(num_decomposition_levels);
+    let expected = j2k_native::encode(pixels, width, height, 1, 8, false, &options)
+        .expect("native lossy DWT 9/7 encode");
+    let mut accelerator = MetalEncodeStageAccelerator::for_forward_dwt97_encode();
+    let actual = {
+        let mut adapter = NativeEncodeStageAdapter::new(&mut accelerator);
+        j2k_native::encode_with_accelerator(
+            pixels,
+            width,
+            height,
+            1,
+            8,
+            false,
+            &options,
+            &mut adapter,
+        )
+        .expect("Metal DWT 9/7 lossy encode")
+    };
+
+    assert_eq!(actual, expected);
+    assert_eq!(accelerator.forward_dwt97_attempts(), 1);
+    assert_eq!(accelerator.forward_dwt97_dispatches(), 1);
+    let report = accelerator.dispatch_report();
+    assert_eq!(report.forward_dwt97, 1);
+    assert_eq!(report.forward_dwt53, 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_forward_dwt97_single_level_matches_native_encode_output() {
+    let width = 17;
+    let height = 15;
+    let pixels = (0..width * height)
+        .map(|idx| ((idx * 29 + idx / 5 + 17) & 0xFF) as u8)
+        .collect::<Vec<_>>();
+
+    assert_metal_dwt97_matches_native_encode(&pixels, width, height, 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_forward_dwt97_multi_level_matches_native_encode_output() {
+    let width = 32;
+    let height = 16;
+    let pixels = (0..width * height)
+        .map(|idx| ((idx * 43 + idx / 7 + 91) & 0xFF) as u8)
+        .collect::<Vec<_>>();
+
+    assert_metal_dwt97_matches_native_encode(&pixels, width, height, 3);
 }

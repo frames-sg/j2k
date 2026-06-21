@@ -20,6 +20,20 @@ struct J2kForwardDwt53BatchedParams {
     uint component_count;
 };
 
+struct J2kForwardDwt97Params {
+    uint full_width;
+    uint current_width;
+    uint current_height;
+    uint low_width;
+    uint low_height;
+    uint parity;
+    float coefficient;
+    uint _reserved;
+};
+
+constant float J2K_FDWT97_KAPPA = 1.2301741f;
+constant float J2K_FDWT97_INV_KAPPA = 1.0f / 1.2301741f;
+
 inline float j2k_fdwt53_predict_row(
     device const float *src,
     uint row_base,
@@ -209,4 +223,170 @@ kernel void j2k_forward_dwt53_vertical_batched(
         params.low_height,
         gid.xy
     );
+}
+
+inline bool j2k_fdwt97_is_active_parity(uint index, uint parity) {
+    return (index & 1u) == parity;
+}
+
+inline float j2k_fdwt97_horizontal_neighbor(
+    device const float *data,
+    uint row_base,
+    uint width,
+    uint x,
+    bool update_high,
+    bool left_neighbor
+) {
+    if (update_high) {
+        if (left_neighbor) {
+            return data[row_base + x - 1u];
+        }
+        const uint last_even = (width & 1u) == 0u ? width - 2u : width - 1u;
+        return (x + 1u < width) ? data[row_base + x + 1u] : data[row_base + last_even];
+    }
+
+    if (left_neighbor) {
+        return x > 0u ? data[row_base + x - 1u] : data[row_base + 1u];
+    }
+    return (x + 1u < width) ? data[row_base + x + 1u] : data[row_base + x - 1u];
+}
+
+inline float j2k_fdwt97_vertical_neighbor(
+    device const float *data,
+    uint full_width,
+    uint height,
+    uint x,
+    uint y,
+    bool update_high,
+    bool top_neighbor
+) {
+    if (update_high) {
+        if (top_neighbor) {
+            return data[(y - 1u) * full_width + x];
+        }
+        const uint last_even = (height & 1u) == 0u ? height - 2u : height - 1u;
+        const uint neighbor_y = (y + 1u < height) ? y + 1u : last_even;
+        return data[neighbor_y * full_width + x];
+    }
+
+    if (top_neighbor) {
+        const uint neighbor_y = y > 0u ? y - 1u : 1u;
+        return data[neighbor_y * full_width + x];
+    }
+    const uint neighbor_y = (y + 1u < height) ? y + 1u : y - 1u;
+    return data[neighbor_y * full_width + x];
+}
+
+kernel void j2k_forward_dwt97_lift_horizontal(
+    device float *data [[buffer(0)]],
+    device float *unused [[buffer(1)]],
+    constant J2kForwardDwt97Params &params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    (void)unused;
+    if (
+        gid.x >= params.current_width ||
+        gid.y >= params.current_height ||
+        !j2k_fdwt97_is_active_parity(gid.x, params.parity)
+    ) {
+        return;
+    }
+
+    const bool update_high = params.parity == 1u;
+    const uint row_base = gid.y * params.full_width;
+    const float left = j2k_fdwt97_horizontal_neighbor(
+        data,
+        row_base,
+        params.current_width,
+        gid.x,
+        update_high,
+        true
+    );
+    const float right = j2k_fdwt97_horizontal_neighbor(
+        data,
+        row_base,
+        params.current_width,
+        gid.x,
+        update_high,
+        false
+    );
+    data[row_base + gid.x] += params.coefficient * (left + right);
+}
+
+kernel void j2k_forward_dwt97_lift_vertical(
+    device float *data [[buffer(0)]],
+    device float *unused [[buffer(1)]],
+    constant J2kForwardDwt97Params &params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    (void)unused;
+    if (
+        gid.x >= params.current_width ||
+        gid.y >= params.current_height ||
+        !j2k_fdwt97_is_active_parity(gid.y, params.parity)
+    ) {
+        return;
+    }
+
+    const bool update_high = params.parity == 1u;
+    const float top = j2k_fdwt97_vertical_neighbor(
+        data,
+        params.full_width,
+        params.current_height,
+        gid.x,
+        gid.y,
+        update_high,
+        true
+    );
+    const float bottom = j2k_fdwt97_vertical_neighbor(
+        data,
+        params.full_width,
+        params.current_height,
+        gid.x,
+        gid.y,
+        update_high,
+        false
+    );
+    data[gid.y * params.full_width + gid.x] += params.coefficient * (top + bottom);
+}
+
+kernel void j2k_forward_dwt97_deinterleave_horizontal(
+    device const float *src [[buffer(0)]],
+    device float *dst [[buffer(1)]],
+    constant J2kForwardDwt97Params &params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.current_width || gid.y >= params.current_height) {
+        return;
+    }
+
+    const uint row_base = gid.y * params.full_width;
+    if (gid.x < params.low_width) {
+        dst[row_base + gid.x] = src[row_base + gid.x * 2u] * J2K_FDWT97_INV_KAPPA;
+        return;
+    }
+
+    const uint high_index = gid.x - params.low_width;
+    dst[row_base + gid.x] = src[row_base + high_index * 2u + 1u] * J2K_FDWT97_KAPPA;
+}
+
+kernel void j2k_forward_dwt97_deinterleave_vertical(
+    device const float *src [[buffer(0)]],
+    device float *dst [[buffer(1)]],
+    constant J2kForwardDwt97Params &params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.current_width || gid.y >= params.current_height) {
+        return;
+    }
+
+    if (gid.y < params.low_height) {
+        dst[gid.y * params.full_width + gid.x] =
+            src[(gid.y * 2u) * params.full_width + gid.x] * J2K_FDWT97_INV_KAPPA;
+        return;
+    }
+
+    const uint high_index = gid.y - params.low_height;
+    dst[gid.y * params.full_width + gid.x] =
+        src[(high_index * 2u + 1u) * params.full_width + gid.x] * J2K_FDWT97_KAPPA;
 }
