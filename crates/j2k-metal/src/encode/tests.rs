@@ -102,60 +102,184 @@ fn assert_decoded_bytes_match(actual: &[u8], expected: &[u8]) {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn metal_encode_deinterleave_rgb8_matches_native_reference() {
-    let pixels = [0, 64, 255, 128, 129, 130, 251, 7, 19, 33, 211, 91];
-    let job = J2kDeinterleaveToF32Job {
-        pixels: &pixels,
-        num_pixels: 4,
-        num_components: 3,
-        bit_depth: 8,
-        signed: false,
-    };
-    let expected = deinterleave_reference(
-        job.pixels,
-        job.num_pixels,
-        job.num_components,
-        job.bit_depth,
-        job.signed,
-    );
-    let mut accelerator = MetalEncodeStageAccelerator::default();
+fn metal_encode_deinterleave_public_layouts_match_native_reference() {
+    #[derive(Clone, Copy)]
+    struct Case {
+        name: &'static str,
+        num_components: u8,
+        bit_depth: u8,
+        signed: bool,
+    }
 
-    let actual = accelerator
-        .encode_deinterleave(job)
-        .expect("Metal deinterleave stage")
-        .expect("RGB8 unsigned deinterleave should dispatch");
+    fn case_pixels(case: Case, num_pixels: usize) -> Vec<u8> {
+        let sample_count = num_pixels * usize::from(case.num_components);
+        if case.bit_depth <= 8 {
+            return (0..sample_count)
+                .map(|idx| ((idx * 37 + 11) & 0xff) as u8)
+                .collect();
+        }
 
-    assert_eq!(actual, expected);
-    assert_eq!(accelerator.deinterleave_attempts(), 1);
-    assert_eq!(accelerator.deinterleave_dispatches(), 1);
-    assert_eq!(accelerator.dispatch_report().deinterleave, 1);
-}
+        let mut pixels = Vec::with_capacity(sample_count * 2);
+        for idx in 0..sample_count {
+            let sample = ((idx * 1031 + 0x7123) & 0xffff) as u16;
+            pixels.extend_from_slice(&sample.to_le_bytes());
+        }
+        pixels
+    }
 
-#[test]
-fn metal_encode_deinterleave_unsupported_16_bit_returns_cpu_fallback() {
-    let pixels = [
-        0x34, 0x12, 0x78, 0x56, 0xbc, 0x9a, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
-    ];
-    let mut accelerator = MetalEncodeStageAccelerator::default();
-
-    let actual = accelerator
-        .encode_deinterleave(J2kDeinterleaveToF32Job {
-            pixels: &pixels,
-            num_pixels: 2,
+    let cases = [
+        Case {
+            name: "Gray8 unsigned",
+            num_components: 1,
+            bit_depth: 8,
+            signed: false,
+        },
+        Case {
+            name: "two-component 8-bit unsigned",
+            num_components: 2,
+            bit_depth: 8,
+            signed: false,
+        },
+        Case {
+            name: "RGB8 unsigned",
+            num_components: 3,
+            bit_depth: 8,
+            signed: false,
+        },
+        Case {
+            name: "RGBA8 unsigned",
+            num_components: 4,
+            bit_depth: 8,
+            signed: false,
+        },
+        Case {
+            name: "RGB8 signed",
+            num_components: 3,
+            bit_depth: 8,
+            signed: true,
+        },
+        Case {
+            name: "Gray16 signed",
+            num_components: 1,
+            bit_depth: 16,
+            signed: true,
+        },
+        Case {
+            name: "RGB16 unsigned",
             num_components: 3,
             bit_depth: 16,
             signed: false,
-        })
-        .expect("unsupported deinterleave should fallback cleanly");
+        },
+        Case {
+            name: "RGBA12 unsigned",
+            num_components: 4,
+            bit_depth: 12,
+            signed: false,
+        },
+    ];
 
-    assert!(actual.is_none());
+    for case in cases {
+        let pixels = case_pixels(case, 5);
+        J2kLosslessSamples::new(
+            &pixels,
+            5,
+            1,
+            case.num_components,
+            case.bit_depth,
+            case.signed,
+        )
+        .unwrap_or_else(|err| panic!("lossless public layout rejected for {}: {err}", case.name));
+        J2kLossySamples::new(
+            &pixels,
+            5,
+            1,
+            case.num_components,
+            case.bit_depth,
+            case.signed,
+        )
+        .unwrap_or_else(|err| panic!("lossy public layout rejected for {}: {err}", case.name));
+
+        let job = J2kDeinterleaveToF32Job {
+            pixels: &pixels,
+            num_pixels: 5,
+            num_components: case.num_components,
+            bit_depth: case.bit_depth,
+            signed: case.signed,
+        };
+        let expected = deinterleave_reference(
+            job.pixels,
+            job.num_pixels,
+            job.num_components,
+            job.bit_depth,
+            job.signed,
+        );
+        let mut accelerator = MetalEncodeStageAccelerator::default();
+
+        let actual = accelerator
+            .encode_deinterleave(job)
+            .unwrap_or_else(|err| {
+                panic!("Metal deinterleave stage failed for {}: {err}", case.name)
+            })
+            .unwrap_or_else(|| panic!("Metal deinterleave did not dispatch for {}", case.name));
+
+        assert_eq!(actual, expected, "{}", case.name);
+        assert_eq!(accelerator.deinterleave_attempts(), 1, "{}", case.name);
+        assert_eq!(accelerator.deinterleave_dispatches(), 1, "{}", case.name);
+        assert_eq!(
+            accelerator.dispatch_report().deinterleave,
+            1,
+            "{}",
+            case.name
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_encode_deinterleave_invalid_component_count_errors_without_dispatch() {
+    let pixels = [0_u8; 10];
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let err = accelerator
+        .encode_deinterleave(J2kDeinterleaveToF32Job {
+            pixels: &pixels,
+            num_pixels: 2,
+            num_components: 5,
+            bit_depth: 8,
+            signed: false,
+        })
+        .unwrap_err();
+
+    assert_eq!(err, "Metal deinterleave encode shape is unsupported");
     assert_eq!(accelerator.deinterleave_attempts(), 1);
     assert_eq!(accelerator.deinterleave_dispatches(), 0);
     assert_eq!(accelerator.dispatch_report().deinterleave, 0);
 }
 
+#[cfg(target_os = "macos")]
 #[test]
-fn metal_encode_deinterleave_unsupported_16_bit_fallback_still_encodes() {
+fn metal_encode_deinterleave_compute_rejects_invalid_shape_structured() {
+    let pixels = [0_u8; 10];
+
+    let err = compute::encode_deinterleave_to_f32(J2kDeinterleaveToF32Job {
+        pixels: &pixels,
+        num_pixels: 2,
+        num_components: 5,
+        bit_depth: 8,
+        signed: false,
+    })
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        crate::Error::UnsupportedMetalRequest {
+            reason: "J2K Metal encode deinterleave supports 1-4 component samples"
+        }
+    ));
+}
+
+#[test]
+fn auto_encode_deinterleave_disabled_fallback_still_encodes() {
     let mut pixels = Vec::with_capacity(8 * 8 * 2);
     for idx in 0..8 * 8 {
         let sample = u16::try_from((idx * 257 + 19) & 0xffff).expect("masked sample fits u16");
@@ -164,7 +288,7 @@ fn metal_encode_deinterleave_unsupported_16_bit_fallback_still_encodes() {
     let samples =
         J2kLosslessSamples::new(&pixels, 8, 8, 1, 16, false).expect("valid Gray16 samples");
     let options = J2kLosslessEncodeOptions::default().with_max_decomposition_levels(Some(0));
-    let mut accelerator = MetalEncodeStageAccelerator::default();
+    let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
 
     let encoded = encode_j2k_lossless_with_accelerator(
         samples,
@@ -1043,6 +1167,39 @@ fn metal_forward_rct_dispatch_round_trips_rgb8_lossless_tile() {
     assert_eq!(accelerator.deinterleave_dispatches(), 1);
     assert_eq!(accelerator.forward_rct_attempts(), 1);
     assert_eq!(accelerator.forward_rct_dispatches(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips() {
+    let mut pixels = Vec::with_capacity(8 * 8 * 2);
+    for idx in 0..8 * 8 {
+        let sample = ((idx * 1021 + 0x2345) & 0xffff) as u16;
+        pixels.extend_from_slice(&sample.to_le_bytes());
+    }
+    let samples =
+        J2kLosslessSamples::new(&pixels, 8, 8, 1, 16, false).expect("valid Gray16 samples");
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let encoded = encode_j2k_lossless_with_accelerator(
+        samples,
+        &lossless_options! {
+            backend: EncodeBackendPreference::RequireDevice,
+            max_decomposition_levels: Some(0),
+        },
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("Metal-accelerated Gray16 lossless encode");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("codestream parses")
+        .decode_native()
+        .expect("codestream decodes");
+
+    assert_eq!(decoded.data, pixels);
+    assert_eq!(encoded.dispatch_report.deinterleave, 1);
+    assert_eq!(accelerator.deinterleave_attempts(), 1);
+    assert_eq!(accelerator.deinterleave_dispatches(), 1);
 }
 
 #[cfg(target_os = "macos")]
@@ -3129,6 +3286,9 @@ fn metal_htj2k_lossless_facade_dispatches_ht_code_blocks_and_packetization() {
     .expect("Metal-accelerated HTJ2K lossless encode");
 
     assert_eq!(encoded.backend, BackendKind::Metal);
+    assert_eq!(encoded.dispatch_report.deinterleave, 1);
+    assert_eq!(accelerator.deinterleave_attempts(), 1);
+    assert_eq!(accelerator.deinterleave_dispatches(), 1);
     assert!(accelerator.ht_code_block_attempts() > 0);
     assert!(accelerator.ht_code_block_dispatches() > 0);
     assert_eq!(accelerator.packetization_attempts(), 1);
@@ -3157,6 +3317,9 @@ fn metal_htj2k_lossy_facade_require_device_dispatches_supported_stages() {
     .expect("Metal-accelerated HTJ2K lossy encode");
 
     assert_eq!(encoded.backend, BackendKind::Metal);
+    assert_eq!(encoded.dispatch_report.deinterleave, 1);
+    assert_eq!(accelerator.deinterleave_attempts(), 1);
+    assert_eq!(accelerator.deinterleave_dispatches(), 1);
     assert!(accelerator.ht_code_block_attempts() > 0);
     assert!(accelerator.ht_code_block_dispatches() > 0);
     assert_eq!(accelerator.packetization_attempts(), 1);

@@ -42,6 +42,7 @@ pub(crate) struct J2kLosslessDeinterleaveParams {
     pub(crate) components: u32,
     pub(crate) bytes_per_sample: u32,
     pub(crate) sample_offset: u32,
+    pub(crate) signed_samples: u32,
 }
 
 #[cfg(target_os = "macos")]

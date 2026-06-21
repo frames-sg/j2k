@@ -274,6 +274,9 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                     Ok(Some(components))
                 }
                 Ok(None) | Err(crate::Error::MetalUnavailable) => Ok(None),
+                Err(crate::Error::UnsupportedMetalRequest { .. }) => {
+                    Err("Metal deinterleave encode shape is unsupported")
+                }
                 Err(_) => Err("Metal deinterleave encode kernel failed"),
             }
         }

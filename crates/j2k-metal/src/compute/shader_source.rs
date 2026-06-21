@@ -95,6 +95,7 @@ struct J2kLosslessDeinterleaveParams {
     uint components;
     uint bytes_per_sample;
     uint sample_offset;
+    uint signed_samples;
 };
 
 inline float j2k_lossless_load_sample(
@@ -104,16 +105,24 @@ inline float j2k_lossless_load_sample(
     uint components,
     uint bytes_per_sample,
     uint sample_offset,
+    uint signed_samples,
     bool inside_src
 ) {
     if (!inside_src) {
-        return -float(int(sample_offset));
+        return signed_samples == 0u ? -float(int(sample_offset)) : 0.0f;
     }
     if (bytes_per_sample == 1u) {
-        return float(int(src[base + component]) - int(sample_offset));
+        const uint raw = uint(src[base + component]);
+        if (signed_samples != 0u) {
+            return float(raw >= 128u ? int(raw) - 256 : int(raw));
+        }
+        return float(int(raw) - int(sample_offset));
     }
     const uint byte_offset = base + component * 2u;
     const uint raw = uint(src[byte_offset]) | (uint(src[byte_offset + 1u]) << 8u);
+    if (signed_samples != 0u) {
+        return float(raw >= 32768u ? int(raw) - 65536 : int(raw));
+    }
     return float(int(raw) - int(sample_offset));
 }
 
@@ -123,6 +132,7 @@ kernel void j2k_lossless_deinterleave_to_planes(
     device float *plane1 [[buffer(2)]],
     device float *plane2 [[buffer(3)]],
     constant J2kLosslessDeinterleaveParams &params [[buffer(4)]],
+    device float *plane3 [[buffer(5)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= params.dst_width || gid.y >= params.dst_height) {
@@ -140,9 +150,10 @@ kernel void j2k_lossless_deinterleave_to_planes(
         params.components,
         params.bytes_per_sample,
         params.sample_offset,
+        params.signed_samples,
         inside_src
     );
-    if (params.components >= 3u) {
+    if (params.components >= 2u) {
         plane1[dst_idx] = j2k_lossless_load_sample(
             src,
             src_base,
@@ -150,8 +161,11 @@ kernel void j2k_lossless_deinterleave_to_planes(
             params.components,
             params.bytes_per_sample,
             params.sample_offset,
+            params.signed_samples,
             inside_src
         );
+    }
+    if (params.components >= 3u) {
         plane2[dst_idx] = j2k_lossless_load_sample(
             src,
             src_base,
@@ -159,6 +173,19 @@ kernel void j2k_lossless_deinterleave_to_planes(
             params.components,
             params.bytes_per_sample,
             params.sample_offset,
+            params.signed_samples,
+            inside_src
+        );
+    }
+    if (params.components >= 4u) {
+        plane3[dst_idx] = j2k_lossless_load_sample(
+            src,
+            src_base,
+            3u,
+            params.components,
+            params.bytes_per_sample,
+            params.sample_offset,
+            params.signed_samples,
             inside_src
         );
     }
