@@ -29,6 +29,7 @@ pub struct MetalEncodeStageAccelerator {
     forward_ict_attempts: usize,
     forward_dwt53_attempts: usize,
     forward_dwt97_attempts: usize,
+    quantize_subband_attempts: usize,
     tier1_code_block_attempts: usize,
     ht_code_block_attempts: usize,
     packetization_attempts: usize,
@@ -37,6 +38,7 @@ pub struct MetalEncodeStageAccelerator {
     forward_ict_dispatches: usize,
     forward_dwt53_dispatches: usize,
     forward_dwt97_dispatches: usize,
+    quantize_subband_dispatches: usize,
     tier1_code_block_dispatches: usize,
     ht_code_block_dispatches: usize,
     packetization_dispatches: usize,
@@ -53,6 +55,7 @@ impl Default for MetalEncodeStageAccelerator {
             forward_ict_attempts: 0,
             forward_dwt53_attempts: 0,
             forward_dwt97_attempts: 0,
+            quantize_subband_attempts: 0,
             tier1_code_block_attempts: 0,
             ht_code_block_attempts: 0,
             packetization_attempts: 0,
@@ -61,6 +64,7 @@ impl Default for MetalEncodeStageAccelerator {
             forward_ict_dispatches: 0,
             forward_dwt53_dispatches: 0,
             forward_dwt97_dispatches: 0,
+            quantize_subband_dispatches: 0,
             tier1_code_block_dispatches: 0,
             ht_code_block_dispatches: 0,
             packetization_dispatches: 0,
@@ -69,7 +73,7 @@ impl Default for MetalEncodeStageAccelerator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MetalEncodeDispatchStages(u8);
+struct MetalEncodeDispatchStages(u16);
 
 impl MetalEncodeDispatchStages {
     const DEINTERLEAVE: Self = Self(1 << 0);
@@ -77,9 +81,10 @@ impl MetalEncodeDispatchStages {
     const FORWARD_ICT: Self = Self(1 << 2);
     const FORWARD_DWT53: Self = Self(1 << 3);
     const FORWARD_DWT97: Self = Self(1 << 4);
-    const TIER1_CODE_BLOCK: Self = Self(1 << 5);
-    const HT_CODE_BLOCK: Self = Self(1 << 6);
-    const PACKETIZATION: Self = Self(1 << 7);
+    const QUANTIZE_SUBBAND: Self = Self(1 << 5);
+    const TIER1_CODE_BLOCK: Self = Self(1 << 6);
+    const HT_CODE_BLOCK: Self = Self(1 << 7);
+    const PACKETIZATION: Self = Self(1 << 8);
     const AUTO_HOST_OUTPUT: Self = Self(0);
     const ALL: Self = Self(
         Self::DEINTERLEAVE.0
@@ -87,6 +92,7 @@ impl MetalEncodeDispatchStages {
             | Self::FORWARD_ICT.0
             | Self::FORWARD_DWT53.0
             | Self::FORWARD_DWT97.0
+            | Self::QUANTIZE_SUBBAND.0
             | Self::TIER1_CODE_BLOCK.0
             | Self::HT_CODE_BLOCK.0
             | Self::PACKETIZATION.0,
@@ -171,6 +177,11 @@ impl MetalEncodeStageAccelerator {
         self.forward_dwt97_attempts
     }
 
+    /// Number of sub-band quantization stage attempts.
+    pub fn quantize_subband_attempts(&self) -> usize {
+        self.quantize_subband_attempts
+    }
+
     /// Number of classic Tier-1 code-block encode attempts.
     pub fn tier1_code_block_attempts(&self) -> usize {
         self.tier1_code_block_attempts
@@ -209,6 +220,11 @@ impl MetalEncodeStageAccelerator {
     /// Number of forward 9/7 DWT Metal dispatches.
     pub fn forward_dwt97_dispatches(&self) -> usize {
         self.forward_dwt97_dispatches
+    }
+
+    /// Number of sub-band quantization Metal dispatches.
+    pub fn quantize_subband_dispatches(&self) -> usize {
+        self.quantize_subband_dispatches
     }
 
     /// Number of classic Tier-1 Metal dispatches.
@@ -259,7 +275,7 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             forward_ict: self.forward_ict_dispatches,
             forward_dwt53: self.forward_dwt53_dispatches,
             forward_dwt97: self.forward_dwt97_dispatches,
-            quantize_subband: 0,
+            quantize_subband: self.quantize_subband_dispatches,
             tier1_code_block: self.tier1_code_block_dispatches,
             ht_code_block: self.ht_code_block_dispatches,
             packetization: self.packetization_dispatches,
@@ -431,6 +447,42 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 self.forward_dwt97_dispatches = self.forward_dwt97_dispatches.saturating_add(1);
             }
             Ok(output)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = job;
+            Ok(None)
+        }
+    }
+
+    fn encode_quantize_subband(
+        &mut self,
+        job: encode_stage::J2kQuantizeSubbandJob<'_>,
+    ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+        self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::QUANTIZE_SUBBAND)
+        {
+            let _ = job;
+            return Ok(None);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            match compute::encode_quantize_subband(job) {
+                Ok(coefficients) => {
+                    if !coefficients.is_empty() {
+                        self.quantize_subband_dispatches =
+                            self.quantize_subband_dispatches.saturating_add(1);
+                    }
+                    Ok(Some(coefficients))
+                }
+                Err(crate::Error::MetalUnavailable) => Ok(None),
+                Err(crate::Error::UnsupportedMetalRequest { .. }) => {
+                    Err("Metal quantize_subband encode shape is unsupported")
+                }
+                Err(_) => Err("Metal quantize_subband encode kernel failed"),
+            }
         }
         #[cfg(not(target_os = "macos"))]
         {

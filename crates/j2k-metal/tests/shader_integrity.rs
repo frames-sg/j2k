@@ -9,6 +9,7 @@ const SHADER_SOURCES: &[&str] = &[
     include_str!("../src/ht_cleanup.metal"),
     include_str!("../src/idwt.metal"),
     include_str!("../src/mct.metal"),
+    include_str!("../src/quantize.metal"),
     include_str!("../src/store.metal"),
 ];
 

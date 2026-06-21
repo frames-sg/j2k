@@ -3535,6 +3535,8 @@ pub fn j2k_metal::MetalEncodeStageAccelerator::ht_code_block_attempts(&self) -> 
 pub fn j2k_metal::MetalEncodeStageAccelerator::ht_code_block_dispatches(&self) -> usize
 pub fn j2k_metal::MetalEncodeStageAccelerator::packetization_attempts(&self) -> usize
 pub fn j2k_metal::MetalEncodeStageAccelerator::packetization_dispatches(&self) -> usize
+pub fn j2k_metal::MetalEncodeStageAccelerator::quantize_subband_attempts(&self) -> usize
+pub fn j2k_metal::MetalEncodeStageAccelerator::quantize_subband_dispatches(&self) -> usize
 pub fn j2k_metal::MetalEncodeStageAccelerator::tier1_code_block_attempts(&self) -> usize
 pub fn j2k_metal::MetalEncodeStageAccelerator::tier1_code_block_dispatches(&self) -> usize
 pub fn j2k_metal::MetalEncodeStageAccelerator::with_cpu_forward_rct() -> Self
@@ -3551,6 +3553,7 @@ pub fn j2k_metal::MetalEncodeStageAccelerator::encode_ht_code_block(&mut self, j
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_ht_code_blocks(&mut self, &[j2k_types::J2kHtCodeBlockEncodeJob<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::EncodedHtJ2kCodeBlock>>, &'static str>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_htj2k_tile(&mut self, j2k_types::J2kHtj2kTileEncodeJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, &'static str>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_packetization(&mut self, j2k_types::J2kPacketizationEncodeJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, &'static str>
+pub fn j2k_metal::MetalEncodeStageAccelerator::encode_quantize_subband(&mut self, j2k_types::J2kQuantizeSubbandJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<i32>>, &'static str>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_tier1_code_block(&mut self, j2k_types::J2kTier1CodeBlockEncodeJob<'_>) -> core::result::Result<core::option::Option<j2k_types::EncodedJ2kCodeBlock>, &'static str>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_tier1_code_blocks(&mut self, &[j2k_types::J2kTier1CodeBlockEncodeJob<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::EncodedJ2kCodeBlock>>, &'static str>
 pub fn j2k_metal::MetalEncodeStageAccelerator::prefer_parallel_cpu_code_block_fallback(&self) -> bool

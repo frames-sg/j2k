@@ -15,13 +15,10 @@ dispatches for:
 - forward ICT
 - forward 5/3 DWT
 - forward 9/7 DWT
+- subband quantization
 - classic Tier-1 code-block encode
 - HT code-block encode
 - packetization
-
-The dispatch report still returns zero for:
-
-- subband quantization
 
 The automatic host-output path is conservative and does not try every available
 Metal stage.
@@ -36,11 +33,11 @@ Metal stage.
 
 ## Remaining Gap
 
-Subband quantization is the remaining unimplemented Metal encode stage. Keep the
-next implementation limited to kernel plumbing, dispatch accounting, CPU parity
-tests, and explicit Metal errors for unsupported input shapes. This is one
-encode-stage implementation, not full end-to-end Metal encode coverage for every
-public encode route.
+Subband quantization has landed for the existing contiguous encode-stage job
+shape, with dispatch accounting, CPU parity tests, and explicit Metal errors for
+unsupported quantization parameters. Auto routing remains conservative. This is
+one encode-stage implementation, not full end-to-end Metal encode coverage for
+every public encode route.
 
 ## Acceptance Criteria
 
