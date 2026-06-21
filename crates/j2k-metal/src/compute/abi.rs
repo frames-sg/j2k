@@ -291,6 +291,16 @@ pub(crate) struct J2kForwardRctParams {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub(crate) struct J2kForwardIctParams {
+    pub(crate) _len: u32,
+    pub(crate) _reserved0: u32,
+    pub(crate) _reserved1: u32,
+    pub(crate) _reserved2: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct J2kForwardDwt53Params {
     pub(crate) full_width: u32,
     pub(crate) current_width: u32,
