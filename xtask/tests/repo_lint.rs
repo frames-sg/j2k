@@ -402,13 +402,13 @@ mod docs_and_workflows_policy {
     use super::*;
 
     #[test]
-    fn wsi_decode_api_guide_covers_public_surfaces() {
+    fn codec_api_guide_covers_public_surfaces() {
         let root = repo_root();
         let readme = fs::read_to_string(root.join("README.md")).expect("read README");
 
         assert!(
-            readme.contains("WSI decode contracts"),
-            "README must document the WSI decode API surface"
+            readme.contains("Codec contracts"),
+            "README must document the public codec API surface"
         );
 
         for required in [
@@ -424,7 +424,7 @@ mod docs_and_workflows_policy {
         ] {
             assert!(
                 readme.contains(required),
-                "README.md must document WSI decode surface `{required}`"
+                "README.md must document codec API surface `{required}`"
             );
         }
     }
@@ -635,6 +635,26 @@ mod docs_and_workflows_policy {
             !coverage_job.contains("continue-on-error"),
             "coverage job must not be allowed to fail silently"
         );
+    }
+
+    #[test]
+    fn coverage_excludes_hardware_only_gpu_adapter_crates() {
+        let xtask =
+            fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask source");
+
+        for required in [
+            "crates/j2k-cuda-runtime/",
+            "crates/j2k-cuda/",
+            "crates/j2k-.*-cuda/",
+            "crates/j2k-metal/",
+            "crates/j2k-.*-metal/",
+            "crates/j2k-metal-support/",
+        ] {
+            assert!(
+                xtask.contains(required),
+                "coverage exclusion regex must include `{required}`"
+            );
+        }
     }
 
     #[test]

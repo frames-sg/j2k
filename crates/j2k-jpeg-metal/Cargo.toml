@@ -1,6 +1,6 @@
 [package]
 name = "j2k-jpeg-metal"
-description = "Metal device-output adapter for j2k-jpeg"
+description = "Metal JPEG decode and baseline encode adapter for j2k-jpeg"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,8 +1,14 @@
 # J2K
 
-J2K is a Rust image-codec workspace focused on JPEG 2000 / HTJ2K,
-tile-oriented imaging workloads, and GPU adapter experiments. The current
-public crate release centers on `j2k`.
+J2K is a Rust image-codec workspace for JPEG 2000 / HTJ2K decode, encode,
+GPU acceleration, and JPEG-to-J2K/HTJ2K transcoding. The public crate release
+centers on `j2k`, with lower-level crates for native codec internals, device
+adapters, JPEG input, and transcode pipelines.
+
+The APIs are general codec APIs. Whole-slide imaging and DICOM tile workloads
+are the main public examples and benchmark fixtures because they stress
+large tiled images, strict color handling, and high-throughput GPU paths, but
+the decoder, encoder, and transcode crates are not WSI-only.
 
 Runtime backend selection defaults to `Auto`: CPU remains the portable baseline,
 and Metal or CUDA paths are selected only for supported shapes with validation
@@ -26,9 +32,8 @@ Use lower-level crates only when you need a specific integration point:
 | JPEG 2000 / HTJ2K inspect, decode, encode, and recode | `j2k` |
 | Shared traits and backend types | `j2k-core` |
 | JPEG inspect/decode and fixture/fallback encode | `j2k-jpeg` |
-| JPEG 2000 and HTJ2K inspect/decode/encode | `j2k` |
-| Native J2K engine support | `j2k-native` |
-| JPEG to HTJ2K transcode | `j2k-transcode` |
+| Native JPEG 2000 and HTJ2K codec engine | `j2k-native` |
+| JPEG to J2K/HTJ2K transcode | `j2k-transcode` |
 | CUDA adapters | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` |
 | Metal adapters | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` |
 | Tile compression codecs | `j2k-tilecodec` |
@@ -72,21 +77,20 @@ performance claims require recorded self-hosted benchmark output.
 ## Public API and support policy
 
 Stable APIs are `j2k`, `j2k-core` traits and value types, `j2k-jpeg`,
-and `j2k-tilecodec`. Experimental APIs are
-the Metal adapters, CUDA adapters, transcode crates, and backend encode-stage
-adapter SPI.
+and `j2k-tilecodec`. Experimental APIs are the Metal adapters, CUDA adapters,
+transcode crates, and backend encode-stage adapter SPI.
 
-WSI decode contracts include `ImageDecode`, `decode_region_scaled_into`,
+Codec contracts include `ImageDecode`, `decode_region_scaled_into`,
 `decode_rows`, `TileBatchDecode`, `DeviceSurface`, `ScratchPool`, and
 `DecoderContext`. `BackendRequest::Auto` may return CPU output.
 `BackendRequest::Metal` and `BackendRequest::Cuda` are strict and fail for
 unsupported shapes.
 
-WSI/DICOM storage paths should pass compressed payloads through when transfer
-syntax, payload kind, dimensions, component count, bit depth, signedness, and
-color interpretation already match the destination requirements. Decode and
-re-encode only when passthrough is invalid and the source codec path is
-supported.
+Container and storage integrations should pass compatible compressed payloads
+through when the payload kind, dimensions, component count, bit depth,
+signedness, and color interpretation already match the destination
+requirements. Decode and re-encode only when passthrough is invalid and the
+source codec path is supported.
 
 Unsupported input must fail explicitly. Error messages must avoid sensitive
 internal details. Unsafe Rust inventory is tracked in

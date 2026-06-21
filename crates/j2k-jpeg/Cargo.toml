@@ -1,6 +1,6 @@
 [package]
 name        = "j2k-jpeg"
-description = "JPEG decoder optimized for whole-slide images (WSI)"
+description = "JPEG inspect/decode and fallback encode support for j2k"
 version.workspace = true
 edition.workspace      = true
 rust-version.workspace = true

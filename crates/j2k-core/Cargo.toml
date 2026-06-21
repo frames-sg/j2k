@@ -1,6 +1,6 @@
 [package]
 name        = "j2k-core"
-description = "Shared decode contracts and types for j2k"
+description = "Shared codec contracts and backend types for j2k"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

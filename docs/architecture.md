@@ -2,7 +2,7 @@
 
 This document records current workspace boundaries. It is not a roadmap.
 
-The public crate release centers on `j2k`. Runtime backend selection defaults to `Auto`: CPU remains the portable baseline, and explicit CUDA or Metal requests are strict. The workspace README records the public support and WSI decode policy.
+The public crate release centers on `j2k`. Runtime backend selection defaults to `Auto`: CPU remains the portable baseline, and explicit CUDA or Metal requests are strict. The workspace README records the public support and codec API policy.
 
 ## Crate classes
 
@@ -16,7 +16,7 @@ The public crate release centers on `j2k`. Runtime backend selection defaults to
 | `j2k-cuda-runtime` | CUDA engine | CUDA Driver API integration, J2K-owned kernel modules, launch orchestration, and CUDA memory helpers shared by CUDA adapters. |
 | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, route policy, and CUDA device memory integration for supported paths. |
 | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal runtime integration for supported paths. |
-| `j2k-transcode` | transcode | JPEG to HTJ2K transcode algorithms. |
+| `j2k-transcode` | transcode | JPEG to J2K/HTJ2K transcode algorithms. |
 | `j2k-cli` | CLI | Command-line inspection entry point. |
 | `j2k-test-support` | dev helper | Shared fixture and benchmark input helpers for tests, benches, and examples. |
 | `j2k-compare` | tooling | Comparator tooling. |

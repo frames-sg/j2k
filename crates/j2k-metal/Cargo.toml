@@ -1,6 +1,6 @@
 [package]
 name = "j2k-metal"
-description = "Metal device-output adapter for j2k"
+description = "Metal decoder and encode-stage adapter for j2k"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

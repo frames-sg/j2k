@@ -1,6 +1,6 @@
 [package]
 name        = "j2k-tilecodec"
-description = "Tile decompression codecs for pathology image containers"
+description = "Tile-oriented decompression codecs for image containers"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

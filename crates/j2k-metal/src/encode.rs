@@ -23,9 +23,11 @@ mod validation;
 
 #[cfg(target_os = "macos")]
 use crate::compute;
+use j2k::J2kLosslessEncodeOptions;
 #[cfg(target_os = "macos")]
 use j2k::{EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, ReversibleTransform};
-use j2k::{EncodedJ2k, J2kLosslessEncodeOptions, J2kLosslessSamples};
+#[cfg(target_os = "macos")]
+use j2k::{EncodedJ2k, J2kLosslessSamples};
 #[cfg(target_os = "macos")]
 use j2k_core::{BackendKind, DeviceSurface, PixelFormat};
 #[cfg(target_os = "macos")]
@@ -34,6 +36,7 @@ use j2k_native::{EncodeOptions, EncodeProgressionOrder};
 use j2k_native::{J2kEncodeStageAccelerator, J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob};
 #[cfg(target_os = "macos")]
 use metal::Buffer;
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::Instant;
@@ -85,6 +88,7 @@ use self::stage_accelerator::metal_dispatch_option;
 pub use self::stage_accelerator::MetalEncodeStageAccelerator;
 #[cfg(test)]
 use self::stats::add_resident_prep_duration;
+#[cfg(any(test, target_os = "macos"))]
 use self::stats::add_resident_prep_wall_duration;
 pub use self::stats::{
     MetalLosslessBufferEncodeBatchOutcome, MetalLosslessEncodeBatchStats,
