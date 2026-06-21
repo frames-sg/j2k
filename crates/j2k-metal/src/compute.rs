@@ -24,12 +24,13 @@ use j2k_native::{
     pack_j2k_code_block_scalar_from_tier1_tokens, ColorSpace as NativeColorSpace,
     DecodedComponents as NativeDecodedComponents, EncodeProgressionOrder, EncodedHtJ2kCodeBlock,
     EncodedJ2kCodeBlock, HtCodeBlockDecodeJob, HtSubBandDecodeJob, J2kCodeBlockDecodeJob,
-    J2kCodeBlockSegment, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kForwardDwt53Level,
-    J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output, J2kHtCodeBlockEncodeJob,
-    J2kInverseMctJob, J2kPacketizationBlockCodingMode, J2kPacketizationEncodeJob,
-    J2kPacketizationPacketDescriptor, J2kSingleDecompositionIdwtJob, J2kStoreComponentJob,
-    J2kSubBandDecodeJob, J2kTier1CodeBlockEncodeJob, J2kTier1TokenSegment, J2kWaveletTransform,
+    J2kCodeBlockSegment, J2kDeinterleaveToF32Job, J2kDirectBandId, J2kDirectColorPlan,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
+    J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
+    J2kHtCodeBlockEncodeJob, J2kInverseMctJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor, J2kSingleDecompositionIdwtJob,
+    J2kStoreComponentJob, J2kSubBandDecodeJob, J2kTier1CodeBlockEncodeJob, J2kTier1TokenSegment,
+    J2kWaveletTransform,
 };
 #[cfg(target_os = "macos")]
 use metal::{
@@ -5388,6 +5389,99 @@ pub(crate) fn encode_forward_dwt97(
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn encode_deinterleave_to_f32(
+    job: J2kDeinterleaveToF32Job<'_>,
+) -> Result<Option<Vec<Vec<f32>>>, Error> {
+    if !encode_deinterleave_to_f32_supported(job) {
+        return Ok(None);
+    }
+    let pixel_count = u32::try_from(job.num_pixels).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal encode deinterleave pixel count exceeds u32".to_string(),
+    })?;
+    let expected_len = job
+        .num_pixels
+        .checked_mul(usize::from(job.num_components))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal encode deinterleave input length overflow".to_string(),
+        })?;
+    if job.pixels.len() != expected_len {
+        return Err(Error::MetalKernel {
+            message: format!(
+                "J2K Metal encode deinterleave input length mismatch: expected {expected_len} bytes, got {}",
+                job.pixels.len()
+            ),
+        });
+    }
+    let src_stride = u32::try_from(expected_len).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal encode deinterleave row stride exceeds u32".to_string(),
+    })?;
+    let plane_bytes = job
+        .num_pixels
+        .checked_mul(size_of::<f32>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal encode deinterleave output length overflow".to_string(),
+        })?;
+
+    with_runtime(|runtime| {
+        let input_buffer = copied_slice_buffer(&runtime.device, job.pixels);
+        let plane0_buffer = runtime
+            .device
+            .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared);
+        let plane1_buffer = runtime
+            .device
+            .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared);
+        let plane2_buffer = runtime
+            .device
+            .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared);
+        let params = J2kLosslessDeinterleaveParams {
+            src_width: pixel_count,
+            src_height: 1,
+            src_stride,
+            dst_width: pixel_count,
+            dst_height: 1,
+            components: u32::from(job.num_components),
+            bytes_per_sample: 1,
+            sample_offset: 128,
+        };
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        label_command_buffer(command_buffer, "j2k encode-stage deinterleave");
+        let encoder = command_buffer.new_compute_command_encoder();
+        label_compute_encoder(encoder, "J2K encode-stage deinterleave");
+        encoder.set_compute_pipeline_state(&runtime.lossless_deinterleave_to_planes);
+        encoder.set_buffer(0, Some(&input_buffer), 0);
+        encoder.set_buffer(1, Some(&plane0_buffer), 0);
+        encoder.set_buffer(2, Some(&plane1_buffer), 0);
+        encoder.set_buffer(3, Some(&plane2_buffer), 0);
+        encoder.set_bytes(
+            4,
+            size_of::<J2kLosslessDeinterleaveParams>() as u64,
+            (&raw const params).cast(),
+        );
+        dispatch_2d_pipeline(
+            encoder,
+            &runtime.lossless_deinterleave_to_planes,
+            (pixel_count, 1),
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let planes = [&plane0_buffer, &plane1_buffer, &plane2_buffer]
+            .into_iter()
+            .map(|buffer| {
+                // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
+                let samples = unsafe {
+                    core::slice::from_raw_parts(buffer.contents().cast::<f32>(), job.num_pixels)
+                };
+                samples.to_vec()
+            })
+            .collect();
+        Ok(Some(planes))
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn dispatch_forward_dwt97_lift_steps(
     pipeline: &ComputePipelineState,
     command_buffer: &CommandBufferRef,
@@ -5403,9 +5497,7 @@ fn dispatch_forward_dwt97_lift_steps(
         (FDWT97_LOW_PASS, FDWT97_BETA),
         (FDWT97_HIGH_PASS, FDWT97_GAMMA),
         (FDWT97_LOW_PASS, FDWT97_DELTA),
-    ]
-    .into_iter()
-    {
+    ] {
         let params = J2kForwardDwt97Params {
             parity,
             coefficient,
@@ -5447,6 +5539,11 @@ fn dispatch_forward_dwt97_pass(
         (params.current_width, params.current_height),
     );
     encoder.end_encoding();
+}
+
+#[cfg(target_os = "macos")]
+fn encode_deinterleave_to_f32_supported(job: J2kDeinterleaveToF32Job<'_>) -> bool {
+    job.num_pixels > 0 && job.num_components == 3 && job.bit_depth == 8 && !job.signed
 }
 
 #[cfg(target_os = "macos")]

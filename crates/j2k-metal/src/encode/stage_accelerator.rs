@@ -24,12 +24,14 @@ pub struct MetalEncodeStageAccelerator {
     dispatch_stages: MetalEncodeDispatchStages,
     parallel_cpu_code_block_fallback: bool,
     auto_host_output_force_cpu_fallback: bool,
+    deinterleave_attempts: usize,
     forward_rct_attempts: usize,
     forward_dwt53_attempts: usize,
     forward_dwt97_attempts: usize,
     tier1_code_block_attempts: usize,
     ht_code_block_attempts: usize,
     packetization_attempts: usize,
+    deinterleave_dispatches: usize,
     forward_rct_dispatches: usize,
     forward_dwt53_dispatches: usize,
     forward_dwt97_dispatches: usize,
@@ -44,12 +46,14 @@ impl Default for MetalEncodeStageAccelerator {
             dispatch_stages: MetalEncodeDispatchStages::ALL,
             parallel_cpu_code_block_fallback: false,
             auto_host_output_force_cpu_fallback: false,
+            deinterleave_attempts: 0,
             forward_rct_attempts: 0,
             forward_dwt53_attempts: 0,
             forward_dwt97_attempts: 0,
             tier1_code_block_attempts: 0,
             ht_code_block_attempts: 0,
             packetization_attempts: 0,
+            deinterleave_dispatches: 0,
             forward_rct_dispatches: 0,
             forward_dwt53_dispatches: 0,
             forward_dwt97_dispatches: 0,
@@ -64,15 +68,17 @@ impl Default for MetalEncodeStageAccelerator {
 struct MetalEncodeDispatchStages(u8);
 
 impl MetalEncodeDispatchStages {
-    const FORWARD_RCT: Self = Self(1 << 0);
-    const FORWARD_DWT53: Self = Self(1 << 1);
-    const FORWARD_DWT97: Self = Self(1 << 2);
-    const TIER1_CODE_BLOCK: Self = Self(1 << 3);
-    const HT_CODE_BLOCK: Self = Self(1 << 4);
-    const PACKETIZATION: Self = Self(1 << 5);
+    const DEINTERLEAVE: Self = Self(1 << 0);
+    const FORWARD_RCT: Self = Self(1 << 1);
+    const FORWARD_DWT53: Self = Self(1 << 2);
+    const FORWARD_DWT97: Self = Self(1 << 3);
+    const TIER1_CODE_BLOCK: Self = Self(1 << 4);
+    const HT_CODE_BLOCK: Self = Self(1 << 5);
+    const PACKETIZATION: Self = Self(1 << 6);
     const AUTO_HOST_OUTPUT: Self = Self(Self::FORWARD_DWT53.0 | Self::HT_CODE_BLOCK.0);
     const ALL: Self = Self(
-        Self::FORWARD_RCT.0
+        Self::DEINTERLEAVE.0
+            | Self::FORWARD_RCT.0
             | Self::FORWARD_DWT53.0
             | Self::FORWARD_DWT97.0
             | Self::TIER1_CODE_BLOCK.0
@@ -134,6 +140,11 @@ impl MetalEncodeStageAccelerator {
         }
     }
 
+    /// Number of deinterleave stage attempts.
+    pub fn deinterleave_attempts(&self) -> usize {
+        self.deinterleave_attempts
+    }
+
     /// Number of forward RCT stage attempts.
     pub fn forward_rct_attempts(&self) -> usize {
         self.forward_rct_attempts
@@ -162,6 +173,11 @@ impl MetalEncodeStageAccelerator {
     /// Number of packetization stage attempts.
     pub fn packetization_attempts(&self) -> usize {
         self.packetization_attempts
+    }
+
+    /// Number of deinterleave Metal dispatches.
+    pub fn deinterleave_dispatches(&self) -> usize {
+        self.deinterleave_dispatches
     }
 
     /// Number of forward RCT Metal dispatches.
@@ -222,7 +238,7 @@ pub(super) fn metal_dispatch_option<T>(
 impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn dispatch_report(&self) -> encode_stage::J2kEncodeDispatchReport {
         encode_stage::J2kEncodeDispatchReport {
-            deinterleave: 0,
+            deinterleave: self.deinterleave_dispatches,
             forward_rct: self.forward_rct_dispatches,
             forward_ict: 0,
             forward_dwt53: self.forward_dwt53_dispatches,
@@ -236,6 +252,36 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
         self.parallel_cpu_code_block_fallback
+    }
+
+    fn encode_deinterleave(
+        &mut self,
+        job: encode_stage::J2kDeinterleaveToF32Job<'_>,
+    ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+        self.deinterleave_attempts = self.deinterleave_attempts.saturating_add(1);
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::DEINTERLEAVE)
+        {
+            let _ = job;
+            return Ok(None);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            match compute::encode_deinterleave_to_f32(job) {
+                Ok(Some(components)) => {
+                    self.deinterleave_dispatches = self.deinterleave_dispatches.saturating_add(1);
+                    Ok(Some(components))
+                }
+                Ok(None) | Err(crate::Error::MetalUnavailable) => Ok(None),
+                Err(_) => Err("Metal deinterleave encode kernel failed"),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = job;
+            Ok(None)
+        }
     }
 
     fn encode_forward_rct(

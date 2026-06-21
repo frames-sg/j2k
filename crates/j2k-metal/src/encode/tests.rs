@@ -4,7 +4,7 @@ use super::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
 use crate::compute;
 use j2k::adapter::encode_stage::{
-    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardRctJob,
+    J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardRctJob,
 };
 #[cfg(target_os = "macos")]
 use j2k::adapter::encode_stage::{J2kForwardDwt53Job, NativeEncodeStageAdapter};
@@ -21,7 +21,9 @@ use j2k_core::DeviceSubmission;
 #[cfg(target_os = "macos")]
 use j2k_core::{BackendKind, PixelFormat};
 #[cfg(target_os = "macos")]
-use j2k_native::{forward_dwt53_reference, EncodeOptions, J2kCodeBlockStyle};
+use j2k_native::{
+    deinterleave_reference, forward_dwt53_reference, EncodeOptions, J2kCodeBlockStyle,
+};
 use j2k_native::{DecodeSettings, Image};
 #[cfg(target_os = "macos")]
 use metal::foreign_types::ForeignType;
@@ -96,6 +98,90 @@ fn assert_decoded_bytes_match(actual: &[u8], expected: &[u8]) {
         actual.len(),
         expected.len()
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_encode_deinterleave_rgb8_matches_native_reference() {
+    let pixels = [0, 64, 255, 128, 129, 130, 251, 7, 19, 33, 211, 91];
+    let job = J2kDeinterleaveToF32Job {
+        pixels: &pixels,
+        num_pixels: 4,
+        num_components: 3,
+        bit_depth: 8,
+        signed: false,
+    };
+    let expected = deinterleave_reference(
+        job.pixels,
+        job.num_pixels,
+        job.num_components,
+        job.bit_depth,
+        job.signed,
+    );
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let actual = accelerator
+        .encode_deinterleave(job)
+        .expect("Metal deinterleave stage")
+        .expect("RGB8 unsigned deinterleave should dispatch");
+
+    assert_eq!(actual, expected);
+    assert_eq!(accelerator.deinterleave_attempts(), 1);
+    assert_eq!(accelerator.deinterleave_dispatches(), 1);
+    assert_eq!(accelerator.dispatch_report().deinterleave, 1);
+}
+
+#[test]
+fn metal_encode_deinterleave_unsupported_16_bit_returns_cpu_fallback() {
+    let pixels = [
+        0x34, 0x12, 0x78, 0x56, 0xbc, 0x9a, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+    ];
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let actual = accelerator
+        .encode_deinterleave(J2kDeinterleaveToF32Job {
+            pixels: &pixels,
+            num_pixels: 2,
+            num_components: 3,
+            bit_depth: 16,
+            signed: false,
+        })
+        .expect("unsupported deinterleave should fallback cleanly");
+
+    assert!(actual.is_none());
+    assert_eq!(accelerator.deinterleave_attempts(), 1);
+    assert_eq!(accelerator.deinterleave_dispatches(), 0);
+    assert_eq!(accelerator.dispatch_report().deinterleave, 0);
+}
+
+#[test]
+fn metal_encode_deinterleave_unsupported_16_bit_fallback_still_encodes() {
+    let mut pixels = Vec::with_capacity(8 * 8 * 2);
+    for idx in 0..8 * 8 {
+        let sample = u16::try_from((idx * 257 + 19) & 0xffff).expect("masked sample fits u16");
+        pixels.extend_from_slice(&sample.to_le_bytes());
+    }
+    let samples =
+        J2kLosslessSamples::new(&pixels, 8, 8, 1, 16, false).expect("valid Gray16 samples");
+    let options = J2kLosslessEncodeOptions::default().with_max_decomposition_levels(Some(0));
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let encoded = encode_j2k_lossless_with_accelerator(
+        samples,
+        &options,
+        j2k_core::BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("Gray16 encode should succeed with CPU deinterleave fallback");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("codestream parses")
+        .decode_native()
+        .expect("codestream decodes");
+
+    assert_eq!(decoded.data, pixels);
+    assert_eq!(encoded.dispatch_report.deinterleave, 0);
+    assert_eq!(accelerator.deinterleave_attempts(), 1);
+    assert_eq!(accelerator.deinterleave_dispatches(), 0);
 }
 
 #[cfg(target_os = "macos")]
@@ -952,6 +1038,9 @@ fn metal_forward_rct_dispatch_round_trips_rgb8_lossless_tile() {
         .expect("codestream decodes");
 
     assert_eq!(decoded.data, pixels);
+    assert_eq!(encoded.dispatch_report.deinterleave, 1);
+    assert_eq!(accelerator.deinterleave_attempts(), 1);
+    assert_eq!(accelerator.deinterleave_dispatches(), 1);
     assert_eq!(accelerator.forward_rct_attempts(), 1);
     assert_eq!(accelerator.forward_rct_dispatches(), 1);
 }
