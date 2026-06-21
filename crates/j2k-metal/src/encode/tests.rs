@@ -5,10 +5,10 @@ use super::MetalEncodeStageAccelerator;
 use crate::compute;
 #[cfg(target_os = "macos")]
 use j2k::adapter::encode_stage::{
-    J2kDeinterleaveToF32Job, J2kForwardDwt53Job, NativeEncodeStageAdapter,
+    J2kDeinterleaveToF32Job, J2kForwardDwt53Job, J2kForwardIctJob, NativeEncodeStageAdapter,
 };
 use j2k::adapter::encode_stage::{
-    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardIctJob, J2kForwardRctJob,
+    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardRctJob,
 };
 use j2k::{
     encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
