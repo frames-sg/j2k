@@ -24,12 +24,13 @@ use j2k_native::{
     pack_j2k_code_block_scalar_from_tier1_tokens, ColorSpace as NativeColorSpace,
     DecodedComponents as NativeDecodedComponents, EncodeProgressionOrder, EncodedHtJ2kCodeBlock,
     EncodedJ2kCodeBlock, HtCodeBlockDecodeJob, HtSubBandDecodeJob, J2kCodeBlockDecodeJob,
-    J2kCodeBlockSegment, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kForwardDwt53Level,
-    J2kForwardDwt53Output, J2kHtCodeBlockEncodeJob, J2kInverseMctJob,
-    J2kPacketizationBlockCodingMode, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
-    J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kSubBandDecodeJob,
-    J2kTier1CodeBlockEncodeJob, J2kTier1TokenSegment, J2kWaveletTransform,
+    J2kCodeBlockSegment, J2kDeinterleaveToF32Job, J2kDirectBandId, J2kDirectColorPlan,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
+    J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
+    J2kHtCodeBlockEncodeJob, J2kInverseMctJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor, J2kSingleDecompositionIdwtJob,
+    J2kStoreComponentJob, J2kSubBandDecodeJob, J2kTier1CodeBlockEncodeJob, J2kTier1TokenSegment,
+    J2kWaveletTransform,
 };
 #[cfg(target_os = "macos")]
 use metal::{
@@ -306,6 +307,10 @@ pub(crate) struct MetalRuntime {
     fdwt53_vertical: ComputePipelineState,
     fdwt53_horizontal_batched: ComputePipelineState,
     fdwt53_vertical_batched: ComputePipelineState,
+    fdwt97_lift_horizontal: ComputePipelineState,
+    fdwt97_lift_vertical: ComputePipelineState,
+    fdwt97_deinterleave_horizontal: ComputePipelineState,
+    fdwt97_deinterleave_vertical: ComputePipelineState,
     inverse_mct: ComputePipelineState,
     forward_rct: ComputePipelineState,
     store_component: ComputePipelineState,
@@ -419,6 +424,10 @@ impl MetalRuntime {
             fdwt53_vertical: pipeline("j2k_forward_dwt53_vertical")?,
             fdwt53_horizontal_batched: pipeline("j2k_forward_dwt53_horizontal_batched")?,
             fdwt53_vertical_batched: pipeline("j2k_forward_dwt53_vertical_batched")?,
+            fdwt97_lift_horizontal: pipeline("j2k_forward_dwt97_lift_horizontal")?,
+            fdwt97_lift_vertical: pipeline("j2k_forward_dwt97_lift_vertical")?,
+            fdwt97_deinterleave_horizontal: pipeline("j2k_forward_dwt97_deinterleave_horizontal")?,
+            fdwt97_deinterleave_vertical: pipeline("j2k_forward_dwt97_deinterleave_vertical")?,
             inverse_mct: pipeline("j2k_inverse_mct")?,
             forward_rct: pipeline("j2k_forward_rct")?,
             store_component: pipeline("j2k_store_component")?,
@@ -5220,6 +5229,324 @@ pub(crate) fn encode_forward_dwt53(
 }
 
 #[cfg(target_os = "macos")]
+const FDWT97_ALPHA: f32 = -1.586_134_3;
+#[cfg(target_os = "macos")]
+const FDWT97_BETA: f32 = -0.052_980_117;
+#[cfg(target_os = "macos")]
+const FDWT97_GAMMA: f32 = 0.882_911_1;
+#[cfg(target_os = "macos")]
+const FDWT97_DELTA: f32 = 0.443_506_87;
+#[cfg(target_os = "macos")]
+const FDWT97_HIGH_PASS: u32 = 1;
+#[cfg(target_os = "macos")]
+const FDWT97_LOW_PASS: u32 = 0;
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kForwardDwt97Params {
+    full_width: u32,
+    current_width: u32,
+    current_height: u32,
+    low_width: u32,
+    low_height: u32,
+    parity: u32,
+    coefficient: f32,
+    _reserved: u32,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn encode_forward_dwt97(
+    samples: &[f32],
+    width: u32,
+    height: u32,
+    num_levels: u8,
+) -> Result<J2kForwardDwt97Output, Error> {
+    if width == 0 || height == 0 {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal forward DWT dimensions must be non-zero".to_string(),
+        });
+    }
+    let width_usize = usize::try_from(width).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal forward DWT width does not fit usize".to_string(),
+    })?;
+    let height_usize = usize::try_from(height).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal forward DWT height does not fit usize".to_string(),
+    })?;
+    let expected_len = width_usize
+        .checked_mul(height_usize)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal forward DWT dimensions overflow".to_string(),
+        })?;
+    if samples.len() != expected_len {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal forward DWT sample length mismatch".to_string(),
+        });
+    }
+    let bytes = size_of_val(samples);
+    let bytes_u64 = u64::try_from(bytes).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal forward DWT buffer size exceeds u64".to_string(),
+    })?;
+
+    with_runtime(|runtime| {
+        let buffer_a = copied_slice_buffer(&runtime.device, samples);
+        let buffer_b = runtime
+            .device
+            .new_buffer(bytes_u64, MTLResourceOptions::StorageModeShared);
+        let command_buffer = runtime.queue.new_command_buffer();
+
+        let mut current_width = width;
+        let mut current_height = height;
+        let mut shapes = Vec::new();
+        let mut levels_run = 0u8;
+        let mut active_is_a = true;
+
+        while levels_run < num_levels && (current_width >= 2 || current_height >= 2) {
+            let low_width = current_width.div_ceil(2);
+            let low_height = current_height.div_ceil(2);
+            let base_params = J2kForwardDwt97Params {
+                full_width: width,
+                current_width,
+                current_height,
+                low_width,
+                low_height,
+                parity: FDWT97_HIGH_PASS,
+                coefficient: 0.0,
+                _reserved: 0,
+            };
+
+            if current_height >= 2 {
+                dispatch_forward_dwt97_lift_steps(
+                    &runtime.fdwt97_lift_vertical,
+                    command_buffer,
+                    &buffer_a,
+                    &buffer_b,
+                    active_is_a,
+                    base_params,
+                    "J2K forward DWT 9/7 vertical",
+                );
+                let (input, output) =
+                    active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
+                dispatch_forward_dwt97_pass(
+                    &runtime.fdwt97_deinterleave_vertical,
+                    command_buffer,
+                    input,
+                    output,
+                    base_params,
+                    "J2K forward DWT 9/7 vertical deinterleave",
+                );
+                active_is_a = !active_is_a;
+            }
+            if current_width >= 2 {
+                dispatch_forward_dwt97_lift_steps(
+                    &runtime.fdwt97_lift_horizontal,
+                    command_buffer,
+                    &buffer_a,
+                    &buffer_b,
+                    active_is_a,
+                    base_params,
+                    "J2K forward DWT 9/7 horizontal",
+                );
+                let (input, output) =
+                    active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
+                dispatch_forward_dwt97_pass(
+                    &runtime.fdwt97_deinterleave_horizontal,
+                    command_buffer,
+                    input,
+                    output,
+                    base_params,
+                    "J2K forward DWT 9/7 horizontal deinterleave",
+                );
+                active_is_a = !active_is_a;
+            }
+
+            shapes.push(J2kForwardDwt97Level {
+                hl: Vec::new(),
+                lh: Vec::new(),
+                hh: Vec::new(),
+                width: current_width,
+                height: current_height,
+                low_width,
+                low_height,
+                high_width: current_width / 2,
+                high_height: current_height / 2,
+            });
+            current_width = low_width;
+            current_height = low_height;
+            levels_run = levels_run.saturating_add(1);
+        }
+
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let active_buffer = if active_is_a { &buffer_a } else { &buffer_b };
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
+        let transformed = unsafe {
+            core::slice::from_raw_parts(active_buffer.contents().cast::<f32>(), samples.len())
+        };
+        extract_forward_dwt97_output(transformed, width, current_width, current_height, shapes)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn encode_deinterleave_to_f32(
+    job: J2kDeinterleaveToF32Job<'_>,
+) -> Result<Option<Vec<Vec<f32>>>, Error> {
+    if !encode_deinterleave_to_f32_supported(job) {
+        return Ok(None);
+    }
+    let pixel_count = u32::try_from(job.num_pixels).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal encode deinterleave pixel count exceeds u32".to_string(),
+    })?;
+    let expected_len = job
+        .num_pixels
+        .checked_mul(usize::from(job.num_components))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal encode deinterleave input length overflow".to_string(),
+        })?;
+    if job.pixels.len() != expected_len {
+        return Err(Error::MetalKernel {
+            message: format!(
+                "J2K Metal encode deinterleave input length mismatch: expected {expected_len} bytes, got {}",
+                job.pixels.len()
+            ),
+        });
+    }
+    let src_stride = u32::try_from(expected_len).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal encode deinterleave row stride exceeds u32".to_string(),
+    })?;
+    let plane_bytes = job
+        .num_pixels
+        .checked_mul(size_of::<f32>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal encode deinterleave output length overflow".to_string(),
+        })?;
+
+    with_runtime(|runtime| {
+        let input_buffer = copied_slice_buffer(&runtime.device, job.pixels);
+        let plane0_buffer = runtime
+            .device
+            .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared);
+        let plane1_buffer = runtime
+            .device
+            .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared);
+        let plane2_buffer = runtime
+            .device
+            .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared);
+        let params = J2kLosslessDeinterleaveParams {
+            src_width: pixel_count,
+            src_height: 1,
+            src_stride,
+            dst_width: pixel_count,
+            dst_height: 1,
+            components: u32::from(job.num_components),
+            bytes_per_sample: 1,
+            sample_offset: 128,
+        };
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        label_command_buffer(command_buffer, "j2k encode-stage deinterleave");
+        let encoder = command_buffer.new_compute_command_encoder();
+        label_compute_encoder(encoder, "J2K encode-stage deinterleave");
+        encoder.set_compute_pipeline_state(&runtime.lossless_deinterleave_to_planes);
+        encoder.set_buffer(0, Some(&input_buffer), 0);
+        encoder.set_buffer(1, Some(&plane0_buffer), 0);
+        encoder.set_buffer(2, Some(&plane1_buffer), 0);
+        encoder.set_buffer(3, Some(&plane2_buffer), 0);
+        encoder.set_bytes(
+            4,
+            size_of::<J2kLosslessDeinterleaveParams>() as u64,
+            (&raw const params).cast(),
+        );
+        dispatch_2d_pipeline(
+            encoder,
+            &runtime.lossless_deinterleave_to_planes,
+            (pixel_count, 1),
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let planes = [&plane0_buffer, &plane1_buffer, &plane2_buffer]
+            .into_iter()
+            .map(|buffer| {
+                // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
+                let samples = unsafe {
+                    core::slice::from_raw_parts(buffer.contents().cast::<f32>(), job.num_pixels)
+                };
+                samples.to_vec()
+            })
+            .collect();
+        Ok(Some(planes))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_forward_dwt97_lift_steps(
+    pipeline: &ComputePipelineState,
+    command_buffer: &CommandBufferRef,
+    buffer_a: &Buffer,
+    buffer_b: &Buffer,
+    active_is_a: bool,
+    base_params: J2kForwardDwt97Params,
+    label_prefix: &str,
+) {
+    let active_buffer = if active_is_a { buffer_a } else { buffer_b };
+    for (parity, coefficient) in [
+        (FDWT97_HIGH_PASS, FDWT97_ALPHA),
+        (FDWT97_LOW_PASS, FDWT97_BETA),
+        (FDWT97_HIGH_PASS, FDWT97_GAMMA),
+        (FDWT97_LOW_PASS, FDWT97_DELTA),
+    ] {
+        let params = J2kForwardDwt97Params {
+            parity,
+            coefficient,
+            ..base_params
+        };
+        dispatch_forward_dwt97_pass(
+            pipeline,
+            command_buffer,
+            active_buffer,
+            active_buffer,
+            params,
+            label_prefix,
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_forward_dwt97_pass(
+    pipeline: &ComputePipelineState,
+    command_buffer: &CommandBufferRef,
+    input: &Buffer,
+    output: &Buffer,
+    params: J2kForwardDwt97Params,
+    label: &str,
+) {
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, label);
+    encoder.set_compute_pipeline_state(pipeline);
+    encoder.set_buffer(0, Some(input), 0);
+    encoder.set_buffer(1, Some(output), 0);
+    encoder.set_bytes(
+        2,
+        size_of::<J2kForwardDwt97Params>() as u64,
+        (&raw const params).cast(),
+    );
+    dispatch_2d_pipeline(
+        encoder,
+        pipeline,
+        (params.current_width, params.current_height),
+    );
+    encoder.end_encoding();
+}
+
+#[cfg(target_os = "macos")]
+fn encode_deinterleave_to_f32_supported(job: J2kDeinterleaveToF32Job<'_>) -> bool {
+    job.num_pixels > 0 && job.num_components == 3 && job.bit_depth == 8 && !job.signed
+}
+
+#[cfg(target_os = "macos")]
 fn active_forward_dwt53_buffers<'a>(
     buffer_a: &'a Buffer,
     buffer_b: &'a Buffer,
@@ -5352,6 +5679,84 @@ fn extract_forward_dwt53_output(
     shapes.reverse();
 
     Ok(J2kForwardDwt53Output {
+        ll,
+        ll_width,
+        ll_height,
+        levels: shapes,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn extract_forward_dwt97_output(
+    transformed: &[f32],
+    full_width: u32,
+    ll_width: u32,
+    ll_height: u32,
+    mut shapes: Vec<J2kForwardDwt97Level>,
+) -> Result<J2kForwardDwt97Output, Error> {
+    let full_width_usize = usize::try_from(full_width).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal forward DWT full width does not fit usize".to_string(),
+    })?;
+    let ll_width_usize = usize::try_from(ll_width).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal forward DWT LL width does not fit usize".to_string(),
+    })?;
+    let ll_height_usize = usize::try_from(ll_height).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal forward DWT LL height does not fit usize".to_string(),
+    })?;
+    let ll_len = ll_width_usize
+        .checked_mul(ll_height_usize)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal forward DWT LL dimensions overflow".to_string(),
+        })?;
+    let mut ll = Vec::with_capacity(ll_len);
+    for y in 0..ll_height_usize {
+        let row_start = y
+            .checked_mul(full_width_usize)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal forward DWT LL row offset overflow".to_string(),
+            })?;
+        let row_end = row_start
+            .checked_add(ll_width_usize)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal forward DWT LL row end overflow".to_string(),
+            })?;
+        let row = transformed
+            .get(row_start..row_end)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal forward DWT LL row out of bounds".to_string(),
+            })?;
+        ll.extend_from_slice(row);
+    }
+
+    for shape in &mut shapes {
+        shape.hl = extract_subband(
+            transformed,
+            full_width_usize,
+            shape.low_width,
+            0,
+            shape.high_width,
+            shape.low_height,
+        )?;
+        shape.lh = extract_subband(
+            transformed,
+            full_width_usize,
+            0,
+            shape.low_height,
+            shape.low_width,
+            shape.high_height,
+        )?;
+        shape.hh = extract_subband(
+            transformed,
+            full_width_usize,
+            shape.low_width,
+            shape.low_height,
+            shape.high_width,
+            shape.high_height,
+        )?;
+    }
+    shapes.reverse();
+
+    Ok(J2kForwardDwt97Output {
         ll,
         ll_width,
         ll_height,
