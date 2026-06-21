@@ -5,7 +5,7 @@ use super::MetalEncodeStageAccelerator;
 use crate::compute;
 #[cfg(target_os = "macos")]
 use j2k::adapter::encode_stage::{
-    J2kDeinterleaveToF32Job, J2kForwardDwt53Job, NativeEncodeStageAdapter,
+    J2kDeinterleaveToF32Job, J2kForwardDwt53Job, J2kForwardIctJob, NativeEncodeStageAdapter,
 };
 use j2k::adapter::encode_stage::{
     J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardRctJob,
@@ -1139,6 +1139,101 @@ fn metal_encode_stage_accelerator_can_leave_forward_rct_on_cpu() {
     assert_eq!(accelerator.forward_rct_attempts(), 1);
     assert_eq!(accelerator.forward_rct_dispatches(), 0);
     assert_eq!((plane0, plane1, plane2), original);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_forward_ict_dispatch_matches_cpu_reference() {
+    fn forward_ict_reference(
+        plane0: &[f32],
+        plane1: &[f32],
+        plane2: &[f32],
+    ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+        let mut out0 = Vec::with_capacity(plane0.len());
+        let mut out1 = Vec::with_capacity(plane1.len());
+        let mut out2 = Vec::with_capacity(plane2.len());
+        for ((&r, &g), &b) in plane0.iter().zip(plane1).zip(plane2) {
+            out0.push(0.299 * r + 0.587 * g + 0.114 * b);
+            out1.push(-0.16875 * r - 0.33126 * g + 0.5 * b);
+            out2.push(0.5 * r - 0.41869 * g - 0.08131 * b);
+        }
+        (out0, out1, out2)
+    }
+
+    fn assert_near(actual: &[f32], expected: &[f32], label: &str) {
+        assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
+        for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (actual - expected).abs() <= 0.0001,
+                "{label}[{index}] mismatch: actual={actual}, expected={expected}"
+            );
+        }
+    }
+
+    let mut plane0 = vec![0.0, 64.0, 128.0, 255.0, -12.5, 42.25];
+    let mut plane1 = vec![3.0, 67.0, 131.0, 252.0, 19.75, -8.5];
+    let mut plane2 = vec![7.0, 71.0, 135.0, 248.0, 33.5, 128.0];
+    let expected = forward_ict_reference(&plane0, &plane1, &plane2);
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let dispatched = accelerator
+        .encode_forward_ict(J2kForwardIctJob {
+            plane0: &mut plane0,
+            plane1: &mut plane1,
+            plane2: &mut plane2,
+        })
+        .expect("Metal ICT dispatch");
+
+    assert!(dispatched);
+    assert_near(&plane0, &expected.0, "Y");
+    assert_near(&plane1, &expected.1, "Cb");
+    assert_near(&plane2, &expected.2, "Cr");
+    assert_eq!(accelerator.forward_ict_attempts(), 1);
+    assert_eq!(accelerator.forward_ict_dispatches(), 1);
+    let report = accelerator.dispatch_report();
+    assert_eq!(report.forward_ict, 1);
+    assert_eq!(report.forward_rct, 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_forward_ict_invalid_plane_lengths_error_without_dispatch() {
+    let mut plane0 = vec![0.0, 64.0];
+    let mut plane1 = vec![3.0];
+    let mut plane2 = vec![7.0, 71.0];
+    let original = (plane0.clone(), plane1.clone(), plane2.clone());
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let err = accelerator
+        .encode_forward_ict(J2kForwardIctJob {
+            plane0: &mut plane0,
+            plane1: &mut plane1,
+            plane2: &mut plane2,
+        })
+        .unwrap_err();
+
+    assert_eq!(err, "Metal forward ICT encode shape is unsupported");
+    assert_eq!(accelerator.forward_ict_attempts(), 1);
+    assert_eq!(accelerator.forward_ict_dispatches(), 0);
+    assert_eq!(accelerator.dispatch_report().forward_ict, 0);
+    assert_eq!((plane0, plane1, plane2), original);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_forward_ict_compute_rejects_invalid_shape_structured() {
+    let mut plane0 = vec![0.0, 64.0];
+    let mut plane1 = vec![3.0];
+    let mut plane2 = vec![7.0, 71.0];
+
+    let err = compute::encode_forward_ict(&mut plane0, &mut plane1, &mut plane2).unwrap_err();
+
+    assert!(matches!(
+        err,
+        crate::Error::UnsupportedMetalRequest {
+            reason: "J2K Metal forward ICT plane lengths must match"
+        }
+    ));
 }
 
 #[cfg(target_os = "macos")]
@@ -3325,6 +3420,42 @@ fn metal_htj2k_lossy_facade_require_device_dispatches_supported_stages() {
     assert!(accelerator.ht_code_block_attempts() > 0);
     assert!(accelerator.ht_code_block_dispatches() > 0);
     assert_eq!(accelerator.packetization_attempts(), 1);
+    assert_eq!(accelerator.packetization_dispatches(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_htj2k_lossy_rgb_facade_reports_forward_ict_dispatch() {
+    let width = 16;
+    let height = 16;
+    let pixels: Vec<u8> = (0..width * height * 3)
+        .map(|idx| ((idx * 19 + idx / 5 + 7) & 0xFF) as u8)
+        .collect();
+    let samples =
+        J2kLossySamples::new(&pixels, width, height, 3, 8, false).expect("valid RGB samples");
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let encoded = encode_j2k_lossy_with_accelerator(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_max_decomposition_levels(Some(0))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("Metal-accelerated RGB HTJ2K lossy encode");
+
+    assert_eq!(encoded.backend, BackendKind::Metal);
+    assert_eq!(encoded.dispatch_report.deinterleave, 1);
+    assert_eq!(encoded.dispatch_report.forward_ict, 1);
+    assert_eq!(encoded.dispatch_report.forward_rct, 0);
+    assert_eq!(encoded.dispatch_report.forward_dwt97, 0);
+    assert_eq!(encoded.dispatch_report.quantize_subband, 0);
+    assert_eq!(accelerator.forward_ict_attempts(), 1);
+    assert_eq!(accelerator.forward_ict_dispatches(), 1);
+    assert!(accelerator.ht_code_block_dispatches() > 0);
     assert_eq!(accelerator.packetization_dispatches(), 1);
 }
 

@@ -12,15 +12,15 @@ dispatches for:
 
 - deinterleave for public 1-4 component, 1-16 bit host encode sample layouts
 - forward RCT
+- forward ICT
 - forward 5/3 DWT
+- forward 9/7 DWT
 - classic Tier-1 code-block encode
 - HT code-block encode
 - packetization
 
 The dispatch report still returns zero for:
 
-- forward ICT
-- forward 9/7 DWT
 - subband quantization
 
 The automatic host-output path is conservative and does not try every available
@@ -28,24 +28,19 @@ Metal stage.
 
 ## Proposed Work
 
-1. Add Metal deinterleave kernels for the lossless/lossy encode input layouts
-   already accepted by the public encode API.
-2. Add forward ICT and irreversible 9/7 DWT kernels for lossy J2K/HTJ2K encode
-   paths.
-3. Add quantization kernels that preserve the current CPU oracle output and
+1. Add quantization kernels that preserve the current CPU oracle output and
    error handling.
-4. Extend dispatch reporting and tests so each new stage has clear attempt and
+2. Extend dispatch reporting and tests so each new stage has clear attempt and
    dispatch counters.
-5. Revisit Auto routing after benchmark evidence exists for each new stage.
+3. Revisit Auto routing after benchmark evidence exists for each new stage.
 
-## Recommended First PR
+## Remaining Gap
 
-Start with Metal encode deinterleave. It is the smallest missing encode-stage
-surface, has a direct CPU oracle, and should not require changing packetization,
-Tier-1 coding, or Auto routing policy. Keep this PR limited to kernel plumbing,
-dispatch accounting, CPU parity tests, and explicit Metal errors for unsupported
-input shapes. This is one encode-stage implementation, not full end-to-end Metal
-encode coverage for every public encode route.
+Subband quantization is the remaining unimplemented Metal encode stage. Keep the
+next implementation limited to kernel plumbing, dispatch accounting, CPU parity
+tests, and explicit Metal errors for unsupported input shapes. This is one
+encode-stage implementation, not full end-to-end Metal encode coverage for every
+public encode route.
 
 ## Acceptance Criteria
 
