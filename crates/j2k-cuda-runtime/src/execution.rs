@@ -65,6 +65,23 @@ impl CudaContext {
         })
     }
 
+    /// Copy host bytes through the opt-in cuda-oxide `CopyU8` kernel.
+    #[cfg(feature = "cuda-oxide-copy-u8")]
+    pub fn copy_with_cuda_oxide_kernel(&self, bytes: &[u8]) -> Result<CudaKernelOutput, CudaError> {
+        let staging = self.upload(bytes)?;
+        let output = self.copy_device_to_device_with_cuda_oxide_kernel(&staging)?;
+        let copy_dispatches = usize::from(!bytes.is_empty());
+        Ok(CudaKernelOutput {
+            buffer: output,
+            execution: CudaExecutionStats {
+                kernel_dispatches: copy_dispatches,
+                copy_kernel_dispatches: copy_dispatches,
+                decode_kernel_dispatches: 0,
+                hardware_decode: false,
+            },
+        })
+    }
+
     pub(crate) fn launch_kernel(
         &self,
         function: CuFunction,
@@ -126,10 +143,40 @@ impl CudaContext {
         self.copy_device_ptr_to_device_with_kernel(src.device_ptr(), src.byte_len())
     }
 
+    #[cfg(feature = "cuda-oxide-copy-u8")]
+    pub(crate) fn copy_device_to_device_with_cuda_oxide_kernel(
+        &self,
+        src: &CudaDeviceBuffer,
+    ) -> Result<CudaDeviceBuffer, CudaError> {
+        self.copy_device_ptr_to_device_with_cuda_oxide_kernel(src.device_ptr(), src.byte_len())
+    }
+
     pub(crate) fn copy_device_ptr_to_device_with_kernel(
         &self,
         src_ptr: CuDevicePtr,
         byte_len: usize,
+    ) -> Result<CudaDeviceBuffer, CudaError> {
+        self.copy_device_ptr_to_device_with_copy_u8_loader(src_ptr, byte_len, |context| {
+            context.inner.kernel_function(CudaKernel::CopyU8)
+        })
+    }
+
+    #[cfg(feature = "cuda-oxide-copy-u8")]
+    pub(crate) fn copy_device_ptr_to_device_with_cuda_oxide_kernel(
+        &self,
+        src_ptr: CuDevicePtr,
+        byte_len: usize,
+    ) -> Result<CudaDeviceBuffer, CudaError> {
+        self.copy_device_ptr_to_device_with_copy_u8_loader(src_ptr, byte_len, |context| {
+            context.inner.cuda_oxide_copy_u8_kernel_function()
+        })
+    }
+
+    fn copy_device_ptr_to_device_with_copy_u8_loader(
+        &self,
+        src_ptr: CuDevicePtr,
+        byte_len: usize,
+        load_function: impl FnOnce(&Self) -> Result<CuFunction, CudaError>,
     ) -> Result<CudaDeviceBuffer, CudaError> {
         self.inner.set_current()?;
         let dst = self.allocate(byte_len)?;
@@ -137,7 +184,7 @@ impl CudaContext {
             return Ok(dst);
         }
 
-        let function = self.inner.kernel_function(CudaKernel::CopyU8)?;
+        let function = load_function(self)?;
         let mut dst_ptr = dst.device_ptr();
         let mut src_ptr = src_ptr;
         let mut len =

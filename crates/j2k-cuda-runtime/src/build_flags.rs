@@ -80,6 +80,17 @@ pub(crate) fn ensure_kernel_ptx_built(kernel: CudaKernel) -> Result<(), CudaErro
     }
 }
 
+#[cfg(feature = "cuda-oxide-copy-u8")]
+pub(crate) fn ensure_cuda_oxide_copy_u8_ptx_built() -> Result<(), CudaError> {
+    if CUDA_OXIDE_COPY_U8_PTX_BUILT {
+        Ok(())
+    } else {
+        Err(CudaError::InvalidArgument {
+            message: "cuda-oxide CopyU8 PTX was not built; set J2K_REQUIRE_CUDA_OXIDE_COPY_U8 on a Linux cuda-oxide host to require it".to_string(),
+        })
+    }
+}
+
 pub(crate) const J2K_ENCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(j2k_cuda_j2k_encode_ptx_built);
 
 pub(crate) const HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(j2k_cuda_htj2k_encode_ptx_built);
@@ -88,6 +99,9 @@ pub(crate) const HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(j2k_cuda_htj2k_en
 /// (the runner). When false, build.rs wrote a placeholder PTX, so dispatch
 /// returns a typed error instead of loading a non-existent kernel.
 pub(crate) const TRANSCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(j2k_cuda_transcode_ptx_built);
+
+#[cfg(feature = "cuda-oxide-copy-u8")]
+pub(crate) const CUDA_OXIDE_COPY_U8_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_copy_u8_built);
 
 /// Whether the coefficient-domain transcode kernels were compiled (runner).
 /// Backends check this to fall back to the scalar oracle when the kernels are

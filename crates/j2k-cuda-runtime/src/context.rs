@@ -1,3 +1,7 @@
+#[cfg(feature = "cuda-oxide-copy-u8")]
+use crate::build_flags::ensure_cuda_oxide_copy_u8_ptx_built;
+#[cfg(feature = "cuda-oxide-copy-u8")]
+use crate::kernels;
 use crate::{
     build_flags::{ensure_kernel_ptx_built, CUDA_IDWT_TRACE_ENV_VAR},
     bytes::{f32_slice_as_bytes_mut, i32_slice_as_bytes_mut},
@@ -24,7 +28,7 @@ use std::{
 pub(crate) struct ContextInner {
     pub(crate) driver: Driver,
     pub(crate) context: CuContext,
-    pub(crate) modules: Mutex<HashMap<CudaKernel, CompiledKernel>>,
+    pub(crate) modules: Mutex<HashMap<CompiledKernelKey, CompiledKernel>>,
     pub(crate) pinned_upload_staging: Mutex<Vec<PinnedUploadStaging>>,
 }
 
@@ -78,7 +82,17 @@ impl ContextInner {
     }
 
     pub(crate) fn kernel_function(&self, kernel: CudaKernel) -> Result<CuFunction, CudaError> {
-        ensure_kernel_ptx_built(kernel)?;
+        self.kernel_function_from_key(CompiledKernelKey::Builtin(kernel))
+    }
+
+    #[cfg(feature = "cuda-oxide-copy-u8")]
+    pub(crate) fn cuda_oxide_copy_u8_kernel_function(&self) -> Result<CuFunction, CudaError> {
+        ensure_cuda_oxide_copy_u8_ptx_built()?;
+        self.kernel_function_from_key(CompiledKernelKey::CudaOxideCopyU8)
+    }
+
+    fn kernel_function_from_key(&self, key: CompiledKernelKey) -> Result<CuFunction, CudaError> {
+        ensure_kernel_ptx_built(key.kernel())?;
         self.set_current()?;
         let mut modules = self
             .modules
@@ -86,13 +100,13 @@ impl ContextInner {
             .map_err(|error| CudaError::StatePoisoned {
                 message: error.to_string(),
             })?;
-        if let Some(compiled) = modules.get(&kernel) {
+        if let Some(compiled) = modules.get(&key) {
             return Ok(compiled.function);
         }
 
-        let compiled = CompiledKernel::load(self, kernel)?;
+        let compiled = CompiledKernel::load(self, key)?;
         let function = compiled.function;
-        modules.insert(kernel, compiled);
+        modules.insert(key, compiled);
         Ok(function)
     }
 }
@@ -667,8 +681,37 @@ pub(crate) struct CompiledKernel {
     pub(crate) function: CuFunction,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum CompiledKernelKey {
+    Builtin(CudaKernel),
+    #[cfg(feature = "cuda-oxide-copy-u8")]
+    CudaOxideCopyU8,
+}
+
+impl CompiledKernelKey {
+    pub(crate) fn kernel(self) -> CudaKernel {
+        match self {
+            Self::Builtin(kernel) => kernel,
+            #[cfg(feature = "cuda-oxide-copy-u8")]
+            Self::CudaOxideCopyU8 => CudaKernel::CopyU8,
+        }
+    }
+
+    pub(crate) fn ptx(self) -> &'static [u8] {
+        match self {
+            Self::Builtin(kernel) => kernel.ptx(),
+            #[cfg(feature = "cuda-oxide-copy-u8")]
+            Self::CudaOxideCopyU8 => kernels::cuda_oxide_copy_u8_ptx(),
+        }
+    }
+
+    pub(crate) fn entrypoint(self) -> &'static [u8] {
+        self.kernel().entrypoint()
+    }
+}
+
 impl CompiledKernel {
-    pub(crate) fn load(context: &ContextInner, kernel: CudaKernel) -> Result<Self, CudaError> {
+    pub(crate) fn load(context: &ContextInner, key: CompiledKernelKey) -> Result<Self, CudaError> {
         context.set_current()?;
         let mut module = std::ptr::null_mut();
         // SAFETY: image is a NUL-terminated PTX string. CUDA copies or parses
@@ -677,7 +720,7 @@ impl CompiledKernel {
         context.driver.check("cuModuleLoadData", unsafe {
             (context.driver.cu_module_load_data)(
                 &raw mut module,
-                kernel.ptx().as_ptr().cast::<c_void>(),
+                key.ptx().as_ptr().cast::<c_void>(),
             )
         })?;
         let mut function = std::ptr::null_mut();
@@ -686,7 +729,7 @@ impl CompiledKernel {
             (context.driver.cu_module_get_function)(
                 &raw mut function,
                 module,
-                kernel.entrypoint().as_ptr().cast::<c_char>(),
+                key.entrypoint().as_ptr().cast::<c_char>(),
             )
         })?;
         Ok(Self { module, function })
