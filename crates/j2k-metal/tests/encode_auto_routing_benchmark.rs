@@ -151,16 +151,16 @@ fn measure(mut run: impl FnMut() -> usize) -> Duration {
     durations[durations.len() / 2]
 }
 
-fn lossless_samples<'a>(
-    pixels: &'a [u8],
+fn lossless_samples(
+    pixels: &[u8],
     dim: u32,
     components: Components,
-) -> J2kLosslessSamples<'a> {
+) -> J2kLosslessSamples<'_> {
     J2kLosslessSamples::new(pixels, dim, dim, components.count(), 8, false)
         .expect("valid lossless samples")
 }
 
-fn lossy_samples<'a>(pixels: &'a [u8], dim: u32, components: Components) -> J2kLossySamples<'a> {
+fn lossy_samples(pixels: &[u8], dim: u32, components: Components) -> J2kLossySamples<'_> {
     J2kLossySamples::new(pixels, dim, dim, components.count(), 8, false)
         .expect("valid lossy samples")
 }
@@ -276,9 +276,10 @@ fn emit_timing(
     cpu: Duration,
     auto: Option<Duration>,
 ) {
-    let auto_ms = auto
-        .map(|duration| format!("{:.3}", duration.as_secs_f64() * 1_000.0))
-        .unwrap_or_else(|| "skipped".to_string());
+    let auto_ms = auto.map_or_else(
+        || "skipped".to_string(),
+        |duration| format!("{:.3}", duration.as_secs_f64() * 1_000.0),
+    );
     println!(
         "j2k_metal_encode_auto_bench mode={mode} codec={} components={} size={}x{} cpu_ms={:.3} auto_ms={auto_ms}",
         codec.label(),
