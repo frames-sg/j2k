@@ -65,7 +65,7 @@ impl MetalEncodeDispatchStages {
     const TIER1_CODE_BLOCK: Self = Self(1 << 2);
     const HT_CODE_BLOCK: Self = Self(1 << 3);
     const PACKETIZATION: Self = Self(1 << 4);
-    const AUTO_HOST_OUTPUT: Self = Self(Self::FORWARD_DWT53.0 | Self::HT_CODE_BLOCK.0);
+    const AUTO_HOST_OUTPUT: Self = Self(0);
     const ALL: Self = Self(
         Self::FORWARD_RCT.0
             | Self::FORWARD_DWT53.0
