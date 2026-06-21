@@ -269,6 +269,9 @@ const JPEG_DECODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/jpeg_de
 // Always resolves: build.rs writes a placeholder empty module when nvcc is
 // absent (the dispatch checks `j2k_cuda_transcode_ptx_built` before load).
 const TRANSCODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/transcode_kernels.ptx"));
+#[cfg(feature = "cuda-oxide-copy-u8")]
+const CUDA_OXIDE_COPY_U8_PTX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_copy_u8.ptx"));
 const HTJ2K_DECODE_CODEBLOCK_THREADS: usize = 32;
 const HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA: c_uint = 32;
 const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
@@ -426,6 +429,11 @@ pub(crate) fn htj2k_packetize_launch_geometry(packet_count: usize) -> Option<Cud
     htj2k_codeblock_sample_launch_geometry(packet_count)
 }
 
+#[cfg(feature = "cuda-oxide-copy-u8")]
+pub(crate) fn cuda_oxide_copy_u8_ptx() -> &'static [u8] {
+    CUDA_OXIDE_COPY_U8_PTX
+}
+
 const COPY_U8_PTX: &[u8] = concat!(
     r"
 .version 7.0
@@ -472,6 +480,16 @@ mod tests {
     #[test]
     fn copy_u8_kernel_metadata_matches_embedded_ptx() {
         let ptx = CudaKernel::CopyU8.ptx();
+        assert_eq!(ptx.last(), Some(&0));
+        let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
+        assert!(source.contains(".visible .entry j2k_copy_u8("));
+        assert_eq!(CudaKernel::CopyU8.entrypoint(), b"j2k_copy_u8\0");
+    }
+
+    #[cfg(all(feature = "cuda-oxide-copy-u8", j2k_cuda_oxide_copy_u8_built))]
+    #[test]
+    fn cuda_oxide_copy_u8_kernel_metadata_matches_generated_ptx() {
+        let ptx = cuda_oxide_copy_u8_ptx();
         assert_eq!(ptx.last(), Some(&0));
         let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
         assert!(source.contains(".visible .entry j2k_copy_u8("));

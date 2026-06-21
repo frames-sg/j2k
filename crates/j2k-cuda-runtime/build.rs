@@ -12,13 +12,21 @@ fn main() {
     println!("cargo:rerun-if-changed=src/htj2k_encode_kernels.ptx");
     println!("cargo:rerun-if-changed=src/jpeg_decode_kernels.cu");
     println!("cargo:rerun-if-changed=src/transcode_kernels.cu");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/Cargo.toml");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/rust-toolchain.toml");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/src/main.rs");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/simt/Cargo.toml");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/simt/src/main.rs");
     println!("cargo:rerun-if-env-changed=NVCC");
+    println!("cargo:rerun-if-env-changed=J2K_CUDA_OXIDE_ARCH");
+    println!("cargo:rerun-if-env-changed=J2K_REQUIRE_CUDA_OXIDE_COPY_U8");
     println!("cargo:rerun-if-env-changed=J2K_REQUIRE_CUDA_HTJ2K_STRICT");
     println!("cargo:rerun-if-env-changed=J2K_REQUIRE_CUDA_KERNEL_BUILD");
     println!("cargo:rustc-check-cfg=cfg( j2k_cuda_j2k_encode_ptx_built)");
     println!("cargo:rustc-check-cfg=cfg( j2k_cuda_htj2k_encode_ptx_built)");
     println!("cargo:rustc-check-cfg=cfg( j2k_cuda_jpeg_decode_ptx_built)");
     println!("cargo:rustc-check-cfg=cfg( j2k_cuda_transcode_ptx_built)");
+    println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_copy_u8_built)");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
     let require_kernel_build = env::var_os("J2K_REQUIRE_CUDA_HTJ2K_STRICT").is_some()
@@ -82,6 +90,110 @@ fn main() {
     if transcode_compiled {
         println!("cargo:rustc-cfg= j2k_cuda_transcode_ptx_built");
     }
+
+    if env::var_os("CARGO_FEATURE_CUDA_OXIDE_COPY_U8").is_some() {
+        let require_cuda_oxide = env::var_os("J2K_REQUIRE_CUDA_OXIDE_COPY_U8").is_some();
+        if compile_cuda_oxide_copy_u8(&out_dir, require_cuda_oxide) {
+            println!("cargo:rustc-cfg=j2k_cuda_oxide_copy_u8_built");
+        }
+    }
+}
+
+fn compile_cuda_oxide_copy_u8(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+    let output = out_dir.join("cuda_oxide_copy_u8.ptx");
+    let host = env::var("HOST").expect("HOST is set by cargo");
+    if !host.contains("linux") {
+        return skip_cuda_oxide_copy_u8(
+            &output,
+            require_cuda_oxide,
+            &format!("cuda-oxide CopyU8 requires a Linux host; current HOST={host}"),
+        );
+    }
+
+    let project_dir = out_dir.join("cuda_oxide_copy_u8");
+    copy_cuda_oxide_project(&project_dir);
+
+    let arch = env::var("J2K_CUDA_OXIDE_ARCH").unwrap_or_else(|_| "sm_80".to_string());
+    println!("cargo:warning=building cuda-oxide CopyU8 with `cargo oxide build --arch {arch}`");
+    // Use the rustup cargo proxy so the staged rust-toolchain.toml selects
+    // cuda-oxide's pinned nightly instead of the outer workspace toolchain.
+    let status = Command::new("cargo")
+        .args(["oxide", "build", "--arch"])
+        .arg(&arch)
+        .current_dir(&project_dir)
+        .status();
+    let status = match status {
+        Ok(status) => status,
+        Err(error) => {
+            return skip_cuda_oxide_copy_u8(
+                &output,
+                require_cuda_oxide,
+                &format!("failed to invoke cargo oxide build: {error}"),
+            );
+        }
+    };
+    if !status.success() {
+        return skip_cuda_oxide_copy_u8(
+            &output,
+            require_cuda_oxide,
+            &format!("cuda-oxide CopyU8 build failed with status {status}"),
+        );
+    }
+
+    let generated = project_dir.join("ptx").join("j2k_cuda_oxide_copy_u8.ptx");
+    let mut bytes = fs::read(&generated).unwrap_or_else(|error| {
+        panic!(
+            "cuda-oxide CopyU8 build did not produce {}: {error}",
+            generated.display()
+        )
+    });
+    if bytes.last().copied() != Some(0) {
+        bytes.push(0);
+    }
+    fs::write(&output, bytes).unwrap_or_else(|error| {
+        panic!(
+            "failed to write cuda-oxide CopyU8 PTX to {}: {error}",
+            output.display()
+        )
+    });
+    true
+}
+
+fn skip_cuda_oxide_copy_u8(output: &Path, required: bool, message: &str) -> bool {
+    assert!(!required, "{message}");
+    println!("cargo:warning=skipping cuda-oxide CopyU8 build: {message}");
+    fs::write(output, b".version 7.0\n.target sm_52\n.address_size 64\n\0")
+        .expect("write placeholder cuda-oxide CopyU8 PTX");
+    false
+}
+
+fn copy_cuda_oxide_project(project_dir: &Path) {
+    let source_dir = Path::new("src/cuda_oxide_copy_u8");
+    copy_cuda_oxide_file(source_dir, project_dir, Path::new("Cargo.toml"));
+    copy_cuda_oxide_file(source_dir, project_dir, Path::new("rust-toolchain.toml"));
+    copy_cuda_oxide_file(source_dir, project_dir, Path::new("src/main.rs"));
+    copy_cuda_oxide_file(source_dir, project_dir, Path::new("simt/Cargo.toml"));
+    copy_cuda_oxide_file(source_dir, project_dir, Path::new("simt/src/main.rs"));
+}
+
+fn copy_cuda_oxide_file(source_dir: &Path, project_dir: &Path, relative: &Path) {
+    let source = source_dir.join(relative);
+    let dest = project_dir.join(relative);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).unwrap_or_else(|error| {
+            panic!(
+                "failed to create cuda-oxide project dir {}: {error}",
+                parent.display()
+            )
+        });
+    }
+    fs::copy(&source, &dest).unwrap_or_else(|error| {
+        panic!(
+            "failed to stage cuda-oxide project file {} to {}: {error}",
+            source.display(),
+            dest.display()
+        )
+    });
 }
 
 /// Compile a CUDA kernel to PTX with nvcc only (no checked-in fallback).

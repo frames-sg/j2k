@@ -19,6 +19,7 @@ path = "src/lib.rs"
 [features]
 default = []
 cuda-profiling = []
+cuda-oxide-copy-u8 = []
 
 [dependencies]
 j2k-core = { path = "../j2k-core", version = "=0.6.0" }

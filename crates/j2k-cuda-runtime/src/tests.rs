@@ -953,6 +953,43 @@ fn default_stream_timer_reports_elapsed_time_when_runtime_required() {
     assert!(elapsed_us > 0);
 }
 
+#[cfg(all(feature = "cuda-oxide-copy-u8", j2k_cuda_oxide_copy_u8_built))]
+#[test]
+fn cuda_oxide_copy_u8_matches_builtin_copy_and_cpu_when_required() {
+    if !cuda_runtime_required() {
+        return;
+    }
+
+    let context = CudaContext::system_default().expect("CUDA context");
+    let input = (0..4099)
+        .map(|index| ((index * 31 + 17) % 251) as u8)
+        .collect::<Vec<_>>();
+
+    let builtin = context
+        .copy_with_kernel(&input)
+        .expect("builtin CUDA copy kernel");
+    let cuda_oxide = context
+        .copy_with_cuda_oxide_kernel(&input)
+        .expect("cuda-oxide CUDA copy kernel");
+
+    let mut builtin_bytes = vec![0u8; input.len()];
+    builtin
+        .buffer()
+        .copy_to_host(&mut builtin_bytes)
+        .expect("download builtin CUDA copy");
+    let mut cuda_oxide_bytes = vec![0u8; input.len()];
+    cuda_oxide
+        .buffer()
+        .copy_to_host(&mut cuda_oxide_bytes)
+        .expect("download cuda-oxide CUDA copy");
+
+    assert_eq!(builtin.execution().kernel_dispatches(), 1);
+    assert_eq!(cuda_oxide.execution().kernel_dispatches(), 1);
+    assert_eq!(builtin_bytes, input);
+    assert_eq!(cuda_oxide_bytes, input);
+    assert_eq!(cuda_oxide_bytes, builtin_bytes);
+}
+
 #[test]
 fn named_default_stream_timer_is_available_for_profiling_ranges_when_required() {
     if !cuda_runtime_required() {
