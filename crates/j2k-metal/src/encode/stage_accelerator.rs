@@ -26,6 +26,7 @@ pub struct MetalEncodeStageAccelerator {
     auto_host_output_force_cpu_fallback: bool,
     deinterleave_attempts: usize,
     forward_rct_attempts: usize,
+    forward_ict_attempts: usize,
     forward_dwt53_attempts: usize,
     forward_dwt97_attempts: usize,
     tier1_code_block_attempts: usize,
@@ -33,6 +34,7 @@ pub struct MetalEncodeStageAccelerator {
     packetization_attempts: usize,
     deinterleave_dispatches: usize,
     forward_rct_dispatches: usize,
+    forward_ict_dispatches: usize,
     forward_dwt53_dispatches: usize,
     forward_dwt97_dispatches: usize,
     tier1_code_block_dispatches: usize,
@@ -48,6 +50,7 @@ impl Default for MetalEncodeStageAccelerator {
             auto_host_output_force_cpu_fallback: false,
             deinterleave_attempts: 0,
             forward_rct_attempts: 0,
+            forward_ict_attempts: 0,
             forward_dwt53_attempts: 0,
             forward_dwt97_attempts: 0,
             tier1_code_block_attempts: 0,
@@ -55,6 +58,7 @@ impl Default for MetalEncodeStageAccelerator {
             packetization_attempts: 0,
             deinterleave_dispatches: 0,
             forward_rct_dispatches: 0,
+            forward_ict_dispatches: 0,
             forward_dwt53_dispatches: 0,
             forward_dwt97_dispatches: 0,
             tier1_code_block_dispatches: 0,
@@ -70,15 +74,17 @@ struct MetalEncodeDispatchStages(u8);
 impl MetalEncodeDispatchStages {
     const DEINTERLEAVE: Self = Self(1 << 0);
     const FORWARD_RCT: Self = Self(1 << 1);
-    const FORWARD_DWT53: Self = Self(1 << 2);
-    const FORWARD_DWT97: Self = Self(1 << 3);
-    const TIER1_CODE_BLOCK: Self = Self(1 << 4);
-    const HT_CODE_BLOCK: Self = Self(1 << 5);
-    const PACKETIZATION: Self = Self(1 << 6);
+    const FORWARD_ICT: Self = Self(1 << 2);
+    const FORWARD_DWT53: Self = Self(1 << 3);
+    const FORWARD_DWT97: Self = Self(1 << 4);
+    const TIER1_CODE_BLOCK: Self = Self(1 << 5);
+    const HT_CODE_BLOCK: Self = Self(1 << 6);
+    const PACKETIZATION: Self = Self(1 << 7);
     const AUTO_HOST_OUTPUT: Self = Self(0);
     const ALL: Self = Self(
         Self::DEINTERLEAVE.0
             | Self::FORWARD_RCT.0
+            | Self::FORWARD_ICT.0
             | Self::FORWARD_DWT53.0
             | Self::FORWARD_DWT97.0
             | Self::TIER1_CODE_BLOCK.0
@@ -150,6 +156,11 @@ impl MetalEncodeStageAccelerator {
         self.forward_rct_attempts
     }
 
+    /// Number of forward ICT stage attempts.
+    pub fn forward_ict_attempts(&self) -> usize {
+        self.forward_ict_attempts
+    }
+
     /// Number of forward 5/3 DWT stage attempts.
     pub fn forward_dwt53_attempts(&self) -> usize {
         self.forward_dwt53_attempts
@@ -183,6 +194,11 @@ impl MetalEncodeStageAccelerator {
     /// Number of forward RCT Metal dispatches.
     pub fn forward_rct_dispatches(&self) -> usize {
         self.forward_rct_dispatches
+    }
+
+    /// Number of forward ICT Metal dispatches.
+    pub fn forward_ict_dispatches(&self) -> usize {
+        self.forward_ict_dispatches
     }
 
     /// Number of forward 5/3 DWT Metal dispatches.
@@ -240,7 +256,7 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         encode_stage::J2kEncodeDispatchReport {
             deinterleave: self.deinterleave_dispatches,
             forward_rct: self.forward_rct_dispatches,
-            forward_ict: 0,
+            forward_ict: self.forward_ict_dispatches,
             forward_dwt53: self.forward_dwt53_dispatches,
             forward_dwt97: self.forward_dwt97_dispatches,
             quantize_subband: 0,
@@ -308,6 +324,39 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 self.forward_rct_dispatches = self.forward_rct_dispatches.saturating_add(1);
             }
             Ok(dispatched)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = job;
+            Ok(false)
+        }
+    }
+
+    fn encode_forward_ict(
+        &mut self,
+        job: encode_stage::J2kForwardIctJob<'_>,
+    ) -> core::result::Result<bool, &'static str> {
+        self.forward_ict_attempts = self.forward_ict_attempts.saturating_add(1);
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::FORWARD_ICT)
+        {
+            let _ = job;
+            return Ok(false);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            match compute::encode_forward_ict(job.plane0, job.plane1, job.plane2) {
+                Ok(()) => {
+                    self.forward_ict_dispatches = self.forward_ict_dispatches.saturating_add(1);
+                    Ok(true)
+                }
+                Err(crate::Error::MetalUnavailable) => Ok(false),
+                Err(crate::Error::UnsupportedMetalRequest { .. }) => {
+                    Err("Metal forward ICT encode shape is unsupported")
+                }
+                Err(_) => Err("Metal forward ICT encode kernel failed"),
+            }
         }
         #[cfg(not(target_os = "macos"))]
         {

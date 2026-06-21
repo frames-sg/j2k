@@ -313,6 +313,7 @@ pub(crate) struct MetalRuntime {
     fdwt97_deinterleave_vertical: ComputePipelineState,
     inverse_mct: ComputePipelineState,
     forward_rct: ComputePipelineState,
+    forward_ict: ComputePipelineState,
     store_component: ComputePipelineState,
     store_component_repeated: ComputePipelineState,
     store_component_repeated_gray_u8: ComputePipelineState,
@@ -430,6 +431,7 @@ impl MetalRuntime {
             fdwt97_deinterleave_vertical: pipeline("j2k_forward_dwt97_deinterleave_vertical")?,
             inverse_mct: pipeline("j2k_inverse_mct")?,
             forward_rct: pipeline("j2k_forward_rct")?,
+            forward_ict: pipeline("j2k_forward_ict")?,
             store_component: pipeline("j2k_store_component")?,
             store_component_repeated: pipeline("j2k_store_component_repeated")?,
             store_component_repeated_gray_u8: pipeline("j2k_store_component_repeated_gray_u8")?,
@@ -9700,6 +9702,84 @@ pub(crate) fn encode_forward_rct(
         encoder.set_buffer(4, Some(&status_buffer), 0);
         let width = runtime
             .forward_rct
+            .thread_execution_width()
+            .max(1)
+            .min(len as u64);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: len as u64,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width,
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
+        let status = unsafe { status_buffer.contents().cast::<J2kMctStatus>().read() };
+        if status.code != J2K_MCT_STATUS_OK {
+            return Err(decode_mct_status_error(status));
+        }
+
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn encode_forward_ict(
+    plane0: &mut [f32],
+    plane1: &mut [f32],
+    plane2: &mut [f32],
+) -> Result<(), Error> {
+    with_runtime(|runtime| {
+        let len = plane0.len();
+        if len == 0 {
+            return Ok(());
+        }
+        if plane1.len() != len || plane2.len() != len {
+            return Err(Error::UnsupportedMetalRequest {
+                reason: "J2K Metal forward ICT plane lengths must match",
+            });
+        }
+
+        let params = J2kForwardIctParams {
+            _len: u32::try_from(len).map_err(|_| Error::UnsupportedMetalRequest {
+                reason: "J2K Metal forward ICT plane length exceeds u32",
+            })?,
+            _reserved0: 0,
+            _reserved1: 0,
+            _reserved2: 0,
+        };
+        let plane0_buffer = borrow_mut_slice_buffer(&runtime.device, plane0);
+        let plane1_buffer = borrow_mut_slice_buffer(&runtime.device, plane1);
+        let plane2_buffer = borrow_mut_slice_buffer(&runtime.device, plane2);
+        let status = J2kMctStatus::default();
+        let status_buffer = runtime.device.new_buffer_with_data(
+            (&raw const status).cast(),
+            size_of::<J2kMctStatus>() as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.forward_ict);
+        encoder.set_buffer(0, Some(&plane0_buffer), 0);
+        encoder.set_buffer(1, Some(&plane1_buffer), 0);
+        encoder.set_buffer(2, Some(&plane2_buffer), 0);
+        encoder.set_bytes(
+            3,
+            size_of::<J2kForwardIctParams>() as u64,
+            (&raw const params).cast(),
+        );
+        encoder.set_buffer(4, Some(&status_buffer), 0);
+        let width = runtime
+            .forward_ict
             .thread_execution_width()
             .max(1)
             .min(len as u64);
