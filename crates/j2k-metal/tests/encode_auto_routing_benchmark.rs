@@ -151,11 +151,7 @@ fn measure(mut run: impl FnMut() -> usize) -> Duration {
     durations[durations.len() / 2]
 }
 
-fn lossless_samples(
-    pixels: &[u8],
-    dim: u32,
-    components: Components,
-) -> J2kLosslessSamples<'_> {
+fn lossless_samples(pixels: &[u8], dim: u32, components: Components) -> J2kLosslessSamples<'_> {
     J2kLosslessSamples::new(pixels, dim, dim, components.count(), 8, false)
         .expect("valid lossless samples")
 }
