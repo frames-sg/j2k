@@ -1361,7 +1361,7 @@ fn coverage() -> Result<(), String> {
 }
 
 const GPU_COVERAGE_EXCLUSION_REGEX: &str =
-    "crates/j2k-cuda-runtime/|crates/j2k-.*-cuda/|crates/j2k-.*-metal/|crates/j2k-metal-support/";
+    "crates/j2k-cuda-runtime/|crates/j2k-cuda/|crates/j2k-.*-cuda/|crates/j2k-metal/|crates/j2k-.*-metal/|crates/j2k-metal-support/";
 
 fn package() -> Result<(), String> {
     ensure_clean_worktree()?;

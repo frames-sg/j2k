@@ -1,6 +1,6 @@
 [package]
 name = "j2k-transcode-metal"
-description = "Metal acceleration for j2k-transcode coefficient-domain paths"
+description = "Metal acceleration for JPEG to J2K and HTJ2K transcode paths"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

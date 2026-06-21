@@ -30,7 +30,7 @@ rust-version = "1.96"
 license      = "Apache-2.0"
 repository   = "https://github.com/frames-sg/j2k"
 homepage     = "https://github.com/frames-sg/j2k"
-keywords     = ["pathology", "wsi", "jpeg", "jpeg2000", "tiff"]
+keywords     = ["jpeg", "jpeg2000", "htj2k", "gpu", "transcode"]
 categories   = ["multimedia::images"]
 
 [workspace.dependencies]

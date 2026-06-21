@@ -1,6 +1,6 @@
 [package]
 name        = "j2k-cli"
-description = "Command-line tool for j2k: inspect"
+description = "Command-line JPEG 2000 and HTJ2K inspection tool for j2k"
 version.workspace = true
 edition.workspace      = true
 rust-version.workspace = true

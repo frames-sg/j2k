@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(target_os = "macos")]
 use j2k::EncodedJ2k;
 #[cfg(target_os = "macos")]
 use j2k_core::BackendKind;
 #[cfg(target_os = "macos")]
 use metal::Buffer;
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::Instant;

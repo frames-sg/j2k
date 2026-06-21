@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use j2k::{EncodedJ2k, J2kLosslessEncodeOptions};
+use j2k::EncodedJ2k;
+#[cfg(target_os = "macos")]
+use j2k::J2kLosslessEncodeOptions;
 use j2k_core::DeviceSubmission;
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;

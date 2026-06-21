@@ -1,6 +1,6 @@
 [package]
 name        = "j2k"
-description = "GPU-aware JPEG 2000 and HTJ2K codec APIs in Rust"
+description = "GPU-aware JPEG 2000 and HTJ2K decoder/encoder APIs in Rust"
 version.workspace = true
 edition.workspace      = true
 rust-version.workspace = true

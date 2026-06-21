@@ -1,6 +1,6 @@
 [package]
 name = "j2k-transcode"
-description = "Experimental JPEG to HTJ2K transcode primitives for j2k"
+description = "JPEG to J2K and HTJ2K transcode primitives for j2k"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
