@@ -12,14 +12,22 @@ formats and packet shapes.
   packets.
 - Explicit Metal JPEG decode currently supports `Gray8`, `Rgb8`, and `Rgba8`
   output formats.
-- Single-request `BackendRequest::Auto` routes to CPU even when Metal
-  capabilities match.
+- Routing and benchmark evidence is documented in
+  `crates/j2k-jpeg-metal/docs/routing-benchmarks.md`.
+- Single-request `BackendRequest::Auto` remains conservative unless benchmark
+  evidence shows Metal should be selected for a supported workload.
 - Viewport paths use hybrid strategies for selected contiguous or resident
   workloads, but unsupported shapes fall back or return structured errors.
 - Metal JPEG encode is baseline-only and accepts `Gray8` or `Rgb8` input
   buffers.
 
-## Proposed Work
+## Landed
+
+- Added benchmark harness coverage for JPEG Metal routing evidence.
+- Documented where Metal should and should not be selected automatically.
+- Preserved strict Metal errors for unsupported packet shapes.
+
+## Remaining Work
 
 1. Add a support matrix test suite for baseline sampling modes, restart
    intervals, output formats, and viewport shapes.
@@ -32,11 +40,11 @@ formats and packet shapes.
 5. Document unsupported JPEG features explicitly rather than silently falling
    back for strict Metal requests.
 
-## Acceptance Criteria
+## Acceptance Criteria For The Next PR
 
 - Strict Metal requests reject unsupported JPEG shapes before launching kernels.
-- Auto routing changes are backed by benchmark evidence and do not initialize
-  Metal for workloads that remain CPU-preferred.
+- Any Auto routing changes are backed by benchmark evidence and do not
+  initialize Metal for workloads that remain CPU-preferred.
 - Decode and encode tests compare Metal output against the CPU JPEG oracle.
 - Viewport tests cover contiguous, sparse, scaled, and resident-output paths.
 - Public docs distinguish JPEG Metal acceleration from full JPEG feature
