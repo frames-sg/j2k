@@ -138,7 +138,9 @@ jobs:
       - run: cargo xtask clippy
 
   semver:
-    runs-on: ubuntu-latest
+    # Published Metal baselines include macOS-gated public API and must be
+    # rustdoc-built on macOS for cargo-semver-checks.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:

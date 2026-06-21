@@ -482,6 +482,10 @@ mod docs_and_workflows_policy {
             "CI semver job must use the repo-owned semver gate"
         );
         assert!(
+            semver_job.contains("runs-on: macos-latest"),
+            "CI semver job must run on macOS so published Metal baselines can be rustdoc-built"
+        );
+        assert!(
             semver_job.contains("toolchain: \"1.96\""),
             "CI semver job must install the workspace Rust toolchain"
         );
