@@ -4550,6 +4550,25 @@ pub fn j2k_transcode::htj2k97_codeblock_oracle::htj2k97_subband_total_bitplanes(
 pub fn j2k_transcode::htj2k97_codeblock_oracle::prequantized_component_from_dwt97(&j2k_transcode::dct97_2d::Dwt97TwoDimensional<f64>, j2k_transcode::accelerator::Htj2k97CodeBlockOptions, u8, u8) -> j2k_types::PrequantizedHtj2k97Component
 pub fn j2k_transcode::htj2k97_codeblock_oracle::quantize_codeblock_subband(&[f64], usize, usize, j2k_types::J2kSubBandType, j2k_transcode::accelerator::Htj2k97CodeBlockOptions) -> j2k_types::PrequantizedHtj2k97Subband
 pub fn j2k_transcode::htj2k97_codeblock_oracle::validate_htj2k97_codeblock_options(j2k_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<(usize, usize), &'static str>
+pub enum j2k_transcode::TranscodePipelineStageKind
+pub j2k_transcode::TranscodePipelineStageKind::CodestreamAssembly
+pub j2k_transcode::TranscodePipelineStageKind::CoefficientPrep
+pub j2k_transcode::TranscodePipelineStageKind::EntropyDecode
+pub j2k_transcode::TranscodePipelineStageKind::Packetization
+pub j2k_transcode::TranscodePipelineStageKind::QuantizationCodeBlockPrep
+pub j2k_transcode::TranscodePipelineStageKind::Transform
+impl j2k_transcode::TranscodePipelineStageKind
+pub const fn j2k_transcode::TranscodePipelineStageKind::as_str(self) -> &'static str
+impl core::fmt::Display for j2k_transcode::TranscodePipelineStageKind
+pub fn j2k_transcode::TranscodePipelineStageKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum j2k_transcode::TranscodeStageProcessor
+pub j2k_transcode::TranscodeStageProcessor::Cpu
+pub j2k_transcode::TranscodeStageProcessor::Hybrid
+pub j2k_transcode::TranscodeStageProcessor::Metal
+impl j2k_transcode::TranscodeStageProcessor
+pub const fn j2k_transcode::TranscodeStageProcessor::as_str(self) -> &'static str
+impl core::fmt::Display for j2k_transcode::TranscodeStageProcessor
+pub fn j2k_transcode::TranscodeStageProcessor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct j2k_transcode::DctGridError
 impl j2k_transcode::DctGridError
 pub const fn j2k_transcode::DctGridError::block_cols(self) -> usize
@@ -4560,6 +4579,26 @@ pub const fn j2k_transcode::DctGridError::width(self) -> usize
 impl core::error::Error for j2k_transcode::DctGridError
 impl core::fmt::Display for j2k_transcode::DctGridError
 pub fn j2k_transcode::DctGridError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct j2k_transcode::TranscodePipelineMap
+pub j2k_transcode::TranscodePipelineMap::recommendation: j2k_transcode::TranscodeResidentStageRecommendation
+pub j2k_transcode::TranscodePipelineMap::stages: alloc::vec::Vec<j2k_transcode::TranscodePipelineStageReport>
+impl j2k_transcode::TranscodePipelineMap
+pub fn j2k_transcode::TranscodePipelineMap::debug_report(&self) -> alloc::string::String
+pub fn j2k_transcode::TranscodePipelineMap::from_timings(&TranscodeTimingReport) -> Self
+pub struct j2k_transcode::TranscodePipelineStageReport
+pub j2k_transcode::TranscodePipelineStageReport::cpu_us: u128
+pub j2k_transcode::TranscodePipelineStageReport::dispatches: usize
+pub j2k_transcode::TranscodePipelineStageReport::fallback_jobs: usize
+pub j2k_transcode::TranscodePipelineStageReport::metal_us: u128
+pub j2k_transcode::TranscodePipelineStageReport::note: &'static str
+pub j2k_transcode::TranscodePipelineStageReport::processor: j2k_transcode::TranscodeStageProcessor
+pub j2k_transcode::TranscodePipelineStageReport::stage: j2k_transcode::TranscodePipelineStageKind
+pub j2k_transcode::TranscodePipelineStageReport::transfer_us: u128
+pub struct j2k_transcode::TranscodeResidentStageRecommendation
+pub j2k_transcode::TranscodeResidentStageRecommendation::evidence_dispatches: usize
+pub j2k_transcode::TranscodeResidentStageRecommendation::evidence_us: u128
+pub j2k_transcode::TranscodeResidentStageRecommendation::reason: &'static str
+pub j2k_transcode::TranscodeResidentStageRecommendation::stage: j2k_transcode::TranscodePipelineStageKind
 ```
 
 ## `j2k-transcode-cuda`

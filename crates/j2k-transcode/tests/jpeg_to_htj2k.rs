@@ -25,7 +25,8 @@ use j2k_transcode::dct97_2d::{
 };
 use j2k_transcode::{
     jpeg_to_htj2k, EncodedTranscode, JpegTileBatchInput, JpegToHtj2kCoefficientPath,
-    JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodeValidationClassification,
+    JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodePipelineStageKind, TranscodeStageProcessor,
+    TranscodeTimingReport, TranscodeValidationClassification,
     JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
 };
 use std::{
@@ -620,6 +621,98 @@ fn lossy_97_cpu_report_includes_transform_fallback_timing_breakdown() {
     assert_eq!(timings.accelerator_dispatches, 0);
     assert_eq!(timings.accelerator_dispatched_jobs, 0);
     assert_eq!(timings.cpu_fallback_jobs, 1);
+}
+
+#[test]
+fn transcode_pipeline_map_covers_cpu_fallback_stages() {
+    let jpeg = JPEG_GRAYSCALE_8X8;
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+
+    let encoded = transcoder
+        .transcode(jpeg, &JpegToHtj2kOptions::lossy_97())
+        .expect("CPU-only 9/7 transcode succeeds");
+    let map = encoded.report.pipeline_map();
+    let stages = map
+        .stages
+        .iter()
+        .map(|stage| stage.stage)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        stages,
+        vec![
+            TranscodePipelineStageKind::EntropyDecode,
+            TranscodePipelineStageKind::CoefficientPrep,
+            TranscodePipelineStageKind::Transform,
+            TranscodePipelineStageKind::QuantizationCodeBlockPrep,
+            TranscodePipelineStageKind::Packetization,
+            TranscodePipelineStageKind::CodestreamAssembly,
+        ]
+    );
+    let transform = map
+        .stages
+        .iter()
+        .find(|stage| stage.stage == TranscodePipelineStageKind::Transform)
+        .expect("pipeline map includes transform stage");
+    assert_eq!(transform.processor, TranscodeStageProcessor::Cpu);
+    assert_eq!(
+        map.recommendation.stage,
+        TranscodePipelineStageKind::Transform
+    );
+    assert!(map.debug_report().contains("stage=transform processor=Cpu"));
+}
+
+#[test]
+fn transcode_pipeline_map_reports_metal_residency_and_next_stage() {
+    let timings = TranscodeTimingReport {
+        jpeg_dct_extract_us: 11,
+        jpeg_dct_repack_us: 7,
+        dct_to_wavelet_accelerator_us: 100,
+        dwt97_batch_pack_upload_us: 9,
+        dwt97_batch_idct_row_lift_us: 31,
+        dwt97_batch_column_lift_us: 29,
+        dwt97_batch_quantize_codeblock_us: 13,
+        dwt97_batch_readback_us: 17,
+        htj2k_encode_us: 101,
+        accelerator_attempts: 1,
+        accelerator_jobs: 4,
+        accelerator_dispatches: 1,
+        accelerator_dispatched_jobs: 4,
+        ..TranscodeTimingReport::default()
+    };
+
+    let map = timings.pipeline_map();
+    let coefficient_prep = map
+        .stages
+        .iter()
+        .find(|stage| stage.stage == TranscodePipelineStageKind::CoefficientPrep)
+        .expect("pipeline map includes coefficient prep stage");
+    let transform = map
+        .stages
+        .iter()
+        .find(|stage| stage.stage == TranscodePipelineStageKind::Transform)
+        .expect("pipeline map includes transform stage");
+    let code_block_prep = map
+        .stages
+        .iter()
+        .find(|stage| stage.stage == TranscodePipelineStageKind::QuantizationCodeBlockPrep)
+        .expect("pipeline map includes code-block prep stage");
+    let debug = map.debug_report();
+
+    assert_eq!(coefficient_prep.processor, TranscodeStageProcessor::Hybrid);
+    assert_eq!(transform.processor, TranscodeStageProcessor::Metal);
+    assert_eq!(code_block_prep.processor, TranscodeStageProcessor::Metal);
+    assert_eq!(
+        map.recommendation.stage,
+        TranscodePipelineStageKind::QuantizationCodeBlockPrep
+    );
+    assert!(
+        map.recommendation.evidence_us >= timings.dwt97_batch_readback_us,
+        "recommendation should cite readback or encode timing evidence"
+    );
+    assert!(debug.contains("stage=entropy_decode processor=Cpu"));
+    assert!(debug.contains("stage=transform processor=Metal"));
+    assert!(debug.contains("recommend_next_stage=quantization_code_block_prep"));
 }
 
 #[test]
