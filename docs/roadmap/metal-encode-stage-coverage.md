@@ -38,6 +38,14 @@ Metal stage.
    dispatch counters.
 5. Revisit Auto routing after benchmark evidence exists for each new stage.
 
+## Recommended First PR
+
+Start with Metal encode deinterleave. It is the smallest missing encode-stage
+surface, has a direct CPU oracle, and should not require changing packetization,
+Tier-1 coding, or Auto routing policy. Keep this PR limited to kernel plumbing,
+dispatch accounting, CPU parity tests, and explicit Metal errors for unsupported
+input shapes.
+
 ## Acceptance Criteria
 
 - Explicit Metal encode requests either dispatch supported stages or return a
