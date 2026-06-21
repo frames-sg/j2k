@@ -46,10 +46,13 @@ use self::config::{
     default_gpu_encode_memory_budget_bytes_for_hw_mem, resident_lossless_chunk_ranges_for_test,
     resolve_lossless_encode_config_for_test,
 };
+#[cfg(target_os = "macos")]
+use self::config::{
+    resident_lossless_chunk_ranges_from_code_blocks, resolve_lossless_encode_config,
+};
 #[cfg(any(test, target_os = "macos"))]
 use self::config::{
-    resident_lossless_chunk_ranges_from_code_blocks, resident_lossless_code_block_chunk_cap,
-    resident_lossless_encode_config_for_mode, resolve_lossless_encode_config,
+    resident_lossless_code_block_chunk_cap, resident_lossless_encode_config_for_mode,
 };
 pub use self::encoded::MetalEncodedJ2k;
 #[cfg(target_os = "macos")]
