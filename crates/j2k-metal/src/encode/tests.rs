@@ -1254,7 +1254,7 @@ fn auto_host_output_encode_options_preserve_auto_for_hybrid_path() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_host_output_accelerator_uses_metal_dwt_with_cpu_block_fallback() {
+fn auto_classic_host_output_stays_cpu_without_metal_dispatches() {
     let pixels: Vec<u8> = (0..64 * 64).map(|i| ((i * 17) & 0xff) as u8).collect();
     let samples =
         J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
@@ -1273,10 +1273,37 @@ fn auto_host_output_accelerator_uses_metal_dwt_with_cpu_block_fallback() {
     .expect("hybrid host-output encode");
 
     assert_eq!(encoded.backend, BackendKind::Cpu);
-    assert_eq!(accelerator.forward_dwt53_dispatches(), 1);
+    assert_eq!(accelerator.forward_dwt53_dispatches(), 0);
     assert_eq!(accelerator.tier1_code_block_dispatches(), 0);
     assert_eq!(accelerator.packetization_dispatches(), 0);
     assert!(accelerator.prefer_parallel_cpu_code_block_fallback());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn auto_lossy_host_output_stays_cpu_without_metal_dispatches() {
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|idx| ((idx * 29 + idx / 7) & 0xff) as u8)
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
+    let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
+
+    let encoded = encode_j2k_lossy_with_accelerator(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::Auto)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_max_decomposition_levels(Some(0))
+            .with_validation(J2kEncodeValidation::External),
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("Auto lossy host-output encode should fall back to CPU");
+
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert_eq!(accelerator.ht_code_block_dispatches(), 0);
+    assert_eq!(accelerator.packetization_dispatches(), 0);
+    assert_eq!(encoded.dispatch_report, J2kEncodeDispatchReport::default());
 }
 
 #[cfg(target_os = "macos")]
