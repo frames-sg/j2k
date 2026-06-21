@@ -52,6 +52,8 @@ Stability values:
 | `J2K_METAL_CLASSIC_TIER1_SPLIT_GPU_TOKEN_PACK` | Requests the split classic Tier-1 GPU token-pack route. | Disabled | Experimental |
 | `J2K_METAL_CLASSIC_TIER1_SPLIT_MQ_BYTE_GPU_TOKEN_PACK` | Set to `1` to request, or `0` to disable, the split MQ-byte GPU token-pack route. | Auto | Experimental |
 | `J2K_HYBRID_FLAT_CPU_TIER1` | Forces flat CPU Tier-1 batching for J2K Metal hybrid decode when set to a truthy value accepted by the adapter. | Adapter default | Experimental |
+| `J2K_CUDA_OXIDE_ARCH` | Overrides the cuda-oxide CopyU8 build target when `j2k-cuda-runtime/cuda-oxide-copy-u8` is enabled. | `sm_80` | Experimental |
+| `J2K_REQUIRE_CUDA_OXIDE_COPY_U8` | Requires cuda-oxide CopyU8 PTX generation when `j2k-cuda-runtime/cuda-oxide-copy-u8` is enabled. | Disabled | Experimental |
 
 ## Test And CI Gates
 

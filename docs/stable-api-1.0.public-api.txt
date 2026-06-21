@@ -5904,6 +5904,7 @@ pub fn j2k_cuda_runtime::CudaContext::upload_htj2k_decode_resources_with_tables_
 pub fn j2k_cuda_runtime::CudaContext::upload_htj2k_decode_table_resources(&self, j2k_cuda_runtime::CudaHtj2kDecodeTables<'_>) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kDecodeTableResources, j2k_cuda_runtime::CudaError>
 impl j2k_cuda_runtime::CudaContext
 pub fn j2k_cuda_runtime::CudaContext::copy_device_to_device_with_kernel(&self, &j2k_cuda_runtime::CudaDeviceBuffer) -> core::result::Result<j2k_cuda_runtime::CudaDeviceBuffer, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaContext::copy_with_cuda_oxide_kernel(&self, &[u8]) -> core::result::Result<j2k_cuda_runtime::CudaKernelOutput, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::copy_with_kernel(&self, &[u8]) -> core::result::Result<j2k_cuda_runtime::CudaKernelOutput, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::create_event(&self) -> core::result::Result<j2k_cuda_runtime::CudaEvent, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::create_stream(&self) -> core::result::Result<j2k_cuda_runtime::CudaStream, j2k_cuda_runtime::CudaError>
