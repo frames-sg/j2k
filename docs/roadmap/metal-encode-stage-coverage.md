@@ -10,6 +10,7 @@ encoding on macOS while keeping CPU fallback behavior explicit and testable.
 `crates/j2k-metal/src/encode/stage_accelerator.rs` currently reports Metal
 dispatches for:
 
+- deinterleave for public 1-4 component, 1-16 bit host encode sample layouts
 - forward RCT
 - forward 5/3 DWT
 - classic Tier-1 code-block encode
@@ -18,7 +19,6 @@ dispatches for:
 
 The dispatch report still returns zero for:
 
-- deinterleave
 - forward ICT
 - forward 9/7 DWT
 - subband quantization
@@ -44,7 +44,8 @@ Start with Metal encode deinterleave. It is the smallest missing encode-stage
 surface, has a direct CPU oracle, and should not require changing packetization,
 Tier-1 coding, or Auto routing policy. Keep this PR limited to kernel plumbing,
 dispatch accounting, CPU parity tests, and explicit Metal errors for unsupported
-input shapes.
+input shapes. This is one encode-stage implementation, not full end-to-end Metal
+encode coverage for every public encode route.
 
 ## Acceptance Criteria
 

@@ -5392,15 +5392,21 @@ pub(crate) fn encode_forward_dwt97(
 pub(crate) fn encode_deinterleave_to_f32(
     job: J2kDeinterleaveToF32Job<'_>,
 ) -> Result<Option<Vec<Vec<f32>>>, Error> {
-    if !encode_deinterleave_to_f32_supported(job) {
-        return Ok(None);
-    }
+    validate_encode_deinterleave_to_f32_job(job)?;
     let pixel_count = u32::try_from(job.num_pixels).map_err(|_| Error::MetalKernel {
         message: "J2K Metal encode deinterleave pixel count exceeds u32".to_string(),
     })?;
+    let bytes_per_sample = encode_deinterleave_bytes_per_sample(job.bit_depth);
+    let sample_count = job
+        .num_pixels
+        .checked_mul(usize::from(job.num_components))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal encode deinterleave sample count overflow".to_string(),
+        })?;
     let expected_len = job
         .num_pixels
         .checked_mul(usize::from(job.num_components))
+        .and_then(|samples| samples.checked_mul(bytes_per_sample))
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal encode deinterleave input length overflow".to_string(),
         })?;
@@ -5424,15 +5430,13 @@ pub(crate) fn encode_deinterleave_to_f32(
 
     with_runtime(|runtime| {
         let input_buffer = copied_slice_buffer(&runtime.device, job.pixels);
-        let plane0_buffer = runtime
-            .device
-            .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared);
-        let plane1_buffer = runtime
-            .device
-            .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared);
-        let plane2_buffer = runtime
-            .device
-            .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared);
+        let plane_buffers = (0..4)
+            .map(|_| {
+                runtime
+                    .device
+                    .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared)
+            })
+            .collect::<Vec<_>>();
         let params = J2kLosslessDeinterleaveParams {
             src_width: pixel_count,
             src_height: 1,
@@ -5440,8 +5444,9 @@ pub(crate) fn encode_deinterleave_to_f32(
             dst_width: pixel_count,
             dst_height: 1,
             components: u32::from(job.num_components),
-            bytes_per_sample: 1,
-            sample_offset: 128,
+            bytes_per_sample: bytes_per_sample as u32,
+            sample_offset: encode_deinterleave_sample_offset(job.bit_depth, job.signed),
+            signed_samples: u32::from(job.signed),
         };
 
         let command_buffer = runtime.queue.new_command_buffer();
@@ -5450,14 +5455,15 @@ pub(crate) fn encode_deinterleave_to_f32(
         label_compute_encoder(encoder, "J2K encode-stage deinterleave");
         encoder.set_compute_pipeline_state(&runtime.lossless_deinterleave_to_planes);
         encoder.set_buffer(0, Some(&input_buffer), 0);
-        encoder.set_buffer(1, Some(&plane0_buffer), 0);
-        encoder.set_buffer(2, Some(&plane1_buffer), 0);
-        encoder.set_buffer(3, Some(&plane2_buffer), 0);
+        encoder.set_buffer(1, Some(&plane_buffers[0]), 0);
+        encoder.set_buffer(2, Some(&plane_buffers[1]), 0);
+        encoder.set_buffer(3, Some(&plane_buffers[2]), 0);
         encoder.set_bytes(
             4,
             size_of::<J2kLosslessDeinterleaveParams>() as u64,
             (&raw const params).cast(),
         );
+        encoder.set_buffer(5, Some(&plane_buffers[3]), 0);
         dispatch_2d_pipeline(
             encoder,
             &runtime.lossless_deinterleave_to_planes,
@@ -5467,8 +5473,9 @@ pub(crate) fn encode_deinterleave_to_f32(
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
-        let planes = [&plane0_buffer, &plane1_buffer, &plane2_buffer]
-            .into_iter()
+        let planes = plane_buffers
+            .iter()
+            .take(usize::from(job.num_components))
             .map(|buffer| {
                 // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
                 let samples = unsafe {
@@ -5477,6 +5484,10 @@ pub(crate) fn encode_deinterleave_to_f32(
                 samples.to_vec()
             })
             .collect();
+        debug_assert_eq!(
+            sample_count.checked_mul(bytes_per_sample),
+            Some(expected_len)
+        );
         Ok(Some(planes))
     })
 }
@@ -5542,8 +5553,41 @@ fn dispatch_forward_dwt97_pass(
 }
 
 #[cfg(target_os = "macos")]
-fn encode_deinterleave_to_f32_supported(job: J2kDeinterleaveToF32Job<'_>) -> bool {
-    job.num_pixels > 0 && job.num_components == 3 && job.bit_depth == 8 && !job.signed
+fn validate_encode_deinterleave_to_f32_job(job: J2kDeinterleaveToF32Job<'_>) -> Result<(), Error> {
+    if job.num_pixels == 0 {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "J2K Metal encode deinterleave requires at least one pixel",
+        });
+    }
+    if !(1..=4).contains(&job.num_components) {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "J2K Metal encode deinterleave supports 1-4 component samples",
+        });
+    }
+    if job.bit_depth == 0 || job.bit_depth > 16 {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "J2K Metal encode deinterleave supports 1-16 bits per sample",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn encode_deinterleave_bytes_per_sample(bit_depth: u8) -> usize {
+    if bit_depth <= 8 {
+        1
+    } else {
+        2
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn encode_deinterleave_sample_offset(bit_depth: u8, signed: bool) -> u32 {
+    if signed {
+        0
+    } else {
+        1u32 << (u32::from(bit_depth) - 1)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -8608,6 +8652,7 @@ fn dispatch_lossless_deinterleave(
         components: u32::from(job.components),
         bytes_per_sample: u32::from(job.bytes_per_sample),
         sample_offset,
+        signed_samples: 0,
     };
     let encoder = command_buffer.new_compute_command_encoder();
     label_compute_encoder(encoder, "J2K coefficient prep deinterleave");
@@ -8621,6 +8666,7 @@ fn dispatch_lossless_deinterleave(
         size_of::<J2kLosslessDeinterleaveParams>() as u64,
         (&raw const params).cast(),
     );
+    encoder.set_buffer(5, Some(plane2), 0);
     dispatch_2d_pipeline(
         encoder,
         &runtime.lossless_deinterleave_to_planes,
@@ -8663,6 +8709,7 @@ fn dispatch_lossless_deinterleave_rct_rgb8(
         components: u32::from(job.components),
         bytes_per_sample: u32::from(job.bytes_per_sample),
         sample_offset,
+        signed_samples: 0,
     };
     let encoder = command_buffer.new_compute_command_encoder();
     label_compute_encoder(encoder, "J2K coefficient prep deinterleave + RCT");

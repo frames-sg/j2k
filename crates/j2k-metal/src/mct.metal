@@ -116,6 +116,7 @@ kernel void j2k_lossless_deinterleave_rct_rgb8_to_planes(
         3u,
         1u,
         params.sample_offset,
+        0u,
         inside_src
     );
     const float g = j2k_lossless_load_sample(
@@ -125,6 +126,7 @@ kernel void j2k_lossless_deinterleave_rct_rgb8_to_planes(
         3u,
         1u,
         params.sample_offset,
+        0u,
         inside_src
     );
     const float b = j2k_lossless_load_sample(
@@ -134,6 +136,7 @@ kernel void j2k_lossless_deinterleave_rct_rgb8_to_planes(
         3u,
         1u,
         params.sample_offset,
+        0u,
         inside_src
     );
 
