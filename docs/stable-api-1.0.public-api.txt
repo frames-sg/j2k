@@ -3523,6 +3523,8 @@ pub fn j2k_metal::MetalEncodeStageAccelerator::for_auto_host_output() -> Self
 pub fn j2k_metal::MetalEncodeStageAccelerator::for_ht_code_block_encode() -> Self
 pub fn j2k_metal::MetalEncodeStageAccelerator::forward_dwt53_attempts(&self) -> usize
 pub fn j2k_metal::MetalEncodeStageAccelerator::forward_dwt53_dispatches(&self) -> usize
+pub fn j2k_metal::MetalEncodeStageAccelerator::forward_dwt97_attempts(&self) -> usize
+pub fn j2k_metal::MetalEncodeStageAccelerator::forward_dwt97_dispatches(&self) -> usize
 pub fn j2k_metal::MetalEncodeStageAccelerator::forward_rct_attempts(&self) -> usize
 pub fn j2k_metal::MetalEncodeStageAccelerator::forward_rct_dispatches(&self) -> usize
 pub fn j2k_metal::MetalEncodeStageAccelerator::ht_code_block_attempts(&self) -> usize
@@ -3537,6 +3539,7 @@ pub fn j2k_metal::MetalEncodeStageAccelerator::default() -> Self
 impl j2k::adapter::encode_stage::J2kEncodeStageAccelerator for j2k_metal::MetalEncodeStageAccelerator
 pub fn j2k_metal::MetalEncodeStageAccelerator::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_dwt53(&mut self, j2k_types::J2kForwardDwt53Job<'_>) -> core::result::Result<core::option::Option<j2k_types::J2kForwardDwt53Output>, &'static str>
+pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_dwt97(&mut self, j2k_types::J2kForwardDwt97Job<'_>) -> core::result::Result<core::option::Option<j2k_types::J2kForwardDwt97Output>, &'static str>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_forward_rct(&mut self, j2k_types::J2kForwardRctJob<'_>) -> core::result::Result<bool, &'static str>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_ht_code_block(&mut self, j2k_types::J2kHtCodeBlockEncodeJob<'_>) -> core::result::Result<core::option::Option<j2k_types::EncodedHtJ2kCodeBlock>, &'static str>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_ht_code_blocks(&mut self, &[j2k_types::J2kHtCodeBlockEncodeJob<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::EncodedHtJ2kCodeBlock>>, &'static str>
