@@ -8,12 +8,15 @@ use crate::build_flags::ensure_cuda_oxide_j2k_dequantize_ptx_built;
 use crate::build_flags::ensure_cuda_oxide_j2k_encode_ptx_built;
 #[cfg(feature = "cuda-oxide-j2k-idwt")]
 use crate::build_flags::ensure_cuda_oxide_j2k_idwt_ptx_built;
+#[cfg(feature = "cuda-oxide-transcode")]
+use crate::build_flags::ensure_cuda_oxide_transcode_ptx_built;
 #[cfg(any(
     feature = "cuda-oxide-copy-u8",
     feature = "cuda-oxide-j2k-encode",
     feature = "cuda-oxide-j2k-decode-store",
     feature = "cuda-oxide-j2k-dequantize",
-    feature = "cuda-oxide-j2k-idwt"
+    feature = "cuda-oxide-j2k-idwt",
+    feature = "cuda-oxide-transcode"
 ))]
 use crate::kernels;
 use crate::{
@@ -161,6 +164,22 @@ impl ContextInner {
         self.kernel_function_from_key(CompiledKernelKey::CudaOxideJ2kIdwt(kernel))
     }
 
+    #[cfg(feature = "cuda-oxide-transcode")]
+    pub(crate) fn cuda_oxide_transcode_kernel_function(
+        &self,
+        kernel: CudaKernel,
+    ) -> Result<CuFunction, CudaError> {
+        ensure_cuda_oxide_transcode_ptx_built()?;
+        if !kernel.is_transcode_reversible53_stage() {
+            return Err(CudaError::InvalidArgument {
+                message: format!(
+                    "kernel {kernel:?} is not a reversible 5/3 transcode cuda-oxide stage"
+                ),
+            });
+        }
+        self.kernel_function_from_key(CompiledKernelKey::CudaOxideTranscode(kernel))
+    }
+
     fn kernel_function_from_key(&self, key: CompiledKernelKey) -> Result<CuFunction, CudaError> {
         match key {
             CompiledKernelKey::Builtin(kernel) => ensure_kernel_ptx_built(kernel)?,
@@ -174,6 +193,8 @@ impl ContextInner {
             CompiledKernelKey::CudaOxideJ2kDequantize(_) => {}
             #[cfg(feature = "cuda-oxide-j2k-idwt")]
             CompiledKernelKey::CudaOxideJ2kIdwt(_) => {}
+            #[cfg(feature = "cuda-oxide-transcode")]
+            CompiledKernelKey::CudaOxideTranscode(_) => {}
         }
         self.set_current()?;
         let mut modules = self
@@ -776,6 +797,8 @@ pub(crate) enum CompiledKernelKey {
     CudaOxideJ2kDequantize(CudaKernel),
     #[cfg(feature = "cuda-oxide-j2k-idwt")]
     CudaOxideJ2kIdwt(CudaKernel),
+    #[cfg(feature = "cuda-oxide-transcode")]
+    CudaOxideTranscode(CudaKernel),
 }
 
 impl CompiledKernelKey {
@@ -792,6 +815,8 @@ impl CompiledKernelKey {
             Self::CudaOxideJ2kDequantize(kernel) => kernel,
             #[cfg(feature = "cuda-oxide-j2k-idwt")]
             Self::CudaOxideJ2kIdwt(kernel) => kernel,
+            #[cfg(feature = "cuda-oxide-transcode")]
+            Self::CudaOxideTranscode(kernel) => kernel,
         }
     }
 
@@ -808,6 +833,8 @@ impl CompiledKernelKey {
             Self::CudaOxideJ2kDequantize(_) => kernels::cuda_oxide_j2k_dequantize_ptx(),
             #[cfg(feature = "cuda-oxide-j2k-idwt")]
             Self::CudaOxideJ2kIdwt(_) => kernels::cuda_oxide_j2k_idwt_ptx(),
+            #[cfg(feature = "cuda-oxide-transcode")]
+            Self::CudaOxideTranscode(_) => kernels::cuda_oxide_transcode_ptx(),
         }
     }
 
