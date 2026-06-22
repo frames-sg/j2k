@@ -1,6 +1,11 @@
-use cuda_device::{kernel, thread};
+#![allow(static_mut_refs)]
+
+use cuda_device::{SharedArray, kernel, thread};
 use cuda_host::cuda_module;
 
+const IDWT_COOP_SAMPLES: usize = 512;
+const IDWT_COLS4_COLUMNS: u32 = 4;
+const IDWT_COLS4_SAMPLES: usize = 256 * IDWT_COLS4_COLUMNS as usize;
 const IDWT_NEG_ALPHA: f32 = 1.5861343;
 const IDWT_NEG_BETA: f32 = 0.052980117;
 const IDWT_NEG_GAMMA: f32 = -0.8829111;
@@ -37,6 +42,40 @@ struct CudaJ2kIdwtMultiJob {
     hh_ptr: u64,
     output_ptr: u64,
     job: CudaJ2kIdwtJob,
+}
+
+#[derive(Clone, Copy)]
+struct IdwtPointers {
+    ll: *const f32,
+    hl: *const f32,
+    lh: *const f32,
+    hh: *const f32,
+    output: *mut f32,
+}
+
+#[derive(Clone, Copy)]
+struct SharedLine {
+    samples: *mut f32,
+    lane: u32,
+    stride: u32,
+    active: bool,
+}
+
+impl SharedLine {
+    #[inline(always)]
+    fn offset(self, index: u32) -> u32 {
+        index * self.stride + self.lane
+    }
+
+    #[inline(always)]
+    fn load(self, index: u32) -> f32 {
+        load_f32(self.samples.cast_const(), self.offset(index))
+    }
+
+    #[inline(always)]
+    fn store(self, index: u32, value: f32) {
+        store_f32(self.samples, self.offset(index), value);
+    }
 }
 
 #[inline(always)]
@@ -103,11 +142,7 @@ fn source_get(source: *const f32, rect: CudaJ2kRect, x: u32, y: u32) -> f32 {
 
 #[inline(always)]
 fn pse_left(idx: u32, offset: u32) -> u32 {
-    if idx > offset {
-        idx - offset
-    } else {
-        offset - idx
-    }
+    idx.abs_diff(offset)
 }
 
 #[inline(always)]
@@ -427,26 +462,134 @@ fn idwt_interleave_sample(
 }
 
 #[inline(always)]
-fn run_interleave(
-    ll: *const f32,
-    hl: *const f32,
-    lh: *const f32,
-    hh: *const f32,
-    output: *mut f32,
-    job: CudaJ2kIdwtJob,
-    local_x: u32,
-    local_y: u32,
-) {
+fn run_interleave(pointers: IdwtPointers, job: CudaJ2kIdwtJob, local_x: u32, local_y: u32) {
     let width = rect_width(job.rect);
     let height = rect_height(job.rect);
     if local_x >= width || local_y >= height {
         return;
     }
     store_f32(
-        output,
+        pointers.output,
         local_y * width + local_x,
-        idwt_interleave_sample(ll, hl, lh, hh, job, local_x, local_y),
+        idwt_interleave_sample(
+            pointers.ll,
+            pointers.hl,
+            pointers.lh,
+            pointers.hh,
+            job,
+            local_x,
+            local_y,
+        ),
     );
+}
+
+#[inline(always)]
+fn multi_job_pointers(item: CudaJ2kIdwtMultiJob) -> IdwtPointers {
+    IdwtPointers {
+        ll: item.ll_ptr as usize as *const f32,
+        hl: item.hl_ptr as usize as *const f32,
+        lh: item.lh_ptr as usize as *const f32,
+        hh: item.hh_ptr as usize as *const f32,
+        output: item.output_ptr as usize as *mut f32,
+    }
+}
+
+#[inline(always)]
+fn filter_shared_single_sample(line: SharedLine, index: u32, len: u32, origin: u32) -> bool {
+    if len != 1 {
+        return false;
+    }
+    if line.active && index == 0 && (origin & 1) != 0 {
+        line.store(0, line.load(0) * 0.5);
+    }
+    thread::sync_threads();
+    true
+}
+
+#[inline(always)]
+fn filter_shared_53_step(line: SharedLine, index: u32, len: u32, first: u32, update_even: bool) {
+    if !line.active || index >= len || (index & 1) != first {
+        return;
+    }
+
+    let left = pse_left(index, 1);
+    let right = pse_right(index, 1, len);
+    line.store(
+        index,
+        lift_53_sample(
+            line.load(index),
+            line.load(left),
+            line.load(right),
+            update_even,
+        ),
+    );
+}
+
+#[inline(always)]
+fn filter_shared_53(line: SharedLine, index: u32, len: u32, origin: u32) {
+    if filter_shared_single_sample(line, index, len, origin) {
+        return;
+    }
+
+    let first_even = origin & 1;
+    let first_odd = 1 - first_even;
+    filter_shared_53_step(line, index, len, first_even, true);
+    thread::sync_threads();
+    filter_shared_53_step(line, index, len, first_odd, false);
+    thread::sync_threads();
+}
+
+#[inline(always)]
+fn scale_shared_97(line: SharedLine, index: u32, len: u32, first_even: u32) {
+    if !line.active || index >= len {
+        return;
+    }
+    let k0 = if first_even == 0 {
+        IDWT_KAPPA
+    } else {
+        IDWT_INV_KAPPA
+    };
+    let k1 = if first_even == 0 {
+        IDWT_INV_KAPPA
+    } else {
+        IDWT_KAPPA
+    };
+    let scale = if (index & 1) == 0 { k0 } else { k1 };
+    line.store(index, line.load(index) * scale);
+}
+
+#[inline(always)]
+fn filter_shared_97_step(line: SharedLine, index: u32, len: u32, first: u32, coefficient: f32) {
+    if !line.active || index >= len || (index & 1) != first {
+        return;
+    }
+
+    let left = pse_left(index, 1);
+    let right = pse_right(index, 1, len);
+    line.store(
+        index,
+        line.load(index) + (line.load(left) + line.load(right)) * coefficient,
+    );
+}
+
+#[inline(always)]
+fn filter_shared_97(line: SharedLine, index: u32, len: u32, origin: u32) {
+    if filter_shared_single_sample(line, index, len, origin) {
+        return;
+    }
+
+    let first_even = origin & 1;
+    let first_odd = 1 - first_even;
+    scale_shared_97(line, index, len, first_even);
+    thread::sync_threads();
+    filter_shared_97_step(line, index, len, first_even, IDWT_NEG_DELTA);
+    thread::sync_threads();
+    filter_shared_97_step(line, index, len, first_odd, IDWT_NEG_GAMMA);
+    thread::sync_threads();
+    filter_shared_97_step(line, index, len, first_even, IDWT_NEG_BETA);
+    thread::sync_threads();
+    filter_shared_97_step(line, index, len, first_odd, IDWT_NEG_ALPHA);
+    thread::sync_threads();
 }
 
 #[cuda_module]
@@ -502,7 +645,18 @@ mod kernels {
         let job = load_job(job_buffer, 0);
         let local_x = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
         let local_y = thread::blockIdx_y() * thread::blockDim_y() + thread::threadIdx_y();
-        run_interleave(ll, hl, lh, hh, output, job, local_x, local_y);
+        run_interleave(
+            IdwtPointers {
+                ll,
+                hl,
+                lh,
+                hh,
+                output,
+            },
+            job,
+            local_x,
+            local_y,
+        );
     }
 
     #[kernel]
@@ -510,11 +664,7 @@ mod kernels {
         let job_idx = thread::blockIdx_y();
         let item = load_job(jobs, job_idx);
         let job = item.job;
-        let ll = item.ll_ptr as usize as *const f32;
-        let hl = item.hl_ptr as usize as *const f32;
-        let lh = item.lh_ptr as usize as *const f32;
-        let hh = item.hh_ptr as usize as *const f32;
-        let output = item.output_ptr as usize as *mut f32;
+        let pointers = multi_job_pointers(item);
         let width = rect_width(job.rect);
         let height = rect_height(job.rect);
         let local_y = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
@@ -525,18 +675,122 @@ mod kernels {
         let mut local_x = 0;
         while local_x < width {
             store_f32(
-                output,
+                pointers.output,
                 local_y * width + local_x,
-                idwt_interleave_sample(ll, hl, lh, hh, job, local_x, local_y),
+                idwt_interleave_sample(
+                    pointers.ll,
+                    pointers.hl,
+                    pointers.lh,
+                    pointers.hh,
+                    job,
+                    local_x,
+                    local_y,
+                ),
             );
             local_x += 1;
         }
         filter_horizontal_scanline(
-            unsafe { output.add((local_y * width) as usize) },
+            unsafe { pointers.output.add((local_y * width) as usize) },
             width,
             job.rect.x0,
             job.irreversible97 != 0,
         );
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_idwt_interleave_horizontal_53_multi(jobs: *const CudaJ2kIdwtMultiJob) {
+        static mut ROW_SAMPLES: SharedArray<f32, IDWT_COOP_SAMPLES> = SharedArray::UNINIT;
+
+        let row_samples = unsafe { ROW_SAMPLES.as_mut_ptr() };
+        let shared = SharedLine {
+            samples: row_samples,
+            lane: 0,
+            stride: 1,
+            active: true,
+        };
+        let local_x = thread::threadIdx_x();
+        let local_y = thread::blockIdx_x();
+        let item = load_job(jobs, thread::blockIdx_y());
+        let job = item.job;
+        let pointers = multi_job_pointers(item);
+        let width = rect_width(job.rect);
+        let height = rect_height(job.rect);
+        if local_y >= height {
+            return;
+        }
+
+        if local_x < width {
+            shared.store(
+                local_x,
+                idwt_interleave_sample(
+                    pointers.ll,
+                    pointers.hl,
+                    pointers.lh,
+                    pointers.hh,
+                    job,
+                    local_x,
+                    local_y,
+                ),
+            );
+        }
+        thread::sync_threads();
+
+        filter_shared_53(shared, local_x, width, job.rect.x0);
+        if local_x < width {
+            store_f32(
+                pointers.output,
+                local_y * width + local_x,
+                shared.load(local_x),
+            );
+        }
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_idwt_interleave_horizontal_97_multi(jobs: *const CudaJ2kIdwtMultiJob) {
+        static mut ROW_SAMPLES: SharedArray<f32, IDWT_COOP_SAMPLES> = SharedArray::UNINIT;
+
+        let row_samples = unsafe { ROW_SAMPLES.as_mut_ptr() };
+        let shared = SharedLine {
+            samples: row_samples,
+            lane: 0,
+            stride: 1,
+            active: true,
+        };
+        let local_x = thread::threadIdx_x();
+        let local_y = thread::blockIdx_x();
+        let item = load_job(jobs, thread::blockIdx_y());
+        let job = item.job;
+        let pointers = multi_job_pointers(item);
+        let width = rect_width(job.rect);
+        let height = rect_height(job.rect);
+        if local_y >= height {
+            return;
+        }
+
+        if local_x < width {
+            shared.store(
+                local_x,
+                idwt_interleave_sample(
+                    pointers.ll,
+                    pointers.hl,
+                    pointers.lh,
+                    pointers.hh,
+                    job,
+                    local_x,
+                    local_y,
+                ),
+            );
+        }
+        thread::sync_threads();
+
+        filter_shared_97(shared, local_x, width, job.rect.x0);
+        if local_x < width {
+            store_f32(
+                pointers.output,
+                local_y * width + local_x,
+                shared.load(local_x),
+            );
+        }
     }
 
     #[kernel]
@@ -653,6 +907,107 @@ mod kernels {
             col,
             job.irreversible97 != 0,
         );
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_idwt_vertical_53_multi(jobs: *const CudaJ2kIdwtMultiJob) {
+        static mut COLUMN_SAMPLES: SharedArray<f32, IDWT_COOP_SAMPLES> = SharedArray::UNINIT;
+
+        let column_samples = unsafe { COLUMN_SAMPLES.as_mut_ptr() };
+        let shared = SharedLine {
+            samples: column_samples,
+            lane: 0,
+            stride: 1,
+            active: true,
+        };
+        let row = thread::threadIdx_x();
+        let col = thread::blockIdx_x();
+        let item = load_job(jobs, thread::blockIdx_y());
+        let job = item.job;
+        let output = item.output_ptr as usize as *mut f32;
+        let width = rect_width(job.rect);
+        let height = rect_height(job.rect);
+        if col >= width {
+            return;
+        }
+
+        if row < height {
+            shared.store(row, load_f32(output.cast_const(), row * width + col));
+        }
+        thread::sync_threads();
+
+        filter_shared_53(shared, row, height, job.rect.y0);
+        if row < height {
+            store_f32(output, row * width + col, shared.load(row));
+        }
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_idwt_vertical_97_multi(jobs: *const CudaJ2kIdwtMultiJob) {
+        static mut COLUMN_SAMPLES: SharedArray<f32, IDWT_COOP_SAMPLES> = SharedArray::UNINIT;
+
+        let column_samples = unsafe { COLUMN_SAMPLES.as_mut_ptr() };
+        let shared = SharedLine {
+            samples: column_samples,
+            lane: 0,
+            stride: 1,
+            active: true,
+        };
+        let row = thread::threadIdx_x();
+        let col = thread::blockIdx_x();
+        let item = load_job(jobs, thread::blockIdx_y());
+        let job = item.job;
+        let output = item.output_ptr as usize as *mut f32;
+        let width = rect_width(job.rect);
+        let height = rect_height(job.rect);
+        if col >= width {
+            return;
+        }
+
+        if row < height {
+            shared.store(row, load_f32(output.cast_const(), row * width + col));
+        }
+        thread::sync_threads();
+
+        filter_shared_97(shared, row, height, job.rect.y0);
+        if row < height {
+            store_f32(output, row * width + col, shared.load(row));
+        }
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_idwt_vertical_97_multi_cols4(jobs: *const CudaJ2kIdwtMultiJob) {
+        static mut COLUMN_SAMPLES: SharedArray<f32, IDWT_COLS4_SAMPLES> = SharedArray::UNINIT;
+
+        let column_samples = unsafe { COLUMN_SAMPLES.as_mut_ptr() };
+        let local_col = thread::threadIdx_x();
+        let row = thread::threadIdx_y();
+        let col = thread::blockIdx_x() * IDWT_COLS4_COLUMNS + local_col;
+        let item = load_job(jobs, thread::blockIdx_y());
+        let job = item.job;
+        let output = item.output_ptr as usize as *mut f32;
+        let width = rect_width(job.rect);
+        let height = rect_height(job.rect);
+        if height > 256 {
+            return;
+        }
+
+        let shared = SharedLine {
+            samples: column_samples,
+            lane: local_col,
+            stride: IDWT_COLS4_COLUMNS,
+            active: col < width,
+        };
+        let valid = shared.active && row < height;
+        if valid {
+            shared.store(row, load_f32(output.cast_const(), row * width + col));
+        }
+        thread::sync_threads();
+
+        filter_shared_97(shared, row, height, job.rect.y0);
+        if valid {
+            store_f32(output, row * width + col, shared.load(row));
+        }
     }
 }
 
