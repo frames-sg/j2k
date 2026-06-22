@@ -18,8 +18,10 @@ use j2k::{
 #[cfg(target_os = "macos")]
 use j2k::{
     encode_j2k_lossy_with_accelerator, J2kBlockCodingMode, J2kEncodeValidation,
-    J2kLossyEncodeOptions, J2kLossySamples, J2kProgressionOrder,
+    J2kLossyEncodeOptions, J2kLossySamples, J2kMarkerSegment, J2kProgressionOrder,
 };
+#[cfg(target_os = "macos")]
+use j2k_core::CodecError;
 use j2k_core::DeviceSubmission;
 #[cfg(target_os = "macos")]
 use j2k_core::{BackendKind, PixelFormat};
@@ -1673,6 +1675,39 @@ fn auto_classic_host_output_stays_cpu_without_metal_dispatches() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn auto_classic_large_host_output_dispatches_benchmark_gated_prep_stages_only() {
+    let width = 1024u32;
+    let height = 1024u32;
+    let pixels: Vec<u8> = (0..width * height)
+        .map(|idx| ((idx * 19 + idx / 13) & 0xff) as u8)
+        .collect();
+    let samples =
+        J2kLosslessSamples::new(&pixels, width, height, 1, 8, false).expect("valid gray samples");
+    let options = lossless_options! {
+        backend: EncodeBackendPreference::Auto,
+        max_decomposition_levels: Some(1),
+        validation: J2kEncodeValidation::External,
+    };
+    let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
+
+    let encoded = encode_j2k_lossless_with_accelerator(
+        samples,
+        &options,
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("benchmark-gated Auto host-output encode");
+
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert_eq!(accelerator.deinterleave_dispatches(), 1);
+    assert_eq!(accelerator.forward_dwt53_dispatches(), 1);
+    assert!(accelerator.quantize_subband_dispatches() > 0);
+    assert_eq!(accelerator.tier1_code_block_dispatches(), 0);
+    assert_eq!(accelerator.packetization_dispatches(), 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn auto_lossy_host_output_stays_cpu_without_metal_dispatches() {
     let pixels: Vec<u8> = (0..64 * 64)
         .map(|idx| ((idx * 29 + idx / 7) & 0xff) as u8)
@@ -1696,6 +1731,63 @@ fn auto_lossy_host_output_stays_cpu_without_metal_dispatches() {
     assert_eq!(accelerator.ht_code_block_dispatches(), 0);
     assert_eq!(accelerator.packetization_dispatches(), 0);
     assert_eq!(encoded.dispatch_report, J2kEncodeDispatchReport::default());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn auto_lossy_packet_marker_shape_stays_cpu_without_packetization_dispatch() {
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|idx| ((idx * 31 + idx / 5) & 0xff) as u8)
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
+    let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
+
+    let encoded = encode_j2k_lossy_with_accelerator(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::Auto)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_max_decomposition_levels(Some(0))
+            .with_marker_segments(vec![J2kMarkerSegment::Sop])
+            .with_validation(J2kEncodeValidation::External),
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("Auto lossy marker shape should fall back to CPU");
+
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert_eq!(accelerator.packetization_attempts(), 0);
+    assert_eq!(accelerator.packetization_dispatches(), 0);
+    assert_eq!(encoded.dispatch_report, J2kEncodeDispatchReport::default());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn strict_metal_lossy_packet_marker_shape_requires_packetization_dispatch() {
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|idx| ((idx * 37 + idx / 9) & 0xff) as u8)
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let err = encode_j2k_lossy_with_accelerator(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_max_decomposition_levels(Some(0))
+            .with_marker_segments(vec![J2kMarkerSegment::Sop])
+            .with_validation(J2kEncodeValidation::External),
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .unwrap_err();
+
+    assert!(err.is_unsupported());
+    assert!(err.to_string().contains("packetization"));
+    assert!(accelerator.ht_code_block_dispatches() > 0);
+    assert_eq!(accelerator.packetization_attempts(), 0);
+    assert_eq!(accelerator.packetization_dispatches(), 0);
 }
 
 #[cfg(target_os = "macos")]

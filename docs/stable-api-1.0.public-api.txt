@@ -5506,6 +5506,8 @@ pub fn j2k_native::encode_with_accelerator(&[u8], u32, u32, u8, u8, bool, &j2k_n
 pub fn j2k_native::execute_direct_color_plan_rgb8_into(&j2k_native::J2kDirectColorPlan, j2k_native::J2kRect, &mut j2k_native::J2kDirectCpuScratch, &mut [u8], usize) -> j2k_native::error::Result<()>
 pub fn j2k_native::execute_direct_color_plan_rgba8_into(&j2k_native::J2kDirectColorPlan, j2k_native::J2kRect, &mut j2k_native::J2kDirectCpuScratch, &mut [u8], usize) -> j2k_native::error::Result<()>
 pub fn j2k_native::forward_dwt53_reference(&[f32], u32, u32, u8) -> j2k_types::J2kForwardDwt53Output
+pub fn j2k_native::forward_dwt97_reference(&[f32], u32, u32, u8) -> j2k_types::J2kForwardDwt97Output
+pub fn j2k_native::forward_ict_reference(alloc::vec::Vec<alloc::vec::Vec<f32>>) -> alloc::vec::Vec<alloc::vec::Vec<f32>>
 pub fn j2k_native::forward_rct_reference(alloc::vec::Vec<alloc::vec::Vec<f32>>) -> alloc::vec::Vec<alloc::vec::Vec<f32>>
 pub fn j2k_native::ht_uvlc_encode_table() -> &'static [j2k_native::HtUvlcTableEntry; 75]
 pub fn j2k_native::ht_uvlc_encode_table_bytes() -> &'static [u8]
@@ -5522,6 +5524,7 @@ pub fn j2k_native::looks_like_j2k_codestream(&[u8]) -> bool
 pub fn j2k_native::pack_j2k_code_block_scalar_from_tier1_tokens(&[u8], &[j2k_native::J2kTier1TokenSegment], u8, u8) -> core::result::Result<j2k_types::EncodedJ2kCodeBlock, &'static str>
 pub fn j2k_native::prepare_ht_sigprop_benchmark_state(j2k_native::HtCodeBlockDecodeJob<'_>) -> j2k_native::error::Result<j2k_native::HtSigPropBenchmarkState>
 pub fn j2k_native::quantize_reversible_reference(&[f32], u16, u16, u8, bool) -> alloc::vec::Vec<i32>
+pub fn j2k_native::quantize_subband_reference(&[f32], u16, u16, u8, bool) -> alloc::vec::Vec<i32>
 pub type j2k_native::J2kDirectBandId = u32
 pub type j2k_native::Result<T> = core::result::Result<T, j2k_native::error::DecodeError>
 ```
