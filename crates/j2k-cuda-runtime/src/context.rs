@@ -1,8 +1,14 @@
 #[cfg(feature = "cuda-oxide-copy-u8")]
 use crate::build_flags::ensure_cuda_oxide_copy_u8_ptx_built;
+#[cfg(feature = "cuda-oxide-j2k-decode-store")]
+use crate::build_flags::ensure_cuda_oxide_j2k_decode_store_ptx_built;
 #[cfg(feature = "cuda-oxide-j2k-encode")]
 use crate::build_flags::ensure_cuda_oxide_j2k_encode_ptx_built;
-#[cfg(any(feature = "cuda-oxide-copy-u8", feature = "cuda-oxide-j2k-encode"))]
+#[cfg(any(
+    feature = "cuda-oxide-copy-u8",
+    feature = "cuda-oxide-j2k-encode",
+    feature = "cuda-oxide-j2k-decode-store"
+))]
 use crate::kernels;
 use crate::{
     build_flags::{ensure_kernel_ptx_built, CUDA_IDWT_TRACE_ENV_VAR},
@@ -107,6 +113,20 @@ impl ContextInner {
         self.kernel_function_from_key(CompiledKernelKey::CudaOxideJ2kEncode(kernel))
     }
 
+    #[cfg(feature = "cuda-oxide-j2k-decode-store")]
+    pub(crate) fn cuda_oxide_j2k_decode_store_kernel_function(
+        &self,
+        kernel: CudaKernel,
+    ) -> Result<CuFunction, CudaError> {
+        ensure_cuda_oxide_j2k_decode_store_ptx_built()?;
+        if !kernel.is_j2k_decode_store_stage() {
+            return Err(CudaError::InvalidArgument {
+                message: format!("kernel {kernel:?} is not a J2K decode-store cuda-oxide stage"),
+            });
+        }
+        self.kernel_function_from_key(CompiledKernelKey::CudaOxideJ2kDecodeStore(kernel))
+    }
+
     fn kernel_function_from_key(&self, key: CompiledKernelKey) -> Result<CuFunction, CudaError> {
         match key {
             CompiledKernelKey::Builtin(kernel) => ensure_kernel_ptx_built(kernel)?,
@@ -114,6 +134,8 @@ impl ContextInner {
             CompiledKernelKey::CudaOxideCopyU8 => {}
             #[cfg(feature = "cuda-oxide-j2k-encode")]
             CompiledKernelKey::CudaOxideJ2kEncode(_) => {}
+            #[cfg(feature = "cuda-oxide-j2k-decode-store")]
+            CompiledKernelKey::CudaOxideJ2kDecodeStore(_) => {}
         }
         self.set_current()?;
         let mut modules = self
@@ -710,6 +732,8 @@ pub(crate) enum CompiledKernelKey {
     CudaOxideCopyU8,
     #[cfg(feature = "cuda-oxide-j2k-encode")]
     CudaOxideJ2kEncode(CudaKernel),
+    #[cfg(feature = "cuda-oxide-j2k-decode-store")]
+    CudaOxideJ2kDecodeStore(CudaKernel),
 }
 
 impl CompiledKernelKey {
@@ -720,6 +744,8 @@ impl CompiledKernelKey {
             Self::CudaOxideCopyU8 => CudaKernel::CopyU8,
             #[cfg(feature = "cuda-oxide-j2k-encode")]
             Self::CudaOxideJ2kEncode(kernel) => kernel,
+            #[cfg(feature = "cuda-oxide-j2k-decode-store")]
+            Self::CudaOxideJ2kDecodeStore(kernel) => kernel,
         }
     }
 
@@ -730,6 +756,8 @@ impl CompiledKernelKey {
             Self::CudaOxideCopyU8 => kernels::cuda_oxide_copy_u8_ptx(),
             #[cfg(feature = "cuda-oxide-j2k-encode")]
             Self::CudaOxideJ2kEncode(_) => kernels::cuda_oxide_j2k_encode_ptx(),
+            #[cfg(feature = "cuda-oxide-j2k-decode-store")]
+            Self::CudaOxideJ2kDecodeStore(_) => kernels::cuda_oxide_j2k_decode_store_ptx(),
         }
     }
 
