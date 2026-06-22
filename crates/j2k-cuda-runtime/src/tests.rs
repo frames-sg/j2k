@@ -197,6 +197,100 @@ fn cuda_oxide_dwt97_transcode_matches_scalar_fixture_when_required() {
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
+    if !cuda_runtime_required()
+        || std::env::var_os("J2K_CUDA_USE_OXIDE_TRANSCODE").is_none()
+        || !super::transcode_kernels_built()
+    {
+        return;
+    }
+
+    let context = CudaContext::system_default().expect("CUDA context");
+    let pool = context.buffer_pool();
+    let first = dwt97_fixture_blocks(1.0);
+    let second = dwt97_fixture_blocks(-1.0);
+    let mut blocks = Vec::with_capacity(128);
+    blocks.extend_from_slice(&first);
+    blocks.extend_from_slice(&second);
+
+    let expected_first = context
+        .j2k_transcode_dwt97(&first, 1, 1, 8, 8)
+        .expect("single first DWT97");
+    let expected_second = context
+        .j2k_transcode_dwt97(&second, 1, 1, 8, 8)
+        .expect("single second DWT97");
+    let (batch, _) = context
+        .j2k_transcode_dwt97_batch_with_pool(&blocks, 2, 1, 1, 8, 8, &pool)
+        .expect("cuda-oxide DWT97 batch");
+    assert_eq!(batch.len(), 2);
+    assert_dwt97_bands_close(&batch[0], &expected_first, 0.02);
+    assert_dwt97_bands_close(&batch[1], &expected_second, 0.02);
+
+    let wide_block_cols = 129;
+    let wide_width = 1032;
+    let wide_height = 8;
+    let mut wide_blocks = vec![0.0f32; wide_block_cols * 64];
+    const WIDE_PATTERN: [f32; 17] = [
+        -2.0, -1.75, -1.25, -0.5, 0.0, 0.25, 0.75, 1.0, 1.5, 2.0, -2.5, 2.5, -3.0, 3.0, -0.25, 0.5,
+        1.25,
+    ];
+    for (index, value) in wide_blocks.iter_mut().enumerate() {
+        *value = WIDE_PATTERN[index % WIDE_PATTERN.len()];
+    }
+    let wide_expected = context
+        .j2k_transcode_dwt97(&wide_blocks, wide_block_cols, 1, wide_width, wide_height)
+        .expect("single wide DWT97");
+    let (wide_batch, _) = context
+        .j2k_transcode_dwt97_batch_with_pool(
+            &wide_blocks,
+            1,
+            wide_block_cols,
+            1,
+            wide_width,
+            wide_height,
+            &pool,
+        )
+        .expect("wide cuda-oxide DWT97 batch");
+    assert_eq!(wide_batch.len(), 1);
+    assert_dwt97_bands_close(&wide_batch[0], &wide_expected, 0.02);
+
+    let params = super::CudaHtj2k97QuantizeParams {
+        inv_delta_ll: 1.0,
+        inv_delta_hl: 1.25,
+        inv_delta_lh: 0.75,
+        inv_delta_hh: 2.0,
+        cb_width: 64,
+        cb_height: 64,
+    };
+    let expected_codeblocks = expected_dwt97_codeblocks(&batch, params);
+    let (quantized, _) = context
+        .j2k_transcode_htj2k97_codeblock_batch_with_pool(&blocks, 2, 1, 1, 8, 8, params, &pool)
+        .expect("cuda-oxide staged DWT97 quantize batch");
+    assert_eq!(quantized, expected_codeblocks);
+
+    let first_i16 = dwt97_fixture_i16_blocks(1);
+    let second_i16 = dwt97_fixture_i16_blocks(-1);
+    let mut i16_blocks = Vec::with_capacity(128);
+    i16_blocks.extend_from_slice(&first_i16);
+    i16_blocks.extend_from_slice(&second_i16);
+    let (fused, _) = context
+        .j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
+            &i16_blocks,
+            2,
+            1,
+            1,
+            8,
+            8,
+            params,
+            &pool,
+        )
+        .expect("cuda-oxide fused i16 DWT97 quantize batch");
+    assert_eq!(download_device_codeblock_bands(&fused), expected_codeblocks);
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
 fn assert_f32_slice_close(actual: &[f32], expected: &[f32], tolerance: f32) {
     assert_eq!(actual.len(), expected.len());
     for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
@@ -205,6 +299,156 @@ fn assert_f32_slice_close(actual: &[f32], expected: &[f32], tolerance: f32) {
             "index {index}: actual={actual}, expected={expected}, tolerance={tolerance}"
         );
     }
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+fn assert_dwt97_bands_close(
+    actual: &super::CudaTranscodeDwt97Bands,
+    expected: &super::CudaTranscodeDwt97Bands,
+    tolerance: f32,
+) {
+    assert_eq!(
+        (
+            actual.low_width,
+            actual.low_height,
+            actual.high_width,
+            actual.high_height,
+        ),
+        (
+            expected.low_width,
+            expected.low_height,
+            expected.high_width,
+            expected.high_height,
+        )
+    );
+    assert_f32_slice_close(&actual.ll, &expected.ll, tolerance);
+    assert_f32_slice_close(&actual.hl, &expected.hl, tolerance);
+    assert_f32_slice_close(&actual.lh, &expected.lh, tolerance);
+    assert_f32_slice_close(&actual.hh, &expected.hh, tolerance);
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+#[allow(clippy::cast_precision_loss)]
+fn dwt97_fixture_blocks(scale: f32) -> [f32; 64] {
+    let mut blocks = [0.0f32; 64];
+    for (index, value) in DWT97_FIXTURE_VALUES {
+        blocks[index] = f32::from(value) * scale;
+    }
+    blocks
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+fn dwt97_fixture_i16_blocks(scale: i16) -> [i16; 64] {
+    let mut blocks = [0i16; 64];
+    for (index, value) in DWT97_FIXTURE_VALUES {
+        blocks[index] = value * scale;
+    }
+    blocks
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+const DWT97_FIXTURE_VALUES: [(usize, i16); 16] = [
+    (0, 80),
+    (1, -24),
+    (2, 13),
+    (3, 5),
+    (5, -3),
+    (8, 31),
+    (9, -11),
+    (10, 7),
+    (16, -9),
+    (17, 4),
+    (18, 3),
+    (27, -5),
+    (36, 6),
+    (45, -4),
+    (54, 2),
+    (63, -1),
+];
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+fn expected_dwt97_codeblocks(
+    batch: &[super::CudaTranscodeDwt97Bands],
+    params: super::CudaHtj2k97QuantizeParams,
+) -> super::CudaHtj2k97CodeblockBands {
+    let first = batch.first().expect("non-empty DWT97 batch");
+    let mut ll = Vec::new();
+    let mut hl = Vec::new();
+    let mut lh = Vec::new();
+    let mut hh = Vec::new();
+    for bands in batch {
+        ll.extend(
+            bands
+                .ll
+                .iter()
+                .map(|&value| quantize_dwt97_deadzone(value, params.inv_delta_ll)),
+        );
+        hl.extend(
+            bands
+                .hl
+                .iter()
+                .map(|&value| quantize_dwt97_deadzone(value, params.inv_delta_hl)),
+        );
+        lh.extend(
+            bands
+                .lh
+                .iter()
+                .map(|&value| quantize_dwt97_deadzone(value, params.inv_delta_lh)),
+        );
+        hh.extend(
+            bands
+                .hh
+                .iter()
+                .map(|&value| quantize_dwt97_deadzone(value, params.inv_delta_hh)),
+        );
+    }
+    super::CudaHtj2k97CodeblockBands {
+        ll,
+        hl,
+        lh,
+        hh,
+        item_count: batch.len(),
+        low_width: first.low_width,
+        low_height: first.low_height,
+        high_width: first.high_width,
+        high_height: first.high_height,
+    }
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+fn quantize_dwt97_deadzone(value: f32, inv_delta: f32) -> i32 {
+    let sign = if value < 0.0 { -1 } else { 1 };
+    sign * (value.abs() * inv_delta).floor() as i32
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+fn download_device_codeblock_bands(
+    bands: &super::CudaHtj2k97DeviceCodeblockBands,
+) -> super::CudaHtj2k97CodeblockBands {
+    let ll_len = bands.item_count * bands.low_width * bands.low_height;
+    let hl_len = bands.item_count * bands.high_width * bands.low_height;
+    let lh_len = bands.item_count * bands.low_width * bands.high_height;
+    let hh_len = bands.item_count * bands.high_width * bands.high_height;
+    super::CudaHtj2k97CodeblockBands {
+        ll: download_pooled_i32(&bands.ll, ll_len),
+        hl: download_pooled_i32(&bands.hl, hl_len),
+        lh: download_pooled_i32(&bands.lh, lh_len),
+        hh: download_pooled_i32(&bands.hh, hh_len),
+        item_count: bands.item_count,
+        low_width: bands.low_width,
+        low_height: bands.low_height,
+        high_width: bands.high_width,
+        high_height: bands.high_height,
+    }
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+fn download_pooled_i32(buffer: &super::CudaPooledDeviceBuffer, len: usize) -> Vec<i32> {
+    let mut output = vec![0i32; len];
+    buffer
+        .copy_to_host(super::i32_slice_as_bytes_mut(&mut output))
+        .expect("download pooled i32 buffer");
+    output
 }
 
 #[test]
