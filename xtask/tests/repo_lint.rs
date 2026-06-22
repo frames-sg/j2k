@@ -1990,6 +1990,7 @@ fn j2k_env_tokens(source: &str) -> BTreeSet<String> {
 
 fn is_internal_j2k_token(token: &str) -> bool {
     token == "J2K_"
+        || token == "J2K_ENCODE"
         || token.starts_with("J2K_SIGNPOST_")
         || token.starts_with("J2K_BATCH_")
         || token.starts_with("J2K_CLASSIC_")
