@@ -1,11 +1,12 @@
 [package]
 name = "j2k-cuda"
-description = "CUDA decoder and encode-stage adapter for j2k"
+description = "NVIDIA CUDA GPU adapter for Rust JPEG 2000 and HTJ2K decode/encode paths"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/j2k-cuda"
 keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
@@ -24,11 +25,11 @@ cuda-runtime = ["dep:j2k-cuda-runtime"]
 cuda-profiling = ["cuda-runtime", "j2k-cuda-runtime/cuda-profiling"]
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.6.0" }
-j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.6.0", optional = true }
-j2k = { path = "../j2k", version = "=0.6.0" }
-j2k-native = { path = "../j2k-native", version = "=0.6.0" }
-j2k-profile = { path = "../j2k-profile", version = "=0.6.0" }
+j2k-core = { path = "../j2k-core", version = "=0.6.1" }
+j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.6.1", optional = true }
+j2k = { path = "../j2k", version = "=0.6.1" }
+j2k-native = { path = "../j2k-native", version = "=0.6.1" }
+j2k-profile = { path = "../j2k-profile", version = "=0.6.1" }
 thiserror = { workspace = true }
 
 [dev-dependencies]

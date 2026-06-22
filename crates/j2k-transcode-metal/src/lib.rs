@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Metal acceleration for coefficient-domain JPEG to HTJ2K transcode stages.
+//! Apple Metal GPU acceleration for Rust JPEG-to-J2K/HTJ2K transcode stages.
 //!
 //! The supported targets are direct DCT-grid to one-level 5/3 and 9/7 wavelet
 //! projections used by `j2k-transcode`'s HTJ2K paths. CPU scalar code

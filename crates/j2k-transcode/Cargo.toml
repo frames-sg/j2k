@@ -18,9 +18,9 @@ path = "src/lib.rs"
 
 [dependencies]
 rayon = { workspace = true }
-j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.0" }
-j2k = { path = "../j2k", version = "=0.6.0" }
-j2k-native = { path = "../j2k-native", version = "=0.6.0" }
+j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.1" }
+j2k = { path = "../j2k", version = "=0.6.1" }
+j2k-native = { path = "../j2k-native", version = "=0.6.1" }
 
 [dev-dependencies]
 criterion = { workspace = true }

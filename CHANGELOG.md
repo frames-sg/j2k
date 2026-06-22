@@ -3,6 +3,12 @@
 This changelog tracks the current staged release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [0.6.1]
+
+- Refreshes public package metadata, docs.rs landing text, and README search
+  signals for the `j2k` rename, Rust programming language discovery, and
+  CUDA/Metal GPU JPEG 2000 / HTJ2K queries.
+
 ## [0.6.0]
 
 - Stages the `j2k` facade release.

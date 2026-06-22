@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Metal-backed JPEG decode and encode adapters.
+//! Apple Metal GPU-backed JPEG decode and encode adapters for `j2k-jpeg`.
 //!
 //! The crate exposes the same CPU-visible JPEG decode surface as
 //! `j2k-jpeg`, with optional Metal-resident surfaces and batch submission

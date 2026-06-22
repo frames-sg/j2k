@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! CUDA acceleration for coefficient-domain JPEG to HTJ2K transcode stages.
+//! NVIDIA CUDA GPU acceleration for Rust JPEG-to-J2K/HTJ2K transcode stages.
 //!
 //! Mirrors `j2k-transcode-metal`: it implements
 //! [`DctToWaveletStageAccelerator`] for direct DCT-grid to one-level 5/3 and 9/7

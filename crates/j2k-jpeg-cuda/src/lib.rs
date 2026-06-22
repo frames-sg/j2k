@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! CUDA-facing device-output adapter for `j2k-jpeg`.
+//! NVIDIA CUDA GPU device-output adapter for `j2k-jpeg`.
 //!
 //! This crate intentionally exposes the same backend-selection surface as the
 //! Metal adapter. CPU requests return host-backed surfaces. Scalar auto

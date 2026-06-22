@@ -1,11 +1,12 @@
 [package]
 name        = "j2k"
-description = "GPU-aware JPEG 2000 and HTJ2K decoder/encoder APIs in Rust"
+description = "JPEG 2000 and HTJ2K codec APIs for Rust with GPU adapter support"
 version.workspace = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace = true
+documentation = "https://docs.rs/j2k"
 keywords.workspace     = true
 categories.workspace   = true
 readme                 = "README.md"
@@ -19,15 +20,15 @@ name = "j2k"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.6.0" }
-j2k-native = { path = "../j2k-native", version = "=0.6.0" }
-j2k-types = { path = "../j2k-types", version = "=0.6.0" }
+j2k-core = { path = "../j2k-core", version = "=0.6.1" }
+j2k-native = { path = "../j2k-native", version = "=0.6.1" }
+j2k-types = { path = "../j2k-types", version = "=0.6.1" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
-j2k-native = { path = "../j2k-native", version = "=0.6.0" }
+j2k-native = { path = "../j2k-native", version = "=0.6.1" }
 j2k-test-support = { path = "../j2k-test-support" }
 
 [[bench]]

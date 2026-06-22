@@ -1,11 +1,12 @@
 [package]
 name = "j2k-jpeg-metal"
-description = "Metal JPEG decode and baseline encode adapter for j2k-jpeg"
+description = "Apple Metal GPU JPEG decode and baseline encode adapter for j2k-jpeg"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/j2k-jpeg-metal"
 keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
@@ -19,10 +20,10 @@ name = "j2k_jpeg_metal"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.6.0" }
-j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.0" }
-j2k-metal-support = { path = "../j2k-metal-support", version = "=0.6.0" }
-j2k-profile = { path = "../j2k-profile", version = "=0.6.0" }
+j2k-core = { path = "../j2k-core", version = "=0.6.1" }
+j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.1" }
+j2k-metal-support = { path = "../j2k-metal-support", version = "=0.6.1" }
+j2k-profile = { path = "../j2k-profile", version = "=0.6.1" }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

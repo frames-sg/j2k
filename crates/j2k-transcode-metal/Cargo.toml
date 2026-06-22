@@ -1,11 +1,12 @@
 [package]
 name = "j2k-transcode-metal"
-description = "Metal acceleration for JPEG to J2K and HTJ2K transcode paths"
+description = "Apple Metal GPU acceleration for Rust JPEG to J2K/HTJ2K transcode paths"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/j2k-transcode-metal"
 keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
@@ -19,18 +20,18 @@ name = "j2k_transcode_metal"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-transcode = { path = "../j2k-transcode", version = "=0.6.0" }
+j2k-transcode = { path = "../j2k-transcode", version = "=0.6.1" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = { workspace = true }
 rayon = { workspace = true }
-j2k-core = { path = "../j2k-core", version = "=0.6.0" }
-j2k-metal-support = { path = "../j2k-metal-support", version = "=0.6.0" }
+j2k-core = { path = "../j2k-core", version = "=0.6.1" }
+j2k-metal-support = { path = "../j2k-metal-support", version = "=0.6.1" }
 
 [dev-dependencies]
 criterion = { workspace = true }
-j2k-native = { path = "../j2k-native", version = "=0.6.0" }
-j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.0" }
+j2k-native = { path = "../j2k-native", version = "=0.6.1" }
+j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.1" }
 j2k-test-support = { path = "../j2k-test-support" }
 
 [[bench]]

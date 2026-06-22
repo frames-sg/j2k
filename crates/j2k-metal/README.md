@@ -1,6 +1,7 @@
 # j2k-metal
 
-Metal adapter for JPEG 2000 / HTJ2K decode and encode-stage paths on macOS.
+Apple Metal GPU adapter for Rust JPEG 2000 / HTJ2K decode and encode-stage
+paths on macOS.
 
 The crate provides resident Metal decode and encode-stage integration for
 supported workloads. It uses `j2k-metal-support` for runtime setup while

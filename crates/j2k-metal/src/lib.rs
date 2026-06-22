@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Metal-backed JPEG 2000 and HTJ2K decode and encode adapters.
+//! Apple Metal GPU adapters for Rust JPEG 2000 / HTJ2K decode and encode paths.
 //!
 //! This crate wraps the CPU/native J2K implementation with optional
 //! Metal-resident decode surfaces, batch decode sessions, and lossless encode

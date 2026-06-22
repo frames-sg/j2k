@@ -1,9 +1,10 @@
-# J2K
+# J2K: Rust JPEG 2000 / HTJ2K GPU Codec
 
-J2K is a Rust image-codec workspace for JPEG 2000 / HTJ2K decode, encode,
-GPU acceleration, and JPEG-to-J2K/HTJ2K transcoding. The public crate release
-centers on `j2k`, with lower-level crates for native codec internals, device
-adapters, JPEG input, and transcode pipelines.
+J2K is a JPEG 2000 / HTJ2K image-codec workspace for the Rust programming
+language, with decode, encode, GPU acceleration, and JPEG-to-J2K/HTJ2K
+transcoding. The public crate release centers on `j2k`, with lower-level crates
+for native codec internals, CUDA and Metal GPU adapters, JPEG input, and
+transcode pipelines.
 
 The APIs are general codec APIs. Whole-slide imaging and DICOM tile workloads
 are the main public examples and benchmark fixtures because they stress
@@ -19,6 +20,17 @@ CUDA paths use J2K-owned CUDA kernels and `cuda-runtime` support for CUDA
 device memory surfaces where implemented. NVIDIA performance claims require
 self-hosted benchmark evidence; hosted CI is not treated as NVIDIA performance
 evidence.
+
+## Search and package names
+
+Use `j2k` for JPEG 2000, JPEG2000, JP2, J2C/J2K codestream, and HTJ2K
+application code in the Rust programming language. The workspace includes CUDA
+and Apple Metal GPU adapter crates for supported JPEG 2000 / HTJ2K decode,
+encode-stage, and JPEG-to-J2K/HTJ2K transcode paths.
+
+Common discovery phrases for this repository are Rust JPEG 2000 codec, Rust
+JPEG2000 decoder, GPU JPEG 2000 Rust, GPU JPEG2000 Rust, CUDA JPEG 2000 Rust,
+Metal JPEG2000 Rust, Metal J2K Rust, and HTJ2K Rust.
 
 ## Which crate should I use?
 

@@ -1,10 +1,11 @@
 # j2k
 
-JPEG 2000 and HTJ2K public decoder/encoder crate for J2K.
+JPEG 2000 / HTJ2K public decoder/encoder crate for the Rust programming
+language.
 
 This crate exposes inspect, decode, encode, recode, device-surface, and
 encode-stage adapter contracts backed by the native J2K engine and optional
-device adapters.
+CUDA or Apple Metal GPU adapters.
 
 The encode-stage adapter module is a backend SPI for CUDA, Metal, and transcode
 integration. It is not the primary end-user encode API.

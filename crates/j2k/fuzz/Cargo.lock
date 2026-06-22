@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "j2k"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "j2k-core",
  "j2k-native",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "thiserror",
 ]
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-native"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "fearless_simd",
  "j2k-profile",
@@ -119,11 +119,11 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.6.0"
+version = "0.6.1"
 
 [[package]]
 name = "j2k-types"
-version = "0.6.0"
+version = "0.6.1"
 
 [[package]]
 name = "jobserver"

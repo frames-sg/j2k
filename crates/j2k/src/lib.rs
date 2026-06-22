@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! JPEG 2000 inspect support for j2k.
+//! JPEG 2000 / HTJ2K codec APIs for the Rust programming language, including
+//! inspect, decode, encode, recode, and GPU-aware backend dispatch.
+//!
+//! This is the public `j2k` facade crate. CPU JPEG 2000 / HTJ2K decode and
+//! encode APIs live here, while CUDA and Apple Metal GPU adapters use the
+//! backend traits and encode-stage contracts re-exported by this crate.
 
 #![deny(missing_docs)]
 

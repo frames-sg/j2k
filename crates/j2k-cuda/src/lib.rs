@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! CUDA-facing device-output adapter for `j2k`.
+//! NVIDIA CUDA GPU device-output adapter for Rust JPEG 2000 / HTJ2K in `j2k`.
 //!
 //! This crate intentionally exposes the same backend-selection surface as the
 //! Metal adapter. CPU and auto requests return host-backed surfaces. Strict

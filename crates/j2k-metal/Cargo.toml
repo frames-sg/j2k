@@ -1,12 +1,13 @@
 [package]
 name = "j2k-metal"
-description = "Metal decoder and encode-stage adapter for j2k"
+description = "Apple Metal GPU adapter for Rust JPEG 2000 and HTJ2K decode/encode paths"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 build = "build.rs"
 license.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/j2k-metal"
 keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
@@ -20,11 +21,11 @@ name = "j2k_metal"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.6.0" }
-j2k = { path = "../j2k", version = "=0.6.0" }
-j2k-native = { path = "../j2k-native", version = "=0.6.0" }
-j2k-metal-support = { path = "../j2k-metal-support", version = "=0.6.0" }
-j2k-profile = { path = "../j2k-profile", version = "=0.6.0" }
+j2k-core = { path = "../j2k-core", version = "=0.6.1" }
+j2k = { path = "../j2k", version = "=0.6.1" }
+j2k-native = { path = "../j2k-native", version = "=0.6.1" }
+j2k-metal-support = { path = "../j2k-metal-support", version = "=0.6.1" }
+j2k-profile = { path = "../j2k-profile", version = "=0.6.1" }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

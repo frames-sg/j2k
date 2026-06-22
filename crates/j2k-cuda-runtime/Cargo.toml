@@ -22,7 +22,7 @@ cuda-profiling = []
 cuda-oxide-copy-u8 = []
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.6.0" }
+j2k-core = { path = "../j2k-core", version = "=0.6.1" }
 libloading = { workspace = true }
 thiserror = { workspace = true }
 
