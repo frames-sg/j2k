@@ -170,11 +170,9 @@ impl ContextInner {
         kernel: CudaKernel,
     ) -> Result<CuFunction, CudaError> {
         ensure_cuda_oxide_transcode_ptx_built()?;
-        if !kernel.is_transcode_reversible53_stage() {
+        if !kernel.is_cuda_oxide_transcode_stage() {
             return Err(CudaError::InvalidArgument {
-                message: format!(
-                    "kernel {kernel:?} is not a reversible 5/3 transcode cuda-oxide stage"
-                ),
+                message: format!("kernel {kernel:?} is not a supported transcode cuda-oxide stage"),
             });
         }
         self.kernel_function_from_key(CompiledKernelKey::CudaOxideTranscode(kernel))

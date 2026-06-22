@@ -252,7 +252,7 @@ impl CudaContext {
         #[cfg(feature = "cuda-oxide-transcode")]
         {
             if crate::build_flags::cuda_oxide_transcode_enabled()
-                && kernel.is_transcode_reversible53_stage()
+                && kernel.is_cuda_oxide_transcode_stage()
             {
                 return self.inner.cuda_oxide_transcode_kernel_function(kernel);
             }
@@ -567,7 +567,7 @@ impl CudaContext {
         blocks: &CudaDeviceBuffer,
         spatial: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::TranscodeDwt97Idct)?;
+        let function = self.transcode_kernel_function(CudaKernel::TranscodeDwt97Idct)?;
         let mut blocks_ptr = blocks.device_ptr();
         let mut block_cols = dims.block_cols;
         let mut width = dims.width;
@@ -589,9 +589,7 @@ impl CudaContext {
         row_low: &CudaDeviceBuffer,
         row_high: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::TranscodeDwt97RowLift)?;
+        let function = self.transcode_kernel_function(CudaKernel::TranscodeDwt97RowLift)?;
         let mut spatial_ptr = spatial.device_ptr();
         let mut width = dims.width;
         let mut height = dims.height;
@@ -628,9 +626,7 @@ impl CudaContext {
         if columns == 0 {
             return Ok(());
         }
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::TranscodeDwt97ColumnLift)?;
+        let function = self.transcode_kernel_function(CudaKernel::TranscodeDwt97ColumnLift)?;
         let mut rows_ptr = rows_buffer.device_ptr();
         let mut band = band_width;
         let mut rows = height;
