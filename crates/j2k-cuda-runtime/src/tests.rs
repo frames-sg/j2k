@@ -119,6 +119,94 @@ fn cuda_oxide_reversible53_transcode_matches_scalar_fixture_when_required() {
     );
 }
 
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+#[test]
+fn cuda_oxide_dwt97_transcode_matches_scalar_fixture_when_required() {
+    if !cuda_runtime_required()
+        || std::env::var_os("J2K_CUDA_USE_OXIDE_TRANSCODE").is_none()
+        || !super::transcode_kernels_built()
+    {
+        return;
+    }
+
+    let context = CudaContext::system_default().expect("CUDA context");
+    let mut blocks = [0.0f32; 64];
+    for (index, value) in [
+        (0, 80.0),
+        (1, -24.0),
+        (2, 13.0),
+        (3, 5.0),
+        (5, -3.0),
+        (8, 31.0),
+        (9, -11.0),
+        (10, 7.0),
+        (16, -9.0),
+        (17, 4.0),
+        (18, 3.0),
+        (27, -5.0),
+        (36, 6.0),
+        (45, -4.0),
+        (54, 2.0),
+        (63, -1.0),
+    ] {
+        blocks[index] = value;
+    }
+
+    let bands = context
+        .j2k_transcode_dwt97(&blocks, 1, 1, 8, 8)
+        .expect("cuda-oxide 9/7 transcode");
+
+    assert_eq!((bands.low_width, bands.low_height), (4, 4));
+    assert_eq!((bands.high_width, bands.high_height), (4, 4));
+    assert_f32_slice_close(
+        &bands.ll,
+        &[
+            12.144_072, 8.567_899, 11.216_426, 20.388_594, 11.476_019, 7.618_125, 12.952_319,
+            19.958_328, 7.468_019, 6.779_34, 10.701_953, 14.315_73, 4.983_001, 3.069_523,
+            4.546_064, 6.695_241,
+        ],
+        0.02,
+    );
+    assert_f32_slice_close(
+        &bands.hl,
+        &[
+            0.579_117, -0.765_21, -1.113_766, 3.008_691, 1.415_966, -2.878_618, 2.173_036,
+            -0.629_188, -0.239_748, 0.239_237, -0.885_278, 2.500_556, 1.929_175, -2.255_519,
+            1.123_41, 0.191_912,
+        ],
+        0.02,
+    );
+    assert_f32_slice_close(
+        &bands.lh,
+        &[
+            -0.314_113, 0.534_82, -1.107_942, 1.062_559, 0.976_02, -1.180_377, 1.861_77,
+            -0.696_248, -1.241_956, 2.006_542, -1.112_403, 0.853_18, 0.104_077, -3.326_791,
+            0.079_872, -2.094_714,
+        ],
+        0.02,
+    );
+    assert_f32_slice_close(
+        &bands.hh,
+        &[
+            -0.434_17, 1.497_277, -0.967_611, -6.657_543, 1.496_545, -1.963_292, -2.252_154,
+            3.941_389, -0.968_106, -2.252_748, 1.867_451, -1.252_69, -6.656_182, 3.949_171,
+            -1.248_663, 0.544_539,
+        ],
+        0.02,
+    );
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+fn assert_f32_slice_close(actual: &[f32], expected: &[f32], tolerance: f32) {
+    assert_eq!(actual.len(), expected.len());
+    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "index {index}: actual={actual}, expected={expected}, tolerance={tolerance}"
+        );
+    }
+}
+
 #[test]
 fn jpeg_chunked_entropy_report_has_one_less_overflow_than_subsequence_count() {
     let config = CudaJpegChunkedEntropyConfig {
