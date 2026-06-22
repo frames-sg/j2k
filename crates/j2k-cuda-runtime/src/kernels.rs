@@ -134,11 +134,16 @@ impl CudaKernel {
             Self::J2kInverseDwtSingle
                 | Self::J2kIdwtInterleave
                 | Self::J2kIdwtInterleaveHorizontalMulti
+                | Self::J2kIdwtInterleaveHorizontal53Multi
+                | Self::J2kIdwtInterleaveHorizontal97Multi
                 | Self::J2kIdwtHorizontal
                 | Self::J2kIdwtHorizontal53
                 | Self::J2kIdwtHorizontal97
                 | Self::J2kIdwtVertical
                 | Self::J2kIdwtVerticalMulti
+                | Self::J2kIdwtVertical53Multi
+                | Self::J2kIdwtVertical97Multi
+                | Self::J2kIdwtVertical97MultiCols4
                 | Self::J2kIdwtVertical53
                 | Self::J2kIdwtVertical97
         )
@@ -833,11 +838,16 @@ mod tests {
             CudaKernel::J2kInverseDwtSingle,
             CudaKernel::J2kIdwtInterleave,
             CudaKernel::J2kIdwtInterleaveHorizontalMulti,
+            CudaKernel::J2kIdwtInterleaveHorizontal53Multi,
+            CudaKernel::J2kIdwtInterleaveHorizontal97Multi,
             CudaKernel::J2kIdwtHorizontal,
             CudaKernel::J2kIdwtHorizontal53,
             CudaKernel::J2kIdwtHorizontal97,
             CudaKernel::J2kIdwtVertical,
             CudaKernel::J2kIdwtVerticalMulti,
+            CudaKernel::J2kIdwtVertical53Multi,
+            CudaKernel::J2kIdwtVertical97Multi,
+            CudaKernel::J2kIdwtVertical97MultiCols4,
             CudaKernel::J2kIdwtVertical53,
             CudaKernel::J2kIdwtVertical97,
         ];
