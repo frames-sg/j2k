@@ -7,6 +7,7 @@ use crate::{
         htj2k_packetization_tag_nodes_as_bytes,
     },
     context::CudaContext,
+    driver::CuFunction,
     error::CudaError,
     execution::{cuda_kernel_param, CudaExecutionStats},
     htj2k_decode::{HTJ2K_STATUS_OK, HTJ2K_STATUS_UNSUPPORTED},
@@ -316,9 +317,7 @@ impl CudaContext {
         statuses: &CudaDeviceBuffer,
         packet_count: usize,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::Htj2kPacketizeCleanup)?;
+        let function = self.htj2k_packetize_kernel_function(CudaKernel::Htj2kPacketizeCleanup)?;
         let mut payload_ptr = payload.device_ptr();
         let mut payload_len_u64 = u64::try_from(payload_len)
             .map_err(|_| CudaError::LengthTooLarge { len: payload_len })?;
@@ -356,6 +355,18 @@ impl CudaContext {
         let geometry = htj2k_packetize_launch_geometry(packet_count)
             .ok_or(CudaError::LengthTooLarge { len: packet_count })?;
         self.launch_kernel(function, geometry, &mut params)
+    }
+
+    fn htj2k_packetize_kernel_function(&self, kernel: CudaKernel) -> Result<CuFunction, CudaError> {
+        #[cfg(feature = "cuda-oxide-j2k-encode")]
+        {
+            if crate::build_flags::cuda_oxide_j2k_encode_enabled()
+                && kernel.is_cuda_oxide_j2k_encode_stage()
+            {
+                return self.inner.cuda_oxide_j2k_encode_kernel_function(kernel);
+            }
+        }
+        self.inner.kernel_function(kernel)
     }
 }
 

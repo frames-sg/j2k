@@ -104,7 +104,11 @@ impl CudaKernel {
 
     #[cfg_attr(not(feature = "cuda-oxide-j2k-encode"), allow(dead_code))]
     pub(crate) fn is_cuda_oxide_j2k_encode_stage(self) -> bool {
-        self.is_j2k_encode_stage() || matches!(self, Self::Htj2kCompactCodeblocks)
+        self.is_j2k_encode_stage()
+            || matches!(
+                self,
+                Self::Htj2kCompactCodeblocks | Self::Htj2kPacketizeCleanup
+            )
     }
 
     #[cfg_attr(not(feature = "cuda-oxide-j2k-decode-store"), allow(dead_code))]
@@ -813,6 +817,7 @@ mod tests {
             CudaKernel::J2kQuantizeSubband,
             CudaKernel::J2kQuantizeSubbandStrided,
             CudaKernel::Htj2kCompactCodeblocks,
+            CudaKernel::Htj2kPacketizeCleanup,
         ];
         for kernel in kernels {
             assert!(kernel.is_cuda_oxide_j2k_encode_stage());
