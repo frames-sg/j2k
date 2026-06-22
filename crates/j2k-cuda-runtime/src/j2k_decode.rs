@@ -1449,6 +1449,7 @@ impl CudaContext {
         height: u32,
         mode: CudaLaunchMode,
     ) -> Result<(), CudaError> {
+        let function = self.j2k_idwt_kernel_function(CudaKernel::J2kIdwtInterleave)?;
         let [ll, hl, lh, hh] = bands;
         let mut low_low_ptr = ll.device_ptr();
         let mut high_low_ptr = hl.device_ptr();
@@ -1470,7 +1471,10 @@ impl CudaContext {
                 height,
                 channels: 1,
             })?;
-        self.launch_named_kernel(CudaKernel::J2kIdwtInterleave, geometry, &mut params, mode)
+        match mode {
+            CudaLaunchMode::Sync => self.launch_kernel(function, geometry, &mut params),
+            CudaLaunchMode::Async => self.launch_kernel_async(function, geometry, &mut params),
+        }
     }
 
     fn launch_j2k_idwt_interleave_horizontal_multi(
@@ -1495,16 +1499,17 @@ impl CudaContext {
         job_count: usize,
         synchronize: bool,
     ) -> Result<(), CudaError> {
+        let function =
+            self.j2k_idwt_kernel_function(CudaKernel::J2kIdwtInterleaveHorizontalMulti)?;
         let mut jobs_ptr = jobs_ptr;
         let mut params = cuda_kernel_params!(jobs_ptr);
         let geometry = j2k_idwt_multi_1d_launch_geometry(max_rows, job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
-        self.launch_named_kernel(
-            CudaKernel::J2kIdwtInterleaveHorizontalMulti,
-            geometry,
-            &mut params,
-            CudaLaunchMode::from_synchronize(synchronize),
-        )
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
     }
 
     fn launch_j2k_idwt_interleave_horizontal_53_multi(
@@ -1569,12 +1574,16 @@ impl CudaContext {
         rows: usize,
         mode: CudaLaunchMode,
     ) -> Result<(), CudaError> {
+        let function = self.j2k_idwt_kernel_function(kernel)?;
         let mut output_ptr = output.device_ptr();
         let mut job_ptr = job.device_ptr();
         let mut params = cuda_kernel_params!(output_ptr, job_ptr);
         let geometry =
             j2k_forward_rct_launch_geometry(rows).ok_or(CudaError::LengthTooLarge { len: rows })?;
-        self.launch_named_kernel(kernel, geometry, &mut params, mode)
+        match mode {
+            CudaLaunchMode::Sync => self.launch_kernel(function, geometry, &mut params),
+            CudaLaunchMode::Async => self.launch_kernel_async(function, geometry, &mut params),
+        }
     }
 
     fn launch_j2k_idwt_vertical(
@@ -1585,12 +1594,16 @@ impl CudaContext {
         columns: usize,
         mode: CudaLaunchMode,
     ) -> Result<(), CudaError> {
+        let function = self.j2k_idwt_kernel_function(kernel)?;
         let mut output_ptr = output.device_ptr();
         let mut job_ptr = job.device_ptr();
         let mut params = cuda_kernel_params!(output_ptr, job_ptr);
         let geometry = j2k_forward_rct_launch_geometry(columns)
             .ok_or(CudaError::LengthTooLarge { len: columns })?;
-        self.launch_named_kernel(kernel, geometry, &mut params, mode)
+        match mode {
+            CudaLaunchMode::Sync => self.launch_kernel(function, geometry, &mut params),
+            CudaLaunchMode::Async => self.launch_kernel_async(function, geometry, &mut params),
+        }
     }
 
     fn launch_j2k_idwt_vertical_multi(
@@ -1615,16 +1628,16 @@ impl CudaContext {
         job_count: usize,
         synchronize: bool,
     ) -> Result<(), CudaError> {
+        let function = self.j2k_idwt_kernel_function(CudaKernel::J2kIdwtVerticalMulti)?;
         let mut jobs_ptr = jobs_ptr;
         let mut params = cuda_kernel_params!(jobs_ptr);
         let geometry = j2k_idwt_multi_1d_launch_geometry(max_columns, job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
-        self.launch_named_kernel(
-            CudaKernel::J2kIdwtVerticalMulti,
-            geometry,
-            &mut params,
-            CudaLaunchMode::from_synchronize(synchronize),
-        )
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
     }
 
     fn launch_j2k_idwt_vertical_53_multi(
@@ -1839,6 +1852,19 @@ impl CudaContext {
                 return self
                     .inner
                     .cuda_oxide_j2k_decode_store_kernel_function(kernel);
+            }
+        }
+        self.inner.kernel_function(kernel)
+    }
+
+    fn j2k_idwt_kernel_function(
+        &self,
+        kernel: CudaKernel,
+    ) -> Result<crate::driver::CuFunction, CudaError> {
+        #[cfg(feature = "cuda-oxide-j2k-idwt")]
+        {
+            if crate::build_flags::cuda_oxide_j2k_idwt_enabled() && kernel.is_j2k_idwt_stage() {
+                return self.inner.cuda_oxide_j2k_idwt_kernel_function(kernel);
             }
         }
         self.inner.kernel_function(kernel)

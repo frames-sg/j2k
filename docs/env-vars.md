@@ -56,10 +56,12 @@ Stability values:
 | `J2K_CUDA_USE_OXIDE_J2K_DECODE_STORE` | Routes supported J2K decode store and inverse-MCT CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-decode-store` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
 | `J2K_CUDA_USE_OXIDE_J2K_DEQUANTIZE` | Routes supported J2K HTJ2K dequantize CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-dequantize` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
 | `J2K_CUDA_USE_OXIDE_J2K_ENCODE` | Routes supported J2K encode-stage CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-encode` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
+| `J2K_CUDA_USE_OXIDE_J2K_IDWT` | Routes supported generic J2K inverse-DWT CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-idwt` is enabled and PTX was generated. Cooperative shared-memory IDWT kernels remain on built-in CUDA C PTX. | Built-in CUDA C PTX | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_COPY_U8` | Requires cuda-oxide CopyU8 PTX generation when `j2k-cuda-runtime/cuda-oxide-copy-u8` is enabled. | Disabled | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_J2K_DECODE_STORE` | Requires cuda-oxide J2K decode store/inverse-MCT PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-decode-store` is enabled. | Disabled | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_J2K_DEQUANTIZE` | Requires cuda-oxide J2K HTJ2K dequantize PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-dequantize` is enabled. | Disabled | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_J2K_ENCODE` | Requires cuda-oxide J2K encode-stage PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-encode` is enabled. | Disabled | Experimental |
+| `J2K_REQUIRE_CUDA_OXIDE_J2K_IDWT` | Requires cuda-oxide J2K generic inverse-DWT PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-idwt` is enabled. | Disabled | Experimental |
 
 ## Test And CI Gates
 
