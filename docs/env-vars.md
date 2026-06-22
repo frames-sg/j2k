@@ -53,8 +53,10 @@ Stability values:
 | `J2K_METAL_CLASSIC_TIER1_SPLIT_MQ_BYTE_GPU_TOKEN_PACK` | Set to `1` to request, or `0` to disable, the split MQ-byte GPU token-pack route. | Auto | Experimental |
 | `J2K_HYBRID_FLAT_CPU_TIER1` | Forces flat CPU Tier-1 batching for J2K Metal hybrid decode when set to a truthy value accepted by the adapter. | Adapter default | Experimental |
 | `J2K_CUDA_OXIDE_ARCH` | Overrides the cuda-oxide build target when a `j2k-cuda-runtime/cuda-oxide-*` feature is enabled. | `sm_80` | Experimental |
+| `J2K_CUDA_USE_OXIDE_J2K_DECODE_STORE` | Routes supported J2K decode store and inverse-MCT CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-decode-store` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
 | `J2K_CUDA_USE_OXIDE_J2K_ENCODE` | Routes supported J2K encode-stage CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-encode` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_COPY_U8` | Requires cuda-oxide CopyU8 PTX generation when `j2k-cuda-runtime/cuda-oxide-copy-u8` is enabled. | Disabled | Experimental |
+| `J2K_REQUIRE_CUDA_OXIDE_J2K_DECODE_STORE` | Requires cuda-oxide J2K decode store/inverse-MCT PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-decode-store` is enabled. | Disabled | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_J2K_ENCODE` | Requires cuda-oxide J2K encode-stage PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-encode` is enabled. | Disabled | Experimental |
 
 ## Test And CI Gates
