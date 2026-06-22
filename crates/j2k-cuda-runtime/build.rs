@@ -106,6 +106,11 @@ fn emit_build_script_metadata() {
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_idwt/src/main.rs");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_idwt/simt/Cargo.toml");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_idwt/simt/src/main.rs");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_transcode/Cargo.toml");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_transcode/rust-toolchain.toml");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_transcode/src/main.rs");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_transcode/simt/Cargo.toml");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_transcode/simt/src/main.rs");
     println!("cargo:rerun-if-env-changed=NVCC");
     println!("cargo:rerun-if-env-changed=J2K_CUDA_OXIDE_ARCH");
     println!("cargo:rerun-if-env-changed=J2K_REQUIRE_CUDA_OXIDE_COPY_U8");
@@ -113,6 +118,7 @@ fn emit_build_script_metadata() {
     println!("cargo:rerun-if-env-changed=J2K_REQUIRE_CUDA_OXIDE_J2K_DECODE_STORE");
     println!("cargo:rerun-if-env-changed=J2K_REQUIRE_CUDA_OXIDE_J2K_DEQUANTIZE");
     println!("cargo:rerun-if-env-changed=J2K_REQUIRE_CUDA_OXIDE_J2K_IDWT");
+    println!("cargo:rerun-if-env-changed=J2K_REQUIRE_CUDA_OXIDE_TRANSCODE");
     println!("cargo:rerun-if-env-changed=J2K_REQUIRE_CUDA_HTJ2K_STRICT");
     println!("cargo:rerun-if-env-changed=J2K_REQUIRE_CUDA_KERNEL_BUILD");
     println!("cargo:rustc-check-cfg=cfg( j2k_cuda_j2k_encode_ptx_built)");
@@ -124,6 +130,7 @@ fn emit_build_script_metadata() {
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_decode_store_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_dequantize_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_idwt_built)");
+    println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_transcode_built)");
 }
 
 fn compile_cuda_oxide_feature_projects(out_dir: &Path) {
@@ -159,6 +166,13 @@ fn compile_cuda_oxide_feature_projects(out_dir: &Path) {
         let require_cuda_oxide = env::var_os("J2K_REQUIRE_CUDA_OXIDE_J2K_IDWT").is_some();
         if compile_cuda_oxide_j2k_idwt(out_dir, require_cuda_oxide) {
             println!("cargo:rustc-cfg=j2k_cuda_oxide_j2k_idwt_built");
+        }
+    }
+
+    if env::var_os("CARGO_FEATURE_CUDA_OXIDE_TRANSCODE").is_some() {
+        let require_cuda_oxide = env::var_os("J2K_REQUIRE_CUDA_OXIDE_TRANSCODE").is_some();
+        if compile_cuda_oxide_transcode(out_dir, require_cuda_oxide) {
+            println!("cargo:rustc-cfg=j2k_cuda_oxide_transcode_built");
         }
     }
 }
@@ -223,6 +237,19 @@ fn compile_cuda_oxide_j2k_idwt(out_dir: &Path, require_cuda_oxide: bool) -> bool
             output_name: "cuda_oxide_j2k_idwt.ptx",
             artifact_name: "j2k_cuda_oxide_j2k_idwt.ptx",
             display_name: "cuda-oxide J2K IDWT",
+        },
+        require_cuda_oxide,
+    )
+}
+
+fn compile_cuda_oxide_transcode(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+    compile_cuda_oxide_project(
+        out_dir,
+        CudaOxideProject {
+            source_dir: Path::new("src/cuda_oxide_transcode"),
+            output_name: "cuda_oxide_transcode.ptx",
+            artifact_name: "j2k_cuda_oxide_transcode.ptx",
+            display_name: "cuda-oxide transcode",
         },
         require_cuda_oxide,
     )

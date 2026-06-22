@@ -6,6 +6,7 @@ use crate::{
     },
     bytes::i16_slice_as_bytes,
     context::CudaContext,
+    driver::CuFunction,
     error::CudaError,
     execution::cuda_kernel_param,
     j2k_encode::CudaDwt97BatchStageTimings,
@@ -184,9 +185,7 @@ impl CudaContext {
         if block_count == 0 {
             return Ok(());
         }
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::TranscodeReversible53Idct)?;
+        let function = self.transcode_kernel_function(CudaKernel::TranscodeReversible53Idct)?;
         let mut blocks_ptr = blocks.device_ptr();
         let mut samples_ptr = samples.device_ptr();
         let mut count = u32::try_from(block_count)
@@ -205,7 +204,7 @@ impl CudaContext {
         out: &CudaDeviceBuffer,
         out_rows: i32,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(kernel)?;
+        let function = self.transcode_kernel_function(kernel)?;
         let mut samples_ptr = samples.device_ptr();
         let mut block_cols = dims.block_cols;
         let mut width = dims.width;
@@ -234,7 +233,7 @@ impl CudaContext {
         if row_count == 0 {
             return Ok(());
         }
-        let function = self.inner.kernel_function(kernel)?;
+        let function = self.transcode_kernel_function(kernel)?;
         let mut rows_ptr = rows_buffer.device_ptr();
         let mut width = dims.width;
         let mut rows = n_rows;
@@ -247,6 +246,18 @@ impl CudaContext {
         let geometry = copy_u8_launch_geometry(row_count)
             .ok_or(CudaError::LengthTooLarge { len: row_count })?;
         self.launch_kernel(function, geometry, &mut params)
+    }
+
+    fn transcode_kernel_function(&self, kernel: CudaKernel) -> Result<CuFunction, CudaError> {
+        #[cfg(feature = "cuda-oxide-transcode")]
+        {
+            if crate::build_flags::cuda_oxide_transcode_enabled()
+                && kernel.is_transcode_reversible53_stage()
+            {
+                return self.inner.cuda_oxide_transcode_kernel_function(kernel);
+            }
+        }
+        self.inner.kernel_function(kernel)
     }
 }
 
