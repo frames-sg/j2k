@@ -27,6 +27,11 @@ fn load_i32(ptr: *const i32, index: u64) -> i32 {
 }
 
 #[inline(always)]
+fn load_f32(ptr: *const f32, index: u64) -> f32 {
+    unsafe { *ptr.add(index as usize) }
+}
+
+#[inline(always)]
 fn store_i32(ptr: *mut i32, index: u64, value: i32) {
     unsafe {
         *ptr.add(index as usize) = value;
@@ -34,7 +39,19 @@ fn store_i32(ptr: *mut i32, index: u64, value: i32) {
 }
 
 #[inline(always)]
+fn store_f32(ptr: *mut f32, index: u64, value: f32) {
+    unsafe {
+        *ptr.add(index as usize) = value;
+    }
+}
+
+#[inline(always)]
 fn offset_i32_mut(ptr: *mut i32, index: u64) -> *mut i32 {
+    unsafe { ptr.add(index as usize) }
+}
+
+#[inline(always)]
+fn offset_f32_mut(ptr: *mut f32, index: u64) -> *mut f32 {
     unsafe { ptr.add(index as usize) }
 }
 
@@ -343,6 +360,185 @@ fn reversible_lift_row(row: *mut i32, n: i32) {
     }
 }
 
+const DWT97_ALPHA: f32 = -1.586_134_3;
+const DWT97_BETA: f32 = -0.052_980_117;
+const DWT97_GAMMA: f32 = 0.882_911_1;
+const DWT97_DELTA: f32 = 0.443_506_87;
+const DWT97_KAPPA: f32 = 1.230_174_1;
+const DWT97_INV_KAPPA: f32 = 1.0 / DWT97_KAPPA;
+
+const DWT97_IDCT8_BASIS: [f32; 64] = [
+    0.353_553_38,
+    0.490_392_65,
+    0.461_939_75,
+    0.415_734_8,
+    0.353_553_38,
+    0.277_785_12,
+    0.191_341_71,
+    0.097_545_16,
+    0.353_553_38,
+    0.415_734_8,
+    0.191_341_71,
+    -0.097_545_16,
+    -0.353_553_38,
+    -0.490_392_65,
+    -0.461_939_75,
+    -0.277_785_12,
+    0.353_553_38,
+    0.277_785_12,
+    -0.191_341_71,
+    -0.490_392_65,
+    -0.353_553_38,
+    0.097_545_16,
+    0.461_939_75,
+    0.415_734_8,
+    0.353_553_38,
+    0.097_545_16,
+    -0.461_939_75,
+    -0.277_785_12,
+    0.353_553_38,
+    0.415_734_8,
+    -0.191_341_71,
+    -0.490_392_65,
+    0.353_553_38,
+    -0.097_545_16,
+    -0.461_939_75,
+    0.277_785_12,
+    0.353_553_38,
+    -0.415_734_8,
+    -0.191_341_71,
+    0.490_392_65,
+    0.353_553_38,
+    -0.277_785_12,
+    -0.191_341_71,
+    0.490_392_65,
+    -0.353_553_38,
+    -0.097_545_16,
+    0.461_939_75,
+    -0.415_734_8,
+    0.353_553_38,
+    -0.415_734_8,
+    0.191_341_71,
+    0.097_545_16,
+    -0.353_553_38,
+    0.490_392_65,
+    -0.461_939_75,
+    0.277_785_12,
+    0.353_553_38,
+    -0.490_392_65,
+    0.461_939_75,
+    -0.415_734_8,
+    0.353_553_38,
+    -0.277_785_12,
+    0.191_341_71,
+    -0.097_545_16,
+];
+
+#[inline(always)]
+fn idct8_basis(sample_idx: i32, freq: i32) -> f32 {
+    DWT97_IDCT8_BASIS[(sample_idx * 8 + freq) as usize]
+}
+
+#[inline(always)]
+fn idct8x8_sample(block: *const f32, local_x: i32, local_y: i32) -> f32 {
+    let mut sample = 0.0_f32;
+    let mut freq_y = 0_i32;
+    while freq_y < 8 {
+        let y_basis = idct8_basis(local_y, freq_y);
+        let mut freq_x = 0_i32;
+        while freq_x < 8 {
+            sample += load_f32(block, (freq_y * 8 + freq_x) as u64)
+                * y_basis
+                * idct8_basis(local_x, freq_x);
+            freq_x += 1;
+        }
+        freq_y += 1;
+    }
+    sample
+}
+
+#[inline(always)]
+fn forward_lift_97(data: *mut f32, n: i32, stride: i32) {
+    if n < 2 {
+        return;
+    }
+    let last_even = if n % 2 == 0 { n - 2 } else { n - 1 };
+
+    let mut i = 1_i32;
+    while i < n {
+        let left = load_f32(data.cast_const(), ((i - 1) * stride) as u64);
+        let right = if i + 1 < n {
+            load_f32(data.cast_const(), ((i + 1) * stride) as u64)
+        } else {
+            load_f32(data.cast_const(), (last_even * stride) as u64)
+        };
+        let value = load_f32(data.cast_const(), (i * stride) as u64) + DWT97_ALPHA * (left + right);
+        store_f32(data, (i * stride) as u64, value);
+        i += 2;
+    }
+
+    let mut i = 0_i32;
+    while i < n {
+        let left = if i > 0 {
+            load_f32(data.cast_const(), ((i - 1) * stride) as u64)
+        } else {
+            load_f32(data.cast_const(), stride as u64)
+        };
+        let right = if i + 1 < n {
+            load_f32(data.cast_const(), ((i + 1) * stride) as u64)
+        } else {
+            left
+        };
+        let value = load_f32(data.cast_const(), (i * stride) as u64) + DWT97_BETA * (left + right);
+        store_f32(data, (i * stride) as u64, value);
+        i += 2;
+    }
+
+    let mut i = 1_i32;
+    while i < n {
+        let left = load_f32(data.cast_const(), ((i - 1) * stride) as u64);
+        let right = if i + 1 < n {
+            load_f32(data.cast_const(), ((i + 1) * stride) as u64)
+        } else {
+            load_f32(data.cast_const(), (last_even * stride) as u64)
+        };
+        let value = load_f32(data.cast_const(), (i * stride) as u64) + DWT97_GAMMA * (left + right);
+        store_f32(data, (i * stride) as u64, value);
+        i += 2;
+    }
+
+    let mut i = 0_i32;
+    while i < n {
+        let left = if i > 0 {
+            load_f32(data.cast_const(), ((i - 1) * stride) as u64)
+        } else {
+            load_f32(data.cast_const(), stride as u64)
+        };
+        let right = if i + 1 < n {
+            load_f32(data.cast_const(), ((i + 1) * stride) as u64)
+        } else {
+            left
+        };
+        let value = load_f32(data.cast_const(), (i * stride) as u64) + DWT97_DELTA * (left + right);
+        store_f32(data, (i * stride) as u64, value);
+        i += 2;
+    }
+
+    let mut i = 0_i32;
+    while i < n {
+        let value = load_f32(data.cast_const(), (i * stride) as u64) * DWT97_INV_KAPPA;
+        store_f32(data, (i * stride) as u64, value);
+        i += 2;
+    }
+
+    let mut i = 1_i32;
+    while i < n {
+        let value = load_f32(data.cast_const(), (i * stride) as u64) * DWT97_KAPPA;
+        store_f32(data, (i * stride) as u64, value);
+        i += 2;
+    }
+}
+
 #[cuda_module]
 mod kernels {
     use super::*;
@@ -472,6 +668,89 @@ mod kernels {
                 (yh * high_width + i) as u64,
                 load_i32(row.cast_const(), (i * 2 + 1) as u64),
             );
+            i += 1;
+        }
+    }
+
+    #[kernel]
+    pub unsafe fn transcode_dwt97_idct(
+        blocks: *const f32,
+        block_cols: i32,
+        width: i32,
+        height: i32,
+        spatial: *mut f32,
+    ) {
+        let x = thread::index_2d_col() as i32;
+        let y = thread::index_2d_row() as i32;
+        if x >= width || y >= height {
+            return;
+        }
+        let block_idx = (y >> 3) * block_cols + (x >> 3);
+        let block = unsafe { blocks.add(block_idx as usize * 64) };
+        store_f32(
+            spatial,
+            (y * width + x) as u64,
+            idct8x8_sample(block, x & 7, y & 7),
+        );
+    }
+
+    #[kernel]
+    pub unsafe fn transcode_dwt97_row_lift(
+        spatial: *mut f32,
+        width: i32,
+        height: i32,
+        low_width: i32,
+        high_width: i32,
+        row_low: *mut f32,
+        row_high: *mut f32,
+    ) {
+        let y = thread::index_1d().get() as i32;
+        if y >= height {
+            return;
+        }
+        let row = offset_f32_mut(spatial, (y * width) as u64);
+        forward_lift_97(row, width, 1);
+        let mut i = 0_i32;
+        while i < low_width {
+            store_f32(
+                row_low,
+                (y * low_width + i) as u64,
+                load_f32(row.cast_const(), (i * 2) as u64),
+            );
+            i += 1;
+        }
+        let mut i = 0_i32;
+        while i < high_width {
+            store_f32(
+                row_high,
+                (y * high_width + i) as u64,
+                load_f32(row.cast_const(), (i * 2 + 1) as u64),
+            );
+            i += 1;
+        }
+    }
+
+    #[kernel]
+    pub unsafe fn transcode_dwt97_column_lift(
+        rows: *mut f32,
+        band_width: i32,
+        height: i32,
+        low_out: *mut f32,
+        high_out: *mut f32,
+    ) {
+        let x = thread::index_1d().get() as i32;
+        if x >= band_width {
+            return;
+        }
+        forward_lift_97(offset_f32_mut(rows, x as u64), height, band_width);
+        let mut i = 0_i32;
+        while i < height {
+            let value = load_f32(rows.cast_const(), (i * band_width + x) as u64);
+            if i & 1 == 0 {
+                store_f32(low_out, ((i / 2) * band_width + x) as u64, value);
+            } else {
+                store_f32(high_out, ((i / 2) * band_width + x) as u64, value);
+            }
             i += 1;
         }
     }
