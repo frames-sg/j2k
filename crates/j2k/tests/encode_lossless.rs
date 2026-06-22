@@ -617,17 +617,17 @@ fn accelerator_facade_require_device_errors_when_no_stage_dispatches() {
 fn accelerator_facade_require_device_errors_when_any_required_stage_is_missing() {
     #[derive(Default)]
     struct PacketizationDispatchAccelerator {
-        deinterleave_dispatches: usize,
-        quantize_subband_dispatches: usize,
-        packetization_dispatches: usize,
+        deinterleave: usize,
+        quantize_subband: usize,
+        packetization: usize,
     }
 
     impl J2kEncodeStageAccelerator for PacketizationDispatchAccelerator {
         fn dispatch_report(&self) -> J2kEncodeDispatchReport {
             J2kEncodeDispatchReport {
-                deinterleave: self.deinterleave_dispatches,
-                quantize_subband: self.quantize_subband_dispatches,
-                packetization: self.packetization_dispatches,
+                deinterleave: self.deinterleave,
+                quantize_subband: self.quantize_subband,
+                packetization: self.packetization,
                 ..J2kEncodeDispatchReport::default()
             }
         }
@@ -636,7 +636,7 @@ fn accelerator_facade_require_device_errors_when_any_required_stage_is_missing()
             &mut self,
             job: J2kDeinterleaveToF32Job<'_>,
         ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
-            self.deinterleave_dispatches = self.deinterleave_dispatches.saturating_add(1);
+            self.deinterleave = self.deinterleave.saturating_add(1);
             Ok(Some(deinterleave_to_f32_for_test(job)))
         }
 
@@ -644,7 +644,7 @@ fn accelerator_facade_require_device_errors_when_any_required_stage_is_missing()
             &mut self,
             job: J2kQuantizeSubbandJob<'_>,
         ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
-            self.quantize_subband_dispatches = self.quantize_subband_dispatches.saturating_add(1);
+            self.quantize_subband = self.quantize_subband.saturating_add(1);
             Ok(Some(
                 job.coefficients
                     .iter()
@@ -657,7 +657,7 @@ fn accelerator_facade_require_device_errors_when_any_required_stage_is_missing()
             &mut self,
             _job: J2kPacketizationEncodeJob<'_>,
         ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
-            self.packetization_dispatches = self.packetization_dispatches.saturating_add(1);
+            self.packetization = self.packetization.saturating_add(1);
             Ok(None)
         }
     }

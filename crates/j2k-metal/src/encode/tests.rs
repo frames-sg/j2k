@@ -21,8 +21,10 @@ use j2k::{
     J2kLossyEncodeOptions, J2kLossySamples, J2kMarkerSegment, J2kProgressionOrder,
 };
 #[cfg(target_os = "macos")]
+use j2k_core::CodecError;
+use j2k_core::DeviceSubmission;
+#[cfg(target_os = "macos")]
 use j2k_core::{BackendKind, PixelFormat};
-use j2k_core::{CodecError, DeviceSubmission};
 #[cfg(target_os = "macos")]
 use j2k_native::{
     deinterleave_reference, forward_dwt53_reference,
