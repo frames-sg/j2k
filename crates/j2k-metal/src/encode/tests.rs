@@ -1670,6 +1670,7 @@ fn auto_classic_host_output_stays_cpu_without_metal_dispatches() {
     assert_eq!(accelerator.forward_dwt53_dispatches(), 0);
     assert_eq!(accelerator.tier1_code_block_dispatches(), 0);
     assert_eq!(accelerator.packetization_dispatches(), 0);
+    assert_eq!(encoded.dispatch_report, J2kEncodeDispatchReport::default());
     assert!(accelerator.prefer_parallel_cpu_code_block_fallback());
 }
 
@@ -1827,6 +1828,7 @@ fn auto_htj2k_small_host_output_stays_cpu_below_resident_gate() {
     assert_eq!(accelerator.forward_dwt53_dispatches(), 0);
     assert_eq!(accelerator.ht_code_block_dispatches(), 0);
     assert_eq!(accelerator.packetization_dispatches(), 0);
+    assert_eq!(encoded.dispatch_report, J2kEncodeDispatchReport::default());
 }
 
 #[cfg(target_os = "macos")]

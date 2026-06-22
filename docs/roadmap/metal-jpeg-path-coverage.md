@@ -16,6 +16,9 @@ formats and packet shapes.
   `crates/j2k-jpeg-metal/docs/routing-benchmarks.md`.
 - Single-request `BackendRequest::Auto` remains conservative unless benchmark
   evidence shows Metal should be selected for a supported workload.
+- Metal routing is not expanded for coverage alone; CPU stays preferred for
+  small, irregular, or entropy-bound work unless benchmarks show a device path
+  wins after transfer overhead.
 - Viewport paths use hybrid strategies for selected contiguous or resident
   workloads, but unsupported shapes fall back or return structured errors.
 - Metal JPEG encode is baseline-only and accepts `Gray8` or `Rgb8` input
