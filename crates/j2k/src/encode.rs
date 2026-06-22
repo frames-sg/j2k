@@ -1224,7 +1224,7 @@ fn required_encode_stages(
     let high_throughput = options.block_coding_mode == J2kBlockCodingMode::HighThroughput;
 
     let mut bits = RequiredEncodeStages::PACKETIZATION;
-    if accelerated_backend == BackendKind::Cuda {
+    if matches!(accelerated_backend, BackendKind::Cuda | BackendKind::Metal) {
         bits |= RequiredEncodeStages::DEINTERLEAVE | RequiredEncodeStages::QUANTIZE_SUBBAND;
     }
     if samples.components >= 3 && options.reversible_transform == ReversibleTransform::Rct53 {
@@ -1256,10 +1256,10 @@ fn required_lossy_encode_stages(
         || options.marker_segments.contains(&J2kMarkerSegment::Sop)
         || options.marker_segments.contains(&J2kMarkerSegment::Eph);
     let mut bits = 0;
-    if !scalar_packetization_required {
+    if !scalar_packetization_required || accelerated_backend == BackendKind::Metal {
         bits |= RequiredEncodeStages::PACKETIZATION;
     }
-    if accelerated_backend == BackendKind::Cuda {
+    if matches!(accelerated_backend, BackendKind::Cuda | BackendKind::Metal) {
         bits |= RequiredEncodeStages::DEINTERLEAVE | RequiredEncodeStages::QUANTIZE_SUBBAND;
         if samples.components >= 3 {
             bits |= RequiredEncodeStages::FORWARD_ICT;

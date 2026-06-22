@@ -966,6 +966,41 @@ pub fn forward_dwt53_reference(
     }
 }
 
+/// Adapter scalar forward 9/7 DWT reference for Metal/CUDA stage parity.
+///
+/// Runs the native CPU irreversible 9/7 forward DWT on `samples` and returns
+/// the decomposed subbands packed into the public `J2kForwardDwt97Output`
+/// type. The returned layout matches what the encoder feeds to Tier-1.
+pub fn forward_dwt97_reference(
+    samples: &[f32],
+    width: u32,
+    height: u32,
+    num_levels: u8,
+) -> J2kForwardDwt97Output {
+    let decomp = j2c::fdwt::forward_dwt(samples, width, height, num_levels, false);
+    let levels = decomp
+        .levels
+        .into_iter()
+        .map(|lvl| J2kForwardDwt97Level {
+            hl: lvl.hl,
+            lh: lvl.lh,
+            hh: lvl.hh,
+            width: lvl.low_width + lvl.high_width,
+            height: lvl.low_height + lvl.high_height,
+            low_width: lvl.low_width,
+            low_height: lvl.low_height,
+            high_width: lvl.high_width,
+            high_height: lvl.high_height,
+        })
+        .collect();
+    J2kForwardDwt97Output {
+        ll: decomp.ll,
+        ll_width: decomp.ll_width,
+        ll_height: decomp.ll_height,
+        levels,
+    }
+}
+
 /// Adapter scalar forward RCT reference for CUDA stage parity.
 ///
 /// Applies the native CPU forward Reversible Color Transform to three
@@ -975,6 +1010,31 @@ pub fn forward_dwt53_reference(
 pub fn forward_rct_reference(mut planes: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
     j2c::forward_mct::forward_rct(&mut planes);
     planes
+}
+
+/// Adapter scalar forward ICT reference for Metal/CUDA stage parity.
+///
+/// Applies the native CPU forward Irreversible Color Transform to three
+/// component planes supplied as owned `Vec<f32>` arrays. The transform is
+/// applied in place and the mutated planes are returned.
+pub fn forward_ict_reference(mut planes: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
+    j2c::forward_mct::forward_ict(&mut planes);
+    planes
+}
+
+/// Adapter scalar sub-band quantization reference for backend stage parity.
+pub fn quantize_subband_reference(
+    coefficients: &[f32],
+    step_exponent: u16,
+    step_mantissa: u16,
+    range_bits: u8,
+    reversible: bool,
+) -> Vec<i32> {
+    let step = j2c::quantize::QuantStepSize {
+        exponent: step_exponent,
+        mantissa: step_mantissa,
+    };
+    j2c::quantize::quantize_subband(coefficients, &step, range_bits, reversible)
 }
 
 /// Adapter scalar reversible sub-band quantization reference for CUDA stage parity.
@@ -992,11 +1052,13 @@ pub fn quantize_reversible_reference(
     range_bits: u8,
     reversible: bool,
 ) -> Vec<i32> {
-    let step = j2c::quantize::QuantStepSize {
-        exponent: step_exponent,
-        mantissa: step_mantissa,
-    };
-    j2c::quantize::quantize_subband(coefficients, &step, range_bits, reversible)
+    quantize_subband_reference(
+        coefficients,
+        step_exponent,
+        step_mantissa,
+        range_bits,
+        reversible,
+    )
 }
 
 /// Adapter scalar pixel deinterleave/level-shift reference for CUDA stage parity.
@@ -4578,6 +4640,39 @@ mod tests {
     }
 
     #[test]
+    fn forward_ict_reference_matches_internal_path() {
+        let planes = vec![vec![100.0f32], vec![150.0f32], vec![200.0f32]];
+        let result = forward_ict_reference(planes.clone());
+
+        let mut internal = planes;
+        j2c::forward_mct::forward_ict(&mut internal);
+
+        assert_eq!(result, internal, "ICT output mismatch");
+    }
+
+    #[test]
+    fn forward_dwt97_reference_matches_internal_path() {
+        let samples = (0..64)
+            .map(|idx| {
+                f32::from(u8::try_from((idx * 19 + idx / 3) & 0xff).expect("masked sample fits u8"))
+                    - 128.0
+            })
+            .collect::<Vec<_>>();
+        let result = forward_dwt97_reference(&samples, 8, 8, 2);
+        let internal = j2c::fdwt::forward_dwt(&samples, 8, 8, 2, false);
+
+        assert_eq!(result.ll, internal.ll, "DWT 9/7 LL mismatch");
+        assert_eq!(result.ll_width, internal.ll_width);
+        assert_eq!(result.ll_height, internal.ll_height);
+        assert_eq!(result.levels.len(), internal.levels.len());
+        for (actual, expected) in result.levels.iter().zip(internal.levels.iter()) {
+            assert_eq!(actual.hl, expected.hl, "DWT 9/7 HL mismatch");
+            assert_eq!(actual.lh, expected.lh, "DWT 9/7 LH mismatch");
+            assert_eq!(actual.hh, expected.hh, "DWT 9/7 HH mismatch");
+        }
+    }
+
+    #[test]
     fn quantize_reversible_reference_matches_internal_path() {
         let coefficients = vec![3.7f32, -8.2, 0.5, -0.5, 10.0];
         let exponent = 8u16;
@@ -4595,6 +4690,22 @@ mod tests {
         // reversible: round to nearest
         assert_eq!(result[0], 4, "3.7 rounds to 4");
         assert_eq!(result[1], -8, "-8.2 rounds to -8");
+    }
+
+    #[test]
+    fn quantize_subband_reference_matches_irreversible_internal_path() {
+        let coefficients = vec![3.7f32, -8.2, 0.5, -0.5, 10.0];
+        let exponent = 8u16;
+        let mantissa = 256u16;
+        let range_bits = 8u8;
+
+        let result =
+            quantize_subband_reference(&coefficients, exponent, mantissa, range_bits, false);
+
+        let step = j2c::quantize::QuantStepSize { exponent, mantissa };
+        let internal = j2c::quantize::quantize_subband(&coefficients, &step, range_bits, false);
+
+        assert_eq!(result, internal, "irreversible quantize output mismatch");
     }
 
     #[test]
