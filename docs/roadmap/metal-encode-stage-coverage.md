@@ -78,6 +78,11 @@ Tier-1, HT code-block, packetization, and codestream assembly remain CPU for
 stage-by-stage Auto host-output routes unless a resident encode path explicitly
 supports the shape.
 
+That boundary is intentional. Do not widen Auto routing simply to increase the
+number of Metal stages. New automatic dispatch should land only when the stage
+is parity-covered, benchmark-backed, and does not lose the benefit through
+extra host/device transfer or dispatch overhead.
+
 ## Acceptance Criteria
 
 - Explicit Metal encode requests either dispatch supported stages or return a

@@ -14,6 +14,8 @@ Runtime backend selection defaults to `Auto`: CPU remains the portable baseline,
 and Metal or CUDA paths are selected only for supported shapes with validation
 and benchmark evidence. Explicit device requests are strict. Unsupported device
 shapes return errors instead of silently changing the requested backend.
+`Auto` is an optimization policy, not a promise to use a device whenever one is
+available.
 
 CUDA paths use J2K-owned CUDA kernels and `cuda-runtime` support for CUDA
 device memory surfaces where implemented. NVIDIA performance claims require
@@ -65,6 +67,13 @@ Runnable examples:
 CPU is the correctness baseline. `BackendRequest::Auto` may return CPU-backed
 outputs when a device path is unavailable, unsupported, or not benchmarked for
 the requested shape.
+
+GPU routing is intentionally selective. A Metal or CUDA path should be enabled
+automatically only when the shape is supported, parity-covered, large or
+regular enough to amortize dispatch and transfer costs, and backed by benchmark
+evidence. Small tiles, irregular packet shapes, entropy-heavy stages, and
+codestream assembly should remain CPU unless a measured resident path shows a
+net win.
 
 Metal adapters are macOS-only and experimental. Explicit Metal requests return
 resident Metal surfaces or encode-stage dispatches only for supported adapter
