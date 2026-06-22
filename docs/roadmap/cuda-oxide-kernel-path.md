@@ -2,10 +2,10 @@
 
 ## Goal
 
-Continue evaluating a Rust-authored CUDA kernel path using cuda-oxide for the
-J2K CUDA runtime. The existing CUDA C and checked-in PTX path remains the
-compatibility baseline until the Rust-authored path proves build stability,
-parity, and benchmark coverage across more than one kernel.
+Continue migrating practical J2K CUDA runtime kernels to Rust-authored
+cuda-oxide equivalents. The existing CUDA C and checked-in PTX path remains the
+default compatibility baseline; cuda-oxide routes are opt-in until build
+stability, parity, and benchmark coverage are broad enough to promote them.
 
 ## Current State
 
@@ -13,6 +13,10 @@ parity, and benchmark coverage across more than one kernel.
   falls back to checked-in PTX for selected kernels.
 - The `cuda-oxide-copy-u8` feature adds an opt-in Rust-authored `CopyU8` PTX
   path without changing the default CUDA C/PTX runtime.
+- The `cuda-oxide-j2k-encode`, `cuda-oxide-j2k-decode-store`,
+  `cuda-oxide-j2k-dequantize`, `cuda-oxide-j2k-idwt`, and
+  `cuda-oxide-transcode` features cover selected J2K CUDA paths where the GPU
+  work maps cleanly to cuda-oxide kernels.
 - Unsupported host builds emit placeholder PTX by default so all-features
   checks keep working. The documented require-build environment flag makes the
   build fail loudly when cuda-oxide generation is required but unavailable.
@@ -24,8 +28,13 @@ parity, and benchmark coverage across more than one kernel.
 
 ## Landed
 
-- Added the first feature-gated cuda-oxide build path in `j2k-cuda-runtime`.
+- Added feature-gated cuda-oxide build paths in `j2k-cuda-runtime`.
 - Ported `CopyU8` as the initial low-risk Rust-authored kernel.
+- Ported supported J2K encode-stage kernels: deinterleave, RCT/ICT, forward
+  DWT 5/3 and 9/7, quantization, HTJ2K encoded-byte compaction, and HTJ2K
+  packetization.
+- Ported supported J2K decode-store, HTJ2K dequantize, generic IDWT, and
+  JPEG-to-J2K transcode kernels where the current CUDA path is data-parallel.
 - Loaded generated PTX through the existing runtime module boundary.
 - Added parity and metadata tests that stay host-safe when cuda-oxide is not
   available.
@@ -33,15 +42,14 @@ parity, and benchmark coverage across more than one kernel.
 
 ## Remaining Work
 
-1. Measure build-time and runtime differences for the CopyU8 path on the CUDA
-   validation runner.
-2. Decide whether the next cuda-oxide port should target a simple
-   deinterleave-style kernel, JPEG decode support code, J2K encode stages,
-   HTJ2K decode/encode, or transcode kernels.
-3. Add the next kernel behind a separate feature gate if it has different build
-   or runtime constraints.
-4. Keep expanding parity tests against the existing CUDA C/PTX path and CPU
+1. Keep the remaining HTJ2K entropy encode/decode kernels on CUDA C unless a
+   measured cuda-oxide port shows a practical win.
+2. Add benchmarks for the landed cuda-oxide routes on self-hosted CUDA
+   validation hardware before changing default routing.
+3. Keep expanding parity tests against the existing CUDA C/PTX path and CPU
    oracle before considering broader migration.
+4. Treat JPEG decode kernels as a separate follow-up because the current goal
+   is J2K/HTJ2K coverage first.
 
 ## Acceptance Criteria For The Next PR
 
