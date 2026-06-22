@@ -55,13 +55,13 @@ Stability values:
 | `J2K_CUDA_OXIDE_ARCH` | Overrides the cuda-oxide build target when a `j2k-cuda-runtime/cuda-oxide-*` feature is enabled. | `sm_80` | Experimental |
 | `J2K_CUDA_USE_OXIDE_J2K_DECODE_STORE` | Routes supported J2K decode store and inverse-MCT CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-decode-store` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
 | `J2K_CUDA_USE_OXIDE_J2K_DEQUANTIZE` | Routes supported J2K HTJ2K dequantize CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-dequantize` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
-| `J2K_CUDA_USE_OXIDE_J2K_ENCODE` | Routes supported J2K encode-stage CUDA kernels and HTJ2K encoded-byte compaction through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-encode` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
+| `J2K_CUDA_USE_OXIDE_J2K_ENCODE` | Routes supported J2K encode-stage CUDA kernels, HTJ2K encoded-byte compaction, and HTJ2K packetization through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-encode` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
 | `J2K_CUDA_USE_OXIDE_J2K_IDWT` | Routes supported generic J2K inverse-DWT CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-idwt` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
 | `J2K_CUDA_USE_OXIDE_TRANSCODE` | Routes supported reversible 5/3 and irreversible 9/7 transcode CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-transcode` is enabled and PTX was generated. This includes staged, batched, code-block quantize, and fused i16 9/7 paths. | Built-in CUDA C PTX | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_COPY_U8` | Requires cuda-oxide CopyU8 PTX generation when `j2k-cuda-runtime/cuda-oxide-copy-u8` is enabled. | Disabled | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_J2K_DECODE_STORE` | Requires cuda-oxide J2K decode store/inverse-MCT PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-decode-store` is enabled. | Disabled | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_J2K_DEQUANTIZE` | Requires cuda-oxide J2K HTJ2K dequantize PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-dequantize` is enabled. | Disabled | Experimental |
-| `J2K_REQUIRE_CUDA_OXIDE_J2K_ENCODE` | Requires cuda-oxide J2K encode-stage and HTJ2K compaction PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-encode` is enabled. | Disabled | Experimental |
+| `J2K_REQUIRE_CUDA_OXIDE_J2K_ENCODE` | Requires cuda-oxide J2K encode-stage, HTJ2K compaction, and HTJ2K packetization PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-encode` is enabled. | Disabled | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_J2K_IDWT` | Requires cuda-oxide J2K generic inverse-DWT PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-idwt` is enabled. | Disabled | Experimental |
 | `J2K_REQUIRE_CUDA_OXIDE_TRANSCODE` | Requires cuda-oxide reversible 5/3 transcode PTX generation when `j2k-cuda-runtime/cuda-oxide-transcode` is enabled. | Disabled | Experimental |
 
