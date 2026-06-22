@@ -2001,7 +2001,7 @@ fn is_internal_j2k_token(token: &str) -> bool {
         || token.starts_with("J2K_GPU_ENCODE_")
         || token.starts_with("J2K_HOST_")
         || token.starts_with("J2K_HT_")
-        || token.starts_with("J2K_IDWT_")
+        || token.starts_with("J2K_IDWT")
         || token.starts_with("J2K_KERNELS_")
         || token.starts_with("J2K_MCT_")
         || token.starts_with("J2K_NOT_")

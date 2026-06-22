@@ -127,6 +127,23 @@ impl CudaKernel {
         )
     }
 
+    #[cfg_attr(not(feature = "cuda-oxide-j2k-idwt"), allow(dead_code))]
+    pub(crate) fn is_j2k_idwt_stage(self) -> bool {
+        matches!(
+            self,
+            Self::J2kInverseDwtSingle
+                | Self::J2kIdwtInterleave
+                | Self::J2kIdwtInterleaveHorizontalMulti
+                | Self::J2kIdwtHorizontal
+                | Self::J2kIdwtHorizontal53
+                | Self::J2kIdwtHorizontal97
+                | Self::J2kIdwtVertical
+                | Self::J2kIdwtVerticalMulti
+                | Self::J2kIdwtVertical53
+                | Self::J2kIdwtVertical97
+        )
+    }
+
     pub(crate) fn ptx(self) -> &'static [u8] {
         match self {
             Self::CopyU8 => COPY_U8_PTX,
@@ -323,6 +340,9 @@ const CUDA_OXIDE_J2K_DECODE_STORE_PTX: &[u8] =
 #[cfg(feature = "cuda-oxide-j2k-dequantize")]
 const CUDA_OXIDE_J2K_DEQUANTIZE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_j2k_dequantize.ptx"));
+#[cfg(feature = "cuda-oxide-j2k-idwt")]
+const CUDA_OXIDE_J2K_IDWT_PTX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_j2k_idwt.ptx"));
 const HTJ2K_DECODE_CODEBLOCK_THREADS: usize = 32;
 const HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA: c_uint = 32;
 const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
@@ -498,6 +518,11 @@ pub(crate) fn cuda_oxide_j2k_decode_store_ptx() -> &'static [u8] {
 #[cfg(feature = "cuda-oxide-j2k-dequantize")]
 pub(crate) fn cuda_oxide_j2k_dequantize_ptx() -> &'static [u8] {
     CUDA_OXIDE_J2K_DEQUANTIZE_PTX
+}
+
+#[cfg(feature = "cuda-oxide-j2k-idwt")]
+pub(crate) fn cuda_oxide_j2k_idwt_ptx() -> &'static [u8] {
+    CUDA_OXIDE_J2K_IDWT_PTX
 }
 
 const COPY_U8_PTX: &[u8] = concat!(
@@ -794,6 +819,36 @@ mod tests {
             assert!(
                 source.contains(&format!(".visible .entry {entrypoint}(")),
                 "missing cuda-oxide J2K dequantize entrypoint {entrypoint}"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda-oxide-j2k-idwt", j2k_cuda_oxide_j2k_idwt_built))]
+    #[test]
+    fn cuda_oxide_j2k_idwt_kernel_metadata_matches_generated_ptx() {
+        let ptx = cuda_oxide_j2k_idwt_ptx();
+        assert_eq!(ptx.last(), Some(&0));
+        let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
+        let kernels = [
+            CudaKernel::J2kInverseDwtSingle,
+            CudaKernel::J2kIdwtInterleave,
+            CudaKernel::J2kIdwtInterleaveHorizontalMulti,
+            CudaKernel::J2kIdwtHorizontal,
+            CudaKernel::J2kIdwtHorizontal53,
+            CudaKernel::J2kIdwtHorizontal97,
+            CudaKernel::J2kIdwtVertical,
+            CudaKernel::J2kIdwtVerticalMulti,
+            CudaKernel::J2kIdwtVertical53,
+            CudaKernel::J2kIdwtVertical97,
+        ];
+        for kernel in kernels {
+            assert!(kernel.is_j2k_idwt_stage());
+            let entrypoint =
+                std::str::from_utf8(&kernel.entrypoint()[..kernel.entrypoint().len() - 1])
+                    .expect("entrypoint utf8");
+            assert!(
+                source.contains(&format!(".visible .entry {entrypoint}(")),
+                "missing cuda-oxide J2K IDWT entrypoint {entrypoint}"
             );
         }
     }

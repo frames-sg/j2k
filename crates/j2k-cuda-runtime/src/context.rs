@@ -6,11 +6,14 @@ use crate::build_flags::ensure_cuda_oxide_j2k_decode_store_ptx_built;
 use crate::build_flags::ensure_cuda_oxide_j2k_dequantize_ptx_built;
 #[cfg(feature = "cuda-oxide-j2k-encode")]
 use crate::build_flags::ensure_cuda_oxide_j2k_encode_ptx_built;
+#[cfg(feature = "cuda-oxide-j2k-idwt")]
+use crate::build_flags::ensure_cuda_oxide_j2k_idwt_ptx_built;
 #[cfg(any(
     feature = "cuda-oxide-copy-u8",
     feature = "cuda-oxide-j2k-encode",
     feature = "cuda-oxide-j2k-decode-store",
-    feature = "cuda-oxide-j2k-dequantize"
+    feature = "cuda-oxide-j2k-dequantize",
+    feature = "cuda-oxide-j2k-idwt"
 ))]
 use crate::kernels;
 use crate::{
@@ -144,6 +147,20 @@ impl ContextInner {
         self.kernel_function_from_key(CompiledKernelKey::CudaOxideJ2kDequantize(kernel))
     }
 
+    #[cfg(feature = "cuda-oxide-j2k-idwt")]
+    pub(crate) fn cuda_oxide_j2k_idwt_kernel_function(
+        &self,
+        kernel: CudaKernel,
+    ) -> Result<CuFunction, CudaError> {
+        ensure_cuda_oxide_j2k_idwt_ptx_built()?;
+        if !kernel.is_j2k_idwt_stage() {
+            return Err(CudaError::InvalidArgument {
+                message: format!("kernel {kernel:?} is not a J2K IDWT cuda-oxide stage"),
+            });
+        }
+        self.kernel_function_from_key(CompiledKernelKey::CudaOxideJ2kIdwt(kernel))
+    }
+
     fn kernel_function_from_key(&self, key: CompiledKernelKey) -> Result<CuFunction, CudaError> {
         match key {
             CompiledKernelKey::Builtin(kernel) => ensure_kernel_ptx_built(kernel)?,
@@ -155,6 +172,8 @@ impl ContextInner {
             CompiledKernelKey::CudaOxideJ2kDecodeStore(_) => {}
             #[cfg(feature = "cuda-oxide-j2k-dequantize")]
             CompiledKernelKey::CudaOxideJ2kDequantize(_) => {}
+            #[cfg(feature = "cuda-oxide-j2k-idwt")]
+            CompiledKernelKey::CudaOxideJ2kIdwt(_) => {}
         }
         self.set_current()?;
         let mut modules = self
@@ -755,6 +774,8 @@ pub(crate) enum CompiledKernelKey {
     CudaOxideJ2kDecodeStore(CudaKernel),
     #[cfg(feature = "cuda-oxide-j2k-dequantize")]
     CudaOxideJ2kDequantize(CudaKernel),
+    #[cfg(feature = "cuda-oxide-j2k-idwt")]
+    CudaOxideJ2kIdwt(CudaKernel),
 }
 
 impl CompiledKernelKey {
@@ -769,6 +790,8 @@ impl CompiledKernelKey {
             Self::CudaOxideJ2kDecodeStore(kernel) => kernel,
             #[cfg(feature = "cuda-oxide-j2k-dequantize")]
             Self::CudaOxideJ2kDequantize(kernel) => kernel,
+            #[cfg(feature = "cuda-oxide-j2k-idwt")]
+            Self::CudaOxideJ2kIdwt(kernel) => kernel,
         }
     }
 
@@ -783,6 +806,8 @@ impl CompiledKernelKey {
             Self::CudaOxideJ2kDecodeStore(_) => kernels::cuda_oxide_j2k_decode_store_ptx(),
             #[cfg(feature = "cuda-oxide-j2k-dequantize")]
             Self::CudaOxideJ2kDequantize(_) => kernels::cuda_oxide_j2k_dequantize_ptx(),
+            #[cfg(feature = "cuda-oxide-j2k-idwt")]
+            Self::CudaOxideJ2kIdwt(_) => kernels::cuda_oxide_j2k_idwt_ptx(),
         }
     }
 

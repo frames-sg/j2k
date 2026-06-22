@@ -1,0 +1,15 @@
+[package]
+name = "j2k_cuda_oxide_j2k_idwt_host"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata.cuda-oxide.interop]
+kind = "j2k-idwt"
+
+[[package.metadata.cuda-oxide.device-crates]]
+manifest-path = "simt/Cargo.toml"
+ptx-dir = "ptx"
+artifact-name = "j2k_cuda_oxide_j2k_idwt"
+
+[workspace]
+resolver = "2"
