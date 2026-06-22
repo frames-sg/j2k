@@ -123,9 +123,12 @@ pub(crate) fn ensure_kernel_ptx_built(kernel: CudaKernel) -> Result<(), CudaErro
         | CudaKernel::TranscodeDwt97RowLift
         | CudaKernel::TranscodeDwt97ColumnLift
         | CudaKernel::TranscodeDwt97IdctBatch
+        | CudaKernel::TranscodeDwt97IdctI16Batch
         | CudaKernel::TranscodeDwt97RowLiftBatch
+        | CudaKernel::TranscodeDwt97RowLiftBatchCoop
         | CudaKernel::TranscodeDwt97ColumnLiftBatch
         | CudaKernel::TranscodeDwt97QuantizeCodeblocks
+        | CudaKernel::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch
             if !TRANSCODE_PTX_BUILT_FROM_CUDA =>
         {
             Some("transcode CUDA PTX was not built from transcode_kernels.cu")
@@ -240,5 +243,15 @@ pub(crate) const CUDA_OXIDE_TRANSCODE_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_tran
 /// unavailable (e.g. a non-nvcc build) instead of attempting a device launch.
 #[must_use]
 pub fn transcode_kernels_built() -> bool {
-    TRANSCODE_PTX_BUILT_FROM_CUDA
+    if TRANSCODE_PTX_BUILT_FROM_CUDA {
+        return true;
+    }
+    #[cfg(feature = "cuda-oxide-transcode")]
+    {
+        cuda_oxide_transcode_enabled() && CUDA_OXIDE_TRANSCODE_PTX_BUILT
+    }
+    #[cfg(not(feature = "cuda-oxide-transcode"))]
+    {
+        false
+    }
 }

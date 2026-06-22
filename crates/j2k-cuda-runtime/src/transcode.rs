@@ -76,12 +76,7 @@ impl CudaContext {
         width: usize,
         height: usize,
     ) -> Result<CudaTranscodeReversible53Bands, CudaError> {
-        if !TRANSCODE_PTX_BUILT_FROM_CUDA {
-            return Err(CudaError::InvalidArgument {
-                message: "CUDA transcode kernels were not built (nvcc unavailable at build time)"
-                    .to_string(),
-            });
-        }
+        ensure_transcode_runtime_ptx_available()?;
         let grid = validate_dct_block_grid(
             block_cols,
             block_rows,
@@ -380,6 +375,33 @@ pub(crate) enum Dwt97BatchInput<'a> {
     I16(&'a [i16]),
 }
 
+fn transcode_runtime_ptx_available() -> bool {
+    if TRANSCODE_PTX_BUILT_FROM_CUDA {
+        return true;
+    }
+    #[cfg(feature = "cuda-oxide-transcode")]
+    {
+        crate::build_flags::cuda_oxide_transcode_enabled()
+            && crate::build_flags::CUDA_OXIDE_TRANSCODE_PTX_BUILT
+    }
+    #[cfg(not(feature = "cuda-oxide-transcode"))]
+    {
+        false
+    }
+}
+
+fn ensure_transcode_runtime_ptx_available() -> Result<(), CudaError> {
+    if transcode_runtime_ptx_available() {
+        Ok(())
+    } else {
+        Err(CudaError::InvalidArgument {
+            message:
+                "CUDA transcode kernels were not built and cuda-oxide transcode PTX is not enabled/built"
+                    .to_string(),
+        })
+    }
+}
+
 impl Dwt97BatchInput<'_> {
     fn len(self) -> usize {
         match self {
@@ -485,12 +507,7 @@ impl CudaContext {
         width: usize,
         height: usize,
     ) -> Result<CudaTranscodeDwt97Bands, CudaError> {
-        if !TRANSCODE_PTX_BUILT_FROM_CUDA {
-            return Err(CudaError::InvalidArgument {
-                message: "CUDA transcode kernels were not built (nvcc unavailable at build time)"
-                    .to_string(),
-            });
-        }
+        ensure_transcode_runtime_ptx_available()?;
         let grid = validate_dct_block_grid(
             block_cols,
             block_rows,
@@ -934,12 +951,7 @@ impl CudaContext {
         params: CudaHtj2k97QuantizeParams,
         pool: &CudaBufferPool,
     ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
-        if !TRANSCODE_PTX_BUILT_FROM_CUDA {
-            return Err(CudaError::InvalidArgument {
-                message: "CUDA transcode kernels were not built (nvcc unavailable at build time)"
-                    .to_string(),
-            });
-        }
+        ensure_transcode_runtime_ptx_available()?;
         let grid = validate_dct_block_grid(
             block_cols,
             block_rows,
@@ -1242,12 +1254,7 @@ impl CudaContext {
         height: usize,
         pool: &CudaBufferPool,
     ) -> Result<(Dwt97BatchDeviceBands, u128, u128, u128), CudaError> {
-        if !TRANSCODE_PTX_BUILT_FROM_CUDA {
-            return Err(CudaError::InvalidArgument {
-                message: "CUDA transcode kernels were not built (nvcc unavailable at build time)"
-                    .to_string(),
-            });
-        }
+        ensure_transcode_runtime_ptx_available()?;
         let grid = validate_dct_block_grid(
             block_cols,
             block_rows,
@@ -1374,7 +1381,7 @@ impl CudaContext {
         blocks: &CudaDeviceBuffer,
         spatial: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(kernel)?;
+        let function = self.transcode_kernel_function(kernel)?;
         let mut blocks_ptr = blocks.device_ptr();
         let mut block_cols = dims.block_cols;
         let mut width = dims.width;
@@ -1412,9 +1419,7 @@ impl CudaContext {
             );
         }
 
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::TranscodeDwt97RowLiftBatch)?;
+        let function = self.transcode_kernel_function(CudaKernel::TranscodeDwt97RowLiftBatch)?;
         let mut spatial_ptr = spatial.device_ptr();
         let mut width = dims.width;
         let mut height = dims.height;
@@ -1446,9 +1451,8 @@ impl CudaContext {
         row_low: &CudaDeviceBuffer,
         row_high: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::TranscodeDwt97RowLiftBatchCoop)?;
+        let function =
+            self.transcode_kernel_function(CudaKernel::TranscodeDwt97RowLiftBatchCoop)?;
         let mut spatial_ptr = spatial.device_ptr();
         let mut width = dims.width;
         let mut height = dims.height;
@@ -1498,9 +1502,7 @@ impl CudaContext {
         if columns == 0 {
             return Ok(());
         }
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::TranscodeDwt97ColumnLiftBatch)?;
+        let function = self.transcode_kernel_function(CudaKernel::TranscodeDwt97ColumnLiftBatch)?;
         let mut rows_ptr = rows_buffer.device_ptr();
         let mut band = band_width;
         let mut rows = height;
@@ -1537,9 +1539,9 @@ impl CudaContext {
         if columns == 0 {
             return Ok(());
         }
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch)?;
+        let function = self.transcode_kernel_function(
+            CudaKernel::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch,
+        )?;
         let mut rows_ptr = rows_buffer.device_ptr();
         let mut band = band_width;
         let mut rows = height;
@@ -1635,9 +1637,8 @@ impl CudaContext {
         if width <= 0 || height <= 0 {
             return Ok(());
         }
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::TranscodeDwt97QuantizeCodeblocks)?;
+        let function =
+            self.transcode_kernel_function(CudaKernel::TranscodeDwt97QuantizeCodeblocks)?;
         let mut band_ptr = band.device_ptr();
         let mut output_ptr = output.device_ptr();
         let mut width = width;
