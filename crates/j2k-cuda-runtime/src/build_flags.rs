@@ -27,6 +27,9 @@ pub(crate) const CUDA_OXIDE_J2K_DEQUANTIZE_ENV_VAR: &str = "J2K_CUDA_USE_OXIDE_J
 #[cfg(feature = "cuda-oxide-j2k-idwt")]
 pub(crate) const CUDA_OXIDE_J2K_IDWT_ENV_VAR: &str = "J2K_CUDA_USE_OXIDE_J2K_IDWT";
 
+#[cfg(feature = "cuda-oxide-transcode")]
+pub(crate) const CUDA_OXIDE_TRANSCODE_ENV_VAR: &str = "J2K_CUDA_USE_OXIDE_TRANSCODE";
+
 pub(crate) const DWT97_FUSED_COLUMN_QUANTIZE_DISABLE_ENV_VAR: &str =
     "J2K_CUDA_DISABLE_DWT97_FUSED_COLUMN_QUANTIZE";
 
@@ -45,6 +48,9 @@ pub(crate) static CUDA_OXIDE_J2K_DEQUANTIZE_ENABLED: OnceLock<bool> = OnceLock::
 
 #[cfg(feature = "cuda-oxide-j2k-idwt")]
 pub(crate) static CUDA_OXIDE_J2K_IDWT_ENABLED: OnceLock<bool> = OnceLock::new();
+
+#[cfg(feature = "cuda-oxide-transcode")]
+pub(crate) static CUDA_OXIDE_TRANSCODE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 pub(crate) fn cuda_stage_timings_disabled() -> bool {
     *CUDA_STAGE_TIMINGS_DISABLED
@@ -78,6 +84,12 @@ pub(crate) fn cuda_oxide_j2k_dequantize_enabled() -> bool {
 pub(crate) fn cuda_oxide_j2k_idwt_enabled() -> bool {
     *CUDA_OXIDE_J2K_IDWT_ENABLED
         .get_or_init(|| std::env::var_os(CUDA_OXIDE_J2K_IDWT_ENV_VAR).is_some())
+}
+
+#[cfg(feature = "cuda-oxide-transcode")]
+pub(crate) fn cuda_oxide_transcode_enabled() -> bool {
+    *CUDA_OXIDE_TRANSCODE_ENABLED
+        .get_or_init(|| std::env::var_os(CUDA_OXIDE_TRANSCODE_ENV_VAR).is_some())
 }
 
 pub(crate) fn ensure_kernel_ptx_built(kernel: CudaKernel) -> Result<(), CudaError> {
@@ -183,6 +195,17 @@ pub(crate) fn ensure_cuda_oxide_j2k_idwt_ptx_built() -> Result<(), CudaError> {
     }
 }
 
+#[cfg(feature = "cuda-oxide-transcode")]
+pub(crate) fn ensure_cuda_oxide_transcode_ptx_built() -> Result<(), CudaError> {
+    if CUDA_OXIDE_TRANSCODE_PTX_BUILT {
+        Ok(())
+    } else {
+        Err(CudaError::InvalidArgument {
+            message: "cuda-oxide transcode PTX was not built; set J2K_REQUIRE_CUDA_OXIDE_TRANSCODE on a Linux cuda-oxide host to require it".to_string(),
+        })
+    }
+}
+
 pub(crate) const J2K_ENCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(j2k_cuda_j2k_encode_ptx_built);
 
 pub(crate) const HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(j2k_cuda_htj2k_encode_ptx_built);
@@ -208,6 +231,9 @@ pub(crate) const CUDA_OXIDE_J2K_DEQUANTIZE_PTX_BUILT: bool =
 
 #[cfg(feature = "cuda-oxide-j2k-idwt")]
 pub(crate) const CUDA_OXIDE_J2K_IDWT_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_j2k_idwt_built);
+
+#[cfg(feature = "cuda-oxide-transcode")]
+pub(crate) const CUDA_OXIDE_TRANSCODE_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_transcode_built);
 
 /// Whether the coefficient-domain transcode kernels were compiled (runner).
 /// Backends check this to fall back to the scalar oracle when the kernels are
