@@ -161,6 +161,19 @@ impl CudaKernel {
         )
     }
 
+    #[cfg_attr(not(feature = "cuda-oxide-transcode"), allow(dead_code))]
+    pub(crate) fn is_transcode_dwt97_single_stage(self) -> bool {
+        matches!(
+            self,
+            Self::TranscodeDwt97Idct | Self::TranscodeDwt97RowLift | Self::TranscodeDwt97ColumnLift
+        )
+    }
+
+    #[cfg_attr(not(feature = "cuda-oxide-transcode"), allow(dead_code))]
+    pub(crate) fn is_cuda_oxide_transcode_stage(self) -> bool {
+        self.is_transcode_reversible53_stage() || self.is_transcode_dwt97_single_stage()
+    }
+
     pub(crate) fn ptx(self) -> &'static [u8] {
         match self {
             Self::CopyU8 => COPY_U8_PTX,
@@ -895,9 +908,12 @@ mod tests {
             CudaKernel::TranscodeReversible53VerticalHigh,
             CudaKernel::TranscodeReversible53HorizontalLow,
             CudaKernel::TranscodeReversible53HorizontalHigh,
+            CudaKernel::TranscodeDwt97Idct,
+            CudaKernel::TranscodeDwt97RowLift,
+            CudaKernel::TranscodeDwt97ColumnLift,
         ];
         for kernel in kernels {
-            assert!(kernel.is_transcode_reversible53_stage());
+            assert!(kernel.is_cuda_oxide_transcode_stage());
             let entrypoint =
                 std::str::from_utf8(&kernel.entrypoint()[..kernel.entrypoint().len() - 1])
                     .expect("entrypoint utf8");
