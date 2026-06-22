@@ -62,6 +62,63 @@ fn validate_dct_block_grid_checks_shape_and_coefficient_count() {
     ));
 }
 
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+#[test]
+fn cuda_oxide_reversible53_transcode_matches_scalar_fixture_when_required() {
+    if !cuda_runtime_required()
+        || std::env::var_os("J2K_CUDA_USE_OXIDE_TRANSCODE").is_none()
+        || !super::transcode_kernels_built()
+    {
+        return;
+    }
+
+    let context = CudaContext::system_default().expect("CUDA context");
+    let mut blocks = [0i16; 64];
+    for (index, value) in [
+        (0, 80),
+        (1, -24),
+        (2, 13),
+        (3, 5),
+        (5, -3),
+        (8, 31),
+        (9, -11),
+        (10, 7),
+        (16, -9),
+        (17, 4),
+        (18, 3),
+        (27, -5),
+        (36, 6),
+        (45, -4),
+        (54, 2),
+        (63, -1),
+    ] {
+        blocks[index] = value;
+    }
+
+    let bands = context
+        .j2k_transcode_reversible_dwt53(&blocks, 1, 1, 8, 8)
+        .expect("cuda-oxide reversible 5/3 transcode");
+
+    assert_eq!((bands.low_width, bands.low_height), (4, 4));
+    assert_eq!((bands.high_width, bands.high_height), (4, 4));
+    assert_eq!(
+        bands.ll.as_slice(),
+        &[14, 8, 12, 22, 13, 7, 14, 22, 8, 7, 12, 15, 6, 3, 5, 7]
+    );
+    assert_eq!(
+        bands.hl.as_slice(),
+        &[2, -1, -1, 5, 1, -4, 2, 0, -1, 1, 0, 3, 3, -3, 2, 0]
+    );
+    assert_eq!(
+        bands.lh.as_slice(),
+        &[2, 1, -1, 2, 2, -1, 3, 0, -1, 3, -1, 1, 1, -4, -1, -2]
+    );
+    assert_eq!(
+        bands.hh.as_slice(),
+        &[1, 2, -1, -4, 1, -1, 0, 1, -1, -1, 1, -2, -5, 2, -1, -1]
+    );
+}
+
 #[test]
 fn jpeg_chunked_entropy_report_has_one_less_overflow_than_subsequence_count() {
     let config = CudaJpegChunkedEntropyConfig {
