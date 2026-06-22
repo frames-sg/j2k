@@ -8,6 +8,7 @@ use crate::{
     execution::{cuda_kernel_param, CudaExecutionStats, CudaLaunchMode},
     kernels::{
         htj2k_codeblock_launch_geometry, htj2k_codeblock_sample_launch_geometry, CudaKernel,
+        CudaLaunchGeometry,
     },
     memory::{pooled_device_buffer, CudaBufferPool, CudaDeviceBuffer, CudaPooledDeviceBuffer},
 };
@@ -1162,7 +1163,7 @@ impl CudaContext {
         let geometry = htj2k_codeblock_sample_launch_geometry(job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
 
-        self.launch_named_kernel(
+        self.launch_j2k_dequantize_kernel(
             CudaKernel::J2kDequantizeHtj2kCodeblocks,
             geometry,
             &mut params,
@@ -1181,7 +1182,7 @@ impl CudaContext {
         let geometry = htj2k_codeblock_sample_launch_geometry(job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
 
-        self.launch_named_kernel(
+        self.launch_j2k_dequantize_kernel(
             CudaKernel::J2kDequantizeHtj2kCodeblocksMulti,
             geometry,
             &mut params,
@@ -1200,12 +1201,39 @@ impl CudaContext {
         let geometry = htj2k_codeblock_sample_launch_geometry(job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
 
-        self.launch_named_kernel(
+        self.launch_j2k_dequantize_kernel(
             CudaKernel::J2kDequantizeHtj2kCleanupJobsMulti,
             geometry,
             &mut params,
             mode,
         )
+    }
+
+    fn launch_j2k_dequantize_kernel<const N: usize>(
+        &self,
+        kernel: CudaKernel,
+        geometry: CudaLaunchGeometry,
+        params: &mut [*mut std::ffi::c_void; N],
+        mode: CudaLaunchMode,
+    ) -> Result<(), CudaError> {
+        let function = self.j2k_dequantize_kernel_function(kernel)?;
+        match mode {
+            CudaLaunchMode::Sync => self.launch_kernel(function, geometry, params),
+            CudaLaunchMode::Async => self.launch_kernel_async(function, geometry, params),
+        }
+    }
+
+    fn j2k_dequantize_kernel_function(
+        &self,
+        kernel: CudaKernel,
+    ) -> Result<crate::driver::CuFunction, CudaError> {
+        #[cfg(feature = "cuda-oxide-j2k-dequantize")]
+        {
+            if crate::build_flags::cuda_oxide_j2k_dequantize_enabled() {
+                return self.inner.cuda_oxide_j2k_dequantize_kernel_function(kernel);
+            }
+        }
+        self.inner.kernel_function(kernel)
     }
 }
 
