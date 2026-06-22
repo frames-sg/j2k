@@ -5,7 +5,8 @@ use super::MetalEncodeStageAccelerator;
 use crate::compute;
 #[cfg(target_os = "macos")]
 use j2k::adapter::encode_stage::{
-    J2kDeinterleaveToF32Job, J2kForwardDwt53Job, J2kForwardIctJob, NativeEncodeStageAdapter,
+    J2kDeinterleaveToF32Job, J2kForwardDwt53Job, J2kForwardIctJob, J2kQuantizeSubbandJob,
+    NativeEncodeStageAdapter,
 };
 use j2k::adapter::encode_stage::{
     J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardRctJob,
@@ -24,7 +25,8 @@ use j2k_core::DeviceSubmission;
 use j2k_core::{BackendKind, PixelFormat};
 #[cfg(target_os = "macos")]
 use j2k_native::{
-    deinterleave_reference, forward_dwt53_reference, EncodeOptions, J2kCodeBlockStyle,
+    deinterleave_reference, forward_dwt53_reference,
+    quantize_reversible_reference as quantize_reference, EncodeOptions, J2kCodeBlockStyle,
 };
 use j2k_native::{DecodeSettings, Image};
 #[cfg(target_os = "macos")]
@@ -276,6 +278,142 @@ fn metal_encode_deinterleave_compute_rejects_invalid_shape_structured() {
         err,
         crate::Error::UnsupportedMetalRequest {
             reason: "J2K Metal encode deinterleave supports 1-4 component samples"
+        }
+    ));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_quantize_subband_kernel_matches_cpu_reference() {
+    #[derive(Clone, Copy)]
+    struct Case {
+        name: &'static str,
+        step_exponent: u16,
+        step_mantissa: u16,
+        range_bits: u8,
+        reversible: bool,
+    }
+
+    let coefficients = (0_u16..257)
+        .map(|idx| {
+            let centered = f32::from(idx) - 128.0;
+            centered * 0.375 + f32::from(idx % 7) * 0.125 - if idx % 5 == 0 { 0.5 } else { 0.0 }
+        })
+        .collect::<Vec<_>>();
+
+    for case in [
+        Case {
+            name: "reversible",
+            step_exponent: 12,
+            step_mantissa: 0,
+            range_bits: 8,
+            reversible: true,
+        },
+        Case {
+            name: "irreversible_delta_1",
+            step_exponent: 8,
+            step_mantissa: 0,
+            range_bits: 8,
+            reversible: false,
+        },
+        Case {
+            name: "irreversible_fractional_delta",
+            step_exponent: 9,
+            step_mantissa: 512,
+            range_bits: 8,
+            reversible: false,
+        },
+        Case {
+            name: "irreversible_large_delta",
+            step_exponent: 6,
+            step_mantissa: 1024,
+            range_bits: 10,
+            reversible: false,
+        },
+    ] {
+        let expected = quantize_reference(
+            &coefficients,
+            case.step_exponent,
+            case.step_mantissa,
+            case.range_bits,
+            case.reversible,
+        );
+        let actual = compute::encode_quantize_subband(J2kQuantizeSubbandJob {
+            coefficients: &coefficients,
+            step_exponent: case.step_exponent,
+            step_mantissa: case.step_mantissa,
+            range_bits: case.range_bits,
+            reversible: case.reversible,
+        })
+        .unwrap_or_else(|err| panic!("Metal quantize_subband failed for {}: {err}", case.name));
+
+        assert_eq!(actual, expected, "{}", case.name);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_quantize_subband_stage_reports_dispatch() {
+    let coefficients = [-4.5, -1.25, -0.5, 0.0, 0.5, 1.25, 4.5];
+    let expected = quantize_reference(&coefficients, 8, 0, 8, true);
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let actual = accelerator
+        .encode_quantize_subband(J2kQuantizeSubbandJob {
+            coefficients: &coefficients,
+            step_exponent: 8,
+            step_mantissa: 0,
+            range_bits: 8,
+            reversible: true,
+        })
+        .expect("Metal quantize_subband stage should not error")
+        .expect("Metal quantize_subband should dispatch");
+
+    assert_eq!(actual, expected);
+    assert_eq!(accelerator.quantize_subband_attempts(), 1);
+    assert_eq!(accelerator.quantize_subband_dispatches(), 1);
+    assert_eq!(accelerator.dispatch_report().quantize_subband, 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_quantize_subband_invalid_shape_errors_without_dispatch() {
+    let coefficients = [1.0, -2.0, 3.0];
+    let mut accelerator = MetalEncodeStageAccelerator::default();
+
+    let err = accelerator
+        .encode_quantize_subband(J2kQuantizeSubbandJob {
+            coefficients: &coefficients,
+            step_exponent: 8,
+            step_mantissa: 2048,
+            range_bits: 8,
+            reversible: false,
+        })
+        .unwrap_err();
+
+    assert_eq!(err, "Metal quantize_subband encode shape is unsupported");
+    assert_eq!(accelerator.quantize_subband_attempts(), 1);
+    assert_eq!(accelerator.quantize_subband_dispatches(), 0);
+    assert_eq!(accelerator.dispatch_report().quantize_subband, 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_quantize_subband_compute_rejects_invalid_shape_structured() {
+    let coefficients = [1.0, -2.0, 3.0];
+    let err = compute::encode_quantize_subband(J2kQuantizeSubbandJob {
+        coefficients: &coefficients,
+        step_exponent: 8,
+        step_mantissa: 2048,
+        range_bits: 8,
+        reversible: false,
+    })
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        crate::Error::UnsupportedMetalRequest {
+            reason: "J2K Metal encode quantize_subband supports step mantissas <= 2047"
         }
     ));
 }
@@ -3386,6 +3524,9 @@ fn metal_htj2k_lossless_facade_dispatches_ht_code_blocks_and_packetization() {
     assert_eq!(encoded.dispatch_report.deinterleave, 1);
     assert_eq!(accelerator.deinterleave_attempts(), 1);
     assert_eq!(accelerator.deinterleave_dispatches(), 1);
+    assert!(encoded.dispatch_report.quantize_subband > 0);
+    assert!(accelerator.quantize_subband_attempts() > 0);
+    assert!(accelerator.quantize_subband_dispatches() > 0);
     assert!(accelerator.ht_code_block_attempts() > 0);
     assert!(accelerator.ht_code_block_dispatches() > 0);
     assert_eq!(accelerator.packetization_attempts(), 1);
@@ -3417,6 +3558,9 @@ fn metal_htj2k_lossy_facade_require_device_dispatches_supported_stages() {
     assert_eq!(encoded.dispatch_report.deinterleave, 1);
     assert_eq!(accelerator.deinterleave_attempts(), 1);
     assert_eq!(accelerator.deinterleave_dispatches(), 1);
+    assert!(encoded.dispatch_report.quantize_subband > 0);
+    assert!(accelerator.quantize_subband_attempts() > 0);
+    assert!(accelerator.quantize_subband_dispatches() > 0);
     assert!(accelerator.ht_code_block_attempts() > 0);
     assert!(accelerator.ht_code_block_dispatches() > 0);
     assert_eq!(accelerator.packetization_attempts(), 1);
@@ -3452,9 +3596,11 @@ fn metal_htj2k_lossy_rgb_facade_reports_forward_ict_dispatch() {
     assert_eq!(encoded.dispatch_report.forward_ict, 1);
     assert_eq!(encoded.dispatch_report.forward_rct, 0);
     assert_eq!(encoded.dispatch_report.forward_dwt97, 0);
-    assert_eq!(encoded.dispatch_report.quantize_subband, 0);
+    assert!(encoded.dispatch_report.quantize_subband > 0);
     assert_eq!(accelerator.forward_ict_attempts(), 1);
     assert_eq!(accelerator.forward_ict_dispatches(), 1);
+    assert!(accelerator.quantize_subband_attempts() > 0);
+    assert!(accelerator.quantize_subband_dispatches() > 0);
     assert!(accelerator.ht_code_block_dispatches() > 0);
     assert_eq!(accelerator.packetization_dispatches(), 1);
 }
@@ -3487,6 +3633,8 @@ fn metal_htj2k_lossy_facade_reports_forward_dwt97_dispatch() {
     assert!(accelerator.forward_dwt97_attempts() > 0);
     assert!(accelerator.forward_dwt97_dispatches() > 0);
     assert!(encoded.dispatch_report.forward_dwt97 > 0);
+    assert!(encoded.dispatch_report.quantize_subband > 0);
+    assert!(accelerator.quantize_subband_dispatches() > 0);
     assert!(accelerator.ht_code_block_dispatches() > 0);
 }
 

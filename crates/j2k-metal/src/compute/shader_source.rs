@@ -525,6 +525,8 @@ kernel void j2k_pack_u16_repeated_gray(
     "\n",
     include_str!("../mct.metal"),
     "\n",
+    include_str!("../quantize.metal"),
+    "\n",
     include_str!("../store.metal"),
     "\n",
     include_str!("../ht_cleanup.metal"),

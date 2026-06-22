@@ -28,9 +28,9 @@ use j2k_native::{
     J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
     J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
     J2kHtCodeBlockEncodeJob, J2kInverseMctJob, J2kPacketizationBlockCodingMode,
-    J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor, J2kSingleDecompositionIdwtJob,
-    J2kStoreComponentJob, J2kSubBandDecodeJob, J2kTier1CodeBlockEncodeJob, J2kTier1TokenSegment,
-    J2kWaveletTransform,
+    J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor, J2kQuantizeSubbandJob,
+    J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kSubBandDecodeJob,
+    J2kTier1CodeBlockEncodeJob, J2kTier1TokenSegment, J2kWaveletTransform,
 };
 #[cfg(target_os = "macos")]
 use metal::{
@@ -314,6 +314,7 @@ pub(crate) struct MetalRuntime {
     inverse_mct: ComputePipelineState,
     forward_rct: ComputePipelineState,
     forward_ict: ComputePipelineState,
+    quantize_subband: ComputePipelineState,
     store_component: ComputePipelineState,
     store_component_repeated: ComputePipelineState,
     store_component_repeated_gray_u8: ComputePipelineState,
@@ -432,6 +433,7 @@ impl MetalRuntime {
             inverse_mct: pipeline("j2k_inverse_mct")?,
             forward_rct: pipeline("j2k_forward_rct")?,
             forward_ict: pipeline("j2k_forward_ict")?,
+            quantize_subband: pipeline("j2k_quantize_subband")?,
             store_component: pipeline("j2k_store_component")?,
             store_component_repeated: pipeline("j2k_store_component_repeated")?,
             store_component_repeated_gray_u8: pipeline("j2k_store_component_repeated_gray_u8")?,
@@ -9806,6 +9808,82 @@ pub(crate) fn encode_forward_ict(
         }
 
         Ok(())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn validate_encode_quantize_subband_job(job: J2kQuantizeSubbandJob<'_>) -> Result<(), Error> {
+    if job.step_exponent > 31 {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "J2K Metal encode quantize_subband supports step exponents <= 31",
+        });
+    }
+    if job.step_mantissa > 2047 {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "J2K Metal encode quantize_subband supports step mantissas <= 2047",
+        });
+    }
+    if job.range_bits == 0 || job.range_bits > 31 {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "J2K Metal encode quantize_subband supports range bits 1-31",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn encode_quantize_subband(job: J2kQuantizeSubbandJob<'_>) -> Result<Vec<i32>, Error> {
+    validate_encode_quantize_subband_job(job)?;
+    let len = job.coefficients.len();
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let len_u32 = u32::try_from(len).map_err(|_| Error::UnsupportedMetalRequest {
+        reason: "J2K Metal encode quantize_subband coefficient count exceeds u32",
+    })?;
+    let output_bytes = len
+        .checked_mul(size_of::<i32>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal encode quantize_subband output length overflow".to_string(),
+        })?;
+
+    with_runtime(|runtime| {
+        let input_buffer = copied_slice_buffer(&runtime.device, job.coefficients);
+        let output_buffer = runtime
+            .device
+            .new_buffer(output_bytes as u64, MTLResourceOptions::StorageModeShared);
+        let params = J2kQuantizeSubbandParams {
+            _len: len_u32,
+            _step_exponent: u32::from(job.step_exponent),
+            _step_mantissa: u32::from(job.step_mantissa),
+            _range_bits: u32::from(job.range_bits),
+            _reversible: u32::from(job.reversible),
+            _reserved0: 0,
+            _reserved1: 0,
+            _reserved2: 0,
+        };
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        label_command_buffer(command_buffer, "j2k encode-stage quantize_subband");
+        let encoder = command_buffer.new_compute_command_encoder();
+        label_compute_encoder(encoder, "J2K encode-stage quantize_subband");
+        encoder.set_compute_pipeline_state(&runtime.quantize_subband);
+        encoder.set_buffer(0, Some(&input_buffer), 0);
+        encoder.set_buffer(1, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            2,
+            size_of::<J2kQuantizeSubbandParams>() as u64,
+            (&raw const params).cast(),
+        );
+        dispatch_1d_pipeline(encoder, &runtime.quantize_subband, u64::from(len_u32));
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
+        let coefficients =
+            unsafe { core::slice::from_raw_parts(output_buffer.contents().cast::<i32>(), len) };
+        Ok(coefficients.to_vec())
     })
 }
 

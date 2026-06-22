@@ -301,6 +301,20 @@ pub(crate) struct J2kForwardIctParams {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub(crate) struct J2kQuantizeSubbandParams {
+    pub(crate) _len: u32,
+    pub(crate) _step_exponent: u32,
+    pub(crate) _step_mantissa: u32,
+    pub(crate) _range_bits: u32,
+    pub(crate) _reversible: u32,
+    pub(crate) _reserved0: u32,
+    pub(crate) _reserved1: u32,
+    pub(crate) _reserved2: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct J2kForwardDwt53Params {
     pub(crate) full_width: u32,
     pub(crate) current_width: u32,
