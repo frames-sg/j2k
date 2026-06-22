@@ -114,7 +114,7 @@ impl ContextInner {
         kernel: CudaKernel,
     ) -> Result<CuFunction, CudaError> {
         ensure_cuda_oxide_j2k_encode_ptx_built()?;
-        if !kernel.is_j2k_encode_stage() {
+        if !kernel.is_cuda_oxide_j2k_encode_stage() {
             return Err(CudaError::InvalidArgument {
                 message: format!("kernel {kernel:?} is not a J2K encode cuda-oxide stage"),
             });

@@ -1,3 +1,9 @@
+#![allow(
+    clippy::manual_div_ceil,
+    clippy::manual_is_multiple_of,
+    clippy::too_many_arguments
+)]
+
 use cuda_device::{kernel, thread};
 use cuda_host::cuda_module;
 
@@ -7,6 +13,22 @@ const J2K_FDWT97_GAMMA: f32 = 0.8829111;
 const J2K_FDWT97_DELTA: f32 = 0.44350687;
 const J2K_FDWT97_KAPPA: f32 = 1.2301741;
 const J2K_FDWT97_INV_KAPPA: f32 = 1.0 / J2K_FDWT97_KAPPA;
+const J2K_HT_MEL_SIZE: u32 = 192;
+const J2K_HT_VLC_SIZE: u32 = 3072 - J2K_HT_MEL_SIZE;
+const J2K_HT_MS_SIZE: u32 = ((16384 * 16) + 14) / 15;
+const J2K_HT_MEL_OFFSET: u32 = J2K_HT_MS_SIZE;
+const J2K_HT_VLC_OFFSET: u32 = J2K_HT_MS_SIZE + J2K_HT_MEL_SIZE;
+const J2K_HT_COMPACT_ASSEMBLE_FLAG: u32 = 0x8000_0000;
+const J2K_HT_COMPACT_LENGTH_MASK: u32 = 0x7fff;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kHtEncodeCompactJob {
+    source_offset: u32,
+    compact_offset: u32,
+    data_len: u32,
+    reserved: u32,
+}
 
 #[inline(always)]
 fn load_u8(ptr: *const u8, index: u64) -> u8 {
@@ -42,6 +64,18 @@ fn store_i32(ptr: *mut i32, index: u64, value: i32) {
     unsafe {
         *ptr.add(index as usize) = value;
     }
+}
+
+#[inline(always)]
+fn store_u8(ptr: *mut u8, index: u64, value: u8) {
+    unsafe {
+        *ptr.add(index as usize) = value;
+    }
+}
+
+#[inline(always)]
+fn load_job<T: Copy>(ptr: *const T, index: u32) -> T {
+    unsafe { *ptr.add(index as usize) }
 }
 
 #[inline(always)]
@@ -83,7 +117,11 @@ fn j2k_fdwt53_predict_col(
     high_index: u32,
 ) -> f32 {
     let odd = high_index * 2 + 1;
-    let last_even = if height % 2 == 0 { height - 2 } else { height - 1 };
+    let last_even = if height % 2 == 0 {
+        height - 2
+    } else {
+        height - 1
+    };
     let top = load_f32(src, (odd - 1) * full_width + x);
     let bottom = if odd + 1 < height {
         load_f32(src, (odd + 1) * full_width + x)
@@ -133,8 +171,7 @@ fn j2k_fdwt97_high2_row(src: *const f32, row_base: u32, width: u32, high_index: 
     } else {
         j2k_fdwt97_low1_row(src, row_base, width, last_low)
     };
-    j2k_fdwt97_high1_row(src, row_base, width, high_index)
-        + J2K_FDWT97_GAMMA * (left + right)
+    j2k_fdwt97_high1_row(src, row_base, width, high_index) + J2K_FDWT97_GAMMA * (left + right)
 }
 
 #[inline(always)]
@@ -162,7 +199,11 @@ fn j2k_fdwt97_high1_col(
     high_index: u32,
 ) -> f32 {
     let odd = high_index * 2 + 1;
-    let last_even = if height % 2 == 0 { height - 2 } else { height - 1 };
+    let last_even = if height % 2 == 0 {
+        height - 2
+    } else {
+        height - 1
+    };
     let top = load_f32(src, (odd - 1) * full_width + x);
     let bottom = if odd + 1 < height {
         load_f32(src, (odd + 1) * full_width + x)
@@ -203,7 +244,11 @@ fn j2k_fdwt97_high2_col(
     high_index: u32,
 ) -> f32 {
     let odd = high_index * 2 + 1;
-    let last_even = if height % 2 == 0 { height - 2 } else { height - 1 };
+    let last_even = if height % 2 == 0 {
+        height - 2
+    } else {
+        height - 1
+    };
     let last_low = last_even / 2;
     let top = j2k_fdwt97_low1_col(src, x, full_width, height, high_index);
     let bottom = if odd + 1 < height {
@@ -211,8 +256,7 @@ fn j2k_fdwt97_high2_col(
     } else {
         j2k_fdwt97_low1_col(src, x, full_width, height, last_low)
     };
-    j2k_fdwt97_high1_col(src, x, full_width, height, high_index)
-        + J2K_FDWT97_GAMMA * (top + bottom)
+    j2k_fdwt97_high1_col(src, x, full_width, height, high_index) + J2K_FDWT97_GAMMA * (top + bottom)
 }
 
 #[inline(always)]
@@ -381,12 +425,7 @@ mod kernels {
     }
 
     #[kernel]
-    pub unsafe fn j2k_forward_rct(
-        plane0: *mut f32,
-        plane1: *mut f32,
-        plane2: *mut f32,
-        len: u64,
-    ) {
+    pub unsafe fn j2k_forward_rct(plane0: *mut f32, plane1: *mut f32, plane2: *mut f32, len: u64) {
         let idx = thread::index_1d().get() as u64;
         if idx >= len {
             return;
@@ -401,12 +440,7 @@ mod kernels {
     }
 
     #[kernel]
-    pub unsafe fn j2k_forward_ict(
-        plane0: *mut f32,
-        plane1: *mut f32,
-        plane2: *mut f32,
-        len: u64,
-    ) {
+    pub unsafe fn j2k_forward_ict(plane0: *mut f32, plane1: *mut f32, plane2: *mut f32, len: u64) {
         let idx = thread::index_1d().get() as u64;
         if idx >= len {
             return;
@@ -597,6 +631,68 @@ mod kernels {
             reversible,
         );
         store_i32(coefficients, output_index, coefficient);
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_htj2k_compact_codeblocks(
+        scratch: *const u8,
+        compact: *mut u8,
+        jobs: *const J2kHtEncodeCompactJob,
+        job_count: u64,
+    ) {
+        let job_idx = thread::blockIdx_x();
+        if job_idx as u64 >= job_count {
+            return;
+        }
+
+        let job = load_job(jobs, job_idx);
+        let mut idx = thread::threadIdx_x();
+        let step = thread::blockDim_x();
+        if (job.reserved & J2K_HT_COMPACT_ASSEMBLE_FLAG) != 0 {
+            let mel_len = job.reserved & J2K_HT_COMPACT_LENGTH_MASK;
+            let vlc_len = (job.reserved >> 15) & J2K_HT_COMPACT_LENGTH_MASK;
+            let locator_bytes = mel_len + vlc_len;
+            if locator_bytes > job.data_len {
+                return;
+            }
+            let ms_len = job.data_len - locator_bytes;
+            let vlc_start = J2K_HT_VLC_SIZE - vlc_len;
+            while idx < job.data_len {
+                let mut value = if idx < ms_len {
+                    load_u8(scratch, (job.source_offset + idx) as u64)
+                } else if idx < ms_len + mel_len {
+                    load_u8(
+                        scratch,
+                        (job.source_offset + J2K_HT_MEL_OFFSET + idx - ms_len) as u64,
+                    )
+                } else {
+                    load_u8(
+                        scratch,
+                        (job.source_offset + J2K_HT_VLC_OFFSET + vlc_start + idx - ms_len - mel_len)
+                            as u64,
+                    )
+                };
+                if job.data_len >= 2 {
+                    if idx == job.data_len - 1 {
+                        value = (locator_bytes >> 4) as u8;
+                    } else if idx == job.data_len - 2 {
+                        value = ((u32::from(value) & 0xf0) | (locator_bytes & 0x0f)) as u8;
+                    }
+                }
+                store_u8(compact, (job.compact_offset + idx) as u64, value);
+                idx += step;
+            }
+            return;
+        }
+
+        while idx < job.data_len {
+            store_u8(
+                compact,
+                (job.compact_offset + idx) as u64,
+                load_u8(scratch, (job.source_offset + idx) as u64),
+            );
+            idx += step;
+        }
     }
 }
 

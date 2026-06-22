@@ -9,6 +9,7 @@ use crate::{
         CudaContext, CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kCompactEncodedCodeBlocks,
         HTJ2K_UVLC_ENCODE_TABLE_BYTES,
     },
+    driver::CuFunction,
     error::CudaError,
     execution::{cuda_kernel_param, CudaExecutionStats},
     htj2k_decode::{HTJ2K_STATUS_OK, HTJ2K_STATUS_UNSUPPORTED},
@@ -1194,16 +1195,14 @@ impl CudaContext {
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
-    fn launch_htj2k_compact_codeblocks(
+    pub(crate) fn launch_htj2k_compact_codeblocks(
         &self,
         scratch: &CudaDeviceBuffer,
         compact: &CudaDeviceBuffer,
         jobs: &CudaDeviceBuffer,
         job_count: usize,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::Htj2kCompactCodeblocks)?;
+        let function = self.htj2k_encode_kernel_function(CudaKernel::Htj2kCompactCodeblocks)?;
         let mut scratch_ptr = scratch.device_ptr();
         let mut compact_ptr = compact.device_ptr();
         let mut jobs_ptr = jobs.device_ptr();
@@ -1213,6 +1212,18 @@ impl CudaContext {
         let geometry = htj2k_codeblock_sample_launch_geometry(job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
         self.launch_kernel_async(function, geometry, &mut params)
+    }
+
+    fn htj2k_encode_kernel_function(&self, kernel: CudaKernel) -> Result<CuFunction, CudaError> {
+        #[cfg(feature = "cuda-oxide-j2k-encode")]
+        {
+            if crate::build_flags::cuda_oxide_j2k_encode_enabled()
+                && kernel.is_cuda_oxide_j2k_encode_stage()
+            {
+                return self.inner.cuda_oxide_j2k_encode_kernel_function(kernel);
+            }
+        }
+        self.inner.kernel_function(kernel)
     }
 }
 
