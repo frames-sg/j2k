@@ -1995,6 +1995,7 @@ fn is_internal_j2k_token(token: &str) -> bool {
         || token.starts_with("J2K_BATCH_")
         || token.starts_with("J2K_CLASSIC_")
         || token.starts_with("J2K_DECODE_")
+        || token.starts_with("J2K_DEQUANTIZE")
         || token.starts_with("J2K_ENCODE_")
         || token.starts_with("J2K_FDWT97_")
         || token.starts_with("J2K_GPU_ENCODE_")
