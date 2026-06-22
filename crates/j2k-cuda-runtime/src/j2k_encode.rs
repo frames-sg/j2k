@@ -1,7 +1,7 @@
 use crate::{
     bytes::{f32_slice_as_bytes, f32_slice_as_bytes_mut, i32_slice_as_bytes_mut},
     context::CudaContext,
-    driver::CuDevicePtr,
+    driver::{CuDevicePtr, CuFunction},
     error::CudaError,
     execution::{cuda_kernel_param, CudaExecutionStats},
     j2k_decode::{active_dwt53_buffers, CudaJ2kStridedInterleavedPixels},
@@ -911,6 +911,16 @@ impl CudaContext {
         )
     }
 
+    fn j2k_encode_kernel_function(&self, kernel: CudaKernel) -> Result<CuFunction, CudaError> {
+        #[cfg(feature = "cuda-oxide-j2k-encode")]
+        {
+            if crate::build_flags::cuda_oxide_j2k_encode_enabled() {
+                return self.inner.cuda_oxide_j2k_encode_kernel_function(kernel);
+            }
+        }
+        self.inner.kernel_function(kernel)
+    }
+
     fn launch_j2k_forward_rct_ptrs(
         &self,
         plane0: CuDevicePtr,
@@ -918,7 +928,7 @@ impl CudaContext {
         plane2: CuDevicePtr,
         len: usize,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::J2kForwardRct)?;
+        let function = self.j2k_encode_kernel_function(CudaKernel::J2kForwardRct)?;
         let mut plane0_ptr = plane0;
         let mut plane1_ptr = plane1;
         let mut plane2_ptr = plane2;
@@ -939,9 +949,7 @@ impl CudaContext {
         bit_depth: u8,
         signed: bool,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::J2kDeinterleaveToF32)?;
+        let function = self.j2k_encode_kernel_function(CudaKernel::J2kDeinterleaveToF32)?;
         let mut pixels_ptr = pixels.device_ptr();
         let mut output_ptr = output.device_ptr();
         let mut num_pixels_u64 =
@@ -976,9 +984,7 @@ impl CudaContext {
         bit_depth: u8,
         signed: bool,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::J2kDeinterleaveStridedToF32)?;
+        let function = self.j2k_encode_kernel_function(CudaKernel::J2kDeinterleaveStridedToF32)?;
         let mut pixels_ptr = pixels.device_ptr();
         let mut output_ptr = output.device_ptr();
         let mut width_u64 = u64::from(width);
@@ -1037,7 +1043,7 @@ impl CudaContext {
         plane2: CuDevicePtr,
         len: usize,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::J2kForwardIct)?;
+        let function = self.j2k_encode_kernel_function(CudaKernel::J2kForwardIct)?;
         let mut plane0_ptr = plane0;
         let mut plane1_ptr = plane1;
         let mut plane2_ptr = plane2;
@@ -1056,7 +1062,7 @@ impl CudaContext {
         output: &CudaDeviceBuffer,
         pass: CudaDwt53Pass,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(kernel)?;
+        let function = self.j2k_encode_kernel_function(kernel)?;
         let mut input_ptr = input.device_ptr();
         let mut output_ptr = output.device_ptr();
         let mut full_width = pass.full_width;
@@ -1088,7 +1094,7 @@ impl CudaContext {
         len: usize,
         job: CudaJ2kQuantizeJob,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::J2kQuantizeSubband)?;
+        let function = self.j2k_encode_kernel_function(CudaKernel::J2kQuantizeSubband)?;
         let mut samples_ptr = samples.device_ptr();
         let mut coefficients_ptr = coefficients.device_ptr();
         let mut len_u64 = u64::try_from(len).map_err(|_| CudaError::LengthTooLarge { len })?;
@@ -1117,9 +1123,7 @@ impl CudaContext {
         coefficients: &CudaDeviceBuffer,
         job: CudaJ2kQuantizeSubbandRegionJob,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::J2kQuantizeSubbandStrided)?;
+        let function = self.j2k_encode_kernel_function(CudaKernel::J2kQuantizeSubbandStrided)?;
         let mut samples_ptr = samples.device_ptr();
         let mut coefficients_ptr = coefficients.device_ptr();
         let mut x0 = job.x0;
