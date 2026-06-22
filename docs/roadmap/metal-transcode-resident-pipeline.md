@@ -5,6 +5,8 @@
 Move JPEG-to-J2K/HTJ2K transcode toward a more resident Metal pipeline on
 macOS, starting from the existing coefficient-domain transform accelerator and
 adding adjacent stages only where correctness and benchmarks justify it.
+JPEG-to-J2K/HTJ2K transcoding itself is implemented; this document tracks
+optional Metal residency and performance work, not feature completion.
 
 ## Current State
 
@@ -26,7 +28,7 @@ adding adjacent stages only where correctness and benchmarks justify it.
 - Kept public wording at Metal-accelerated transcode stages rather than
   claiming a complete resident pipeline.
 
-## Remaining Work
+## Optional Metal Residency Work
 
 1. Add resident Metal handoff types for transform outputs that can flow into
    downstream HTJ2K encode or packetization stages.
@@ -34,7 +36,8 @@ adding adjacent stages only where correctness and benchmarks justify it.
    because thresholds or shape gates are conservative.
 3. Evaluate whether JPEG entropy decode, coefficient preparation, packetization,
    or codestream assembly should be moved next, based on measured CPU time and
-   transfer overhead.
+   transfer overhead. Leave those stages on CPU when the workload is irregular,
+   small, or transfer-bound.
 4. Add benchmark artifacts for JPEG-to-J2K and JPEG-to-HTJ2K workloads that are
    not limited to WSI examples.
 
