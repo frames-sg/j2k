@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTJ2K Rust - J2K</title>
+  <meta name="description" content="HTJ2K Rust support in J2K: high-throughput JPEG 2000 decode, encode, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.">
+  <link rel="canonical" href="https://frames-sg.github.io/j2k/htj2k-rust/">
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="bar">
+      <a class="brand" href="../">J2K</a>
+      <nav class="nav" aria-label="Primary">
+        <a href="../rust-jpeg2000-codec/">Rust JPEG 2000</a>
+        <a href="../gpu-jpeg2000-rust/">GPU JPEG2000</a>
+        <a href="../cuda-jpeg2000-rust/">CUDA</a>
+        <a href="../metal-jpeg2000-rust/">Metal</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="eyebrow">HTJ2K Rust</p>
+          <h1>HTJ2K Rust</h1>
+          <p class="lead">J2K supports HTJ2K-oriented Rust APIs for decode, encode, recode, and JPEG-to-HTJ2K transcode workflows, with optional CUDA and Metal adapter crates for supported routes.</p>
+          <div class="actions">
+            <a class="button primary" href="https://crates.io/crates/j2k">j2k crate</a>
+            <a class="button" href="https://crates.io/crates/j2k-transcode">j2k-transcode</a>
+          </div>
+        </div>
+        <img class="diagram" src="../assets/j2k-gpu-pipeline.svg" alt="HTJ2K Rust codec and transcode pipeline">
+      </div>
+    </section>
+    <section class="section">
+      <div class="wrap grid three">
+        <article class="card">
+          <h2>Decode and encode</h2>
+          <p>The `j2k` facade owns public JPEG 2000 / HTJ2K application APIs and reexports shared backend contracts.</p>
+          <pre class="code">cargo add j2k</pre>
+        </article>
+        <article class="card">
+          <h2>Recode</h2>
+          <p>Classic JPEG 2000 reversible inputs can be recoded to HTJ2K through the public recode API when supported.</p>
+        </article>
+        <article class="card">
+          <h2>Transcode</h2>
+          <p>`j2k-transcode` provides JPEG-to-J2K/HTJ2K primitives with CUDA and Metal acceleration crates for supported stages.</p>
+          <pre class="code">cargo add j2k-transcode</pre>
+        </article>
+      </div>
+    </section>
+    <section class="section alt">
+      <div class="wrap copy">
+        <h2>Related search paths</h2>
+        <p>See <a href="../cuda-jpeg2000-rust/">CUDA JPEG2000 Rust</a>, <a href="../metal-jpeg2000-rust/">Metal JPEG2000 Rust</a>, and <a href="../gpu-jpeg2000-rust/">GPU JPEG2000 Rust</a> for backend-specific pages.</p>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <p>HTJ2K Rust documentation for J2K.</p>
+      <p><a href="../sitemap.xml">Sitemap</a></p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CUDA JPEG2000 Rust - J2K</title>
+  <meta name="description" content="CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <link rel="canonical" href="https://frames-sg.github.io/j2k/cuda-jpeg2000-rust/">
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="bar">
+      <a class="brand" href="../">J2K</a>
+      <nav class="nav" aria-label="Primary">
+        <a href="../rust-jpeg2000-codec/">Rust JPEG 2000</a>
+        <a href="../gpu-jpeg2000-rust/">GPU JPEG2000</a>
+        <a href="../metal-jpeg2000-rust/">Metal</a>
+        <a href="../htj2k-rust/">HTJ2K</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="eyebrow">CUDA JPEG2000 Rust</p>
+          <h1>CUDA JPEG2000 Rust</h1>
+          <p class="lead">J2K provides NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K device-output, encode-stage, and JPEG-to-J2K/HTJ2K transcode workflows in Rust.</p>
+          <div class="actions">
+            <a class="button primary" href="https://crates.io/crates/j2k-cuda">j2k-cuda</a>
+            <a class="button" href="https://docs.rs/j2k-cuda">CUDA API docs</a>
+          </div>
+        </div>
+        <img class="diagram" src="../assets/j2k-gpu-pipeline.svg" alt="CUDA JPEG2000 Rust pipeline">
+      </div>
+    </section>
+    <section class="section">
+      <div class="wrap grid three">
+        <article class="card">
+          <h2>Codec adapter</h2>
+          <p>`j2k-cuda` exposes CUDA-facing JPEG 2000 / HTJ2K decode and encode-stage adapter APIs.</p>
+          <pre class="code">cargo add j2k-cuda --features cuda-runtime</pre>
+        </article>
+        <article class="card">
+          <h2>JPEG input adapter</h2>
+          <p>`j2k-jpeg-cuda` provides CUDA device-output integration for supported JPEG decode surfaces.</p>
+          <pre class="code">cargo add j2k-jpeg-cuda --features cuda-runtime</pre>
+        </article>
+        <article class="card">
+          <h2>Transcode adapter</h2>
+          <p>`j2k-transcode-cuda` accelerates supported coefficient-domain JPEG-to-J2K/HTJ2K stages.</p>
+          <pre class="code">cargo add j2k-transcode-cuda --features cuda-runtime</pre>
+        </article>
+      </div>
+    </section>
+    <section class="section alt">
+      <div class="wrap copy">
+        <h2>Validation posture</h2>
+        <p>CUDA performance claims require self-hosted NVIDIA benchmark evidence. Hosted CI is not treated as NVIDIA performance evidence.</p>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <p>CUDA JPEG2000 Rust documentation for J2K.</p>
+      <p><a href="../sitemap.xml">Sitemap</a></p>
+    </div>
+  </footer>
+</body>
+</html>

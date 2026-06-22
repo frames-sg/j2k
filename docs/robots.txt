@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://frames-sg.github.io/j2k/sitemap.xml
