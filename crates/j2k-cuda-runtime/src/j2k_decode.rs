@@ -1703,7 +1703,7 @@ impl CudaContext {
         job: &CudaDeviceBuffer,
         pixels: usize,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::J2kStoreGray8)?;
+        let function = self.j2k_decode_store_kernel_function(CudaKernel::J2kStoreGray8)?;
         let mut input_ptr = input.device_ptr();
         let mut output_ptr = output.device_ptr();
         let mut job_ptr = job.device_ptr();
@@ -1720,7 +1720,7 @@ impl CudaContext {
         job: &CudaDeviceBuffer,
         pixels: usize,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::J2kStoreGray16)?;
+        let function = self.j2k_decode_store_kernel_function(CudaKernel::J2kStoreGray16)?;
         let mut input_ptr = input.device_ptr();
         let mut output_ptr = output.device_ptr();
         let mut job_ptr = job.device_ptr();
@@ -1738,7 +1738,7 @@ impl CudaContext {
         job: &CudaDeviceBuffer,
         len: usize,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::J2kInverseMct)?;
+        let function = self.j2k_decode_store_kernel_function(CudaKernel::J2kInverseMct)?;
         let mut plane0_ptr = plane0.device_ptr();
         let mut plane1_ptr = plane1.device_ptr();
         let mut plane2_ptr = plane2.device_ptr();
@@ -1758,7 +1758,7 @@ impl CudaContext {
         job: &CudaDeviceBuffer,
         pixels: usize,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::J2kStoreRgb8)?;
+        let function = self.j2k_decode_store_kernel_function(CudaKernel::J2kStoreRgb8)?;
         let mut plane0_ptr = plane0.device_ptr();
         let mut plane1_ptr = plane1.device_ptr();
         let mut plane2_ptr = plane2.device_ptr();
@@ -1780,7 +1780,7 @@ impl CudaContext {
         job: &CudaDeviceBuffer,
         pixels: usize,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::J2kStoreRgb16)?;
+        let function = self.j2k_decode_store_kernel_function(CudaKernel::J2kStoreRgb16)?;
         let mut plane0_ptr = plane0.device_ptr();
         let mut plane1_ptr = plane1.device_ptr();
         let mut plane2_ptr = plane2.device_ptr();
@@ -1799,9 +1799,7 @@ impl CudaContext {
         max_pixels: usize,
         job_count: usize,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::J2kStoreRgb8MctBatch)?;
+        let function = self.j2k_decode_store_kernel_function(CudaKernel::J2kStoreRgb8MctBatch)?;
         let mut jobs_ptr = jobs.device_ptr();
         let mut params = cuda_kernel_params!(jobs_ptr);
         let geometry = j2k_store_batch_launch_geometry(max_pixels, job_count)
@@ -1818,7 +1816,7 @@ impl CudaContext {
         job: &CudaDeviceBuffer,
         pixels: usize,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::J2kStoreRgb16Mct)?;
+        let function = self.j2k_decode_store_kernel_function(CudaKernel::J2kStoreRgb16Mct)?;
         let mut plane0_ptr = plane0.device_ptr();
         let mut plane1_ptr = plane1.device_ptr();
         let mut plane2_ptr = plane2.device_ptr();
@@ -1829,6 +1827,21 @@ impl CudaContext {
         let geometry = j2k_forward_rct_launch_geometry(pixels)
             .ok_or(CudaError::LengthTooLarge { len: pixels })?;
         self.launch_kernel(function, geometry, &mut params)
+    }
+
+    fn j2k_decode_store_kernel_function(
+        &self,
+        kernel: CudaKernel,
+    ) -> Result<crate::driver::CuFunction, CudaError> {
+        #[cfg(feature = "cuda-oxide-j2k-decode-store")]
+        {
+            if crate::build_flags::cuda_oxide_j2k_decode_store_enabled() {
+                return self
+                    .inner
+                    .cuda_oxide_j2k_decode_store_kernel_function(kernel);
+            }
+        }
+        self.inner.kernel_function(kernel)
     }
 }
 

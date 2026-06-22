@@ -102,6 +102,21 @@ impl CudaKernel {
         )
     }
 
+    #[cfg_attr(not(feature = "cuda-oxide-j2k-decode-store"), allow(dead_code))]
+    pub(crate) fn is_j2k_decode_store_stage(self) -> bool {
+        matches!(
+            self,
+            Self::J2kInverseMct
+                | Self::J2kStoreGray16
+                | Self::J2kStoreGray8
+                | Self::J2kStoreRgb16
+                | Self::J2kStoreRgb16Mct
+                | Self::J2kStoreRgb8
+                | Self::J2kStoreRgb8Mct
+                | Self::J2kStoreRgb8MctBatch
+        )
+    }
+
     pub(crate) fn ptx(self) -> &'static [u8] {
         match self {
             Self::CopyU8 => COPY_U8_PTX,
@@ -292,6 +307,9 @@ const CUDA_OXIDE_COPY_U8_PTX: &[u8] =
 #[cfg(feature = "cuda-oxide-j2k-encode")]
 const CUDA_OXIDE_J2K_ENCODE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_j2k_encode.ptx"));
+#[cfg(feature = "cuda-oxide-j2k-decode-store")]
+const CUDA_OXIDE_J2K_DECODE_STORE_PTX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_j2k_decode_store.ptx"));
 const HTJ2K_DECODE_CODEBLOCK_THREADS: usize = 32;
 const HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA: c_uint = 32;
 const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
@@ -457,6 +475,11 @@ pub(crate) fn cuda_oxide_copy_u8_ptx() -> &'static [u8] {
 #[cfg(feature = "cuda-oxide-j2k-encode")]
 pub(crate) fn cuda_oxide_j2k_encode_ptx() -> &'static [u8] {
     CUDA_OXIDE_J2K_ENCODE_PTX
+}
+
+#[cfg(feature = "cuda-oxide-j2k-decode-store")]
+pub(crate) fn cuda_oxide_j2k_decode_store_ptx() -> &'static [u8] {
+    CUDA_OXIDE_J2K_DECODE_STORE_PTX
 }
 
 const COPY_U8_PTX: &[u8] = concat!(
@@ -696,6 +719,37 @@ mod tests {
             assert!(
                 source.contains(&format!(".visible .entry {entrypoint}(")),
                 "missing cuda-oxide J2K encode entrypoint {entrypoint}"
+            );
+        }
+    }
+
+    #[cfg(all(
+        feature = "cuda-oxide-j2k-decode-store",
+        j2k_cuda_oxide_j2k_decode_store_built
+    ))]
+    #[test]
+    fn cuda_oxide_j2k_decode_store_kernel_metadata_matches_generated_ptx() {
+        let ptx = cuda_oxide_j2k_decode_store_ptx();
+        assert_eq!(ptx.last(), Some(&0));
+        let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
+        let kernels = [
+            CudaKernel::J2kInverseMct,
+            CudaKernel::J2kStoreGray8,
+            CudaKernel::J2kStoreGray16,
+            CudaKernel::J2kStoreRgb8,
+            CudaKernel::J2kStoreRgb8Mct,
+            CudaKernel::J2kStoreRgb8MctBatch,
+            CudaKernel::J2kStoreRgb16,
+            CudaKernel::J2kStoreRgb16Mct,
+        ];
+        for kernel in kernels {
+            assert!(kernel.is_j2k_decode_store_stage());
+            let entrypoint =
+                std::str::from_utf8(&kernel.entrypoint()[..kernel.entrypoint().len() - 1])
+                    .expect("entrypoint utf8");
+            assert!(
+                source.contains(&format!(".visible .entry {entrypoint}(")),
+                "missing cuda-oxide J2K decode-store entrypoint {entrypoint}"
             );
         }
     }
