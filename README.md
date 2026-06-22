@@ -67,7 +67,9 @@ outputs when a device path is unavailable, unsupported, or not benchmarked for
 the requested shape.
 
 Metal adapters are macOS-only and experimental. Explicit Metal requests return
-resident Metal surfaces only for supported adapter paths.
+resident Metal surfaces or encode-stage dispatches only for supported adapter
+paths. Metal encode support is not a blanket end-to-end guarantee for every
+public encode route; unsupported explicit Metal shapes fail clearly.
 
 CUDA adapters require a CUDA driver and adapter support. CUDA device memory
 surfaces are available for supported paths; unsupported explicit CUDA requests
