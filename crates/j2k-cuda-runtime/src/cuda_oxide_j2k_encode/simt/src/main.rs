@@ -1,10 +1,11 @@
 #![allow(
     clippy::manual_div_ceil,
     clippy::manual_is_multiple_of,
-    clippy::too_many_arguments
+    clippy::too_many_arguments,
+    static_mut_refs
 )]
 
-use cuda_device::{kernel, thread};
+use cuda_device::{SharedArray, kernel, thread};
 use cuda_host::cuda_module;
 
 const J2K_FDWT97_ALPHA: f32 = -1.5861343;
@@ -20,6 +21,12 @@ const J2K_HT_MEL_OFFSET: u32 = J2K_HT_MS_SIZE;
 const J2K_HT_VLC_OFFSET: u32 = J2K_HT_MS_SIZE + J2K_HT_MEL_SIZE;
 const J2K_HT_COMPACT_ASSEMBLE_FLAG: u32 = 0x8000_0000;
 const J2K_HT_COMPACT_LENGTH_MASK: u32 = 0x7fff;
+const J2K_ENCODE_STATUS_OK: u32 = 0;
+const J2K_ENCODE_STATUS_FAIL: u32 = 1;
+const J2K_ENCODE_STATUS_UNSUPPORTED: u32 = 2;
+const J2K_PACKET_TAG_INF: u32 = 0x7fff_ffff;
+const J2K_PACKET_MAX_TAG_NODES: usize = 2048;
+const J2K_PACKET_MAX_TAG_LEVELS: usize = 16;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -30,8 +37,102 @@ struct J2kHtEncodeCompactJob {
     reserved: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kHtPacketJob {
+    block_start: u32,
+    block_count: u32,
+    subband_start: u32,
+    subband_count: u32,
+    output_offset: u32,
+    output_capacity: u32,
+    layer: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kHtPacketSubband {
+    block_start: u32,
+    block_count: u32,
+    num_cbs_x: u32,
+    num_cbs_y: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kHtPacketBlock {
+    data_offset: u32,
+    data_len: u32,
+    cleanup_length: u32,
+    refinement_length: u32,
+    num_coding_passes: u32,
+    num_zero_bitplanes: u32,
+    l_block: u32,
+    previously_included: u32,
+    inclusion_layer: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kHtPacketSubbandTagState {
+    inclusion_node_start: u32,
+    zero_bitplane_node_start: u32,
+    node_count: u32,
+    reserved0: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kHtPacketTagNodeState {
+    current: u32,
+    known: u32,
+}
+
+#[repr(C)]
+struct J2kHtPacketStatus {
+    code: u32,
+    detail: u32,
+    output_len: u32,
+    reserved0: u32,
+}
+
+struct J2kPacketBitWriter {
+    out: *mut u8,
+    pos: u32,
+    capacity: u32,
+    buffer: u32,
+    bits_in_buffer: u32,
+    last_byte_was_ff: u32,
+    failed: u32,
+}
+
+struct J2kPacketTagTree {
+    values: [u32; J2K_PACKET_MAX_TAG_NODES],
+    current: [u32; J2K_PACKET_MAX_TAG_NODES],
+    known: [u32; J2K_PACKET_MAX_TAG_NODES],
+    widths: [u32; J2K_PACKET_MAX_TAG_LEVELS],
+    heights: [u32; J2K_PACKET_MAX_TAG_LEVELS],
+    offsets: [u32; J2K_PACKET_MAX_TAG_LEVELS],
+    levels: u32,
+    total_nodes: u32,
+    failed: u32,
+}
+
+struct J2kPacketHeaderResult {
+    code: u32,
+    detail: u32,
+    header_len: u32,
+    body_len: u32,
+    output_len: u32,
+}
+
 #[inline(always)]
 fn load_u8(ptr: *const u8, index: u64) -> u8 {
+    unsafe { *ptr.add(index as usize) }
+}
+
+#[inline(always)]
+fn load_u32(ptr: *const u32, index: u64) -> u32 {
     unsafe { *ptr.add(index as usize) }
 }
 
@@ -74,8 +175,646 @@ fn store_u8(ptr: *mut u8, index: u64, value: u8) {
 }
 
 #[inline(always)]
+fn store_u32(ptr: *mut u32, index: u64, value: u32) {
+    unsafe {
+        *ptr.add(index as usize) = value;
+    }
+}
+
+#[inline(always)]
 fn load_job<T: Copy>(ptr: *const T, index: u32) -> T {
     unsafe { *ptr.add(index as usize) }
+}
+
+#[inline(always)]
+fn j2k_packet_status(status: *mut J2kHtPacketStatus, code: u32, detail: u32, output_len: u32) {
+    unsafe {
+        (*status).code = code;
+        (*status).detail = detail;
+        (*status).output_len = output_len;
+        (*status).reserved0 = 0;
+    }
+}
+
+#[inline(always)]
+fn j2k_packet_writer_init(out: *mut u8, capacity: u32) -> J2kPacketBitWriter {
+    J2kPacketBitWriter {
+        out,
+        pos: 0,
+        capacity,
+        buffer: 0,
+        bits_in_buffer: 0,
+        last_byte_was_ff: 0,
+        failed: 0,
+    }
+}
+
+#[inline(always)]
+fn j2k_packet_push_byte(writer: &mut J2kPacketBitWriter, byte: u8) {
+    if writer.pos >= writer.capacity {
+        writer.failed = 1;
+        return;
+    }
+    store_u8(writer.out, writer.pos as u64, byte);
+    writer.pos += 1;
+    writer.last_byte_was_ff = if byte == 0xff { 1 } else { 0 };
+}
+
+#[inline(always)]
+fn j2k_packet_flush_byte(writer: &mut J2kPacketBitWriter) {
+    let limit = if writer.last_byte_was_ff != 0 { 7 } else { 8 };
+    let byte = ((writer.buffer >> (writer.bits_in_buffer - limit)) & 0xff) as u8;
+    j2k_packet_push_byte(writer, byte);
+    writer.bits_in_buffer -= limit;
+    writer.buffer = if writer.bits_in_buffer == 0 {
+        0
+    } else {
+        writer.buffer & ((1_u32 << writer.bits_in_buffer) - 1)
+    };
+}
+
+#[inline(always)]
+fn j2k_packet_write_bit(writer: &mut J2kPacketBitWriter, bit: u32) {
+    writer.buffer = (writer.buffer << 1) | (bit & 1);
+    writer.bits_in_buffer += 1;
+    let limit = if writer.last_byte_was_ff != 0 { 7 } else { 8 };
+    if writer.bits_in_buffer >= limit {
+        j2k_packet_flush_byte(writer);
+    }
+}
+
+#[inline(always)]
+fn j2k_packet_write_bits(writer: &mut J2kPacketBitWriter, value: u32, mut count: u32) {
+    while count > 0 {
+        count -= 1;
+        j2k_packet_write_bit(writer, (value >> count) & 1);
+    }
+}
+
+#[inline(always)]
+fn j2k_packet_finish(writer: &mut J2kPacketBitWriter) {
+    if writer.bits_in_buffer == 0 {
+        return;
+    }
+    let limit = if writer.last_byte_was_ff != 0 { 7 } else { 8 };
+    let shift = limit - writer.bits_in_buffer;
+    let byte = ((writer.buffer << shift) & 0xff) as u8;
+    j2k_packet_push_byte(writer, byte);
+    writer.buffer = 0;
+    writer.bits_in_buffer = 0;
+}
+
+#[inline(always)]
+fn j2k_packet_encode_num_ht_passes(writer: &mut J2kPacketBitWriter, num_passes: u32) {
+    if num_passes == 1 {
+        j2k_packet_write_bit(writer, 0);
+    } else if num_passes == 2 {
+        j2k_packet_write_bits(writer, 0b10, 2);
+    } else if num_passes <= 5 {
+        j2k_packet_write_bits(writer, 0b11, 2);
+        j2k_packet_write_bits(writer, num_passes - 3, 2);
+    } else if num_passes <= 36 {
+        j2k_packet_write_bits(writer, 0b11, 2);
+        j2k_packet_write_bits(writer, 0b11, 2);
+        j2k_packet_write_bits(writer, num_passes - 6, 5);
+    } else {
+        j2k_packet_write_bits(writer, 0b11, 2);
+        j2k_packet_write_bits(writer, 0b11, 2);
+        j2k_packet_write_bits(writer, 31, 5);
+        j2k_packet_write_bits(writer, num_passes - 37, 7);
+    }
+}
+
+#[inline(always)]
+fn j2k_packet_value_fits(value: u32, bits: u32) -> bool {
+    bits >= 32 || value < (1_u32 << bits)
+}
+
+#[inline(always)]
+fn j2k_packet_ht_length_bits(l_block: u32, num_passes: u32) -> u32 {
+    let placeholder_groups = (if num_passes > 0 { num_passes - 1 } else { 0 }) / 3;
+    let placeholder_passes = placeholder_groups * 3;
+    let mut value = placeholder_passes + 1;
+    let mut log2_value = 0;
+    while value > 1 {
+        value >>= 1;
+        log2_value += 1;
+    }
+    l_block + log2_value
+}
+
+#[inline(always)]
+fn j2k_packet_encode_ht_segment_lengths(writer: &mut J2kPacketBitWriter, block: J2kHtPacketBlock) {
+    let cleanup_length = if block.num_coding_passes == 1 && block.cleanup_length == 0 {
+        block.data_len
+    } else {
+        block.cleanup_length
+    };
+    let mut l_block = block.l_block;
+    let mut cleanup_bits = j2k_packet_ht_length_bits(l_block, block.num_coding_passes);
+    let refinement_extra_bits = if block.num_coding_passes > 2 { 1 } else { 0 };
+    while !j2k_packet_value_fits(cleanup_length, cleanup_bits)
+        || (block.num_coding_passes > 1
+            && !j2k_packet_value_fits(block.refinement_length, l_block + refinement_extra_bits))
+    {
+        j2k_packet_write_bit(writer, 1);
+        l_block += 1;
+        cleanup_bits += 1;
+    }
+    j2k_packet_write_bit(writer, 0);
+    j2k_packet_write_bits(writer, cleanup_length, cleanup_bits);
+
+    if block.num_coding_passes > 1 {
+        j2k_packet_write_bits(
+            writer,
+            block.refinement_length,
+            l_block + refinement_extra_bits,
+        );
+    }
+}
+
+#[inline(always)]
+fn j2k_packet_tag_tree_new() -> J2kPacketTagTree {
+    J2kPacketTagTree {
+        values: [0; J2K_PACKET_MAX_TAG_NODES],
+        current: [0; J2K_PACKET_MAX_TAG_NODES],
+        known: [0; J2K_PACKET_MAX_TAG_NODES],
+        widths: [0; J2K_PACKET_MAX_TAG_LEVELS],
+        heights: [0; J2K_PACKET_MAX_TAG_LEVELS],
+        offsets: [0; J2K_PACKET_MAX_TAG_LEVELS],
+        levels: 0,
+        total_nodes: 0,
+        failed: 0,
+    }
+}
+
+#[inline(always)]
+fn j2k_packet_tag_tree_fail(tree: &mut J2kPacketTagTree) -> bool {
+    tree.failed = 1;
+    false
+}
+
+#[inline(always)]
+fn j2k_packet_tag_tree_init(tree: &mut J2kPacketTagTree, width: u32, height: u32) -> bool {
+    if width == 0 || height == 0 {
+        return j2k_packet_tag_tree_fail(tree);
+    }
+
+    let mut w = width;
+    let mut h = height;
+    let mut total = 0_u32;
+    let mut levels = 0_u32;
+    loop {
+        if levels as usize >= J2K_PACKET_MAX_TAG_LEVELS {
+            return j2k_packet_tag_tree_fail(tree);
+        }
+        let Some(nodes) = w.checked_mul(h) else {
+            return j2k_packet_tag_tree_fail(tree);
+        };
+        let Some(next_total) = total.checked_add(nodes) else {
+            return j2k_packet_tag_tree_fail(tree);
+        };
+        if next_total as usize > J2K_PACKET_MAX_TAG_NODES {
+            return j2k_packet_tag_tree_fail(tree);
+        }
+
+        let level = levels as usize;
+        tree.widths[level] = w;
+        tree.heights[level] = h;
+        tree.offsets[level] = total;
+        total = next_total;
+        levels += 1;
+        if w <= 1 && h <= 1 {
+            break;
+        }
+        w = (w + 1) >> 1;
+        h = (h + 1) >> 1;
+    }
+
+    tree.levels = levels;
+    tree.total_nodes = total;
+    tree.failed = 0;
+    let mut idx = 0_u32;
+    while idx < total {
+        let slot = idx as usize;
+        tree.values[slot] = 0;
+        tree.current[slot] = 0;
+        tree.known[slot] = 0;
+        idx += 1;
+    }
+    true
+}
+
+#[inline(always)]
+fn j2k_packet_tag_tree_propagate(tree: &mut J2kPacketTagTree) {
+    let mut level = 1_u32;
+    while level < tree.levels {
+        let prev_w = tree.widths[(level - 1) as usize];
+        let prev_h = tree.heights[(level - 1) as usize];
+        let curr_w = tree.widths[level as usize];
+        let curr_h = tree.heights[level as usize];
+        let mut cy = 0_u32;
+        while cy < curr_h {
+            let mut cx = 0_u32;
+            while cx < curr_w {
+                let mut min_value = u32::MAX;
+                let child_x0 = cx << 1;
+                let child_y0 = cy << 1;
+                let child_x1 = (child_x0 + 2).min(prev_w);
+                let child_y1 = (child_y0 + 2).min(prev_h);
+                let mut y = child_y0;
+                while y < child_y1 {
+                    let mut x = child_x0;
+                    while x < child_x1 {
+                        let child_idx = tree.offsets[(level - 1) as usize] + y * prev_w + x;
+                        min_value = min_value.min(tree.values[child_idx as usize]);
+                        x += 1;
+                    }
+                    y += 1;
+                }
+                let node_idx = tree.offsets[level as usize] + cy * curr_w + cx;
+                tree.values[node_idx as usize] = min_value;
+                cx += 1;
+            }
+            cy += 1;
+        }
+        level += 1;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn j2k_packet_build_tag_trees(
+    inclusion_tree: &mut J2kPacketTagTree,
+    zbp_tree: &mut J2kPacketTagTree,
+    subband: J2kHtPacketSubband,
+    blocks: *const J2kHtPacketBlock,
+    tag_states: *const J2kHtPacketSubbandTagState,
+    tag_nodes: *const J2kHtPacketTagNodeState,
+    tag_state_count: u64,
+    tag_node_count: u64,
+    subband_meta_idx: u32,
+) {
+    if !j2k_packet_tag_tree_init(inclusion_tree, subband.num_cbs_x, subband.num_cbs_y)
+        || !j2k_packet_tag_tree_init(zbp_tree, subband.num_cbs_x, subband.num_cbs_y)
+    {
+        inclusion_tree.failed = 1;
+        zbp_tree.failed = 1;
+        return;
+    }
+
+    let mut idx = 0_u32;
+    while idx < subband.block_count {
+        let block = load_job(blocks, subband.block_start + idx);
+        let x = idx % subband.num_cbs_x;
+        let y = idx / subband.num_cbs_x;
+        let leaf_idx = y * subband.num_cbs_x + x;
+        inclusion_tree.values[leaf_idx as usize] = if block.previously_included == 0 {
+            block.inclusion_layer
+        } else {
+            J2K_PACKET_TAG_INF
+        };
+        zbp_tree.values[leaf_idx as usize] = block.num_zero_bitplanes;
+        idx += 1;
+    }
+    j2k_packet_tag_tree_propagate(inclusion_tree);
+    j2k_packet_tag_tree_propagate(zbp_tree);
+
+    if tag_state_count == 0 {
+        return;
+    }
+    if subband_meta_idx as u64 >= tag_state_count {
+        inclusion_tree.failed = 1;
+        zbp_tree.failed = 1;
+        return;
+    }
+    let state = load_job(tag_states, subband_meta_idx);
+    if state.node_count != inclusion_tree.total_nodes {
+        inclusion_tree.failed = 1;
+        zbp_tree.failed = 1;
+        return;
+    }
+    let Some(inclusion_end) =
+        (state.inclusion_node_start as u64).checked_add(state.node_count as u64)
+    else {
+        inclusion_tree.failed = 1;
+        zbp_tree.failed = 1;
+        return;
+    };
+    let Some(zbp_end) =
+        (state.zero_bitplane_node_start as u64).checked_add(state.node_count as u64)
+    else {
+        inclusion_tree.failed = 1;
+        zbp_tree.failed = 1;
+        return;
+    };
+    if inclusion_end > tag_node_count || zbp_end > tag_node_count {
+        inclusion_tree.failed = 1;
+        zbp_tree.failed = 1;
+        return;
+    }
+
+    let mut node_idx = 0_u32;
+    while node_idx < state.node_count {
+        let inclusion_node = load_job(tag_nodes, state.inclusion_node_start + node_idx);
+        let zbp_node = load_job(tag_nodes, state.zero_bitplane_node_start + node_idx);
+        let slot = node_idx as usize;
+        inclusion_tree.current[slot] = inclusion_node.current;
+        inclusion_tree.known[slot] = inclusion_node.known;
+        zbp_tree.current[slot] = zbp_node.current;
+        zbp_tree.known[slot] = zbp_node.known;
+        node_idx += 1;
+    }
+}
+
+#[inline(always)]
+fn j2k_packet_tag_tree_encode(
+    tree: &mut J2kPacketTagTree,
+    x: u32,
+    y: u32,
+    max_value: u32,
+    writer: &mut J2kPacketBitWriter,
+) {
+    let mut path = [0_u32; J2K_PACKET_MAX_TAG_LEVELS];
+    let mut cx = x;
+    let mut cy = y;
+    let mut level = 0_u32;
+    while level < tree.levels {
+        path[level as usize] = tree.offsets[level as usize] + cy * tree.widths[level as usize] + cx;
+        cx >>= 1;
+        cy >>= 1;
+        level += 1;
+    }
+
+    let mut parent_value = 0_u32;
+    let mut reverse = tree.levels;
+    while reverse > 0 {
+        let node_idx = path[(reverse - 1) as usize];
+        let slot = node_idx as usize;
+        let mut start = tree.current[slot].max(parent_value);
+        if tree.known[slot] == 0 {
+            let target = tree.values[slot].min(max_value);
+            while start < target {
+                j2k_packet_write_bit(writer, 0);
+                start += 1;
+            }
+            if tree.values[slot] < max_value {
+                j2k_packet_write_bit(writer, 1);
+                tree.known[slot] = 1;
+            }
+            tree.current[slot] = target;
+        }
+        parent_value = tree.current[slot];
+        reverse -= 1;
+    }
+}
+
+#[inline(always)]
+fn j2k_packet_header_result(
+    code: u32,
+    detail: u32,
+    header_len: u32,
+    body_len: u32,
+    output_len: u32,
+) -> J2kPacketHeaderResult {
+    J2kPacketHeaderResult {
+        code,
+        detail,
+        header_len,
+        body_len,
+        output_len,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn j2k_packet_build_header_serial(
+    payload_len: u64,
+    packet: J2kHtPacketJob,
+    subbands: *const J2kHtPacketSubband,
+    blocks: *const J2kHtPacketBlock,
+    tag_states: *const J2kHtPacketSubbandTagState,
+    tag_nodes: *const J2kHtPacketTagNodeState,
+    tag_state_count: u64,
+    tag_node_count: u64,
+    packet_out: *mut u8,
+) -> J2kPacketHeaderResult {
+    let mut writer = j2k_packet_writer_init(packet_out, packet.output_capacity);
+
+    let mut any_data = 0_u32;
+    let mut subband_idx = 0_u32;
+    while subband_idx < packet.subband_count {
+        let subband = load_job(subbands, packet.subband_start + subband_idx);
+        if subband.num_cbs_x == 0
+            || subband.num_cbs_y == 0
+            || subband.num_cbs_x.checked_mul(subband.num_cbs_y) != Some(subband.block_count)
+        {
+            return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 7, 0, 0, 0);
+        }
+        let mut idx = 0_u32;
+        while idx < subband.block_count {
+            let block = load_job(blocks, subband.block_start + idx);
+            if block.num_coding_passes > 0 {
+                any_data = 1;
+            }
+            if block.num_coding_passes > 164 {
+                return j2k_packet_header_result(J2K_ENCODE_STATUS_UNSUPPORTED, 1, 0, 0, 0);
+            }
+            let Some(data_end) = (block.data_offset as u64).checked_add(block.data_len as u64)
+            else {
+                return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 2, 0, 0, 0);
+            };
+            if data_end > payload_len {
+                return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 2, 0, 0, 0);
+            }
+            if block.num_coding_passes == 0 {
+                if block.data_len != 0 || block.cleanup_length != 0 || block.refinement_length != 0
+                {
+                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 10, 0, 0, 0);
+                }
+            } else if block.num_coding_passes == 1 {
+                let cleanup_length = if block.cleanup_length == 0 {
+                    block.data_len
+                } else {
+                    block.cleanup_length
+                };
+                if cleanup_length != block.data_len || block.refinement_length != 0 {
+                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 11, 0, 0, 0);
+                }
+            } else {
+                let segment_len = block.cleanup_length as u64 + block.refinement_length as u64;
+                if block.cleanup_length == 0
+                    || block.refinement_length == 0
+                    || segment_len != block.data_len as u64
+                    || block.cleanup_length < 2
+                    || block.cleanup_length >= 65_535
+                    || block.refinement_length >= 2047
+                {
+                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 12, 0, 0, 0);
+                }
+            }
+            idx += 1;
+        }
+        subband_idx += 1;
+    }
+
+    if any_data == 0 {
+        j2k_packet_write_bit(&mut writer, 0);
+        j2k_packet_finish(&mut writer);
+        if writer.failed != 0 {
+            return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 3, 0, 0, 0);
+        }
+        return j2k_packet_header_result(J2K_ENCODE_STATUS_OK, 0, writer.pos, 0, writer.pos);
+    }
+
+    j2k_packet_write_bit(&mut writer, 1);
+    subband_idx = 0;
+    while subband_idx < packet.subband_count {
+        let subband_meta_idx = packet.subband_start + subband_idx;
+        let subband = load_job(subbands, subband_meta_idx);
+        let mut inclusion_tree = j2k_packet_tag_tree_new();
+        let mut zbp_tree = j2k_packet_tag_tree_new();
+        j2k_packet_build_tag_trees(
+            &mut inclusion_tree,
+            &mut zbp_tree,
+            subband,
+            blocks,
+            tag_states,
+            tag_nodes,
+            tag_state_count,
+            tag_node_count,
+            subband_meta_idx,
+        );
+        if inclusion_tree.failed != 0 || zbp_tree.failed != 0 {
+            return j2k_packet_header_result(J2K_ENCODE_STATUS_UNSUPPORTED, 8, 0, 0, 0);
+        }
+
+        let mut idx = 0_u32;
+        while idx < subband.block_count {
+            let block = load_job(blocks, subband.block_start + idx);
+            let x = idx % subband.num_cbs_x;
+            let y = idx / subband.num_cbs_x;
+            if block.previously_included == 0 {
+                if block.num_coding_passes > 0 && block.inclusion_layer != packet.layer {
+                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 9, 0, 0, 0);
+                }
+                j2k_packet_tag_tree_encode(
+                    &mut inclusion_tree,
+                    x,
+                    y,
+                    packet.layer + 1,
+                    &mut writer,
+                );
+                if block.num_coding_passes == 0 {
+                    idx += 1;
+                    continue;
+                }
+                j2k_packet_tag_tree_encode(
+                    &mut zbp_tree,
+                    x,
+                    y,
+                    block.num_zero_bitplanes + 1,
+                    &mut writer,
+                );
+            } else if block.num_coding_passes > 0 {
+                j2k_packet_write_bit(&mut writer, 1);
+            } else {
+                j2k_packet_write_bit(&mut writer, 0);
+                idx += 1;
+                continue;
+            }
+            j2k_packet_encode_num_ht_passes(&mut writer, block.num_coding_passes);
+            j2k_packet_encode_ht_segment_lengths(&mut writer, block);
+            idx += 1;
+        }
+        subband_idx += 1;
+    }
+
+    j2k_packet_finish(&mut writer);
+    if writer.failed != 0 {
+        return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 4, 0, 0, 0);
+    }
+    if writer.pos > 0 && load_u8(packet_out.cast_const(), (writer.pos - 1) as u64) == 0xff {
+        if writer.pos >= packet.output_capacity {
+            return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 5, 0, 0, 0);
+        }
+        store_u8(packet_out, writer.pos as u64, 0);
+        writer.pos += 1;
+    }
+
+    let header_len = writer.pos;
+    let mut body_len = 0_u32;
+    subband_idx = 0;
+    while subband_idx < packet.subband_count {
+        let subband = load_job(subbands, packet.subband_start + subband_idx);
+        let mut idx = 0_u32;
+        while idx < subband.block_count {
+            let block = load_job(blocks, subband.block_start + idx);
+            if block.num_coding_passes != 0 && block.data_len != 0 {
+                let Some(next_body_len) = body_len.checked_add(block.data_len) else {
+                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 6, 0, 0, 0);
+                };
+                let Some(total_len) = header_len.checked_add(next_body_len) else {
+                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 6, 0, 0, 0);
+                };
+                if total_len > packet.output_capacity {
+                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 6, 0, 0, 0);
+                }
+                body_len = next_body_len;
+            }
+            idx += 1;
+        }
+        subband_idx += 1;
+    }
+
+    j2k_packet_header_result(
+        J2K_ENCODE_STATUS_OK,
+        0,
+        header_len,
+        body_len,
+        header_len + body_len,
+    )
+}
+
+#[inline(always)]
+fn j2k_packet_copy_body_cooperative(
+    payload: *const u8,
+    packet: J2kHtPacketJob,
+    subbands: *const J2kHtPacketSubband,
+    blocks: *const J2kHtPacketBlock,
+    packet_out: *mut u8,
+    header_len: u32,
+    body_len: u32,
+) {
+    let mut body_byte = thread::threadIdx_x();
+    let step = thread::blockDim_x();
+    while body_byte < body_len {
+        let mut remaining = body_byte;
+        let mut copied = false;
+        let mut subband_idx = 0_u32;
+        while subband_idx < packet.subband_count && !copied {
+            let subband = load_job(subbands, packet.subband_start + subband_idx);
+            let mut idx = 0_u32;
+            while idx < subband.block_count {
+                let block = load_job(blocks, subband.block_start + idx);
+                if block.num_coding_passes != 0 && block.data_len != 0 {
+                    if remaining < block.data_len {
+                        store_u8(
+                            packet_out,
+                            (header_len + body_byte) as u64,
+                            load_u8(payload, (block.data_offset + remaining) as u64),
+                        );
+                        copied = true;
+                        break;
+                    }
+                    remaining -= block.data_len;
+                }
+                idx += 1;
+            }
+            subband_idx += 1;
+        }
+        body_byte += step;
+    }
 }
 
 #[inline(always)]
@@ -693,6 +1432,68 @@ mod kernels {
             );
             idx += step;
         }
+    }
+
+    #[kernel]
+    pub unsafe fn j2k_htj2k_packetize_cleanup(
+        payload: *const u8,
+        payload_len: u64,
+        packets: *const J2kHtPacketJob,
+        subbands: *const J2kHtPacketSubband,
+        blocks: *const J2kHtPacketBlock,
+        tag_states: *const J2kHtPacketSubbandTagState,
+        tag_nodes: *const J2kHtPacketTagNodeState,
+        tag_state_count: u64,
+        tag_node_count: u64,
+        out: *mut u8,
+        statuses: *mut J2kHtPacketStatus,
+        packet_count: u64,
+    ) {
+        static mut HEADER_RESULT: SharedArray<u32, 3> = SharedArray::UNINIT;
+
+        let packet_idx = thread::blockIdx_x() as u64;
+        if packet_idx >= packet_count {
+            return;
+        }
+
+        let packet = load_job(packets, packet_idx as u32);
+        let status = unsafe { statuses.add(packet_idx as usize) };
+        let packet_out = unsafe { out.add(packet.output_offset as usize) };
+        let header_result = unsafe { HEADER_RESULT.as_mut_ptr() };
+
+        if thread::threadIdx_x() == 0 {
+            let result = j2k_packet_build_header_serial(
+                payload_len,
+                packet,
+                subbands,
+                blocks,
+                tag_states,
+                tag_nodes,
+                tag_state_count,
+                tag_node_count,
+                packet_out,
+            );
+            store_u32(header_result, 0, result.code);
+            store_u32(header_result, 1, result.header_len);
+            store_u32(header_result, 2, result.body_len);
+            j2k_packet_status(status, result.code, result.detail, result.output_len);
+        }
+        thread::sync_threads();
+
+        let shared_code = load_u32(header_result.cast_const(), 0);
+        let shared_body_len = load_u32(header_result.cast_const(), 2);
+        if shared_code != J2K_ENCODE_STATUS_OK || shared_body_len == 0 {
+            return;
+        }
+        j2k_packet_copy_body_cooperative(
+            payload,
+            packet,
+            subbands,
+            blocks,
+            packet_out,
+            load_u32(header_result.cast_const(), 1),
+            shared_body_len,
+        );
     }
 }
 
