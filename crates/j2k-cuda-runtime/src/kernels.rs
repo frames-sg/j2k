@@ -170,8 +170,24 @@ impl CudaKernel {
     }
 
     #[cfg_attr(not(feature = "cuda-oxide-transcode"), allow(dead_code))]
+    pub(crate) fn is_transcode_dwt97_batch_stage(self) -> bool {
+        matches!(
+            self,
+            Self::TranscodeDwt97IdctBatch
+                | Self::TranscodeDwt97IdctI16Batch
+                | Self::TranscodeDwt97RowLiftBatch
+                | Self::TranscodeDwt97RowLiftBatchCoop
+                | Self::TranscodeDwt97ColumnLiftBatch
+                | Self::TranscodeDwt97QuantizeCodeblocks
+                | Self::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch
+        )
+    }
+
+    #[cfg_attr(not(feature = "cuda-oxide-transcode"), allow(dead_code))]
     pub(crate) fn is_cuda_oxide_transcode_stage(self) -> bool {
-        self.is_transcode_reversible53_stage() || self.is_transcode_dwt97_single_stage()
+        self.is_transcode_reversible53_stage()
+            || self.is_transcode_dwt97_single_stage()
+            || self.is_transcode_dwt97_batch_stage()
     }
 
     pub(crate) fn ptx(self) -> &'static [u8] {
@@ -911,6 +927,13 @@ mod tests {
             CudaKernel::TranscodeDwt97Idct,
             CudaKernel::TranscodeDwt97RowLift,
             CudaKernel::TranscodeDwt97ColumnLift,
+            CudaKernel::TranscodeDwt97IdctBatch,
+            CudaKernel::TranscodeDwt97IdctI16Batch,
+            CudaKernel::TranscodeDwt97RowLiftBatch,
+            CudaKernel::TranscodeDwt97RowLiftBatchCoop,
+            CudaKernel::TranscodeDwt97ColumnLiftBatch,
+            CudaKernel::TranscodeDwt97QuantizeCodeblocks,
+            CudaKernel::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch,
         ];
         for kernel in kernels {
             assert!(kernel.is_cuda_oxide_transcode_stage());
