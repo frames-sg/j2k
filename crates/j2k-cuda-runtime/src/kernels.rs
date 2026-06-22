@@ -85,6 +85,23 @@ pub(crate) struct CudaLaunchGeometry {
 }
 
 impl CudaKernel {
+    #[cfg_attr(not(feature = "cuda-oxide-j2k-encode"), allow(dead_code))]
+    pub(crate) fn is_j2k_encode_stage(self) -> bool {
+        matches!(
+            self,
+            Self::J2kDeinterleaveToF32
+                | Self::J2kDeinterleaveStridedToF32
+                | Self::J2kForwardRct
+                | Self::J2kForwardIct
+                | Self::J2kForwardDwt53Horizontal
+                | Self::J2kForwardDwt53Vertical
+                | Self::J2kForwardDwt97Horizontal
+                | Self::J2kForwardDwt97Vertical
+                | Self::J2kQuantizeSubband
+                | Self::J2kQuantizeSubbandStrided
+        )
+    }
+
     pub(crate) fn ptx(self) -> &'static [u8] {
         match self {
             Self::CopyU8 => COPY_U8_PTX,
@@ -272,6 +289,9 @@ const TRANSCODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/transcode
 #[cfg(feature = "cuda-oxide-copy-u8")]
 const CUDA_OXIDE_COPY_U8_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_copy_u8.ptx"));
+#[cfg(feature = "cuda-oxide-j2k-encode")]
+const CUDA_OXIDE_J2K_ENCODE_PTX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_j2k_encode.ptx"));
 const HTJ2K_DECODE_CODEBLOCK_THREADS: usize = 32;
 const HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA: c_uint = 32;
 const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
@@ -432,6 +452,11 @@ pub(crate) fn htj2k_packetize_launch_geometry(packet_count: usize) -> Option<Cud
 #[cfg(feature = "cuda-oxide-copy-u8")]
 pub(crate) fn cuda_oxide_copy_u8_ptx() -> &'static [u8] {
     CUDA_OXIDE_COPY_U8_PTX
+}
+
+#[cfg(feature = "cuda-oxide-j2k-encode")]
+pub(crate) fn cuda_oxide_j2k_encode_ptx() -> &'static [u8] {
+    CUDA_OXIDE_J2K_ENCODE_PTX
 }
 
 const COPY_U8_PTX: &[u8] = concat!(
@@ -643,6 +668,36 @@ mod tests {
             std::str::from_utf8(&J2K_ENCODE_PTX[..J2K_ENCODE_PTX.len() - 1]).expect("ptx utf8");
         assert!(source.contains(".visible .entry j2k_deinterleave_to_f32("));
         assert!(source.contains(".visible .entry j2k_quantize_subband_strided("));
+    }
+
+    #[cfg(all(feature = "cuda-oxide-j2k-encode", j2k_cuda_oxide_j2k_encode_built))]
+    #[test]
+    fn cuda_oxide_j2k_encode_kernel_metadata_matches_generated_ptx() {
+        let ptx = cuda_oxide_j2k_encode_ptx();
+        assert_eq!(ptx.last(), Some(&0));
+        let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
+        let kernels = [
+            CudaKernel::J2kDeinterleaveToF32,
+            CudaKernel::J2kDeinterleaveStridedToF32,
+            CudaKernel::J2kForwardRct,
+            CudaKernel::J2kForwardIct,
+            CudaKernel::J2kForwardDwt53Horizontal,
+            CudaKernel::J2kForwardDwt53Vertical,
+            CudaKernel::J2kForwardDwt97Horizontal,
+            CudaKernel::J2kForwardDwt97Vertical,
+            CudaKernel::J2kQuantizeSubband,
+            CudaKernel::J2kQuantizeSubbandStrided,
+        ];
+        for kernel in kernels {
+            assert!(kernel.is_j2k_encode_stage());
+            let entrypoint =
+                std::str::from_utf8(&kernel.entrypoint()[..kernel.entrypoint().len() - 1])
+                    .expect("entrypoint utf8");
+            assert!(
+                source.contains(&format!(".visible .entry {entrypoint}(")),
+                "missing cuda-oxide J2K encode entrypoint {entrypoint}"
+            );
+        }
     }
 
     #[test]
