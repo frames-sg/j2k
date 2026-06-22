@@ -908,6 +908,63 @@ fn htj2k_encode_compact_jobs_pack_actual_payloads() {
     );
 }
 
+#[cfg(all(feature = "cuda-oxide-j2k-encode", j2k_cuda_oxide_j2k_encode_built))]
+#[test]
+fn cuda_oxide_htj2k_compact_codeblocks_assembles_payload_when_required() {
+    if !cuda_runtime_required() || std::env::var_os("J2K_CUDA_USE_OXIDE_J2K_ENCODE").is_none() {
+        return;
+    }
+
+    const J2K_HT_MEL_SIZE: usize = 192;
+    const J2K_HT_VLC_SIZE: usize = 3072 - J2K_HT_MEL_SIZE;
+    const J2K_HT_MS_SIZE: usize = ((16384 * 16) + 14) / 15;
+    const J2K_HT_MEL_OFFSET: usize = J2K_HT_MS_SIZE;
+    const J2K_HT_VLC_OFFSET: usize = J2K_HT_MS_SIZE + J2K_HT_MEL_SIZE;
+    const J2K_HT_COMPACT_ASSEMBLE_FLAG: u32 = 0x8000_0000;
+
+    let context = CudaContext::system_default().expect("CUDA context");
+    let source_offset = 3usize;
+    let plain_source_offset = source_offset + J2K_HT_VLC_OFFSET + J2K_HT_VLC_SIZE + 8;
+    let mut scratch = vec![0u8; plain_source_offset + 4];
+    scratch[source_offset..source_offset + 3].copy_from_slice(&[10, 11, 12]);
+    scratch[source_offset + J2K_HT_MEL_OFFSET..source_offset + J2K_HT_MEL_OFFSET + 2]
+        .copy_from_slice(&[20, 21]);
+    let vlc_start = source_offset + J2K_HT_VLC_OFFSET + J2K_HT_VLC_SIZE - 3;
+    scratch[vlc_start..vlc_start + 3].copy_from_slice(&[30, 31, 32]);
+    scratch[plain_source_offset..plain_source_offset + 4].copy_from_slice(&[40, 41, 42, 43]);
+    let jobs = [
+        super::CudaHtj2kEncodeCompactJob {
+            source_offset: u32::try_from(source_offset).expect("source offset fits"),
+            compact_offset: 0,
+            data_len: 8,
+            reserved: J2K_HT_COMPACT_ASSEMBLE_FLAG | 2 | (3 << 15),
+        },
+        super::CudaHtj2kEncodeCompactJob {
+            source_offset: u32::try_from(plain_source_offset).expect("plain offset fits"),
+            compact_offset: 8,
+            data_len: 4,
+            reserved: 0,
+        },
+    ];
+    let expected = [10, 11, 12, 20, 21, 30, 0x15, 0, 40, 41, 42, 43];
+
+    let scratch_buffer = context.upload(&scratch).expect("scratch upload");
+    let compact_buffer = context.allocate(expected.len()).expect("compact output");
+    let jobs_buffer = context
+        .upload(super::bytes::htj2k_encode_compact_jobs_as_bytes(&jobs))
+        .expect("compact job upload");
+
+    context
+        .launch_htj2k_compact_codeblocks(&scratch_buffer, &compact_buffer, &jobs_buffer, jobs.len())
+        .expect("cuda-oxide compact codeblocks");
+    let mut actual = vec![0u8; expected.len()];
+    compact_buffer
+        .copy_to_host(&mut actual)
+        .expect("download compact output");
+
+    assert_eq!(actual, expected);
+}
+
 #[test]
 fn htj2k_encode_resources_feed_resident_region_encode_when_required() {
     if !cuda_runtime_required() {

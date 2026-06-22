@@ -102,6 +102,11 @@ impl CudaKernel {
         )
     }
 
+    #[cfg_attr(not(feature = "cuda-oxide-j2k-encode"), allow(dead_code))]
+    pub(crate) fn is_cuda_oxide_j2k_encode_stage(self) -> bool {
+        self.is_j2k_encode_stage() || matches!(self, Self::Htj2kCompactCodeblocks)
+    }
+
     #[cfg_attr(not(feature = "cuda-oxide-j2k-decode-store"), allow(dead_code))]
     pub(crate) fn is_j2k_decode_store_stage(self) -> bool {
         matches!(
@@ -807,9 +812,10 @@ mod tests {
             CudaKernel::J2kForwardDwt97Vertical,
             CudaKernel::J2kQuantizeSubband,
             CudaKernel::J2kQuantizeSubbandStrided,
+            CudaKernel::Htj2kCompactCodeblocks,
         ];
         for kernel in kernels {
-            assert!(kernel.is_j2k_encode_stage());
+            assert!(kernel.is_cuda_oxide_j2k_encode_stage());
             let entrypoint =
                 std::str::from_utf8(&kernel.entrypoint()[..kernel.entrypoint().len() - 1])
                     .expect("entrypoint utf8");
