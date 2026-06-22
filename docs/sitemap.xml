@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://frames-sg.github.io/j2k/</loc>
+    <lastmod>2026-06-22</lastmod>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://frames-sg.github.io/j2k/rust-jpeg2000-codec/</loc>
+    <lastmod>2026-06-22</lastmod>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://frames-sg.github.io/j2k/gpu-jpeg2000-rust/</loc>
+    <lastmod>2026-06-22</lastmod>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://frames-sg.github.io/j2k/cuda-jpeg2000-rust/</loc>
+    <lastmod>2026-06-22</lastmod>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://frames-sg.github.io/j2k/metal-jpeg2000-rust/</loc>
+    <lastmod>2026-06-22</lastmod>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://frames-sg.github.io/j2k/htj2k-rust/</loc>
+    <lastmod>2026-06-22</lastmod>
+    <priority>0.9</priority>
+  </url>
+</urlset>

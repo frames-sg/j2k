@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPU JPEG2000 Rust - J2K</title>
+  <meta name="description" content="GPU JPEG2000 Rust support in J2K: CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <link rel="canonical" href="https://frames-sg.github.io/j2k/gpu-jpeg2000-rust/">
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="bar">
+      <a class="brand" href="../">J2K</a>
+      <nav class="nav" aria-label="Primary">
+        <a href="../rust-jpeg2000-codec/">Rust JPEG 2000</a>
+        <a href="../cuda-jpeg2000-rust/">CUDA</a>
+        <a href="../metal-jpeg2000-rust/">Metal</a>
+        <a href="../htj2k-rust/">HTJ2K</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="eyebrow">GPU JPEG2000 Rust</p>
+          <h1>GPU JPEG2000 Rust</h1>
+          <p class="lead">J2K keeps CPU decode and encode as the correctness baseline while exposing CUDA and Apple Metal GPU adapters for supported JPEG 2000 / HTJ2K paths.</p>
+          <div class="actions">
+            <a class="button primary" href="https://crates.io/crates/j2k">j2k crate</a>
+            <a class="button" href="https://github.com/frames-sg/j2k">Source</a>
+          </div>
+        </div>
+        <img class="diagram" src="../assets/j2k-gpu-pipeline.svg" alt="GPU JPEG2000 Rust backend map">
+      </div>
+    </section>
+    <section class="section">
+      <div class="wrap grid three">
+        <article class="card">
+          <h2>CPU baseline</h2>
+          <p>Portable CPU paths remain available for general JPEG 2000 / HTJ2K application code.</p>
+        </article>
+        <article class="card">
+          <h2>CUDA</h2>
+          <p>`j2k-cuda`, `j2k-jpeg-cuda`, and `j2k-transcode-cuda` integrate NVIDIA device surfaces and kernels for supported shapes.</p>
+        </article>
+        <article class="card">
+          <h2>Metal</h2>
+          <p>`j2k-metal`, `j2k-jpeg-metal`, and `j2k-transcode-metal` integrate Apple Metal-backed paths on macOS.</p>
+        </article>
+      </div>
+    </section>
+    <section class="section alt">
+      <div class="wrap copy">
+        <h2>Strict backend behavior</h2>
+        <p>`BackendRequest::Auto` may choose CPU for unsupported or unbenchmarked shapes. Explicit CUDA or Metal requests are strict and report unsupported paths clearly.</p>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <p>GPU JPEG2000 Rust documentation for J2K.</p>
+      <p><a href="../sitemap.xml">Sitemap</a></p>
+    </div>
+  </footer>
+</body>
+</html>

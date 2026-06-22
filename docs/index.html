@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>J2K: Rust JPEG 2000 / HTJ2K GPU Codec</title>
+  <meta name="description" content="J2K is a Rust JPEG 2000 / HTJ2K codec workspace with CPU decode and encode APIs plus CUDA and Apple Metal GPU adapter crates.">
+  <link rel="canonical" href="https://frames-sg.github.io/j2k/">
+  <meta property="og:title" content="J2K: Rust JPEG 2000 / HTJ2K GPU Codec">
+  <meta property="og:description" content="Rust JPEG 2000, JPEG2000, JP2, J2K, HTJ2K, CUDA, and Metal GPU codec crates.">
+  <meta property="og:url" content="https://frames-sg.github.io/j2k/">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="assets/site.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "name": "J2K",
+    "headline": "J2K: Rust JPEG 2000 / HTJ2K GPU Codec",
+    "codeRepository": "https://github.com/frames-sg/j2k",
+    "programmingLanguage": "Rust",
+    "license": "https://www.apache.org/licenses/LICENSE-2.0",
+    "url": "https://frames-sg.github.io/j2k/",
+    "description": "Rust JPEG 2000 and HTJ2K codec APIs with CUDA and Apple Metal GPU adapter support."
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="bar">
+      <a class="brand" href="./">J2K</a>
+      <nav class="nav" aria-label="Primary">
+        <a href="rust-jpeg2000-codec/">Rust JPEG 2000</a>
+        <a href="gpu-jpeg2000-rust/">GPU JPEG2000</a>
+        <a href="cuda-jpeg2000-rust/">CUDA</a>
+        <a href="metal-jpeg2000-rust/">Metal</a>
+        <a href="htj2k-rust/">HTJ2K</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="eyebrow">Rust image codec workspace</p>
+          <h1>J2K: Rust JPEG 2000 / HTJ2K GPU Codec</h1>
+          <p class="lead">J2K provides JPEG 2000 / HTJ2K inspect, decode, encode, recode, and JPEG-to-J2K/HTJ2K transcode APIs for Rust, with optional CUDA and Apple Metal GPU adapter crates for supported paths.</p>
+          <div class="actions">
+            <a class="button primary" href="https://crates.io/crates/j2k">crates.io/j2k</a>
+            <a class="button" href="https://docs.rs/j2k">docs.rs/j2k</a>
+            <a class="button" href="https://github.com/frames-sg/j2k">GitHub</a>
+          </div>
+          <ul class="tag-list" aria-label="Search terms">
+            <li>Rust JPEG 2000 codec</li>
+            <li>GPU JPEG2000 Rust</li>
+            <li>CUDA JPEG 2000 Rust</li>
+            <li>Metal JPEG2000 Rust</li>
+            <li>HTJ2K Rust</li>
+          </ul>
+        </div>
+        <img class="diagram" src="assets/j2k-gpu-pipeline.svg" alt="J2K Rust JPEG 2000 and HTJ2K GPU codec pipeline">
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap grid three">
+        <article class="card">
+          <h2>Use the public crate</h2>
+          <p>Application code should start with the `j2k` facade crate for JPEG 2000 / HTJ2K inspect, decode, encode, and recode APIs.</p>
+          <pre class="code">cargo add j2k</pre>
+        </article>
+        <article class="card">
+          <h2>Choose GPU adapters</h2>
+          <p>CUDA and Metal crates provide device-specific integration for supported decode, encode-stage, and transcode routes.</p>
+          <pre class="code">cargo add j2k-cuda --features cuda-runtime
+cargo add j2k-metal</pre>
+        </article>
+        <article class="card">
+          <h2>Transcode JPEG tiles</h2>
+          <p>`j2k-transcode` owns JPEG-to-J2K/HTJ2K primitives, with CUDA and Metal adapter crates for supported stage acceleration.</p>
+          <pre class="code">cargo add j2k-transcode</pre>
+        </article>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="wrap">
+        <h2>Targeted documentation</h2>
+        <div class="grid three">
+          <a class="card" href="rust-jpeg2000-codec/">
+            <h3>Rust JPEG 2000 Codec</h3>
+            <p>Decode, encode, JP2/J2K codestream handling, and crate selection.</p>
+          </a>
+          <a class="card" href="gpu-jpeg2000-rust/">
+            <h3>GPU JPEG2000 Rust</h3>
+            <p>Backend posture, CPU fallback, CUDA, Metal, and strict device requests.</p>
+          </a>
+          <a class="card" href="cuda-jpeg2000-rust/">
+            <h3>CUDA JPEG2000 Rust</h3>
+            <p>NVIDIA CUDA adapter crates and runtime feature boundaries.</p>
+          </a>
+          <a class="card" href="metal-jpeg2000-rust/">
+            <h3>Metal JPEG2000 Rust</h3>
+            <p>Apple Metal adapter crates for macOS GPU-backed paths.</p>
+          </a>
+          <a class="card" href="htj2k-rust/">
+            <h3>HTJ2K Rust</h3>
+            <p>High-throughput JPEG 2000 APIs, recode, and transcode routes.</p>
+          </a>
+          <a class="card" href="sitemap.xml">
+            <h3>Sitemap</h3>
+            <p>Submit this sitemap in Google Search Console after site verification.</p>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap copy">
+        <h2>Backend policy</h2>
+        <p>CPU remains the portable correctness baseline. `BackendRequest::Auto` may return CPU output when a device path is unavailable, unsupported, or not benchmarked for a requested shape. Explicit CUDA and Metal requests are strict and return errors for unsupported shapes instead of silently changing backend.</p>
+        <p class="note">Published GPU performance claims should cite host hardware, operating system, input source, exact command, comparator availability, and comparator versions.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <p>J2K is Apache-2.0 licensed.</p>
+      <p><a href="https://github.com/frames-sg/j2k">Repository</a> · <a href="https://docs.rs/j2k">API docs</a> · <a href="https://crates.io/crates/j2k">Crate</a></p>
+    </div>
+  </footer>
+</body>
+</html>
