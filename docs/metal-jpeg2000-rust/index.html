@@ -6,6 +6,29 @@
   <title>Metal JPEG2000 Rust - J2K</title>
   <meta name="description" content="Metal JPEG2000 Rust support in J2K: Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths on macOS.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/metal-jpeg2000-rust/">
+  <meta property="og:title" content="Metal JPEG2000 Rust">
+  <meta property="og:description" content="Metal JPEG2000 Rust support in J2K: Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths on macOS.">
+  <meta property="og:url" content="https://frames-sg.github.io/j2k/metal-jpeg2000-rust/">
+  <meta property="og:type" content="article">
+  <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Metal JPEG2000 Rust">
+  <meta name="twitter:description" content="Metal JPEG2000 Rust support in J2K: Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths on macOS.">
+  <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Metal JPEG2000 Rust",
+    "description": "Metal JPEG2000 Rust support in J2K: Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths on macOS.",
+    "url": "https://frames-sg.github.io/j2k/metal-jpeg2000-rust/",
+    "isPartOf": { "@type": "SoftwareSourceCode", "name": "J2K", "codeRepository": "https://github.com/frames-sg/j2k", "programmingLanguage": "Rust" }
+  }
+  </script>
   <link rel="stylesheet" href="../assets/site.css">
 </head>
 <body>
@@ -39,17 +62,17 @@
       <div class="wrap grid three">
         <article class="card">
           <h2>Codec adapter</h2>
-          <p>`j2k-metal` exposes Apple Metal-backed JPEG 2000 / HTJ2K decode and encode-stage adapter APIs.</p>
+          <p><code>j2k-metal</code> exposes Apple Metal-backed JPEG 2000 / HTJ2K decode and encode-stage adapter APIs.</p>
           <pre class="code">cargo add j2k-metal</pre>
         </article>
         <article class="card">
           <h2>JPEG input adapter</h2>
-          <p>`j2k-jpeg-metal` provides Metal-backed JPEG decode surfaces and selected baseline encode paths.</p>
+          <p><code>j2k-jpeg-metal</code> provides Metal-backed JPEG decode surfaces and selected baseline encode paths.</p>
           <pre class="code">cargo add j2k-jpeg-metal</pre>
         </article>
         <article class="card">
           <h2>Transcode adapter</h2>
-          <p>`j2k-transcode-metal` accelerates supported JPEG-to-J2K/HTJ2K transcode stages on macOS.</p>
+          <p><code>j2k-transcode-metal</code> accelerates supported JPEG-to-J2K/HTJ2K transcode stages on macOS.</p>
           <pre class="code">cargo add j2k-transcode-metal</pre>
         </article>
       </div>

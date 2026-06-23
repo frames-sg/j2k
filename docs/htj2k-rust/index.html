@@ -6,6 +6,29 @@
   <title>HTJ2K Rust - J2K</title>
   <meta name="description" content="HTJ2K Rust support in J2K: high-throughput JPEG 2000 decode, encode, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/htj2k-rust/">
+  <meta property="og:title" content="HTJ2K Rust">
+  <meta property="og:description" content="HTJ2K Rust support in J2K: high-throughput JPEG 2000 decode, encode, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.">
+  <meta property="og:url" content="https://frames-sg.github.io/j2k/htj2k-rust/">
+  <meta property="og:type" content="article">
+  <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="HTJ2K Rust">
+  <meta name="twitter:description" content="HTJ2K Rust support in J2K: high-throughput JPEG 2000 decode, encode, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.">
+  <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "HTJ2K Rust",
+    "description": "HTJ2K Rust support in J2K: high-throughput JPEG 2000 decode, encode, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.",
+    "url": "https://frames-sg.github.io/j2k/htj2k-rust/",
+    "isPartOf": { "@type": "SoftwareSourceCode", "name": "J2K", "codeRepository": "https://github.com/frames-sg/j2k", "programmingLanguage": "Rust" }
+  }
+  </script>
   <link rel="stylesheet" href="../assets/site.css">
 </head>
 <body>
@@ -39,7 +62,7 @@
       <div class="wrap grid three">
         <article class="card">
           <h2>Decode and encode</h2>
-          <p>The `j2k` facade owns public JPEG 2000 / HTJ2K application APIs and reexports shared backend contracts.</p>
+          <p>The <code>j2k</code> facade owns public JPEG 2000 / HTJ2K application APIs and reexports shared backend contracts.</p>
           <pre class="code">cargo add j2k</pre>
         </article>
         <article class="card">
@@ -48,7 +71,7 @@
         </article>
         <article class="card">
           <h2>Transcode</h2>
-          <p>`j2k-transcode` provides JPEG-to-J2K/HTJ2K primitives with CUDA and Metal acceleration crates for supported stages.</p>
+          <p><code>j2k-transcode</code> provides JPEG-to-J2K/HTJ2K primitives with CUDA and Metal acceleration crates for supported stages.</p>
           <pre class="code">cargo add j2k-transcode</pre>
         </article>
       </div>
