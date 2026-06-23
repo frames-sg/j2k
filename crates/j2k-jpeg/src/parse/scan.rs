@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Parse the Start-of-Scan segment payload into per-component DC/AC Huffman
 //! table selectors plus the spectral selection (`Ss`, `Se`) and successive-

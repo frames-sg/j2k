@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! CUDA codec engine and Driver API runtime used by J2K CUDA adapter crates.
 

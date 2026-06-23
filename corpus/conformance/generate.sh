@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT OR Apache-2.0
 #
 # Regenerate libjpeg-turbo reference fixtures. Run once, commit the output.
 # CI does NOT run this — it only reads the committed files.

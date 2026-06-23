@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // Bit-exact parity: CUDA reversible 5/3 DCT->wavelet transcode vs the
 //j2k-transcode scalar oracle. Mirrors j2k-transcode-metal's dct53.rs.

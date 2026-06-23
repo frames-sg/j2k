@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! NVIDIA GPU codec baseline (nvJPEG + nvJPEG2000) for benchmarking j2k's
 //! coefficient-domain JPEG → HTJ2K transcode against the conventional

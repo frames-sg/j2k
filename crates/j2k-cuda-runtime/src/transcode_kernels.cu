@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // CUDA kernels for j2k-transcode-cuda: direct DCT-coefficient-domain
 // JPEG -> HTJ2K transform stages. These port the j2k-transcode SCALAR

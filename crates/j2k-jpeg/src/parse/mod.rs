@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! JPEG marker-level parser. Walks the byte stream until the end of the
 //! headers (the SOS marker) and populates [`crate::info::Info`] plus the

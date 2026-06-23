@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Property-based tests: the parser must never panic on arbitrary bytes,
 //! must always return a typed `JpegError`, and must not consume unbounded

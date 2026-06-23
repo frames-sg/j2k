@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 /// Integer sample width used by a pixel format or row sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

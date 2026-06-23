@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Hot-path backend dispatch for interleaved RGB row production and the 8×8
 //! inverse DCT.

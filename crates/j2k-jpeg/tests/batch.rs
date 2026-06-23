@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Batch decode via [`Decoder::decode_tile`]: sequential output must match
 //! parallel output byte-for-byte across a worker pool. Validates the
