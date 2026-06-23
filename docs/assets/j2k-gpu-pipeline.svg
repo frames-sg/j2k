@@ -19,7 +19,7 @@
   </g>
 
   <!-- central hub: the public j2k crate (accented) -->
-  <rect x="230" y="188" width="300" height="96" rx="10" fill="#fdf4ef" stroke="#b7410e" stroke-width="2.5"/>
+  <rect x="196" y="188" width="368" height="96" rx="10" fill="#fdf4ef" stroke="#b7410e" stroke-width="2.5"/>
 
   <g font-family="Inter, Arial, sans-serif" fill="#172026">
     <text x="66" y="72" font-size="22" font-weight="700">JPEG 2000</text>
@@ -29,8 +29,8 @@
     <text x="538" y="72" font-size="22" font-weight="700">JPEG input</text>
     <text x="538" y="98" font-size="15" fill="#52616b">Transcode paths</text>
 
-    <text x="252" y="228" font-size="23" font-weight="700">j2k crate</text>
-    <text x="252" y="255" font-size="15" fill="#52616b">Rust decode · encode · recode · transcode</text>
+    <text x="380" y="228" text-anchor="middle" font-size="23" font-weight="700">j2k crate</text>
+    <text x="380" y="255" text-anchor="middle" font-size="14" fill="#52616b">Rust decode · encode · recode · transcode</text>
 
     <text x="66" y="390" font-size="20" font-weight="700">CPU baseline</text>
     <text x="66" y="415" font-size="14" fill="#52616b">Portable correctness path</text>
