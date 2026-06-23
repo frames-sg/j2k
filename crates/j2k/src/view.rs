@@ -75,8 +75,7 @@ impl<'a> J2kView<'a> {
     }
 }
 
-/// JPEG 2000 / HTJ2K decoder with WSI-shaped full-frame, ROI, and scaled
-/// output methods.
+/// JPEG 2000 / HTJ2K decoder with full-frame, ROI, and scaled output methods.
 ///
 /// The decoder borrows compressed tile bytes and owns reusable native decode
 /// context so repeated operations can avoid reparsing backend state.

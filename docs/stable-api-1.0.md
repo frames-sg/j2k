@@ -28,3 +28,15 @@ stable public line. Manual prose in this file must not duplicate that inventory.
 - Unpublished tooling: test support, comparators, and xtask automation helpers.
 
 Breaking changes to stable crates require explicit semver review.
+
+## CLI contract
+
+`j2k-cli` currently supports:
+
+- `j2k inspect <file>`
+- `j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53`
+
+Usage errors and unsupported options return exit code `2`. Runtime failures,
+including unreadable files and unsupported codec inputs, return exit code `1`.
+Successful commands return exit code `0` and write a single summary line to
+stdout.

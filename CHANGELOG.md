@@ -3,6 +3,19 @@
 This changelog tracks the current staged release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [0.6.2]
+
+- Removes the cuda-oxide transcode IDCT per-thread local-memory table
+  materialization, reducing the self-hosted RTX 4070 SUPER cuda-oxide
+  JPEG-to-HTJ2K transcode profile from `40.813 MP/s` before the fix to
+  `380.411 MP/s` in the `v0.6.2` validation run.
+- Keeps cuda-oxide transcode opt-in and records the CUDA C vs cuda-oxide
+  benchmark evidence in the public benchmark documentation.
+- Adds `j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53` to the
+  CLI as the first conservative JPEG-to-HTJ2K smoke-test command.
+- Refreshes adoption-facing docs with a shorter quickstart, support matrix, and
+  current `0.6.x` security/environment-variable line.
+
 ## [0.6.0]
 
 - Stages the `j2k` facade release.

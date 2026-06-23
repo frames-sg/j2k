@@ -22,14 +22,16 @@ path = "src/lib.rs"
 default = []
 cuda-runtime = ["dep:j2k-cuda-runtime"]
 cuda-profiling = ["cuda-runtime", "j2k-cuda-runtime/cuda-profiling"]
+cuda-oxide-j2k-encode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-j2k-encode"]
+cuda-oxide-transcode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-transcode"]
 
 [dependencies]
-j2k-transcode = { path = "../j2k-transcode", version = "=0.6.0" }
-j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.6.0", optional = true }
-j2k-native = { path = "../j2k-native", version = "=0.6.0" }
+j2k-transcode = { path = "../j2k-transcode", version = "=0.6.2" }
+j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.6.2", optional = true }
+j2k-native = { path = "../j2k-native", version = "=0.6.2" }
 
 [dev-dependencies]
-j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.0" }
+j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.2" }
 j2k-test-support = { path = "../j2k-test-support" }
 
 [lints.rust]

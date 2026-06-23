@@ -1,8 +1,10 @@
 # Contributing
 
-Contributions should keep the workspace focused on WSI-shaped codec primitives:
-safe parsing, predictable decode behavior, caller-owned scratch/context reuse,
-and reproducible benchmarks.
+Contributions should keep the workspace focused on practical JPEG 2000 / HTJ2K
+codec infrastructure: safe parsing, predictable decode and encode behavior,
+caller-owned scratch/context reuse, optional GPU acceleration where it is
+measured to help, and reproducible benchmarks. Whole-slide imaging workloads are
+important stress cases, but the public APIs are general codec APIs.
 
 ## Development Setup
 
@@ -31,8 +33,8 @@ defines benchmark publication and no-silent-skip behavior.
 
 ## Public API Changes
 
-Public decode APIs are part of the WSI integration surface. Changes to ROI,
-scaled decode, tile-batch, row-streaming, context, scratch-pool, or device
+Public decode APIs are part of the general codec integration surface. Changes to
+ROI, scaled decode, tile-batch, row-streaming, context, scratch-pool, or device
 surface behavior should update:
 
 - README quick-start or examples when user-facing behavior changes

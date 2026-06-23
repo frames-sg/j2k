@@ -17,7 +17,7 @@ The public crate release centers on `j2k`. Runtime backend selection defaults to
 | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, route policy, and CUDA device memory integration for supported paths. |
 | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal runtime integration for supported paths. |
 | `j2k-transcode` | transcode | JPEG to J2K/HTJ2K transcode algorithms. |
-| `j2k-cli` | CLI | Command-line inspection entry point. |
+| `j2k-cli` | CLI | Command-line inspection and JPEG-to-HTJ2K smoke transcode entry point. |
 | `j2k-test-support` | dev helper | Shared fixture and benchmark input helpers for tests, benches, and examples. |
 | `j2k-compare` | tooling | Comparator tooling. |
 | `xtask` | workspace tool | Repository automation under `xtask/`. |
@@ -51,7 +51,7 @@ j2k-metal-support -> j2k-core
 j2k-cuda-runtime -> j2k-core
 j2k-transcode-metal -> j2k-core, j2k-metal-support, j2k-transcode
 j2k-transcode-cuda -> j2k-cuda-runtime, j2k-native, j2k-transcode
-j2k-cli -> j2k, j2k-jpeg
+j2k-cli -> j2k, j2k-jpeg, j2k-transcode
 ```
 
 ## Backend policy

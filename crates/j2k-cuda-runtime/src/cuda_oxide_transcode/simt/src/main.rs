@@ -373,111 +373,395 @@ const DWT97_ROW_LIFT_ROWS_PER_BLOCK: usize = 4;
 const DWT97_ROW_LIFT_SHARED_SAMPLES: usize =
     DWT97_ROW_LIFT_MAX_WIDTH * DWT97_ROW_LIFT_ROWS_PER_BLOCK;
 
-const DWT97_IDCT8_BASIS: [f32; 64] = [
-    0.353_553_38,
-    0.490_392_65,
-    0.461_939_75,
-    0.415_734_8,
-    0.353_553_38,
-    0.277_785_12,
-    0.191_341_71,
-    0.097_545_16,
-    0.353_553_38,
-    0.415_734_8,
-    0.191_341_71,
-    -0.097_545_16,
-    -0.353_553_38,
-    -0.490_392_65,
-    -0.461_939_75,
-    -0.277_785_12,
-    0.353_553_38,
-    0.277_785_12,
-    -0.191_341_71,
-    -0.490_392_65,
-    -0.353_553_38,
-    0.097_545_16,
-    0.461_939_75,
-    0.415_734_8,
-    0.353_553_38,
-    0.097_545_16,
-    -0.461_939_75,
-    -0.277_785_12,
-    0.353_553_38,
-    0.415_734_8,
-    -0.191_341_71,
-    -0.490_392_65,
-    0.353_553_38,
-    -0.097_545_16,
-    -0.461_939_75,
-    0.277_785_12,
-    0.353_553_38,
-    -0.415_734_8,
-    -0.191_341_71,
-    0.490_392_65,
-    0.353_553_38,
-    -0.277_785_12,
-    -0.191_341_71,
-    0.490_392_65,
-    -0.353_553_38,
-    -0.097_545_16,
-    0.461_939_75,
-    -0.415_734_8,
-    0.353_553_38,
-    -0.415_734_8,
-    0.191_341_71,
-    0.097_545_16,
-    -0.353_553_38,
-    0.490_392_65,
-    -0.461_939_75,
-    0.277_785_12,
-    0.353_553_38,
-    -0.490_392_65,
-    0.461_939_75,
-    -0.415_734_8,
-    0.353_553_38,
-    -0.277_785_12,
-    0.191_341_71,
-    -0.097_545_16,
-];
+const IDCT_C0: f32 = 0.353_553_38;
+const IDCT_C1: f32 = 0.490_392_65;
+const IDCT_C2: f32 = 0.461_939_75;
+const IDCT_C3: f32 = 0.415_734_8;
+const IDCT_C5: f32 = 0.277_785_12;
+const IDCT_C6: f32 = 0.191_341_71;
+const IDCT_C7: f32 = 0.097_545_16;
 
 #[inline(always)]
-fn idct8_basis(sample_idx: i32, freq: i32) -> f32 {
-    DWT97_IDCT8_BASIS[(sample_idx * 8 + freq) as usize]
+fn idct8_basis_0(_sample_idx: i32) -> f32 {
+    IDCT_C0
+}
+
+#[inline(always)]
+fn idct8_basis_1(sample_idx: i32) -> f32 {
+    match sample_idx {
+        0 => IDCT_C1,
+        1 => IDCT_C3,
+        2 => IDCT_C5,
+        3 => IDCT_C7,
+        4 => -IDCT_C7,
+        5 => -IDCT_C5,
+        6 => -IDCT_C3,
+        7 => -IDCT_C1,
+        _ => 0.0,
+    }
+}
+
+#[inline(always)]
+fn idct8_basis_2(sample_idx: i32) -> f32 {
+    match sample_idx {
+        0 => IDCT_C2,
+        1 => IDCT_C6,
+        2 => -IDCT_C6,
+        3 => -IDCT_C2,
+        4 => -IDCT_C2,
+        5 => -IDCT_C6,
+        6 => IDCT_C6,
+        7 => IDCT_C2,
+        _ => 0.0,
+    }
+}
+
+#[inline(always)]
+fn idct8_basis_3(sample_idx: i32) -> f32 {
+    match sample_idx {
+        0 => IDCT_C3,
+        1 => -IDCT_C7,
+        2 => -IDCT_C1,
+        3 => -IDCT_C5,
+        4 => IDCT_C5,
+        5 => IDCT_C1,
+        6 => IDCT_C7,
+        7 => -IDCT_C3,
+        _ => 0.0,
+    }
+}
+
+#[inline(always)]
+fn idct8_basis_4(sample_idx: i32) -> f32 {
+    match sample_idx {
+        0 | 3 | 4 | 7 => IDCT_C0,
+        1 | 2 | 5 | 6 => -IDCT_C0,
+        _ => 0.0,
+    }
+}
+
+#[inline(always)]
+fn idct8_basis_5(sample_idx: i32) -> f32 {
+    match sample_idx {
+        0 => IDCT_C5,
+        1 => -IDCT_C1,
+        2 => IDCT_C7,
+        3 => IDCT_C3,
+        4 => -IDCT_C3,
+        5 => -IDCT_C7,
+        6 => IDCT_C1,
+        7 => -IDCT_C5,
+        _ => 0.0,
+    }
+}
+
+#[inline(always)]
+fn idct8_basis_6(sample_idx: i32) -> f32 {
+    match sample_idx {
+        0 => IDCT_C6,
+        1 => -IDCT_C2,
+        2 => IDCT_C2,
+        3 => -IDCT_C6,
+        4 => -IDCT_C6,
+        5 => IDCT_C2,
+        6 => -IDCT_C2,
+        7 => IDCT_C6,
+        _ => 0.0,
+    }
+}
+
+#[inline(always)]
+fn idct8_basis_7(sample_idx: i32) -> f32 {
+    match sample_idx {
+        0 => IDCT_C7,
+        1 => -IDCT_C5,
+        2 => IDCT_C3,
+        3 => -IDCT_C1,
+        4 => IDCT_C1,
+        5 => -IDCT_C3,
+        6 => IDCT_C5,
+        7 => -IDCT_C7,
+        _ => 0.0,
+    }
+}
+
+macro_rules! accumulate_idct_f32_row {
+    ($sample:ident, $block:expr, $row:expr, $y_basis:expr, $x0:expr, $x1:expr, $x2:expr, $x3:expr, $x4:expr, $x5:expr, $x6:expr, $x7:expr) => {{
+        let y_basis = $y_basis;
+        $sample += load_f32($block, ($row * 8) as u64) * y_basis * $x0;
+        $sample += load_f32($block, ($row * 8 + 1) as u64) * y_basis * $x1;
+        $sample += load_f32($block, ($row * 8 + 2) as u64) * y_basis * $x2;
+        $sample += load_f32($block, ($row * 8 + 3) as u64) * y_basis * $x3;
+        $sample += load_f32($block, ($row * 8 + 4) as u64) * y_basis * $x4;
+        $sample += load_f32($block, ($row * 8 + 5) as u64) * y_basis * $x5;
+        $sample += load_f32($block, ($row * 8 + 6) as u64) * y_basis * $x6;
+        $sample += load_f32($block, ($row * 8 + 7) as u64) * y_basis * $x7;
+    }};
+}
+
+macro_rules! accumulate_idct_i16_row {
+    ($sample:ident, $block:expr, $row:expr, $y_basis:expr, $x0:expr, $x1:expr, $x2:expr, $x3:expr, $x4:expr, $x5:expr, $x6:expr, $x7:expr) => {{
+        let y_basis = $y_basis;
+        $sample += load_i16($block, ($row * 8) as u64) as f32 * y_basis * $x0;
+        $sample += load_i16($block, ($row * 8 + 1) as u64) as f32 * y_basis * $x1;
+        $sample += load_i16($block, ($row * 8 + 2) as u64) as f32 * y_basis * $x2;
+        $sample += load_i16($block, ($row * 8 + 3) as u64) as f32 * y_basis * $x3;
+        $sample += load_i16($block, ($row * 8 + 4) as u64) as f32 * y_basis * $x4;
+        $sample += load_i16($block, ($row * 8 + 5) as u64) as f32 * y_basis * $x5;
+        $sample += load_i16($block, ($row * 8 + 6) as u64) as f32 * y_basis * $x6;
+        $sample += load_i16($block, ($row * 8 + 7) as u64) as f32 * y_basis * $x7;
+    }};
 }
 
 #[inline(always)]
 fn idct8x8_sample(block: *const f32, local_x: i32, local_y: i32) -> f32 {
+    let x0 = idct8_basis_0(local_x);
+    let x1 = idct8_basis_1(local_x);
+    let x2 = idct8_basis_2(local_x);
+    let x3 = idct8_basis_3(local_x);
+    let x4 = idct8_basis_4(local_x);
+    let x5 = idct8_basis_5(local_x);
+    let x6 = idct8_basis_6(local_x);
+    let x7 = idct8_basis_7(local_x);
     let mut sample = 0.0_f32;
-    let mut freq_y = 0_i32;
-    while freq_y < 8 {
-        let y_basis = idct8_basis(local_y, freq_y);
-        let mut freq_x = 0_i32;
-        while freq_x < 8 {
-            sample += load_f32(block, (freq_y * 8 + freq_x) as u64)
-                * y_basis
-                * idct8_basis(local_x, freq_x);
-            freq_x += 1;
-        }
-        freq_y += 1;
-    }
+    accumulate_idct_f32_row!(
+        sample,
+        block,
+        0,
+        idct8_basis_0(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_f32_row!(
+        sample,
+        block,
+        1,
+        idct8_basis_1(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_f32_row!(
+        sample,
+        block,
+        2,
+        idct8_basis_2(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_f32_row!(
+        sample,
+        block,
+        3,
+        idct8_basis_3(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_f32_row!(
+        sample,
+        block,
+        4,
+        idct8_basis_4(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_f32_row!(
+        sample,
+        block,
+        5,
+        idct8_basis_5(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_f32_row!(
+        sample,
+        block,
+        6,
+        idct8_basis_6(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_f32_row!(
+        sample,
+        block,
+        7,
+        idct8_basis_7(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
     sample
 }
 
 #[inline(always)]
 fn idct8x8_sample_i16(block: *const i16, local_x: i32, local_y: i32) -> f32 {
+    let x0 = idct8_basis_0(local_x);
+    let x1 = idct8_basis_1(local_x);
+    let x2 = idct8_basis_2(local_x);
+    let x3 = idct8_basis_3(local_x);
+    let x4 = idct8_basis_4(local_x);
+    let x5 = idct8_basis_5(local_x);
+    let x6 = idct8_basis_6(local_x);
+    let x7 = idct8_basis_7(local_x);
     let mut sample = 0.0_f32;
-    let mut freq_y = 0_i32;
-    while freq_y < 8 {
-        let y_basis = idct8_basis(local_y, freq_y);
-        let mut freq_x = 0_i32;
-        while freq_x < 8 {
-            sample += load_i16(block, (freq_y * 8 + freq_x) as u64) as f32
-                * y_basis
-                * idct8_basis(local_x, freq_x);
-            freq_x += 1;
-        }
-        freq_y += 1;
-    }
+    accumulate_idct_i16_row!(
+        sample,
+        block,
+        0,
+        idct8_basis_0(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_i16_row!(
+        sample,
+        block,
+        1,
+        idct8_basis_1(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_i16_row!(
+        sample,
+        block,
+        2,
+        idct8_basis_2(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_i16_row!(
+        sample,
+        block,
+        3,
+        idct8_basis_3(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_i16_row!(
+        sample,
+        block,
+        4,
+        idct8_basis_4(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_i16_row!(
+        sample,
+        block,
+        5,
+        idct8_basis_5(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_i16_row!(
+        sample,
+        block,
+        6,
+        idct8_basis_6(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
+    accumulate_idct_i16_row!(
+        sample,
+        block,
+        7,
+        idct8_basis_7(local_y),
+        x0,
+        x1,
+        x2,
+        x3,
+        x4,
+        x5,
+        x6,
+        x7
+    );
     sample
 }
 

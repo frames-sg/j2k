@@ -18,6 +18,34 @@ are the main public examples and benchmark fixtures because they stress
 large tiled images, strict color handling, and high-throughput GPU paths, but
 the decoder, encoder, and transcode crates are not WSI-only.
 
+## Quickstart
+
+Use the public Rust API for application integration:
+
+```bash
+cargo add j2k
+```
+
+Run the command-line tool for quick inspection and JPEG-to-HTJ2K transcode
+smoke tests:
+
+```bash
+cargo install j2k-cli
+j2k inspect input.jp2
+j2k transcode input.jpg output.j2k --htj2k --lossless-53
+```
+
+Runnable repository examples:
+
+- `cargo run -p j2k --example decode_generated`
+  ([crates/j2k/examples/decode_generated.rs](crates/j2k/examples/decode_generated.rs))
+- `cargo run -p j2k-jpeg --example inspect`
+  ([crates/j2k-jpeg/examples/inspect.rs](crates/j2k-jpeg/examples/inspect.rs))
+- `cargo run -p j2k-transcode --example jpeg_to_htj2k`
+  ([crates/j2k-transcode/examples/jpeg_to_htj2k.rs](crates/j2k-transcode/examples/jpeg_to_htj2k.rs))
+- `cargo run -p j2k-tilecodec --example decompress`
+  ([crates/j2k-tilecodec/examples/decompress.rs](crates/j2k-tilecodec/examples/decompress.rs))
+
 Runtime backend selection defaults to `Auto`: CPU remains the portable baseline,
 and Metal or CUDA paths are selected only for supported shapes with validation
 and benchmark evidence. Explicit device requests are strict. Unsupported device
@@ -47,9 +75,21 @@ Use lower-level crates only when you need a specific integration point:
 | CUDA adapters | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` |
 | Metal adapters | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` |
 | Tile compression codecs | `j2k-tilecodec` |
-| Command-line inspection | `j2k-cli` |
+| Command-line inspection and JPEG-to-HTJ2K smoke transcode | `j2k-cli` |
 
 The names `statumen` and `wsi-dicom` are not current package names.
+
+## Support Matrix
+
+| Area | Current support | Notes |
+| --- | --- | --- |
+| JPEG 2000 / HTJ2K inspect | J2K codestream and JP2 header inspection | Unsupported or malformed input fails explicitly. |
+| JPEG 2000 / HTJ2K decode | Full-frame, ROI, scaled, row, and tile-batch API surfaces | CPU is the portable correctness baseline. |
+| JPEG 2000 / HTJ2K encode | Native Rust encode APIs plus encode-stage accelerator hooks | Stable public API is centered on `j2k`; adapter SPI remains experimental. |
+| JPEG input | JPEG inspect/decode through `j2k-jpeg` | Used by transcode and fixture workflows. |
+| JPEG-to-J2K/HTJ2K transcode | CPU transcode primitives plus CUDA/Metal accelerator adapters | CLI exposes the conservative lossless JPEG-to-HTJ2K command first. |
+| CUDA acceleration | J2K-owned CUDA kernels and optional cuda-oxide routes for selected stages | Requires self-hosted CUDA validation before performance claims. |
+| Metal acceleration | macOS Metal adapters for selected decode, encode-stage, and transcode stages | Auto routing stays conservative and benchmark-gated. |
 
 ## Fast Path For LLM-Assisted Use
 
@@ -62,13 +102,6 @@ cargo add j2k
 The shared decode traits live in `j2k-core` and are implemented by codec
 crates: `ImageDecode`, `ImageDecodeRows`, `TileBatchDecode`, and
 device-surface traits.
-
-Runnable examples:
-
-- `crates/j2k/examples/decode_generated.rs`
-- `crates/j2k-jpeg/examples/inspect.rs`
-- `crates/j2k-tilecodec/examples/decompress.rs`
-- `crates/j2k-transcode/examples/jpeg_to_htj2k.rs`
 
 ## Current backend posture
 
@@ -120,6 +153,8 @@ Reference files:
 
 - [docs/architecture.md](docs/architecture.md) - workspace layer rules and crate
   dependency graph
+- [docs/benchmark-evidence.md](docs/benchmark-evidence.md) - reproducible
+  benchmark commands and current CUDA/Metal evidence
 - [docs/env-vars.md](docs/env-vars.md) - supported `J2K_*`
   environment variables
 - [docs/release.md](docs/release.md) - release and package validation policy

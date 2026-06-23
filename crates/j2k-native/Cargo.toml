@@ -28,8 +28,8 @@ fearless_simd = { version = "0.4", optional = true }
 libm = { version = "0.2", default-features = false }
 log = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
-j2k-profile = { path = "../j2k-profile", version = "=0.6.0", default-features = false }
-j2k-types = { path = "../j2k-types", version = "=0.6.0" }
+j2k-profile = { path = "../j2k-profile", version = "=0.6.2", default-features = false }
+j2k-types = { path = "../j2k-types", version = "=0.6.2" }
 
 [dev-dependencies]
 criterion = { workspace = true }

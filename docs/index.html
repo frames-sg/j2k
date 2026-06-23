@@ -79,10 +79,11 @@
           <pre class="code">cargo add j2k</pre>
         </div>
         <div>
-          <h2>Optional GPU crates</h2>
-          <p>Add backend crates only when the application needs explicit device integration.</p>
-          <pre class="code">cargo add j2k-cuda --features cuda-runtime
-cargo add j2k-metal</pre>
+          <h2>CLI smoke tests</h2>
+          <p>Use the CLI for inspection and conservative JPEG-to-HTJ2K transcode checks.</p>
+          <pre class="code">cargo install j2k-cli
+j2k inspect input.jp2
+j2k transcode input.jpg output.j2k --htj2k --lossless-53</pre>
         </div>
       </div>
     </section>
@@ -114,6 +115,10 @@ cargo add j2k-metal</pre>
               <tr>
                 <td><code>j2k-transcode</code></td>
                 <td>JPEG-to-J2K/HTJ2K transcode primitives and shared transcode contracts.</td>
+              </tr>
+              <tr>
+                <td><code>j2k-cli</code></td>
+                <td>Command-line inspection and JPEG-to-HTJ2K transcode smoke tests.</td>
               </tr>
             </tbody>
           </table>

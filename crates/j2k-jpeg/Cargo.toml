@@ -27,8 +27,8 @@ bench-libjpeg-turbo = []
 bench-internals = []
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.6.0" }
-j2k-profile = { path = "../j2k-profile", version = "=0.6.0" }
+j2k-core = { path = "../j2k-core", version = "=0.6.2" }
+j2k-profile = { path = "../j2k-profile", version = "=0.6.2" }
 thiserror = { workspace = true }
 memchr = { workspace = true }
 rayon = { workspace = true }

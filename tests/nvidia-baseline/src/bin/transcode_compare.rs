@@ -20,9 +20,9 @@ use std::{path::PathBuf, time::Instant};
 
 use j2k::adapter::encode_stage::IrreversibleQuantizationSubbandScales;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-use j2k_cuda::CudaEncodeStageAccelerator;
+use j2k::adapter::encode_stage::J2kEncodeStageAccelerator;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-use j2k_native::J2kEncodeStageAccelerator;
+use j2k_cuda::CudaEncodeStageAccelerator;
 use j2k_native::{DecodeSettings, Image};
 use j2k_nvidia_baseline::{
     nvidia_decode_jpeg_rgb, psnr_u8, write_text_artifact, ycbcr_to_rgb_round_nearest,

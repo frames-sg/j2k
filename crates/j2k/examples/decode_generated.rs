@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Generate a tiny HTJ2K grayscale codestream and decode it through the public
-//! WSI-shaped API.
+//! API.
 //!
 //! Run with:
 //! `cargo run -p j2k --example decode_generated`

@@ -9,9 +9,9 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.6.0" }
-j2k = { path = "../j2k", version = "=0.6.0" }
-j2k-test-support = { path = "../j2k-test-support", version = "=0.6.0" }
+j2k-core = { path = "../j2k-core", version = "=0.6.2" }
+j2k = { path = "../j2k", version = "=0.6.2" }
+j2k-test-support = { path = "../j2k-test-support", version = "=0.6.2" }
 openjpeg-sys = "1.0.12"
 
 [build-dependencies]

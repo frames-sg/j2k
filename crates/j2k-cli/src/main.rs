@@ -17,10 +17,19 @@ fn main() -> ExitCode {
             };
             inspect(Path::new(&path))
         }
+        Some("transcode") => match parse_transcode_args(args.collect()) {
+            Ok(args) => transcode(&args),
+            Err(message) => {
+                eprintln!("{message}");
+                eprintln!("{TRANSCODE_USAGE}");
+                ExitCode::from(2)
+            }
+        },
         Some("--help" | "-h" | "help") | None => {
             eprintln!("j2k {}", env!("CARGO_PKG_VERSION"));
             eprintln!("Usage:");
-            eprintln!("  j2k inspect <file>    Parse JPEG or JPEG 2000 headers and print Info");
+            eprintln!("  j2k inspect <file>                                      Parse JPEG or JPEG 2000 headers");
+            eprintln!("  j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53");
             ExitCode::SUCCESS
         }
         Some(other) => {
@@ -28,6 +37,92 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+const TRANSCODE_USAGE: &str = "usage: j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TranscodeArgs {
+    input: String,
+    output: String,
+}
+
+fn parse_transcode_args(raw_args: Vec<String>) -> Result<TranscodeArgs, String> {
+    let mut input = None;
+    let mut output = None;
+    let mut htj2k = false;
+    let mut lossless_53 = false;
+
+    for arg in raw_args {
+        match arg.as_str() {
+            "--htj2k" => htj2k = true,
+            "--lossless-53" => lossless_53 = true,
+            flag if flag.starts_with('-') => {
+                return Err(format!("unsupported transcode option: {flag}"));
+            }
+            path if input.is_none() => input = Some(path.to_string()),
+            path if output.is_none() => output = Some(path.to_string()),
+            extra => return Err(format!("unexpected transcode argument: {extra}")),
+        }
+    }
+
+    if !htj2k {
+        return Err("transcode requires --htj2k".to_string());
+    }
+    if !lossless_53 {
+        return Err("transcode requires --lossless-53".to_string());
+    }
+
+    let input = input.ok_or_else(|| "missing input JPEG path".to_string())?;
+    let output = output.ok_or_else(|| "missing output J2K path".to_string())?;
+    Ok(TranscodeArgs { input, output })
+}
+
+fn transcode(args: &TranscodeArgs) -> ExitCode {
+    match transcode_jpeg_to_htj2k(Path::new(&args.input), Path::new(&args.output)) {
+        Ok(summary) => {
+            println!("{summary}");
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("{message}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn transcode_jpeg_to_htj2k(input: &Path, output: &Path) -> Result<String, String> {
+    let bytes =
+        std::fs::read(input).map_err(|e| format!("error reading {}: {e}", input.display()))?;
+    let encoded =
+        transcode_jpeg_to_htj2k_bytes(&bytes).map_err(|e| format!("error transcoding: {e}"))?;
+    std::fs::write(output, &encoded.codestream)
+        .map_err(|e| format!("error writing {}: {e}", output.display()))?;
+    Ok(format_transcode_summary(&encoded))
+}
+
+fn transcode_jpeg_to_htj2k_bytes(
+    bytes: &[u8],
+) -> Result<j2k_transcode::EncodedTranscode, j2k_transcode::JpegToHtj2kError> {
+    j2k_transcode::jpeg_to_htj2k(bytes, &j2k_transcode::JpegToHtj2kOptions::lossless_53())
+}
+
+fn format_transcode_summary(encoded: &j2k_transcode::EncodedTranscode) -> String {
+    let report = &encoded.report;
+    let timings = report.timings;
+    format!(
+        "transcoded {}x{} comps={} bytes={} path={} transform_dispatches={} cpu_fallback_jobs={} extract_us={} transform_us={} encode_us={}",
+        report.width,
+        report.height,
+        report.component_count,
+        encoded.codestream.len(),
+        report.path,
+        timings.accelerator_dispatches,
+        timings.cpu_fallback_jobs,
+        report.extract_us,
+        report.transform_us,
+        report.encode_us,
+    )
 }
 
 fn inspect(path: &Path) -> ExitCode {
@@ -142,9 +237,11 @@ fn read_inspect_input_with_limit(path: &Path, limit: usize) -> io::Result<Inspec
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_inspect_format, inspect_bytes, read_inspect_input_with_limit, InspectFormat,
+        detect_inspect_format, format_transcode_summary, inspect_bytes, parse_transcode_args,
+        read_inspect_input_with_limit, transcode_jpeg_to_htj2k, transcode_jpeg_to_htj2k_bytes,
+        InspectFormat, TranscodeArgs,
     };
-    use j2k_test_support::{minimal_j2k_codestream, minimal_jp2};
+    use j2k_test_support::{minimal_j2k_codestream, minimal_jp2, JPEG_GRAYSCALE_8X8};
 
     #[test]
     fn detects_j2k_codestream_magic() {
@@ -177,5 +274,65 @@ mod tests {
         let line = inspect_bytes(&minimal_jp2()).expect("jp2 inspect");
         assert!(line.contains("128×64"));
         assert!(line.contains("levels=6"));
+    }
+
+    #[test]
+    fn parses_supported_transcode_command() {
+        let args = parse_transcode_args(vec![
+            "input.jpg".to_string(),
+            "output.j2k".to_string(),
+            "--htj2k".to_string(),
+            "--lossless-53".to_string(),
+        ])
+        .expect("parse transcode command");
+        assert_eq!(
+            args,
+            TranscodeArgs {
+                input: "input.jpg".to_string(),
+                output: "output.j2k".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_transcode_option() {
+        let err = parse_transcode_args(vec![
+            "input.jpg".to_string(),
+            "output.j2k".to_string(),
+            "--htj2k".to_string(),
+            "--lossy-97".to_string(),
+        ])
+        .expect_err("unsupported option should fail");
+        assert!(err.contains("unsupported transcode option"));
+    }
+
+    #[test]
+    fn transcodes_fixture_to_nonempty_htj2k_codestream() {
+        let encoded =
+            transcode_jpeg_to_htj2k_bytes(JPEG_GRAYSCALE_8X8).expect("transcode JPEG fixture");
+        assert!(!encoded.codestream.is_empty());
+        assert!(encoded.codestream.starts_with(&[0xff, 0x4f]));
+        let summary = format_transcode_summary(&encoded);
+        assert!(summary.contains("transcoded 8x8"));
+        assert!(summary.contains("bytes="));
+    }
+
+    #[test]
+    fn transcode_file_writes_output_codestream() {
+        let base = std::env::temp_dir().join(format!("j2k-cli-transcode-{}", std::process::id()));
+        std::fs::create_dir_all(&base).expect("create temp dir");
+        let input = base.join("input.jpg");
+        let output = base.join("output.j2k");
+        std::fs::write(&input, JPEG_GRAYSCALE_8X8).expect("write JPEG fixture");
+
+        let summary = transcode_jpeg_to_htj2k(&input, &output).expect("transcode file");
+        let written = std::fs::read(&output).expect("read output J2K");
+
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&output);
+        let _ = std::fs::remove_dir(&base);
+
+        assert!(summary.contains("transcoded 8x8"));
+        assert!(written.starts_with(&[0xff, 0x4f]));
     }
 }

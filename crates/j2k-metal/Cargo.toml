@@ -20,11 +20,11 @@ name = "j2k_metal"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-core = { path = "../j2k-core", version = "=0.6.0" }
-j2k = { path = "../j2k", version = "=0.6.0" }
-j2k-native = { path = "../j2k-native", version = "=0.6.0" }
-j2k-metal-support = { path = "../j2k-metal-support", version = "=0.6.0" }
-j2k-profile = { path = "../j2k-profile", version = "=0.6.0" }
+j2k-core = { path = "../j2k-core", version = "=0.6.2" }
+j2k = { path = "../j2k", version = "=0.6.2" }
+j2k-native = { path = "../j2k-native", version = "=0.6.2" }
+j2k-metal-support = { path = "../j2k-metal-support", version = "=0.6.2" }
+j2k-profile = { path = "../j2k-profile", version = "=0.6.2" }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

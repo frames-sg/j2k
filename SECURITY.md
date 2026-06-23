@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-The current supported development line is `0.5.x`.
+The current supported development line is `0.6.x`.
 
 ## Reporting vulnerabilities
 

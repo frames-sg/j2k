@@ -6,7 +6,7 @@ use std::{
     process::{Command, Output},
 };
 
-use j2k_test_support::{minimal_gray8_jpeg, minimal_jp2};
+use j2k_test_support::{minimal_gray8_jpeg, minimal_jp2, JPEG_GRAYSCALE_8X8};
 
 fn j2k_bin() -> &'static str {
     env!("CARGO_BIN_EXE_j2k")
@@ -90,6 +90,62 @@ fn inspect_cli_reports_invalid_jpeg() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("error:"));
+}
+
+#[test]
+fn transcode_cli_writes_htj2k_codestream() {
+    let input = write_temp_file("transcode-input.jpg", JPEG_GRAYSCALE_8X8);
+    let output_path = input.with_file_name("transcode-output.j2k");
+
+    let output = run_j2k(&[
+        "transcode",
+        path_str(&input),
+        path_str(&output_path),
+        "--htj2k",
+        "--lossless-53",
+    ]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let stdout = stdout(&output);
+    assert!(stdout.contains("transcoded 8x8"));
+    assert!(stdout.contains("bytes="));
+
+    let codestream = fs::read(output_path).expect("read transcode CLI output");
+    assert!(codestream.starts_with(&[0xff, 0x4f]));
+}
+
+#[test]
+fn transcode_cli_rejects_unsupported_option() {
+    let input = write_temp_file("transcode-unsupported-option.jpg", JPEG_GRAYSCALE_8X8);
+    let output_path = input.with_file_name("transcode-unsupported-option.j2k");
+
+    let output = run_j2k(&[
+        "transcode",
+        path_str(&input),
+        path_str(&output_path),
+        "--htj2k",
+        "--lossy-97",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("unsupported transcode option"));
+}
+
+#[test]
+fn transcode_cli_reports_invalid_input() {
+    let input = write_temp_file("transcode-invalid.jpg", b"not a jpeg");
+    let output_path = input.with_file_name("transcode-invalid.j2k");
+
+    let output = run_j2k(&[
+        "transcode",
+        path_str(&input),
+        path_str(&output_path),
+        "--htj2k",
+        "--lossless-53",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("error transcoding"));
 }
 
 fn path_str(path: &Path) -> &str {
