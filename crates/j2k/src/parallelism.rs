@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 /// CPU parallelism policy for JPEG 2000 decode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

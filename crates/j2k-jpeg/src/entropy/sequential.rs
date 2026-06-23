@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Baseline sequential scan decoder. Iterates MCUs, decodes blocks, runs the
 //! IDCT, and pipes rows through an [`OutputWriter`] with chroma upsample and

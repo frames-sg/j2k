@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Validation harness helpers for the experimental JPEG-DCT to HTJ2K path.
 

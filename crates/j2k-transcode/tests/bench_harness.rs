@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 const DCT53_BENCH: &str = include_str!("../benches/dct53.rs");
 

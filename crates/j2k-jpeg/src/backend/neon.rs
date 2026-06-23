@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use core::arch::aarch64::{
     int32x4_t, uint16x8_t, uint8x16_t, uint8x8_t, uint8x8x3_t, vaddq_s32, vaddq_u16, vcombine_u16,

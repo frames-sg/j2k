@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Parse DQT (Define Quantization Table) and DHT (Define Huffman Table)
 //! segments into slot-indexed table storage.

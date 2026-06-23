@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 /// Cache hit/miss counters reported by codec contexts.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

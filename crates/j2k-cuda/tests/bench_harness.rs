@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[test]
 fn cuda_htj2k_decode_bench_exposes_gray_rgb_rgba_rows() {

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
     classic_batch_uses_plain_fast_path, classic_repeated_uses_plain_fast_path,

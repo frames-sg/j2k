@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // Fused code-block parity (Gap C): the CUDA staged 9/7 + deadzone quantization
 // batch must match the shared j2k-transcode code-block oracle in layout

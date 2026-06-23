@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! YCbCr → RGB conversion. Scalar implementation uses libjpeg-turbo's 16-bit
 //! fixed-point coefficients (`jdcolor.c`), so outputs match their ISLOW path

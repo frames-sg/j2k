@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use flate2::{write::ZlibEncoder, Compression};

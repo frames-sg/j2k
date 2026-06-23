@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // JPEG -> HTJ2K transcode throughput comparison:
 //   j2k  — coefficient-domain batch transcode (CUDA transform with CPU or CUDA HT encode)

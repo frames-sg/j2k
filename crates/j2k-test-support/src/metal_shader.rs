@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 /// Return Metal kernel entry-point names declared as `kernel void`.
 pub fn metal_kernel_names(source: &str) -> Vec<String> {

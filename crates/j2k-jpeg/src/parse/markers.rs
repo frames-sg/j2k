@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Low-level marker-walker. Handles the raw byte-stream structure:
 //! SOI → sequence of `FFxx` markers with length-prefixed payloads, including

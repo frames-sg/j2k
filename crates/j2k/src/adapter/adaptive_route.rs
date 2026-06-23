@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Adaptive JPEG 2000 / HTJ2K CPU-device route planning.
 

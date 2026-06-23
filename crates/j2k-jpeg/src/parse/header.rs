@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Drive the marker walker and accumulate parsed segments into a `ParsedHeader`.
 //! Produces the `Info` struct returned by `Decoder::inspect`.

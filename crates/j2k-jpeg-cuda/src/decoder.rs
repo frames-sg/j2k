@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{
     submit_ready_device, BackendRequest, DecodeOutcome, Downscale, ImageCodec, ImageDecode,

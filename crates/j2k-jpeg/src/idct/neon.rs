@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! NEON SIMD integer ISLOW IDCT. Bit-exact with `super::scalar::idct_islow`.
 //!

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::adapter::encode_stage::{
     EncodedHtJ2kCodeBlock, IrreversibleQuantizationSubbandScales, J2kEncodeStageAccelerator,

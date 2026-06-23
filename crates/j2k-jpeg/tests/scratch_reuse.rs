@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Reusing a `ScratchPool` across many decodes must produce byte-identical
 //! output on every iteration. Regression guard for Phase 3.

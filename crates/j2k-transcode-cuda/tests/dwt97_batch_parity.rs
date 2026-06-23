@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // Batch parity (Gap B): the CUDA same-geometry 9/7 batch must produce the exact
 // same bands as the per-job CUDA 9/7 path (identical f32 kernels with per-item

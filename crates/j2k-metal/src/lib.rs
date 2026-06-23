@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Metal-backed JPEG 2000 and HTJ2K decode and encode adapters.
 //!

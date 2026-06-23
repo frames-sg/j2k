@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 use std::time::Instant;
