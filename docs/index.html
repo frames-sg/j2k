@@ -40,87 +40,87 @@
   </header>
 
   <main>
-    <section class="hero">
-      <div class="wrap hero-grid">
-        <div>
-          <p class="eyebrow">Rust image codec workspace</p>
-          <h1>J2K: Rust JPEG 2000 / HTJ2K GPU Codec</h1>
-          <p class="lead">J2K provides JPEG 2000 / HTJ2K inspect, decode, encode, recode, and JPEG-to-J2K/HTJ2K transcode APIs for Rust, with optional CUDA and Apple Metal GPU adapter crates for supported paths.</p>
-          <div class="actions">
-            <a class="button primary" href="https://crates.io/crates/j2k">crates.io/j2k</a>
-            <a class="button" href="https://docs.rs/j2k">docs.rs/j2k</a>
-            <a class="button" href="https://github.com/frames-sg/j2k">GitHub</a>
-          </div>
-          <ul class="tag-list" aria-label="Search terms">
-            <li>Rust JPEG 2000 codec</li>
-            <li>GPU JPEG2000 Rust</li>
-            <li>CUDA JPEG 2000 Rust</li>
-            <li>Metal JPEG2000 Rust</li>
-            <li>HTJ2K Rust</li>
-          </ul>
+    <section class="hero docs-hero">
+      <div class="wrap narrow">
+        <p class="eyebrow">Project documentation</p>
+        <h1>J2K: Rust JPEG 2000 / HTJ2K GPU Codec</h1>
+        <p class="lead">Rust crates for JPEG 2000 and HTJ2K inspection, decode, encode, recode, and JPEG-to-J2K/HTJ2K transcode workflows. CPU is the portable baseline; CUDA and Apple Metal adapter crates cover supported GPU paths.</p>
+        <div class="actions">
+          <a class="button primary" href="https://crates.io/crates/j2k">crates.io</a>
+          <a class="button" href="https://docs.rs/j2k">API docs</a>
+          <a class="button" href="https://github.com/frames-sg/j2k">Repository</a>
         </div>
-        <img class="diagram" src="assets/j2k-gpu-pipeline.svg" alt="J2K Rust JPEG 2000 and HTJ2K GPU codec pipeline">
       </div>
     </section>
 
     <section class="section">
-      <div class="wrap grid three">
-        <article class="card">
-          <h2>Use the public crate</h2>
-          <p>Application code should start with the `j2k` facade crate for JPEG 2000 / HTJ2K inspect, decode, encode, and recode APIs.</p>
+      <div class="wrap split">
+        <div>
+          <h2>Install</h2>
+          <p>Most applications should start with the public facade crate.</p>
           <pre class="code">cargo add j2k</pre>
-        </article>
-        <article class="card">
-          <h2>Choose GPU adapters</h2>
-          <p>CUDA and Metal crates provide device-specific integration for supported decode, encode-stage, and transcode routes.</p>
+        </div>
+        <div>
+          <h2>Optional GPU crates</h2>
+          <p>Add backend crates only when the application needs explicit device integration.</p>
           <pre class="code">cargo add j2k-cuda --features cuda-runtime
 cargo add j2k-metal</pre>
-        </article>
-        <article class="card">
-          <h2>Transcode JPEG tiles</h2>
-          <p>`j2k-transcode` owns JPEG-to-J2K/HTJ2K primitives, with CUDA and Metal adapter crates for supported stage acceleration.</p>
-          <pre class="code">cargo add j2k-transcode</pre>
-        </article>
+        </div>
       </div>
     </section>
 
     <section class="section alt">
       <div class="wrap">
-        <h2>Targeted documentation</h2>
-        <div class="grid three">
-          <a class="card" href="rust-jpeg2000-codec/">
-            <h3>Rust JPEG 2000 Codec</h3>
-            <p>Decode, encode, JP2/J2K codestream handling, and crate selection.</p>
-          </a>
-          <a class="card" href="gpu-jpeg2000-rust/">
-            <h3>GPU JPEG2000 Rust</h3>
-            <p>Backend posture, CPU fallback, CUDA, Metal, and strict device requests.</p>
-          </a>
-          <a class="card" href="cuda-jpeg2000-rust/">
-            <h3>CUDA JPEG2000 Rust</h3>
-            <p>NVIDIA CUDA adapter crates and runtime feature boundaries.</p>
-          </a>
-          <a class="card" href="metal-jpeg2000-rust/">
-            <h3>Metal JPEG2000 Rust</h3>
-            <p>Apple Metal adapter crates for macOS GPU-backed paths.</p>
-          </a>
-          <a class="card" href="htj2k-rust/">
-            <h3>HTJ2K Rust</h3>
-            <p>High-throughput JPEG 2000 APIs, recode, and transcode routes.</p>
-          </a>
-          <a class="card" href="sitemap.xml">
-            <h3>Sitemap</h3>
-            <p>Submit this sitemap in Google Search Console after site verification.</p>
-          </a>
+        <h2>Package map</h2>
+        <div class="table-wrap">
+          <table class="package-table">
+            <thead>
+              <tr>
+                <th>Crate</th>
+                <th>Use</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>j2k</code></td>
+                <td>Public API for JPEG 2000 / HTJ2K inspection, decode, encode, and recode.</td>
+              </tr>
+              <tr>
+                <td><code>j2k-cuda</code></td>
+                <td>NVIDIA CUDA adapter for supported JPEG 2000 and HTJ2K backend paths.</td>
+              </tr>
+              <tr>
+                <td><code>j2k-metal</code></td>
+                <td>Apple Metal adapter for supported macOS GPU paths.</td>
+              </tr>
+              <tr>
+                <td><code>j2k-transcode</code></td>
+                <td>JPEG-to-J2K/HTJ2K transcode primitives and shared transcode contracts.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </section>
 
     <section class="section">
-      <div class="wrap copy">
-        <h2>Backend policy</h2>
-        <p>CPU remains the portable correctness baseline. `BackendRequest::Auto` may return CPU output when a device path is unavailable, unsupported, or not benchmarked for a requested shape. Explicit CUDA and Metal requests are strict and return errors for unsupported shapes instead of silently changing backend.</p>
-        <p class="note">Published GPU performance claims should cite host hardware, operating system, input source, exact command, comparator availability, and comparator versions.</p>
+      <div class="wrap split">
+        <div>
+          <h2>Topic pages</h2>
+          <ul class="link-list">
+            <li><a href="rust-jpeg2000-codec/">Rust JPEG 2000 Codec</a><span>Decode, encode, JP2/J2K codestreams, and crate selection.</span></li>
+            <li><a href="gpu-jpeg2000-rust/">GPU JPEG2000 Rust</a><span>Backend behavior, CPU fallback, CUDA, Metal, and strict device requests.</span></li>
+            <li><a href="cuda-jpeg2000-rust/">CUDA JPEG2000 Rust</a><span>NVIDIA adapter crates and runtime feature boundaries.</span></li>
+            <li><a href="metal-jpeg2000-rust/">Metal JPEG2000 Rust</a><span>Apple Metal adapter crates for macOS GPU-backed paths.</span></li>
+            <li><a href="htj2k-rust/">HTJ2K Rust</a><span>High-throughput JPEG 2000 APIs, recode, and transcode routes.</span></li>
+          </ul>
+        </div>
+        <div class="copy">
+          <h2>Backend behavior</h2>
+          <p>CPU output is the correctness baseline. <code>BackendRequest::Auto</code> may return CPU output when a device path is unavailable, unsupported, or not benchmarked for the requested shape.</p>
+          <p>Explicit CUDA and Metal requests are strict. Unsupported shapes return errors instead of silently changing backend.</p>
+          <p class="note">Benchmark claims should cite host hardware, operating system, input source, exact command, comparator availability, and comparator versions.</p>
+        </div>
       </div>
     </section>
   </main>
