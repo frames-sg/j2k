@@ -10,6 +10,15 @@
   <meta property="og:description" content="Rust JPEG 2000, JPEG2000, JP2, J2K, HTJ2K, CUDA, and Metal GPU codec crates.">
   <meta property="og:url" content="https://frames-sg.github.io/j2k/">
   <meta property="og:type" content="website">
+  <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="J2K: Rust JPEG 2000 / HTJ2K GPU Codec">
+  <meta name="twitter:description" content="Rust JPEG 2000, HTJ2K, JP2, J2K codec crates with CUDA and Apple Metal GPU adapters.">
+  <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <link rel="stylesheet" href="assets/site.css">
   <script type="application/ld+json">
   {
@@ -50,6 +59,15 @@
           <a class="button" href="https://docs.rs/j2k">API docs</a>
           <a class="button" href="https://github.com/frames-sg/j2k">Repository</a>
         </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap">
+        <figure class="pipeline">
+          <img class="diagram" src="assets/j2k-gpu-pipeline.svg" alt="J2K pipeline: JPEG 2000, HTJ2K, and JPEG inputs flow through the j2k crate, which routes to CPU baseline, CUDA, and Metal backends.">
+          <figcaption>One public crate, three input formats, three backends. CPU is the baseline; CUDA and Metal accelerate supported shapes.</figcaption>
+        </figure>
       </div>
     </section>
 

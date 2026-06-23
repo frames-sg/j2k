@@ -1,53 +1,59 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 500" role="img" aria-labelledby="title desc">
-  <title id="title">J2K Rust JPEG 2000 GPU codec pipeline</title>
-  <desc id="desc">A pipeline diagram showing JPEG 2000 and HTJ2K data flowing through Rust APIs to CPU, CUDA, and Metal backends.</desc>
-  <rect width="760" height="500" fill="#f7f9fa"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 492" role="img" aria-labelledby="title desc">
+  <title id="title">J2K Rust JPEG 2000 codec pipeline</title>
+  <desc id="desc">JPEG 2000, HTJ2K, and JPEG inputs all enter the Rust j2k crate, which routes work to three parallel backends: a CPU baseline plus optional CUDA and Metal GPU adapters.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#b7410e"/>
+    </marker>
+  </defs>
+  <rect width="760" height="492" fill="#f7f9fa"/>
+
+  <!-- input + backend boxes -->
   <g fill="#ffffff" stroke="#d6dee3" stroke-width="2">
-    <rect x="44" y="54" width="200" height="96" rx="8"/>
-    <rect x="280" y="54" width="200" height="96" rx="8"/>
-    <rect x="516" y="54" width="200" height="96" rx="8"/>
-    <rect x="44" y="220" width="200" height="96" rx="8"/>
-    <rect x="280" y="220" width="200" height="96" rx="8"/>
-    <rect x="516" y="220" width="200" height="96" rx="8"/>
-    <rect x="162" y="380" width="200" height="78" rx="8"/>
-    <rect x="398" y="380" width="200" height="78" rx="8"/>
+    <rect x="44" y="34" width="200" height="92" rx="8"/>
+    <rect x="280" y="34" width="200" height="92" rx="8"/>
+    <rect x="516" y="34" width="200" height="92" rx="8"/>
+    <rect x="44" y="352" width="200" height="92" rx="8"/>
+    <rect x="280" y="352" width="200" height="92" rx="8"/>
+    <rect x="516" y="352" width="200" height="92" rx="8"/>
   </g>
+
+  <!-- central hub: the public j2k crate (accented) -->
+  <rect x="230" y="188" width="300" height="96" rx="10" fill="#fdf4ef" stroke="#b7410e" stroke-width="2.5"/>
+
   <g font-family="Inter, Arial, sans-serif" fill="#172026">
-    <text x="66" y="91" font-size="22" font-weight="700">JPEG 2000</text>
-    <text x="66" y="119" font-size="15" fill="#52616b">JP2, J2K, J2C</text>
-    <text x="302" y="91" font-size="22" font-weight="700">HTJ2K</text>
-    <text x="302" y="119" font-size="15" fill="#52616b">Part 15 codestreams</text>
-    <text x="538" y="91" font-size="22" font-weight="700">JPEG input</text>
-    <text x="538" y="119" font-size="15" fill="#52616b">Transcode paths</text>
+    <text x="66" y="72" font-size="22" font-weight="700">JPEG 2000</text>
+    <text x="66" y="98" font-size="15" fill="#52616b">JP2, J2K, J2C</text>
+    <text x="302" y="72" font-size="22" font-weight="700">HTJ2K</text>
+    <text x="302" y="98" font-size="15" fill="#52616b">Part 15 codestreams</text>
+    <text x="538" y="72" font-size="22" font-weight="700">JPEG input</text>
+    <text x="538" y="98" font-size="15" fill="#52616b">Transcode paths</text>
 
-    <text x="66" y="257" font-size="22" font-weight="700">j2k crate</text>
-    <text x="66" y="285" font-size="15" fill="#52616b">Rust decode, encode, recode</text>
-    <text x="302" y="257" font-size="22" font-weight="700">CUDA adapter</text>
-    <text x="302" y="285" font-size="15" fill="#52616b">NVIDIA device surfaces</text>
-    <text x="538" y="257" font-size="22" font-weight="700">Metal adapter</text>
-    <text x="538" y="285" font-size="15" fill="#52616b">Apple GPU surfaces</text>
+    <text x="252" y="228" font-size="23" font-weight="700">j2k crate</text>
+    <text x="252" y="255" font-size="15" fill="#52616b">Rust decode · encode · recode · transcode</text>
 
-    <text x="184" y="414" font-size="20" font-weight="700">CPU baseline</text>
-    <text x="184" y="440" font-size="14" fill="#52616b">Portable correctness path</text>
-    <text x="420" y="414" font-size="20" font-weight="700">Auto routing</text>
-    <text x="420" y="440" font-size="14" fill="#52616b">Strict backend requests</text>
+    <text x="66" y="390" font-size="20" font-weight="700">CPU baseline</text>
+    <text x="66" y="415" font-size="14" fill="#52616b">Portable correctness path</text>
+    <text x="302" y="390" font-size="20" font-weight="700">CUDA adapter</text>
+    <text x="302" y="415" font-size="14" fill="#52616b">NVIDIA device surfaces</text>
+    <text x="538" y="390" font-size="20" font-weight="700">Metal adapter</text>
+    <text x="538" y="415" font-size="14" fill="#52616b">Apple GPU surfaces</text>
   </g>
-  <g stroke="#0f766e" stroke-width="3" fill="none" stroke-linecap="round">
-    <path d="M144 150v70"/>
-    <path d="M380 150v70"/>
-    <path d="M616 150v70"/>
-    <path d="M244 268h36"/>
-    <path d="M480 268h36"/>
-    <path d="M144 316l118 64"/>
-    <path d="M380 316l-118 64"/>
-    <path d="M380 316l118 64"/>
-    <path d="M616 316l-118 64"/>
+
+  <!-- routing caption below the backends, clear of all arrows -->
+  <text x="380" y="478" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#7a6a5f">BackendRequest::Auto routes per shape · explicit CUDA / Metal requests are strict</text>
+
+  <!-- inputs converge into the j2k crate -->
+  <g stroke="#b7410e" stroke-width="2.5" fill="none" stroke-linecap="round">
+    <path d="M144 126 L300 186" marker-end="url(#arrow)"/>
+    <path d="M380 126 L380 186" marker-end="url(#arrow)"/>
+    <path d="M616 126 L460 186" marker-end="url(#arrow)"/>
   </g>
-  <g fill="#0f766e">
-    <path d="M144 224l-7-12h14z"/>
-    <path d="M380 224l-7-12h14z"/>
-    <path d="M616 224l-7-12h14z"/>
-    <path d="M278 268l-12-7v14z"/>
-    <path d="M514 268l-12-7v14z"/>
+
+  <!-- j2k crate fans out to the three parallel backends -->
+  <g stroke="#b7410e" stroke-width="2.5" fill="none" stroke-linecap="round">
+    <path d="M340 284 L160 350" marker-end="url(#arrow)"/>
+    <path d="M380 284 L380 350" marker-end="url(#arrow)"/>
+    <path d="M420 284 L600 350" marker-end="url(#arrow)"/>
   </g>
 </svg>
