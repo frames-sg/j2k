@@ -6,6 +6,29 @@
   <title>CUDA JPEG2000 Rust - J2K</title>
   <meta name="description" content="CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/cuda-jpeg2000-rust/">
+  <meta property="og:title" content="CUDA JPEG2000 Rust">
+  <meta property="og:description" content="CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <meta property="og:url" content="https://frames-sg.github.io/j2k/cuda-jpeg2000-rust/">
+  <meta property="og:type" content="article">
+  <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="CUDA JPEG2000 Rust">
+  <meta name="twitter:description" content="CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "CUDA JPEG2000 Rust",
+    "description": "CUDA JPEG2000 Rust support in J2K: NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.",
+    "url": "https://frames-sg.github.io/j2k/cuda-jpeg2000-rust/",
+    "isPartOf": { "@type": "SoftwareSourceCode", "name": "J2K", "codeRepository": "https://github.com/frames-sg/j2k", "programmingLanguage": "Rust" }
+  }
+  </script>
   <link rel="stylesheet" href="../assets/site.css">
 </head>
 <body>
@@ -39,17 +62,17 @@
       <div class="wrap grid three">
         <article class="card">
           <h2>Codec adapter</h2>
-          <p>`j2k-cuda` exposes CUDA-facing JPEG 2000 / HTJ2K decode and encode-stage adapter APIs.</p>
+          <p><code>j2k-cuda</code> exposes CUDA-facing JPEG 2000 / HTJ2K decode and encode-stage adapter APIs.</p>
           <pre class="code">cargo add j2k-cuda --features cuda-runtime</pre>
         </article>
         <article class="card">
           <h2>JPEG input adapter</h2>
-          <p>`j2k-jpeg-cuda` provides CUDA device-output integration for supported JPEG decode surfaces.</p>
+          <p><code>j2k-jpeg-cuda</code> provides CUDA device-output integration for supported JPEG decode surfaces.</p>
           <pre class="code">cargo add j2k-jpeg-cuda --features cuda-runtime</pre>
         </article>
         <article class="card">
           <h2>Transcode adapter</h2>
-          <p>`j2k-transcode-cuda` accelerates supported coefficient-domain JPEG-to-J2K/HTJ2K stages.</p>
+          <p><code>j2k-transcode-cuda</code> accelerates supported coefficient-domain JPEG-to-J2K/HTJ2K stages.</p>
           <pre class="code">cargo add j2k-transcode-cuda --features cuda-runtime</pre>
         </article>
       </div>

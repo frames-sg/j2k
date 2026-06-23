@@ -31,7 +31,7 @@ license      = "Apache-2.0"
 repository   = "https://github.com/frames-sg/j2k"
 homepage     = "https://github.com/frames-sg/j2k"
 keywords     = ["jpeg", "jpeg2000", "htj2k", "gpu", "transcode"]
-categories   = ["multimedia::images"]
+categories   = ["multimedia::images", "multimedia::encoding", "compression"]
 
 [workspace.dependencies]
 thiserror = { version = "2", default-features = false }

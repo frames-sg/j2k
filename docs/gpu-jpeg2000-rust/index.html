@@ -6,6 +6,29 @@
   <title>GPU JPEG2000 Rust - J2K</title>
   <meta name="description" content="GPU JPEG2000 Rust support in J2K: CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/gpu-jpeg2000-rust/">
+  <meta property="og:title" content="GPU JPEG2000 Rust">
+  <meta property="og:description" content="GPU JPEG2000 Rust support in J2K: CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <meta property="og:url" content="https://frames-sg.github.io/j2k/gpu-jpeg2000-rust/">
+  <meta property="og:type" content="article">
+  <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="GPU JPEG2000 Rust">
+  <meta name="twitter:description" content="GPU JPEG2000 Rust support in J2K: CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "GPU JPEG2000 Rust",
+    "description": "GPU JPEG2000 Rust support in J2K: CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.",
+    "url": "https://frames-sg.github.io/j2k/gpu-jpeg2000-rust/",
+    "isPartOf": { "@type": "SoftwareSourceCode", "name": "J2K", "codeRepository": "https://github.com/frames-sg/j2k", "programmingLanguage": "Rust" }
+  }
+  </script>
   <link rel="stylesheet" href="../assets/site.css">
 </head>
 <body>
@@ -43,18 +66,18 @@
         </article>
         <article class="card">
           <h2>CUDA</h2>
-          <p>`j2k-cuda`, `j2k-jpeg-cuda`, and `j2k-transcode-cuda` integrate NVIDIA device surfaces and kernels for supported shapes.</p>
+          <p><code>j2k-cuda</code>, <code>j2k-jpeg-cuda</code>, and <code>j2k-transcode-cuda</code> integrate NVIDIA device surfaces and kernels for supported shapes.</p>
         </article>
         <article class="card">
           <h2>Metal</h2>
-          <p>`j2k-metal`, `j2k-jpeg-metal`, and `j2k-transcode-metal` integrate Apple Metal-backed paths on macOS.</p>
+          <p><code>j2k-metal</code>, <code>j2k-jpeg-metal</code>, and <code>j2k-transcode-metal</code> integrate Apple Metal-backed paths on macOS.</p>
         </article>
       </div>
     </section>
     <section class="section alt">
       <div class="wrap copy">
         <h2>Strict backend behavior</h2>
-        <p>`BackendRequest::Auto` may choose CPU for unsupported or unbenchmarked shapes. Explicit CUDA or Metal requests are strict and report unsupported paths clearly.</p>
+        <p><code>BackendRequest::Auto</code> may choose CPU for unsupported or unbenchmarked shapes. Explicit CUDA or Metal requests are strict and report unsupported paths clearly.</p>
       </div>
     </section>
   </main>
