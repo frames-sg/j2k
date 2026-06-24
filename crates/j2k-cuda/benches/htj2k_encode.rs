@@ -453,6 +453,7 @@ fn cuda_encode_manifest() -> Result<Option<CudaEncodeManifest>, String> {
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("read J2K_CUDA_ENCODE_MANIFEST {}: {error}", path.display()))?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let relocation_roots = external_input_dirs();
     let mut lines = text.lines().filter(|line| !line.trim().is_empty());
     let header = lines
         .next()
@@ -468,18 +469,14 @@ fn cuda_encode_manifest() -> Result<Option<CudaEncodeManifest>, String> {
         let fields = line.split('\t').collect::<Vec<_>>();
         let row_number = line_index + 2;
         let raw_path = manifest_field(&fields, path_index, "path", row_number)?;
-        let resolved_path = if Path::new(raw_path).is_absolute() {
-            PathBuf::from(raw_path)
-        } else {
-            base.join(raw_path)
-        };
-        let canonical_path = resolved_path.canonicalize().map_err(|error| {
-            format!(
-                "CUDA encode manifest {} row {row_number} path {} cannot be canonicalized: {error}",
-                path.display(),
-                resolved_path.display()
-            )
-        })?;
+        let canonical_path = canonicalize_manifest_row_path(
+            raw_path,
+            base,
+            &relocation_roots,
+            "CUDA encode manifest",
+            &path,
+            row_number,
+        )?;
         let entry = CudaEncodeManifestEntry {
             input_fnv1a64: manifest_optional_value(
                 &fields,
@@ -496,6 +493,92 @@ fn cuda_encode_manifest() -> Result<Option<CudaEncodeManifest>, String> {
         }
     }
     Ok(Some(CudaEncodeManifest { entries }))
+}
+
+fn canonicalize_manifest_row_path(
+    raw_path: &str,
+    base: &Path,
+    relocation_roots: &[PathBuf],
+    manifest_label: &str,
+    manifest_path: &Path,
+    row_number: usize,
+) -> Result<PathBuf, String> {
+    let raw = Path::new(raw_path);
+    let resolved_path = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        base.join(raw)
+    };
+    match resolved_path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(primary_error) => {
+            let candidates = manifest_relocation_candidates(raw, relocation_roots);
+            if candidates.len() == 1 {
+                Ok(candidates[0].clone())
+            } else if !candidates.is_empty() {
+                Err(format!(
+                    "{manifest_label} {} row {row_number} path {} is ambiguous after suffix remap: {}",
+                    manifest_path.display(),
+                    raw_path,
+                    join_path_labels(&candidates)
+                ))
+            } else {
+                Err(format!(
+                    "{manifest_label} {} row {row_number} path {} cannot be canonicalized: {primary_error}; no suffix remap found under {}",
+                    manifest_path.display(),
+                    resolved_path.display(),
+                    join_path_labels(relocation_roots)
+                ))
+            }
+        }
+    }
+}
+
+fn manifest_relocation_candidates(raw_path: &Path, relocation_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let suffixes = normal_path_suffixes(raw_path);
+    let mut candidates = Vec::new();
+    for root in relocation_roots {
+        for suffix in &suffixes {
+            let candidate = root.join(suffix);
+            let Ok(canonical) = candidate.canonicalize() else {
+                continue;
+            };
+            if !candidates.contains(&canonical) {
+                candidates.push(canonical);
+            }
+        }
+    }
+    candidates
+}
+
+fn normal_path_suffixes(path: &Path) -> Vec<PathBuf> {
+    let parts = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut suffixes = Vec::new();
+    for start in 0..parts.len() {
+        let mut suffix = PathBuf::new();
+        for part in &parts[start..] {
+            suffix.push(part);
+        }
+        suffixes.push(suffix);
+    }
+    suffixes
+}
+
+fn join_path_labels(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return "none".to_string();
+    }
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn validate_cuda_encode_manifest_entry(

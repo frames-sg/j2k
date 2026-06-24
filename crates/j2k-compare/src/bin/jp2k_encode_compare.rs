@@ -557,6 +557,7 @@ fn encode_manifest_from_env() -> Result<Option<EncodeManifest>, String> {
         )
     })?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let relocation_roots = external_input_dirs();
     let mut lines = text.lines().filter(|line| !line.trim().is_empty());
     let header = lines
         .next()
@@ -577,18 +578,14 @@ fn encode_manifest_from_env() -> Result<Option<EncodeManifest>, String> {
         let fields = line.split('\t').collect::<Vec<_>>();
         let row_number = line_index + 2;
         let raw_path = manifest_field(&fields, path_index, "path", row_number)?;
-        let resolved_path = if Path::new(raw_path).is_absolute() {
-            PathBuf::from(raw_path)
-        } else {
-            base.join(raw_path)
-        };
-        let canonical_path = resolved_path.canonicalize().map_err(|error| {
-            format!(
-                "encode manifest {} row {row_number} path {} cannot be canonicalized: {error}",
-                path.display(),
-                resolved_path.display()
-            )
-        })?;
+        let canonical_path = canonicalize_manifest_row_path(
+            raw_path,
+            base,
+            &relocation_roots,
+            "encode manifest",
+            &path,
+            row_number,
+        )?;
         let entry = EncodeManifestEntry {
             corpus_category: manifest_required_value(
                 &fields,
@@ -633,6 +630,92 @@ fn encode_manifest_from_env() -> Result<Option<EncodeManifest>, String> {
     }
 
     Ok(Some(EncodeManifest { entries }))
+}
+
+fn canonicalize_manifest_row_path(
+    raw_path: &str,
+    base: &Path,
+    relocation_roots: &[PathBuf],
+    manifest_label: &str,
+    manifest_path: &Path,
+    row_number: usize,
+) -> Result<PathBuf, String> {
+    let raw = Path::new(raw_path);
+    let resolved_path = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        base.join(raw)
+    };
+    match resolved_path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(primary_error) => {
+            let candidates = manifest_relocation_candidates(raw, relocation_roots);
+            if candidates.len() == 1 {
+                Ok(candidates[0].clone())
+            } else if !candidates.is_empty() {
+                Err(format!(
+                    "{manifest_label} {} row {row_number} path {} is ambiguous after suffix remap: {}",
+                    manifest_path.display(),
+                    raw_path,
+                    join_path_labels(&candidates)
+                ))
+            } else {
+                Err(format!(
+                    "{manifest_label} {} row {row_number} path {} cannot be canonicalized: {primary_error}; no suffix remap found under {}",
+                    manifest_path.display(),
+                    resolved_path.display(),
+                    join_path_labels(relocation_roots)
+                ))
+            }
+        }
+    }
+}
+
+fn manifest_relocation_candidates(raw_path: &Path, relocation_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let suffixes = normal_path_suffixes(raw_path);
+    let mut candidates = Vec::new();
+    for root in relocation_roots {
+        for suffix in &suffixes {
+            let candidate = root.join(suffix);
+            let Ok(canonical) = candidate.canonicalize() else {
+                continue;
+            };
+            if !candidates.contains(&canonical) {
+                candidates.push(canonical);
+            }
+        }
+    }
+    candidates
+}
+
+fn normal_path_suffixes(path: &Path) -> Vec<PathBuf> {
+    let parts = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut suffixes = Vec::new();
+    for start in 0..parts.len() {
+        let mut suffix = PathBuf::new();
+        for part in &parts[start..] {
+            suffix.push(part);
+        }
+        suffixes.push(suffix);
+    }
+    suffixes
+}
+
+fn join_path_labels(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return "none".to_string();
+    }
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn external_image_metadata(
@@ -2745,8 +2828,10 @@ fn fnv1a64_hex_slices(slices: &[&[u8]]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_size_config_from_values, DEFAULT_CASE_BATCH_SIZES, DEFAULT_MIXED_BATCH_SIZES,
+        batch_size_config_from_values, canonicalize_manifest_row_path, DEFAULT_CASE_BATCH_SIZES,
+        DEFAULT_MIXED_BATCH_SIZES,
     };
+    use std::path::Path;
 
     #[test]
     fn encode_batch_config_defaults_keep_large_batches_mixed_only() {
@@ -2770,5 +2855,30 @@ mod tests {
 
         assert_eq!(config.case_batch_sizes, vec![2, 4]);
         assert_eq!(config.mixed_batch_sizes, vec![8, 16]);
+    }
+
+    #[test]
+    fn encode_manifest_path_remaps_to_supplied_fixture_root_by_suffix() {
+        let root = std::env::current_dir()
+            .expect("current dir")
+            .join("target")
+            .join("j2k-encode-manifest-remap-test")
+            .join(std::process::id().to_string());
+        let fixture_root = root.join("staged-pnm");
+        let fixture = fixture_root.join("sample.ppm");
+        std::fs::create_dir_all(&fixture_root).expect("create dirs");
+        std::fs::write(&fixture, b"P6\n1 1\n255\nabc").expect("fixture");
+
+        let resolved = canonicalize_manifest_row_path(
+            "/old/worktree/target/j2k-public-corpora/materialized-kodak/staged-pnm/sample.ppm",
+            Path::new("/unused"),
+            &[fixture_root],
+            "encode manifest",
+            Path::new("encode-fixtures.tsv"),
+            2,
+        )
+        .expect("remap stale absolute path");
+
+        assert_eq!(resolved, fixture.canonicalize().expect("canonical fixture"));
     }
 }
