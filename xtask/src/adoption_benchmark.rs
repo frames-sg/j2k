@@ -71,6 +71,7 @@ pub(crate) struct AdoptionBenchmarkOptions {
     require_metal: bool,
     require_openjph: bool,
     require_kakadu: bool,
+    finalize_existing: bool,
 }
 
 #[derive(Debug)]
@@ -101,6 +102,18 @@ pub(crate) fn adoption_benchmark(args: impl Iterator<Item = String>) -> Result<(
     let options = AdoptionBenchmarkOptions::parse(args.into_iter())?;
     fs::create_dir_all(&options.out_dir)
         .map_err(|err| format!("failed to create {}: {err}", options.out_dir.display()))?;
+
+    if options.finalize_existing {
+        let steps = existing_steps(&options)?;
+        write_summary(&options, &steps)?;
+        write_readme(&options, &steps)?;
+        enforce_publication_gate(&options)?;
+        eprintln!(
+            "finalized existing adoption benchmark artifacts under {}",
+            options.out_dir.display()
+        );
+        return Ok(());
+    }
 
     let mut steps = vec![
         run_cpu_fixture_compare(&options)?,
@@ -559,6 +572,102 @@ fn skipped_step(name: &'static str, reason: &str, out_dir: &Path) -> AdoptionSte
             reason: reason.to_string(),
         },
     }
+}
+
+fn existing_steps(options: &AdoptionBenchmarkOptions) -> Result<Vec<AdoptionStep>, String> {
+    let mut steps = vec![
+        existing_ran_step("cpu-fixture-compare", None, &options.out_dir)?,
+        existing_ran_step("cpu-encode-compare", None, &options.out_dir)?,
+        existing_ran_step(
+            "cpu-public-api-encode",
+            Some(&criterion_target_dir(options, "cpu-public-api-encode")),
+            &options.out_dir,
+        )?,
+        existing_ran_step(
+            "cpu-public-api-decode",
+            Some(&criterion_target_dir(options, "cpu-public-api-decode")),
+            &options.out_dir,
+        )?,
+    ];
+
+    if options.cuda {
+        steps.push(existing_ran_step(
+            "cuda-htj2k-decode",
+            Some(&criterion_target_dir(options, "cuda-htj2k-decode")),
+            &options.out_dir,
+        )?);
+        steps.push(existing_ran_step(
+            "cuda-htj2k-encode",
+            Some(&criterion_target_dir(options, "cuda-htj2k-encode")),
+            &options.out_dir,
+        )?);
+    } else {
+        steps.push(skipped_step(
+            "cuda-htj2k-decode",
+            "not requested; pass --cuda for CUDA decode/encode Criterion benches",
+            &options.out_dir,
+        ));
+        steps.push(skipped_step(
+            "cuda-htj2k-encode",
+            "not requested; pass --cuda for CUDA decode/encode Criterion benches",
+            &options.out_dir,
+        ));
+    }
+
+    if options.metal {
+        steps.push(existing_ran_step(
+            "metal-encode-auto-routing",
+            None,
+            &options.out_dir,
+        )?);
+    } else {
+        steps.push(skipped_step(
+            "metal-encode-auto-routing",
+            "not requested; pass --metal for Metal hybrid encode routing benchmark",
+            &options.out_dir,
+        ));
+    }
+
+    Ok(steps)
+}
+
+fn existing_ran_step(
+    name: &'static str,
+    target_dir: Option<&Path>,
+    out_dir: &Path,
+) -> Result<AdoptionStep, String> {
+    let stdout = out_dir.join(format!("{name}.out"));
+    let stderr = out_dir.join(format!("{name}.err"));
+    if !stdout.is_file() {
+        return Err(format!(
+            "--finalize-existing requires completed {name} stdout at {}",
+            stdout.display()
+        ));
+    }
+    let stdout_len = stdout
+        .metadata()
+        .map_err(|err| format!("stat {}: {err}", stdout.display()))?
+        .len();
+    if stdout_len == 0 {
+        return Err(format!(
+            "--finalize-existing found empty {name} stdout at {}",
+            stdout.display()
+        ));
+    }
+    if !stderr.exists() {
+        return Err(format!(
+            "--finalize-existing requires {name} stderr at {}",
+            stderr.display()
+        ));
+    }
+    Ok(AdoptionStep {
+        name,
+        command: "existing artifact reused by --finalize-existing".to_string(),
+        stdout,
+        stderr,
+        criterion_root: target_dir.map(|path| path.join("criterion")),
+        status: StepStatus::Ran,
+    })
 }
 
 fn write_summary(options: &AdoptionBenchmarkOptions, steps: &[AdoptionStep]) -> Result<(), String> {
@@ -1360,6 +1469,7 @@ impl AdoptionBenchmarkOptions {
             require_metal: false,
             require_openjph: false,
             require_kakadu: false,
+            finalize_existing: false,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -1423,6 +1533,9 @@ impl AdoptionBenchmarkOptions {
                     options.kakadu = true;
                     options.require_kakadu = true;
                 }
+                "--finalize-existing" => {
+                    options.finalize_existing = true;
+                }
                 "--help" | "-h" => unreachable!("help handled before option parsing"),
                 other => {
                     return Err(format!(
@@ -1453,7 +1566,7 @@ impl AdoptionBenchmarkOptions {
 }
 
 fn help_text() -> String {
-    "usage: cargo xtask adoption-benchmark [--fixtures PATHS --manifest FILE] [--encode-fixtures PATHS --encode-manifest FILE] [--include-generated] [--quick] [--cuda|--require-cuda] [--cuda-decode-batch-sizes LIST] [--metal|--require-metal] [--openjph|--require-openjph] [--kakadu|--require-kakadu] [--out-dir DIR]".to_string()
+    "usage: cargo xtask adoption-benchmark [--fixtures PATHS --manifest FILE] [--encode-fixtures PATHS --encode-manifest FILE] [--include-generated] [--quick] [--cuda|--require-cuda] [--cuda-decode-batch-sizes LIST] [--metal|--require-metal] [--openjph|--require-openjph] [--kakadu|--require-kakadu] [--finalize-existing] [--out-dir DIR]".to_string()
 }
 
 fn parse_batch_size_list(value: &str, label: &str) -> Result<String, String> {
@@ -1597,6 +1710,7 @@ mod tests {
             require_metal: false,
             require_openjph: false,
             require_kakadu: false,
+            finalize_existing: false,
         };
 
         let error = enforce_publication_gate(&options).expect_err("gate must fail");
