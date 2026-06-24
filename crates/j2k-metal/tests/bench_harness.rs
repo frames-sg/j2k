@@ -76,3 +76,29 @@ fn j2k_metal_benches_directory_is_clean_for_redesign() {
         "remove stale j2k-metal bench sources before adding new profiling benches: {sources:?}"
     );
 }
+
+#[test]
+fn metal_encode_auto_routing_accepts_external_staged_pnm_sources() {
+    let path = manifest_dir().join("tests/encode_auto_routing_benchmark.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("must read {}: {error}", path.display()));
+
+    for expected in [
+        "J2K_METAL_ENCODE_INPUT_DIRS",
+        "J2K_METAL_ENCODE_MANIFEST",
+        "J2K_METAL_ENCODE_INCLUDE_GENERATED",
+        "j2k_metal_encode_io_policy",
+        "j2k_metal_encode_external_case_count",
+        "j2k_metal_encode_external_input_format",
+        "staged-pnm-p5-p6",
+        "lossless_external",
+        "read_pnm_image",
+        "validate_metal_encode_manifest_entry",
+        "input_fnv1a64",
+    ] {
+        assert!(
+            source.contains(expected),
+            "Metal auto-routing benchmark is missing `{expected}`"
+        );
+    }
+}

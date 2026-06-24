@@ -189,6 +189,19 @@ pub fn write_pnm(
     fs::write(path, pnm_bytes(pixels, width, height, channels)?)
 }
 
+/// Binary PGM/PPM image decoded from a staged PNM fixture.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PnmImage {
+    /// Raw 8-bit pixel payload.
+    pub pixels: Vec<u8>,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Component count, currently `1` for PGM or `3` for PPM.
+    pub channels: usize,
+}
+
 /// Reads pixel payload bytes from a binary PGM (`P5`) or PPM (`P6`) fixture.
 ///
 /// # Errors
@@ -196,30 +209,82 @@ pub fn write_pnm(
 /// Returns an error when the file cannot be read or the PNM header is missing
 /// the expected `P5`/`P6` magic, dimensions, or max-value fields.
 pub fn read_pnm_pixels(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
+    read_pnm_image(path).map(|image| image.pixels)
+}
+
+/// Reads a binary PGM (`P5`) or PPM (`P6`) fixture with shape metadata.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read, the PNM header is malformed,
+/// the max value is not `255`, or the payload length does not match the shape.
+pub fn read_pnm_image(path: impl AsRef<Path>) -> io::Result<PnmImage> {
     let bytes = fs::read(path)?;
     let mut cursor = 0;
 
     let magic = read_pnm_token(&bytes, &mut cursor)
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "PNM missing magic"))?;
-    if magic != b"P5" && magic != b"P6" {
+    let channels = match magic {
+        b"P5" => 1,
+        b"P6" => 3,
+        _ => {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "PNM magic must be P5 or P6",
+            ));
+        }
+    };
+
+    let width = parse_pnm_u32(read_pnm_token(&bytes, &mut cursor), "width")?;
+    let height = parse_pnm_u32(read_pnm_token(&bytes, &mut cursor), "height")?;
+    let max_value = parse_pnm_u32(read_pnm_token(&bytes, &mut cursor), "max value")?;
+    if max_value != 255 {
         return Err(io::Error::new(
             ErrorKind::InvalidData,
-            "PNM magic must be P5 or P6",
+            "PNM max value must be 255",
         ));
     }
 
-    read_pnm_token(&bytes, &mut cursor)
-        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "PNM missing width"))?;
-    read_pnm_token(&bytes, &mut cursor)
-        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "PNM missing height"))?;
-    read_pnm_token(&bytes, &mut cursor)
-        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "PNM missing max value"))?;
+    if cursor >= bytes.len() || !bytes[cursor].is_ascii_whitespace() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "PNM header must be followed by whitespace before pixel data",
+        ));
+    }
+    cursor += 1;
 
-    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-        cursor += 1;
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(channels))
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "PNM dimensions overflow"))?;
+    let pixels = bytes[cursor..].to_vec();
+    if pixels.len() != expected_len {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "PNM pixel payload length {} does not match expected {expected_len}",
+                pixels.len()
+            ),
+        ));
     }
 
-    Ok(bytes[cursor..].to_vec())
+    Ok(PnmImage {
+        pixels,
+        width,
+        height,
+        channels,
+    })
+}
+
+/// Computes the FNV-1a 64-bit digest used by benchmark manifests.
+#[must_use]
+pub fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn read_pnm_token<'a>(bytes: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
@@ -238,6 +303,23 @@ fn read_pnm_token<'a>(bytes: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
     }
 
     (start != *cursor).then_some(&bytes[start..*cursor])
+}
+
+fn parse_pnm_u32(token: Option<&[u8]>, label: &str) -> io::Result<u32> {
+    let token = token
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, format!("PNM missing {label}")))?;
+    let text = std::str::from_utf8(token).map_err(|_| {
+        io::Error::new(
+            ErrorKind::InvalidData,
+            format!("PNM {label} is not valid ASCII"),
+        )
+    })?;
+    text.parse::<u32>().map_err(|error| {
+        io::Error::new(
+            ErrorKind::InvalidData,
+            format!("invalid PNM {label} {text:?}: {error}"),
+        )
+    })
 }
 
 fn skip_pnm_separators(bytes: &[u8], cursor: &mut usize) {
@@ -261,8 +343,8 @@ fn skip_pnm_separators(bytes: &[u8], cursor: &mut usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        minimal_j2k_codestream, minimal_jp2, pnm_bytes, read_pnm_pixels, wrap_codestream_jp2,
-        write_pnm,
+        fnv1a64_hex, minimal_j2k_codestream, minimal_jp2, pnm_bytes, read_pnm_image,
+        read_pnm_pixels, wrap_codestream_jp2, write_pnm,
     };
 
     #[test]
@@ -325,5 +407,27 @@ mod tests {
         write_pnm(&path, &[7, 8], 2, 1, 1).expect("write pnm");
         assert_eq!(read_pnm_pixels(&path).expect("read pnm pixels"), vec![7, 8]);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn read_pnm_image_reports_shape_and_preserves_initial_whitespace_pixel() {
+        let path = std::env::temp_dir().join(format!(
+            "j2k-test-support-pnm-shape-{}.pgm",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"P5\n2 1\n255\n\x20\x0a").expect("write pnm fixture");
+
+        let image = read_pnm_image(&path).expect("read pnm image");
+
+        assert_eq!(image.width, 2);
+        assert_eq!(image.height, 1);
+        assert_eq!(image.channels, 1);
+        assert_eq!(image.pixels, vec![0x20, 0x0a]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn fnv1a64_digest_matches_manifest_value() {
+        assert_eq!(fnv1a64_hex(b"abc"), "e71fa2190541574b");
     }
 }

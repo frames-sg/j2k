@@ -675,6 +675,11 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 self.auto_host_output_force_cpu_fallback = true;
                 return Ok(None);
             }
+            let format = match job.num_components {
+                1 => PixelFormat::Gray8,
+                3 => PixelFormat::Rgb8,
+                _ => return Ok(None),
+            };
             let session = match crate::MetalBackendSession::system_default() {
                 Ok(session) => session,
                 Err(crate::Error::MetalUnavailable) => return Ok(None),
@@ -696,7 +701,7 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 pitch_bytes,
                 output_width: job.width,
                 output_height: job.height,
-                format: PixelFormat::Rgb8,
+                format,
             };
             let encoded = match encode_resident_ht_tile_body_with_cpu_packetization(
                 tile,

@@ -2,7 +2,12 @@
 
 #![allow(clippy::similar_names)]
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 use j2k::adapter::encode_stage::{
     J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
@@ -21,24 +26,31 @@ use j2k_native::{
     deinterleave_reference, forward_dwt53_reference, forward_dwt97_reference,
     forward_ict_reference, forward_rct_reference, quantize_subband_reference,
 };
-use j2k_test_support::{patterned_gray8, patterned_rgb8};
+use j2k_test_support::{fnv1a64_hex, patterned_gray8, patterned_rgb8, read_pnm_image};
 
 const DIMS: &[u32] = &[128, 512, 1024];
 const ITERS: usize = 5;
 const AUTO_STAGE_MIN_PIXELS: u64 = 512 * 512;
-const AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS: u64 = 1024 * 1024;
+const AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS: u64 = 512 * 512;
 
 #[test]
 #[ignore = "benchmark harness; run explicitly with --ignored --nocapture"]
 fn encode_auto_routing_benchmark() {
     run_stage_benchmarks();
-    for &dim in DIMS {
-        run_lossless_case(Codec::Classic, Components::Gray8, dim);
-        run_lossless_case(Codec::Classic, Components::Rgb8, dim);
-        run_lossless_case(Codec::Htj2k, Components::Rgb8, dim);
-        run_lossy_case(Codec::Classic, Components::Gray8, dim);
-        run_lossy_case(Codec::Htj2k, Components::Gray8, dim);
-        run_lossy_case(Codec::Htj2k, Components::Rgb8, dim);
+    if include_generated_host_input() {
+        for &dim in DIMS {
+            run_lossless_case(Codec::Classic, Components::Gray8, dim);
+            run_lossless_case(Codec::Classic, Components::Rgb8, dim);
+            run_lossless_case(Codec::Htj2k, Components::Rgb8, dim);
+            run_lossy_case(Codec::Classic, Components::Gray8, dim);
+            run_lossy_case(Codec::Htj2k, Components::Gray8, dim);
+            run_lossy_case(Codec::Htj2k, Components::Rgb8, dim);
+        }
+    }
+    let external_cases = external_encode_cases();
+    emit_external_metadata(&external_cases);
+    for case in &external_cases {
+        run_external_lossless_case(case);
     }
 }
 
@@ -96,6 +108,16 @@ impl Components {
         }
     }
 
+    fn from_channels(channels: usize) -> Result<Self, String> {
+        match channels {
+            1 => Ok(Self::Gray8),
+            3 => Ok(Self::Rgb8),
+            other => Err(format!(
+                "Metal external encode supports only PGM/PPM, got {other} channels"
+            )),
+        }
+    }
+
     fn pixels(self, width: u32, height: u32) -> Vec<u8> {
         match self {
             Self::Gray8 => patterned_gray8(width, height),
@@ -104,41 +126,83 @@ impl Components {
     }
 }
 
+struct ExternalEncodeCase {
+    id: String,
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    components: Components,
+    input_source: String,
+}
+
+struct MetalEncodeManifest {
+    entries: HashMap<PathBuf, MetalEncodeManifestEntry>,
+}
+
+struct MetalEncodeManifestEntry {
+    input_fnv1a64: Option<String>,
+}
+
 fn run_lossless_case(codec: Codec, components: Components, dim: u32) {
     let pixels = components.pixels(dim, dim);
-    let auto_probe = probe_lossless_auto(&pixels, dim, codec, components);
-    emit_probe("lossless", codec, components, dim, &auto_probe);
+    run_lossless_case_with_pixels("lossless", codec, components, dim, dim, &pixels, false);
+}
+
+fn run_external_lossless_case(case: &ExternalEncodeCase) {
+    run_lossless_case_with_pixels(
+        "lossless_external",
+        Codec::Htj2k,
+        case.components,
+        case.width,
+        case.height,
+        &case.pixels,
+        true,
+    );
+}
+
+fn run_lossless_case_with_pixels(
+    mode: &str,
+    codec: Codec,
+    components: Components,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    require_auto_dispatch: bool,
+) {
+    let auto_probe = probe_lossless_auto(pixels, width, height, codec, components);
+    emit_probe(mode, codec, components, width, height, &auto_probe);
     let cpu = measure(|| {
-        let samples = lossless_samples(std::hint::black_box(pixels.as_slice()), dim, components);
+        let samples = lossless_samples_2d(std::hint::black_box(pixels), width, height, components);
         let options = lossless_options(codec, EncodeBackendPreference::CpuOnly);
         let encoded = encode_j2k_lossless(samples, &options).expect("CPU lossless encode");
         assert_eq!(encoded.backend, BackendKind::Cpu);
         encoded.codestream.len()
     });
-    let expected_dispatch = expected_lossless_auto_dispatch(codec, components, dim);
-    let auto = should_bench_auto(&auto_probe, expected_dispatch).then(|| {
-        measure(|| {
-            let samples =
-                lossless_samples(std::hint::black_box(pixels.as_slice()), dim, components);
-            let options = lossless_options(codec, EncodeBackendPreference::Auto);
-            let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
-            let encoded = encode_j2k_lossless_with_accelerator(
-                samples,
-                &options,
-                BackendKind::Metal,
-                &mut accelerator,
-            )
-            .expect("Auto Metal lossless encode");
-            encoded.codestream.len()
-        })
-    });
-    emit_timing("lossless", codec, components, dim, cpu, auto);
+    let expected_dispatch = expected_lossless_auto_dispatch(codec, components, width, height);
+    let auto =
+        should_bench_auto(&auto_probe, expected_dispatch, require_auto_dispatch).then(|| {
+            measure(|| {
+                let samples =
+                    lossless_samples_2d(std::hint::black_box(pixels), width, height, components);
+                let options = lossless_options(codec, EncodeBackendPreference::Auto);
+                let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
+                let encoded = encode_j2k_lossless_with_accelerator(
+                    samples,
+                    &options,
+                    BackendKind::Metal,
+                    &mut accelerator,
+                )
+                .expect("Auto Metal lossless encode");
+                encoded.codestream.len()
+            })
+        });
+    emit_timing(mode, codec, components, width, height, cpu, auto);
 }
 
 fn run_lossy_case(codec: Codec, components: Components, dim: u32) {
     let pixels = components.pixels(dim, dim);
     let auto_probe = probe_lossy_auto(&pixels, dim, codec, components);
-    emit_probe("lossy", codec, components, dim, &auto_probe);
+    emit_probe("lossy", codec, components, dim, dim, &auto_probe);
     let cpu = measure(|| {
         let samples = lossy_samples(std::hint::black_box(pixels.as_slice()), dim, components);
         let options = lossy_options(codec, components, EncodeBackendPreference::CpuOnly);
@@ -146,7 +210,7 @@ fn run_lossy_case(codec: Codec, components: Components, dim: u32) {
         assert_eq!(encoded.backend, BackendKind::Cpu);
         encoded.codestream.len()
     });
-    let auto = should_bench_auto(&auto_probe, false).then(|| {
+    let auto = should_bench_auto(&auto_probe, false, false).then(|| {
         measure(|| {
             let samples = lossy_samples(std::hint::black_box(pixels.as_slice()), dim, components);
             let options = lossy_options(codec, components, EncodeBackendPreference::Auto);
@@ -161,7 +225,305 @@ fn run_lossy_case(codec: Codec, components: Components, dim: u32) {
             encoded.codestream.len()
         })
     });
-    emit_timing("lossy", codec, components, dim, cpu, auto);
+    emit_timing("lossy", codec, components, dim, dim, cpu, auto);
+}
+
+fn include_generated_host_input() -> bool {
+    !env_falsey("J2K_METAL_ENCODE_INCLUDE_GENERATED")
+}
+
+fn env_falsey(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
+}
+
+fn external_encode_cases() -> Vec<ExternalEncodeCase> {
+    let dirs = external_encode_input_dirs();
+    if dirs.is_empty() {
+        return Vec::new();
+    }
+    let manifest = metal_encode_manifest().unwrap_or_else(|error| panic!("{error}"));
+    let mut cases = Vec::new();
+    for dir in dirs {
+        let mut paths = Vec::new();
+        collect_pnm_paths(&dir, &mut paths)
+            .unwrap_or_else(|error| panic!("collect external Metal encode inputs: {error}"));
+        assert!(
+            !paths.is_empty(),
+            "J2K_METAL_ENCODE_INPUT_DIRS entry {} contains no staged .pgm/.ppm/.pnm files",
+            dir.display()
+        );
+        paths.sort();
+        for path in paths {
+            cases.push(
+                load_external_encode_case(&path, manifest.as_ref())
+                    .unwrap_or_else(|error| panic!("{error}")),
+            );
+        }
+    }
+    cases
+}
+
+fn external_encode_input_dirs() -> Vec<PathBuf> {
+    std::env::var_os("J2K_METAL_ENCODE_INPUT_DIRS")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default()
+}
+
+fn collect_pnm_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err(format!(
+            "J2K_METAL_ENCODE_INPUT_DIRS entry is not a directory: {}",
+            dir.display()
+        ));
+    }
+    for entry in fs::read_dir(dir).map_err(|error| format!("read {}: {error}", dir.display()))? {
+        let path = entry
+            .map_err(|error| format!("read dir entry under {}: {error}", dir.display()))?
+            .path();
+        if path.is_dir() {
+            collect_pnm_paths(&path, paths)?;
+        } else if is_pnm_path(&path) {
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn is_pnm_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "pgm" | "ppm" | "pnm"
+            )
+        })
+}
+
+fn load_external_encode_case(
+    path: &Path,
+    manifest: Option<&MetalEncodeManifest>,
+) -> Result<ExternalEncodeCase, String> {
+    let image = read_pnm_image(path).map_err(|error| {
+        format!(
+            "read external Metal encode staged PNM {}: {error}",
+            path.display()
+        )
+    })?;
+    validate_metal_encode_manifest_entry(path, &image.pixels, manifest)?;
+    Ok(ExternalEncodeCase {
+        id: sanitized_stem(path),
+        pixels: image.pixels,
+        width: image.width,
+        height: image.height,
+        components: Components::from_channels(image.channels)?,
+        input_source: external_source_label(path)?,
+    })
+}
+
+fn metal_encode_manifest() -> Result<Option<MetalEncodeManifest>, String> {
+    let Some(path) = std::env::var_os("J2K_METAL_ENCODE_MANIFEST").map(PathBuf::from) else {
+        return Ok(None);
+    };
+    let text = fs::read_to_string(&path)
+        .map_err(|error| format!("read J2K_METAL_ENCODE_MANIFEST {}: {error}", path.display()))?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+    let header = lines
+        .next()
+        .ok_or_else(|| format!("Metal encode manifest {} is empty", path.display()))?;
+    let headers = header.split('\t').collect::<Vec<_>>();
+    let path_index = manifest_column(&headers, "path")?;
+    let hash_index = optional_manifest_column(&headers, "input_fnv1a64");
+    let mut entries = HashMap::new();
+    for (line_index, line) in lines.enumerate() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let fields = line.split('\t').collect::<Vec<_>>();
+        let row_number = line_index + 2;
+        let raw_path = manifest_field(&fields, path_index, "path", row_number)?;
+        let resolved_path = if Path::new(raw_path).is_absolute() {
+            PathBuf::from(raw_path)
+        } else {
+            base.join(raw_path)
+        };
+        let canonical_path = resolved_path.canonicalize().map_err(|error| {
+            format!(
+                "Metal encode manifest {} row {row_number} path {} cannot be canonicalized: {error}",
+                path.display(),
+                resolved_path.display()
+            )
+        })?;
+        let entry = MetalEncodeManifestEntry {
+            input_fnv1a64: manifest_optional_value(
+                &fields,
+                hash_index,
+                "input_fnv1a64",
+                row_number,
+            )?,
+        };
+        if entries.insert(canonical_path, entry).is_some() {
+            return Err(format!(
+                "Metal encode manifest {} row {row_number} duplicates path {raw_path}",
+                path.display()
+            ));
+        }
+    }
+    Ok(Some(MetalEncodeManifest { entries }))
+}
+
+fn validate_metal_encode_manifest_entry(
+    path: &Path,
+    pixels: &[u8],
+    manifest: Option<&MetalEncodeManifest>,
+) -> Result<(), String> {
+    let Some(manifest) = manifest else {
+        return Ok(());
+    };
+    let canonical_path = path.canonicalize().map_err(|error| {
+        format!(
+            "canonicalize external Metal encode input {}: {error}",
+            path.display()
+        )
+    })?;
+    let Some(entry) = manifest.entries.get(&canonical_path) else {
+        return Err(format!(
+            "external Metal encode input {} is not covered by J2K_METAL_ENCODE_MANIFEST",
+            path.display()
+        ));
+    };
+    let Some(expected_hash) = &entry.input_fnv1a64 else {
+        return Err(format!(
+            "external Metal encode input {} manifest row is missing input_fnv1a64",
+            path.display()
+        ));
+    };
+    let actual_hash = fnv1a64_hex(pixels);
+    if actual_hash != *expected_hash {
+        return Err(format!(
+            "external Metal encode input {} hash mismatch: manifest {expected_hash} != actual {actual_hash}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn manifest_column(headers: &[&str], name: &str) -> Result<usize, String> {
+    optional_manifest_column(headers, name)
+        .ok_or_else(|| format!("Metal encode manifest is missing required {name:?} column"))
+}
+
+fn optional_manifest_column(headers: &[&str], name: &str) -> Option<usize> {
+    headers.iter().position(|header| *header == name)
+}
+
+fn manifest_field<'a>(
+    fields: &'a [&str],
+    index: usize,
+    name: &str,
+    row_number: usize,
+) -> Result<&'a str, String> {
+    fields
+        .get(index)
+        .copied()
+        .ok_or_else(|| format!("Metal encode manifest row {row_number} is missing {name:?} field"))
+}
+
+fn manifest_optional_value(
+    fields: &[&str],
+    index: Option<usize>,
+    name: &str,
+    row_number: usize,
+) -> Result<Option<String>, String> {
+    let Some(index) = index else {
+        return Ok(None);
+    };
+    let value = manifest_field(fields, index, name, row_number)?.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!(
+            "Metal encode manifest row {row_number} field {name:?} contains a control character"
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn external_source_label(path: &Path) -> Result<String, String> {
+    let source_path = path.display().to_string();
+    if source_path.chars().any(char::is_control) {
+        return Err(format!(
+            "external Metal encode input path contains a control character: {}",
+            source_path.escape_debug()
+        ));
+    }
+    Ok(format!("external:{source_path}"))
+}
+
+fn sanitized_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("unnamed")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn emit_external_metadata(external_cases: &[ExternalEncodeCase]) {
+    println!(
+        "j2k_metal_encode_generated_host_input_included\t{}",
+        include_generated_host_input()
+    );
+    println!(
+        "j2k_metal_encode_io_policy\tstaged-pnm-pixels-preloaded-no-filesystem-io-in-timed-loop;auto-rows-include-public-api-host-submission-and-metal-auto-route-work"
+    );
+    println!(
+        "j2k_metal_encode_input_dirs\t{}",
+        std::env::var("J2K_METAL_ENCODE_INPUT_DIRS").unwrap_or_else(|_| "not set".to_string())
+    );
+    println!(
+        "j2k_metal_encode_manifest\t{}",
+        std::env::var("J2K_METAL_ENCODE_MANIFEST").unwrap_or_else(|_| "not set".to_string())
+    );
+    println!(
+        "j2k_metal_encode_external_case_count\t{}",
+        external_cases.len()
+    );
+    println!("j2k_metal_encode_external_input_format\tstaged-pnm-p5-p6");
+    println!(
+        "j2k_metal_encode_external_case_sources\t{}",
+        if external_cases.is_empty() {
+            "none".to_string()
+        } else {
+            external_cases
+                .iter()
+                .map(|case| case.input_source.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    );
+    println!(
+        "j2k_metal_encode_external_case_ids\t{}",
+        if external_cases.is_empty() {
+            "none".to_string()
+        } else {
+            external_cases
+                .iter()
+                .map(|case| case.id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    );
 }
 
 fn run_deinterleave_stage_benchmark(dim: u32) {
@@ -343,8 +705,13 @@ fn measure(mut run: impl FnMut() -> usize) -> Duration {
     durations[durations.len() / 2]
 }
 
-fn lossless_samples(pixels: &[u8], dim: u32, components: Components) -> J2kLosslessSamples<'_> {
-    J2kLosslessSamples::new(pixels, dim, dim, components.count(), 8, false)
+fn lossless_samples_2d(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    components: Components,
+) -> J2kLosslessSamples<'_> {
+    J2kLosslessSamples::new(pixels, width, height, components.count(), 8, false)
         .expect("valid lossless samples")
 }
 
@@ -431,13 +798,18 @@ fn dwt97_len(output: &j2k::adapter::encode_stage::J2kForwardDwt97Output) -> usiz
             .sum::<usize>()
 }
 
-fn expected_lossless_auto_dispatch(codec: Codec, components: Components, dim: u32) -> bool {
-    let pixels = u64::from(dim).saturating_mul(u64::from(dim));
-    let resident_htj2k_rgb = matches!(codec, Codec::Htj2k)
-        && matches!(components, Components::Rgb8)
+fn expected_lossless_auto_dispatch(
+    codec: Codec,
+    components: Components,
+    width: u32,
+    height: u32,
+) -> bool {
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    let resident_htj2k_host_input = matches!(codec, Codec::Htj2k)
+        && matches!(components, Components::Gray8 | Components::Rgb8)
         && pixels >= AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS;
     let stage_gated_classic = matches!(codec, Codec::Classic) && pixels >= AUTO_STAGE_MIN_PIXELS;
-    resident_htj2k_rgb || stage_gated_classic
+    resident_htj2k_host_input || stage_gated_classic
 }
 
 fn probe_deinterleave_stage(
@@ -545,11 +917,12 @@ fn probe_quantize_subband_stage(coefficients: &[f32]) -> Result<J2kEncodeDispatc
 
 fn probe_lossless_auto(
     pixels: &[u8],
-    dim: u32,
+    width: u32,
+    height: u32,
     codec: Codec,
     components: Components,
 ) -> Result<J2kEncodeDispatchReport, String> {
-    let samples = lossless_samples(pixels, dim, components);
+    let samples = lossless_samples_2d(pixels, width, height, components);
     let options = lossless_options(codec, EncodeBackendPreference::Auto);
     let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
     encode_j2k_lossless_with_accelerator(samples, &options, BackendKind::Metal, &mut accelerator)
@@ -574,18 +947,19 @@ fn probe_lossy_auto(
 fn should_bench_auto(
     probe: &Result<J2kEncodeDispatchReport, String>,
     expected_dispatch: bool,
+    require_dispatch: bool,
 ) -> bool {
     match probe {
-        Ok(dispatch) if !expected_dispatch || *dispatch != J2kEncodeDispatchReport::default() => {
-            true
-        }
-        Ok(_) if std::env::var_os("J2K_REQUIRE_METAL_BENCH").is_some() => {
-            panic!("J2K_REQUIRE_METAL_BENCH is set but Auto Metal encode did not dispatch")
-        }
-        Ok(_) => {
+        Ok(dispatch) if *dispatch != J2kEncodeDispatchReport::default() => true,
+        Ok(_) if require_dispatch || expected_dispatch => {
+            assert!(
+                std::env::var_os("J2K_REQUIRE_METAL_BENCH").is_none(),
+                "J2K_REQUIRE_METAL_BENCH is set but Auto Metal encode did not dispatch"
+            );
             eprintln!("skipping Auto Metal encode bench: route did not dispatch");
             false
         }
+        Ok(_) => true,
         Err(error) if std::env::var_os("J2K_REQUIRE_METAL_BENCH").is_some() => {
             panic!("J2K_REQUIRE_METAL_BENCH is set but Auto Metal encode failed: {error}")
         }
@@ -626,7 +1000,8 @@ fn emit_probe(
     mode: &str,
     codec: Codec,
     components: Components,
-    dim: u32,
+    width: u32,
+    height: u32,
     probe: &Result<J2kEncodeDispatchReport, String>,
 ) {
     match probe {
@@ -634,15 +1009,15 @@ fn emit_probe(
             "j2k_metal_encode_auto_probe mode={mode} codec={} components={} size={}x{} dispatch={dispatch:?}",
             codec.label(),
             components.label(),
-            dim,
-            dim
+            width,
+            height
         ),
         Err(error) => println!(
             "j2k_metal_encode_auto_probe mode={mode} codec={} components={} size={}x{} error={error}",
             codec.label(),
             components.label(),
-            dim,
-            dim
+            width,
+            height
         ),
     }
 }
@@ -651,7 +1026,8 @@ fn emit_timing(
     mode: &str,
     codec: Codec,
     components: Components,
-    dim: u32,
+    width: u32,
+    height: u32,
     cpu: Duration,
     auto: Option<Duration>,
 ) {
@@ -663,8 +1039,8 @@ fn emit_timing(
         "j2k_metal_encode_auto_bench mode={mode} codec={} components={} size={}x{} cpu_ms={:.3} auto_ms={auto_ms}",
         codec.label(),
         components.label(),
-        dim,
-        dim,
+        width,
+        height,
         cpu.as_secs_f64() * 1_000.0
     );
 }

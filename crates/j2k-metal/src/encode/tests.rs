@@ -1875,6 +1875,88 @@ fn auto_htj2k_large_host_output_uses_resident_metal_rct_dwt_and_ht_with_cpu_pack
 
 #[cfg(target_os = "macos")]
 #[test]
+fn auto_htj2k_kodak_sized_rgb_host_output_uses_resident_metal() {
+    let width = 768u32;
+    let height = 512u32;
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
+    for y in 0..height {
+        for x in 0..width {
+            pixels.push(((x * 3 + y * 5) & 0xff) as u8);
+            pixels.push(((x * 7 + y * 11) & 0xff) as u8);
+            pixels.push(((x * 13 + y * 17) & 0xff) as u8);
+        }
+    }
+    let samples =
+        J2kLosslessSamples::new(&pixels, width, height, 3, 8, false).expect("valid RGB samples");
+    let options = lossless_options! {
+        backend: EncodeBackendPreference::Auto,
+        block_coding_mode: J2kBlockCodingMode::HighThroughput,
+        validation: J2kEncodeValidation::External,
+    };
+    let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
+
+    let encoded = encode_j2k_lossless_with_accelerator(
+        samples,
+        &options,
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("hybrid HTJ2K host-output encode");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("codestream parses")
+        .decode_native()
+        .expect("codestream decodes");
+
+    assert_eq!(decoded.data, pixels);
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert!(accelerator.forward_rct_dispatches() > 0);
+    assert_eq!(accelerator.forward_dwt53_dispatches(), 3);
+    assert!(accelerator.ht_code_block_dispatches() > 0);
+    assert_eq!(accelerator.packetization_dispatches(), 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn auto_htj2k_gray_host_output_uses_resident_metal_dwt_and_ht_with_cpu_packetization() {
+    let width = 512u32;
+    let height = 512u32;
+    let mut pixels = Vec::with_capacity(width as usize * height as usize);
+    for y in 0..height {
+        for x in 0..width {
+            pixels.push(((x * 7 + y * 11 + (x ^ y)) & 0xff) as u8);
+        }
+    }
+    let samples =
+        J2kLosslessSamples::new(&pixels, width, height, 1, 8, false).expect("valid gray samples");
+    let options = lossless_options! {
+        backend: EncodeBackendPreference::Auto,
+        block_coding_mode: J2kBlockCodingMode::HighThroughput,
+        validation: J2kEncodeValidation::External,
+    };
+    let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
+
+    let encoded = encode_j2k_lossless_with_accelerator(
+        samples,
+        &options,
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("hybrid HTJ2K host-output encode");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("codestream parses")
+        .decode_native()
+        .expect("codestream decodes");
+
+    assert_eq!(decoded.data, pixels);
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert_eq!(accelerator.forward_rct_dispatches(), 0);
+    assert_eq!(accelerator.forward_dwt53_dispatches(), 1);
+    assert!(accelerator.ht_code_block_dispatches() > 0);
+    assert_eq!(accelerator.packetization_dispatches(), 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn auto_htj2k_padded_rgb8_uses_fused_metal_rct_with_cpu_packetization() {
     let mut pixels = Vec::with_capacity(64 * 64 * 3);
     for y in 0..64u32 {

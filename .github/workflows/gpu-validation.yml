@@ -31,6 +31,11 @@ on:
         type: boolean
         required: false
         default: false
+      run-adoption-benchmark:
+        description: "Run the fixture-backed adoption benchmark bundle on the CUDA runner"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -342,3 +347,88 @@ jobs:
         env:
           J2K_REQUIRE_CUDA_BENCH: "1"
         run: cargo bench -p j2k-cuda --bench htj2k_encode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
+      - name: CUDA adoption benchmark bundle
+        if: ${{ inputs.run-adoption-benchmark }}
+        env:
+          J2K_ADOPTION_FIXTURES: ${{ vars.J2K_ADOPTION_FIXTURES }}
+          J2K_ADOPTION_MANIFEST: ${{ vars.J2K_ADOPTION_MANIFEST }}
+          J2K_ADOPTION_ENCODE_FIXTURES: ${{ vars.J2K_ADOPTION_ENCODE_FIXTURES }}
+          J2K_ADOPTION_ENCODE_MANIFEST: ${{ vars.J2K_ADOPTION_ENCODE_MANIFEST }}
+          J2K_ADOPTION_OUT_DIR: target/j2k-adoption-benchmark/cuda-full
+        run: |
+          set -euo pipefail
+          command -v opj_compress >/dev/null
+          command -v grk_compress >/dev/null
+          if [ -n "${J2K_ADOPTION_FIXTURES:-}${J2K_ADOPTION_MANIFEST:-}${J2K_ADOPTION_ENCODE_FIXTURES:-}${J2K_ADOPTION_ENCODE_MANIFEST:-}" ]; then
+            : "${J2K_ADOPTION_FIXTURES:?Set repository variable J2K_ADOPTION_FIXTURES to the pinned decode fixture directory list}"
+            : "${J2K_ADOPTION_MANIFEST:?Set repository variable J2K_ADOPTION_MANIFEST to the pinned decode manifest TSV}"
+            : "${J2K_ADOPTION_ENCODE_FIXTURES:?Set repository variable J2K_ADOPTION_ENCODE_FIXTURES to the pinned staged PNM encode fixture directory list}"
+            : "${J2K_ADOPTION_ENCODE_MANIFEST:?Set repository variable J2K_ADOPTION_ENCODE_MANIFEST to the pinned encode manifest TSV}"
+          else
+            echo "No adoption corpus repository variables set; building the default public starter corpus"
+            mkdir -p target/j2k-public-corpora/kodak
+            for n in $(seq -w 1 24); do
+              kodak="target/j2k-public-corpora/kodak/kodim${n}.png"
+              if [ ! -f "${kodak}" ]; then
+                curl -L --fail \
+                  "https://r0k.us/graphics/kodak/kodak/kodim${n}.png" \
+                  -o "${kodak}"
+              fi
+            done
+            cargo xtask adoption-materialize \
+              --encode-fixtures target/j2k-public-corpora/kodak \
+              --source-command "downloaded-from-r0k-us-kodak-lossless-true-color" \
+              --license-status redistributable \
+              --corpus-name kodak \
+              --corpus-category natural-image \
+              --out-dir target/j2k-public-corpora/materialized-kodak
+            if [ ! -d target/j2k-public-corpora/openjpeg-data/.git ]; then
+              git clone --depth 1 https://github.com/uclouvain/openjpeg-data \
+                target/j2k-public-corpora/openjpeg-data
+            fi
+            cargo xtask adoption-curate \
+              --fixtures target/j2k-public-corpora/openjpeg-data/input/conformance \
+              --encode-command "source-native-openjpeg-data-conformance-dir" \
+              --license-status permissive-test-fixture \
+              --corpus-name openjpeg-data-conformance \
+              --corpus-category conformance \
+              --out-dir target/j2k-public-corpora/openjpeg-conformance-curated
+            cargo xtask adoption-curate \
+              --fixtures target/j2k-public-corpora/openjpeg-data/input/nonregression \
+              --encode-command "source-native-openjpeg-data-nonregression-dir" \
+              --license-status permissive-test-fixture \
+              --corpus-name openjpeg-data \
+              --corpus-category interop \
+              --max-files 24 \
+              --out-dir target/j2k-public-corpora/openjpeg-interop-curated
+            mkdir -p target/j2k-public-corpora/combined-adoption
+            awk 'FNR == 1 && NR != 1 { next } { print }' \
+              target/j2k-public-corpora/materialized-kodak/fixtures.tsv \
+              target/j2k-public-corpora/openjpeg-conformance-curated/fixtures.tsv \
+              target/j2k-public-corpora/openjpeg-interop-curated/fixtures.tsv \
+              > target/j2k-public-corpora/combined-adoption/fixtures.tsv
+            cp target/j2k-public-corpora/materialized-kodak/encode-fixtures.tsv \
+              target/j2k-public-corpora/combined-adoption/encode-fixtures.tsv
+            J2K_ADOPTION_FIXTURES="target/j2k-public-corpora/materialized-kodak/decode-fixtures:target/j2k-public-corpora/openjpeg-conformance-curated/fixtures:target/j2k-public-corpora/openjpeg-interop-curated/fixtures"
+            J2K_ADOPTION_MANIFEST="target/j2k-public-corpora/combined-adoption/fixtures.tsv"
+            J2K_ADOPTION_ENCODE_FIXTURES="target/j2k-public-corpora/materialized-kodak/staged-pnm"
+            J2K_ADOPTION_ENCODE_MANIFEST="target/j2k-public-corpora/combined-adoption/encode-fixtures.tsv"
+          fi
+          cargo xtask adoption-benchmark \
+            --fixtures "${J2K_ADOPTION_FIXTURES}" \
+            --manifest "${J2K_ADOPTION_MANIFEST}" \
+            --encode-fixtures "${J2K_ADOPTION_ENCODE_FIXTURES}" \
+            --encode-manifest "${J2K_ADOPTION_ENCODE_MANIFEST}" \
+            --cuda \
+            --require-cuda \
+            --out-dir "${J2K_ADOPTION_OUT_DIR}"
+          cargo xtask adoption-report \
+            --run-dir "${J2K_ADOPTION_OUT_DIR}" \
+            --out "${J2K_ADOPTION_OUT_DIR}/adoption-report.md"
+      - name: Upload CUDA adoption benchmark artifacts
+        if: ${{ inputs.run-adoption-benchmark && always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cuda-adoption-benchmark
+          path: target/j2k-adoption-benchmark/cuda-full
+          if-no-files-found: warn

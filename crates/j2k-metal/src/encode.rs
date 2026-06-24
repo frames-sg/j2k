@@ -1383,9 +1383,10 @@ fn should_try_resident_lossless_ht_cpu_packetization(
 ) -> bool {
     options.backend == EncodeBackendPreference::Auto
         && options.block_coding_mode == J2kBlockCodingMode::HighThroughput
-        && options.reversible_transform == ReversibleTransform::Rct53
         && matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous)
-        && tile.format == PixelFormat::Rgb8
+        && matches!(tile.format, PixelFormat::Gray8 | PixelFormat::Rgb8)
+        && (tile.format == PixelFormat::Gray8
+            || options.reversible_transform == ReversibleTransform::Rct53)
 }
 
 #[cfg(target_os = "macos")]
