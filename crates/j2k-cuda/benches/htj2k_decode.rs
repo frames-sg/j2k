@@ -493,12 +493,12 @@ fn external_decode_cases(enabled_cases: &[&str]) -> ExternalDecodeCases {
                     path.display()
                 )
             });
-            let stem = sanitized_stem(&path);
+            let fixture_id = external_fixture_id(&path, &bytes);
             let input_source = format!("external:{}", path.display());
             match (info.components, info.bit_depth) {
                 (1, 8) if enabled_cases.contains(&"gray8") => {
                     cases.push(decode_case(
-                        format!("external_{stem}_gray8"),
+                        format!("external_{fixture_id}_gray8"),
                         input_source,
                         bytes,
                         PixelFormat::Gray8,
@@ -509,7 +509,7 @@ fn external_decode_cases(enabled_cases: &[&str]) -> ExternalDecodeCases {
                     let mut pushed = false;
                     if enabled_cases.contains(&"rgb8") {
                         cases.push(decode_case(
-                            format!("external_{stem}_rgb8"),
+                            format!("external_{fixture_id}_rgb8"),
                             input_source.clone(),
                             bytes.clone(),
                             PixelFormat::Rgb8,
@@ -519,7 +519,7 @@ fn external_decode_cases(enabled_cases: &[&str]) -> ExternalDecodeCases {
                     }
                     if enabled_cases.contains(&"rgba8") {
                         cases.push(decode_case(
-                            format!("external_{stem}_rgba8"),
+                            format!("external_{fixture_id}_rgba8"),
                             input_source,
                             bytes,
                             PixelFormat::Rgba8,
@@ -980,6 +980,11 @@ fn sanitized_stem(path: &Path) -> String {
             }
         })
         .collect()
+}
+
+fn external_fixture_id(path: &Path, bytes: &[u8]) -> String {
+    let hash = fnv1a64_hex(bytes);
+    format!("{}_{}", sanitized_stem(path), &hash[..8])
 }
 
 fn dimensions_label(dimensions: (u32, u32)) -> String {
