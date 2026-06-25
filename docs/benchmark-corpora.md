@@ -338,6 +338,10 @@ The adoption bundle currently contains these classes of evidence:
   The CUDA decode bench emits `j2k_cuda_decode_sample_size` because external
   adoption runs intentionally use a bounded Criterion sample count across all
   CPU and CUDA rows.
+  Mixed batch rows use the full external corpus up to batch 16 and then switch
+  to tile-sized external cases for larger batches; the emitted
+  `j2k_cuda_decode_mixed_large_batch_policy` and
+  `j2k_cuda_decode_mixed_large_batch_tile_pixels` rows make that split explicit.
   CUDA decode emits `j2k_cuda_decode_io_policy` to distinguish preloaded
   host-memory fixture bytes and device-resident output surfaces from disk I/O
   throughput.

@@ -21,6 +21,9 @@ const CASE_BATCH_SIZES: &[usize] = &[1];
 const DECODE_SAMPLE_SIZE: usize = 10;
 const DECODE_WARM_UP: Duration = Duration::from_millis(500);
 const DECODE_MEASUREMENT: Duration = Duration::from_secs(1);
+const MIXED_BATCH_FULL_CORPUS_MAX_BATCH: usize = 16;
+const MIXED_BATCH_TILE_MIN_PIXELS: u64 = 64 * 64;
+const MIXED_BATCH_TILE_MAX_PIXELS: u64 = 1024 * 1024;
 
 struct DecodeBenchCase {
     id: String,
@@ -309,9 +312,13 @@ fn bench_mixed_external_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase])
             continue;
         }
         for &batch_size in &batch_sizes {
+            let selected_cases = mixed_external_cases_for_batch(&external_cases, batch_size);
+            if selected_cases.len() < 2 {
+                continue;
+            }
             let inputs = (0..batch_size)
                 .map(|index| {
-                    external_cases[index % external_cases.len()]
+                    selected_cases[index % selected_cases.len()]
                         .fixture
                         .as_slice()
                 })
@@ -339,7 +346,7 @@ fn bench_mixed_external_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase])
                 },
             );
             if cuda_batch_decode_supported(fmt)
-                && external_cases.iter().all(|case| case.cuda_available)
+                && selected_cases.iter().all(|case| case.cuda_available)
             {
                 group.bench_with_input(
                     BenchmarkId::new(
@@ -598,6 +605,12 @@ fn emit_input_metadata(corpus: &DecodeBenchCorpus) {
     );
     println!(
         "j2k_cuda_decode_batch_policy\tper-fixture-batch-rows-use-case-batch-sizes;mixed-external-rows-use-public-large-batch-sizes"
+    );
+    println!(
+        "j2k_cuda_decode_mixed_large_batch_policy\tfull-external-corpus-up-to-batch-{MIXED_BATCH_FULL_CORPUS_MAX_BATCH};tile-sized-external-cases-above-that"
+    );
+    println!(
+        "j2k_cuda_decode_mixed_large_batch_tile_pixels\t{MIXED_BATCH_TILE_MIN_PIXELS}..{MIXED_BATCH_TILE_MAX_PIXELS}"
     );
     println!(
         "j2k_cuda_decode_io_policy\thost-memory-fixture-bytes-preloaded-no-filesystem-io-in-timed-loop;cuda-rows-return-device-resident-surfaces"
@@ -1077,6 +1090,25 @@ fn configure_batch_group<M: criterion::measurement::Measurement>(
     group.sample_size(decode_sample_size());
     group.warm_up_time(DECODE_WARM_UP);
     group.measurement_time(DECODE_MEASUREMENT);
+}
+
+fn mixed_external_cases_for_batch<'a>(
+    external_cases: &'a [&'a DecodeBenchCase],
+    batch_size: usize,
+) -> Vec<&'a DecodeBenchCase> {
+    if batch_size <= MIXED_BATCH_FULL_CORPUS_MAX_BATCH {
+        return external_cases.to_vec();
+    }
+    external_cases
+        .iter()
+        .copied()
+        .filter(|case| mixed_large_batch_tile_sized(case.dimensions))
+        .collect()
+}
+
+fn mixed_large_batch_tile_sized(dimensions: (u32, u32)) -> bool {
+    let pixels = u64::from(dimensions.0) * u64::from(dimensions.1);
+    (MIXED_BATCH_TILE_MIN_PIXELS..=MIXED_BATCH_TILE_MAX_PIXELS).contains(&pixels)
 }
 
 fn cuda_decode_criterion() -> Criterion {
