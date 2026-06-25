@@ -430,6 +430,7 @@ fn run_cuda_htj2k_encode(options: &AdoptionBenchmarkOptions) -> Result<AdoptionS
     }
     if options.require_cuda {
         envs.push(("J2K_REQUIRE_CUDA_BENCH".to_string(), "1".to_string()));
+        envs.push(("J2K_REQUIRE_CUDA_KERNEL_BUILD".to_string(), "1".to_string()));
     }
     run_logged_owned(
         "cuda-htj2k-encode",
