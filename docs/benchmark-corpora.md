@@ -335,6 +335,9 @@ The adoption bundle currently contains these classes of evidence:
   Per-fixture batch rows use `j2k_cuda_decode_case_batch_sizes` so the harness
   still touches every fixture without multiplying every large image by every
   huge batch size.
+  The CUDA decode bench emits `j2k_cuda_decode_sample_size` because external
+  adoption runs intentionally use a bounded Criterion sample count across all
+  CPU and CUDA rows.
   CUDA decode emits `j2k_cuda_decode_io_policy` to distinguish preloaded
   host-memory fixture bytes and device-resident output surfaces from disk I/O
   throughput.

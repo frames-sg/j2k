@@ -18,9 +18,9 @@ use j2k_native::{encode_htj2k, EncodeOptions};
 const TILE_DIM: u32 = 512;
 const BATCH_SIZES: &[usize] = &[8, 16, 32, 64];
 const CASE_BATCH_SIZES: &[usize] = &[1];
-const BATCH_SAMPLE_SIZE: usize = 10;
-const BATCH_WARM_UP: Duration = Duration::from_millis(500);
-const BATCH_MEASUREMENT: Duration = Duration::from_secs(1);
+const DECODE_SAMPLE_SIZE: usize = 10;
+const DECODE_WARM_UP: Duration = Duration::from_millis(500);
+const DECODE_MEASUREMENT: Duration = Duration::from_secs(1);
 
 struct DecodeBenchCase {
     id: String,
@@ -591,7 +591,11 @@ fn emit_input_metadata(corpus: &DecodeBenchCorpus) {
     println!("j2k_cuda_decode_batch_sizes\t{mixed_batch_sizes}");
     println!("j2k_cuda_decode_case_batch_sizes\t{case_batch_sizes}");
     println!("j2k_cuda_decode_mixed_batch_sizes\t{mixed_batch_sizes}");
-    println!("j2k_cuda_decode_batch_sample_size\t{BATCH_SAMPLE_SIZE}");
+    println!("j2k_cuda_decode_sample_size\t{}", decode_sample_size());
+    println!(
+        "j2k_cuda_decode_batch_sample_size\t{}",
+        decode_sample_size()
+    );
     println!(
         "j2k_cuda_decode_batch_policy\tper-fixture-batch-rows-use-case-batch-sizes;mixed-external-rows-use-public-large-batch-sizes"
     );
@@ -1070,9 +1074,31 @@ fn enabled_decode_cases() -> Vec<&'static str> {
 fn configure_batch_group<M: criterion::measurement::Measurement>(
     group: &mut criterion::BenchmarkGroup<'_, M>,
 ) {
-    group.sample_size(BATCH_SAMPLE_SIZE);
-    group.warm_up_time(BATCH_WARM_UP);
-    group.measurement_time(BATCH_MEASUREMENT);
+    group.sample_size(decode_sample_size());
+    group.warm_up_time(DECODE_WARM_UP);
+    group.measurement_time(DECODE_MEASUREMENT);
+}
+
+fn cuda_decode_criterion() -> Criterion {
+    Criterion::default()
+        .sample_size(decode_sample_size())
+        .warm_up_time(DECODE_WARM_UP)
+        .measurement_time(DECODE_MEASUREMENT)
+}
+
+fn decode_sample_size() -> usize {
+    let Some(value) = std::env::var_os("J2K_CUDA_DECODE_SAMPLE_SIZE") else {
+        return DECODE_SAMPLE_SIZE;
+    };
+    let value = value.to_string_lossy();
+    let sample_size = value
+        .parse::<usize>()
+        .unwrap_or_else(|error| panic!("invalid J2K_CUDA_DECODE_SAMPLE_SIZE `{value}`: {error}"));
+    assert!(
+        sample_size >= 10,
+        "J2K_CUDA_DECODE_SAMPLE_SIZE must be at least Criterion's minimum sample size of 10"
+    );
+    sample_size
 }
 
 fn decode_case_batch_sizes() -> Vec<usize> {
@@ -1206,5 +1232,9 @@ fn htj2k_rgb8_fixture(width: u32, height: u32) -> Vec<u8> {
     encode_htj2k(&pixels, width, height, 3, 8, false, &options).expect("encode RGB HTJ2K fixture")
 }
 
-criterion_group!(benches, bench_htj2k_decode);
+criterion_group! {
+    name = benches;
+    config = cuda_decode_criterion();
+    targets = bench_htj2k_decode
+}
 criterion_main!(benches);

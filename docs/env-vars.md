@@ -176,6 +176,7 @@ Stability values:
 | `J2K_CUDA_DECODE_FORMATS` | Comma-separated CUDA J2K decode benchmark output formats such as `gray8,rgb8,rgba8`. | Harness default | Benchmark |
 | `J2K_CUDA_DECODE_BATCH_SIZES` | Comma-separated CUDA J2K decode mixed-external batch sizes. | Harness default | Benchmark |
 | `J2K_CUDA_DECODE_CASE_BATCH_SIZES` | Comma-separated CUDA J2K decode per-fixture batch sizes. Keep this bounded for external adoption runs; use `J2K_CUDA_DECODE_BATCH_SIZES` for huge mixed batches. | Harness default | Benchmark |
+| `J2K_CUDA_DECODE_SAMPLE_SIZE` | Criterion sample size for CUDA J2K decode benchmark rows. Must be at least 10. | 10 | Benchmark |
 | `J2K_CUDA_DECODE_INPUT_DIRS` | Optional path-list of external HTJ2K `.j2k`, `.j2c`, `.jp2`, `.jph`, or `.jhc` fixtures included in the CUDA decode Criterion benchmark. | Not set | Benchmark |
 | `J2K_CUDA_DECODE_MANIFEST` | Optional TSV manifest for CUDA decode external fixtures. Uses the same pinned `path`, `input_fnv1a64`, `codec`, and `container` fields as `J2K_FIXTURE_COMPARE_MANIFEST`. | Not set | Benchmark |
 | `J2K_CUDA_DECODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated CUDA decode fixtures when external fixtures are provided. | Generated CUDA decode fixtures included | Benchmark |
