@@ -330,7 +330,7 @@ fn metal_encode_manifest() -> Result<Option<MetalEncodeManifest>, String> {
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("read J2K_METAL_ENCODE_MANIFEST {}: {error}", path.display()))?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
-    let relocation_roots = external_input_dirs();
+    let relocation_roots = external_encode_input_dirs();
     let mut lines = text.lines().filter(|line| !line.trim().is_empty());
     let header = lines
         .next()

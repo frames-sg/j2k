@@ -330,7 +330,11 @@ The adoption bundle currently contains these classes of evidence:
   subset and reports scanned/skipped fixture counts for classic J2K,
   unsupported-shape, and disabled-format fixtures.
   Use `--cuda-decode-batch-sizes 1,16,256,1024` for large-batch adoption
-  evidence; the selected list is emitted as `j2k_cuda_decode_batch_sizes`.
+  evidence in mixed external batch rows; the selected list is emitted as
+  `j2k_cuda_decode_batch_sizes` and `j2k_cuda_decode_mixed_batch_sizes`.
+  Per-fixture batch rows use `j2k_cuda_decode_case_batch_sizes` so the harness
+  still touches every fixture without multiplying every large image by every
+  huge batch size.
   CUDA decode emits `j2k_cuda_decode_io_policy` to distinguish preloaded
   host-memory fixture bytes and device-resident output surfaces from disk I/O
   throughput.

@@ -4,6 +4,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -16,6 +17,10 @@ use j2k_native::{encode_htj2k, EncodeOptions};
 
 const TILE_DIM: u32 = 512;
 const BATCH_SIZES: &[usize] = &[8, 16, 32, 64];
+const CASE_BATCH_SIZES: &[usize] = &[1];
+const BATCH_SAMPLE_SIZE: usize = 10;
+const BATCH_WARM_UP: Duration = Duration::from_millis(500);
+const BATCH_MEASUREMENT: Duration = Duration::from_secs(1);
 
 struct DecodeBenchCase {
     id: String,
@@ -238,7 +243,8 @@ fn bench_roi_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], scale: Downsca
 
 fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
     let mut group = c.benchmark_group("j2k_cuda_htj2k_tile_batch_decode");
-    let batch_sizes = decode_batch_sizes();
+    configure_batch_group(&mut group);
+    let batch_sizes = decode_case_batch_sizes();
     for case in cases {
         for &batch_size in &batch_sizes {
             let fixtures = vec![case.fixture.clone(); batch_size];
@@ -292,7 +298,8 @@ fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
 
 fn bench_mixed_external_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
     let mut group = c.benchmark_group("j2k_cuda_htj2k_external_mixed_tile_batch_decode");
-    let batch_sizes = decode_batch_sizes();
+    configure_batch_group(&mut group);
+    let batch_sizes = decode_mixed_batch_sizes();
     for fmt in [PixelFormat::Gray8, PixelFormat::Rgb8, PixelFormat::Rgba8] {
         let external_cases = cases
             .iter()
@@ -567,7 +574,12 @@ fn emit_input_metadata(corpus: &DecodeBenchCorpus) {
         .iter()
         .filter(|case| case.input_source.starts_with("external:"))
         .count();
-    let batch_sizes = decode_batch_sizes()
+    let mixed_batch_sizes = decode_mixed_batch_sizes()
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let case_batch_sizes = decode_case_batch_sizes()
         .iter()
         .map(usize::to_string)
         .collect::<Vec<_>>()
@@ -576,7 +588,13 @@ fn emit_input_metadata(corpus: &DecodeBenchCorpus) {
         "j2k_cuda_decode_generated_included\t{}",
         include_generated_decode_cases()
     );
-    println!("j2k_cuda_decode_batch_sizes\t{batch_sizes}");
+    println!("j2k_cuda_decode_batch_sizes\t{mixed_batch_sizes}");
+    println!("j2k_cuda_decode_case_batch_sizes\t{case_batch_sizes}");
+    println!("j2k_cuda_decode_mixed_batch_sizes\t{mixed_batch_sizes}");
+    println!("j2k_cuda_decode_batch_sample_size\t{BATCH_SAMPLE_SIZE}");
+    println!(
+        "j2k_cuda_decode_batch_policy\tper-fixture-batch-rows-use-case-batch-sizes;mixed-external-rows-use-public-large-batch-sizes"
+    );
     println!(
         "j2k_cuda_decode_io_policy\thost-memory-fixture-bytes-preloaded-no-filesystem-io-in-timed-loop;cuda-rows-return-device-resident-surfaces"
     );
@@ -1049,9 +1067,25 @@ fn enabled_decode_cases() -> Vec<&'static str> {
     cases
 }
 
-fn decode_batch_sizes() -> Vec<usize> {
-    let Some(value) = std::env::var_os("J2K_CUDA_DECODE_BATCH_SIZES") else {
-        return BATCH_SIZES.to_vec();
+fn configure_batch_group<M: criterion::measurement::Measurement>(
+    group: &mut criterion::BenchmarkGroup<'_, M>,
+) {
+    group.sample_size(BATCH_SAMPLE_SIZE);
+    group.warm_up_time(BATCH_WARM_UP);
+    group.measurement_time(BATCH_MEASUREMENT);
+}
+
+fn decode_case_batch_sizes() -> Vec<usize> {
+    parse_batch_sizes_env("J2K_CUDA_DECODE_CASE_BATCH_SIZES", CASE_BATCH_SIZES)
+}
+
+fn decode_mixed_batch_sizes() -> Vec<usize> {
+    parse_batch_sizes_env("J2K_CUDA_DECODE_BATCH_SIZES", BATCH_SIZES)
+}
+
+fn parse_batch_sizes_env(name: &str, default: &[usize]) -> Vec<usize> {
+    let Some(value) = std::env::var_os(name) else {
+        return default.to_vec();
     };
     let value = value.to_string_lossy();
     let mut batch_sizes = Vec::new();
@@ -1060,20 +1094,17 @@ fn decode_batch_sizes() -> Vec<usize> {
         if raw.is_empty() {
             continue;
         }
-        let batch_size = raw.parse::<usize>().unwrap_or_else(|error| {
-            panic!("invalid J2K_CUDA_DECODE_BATCH_SIZES entry `{raw}`: {error}")
-        });
-        assert!(
-            batch_size > 0,
-            "J2K_CUDA_DECODE_BATCH_SIZES entries must be greater than zero"
-        );
+        let batch_size = raw
+            .parse::<usize>()
+            .unwrap_or_else(|error| panic!("invalid {name} entry `{raw}`: {error}"));
+        assert!(batch_size > 0, "{name} entries must be greater than zero");
         if !batch_sizes.contains(&batch_size) {
             batch_sizes.push(batch_size);
         }
     }
     assert!(
         !batch_sizes.is_empty(),
-        "J2K_CUDA_DECODE_BATCH_SIZES did not contain any batch sizes"
+        "{name} did not contain any batch sizes"
     );
     batch_sizes
 }
