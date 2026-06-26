@@ -14,6 +14,7 @@
 //
 // Usage:
 //   svs_extract <slide.svs> <out-dir> [--limit N] [--stride S] [--quality Q]
+//       [--region-size N] [--format jpeg|ppm|pgm]
 //
 // Defaults: --limit 256 --stride 7 --quality 85. Near-white background tiles are
 // skipped (mean luma > 235).
@@ -21,7 +22,10 @@
 use std::path::Path;
 
 use j2k_jpeg::encoder::{encode_jpeg_baseline, JpegEncodeOptions, JpegSamples};
-use wsi_rs::{Slide, TileLayout, TileOutputPreference, TilePixels, TileRequest};
+use wsi_rs::{
+    LevelIdx, PlaneIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide, TileLayout,
+    TileOutputPreference, TilePixels, TileRequest,
+};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -44,6 +48,8 @@ fn main() {
     let mut scene = 0usize;
     let mut series = 0usize;
     let mut level = 0u32;
+    let mut region_size = None;
+    let mut output_format = OutputFormat::Jpeg;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--limit" => limit = args.next().and_then(|v| v.parse().ok()).unwrap_or(limit),
@@ -64,6 +70,14 @@ fn main() {
             "--scene" => scene = args.next().and_then(|v| v.parse().ok()).unwrap_or(scene),
             "--series" => series = args.next().and_then(|v| v.parse().ok()).unwrap_or(series),
             "--level" => level = args.next().and_then(|v| v.parse().ok()).unwrap_or(level),
+            "--region-size" => region_size = args.next().and_then(|v| v.parse().ok()),
+            "--format" | "--output-format" => {
+                let value = args.next().unwrap_or_else(|| "jpeg".to_string());
+                output_format = OutputFormat::parse(&value).unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                });
+            }
             other => {
                 eprintln!("unknown flag: {other}");
                 std::process::exit(2);
@@ -79,6 +93,8 @@ fn main() {
         scene,
         series,
         level,
+        region_size,
+        output_format,
     };
     if let Err(error) = run(&svs_path, &out_dir, &options) {
         eprintln!("error: {error}");
@@ -94,6 +110,44 @@ struct ExtractOptions {
     scene: usize,
     series: usize,
     level: u32,
+    region_size: Option<u32>,
+    output_format: OutputFormat,
+}
+
+#[derive(Clone, Copy)]
+enum OutputFormat {
+    Jpeg,
+    Ppm,
+    Pgm,
+}
+
+impl OutputFormat {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "jpeg" | "jpg" => Ok(Self::Jpeg),
+            "ppm" => Ok(Self::Ppm),
+            "pgm" => Ok(Self::Pgm),
+            other => Err(format!(
+                "--format must be jpeg, ppm, or pgm; got {other:?}"
+            )),
+        }
+    }
+
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Ppm => "ppm",
+            Self::Pgm => "pgm",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Jpeg => "JPEG",
+            Self::Ppm => "PPM",
+            Self::Pgm => "PGM",
+        }
+    }
 }
 
 struct SlideGrid {
@@ -169,6 +223,9 @@ fn validate_options(options: &ExtractOptions) -> Result<(), String> {
     if !(0.0..=1.0).contains(&options.min_tissue) {
         return Err("--min-tissue must be between 0 and 1".to_string());
     }
+    if matches!(options.region_size, Some(0)) {
+        return Err("--region-size must be greater than zero".to_string());
+    }
     Ok(())
 }
 
@@ -204,6 +261,10 @@ fn extract_tiles(
     options: &ExtractOptions,
     grid: &SlideGrid,
 ) -> Result<ExtractionStats, String> {
+    if let Some(region_size) = options.region_size {
+        return extract_regions(slide, out_dir, options, grid, region_size);
+    }
+
     let jpeg_options = JpegEncodeOptions {
         quality: options.quality,
         ..JpegEncodeOptions::default()
@@ -241,19 +302,82 @@ fn extract_tiles(
             continue;
         }
 
-        let encoded = encode_jpeg_baseline(
-            JpegSamples::Rgb8 {
-                data: &rgb,
-                width: w,
-                height: h,
-            },
+        write_rgb_image(
+            out_dir,
+            "tile",
+            stats.written,
+            &rgb,
+            (w, h),
+            options.output_format,
             jpeg_options,
         )
-        .map_err(|e| format!("encode tile row {row} col {col}: {e}"))?;
+        .map_err(|e| format!("write tile row {row} col {col}: {e}"))?;
+        stats.record_written(fraction);
+    }
+    Ok(stats)
+}
 
-        let path = out_dir.join(format!("tile_{:05}.jpg", stats.written));
-        std::fs::write(&path, &encoded.data)
-            .map_err(|e| format!("write {}: {e}", path.display()))?;
+fn extract_regions(
+    slide: &Slide,
+    out_dir: &Path,
+    options: &ExtractOptions,
+    grid: &SlideGrid,
+    region_size: u32,
+) -> Result<ExtractionStats, String> {
+    let jpeg_options = JpegEncodeOptions {
+        quality: options.quality,
+        ..JpegEncodeOptions::default()
+    };
+    let region_size_u64 = u64::from(region_size);
+    if grid.dimensions.0 < region_size_u64 || grid.dimensions.1 < region_size_u64 {
+        return Err(format!(
+            "--region-size {region_size} exceeds level dimensions {}x{}",
+            grid.dimensions.0, grid.dimensions.1
+        ));
+    }
+    let regions_across = ((grid.dimensions.0 - region_size_u64) / region_size_u64) + 1;
+    let regions_down = ((grid.dimensions.1 - region_size_u64) / region_size_u64) + 1;
+    let region_count = regions_across
+        .checked_mul(regions_down)
+        .ok_or_else(|| "region grid is too large".to_string())?;
+
+    let mut stats = ExtractionStats::default();
+    let mut index = 0u64;
+    let stride = u64::try_from(options.stride.max(1)).map_err(|_| "--stride is too large")?;
+    while index < region_count && stats.written < options.limit {
+        let row = index / regions_across;
+        let col = index % regions_across;
+        index = index
+            .checked_add(stride)
+            .ok_or_else(|| "region stride overflow".to_string())?;
+
+        stats.attempted += 1;
+        let x = col
+            .checked_mul(region_size_u64)
+            .ok_or_else(|| "region x overflow".to_string())?;
+        let y = row
+            .checked_mul(region_size_u64)
+            .ok_or_else(|| "region y overflow".to_string())?;
+        let Ok(rgb) = read_region_rgb(slide, options, x, y, region_size) else {
+            stats.decode_failures += 1;
+            continue;
+        };
+        let fraction = tissue_fraction(&rgb);
+        if fraction < options.min_tissue || luma_stddev(&rgb) < 12.0 {
+            stats.skipped_blank += 1;
+            continue;
+        }
+
+        write_rgb_image(
+            out_dir,
+            "region",
+            stats.written,
+            &rgb,
+            (region_size, region_size),
+            options.output_format,
+            jpeg_options,
+        )
+        .map_err(|e| format!("write region x {x} y {y}: {e}"))?;
         stats.record_written(fraction);
     }
     Ok(stats)
@@ -261,8 +385,9 @@ fn extract_tiles(
 
 fn print_stats(out_dir: &str, options: &ExtractOptions, stats: &ExtractionStats) {
     println!(
-        "wrote {} JPEG tiles to {out_dir} (attempted {}, skipped {} below {:.0}% tissue, {} decode failures)",
+        "wrote {} {} images to {out_dir} (attempted {}, skipped {} below {:.0}% tissue, {} decode failures)",
         stats.written,
+        options.output_format.label(),
         stats.attempted,
         stats.skipped_blank,
         options.min_tissue * 100.0,
@@ -312,6 +437,96 @@ fn read_tile_rgb(slide: &Slide, request: &TileRequest) -> Result<(Vec<u8>, u32, 
         TilePixels::Device(_) => Err("wsi-rs returned a device tile for CPU output".to_string()),
         _ => Err("wsi-rs returned an unsupported tile output for CPU output".to_string()),
     }
+}
+
+fn read_region_rgb(
+    slide: &Slide,
+    options: &ExtractOptions,
+    x: u64,
+    y: u64,
+    size: u32,
+) -> Result<Vec<u8>, String> {
+    let request = RegionRequest::new(
+        SceneId::new(options.scene),
+        SeriesId::new(options.series),
+        LevelIdx::new(options.level),
+        (
+            i64::try_from(x).map_err(|_| "region x is too large")?,
+            i64::try_from(y).map_err(|_| "region y is too large")?,
+        ),
+        (size, size),
+    )
+    .with_plane(PlaneIdx::new(PlaneSelection::default()));
+    let rgba = slide
+        .read_region_rgba(&request)
+        .map_err(|e| format!("read region: {e}"))?
+        .into_raw();
+    Ok(rgba_to_rgb_on_white(&rgba))
+}
+
+fn rgba_to_rgb_on_white(rgba: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+    for px in rgba.chunks_exact(4) {
+        let alpha = u16::from(px[3]);
+        let inv_alpha = 255_u16 - alpha;
+        rgb.push(composite_channel(px[0], alpha, inv_alpha));
+        rgb.push(composite_channel(px[1], alpha, inv_alpha));
+        rgb.push(composite_channel(px[2], alpha, inv_alpha));
+    }
+    rgb
+}
+
+fn composite_channel(value: u8, alpha: u16, inv_alpha: u16) -> u8 {
+    let blended = (u16::from(value) * alpha + 255 * inv_alpha + 127) / 255;
+    u8::try_from(blended).unwrap_or(255)
+}
+
+fn write_rgb_image(
+    out_dir: &Path,
+    prefix: &str,
+    index: usize,
+    rgb: &[u8],
+    dimensions: (u32, u32),
+    format: OutputFormat,
+    jpeg_options: JpegEncodeOptions,
+) -> Result<(), String> {
+    let (width, height) = dimensions;
+    let path = out_dir.join(format!("{prefix}_{index:05}.{}", format.extension()));
+    let bytes = match format {
+        OutputFormat::Jpeg => {
+            encode_jpeg_baseline(
+                JpegSamples::Rgb8 {
+                    data: rgb,
+                    width,
+                    height,
+                },
+                jpeg_options,
+            )
+            .map_err(|e| format!("encode JPEG: {e}"))?
+            .data
+        }
+        OutputFormat::Ppm => {
+            let mut bytes = format!("P6\n{width} {height}\n255\n").into_bytes();
+            bytes.extend_from_slice(rgb);
+            bytes
+        }
+        OutputFormat::Pgm => {
+            let mut bytes = format!("P5\n{width} {height}\n255\n").into_bytes();
+            bytes.extend(rgb_to_gray(rgb));
+            bytes
+        }
+    };
+    std::fs::write(&path, bytes).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn rgb_to_gray(rgb: &[u8]) -> Vec<u8> {
+    rgb.chunks_exact(3)
+        .map(|px| {
+            let luma =
+                77_u16 * u16::from(px[0]) + 150_u16 * u16::from(px[1]) + 29_u16 * u16::from(px[2]);
+            u8::try_from((luma + 128) >> 8).unwrap_or(255)
+        })
+        .collect()
 }
 
 /// Fraction of pixels that look like stained tissue rather than bright glass /

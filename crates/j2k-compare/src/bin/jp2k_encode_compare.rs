@@ -19,7 +19,7 @@ use j2k_test_support::{patterned_gray8, patterned_rgb8, wrap_jp2_codestream};
 
 const DEFAULT_REPEATS: usize = 5;
 const DEFAULT_CASE_BATCH_SIZES: &[usize] = &[1];
-const DEFAULT_MIXED_BATCH_SIZES: &[usize] = &[1, 16, 256];
+const DEFAULT_MIXED_BATCH_SIZES: &[usize] = &[1, 16, 256, 1024];
 const MIN_PUBLICATION_EXTERNAL_IMAGES: usize = 24;
 const MIN_PUBLICATION_MIXED_DISTINCT_INPUTS: usize = 2;
 const MIN_PUBLICATION_EXTERNAL_DIMENSIONS: usize = 3;

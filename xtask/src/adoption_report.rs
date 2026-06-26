@@ -302,14 +302,6 @@ fn collect_required_metal_issues(summary: &Value, issues: &mut Vec<String>) {
         ));
     }
     if metal
-        .get("skipped_auto_bench_count")
-        .and_then(Value::as_u64)
-        .unwrap_or(1)
-        != 0
-    {
-        issues.push("Metal encode has skipped auto benchmark rows".to_string());
-    }
-    if metal
         .get("probe_error_count")
         .and_then(Value::as_u64)
         .unwrap_or(1)
@@ -324,6 +316,31 @@ fn collect_required_metal_issues(summary: &Value, issues: &mut Vec<String>) {
         == 0
     {
         issues.push("Metal encode has no auto benchmark rows".to_string());
+    }
+    let resident_count = metal
+        .get("resident_bench_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let resident_verified_count = metal
+        .get("resident_verified_bench_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if resident_count == 0 {
+        issues.push("Metal encode has no resident benchmark rows".to_string());
+    }
+    if resident_verified_count == 0 {
+        issues.push(
+            "Metal encode has no verified resident packetization/codestream rows".to_string(),
+        );
+    }
+    if resident_count > 0
+        && metal
+            .get("skipped_resident_bench_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(resident_count)
+            == resident_count
+    {
+        issues.push("Metal encode has no measured resident benchmark rows".to_string());
     }
     let Some(metadata) = metal.get("metadata") else {
         issues.push("Metal encode metadata missing".to_string());
@@ -928,6 +945,8 @@ fn mixed_winner_summary(
     metric_column: &str,
     include: impl Fn(&BTreeMap<String, String>) -> bool,
 ) {
+    const FIRST_CLASS_PARTICIPANTS: &[&str] = &["j2k", "openjpeg", "grok"];
+
     let mut groups = BTreeMap::<(String, String), BTreeMap<String, f64>>::new();
     for row in &table.rows {
         if row
@@ -937,17 +956,24 @@ fn mixed_winner_summary(
         {
             continue;
         }
+        let participant = row_value(row, participant_column);
+        if !FIRST_CLASS_PARTICIPANTS.contains(&participant.as_str()) {
+            continue;
+        }
         let Some(metric) = numeric_row_field(row, metric_column) else {
             continue;
         };
         let group = (row_value(row, "case"), row_value(row, "batch_size"));
-        let participant = row_value(row, participant_column);
         groups.entry(group).or_default().insert(participant, metric);
     }
     if groups.is_empty() {
         out.push_str("No mixed rows recorded.\n");
         return;
     }
+
+    out.push_str(
+        "Winner eligibility is limited to first-class comparable rows: `j2k`, `openjpeg`, and `grok`. Optional CLI context rows such as OpenJPH or Kakadu remain in raw tables but do not decide this summary.\n\n",
+    );
 
     let columns = [
         "case",
@@ -1481,6 +1507,9 @@ mod tests {
                 "auto_bench_count": 1,
                 "skipped_auto_bench_count": 1,
                 "probe_error_count": 0,
+                "resident_bench_count": 1,
+                "skipped_resident_bench_count": 1,
+                "resident_verified_bench_count": 0,
                 "metadata": {}
             },
             "steps": [
@@ -1490,9 +1519,11 @@ mod tests {
 
         let issues = publication_issues(&summary);
 
+        assert!(issues.iter().any(|issue| issue
+            .contains("Metal encode has no verified resident packetization/codestream rows")));
         assert!(issues
             .iter()
-            .any(|issue| issue.contains("Metal encode has skipped auto benchmark rows")));
+            .any(|issue| issue.contains("Metal encode has no measured resident benchmark rows")));
         assert!(issues
             .iter()
             .any(|issue| issue.contains("Metal encode manifest not recorded")));
@@ -1518,8 +1549,11 @@ mod tests {
             "metal_encode_auto_routing": {
                 "status": "ran",
                 "auto_bench_count": 2,
-                "skipped_auto_bench_count": 0,
+                "skipped_auto_bench_count": 1,
                 "probe_error_count": 0,
+                "resident_bench_count": 4,
+                "skipped_resident_bench_count": 0,
+                "resident_verified_bench_count": 4,
                 "metadata": {
                     "j2k_metal_encode_io_policy": "staged-pnm-pixels-preloaded-no-filesystem-io-in-timed-loop;auto-rows-include-public-api-host-submission-and-metal-auto-route-work",
                     "j2k_metal_encode_input_dirs": "/pnm",
@@ -1616,6 +1650,9 @@ benchmark_complete\ttrue\n",
         assert!(report.contains("Status: diagnostic only"));
         assert!(report.contains("CPU Decode Rows"));
         assert!(report.contains("CPU Decode Mixed Winner Summary"));
+        assert!(report.contains(
+            "Winner eligibility is limited to first-class comparable rows: `j2k`, `openjpeg`, and `grok`."
+        ));
         assert!(report.contains("CPU Decode Mixed Batch Rows"));
         assert!(report.contains("external_mixed_decode"));
         assert!(report.contains(
@@ -1725,6 +1762,7 @@ j2k\tcase_a\tportable-native\tnative\texternal:case-a\tnatural-image\tj2k\tjp2\t
 j2k\texternal_mixed_decode\tportable-native\tnative-mixed-external-batch\texternal:mixed\tnatural-image\tmixed\tmixed\tfull\trgb8\tmixed\t16\t16384\t20.0\t800.0\t200.0\t32768\t\n\
 openjpeg\texternal_mixed_decode\tportable-native\tnative-mixed-external-batch\texternal:mixed\tnatural-image\tmixed\tmixed\tfull\trgb8\tmixed\t16\t16384\t22.0\t700.0\t180.0\t32768\t\n\
 grok\texternal_mixed_decode\tportable-native\tnative-mixed-external-batch\texternal:mixed\tnatural-image\tmixed\tmixed\tfull\trgb8\tmixed\t16\t16384\t26.0\t600.0\t150.0\t32768\t\n\
+openjph\texternal_mixed_decode\tportable-native\topenjph-cli-process-output-pnm\texternal:mixed\tnatural-image\tmixed\tmixed\tfull\trgb8\tmixed\t16\t16384\t5.0\t1000.0\t400.0\t32768\t\n\
 benchmark_complete\ttrue\n",
         )
         .expect("write fixture output");
@@ -1735,6 +1773,7 @@ j2k\tcase_a\tclassic-lossless-cli\tpnm-input-cli-process-output-jp2\texternal:ca
 j2k\texternal_mixed_encode\tclassic-lossless-cli\tpnm-input-cli-process-output-jp2\texternal:mixed\tnatural-image\tmixed\tmixed\t16\t16384\t20.0\t800.0\t200.0\t12345\t\n\
 openjpeg\texternal_mixed_encode\tclassic-lossless-cli\tpnm-input-cli-process-output-jp2\texternal:mixed\tnatural-image\tmixed\tmixed\t16\t16384\t28.0\t500.0\t140.0\t12345\t\n\
 grok\texternal_mixed_encode\tclassic-lossless-cli\tpnm-input-cli-process-output-jp2\texternal:mixed\tnatural-image\tmixed\tmixed\t16\t16384\t18.0\t900.0\t220.0\t12345\t\n\
+kakadu\texternal_mixed_encode\tclassic-lossless-cli\tkakadu-cli-process-output-jp2\texternal:mixed\tnatural-image\tmixed\tmixed\t16\t16384\t10.0\t1600.0\t390.0\t12345\t\n\
 benchmark_complete\ttrue\n",
         )
         .expect("write encode output");

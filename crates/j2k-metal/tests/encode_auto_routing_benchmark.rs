@@ -266,7 +266,7 @@ fn run_external_lossless_case(case: &ExternalEncodeCase) {
         case.width,
         case.height,
         &case.pixels,
-        true,
+        false,
     );
 }
 

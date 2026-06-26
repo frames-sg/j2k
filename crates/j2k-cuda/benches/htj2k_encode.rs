@@ -4,6 +4,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -27,6 +28,9 @@ const CODE_BLOCK_DIM: u32 = 64;
 const CODE_BLOCK_BATCH: usize = 64;
 const REGION_BLOCKS_X: u32 = 8;
 const REGION_BLOCKS_Y: u32 = 8;
+const ENCODE_SAMPLE_SIZE: usize = 10;
+const ENCODE_WARM_UP: Duration = Duration::from_millis(500);
+const ENCODE_MEASUREMENT: Duration = Duration::from_secs(1);
 
 struct EncodeBenchCase {
     id: String,
@@ -690,6 +694,12 @@ fn emit_encode_input_metadata(external_cases: &[EncodeBenchCase]) {
         "j2k_cuda_encode_generated_host_input_included\t{}",
         include_generated_host_input()
     );
+    println!("j2k_cuda_encode_sample_size\t{}", encode_sample_size());
+    println!("j2k_cuda_encode_warm_up_ms\t{}", ENCODE_WARM_UP.as_millis());
+    println!(
+        "j2k_cuda_encode_measurement_ms\t{}",
+        ENCODE_MEASUREMENT.as_millis()
+    );
     println!(
         "j2k_cuda_encode_io_policy\tstaged-pnm-pixels-preloaded-no-filesystem-io-in-timed-loop;cuda-host-input-rows-include-public-api-host-submission-and-device-encode-work"
     );
@@ -983,5 +993,31 @@ fn area_len(width: u32, height: u32) -> usize {
         * usize::try_from(height).expect("bench height fits usize")
 }
 
-criterion_group!(benches, bench_htj2k_encode);
+fn cuda_encode_criterion() -> Criterion {
+    Criterion::default()
+        .sample_size(encode_sample_size())
+        .warm_up_time(ENCODE_WARM_UP)
+        .measurement_time(ENCODE_MEASUREMENT)
+}
+
+fn encode_sample_size() -> usize {
+    let Some(value) = std::env::var_os("J2K_CUDA_ENCODE_SAMPLE_SIZE") else {
+        return ENCODE_SAMPLE_SIZE;
+    };
+    let value = value.to_string_lossy();
+    let sample_size = value
+        .parse::<usize>()
+        .unwrap_or_else(|error| panic!("invalid J2K_CUDA_ENCODE_SAMPLE_SIZE `{value}`: {error}"));
+    assert!(
+        sample_size >= 10,
+        "J2K_CUDA_ENCODE_SAMPLE_SIZE must be at least Criterion's minimum sample size of 10"
+    );
+    sample_size
+}
+
+criterion_group! {
+    name = benches;
+    config = cuda_encode_criterion();
+    targets = bench_htj2k_encode
+}
 criterion_main!(benches);

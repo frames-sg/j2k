@@ -2495,6 +2495,9 @@ fn skip_reason(
         DecoderKind::OpenJph if !openjph_is_available() => Some("openjph-unavailable"),
         DecoderKind::Kakadu if !kakadu_is_available() => Some("kakadu-unavailable"),
         DecoderKind::OpenJph if case.codec != Codec::Htj2k => Some("openjph-htj2k-only"),
+        DecoderKind::OpenJph if !matches!(case.container, Container::Jph | Container::Jhc) => {
+            Some("openjph-jph-compatible-stream-required")
+        }
         DecoderKind::OpenJph if case.input_source.starts_with("j2k-generated") => {
             Some("openjph-jph-compatible-stream-required")
         }
