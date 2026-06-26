@@ -548,6 +548,10 @@ impl MetalRuntime {
         })
     }
 
+    pub(crate) fn command_queue(&self) -> &metal::CommandQueueRef {
+        self.queue.as_ref()
+    }
+
     fn take_private_buffer(&self, bytes: usize) -> Result<Buffer, Error> {
         self.buffer_pools.take_private(&self.device, bytes)
     }

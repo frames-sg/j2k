@@ -798,6 +798,10 @@ fn render_report(
                         "j2k_metal_encode_external_input_format",
                         scalar_label(metadata, "j2k_metal_encode_external_input_format"),
                     ),
+                    (
+                        "j2k_metal_encode_resident_batch_sizes",
+                        scalar_label(metadata, "j2k_metal_encode_resident_batch_sizes"),
+                    ),
                     ("auto_bench_count", scalar_label(metal, "auto_bench_count")),
                     (
                         "skipped_auto_bench_count",
@@ -807,10 +811,23 @@ fn render_report(
                         "probe_error_count",
                         scalar_label(metal, "probe_error_count"),
                     ),
+                    (
+                        "resident_bench_count",
+                        scalar_label(metal, "resident_bench_count"),
+                    ),
+                    (
+                        "skipped_resident_bench_count",
+                        scalar_label(metal, "skipped_resident_bench_count"),
+                    ),
+                    (
+                        "resident_verified_bench_count",
+                        scalar_label(metal, "resident_verified_bench_count"),
+                    ),
                 ],
             );
         }
         metal_auto_summary(&mut out, metal);
+        metal_resident_summary(&mut out, metal);
     }
 
     out
@@ -1056,6 +1073,17 @@ struct MetalAutoGroup {
     auto_ms_total: f64,
 }
 
+#[derive(Default)]
+struct MetalResidentGroup {
+    rows: usize,
+    cpu_ms_total: f64,
+    hybrid_ms_total: f64,
+    hybrid_rows: usize,
+    resident_host_ms_total: f64,
+    resident_buffer_ms_total: f64,
+    host_readback_ms_total: f64,
+}
+
 fn metal_auto_summary(out: &mut String, metal: &Value) {
     let Some(rows) = metal.get("auto_benches").and_then(Value::as_array) else {
         out.push_str("\nNo Metal auto benchmark rows recorded.\n");
@@ -1119,6 +1147,107 @@ fn metal_auto_summary(out: &mut String, metal: &Value) {
                 group.rows.to_string(),
                 format!("{cpu_avg:.3}"),
                 format!("{auto_avg:.3}"),
+                format!("{ratio:.3}x"),
+                winner.to_string(),
+            ],
+        );
+    }
+}
+
+fn metal_resident_summary(out: &mut String, metal: &Value) {
+    let Some(rows) = metal.get("resident_benches").and_then(Value::as_array) else {
+        out.push_str("\nNo Metal resident benchmark rows recorded.\n");
+        return;
+    };
+    let mut groups =
+        BTreeMap::<(String, String, String, String, String), MetalResidentGroup>::new();
+    for row in rows {
+        if row.get("packetization_used").and_then(Value::as_bool) != Some(true)
+            || row.get("codestream_assembly_used").and_then(Value::as_bool) != Some(true)
+        {
+            continue;
+        }
+        let Some(cpu_ms) = numeric_field(row, "cpu_ms") else {
+            continue;
+        };
+        let Some(resident_host_ms) = numeric_field(row, "resident_host_ms") else {
+            continue;
+        };
+        let Some(resident_buffer_ms) = numeric_field(row, "resident_buffer_ms") else {
+            continue;
+        };
+        let key = (
+            value_field(row, "mode"),
+            value_field(row, "codec"),
+            value_field(row, "components"),
+            value_field(row, "size"),
+            value_field(row, "batch_size"),
+        );
+        let group = groups.entry(key).or_default();
+        group.rows += 1;
+        group.cpu_ms_total += cpu_ms;
+        group.resident_host_ms_total += resident_host_ms;
+        group.resident_buffer_ms_total += resident_buffer_ms;
+        if let Some(hybrid_ms) = numeric_field(row, "hybrid_cpu_packet_ms") {
+            group.hybrid_rows += 1;
+            group.hybrid_ms_total += hybrid_ms;
+        }
+        if let Some(host_readback_ms) = numeric_field(row, "host_readback_ms") {
+            group.host_readback_ms_total += host_readback_ms;
+        }
+    }
+    if groups.is_empty() {
+        out.push_str("\nNo verified Metal resident packetization rows recorded.\n");
+        return;
+    }
+
+    out.push_str("\nMetal resident packetization summary:\n\n");
+    let columns = [
+        "mode",
+        "codec",
+        "components",
+        "size",
+        "batch_size",
+        "rows",
+        "cpu_ms_avg",
+        "hybrid_cpu_packet_ms_avg",
+        "resident_host_ms_avg",
+        "resident_buffer_ms_avg",
+        "host_readback_ms_avg",
+        "resident_host_vs_cpu",
+        "winner",
+    ];
+    markdown_header(out, &columns);
+    for ((mode, codec, components, size, batch_size), group) in groups {
+        let rows = group.rows as f64;
+        let cpu_avg = group.cpu_ms_total / rows;
+        let resident_host_avg = group.resident_host_ms_total / rows;
+        let resident_buffer_avg = group.resident_buffer_ms_total / rows;
+        let host_readback_avg = group.host_readback_ms_total / rows;
+        let hybrid_avg =
+            (group.hybrid_rows > 0).then(|| group.hybrid_ms_total / group.hybrid_rows as f64);
+        let ratio = resident_host_avg / cpu_avg;
+        let winner = if resident_host_avg < cpu_avg {
+            "resident-host"
+        } else if cpu_avg < resident_host_avg {
+            "cpu"
+        } else {
+            "tie"
+        };
+        markdown_row(
+            out,
+            [
+                mode,
+                codec,
+                components,
+                size,
+                batch_size,
+                group.rows.to_string(),
+                format!("{cpu_avg:.3}"),
+                metric_label(hybrid_avg),
+                format!("{resident_host_avg:.3}"),
+                format!("{resident_buffer_avg:.3}"),
+                format!("{host_readback_avg:.3}"),
                 format!("{ratio:.3}x"),
                 winner.to_string(),
             ],

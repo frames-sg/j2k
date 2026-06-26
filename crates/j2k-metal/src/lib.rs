@@ -66,7 +66,7 @@ use j2k_metal_support::{system_default_device, MetalSupportError};
 #[cfg(target_os = "macos")]
 use metal::foreign_types::ForeignType;
 #[cfg(target_os = "macos")]
-use metal::{Buffer, Device, MTLResourceOptions};
+use metal::{Buffer, Device, MTLCommandBufferStatus, MTLResourceOptions};
 
 #[doc(hidden)]
 pub use batch::{benchmark_group_region_scaled_requests, BenchmarkGroupedRequests};
@@ -101,6 +101,90 @@ pub fn benchmark_region_scaled_direct_plan_prepare(
     _scale: Downscale,
 ) -> Result<(), Error> {
     Err(Error::MetalUnavailable)
+}
+
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn benchmark_private_buffer_with_bytes(
+    session: &MetalBackendSession,
+    bytes: &[u8],
+) -> Result<Buffer, Error> {
+    if bytes.is_empty() {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal benchmark private input upload is empty".to_string(),
+        });
+    }
+    let byte_len = u64::try_from(bytes.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal benchmark private input length exceeds u64".to_string(),
+    })?;
+    let upload = session.device().new_buffer_with_data(
+        bytes.as_ptr().cast(),
+        byte_len,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let private = session
+        .device()
+        .new_buffer(byte_len, MTLResourceOptions::StorageModePrivate);
+    let runtime = session.runtime()?;
+    let command_buffer = runtime.command_queue().new_command_buffer();
+    let blit = command_buffer.new_blit_command_encoder();
+    blit.copy_from_buffer(&upload, 0, &private, 0, byte_len);
+    blit.end_encoding();
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+    if command_buffer.status() != MTLCommandBufferStatus::Completed {
+        return Err(Error::MetalKernel {
+            message: format!(
+                "J2K Metal benchmark private input upload failed with status {:?}",
+                command_buffer.status()
+            ),
+        });
+    }
+    Ok(private)
+}
+
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn benchmark_overwrite_private_buffer_with_bytes(
+    session: &MetalBackendSession,
+    dst: &Buffer,
+    bytes: &[u8],
+) -> Result<(), Error> {
+    if bytes.is_empty() {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal benchmark private input overwrite is empty".to_string(),
+        });
+    }
+    let byte_len = u64::try_from(bytes.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal benchmark private input overwrite length exceeds u64".to_string(),
+    })?;
+    if byte_len > dst.length() {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal benchmark private input overwrite exceeds destination buffer"
+                .to_string(),
+        });
+    }
+    let upload = session.device().new_buffer_with_data(
+        bytes.as_ptr().cast(),
+        byte_len,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let runtime = session.runtime()?;
+    let command_buffer = runtime.command_queue().new_command_buffer();
+    let blit = command_buffer.new_blit_command_encoder();
+    blit.copy_from_buffer(&upload, 0, dst, 0, byte_len);
+    blit.end_encoding();
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+    if command_buffer.status() != MTLCommandBufferStatus::Completed {
+        return Err(Error::MetalKernel {
+            message: format!(
+                "J2K Metal benchmark private input overwrite failed with status {:?}",
+                command_buffer.status()
+            ),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]

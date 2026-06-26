@@ -33,8 +33,6 @@ use j2k_native::{
 use j2k_native::{DecodeSettings, Image};
 #[cfg(target_os = "macos")]
 use metal::foreign_types::ForeignType;
-#[cfg(target_os = "macos")]
-use metal::Buffer;
 use std::time::Duration;
 
 #[cfg(target_os = "macos")]
@@ -44,47 +42,6 @@ macro_rules! lossless_options {
         $(options.$field = $value;)+
         options
     }};
-}
-
-#[cfg(target_os = "macos")]
-fn private_buffer_with_bytes(session: &crate::MetalBackendSession, bytes: &[u8]) -> Buffer {
-    let upload = session.device().new_buffer_with_data(
-        bytes.as_ptr().cast(),
-        bytes.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
-    let private = session.device().new_buffer(
-        bytes.len() as u64,
-        metal::MTLResourceOptions::StorageModePrivate,
-    );
-    let queue = session.device().new_command_queue();
-    let command_buffer = queue.new_command_buffer();
-    let blit = command_buffer.new_blit_command_encoder();
-    blit.copy_from_buffer(&upload, 0, &private, 0, bytes.len() as u64);
-    blit.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
-    private
-}
-
-#[cfg(target_os = "macos")]
-fn overwrite_private_buffer_with_bytes(
-    session: &crate::MetalBackendSession,
-    dst: &Buffer,
-    bytes: &[u8],
-) {
-    let upload = session.device().new_buffer_with_data(
-        bytes.as_ptr().cast(),
-        bytes.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
-    let queue = session.device().new_command_queue();
-    let command_buffer = queue.new_command_buffer();
-    let blit = command_buffer.new_blit_command_encoder();
-    blit.copy_from_buffer(&upload, 0, dst, 0, bytes.len() as u64);
-    blit.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
 }
 
 #[cfg(target_os = "macos")]
@@ -1602,7 +1559,8 @@ fn metal_buffer_lossless_encode_accepts_padded_contiguous_input_without_copy() {
 fn metal_padded_private_rgb8_encode_uses_resident_coefficient_prep() {
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 31) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
         super::MetalLosslessEncodeTile {
@@ -1957,7 +1915,7 @@ fn auto_htj2k_gray_host_output_uses_resident_metal_dwt_and_ht_with_cpu_packetiza
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_htj2k_padded_rgb8_uses_fused_metal_rct_with_cpu_packetization() {
+fn auto_htj2k_padded_rgb8_stays_cpu_below_resident_gate() {
     let mut pixels = Vec::with_capacity(64 * 64 * 3);
     for y in 0..64u32 {
         for x in 0..64u32 {
@@ -1967,8 +1925,8 @@ fn auto_htj2k_padded_rgb8_uses_fused_metal_rct_with_cpu_packetization() {
         }
     }
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
-    compute::reset_lossless_deinterleave_rct_fused_dispatches_for_test();
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
         super::MetalLosslessEncodeTile {
@@ -1988,7 +1946,7 @@ fn auto_htj2k_padded_rgb8_uses_fused_metal_rct_with_cpu_packetization() {
         },
         &session,
     )
-    .expect("Auto HTJ2K resident hybrid encode");
+    .expect("Auto HTJ2K host-output encode");
     let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
@@ -1996,13 +1954,9 @@ fn auto_htj2k_padded_rgb8_uses_fused_metal_rct_with_cpu_packetization() {
 
     assert_eq!(decoded.data, pixels);
     assert_eq!(encoded.encoded.backend, BackendKind::Cpu);
-    assert!(encoded.resident.coefficient_prep_used);
+    assert!(!encoded.resident.coefficient_prep_used);
     assert!(!encoded.resident.packetization_used);
     assert!(!encoded.resident.codestream_assembly_used);
-    assert!(
-        compute::lossless_deinterleave_rct_fused_dispatches_for_test() > 0,
-        "Auto HTJ2K resident hybrid should use fused deinterleave + RCT"
-    );
 }
 
 #[cfg(target_os = "macos")]
@@ -2010,7 +1964,8 @@ fn auto_htj2k_padded_rgb8_uses_fused_metal_rct_with_cpu_packetization() {
 fn metal_padded_private_rgb8_auto_host_encode_routes_away_from_resident_prep() {
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 43) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
         super::MetalLosslessEncodeTile {
@@ -2044,10 +1999,168 @@ fn metal_padded_private_rgb8_auto_host_encode_routes_away_from_resident_prep() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn auto_htj2k_padded_private_rgb8_host_output_uses_full_resident_path() {
+    let width = 512u32;
+    let height = 512u32;
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
+    for y in 0..height {
+        for x in 0..width {
+            pixels.push(((x * 3 + y * 5) & 0xff) as u8);
+            pixels.push(((x * 7 + y * 11) & 0xff) as u8);
+            pixels.push(((x * 13 + y * 17) & 0xff) as u8);
+        }
+    }
+    let session = crate::MetalBackendSession::system_default().expect("Metal session");
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
+
+    let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
+        super::MetalLosslessEncodeTile {
+            buffer: &buffer,
+            byte_offset: 0,
+            width,
+            height,
+            pitch_bytes: width as usize * 3,
+            output_width: width,
+            output_height: height,
+            format: PixelFormat::Rgb8,
+        },
+        &lossless_options! {
+            backend: EncodeBackendPreference::Auto,
+            block_coding_mode: J2kBlockCodingMode::HighThroughput,
+            validation: J2kEncodeValidation::External,
+        },
+        &session,
+    )
+    .expect("Auto HTJ2K resident host-output encode");
+
+    assert_eq!(encoded.encoded.backend, BackendKind::Metal);
+    assert!(!encoded.input_copy_used);
+    assert!(encoded.resident.coefficient_prep_used);
+    assert!(encoded.resident.packetization_used);
+    assert!(encoded.resident.codestream_assembly_used);
+    let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
+        .expect("codestream parses")
+        .decode_native()
+        .expect("codestream decodes");
+    assert_eq!(decoded.data, pixels);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn auto_htj2k_padded_private_gray8_single_host_output_uses_hybrid_path() {
+    let width = 512u32;
+    let height = 512u32;
+    let pixels: Vec<u8> = (0..width * height)
+        .map(|index| ((index * 17 + index / 13) & 0xff) as u8)
+        .collect();
+    let session = crate::MetalBackendSession::system_default().expect("Metal session");
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
+
+    let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
+        super::MetalLosslessEncodeTile {
+            buffer: &buffer,
+            byte_offset: 0,
+            width,
+            height,
+            pitch_bytes: width as usize,
+            output_width: width,
+            output_height: height,
+            format: PixelFormat::Gray8,
+        },
+        &lossless_options! {
+            backend: EncodeBackendPreference::Auto,
+            block_coding_mode: J2kBlockCodingMode::HighThroughput,
+            validation: J2kEncodeValidation::External,
+        },
+        &session,
+    )
+    .expect("Auto HTJ2K single Gray8 host-output encode");
+
+    assert_eq!(encoded.encoded.backend, BackendKind::Cpu);
+    assert!(!encoded.resident.coefficient_prep_used);
+    assert!(!encoded.resident.packetization_used);
+    assert!(!encoded.resident.codestream_assembly_used);
+    let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
+        .expect("codestream parses")
+        .decode_native()
+        .expect("codestream decodes");
+    assert_eq!(decoded.data, pixels);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn auto_htj2k_padded_private_gray8_batch_host_output_uses_full_resident_path() {
+    let width = 512u32;
+    let height = 512u32;
+    let first: Vec<u8> = (0..width * height)
+        .map(|index| ((index * 17 + index / 13) & 0xff) as u8)
+        .collect();
+    let second: Vec<u8> = (0..width * height)
+        .map(|index| ((index * 23 + index / 7 + 5) & 0xff) as u8)
+        .collect();
+    let session = crate::MetalBackendSession::system_default().expect("Metal session");
+    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+        .expect("private benchmark input buffer");
+    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+        .expect("private benchmark input buffer");
+    let tiles = [
+        super::MetalLosslessEncodeTile {
+            buffer: &first_buffer,
+            byte_offset: 0,
+            width,
+            height,
+            pitch_bytes: width as usize,
+            output_width: width,
+            output_height: height,
+            format: PixelFormat::Gray8,
+        },
+        super::MetalLosslessEncodeTile {
+            buffer: &second_buffer,
+            byte_offset: 0,
+            width,
+            height,
+            pitch_bytes: width as usize,
+            output_width: width,
+            output_height: height,
+            format: PixelFormat::Gray8,
+        },
+    ];
+
+    let encoded = super::encode_lossless_from_padded_metal_buffers_with_report(
+        &tiles,
+        &lossless_options! {
+            backend: EncodeBackendPreference::Auto,
+            block_coding_mode: J2kBlockCodingMode::HighThroughput,
+            validation: J2kEncodeValidation::External,
+        },
+        &session,
+    )
+    .expect("Auto HTJ2K batched Gray8 host-output encode");
+
+    assert_eq!(encoded.len(), 2);
+    for (frame, expected) in encoded.iter().zip([first, second]) {
+        assert_eq!(frame.encoded.backend, BackendKind::Metal);
+        assert!(!frame.input_copy_used);
+        assert!(frame.resident.coefficient_prep_used);
+        assert!(frame.resident.packetization_used);
+        assert!(frame.resident.codestream_assembly_used);
+        let decoded = Image::new(&frame.encoded.codestream, &DecodeSettings::default())
+            .expect("codestream parses")
+            .decode_native()
+            .expect("codestream decodes");
+        assert_eq!(decoded.data, expected);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn metal_padded_private_rgb8_encode_to_metal_buffer_exposes_finished_bytes() {
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 37) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_to_metal_with_report(
         super::MetalLosslessEncodeTile {
@@ -2094,7 +2207,8 @@ fn metal_padded_private_rgb8_encode_to_metal_buffer_exposes_finished_bytes() {
 fn metal_edge_private_rgb8_encode_to_metal_buffer_pads_and_stays_resident() {
     let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 41) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_metal_buffer_to_metal_with_report(
         super::MetalLosslessEncodeTile {
@@ -2148,7 +2262,8 @@ fn submitted_private_padded_rgb8_encode_snapshots_before_wait() {
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 31) & 0xFF) as u8).collect();
     let replacement = vec![0u8; pixels.len()];
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let submitted = super::submit_lossless_from_padded_metal_buffer(
         super::MetalLosslessEncodeTile {
@@ -2167,7 +2282,8 @@ fn submitted_private_padded_rgb8_encode_snapshots_before_wait() {
         &session,
     )
     .expect("submit Metal private padded RGB8 encode");
-    overwrite_private_buffer_with_bytes(&session, &buffer, &replacement);
+    crate::benchmark_overwrite_private_buffer_with_bytes(&session, &buffer, &replacement)
+        .expect("overwrite private benchmark input buffer");
 
     let encoded = submitted.wait().expect("wait submitted encode");
     let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
@@ -2187,7 +2303,8 @@ fn metal_padded_private_gray8_dwt_encode_uses_resident_coefficient_prep() {
         }
     }
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
         super::MetalLosslessEncodeTile {
@@ -2231,7 +2348,8 @@ fn metal_padded_private_rgb8_dwt_encode_uses_resident_coefficient_prep() {
         }
     }
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
         super::MetalLosslessEncodeTile {
@@ -2272,7 +2390,8 @@ fn metal_padded_private_gray8_dwt_resident_codestream_decodes_natively() {
         }
     }
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
         super::MetalLosslessEncodeTile {
@@ -2312,7 +2431,8 @@ fn metal_padded_private_rgb8_dwt_resident_codestream_decodes_natively() {
         }
     }
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
         super::MetalLosslessEncodeTile {
@@ -2350,7 +2470,8 @@ fn metal_padded_private_gray8_rpcl_encode_uses_resident_coefficient_prep() {
         }
     }
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
         super::MetalLosslessEncodeTile {
@@ -2391,7 +2512,8 @@ fn metal_padded_private_gray16_encode_uses_resident_coefficient_prep() {
         pixels.extend_from_slice(&value.to_le_bytes());
     }
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
         super::MetalLosslessEncodeTile {
@@ -2428,7 +2550,8 @@ fn metal_padded_private_gray16_encode_uses_resident_coefficient_prep() {
 fn metal_padded_private_ht_encode_to_metal_buffer_stays_resident() {
     let pixels: Vec<u8> = (0..8 * 8).map(|i| ((i * 31) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_to_metal_with_report(
         super::MetalLosslessEncodeTile {
@@ -2477,7 +2600,8 @@ fn metal_padded_private_rgb8_ht_rpcl_512_encode_preserves_three_dwt_levels_and_s
         .map(|idx| ((idx * 47 + idx / 17) & 0xFF) as u8)
         .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = private_buffer_with_bytes(&session, &pixels);
+    let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
 
     let encoded = super::encode_lossless_from_padded_metal_buffer_to_metal_with_report(
         super::MetalLosslessEncodeTile {
@@ -2533,8 +2657,10 @@ fn metal_rgb8_ht_batch_uses_fused_deinterleave_rct_kernel() {
         .map(|idx| 255u8.wrapping_sub(((idx * 13 + idx / 5) & 0xFF) as u8))
         .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let first_buffer = private_buffer_with_bytes(&session, &first);
-    let second_buffer = private_buffer_with_bytes(&session, &second);
+    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+        .expect("private benchmark input buffer");
+    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+        .expect("private benchmark input buffer");
     let tiles = [
         super::MetalLosslessEncodeTile {
             buffer: &first_buffer,
@@ -2657,8 +2783,10 @@ fn metal_padded_private_batch_encode_to_metal_buffers_exposes_per_frame_bytes() 
         .map(|i| 255u8.wrapping_sub(((i * 23) & 0xFF) as u8))
         .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let first_buffer = private_buffer_with_bytes(&session, &first);
-    let second_buffer = private_buffer_with_bytes(&session, &second);
+    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+        .expect("private benchmark input buffer");
+    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+        .expect("private benchmark input buffer");
     let tiles = [
         super::MetalLosslessEncodeTile {
             buffer: &first_buffer,
@@ -2729,8 +2857,10 @@ fn metal_padded_private_batch_dwt_encode_to_metal_buffers_round_trips() {
         .map(|i| 255u8.wrapping_sub(((i * 23 + i / 5) & 0xFF) as u8))
         .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let first_buffer = private_buffer_with_bytes(&session, &first);
-    let second_buffer = private_buffer_with_bytes(&session, &second);
+    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+        .expect("private benchmark input buffer");
+    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+        .expect("private benchmark input buffer");
     let tiles = [
         super::MetalLosslessEncodeTile {
             buffer: &first_buffer,
@@ -2790,8 +2920,10 @@ fn metal_edge_private_batch_encode_to_metal_buffers_stays_resident() {
         .map(|i| 255u8.wrapping_sub(((i * 19) & 0xFF) as u8))
         .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let first_buffer = private_buffer_with_bytes(&session, &first);
-    let second_buffer = private_buffer_with_bytes(&session, &second);
+    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+        .expect("private benchmark input buffer");
+    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+        .expect("private benchmark input buffer");
     compute::reset_ht_batch_coefficient_copy_blits_for_test();
     let tiles = [
         super::MetalLosslessEncodeTile {
@@ -2867,8 +2999,10 @@ fn metal_ht_private_batch_encode_to_metal_buffers_stays_resident() {
         .map(|i| 255u8.wrapping_sub(((i * 13) & 0xFF) as u8))
         .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let first_buffer = private_buffer_with_bytes(&session, &first);
-    let second_buffer = private_buffer_with_bytes(&session, &second);
+    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+        .expect("private benchmark input buffer");
+    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+        .expect("private benchmark input buffer");
     let tiles = [
         super::MetalLosslessEncodeTile {
             buffer: &first_buffer,
@@ -2955,8 +3089,10 @@ fn metal_ht_private_batch_encode_reuses_private_arenas_between_batches() {
         .collect();
     let device = metal::Device::system_default().expect("Metal device");
     let session = crate::MetalBackendSession::new(device.clone());
-    let first_buffer = private_buffer_with_bytes(&session, &first);
-    let second_buffer = private_buffer_with_bytes(&session, &second);
+    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+        .expect("private benchmark input buffer");
+    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+        .expect("private benchmark input buffer");
     let tiles = [
         super::MetalLosslessEncodeTile {
             buffer: &first_buffer,
@@ -3195,7 +3331,10 @@ fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let buffers = inputs
         .iter()
-        .map(|bytes| private_buffer_with_bytes(&session, bytes))
+        .map(|bytes| {
+            crate::benchmark_private_buffer_with_bytes(&session, bytes)
+                .expect("private benchmark input buffer")
+        })
         .collect::<Vec<_>>();
     let tiles = buffers
         .iter()
@@ -3318,8 +3457,10 @@ fn metal_parallel_batch_returns_indexed_injected_failure() {
     let first: Vec<u8> = (0..8 * 8).map(|i| ((i * 3) & 0xFF) as u8).collect();
     let second: Vec<u8> = (0..8 * 8).map(|i| ((i * 5) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let first_buffer = private_buffer_with_bytes(&session, &first);
-    let second_buffer = private_buffer_with_bytes(&session, &second);
+    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+        .expect("private benchmark input buffer");
+    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+        .expect("private benchmark input buffer");
     let tiles = [
         super::MetalLosslessEncodeTile {
             buffer: &first_buffer,
@@ -3481,8 +3622,10 @@ fn metal_classic_resident_uses_mq_byte_split_gpu_token_pack_by_default() {
         })
         .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let first_buffer = private_buffer_with_bytes(&session, &first);
-    let second_buffer = private_buffer_with_bytes(&session, &second);
+    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+        .expect("private benchmark input buffer");
+    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+        .expect("private benchmark input buffer");
     let tiles = [
         super::MetalLosslessEncodeTile {
             buffer: &first_buffer,
@@ -3573,8 +3716,10 @@ fn metal_classic_resident_gpu_token_pack_route_round_trips() {
         })
         .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let first_buffer = private_buffer_with_bytes(&session, &first);
-    let second_buffer = private_buffer_with_bytes(&session, &second);
+    let first_buffer = crate::benchmark_private_buffer_with_bytes(&session, &first)
+        .expect("private benchmark input buffer");
+    let second_buffer = crate::benchmark_private_buffer_with_bytes(&session, &second)
+        .expect("private benchmark input buffer");
     let tiles = [
         super::MetalLosslessEncodeTile {
             buffer: &first_buffer,

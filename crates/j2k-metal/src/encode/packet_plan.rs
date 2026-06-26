@@ -71,8 +71,12 @@ pub(super) fn lossless_options_for_resident_htj2k_tile_job(
     ))
 }
 
+pub(super) fn should_use_resident_htj2k_host_shape_for_auto(width: u32, height: u32) -> bool {
+    (width as usize).saturating_mul(height as usize) >= AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS
+}
+
 pub(super) fn should_use_resident_htj2k_host_tile_for_auto(job: J2kHtj2kTileEncodeJob<'_>) -> bool {
-    (job.width as usize).saturating_mul(job.height as usize) >= AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS
+    should_use_resident_htj2k_host_shape_for_auto(job.width, job.height)
 }
 
 pub(super) fn packet_descriptors_for_lossless_device_order(

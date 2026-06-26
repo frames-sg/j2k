@@ -3,7 +3,7 @@
 #![allow(clippy::similar_names)]
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -21,14 +21,29 @@ use j2k::{
     J2kLossyEncodeOptions, J2kLossySamples, J2kRateTarget,
 };
 use j2k_core::BackendKind;
+#[cfg(target_os = "macos")]
+use j2k_core::{DeviceSubmission, PixelFormat};
 use j2k_metal::MetalEncodeStageAccelerator;
+#[cfg(target_os = "macos")]
+use j2k_metal::{
+    benchmark_private_buffer_with_bytes, encode_lossless_batch_with_report,
+    submit_lossless_batch_to_metal, MetalBackendSession, MetalEncodeInputStaging,
+    MetalLosslessBufferEncodeOutcome, MetalLosslessEncodeBatchRequest, MetalLosslessEncodeConfig,
+    MetalLosslessEncodeOutcome, MetalLosslessEncodeTile,
+};
 use j2k_native::{
     deinterleave_reference, forward_dwt53_reference, forward_dwt97_reference,
     forward_ict_reference, forward_rct_reference, quantize_subband_reference,
 };
 use j2k_test_support::{fnv1a64_hex, patterned_gray8, patterned_rgb8, read_pnm_image};
+#[cfg(target_os = "macos")]
+use metal::Buffer;
 
 const DIMS: &[u32] = &[128, 512, 1024];
+const RESIDENT_BATCH_SIZES: &[usize] = &[1, 16, 256, 1024];
+const RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES_ENV: &str =
+    "J2K_METAL_ENCODE_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES";
+const DEFAULT_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ITERS: usize = 5;
 const AUTO_STAGE_MIN_PIXELS: u64 = 512 * 512;
 const AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS: u64 = 512 * 512;
@@ -52,6 +67,7 @@ fn encode_auto_routing_benchmark() {
     for case in &external_cases {
         run_external_lossless_case(case);
     }
+    run_resident_batch_benchmarks(&external_cases);
 }
 
 fn run_stage_benchmarks() {
@@ -87,7 +103,7 @@ impl Codec {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Components {
     Gray8,
     Rgb8,
@@ -124,6 +140,73 @@ impl Components {
             Self::Rgb8 => patterned_rgb8(width, height),
         }
     }
+
+    #[cfg(target_os = "macos")]
+    const fn pixel_format(self) -> PixelFormat {
+        match self {
+            Self::Gray8 => PixelFormat::Gray8,
+            Self::Rgb8 => PixelFormat::Rgb8,
+        }
+    }
+}
+
+impl ResidentBatchMetrics {
+    #[cfg(target_os = "macos")]
+    fn from_host_outcomes(outcomes: &[MetalLosslessEncodeOutcome]) -> Self {
+        Self {
+            packetization_used: !outcomes.is_empty()
+                && all_packetization_resident(outcomes.iter().map(|outcome| &outcome.resident)),
+            codestream_assembly_used: !outcomes.is_empty()
+                && all_codestream_assembly_resident(
+                    outcomes.iter().map(|outcome| &outcome.resident),
+                ),
+            host_readback_duration: outcomes.iter().fold(Duration::ZERO, |total, outcome| {
+                total + outcome.host_readback_duration
+            }),
+            gpu_duration: sum_optional_durations(
+                outcomes.iter().map(|outcome| outcome.gpu_duration),
+            ),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn from_buffer_outcomes(outcomes: &[MetalLosslessBufferEncodeOutcome]) -> Self {
+        Self {
+            packetization_used: !outcomes.is_empty()
+                && all_packetization_resident(outcomes.iter().map(|outcome| &outcome.resident)),
+            codestream_assembly_used: !outcomes.is_empty()
+                && all_codestream_assembly_resident(
+                    outcomes.iter().map(|outcome| &outcome.resident),
+                ),
+            host_readback_duration: Duration::ZERO,
+            gpu_duration: sum_optional_durations(
+                outcomes.iter().map(|outcome| outcome.gpu_duration),
+            ),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn all_packetization_resident<'a>(
+    mut residents: impl Iterator<Item = &'a j2k_metal::MetalLosslessEncodeResidency>,
+) -> bool {
+    residents.all(|resident| resident.packetization_used)
+}
+
+#[cfg(target_os = "macos")]
+fn all_codestream_assembly_resident<'a>(
+    mut residents: impl Iterator<Item = &'a j2k_metal::MetalLosslessEncodeResidency>,
+) -> bool {
+    residents.all(|resident| resident.codestream_assembly_used)
+}
+
+#[cfg(target_os = "macos")]
+fn sum_optional_durations(durations: impl Iterator<Item = Option<Duration>>) -> Option<Duration> {
+    let mut total = Duration::ZERO;
+    for duration in durations {
+        total += duration?;
+    }
+    Some(total)
 }
 
 struct ExternalEncodeCase {
@@ -143,6 +226,33 @@ struct MetalEncodeManifestEntry {
     input_fnv1a64: Option<String>,
 }
 
+struct ResidentCaseGroup<'a> {
+    components: Components,
+    width: u32,
+    height: u32,
+    cases: Vec<&'a ExternalEncodeCase>,
+}
+
+#[derive(Debug)]
+struct TimedOutput<T> {
+    duration: Duration,
+    value: T,
+}
+
+#[derive(Debug)]
+struct ResidentBatchOutput {
+    encoded_bytes: usize,
+    metrics: ResidentBatchMetrics,
+}
+
+#[derive(Debug)]
+struct ResidentBatchMetrics {
+    packetization_used: bool,
+    codestream_assembly_used: bool,
+    host_readback_duration: Duration,
+    gpu_duration: Option<Duration>,
+}
+
 fn run_lossless_case(codec: Codec, components: Components, dim: u32) {
     let pixels = components.pixels(dim, dim);
     run_lossless_case_with_pixels("lossless", codec, components, dim, dim, &pixels, false);
@@ -158,6 +268,348 @@ fn run_external_lossless_case(case: &ExternalEncodeCase) {
         &case.pixels,
         true,
     );
+}
+
+fn run_resident_batch_benchmarks(external_cases: &[ExternalEncodeCase]) {
+    let groups = resident_case_groups(external_cases);
+    #[cfg(target_os = "macos")]
+    let session = MetalBackendSession::system_default().map_err(|error| error.to_string());
+    for group in &groups {
+        for &batch_size in RESIDENT_BATCH_SIZES {
+            #[cfg(target_os = "macos")]
+            run_resident_batch_group(group, batch_size, session.as_ref());
+            #[cfg(not(target_os = "macos"))]
+            run_resident_batch_group(group, batch_size);
+        }
+    }
+}
+
+fn resident_case_groups(external_cases: &[ExternalEncodeCase]) -> Vec<ResidentCaseGroup<'_>> {
+    let mut groups = BTreeMap::<(Components, u32, u32), Vec<&ExternalEncodeCase>>::new();
+    for case in external_cases {
+        groups
+            .entry((case.components, case.width, case.height))
+            .or_default()
+            .push(case);
+    }
+    groups
+        .into_iter()
+        .map(|((components, width, height), cases)| ResidentCaseGroup {
+            components,
+            width,
+            height,
+            cases,
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn run_resident_batch_group(
+    group: &ResidentCaseGroup<'_>,
+    batch_size: usize,
+    session: Result<&MetalBackendSession, &String>,
+) {
+    if let Err(error) = ensure_resident_batch_within_output_budget(group, batch_size) {
+        let cpu: Result<TimedOutput<usize>, String> = Err(error.clone());
+        let hybrid: Result<TimedOutput<usize>, String> = Err(error.clone());
+        let resident: Result<
+            (
+                TimedOutput<ResidentBatchOutput>,
+                TimedOutput<ResidentBatchOutput>,
+            ),
+            String,
+        > = Err(error);
+        emit_resident_batch_row(group, batch_size, &cpu, &hybrid, resident.as_ref());
+        return;
+    }
+    let batch_cases = repeated_resident_batch_cases(group, batch_size);
+    let cpu = measure_result(|| run_cpu_lossless_batch(&batch_cases));
+    let hybrid = measure_result(|| run_hybrid_cpu_packet_batch(&batch_cases));
+    let resident = match session {
+        Ok(session) => measure_resident_batches(session, group, batch_size),
+        Err(error) => Err((*error).clone()),
+    };
+    emit_resident_batch_row(group, batch_size, &cpu, &hybrid, resident.as_ref());
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_resident_batch_group(group: &ResidentCaseGroup<'_>, batch_size: usize) {
+    if let Err(error) = ensure_resident_batch_within_output_budget(group, batch_size) {
+        let cpu: Result<TimedOutput<usize>, String> = Err(error.clone());
+        let hybrid: Result<TimedOutput<usize>, String> = Err(error.clone());
+        let resident: Result<
+            (
+                TimedOutput<ResidentBatchOutput>,
+                TimedOutput<ResidentBatchOutput>,
+            ),
+            String,
+        > = Err(error);
+        emit_resident_batch_row(group, batch_size, &cpu, &hybrid, resident.as_ref());
+        return;
+    }
+    let batch_cases = repeated_resident_batch_cases(group, batch_size);
+    let cpu = measure_result(|| run_cpu_lossless_batch(&batch_cases));
+    let hybrid = measure_result(|| run_hybrid_cpu_packet_batch(&batch_cases));
+    let resident = measure_resident_batches(group, batch_size);
+    emit_resident_batch_row(group, batch_size, &cpu, &hybrid, resident.as_ref());
+}
+
+fn repeated_resident_batch_cases<'a>(
+    group: &'a ResidentCaseGroup<'a>,
+    batch_size: usize,
+) -> Vec<&'a ExternalEncodeCase> {
+    assert!(
+        !group.cases.is_empty(),
+        "resident benchmark groups are never empty"
+    );
+    (0..batch_size)
+        .map(|index| group.cases[index % group.cases.len()])
+        .collect()
+}
+
+fn run_cpu_lossless_batch(batch_cases: &[&ExternalEncodeCase]) -> Result<usize, String> {
+    let options = lossless_options(Codec::Htj2k, EncodeBackendPreference::CpuOnly);
+    let mut encoded_bytes = 0usize;
+    for case in batch_cases {
+        let samples = lossless_samples_2d(
+            std::hint::black_box(case.pixels.as_slice()),
+            case.width,
+            case.height,
+            case.components,
+        );
+        let encoded = encode_j2k_lossless(samples, &options).map_err(|error| error.to_string())?;
+        if encoded.backend != BackendKind::Cpu {
+            return Err(format!(
+                "CPU batch encode returned unexpected backend {:?}",
+                encoded.backend
+            ));
+        }
+        encoded_bytes = encoded_bytes
+            .checked_add(encoded.codestream.len())
+            .ok_or_else(|| "CPU batch encoded byte count overflow".to_string())?;
+    }
+    Ok(encoded_bytes)
+}
+
+fn run_hybrid_cpu_packet_batch(batch_cases: &[&ExternalEncodeCase]) -> Result<usize, String> {
+    let options = lossless_options(Codec::Htj2k, EncodeBackendPreference::Auto);
+    let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
+    let mut encoded_bytes = 0usize;
+    for case in batch_cases {
+        let samples = lossless_samples_2d(
+            std::hint::black_box(case.pixels.as_slice()),
+            case.width,
+            case.height,
+            case.components,
+        );
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .map_err(|error| error.to_string())?;
+        if encoded.dispatch_report == J2kEncodeDispatchReport::default() {
+            return Err("Metal auto route did not dispatch".to_string());
+        }
+        encoded_bytes = encoded_bytes
+            .checked_add(encoded.codestream.len())
+            .ok_or_else(|| "hybrid batch encoded byte count overflow".to_string())?;
+    }
+    Ok(encoded_bytes)
+}
+
+#[cfg(target_os = "macos")]
+fn measure_resident_batches(
+    session: &MetalBackendSession,
+    group: &ResidentCaseGroup<'_>,
+    batch_size: usize,
+) -> Result<
+    (
+        TimedOutput<ResidentBatchOutput>,
+        TimedOutput<ResidentBatchOutput>,
+    ),
+    String,
+> {
+    ensure_resident_batch_within_output_budget(group, batch_size)?;
+    let buffers = resident_group_buffers(session, group)?;
+    let tiles = resident_batch_tiles(group, &buffers, batch_size);
+    let host = measure_result(|| run_resident_host_batch(session, &tiles))?;
+    let buffer = measure_result(|| run_resident_buffer_batch(session, &tiles))?;
+    Ok((host, buffer))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn measure_resident_batches(
+    _group: &ResidentCaseGroup<'_>,
+    _batch_size: usize,
+) -> Result<
+    (
+        TimedOutput<ResidentBatchOutput>,
+        TimedOutput<ResidentBatchOutput>,
+    ),
+    String,
+> {
+    Err("Metal resident encode is macOS-only".to_string())
+}
+
+fn ensure_resident_batch_within_output_budget(
+    group: &ResidentCaseGroup<'_>,
+    batch_size: usize,
+) -> Result<(), String> {
+    ensure_resident_batch_within_output_budget_bytes(
+        group,
+        batch_size,
+        resident_max_estimated_output_bytes(),
+    )
+}
+
+fn ensure_resident_batch_within_output_budget_bytes(
+    group: &ResidentCaseGroup<'_>,
+    batch_size: usize,
+    max_bytes: u64,
+) -> Result<(), String> {
+    let estimated_bytes = resident_batch_estimated_output_bytes(group, batch_size)?;
+    if estimated_bytes <= max_bytes {
+        return Ok(());
+    }
+    Err(format!(
+        "memory budget prevented resident batch estimated_output_bytes={estimated_bytes} max_estimated_output_bytes={max_bytes} env={RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES_ENV}"
+    ))
+}
+
+fn resident_batch_estimated_output_bytes(
+    group: &ResidentCaseGroup<'_>,
+    batch_size: usize,
+) -> Result<u64, String> {
+    u64::from(group.width)
+        .checked_mul(u64::from(group.height))
+        .and_then(|value| value.checked_mul(u64::from(group.components.count())))
+        .and_then(|value| value.checked_mul(batch_size as u64))
+        .ok_or_else(|| {
+            format!(
+                "resident batch estimated output bytes overflow for {}x{} {} batch_size={batch_size}",
+                group.width,
+                group.height,
+                group.components.label()
+            )
+        })
+}
+
+fn resident_max_estimated_output_bytes() -> u64 {
+    let Some(value) = std::env::var(RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES_ENV).ok() else {
+        return DEFAULT_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES;
+    };
+    let parsed = value.parse::<u64>().unwrap_or_else(|_| {
+        panic!("{RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES_ENV} must be an integer byte count")
+    });
+    assert!(
+        parsed > 0,
+        "{RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES_ENV} must be greater than zero"
+    );
+    parsed
+}
+
+#[cfg(target_os = "macos")]
+fn resident_group_buffers(
+    session: &MetalBackendSession,
+    group: &ResidentCaseGroup<'_>,
+) -> Result<Vec<Buffer>, String> {
+    let mut buffers = Vec::with_capacity(group.cases.len());
+    for case in &group.cases {
+        buffers.push(
+            benchmark_private_buffer_with_bytes(session, &case.pixels)
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    Ok(buffers)
+}
+
+#[cfg(target_os = "macos")]
+fn resident_batch_tiles<'a>(
+    group: &ResidentCaseGroup<'_>,
+    buffers: &'a [Buffer],
+    batch_size: usize,
+) -> Vec<MetalLosslessEncodeTile<'a>> {
+    (0..batch_size)
+        .map(|index| {
+            let case_index = index % group.cases.len();
+            let case = group.cases[case_index];
+            MetalLosslessEncodeTile {
+                buffer: &buffers[case_index],
+                byte_offset: 0,
+                width: case.width,
+                height: case.height,
+                pitch_bytes: case.width as usize * case.components.count() as usize,
+                output_width: case.width,
+                output_height: case.height,
+                format: case.components.pixel_format(),
+            }
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn run_resident_host_batch(
+    session: &MetalBackendSession,
+    tiles: &[MetalLosslessEncodeTile<'_>],
+) -> Result<ResidentBatchOutput, String> {
+    let options = lossless_options(Codec::Htj2k, EncodeBackendPreference::RequireDevice);
+    let outcomes = encode_lossless_batch_with_report(
+        MetalLosslessEncodeBatchRequest {
+            tiles,
+            staging: MetalEncodeInputStaging::AlreadyPaddedContiguous,
+            config: MetalLosslessEncodeConfig::default(),
+        },
+        &options,
+        session,
+    )
+    .map_err(|error| error.to_string())?;
+    let encoded_bytes = outcomes
+        .iter()
+        .try_fold(0usize, |total, outcome| {
+            total
+                .checked_add(outcome.encoded.codestream.len())
+                .ok_or("resident host encoded byte count overflow")
+        })
+        .map_err(str::to_string)?;
+    Ok(ResidentBatchOutput {
+        encoded_bytes,
+        metrics: ResidentBatchMetrics::from_host_outcomes(&outcomes),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn run_resident_buffer_batch(
+    session: &MetalBackendSession,
+    tiles: &[MetalLosslessEncodeTile<'_>],
+) -> Result<ResidentBatchOutput, String> {
+    let options = lossless_options(Codec::Htj2k, EncodeBackendPreference::RequireDevice);
+    let outcome = submit_lossless_batch_to_metal(
+        MetalLosslessEncodeBatchRequest {
+            tiles,
+            staging: MetalEncodeInputStaging::AlreadyPaddedContiguous,
+            config: MetalLosslessEncodeConfig::default(),
+        },
+        &options,
+        session,
+    )
+    .map_err(|error| error.to_string())?
+    .wait()
+    .map_err(|error| error.to_string())?;
+    let encoded_bytes = outcome
+        .outcomes
+        .iter()
+        .try_fold(0usize, |total, outcome| {
+            total
+                .checked_add(outcome.encoded.byte_len)
+                .ok_or("resident buffer encoded byte count overflow")
+        })
+        .map_err(str::to_string)?;
+    Ok(ResidentBatchOutput {
+        encoded_bytes,
+        metrics: ResidentBatchMetrics::from_buffer_outcomes(&outcome.outcomes),
+    })
 }
 
 fn run_lossless_case_with_pixels(
@@ -568,7 +1020,19 @@ fn emit_external_metadata(external_cases: &[ExternalEncodeCase]) {
         include_generated_host_input()
     );
     println!(
-        "j2k_metal_encode_io_policy\tstaged-pnm-pixels-preloaded-no-filesystem-io-in-timed-loop;auto-rows-include-public-api-host-submission-and-metal-auto-route-work"
+        "j2k_metal_encode_io_policy\tstaged-pnm-pixels-preloaded-no-filesystem-io-in-timed-loop;auto-rows-include-public-api-host-submission-and-metal-auto-route-work;resident-rows-use-private-input-buffers-preuploaded-outside-timed-loop-and-already-padded-contiguous-staging"
+    );
+    println!(
+        "j2k_metal_encode_resident_batch_sizes\t{}",
+        RESIDENT_BATCH_SIZES
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    println!(
+        "j2k_metal_encode_resident_max_estimated_output_bytes\t{}",
+        resident_max_estimated_output_bytes()
     );
     println!(
         "j2k_metal_encode_input_dirs\t{}",
@@ -786,6 +1250,21 @@ fn measure(mut run: impl FnMut() -> usize) -> Duration {
     }
     durations.sort_unstable();
     durations[durations.len() / 2]
+}
+
+fn measure_result<T>(mut run: impl FnMut() -> Result<T, String>) -> Result<TimedOutput<T>, String> {
+    std::hint::black_box(run()?);
+    let mut samples = Vec::with_capacity(ITERS);
+    for _ in 0..ITERS {
+        let started = Instant::now();
+        let value = run()?;
+        std::hint::black_box(&value);
+        samples.push((started.elapsed(), value));
+    }
+    samples.sort_by_key(|(duration, _)| *duration);
+    let median = samples.len() / 2;
+    let (duration, value) = samples.swap_remove(median);
+    Ok(TimedOutput { duration, value })
 }
 
 fn lossless_samples_2d(
@@ -1126,4 +1605,131 @@ fn emit_timing(
         height,
         cpu.as_secs_f64() * 1_000.0
     );
+}
+
+fn emit_resident_batch_row(
+    group: &ResidentCaseGroup<'_>,
+    batch_size: usize,
+    cpu: &Result<TimedOutput<usize>, String>,
+    hybrid: &Result<TimedOutput<usize>, String>,
+    resident: Result<
+        &(
+            TimedOutput<ResidentBatchOutput>,
+            TimedOutput<ResidentBatchOutput>,
+        ),
+        &String,
+    >,
+) {
+    let (resident_host_ms, resident_buffer_ms, packetization_used, codestream_assembly_used) =
+        match resident {
+            Ok((host, buffer)) => (
+                duration_ms(host.duration),
+                duration_ms(buffer.duration),
+                host.value.metrics.packetization_used && buffer.value.metrics.packetization_used,
+                host.value.metrics.codestream_assembly_used
+                    && buffer.value.metrics.codestream_assembly_used,
+            ),
+            Err(_) => ("skipped".to_string(), "skipped".to_string(), false, false),
+        };
+    let host_readback_ms = resident.ok().map_or_else(
+        || "skipped".to_string(),
+        |(host, _)| duration_ms(host.value.metrics.host_readback_duration),
+    );
+    let gpu_ms = resident
+        .ok()
+        .and_then(|(host, buffer)| {
+            host.value
+                .metrics
+                .gpu_duration
+                .or(buffer.value.metrics.gpu_duration)
+        })
+        .map_or_else(|| "not-recorded".to_string(), duration_ms);
+    let error = resident.err().map_or_else(String::new, |error| {
+        format!(" error={}", single_line_error(error))
+    });
+
+    println!(
+        "j2k_metal_encode_resident_bench mode=lossless_external codec=htj2k components={} size={}x{} batch_size={} fixture_count={} resident_input_storage=private resident_staging=already_padded_contiguous cpu_ms={} hybrid_cpu_packet_ms={} resident_host_ms={} resident_buffer_ms={} packetization_used={} codestream_assembly_used={} host_readback_ms={} gpu_ms={} encoded_host_bytes={} encoded_buffer_bytes={}{}",
+        group.components.label(),
+        group.width,
+        group.height,
+        batch_size,
+        group.cases.len(),
+        timed_ms_or_skipped(cpu),
+        timed_ms_or_skipped(hybrid),
+        resident_host_ms,
+        resident_buffer_ms,
+        packetization_used,
+        codestream_assembly_used,
+        host_readback_ms,
+        gpu_ms,
+        resident
+            .ok()
+            .map_or_else(|| "skipped".to_string(), |(host, _)| {
+                host.value.encoded_bytes.to_string()
+            }),
+        resident
+            .ok()
+            .map_or_else(|| "skipped".to_string(), |(_, buffer)| {
+                buffer.value.encoded_bytes.to_string()
+            }),
+        error
+    );
+}
+
+fn timed_ms_or_skipped<T>(timed: &Result<TimedOutput<T>, String>) -> String {
+    timed.as_ref().map_or_else(
+        |_| "skipped".to_string(),
+        |output| duration_ms(output.duration),
+    )
+}
+
+fn duration_ms(duration: Duration) -> String {
+    format!("{:.3}", duration.as_secs_f64() * 1_000.0)
+}
+
+fn single_line_error(error: &str) -> String {
+    error.replace('\n', " ")
+}
+
+#[test]
+fn resident_output_budget_allows_kodak_sized_1024_batch() {
+    let group = ResidentCaseGroup {
+        components: Components::Rgb8,
+        width: 768,
+        height: 512,
+        cases: Vec::new(),
+    };
+
+    assert_eq!(
+        resident_batch_estimated_output_bytes(&group, 1024).expect("estimate"),
+        1_207_959_552
+    );
+    ensure_resident_batch_within_output_budget_bytes(
+        &group,
+        1024,
+        DEFAULT_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES,
+    )
+    .expect("Kodak-sized 1024 batch fits the default resident output budget");
+}
+
+#[test]
+fn resident_output_budget_skips_multi_gigabyte_gray_batch() {
+    let group = ResidentCaseGroup {
+        components: Components::Gray8,
+        width: 2749,
+        height: 4049,
+        cases: Vec::new(),
+    };
+
+    let error = ensure_resident_batch_within_output_budget_bytes(
+        &group,
+        256,
+        DEFAULT_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES,
+    )
+    .expect_err("large gray host-output batch exceeds the default resident output budget");
+
+    assert!(error.contains("memory budget prevented resident batch"));
+    assert!(error.contains("estimated_output_bytes="));
+    assert!(error.contains("max_estimated_output_bytes="));
 }
