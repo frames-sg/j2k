@@ -9,3 +9,4 @@ Cargo.lock.bak
 *.swp
 __pycache__/
 *.py[cod]
+corpus/wsi-samples/gdc-downloads/
