@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //
 //! Proptest-driven bit-exact parity between the scalar ISLOW IDCT and every
 //! SIMD backend variant. Any divergence here is a merge-blocker for Phase 1.

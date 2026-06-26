@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[test]
 fn cuda_htj2k_decode_bench_exposes_gray_rgb_rgba_rows() {
@@ -16,11 +16,38 @@ fn cuda_htj2k_decode_bench_exposes_gray_rgb_rgba_rows() {
         "j2k_cuda_htj2k_scaled_decode",
         "j2k_cuda_htj2k_roi_scaled_decode",
         "j2k_cuda_htj2k_tile_batch_decode",
+        "j2k_cuda_htj2k_external_mixed_tile_batch_decode",
+        "cpu_external_mixed_",
+        "cuda_external_mixed_",
         "BATCH_SIZES",
         "[8, 16, 32, 64]",
         "J2K_CUDA_DECODE_BATCH_SIZES",
+        "J2K_CUDA_DECODE_CASE_BATCH_SIZES",
+        "J2K_CUDA_DECODE_SAMPLE_SIZE",
         "J2K_CUDA_DECODE_FORMATS",
+        "J2K_CUDA_DECODE_INPUT_DIRS",
+        "J2K_CUDA_DECODE_MANIFEST",
+        "J2K_CUDA_DECODE_INCLUDE_GENERATED",
         "J2K_REQUIRE_CUDA_BENCH",
+        "j2k_cuda_decode_batch_sizes",
+        "j2k_cuda_decode_case_batch_sizes",
+        "j2k_cuda_decode_mixed_batch_sizes",
+        "j2k_cuda_decode_sample_size",
+        "j2k_cuda_decode_batch_policy",
+        "j2k_cuda_decode_mixed_large_batch_policy",
+        "j2k_cuda_decode_mixed_large_batch_tile_pixels",
+        "mixed_external_cases_for_batch",
+        "j2k_cuda_decode_io_policy",
+        "j2k_cuda_decode_external_case_count",
+        "j2k_cuda_decode_external_fixture_count",
+        "j2k_cuda_decode_external_skipped_non_htj2k_count",
+        "j2k_cuda_decode_external_skipped_unsupported_shape_count",
+        "j2k_cuda_decode_external_skipped_format_disabled_count",
+        "validate_manifest_entry",
+        "external CUDA decode fixture",
+        "input_fnv1a64",
+        "codec",
+        "container",
     ] {
         assert!(
             bench.contains(expected),
@@ -83,6 +110,32 @@ fn cuda_htj2k_tile_batch_bench_uses_cuda_batch_entrypoint() {
         !cuda_batch_body.contains("Codec::submit_tile_to_device("),
         "CUDA HTJ2K tile batch row must not submit one tile at a time"
     );
+}
+
+#[test]
+fn cuda_htj2k_encode_bench_accepts_external_staged_pnm_sources() {
+    let bench = include_str!("../benches/htj2k_encode.rs");
+
+    for expected in [
+        "j2k_cuda_htj2k_external_host_input_encode",
+        "cpu_external_",
+        "cuda_external_",
+        "J2K_CUDA_ENCODE_INPUT_DIRS",
+        "J2K_CUDA_ENCODE_MANIFEST",
+        "J2K_CUDA_ENCODE_INCLUDE_GENERATED",
+        "j2k_cuda_encode_io_policy",
+        "j2k_cuda_encode_external_case_count",
+        "j2k_cuda_encode_external_input_format",
+        "staged-pnm-p5-p6",
+        "read_pnm_image",
+        "validate_cuda_encode_manifest_entry",
+        "input_fnv1a64",
+    ] {
+        assert!(
+            bench.contains(expected),
+            "CUDA HTJ2K encode benchmark is missing `{expected}`"
+        );
+    }
 }
 
 #[test]

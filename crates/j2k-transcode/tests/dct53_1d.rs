@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_transcode::dct53_1d::{
     dct8_blocks_to_dwt53_float_linear, dct8_blocks_to_dwt53_float_linear_with_len,

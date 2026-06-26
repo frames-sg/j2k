@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! `Rgba8Writer` — 4-byte-per-pixel RGBA output. Alpha is a constant captured
 //! at construction time and written verbatim into every pixel's A channel.

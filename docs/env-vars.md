@@ -69,8 +69,10 @@ Stability values:
 
 | Variable | Effect | Default | Stability |
 | --- | --- | --- | --- |
-| `J2K_REQUIRE_OPENJPEG` | Makes OpenJPEG parity tests fail instead of skip when OpenJPEG tools are unavailable. | Skip unavailable comparator paths | Test/CI |
-| `J2K_REQUIRE_GROK` | Makes Grok parity tests fail instead of skip when Grok tools or libraries are unavailable. | Skip unavailable comparator paths | Test/CI |
+| `J2K_REQUIRE_OPENJPEG` | Makes OpenJPEG parity tests and benchmark comparator runs fail instead of skip when OpenJPEG tools are unavailable. | Skip unavailable comparator paths | Benchmark |
+| `J2K_REQUIRE_GROK` | Makes Grok parity tests and benchmark comparator runs fail instead of skip when Grok tools or libraries are unavailable. | Skip unavailable comparator paths | Benchmark |
+| `J2K_REQUIRE_OPENJPH` | Makes optional OpenJPH fixture comparator rows fail instead of skip when `ojph_expand` is unavailable. Intended only for HTJ2K/JPH-compatible CLI context rows. | Skip unavailable OpenJPH path unless explicitly included | Benchmark |
+| `J2K_REQUIRE_KAKADU` | Makes optional Kakadu fixture/encoder comparator rows fail instead of skip when `kdu_expand` or `kdu_compress` is unavailable. Intended only for proprietary CLI/file-output context rows. | Skip unavailable Kakadu path unless explicitly included | Benchmark |
 | `J2K_REQUIRE_LIBJPEG_TURBO` | Makes libjpeg-turbo comparison tests fail instead of skip when the bench feature/tooling is unavailable. | Skip unavailable comparator path | Test/CI |
 | `J2K_REQUIRE_CUDA_RUNTIME` | Makes CUDA tests and NVIDIA comparison harnesses require a usable CUDA runtime instead of skipping. | Skip runtime-only CUDA paths | Test/CI |
 | `J2K_REQUIRE_CUDA_HTJ2K_STRICT` | Requires CUDA HTJ2K strict validation and makes CUDA kernel build failures fatal in the runtime build script. | Non-strict when runtime unavailable | Test/CI |
@@ -102,9 +104,12 @@ Stability values:
 | `J2K_PARITY_CORPUS_MAX_BYTES` | Maximum accepted byte size for each downloaded parity-corpus fixture. | `536870912` | Test/CI |
 | `J2K_OPENJPEG_BIN` | Override for OpenJPEG `opj_decompress` in J2K parity tests. | `opj_decompress` on `PATH` | Test/CI |
 | `J2K_OPENJPEG_DECOMPRESS_BIN` | Override for OpenJPEG `opj_decompress` in benchmark reports. | `opj_decompress` on `PATH` | Benchmark |
-| `J2K_OPENJPEG_COMPRESS_BIN` | Override for OpenJPEG `opj_compress` in J2K parity tests. | `opj_compress` on `PATH` | Test/CI |
+| `J2K_OPENJPEG_COMPRESS_BIN` | Override for OpenJPEG `opj_compress` in J2K parity tests and encoder benchmark reports. | `opj_compress` on `PATH` | Benchmark |
+| `J2K_OPENJPH_EXPAND_BIN` | Override for OpenJPH `ojph_expand` in optional fixture comparator rows. | `ojph_expand` on `PATH`, `/opt/homebrew/bin/ojph_expand`, or `/usr/local/bin/ojph_expand` | Benchmark |
+| `J2K_KDU_EXPAND_BIN` | Override for Kakadu `kdu_expand` in optional fixture comparator rows. | `kdu_expand` on `PATH`, `/opt/homebrew/bin/kdu_expand`, or `/usr/local/bin/kdu_expand` | Benchmark |
+| `J2K_KDU_COMPRESS_BIN` | Override for Kakadu `kdu_compress` in optional encoder comparator rows. | `kdu_compress` on `PATH`, `/opt/homebrew/bin/kdu_compress`, or `/usr/local/bin/kdu_compress` | Benchmark |
 | `J2K_GROK_BIN` | Override for Grok `grk_decompress` in J2K parity tests. | `grk_decompress` on `PATH` | Test/CI |
-| `J2K_GROK_COMPRESS_BIN` | Override for Grok `grk_compress` in J2K parity tests. | `grk_compress` on `PATH` | Test/CI |
+| `J2K_GROK_COMPRESS_BIN` | Override for Grok `grk_compress` in J2K parity tests and encoder benchmark reports. | `grk_compress` on `PATH` | Benchmark |
 | `J2K_GROK_ROOT` | Path to Grok installation/library root for in-process comparator builds and benchmark reports. | Not set | Test/CI |
 | `J2K_GROK_SOURCE` | Path to Grok source used by the in-process comparator build script. | Not set | Test/CI |
 | `J2K_GROK_VERSION` | Build-script emitted Grok version metadata consumed by the comparator crate. | `unavailable` if not emitted | Generated |
@@ -143,12 +148,50 @@ Stability values:
 | `J2K_JPEG_COMPARE_SUBSAMPLING` | Subsampling for the standalone NVIDIA JPEG comparison fixture. | Falls back to `J2K_CUDA_BENCH_SUBSAMPLING` | Benchmark |
 | `J2K_JPEG_COMPARE_PATTERN` | Generated image pattern for the standalone NVIDIA JPEG comparison fixture. | Harness default | Benchmark |
 | `J2K_COMPARE_THREADS` | Thread count for J2K comparator signoff and benchmark reports. | Comparator default or `not set` in reports | Benchmark |
+| `J2K_FIXTURE_COMPARE_REPEATS` | Repeat count for `jp2k_fixture_compare`. | Tool default | Benchmark |
+| `J2K_FIXTURE_COMPARE_MODE` | Benchmark mode for `jp2k_fixture_compare`: `portable-native` for native comparable rows, `portable-emulated` for task-equivalent rows with `decode_method` labels, or `capability` for feature coverage with explicit skips. | `portable-native` | Benchmark |
+| `J2K_FIXTURE_COMPARE_BATCH_SIZES` | Backward-compatible comma-separated batch sizes for `jp2k_fixture_compare`; when set, it applies to both per-fixture rows and mixed external rows. Prefer the case/mixed split below for full adoption runs. | Not set | Benchmark |
+| `J2K_FIXTURE_COMPARE_BATCH_SIZE` | Backward-compatible single batch size for `jp2k_fixture_compare` when `J2K_FIXTURE_COMPARE_BATCH_SIZES` is unset. | Tool default | Benchmark |
+| `J2K_FIXTURE_COMPARE_CASE_BATCH_SIZES` | Comma-separated per-fixture detail batch sizes for `jp2k_fixture_compare`. Publication defaults keep every fixture covered at batch `1`; large throughput batches are measured by mixed external rows. | `1` | Benchmark |
+| `J2K_FIXTURE_COMPARE_MIXED_BATCH_SIZES` | Comma-separated mixed-external throughput batch sizes for `jp2k_fixture_compare`. Publication defaults include the huge-batch decode matrix without multiplying every fixture row by every large batch size. | `1,16,256,1024` | Benchmark |
+| `J2K_FIXTURE_COMPARE_THREADS` | Worker count for `jp2k_fixture_compare`. | Tool default | Benchmark |
+| `J2K_FIXTURE_COMPARE_INPUT_DIRS` | Optional path-list of directories recursively scanned for external `.j2k`, `.j2c`, `.jp2`, `.jph`, or `.jhc` fixtures included in `jp2k_fixture_compare`. | Not set | Benchmark |
+| `J2K_FIXTURE_COMPARE_INPUT_DIR` | Backward-compatible single external fixture directory recursively scanned when `J2K_FIXTURE_COMPARE_INPUT_DIRS` is unset. | Not set | Benchmark |
+| `J2K_FIXTURE_COMPARE_MANIFEST` | Optional TSV manifest for external fixtures. Requires `path` and `corpus_category`; supports `corpus_name`, `license_status`, `encode_command`, `input_fnv1a64`, `source_fnv1a64`, `codec`, and `container` (`raw-codestream`, `j2k`, `j2c`, `jp2`, `jph`, or `jhc`). Publication runs require fixture hash, codec, and container pins; materialized raw/boxed variants should include `source_fnv1a64` so source diversity is not inflated by container wrappers. For native compressed corpora, `source_fnv1a64` normally equals `input_fnv1a64`; publishable decode claims require independent native compressed classic J2K and HTJ2K coverage, not only repo-materialized codestreams. | Not set | Benchmark |
+| `J2K_FIXTURE_COMPARE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated smoke fixtures from `jp2k_fixture_compare` external-corpus publication runs. | Generated fixtures included | Benchmark |
+| `J2K_INCLUDE_OPENJPH` | Adds optional OpenJPH `ojph_expand` rows to `jp2k_fixture_compare`. Rows are HTJ2K/JPH-compatible full/scaled CLI/file-output context rows labeled `decode_method=openjph-cli-process-output-pnm`; unsupported fixtures are skipped explicitly. | Disabled | Benchmark |
+| `J2K_INCLUDE_KAKADU` | Adds optional Kakadu `kdu_expand` fixture rows and `kdu_compress` encoder rows. Rows are proprietary CLI/file-output context rows labeled separately from the default J2K/OpenJPEG/Grok matrix. | Disabled | Benchmark |
+| `J2K_ENCODE_COMPARE_REPEATS` | Repeat count for `jp2k_encode_compare`. | Tool default | Benchmark |
+| `J2K_ENCODE_COMPARE_BATCH_SIZES` | Backward-compatible comma-separated batch sizes for `jp2k_encode_compare`; when set, it applies to both per-source rows and mixed external rows. Prefer the case/mixed split below for full adoption runs. | Not set | Benchmark |
+| `J2K_ENCODE_COMPARE_CASE_BATCH_SIZES` | Comma-separated per-source detail batch sizes for `jp2k_encode_compare`. Publication defaults keep every source image covered at batch `1`. | `1` | Benchmark |
+| `J2K_ENCODE_COMPARE_MIXED_BATCH_SIZES` | Comma-separated mixed-source throughput batch sizes for `jp2k_encode_compare`; rows encode identical staged PNM bytes through J2K, OpenJPEG, and Grok CLI processes with rotating encoder sample order. | `1,16,256` | Benchmark |
+| `J2K_ENCODE_COMPARE_INPUT_DIRS` | Optional path-list of directories recursively scanned for external 8-bit gray/RGB `.pgm`, `.ppm`, `.pnm`, `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`, or `.bmp` source images included in `jp2k_encode_compare`. Non-PNM images are decoded to canonical PNM outside the timed loop. | Not set | Benchmark |
+| `J2K_ENCODE_COMPARE_MANIFEST` | Optional TSV manifest for external encode source images. Requires `path` and `corpus_category`; supports `corpus_name`, `license_status`, `source_command`, and `input_fnv1a64`. Publication runs require the decoded-pixel hash pin. | Not set | Benchmark |
+| `J2K_ENCODE_COMPARE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated smoke source images from `jp2k_encode_compare` external-corpus publication runs. | Generated source images included | Benchmark |
+| `J2K_ENCODE_COMPARE_ENCODERS` | Comma-separated encoder filter for local smoke checks, with values `j2k`, `openjpeg`, `grok`, and optional `kakadu`/`kdu`. Any filter blocks publication eligibility. | All default encoders | Benchmark |
 | `J2K_BATCH_COMPARE_REPEATS` | Repeat count for `jp2k_batch_compare`. | Tool default | Benchmark |
 | `J2K_BATCH_COMPARE_THREADS` | Worker count for `jp2k_batch_compare`. | Tool default | Benchmark |
 | `J2K_ROI_COMPARE_REPEATS` | Repeat count for `jp2k_roi_batch_compare`. | Tool default | Benchmark |
 | `J2K_ROI_COMPARE_THREADS` | Worker count for `jp2k_roi_batch_compare`. | Tool default | Benchmark |
 | `J2K_CUDA_DECODE_FORMATS` | Comma-separated CUDA J2K decode benchmark output formats such as `gray8,rgb8,rgba8`. | Harness default | Benchmark |
-| `J2K_CUDA_DECODE_BATCH_SIZES` | Comma-separated CUDA J2K decode benchmark batch sizes. | Harness default | Benchmark |
+| `J2K_CUDA_DECODE_BATCH_SIZES` | Comma-separated CUDA J2K decode mixed-external batch sizes. | Harness default | Benchmark |
+| `J2K_CUDA_DECODE_CASE_BATCH_SIZES` | Comma-separated CUDA J2K decode per-fixture batch sizes. Keep this bounded for external adoption runs; use `J2K_CUDA_DECODE_BATCH_SIZES` for huge mixed batches. | Harness default | Benchmark |
+| `J2K_CUDA_DECODE_SAMPLE_SIZE` | Criterion sample size for CUDA J2K decode benchmark rows. Must be at least 10. | 10 | Benchmark |
+| `J2K_CUDA_DECODE_INPUT_DIRS` | Optional path-list of external HTJ2K `.j2k`, `.j2c`, `.jp2`, `.jph`, or `.jhc` fixtures included in the CUDA decode Criterion benchmark. | Not set | Benchmark |
+| `J2K_CUDA_DECODE_MANIFEST` | Optional TSV manifest for CUDA decode external fixtures. Uses the same pinned `path`, `input_fnv1a64`, `codec`, and `container` fields as `J2K_FIXTURE_COMPARE_MANIFEST`. | Not set | Benchmark |
+| `J2K_CUDA_DECODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated CUDA decode fixtures when external fixtures are provided. | Generated CUDA decode fixtures included | Benchmark |
+| `J2K_CUDA_ENCODE_INPUT_DIRS` | Optional path-list of staged external `.pgm`, `.ppm`, or `.pnm` source images included in the CUDA HTJ2K encode Criterion benchmark. Use the same canonical PNM source assets as `J2K_ENCODE_COMPARE_INPUT_DIRS` after staging. | Not set | Benchmark |
+| `J2K_CUDA_ENCODE_MANIFEST` | Optional TSV manifest for CUDA encode staged PNM sources. Uses `path` and pinned `input_fnv1a64` from `J2K_ENCODE_COMPARE_MANIFEST`. | Not set | Benchmark |
+| `J2K_CUDA_ENCODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit the generated CUDA host-input encode row when external staged PNM sources are provided. Code-block/device-input microbenchmarks remain generated component rows. | Generated CUDA host-input row included | Benchmark |
+| `J2K_METAL_ENCODE_INPUT_DIRS` | Optional path-list of staged external `.pgm`, `.ppm`, or `.pnm` source images included in the Metal auto-routing encode benchmark. Use the same canonical PNM source assets as `J2K_ENCODE_COMPARE_INPUT_DIRS` after staging. | Not set | Benchmark |
+| `J2K_METAL_ENCODE_MANIFEST` | Optional TSV manifest for Metal encode staged PNM sources. Uses `path` and pinned `input_fnv1a64` from `J2K_ENCODE_COMPARE_MANIFEST`. | Not set | Benchmark |
+| `J2K_METAL_ENCODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated Metal host-input auto-routing rows when external staged PNM sources are provided. Stage microbenchmarks remain generated component rows. | Generated Metal host-input rows included | Benchmark |
+| `J2K_METAL_ENCODE_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES` | Maximum raw-byte estimate allowed for a Metal resident host-output encode benchmark row before the row is emitted as a structured memory-budget skip. This protects huge batches from materializing multi-gigabyte host codestream outputs in one benchmark process. | `2147483648` | Benchmark |
+| `J2K_ADOPTION_FIXTURES` | Repository variable or environment override for the CUDA adoption workflow decode fixture directory path-list passed to `cargo xtask adoption-benchmark --fixtures`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
+| `J2K_ADOPTION_MANIFEST` | Repository variable or environment override for the CUDA adoption workflow decode fixture manifest passed to `--manifest`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
+| `J2K_ADOPTION_ENCODE_FIXTURES` | Repository variable or environment override for the CUDA adoption workflow staged PNM encode fixture directory path-list passed to `--encode-fixtures`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
+| `J2K_ADOPTION_ENCODE_MANIFEST` | Repository variable or environment override for the CUDA adoption workflow staged PNM encode manifest passed to `--encode-manifest`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
+| `J2K_ADOPTION_OUT_DIR` | Output directory used by the CUDA adoption workflow for generated benchmark artifacts and the rendered report. | `target/j2k-adoption-benchmark/cuda-full` | Benchmark/CI |
 | `J2K_CUDA_PROFILE_BATCH_SIZE` | Batch size for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
 | `J2K_CUDA_PROFILE_ITERATIONS` | Iteration count for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
 | `J2K_LEVEL1_CUDA_HT_MIN_MPS` | Level-1 CUDA HT throughput floor used by GPU validation workflow. | Workflow default `350` | Benchmark |

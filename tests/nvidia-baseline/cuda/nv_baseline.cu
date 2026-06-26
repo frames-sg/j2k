@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // NVIDIA GPU baseline for the JPEG -> HTJ2K transcode comparison: nvJPEG decodes
 // the JPEG to RGB on the GPU, then nvJPEG2000 encodes it to a High-Throughput

@@ -1,4 +1,11 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use j2k::{
@@ -14,12 +21,33 @@ use j2k_cuda_runtime::{
 use j2k_native::{
     encode_ht_code_block_scalar, ht_uvlc_encode_table, ht_vlc_encode_table0, ht_vlc_encode_table1,
 };
+use j2k_test_support::read_pnm_image;
 
 const TILE_DIM: u32 = 512;
 const CODE_BLOCK_DIM: u32 = 64;
 const CODE_BLOCK_BATCH: usize = 64;
 const REGION_BLOCKS_X: u32 = 8;
 const REGION_BLOCKS_Y: u32 = 8;
+const ENCODE_SAMPLE_SIZE: usize = 10;
+const ENCODE_WARM_UP: Duration = Duration::from_millis(500);
+const ENCODE_MEASUREMENT: Duration = Duration::from_secs(1);
+
+struct EncodeBenchCase {
+    id: String,
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    components: u8,
+    input_source: String,
+}
+
+struct CudaEncodeManifest {
+    entries: HashMap<PathBuf, CudaEncodeManifestEntry>,
+}
+
+struct CudaEncodeManifestEntry {
+    input_fnv1a64: Option<String>,
+}
 
 fn bench_htj2k_encode(c: &mut Criterion) {
     let pixels = generate_gray_tile(TILE_DIM, TILE_DIM);
@@ -31,8 +59,14 @@ fn bench_htj2k_encode(c: &mut Criterion) {
     let region_coefficients = generate_region_coefficients(region_width, region_height);
     let region_jobs = strided_region_jobs(CODE_BLOCK_DIM, REGION_BLOCKS_X, REGION_BLOCKS_Y);
     let cuda_available = cuda_encode_available(&pixels, &coefficients, &jobs);
+    let external_cases = external_encode_cases();
 
-    bench_host_input(c, &pixels, cuda_available);
+    emit_encode_input_metadata(&external_cases);
+
+    if include_generated_host_input() {
+        bench_host_input(c, &pixels, cuda_available);
+    }
+    bench_external_host_input(c, &external_cases, cuda_available);
     bench_codeblock_microkernels(c, &coefficients, &jobs, cuda_available);
     bench_device_input_regions(c, &region_coefficients, &region_jobs, cuda_available);
 }
@@ -87,6 +121,82 @@ fn bench_host_input(c: &mut Criterion, pixels: &[u8], cuda_available: bool) {
         );
     }
     group.finish();
+}
+
+fn bench_external_host_input(c: &mut Criterion, cases: &[EncodeBenchCase], cuda_available: bool) {
+    if cases.is_empty() {
+        return;
+    }
+    let mut group = c.benchmark_group("j2k_cuda_htj2k_external_host_input_encode");
+    for case in cases {
+        group.bench_with_input(
+            BenchmarkId::new(format!("cpu_external_{}", case.id), dimensions_label(case)),
+            case,
+            |b, case| {
+                let options = cpu_htj2k_options();
+                b.iter(|| {
+                    let encoded = encode_case_cpu(std::hint::black_box(case), options)
+                        .expect("CPU external HTJ2K encode");
+                    std::hint::black_box(encoded)
+                });
+            },
+        );
+        if cuda_available {
+            group.bench_with_input(
+                BenchmarkId::new(format!("cuda_external_{}", case.id), dimensions_label(case)),
+                case,
+                |b, case| {
+                    let options = cuda_htj2k_options();
+                    b.iter(|| {
+                        let encoded = encode_case_cuda(std::hint::black_box(case), options)
+                            .expect("CUDA external HTJ2K encode");
+                        assert_eq!(encoded.backend, BackendKind::Cuda);
+                        std::hint::black_box(encoded.codestream.len())
+                    });
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
+fn encode_case_cpu(
+    case: &EncodeBenchCase,
+    options: J2kLosslessEncodeOptions,
+) -> Result<usize, String> {
+    let samples = J2kLosslessSamples::new(
+        &case.pixels,
+        case.width,
+        case.height,
+        case.components,
+        8,
+        false,
+    )
+    .map_err(|error| error.to_string())?;
+    let encoded = encode_j2k_lossless(samples, &options).map_err(|error| error.to_string())?;
+    if encoded.backend != BackendKind::Cpu {
+        return Err(format!(
+            "external CPU encode case {} used {:?} backend",
+            case.id, encoded.backend
+        ));
+    }
+    Ok(encoded.codestream.len())
+}
+
+fn encode_case_cuda(
+    case: &EncodeBenchCase,
+    options: J2kLosslessEncodeOptions,
+) -> Result<j2k::EncodedJ2k, String> {
+    let samples = J2kLosslessSamples::new(
+        &case.pixels,
+        case.width,
+        case.height,
+        case.components,
+        8,
+        false,
+    )
+    .map_err(|error| error.to_string())?;
+    encode_j2k_lossless_with_cuda(samples, &options).map_err(|error| error.to_string())
 }
 
 fn bench_codeblock_microkernels(
@@ -235,6 +345,389 @@ fn bench_device_input_regions(
         );
     }
     group.finish();
+}
+
+fn include_generated_host_input() -> bool {
+    !env_falsey("J2K_CUDA_ENCODE_INCLUDE_GENERATED")
+}
+
+fn env_falsey(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
+}
+
+fn external_encode_cases() -> Vec<EncodeBenchCase> {
+    let dirs = external_encode_input_dirs();
+    if dirs.is_empty() {
+        return Vec::new();
+    }
+    let manifest = cuda_encode_manifest().unwrap_or_else(|error| panic!("{error}"));
+    let mut cases = Vec::new();
+    for dir in dirs {
+        let mut paths = Vec::new();
+        collect_pnm_paths(&dir, &mut paths)
+            .unwrap_or_else(|error| panic!("collect external CUDA encode inputs: {error}"));
+        paths.sort();
+        assert!(
+            !paths.is_empty(),
+            "J2K_CUDA_ENCODE_INPUT_DIRS entry {} contains no staged .pgm/.ppm/.pnm files",
+            dir.display()
+        );
+        for path in paths {
+            cases.push(
+                load_external_encode_case(&path, manifest.as_ref())
+                    .unwrap_or_else(|error| panic!("{error}")),
+            );
+        }
+    }
+    cases
+}
+
+fn external_encode_input_dirs() -> Vec<PathBuf> {
+    std::env::var_os("J2K_CUDA_ENCODE_INPUT_DIRS")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default()
+}
+
+fn collect_pnm_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err(format!(
+            "J2K_CUDA_ENCODE_INPUT_DIRS entry is not a directory: {}",
+            dir.display()
+        ));
+    }
+    for entry in fs::read_dir(dir).map_err(|error| format!("read {}: {error}", dir.display()))? {
+        let path = entry
+            .map_err(|error| format!("read dir entry under {}: {error}", dir.display()))?
+            .path();
+        if path.is_dir() {
+            collect_pnm_paths(&path, paths)?;
+        } else if is_pnm_path(&path) {
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn is_pnm_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "pgm" | "ppm" | "pnm"
+            )
+        })
+}
+
+fn load_external_encode_case(
+    path: &Path,
+    manifest: Option<&CudaEncodeManifest>,
+) -> Result<EncodeBenchCase, String> {
+    let image = read_pnm_image(path).map_err(|error| {
+        format!(
+            "read external CUDA encode staged PNM {}: {error}",
+            path.display()
+        )
+    })?;
+    let components = u8::try_from(image.channels)
+        .map_err(|_| format!("{} channel count is too large", path.display()))?;
+    if !matches!(components, 1 | 3) {
+        return Err(format!(
+            "{} has unsupported component count {components}; expected PGM or PPM",
+            path.display()
+        ));
+    }
+    validate_cuda_encode_manifest_entry(path, &image.pixels, manifest)?;
+    Ok(EncodeBenchCase {
+        id: sanitized_stem(path),
+        pixels: image.pixels,
+        width: image.width,
+        height: image.height,
+        components,
+        input_source: external_source_label(path)?,
+    })
+}
+
+fn cuda_encode_manifest() -> Result<Option<CudaEncodeManifest>, String> {
+    let Some(path) = std::env::var_os("J2K_CUDA_ENCODE_MANIFEST").map(PathBuf::from) else {
+        return Ok(None);
+    };
+    let text = fs::read_to_string(&path)
+        .map_err(|error| format!("read J2K_CUDA_ENCODE_MANIFEST {}: {error}", path.display()))?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let relocation_roots = external_encode_input_dirs();
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+    let header = lines
+        .next()
+        .ok_or_else(|| format!("CUDA encode manifest {} is empty", path.display()))?;
+    let headers = header.split('\t').collect::<Vec<_>>();
+    let path_index = manifest_column(&headers, "path")?;
+    let hash_index = optional_manifest_column(&headers, "input_fnv1a64");
+    let mut entries = HashMap::new();
+    for (line_index, line) in lines.enumerate() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let fields = line.split('\t').collect::<Vec<_>>();
+        let row_number = line_index + 2;
+        let raw_path = manifest_field(&fields, path_index, "path", row_number)?;
+        let canonical_path = canonicalize_manifest_row_path(
+            raw_path,
+            base,
+            &relocation_roots,
+            "CUDA encode manifest",
+            &path,
+            row_number,
+        )?;
+        let entry = CudaEncodeManifestEntry {
+            input_fnv1a64: manifest_optional_value(
+                &fields,
+                hash_index,
+                "input_fnv1a64",
+                row_number,
+            )?,
+        };
+        if entries.insert(canonical_path, entry).is_some() {
+            return Err(format!(
+                "CUDA encode manifest {} row {row_number} duplicates path {raw_path}",
+                path.display()
+            ));
+        }
+    }
+    Ok(Some(CudaEncodeManifest { entries }))
+}
+
+fn canonicalize_manifest_row_path(
+    raw_path: &str,
+    base: &Path,
+    relocation_roots: &[PathBuf],
+    manifest_label: &str,
+    manifest_path: &Path,
+    row_number: usize,
+) -> Result<PathBuf, String> {
+    let raw = Path::new(raw_path);
+    let resolved_path = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        base.join(raw)
+    };
+    match resolved_path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(primary_error) => {
+            let candidates = manifest_relocation_candidates(raw, relocation_roots);
+            if candidates.len() == 1 {
+                Ok(candidates[0].clone())
+            } else if !candidates.is_empty() {
+                Err(format!(
+                    "{manifest_label} {} row {row_number} path {} is ambiguous after suffix remap: {}",
+                    manifest_path.display(),
+                    raw_path,
+                    join_path_labels(&candidates)
+                ))
+            } else {
+                Err(format!(
+                    "{manifest_label} {} row {row_number} path {} cannot be canonicalized: {primary_error}; no suffix remap found under {}",
+                    manifest_path.display(),
+                    resolved_path.display(),
+                    join_path_labels(relocation_roots)
+                ))
+            }
+        }
+    }
+}
+
+fn manifest_relocation_candidates(raw_path: &Path, relocation_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let suffixes = normal_path_suffixes(raw_path);
+    let mut candidates = Vec::new();
+    for root in relocation_roots {
+        for suffix in &suffixes {
+            let candidate = root.join(suffix);
+            let Ok(canonical) = candidate.canonicalize() else {
+                continue;
+            };
+            if !candidates.contains(&canonical) {
+                candidates.push(canonical);
+            }
+        }
+    }
+    candidates
+}
+
+fn normal_path_suffixes(path: &Path) -> Vec<PathBuf> {
+    let parts = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut suffixes = Vec::new();
+    for start in 0..parts.len() {
+        let mut suffix = PathBuf::new();
+        for part in &parts[start..] {
+            suffix.push(part);
+        }
+        suffixes.push(suffix);
+    }
+    suffixes
+}
+
+fn join_path_labels(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return "none".to_string();
+    }
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn validate_cuda_encode_manifest_entry(
+    path: &Path,
+    pixels: &[u8],
+    manifest: Option<&CudaEncodeManifest>,
+) -> Result<(), String> {
+    let Some(manifest) = manifest else {
+        return Ok(());
+    };
+    let canonical_path = path.canonicalize().map_err(|error| {
+        format!(
+            "canonicalize external CUDA encode input {}: {error}",
+            path.display()
+        )
+    })?;
+    let Some(entry) = manifest.entries.get(&canonical_path) else {
+        return Err(format!(
+            "external CUDA encode input {} is not covered by J2K_CUDA_ENCODE_MANIFEST",
+            path.display()
+        ));
+    };
+    let Some(expected_hash) = &entry.input_fnv1a64 else {
+        return Err(format!(
+            "external CUDA encode input {} manifest row is missing input_fnv1a64",
+            path.display()
+        ));
+    };
+    let actual_hash = fnv1a64_hex(pixels);
+    if actual_hash != *expected_hash {
+        return Err(format!(
+            "external CUDA encode input {} hash mismatch: manifest {expected_hash} != actual {actual_hash}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn manifest_column(headers: &[&str], name: &str) -> Result<usize, String> {
+    optional_manifest_column(headers, name)
+        .ok_or_else(|| format!("CUDA encode manifest is missing required {name:?} column"))
+}
+
+fn optional_manifest_column(headers: &[&str], name: &str) -> Option<usize> {
+    headers.iter().position(|header| *header == name)
+}
+
+fn manifest_field<'a>(
+    fields: &'a [&str],
+    index: usize,
+    name: &str,
+    row_number: usize,
+) -> Result<&'a str, String> {
+    fields
+        .get(index)
+        .copied()
+        .ok_or_else(|| format!("CUDA encode manifest row {row_number} is missing {name:?} field"))
+}
+
+fn manifest_optional_value(
+    fields: &[&str],
+    index: Option<usize>,
+    name: &str,
+    row_number: usize,
+) -> Result<Option<String>, String> {
+    let Some(index) = index else {
+        return Ok(None);
+    };
+    let value = manifest_field(fields, index, name, row_number)?.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!(
+            "CUDA encode manifest row {row_number} field {name:?} contains a control character"
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn external_source_label(path: &Path) -> Result<String, String> {
+    let source_path = path.display().to_string();
+    if source_path.chars().any(char::is_control) {
+        return Err(format!(
+            "external CUDA encode input path contains a control character: {}",
+            source_path.escape_debug()
+        ));
+    }
+    Ok(format!("external:{source_path}"))
+}
+
+fn sanitized_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("unnamed")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn emit_encode_input_metadata(external_cases: &[EncodeBenchCase]) {
+    println!(
+        "j2k_cuda_encode_generated_host_input_included\t{}",
+        include_generated_host_input()
+    );
+    println!("j2k_cuda_encode_sample_size\t{}", encode_sample_size());
+    println!("j2k_cuda_encode_warm_up_ms\t{}", ENCODE_WARM_UP.as_millis());
+    println!(
+        "j2k_cuda_encode_measurement_ms\t{}",
+        ENCODE_MEASUREMENT.as_millis()
+    );
+    println!(
+        "j2k_cuda_encode_io_policy\tstaged-pnm-pixels-preloaded-no-filesystem-io-in-timed-loop;cuda-host-input-rows-include-public-api-host-submission-and-device-encode-work"
+    );
+    println!(
+        "j2k_cuda_encode_input_dirs\t{}",
+        std::env::var("J2K_CUDA_ENCODE_INPUT_DIRS").unwrap_or_else(|_| "not set".to_string())
+    );
+    println!(
+        "j2k_cuda_encode_manifest\t{}",
+        std::env::var("J2K_CUDA_ENCODE_MANIFEST").unwrap_or_else(|_| "not set".to_string())
+    );
+    println!(
+        "j2k_cuda_encode_external_case_count\t{}",
+        external_cases.len()
+    );
+    println!("j2k_cuda_encode_external_input_format\tstaged-pnm-p5-p6");
+    println!(
+        "j2k_cuda_encode_external_case_sources\t{}",
+        if external_cases.is_empty() {
+            "none".to_string()
+        } else {
+            external_cases
+                .iter()
+                .map(|case| case.input_source.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    );
 }
 
 fn cuda_encode_available(
@@ -482,10 +975,49 @@ fn coefficients_as_bytes(coefficients: &[i32]) -> Vec<u8> {
     bytes
 }
 
+fn dimensions_label(case: &EncodeBenchCase) -> String {
+    format!("{}x{}", case.width, case.height)
+}
+
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 fn area_len(width: u32, height: u32) -> usize {
     usize::try_from(width).expect("bench width fits usize")
         * usize::try_from(height).expect("bench height fits usize")
 }
 
-criterion_group!(benches, bench_htj2k_encode);
+fn cuda_encode_criterion() -> Criterion {
+    Criterion::default()
+        .sample_size(encode_sample_size())
+        .warm_up_time(ENCODE_WARM_UP)
+        .measurement_time(ENCODE_MEASUREMENT)
+}
+
+fn encode_sample_size() -> usize {
+    let Some(value) = std::env::var_os("J2K_CUDA_ENCODE_SAMPLE_SIZE") else {
+        return ENCODE_SAMPLE_SIZE;
+    };
+    let value = value.to_string_lossy();
+    let sample_size = value
+        .parse::<usize>()
+        .unwrap_or_else(|error| panic!("invalid J2K_CUDA_ENCODE_SAMPLE_SIZE `{value}`: {error}"));
+    assert!(
+        sample_size >= 10,
+        "J2K_CUDA_ENCODE_SAMPLE_SIZE must be at least Criterion's minimum sample size of 10"
+    );
+    sample_size
+}
+
+criterion_group! {
+    name = benches;
+    config = cuda_encode_criterion();
+    targets = bench_htj2k_encode
+}
 criterion_main!(benches);

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{J2kCodec, J2kContext, J2kDecoder, J2kError, J2kRowDecodeOptions};
 use j2k_core::{

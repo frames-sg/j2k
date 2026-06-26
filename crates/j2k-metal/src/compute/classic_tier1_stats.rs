@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{J2kResidentEncodeStageStats, J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS};
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
 use std::{
@@ -546,6 +546,10 @@ impl MetalRuntime {
             tier1_dummy_buffer: device.new_buffer(1, MTLResourceOptions::StorageModeShared),
             buffer_pools: MetalBufferPools::new(),
         })
+    }
+
+    pub(crate) fn command_queue(&self) -> &metal::CommandQueueRef {
+        self.queue.as_ref()
     }
 
     fn take_private_buffer(&self, bytes: usize) -> Result<Buffer, Error> {

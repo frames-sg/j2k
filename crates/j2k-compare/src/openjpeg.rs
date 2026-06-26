@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use openjpeg_sys::{
     opj_codec_set_threads, opj_create_decompress, opj_decode, opj_destroy_codec, opj_dparameters_t,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Inverse discrete cosine transform. The scalar ISLOW path is the parity
 //! oracle — every SIMD variant is proptested for bit-exact match against

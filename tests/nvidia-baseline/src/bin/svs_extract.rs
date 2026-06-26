@@ -1,19 +1,20 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// Extract benchmark JPEG tiles from an Aperio .svs whole-slide image.
+// Extract benchmark JPEG tiles from a whole-slide image.
 //
 // Many GDC SVS files store their tiles as JPEG 2000 (Aperio compression 33003 /
 // 33005), not JPEG, so they cannot feed a JPEG -> HTJ2K transcode benchmark
-// directly. This tool decodes each tile (J2K via j2k-native; original
-// JPEG passed through) to RGB and re-encodes a deterministic, tissue-only subset
-// as baseline JPEG into an output directory for `transcode_compare`.
+// directly. This tool reads tiles through wsi-rs, converts them to RGB, and
+// re-encodes a deterministic, tissue-only subset as baseline JPEG into an
+// output directory for `transcode_compare`.
 //
 // Re-encoding adds one lossy step, so the tiles are realistic WSI *content* at
-// realistic tile sizes rather than byte-identical originals — fine for a
+// realistic tile sizes rather than byte-identical originals - fine for a
 // throughput benchmark (and the PSNR reference is self-consistent across codecs).
 //
 // Usage:
 //   svs_extract <slide.svs> <out-dir> [--limit N] [--stride S] [--quality Q]
+//       [--region-size N] [--format jpeg|ppm|pgm]
 //
 // Defaults: --limit 256 --stride 7 --quality 85. Near-white background tiles are
 // skipped (mean luma > 235).
@@ -21,8 +22,10 @@
 use std::path::Path;
 
 use j2k_jpeg::encoder::{encode_jpeg_baseline, JpegEncodeOptions, JpegSamples};
-use j2k_native::{DecodeSettings, Image};
-use j2k_nvidia_baseline::ycbcr_to_rgb_round_nearest;
+use wsi_rs::{
+    LevelIdx, PlaneIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide, TileLayout,
+    TileOutputPreference, TilePixels, TileRequest,
+};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -42,6 +45,11 @@ fn main() {
     let mut stride = 7usize;
     let mut quality = 85u8;
     let mut min_tissue = 0.5f64;
+    let mut scene = 0usize;
+    let mut series = 0usize;
+    let mut level = 0u32;
+    let mut region_size = None;
+    let mut output_format = OutputFormat::Jpeg;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--limit" => limit = args.next().and_then(|v| v.parse().ok()).unwrap_or(limit),
@@ -59,6 +67,17 @@ fn main() {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(min_tissue);
             }
+            "--scene" => scene = args.next().and_then(|v| v.parse().ok()).unwrap_or(scene),
+            "--series" => series = args.next().and_then(|v| v.parse().ok()).unwrap_or(series),
+            "--level" => level = args.next().and_then(|v| v.parse().ok()).unwrap_or(level),
+            "--region-size" => region_size = args.next().and_then(|v| v.parse().ok()),
+            "--format" | "--output-format" => {
+                let value = args.next().unwrap_or_else(|| "jpeg".to_string());
+                output_format = OutputFormat::parse(&value).unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                });
+            }
             other => {
                 eprintln!("unknown flag: {other}");
                 std::process::exit(2);
@@ -66,109 +85,448 @@ fn main() {
         }
     }
 
-    if let Err(error) = run(&svs_path, &out_dir, limit, stride, quality, min_tissue) {
+    let options = ExtractOptions {
+        limit,
+        stride,
+        quality,
+        min_tissue,
+        scene,
+        series,
+        level,
+        region_size,
+        output_format,
+    };
+    if let Err(error) = run(&svs_path, &out_dir, &options) {
         eprintln!("error: {error}");
         std::process::exit(1);
     }
 }
 
-fn run(
-    svs_path: &str,
-    out_dir: &str,
+struct ExtractOptions {
     limit: usize,
     stride: usize,
     quality: u8,
     min_tissue: f64,
-) -> Result<(), String> {
-    let bytes = std::fs::read(svs_path).map_err(|e| format!("read {svs_path}: {e}"))?;
-    let ifd0 = parse_first_ifd(&bytes)?;
+    scene: usize,
+    series: usize,
+    level: u32,
+    region_size: Option<u32>,
+    output_format: OutputFormat,
+}
+
+#[derive(Clone, Copy)]
+enum OutputFormat {
+    Jpeg,
+    Ppm,
+    Pgm,
+}
+
+impl OutputFormat {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "jpeg" | "jpg" => Ok(Self::Jpeg),
+            "ppm" => Ok(Self::Ppm),
+            "pgm" => Ok(Self::Pgm),
+            other => Err(format!(
+                "--format must be jpeg, ppm, or pgm; got {other:?}"
+            )),
+        }
+    }
+
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Ppm => "ppm",
+            Self::Pgm => "pgm",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Jpeg => "JPEG",
+            Self::Ppm => "PPM",
+            Self::Pgm => "PGM",
+        }
+    }
+}
+
+struct SlideGrid {
+    dimensions: (u64, u64),
+    tile_width: u32,
+    tile_height: u32,
+    tiles_across: u64,
+    tile_count: u64,
+}
+
+#[derive(Default)]
+struct ExtractionStats {
+    written: usize,
+    attempted: usize,
+    skipped_blank: usize,
+    decode_failures: usize,
+    min_seen_fraction: f64,
+    sum_fraction: f64,
+}
+
+impl ExtractionStats {
+    fn record_written(&mut self, tissue_fraction: f64) {
+        self.written += 1;
+        if self.written == 1 {
+            self.min_seen_fraction = tissue_fraction;
+        } else {
+            self.min_seen_fraction = self.min_seen_fraction.min(tissue_fraction);
+        }
+        self.sum_fraction += tissue_fraction;
+    }
+
+    fn mean_tissue_fraction(&self) -> f64 {
+        if self.written == 0 {
+            0.0
+        } else {
+            self.sum_fraction / self.written as f64
+        }
+    }
+}
+
+fn run(svs_path: &str, out_dir: &str, options: &ExtractOptions) -> Result<(), String> {
+    validate_options(options)?;
+    let slide = Slide::open(svs_path).map_err(|e| format!("open slide {svs_path}: {e}"))?;
+    let grid = slide_grid(&slide, options)?;
     println!(
-        "slide: {}x{} px, {}x{} tiles, compression {}, {} tiles total",
-        ifd0.image_width,
-        ifd0.image_height,
-        ifd0.tile_width,
-        ifd0.tile_height,
-        ifd0.compression,
-        ifd0.tile_offsets.len()
+        "slide: {}x{} px, {}x{} tiles, {} tiles total, scene {}, series {}, level {}",
+        grid.dimensions.0,
+        grid.dimensions.1,
+        grid.tile_width,
+        grid.tile_height,
+        grid.tile_count,
+        options.scene,
+        options.series,
+        options.level
     );
 
     std::fs::create_dir_all(out_dir).map_err(|e| format!("create {out_dir}: {e}"))?;
+    let stats = extract_tiles(&slide, Path::new(out_dir), options, &grid)?;
+    print_stats(out_dir, options, &stats);
+    if stats.written == 0 {
+        return Err(
+            "no tiles written - decode may be unsupported, or all tiles below the tissue threshold"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
 
-    let options = JpegEncodeOptions {
-        quality,
+fn validate_options(options: &ExtractOptions) -> Result<(), String> {
+    if options.limit == 0 {
+        return Err("--limit must be greater than zero".to_string());
+    }
+    if !(0.0..=1.0).contains(&options.min_tissue) {
+        return Err("--min-tissue must be between 0 and 1".to_string());
+    }
+    if matches!(options.region_size, Some(0)) {
+        return Err("--region-size must be greater than zero".to_string());
+    }
+    Ok(())
+}
+
+fn slide_grid(slide: &Slide, options: &ExtractOptions) -> Result<SlideGrid, String> {
+    let level = selected_level(slide, options.scene, options.series, options.level)?;
+    let TileLayout::Regular {
+        tile_width,
+        tile_height,
+        tiles_across,
+        tiles_down,
+    } = level.tile_layout
+    else {
+        return Err(format!(
+            "scene {} series {} level {} is not a regular tiled level",
+            options.scene, options.series, options.level
+        ));
+    };
+    let tile_count = tiles_across
+        .checked_mul(tiles_down)
+        .ok_or_else(|| "tile grid is too large".to_string())?;
+    Ok(SlideGrid {
+        dimensions: level.dimensions,
+        tile_width,
+        tile_height,
+        tiles_across,
+        tile_count,
+    })
+}
+
+fn extract_tiles(
+    slide: &Slide,
+    out_dir: &Path,
+    options: &ExtractOptions,
+    grid: &SlideGrid,
+) -> Result<ExtractionStats, String> {
+    if let Some(region_size) = options.region_size {
+        return extract_regions(slide, out_dir, options, grid, region_size);
+    }
+
+    let jpeg_options = JpegEncodeOptions {
+        quality: options.quality,
         ..JpegEncodeOptions::default()
     };
 
-    let mut written = 0usize;
-    let mut attempted = 0usize;
-    let mut skipped_blank = 0usize;
-    let mut decode_failures = 0usize;
-    let mut min_seen_fraction = 1.0f64;
-    let mut sum_fraction = 0.0f64;
+    let mut stats = ExtractionStats::default();
+    let mut index = 0u64;
+    let stride = u64::try_from(options.stride.max(1)).map_err(|_| "--stride is too large")?;
+    while index < grid.tile_count && stats.written < options.limit {
+        let row = index / grid.tiles_across;
+        let col = index % grid.tiles_across;
+        index = index
+            .checked_add(stride)
+            .ok_or_else(|| "tile stride overflow".to_string())?;
 
-    let mut index = 0usize;
-    while index < ifd0.tile_offsets.len() && written < limit {
-        let offset = ifd0.tile_offsets[index] as usize;
-        let count = ifd0.tile_byte_counts[index] as usize;
-        index += stride;
-        if count == 0 || offset + count > bytes.len() {
-            continue;
-        }
-        attempted += 1;
-        let tile = &bytes[offset..offset + count];
+        stats.attempted += 1;
 
-        let Some((rgb, w, h)) = decode_tile_rgb(tile, ifd0.compression) else {
-            decode_failures += 1;
+        let request = TileRequest::new(
+            options.scene,
+            options.series,
+            options.level,
+            i64::try_from(col).map_err(|_| "tile column is too large")?,
+            i64::try_from(row).map_err(|_| "tile row is too large")?,
+        );
+        let Ok((rgb, w, h)) = read_tile_rgb(slide, &request) else {
+            stats.decode_failures += 1;
             continue;
         };
         let fraction = tissue_fraction(&rgb);
         // Require both real tissue coverage and visible structure (texture), so
         // flat homogeneous stroma/background is rejected in favour of cellular
         // tissue with nuclei and edges.
-        if fraction < min_tissue || luma_stddev(&rgb) < 12.0 {
-            skipped_blank += 1;
+        if fraction < options.min_tissue || luma_stddev(&rgb) < 12.0 {
+            stats.skipped_blank += 1;
             continue;
         }
 
-        let encoded = encode_jpeg_baseline(
-            JpegSamples::Rgb8 {
-                data: &rgb,
-                width: w,
-                height: h,
-            },
-            options,
+        write_rgb_image(
+            out_dir,
+            "tile",
+            stats.written,
+            &rgb,
+            (w, h),
+            options.output_format,
+            jpeg_options,
         )
-        .map_err(|e| format!("encode tile {index}: {e}"))?;
-
-        let path = Path::new(out_dir).join(format!("tile_{written:05}.jpg"));
-        std::fs::write(&path, &encoded.data)
-            .map_err(|e| format!("write {}: {e}", path.display()))?;
-        written += 1;
-        min_seen_fraction = min_seen_fraction.min(fraction);
-        sum_fraction += fraction;
+        .map_err(|e| format!("write tile row {row} col {col}: {e}"))?;
+        stats.record_written(fraction);
     }
+    Ok(stats)
+}
 
-    let mean_fraction = if written > 0 {
-        sum_fraction / written as f64
-    } else {
-        0.0
+fn extract_regions(
+    slide: &Slide,
+    out_dir: &Path,
+    options: &ExtractOptions,
+    grid: &SlideGrid,
+    region_size: u32,
+) -> Result<ExtractionStats, String> {
+    let jpeg_options = JpegEncodeOptions {
+        quality: options.quality,
+        ..JpegEncodeOptions::default()
     };
+    let region_size_u64 = u64::from(region_size);
+    if grid.dimensions.0 < region_size_u64 || grid.dimensions.1 < region_size_u64 {
+        return Err(format!(
+            "--region-size {region_size} exceeds level dimensions {}x{}",
+            grid.dimensions.0, grid.dimensions.1
+        ));
+    }
+    let regions_across = ((grid.dimensions.0 - region_size_u64) / region_size_u64) + 1;
+    let regions_down = ((grid.dimensions.1 - region_size_u64) / region_size_u64) + 1;
+    let region_count = regions_across
+        .checked_mul(regions_down)
+        .ok_or_else(|| "region grid is too large".to_string())?;
+
+    let mut stats = ExtractionStats::default();
+    let mut index = 0u64;
+    let stride = u64::try_from(options.stride.max(1)).map_err(|_| "--stride is too large")?;
+    while index < region_count && stats.written < options.limit {
+        let row = index / regions_across;
+        let col = index % regions_across;
+        index = index
+            .checked_add(stride)
+            .ok_or_else(|| "region stride overflow".to_string())?;
+
+        stats.attempted += 1;
+        let x = col
+            .checked_mul(region_size_u64)
+            .ok_or_else(|| "region x overflow".to_string())?;
+        let y = row
+            .checked_mul(region_size_u64)
+            .ok_or_else(|| "region y overflow".to_string())?;
+        let Ok(rgb) = read_region_rgb(slide, options, x, y, region_size) else {
+            stats.decode_failures += 1;
+            continue;
+        };
+        let fraction = tissue_fraction(&rgb);
+        if fraction < options.min_tissue || luma_stddev(&rgb) < 12.0 {
+            stats.skipped_blank += 1;
+            continue;
+        }
+
+        write_rgb_image(
+            out_dir,
+            "region",
+            stats.written,
+            &rgb,
+            (region_size, region_size),
+            options.output_format,
+            jpeg_options,
+        )
+        .map_err(|e| format!("write region x {x} y {y}: {e}"))?;
+        stats.record_written(fraction);
+    }
+    Ok(stats)
+}
+
+fn print_stats(out_dir: &str, options: &ExtractOptions, stats: &ExtractionStats) {
     println!(
-        "wrote {written} JPEG tiles to {out_dir} (attempted {attempted}, skipped {skipped_blank} below {:.0}% tissue, {decode_failures} decode failures)",
-        min_tissue * 100.0
+        "wrote {} {} images to {out_dir} (attempted {}, skipped {} below {:.0}% tissue, {} decode failures)",
+        stats.written,
+        options.output_format.label(),
+        stats.attempted,
+        stats.skipped_blank,
+        options.min_tissue * 100.0,
+        stats.decode_failures
     );
     println!(
         "tissue coverage of written tiles: min {:.0}%, mean {:.0}%",
-        min_seen_fraction * 100.0,
-        mean_fraction * 100.0
+        stats.min_seen_fraction * 100.0,
+        stats.mean_tissue_fraction() * 100.0
     );
-    if written == 0 {
-        return Err(
-            "no tiles written — decode may be unsupported, or all tiles below the tissue threshold"
-                .to_string(),
-        );
+}
+
+fn selected_level(
+    slide: &Slide,
+    scene: usize,
+    series: usize,
+    level: u32,
+) -> Result<&wsi_rs::Level, String> {
+    let dataset = slide.dataset();
+    let scene_ref = dataset
+        .scenes
+        .get(scene)
+        .ok_or_else(|| format!("scene {scene} is out of range"))?;
+    let series_ref = scene_ref
+        .series
+        .get(series)
+        .ok_or_else(|| format!("series {series} is out of range"))?;
+    series_ref
+        .levels
+        .get(level as usize)
+        .ok_or_else(|| format!("level {level} is out of range"))
+}
+
+fn read_tile_rgb(slide: &Slide, request: &TileRequest) -> Result<(Vec<u8>, u32, u32), String> {
+    match slide
+        .read_tile(request, TileOutputPreference::cpu())
+        .map_err(|e| format!("read tile: {e}"))?
+    {
+        TilePixels::Cpu(tile) => {
+            let rgb = tile
+                .to_rgb()
+                .map_err(|e| format!("convert tile to RGB: {e}"))?;
+            let width = rgb.width();
+            let height = rgb.height();
+            Ok((rgb.into_raw(), width, height))
+        }
+        TilePixels::Device(_) => Err("wsi-rs returned a device tile for CPU output".to_string()),
+        _ => Err("wsi-rs returned an unsupported tile output for CPU output".to_string()),
     }
-    Ok(())
+}
+
+fn read_region_rgb(
+    slide: &Slide,
+    options: &ExtractOptions,
+    x: u64,
+    y: u64,
+    size: u32,
+) -> Result<Vec<u8>, String> {
+    let request = RegionRequest::new(
+        SceneId::new(options.scene),
+        SeriesId::new(options.series),
+        LevelIdx::new(options.level),
+        (
+            i64::try_from(x).map_err(|_| "region x is too large")?,
+            i64::try_from(y).map_err(|_| "region y is too large")?,
+        ),
+        (size, size),
+    )
+    .with_plane(PlaneIdx::new(PlaneSelection::default()));
+    let rgba = slide
+        .read_region_rgba(&request)
+        .map_err(|e| format!("read region: {e}"))?
+        .into_raw();
+    Ok(rgba_to_rgb_on_white(&rgba))
+}
+
+fn rgba_to_rgb_on_white(rgba: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+    for px in rgba.chunks_exact(4) {
+        let alpha = u16::from(px[3]);
+        let inv_alpha = 255_u16 - alpha;
+        rgb.push(composite_channel(px[0], alpha, inv_alpha));
+        rgb.push(composite_channel(px[1], alpha, inv_alpha));
+        rgb.push(composite_channel(px[2], alpha, inv_alpha));
+    }
+    rgb
+}
+
+fn composite_channel(value: u8, alpha: u16, inv_alpha: u16) -> u8 {
+    let blended = (u16::from(value) * alpha + 255 * inv_alpha + 127) / 255;
+    u8::try_from(blended).unwrap_or(255)
+}
+
+fn write_rgb_image(
+    out_dir: &Path,
+    prefix: &str,
+    index: usize,
+    rgb: &[u8],
+    dimensions: (u32, u32),
+    format: OutputFormat,
+    jpeg_options: JpegEncodeOptions,
+) -> Result<(), String> {
+    let (width, height) = dimensions;
+    let path = out_dir.join(format!("{prefix}_{index:05}.{}", format.extension()));
+    let bytes = match format {
+        OutputFormat::Jpeg => {
+            encode_jpeg_baseline(
+                JpegSamples::Rgb8 {
+                    data: rgb,
+                    width,
+                    height,
+                },
+                jpeg_options,
+            )
+            .map_err(|e| format!("encode JPEG: {e}"))?
+            .data
+        }
+        OutputFormat::Ppm => {
+            let mut bytes = format!("P6\n{width} {height}\n255\n").into_bytes();
+            bytes.extend_from_slice(rgb);
+            bytes
+        }
+        OutputFormat::Pgm => {
+            let mut bytes = format!("P5\n{width} {height}\n255\n").into_bytes();
+            bytes.extend(rgb_to_gray(rgb));
+            bytes
+        }
+    };
+    std::fs::write(&path, bytes).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn rgb_to_gray(rgb: &[u8]) -> Vec<u8> {
+    rgb.chunks_exact(3)
+        .map(|px| {
+            let luma =
+                77_u16 * u16::from(px[0]) + 150_u16 * u16::from(px[1]) + 29_u16 * u16::from(px[2]);
+            u8::try_from((luma + 128) >> 8).unwrap_or(255)
+        })
+        .collect()
 }
 
 /// Fraction of pixels that look like stained tissue rather than bright glass /
@@ -206,167 +564,4 @@ fn luma_stddev(rgb: &[u8]) -> f64 {
     let mean = luma.iter().sum::<f64>() / total as f64;
     let variance = luma.iter().map(|&l| (l - mean) * (l - mean)).sum::<f64>() / total as f64;
     variance.sqrt()
-}
-
-// Aperio JPEG 2000 with YCbCr components (the codestream stores Y/Cb/Cr planes
-// directly rather than using J2K's in-stream color transform).
-const APERIO_J2K_YCBCR: u16 = 33003;
-
-/// Decode one tile to interleaved RGB. JPEG 2000 / HTJ2K codestreams and JPEG
-/// tiles are both handled by the native parser via `Image`. Aperio's J2K-YCbCr
-/// tiles decode to YCbCr component values, which are converted to RGB here.
-fn decode_tile_rgb(tile: &[u8], compression: u16) -> Option<(Vec<u8>, u32, u32)> {
-    let image = Image::new(tile, &DecodeSettings::default()).ok()?;
-    let bitmap = image.decode_native().ok()?;
-    if bitmap.bytes_per_sample != 1 {
-        return None;
-    }
-    match bitmap.num_components {
-        3 => {
-            let rgb = if compression == APERIO_J2K_YCBCR {
-                ycbcr_to_rgb_round_nearest(&bitmap.data)
-            } else {
-                bitmap.data
-            };
-            Some((rgb, bitmap.width, bitmap.height))
-        }
-        1 => {
-            // Expand grayscale to RGB so the encoder path is uniform.
-            let rgb = bitmap.data.iter().flat_map(|&g| [g, g, g]).collect();
-            Some((rgb, bitmap.width, bitmap.height))
-        }
-        _ => None,
-    }
-}
-
-struct Ifd {
-    image_width: u32,
-    image_height: u32,
-    tile_width: u32,
-    tile_height: u32,
-    compression: u16,
-    tile_offsets: Vec<u32>,
-    tile_byte_counts: Vec<u32>,
-}
-
-/// Minimal classic little-endian TIFF reader for the first (full-resolution) IFD.
-fn parse_first_ifd(bytes: &[u8]) -> Result<Ifd, String> {
-    if bytes.len() < 8 || &bytes[0..2] != b"II" {
-        return Err("not a little-endian TIFF (expected II byte order)".to_string());
-    }
-    let magic = u16::from_le_bytes([bytes[2], bytes[3]]);
-    if magic != 42 {
-        return Err(format!(
-            "unsupported TIFF magic {magic} (BigTIFF is not supported)"
-        ));
-    }
-    let ifd_off = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
-    if ifd_off + 2 > bytes.len() {
-        return Err("IFD offset out of range".to_string());
-    }
-    let entry_count = u16::from_le_bytes([bytes[ifd_off], bytes[ifd_off + 1]]) as usize;
-
-    let mut compression = 1u16;
-    let (mut image_width, mut image_height) = (0u32, 0u32);
-    let (mut tile_width, mut tile_height) = (0u32, 0u32);
-    let mut tile_offsets = Vec::new();
-    let mut tile_byte_counts = Vec::new();
-
-    for i in 0..entry_count {
-        let base = ifd_off + 2 + i * 12;
-        if base + 12 > bytes.len() {
-            return Err("IFD entry out of range".to_string());
-        }
-        let tag = u16::from_le_bytes([bytes[base], bytes[base + 1]]);
-        let typ = u16::from_le_bytes([bytes[base + 2], bytes[base + 3]]);
-        let count = u32::from_le_bytes([
-            bytes[base + 4],
-            bytes[base + 5],
-            bytes[base + 6],
-            bytes[base + 7],
-        ]);
-        let value_field = &bytes[base + 8..base + 12];
-        match tag {
-            256 => image_width = scalar(typ, value_field),
-            257 => image_height = scalar(typ, value_field),
-            259 => compression = scalar(typ, value_field) as u16,
-            322 => tile_width = scalar(typ, value_field),
-            323 => tile_height = scalar(typ, value_field),
-            324 => tile_offsets = read_u32_array(bytes, typ, count, value_field)?,
-            325 => tile_byte_counts = read_u32_array(bytes, typ, count, value_field)?,
-            _ => {}
-        }
-    }
-
-    if tile_offsets.is_empty() || tile_offsets.len() != tile_byte_counts.len() {
-        return Err(
-            "IFD has no tiles or mismatched tile arrays (is this a tiled SVS?)".to_string(),
-        );
-    }
-    Ok(Ifd {
-        image_width,
-        image_height,
-        tile_width,
-        tile_height,
-        compression,
-        tile_offsets,
-        tile_byte_counts,
-    })
-}
-
-/// Read an inline scalar (SHORT=3 or LONG=4) from a 4-byte value field.
-fn scalar(typ: u16, value_field: &[u8]) -> u32 {
-    match typ {
-        3 => u32::from(u16::from_le_bytes([value_field[0], value_field[1]])),
-        _ => u32::from_le_bytes([
-            value_field[0],
-            value_field[1],
-            value_field[2],
-            value_field[3],
-        ]),
-    }
-}
-
-/// Read a SHORT/LONG array, inline when it fits in 4 bytes else at the offset.
-fn read_u32_array(
-    bytes: &[u8],
-    typ: u16,
-    count: u32,
-    value_field: &[u8],
-) -> Result<Vec<u32>, String> {
-    let count = count as usize;
-    let elem = match typ {
-        3 => 2usize,
-        4 => 4usize,
-        other => return Err(format!("unsupported tile-array type {other}")),
-    };
-    let total = count * elem;
-    let data: &[u8] = if total <= 4 {
-        value_field
-    } else {
-        let off = u32::from_le_bytes([
-            value_field[0],
-            value_field[1],
-            value_field[2],
-            value_field[3],
-        ]) as usize;
-        bytes
-            .get(off..off + total)
-            .ok_or_else(|| "tile array out of range".to_string())?
-    };
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
-        let v = if elem == 2 {
-            u32::from(u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]))
-        } else {
-            u32::from_le_bytes([
-                data[i * 4],
-                data[i * 4 + 1],
-                data[i * 4 + 2],
-                data[i * 4 + 3],
-            ])
-        };
-        out.push(v);
-    }
-    Ok(out)
 }

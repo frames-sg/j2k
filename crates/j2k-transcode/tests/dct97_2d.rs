@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_transcode::dct97_2d::{
     dct8x8_blocks_then_dwt97_float, dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch,

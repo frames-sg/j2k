@@ -4096,6 +4096,35 @@ mod tests {
     }
 
     #[test]
+    fn odd_dimensions_honor_covering_target_resolution() {
+        let pixels = gradient_pixels(9, 7, 1);
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..EncodeOptions::default()
+        };
+        let bytes =
+            encode_htj2k(&pixels, 9, 7, 1, 8, false, &options).expect("encode odd HT gray8");
+
+        for (target, expected) in [((5, 4), (5, 4)), ((3, 2), (3, 2))] {
+            let image = Image::new(
+                &bytes,
+                &DecodeSettings {
+                    target_resolution: Some(target),
+                    ..DecodeSettings::default()
+                },
+            )
+            .expect("scaled odd image");
+
+            assert_eq!(
+                (image.width(), image.height()),
+                expected,
+                "target {target:?}"
+            );
+        }
+    }
+
+    #[test]
     fn grayscale_direct_plan_region_prunes_unneeded_ht_code_blocks() {
         let bytes = fixture_ht_multi_block();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");

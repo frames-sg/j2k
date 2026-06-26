@@ -4,7 +4,7 @@ description = "NVIDIA GPU codec baseline (nvJPEG + nvJPEG2000) for benchmarking 
 version = "0.6.2"
 edition = "2021"
 rust-version = "1.96"
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/frames-sg/j2k"
 publish = false
 
@@ -55,6 +55,15 @@ j2k-cuda = { path = "../../crates/j2k-cuda", version = "=0.6.2", optional = true
 j2k-jpeg = { path = "../../crates/j2k-jpeg", version = "=0.6.2" }
 j2k = { path = "../../crates/j2k", version = "=0.6.2" }
 j2k-native = { path = "../../crates/j2k-native", version = "=0.6.2" }
+# Use the adjacent wsi-rs checkout until a j2k-0.6-compatible wsi-rs release
+# is available; crates.io wsi-rs 0.4.0 depends on a yanked tilecodec package.
+wsi-rs = { path = "../../../wsi-rs", version = "=0.5.0" }
+
+[patch.crates-io]
+j2k = { path = "../../crates/j2k" }
+j2k-core = { path = "../../crates/j2k-core" }
+j2k-jpeg = { path = "../../crates/j2k-jpeg" }
+j2k-tilecodec = { path = "../../crates/j2k-tilecodec" }
 
 # Metal backend for the j2k side of the comparison on macOS (the runner is
 # Linux/CUDA, so this is target-gated to keep the runner build untouched).

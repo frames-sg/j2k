@@ -472,7 +472,7 @@ fn compile_or_copy_ptx(
 }
 
 fn configured_nvcc(strict: bool) -> Option<std::ffi::OsString> {
-    let nvcc = env::var_os("NVCC");
+    let nvcc = env::var_os("NVCC").or_else(find_nvcc_in_path);
     if strict {
         let nvcc = nvcc.expect("strict CUDA kernel build requires absolute NVCC");
         assert!(
@@ -484,4 +484,15 @@ fn configured_nvcc(strict: bool) -> Option<std::ffi::OsString> {
     } else {
         nvcc
     }
+}
+
+fn find_nvcc_in_path() -> Option<std::ffi::OsString> {
+    let path = env::var_os("PATH")?;
+    for dir in env::split_paths(&path) {
+        let candidate = dir.join("nvcc");
+        if candidate.is_file() {
+            return Some(candidate.into_os_string());
+        }
+    }
+    None
 }

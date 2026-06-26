@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(any(test, target_os = "macos"))]
 mod config;
@@ -25,15 +25,13 @@ mod validation;
 use crate::compute;
 use j2k::J2kLosslessEncodeOptions;
 #[cfg(target_os = "macos")]
-use j2k::{EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, ReversibleTransform};
+use j2k::J2kLosslessSamples;
 #[cfg(target_os = "macos")]
-use j2k::{EncodedJ2k, J2kLosslessSamples};
+use j2k::{EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, ReversibleTransform};
 #[cfg(target_os = "macos")]
 use j2k_core::{BackendKind, DeviceSurface, PixelFormat};
 #[cfg(target_os = "macos")]
-use j2k_native::{EncodeOptions, EncodeProgressionOrder};
-#[cfg(target_os = "macos")]
-use j2k_native::{J2kEncodeStageAccelerator, J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob};
+use j2k_native::J2kPacketizationEncodeJob;
 #[cfg(target_os = "macos")]
 use metal::Buffer;
 #[cfg(target_os = "macos")]
@@ -60,7 +58,7 @@ use self::packet_plan::{
     cpu_packetization_resolutions_from_lossless_device_plan,
     lossless_options_for_resident_htj2k_tile_job, packet_descriptors_for_lossless_device_order,
     packetization_progression_order, resident_packetization_resolutions_from_lossless_device_plan,
-    should_use_resident_htj2k_host_tile_for_auto,
+    should_use_resident_htj2k_host_shape_for_auto, should_use_resident_htj2k_host_tile_for_auto,
 };
 #[cfg(target_os = "macos")]
 use self::plan::{
@@ -70,7 +68,7 @@ use self::plan::{
 use self::resident_estimate::estimated_tier1_output_bytes;
 #[cfg(target_os = "macos")]
 use self::resident_estimate::{
-    checked_mul_bytes, estimate_resident_lossless_encode_peak_bytes,
+    estimate_resident_lossless_encode_peak_bytes,
     resident_classic_batch_encode_should_retry_conservative,
     resident_codestream_assembly_job_for_metadata,
     resident_ht_batch_encode_should_retry_conservative,
@@ -202,7 +200,7 @@ fn encode_lossless_tiles_with_report(
     staging: MetalEncodeInputStaging,
     config: MetalLosslessEncodeConfig,
 ) -> Result<Vec<MetalLosslessEncodeOutcome>, crate::Error> {
-    if should_try_resident_lossless_host_encode(options) {
+    if should_try_resident_lossless_host_encode_for_tiles(tiles, options, staging) {
         let batch = try_encode_resident_lossless_tiles_to_metal_buffer_batch(
             tiles, options, session, staging, config,
         )?;
@@ -236,7 +234,7 @@ fn encode_lossless_owned_tiles_with_report(
         .iter()
         .map(OwnedMetalLosslessEncodeTile::as_tile)
         .collect::<Vec<_>>();
-    if should_try_resident_lossless_host_encode(options) {
+    if should_try_resident_lossless_host_encode_for_tiles(&borrowed, options, staging) {
         let batch = try_encode_resident_lossless_tiles_to_metal_buffer_batch(
             &borrowed, options, session, staging, config,
         )?;
@@ -476,6 +474,53 @@ fn should_try_resident_lossless_host_encode(options: J2kLosslessEncodeOptions) -
 }
 
 #[cfg(target_os = "macos")]
+fn should_try_resident_lossless_host_encode_for_tiles(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    options: J2kLosslessEncodeOptions,
+    staging: MetalEncodeInputStaging,
+) -> bool {
+    if should_try_resident_lossless_host_encode(options) {
+        return true;
+    }
+    options.backend == EncodeBackendPreference::Auto
+        && !tiles.is_empty()
+        && tiles.iter().all(|&tile| {
+            should_try_auto_resident_lossless_host_encode(tile, options, staging, tiles.len())
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn should_try_auto_resident_lossless_host_encode(
+    tile: MetalLosslessEncodeTile<'_>,
+    options: J2kLosslessEncodeOptions,
+    staging: MetalEncodeInputStaging,
+    batch_size: usize,
+) -> bool {
+    options.backend == EncodeBackendPreference::Auto
+        && options.block_coding_mode == J2kBlockCodingMode::HighThroughput
+        && matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous)
+        && should_use_resident_htj2k_host_shape_for_auto(tile.output_width, tile.output_height)
+        && should_try_auto_resident_lossless_host_format(
+            tile.format,
+            options.reversible_transform,
+            batch_size,
+        )
+}
+
+#[cfg(target_os = "macos")]
+fn should_try_auto_resident_lossless_host_format(
+    format: PixelFormat,
+    reversible_transform: ReversibleTransform,
+    batch_size: usize,
+) -> bool {
+    match format {
+        PixelFormat::Gray8 => batch_size > 1,
+        PixelFormat::Rgb8 => reversible_transform == ReversibleTransform::Rct53,
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn host_output_encode_options(mut options: J2kLosslessEncodeOptions) -> J2kLosslessEncodeOptions {
     options.validation = J2kEncodeValidation::External;
     options
@@ -502,17 +547,9 @@ fn borrow_padded_metal_buffer_from_bytes(
 #[cfg(target_os = "macos")]
 struct ResidentHybridHtTileBody {
     tile_data: Vec<u8>,
-    components: u8,
-    bit_depth: u8,
-    bytes_per_pixel: usize,
     code_block_count: usize,
-    code_block_width_exp: u8,
-    code_block_height_exp: u8,
     num_decomposition_levels: u8,
     used_fused_rct: bool,
-    guard_bits: u8,
-    progression_order: EncodeProgressionOrder,
-    write_tlm: bool,
     forward_dwt53_dispatches: usize,
     ht_code_block_dispatches: usize,
 }
@@ -611,17 +648,9 @@ fn encode_resident_ht_tile_body_with_cpu_packetization(
 
     Ok(Some(ResidentHybridHtTileBody {
         tile_data,
-        components,
-        bit_depth,
-        bytes_per_pixel,
         code_block_count: plan.code_blocks.len(),
-        code_block_width_exp: plan.code_block_width_exp,
-        code_block_height_exp: plan.code_block_height_exp,
         num_decomposition_levels: plan.num_decomposition_levels,
         used_fused_rct: plan.use_mct && tile.format == PixelFormat::Rgb8,
-        guard_bits: plan.guard_bits,
-        progression_order: plan.progression_order,
-        write_tlm: plan.write_tlm,
         forward_dwt53_dispatches: if plan.num_decomposition_levels > 0 {
             usize::from(plan.components)
         } else {
@@ -629,22 +658,6 @@ fn encode_resident_ht_tile_body_with_cpu_packetization(
         },
         ht_code_block_dispatches: usize::from(!plan.code_blocks.is_empty()),
     }))
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Default)]
-struct PrepacketizedHtj2kTileAccelerator {
-    tile_data: Option<Vec<u8>>,
-}
-
-#[cfg(target_os = "macos")]
-impl J2kEncodeStageAccelerator for PrepacketizedHtj2kTileAccelerator {
-    fn encode_htj2k_tile(
-        &mut self,
-        _job: J2kHtj2kTileEncodeJob<'_>,
-    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
-        Ok(self.tile_data.take())
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1383,120 +1396,10 @@ fn should_try_resident_lossless_ht_cpu_packetization(
 ) -> bool {
     options.backend == EncodeBackendPreference::Auto
         && options.block_coding_mode == J2kBlockCodingMode::HighThroughput
-        && options.reversible_transform == ReversibleTransform::Rct53
         && matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous)
-        && tile.format == PixelFormat::Rgb8
-}
-
-#[cfg(target_os = "macos")]
-fn encode_cpu_codestream_from_prepacketized_ht_tile(
-    tile_body: ResidentHybridHtTileBody,
-    tile: MetalLosslessEncodeTile<'_>,
-) -> Result<EncodedJ2k, crate::Error> {
-    let dummy_len = checked_mul_bytes(
-        checked_mul_bytes(tile.output_width as usize, tile.output_height as usize),
-        tile_body.bytes_per_pixel,
-    );
-    let dummy = vec![0u8; dummy_len];
-    let samples = J2kLosslessSamples::new(
-        &dummy,
-        tile.output_width,
-        tile.output_height,
-        tile_body.components,
-        tile_body.bit_depth,
-        false,
-    )
-    .map_err(crate::Error::Decode)?;
-    let mut wrapper = PrepacketizedHtj2kTileAccelerator {
-        tile_data: Some(tile_body.tile_data),
-    };
-    let native_options = EncodeOptions {
-        reversible: true,
-        num_decomposition_levels: tile_body.num_decomposition_levels,
-        code_block_width_exp: tile_body.code_block_width_exp,
-        code_block_height_exp: tile_body.code_block_height_exp,
-        guard_bits: tile_body.guard_bits,
-        use_ht_block_coding: true,
-        progression_order: tile_body.progression_order,
-        write_tlm: tile_body.write_tlm,
-        use_mct: tile_body.used_fused_rct,
-        validate_high_throughput_codestream: false,
-        ..EncodeOptions::default()
-    };
-    let codestream = j2k_native::encode_with_accelerator(
-        samples.data,
-        samples.width,
-        samples.height,
-        samples.components,
-        samples.bit_depth,
-        samples.signed,
-        &native_options,
-        &mut wrapper,
-    )
-    .map_err(|err| {
-        crate::Error::Decode(j2k::J2kError::Backend(format!(
-            "JPEG 2000 lossless encode failed: {err}"
-        )))
-    })?;
-    Ok(EncodedJ2k {
-        codestream,
-        backend: BackendKind::Cpu,
-        dispatch_report: j2k::adapter::encode_stage::J2kEncodeDispatchReport::default(),
-        width: samples.width,
-        height: samples.height,
-        components: samples.components,
-        bit_depth: samples.bit_depth,
-        signed: samples.signed,
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn try_encode_lossless_tile_resident_ht_cpu_packetization_with_report(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    staging: MetalEncodeInputStaging,
-) -> Result<Option<MetalLosslessEncodeOutcome>, crate::Error> {
-    let encode_started = Instant::now();
-    let Some(tile_body) = encode_resident_ht_tile_body_with_cpu_packetization(
-        tile,
-        options,
-        session,
-        staging,
-        RESIDENT_CLASSIC_CODE_BLOCK_EDGE,
-        RESIDENT_CLASSIC_CODE_BLOCK_EDGE,
-    )?
-    else {
-        return Ok(None);
-    };
-    let encoded = encode_cpu_codestream_from_prepacketized_ht_tile(tile_body, tile)?;
-    let encode_duration = encode_started.elapsed();
-    let validation_duration = if options.validation == J2kEncodeValidation::CpuRoundTrip {
-        let validation_started = Instant::now();
-        validate_lossless_roundtrip_on_metal_tile_with_session(
-            tile,
-            encoded.codestream.as_slice(),
-            session,
-        )?;
-        validation_started.elapsed()
-    } else {
-        Duration::ZERO
-    };
-
-    Ok(Some(MetalLosslessEncodeOutcome {
-        encoded,
-        input_copy_used: false,
-        resident: MetalLosslessEncodeResidency {
-            coefficient_prep_used: true,
-            packetization_used: false,
-            codestream_assembly_used: false,
-        },
-        input_copy_duration: Duration::ZERO,
-        encode_duration,
-        gpu_duration: None,
-        validation_duration,
-        host_readback_duration: Duration::ZERO,
-    }))
+        && matches!(tile.format, PixelFormat::Gray8 | PixelFormat::Rgb8)
+        && (tile.format == PixelFormat::Gray8
+            || options.reversible_transform == ReversibleTransform::Rct53)
 }
 
 #[cfg(target_os = "macos")]
@@ -1725,12 +1628,9 @@ fn encode_lossless_tile_with_report(
     validate_metal_encode_tile(tile)?;
     let (components, bit_depth) = lossless_sample_shape(tile.format)?;
     let bytes_per_pixel = tile.format.bytes_per_pixel();
-    if let Some(outcome) = try_encode_lossless_tile_resident_ht_cpu_packetization_with_report(
-        tile, options, session, staging,
-    )? {
-        return Ok(outcome);
-    }
-    if should_try_resident_lossless_host_encode(options) {
+    if should_try_resident_lossless_host_encode(options)
+        || should_try_auto_resident_lossless_host_encode(tile, options, staging, 1)
+    {
         if let Some(outcome) =
             try_encode_lossless_tile_device_resident_with_report(tile, options, session, staging)?
         {

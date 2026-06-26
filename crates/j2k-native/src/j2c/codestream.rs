@@ -181,23 +181,20 @@ pub(crate) fn read_header<'a>(
         .map(|c| c.num_resolution_levels())
         .min()
         .ok_or(ValidationError::InvalidComponentMetadata)?;
-    let skipped_resolution_levels =
-        if let Some((target_width, target_height)) = settings.target_resolution {
-            if target_width == 0 || target_height == 0 {
-                bail!(ValidationError::InvalidDimensions);
-            }
-            let width_log = (size_data.image_width() / target_width)
-                .checked_ilog2()
-                .unwrap_or(0);
-            let height_log = (size_data.image_height() / target_height)
-                .checked_ilog2()
-                .unwrap_or(0);
-
-            width_log.min(height_log) as u8
-        } else {
-            0
+    let skipped_resolution_levels = if let Some((target_width, target_height)) =
+        settings.target_resolution
+    {
+        if target_width == 0 || target_height == 0 {
+            bail!(ValidationError::InvalidDimensions);
         }
-        .min(min_num_resolution_levels - 1);
+        let width_log = skipped_levels_to_reach_target(size_data.image_width(), target_width);
+        let height_log = skipped_levels_to_reach_target(size_data.image_height(), target_height);
+
+        width_log.min(height_log)
+    } else {
+        0
+    }
+    .min(min_num_resolution_levels - 1);
 
     // If the user defined a maximum resolution level that is lower than the
     // maximum available one, the final image needs to be shrunk further.
@@ -228,6 +225,19 @@ pub(crate) fn read_header<'a>(
     validate(&header)?;
 
     Ok(header)
+}
+
+fn skipped_levels_to_reach_target(source: u32, target: u32) -> u8 {
+    if source <= target {
+        return 0;
+    }
+
+    let shrink_ratio = source.div_ceil(target);
+    if shrink_ratio <= 1 {
+        0
+    } else {
+        (shrink_ratio - 1).ilog2() as u8 + 1
+    }
 }
 
 fn validate(header: &Header<'_>) -> Result<()> {

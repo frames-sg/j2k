@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Decoder-internal primitives shared across phases. Nothing in this module
 //! is part of the public API.

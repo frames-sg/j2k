@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{
     EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions,
@@ -13,7 +13,7 @@ use j2k_native::{
 use super::plan::LosslessDeviceEncodePlan;
 use crate::compute;
 
-const AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS: usize = 1024 * 1024;
+const AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS: usize = 512 * 512;
 
 fn lossless_progression_from_packetization_order(
     order: J2kPacketizationProgressionOrder,
@@ -30,12 +30,14 @@ fn lossless_progression_from_packetization_order(
 pub(super) fn lossless_options_for_resident_htj2k_tile_job(
     job: J2kHtj2kTileEncodeJob<'_>,
 ) -> Option<J2kLosslessEncodeOptions> {
-    if job.num_components != 3
+    if !matches!(job.num_components, 1 | 3)
         || job.bit_depth != 8
         || job.signed
         || !job.reversible
-        || !job.use_mct
-        || job.guard_bits != 2
+        || (job.num_components == 1 && job.use_mct)
+        || (job.num_components == 3 && !job.use_mct)
+        || (job.num_components == 1 && job.guard_bits != 1)
+        || (job.num_components == 3 && job.guard_bits != 2)
         || job.code_block_width != 64
         || job.code_block_height != 64
     {
@@ -60,13 +62,21 @@ pub(super) fn lossless_options_for_resident_htj2k_tile_job(
         J2kBlockCodingMode::HighThroughput,
         lossless_progression_from_packetization_order(job.progression_order),
         Some(job.num_decomposition_levels),
-        ReversibleTransform::Rct53,
+        if job.use_mct {
+            ReversibleTransform::Rct53
+        } else {
+            ReversibleTransform::None53
+        },
         J2kEncodeValidation::External,
     ))
 }
 
+pub(super) fn should_use_resident_htj2k_host_shape_for_auto(width: u32, height: u32) -> bool {
+    (width as usize).saturating_mul(height as usize) >= AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS
+}
+
 pub(super) fn should_use_resident_htj2k_host_tile_for_auto(job: J2kHtj2kTileEncodeJob<'_>) -> bool {
-    (job.width as usize).saturating_mul(job.height as usize) >= AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS
+    should_use_resident_htj2k_host_shape_for_auto(job.width, job.height)
 }
 
 pub(super) fn packet_descriptors_for_lossless_device_order(

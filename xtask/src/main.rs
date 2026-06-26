@@ -6,6 +6,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod adoption_benchmark;
+mod adoption_corpus;
+mod adoption_curate;
+mod adoption_manifest;
+mod adoption_materialize;
+mod adoption_report;
 mod perf_guard;
 mod process;
 
@@ -124,6 +130,11 @@ fn run() -> Result<(), String> {
         "typos" => typos(),
         "bench-build" => bench_build(),
         "bench-report" => bench_report(env::args().skip(2)),
+        "adoption-benchmark" => adoption_benchmark::adoption_benchmark(env::args().skip(2)),
+        "adoption-curate" => adoption_curate::adoption_curate(env::args().skip(2)),
+        "adoption-manifest" => adoption_manifest::adoption_manifest(env::args().skip(2)),
+        "adoption-materialize" => adoption_materialize::adoption_materialize(env::args().skip(2)),
+        "adoption-report" => adoption_report::adoption_report(env::args().skip(2)),
         "j2k-bench-signoff" => j2k_bench_signoff(),
         "j2k-perf-guard" => perf_guard::j2k_perf_guard(env::args().skip(2)),
         "fuzz-build" => fuzz_build(),
@@ -1627,6 +1638,11 @@ fn print_help() {
            typos         run typos\n\
            bench-build   compile benchmark targets\n\
            bench-report  print or write a benchmark publication report\n\
+           adoption-benchmark run CPU comparator and optional CUDA/Metal adoption benchmark bundle\n\
+           adoption-curate stage inspectable external J2K fixtures and a pinned manifest\n\
+           adoption-manifest generate decode and encode fixture manifests for adoption benchmarks\n\
+           adoption-materialize stage source images into fixed J2K/HTJ2K fixtures and manifests\n\
+           adoption-report render a marketing-safe report from an adoption benchmark bundle\n\
           j2k-bench-signoff run required OpenJPEG/Grok parity and J2K compare bench compile gates\n\
           j2k-perf-guard compare CPU J2K Criterion medians against a baseline git ref\n\
            fuzz-build    compile fuzz harnesses\n\

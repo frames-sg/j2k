@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::color::upsample::h2v2_fancy_sample;
 use crate::color::ycbcr::ycbcr_to_rgb;
