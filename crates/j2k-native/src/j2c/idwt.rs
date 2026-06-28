@@ -20,6 +20,8 @@ use crate::{
 pub(crate) struct IDWTOutput {
     /// The buffer that will hold the final coefficients.
     pub(crate) coefficients: Vec<f32>,
+    /// The buffer that will hold exact reversible integer coefficients.
+    pub(crate) coefficients_i64: Vec<i64>,
     /// The rect that the coefficients belong to. This will be equivalent
     /// to the rectangle that forms the smallest decomposition level. It does
     /// not have to be equivalent to the original size of the tile, as the
@@ -32,6 +34,7 @@ impl Default for IDWTOutput {
     fn default() -> Self {
         Self {
             coefficients: vec![],
+            coefficients_i64: vec![],
             rect: IntRect::from_ltrb(0, 0, u32::MAX, u32::MAX),
         }
     }
@@ -59,6 +62,10 @@ pub(crate) fn apply(
     transform: WaveletTransform,
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
 ) -> Result<()> {
+    if storage.exact_integer_decode {
+        return apply_i64(storage, tile_ctx, component_idx, header, transform);
+    }
+
     let tile_decompositions = &storage.tile_decompositions[component_idx];
     if storage.roi_plan.is_some() {
         return apply_roi(storage, tile_ctx, component_idx, header, transform);
@@ -173,6 +180,122 @@ pub(crate) fn apply(
                 storage,
                 backend,
             )?,
+            (InputSource::Scratch, true) | (InputSource::Output, false) => unreachable!(),
+        };
+        current_source = if use_scratch {
+            InputSource::Scratch
+        } else {
+            InputSource::Output
+        };
+        current_rect = temp_output.rect;
+        tile_ctx.debug_counters.idwt_output_samples = tile_ctx
+            .debug_counters
+            .idwt_output_samples
+            .saturating_add(current_rect.width() as usize * current_rect.height() as usize);
+        use_scratch = !use_scratch;
+    }
+
+    output.rect = temp_output.rect;
+    Ok(())
+}
+
+fn apply_i64(
+    storage: &DecompositionStorage<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    component_idx: usize,
+    header: &Header<'_>,
+    transform: WaveletTransform,
+) -> Result<()> {
+    if transform != WaveletTransform::Reversible53 {
+        bail!(DecodingError::UnsupportedFeature(
+            "25-38 bit integer IDWT currently requires reversible 5/3 coding",
+        ));
+    }
+    if storage.roi_plan.is_some() {
+        bail!(DecodingError::UnsupportedFeature(
+            "25-38 bit region decode requires exact integer region IDWT support",
+        ));
+    }
+
+    let tile_decompositions = &storage.tile_decompositions[component_idx];
+    let mut decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
+    decompositions = &decompositions[..decompositions
+        .len()
+        .saturating_sub(header.skipped_resolution_levels as usize)];
+    let ll_sub_band = &storage.sub_bands[tile_decompositions.first_ll_sub_band];
+    let (scratch_buf, output) = (
+        &mut tile_ctx.idwt_scratch_buffer_i64,
+        &mut tile_ctx.idwt_output,
+    );
+
+    let estimate_buffer_size = |decomposition: &Decomposition| {
+        let total_width = decomposition.rect.width() as usize;
+        let total_height = decomposition.rect.height() as usize;
+        let min = total_width * total_height;
+        let max = (total_width + 1) * (total_height + 1);
+        (min, max)
+    };
+
+    if decompositions.is_empty() {
+        output.coefficients_i64.clear();
+        output
+            .coefficients_i64
+            .extend_from_slice(&storage.coefficients_i64[ll_sub_band.coefficients.clone()]);
+        output.rect = ll_sub_band.rect;
+        tile_ctx.debug_counters.idwt_output_samples = tile_ctx
+            .debug_counters
+            .idwt_output_samples
+            .saturating_add(output.coefficients_i64.len());
+        return Ok(());
+    }
+
+    let (s_min, s_max) = estimate_buffer_size(decompositions.last().unwrap());
+    if output.coefficients_i64.len() < s_min {
+        output
+            .coefficients_i64
+            .reserve_exact(s_max - output.coefficients_i64.len());
+    }
+
+    if decompositions.len() > 1 {
+        let (s_min, s_max) = estimate_buffer_size(&decompositions[decompositions.len() - 2]);
+        if scratch_buf.len() < s_min {
+            scratch_buf.reserve_exact(s_max - scratch_buf.len());
+        }
+    }
+
+    let mut use_scratch = decompositions.len().is_multiple_of(2);
+    let mut current_source = InputSource::SubBand;
+    let mut current_rect = ll_sub_band.rect;
+    let mut temp_output = IDWTTempOutput {
+        rect: ll_sub_band.rect,
+    };
+
+    for decomposition in decompositions {
+        temp_output = match (current_source, use_scratch) {
+            (InputSource::SubBand, true) => apply_level_i64(
+                IDWTInputI64::from_sub_band(ll_sub_band, storage),
+                scratch_buf,
+                decomposition,
+                storage,
+            ),
+            (InputSource::SubBand, false) => apply_level_i64(
+                IDWTInputI64::from_sub_band(ll_sub_band, storage),
+                &mut output.coefficients_i64,
+                decomposition,
+                storage,
+            ),
+            (InputSource::Scratch, false) => apply_level_i64(
+                IDWTInputI64::from_output(scratch_buf, current_rect),
+                &mut output.coefficients_i64,
+                decomposition,
+                storage,
+            ),
+            (InputSource::Output, true) => apply_level_i64(
+                IDWTInputI64::from_output(&output.coefficients_i64, current_rect),
+                scratch_buf,
+                decomposition,
+                storage,
+            ),
             (InputSource::Scratch, true) | (InputSource::Output, false) => unreachable!(),
         };
         current_source = if use_scratch {
@@ -385,6 +508,147 @@ fn interleave_samples_roi(
             let dst = (y - output_window.y0) as usize * width + (x - output_window.x0) as usize;
             output[dst] = source.get(band_x, band_y);
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct IDWTInputI64<'a> {
+    coefficients: &'a [i64],
+}
+
+impl<'a> IDWTInputI64<'a> {
+    fn from_sub_band(sub_band: &'a SubBand, storage: &'a DecompositionStorage<'_>) -> Self {
+        IDWTInputI64 {
+            coefficients: &storage.coefficients_i64[sub_band.coefficients.clone()],
+        }
+    }
+
+    fn from_output(coefficients: &'a [i64], _rect: IntRect) -> Self {
+        IDWTInputI64 { coefficients }
+    }
+}
+
+fn apply_level_i64(
+    input: IDWTInputI64<'_>,
+    target: &mut Vec<i64>,
+    decomposition: &Decomposition,
+    storage: &DecompositionStorage<'_>,
+) -> IDWTTempOutput {
+    interleave_samples_i64(input, decomposition, target, storage);
+
+    if decomposition.rect.width() > 0 && decomposition.rect.height() > 0 {
+        filter_horizontal_i64(target, decomposition.rect);
+        filter_vertical_i64(target, decomposition.rect);
+    }
+
+    IDWTTempOutput {
+        rect: decomposition.rect,
+    }
+}
+
+fn interleave_samples_i64(
+    input: IDWTInputI64<'_>,
+    decomposition: &Decomposition,
+    coefficients: &mut Vec<i64>,
+    storage: &DecompositionStorage<'_>,
+) {
+    let width = decomposition.rect.width() as usize;
+    let height = decomposition.rect.height() as usize;
+    assert!(coefficients.capacity() >= width * height);
+    coefficients.resize(width * height, 0);
+
+    let IntRect {
+        x0: u0,
+        x1: u1,
+        y0: v0,
+        y1: v1,
+    } = decomposition.rect;
+
+    let ll = input.coefficients;
+    let hl = &storage.coefficients_i64[storage.sub_bands[decomposition.sub_bands[0]]
+        .coefficients
+        .clone()];
+    let lh = &storage.coefficients_i64[storage.sub_bands[decomposition.sub_bands[1]]
+        .coefficients
+        .clone()];
+    let hh = &storage.coefficients_i64[storage.sub_bands[decomposition.sub_bands[2]]
+        .coefficients
+        .clone()];
+
+    let num_u_low = (u1.div_ceil(2) - u0.div_ceil(2)) as usize;
+    let num_u_high = (u1 / 2 - u0 / 2) as usize;
+    let num_v_low = (v1.div_ceil(2) - v0.div_ceil(2)) as usize;
+    let num_v_high = (v1 / 2 - v0 / 2) as usize;
+
+    let (first_w, second_w) = if u0 % 2 == 0 {
+        (num_u_low, num_u_high)
+    } else {
+        (num_u_high, num_u_low)
+    };
+
+    let even_row_start = if v0 % 2 == 0 { 0 } else { 1 };
+    let odd_row_start = if v0 % 2 == 0 { 1 } else { 0 };
+
+    let (first_even, second_even) = if u0 % 2 == 0 { (ll, hl) } else { (hl, ll) };
+    interleave_rows_i64(
+        first_even,
+        second_even,
+        first_w,
+        second_w,
+        coefficients,
+        width,
+        height,
+        even_row_start,
+        num_v_low,
+    );
+
+    let (first_odd, second_odd) = if u0 % 2 == 0 { (lh, hh) } else { (hh, lh) };
+    interleave_rows_i64(
+        first_odd,
+        second_odd,
+        first_w,
+        second_w,
+        coefficients,
+        width,
+        height,
+        odd_row_start,
+        num_v_high,
+    );
+}
+
+fn interleave_rows_i64(
+    first_band: &[i64],
+    second_band: &[i64],
+    first_w: usize,
+    second_w: usize,
+    output: &mut [i64],
+    width: usize,
+    height: usize,
+    start_row: usize,
+    num_rows: usize,
+) {
+    for v in 0..num_rows {
+        let out_row = start_row + v * 2;
+        if out_row >= height {
+            break;
+        }
+
+        let first_row = &first_band[v * first_w..][..first_w];
+        let second_row = &second_band[v * second_w..][..second_w];
+        let out_slice = &mut output[out_row * width..][..width];
+
+        interleave_row_i64(first_row, second_row, out_slice);
+    }
+}
+
+fn interleave_row_i64(first: &[i64], second: &[i64], output: &mut [i64]) {
+    let num_pairs = first.len().min(second.len());
+    for i in 0..num_pairs {
+        output[i * 2] = first[i];
+        output[i * 2 + 1] = second[i];
+    }
+    if first.len() > num_pairs {
+        output[num_pairs * 2] = first[num_pairs];
     }
 }
 
@@ -763,6 +1027,40 @@ fn reversible_filter_53r(scanline: &mut [f32], width: usize, x0: usize) {
     );
 }
 
+fn filter_horizontal_i64(coefficients: &mut [i64], rect: IntRect) {
+    let width = rect.width() as usize;
+
+    for scanline in coefficients
+        .chunks_exact_mut(width)
+        .take(rect.height() as usize)
+    {
+        filter_row_i64(scanline, width, rect.x0 as usize);
+    }
+}
+
+fn filter_row_i64(scanline: &mut [i64], width: usize, x0: usize) {
+    if width == 1 {
+        if !x0.is_multiple_of(2) {
+            scanline[0] = floor_div_i64(scanline[0], 2);
+        }
+        return;
+    }
+
+    reversible_filter_53r_i64(scanline, width, x0);
+}
+
+fn reversible_filter_53r_i64(scanline: &mut [i64], width: usize, x0: usize) {
+    let first_even = x0 % 2;
+    let first_odd = 1 - first_even;
+
+    filter_step_horizontal_i64(scanline, width, first_even, |s, left, right| {
+        s - floor_div_i64(left + right + 2, 4)
+    });
+    filter_step_horizontal_i64(scanline, width, first_odd, |s, left, right| {
+        s + floor_div_i64(left + right, 2)
+    });
+}
+
 /// The 1D Filter 9-7I procedure from F.3.8.2.
 fn irreversible_filter_97i(scanline: &mut [f32], width: usize, x0: usize) {
     // Table F.4.
@@ -865,6 +1163,31 @@ fn filter_step_horizontal(
     }
 }
 
+fn filter_step_horizontal_i64(
+    scanline: &mut [i64],
+    width: usize,
+    first: usize,
+    f: impl Fn(i64, i64, i64) -> i64,
+) {
+    if first == 0 {
+        let left = periodic_symmetric_extension_left(0, 1);
+        let right = periodic_symmetric_extension_right(0, 1, width);
+        scanline[0] = f(scanline[0], scanline[left], scanline[right]);
+    }
+
+    let middle_start = if first == 0 { 2 } else { 1 };
+    for i in (middle_start..width - 1).step_by(2) {
+        scanline[i] = f(scanline[i], scanline[i - 1], scanline[i + 1]);
+    }
+
+    if width > 1 && (width - 1) % 2 == first {
+        let i = width - 1;
+        let left = periodic_symmetric_extension_left(i, 1);
+        let right = periodic_symmetric_extension_right(i, 1, width);
+        scanline[i] = f(scanline[i], scanline[left], scanline[right]);
+    }
+}
+
 #[inline(always)]
 fn filter_step_vertical<S: Simd>(
     simd: S,
@@ -928,9 +1251,72 @@ fn periodic_symmetric_extension_right(idx: usize, offset: usize, length: usize) 
     }
 }
 
+#[inline(always)]
+fn floor_div_i64(numerator: i64, denominator: i64) -> i64 {
+    debug_assert!(denominator > 0);
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    if remainder != 0 && remainder < 0 {
+        quotient - 1
+    } else {
+        quotient
+    }
+}
+
 /// The `VER_SR` procedure from F.3.5.
 fn filter_vertical(coefficients: &mut [f32], rect: IntRect, transform: WaveletTransform) {
     dispatch!(Level::new(), simd => filter_vertical_impl(simd, coefficients, rect, transform));
+}
+
+fn filter_vertical_i64(coefficients: &mut [i64], rect: IntRect) {
+    let width = rect.width() as usize;
+    let height = rect.height() as usize;
+    let y0 = rect.y0 as usize;
+
+    if height == 1 {
+        if !y0.is_multiple_of(2) {
+            for sample in coefficients.iter_mut().take(width) {
+                *sample = floor_div_i64(*sample, 2);
+            }
+        }
+        return;
+    }
+
+    let first_even = y0 % 2;
+    let first_odd = 1 - first_even;
+
+    filter_step_vertical_i64(
+        coefficients,
+        height,
+        width,
+        first_even,
+        |s, above, below| s - floor_div_i64(above + below + 2, 4),
+    );
+    filter_step_vertical_i64(coefficients, height, width, first_odd, |s, above, below| {
+        s + floor_div_i64(above + below, 2)
+    });
+}
+
+fn filter_step_vertical_i64(
+    scanline: &mut [i64],
+    height: usize,
+    width: usize,
+    first: usize,
+    f: impl Fn(i64, i64, i64) -> i64,
+) {
+    for row in (first..height).step_by(2) {
+        let row_above = periodic_symmetric_extension_left(row, 1);
+        let row_below = periodic_symmetric_extension_right(row, 1, height);
+
+        for col in 0..width {
+            let idx = row * width + col;
+            scanline[idx] = f(
+                scanline[idx],
+                scanline[row_above * width + col],
+                scanline[row_below * width + col],
+            );
+        }
+    }
 }
 
 #[inline(always)]

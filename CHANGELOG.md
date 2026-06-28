@@ -5,6 +5,22 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [0.6.2]
 
+- Defines the public codec claim as JPEG 2000 Part 1 codestream support, JP2
+  still-image wrapping, HTJ2K Part 15 support, and JPH wrapping, with
+  JPX / JPEG 2000 Part 2 extensions explicitly out of scope.
+- Adds the public support matrix and `cargo xtask public-support` gate covering
+  signed/high-bit samples, wide component counts, progression/tile-part cases,
+  packet-marker combinations, ROI maxshift, JP2/JPH metadata, HT refinement
+  decode/encode, J2K-to-HTJ2K recode, and publication gates.
+- Expands the public `j2k` facade with component-plane decode/encode APIs for
+  arbitrary component counts, signedness, sampling, mixed bit depths, and
+  native high-bit sample access while keeping Gray/RGB/RGBA convenience paths.
+- Adds JP2/JPH wrapper helpers and validation for still-image metadata,
+  codestream branding, color boxes, palettes/component mapping, channel
+  definitions, BPCC, and ICC preservation paths.
+- Completes repo-local HTJ2K cleanup/refinement, multi-layer/rate, JPH, and
+  recode self-checks while keeping external OpenJPH/Kakadu evidence as a
+  publication gate.
 - Removes the cuda-oxide transcode IDCT per-thread local-memory table
   materialization, reducing the self-hosted RTX 4070 SUPER cuda-oxide
   JPEG-to-HTJ2K transcode profile from `40.813 MP/s` before the fix to

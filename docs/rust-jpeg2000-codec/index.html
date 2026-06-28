@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Rust JPEG 2000 Codec - J2K</title>
-  <meta name="description" content="J2K is a Rust JPEG 2000 codec crate for JP2, J2K/J2C codestreams, HTJ2K, decode, encode, and recode workflows.">
+  <meta name="description" content="J2K is a Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/rust-jpeg2000-codec/">
   <meta property="og:title" content="Rust JPEG 2000 Codec">
-  <meta property="og:description" content="J2K is a Rust JPEG 2000 codec crate for JP2, J2K/J2C codestreams, HTJ2K, decode, encode, and recode workflows.">
+  <meta property="og:description" content="J2K is a Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.">
   <meta property="og:url" content="https://frames-sg.github.io/j2k/rust-jpeg2000-codec/">
   <meta property="og:type" content="article">
   <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
@@ -15,7 +15,7 @@
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Rust JPEG 2000 Codec">
-  <meta name="twitter:description" content="J2K is a Rust JPEG 2000 codec crate for JP2, J2K/J2C codestreams, HTJ2K, decode, encode, and recode workflows.">
+  <meta name="twitter:description" content="J2K is a Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.">
   <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
@@ -24,7 +24,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "Rust JPEG 2000 Codec",
-    "description": "J2K is a Rust JPEG 2000 codec crate for JP2, J2K/J2C codestreams, HTJ2K, decode, encode, and recode workflows.",
+    "description": "J2K is a Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.",
     "url": "https://frames-sg.github.io/j2k/rust-jpeg2000-codec/",
     "isPartOf": { "@type": "SoftwareSourceCode", "name": "J2K", "codeRepository": "https://github.com/frames-sg/j2k", "programmingLanguage": "Rust" }
   }
@@ -49,7 +49,7 @@
         <div>
           <p class="eyebrow">Rust JPEG 2000 codec</p>
           <h1>Rust JPEG 2000 Codec</h1>
-          <p class="lead">Use <code>j2k</code> for JPEG 2000 / JPEG2000 application code in Rust: inspect, decode, encode, recode, JP2 containers, J2K/J2C codestreams, and HTJ2K paths.</p>
+          <p class="lead">Use <code>j2k</code> for JPEG 2000 Part 1 application code in Rust: inspect, decode, encode, recode, JP2 still-image containers, J2K/J2C codestreams, and HTJ2K/JPH paths.</p>
           <div class="actions">
             <a class="button primary" href="https://crates.io/crates/j2k">cargo add j2k</a>
             <a class="button" href="https://docs.rs/j2k">API docs</a>
@@ -67,7 +67,23 @@
         </article>
         <article class="card">
           <h2>Supported surfaces</h2>
-          <p>J2K exposes decode and encode APIs, row streaming, tile-batch decode, scaled region decode, scratch pools, backend requests, and compressed-payload passthrough checks.</p>
+          <p>J2K exposes decode and encode APIs, component planes, row streaming, tile-batch decode, scaled region decode, scratch pools, backend requests, and compressed-payload passthrough checks.</p>
+        </article>
+      </div>
+    </section>
+    <section class="section">
+      <div class="wrap grid three">
+        <article class="card">
+          <h2>Part 1 codestreams</h2>
+          <p>Raw J2K/J2C support covers Part 1 still-image codestream parse, inspect, decode, encode, signed samples, high-bit samples, component counts, ROI, progression, tile parts, packet markers, and precinct/layer behavior tracked by the support matrix.</p>
+        </article>
+        <article class="card">
+          <h2>JP2 wrapper</h2>
+          <p>JP2 still-image wrapping covers IHDR, COLR, BPCC, PCLR, CMAP, CDEF, ICC preservation paths, and codestream-brand validation for standard Part 1 still-image files.</p>
+        </article>
+        <article class="card">
+          <h2>Not JPX</h2>
+          <p>JPX and JPEG 2000 Part 2 extension behavior is outside the claim unless a feature is required for ordinary JP2/JPH still-image correctness.</p>
         </article>
       </div>
     </section>

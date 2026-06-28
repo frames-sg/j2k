@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use j2k_native::{encode, DecodeSettings, EncodeOptions, Image};
+use j2k_native::{
+    encode, encode_with_roi_regions, DecodeSettings, EncodeOptions, EncodeRoiRegion, Image,
+};
 
 fn marker_offset(codestream: &[u8], marker: u8) -> usize {
     codestream
@@ -72,6 +74,100 @@ fn tile_header_rgn_marker_with_zero_shift_is_a_noop() {
     assert_eq!(decoded.height, 64);
     assert_eq!(decoded.num_components, 1);
     assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn encode_whole_component_roi_maxshift_roundtrips_and_writes_rgn() {
+    let pixels: Vec<_> = (0..64 * 64).map(|idx| (idx % 251) as u8).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        roi_component_shifts: vec![3],
+        ..EncodeOptions::default()
+    };
+
+    let codestream =
+        encode(&pixels, 64, 64, 1, 8, false, &options).expect("whole-component ROI fixture encode");
+    let rgn = marker_offset(&codestream, 0x5E);
+
+    assert_eq!(
+        &codestream[rgn + 2..rgn + 7],
+        &[0x00, 0x05, 0x00, 0x00, 0x03]
+    );
+
+    let decoded = Image::new(&codestream, &DecodeSettings::default())
+        .expect("encoded RGN codestream parses")
+        .decode_native()
+        .expect("encoded RGN codestream decodes");
+
+    assert_eq!(decoded.width, 64);
+    assert_eq!(decoded.height, 64);
+    assert_eq!(decoded.num_components, 1);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn encode_rectangular_roi_maxshift_roundtrips_and_writes_rgn() {
+    let pixels: Vec<_> = (0..64 * 64).map(|idx| (idx % 251) as u8).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let roi = [EncodeRoiRegion {
+        component: 0,
+        x: 8,
+        y: 12,
+        width: 24,
+        height: 20,
+        shift: 12,
+    }];
+
+    let codestream = encode_with_roi_regions(&pixels, 64, 64, 1, 8, false, &options, &roi)
+        .expect("rectangular ROI fixture encode");
+    let rgn = marker_offset(&codestream, 0x5E);
+
+    assert_eq!(
+        &codestream[rgn + 2..rgn + 7],
+        &[0x00, 0x05, 0x00, 0x00, 0x0C]
+    );
+
+    let decoded = Image::new(&codestream, &DecodeSettings::default())
+        .expect("encoded rectangular RGN codestream parses")
+        .decode_native()
+        .expect("encoded rectangular RGN codestream decodes");
+
+    assert_eq!(decoded.width, 64);
+    assert_eq!(decoded.height, 64);
+    assert_eq!(decoded.num_components, 1);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn encode_rejects_ambiguous_whole_component_and_rectangular_roi() {
+    let pixels: Vec<_> = (0..16 * 16).map(|idx| (idx % 251) as u8).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        roi_component_shifts: vec![4],
+        ..EncodeOptions::default()
+    };
+    let roi = [EncodeRoiRegion {
+        component: 0,
+        x: 0,
+        y: 0,
+        width: 8,
+        height: 8,
+        shift: 4,
+    }];
+
+    let err = encode_with_roi_regions(&pixels, 16, 16, 1, 8, false, &options, &roi)
+        .expect_err("ambiguous ROI request must fail");
+
+    assert_eq!(
+        err,
+        "ROI region cannot be combined with whole-component ROI shift"
+    );
 }
 
 #[test]

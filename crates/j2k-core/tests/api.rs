@@ -982,3 +982,26 @@ fn passthrough_candidate_rejects_jp2_container_for_dicom_codestream_payload() {
         })
     );
 }
+
+#[test]
+fn passthrough_requirements_can_match_large_jpeg2000_component_counts() {
+    let bytes = [0xff, 0x4f, 0xff, 0xd9];
+    let mut info = passthrough_info();
+    info.components = 256;
+    let candidate = PassthroughCandidate::new(
+        &bytes,
+        CompressedTransferSyntax::HtJpeg2000Lossless,
+        CompressedPayloadKind::JphFile,
+        info,
+    );
+    let requirements = PassthroughRequirements::new(
+        CompressedTransferSyntax::HtJpeg2000Lossless,
+        CompressedPayloadKind::JphFile,
+    )
+    .with_component_count(256);
+
+    assert_eq!(
+        candidate.copy_bytes_if_eligible(&requirements),
+        Ok(bytes.as_slice())
+    );
+}

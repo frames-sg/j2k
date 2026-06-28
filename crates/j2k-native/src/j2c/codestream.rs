@@ -8,9 +8,10 @@ use super::build::SubBandType;
 use super::DecodeSettings;
 use crate::error::{bail, err, DecodingError, MarkerError, Result, ValidationError};
 use crate::reader::BitReader;
-use crate::{MAX_J2K_SPEC_COMPONENTS, MAX_NATIVE_DECODE_COMPONENTS};
+use crate::MAX_J2K_SPEC_COMPONENTS;
 
 const MAX_LAYER_COUNT: u8 = 32;
+const MAX_PART1_COMPONENT_PRECISION: u8 = 38;
 const MAX_RESOLUTION_COUNT: u8 = 32;
 const MAX_PRECINCT_EXPONENT: u8 = 31;
 
@@ -331,6 +332,12 @@ impl ComponentInfo {
         self.coding_style.parameters.transformation
     }
 
+    pub(crate) fn requires_exact_integer_decode(&self) -> bool {
+        self.size_info.precision > 24
+            && self.wavelet_transform() == WaveletTransform::Reversible53
+            && self.quantization_info.quantization_style == QuantizationStyle::NoQuantization
+    }
+
     pub(crate) fn num_resolution_levels(&self) -> u8 {
         self.coding_style.parameters.num_resolution_levels
     }
@@ -347,6 +354,7 @@ impl ComponentInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reader::BitReader;
     use crate::J2kWaveletTransform;
 
     #[test]
@@ -359,6 +367,48 @@ mod tests {
             J2kWaveletTransform::from(WaveletTransform::Irreversible97),
             J2kWaveletTransform::Irreversible97
         );
+    }
+
+    #[test]
+    fn poc_marker_preserves_wide_component_bounds() {
+        let mut marker = Vec::new();
+        marker.extend_from_slice(&11_u16.to_be_bytes());
+        marker.push(0); // RSpoc
+        marker.extend_from_slice(&300_u16.to_be_bytes()); // CSpoc
+        marker.extend_from_slice(&1_u16.to_be_bytes()); // LYEpoc
+        marker.push(1); // REpoc
+        marker.extend_from_slice(&512_u16.to_be_bytes()); // CEpoc
+        marker.push(0); // LRCP
+
+        let changes = poc_marker(&mut BitReader::new(&marker), 600, 1).expect("POC parses");
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].component_start, 300);
+        assert_eq!(changes[0].component_end, 512);
+        assert!(matches!(
+            changes[0].progression_order,
+            ProgressionOrder::LayerResolutionComponentPosition
+        ));
+    }
+
+    #[test]
+    fn poc_marker_accepts_wide_all_components_sentinel() {
+        let mut marker = Vec::new();
+        marker.extend_from_slice(&11_u16.to_be_bytes());
+        marker.push(0); // RSpoc
+        marker.extend_from_slice(&0_u16.to_be_bytes()); // CSpoc
+        marker.extend_from_slice(&1_u16.to_be_bytes()); // LYEpoc
+        marker.push(1); // REpoc
+        marker.extend_from_slice(&u16::MAX.to_be_bytes()); // CEpoc sentinel
+        marker.push(4); // CPRL
+
+        let changes = poc_marker(&mut BitReader::new(&marker), 600, 1).expect("POC parses");
+
+        assert_eq!(changes[0].component_end, u16::MAX);
+        assert!(matches!(
+            changes[0].progression_order,
+            ProgressionOrder::ComponentPositionResolutionLayer
+        ));
     }
 }
 
@@ -375,10 +425,10 @@ pub(crate) enum ProgressionOrder {
 #[derive(Debug, Clone)]
 pub(crate) struct ProgressionChange {
     pub(crate) resolution_start: u8,
-    pub(crate) component_start: u8,
+    pub(crate) component_start: u16,
     pub(crate) layer_end: u8,
     pub(crate) resolution_end: u8,
-    pub(crate) component_end: u8,
+    pub(crate) component_end: u16,
     pub(crate) progression_order: ProgressionOrder,
 }
 
@@ -584,6 +634,7 @@ impl SizeData {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ComponentSizeInfo {
     pub(crate) precision: u8,
+    pub(crate) signed: bool,
     pub(crate) horizontal_resolution: u8,
     pub(crate) vertical_resolution: u8,
 }
@@ -620,6 +671,18 @@ impl SizeData {
     pub(crate) fn image_height(&self) -> u32 {
         (self.reference_grid_height - self.image_area_y_offset)
             .div_ceil(self.y_shrink_factor * self.y_resolution_shrink_factor)
+    }
+
+    /// Return the reference-grid image width before component or resolution
+    /// downscaling is applied.
+    pub(crate) fn reference_image_width(&self) -> u32 {
+        self.reference_grid_width - self.image_area_x_offset
+    }
+
+    /// Return the reference-grid image height before component or resolution
+    /// downscaling is applied.
+    pub(crate) fn reference_image_height(&self) -> u32 {
+        self.reference_grid_height - self.image_area_y_offset
     }
 }
 
@@ -732,7 +795,7 @@ fn size_marker_inner(reader: &mut BitReader<'_>) -> Result<SizeData> {
         bail!(ValidationError::InvalidComponentMetadata);
     }
 
-    if csiz > MAX_J2K_SPEC_COMPONENTS || csiz > MAX_NATIVE_DECODE_COMPONENTS {
+    if csiz > MAX_J2K_SPEC_COMPONENTS {
         bail!(ValidationError::TooManyChannels);
     }
 
@@ -743,17 +806,15 @@ fn size_marker_inner(reader: &mut BitReader<'_>) -> Result<SizeData> {
         let y_rsiz = read_siz_byte(reader)?;
 
         let precision = (ssiz & 0x7F) + 1;
-        // No idea how to process signed images, but as far as I can tell
-        // openjpeg and others just accept it as is, so let's do the same.
-        let _is_signed = (ssiz & 0x80) != 0;
+        let signed = (ssiz & 0x80) != 0;
 
-        // In theory up to 38 is allowed, but we don't support more than that.
-        if precision as u32 > BITPLANE_BIT_SIZE {
+        if precision > MAX_PART1_COMPONENT_PRECISION || precision as u32 > BITPLANE_BIT_SIZE {
             bail!(ValidationError::InvalidComponentMetadata);
         }
 
         components.push(ComponentSizeInfo {
             precision,
+            signed,
             horizontal_resolution: x_rsiz,
             vertical_resolution: y_rsiz,
         });
@@ -1105,17 +1166,16 @@ pub(crate) fn poc_marker(
             || component_start >= csiz
             || layer_end == 0
             || layer_end > u16::from(u8::MAX)
-            || component_end > u16::from(u8::MAX)
         {
             return None;
         }
 
         changes.push(ProgressionChange {
             resolution_start,
-            component_start: component_start as u8,
+            component_start,
             layer_end: layer_end as u8,
             resolution_end,
-            component_end: component_end as u8,
+            component_end,
             progression_order,
         });
     }

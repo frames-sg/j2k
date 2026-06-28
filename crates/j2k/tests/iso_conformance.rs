@@ -14,6 +14,7 @@ enum Classification {
     Blocking,
     KnownLimitation,
     Investigate,
+    OutOfScope,
 }
 
 #[derive(Debug)]
@@ -79,6 +80,7 @@ fn parse_classification(line_number: usize, value: &str) -> Classification {
         "blocking" => Classification::Blocking,
         "known-limitation" => Classification::KnownLimitation,
         "investigate" => Classification::Investigate,
+        "out-of-scope" => Classification::OutOfScope,
         _ => panic!("manifest line {line_number} has invalid classification {value:?}"),
     }
 }
@@ -99,10 +101,13 @@ fn iso_conformance_manifest_is_release_classified() {
             "{} must list exercised features",
             vector.id
         );
-        if vector.classification == Classification::KnownLimitation {
+        if matches!(
+            vector.classification,
+            Classification::KnownLimitation | Classification::OutOfScope
+        ) {
             assert!(
                 !vector.reason.is_empty(),
-                "{} known limitation must document the deferred feature",
+                "{} non-blocking row must document the deferred feature",
                 vector.id
             );
         }
@@ -203,6 +208,12 @@ fn env_gated_iso_conformance_blocks_only_shipped_features() {
             Classification::KnownLimitation => {
                 eprintln!(
                     "known limitation {}: {} ({})",
+                    vector.id, vector.reason, vector.features
+                );
+            }
+            Classification::OutOfScope => {
+                eprintln!(
+                    "out of scope {}: {} ({})",
                     vector.id, vector.reason, vector.features
                 );
             }

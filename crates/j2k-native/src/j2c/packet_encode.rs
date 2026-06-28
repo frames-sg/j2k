@@ -16,7 +16,10 @@ use alloc::vec::Vec;
 use super::codestream::markers;
 use super::codestream_write::BlockCodingMode;
 use super::tag_tree_encode::TagTreeEncoder;
-use crate::packet_math::{self, bits_for_ht_cleanup_length, bits_for_length, value_fits_in_bits};
+use crate::packet_math::{
+    self, bits_for_ht_cleanup_length, bits_for_ht_refinement_only_length, bits_for_length,
+    value_fits_in_bits,
+};
 use crate::writer::BitWriter;
 use crate::J2kPacketizationProgressionOrder;
 
@@ -71,7 +74,7 @@ pub(crate) struct PacketDescriptor {
     pub(crate) state_index: u32,
     pub(crate) layer: u8,
     pub(crate) resolution: u32,
-    pub(crate) component: u8,
+    pub(crate) component: u16,
     pub(crate) precinct: u64,
 }
 
@@ -95,12 +98,20 @@ struct PacketState {
 pub(crate) struct PacketizedTileData {
     pub(crate) data: Vec<u8>,
     pub(crate) packet_lengths: Vec<u32>,
+    pub(crate) packet_headers: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PacketMarkerOptions {
     pub(crate) write_sop: bool,
     pub(crate) write_eph: bool,
+    pub(crate) separate_packet_headers: bool,
+}
+
+struct FormedPacket {
+    merged: Vec<u8>,
+    header: Vec<u8>,
+    body: Vec<u8>,
 }
 
 /// Form a packet from a resolution-level packet (possibly multiple subbands).
@@ -197,10 +208,14 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
 fn packet_state_seed(packet: &ResolutionPacket) -> Result<PacketStateSeed, &'static str> {
     let mut subbands = Vec::with_capacity(packet.subbands.len());
     for subband in &packet.subbands {
-        if subband.num_cbs_x == 0
-            || subband.num_cbs_y == 0
-            || subband.num_cbs_x.saturating_mul(subband.num_cbs_y)
-                != subband.code_blocks.len() as u32
+        let expected_code_blocks = subband.num_cbs_x.saturating_mul(subband.num_cbs_y);
+        let actual_code_blocks = subband.code_blocks.len() as u32;
+        let empty_subband =
+            subband.num_cbs_x == 0 && subband.num_cbs_y == 0 && actual_code_blocks == 0;
+        if !empty_subband
+            && (subband.num_cbs_x == 0
+                || subband.num_cbs_y == 0
+                || expected_code_blocks != actual_code_blocks)
         {
             return Err("invalid packet subband code-block layout");
         }
@@ -338,13 +353,13 @@ fn build_packet_states(
         .collect()
 }
 
-fn form_packet_with_state_and_options(
+fn form_packet_parts_with_state_and_options(
     packet_data: &ResolutionPacket,
     state: &mut PacketState,
     layer: u8,
     marker_options: PacketMarkerOptions,
     packet_sequence: u16,
-) -> Result<Vec<u8>, &'static str> {
+) -> Result<FormedPacket, &'static str> {
     if state.subbands.len() != packet_data.subbands.len() {
         return Err("packet descriptor state layout mismatch");
     }
@@ -358,7 +373,7 @@ fn form_packet_with_state_and_options(
 
     if !any_data {
         header_writer.write_bit(0);
-        return Ok(finish_packet(
+        return Ok(finish_packet_parts(
             header_writer,
             Vec::new(),
             marker_options,
@@ -429,7 +444,7 @@ fn form_packet_with_state_and_options(
         }
     }
 
-    Ok(finish_packet(
+    Ok(finish_packet_parts(
         header_writer,
         body,
         marker_options,
@@ -443,27 +458,46 @@ fn finish_packet(
     marker_options: PacketMarkerOptions,
     packet_sequence: u16,
 ) -> Vec<u8> {
-    let mut packet = Vec::new();
+    finish_packet_parts(header_writer, body, marker_options, packet_sequence).merged
+}
+
+fn finish_packet_parts(
+    header_writer: BitWriter,
+    body: Vec<u8>,
+    marker_options: PacketMarkerOptions,
+    packet_sequence: u16,
+) -> FormedPacket {
+    let mut body_prefix = Vec::new();
     if marker_options.write_sop {
-        packet.push(0xFF);
-        packet.push(markers::SOP);
-        packet.extend_from_slice(&4u16.to_be_bytes());
-        packet.extend_from_slice(&packet_sequence.to_be_bytes());
+        body_prefix.push(0xFF);
+        body_prefix.push(markers::SOP);
+        body_prefix.extend_from_slice(&4u16.to_be_bytes());
+        body_prefix.extend_from_slice(&packet_sequence.to_be_bytes());
     }
 
     let mut header = header_writer.finish();
     if header.last().copied() == Some(0xff) {
         header.push(0x00);
     }
-    packet.extend_from_slice(&header);
 
     if marker_options.write_eph {
-        packet.push(0xFF);
-        packet.push(markers::EPH);
+        header.push(0xFF);
+        header.push(markers::EPH);
     }
 
-    packet.extend_from_slice(&body);
-    packet
+    let mut merged = Vec::with_capacity(body_prefix.len() + header.len() + body.len());
+    merged.extend_from_slice(&body_prefix);
+    merged.extend_from_slice(&header);
+    merged.extend_from_slice(&body);
+
+    let mut separated_body = body_prefix;
+    separated_body.extend_from_slice(&body);
+
+    FormedPacket {
+        merged,
+        header,
+        body: separated_body,
+    }
 }
 
 /// Encode the number of coding passes using the variable-length code from Table B.4.
@@ -590,6 +624,19 @@ fn encode_ht_segment_lengths_with_lblock(
     writer: &mut BitWriter,
 ) -> Result<(), &'static str> {
     let (cleanup_length, refinement_length) = ht_segment_lengths(code_block)?;
+    if cleanup_length == 0 && refinement_length != 0 {
+        let mut refinement_bits =
+            bits_for_ht_refinement_only_length(*l_block, code_block.num_coding_passes);
+        while !value_fits_in_bits(refinement_length, refinement_bits) {
+            writer.write_bit(1);
+            *l_block += 1;
+            refinement_bits += 1;
+        }
+        writer.write_bit(0);
+        writer.write_bits(refinement_length, refinement_bits as u8);
+        return Ok(());
+    }
+
     let mut cleanup_bits = bits_for_ht_cleanup_length(*l_block, code_block.num_coding_passes);
     let refinement_extra_bits = u32::from(code_block.num_coding_passes > 2);
 
@@ -628,7 +675,7 @@ fn ht_segment_lengths(code_block: &CodeBlockPacketData) -> Result<(u32, u32), &'
 pub(crate) fn form_tile_bitstream(
     resolution_packets: &mut [ResolutionPacket],
     _num_layers: u8,
-    _num_components: u8,
+    _num_components: u16,
 ) -> Vec<u8> {
     let mut tile_data = Vec::new();
 
@@ -669,12 +716,18 @@ pub(crate) fn form_tile_bitstream_with_descriptors_lengths_and_markers(
         return Ok(PacketizedTileData {
             data: Vec::new(),
             packet_lengths: Vec::new(),
+            packet_headers: Vec::new(),
         });
     }
 
     let mut states = build_packet_states(resolution_packets, descriptors)?;
     let mut tile_data = Vec::new();
     let mut packet_lengths = Vec::with_capacity(descriptors.len());
+    let mut packet_headers = if marker_options.separate_packet_headers {
+        Vec::with_capacity(descriptors.len())
+    } else {
+        Vec::new()
+    };
     for (packet_sequence, descriptor) in descriptors.iter().enumerate() {
         let packet = resolution_packets
             .get(descriptor.packet_index as usize)
@@ -682,7 +735,7 @@ pub(crate) fn form_tile_bitstream_with_descriptors_lengths_and_markers(
         let state = states
             .get_mut(descriptor.state_index as usize)
             .ok_or("packet descriptor state index out of range")?;
-        let packet = form_packet_with_state_and_options(
+        let packet = form_packet_parts_with_state_and_options(
             packet,
             state,
             descriptor.layer,
@@ -690,19 +743,28 @@ pub(crate) fn form_tile_bitstream_with_descriptors_lengths_and_markers(
             u16::try_from(packet_sequence % (usize::from(u16::MAX) + 1))
                 .expect("SOP packet sequence modulo 65536 fits u16"),
         )?;
-        packet_lengths.push(u32::try_from(packet.len()).map_err(|_| "packet length exceeds u32")?);
-        tile_data.extend_from_slice(&packet);
+        if marker_options.separate_packet_headers {
+            packet_lengths
+                .push(u32::try_from(packet.body.len()).map_err(|_| "packet length exceeds u32")?);
+            tile_data.extend_from_slice(&packet.body);
+            packet_headers.push(packet.header);
+        } else {
+            packet_lengths
+                .push(u32::try_from(packet.merged.len()).map_err(|_| "packet length exceeds u32")?);
+            tile_data.extend_from_slice(&packet.merged);
+        }
     }
     Ok(PacketizedTileData {
         data: tile_data,
         packet_lengths,
+        packet_headers,
     })
 }
 
 pub(crate) fn form_tile_bitstream_for_progression(
     resolution_packets: &mut [ResolutionPacket],
     num_layers: u8,
-    num_components: u8,
+    num_components: u16,
     progression_order: J2kPacketizationProgressionOrder,
 ) -> Vec<u8> {
     match progression_order {

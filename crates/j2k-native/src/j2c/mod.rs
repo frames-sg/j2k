@@ -26,6 +26,8 @@ mod tag_tree;
 pub(crate) mod tag_tree_encode;
 mod tile;
 
+use alloc::vec::Vec;
+
 use super::jp2::colr::{ColorSpace, ColorSpecificationBox, EnumeratedColorspace};
 use super::jp2::ImageBoxes;
 use crate::error::{bail, FormatError, MarkerError, Result};
@@ -40,6 +42,7 @@ pub(crate) use decode::should_decode_classic_sub_band_in_parallel;
 pub(crate) use decode::{build_direct_color_plan, build_direct_grayscale_plan, decode};
 pub use decode::{CpuDecodeParallelism, DecoderContext};
 pub use recode::Reversible53CoefficientImage;
+pub(crate) use segment::MAX_BITPLANE_COUNT;
 
 pub(crate) struct ParsedCodestream<'a> {
     pub(crate) header: Header<'a>,
@@ -49,7 +52,9 @@ pub(crate) struct ParsedCodestream<'a> {
 #[derive(Debug, Clone)]
 pub(crate) struct ComponentData {
     pub(crate) container: SimdBuffer<{ SIMD_WIDTH }>,
+    pub(crate) integer_container: Option<Vec<i64>>,
     pub(crate) bit_depth: u8,
+    pub(crate) signed: bool,
 }
 
 pub(crate) fn parse<'a>(stream: &'a [u8], settings: &DecodeSettings) -> Result<Image<'a>> {

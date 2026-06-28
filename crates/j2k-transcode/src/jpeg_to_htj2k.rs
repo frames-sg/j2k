@@ -81,6 +81,10 @@ pub struct JpegToHtj2kEncodeOptions {
     pub write_plt: bool,
     /// Whether to write PLM packet-length marker segments.
     pub write_plm: bool,
+    /// Whether to write PPM packed packet-header marker segments.
+    pub write_ppm: bool,
+    /// Whether to write PPT packed packet-header marker segments.
+    pub write_ppt: bool,
     /// Whether to write SOP marker segments before packets.
     pub write_sop: bool,
     /// Whether to write EPH markers after packet headers.
@@ -101,6 +105,8 @@ pub struct JpegToHtj2kEncodeOptions {
     pub component_sampling: Option<Vec<(u8, u8)>>,
     /// Optional tile size for multi-tile codestreams.
     pub tile_size: Option<(u32, u32)>,
+    /// Optional maximum number of complete packets to place in each tile-part.
+    pub tile_part_packet_limit: Option<u16>,
     /// Optional precinct exponents in COD order.
     pub precinct_exponents: Vec<(u8, u8)>,
 }
@@ -118,6 +124,8 @@ impl Default for JpegToHtj2kEncodeOptions {
             write_tlm: false,
             write_plt: false,
             write_plm: false,
+            write_ppm: false,
+            write_ppt: false,
             write_sop: false,
             write_eph: false,
             use_mct: true,
@@ -129,6 +137,7 @@ impl Default for JpegToHtj2kEncodeOptions {
                 IrreversibleQuantizationSubbandScales::default(),
             component_sampling: None,
             tile_size: None,
+            tile_part_packet_limit: None,
             precinct_exponents: Vec::new(),
         }
     }
@@ -147,6 +156,8 @@ impl JpegToHtj2kEncodeOptions {
             write_tlm: self.write_tlm,
             write_plt: self.write_plt,
             write_plm: self.write_plm,
+            write_ppm: self.write_ppm,
+            write_ppt: self.write_ppt,
             write_sop: self.write_sop,
             write_eph: self.write_eph,
             use_mct: self.use_mct,
@@ -157,7 +168,9 @@ impl JpegToHtj2kEncodeOptions {
             irreversible_quantization_subband_scales: self.irreversible_quantization_subband_scales,
             component_sampling: self.component_sampling.clone(),
             tile_size: self.tile_size,
+            tile_part_packet_limit: self.tile_part_packet_limit,
             precinct_exponents: self.precinct_exponents.clone(),
+            roi_component_shifts: Vec::new(),
         }
     }
 }

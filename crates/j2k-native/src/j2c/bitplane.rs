@@ -11,6 +11,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::mem::size_of;
 
 use super::arithmetic_decoder::{ArithmeticDecoder, ArithmeticDecoderContext};
 use super::build::{CodeBlock, SubBandType};
@@ -469,8 +470,9 @@ fn handle_bypass_coding_passes(
     Some(())
 }
 
-// We only allow 31 bit planes because we need one bit for the sign.
-pub(crate) const BITPLANE_BIT_SIZE: u32 = size_of::<u32>() as u32 * 8 - 1;
+// JPEG 2000 Part 1 permits up to 38 sample bits; keep additional headroom for
+// guard bits and ROI-shifted code-block magnitudes while reserving one sign bit.
+pub(crate) const BITPLANE_BIT_SIZE: u32 = size_of::<u64>() as u32 * 8 - 1;
 
 const HAS_MAGNITUDE_REFINEMENT_SHIFT: u8 = 6;
 const HAS_ZERO_CODING_SHIFT: u8 = 5;
@@ -498,27 +500,33 @@ impl CoefficientState {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct Coefficient(u32);
+pub(crate) struct Coefficient(u64);
 
 impl Coefficient {
+    #[cfg(test)]
     pub(crate) fn get(&self) -> i32 {
-        let mut magnitude = (self.0 & !0x80000000) as i32;
+        self.get_i64()
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+    }
+
+    pub(crate) fn get_i64(&self) -> i64 {
+        let mut magnitude = (self.0 & !(1_u64 << 63)).min(i64::MAX as u64) as i64;
         // Map sign (0 for positive, 1 for negative) to 1, -1.
-        magnitude *= 1 - 2 * (self.sign() as i32);
+        magnitude *= 1 - 2 * self.sign() as i64;
 
         magnitude
     }
 
     fn set_sign(&mut self, sign: u8) {
-        self.0 |= (sign as u32) << 31;
+        self.0 |= u64::from(sign) << 63;
     }
 
-    fn sign(&self) -> u32 {
-        (self.0 >> 31) & 1
+    fn sign(&self) -> u64 {
+        (self.0 >> 63) & 1
     }
 
     fn push_bit_at(&mut self, bit: u32, position: u8) {
-        self.0 |= bit << position;
+        self.0 |= u64::from(bit) << position;
     }
 }
 
@@ -1680,6 +1688,82 @@ mod tests {
             });
         }
         coefficients
+    }
+
+    #[test]
+    fn classic_coefficient_state_preserves_38_bit_magnitude() {
+        let mut coefficient = Coefficient::default();
+        coefficient.push_bit_at(1, 37);
+        assert_eq!(coefficient.get_i64(), 1_i64 << 37);
+        assert_eq!(coefficient.get(), i32::MAX);
+
+        coefficient.set_sign(1);
+        assert_eq!(coefficient.get_i64(), -(1_i64 << 37));
+        assert_eq!(coefficient.get(), i32::MIN);
+    }
+
+    #[test]
+    fn classic_tier1_round_trips_38_bit_coefficients() {
+        let coefficients = vec![
+            0,
+            1_i64 << 37,
+            -((1_i64 << 37) - 1),
+            17,
+            -33,
+            1_i64 << 36,
+            0,
+            -((1_i64 << 35) + 3),
+            5,
+            -7,
+            0,
+            1_i64 << 34,
+            -1,
+            9,
+            -11,
+            (1_i64 << 32) + 123,
+        ];
+        let style = CodeBlockStyle::default();
+        let encoded = bitplane_encode::encode_code_block_segments_with_style_i64(
+            &coefficients,
+            4,
+            4,
+            SubBandType::LowLow,
+            38,
+            &style,
+        );
+        let segments = encoded
+            .segments
+            .iter()
+            .map(|segment| J2kCodeBlockSegment {
+                data_offset: segment.data_offset,
+                data_length: segment.data_length,
+                start_coding_pass: segment.start_coding_pass,
+                end_coding_pass: segment.end_coding_pass,
+                use_arithmetic: segment.use_arithmetic,
+            })
+            .collect::<Vec<_>>();
+        let mut ctx = BitPlaneDecodeContext::default();
+
+        decode_code_block_segments_validated(
+            &encoded.data,
+            &segments,
+            4,
+            4,
+            encoded.num_zero_bitplanes,
+            encoded.num_coding_passes,
+            38,
+            SubBandType::LowLow,
+            &style,
+            true,
+            &mut ctx,
+        )
+        .expect("decode 38-bit code block");
+
+        let decoded = ctx
+            .coefficient_rows()
+            .flat_map(|row| row.iter().map(Coefficient::get_i64))
+            .collect::<Vec<_>>();
+        assert_eq!(decoded, coefficients);
     }
 
     fn assert_code_block_round_trip(

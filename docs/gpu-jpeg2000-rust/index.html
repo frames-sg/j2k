@@ -78,6 +78,8 @@
       <div class="wrap copy">
         <h2>Strict backend behavior</h2>
         <p><code>BackendRequest::Auto</code> may choose CPU for unsupported or unbenchmarked shapes. Explicit CUDA or Metal requests are strict and report unsupported paths clearly.</p>
+        <p>The codec support boundary is the same as the CPU baseline: JPEG 2000 Part 1 codestreams, JP2 still-image files, HTJ2K Part 15 codestreams, and JPH still-image files. GPU adapters accelerate selected shapes inside that boundary; they are not a separate promise of full-device coverage.</p>
+        <p class="note">Use <a href="https://github.com/frames-sg/j2k/blob/main/docs/public-support.md">docs/public-support.md</a> for codec support and the adoption benchmark report for public performance claims.</p>
       </div>
     </section>
   </main>

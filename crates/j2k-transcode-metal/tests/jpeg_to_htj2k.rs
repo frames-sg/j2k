@@ -414,7 +414,10 @@ fn assert_explicit_metal_integer53_matches_scalar(
         (decoded.width, decoded.height),
         (encoded.report.width, encoded.report.height)
     );
-    assert_eq!(decoded.num_components, expected_report_sampling.len() as u8);
+    assert_eq!(
+        decoded.num_components,
+        expected_report_sampling.len() as u16
+    );
     assert_report_sampling(&encoded.report.components, expected_report_sampling);
     assert_component_sampling(&encoded.codestream, expected_codestream_sampling);
 }

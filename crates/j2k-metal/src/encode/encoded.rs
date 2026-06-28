@@ -86,7 +86,7 @@ impl MetalEncodedJ2k {
                 dispatch_report: j2k::adapter::encode_stage::J2kEncodeDispatchReport::default(),
                 width: self.width,
                 height: self.height,
-                components: self.components,
+                components: u16::from(self.components),
                 bit_depth: self.bit_depth,
                 signed: self.signed,
             },

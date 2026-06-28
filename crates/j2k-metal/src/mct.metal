@@ -148,6 +148,7 @@ kernel void j2k_lossless_deinterleave_rct_rgb8_to_planes(
         0u,
         3u,
         1u,
+        params.bit_depth,
         params.sample_offset,
         0u,
         inside_src
@@ -158,6 +159,7 @@ kernel void j2k_lossless_deinterleave_rct_rgb8_to_planes(
         1u,
         3u,
         1u,
+        params.bit_depth,
         params.sample_offset,
         0u,
         inside_src
@@ -168,6 +170,7 @@ kernel void j2k_lossless_deinterleave_rct_rgb8_to_planes(
         2u,
         3u,
         1u,
+        params.bit_depth,
         params.sample_offset,
         0u,
         inside_src

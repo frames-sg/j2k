@@ -3,7 +3,8 @@
 //! Regression scaffold for JP2 palette/component-map validation.
 
 use j2k_native::{
-    encode, ColorError, DecodeError, DecodeSettings, EncodeOptions, FormatError, Image,
+    encode, encode_htj2k, ColorError, DecodeError, DecodeSettings, EncodeOptions, FormatError,
+    Image,
 };
 
 fn jp2_box(box_type: &[u8; 4], payload: &[u8]) -> Vec<u8> {
@@ -38,6 +39,256 @@ fn empty_cmap_with_palette_returns_error() {
     );
 }
 
+#[test]
+fn missing_ihdr_returns_invalid_box() {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
+    let colr = jp2_box(b"colr", &[1, 0, 0, 0, 0, 0, 17]);
+    let jp2 = jp2_with_header_payload(&codestream, &colr);
+
+    let err = match Image::new(&jp2, &DecodeSettings::default()) {
+        Ok(_) => panic!("missing ihdr must reject"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
+}
+
+#[test]
+fn invalid_ihdr_compression_type_returns_invalid_box() {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
+    let ihdr = {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&4_u32.to_be_bytes());
+        payload.extend_from_slice(&4_u32.to_be_bytes());
+        payload.extend_from_slice(&1_u16.to_be_bytes());
+        payload.extend_from_slice(&[7, 0, 0, 0]);
+        jp2_box(b"ihdr", &payload)
+    };
+    let colr = jp2_box(b"colr", &[1, 0, 0, 0, 0, 0, 17]);
+    let mut jp2h_payload = Vec::new();
+    jp2h_payload.extend_from_slice(&ihdr);
+    jp2h_payload.extend_from_slice(&colr);
+    let jp2 = jp2_with_header_payload(&codestream, &jp2h_payload);
+
+    let err = match Image::new(&jp2, &DecodeSettings::default()) {
+        Ok(_) => panic!("invalid ihdr compression type must reject"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
+}
+
+#[test]
+fn missing_colr_returns_invalid_box() {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&4_u32.to_be_bytes());
+    ihdr.extend_from_slice(&4_u32.to_be_bytes());
+    ihdr.extend_from_slice(&1_u16.to_be_bytes());
+    ihdr.extend_from_slice(&[7, 7, 0, 0]);
+    let jp2h = jp2_box(b"ihdr", &ihdr);
+    let jp2 = jp2_with_header_payload(&codestream, &jp2h);
+
+    let err = match Image::new(&jp2, &DecodeSettings::default()) {
+        Ok(_) => panic!("missing COLR must reject"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
+}
+
+#[test]
+fn ihdr_dimension_mismatch_returns_invalid_box() {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
+    let jp2 = jp2_with_header_payload(&codestream, &basic_jp2h_payload(5, 4, 1, 8));
+
+    let err = match Image::new(&jp2, &DecodeSettings::default()) {
+        Ok(_) => panic!("IHDR dimensions must reject"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
+}
+
+#[test]
+fn ihdr_bpc_mismatch_returns_invalid_box() {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
+    let jp2 = jp2_with_header_payload(&codestream, &basic_jp2h_payload(4, 4, 1, 16));
+
+    let err = match Image::new(&jp2, &DecodeSettings::default()) {
+        Ok(_) => panic!("IHDR BPC mismatch must reject"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
+}
+
+#[test]
+fn bpcc_precision_mismatch_returns_invalid_box() {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
+    let jp2 = jp2_with_header_payload(&codestream, &bpcc_jp2h_payload(4, 4, 1, &[15]));
+
+    let err = match Image::new(&jp2, &DecodeSettings::default()) {
+        Ok(_) => panic!("BPCC precision mismatch must reject"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
+}
+
+#[test]
+fn jph_file_type_rejects_classic_codestream() {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
+    let jp2 = jp2_with_header_payload_and_file_type(
+        &codestream,
+        &basic_jp2h_payload(4, 4, 1, 8),
+        b"jph \0\0\0\0jph ",
+    );
+
+    let err = match Image::new(&jp2, &DecodeSettings::default()) {
+        Ok(_) => panic!("JPH file type must reject classic codestreams"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(
+        err,
+        DecodeError::Format(FormatError::InvalidFileType)
+    ));
+}
+
+#[test]
+fn jp2_file_type_rejects_htj2k_codestream() {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode_htj2k(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
+    let jp2 = jp2_with_header_payload(&codestream, &basic_jp2h_payload(4, 4, 1, 8));
+
+    let err = match Image::new(&jp2, &DecodeSettings::default()) {
+        Ok(_) => panic!("JP2 file type must reject HTJ2K codestreams"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(
+        err,
+        DecodeError::Format(FormatError::InvalidFileType)
+    ));
+}
+
+#[test]
+fn jph_file_type_accepts_htj2k_codestream() {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode_htj2k(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
+    let jp2 = jp2_with_header_payload_and_file_type(
+        &codestream,
+        &basic_jp2h_payload(4, 4, 1, 8),
+        b"jph \0\0\0\0jph ",
+    );
+
+    let image = Image::new(&jp2, &DecodeSettings::default()).expect("JPH parses");
+    let bitmap = image.decode_native().expect("JPH decodes");
+
+    assert_eq!(bitmap.data, pixels);
+}
+
+#[test]
+fn premultiplied_opacity_cdef_sets_alpha() {
+    let pixels: Vec<u8> = (0..4 * 4 * 4).map(|idx| idx as u8).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 4, 4, 4, 8, false, &options).expect("encode fixture");
+    let jp2 = jp2_with_header_payload(
+        &codestream,
+        &cdef_jp2h_payload(
+            4,
+            4,
+            4,
+            8,
+            16,
+            &[(0, 0, 1), (1, 0, 2), (2, 0, 3), (3, 2, 0)],
+        ),
+    );
+
+    let image = Image::new(&jp2, &DecodeSettings::default()).expect("JP2 parses");
+
+    assert!(image.has_alpha());
+}
+
+#[test]
+fn unspecified_cdef_association_decodes() {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
+    let jp2 = jp2_with_header_payload(
+        &codestream,
+        &cdef_jp2h_payload(4, 4, 1, 8, 17, &[(0, u16::MAX, u16::MAX)]),
+    );
+
+    let bitmap = Image::new(&jp2, &DecodeSettings::default())
+        .expect("JP2 parses")
+        .decode_native()
+        .expect("JP2 decodes");
+
+    assert_eq!(bitmap.data, pixels);
+}
+
 fn jp2_with_empty_cmap(codestream: &[u8]) -> Vec<u8> {
     let ihdr = {
         let mut payload = Vec::new();
@@ -64,10 +315,81 @@ fn jp2_with_empty_cmap(codestream: &[u8]) -> Vec<u8> {
     jp2h_payload.extend_from_slice(&pclr);
     jp2h_payload.extend_from_slice(&cmap);
 
+    jp2_with_header_payload(codestream, &jp2h_payload)
+}
+
+fn basic_jp2h_payload(width: u32, height: u32, components: u16, bit_depth: u8) -> Vec<u8> {
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&components.to_be_bytes());
+    ihdr.extend_from_slice(&[bit_depth.saturating_sub(1), 7, 0, 0]);
+    let colr = jp2_box(b"colr", &[1, 0, 0, 0, 0, 0, 17]);
+
+    let mut jp2h_payload = Vec::new();
+    jp2h_payload.extend_from_slice(&jp2_box(b"ihdr", &ihdr));
+    jp2h_payload.extend_from_slice(&colr);
+    jp2h_payload
+}
+
+fn bpcc_jp2h_payload(width: u32, height: u32, components: u16, bpcc_payload: &[u8]) -> Vec<u8> {
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&components.to_be_bytes());
+    ihdr.extend_from_slice(&[0xff, 7, 0, 0]);
+    let colr = jp2_box(b"colr", &[1, 0, 0, 0, 0, 0, 17]);
+
+    let mut jp2h_payload = Vec::new();
+    jp2h_payload.extend_from_slice(&jp2_box(b"ihdr", &ihdr));
+    jp2h_payload.extend_from_slice(&jp2_box(b"bpcc", bpcc_payload));
+    jp2h_payload.extend_from_slice(&colr);
+    jp2h_payload
+}
+
+fn cdef_jp2h_payload(
+    width: u32,
+    height: u32,
+    components: u16,
+    bit_depth: u8,
+    colorspace: u32,
+    definitions: &[(u16, u16, u16)],
+) -> Vec<u8> {
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&components.to_be_bytes());
+    ihdr.extend_from_slice(&[bit_depth.saturating_sub(1), 7, 0, 0]);
+    let mut colr = vec![1, 0, 0];
+    colr.extend_from_slice(&colorspace.to_be_bytes());
+    let mut cdef = Vec::new();
+    cdef.extend_from_slice(&(definitions.len() as u16).to_be_bytes());
+    for (channel, channel_type, association) in definitions {
+        cdef.extend_from_slice(&channel.to_be_bytes());
+        cdef.extend_from_slice(&channel_type.to_be_bytes());
+        cdef.extend_from_slice(&association.to_be_bytes());
+    }
+
+    let mut jp2h_payload = Vec::new();
+    jp2h_payload.extend_from_slice(&jp2_box(b"ihdr", &ihdr));
+    jp2h_payload.extend_from_slice(&jp2_box(b"colr", &colr));
+    jp2h_payload.extend_from_slice(&jp2_box(b"cdef", &cdef));
+    jp2h_payload
+}
+
+fn jp2_with_header_payload(codestream: &[u8], jp2h_payload: &[u8]) -> Vec<u8> {
+    jp2_with_header_payload_and_file_type(codestream, jp2h_payload, b"jp2 \0\0\0\0jp2 ")
+}
+
+fn jp2_with_header_payload_and_file_type(
+    codestream: &[u8],
+    jp2h_payload: &[u8],
+    ftyp_payload: &[u8],
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&jp2_box(b"jP  ", &[0x0d, 0x0a, 0x87, 0x0a]));
-    out.extend_from_slice(&jp2_box(b"ftyp", b"jp2 \0\0\0\0jp2 "));
-    out.extend_from_slice(&jp2_box(b"jp2h", &jp2h_payload));
+    out.extend_from_slice(&jp2_box(b"ftyp", ftyp_payload));
+    out.extend_from_slice(&jp2_box(b"jp2h", jp2h_payload));
     out.extend_from_slice(&jp2_box(b"jp2c", codestream));
     out
 }

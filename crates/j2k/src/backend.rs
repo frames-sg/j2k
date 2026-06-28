@@ -16,7 +16,7 @@ pub(crate) fn inspect_info(bytes: &[u8]) -> Result<Info, J2kError> {
 }
 
 pub(crate) fn inspect_info_from_image(image: &Image<'_>) -> Info {
-    let components = image.color_space().num_channels() + u8::from(image.has_alpha());
+    let components = image.color_space().num_channels() + u16::from(image.has_alpha());
     Info {
         dimensions: (image.width(), image.height()),
         components,

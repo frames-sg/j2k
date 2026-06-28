@@ -3,13 +3,13 @@
 use std::num::NonZeroUsize;
 
 use j2k::{
-    decode_tiles_region_scaled_into, encode_j2k_lossless, EncodeBackendPreference,
-    J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
-    TileBatchOptions, TileRegionScaledDecodeJob,
+    decode_tiles_region_scaled_into, encode_j2k_lossless, wrap_j2k_codestream,
+    EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kFileWrapOptions,
+    J2kLosslessEncodeOptions, J2kLosslessSamples, TileBatchOptions, TileRegionScaledDecodeJob,
 };
 use j2k_compare::{grok, measure_repeated, parse_positive_usize, sample_stats, usize_to_f64};
 use j2k_core::{tile_batch_worker_count, Downscale, PixelFormat, Rect};
-use j2k_test_support::{patterned_rgb8, wrap_jp2_codestream};
+use j2k_test_support::patterned_rgb8;
 
 const DEFAULT_REPEATS: usize = 9;
 const DEFAULT_BATCH_SIZE: usize = 16;
@@ -80,9 +80,11 @@ fn run() -> Result<(), String> {
 
 fn compare_cases() -> Result<Vec<CompareCase>, String> {
     let raw_512 = encode_htj2k_rgb_codestream(512, 512)?;
-    let jp2_512 = wrap_jp2_codestream(&raw_512, 512, 512, 3, 8, 16);
+    let jph_512 = wrap_j2k_codestream(&raw_512, J2kFileWrapOptions::jph())
+        .map_err(|error| format!("wrap 512 HTJ2K ROI fixture as JPH: {error}"))?;
     let raw_256 = encode_htj2k_rgb_codestream(256, 256)?;
-    let jp2_256 = wrap_jp2_codestream(&raw_256, 256, 256, 3, 8, 16);
+    let jph_256 = wrap_j2k_codestream(&raw_256, J2kFileWrapOptions::jph())
+        .map_err(|error| format!("wrap 256 HTJ2K ROI fixture as JPH: {error}"))?;
     Ok(vec![
         CompareCase {
             name: "htj2k_raw_rgb8_512_roi256_q4_repeated_batch16",
@@ -97,8 +99,8 @@ fn compare_cases() -> Result<Vec<CompareCase>, String> {
             batch_size: DEFAULT_BATCH_SIZE,
         },
         CompareCase {
-            name: "htj2k_jp2_rgb8_512_roi256_q4_repeated_batch16",
-            bytes: jp2_512,
+            name: "htj2k_jph_rgb8_512_roi256_q4_repeated_batch16",
+            bytes: jph_512,
             roi: Rect {
                 x: 128,
                 y: 128,
@@ -109,8 +111,8 @@ fn compare_cases() -> Result<Vec<CompareCase>, String> {
             batch_size: DEFAULT_BATCH_SIZE,
         },
         CompareCase {
-            name: "htj2k_jp2_rgb8_256_roi128_q4_repeated_batch16",
-            bytes: jp2_256,
+            name: "htj2k_jph_rgb8_256_roi128_q4_repeated_batch16",
+            bytes: jph_256,
             roi: Rect {
                 x: 64,
                 y: 64,

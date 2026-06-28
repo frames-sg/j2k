@@ -31,6 +31,14 @@ pub fn bits_for_ht_cleanup_length(l_block: u32, raw_num_passes: u8) -> u32 {
     l_block + (placeholder_passes + 1).ilog2()
 }
 
+/// Number of bits needed to encode an HT refinement-only packet
+/// contribution length after the cleanup segment has already appeared in an
+/// earlier quality layer.
+#[inline]
+pub fn bits_for_ht_refinement_only_length(l_block: u32, num_coding_passes: u8) -> u32 {
+    l_block + u32::from(num_coding_passes > 1)
+}
+
 /// Splits an HT code-block packet contribution into its
 /// `(cleanup, refinement)` segment lengths, validating them against the
 /// contribution payload length.
@@ -49,6 +57,16 @@ pub fn ht_segment_lengths(
 
     let data_len =
         u32::try_from(data_len).map_err(|_| "HTJ2K packet contribution exceeds u32 length")?;
+    if ht_cleanup_length == 0 && ht_refinement_length != 0 {
+        if ht_refinement_length != data_len {
+            return Err("refinement-only HTJ2K packet contribution length mismatch");
+        }
+        if ht_refinement_length >= 2047 {
+            return Err("HTJ2K refinement segment length is out of range");
+        }
+        return Ok((0, ht_refinement_length));
+    }
+
     if num_coding_passes == 1 {
         if ht_refinement_length != 0 {
             return Err("single-pass HTJ2K packet contribution must not carry refinement bytes");

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{ParsedCod, ParsedComponentInfo, ParsedSiz};
+use super::{ParsedCod, ParsedSiz};
+use crate::J2kComponentInfo;
 use crate::J2kError;
 use j2k_core::{InputError, TileLayout, Unsupported};
 use j2k_native::{
@@ -19,15 +20,11 @@ pub(crate) fn looks_like_codestream(input: &[u8]) -> bool {
 
 pub(crate) fn parse_codestream(input: &[u8]) -> Result<CodestreamInfo, J2kError> {
     let header = inspect_j2k_codestream_header(input).map_err(map_header_error)?;
-    let components = u8::try_from(header.components).map_err(|_| {
-        J2kError::Unsupported(Unsupported {
-            what: "component count > 255",
-        })
-    })?;
+    let components = header.components;
     let component_info = header
         .component_info
         .into_iter()
-        .map(|component| ParsedComponentInfo {
+        .map(|component| J2kComponentInfo {
             bit_depth: component.bit_depth,
             signed: component.signed,
             x_rsiz: component.x_rsiz,

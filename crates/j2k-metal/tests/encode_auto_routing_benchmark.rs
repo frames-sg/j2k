@@ -1273,12 +1273,19 @@ fn lossless_samples_2d(
     height: u32,
     components: Components,
 ) -> J2kLosslessSamples<'_> {
-    J2kLosslessSamples::new(pixels, width, height, components.count(), 8, false)
-        .expect("valid lossless samples")
+    J2kLosslessSamples::new(
+        pixels,
+        width,
+        height,
+        u16::from(components.count()),
+        8,
+        false,
+    )
+    .expect("valid lossless samples")
 }
 
 fn lossy_samples(pixels: &[u8], dim: u32, components: Components) -> J2kLossySamples<'_> {
-    J2kLossySamples::new(pixels, dim, dim, components.count(), 8, false)
+    J2kLossySamples::new(pixels, dim, dim, u16::from(components.count()), 8, false)
         .expect("valid lossy samples")
 }
 

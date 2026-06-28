@@ -629,7 +629,7 @@ fn encode_resident_ht_tile_body_with_cpu_packetization(
             }
         })?,
         num_layers: 1,
-        num_components: plan.components,
+        num_components: u16::from(plan.components),
         code_block_count: u32::try_from(plan.code_blocks.len()).map_err(|_| {
             crate::Error::MetalKernel {
                 message: "J2K Metal resident hybrid code-block count exceeds u32".to_string(),
@@ -1698,7 +1698,7 @@ fn encode_lossless_tile_with_report(
         data,
         tile.output_width,
         tile.output_height,
-        components,
+        u16::from(components),
         bit_depth,
         false,
     )

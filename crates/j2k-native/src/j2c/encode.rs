@@ -16,7 +16,7 @@ use rayon::prelude::*;
 use super::bitplane_encode;
 use super::build::SubBandType;
 use super::codestream::CodeBlockStyle;
-use super::codestream_write::{self, BlockCodingMode, EncodeParams};
+use super::codestream_write::{self, BlockCodingMode, EncodeComponentSampleInfo, EncodeParams};
 use super::fdwt::{self, DwtDecomposition};
 use super::forward_mct;
 use super::ht_block_encode;
@@ -40,10 +40,22 @@ use crate::{
     PreencodedHtj2k97CompactSubband, PreencodedHtj2k97Component, PreencodedHtj2k97Image,
     PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband, PrequantizedHtj2k97Component,
     PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+    MAX_J2K_SPEC_COMPONENTS,
 };
 use crate::{DecodeSettings, Image};
 
 const HT_CPU_PARALLEL_FALLBACK_MIN_JOBS: usize = 4;
+const MAX_RAW_PIXEL_ENCODE_BIT_DEPTH: u8 = 24;
+const MAX_PART1_SAMPLE_BIT_DEPTH: u8 = 38;
+const MAX_REVERSIBLE_NO_QUANT_EXPONENT: u16 = 31;
+const MAX_REVERSIBLE_NO_QUANT_GUARD_BITS: u8 = 7;
+const MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES: u16 =
+    MAX_REVERSIBLE_NO_QUANT_GUARD_BITS as u16 + MAX_REVERSIBLE_NO_QUANT_EXPONENT - 1;
+// Classic packet headers can signal at most 164 coding passes, i.e.
+// 1 cleanup pass for the first bitplane plus 3 passes for each additional
+// bitplane: 1 + 3 * (55 - 1) = 163.
+const MAX_CLASSIC_ROI_CODED_BITPLANES: u8 = 55;
+const MAX_HT_ROI_CODED_BITPLANES: u8 = 31;
 
 /// Encoding options for JPEG 2000.
 #[derive(Debug, Clone)]
@@ -68,6 +80,10 @@ pub struct EncodeOptions {
     pub write_plt: bool,
     /// Write PLM packet-length marker segments in the main header.
     pub write_plm: bool,
+    /// Write PPM packed packet-header marker segments in the main header.
+    pub write_ppm: bool,
+    /// Write PPT packed packet-header marker segments in tile-part headers.
+    pub write_ppt: bool,
     /// Write SOP marker segments before packets.
     pub write_sop: bool,
     /// Write EPH markers after packet headers.
@@ -94,10 +110,67 @@ pub struct EncodeOptions {
     /// resolution. This is experimental and primarily intended for precomputed
     /// coefficient encoders that preserve JPEG-native chroma subsampling.
     pub component_sampling: Option<Vec<(u8, u8)>>,
+    /// Optional per-component whole-component ROI maxshift values.
+    ///
+    /// Non-zero entries emit RGN markers and encode every coefficient in that
+    /// component with the requested maxshift. Rectangular ROI authoring is not
+    /// represented by this field.
+    pub roi_component_shifts: Vec<u8>,
     /// Optional tile width and height for multi-tile codestream output.
     pub tile_size: Option<(u32, u32)>,
+    /// Optional maximum number of complete packets to place in each tile-part.
+    pub tile_part_packet_limit: Option<u16>,
     /// Optional precinct exponents in COD order, one per resolution level.
     pub precinct_exponents: Vec<(u8, u8)>,
+}
+
+/// Borrowed component-plane samples for reversible 5/3 component-plane encode.
+#[derive(Debug, Clone, Copy)]
+pub struct EncodeComponentPlane<'a> {
+    /// Row-major little-endian component samples at this component's own grid.
+    pub data: &'a [u8],
+    /// Horizontal SIZ sampling factor (`XRsiz`).
+    pub x_rsiz: u8,
+    /// Vertical SIZ sampling factor (`YRsiz`).
+    pub y_rsiz: u8,
+}
+
+/// Borrowed component-plane samples with per-component precision metadata.
+#[derive(Debug, Clone, Copy)]
+pub struct EncodeTypedComponentPlane<'a> {
+    /// Row-major little-endian component samples at this component's own grid.
+    pub data: &'a [u8],
+    /// Horizontal SIZ sampling factor (`XRsiz`).
+    pub x_rsiz: u8,
+    /// Vertical SIZ sampling factor (`YRsiz`).
+    pub y_rsiz: u8,
+    /// Significant bits per sample for this component.
+    pub bit_depth: u8,
+    /// Whether samples in this component are signed.
+    pub signed: bool,
+}
+
+/// Rectangular region-of-interest request for JPEG 2000 maxshift encoding.
+///
+/// The rectangle is expressed in full-resolution reference-grid pixels. For
+/// sampled components, the encoder maps the rectangle to that component's SIZ
+/// grid before selecting wavelet coefficients. All regions for the same
+/// component must use the same non-zero `shift`, because JPEG 2000 RGN stores
+/// one maxshift value per component.
+#[derive(Debug, Clone, Copy)]
+pub struct EncodeRoiRegion {
+    /// Component index to which the ROI applies.
+    pub component: u16,
+    /// Left edge in reference-grid pixels.
+    pub x: u32,
+    /// Top edge in reference-grid pixels.
+    pub y: u32,
+    /// Width in reference-grid pixels.
+    pub width: u32,
+    /// Height in reference-grid pixels.
+    pub height: u32,
+    /// Maxshift value to write in the component's RGN marker.
+    pub shift: u8,
 }
 
 impl Default for EncodeOptions {
@@ -113,6 +186,8 @@ impl Default for EncodeOptions {
             write_tlm: false,
             write_plt: false,
             write_plm: false,
+            write_ppm: false,
+            write_ppt: false,
             write_sop: false,
             write_eph: false,
             use_mct: true,
@@ -123,7 +198,9 @@ impl Default for EncodeOptions {
             irreversible_quantization_subband_scales:
                 IrreversibleQuantizationSubbandScales::default(),
             component_sampling: None,
+            roi_component_shifts: Vec::new(),
             tile_size: None,
+            tile_part_packet_limit: None,
             precinct_exponents: Vec::new(),
         }
     }
@@ -162,7 +239,7 @@ pub fn encode(
     pixels: &[u8],
     width: u32,
     height: u32,
-    num_components: u8,
+    num_components: u16,
     bit_depth: u8,
     signed: bool,
     options: &EncodeOptions,
@@ -189,10 +266,34 @@ pub fn encode_with_accelerator(
     pixels: &[u8],
     width: u32,
     height: u32,
-    num_components: u8,
+    num_components: u16,
     bit_depth: u8,
     signed: bool,
     options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    encode_with_accelerator_and_component_sample_info(
+        pixels,
+        width,
+        height,
+        num_components,
+        bit_depth,
+        signed,
+        options,
+        &[],
+        accelerator,
+    )
+}
+
+fn encode_with_accelerator_and_component_sample_info(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    num_components: u16,
+    bit_depth: u8,
+    signed: bool,
+    options: &EncodeOptions,
+    component_sample_info: &[EncodeComponentSampleInfo],
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, &'static str> {
     let block_coding_mode = block_coding_mode(options);
@@ -205,6 +306,82 @@ pub fn encode_with_accelerator(
         signed,
         options,
         block_coding_mode,
+        &[],
+        component_sample_info,
+        accelerator,
+    )?;
+
+    if block_coding_mode == BlockCodingMode::HighThroughput
+        && options.validate_high_throughput_codestream
+    {
+        validate_htj2k_codestream(
+            &codestream,
+            pixels,
+            width,
+            height,
+            num_components,
+            bit_depth,
+            signed,
+            options.reversible,
+        )?;
+    }
+
+    Ok(codestream)
+}
+
+/// Encode pixel data into a JPEG 2000 codestream with rectangular ROI maxshift.
+///
+/// This uses the normal native encoder pipeline. Non-empty `roi_regions`
+/// produce RGN markers and shift selected quantized coefficients before
+/// code-block encoding.
+pub fn encode_with_roi_regions(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    num_components: u16,
+    bit_depth: u8,
+    signed: bool,
+    options: &EncodeOptions,
+    roi_regions: &[EncodeRoiRegion],
+) -> Result<Vec<u8>, &'static str> {
+    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+    encode_with_accelerator_and_roi_regions(
+        pixels,
+        width,
+        height,
+        num_components,
+        bit_depth,
+        signed,
+        options,
+        roi_regions,
+        &mut accelerator,
+    )
+}
+
+/// Encode pixel data with rectangular ROI maxshift and optional stage hooks.
+pub fn encode_with_accelerator_and_roi_regions(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    num_components: u16,
+    bit_depth: u8,
+    signed: bool,
+    options: &EncodeOptions,
+    roi_regions: &[EncodeRoiRegion],
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    let block_coding_mode = block_coding_mode(options);
+    let codestream = encode_impl(
+        pixels,
+        width,
+        height,
+        num_components,
+        bit_depth,
+        signed,
+        options,
+        block_coding_mode,
+        roi_regions,
+        &[],
         accelerator,
     )?;
 
@@ -233,7 +410,7 @@ pub fn encode_htj2k(
     pixels: &[u8],
     width: u32,
     height: u32,
-    num_components: u8,
+    num_components: u16,
     bit_depth: u8,
     signed: bool,
     options: &EncodeOptions,
@@ -249,6 +426,918 @@ pub fn encode_htj2k(
         signed,
         &options,
     )
+}
+
+/// Encode reversible 5/3 component planes into a classic J2K or HTJ2K
+/// codestream.
+///
+/// Plane buffers are supplied at each component's own SIZ sampling grid. Set
+/// [`EncodeOptions::use_ht_block_coding`] to select HTJ2K block coding; the
+/// default writes classic Part 1 block coding.
+pub fn encode_component_planes_53(
+    planes: &[EncodeComponentPlane<'_>],
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+    signed: bool,
+    options: &EncodeOptions,
+) -> Result<Vec<u8>, &'static str> {
+    let typed_planes = planes
+        .iter()
+        .map(|plane| EncodeTypedComponentPlane {
+            data: plane.data,
+            x_rsiz: plane.x_rsiz,
+            y_rsiz: plane.y_rsiz,
+            bit_depth,
+            signed,
+        })
+        .collect::<Vec<_>>();
+    encode_typed_component_planes_53(&typed_planes, width, height, options)
+}
+
+/// Encode reversible 5/3 typed component planes into a classic J2K or HTJ2K
+/// codestream.
+///
+/// This is the component-plane entry point for JPEG 2000 codestreams whose
+/// components have different precision or signedness. Plane buffers are
+/// supplied at each component's own SIZ sampling grid. Components are encoded
+/// without a reversible color transform.
+pub fn encode_typed_component_planes_53(
+    planes: &[EncodeTypedComponentPlane<'_>],
+    width: u32,
+    height: u32,
+    options: &EncodeOptions,
+) -> Result<Vec<u8>, &'static str> {
+    if width == 0 || height == 0 {
+        return Err("invalid dimensions");
+    }
+    if planes.is_empty() || planes.len() > usize::from(MAX_J2K_SPEC_COMPONENTS) {
+        return Err("unsupported component count");
+    }
+    if planes
+        .iter()
+        .any(|plane| plane.x_rsiz == 0 || plane.y_rsiz == 0)
+    {
+        return Err("component sampling factors must be non-zero");
+    }
+    if planes.iter().any(|plane| plane.bit_depth == 0) {
+        return Err("unsupported bit depth");
+    }
+    if planes
+        .iter()
+        .any(|plane| plane.bit_depth > MAX_PART1_SAMPLE_BIT_DEPTH)
+    {
+        return Err("unsupported bit depth");
+    }
+    if planes
+        .iter()
+        .any(|plane| plane.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH)
+    {
+        return encode_typed_component_planes_53_i64(planes, width, height, options);
+    }
+
+    let max_levels = planes
+        .iter()
+        .map(|plane| {
+            let component_width = width.div_ceil(u32::from(plane.x_rsiz));
+            let component_height = height.div_ceil(u32::from(plane.y_rsiz));
+            max_decomposition_levels(component_width, component_height)
+        })
+        .min()
+        .unwrap_or(0);
+    let num_levels = options.num_decomposition_levels.min(max_levels);
+    let components = planes
+        .iter()
+        .map(|plane| {
+            let component_width = width.div_ceil(u32::from(plane.x_rsiz));
+            let component_height = height.div_ceil(u32::from(plane.y_rsiz));
+            let samples = component_plane_to_f32(
+                plane.data,
+                component_width,
+                component_height,
+                plane.bit_depth,
+                plane.signed,
+            )?;
+            let dwt = fdwt::forward_dwt(
+                &samples,
+                component_width,
+                component_height,
+                num_levels,
+                true,
+            );
+            Ok(PrecomputedHtj2k53Component {
+                x_rsiz: plane.x_rsiz,
+                y_rsiz: plane.y_rsiz,
+                dwt: forward_dwt53_output_from_decomposition(dwt),
+            })
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    let max_bit_depth = planes
+        .iter()
+        .map(|plane| plane.bit_depth)
+        .max()
+        .ok_or("unsupported component count")?;
+    let component_sample_info = planes
+        .iter()
+        .map(|plane| EncodeComponentSampleInfo {
+            bit_depth: plane.bit_depth,
+            signed: plane.signed,
+        })
+        .collect::<Vec<_>>();
+    let image = PrecomputedHtj2k53Image {
+        width,
+        height,
+        bit_depth: max_bit_depth,
+        signed: planes.iter().all(|plane| plane.signed),
+        components,
+    };
+
+    if options.use_ht_block_coding {
+        let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+        encode_precomputed_53_with_component_sample_info_and_accelerator(
+            &image,
+            options,
+            false,
+            true,
+            &component_sample_info,
+            &mut accelerator,
+        )
+    } else {
+        let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+        encode_precomputed_53_with_component_sample_info_and_accelerator(
+            &image,
+            options,
+            false,
+            false,
+            &component_sample_info,
+            &mut accelerator,
+        )
+    }
+}
+
+fn encode_typed_component_planes_53_i64(
+    planes: &[EncodeTypedComponentPlane<'_>],
+    width: u32,
+    height: u32,
+    options: &EncodeOptions,
+) -> Result<Vec<u8>, &'static str> {
+    if options.num_layers == 0 || options.num_layers > 32 {
+        return Err("unsupported quality layer count");
+    }
+    if options.write_ppm && options.write_ppt {
+        return Err("PPM and PPT packet header markers are mutually exclusive");
+    }
+    if matches!(options.tile_part_packet_limit, Some(0)) {
+        return Err("tile-part packet limit must be non-zero");
+    }
+    if !options.quality_layer_byte_targets.is_empty()
+        && options.quality_layer_byte_targets.len() != usize::from(options.num_layers)
+    {
+        return Err("quality layer byte target count must match quality layer count");
+    }
+    if let Some((tile_width, tile_height)) = options.tile_size {
+        if tile_width == 0 || tile_height == 0 {
+            return Err("invalid tile dimensions");
+        }
+    }
+
+    let num_components = u16::try_from(planes.len()).map_err(|_| "unsupported component count")?;
+    if let Some((tile_width, tile_height)) = options.tile_size {
+        if tile_width < width || tile_height < height {
+            return encode_typed_component_planes_53_i64_multitile(
+                planes,
+                width,
+                height,
+                options,
+                tile_width,
+                tile_height,
+                num_components,
+            );
+        }
+    }
+    let max_bit_depth = planes
+        .iter()
+        .map(|plane| plane.bit_depth)
+        .max()
+        .ok_or("unsupported component count")?;
+    let num_levels = planes
+        .iter()
+        .map(|plane| {
+            let component_width = width.div_ceil(u32::from(plane.x_rsiz));
+            let component_height = height.div_ceil(u32::from(plane.y_rsiz));
+            max_decomposition_levels(component_width, component_height)
+        })
+        .min()
+        .unwrap_or(0)
+        .min(options.num_decomposition_levels);
+    let requested_guard_bits = options.guard_bits;
+    let guard_bits =
+        reversible_guard_bits_for_marker_limit(max_bit_depth, num_levels, requested_guard_bits)?;
+    let reversible_guard_delta = guard_bits.saturating_sub(requested_guard_bits);
+    let mut step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+        max_bit_depth,
+        num_levels,
+        true,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    if reversible_guard_delta != 0 {
+        adjust_reversible_step_sizes_for_guard_delta(&mut step_sizes, reversible_guard_delta)?;
+    }
+    let component_sample_info = planes
+        .iter()
+        .map(|plane| EncodeComponentSampleInfo {
+            bit_depth: plane.bit_depth,
+            signed: plane.signed,
+        })
+        .collect::<Vec<_>>();
+    let mut component_step_sizes = component_step_sizes(
+        &component_sample_info,
+        num_levels,
+        true,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    if reversible_guard_delta != 0 {
+        adjust_component_step_sizes_for_guard_delta(
+            &mut component_step_sizes,
+            reversible_guard_delta,
+        )?;
+    }
+    if step_sizes.iter().any(|step| step.exponent > 31)
+        || component_step_sizes
+            .iter()
+            .flatten()
+            .any(|step| step.exponent > 31)
+    {
+        return Err("25-38 bit typed component-plane encode exceeds the current no-quantization guard/exponent signaling limit");
+    }
+
+    let quant_params = step_sizes
+        .iter()
+        .map(|step| (step.exponent, step.mantissa))
+        .collect::<Vec<_>>();
+    let component_quantization_step_sizes = component_step_sizes
+        .iter()
+        .map(|steps| {
+            steps
+                .iter()
+                .map(|step| (step.exponent, step.mantissa))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let cb_width = 1u32 << (options.code_block_width_exp + 2);
+    let cb_height = 1u32 << (options.code_block_height_exp + 2);
+    let block_coding_mode = if options.use_ht_block_coding {
+        BlockCodingMode::HighThroughput
+    } else {
+        BlockCodingMode::Classic
+    };
+    let component_sampling = planes
+        .iter()
+        .map(|plane| (plane.x_rsiz, plane.y_rsiz))
+        .collect::<Vec<_>>();
+    let mut high_bit_options = options.clone();
+    high_bit_options.reversible = true;
+    high_bit_options.use_mct = false;
+    high_bit_options.component_sampling = Some(component_sampling.clone());
+    let precinct_exponents = precinct_exponents_for_options(&high_bit_options, num_levels)?;
+    let params = EncodeParams {
+        width,
+        height,
+        tile_width: options
+            .tile_size
+            .map_or(width, |(tile_width, _)| tile_width),
+        tile_height: options
+            .tile_size
+            .map_or(height, |(_, tile_height)| tile_height),
+        num_components,
+        bit_depth: max_bit_depth,
+        signed: planes.iter().all(|plane| plane.signed),
+        component_sample_info,
+        component_quantization_step_sizes,
+        num_decomposition_levels: num_levels,
+        reversible: true,
+        code_block_width_exp: options.code_block_width_exp,
+        code_block_height_exp: options.code_block_height_exp,
+        num_layers: options.num_layers,
+        use_mct: false,
+        guard_bits,
+        block_coding_mode,
+        progression_order: options.progression_order,
+        write_tlm: options.write_tlm,
+        write_plt: options.write_plt,
+        write_plm: options.write_plm,
+        write_ppm: options.write_ppm,
+        write_ppt: options.write_ppt,
+        write_sop: options.write_sop,
+        write_eph: options.write_eph,
+        terminate_coding_passes: block_coding_mode == BlockCodingMode::Classic
+            && options.num_layers > 1,
+        component_sampling,
+        roi_component_shifts: vec![0; usize::from(num_components)],
+        precinct_exponents,
+    };
+
+    let ht_target_coding_passes = ht_target_coding_passes_for_options(options);
+    let mut component_resolution_packets = Vec::with_capacity(planes.len());
+    for (component_idx, plane) in planes.iter().enumerate() {
+        let component_width = width.div_ceil(u32::from(plane.x_rsiz));
+        let component_height = height.div_ceil(u32::from(plane.y_rsiz));
+        let samples = typed_component_plane_to_i64(plane, component_width, component_height)?;
+        let decomp = fdwt::forward_dwt_i64(&samples, component_width, component_height, num_levels);
+        let steps = component_step_sizes
+            .get(component_idx)
+            .ok_or("component quantization step count mismatch")?;
+        let component = u16::try_from(component_idx).map_err(|_| "component index exceeds u16")?;
+        let mut packets = Vec::with_capacity(num_levels as usize + 1);
+
+        let ll_subband = prepare_subband_i64(
+            &decomp.ll,
+            decomp.ll_width,
+            decomp.ll_height,
+            steps
+                .first()
+                .ok_or("reversible quantization step missing")?,
+            guard_bits,
+            cb_width,
+            cb_height,
+            SubBandType::LowLow,
+            0,
+            &[],
+            1,
+            block_coding_mode,
+            ht_target_coding_passes,
+        )?;
+        packets.push(PreparedResolutionPacket {
+            component,
+            resolution: 0,
+            precinct: 0,
+            subbands: vec![ll_subband],
+        });
+
+        for (level_idx, level) in decomp.levels.iter().enumerate() {
+            let step_base = 1 + level_idx * 3;
+            let hl_subband = prepare_subband_i64(
+                &level.hl,
+                level.high_width,
+                level.low_height,
+                steps
+                    .get(step_base)
+                    .ok_or("reversible quantization step missing")?,
+                guard_bits,
+                cb_width,
+                cb_height,
+                SubBandType::HighLow,
+                0,
+                &[],
+                1,
+                block_coding_mode,
+                ht_target_coding_passes,
+            )?;
+            let lh_subband = prepare_subband_i64(
+                &level.lh,
+                level.low_width,
+                level.high_height,
+                steps
+                    .get(step_base + 1)
+                    .ok_or("reversible quantization step missing")?,
+                guard_bits,
+                cb_width,
+                cb_height,
+                SubBandType::LowHigh,
+                0,
+                &[],
+                1,
+                block_coding_mode,
+                ht_target_coding_passes,
+            )?;
+            let hh_subband = prepare_subband_i64(
+                &level.hh,
+                level.high_width,
+                level.high_height,
+                steps
+                    .get(step_base + 2)
+                    .ok_or("reversible quantization step missing")?,
+                guard_bits,
+                cb_width,
+                cb_height,
+                SubBandType::HighHigh,
+                0,
+                &[],
+                1,
+                block_coding_mode,
+                ht_target_coding_passes,
+            )?;
+            packets.push(PreparedResolutionPacket {
+                component,
+                resolution: u32::try_from(level_idx + 1)
+                    .map_err(|_| "resolution index exceeds u32")?,
+                precinct: 0,
+                subbands: vec![hl_subband, lh_subband, hh_subband],
+            });
+        }
+        component_resolution_packets.push(packets);
+    }
+
+    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+    encode_i64_component_resolution_packets(
+        component_resolution_packets,
+        width,
+        height,
+        num_components,
+        num_levels,
+        &params,
+        &quant_params,
+        &high_bit_options,
+        &mut accelerator,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_typed_component_planes_53_i64_multitile(
+    planes: &[EncodeTypedComponentPlane<'_>],
+    width: u32,
+    height: u32,
+    options: &EncodeOptions,
+    tile_width: u32,
+    tile_height: u32,
+    num_components: u16,
+) -> Result<Vec<u8>, &'static str> {
+    let num_x_tiles = width.div_ceil(tile_width);
+    let num_y_tiles = height.div_ceil(tile_height);
+    let num_tiles = num_x_tiles
+        .checked_mul(num_y_tiles)
+        .ok_or("tile count overflow")?;
+    if num_tiles > u32::from(u16::MAX) + 1 {
+        return Err("multi-tile encode supports at most 65536 tiles");
+    }
+
+    let num_levels = min_sampled_tile_component_decomposition_levels(
+        planes,
+        width,
+        height,
+        tile_width,
+        tile_height,
+    )?
+    .min(options.num_decomposition_levels);
+    let max_bit_depth = planes
+        .iter()
+        .map(|plane| plane.bit_depth)
+        .max()
+        .ok_or("unsupported component count")?;
+    let requested_guard_bits = options.guard_bits;
+    let guard_bits =
+        reversible_guard_bits_for_marker_limit(max_bit_depth, num_levels, requested_guard_bits)?;
+    let reversible_guard_delta = guard_bits.saturating_sub(requested_guard_bits);
+    let mut step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+        max_bit_depth,
+        num_levels,
+        true,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    if reversible_guard_delta != 0 {
+        adjust_reversible_step_sizes_for_guard_delta(&mut step_sizes, reversible_guard_delta)?;
+    }
+    let component_sample_info = planes
+        .iter()
+        .map(|plane| EncodeComponentSampleInfo {
+            bit_depth: plane.bit_depth,
+            signed: plane.signed,
+        })
+        .collect::<Vec<_>>();
+    let mut component_step_sizes = component_step_sizes(
+        &component_sample_info,
+        num_levels,
+        true,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    if reversible_guard_delta != 0 {
+        adjust_component_step_sizes_for_guard_delta(
+            &mut component_step_sizes,
+            reversible_guard_delta,
+        )?;
+    }
+    if step_sizes.iter().any(|step| step.exponent > 31)
+        || component_step_sizes
+            .iter()
+            .flatten()
+            .any(|step| step.exponent > 31)
+    {
+        return Err("25-38 bit typed component-plane encode exceeds the current no-quantization guard/exponent signaling limit");
+    }
+
+    let quant_params = step_sizes
+        .iter()
+        .map(|step| (step.exponent, step.mantissa))
+        .collect::<Vec<_>>();
+    let component_quantization_step_sizes = component_step_sizes
+        .iter()
+        .map(|steps| {
+            steps
+                .iter()
+                .map(|step| (step.exponent, step.mantissa))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let component_sampling = planes
+        .iter()
+        .map(|plane| (plane.x_rsiz, plane.y_rsiz))
+        .collect::<Vec<_>>();
+    let mut high_bit_options = options.clone();
+    high_bit_options.num_decomposition_levels = num_levels;
+    high_bit_options.reversible = true;
+    high_bit_options.use_mct = false;
+    high_bit_options.component_sampling = Some(component_sampling.clone());
+    let precinct_exponents = precinct_exponents_for_options(&high_bit_options, num_levels)?;
+
+    let mut child_options = high_bit_options.clone();
+    child_options.tile_size = None;
+    child_options.write_tlm = false;
+    child_options.write_plt = false;
+    child_options.write_plm = false;
+    child_options.write_ppm = false;
+    child_options.write_ppt = false;
+
+    let block_coding_mode = if options.use_ht_block_coding {
+        BlockCodingMode::HighThroughput
+    } else {
+        BlockCodingMode::Classic
+    };
+    let params = EncodeParams {
+        width,
+        height,
+        tile_width,
+        tile_height,
+        num_components,
+        bit_depth: max_bit_depth,
+        signed: planes.iter().all(|plane| plane.signed),
+        component_sample_info,
+        component_quantization_step_sizes,
+        num_decomposition_levels: num_levels,
+        reversible: true,
+        code_block_width_exp: options.code_block_width_exp,
+        code_block_height_exp: options.code_block_height_exp,
+        num_layers: options.num_layers,
+        use_mct: false,
+        guard_bits,
+        block_coding_mode,
+        progression_order: options.progression_order,
+        write_tlm: options.write_tlm,
+        write_plt: options.write_plt,
+        write_plm: options.write_plm,
+        write_ppm: options.write_ppm,
+        write_ppt: options.write_ppt,
+        write_sop: options.write_sop,
+        write_eph: options.write_eph,
+        terminate_coding_passes: block_coding_mode == BlockCodingMode::Classic
+            && options.num_layers > 1,
+        component_sampling,
+        roi_component_shifts: vec![0; usize::from(num_components)],
+        precinct_exponents,
+    };
+
+    let mut tile_bodies = Vec::with_capacity(num_tiles as usize);
+    for tile_y in 0..num_y_tiles {
+        for tile_x in 0..num_x_tiles {
+            let tile_index = tile_y
+                .checked_mul(num_x_tiles)
+                .and_then(|base| base.checked_add(tile_x))
+                .ok_or("tile index overflow")?;
+            let tile_index = u16::try_from(tile_index).map_err(|_| "tile index exceeds u16")?;
+            let x0 = tile_x * tile_width;
+            let y0 = tile_y * tile_height;
+            let actual_width = (width - x0).min(tile_width);
+            let actual_height = (height - y0).min(tile_height);
+            let tile_plane_data = planes
+                .iter()
+                .map(|plane| {
+                    let x_rsiz = u32::from(plane.x_rsiz);
+                    let y_rsiz = u32::from(plane.y_rsiz);
+                    let component_image_width = width.div_ceil(x_rsiz);
+                    let component_image_height = height.div_ceil(y_rsiz);
+                    let (component_x0, component_tile_width) = sampled_tile_component_axis(
+                        x0,
+                        actual_width,
+                        x_rsiz,
+                        component_image_width,
+                    )?;
+                    let (component_y0, component_tile_height) = sampled_tile_component_axis(
+                        y0,
+                        actual_height,
+                        y_rsiz,
+                        component_image_height,
+                    )?;
+                    let data = extract_component_plane_tile(
+                        plane.data,
+                        component_image_width,
+                        component_x0,
+                        component_y0,
+                        component_tile_width,
+                        component_tile_height,
+                        plane.bit_depth,
+                    )?;
+                    Ok((data, component_tile_width, component_tile_height))
+                })
+                .collect::<Result<Vec<_>, &'static str>>()?;
+            let tile_planes = planes
+                .iter()
+                .zip(tile_plane_data.iter())
+                .map(|(plane, (data, _, _))| EncodeTypedComponentPlane {
+                    data,
+                    x_rsiz: plane.x_rsiz,
+                    y_rsiz: plane.y_rsiz,
+                    bit_depth: plane.bit_depth,
+                    signed: plane.signed,
+                })
+                .collect::<Vec<_>>();
+            let component_dimensions = tile_planes
+                .iter()
+                .zip(tile_plane_data.iter())
+                .map(|(_, (_, component_width, component_height))| {
+                    (*component_width, *component_height)
+                })
+                .collect::<Vec<_>>();
+            let component_resolution_packets = prepare_typed_component_planes_i64_packets(
+                &tile_planes,
+                &component_dimensions,
+                &component_step_sizes,
+                guard_bits,
+                num_levels,
+                1u32 << (options.code_block_width_exp + 2),
+                1u32 << (options.code_block_height_exp + 2),
+                block_coding_mode,
+                ht_target_coding_passes_for_options(options),
+            )?;
+            let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+            let packetized_tile = packetize_i64_component_resolution_packets(
+                component_resolution_packets,
+                actual_width,
+                actual_height,
+                num_components,
+                num_levels,
+                &params,
+                &child_options,
+                &mut accelerator,
+            )?;
+            tile_bodies.extend(split_packetized_tile_into_tile_parts(
+                tile_index,
+                &packetized_tile.data,
+                &packetized_tile.packet_lengths,
+                &packetized_tile.packet_headers,
+                options.tile_part_packet_limit,
+            )?);
+        }
+    }
+
+    let tile_packet_headers = tile_bodies
+        .iter()
+        .map(|tile| tile.packet_headers.as_slice())
+        .collect::<Vec<_>>();
+    validate_packet_header_marker_payloads(
+        params.write_ppm,
+        params.write_ppt,
+        &tile_packet_headers,
+    )?;
+    let tile_parts = tile_bodies
+        .iter()
+        .map(|tile| codestream_write::TilePartData {
+            tile_index: tile.tile_index,
+            tile_part_index: tile.tile_part_index,
+            num_tile_parts: tile.num_tile_parts,
+            data: &tile.data,
+            packet_lengths: &tile.packet_lengths,
+            packet_headers: &tile.packet_headers,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(codestream_write::write_codestream_tiles(
+        &params,
+        &tile_parts,
+        &quant_params,
+    ))
+}
+
+fn min_sampled_tile_component_decomposition_levels(
+    planes: &[EncodeTypedComponentPlane<'_>],
+    width: u32,
+    height: u32,
+    tile_width: u32,
+    tile_height: u32,
+) -> Result<u8, &'static str> {
+    let num_x_tiles = width.div_ceil(tile_width);
+    let num_y_tiles = height.div_ceil(tile_height);
+    let mut levels: Option<u8> = None;
+    for tile_y in 0..num_y_tiles {
+        for tile_x in 0..num_x_tiles {
+            let x0 = tile_x * tile_width;
+            let y0 = tile_y * tile_height;
+            let actual_width = (width - x0).min(tile_width);
+            let actual_height = (height - y0).min(tile_height);
+            for plane in planes {
+                let x_rsiz = u32::from(plane.x_rsiz);
+                let y_rsiz = u32::from(plane.y_rsiz);
+                let component_image_width = width.div_ceil(x_rsiz);
+                let component_image_height = height.div_ceil(y_rsiz);
+                let (_, component_tile_width) =
+                    sampled_tile_component_axis(x0, actual_width, x_rsiz, component_image_width)?;
+                let (_, component_tile_height) =
+                    sampled_tile_component_axis(y0, actual_height, y_rsiz, component_image_height)?;
+                let component_levels =
+                    max_decomposition_levels(component_tile_width, component_tile_height);
+                levels = Some(levels.map_or(component_levels, |min| min.min(component_levels)));
+            }
+        }
+    }
+    Ok(levels.unwrap_or(0))
+}
+
+fn sampled_tile_component_axis(
+    tile_origin: u32,
+    tile_extent: u32,
+    sampling: u32,
+    component_extent: u32,
+) -> Result<(u32, u32), &'static str> {
+    let tile_end = tile_origin
+        .checked_add(tile_extent)
+        .ok_or("tile component bounds overflow")?;
+    let start = tile_origin.div_ceil(sampling).min(component_extent);
+    let end = tile_end.div_ceil(sampling).min(component_extent);
+    Ok((start, end.saturating_sub(start)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_typed_component_planes_i64_packets(
+    planes: &[EncodeTypedComponentPlane<'_>],
+    component_dimensions: &[(u32, u32)],
+    component_step_sizes: &[Vec<QuantStepSize>],
+    guard_bits: u8,
+    num_levels: u8,
+    cb_width: u32,
+    cb_height: u32,
+    block_coding_mode: BlockCodingMode,
+    ht_target_coding_passes: u8,
+) -> Result<Vec<Vec<PreparedResolutionPacket>>, &'static str> {
+    if component_dimensions.len() != planes.len() {
+        return Err("component dimensions count does not match component count");
+    }
+    let mut component_resolution_packets = Vec::with_capacity(planes.len());
+    for (component_idx, (plane, &(component_width, component_height))) in
+        planes.iter().zip(component_dimensions).enumerate()
+    {
+        let samples = typed_component_plane_to_i64(plane, component_width, component_height)?;
+        let decomp = fdwt::forward_dwt_i64(&samples, component_width, component_height, num_levels);
+        let steps = component_step_sizes
+            .get(component_idx)
+            .ok_or("component quantization step count mismatch")?;
+        let component = u16::try_from(component_idx).map_err(|_| "component index exceeds u16")?;
+        let mut packets = Vec::with_capacity(num_levels as usize + 1);
+
+        let ll_subband = prepare_subband_i64(
+            &decomp.ll,
+            decomp.ll_width,
+            decomp.ll_height,
+            steps
+                .first()
+                .ok_or("reversible quantization step missing")?,
+            guard_bits,
+            cb_width,
+            cb_height,
+            SubBandType::LowLow,
+            0,
+            &[],
+            1,
+            block_coding_mode,
+            ht_target_coding_passes,
+        )?;
+        packets.push(PreparedResolutionPacket {
+            component,
+            resolution: 0,
+            precinct: 0,
+            subbands: vec![ll_subband],
+        });
+
+        for (level_idx, level) in decomp.levels.iter().enumerate() {
+            let step_base = 1 + level_idx * 3;
+            let hl_subband = prepare_subband_i64(
+                &level.hl,
+                level.high_width,
+                level.low_height,
+                steps
+                    .get(step_base)
+                    .ok_or("reversible quantization step missing")?,
+                guard_bits,
+                cb_width,
+                cb_height,
+                SubBandType::HighLow,
+                0,
+                &[],
+                1,
+                block_coding_mode,
+                ht_target_coding_passes,
+            )?;
+            let lh_subband = prepare_subband_i64(
+                &level.lh,
+                level.low_width,
+                level.high_height,
+                steps
+                    .get(step_base + 1)
+                    .ok_or("reversible quantization step missing")?,
+                guard_bits,
+                cb_width,
+                cb_height,
+                SubBandType::LowHigh,
+                0,
+                &[],
+                1,
+                block_coding_mode,
+                ht_target_coding_passes,
+            )?;
+            let hh_subband = prepare_subband_i64(
+                &level.hh,
+                level.high_width,
+                level.high_height,
+                steps
+                    .get(step_base + 2)
+                    .ok_or("reversible quantization step missing")?,
+                guard_bits,
+                cb_width,
+                cb_height,
+                SubBandType::HighHigh,
+                0,
+                &[],
+                1,
+                block_coding_mode,
+                ht_target_coding_passes,
+            )?;
+            packets.push(PreparedResolutionPacket {
+                component,
+                resolution: u32::try_from(level_idx + 1)
+                    .map_err(|_| "resolution index exceeds u32")?,
+                precinct: 0,
+                subbands: vec![hl_subband, lh_subband, hh_subband],
+            });
+        }
+        component_resolution_packets.push(packets);
+    }
+
+    Ok(component_resolution_packets)
+}
+
+/// Encode precomputed reversible 5/3 wavelet coefficients into a classic
+/// JPEG 2000 Part 1 codestream.
+///
+/// This mirrors [`encode_precomputed_htj2k_53`] while selecting classic EBCOT
+/// block coding. It reuses the same quantization, packetization, and codestream
+/// writer stages as the normal encoder and is primarily intended for fixtures
+/// and coefficient-domain workflows that need JPEG-native component sampling.
+pub fn encode_precomputed_j2k_53(
+    image: &PrecomputedHtj2k53Image,
+    options: &EncodeOptions,
+) -> Result<Vec<u8>, &'static str> {
+    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+    encode_precomputed_j2k_53_with_mct_and_accelerator(image, options, false, &mut accelerator)
+}
+
+/// Encode precomputed reversible 5/3 wavelet coefficients into a classic
+/// JPEG 2000 Part 1 codestream using optional block encode and packetization
+/// hooks.
+pub fn encode_precomputed_j2k_53_with_accelerator(
+    image: &PrecomputedHtj2k53Image,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    encode_precomputed_j2k_53_with_mct_and_accelerator(image, options, false, accelerator)
+}
+
+/// Encode precomputed reversible 5/3 wavelet coefficients into a classic
+/// JPEG 2000 Part 1 codestream while controlling the output COD
+/// multi-component transform flag.
+pub fn encode_precomputed_j2k_53_with_mct(
+    image: &PrecomputedHtj2k53Image,
+    options: &EncodeOptions,
+    use_mct: bool,
+) -> Result<Vec<u8>, &'static str> {
+    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+    encode_precomputed_j2k_53_with_mct_and_accelerator(image, options, use_mct, &mut accelerator)
+}
+
+/// Encode precomputed reversible 5/3 wavelet coefficients into a classic
+/// JPEG 2000 Part 1 codestream while controlling the output COD
+/// multi-component transform flag and using optional encode stage hooks.
+pub fn encode_precomputed_j2k_53_with_mct_and_accelerator(
+    image: &PrecomputedHtj2k53Image,
+    options: &EncodeOptions,
+    use_mct: bool,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    encode_precomputed_53_with_mct_and_accelerator(image, options, use_mct, false, accelerator)
 }
 
 /// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
@@ -301,15 +1390,45 @@ pub fn encode_precomputed_htj2k_53_with_mct_and_accelerator(
     use_mct: bool,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, &'static str> {
+    encode_precomputed_53_with_mct_and_accelerator(image, options, use_mct, true, accelerator)
+}
+
+fn encode_precomputed_53_with_mct_and_accelerator(
+    image: &PrecomputedHtj2k53Image,
+    options: &EncodeOptions,
+    use_mct: bool,
+    use_ht_block_coding: bool,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    encode_precomputed_53_with_component_sample_info_and_accelerator(
+        image,
+        options,
+        use_mct,
+        use_ht_block_coding,
+        &[],
+        accelerator,
+    )
+}
+
+fn encode_precomputed_53_with_component_sample_info_and_accelerator(
+    image: &PrecomputedHtj2k53Image,
+    options: &EncodeOptions,
+    use_mct: bool,
+    use_ht_block_coding: bool,
+    component_sample_info: &[EncodeComponentSampleInfo],
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
     if image.width == 0 || image.height == 0 {
         return Err("invalid dimensions");
     }
-    if image.components.is_empty() || image.components.len() > 4 {
+    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
+    {
         return Err("unsupported component count");
     }
-    if image.bit_depth == 0 || image.bit_depth > 16 {
+    if image.bit_depth == 0 || image.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
         return Err("unsupported bit depth");
     }
+    validate_component_sample_info(component_sample_info, image.components.len())?;
     if image
         .components
         .iter()
@@ -320,12 +1439,12 @@ pub fn encode_precomputed_htj2k_53_with_mct_and_accelerator(
     validate_precomputed_dwt_geometry(image)?;
 
     let num_components =
-        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
     let num_levels = precomputed_level_count(&image.components)?;
     let mut precomputed_options = options.clone();
     precomputed_options.num_decomposition_levels = num_levels;
     precomputed_options.reversible = true;
-    precomputed_options.use_ht_block_coding = true;
+    precomputed_options.use_ht_block_coding = use_ht_block_coding;
     precomputed_options.use_mct = use_mct;
     precomputed_options.validate_high_throughput_codestream = false;
     precomputed_options.component_sampling = Some(
@@ -347,7 +1466,7 @@ pub fn encode_precomputed_htj2k_53_with_mct_and_accelerator(
         encode_accelerator: accelerator,
     };
 
-    encode_with_accelerator(
+    encode_with_accelerator_and_component_sample_info(
         &dummy_pixels,
         image.width,
         image.height,
@@ -355,6 +1474,7 @@ pub fn encode_precomputed_htj2k_53_with_mct_and_accelerator(
         image.bit_depth,
         image.signed,
         &precomputed_options,
+        component_sample_info,
         &mut precomputed_accelerator,
     )
 }
@@ -386,7 +1506,8 @@ pub fn encode_precomputed_htj2k_97_with_accelerator(
     if image.width == 0 || image.height == 0 {
         return Err("invalid dimensions");
     }
-    if image.components.is_empty() || image.components.len() > 4 {
+    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
+    {
         return Err("unsupported component count");
     }
     if image.bit_depth == 0 || image.bit_depth > 16 {
@@ -403,7 +1524,7 @@ pub fn encode_precomputed_htj2k_97_with_accelerator(
     validate_precomputed_dwt97_geometry(image)?;
 
     let num_components =
-        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
     let num_levels = precomputed_97_level_count(&image.components)?;
     let mut precomputed_options = options.clone();
     precomputed_options.num_decomposition_levels = num_levels;
@@ -483,14 +1604,15 @@ pub fn encode_precomputed_htj2k_97_batch_with_accelerator(
                 packet_encode::PacketMarkerOptions {
                     write_sop: prepared.params.write_sop,
                     write_eph: prepared.params.write_eph,
+                    separate_packet_headers: prepared.params.write_ppm || prepared.params.write_ppt,
                 },
             )?;
-        codestreams.push(codestream_write::write_codestream_with_packet_lengths(
+        codestreams.push(write_single_tile_packetized_codestream(
             &prepared.params,
-            &packetized_tile.data,
+            &packetized_tile,
             &prepared.quant_params,
-            &packetized_tile.packet_lengths,
-        ));
+            options.tile_part_packet_limit,
+        )?);
     }
     if encoded_packets.next().is_some() {
         return Err("encoded packet count mismatch");
@@ -541,7 +1663,8 @@ pub fn encode_prequantized_htj2k_97_with_accelerator(
     if image.width == 0 || image.height == 0 {
         return Err("invalid dimensions");
     }
-    if image.components.is_empty() || image.components.len() > 4 {
+    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
+    {
         return Err("unsupported component count");
     }
     if image.bit_depth == 0 || image.bit_depth > 16 {
@@ -557,7 +1680,7 @@ pub fn encode_prequantized_htj2k_97_with_accelerator(
     }
 
     let num_components =
-        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
     let num_levels = prequantized_97_level_count(&image.components)?;
     let guard_bits = options.guard_bits.max(2);
     let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
@@ -601,23 +1724,28 @@ pub fn encode_prequantized_htj2k_97_with_accelerator(
     )?;
     let mut resolution_packets =
         encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
-    let packetization_resolutions = public_packetization_resolutions(&resolution_packets);
-    let packetization_job = J2kPacketizationEncodeJob {
-        resolution_count: resolution_packets.len() as u32,
-        num_layers: 1,
+    let packetized_tile = packetize_resolution_packets_with_options(
+        &mut resolution_packets,
+        &packet_descriptors,
+        1,
         num_components,
-        code_block_count: count_code_blocks(&resolution_packets)?,
-        progression_order: public_packetization_progression_order(
-            prequantized_options.progression_order,
-        ),
-        packet_descriptors: &packet_descriptors,
-        resolutions: &packetization_resolutions,
-    };
-    let tile_data = accelerator
-        .encode_packetization(packetization_job)?
-        .unwrap_or_else(|| {
-            packet_encode::form_tile_bitstream(&mut resolution_packets, 1, num_components)
-        });
+        prequantized_options.progression_order,
+        packet_encode::PacketMarkerOptions {
+            write_sop: prequantized_options.write_sop,
+            write_eph: prequantized_options.write_eph,
+            separate_packet_headers: prequantized_options.write_ppm
+                || prequantized_options.write_ppt,
+        },
+        true,
+        prequantized_options.write_plt
+            || prequantized_options.write_plm
+            || prequantized_options.write_ppm
+            || prequantized_options.write_ppt
+            || prequantized_options.write_sop
+            || prequantized_options.write_eph
+            || prequantized_options.tile_part_packet_limit.is_some(),
+        accelerator,
+    )?;
 
     let quant_params: Vec<(u16, u16)> = step_sizes
         .iter()
@@ -631,6 +1759,8 @@ pub fn encode_prequantized_htj2k_97_with_accelerator(
         num_components,
         bit_depth: image.bit_depth,
         signed: image.signed,
+        component_sample_info: Vec::new(),
+        component_quantization_step_sizes: Vec::new(),
         num_decomposition_levels: num_levels,
         reversible: false,
         code_block_width_exp: prequantized_options.code_block_width_exp,
@@ -643,6 +1773,8 @@ pub fn encode_prequantized_htj2k_97_with_accelerator(
         write_tlm: prequantized_options.write_tlm,
         write_plt: prequantized_options.write_plt,
         write_plm: prequantized_options.write_plm,
+        write_ppm: prequantized_options.write_ppm,
+        write_ppt: prequantized_options.write_ppt,
         write_sop: prequantized_options.write_sop,
         write_eph: prequantized_options.write_eph,
         terminate_coding_passes: false,
@@ -650,14 +1782,16 @@ pub fn encode_prequantized_htj2k_97_with_accelerator(
             .component_sampling
             .clone()
             .ok_or("component sampling missing")?,
+        roi_component_shifts: vec![0; usize::from(num_components)],
         precinct_exponents: precinct_exponents_for_options(&prequantized_options, num_levels)?,
     };
 
-    Ok(codestream_write::write_codestream(
+    write_single_tile_packetized_codestream(
         &params,
-        &tile_data,
+        &packetized_tile,
         &quant_params,
-    ))
+        prequantized_options.tile_part_packet_limit,
+    )
 }
 
 /// Encode preencoded irreversible 9/7 HTJ2K code-block payloads into a
@@ -680,7 +1814,8 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
     if image.width == 0 || image.height == 0 {
         return Err("invalid dimensions");
     }
-    if image.components.is_empty() || image.components.len() > 4 {
+    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
+    {
         return Err("unsupported component count");
     }
     if image.bit_depth == 0 || image.bit_depth > 16 {
@@ -696,7 +1831,7 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
     }
 
     let num_components =
-        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
     let num_levels = preencoded_97_level_count(&image.components)?;
     let guard_bits = options.guard_bits.max(2);
     let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
@@ -740,23 +1875,27 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
     )?;
     let mut resolution_packets =
         encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
-    let packetization_resolutions = public_packetization_resolutions(&resolution_packets);
-    let packetization_job = J2kPacketizationEncodeJob {
-        resolution_count: resolution_packets.len() as u32,
-        num_layers: 1,
+    let packetized_tile = packetize_resolution_packets_with_options(
+        &mut resolution_packets,
+        &packet_descriptors,
+        1,
         num_components,
-        code_block_count: count_code_blocks(&resolution_packets)?,
-        progression_order: public_packetization_progression_order(
-            preencoded_options.progression_order,
-        ),
-        packet_descriptors: &packet_descriptors,
-        resolutions: &packetization_resolutions,
-    };
-    let tile_data = accelerator
-        .encode_packetization(packetization_job)?
-        .unwrap_or_else(|| {
-            packet_encode::form_tile_bitstream(&mut resolution_packets, 1, num_components)
-        });
+        preencoded_options.progression_order,
+        packet_encode::PacketMarkerOptions {
+            write_sop: preencoded_options.write_sop,
+            write_eph: preencoded_options.write_eph,
+            separate_packet_headers: preencoded_options.write_ppm || preencoded_options.write_ppt,
+        },
+        true,
+        preencoded_options.write_plt
+            || preencoded_options.write_plm
+            || preencoded_options.write_ppm
+            || preencoded_options.write_ppt
+            || preencoded_options.write_sop
+            || preencoded_options.write_eph
+            || preencoded_options.tile_part_packet_limit.is_some(),
+        accelerator,
+    )?;
 
     let quant_params: Vec<(u16, u16)> = step_sizes
         .iter()
@@ -770,6 +1909,8 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
         num_components,
         bit_depth: image.bit_depth,
         signed: image.signed,
+        component_sample_info: Vec::new(),
+        component_quantization_step_sizes: Vec::new(),
         num_decomposition_levels: num_levels,
         reversible: false,
         code_block_width_exp: preencoded_options.code_block_width_exp,
@@ -782,6 +1923,8 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
         write_tlm: preencoded_options.write_tlm,
         write_plt: preencoded_options.write_plt,
         write_plm: preencoded_options.write_plm,
+        write_ppm: preencoded_options.write_ppm,
+        write_ppt: preencoded_options.write_ppt,
         write_sop: preencoded_options.write_sop,
         write_eph: preencoded_options.write_eph,
         terminate_coding_passes: false,
@@ -789,14 +1932,16 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
             .component_sampling
             .clone()
             .ok_or("component sampling missing")?,
+        roi_component_shifts: vec![0; usize::from(num_components)],
         precinct_exponents: precinct_exponents_for_options(&preencoded_options, num_levels)?,
     };
 
-    Ok(codestream_write::write_codestream(
+    write_single_tile_packetized_codestream(
         &params,
-        &tile_data,
+        &packetized_tile,
         &quant_params,
-    ))
+        preencoded_options.tile_part_packet_limit,
+    )
 }
 
 /// Encode preencoded irreversible 9/7 HTJ2K code-block payloads into a
@@ -810,7 +1955,8 @@ pub fn encode_preencoded_htj2k_97_owned_with_accelerator(
     if image.width == 0 || image.height == 0 {
         return Err("invalid dimensions");
     }
-    if image.components.is_empty() || image.components.len() > 4 {
+    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
+    {
         return Err("unsupported component count");
     }
     if image.bit_depth == 0 || image.bit_depth > 16 {
@@ -830,7 +1976,7 @@ pub fn encode_preencoded_htj2k_97_owned_with_accelerator(
     let bit_depth = image.bit_depth;
     let signed = image.signed;
     let num_components =
-        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
     let num_levels = preencoded_97_level_count(&image.components)?;
     let guard_bits = options.guard_bits.max(2);
     let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
@@ -873,23 +2019,27 @@ pub fn encode_preencoded_htj2k_97_owned_with_accelerator(
     )?;
     let mut resolution_packets =
         encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
-    let packetization_resolutions = public_packetization_resolutions(&resolution_packets);
-    let packetization_job = J2kPacketizationEncodeJob {
-        resolution_count: resolution_packets.len() as u32,
-        num_layers: 1,
+    let packetized_tile = packetize_resolution_packets_with_options(
+        &mut resolution_packets,
+        &packet_descriptors,
+        1,
         num_components,
-        code_block_count: count_code_blocks(&resolution_packets)?,
-        progression_order: public_packetization_progression_order(
-            preencoded_options.progression_order,
-        ),
-        packet_descriptors: &packet_descriptors,
-        resolutions: &packetization_resolutions,
-    };
-    let tile_data = accelerator
-        .encode_packetization(packetization_job)?
-        .unwrap_or_else(|| {
-            packet_encode::form_tile_bitstream(&mut resolution_packets, 1, num_components)
-        });
+        preencoded_options.progression_order,
+        packet_encode::PacketMarkerOptions {
+            write_sop: preencoded_options.write_sop,
+            write_eph: preencoded_options.write_eph,
+            separate_packet_headers: preencoded_options.write_ppm || preencoded_options.write_ppt,
+        },
+        true,
+        preencoded_options.write_plt
+            || preencoded_options.write_plm
+            || preencoded_options.write_ppm
+            || preencoded_options.write_ppt
+            || preencoded_options.write_sop
+            || preencoded_options.write_eph
+            || preencoded_options.tile_part_packet_limit.is_some(),
+        accelerator,
+    )?;
 
     let quant_params: Vec<(u16, u16)> = step_sizes
         .iter()
@@ -903,6 +2053,8 @@ pub fn encode_preencoded_htj2k_97_owned_with_accelerator(
         num_components,
         bit_depth,
         signed,
+        component_sample_info: Vec::new(),
+        component_quantization_step_sizes: Vec::new(),
         num_decomposition_levels: num_levels,
         reversible: false,
         code_block_width_exp: preencoded_options.code_block_width_exp,
@@ -915,6 +2067,8 @@ pub fn encode_preencoded_htj2k_97_owned_with_accelerator(
         write_tlm: preencoded_options.write_tlm,
         write_plt: preencoded_options.write_plt,
         write_plm: preencoded_options.write_plm,
+        write_ppm: preencoded_options.write_ppm,
+        write_ppt: preencoded_options.write_ppt,
         write_sop: preencoded_options.write_sop,
         write_eph: preencoded_options.write_eph,
         terminate_coding_passes: false,
@@ -922,14 +2076,16 @@ pub fn encode_preencoded_htj2k_97_owned_with_accelerator(
             .component_sampling
             .clone()
             .ok_or("component sampling missing")?,
+        roi_component_shifts: vec![0; usize::from(num_components)],
         precinct_exponents: precinct_exponents_for_options(&preencoded_options, num_levels)?,
     };
 
-    Ok(codestream_write::write_codestream(
+    write_single_tile_packetized_codestream(
         &params,
-        &tile_data,
+        &packetized_tile,
         &quant_params,
-    ))
+        preencoded_options.tile_part_packet_limit,
+    )
 }
 
 /// Encode compact preencoded irreversible 9/7 HTJ2K code-block payloads into a
@@ -943,11 +2099,22 @@ pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
     if image.width == 0 || image.height == 0 {
         return Err("invalid dimensions");
     }
-    if image.components.is_empty() || image.components.len() > 4 {
+    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
+    {
         return Err("unsupported component count");
     }
     if image.bit_depth == 0 || image.bit_depth > 16 {
         return Err("unsupported bit depth");
+    }
+    if options.write_plt
+        || options.write_plm
+        || options.write_sop
+        || options.write_eph
+        || options.tile_part_packet_limit.is_some()
+    {
+        return Err(
+            "compact preencoded HTJ2K encode does not support packet marker or tile-part options",
+        );
     }
     validate_irreversible_quantization_profile(options)?;
     if image
@@ -963,7 +2130,7 @@ pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
     let bit_depth = image.bit_depth;
     let signed = image.signed;
     let num_components =
-        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
     let num_levels = preencoded_compact_97_level_count(&image.components)?;
     let guard_bits = options.guard_bits.max(2);
     let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
@@ -1046,6 +2213,8 @@ pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
         num_components,
         bit_depth,
         signed,
+        component_sample_info: Vec::new(),
+        component_quantization_step_sizes: Vec::new(),
         num_decomposition_levels: num_levels,
         reversible: false,
         code_block_width_exp: preencoded_options.code_block_width_exp,
@@ -1058,6 +2227,8 @@ pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
         write_tlm: preencoded_options.write_tlm,
         write_plt: preencoded_options.write_plt,
         write_plm: preencoded_options.write_plm,
+        write_ppm: preencoded_options.write_ppm,
+        write_ppt: preencoded_options.write_ppt,
         write_sop: preencoded_options.write_sop,
         write_eph: preencoded_options.write_eph,
         terminate_coding_passes: false,
@@ -1065,6 +2236,7 @@ pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
             .component_sampling
             .clone()
             .ok_or("component sampling missing")?,
+        roi_component_shifts: vec![0; usize::from(num_components)],
         precinct_exponents: precinct_exponents_for_options(&preencoded_options, num_levels)?,
     };
 
@@ -1110,9 +2282,6 @@ fn validate_precomputed_component_dwt_geometry(
     component_width: u32,
     component_height: u32,
 ) -> Result<(), &'static str> {
-    if dwt.level_count() == 0 {
-        return Err("precomputed DWT must contain at least one decomposition level");
-    }
     if let Some(highest_level) = dwt.last_level_geometry() {
         if highest_level.width != component_width || highest_level.height != component_height {
             return Err("precomputed DWT component dimensions mismatch");
@@ -1664,7 +2833,7 @@ fn prepared_resolution_packets_from_prequantized_component(
     component_idx: usize,
     component: &PrequantizedHtj2k97Component,
 ) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
-    let component_idx = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
+    let component_idx = u16::try_from(component_idx).map_err(|_| "component index exceeds u16")?;
     component
         .resolutions
         .iter()
@@ -1693,7 +2862,7 @@ fn prepared_subband_from_prequantized(
             .code_blocks
             .iter()
             .map(|block| PreparedEncodeCodeBlock {
-                coefficients: block.coefficients.clone(),
+                coefficients: block.coefficients.iter().copied().map(i64::from).collect(),
                 width: block.width,
                 height: block.height,
             })
@@ -1725,6 +2894,7 @@ fn prepared_subband_from_prequantized(
         sub_band_type: internal_sub_band_type(subband.sub_band_type),
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: BlockCodingMode::HighThroughput,
+        ht_target_coding_passes: 1,
     })
 }
 
@@ -1755,7 +2925,7 @@ fn prepared_resolution_packets_from_preencoded_component(
     component_idx: usize,
     component: &PreencodedHtj2k97Component,
 ) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
-    let component_idx = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
+    let component_idx = u16::try_from(component_idx).map_err(|_| "component index exceeds u16")?;
     component
         .resolutions
         .iter()
@@ -1780,7 +2950,7 @@ fn prepared_resolution_packets_from_preencoded_component_owned(
     component_idx: usize,
     component: PreencodedHtj2k97Component,
 ) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
-    let component_idx = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
+    let component_idx = u16::try_from(component_idx).map_err(|_| "component index exceeds u16")?;
     component
         .resolutions
         .into_iter()
@@ -1806,7 +2976,7 @@ fn prepared_resolution_packets_from_preencoded_compact_component<'a>(
     component: &'a PreencodedHtj2k97CompactComponent,
     payload: &'a [u8],
 ) -> Result<Vec<PreparedCompactResolutionPacket<'a>>, &'static str> {
-    let component_idx = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
+    let component_idx = u16::try_from(component_idx).map_err(|_| "component index exceeds u16")?;
     component
         .resolutions
         .iter()
@@ -1873,6 +3043,7 @@ fn prepared_subband_from_preencoded(
         sub_band_type: internal_sub_band_type(subband.sub_band_type),
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: BlockCodingMode::HighThroughput,
+        ht_target_coding_passes: 1,
     })
 }
 
@@ -1934,6 +3105,7 @@ fn prepared_subband_from_preencoded_owned(
         sub_band_type: internal_sub_band_type(subband.sub_band_type),
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: BlockCodingMode::HighThroughput,
+        ht_target_coding_passes: 1,
     })
 }
 
@@ -1975,10 +3147,10 @@ fn compact_payload_slice<'a>(
 fn zero_pixel_buffer(
     width: u32,
     height: u32,
-    num_components: u8,
+    num_components: u16,
     bit_depth: u8,
 ) -> Result<Vec<u8>, &'static str> {
-    let bytes_per_sample = if bit_depth <= 8 { 1usize } else { 2usize };
+    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth)?;
     let len = width as usize;
     let len = len
         .checked_mul(height as usize)
@@ -2144,6 +3316,14 @@ fn block_coding_mode(options: &EncodeOptions) -> BlockCodingMode {
     }
 }
 
+fn ht_target_coding_passes_for_options(options: &EncodeOptions) -> u8 {
+    if options.use_ht_block_coding && options.num_layers > 1 {
+        options.num_layers.min(3)
+    } else {
+        1
+    }
+}
+
 fn validate_irreversible_quantization_scale(scale: f32) -> Result<(), &'static str> {
     if scale.is_finite() && scale > 0.0 {
         Ok(())
@@ -2166,7 +3346,7 @@ fn validate_htj2k_codestream(
     pixels: &[u8],
     width: u32,
     height: u32,
-    num_components: u8,
+    num_components: u16,
     bit_depth: u8,
     signed: bool,
     reversible: bool,
@@ -2197,7 +3377,9 @@ fn native_samples_equal(expected: &[u8], actual: &[u8], bit_depth: u8, signed: b
         return false;
     }
 
-    let bytes_per_sample = if bit_depth <= 8 { 1 } else { 2 };
+    let Ok(bytes_per_sample) = raw_pixel_bytes_per_sample(bit_depth) else {
+        return false;
+    };
     let sample_count = expected.len() / bytes_per_sample;
     (0..sample_count).all(|sample_index| {
         decode_native_sample(expected, sample_index, bit_depth, signed)
@@ -2205,48 +3387,72 @@ fn native_samples_equal(expected: &[u8], actual: &[u8], bit_depth: u8, signed: b
     })
 }
 
-fn decode_native_sample(bytes: &[u8], sample_index: usize, bit_depth: u8, signed: bool) -> i32 {
-    let byte_offset = sample_index * if bit_depth <= 8 { 1 } else { 2 };
-    let mask = (1u32 << u32::from(bit_depth)) - 1;
-    let raw = if bit_depth <= 8 {
-        u32::from(bytes[byte_offset])
-    } else {
-        u32::from(u16::from_le_bytes([
-            bytes[byte_offset],
-            bytes[byte_offset + 1],
-        ]))
-    } & mask;
+fn decode_native_sample(bytes: &[u8], sample_index: usize, bit_depth: u8, signed: bool) -> i64 {
+    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth).unwrap_or(1);
+    let byte_offset = sample_index * bytes_per_sample;
+    let raw = read_le_sample_value(
+        &bytes[byte_offset..byte_offset + bytes_per_sample],
+        bit_depth,
+    );
 
     if signed {
-        let shift = 32 - u32::from(bit_depth);
-        ((raw << shift) as i32) >> shift
+        sign_extend_sample(raw, bit_depth)
     } else {
-        raw as i32
+        raw as i64
     }
+}
+
+fn raw_pixel_bytes_per_sample(bit_depth: u8) -> Result<usize, &'static str> {
+    if bit_depth == 0 || bit_depth > MAX_PART1_SAMPLE_BIT_DEPTH {
+        return Err("unsupported bit depth");
+    }
+    Ok(usize::from(bit_depth).div_ceil(8).max(1))
+}
+
+fn read_le_sample_value(bytes: &[u8], bit_depth: u8) -> u64 {
+    let mut raw = 0_u64;
+    for (shift, byte) in bytes.iter().enumerate() {
+        raw |= u64::from(*byte) << (shift * 8);
+    }
+    let mask = (1_u64 << bit_depth) - 1;
+    raw & mask
+}
+
+fn sign_extend_sample(raw: u64, bit_depth: u8) -> i64 {
+    let shift = 64 - u32::from(bit_depth);
+    ((raw << shift) as i64) >> shift
 }
 
 fn encode_impl(
     pixels: &[u8],
     width: u32,
     height: u32,
-    num_components: u8,
+    num_components: u16,
     bit_depth: u8,
     signed: bool,
     options: &EncodeOptions,
     block_coding_mode: BlockCodingMode,
+    roi_regions: &[EncodeRoiRegion],
+    component_sample_info: &[EncodeComponentSampleInfo],
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, &'static str> {
     if width == 0 || height == 0 {
         return Err("invalid dimensions");
     }
-    if num_components == 0 || num_components > 4 {
+    if num_components == 0 || num_components > MAX_J2K_SPEC_COMPONENTS {
         return Err("unsupported component count");
     }
-    if bit_depth == 0 || bit_depth > 16 {
+    if bit_depth == 0 || bit_depth > MAX_PART1_SAMPLE_BIT_DEPTH {
         return Err("unsupported bit depth");
     }
     if options.num_layers == 0 || options.num_layers > 32 {
         return Err("unsupported quality layer count");
+    }
+    if options.write_ppm && options.write_ppt {
+        return Err("PPM and PPT packet header markers are mutually exclusive");
+    }
+    if matches!(options.tile_part_packet_limit, Some(0)) {
+        return Err("tile-part packet limit must be non-zero");
     }
     if !options.quality_layer_byte_targets.is_empty()
         && options.quality_layer_byte_targets.len() != usize::from(options.num_layers)
@@ -2256,11 +3462,12 @@ fn encode_impl(
     if !options.reversible {
         validate_irreversible_quantization_profile(options)?;
     }
+    validate_component_sample_info(component_sample_info, usize::from(num_components))?;
 
     let num_pixels = (width as usize)
         .checked_mul(height as usize)
         .ok_or("image dimensions overflow")?;
-    let bytes_per_sample = if bit_depth <= 8 { 1 } else { 2 };
+    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth)?;
     let expected_len = num_pixels
         .checked_mul(num_components as usize)
         .and_then(|len| len.checked_mul(bytes_per_sample))
@@ -2269,6 +3476,15 @@ fn encode_impl(
         return Err("pixel data too short");
     }
     let component_sampling = component_sampling_for_options(options, num_components)?;
+    let high_bit_exact = bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH;
+    if high_bit_exact && options.reversible {
+        validate_reversible_i64_encode_options(
+            options,
+            block_coding_mode,
+            component_sample_info,
+            &component_sampling,
+        )?;
+    }
     if let Some((tile_width, tile_height)) = options.tile_size {
         if tile_width == 0 || tile_height == 0 {
             return Err("invalid tile dimensions");
@@ -2289,6 +3505,8 @@ fn encode_impl(
                 signed,
                 options,
                 block_coding_mode,
+                roi_regions,
+                component_sample_info,
                 accelerator,
                 tile_width,
                 tile_height,
@@ -2299,12 +3517,12 @@ fn encode_impl(
     let profile_enabled = profile::profile_stages_enabled();
     let total_start = profile::profile_now(profile_enabled);
 
-    let use_mct = options.use_mct && num_components >= 3;
+    let use_mct = options.use_mct && matches!(num_components, 3 | 4);
     let num_levels = options.num_decomposition_levels.min(
         // Don't decompose more than the image supports
         max_decomposition_levels(width, height),
     );
-    let guard_bits = if options.reversible {
+    let requested_guard_bits = if options.reversible {
         if use_mct {
             options.guard_bits.max(2)
         } else {
@@ -2313,7 +3531,13 @@ fn encode_impl(
     } else {
         options.guard_bits.max(2)
     };
-    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+    let guard_bits = if high_bit_exact && options.reversible {
+        reversible_guard_bits_for_marker_limit(bit_depth, num_levels, requested_guard_bits)?
+    } else {
+        requested_guard_bits
+    };
+    let reversible_guard_delta = guard_bits.saturating_sub(requested_guard_bits);
+    let mut step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
         bit_depth,
         num_levels,
         options.reversible,
@@ -2321,13 +3545,53 @@ fn encode_impl(
         options.irreversible_quantization_scale,
         options.irreversible_quantization_subband_scales,
     );
+    if options.reversible && reversible_guard_delta != 0 {
+        adjust_reversible_step_sizes_for_guard_delta(&mut step_sizes, reversible_guard_delta)?;
+    }
     let quant_params: Vec<(u16, u16)> = step_sizes
         .iter()
         .map(|s| (s.exponent, s.mantissa))
         .collect();
+    let mut component_step_sizes = component_step_sizes(
+        component_sample_info,
+        num_levels,
+        options.reversible,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    if options.reversible && reversible_guard_delta != 0 {
+        adjust_component_step_sizes_for_guard_delta(
+            &mut component_step_sizes,
+            reversible_guard_delta,
+        )?;
+    }
+    let component_quantization_step_sizes = component_step_sizes
+        .iter()
+        .map(|steps| {
+            steps
+                .iter()
+                .map(|step| (step.exponent, step.mantissa))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     let cb_width = 1u32 << (options.code_block_width_exp + 2);
     let cb_height = 1u32 << (options.code_block_height_exp + 2);
+    let ht_target_coding_passes = ht_target_coding_passes_for_options(options);
     let precinct_exponents = precinct_exponents_for_options(options, num_levels)?;
+    let max_base_bitplanes =
+        max_total_bitplanes_for_components(&step_sizes, &component_step_sizes, guard_bits)?;
+    let roi_plans = roi_encode_plans_for_options(
+        options,
+        roi_regions,
+        num_components,
+        width,
+        height,
+        &component_sampling,
+        max_base_bitplanes,
+        block_coding_mode,
+    )?;
+    let roi_component_shifts: Vec<u8> = roi_plans.iter().map(|plan| plan.shift).collect();
     let params = EncodeParams {
         width,
         height,
@@ -2340,6 +3604,8 @@ fn encode_impl(
         num_components,
         bit_depth,
         signed,
+        component_sample_info: component_sample_info.to_vec(),
+        component_quantization_step_sizes,
         num_decomposition_levels: num_levels,
         reversible: options.reversible,
         code_block_width_exp: options.code_block_width_exp,
@@ -2352,17 +3618,51 @@ fn encode_impl(
         write_tlm: options.write_tlm,
         write_plt: options.write_plt,
         write_plm: options.write_plm,
+        write_ppm: options.write_ppm,
+        write_ppt: options.write_ppt,
         write_sop: options.write_sop,
         write_eph: options.write_eph,
         terminate_coding_passes: block_coding_mode == BlockCodingMode::Classic
             && options.num_layers > 1,
         component_sampling,
+        roi_component_shifts: roi_component_shifts.clone(),
         precinct_exponents,
     };
 
+    if high_bit_exact && options.reversible {
+        return encode_reversible_i64_single_tile_codestream(
+            pixels,
+            width,
+            height,
+            num_pixels,
+            num_components,
+            bit_depth,
+            signed,
+            options,
+            &params,
+            &quant_params,
+            &step_sizes,
+            &roi_plans,
+            use_mct,
+            guard_bits,
+            num_levels,
+            cb_width,
+            cb_height,
+            ht_target_coding_passes,
+            accelerator,
+        );
+    }
+
     let stage_start = profile::profile_now(profile_enabled);
     if block_coding_mode == BlockCodingMode::HighThroughput
-        && !(params.write_plt || params.write_plm || params.write_sop || params.write_eph)
+        && component_sample_info.is_empty()
+        && roi_component_shifts.iter().all(|shift| *shift == 0)
+        && roi_regions.is_empty()
+        && !(params.write_plt
+            || params.write_plm
+            || params.write_sop
+            || params.write_eph
+            || options.tile_part_packet_limit.is_some())
     {
         if let Some(tile_data) = accelerator.encode_htj2k_tile(J2kHtj2kTileEncodeJob {
             pixels,
@@ -2444,6 +3744,12 @@ fn encode_impl(
             )
         })
         .collect::<Result<Vec<_>, &'static str>>()?;
+    validate_component_sampling_dwt_geometry(
+        &decompositions,
+        width,
+        height,
+        &params.component_sampling,
+    )?;
     let dwt_us = profile::elapsed_us(stage_start);
 
     // Step 5: Quantize and encode code-blocks for each component
@@ -2456,22 +3762,40 @@ fn encode_impl(
         .take(num_components as usize)
         .enumerate()
     {
-        let component = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
+        let component = u16::try_from(component_idx).map_err(|_| "component index exceeds u16")?;
+        let component_bit_depth = component_sample_info
+            .get(component_idx)
+            .map_or(bit_depth, |info| info.bit_depth);
+        let component_steps = component_step_sizes
+            .get(component_idx)
+            .map_or(step_sizes.as_slice(), Vec::as_slice);
+        let roi_shift = roi_component_shifts
+            .get(component_idx)
+            .copied()
+            .unwrap_or(0);
+        let roi_plan = roi_plans
+            .get(component_idx)
+            .ok_or("ROI plan count does not match component count")?;
         let mut packets = Vec::with_capacity(num_levels as usize + 1);
 
         // LL subband (resolution 0)
+        let ll_roi_scale = roi_subband_scale(num_levels, None)?;
         let ll_subband = prepare_subband(
             &decomp.ll,
             decomp.ll_width,
             decomp.ll_height,
-            &step_sizes[0],
-            bit_depth,
+            &component_steps[0],
+            component_bit_depth,
             guard_bits,
             options.reversible,
             block_coding_mode,
             cb_width,
             cb_height,
             SubBandType::LowLow,
+            roi_shift,
+            &roi_plan.regions,
+            ll_roi_scale,
+            ht_target_coding_passes,
             accelerator,
         )?;
         packets.push(PreparedResolutionPacket {
@@ -2484,20 +3808,25 @@ fn encode_impl(
         // Higher resolution levels
         for (level_idx, level) in decomp.levels.iter().enumerate() {
             let step_base = 1 + level_idx * 3;
+            let level_roi_scale = roi_subband_scale(num_levels, Some(level_idx))?;
 
             // HL subband
             let hl_subband = prepare_subband(
                 &level.hl,
                 level.high_width,
                 level.low_height,
-                &step_sizes[step_base],
-                bit_depth,
+                &component_steps[step_base],
+                component_bit_depth,
                 guard_bits,
                 options.reversible,
                 block_coding_mode,
                 cb_width,
                 cb_height,
                 SubBandType::HighLow,
+                roi_shift,
+                &roi_plan.regions,
+                level_roi_scale,
+                ht_target_coding_passes,
                 accelerator,
             )?;
 
@@ -2506,14 +3835,18 @@ fn encode_impl(
                 &level.lh,
                 level.low_width,
                 level.high_height,
-                &step_sizes[step_base + 1],
-                bit_depth,
+                &component_steps[step_base + 1],
+                component_bit_depth,
                 guard_bits,
                 options.reversible,
                 block_coding_mode,
                 cb_width,
                 cb_height,
                 SubBandType::LowHigh,
+                roi_shift,
+                &roi_plan.regions,
+                level_roi_scale,
+                ht_target_coding_passes,
                 accelerator,
             )?;
 
@@ -2522,14 +3855,18 @@ fn encode_impl(
                 &level.hh,
                 level.high_width,
                 level.high_height,
-                &step_sizes[step_base + 2],
-                bit_depth,
+                &component_steps[step_base + 2],
+                component_bit_depth,
                 guard_bits,
                 options.reversible,
                 block_coding_mode,
                 cb_width,
                 cb_height,
                 SubBandType::HighHigh,
+                roi_shift,
+                &roi_plan.regions,
+                level_roi_scale,
+                ht_target_coding_passes,
                 accelerator,
             )?;
 
@@ -2582,49 +3919,31 @@ fn encode_impl(
     // Step 6: Form tile bitstream (T2)
     let stage_start = profile::profile_now(profile_enabled);
     let mut resolution_packets = resolution_packets;
-    let packetization_resolutions = public_packetization_resolutions(&resolution_packets);
-    let scalar_packet_descriptors = scalar_packet_descriptors(&packet_descriptors);
-    let packetization_job = J2kPacketizationEncodeJob {
-        resolution_count: resolution_packets.len() as u32,
-        num_layers: options.num_layers,
+    let packetized_tile = packetize_resolution_packets_with_options(
+        &mut resolution_packets,
+        &packet_descriptors,
+        options.num_layers,
         num_components,
-        code_block_count: count_code_blocks(&resolution_packets)?,
-        progression_order: public_packetization_progression_order(options.progression_order),
-        packet_descriptors: &packet_descriptors,
-        resolutions: &packetization_resolutions,
-    };
-    let needs_scalar_packetization =
-        params.write_plt || params.write_plm || params.write_sop || params.write_eph;
-    let accelerated_tile_data = if allow_packetization_accelerator && !needs_scalar_packetization {
-        accelerator.encode_packetization(packetization_job)?
-    } else {
-        None
-    };
-    let packetized_tile = if let Some(data) = accelerated_tile_data {
-        packet_encode::PacketizedTileData {
-            data,
-            packet_lengths: Vec::new(),
-        }
-    } else {
-        packet_encode::form_tile_bitstream_with_descriptors_lengths_and_markers(
-            &mut resolution_packets,
-            &scalar_packet_descriptors,
-            packet_encode::PacketMarkerOptions {
-                write_sop: params.write_sop,
-                write_eph: params.write_eph,
-            },
-        )?
-    };
+        options.progression_order,
+        packet_encode::PacketMarkerOptions {
+            write_sop: params.write_sop,
+            write_eph: params.write_eph,
+            separate_packet_headers: params.write_ppm || params.write_ppt,
+        },
+        allow_packetization_accelerator,
+        packetization_requires_scalar(&params, options.tile_part_packet_limit),
+        accelerator,
+    )?;
     let packetize_us = profile::elapsed_us(stage_start);
 
     // Step 7: Write codestream
     let stage_start = profile::profile_now(profile_enabled);
-    let codestream = codestream_write::write_codestream_with_packet_lengths(
+    let codestream = write_single_tile_packetized_codestream(
         &params,
-        &packetized_tile.data,
+        &packetized_tile,
         &quant_params,
-        &packetized_tile.packet_lengths,
-    );
+        options.tile_part_packet_limit,
+    )?;
     let codestream_us = profile::elapsed_us(stage_start);
 
     if profile_enabled {
@@ -2647,15 +3966,588 @@ fn encode_impl(
     Ok(codestream)
 }
 
+fn validate_reversible_i64_encode_options(
+    options: &EncodeOptions,
+    block_coding_mode: BlockCodingMode,
+    component_sample_info: &[EncodeComponentSampleInfo],
+    component_sampling: &[(u8, u8)],
+) -> Result<(), &'static str> {
+    if !options.reversible {
+        return Err("25-38 bit encode currently requires reversible 5/3 coding");
+    }
+    if !matches!(
+        block_coding_mode,
+        BlockCodingMode::Classic | BlockCodingMode::HighThroughput
+    ) {
+        return Err("25-38 bit encode requires classic J2K or HTJ2K block coding");
+    }
+    if !component_sample_info.is_empty() {
+        return Err("25-38 bit encode currently requires uniform raw-pixel component metadata");
+    }
+    if component_sampling
+        .iter()
+        .any(|sampling| *sampling != (1, 1))
+    {
+        return Err("25-38 bit encode currently requires full-resolution components");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_reversible_i64_single_tile_codestream(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    num_pixels: usize,
+    num_components: u16,
+    bit_depth: u8,
+    signed: bool,
+    options: &EncodeOptions,
+    params: &EncodeParams,
+    quant_params: &[(u16, u16)],
+    step_sizes: &[QuantStepSize],
+    roi_plans: &[ComponentRoiEncodePlan],
+    use_mct: bool,
+    guard_bits: u8,
+    num_levels: u8,
+    cb_width: u32,
+    cb_height: u32,
+    ht_target_coding_passes: u8,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    let max_reversible_gain = if num_levels == 0 { 0 } else { 2 };
+    if u16::from(bit_depth) + max_reversible_gain > MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES {
+        return Err("25-38 bit reversible encode exceeds the current no-quantization guard/exponent signaling limit");
+    }
+
+    let mut components = deinterleave_to_i64(pixels, num_pixels, num_components, bit_depth, signed);
+    if use_mct {
+        forward_rct_i64(&mut components);
+    }
+
+    let decompositions = components
+        .iter()
+        .map(|component| fdwt::forward_dwt_i64(component, width, height, num_levels))
+        .collect::<Vec<_>>();
+
+    let mut component_resolution_packets = Vec::with_capacity(num_components as usize);
+    for (component_idx, decomp) in decompositions
+        .iter()
+        .take(num_components as usize)
+        .enumerate()
+    {
+        let component = u16::try_from(component_idx).map_err(|_| "component index exceeds u16")?;
+        let roi_shift = params
+            .roi_component_shifts
+            .get(component_idx)
+            .copied()
+            .unwrap_or(0);
+        let roi_plan = roi_plans
+            .get(component_idx)
+            .ok_or("ROI plan count does not match component count")?;
+        let mut packets = Vec::with_capacity(num_levels as usize + 1);
+
+        let ll_roi_scale = roi_subband_scale(num_levels, None)?;
+        let ll_subband = prepare_subband_i64(
+            &decomp.ll,
+            decomp.ll_width,
+            decomp.ll_height,
+            step_sizes
+                .first()
+                .ok_or("reversible quantization step missing")?,
+            guard_bits,
+            cb_width,
+            cb_height,
+            SubBandType::LowLow,
+            roi_shift,
+            &roi_plan.regions,
+            ll_roi_scale,
+            params.block_coding_mode,
+            ht_target_coding_passes,
+        )?;
+        packets.push(PreparedResolutionPacket {
+            component,
+            resolution: 0,
+            precinct: 0,
+            subbands: vec![ll_subband],
+        });
+
+        for (level_idx, level) in decomp.levels.iter().enumerate() {
+            let step_base = 1 + level_idx * 3;
+            let level_roi_scale = roi_subband_scale(num_levels, Some(level_idx))?;
+            let hl_subband = prepare_subband_i64(
+                &level.hl,
+                level.high_width,
+                level.low_height,
+                step_sizes
+                    .get(step_base)
+                    .ok_or("reversible quantization step missing")?,
+                guard_bits,
+                cb_width,
+                cb_height,
+                SubBandType::HighLow,
+                roi_shift,
+                &roi_plan.regions,
+                level_roi_scale,
+                params.block_coding_mode,
+                ht_target_coding_passes,
+            )?;
+            let lh_subband = prepare_subband_i64(
+                &level.lh,
+                level.low_width,
+                level.high_height,
+                step_sizes
+                    .get(step_base + 1)
+                    .ok_or("reversible quantization step missing")?,
+                guard_bits,
+                cb_width,
+                cb_height,
+                SubBandType::LowHigh,
+                roi_shift,
+                &roi_plan.regions,
+                level_roi_scale,
+                params.block_coding_mode,
+                ht_target_coding_passes,
+            )?;
+            let hh_subband = prepare_subband_i64(
+                &level.hh,
+                level.high_width,
+                level.high_height,
+                step_sizes
+                    .get(step_base + 2)
+                    .ok_or("reversible quantization step missing")?,
+                guard_bits,
+                cb_width,
+                cb_height,
+                SubBandType::HighHigh,
+                roi_shift,
+                &roi_plan.regions,
+                level_roi_scale,
+                params.block_coding_mode,
+                ht_target_coding_passes,
+            )?;
+
+            packets.push(PreparedResolutionPacket {
+                component,
+                resolution: u32::try_from(level_idx + 1)
+                    .map_err(|_| "resolution index exceeds u32")?,
+                precinct: 0,
+                subbands: vec![hl_subband, lh_subband, hh_subband],
+            });
+        }
+        component_resolution_packets.push(packets);
+    }
+
+    encode_i64_component_resolution_packets(
+        component_resolution_packets,
+        width,
+        height,
+        num_components,
+        num_levels,
+        params,
+        quant_params,
+        options,
+        accelerator,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_i64_component_resolution_packets(
+    component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
+    width: u32,
+    height: u32,
+    num_components: u16,
+    num_levels: u8,
+    params: &EncodeParams,
+    quant_params: &[(u16, u16)],
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    let packetized_tile = packetize_i64_component_resolution_packets(
+        component_resolution_packets,
+        width,
+        height,
+        num_components,
+        num_levels,
+        params,
+        options,
+        accelerator,
+    )?;
+
+    write_single_tile_packetized_codestream(
+        params,
+        &packetized_tile,
+        quant_params,
+        options.tile_part_packet_limit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn packetize_i64_component_resolution_packets(
+    component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
+    width: u32,
+    height: u32,
+    num_components: u16,
+    num_levels: u8,
+    params: &EncodeParams,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<packet_encode::PacketizedTileData, &'static str> {
+    let component_resolution_packets = split_component_resolution_packets_by_precinct(
+        component_resolution_packets,
+        width,
+        height,
+        num_levels,
+        &params.precinct_exponents,
+    )?;
+    let prepared_resolution_packets =
+        ordered_prepared_resolution_packets(component_resolution_packets, options)?;
+    let (resolution_packets, packet_descriptors, allow_packetization_accelerator) =
+        if options.num_layers > 1 {
+            let (resolution_packets, packet_descriptors) =
+                encode_prepared_resolution_packets_layered(
+                    prepared_resolution_packets,
+                    options.num_layers,
+                    options.progression_order,
+                    &options.quality_layer_byte_targets,
+                    accelerator,
+                )?;
+            (resolution_packets, packet_descriptors, false)
+        } else {
+            let packet_descriptors = packet_descriptors_for_order(
+                &prepared_resolution_packets,
+                1,
+                options.progression_order,
+            )?;
+            let resolution_packets =
+                encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
+            (resolution_packets, packet_descriptors, true)
+        };
+
+    let mut resolution_packets = resolution_packets;
+    let packetized_tile = packetize_resolution_packets_with_options(
+        &mut resolution_packets,
+        &packet_descriptors,
+        options.num_layers,
+        num_components,
+        options.progression_order,
+        packet_encode::PacketMarkerOptions {
+            write_sop: params.write_sop,
+            write_eph: params.write_eph,
+            separate_packet_headers: params.write_ppm || params.write_ppt,
+        },
+        allow_packetization_accelerator,
+        packetization_requires_scalar(params, options.tile_part_packet_limit),
+        accelerator,
+    )?;
+    Ok(packetized_tile)
+}
+
+fn deinterleave_to_i64(
+    pixels: &[u8],
+    num_pixels: usize,
+    num_components: u16,
+    bit_depth: u8,
+    signed: bool,
+) -> Vec<Vec<i64>> {
+    let nc = num_components as usize;
+    let mut components = vec![vec![0_i64; num_pixels]; nc];
+    let unsigned_offset = if signed {
+        0
+    } else {
+        1_i64 << (u32::from(bit_depth) - 1)
+    };
+    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth).unwrap_or(5);
+    for (i, pixel) in pixels
+        .chunks_exact(nc * bytes_per_sample)
+        .take(num_pixels)
+        .enumerate()
+    {
+        for (component_idx, component) in components.iter_mut().enumerate().take(nc) {
+            let offset = component_idx * bytes_per_sample;
+            let raw = read_le_sample_value(&pixel[offset..offset + bytes_per_sample], bit_depth);
+            component[i] = if signed {
+                sign_extend_sample(raw, bit_depth)
+            } else {
+                i64::try_from(raw).unwrap_or(i64::MAX) - unsigned_offset
+            };
+        }
+    }
+    components
+}
+
+fn typed_component_plane_to_i64(
+    plane: &EncodeTypedComponentPlane<'_>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<i64>, &'static str> {
+    let bytes_per_sample = raw_pixel_bytes_per_sample(plane.bit_depth)?;
+    let sample_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or("image dimensions overflow")?;
+    let expected_len = sample_count
+        .checked_mul(bytes_per_sample)
+        .ok_or("image dimensions overflow")?;
+    if plane.data.len() != expected_len {
+        return Err("component plane data length mismatch");
+    }
+    let unsigned_offset = if plane.signed {
+        0
+    } else {
+        1_i64 << (u32::from(plane.bit_depth) - 1)
+    };
+    Ok(plane
+        .data
+        .chunks_exact(bytes_per_sample)
+        .map(|sample| {
+            let raw = read_le_sample_value(sample, plane.bit_depth);
+            if plane.signed {
+                sign_extend_sample(raw, plane.bit_depth)
+            } else {
+                i64::try_from(raw).unwrap_or(i64::MAX) - unsigned_offset
+            }
+        })
+        .collect())
+}
+
+fn forward_rct_i64(components: &mut [Vec<i64>]) {
+    debug_assert!(components.len() >= 3);
+    let (r_components, rest) = components.split_at_mut(1);
+    let (g_components, b_components) = rest.split_at_mut(1);
+    let r_components = &mut r_components[0];
+    let g_components = &mut g_components[0];
+    let b_components = &mut b_components[0];
+
+    for ((r, g), b) in r_components
+        .iter_mut()
+        .zip(g_components.iter_mut())
+        .zip(b_components.iter_mut())
+    {
+        let r0 = *r;
+        let g0 = *g;
+        let b0 = *b;
+        *r = (r0 + 2 * g0 + b0).div_euclid(4);
+        *g = b0 - g0;
+        *b = r0 - g0;
+    }
+}
+
+struct EncodedTilePart {
+    tile_index: u16,
+    tile_part_index: u8,
+    num_tile_parts: u8,
+    data: Vec<u8>,
+    packet_lengths: Vec<u32>,
+    packet_headers: Vec<Vec<u8>>,
+}
+
+fn split_packetized_tile_into_tile_parts(
+    tile_index: u16,
+    data: &[u8],
+    packet_lengths: &[u32],
+    packet_headers: &[Vec<u8>],
+    packet_limit: Option<u16>,
+) -> Result<Vec<EncodedTilePart>, &'static str> {
+    if !packet_headers.is_empty() && packet_headers.len() != packet_lengths.len() {
+        return Err("packet header count does not match packet length count");
+    }
+    let Some(packet_limit) = packet_limit else {
+        return Ok(vec![EncodedTilePart {
+            tile_index,
+            tile_part_index: 0,
+            num_tile_parts: 1,
+            data: data.to_vec(),
+            packet_lengths: packet_lengths.to_vec(),
+            packet_headers: packet_headers.to_vec(),
+        }]);
+    };
+    if packet_limit == 0 {
+        return Err("tile-part packet limit must be non-zero");
+    }
+    if packet_lengths.is_empty() {
+        return Ok(vec![EncodedTilePart {
+            tile_index,
+            tile_part_index: 0,
+            num_tile_parts: 1,
+            data: data.to_vec(),
+            packet_lengths: Vec::new(),
+            packet_headers: Vec::new(),
+        }]);
+    }
+
+    let expected_len = packet_lengths.iter().try_fold(0usize, |acc, &len| {
+        acc.checked_add(usize::try_from(len).map_err(|_| "packet length exceeds usize")?)
+            .ok_or("packet length sum overflow")
+    })?;
+    if expected_len != data.len() {
+        return Err("packet lengths do not match tile data length");
+    }
+
+    let packet_limit = usize::from(packet_limit);
+    let num_tile_parts = packet_lengths.len().div_ceil(packet_limit);
+    if num_tile_parts > usize::from(u8::MAX) {
+        return Err("tile-part packet limit would emit more than 255 tile-parts");
+    }
+    let num_tile_parts = u8::try_from(num_tile_parts).map_err(|_| "tile-part count exceeds u8")?;
+
+    let mut parts = Vec::with_capacity(usize::from(num_tile_parts));
+    let mut data_offset = 0usize;
+    for (tile_part_index, packet_chunk) in packet_lengths.chunks(packet_limit).enumerate() {
+        let chunk_len = packet_chunk.iter().try_fold(0usize, |acc, &len| {
+            acc.checked_add(usize::try_from(len).map_err(|_| "packet length exceeds usize")?)
+                .ok_or("packet length sum overflow")
+        })?;
+        let end = data_offset
+            .checked_add(chunk_len)
+            .ok_or("packet length sum overflow")?;
+        let tile_part_index =
+            u8::try_from(tile_part_index).map_err(|_| "tile-part index exceeds u8")?;
+        parts.push(EncodedTilePart {
+            tile_index,
+            tile_part_index,
+            num_tile_parts,
+            data: data[data_offset..end].to_vec(),
+            packet_lengths: packet_chunk.to_vec(),
+            packet_headers: if packet_headers.is_empty() {
+                Vec::new()
+            } else {
+                let packet_start = tile_part_index as usize * packet_limit;
+                let packet_end = packet_start + packet_chunk.len();
+                packet_headers[packet_start..packet_end].to_vec()
+            },
+        });
+        data_offset = end;
+    }
+    Ok(parts)
+}
+
+fn write_single_tile_packetized_codestream(
+    params: &EncodeParams,
+    packetized_tile: &packet_encode::PacketizedTileData,
+    quant_params: &[(u16, u16)],
+    tile_part_packet_limit: Option<u16>,
+) -> Result<Vec<u8>, &'static str> {
+    validate_packet_header_marker_payload(params, packetized_tile)?;
+    let tile_parts = split_packetized_tile_into_tile_parts(
+        0,
+        &packetized_tile.data,
+        &packetized_tile.packet_lengths,
+        &packetized_tile.packet_headers,
+        tile_part_packet_limit,
+    )?;
+    let codestream_tile_parts = tile_parts
+        .iter()
+        .map(|part| codestream_write::TilePartData {
+            tile_index: part.tile_index,
+            tile_part_index: part.tile_part_index,
+            num_tile_parts: part.num_tile_parts,
+            data: &part.data,
+            packet_lengths: &part.packet_lengths,
+            packet_headers: &part.packet_headers,
+        })
+        .collect::<Vec<_>>();
+    Ok(codestream_write::write_codestream_tiles(
+        params,
+        &codestream_tile_parts,
+        quant_params,
+    ))
+}
+
+fn validate_packet_header_marker_payload(
+    params: &EncodeParams,
+    packetized_tile: &packet_encode::PacketizedTileData,
+) -> Result<(), &'static str> {
+    if !params.write_ppm && !params.write_ppt {
+        return Ok(());
+    }
+    if params.write_ppm && params.write_ppt {
+        return Err("PPM and PPT packet header markers are mutually exclusive");
+    }
+    validate_packet_header_marker_payloads(
+        params.write_ppm,
+        params.write_ppt,
+        &[&packetized_tile.packet_headers],
+    )?;
+    Ok(())
+}
+
+fn validate_packet_header_marker_payloads(
+    write_ppm: bool,
+    write_ppt: bool,
+    tile_packet_headers: &[&[Vec<u8>]],
+) -> Result<(), &'static str> {
+    const PACKET_HEADER_MARKER_PAYLOAD_LIMIT: usize = u16::MAX as usize - 3;
+    const PPM_PACKET_HEADER_LIMIT: usize = PACKET_HEADER_MARKER_PAYLOAD_LIMIT - 2;
+    const MAX_PACKET_HEADER_MARKERS: usize = u8::MAX as usize + 1;
+
+    if !write_ppm && !write_ppt {
+        return Ok(());
+    }
+    if write_ppm && write_ppt {
+        return Err("PPM and PPT packet header markers are mutually exclusive");
+    }
+    if tile_packet_headers.iter().any(|headers| headers.is_empty()) {
+        return Err("PPM/PPT encode requires separated packet headers");
+    }
+    if write_ppm {
+        let mut marker_count = 0usize;
+        let mut payload_len = 0usize;
+        for header in tile_packet_headers
+            .iter()
+            .flat_map(|headers| headers.iter())
+        {
+            if header.len() > PPM_PACKET_HEADER_LIMIT {
+                return Err("PPM packet header exceeds marker payload limit");
+            }
+            let entry_len = 2usize
+                .checked_add(header.len())
+                .ok_or("PPM marker payload length overflow")?;
+            if payload_len == 0 {
+                marker_count = marker_count
+                    .checked_add(1)
+                    .ok_or("PPM marker count overflow")?;
+            } else if payload_len
+                .checked_add(entry_len)
+                .is_none_or(|len| len > PACKET_HEADER_MARKER_PAYLOAD_LIMIT)
+            {
+                marker_count = marker_count
+                    .checked_add(1)
+                    .ok_or("PPM marker count overflow")?;
+                payload_len = 0;
+            }
+            payload_len = payload_len
+                .checked_add(entry_len)
+                .ok_or("PPM marker payload length overflow")?;
+            if marker_count > MAX_PACKET_HEADER_MARKERS {
+                return Err("PPM packet headers require more than 256 marker segments");
+            }
+        }
+    }
+    if write_ppt {
+        for headers in tile_packet_headers {
+            let payload_len = headers.iter().try_fold(0usize, |acc, header| {
+                acc.checked_add(header.len())
+                    .ok_or("PPT marker payload length overflow")
+            })?;
+            let marker_count = payload_len.div_ceil(PACKET_HEADER_MARKER_PAYLOAD_LIMIT);
+            if marker_count > MAX_PACKET_HEADER_MARKERS {
+                return Err("PPT packet headers require more than 256 marker segments");
+            }
+        }
+    }
+    Ok(())
+}
 fn encode_multitile_impl(
     pixels: &[u8],
     width: u32,
     height: u32,
-    num_components: u8,
+    num_components: u16,
     bit_depth: u8,
     signed: bool,
     options: &EncodeOptions,
     block_coding_mode: BlockCodingMode,
+    roi_regions: &[EncodeRoiRegion],
+    component_sample_info: &[EncodeComponentSampleInfo],
     accelerator: &mut impl J2kEncodeStageAccelerator,
     tile_width: u32,
     tile_height: u32,
@@ -2682,8 +4574,8 @@ fn encode_multitile_impl(
     let num_levels = options
         .num_decomposition_levels
         .min(max_decomposition_levels(min_tile_width, min_tile_height));
-    let use_mct = options.use_mct && num_components >= 3;
-    let guard_bits = if options.reversible {
+    let use_mct = options.use_mct && matches!(num_components, 3 | 4);
+    let requested_guard_bits = if options.reversible {
         if use_mct {
             options.guard_bits.max(2)
         } else {
@@ -2692,7 +4584,14 @@ fn encode_multitile_impl(
     } else {
         options.guard_bits.max(2)
     };
-    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+    let high_bit_exact = bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH;
+    let guard_bits = if high_bit_exact && options.reversible {
+        reversible_guard_bits_for_marker_limit(bit_depth, num_levels, requested_guard_bits)?
+    } else {
+        requested_guard_bits
+    };
+    let reversible_guard_delta = guard_bits.saturating_sub(requested_guard_bits);
+    let mut step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
         bit_depth,
         num_levels,
         options.reversible,
@@ -2700,26 +4599,58 @@ fn encode_multitile_impl(
         options.irreversible_quantization_scale,
         options.irreversible_quantization_subband_scales,
     );
+    if options.reversible && reversible_guard_delta != 0 {
+        adjust_reversible_step_sizes_for_guard_delta(&mut step_sizes, reversible_guard_delta)?;
+    }
     let quant_params: Vec<(u16, u16)> = step_sizes
         .iter()
         .map(|s| (s.exponent, s.mantissa))
         .collect();
+    let mut component_step_sizes = component_step_sizes(
+        component_sample_info,
+        num_levels,
+        options.reversible,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    if options.reversible && reversible_guard_delta != 0 {
+        adjust_component_step_sizes_for_guard_delta(
+            &mut component_step_sizes,
+            reversible_guard_delta,
+        )?;
+    }
+    let component_quantization_step_sizes = component_step_sizes
+        .iter()
+        .map(|steps| {
+            steps
+                .iter()
+                .map(|step| (step.exponent, step.mantissa))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
 
     let mut child_options = options.clone();
     child_options.num_decomposition_levels = num_levels;
     child_options.tile_size = None;
     child_options.write_tlm = false;
-    child_options.write_plt = options.write_plt || options.write_plm;
+    child_options.write_plt = options.write_plt
+        || options.write_plm
+        || options.write_ppm
+        || options.write_ppt
+        || options.tile_part_packet_limit.is_some();
     child_options.write_plm = false;
-
-    struct EncodedTilePart {
-        data: Vec<u8>,
-        packet_lengths: Vec<u32>,
-    }
+    child_options.write_ppm = options.write_ppm || options.write_ppt;
+    child_options.write_ppt = false;
 
     let mut tile_bodies = Vec::with_capacity(num_tiles as usize);
     for tile_y in 0..num_y_tiles {
         for tile_x in 0..num_x_tiles {
+            let tile_index = tile_y
+                .checked_mul(num_x_tiles)
+                .and_then(|base| base.checked_add(tile_x))
+                .ok_or("tile index overflow")?;
+            let tile_index = u16::try_from(tile_index).map_err(|_| "tile index exceeds u16")?;
             let x0 = tile_x * tile_width;
             let y0 = tile_y * tile_height;
             let actual_width = (width - x0).min(tile_width);
@@ -2734,6 +4665,8 @@ fn encode_multitile_impl(
                 num_components,
                 bit_depth,
             )?;
+            let tile_roi_regions =
+                roi_regions_for_tile(roi_regions, x0, y0, actual_width, actual_height)?;
             let tile_codestream = encode_impl(
                 &tile_pixels,
                 actual_width,
@@ -2743,21 +4676,46 @@ fn encode_multitile_impl(
                 signed,
                 &child_options,
                 block_coding_mode,
+                &tile_roi_regions,
+                component_sample_info,
                 accelerator,
             )?;
-            let packet_lengths = if options.write_plt || options.write_plm {
+            let packet_lengths = if options.write_plt
+                || options.write_plm
+                || options.write_ppm
+                || options.write_ppt
+                || options.tile_part_packet_limit.is_some()
+            {
                 extract_single_tile_plt_packet_lengths(&tile_codestream)?
             } else {
                 Vec::new()
             };
-            tile_bodies.push(EncodedTilePart {
-                data: extract_single_tile_body(&tile_codestream)?.to_vec(),
-                packet_lengths,
-            });
+            let packet_headers = if options.write_ppm || options.write_ppt {
+                extract_single_tile_ppm_packet_headers(&tile_codestream)?
+            } else {
+                Vec::new()
+            };
+            tile_bodies.extend(split_packetized_tile_into_tile_parts(
+                tile_index,
+                extract_single_tile_body(&tile_codestream)?,
+                &packet_lengths,
+                &packet_headers,
+                options.tile_part_packet_limit,
+            )?);
         }
     }
 
     let component_sampling = component_sampling_for_options(options, num_components)?;
+    let roi_plans = roi_encode_plans_for_options(
+        options,
+        roi_regions,
+        num_components,
+        width,
+        height,
+        &component_sampling,
+        max_total_bitplanes_for_components(&step_sizes, &component_step_sizes, guard_bits)?,
+        block_coding_mode,
+    )?;
     let precinct_exponents = precinct_exponents_for_options(options, num_levels)?;
     let params = EncodeParams {
         width,
@@ -2767,6 +4725,8 @@ fn encode_multitile_impl(
         num_components,
         bit_depth,
         signed,
+        component_sample_info: component_sample_info.to_vec(),
+        component_quantization_step_sizes,
         num_decomposition_levels: num_levels,
         reversible: options.reversible,
         code_block_width_exp: options.code_block_width_exp,
@@ -2779,24 +4739,36 @@ fn encode_multitile_impl(
         write_tlm: options.write_tlm,
         write_plt: options.write_plt,
         write_plm: options.write_plm,
+        write_ppm: options.write_ppm,
+        write_ppt: options.write_ppt,
         write_sop: options.write_sop,
         write_eph: options.write_eph,
         terminate_coding_passes: block_coding_mode == BlockCodingMode::Classic
             && options.num_layers > 1,
         component_sampling,
+        roi_component_shifts: roi_plans.iter().map(|plan| plan.shift).collect(),
         precinct_exponents,
     };
+    let tile_packet_headers = tile_bodies
+        .iter()
+        .map(|tile| tile.packet_headers.as_slice())
+        .collect::<Vec<_>>();
+    validate_packet_header_marker_payloads(
+        params.write_ppm,
+        params.write_ppt,
+        &tile_packet_headers,
+    )?;
     let tile_parts = tile_bodies
         .iter()
-        .enumerate()
-        .map(|(tile_index, tile)| {
-            Ok(codestream_write::TilePartData {
-                tile_index: u16::try_from(tile_index).map_err(|_| "tile index exceeds u16")?,
-                data: &tile.data,
-                packet_lengths: &tile.packet_lengths,
-            })
+        .map(|tile| codestream_write::TilePartData {
+            tile_index: tile.tile_index,
+            tile_part_index: tile.tile_part_index,
+            num_tile_parts: tile.num_tile_parts,
+            data: &tile.data,
+            packet_lengths: &tile.packet_lengths,
+            packet_headers: &tile.packet_headers,
         })
-        .collect::<Result<Vec<_>, &'static str>>()?;
+        .collect::<Vec<_>>();
 
     Ok(codestream_write::write_codestream_tiles(
         &params,
@@ -2812,10 +4784,10 @@ fn extract_interleaved_tile(
     y0: u32,
     tile_width: u32,
     tile_height: u32,
-    num_components: u8,
+    num_components: u16,
     bit_depth: u8,
 ) -> Result<Vec<u8>, &'static str> {
-    let bytes_per_sample = if bit_depth <= 8 { 1usize } else { 2usize };
+    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth)?;
     let bytes_per_pixel = usize::from(num_components)
         .checked_mul(bytes_per_sample)
         .ok_or("pixel stride overflow")?;
@@ -2853,6 +4825,95 @@ fn extract_interleaved_tile(
     }
 
     Ok(tile)
+}
+
+fn extract_component_plane_tile(
+    data: &[u8],
+    image_width: u32,
+    x0: u32,
+    y0: u32,
+    tile_width: u32,
+    tile_height: u32,
+    bit_depth: u8,
+) -> Result<Vec<u8>, &'static str> {
+    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth)?;
+    let row_bytes = usize::try_from(tile_width)
+        .map_err(|_| "tile width exceeds usize")?
+        .checked_mul(bytes_per_sample)
+        .ok_or("tile row byte count overflow")?;
+    let out_len = row_bytes
+        .checked_mul(usize::try_from(tile_height).map_err(|_| "tile height exceeds usize")?)
+        .ok_or("tile byte count overflow")?;
+    let mut tile = Vec::with_capacity(out_len);
+    let image_row_bytes = usize::try_from(image_width)
+        .map_err(|_| "image width exceeds usize")?
+        .checked_mul(bytes_per_sample)
+        .ok_or("image row byte count overflow")?;
+    let x_byte_offset = usize::try_from(x0)
+        .map_err(|_| "tile x offset exceeds usize")?
+        .checked_mul(bytes_per_sample)
+        .ok_or("tile x byte offset overflow")?;
+
+    for y in y0..y0 + tile_height {
+        let row_start = usize::try_from(y)
+            .map_err(|_| "tile y offset exceeds usize")?
+            .checked_mul(image_row_bytes)
+            .and_then(|offset| offset.checked_add(x_byte_offset))
+            .ok_or("tile row offset overflow")?;
+        let row_end = row_start
+            .checked_add(row_bytes)
+            .ok_or("tile row range overflow")?;
+        tile.extend_from_slice(
+            data.get(row_start..row_end)
+                .ok_or("component plane tile row range outside source data")?,
+        );
+    }
+
+    Ok(tile)
+}
+
+fn roi_regions_for_tile(
+    roi_regions: &[EncodeRoiRegion],
+    tile_x: u32,
+    tile_y: u32,
+    tile_width: u32,
+    tile_height: u32,
+) -> Result<Vec<EncodeRoiRegion>, &'static str> {
+    let tile_x1 = tile_x
+        .checked_add(tile_width)
+        .ok_or("tile ROI bounds overflow")?;
+    let tile_y1 = tile_y
+        .checked_add(tile_height)
+        .ok_or("tile ROI bounds overflow")?;
+    let mut clipped = Vec::new();
+
+    for region in roi_regions {
+        let region_x1 = region
+            .x
+            .checked_add(region.width)
+            .ok_or("ROI region bounds overflow")?;
+        let region_y1 = region
+            .y
+            .checked_add(region.height)
+            .ok_or("ROI region bounds overflow")?;
+        let x0 = region.x.max(tile_x);
+        let y0 = region.y.max(tile_y);
+        let x1 = region_x1.min(tile_x1);
+        let y1 = region_y1.min(tile_y1);
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+        clipped.push(EncodeRoiRegion {
+            component: region.component,
+            x: x0 - tile_x,
+            y: y0 - tile_y,
+            width: x1 - x0,
+            height: y1 - y0,
+            shift: region.shift,
+        });
+    }
+
+    Ok(clipped)
 }
 
 fn extract_single_tile_body(codestream: &[u8]) -> Result<&[u8], &'static str> {
@@ -2910,6 +4971,60 @@ fn extract_single_tile_plt_packet_lengths(codestream: &[u8]) -> Result<Vec<u32>,
     }
 
     Ok(packet_lengths)
+}
+
+fn extract_single_tile_ppm_packet_headers(codestream: &[u8]) -> Result<Vec<Vec<u8>>, &'static str> {
+    let sot = codestream
+        .windows(2)
+        .position(|marker| marker == [0xFF, super::codestream::markers::SOT])
+        .ok_or("encoded tile codestream missing SOT")?;
+    let mut packet_headers = Vec::new();
+    let mut offset = 0usize;
+
+    while offset + 4 <= sot {
+        if codestream[offset] == 0xFF && codestream[offset + 1] == super::codestream::markers::PPM {
+            let marker_len =
+                u16::from_be_bytes([codestream[offset + 2], codestream[offset + 3]]) as usize;
+            if marker_len < 3 {
+                return Err("encoded tile codestream has invalid PPM length");
+            }
+            let marker_end = offset
+                .checked_add(2)
+                .and_then(|value| value.checked_add(marker_len))
+                .ok_or("encoded tile codestream PPM length overflow")?;
+            if marker_end > sot {
+                return Err("encoded tile codestream PPM extends past SOT");
+            }
+            let mut payload_offset = offset + 5;
+            while payload_offset < marker_end {
+                let header_len_end = payload_offset
+                    .checked_add(2)
+                    .ok_or("encoded tile codestream PPM payload overflow")?;
+                let len_bytes = codestream
+                    .get(payload_offset..header_len_end)
+                    .ok_or("encoded tile codestream PPM packet length truncated")?;
+                let header_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
+                let header_start = header_len_end;
+                let header_end = header_start
+                    .checked_add(header_len)
+                    .ok_or("encoded tile codestream PPM packet header overflow")?;
+                let header = codestream
+                    .get(header_start..header_end)
+                    .ok_or("encoded tile codestream PPM packet header truncated")?;
+                packet_headers.push(header.to_vec());
+                payload_offset = header_end;
+            }
+            offset = marker_end;
+        } else {
+            offset += 1;
+        }
+    }
+
+    if packet_headers.is_empty() {
+        return Err("encoded tile codestream missing PPM packet headers");
+    }
+
+    Ok(packet_headers)
 }
 
 fn try_encode_forward_rct(
@@ -3047,7 +5162,7 @@ fn validate_band_len(actual: usize, width: u32, height: u32) -> Result<(), &'sta
 
 fn validate_deinterleaved_components(
     components: Vec<Vec<f32>>,
-    num_components: u8,
+    num_components: u16,
     num_pixels: usize,
 ) -> Result<Vec<Vec<f32>>, &'static str> {
     if components.len() != usize::from(num_components) {
@@ -3062,9 +5177,119 @@ fn validate_deinterleaved_components(
     Ok(components)
 }
 
+fn component_plane_to_f32(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+    signed: bool,
+) -> Result<Vec<f32>, &'static str> {
+    let sample_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or("image dimensions overflow")?;
+    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth)?;
+    let expected_len = sample_count
+        .checked_mul(bytes_per_sample)
+        .ok_or("image dimensions overflow")?;
+    if data.len() != expected_len {
+        return Err("component plane data length mismatch");
+    }
+
+    let unsigned_offset = if signed {
+        0.0
+    } else {
+        (1_u64 << (u32::from(bit_depth) - 1)) as f32
+    };
+    Ok(data
+        .chunks_exact(bytes_per_sample)
+        .map(|sample| {
+            let raw = read_le_sample_value(sample, bit_depth);
+            if signed {
+                sign_extend_sample(raw, bit_depth) as f32
+            } else {
+                raw as f32 - unsigned_offset
+            }
+        })
+        .collect())
+}
+
+fn forward_dwt53_output_from_decomposition(
+    decomposition: DwtDecomposition,
+) -> J2kForwardDwt53Output {
+    J2kForwardDwt53Output {
+        ll: decomposition.ll,
+        ll_width: decomposition.ll_width,
+        ll_height: decomposition.ll_height,
+        levels: decomposition
+            .levels
+            .into_iter()
+            .map(|level| {
+                let width = level.low_width + level.high_width;
+                let height = level.low_height + level.high_height;
+                J2kForwardDwt53Level {
+                    hl: level.hl,
+                    lh: level.lh,
+                    hh: level.hh,
+                    width,
+                    height,
+                    low_width: level.low_width,
+                    low_height: level.low_height,
+                    high_width: level.high_width,
+                    high_height: level.high_height,
+                }
+            })
+            .collect(),
+    }
+}
+
+fn validate_component_sampling_dwt_geometry(
+    decompositions: &[DwtDecomposition],
+    reference_width: u32,
+    reference_height: u32,
+    component_sampling: &[(u8, u8)],
+) -> Result<(), &'static str> {
+    if decompositions.len() != component_sampling.len() {
+        return Err("component sampling count does not match component count");
+    }
+    for (decomposition, &(x_rsiz, y_rsiz)) in decompositions.iter().zip(component_sampling) {
+        let expected_width = reference_width.div_ceil(u32::from(x_rsiz.max(1)));
+        let expected_height = reference_height.div_ceil(u32::from(y_rsiz.max(1)));
+        if dwt_decomposition_dimensions(decomposition) != (expected_width, expected_height) {
+            return Err("component sampling requires component-sized DWT geometry");
+        }
+    }
+    Ok(())
+}
+
+fn dwt_decomposition_dimensions(decomposition: &DwtDecomposition) -> (u32, u32) {
+    decomposition
+        .levels
+        .last()
+        .map_or((decomposition.ll_width, decomposition.ll_height), |level| {
+            (
+                level.low_width + level.high_width,
+                level.low_height + level.high_height,
+            )
+        })
+}
+
+#[derive(Clone, Debug, Default)]
+struct ComponentRoiEncodePlan {
+    shift: u8,
+    regions: Vec<ComponentRoiEncodeRegion>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ComponentRoiEncodeRegion {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
 fn component_sampling_for_options(
     options: &EncodeOptions,
-    num_components: u8,
+    num_components: u16,
 ) -> Result<Vec<(u8, u8)>, &'static str> {
     match &options.component_sampling {
         Some(component_sampling) => {
@@ -3081,6 +5306,279 @@ fn component_sampling_for_options(
         }
         None => Ok(vec![(1, 1); usize::from(num_components)]),
     }
+}
+
+fn roi_encode_plans_for_options(
+    options: &EncodeOptions,
+    roi_regions: &[EncodeRoiRegion],
+    num_components: u16,
+    width: u32,
+    height: u32,
+    component_sampling: &[(u8, u8)],
+    base_bitplanes: u8,
+    block_coding_mode: BlockCodingMode,
+) -> Result<Vec<ComponentRoiEncodePlan>, &'static str> {
+    let whole_component_shifts = roi_component_shifts_for_options(
+        options,
+        num_components,
+        base_bitplanes,
+        block_coding_mode,
+    )?;
+    let mut plans = whole_component_shifts
+        .iter()
+        .map(|&shift| ComponentRoiEncodePlan {
+            shift,
+            regions: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+
+    for region in roi_regions {
+        if region.component >= num_components {
+            return Err("ROI region component index out of range");
+        }
+        if region.width == 0 || region.height == 0 {
+            return Err("ROI region dimensions must be non-zero");
+        }
+        if region.shift == 0 {
+            return Err("ROI region maxshift must be non-zero");
+        }
+
+        let x1 = region
+            .x
+            .checked_add(region.width)
+            .ok_or("ROI region bounds overflow")?;
+        let y1 = region
+            .y
+            .checked_add(region.height)
+            .ok_or("ROI region bounds overflow")?;
+        if region.x >= width || region.y >= height || x1 > width || y1 > height {
+            return Err("ROI region must be inside image bounds");
+        }
+
+        let component_idx = usize::from(region.component);
+        if whole_component_shifts[component_idx] != 0 {
+            return Err("ROI region cannot be combined with whole-component ROI shift");
+        }
+        if region.shift < base_bitplanes {
+            return Err("ROI region maxshift must cover background bitplanes");
+        }
+        validate_roi_shift(region.shift, base_bitplanes, block_coding_mode)?;
+
+        let plan = &mut plans[component_idx];
+        if plan.shift == 0 {
+            plan.shift = region.shift;
+        } else if plan.shift != region.shift {
+            return Err("ROI regions for one component must use one maxshift");
+        }
+
+        let &(x_rsiz, y_rsiz) = component_sampling
+            .get(component_idx)
+            .ok_or("component sampling count does not match component count")?;
+        let component_width = width.div_ceil(u32::from(x_rsiz));
+        let component_height = height.div_ceil(u32::from(y_rsiz));
+        let component_x0 = region.x / u32::from(x_rsiz);
+        let component_y0 = region.y / u32::from(y_rsiz);
+        let component_x1 = x1.div_ceil(u32::from(x_rsiz)).min(component_width);
+        let component_y1 = y1.div_ceil(u32::from(y_rsiz)).min(component_height);
+        if component_x0 >= component_x1 || component_y0 >= component_y1 {
+            return Err("ROI region does not intersect component grid");
+        }
+        plan.regions.push(ComponentRoiEncodeRegion {
+            x: component_x0,
+            y: component_y0,
+            width: component_x1 - component_x0,
+            height: component_y1 - component_y0,
+        });
+    }
+
+    Ok(plans)
+}
+
+fn roi_component_shifts_for_options(
+    options: &EncodeOptions,
+    num_components: u16,
+    base_bitplanes: u8,
+    block_coding_mode: BlockCodingMode,
+) -> Result<Vec<u8>, &'static str> {
+    if options.roi_component_shifts.is_empty() {
+        return Ok(vec![0; usize::from(num_components)]);
+    }
+    if options.roi_component_shifts.len() != usize::from(num_components) {
+        return Err("ROI component shift count does not match component count");
+    }
+    let max_bitplanes = max_roi_coded_bitplanes(block_coding_mode);
+    for &shift in &options.roi_component_shifts {
+        validate_roi_shift_for_max(shift, base_bitplanes, max_bitplanes)?;
+    }
+    Ok(options.roi_component_shifts.clone())
+}
+
+fn validate_roi_shift(
+    shift: u8,
+    base_bitplanes: u8,
+    block_coding_mode: BlockCodingMode,
+) -> Result<(), &'static str> {
+    let max_bitplanes = max_roi_coded_bitplanes(block_coding_mode);
+    validate_roi_shift_for_max(shift, base_bitplanes, max_bitplanes)
+}
+
+fn max_roi_coded_bitplanes(block_coding_mode: BlockCodingMode) -> u8 {
+    match block_coding_mode {
+        BlockCodingMode::Classic => MAX_CLASSIC_ROI_CODED_BITPLANES,
+        BlockCodingMode::HighThroughput => MAX_HT_ROI_CODED_BITPLANES,
+    }
+}
+
+fn validate_roi_shift_for_max(
+    shift: u8,
+    base_bitplanes: u8,
+    max_bitplanes: u8,
+) -> Result<(), &'static str> {
+    if base_bitplanes
+        .checked_add(shift)
+        .is_none_or(|bitplanes| bitplanes > max_bitplanes)
+    {
+        return Err("ROI maxshift exceeds supported coded bitplane count");
+    }
+    Ok(())
+}
+
+fn roi_subband_scale(num_levels: u8, level_idx: Option<usize>) -> Result<u32, &'static str> {
+    let shift = match level_idx {
+        Some(level_idx) => usize::from(num_levels)
+            .checked_sub(level_idx)
+            .ok_or("ROI subband level exceeds decomposition level count")?,
+        None => usize::from(num_levels),
+    };
+    if shift >= u32::BITS as usize {
+        return Err("ROI subband scale exceeds supported coordinate range");
+    }
+    Ok(1_u32 << shift)
+}
+
+fn max_total_bitplanes(step_sizes: &[QuantStepSize], guard_bits: u8) -> Result<u8, &'static str> {
+    step_sizes
+        .iter()
+        .map(|step_size| {
+            debug_assert!(step_size.exponent <= u16::from(u8::MAX));
+            guard_bits
+                .checked_add(
+                    u8::try_from(step_size.exponent)
+                        .map_err(|_| "quantization exponent exceeds supported bitplane count")?,
+                )
+                .and_then(|value| value.checked_sub(1))
+                .ok_or("quantization bitplane count underflows")
+        })
+        .max()
+        .unwrap_or(Ok(0))
+}
+
+fn max_total_bitplanes_for_components(
+    default_step_sizes: &[QuantStepSize],
+    component_step_sizes: &[Vec<QuantStepSize>],
+    guard_bits: u8,
+) -> Result<u8, &'static str> {
+    let default = max_total_bitplanes(default_step_sizes, guard_bits)?;
+    component_step_sizes
+        .iter()
+        .try_fold(default, |max_bitplanes, step_sizes| {
+            Ok(max_bitplanes.max(max_total_bitplanes(step_sizes, guard_bits)?))
+        })
+}
+
+fn validate_component_sample_info(
+    component_sample_info: &[EncodeComponentSampleInfo],
+    num_components: usize,
+) -> Result<(), &'static str> {
+    if component_sample_info.is_empty() {
+        return Ok(());
+    }
+    if component_sample_info.len() != num_components {
+        return Err("component sample metadata count does not match component count");
+    }
+    if component_sample_info
+        .iter()
+        .any(|info| info.bit_depth == 0 || info.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH)
+    {
+        return Err("unsupported bit depth");
+    }
+    Ok(())
+}
+
+fn component_step_sizes(
+    component_sample_info: &[EncodeComponentSampleInfo],
+    num_levels: u8,
+    reversible: bool,
+    guard_bits: u8,
+    quantization_scale: f32,
+    subband_scales: IrreversibleQuantizationSubbandScales,
+) -> Vec<Vec<QuantStepSize>> {
+    component_sample_info
+        .iter()
+        .map(|info| {
+            quantize::compute_step_sizes_with_irreversible_profile(
+                info.bit_depth,
+                num_levels,
+                reversible,
+                guard_bits,
+                quantization_scale,
+                subband_scales,
+            )
+        })
+        .collect()
+}
+
+fn reversible_guard_bits_for_marker_limit(
+    bit_depth: u8,
+    num_levels: u8,
+    requested_guard_bits: u8,
+) -> Result<u8, &'static str> {
+    if requested_guard_bits > MAX_REVERSIBLE_NO_QUANT_GUARD_BITS {
+        return Err("reversible guard bits exceed the Part 1 marker field");
+    }
+    let max_reversible_gain = if num_levels == 0 { 0 } else { 2 };
+    let requested_bitplanes = u16::from(requested_guard_bits)
+        .checked_add(u16::from(bit_depth))
+        .and_then(|value| value.checked_add(max_reversible_gain))
+        .and_then(|value| value.checked_sub(1))
+        .ok_or("reversible no-quantization bitplane count underflows")?;
+    if requested_bitplanes > MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES {
+        return Err("25-38 bit reversible encode exceeds the current no-quantization guard/exponent signaling limit");
+    }
+    let min_guard_bits = requested_bitplanes.saturating_sub(MAX_REVERSIBLE_NO_QUANT_EXPONENT - 1);
+    let guard_bits = requested_guard_bits
+        .max(u8::try_from(min_guard_bits).map_err(|_| "reversible guard bits exceed u8")?);
+    if guard_bits > MAX_REVERSIBLE_NO_QUANT_GUARD_BITS {
+        return Err("reversible guard bits exceed the Part 1 marker field");
+    }
+    Ok(guard_bits)
+}
+
+fn adjust_component_step_sizes_for_guard_delta(
+    component_step_sizes: &mut [Vec<QuantStepSize>],
+    guard_delta: u8,
+) -> Result<(), &'static str> {
+    for step_sizes in component_step_sizes {
+        adjust_reversible_step_sizes_for_guard_delta(step_sizes, guard_delta)?;
+    }
+    Ok(())
+}
+
+fn adjust_reversible_step_sizes_for_guard_delta(
+    step_sizes: &mut [QuantStepSize],
+    guard_delta: u8,
+) -> Result<(), &'static str> {
+    let guard_delta = u16::from(guard_delta);
+    for step in step_sizes {
+        step.exponent = step
+            .exponent
+            .checked_sub(guard_delta)
+            .ok_or("reversible no-quantization exponent underflows guard-bit adjustment")?;
+        if step.exponent > MAX_REVERSIBLE_NO_QUANT_EXPONENT {
+            return Err("reversible no-quantization exponent exceeds the Part 1 marker field");
+        }
+    }
+    Ok(())
 }
 
 fn precinct_exponents_for_options(
@@ -3373,6 +5871,7 @@ fn split_prepared_subband_by_precinct(
         sub_band_type: subband.sub_band_type,
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: subband.block_coding_mode,
+        ht_target_coding_passes: subband.ht_target_coding_passes,
     })
 }
 
@@ -3392,6 +5891,7 @@ fn empty_prepared_subband_precinct(subband: &PreparedEncodeSubband) -> PreparedE
         sub_band_type: subband.sub_band_type,
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: subband.block_coding_mode,
+        ht_target_coding_passes: subband.ht_target_coding_passes,
     }
 }
 
@@ -3655,6 +6155,58 @@ fn public_packetization_resolutions(
         .collect()
 }
 
+fn packetize_resolution_packets_with_options(
+    resolution_packets: &mut [ResolutionPacket],
+    packet_descriptors: &[J2kPacketizationPacketDescriptor],
+    num_layers: u8,
+    num_components: u16,
+    progression_order: EncodeProgressionOrder,
+    marker_options: packet_encode::PacketMarkerOptions,
+    allow_packetization_accelerator: bool,
+    force_scalar_packetization: bool,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<packet_encode::PacketizedTileData, &'static str> {
+    let packetization_resolutions = public_packetization_resolutions(resolution_packets);
+    let packetization_job = J2kPacketizationEncodeJob {
+        resolution_count: resolution_packets.len() as u32,
+        num_layers,
+        num_components,
+        code_block_count: count_code_blocks(resolution_packets)?,
+        progression_order: public_packetization_progression_order(progression_order),
+        packet_descriptors,
+        resolutions: &packetization_resolutions,
+    };
+    if allow_packetization_accelerator && !force_scalar_packetization {
+        if let Some(data) = accelerator.encode_packetization(packetization_job)? {
+            return Ok(packet_encode::PacketizedTileData {
+                data,
+                packet_lengths: Vec::new(),
+                packet_headers: Vec::new(),
+            });
+        }
+    }
+
+    let scalar_packet_descriptors = scalar_packet_descriptors(packet_descriptors);
+    packet_encode::form_tile_bitstream_with_descriptors_lengths_and_markers(
+        resolution_packets,
+        &scalar_packet_descriptors,
+        marker_options,
+    )
+}
+
+fn packetization_requires_scalar(
+    params: &EncodeParams,
+    tile_part_packet_limit: Option<u16>,
+) -> bool {
+    params.write_plt
+        || params.write_plm
+        || params.write_ppm
+        || params.write_ppt
+        || params.write_sop
+        || params.write_eph
+        || tile_part_packet_limit.is_some()
+}
+
 fn public_packetization_resolutions_from_compact<'a>(
     resolution_packets: &'a [PreparedCompactResolutionPacket<'a>],
 ) -> Vec<J2kPacketizationResolution<'a>> {
@@ -3698,7 +6250,7 @@ fn public_packetization_block_coding_mode(
 
 #[derive(Clone)]
 struct PreparedEncodeCodeBlock {
-    coefficients: Vec<i32>,
+    coefficients: Vec<i64>,
     width: u32,
     height: u32,
 }
@@ -3716,10 +6268,11 @@ struct PreparedEncodeSubband {
     sub_band_type: SubBandType,
     total_bitplanes: u8,
     block_coding_mode: BlockCodingMode,
+    ht_target_coding_passes: u8,
 }
 
 struct PreparedResolutionPacket {
-    component: u8,
+    component: u16,
     resolution: u32,
     precinct: u64,
     subbands: Vec<PreparedEncodeSubband>,
@@ -3740,7 +6293,7 @@ struct PreparedCompactSubband<'a> {
 }
 
 struct PreparedCompactResolutionPacket<'a> {
-    component: u8,
+    component: u16,
     resolution: u32,
     precinct: u64,
     subbands: Vec<PreparedCompactSubband<'a>>,
@@ -3761,7 +6314,8 @@ fn prepare_precomputed_htj2k97_image_for_batch(
     if image.width == 0 || image.height == 0 {
         return Err("invalid dimensions");
     }
-    if image.components.is_empty() || image.components.len() > 4 {
+    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
+    {
         return Err("unsupported component count");
     }
     if image.bit_depth == 0 || image.bit_depth > 16 {
@@ -3778,7 +6332,7 @@ fn prepare_precomputed_htj2k97_image_for_batch(
     validate_precomputed_dwt97_geometry(image)?;
 
     let num_components =
-        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
     let num_levels = precomputed_97_level_count(&image.components)?;
     let guard_bits = options.guard_bits.max(2);
     let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
@@ -3816,6 +6370,8 @@ fn prepare_precomputed_htj2k97_image_for_batch(
         num_components,
         bit_depth: image.bit_depth,
         signed: image.signed,
+        component_sample_info: Vec::new(),
+        component_quantization_step_sizes: Vec::new(),
         num_decomposition_levels: num_levels,
         reversible: false,
         code_block_width_exp: precomputed_options.code_block_width_exp,
@@ -3828,10 +6384,13 @@ fn prepare_precomputed_htj2k97_image_for_batch(
         write_tlm: precomputed_options.write_tlm,
         write_plt: precomputed_options.write_plt,
         write_plm: precomputed_options.write_plm,
+        write_ppm: precomputed_options.write_ppm,
+        write_ppt: precomputed_options.write_ppt,
         write_sop: precomputed_options.write_sop,
         write_eph: precomputed_options.write_eph,
         terminate_coding_passes: false,
         component_sampling,
+        roi_component_shifts: vec![0; usize::from(num_components)],
         precinct_exponents,
     };
 
@@ -3881,7 +6440,7 @@ fn prepared_resolution_packets_from_precomputed_97_component(
     cb_width: u32,
     cb_height: u32,
 ) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
-    let component_idx = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
+    let component_idx = u16::try_from(component_idx).map_err(|_| "component index exceeds u16")?;
     let mut packets = Vec::with_capacity(component.dwt.levels.len() + 1);
     packets.push(PreparedResolutionPacket {
         component: component_idx,
@@ -3985,6 +6544,178 @@ fn copy_code_block_coefficients(
     coefficients
 }
 
+fn copy_code_block_coefficients_i64(
+    quantized: &[i64],
+    width: usize,
+    x0: usize,
+    y0: usize,
+    cbw: usize,
+    cbh: usize,
+) -> Vec<i64> {
+    let len = cbw * cbh;
+    let start = y0 * width + x0;
+    if cbw == width {
+        return quantized[start..start + len].to_vec();
+    }
+
+    let mut coefficients = Vec::with_capacity(len);
+    for y in 0..cbh {
+        let row_start = (y0 + y) * width + x0;
+        coefficients.extend_from_slice(&quantized[row_start..row_start + cbw]);
+    }
+    coefficients
+}
+
+fn coefficients_fit_i32(coefficients: &[i64]) -> bool {
+    coefficients
+        .iter()
+        .all(|&coefficient| i32::try_from(coefficient).is_ok())
+}
+
+fn downcast_i64_coefficients_to_i32(coefficients: &[i64]) -> Result<Vec<i32>, &'static str> {
+    coefficients
+        .iter()
+        .map(|&coefficient| {
+            i32::try_from(coefficient).map_err(|_| {
+                "HTJ2K/accelerated code-block encode does not support i64 coefficients"
+            })
+        })
+        .collect()
+}
+
+fn apply_roi_maxshift_encode(
+    coefficients: &mut [i32],
+    width: u32,
+    height: u32,
+    roi_shift: u8,
+    roi_regions: &[ComponentRoiEncodeRegion],
+    roi_scale: u32,
+) -> Result<(), &'static str> {
+    if roi_shift == 0 {
+        return Ok(());
+    }
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or("ROI subband dimensions overflow")?;
+    if coefficients.len() != expected_len {
+        return Err("ROI subband coefficient length mismatch");
+    }
+    if roi_regions.is_empty() {
+        for coefficient in coefficients {
+            shift_roi_coefficient(coefficient, roi_shift)?;
+        }
+        return Ok(());
+    }
+
+    let mut selected = vec![false; coefficients.len()];
+    for region in roi_regions {
+        let Some((x0, y0, x1, y1)) = roi_region_subband_window(*region, width, height, roi_scale)
+        else {
+            continue;
+        };
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let idx = (y as usize)
+                    .checked_mul(width as usize)
+                    .and_then(|row| row.checked_add(x as usize))
+                    .ok_or("ROI subband index overflow")?;
+                if selected[idx] {
+                    continue;
+                }
+                selected[idx] = true;
+                shift_roi_coefficient(&mut coefficients[idx], roi_shift)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_roi_maxshift_encode_i64(
+    coefficients: &mut [i64],
+    width: u32,
+    height: u32,
+    roi_shift: u8,
+    roi_regions: &[ComponentRoiEncodeRegion],
+    roi_scale: u32,
+) -> Result<(), &'static str> {
+    if roi_shift == 0 {
+        return Ok(());
+    }
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or("ROI subband dimensions overflow")?;
+    if coefficients.len() != expected_len {
+        return Err("ROI subband coefficient length mismatch");
+    }
+    if roi_regions.is_empty() {
+        for coefficient in coefficients {
+            shift_roi_coefficient_i64(coefficient, roi_shift)?;
+        }
+        return Ok(());
+    }
+
+    let mut selected = vec![false; coefficients.len()];
+    for region in roi_regions {
+        let Some((x0, y0, x1, y1)) = roi_region_subband_window(*region, width, height, roi_scale)
+        else {
+            continue;
+        };
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let idx = (y as usize)
+                    .checked_mul(width as usize)
+                    .and_then(|row| row.checked_add(x as usize))
+                    .ok_or("ROI subband index overflow")?;
+                if selected[idx] {
+                    continue;
+                }
+                selected[idx] = true;
+                shift_roi_coefficient_i64(&mut coefficients[idx], roi_shift)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn shift_roi_coefficient(coefficient: &mut i32, roi_shift: u8) -> Result<(), &'static str> {
+    *coefficient = coefficient
+        .checked_shl(u32::from(roi_shift))
+        .ok_or("ROI maxshift coefficient overflow")?;
+    Ok(())
+}
+
+fn shift_roi_coefficient_i64(coefficient: &mut i64, roi_shift: u8) -> Result<(), &'static str> {
+    let factor = 1_i64
+        .checked_shl(u32::from(roi_shift))
+        .ok_or("ROI maxshift coefficient overflow")?;
+    *coefficient = coefficient
+        .checked_mul(factor)
+        .ok_or("ROI maxshift coefficient overflow")?;
+    Ok(())
+}
+
+fn roi_region_subband_window(
+    region: ComponentRoiEncodeRegion,
+    width: u32,
+    height: u32,
+    roi_scale: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    if width == 0 || height == 0 || roi_scale == 0 {
+        return None;
+    }
+    let x1 = region.x.saturating_add(region.width);
+    let y1 = region.y.saturating_add(region.height);
+    let x0 = (region.x / roi_scale).min(width);
+    let y0 = (region.y / roi_scale).min(height);
+    let x1 = x1.div_ceil(roi_scale).min(width);
+    let y1 = y1.div_ceil(roi_scale).min(height);
+    if x0 >= x1 || y0 >= y1 {
+        None
+    } else {
+        Some((x0, y0, x1, y1))
+    }
+}
+
 fn prepare_subband(
     coefficients: &[f32],
     width: u32,
@@ -3997,6 +6728,10 @@ fn prepare_subband(
     cb_width: u32,
     cb_height: u32,
     sub_band_type: SubBandType,
+    roi_shift: u8,
+    roi_regions: &[ComponentRoiEncodeRegion],
+    roi_scale: u32,
+    ht_target_coding_passes: u8,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<PreparedEncodeSubband, &'static str> {
     if width == 0 || height == 0 {
@@ -4012,18 +6747,25 @@ fn prepare_subband(
             sub_band_type,
             total_bitplanes: 0,
             block_coding_mode,
+            ht_target_coding_passes,
         });
     }
 
     let range_bits = subband_range_bits(bit_depth, sub_band_type);
     debug_assert!(step_size.exponent <= u16::from(u8::MAX));
-    let total_bitplanes = guard_bits
+    let base_total_bitplanes = guard_bits
         .saturating_add(step_size.exponent as u8)
         .saturating_sub(1);
+    let total_bitplanes = base_total_bitplanes
+        .checked_add(roi_shift)
+        .ok_or("ROI maxshift exceeds supported coded bitplane count")?;
     let num_cbs_x = width.div_ceil(cb_width);
     let num_cbs_y = height.div_ceil(cb_height);
 
-    if block_coding_mode == BlockCodingMode::HighThroughput {
+    if block_coding_mode == BlockCodingMode::HighThroughput
+        && roi_shift == 0
+        && ht_target_coding_passes == 1
+    {
         if let Some(encoded) = accelerator.encode_ht_subband(J2kHtSubbandEncodeJob {
             coefficients,
             width,
@@ -4054,11 +6796,12 @@ fn prepare_subband(
                 sub_band_type,
                 total_bitplanes,
                 block_coding_mode,
+                ht_target_coding_passes,
             });
         }
     }
 
-    let quantized = match accelerator.encode_quantize_subband(J2kQuantizeSubbandJob {
+    let mut quantized = match accelerator.encode_quantize_subband(J2kQuantizeSubbandJob {
         coefficients,
         step_exponent: step_size.exponent,
         step_mantissa: step_size.mantissa,
@@ -4073,6 +6816,14 @@ fn prepare_subband(
         }
         None => quantize::quantize_subband(coefficients, step_size, range_bits, reversible),
     };
+    apply_roi_maxshift_encode(
+        &mut quantized,
+        width,
+        height,
+        roi_shift,
+        roi_regions,
+        roi_scale,
+    )?;
 
     // Split into code-blocks
     let mut code_blocks = Vec::with_capacity((num_cbs_x * num_cbs_y) as usize);
@@ -4087,6 +6838,104 @@ fn prepare_subband(
             let cbh = y1 - y0;
 
             let cb_coeffs = copy_code_block_coefficients(
+                &quantized,
+                width as usize,
+                x0 as usize,
+                y0 as usize,
+                cbw as usize,
+                cbh as usize,
+            )
+            .into_iter()
+            .map(i64::from)
+            .collect();
+
+            code_blocks.push(PreparedEncodeCodeBlock {
+                coefficients: cb_coeffs,
+                width: cbw,
+                height: cbh,
+            });
+        }
+    }
+
+    Ok(PreparedEncodeSubband {
+        code_blocks,
+        preencoded_ht_code_blocks: None,
+        num_cbs_x,
+        num_cbs_y,
+        code_block_width: cb_width,
+        code_block_height: cb_height,
+        width,
+        height,
+        sub_band_type,
+        total_bitplanes,
+        block_coding_mode,
+        ht_target_coding_passes,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_subband_i64(
+    coefficients: &[i64],
+    width: u32,
+    height: u32,
+    step_size: &QuantStepSize,
+    guard_bits: u8,
+    cb_width: u32,
+    cb_height: u32,
+    sub_band_type: SubBandType,
+    roi_shift: u8,
+    roi_regions: &[ComponentRoiEncodeRegion],
+    roi_scale: u32,
+    block_coding_mode: BlockCodingMode,
+    ht_target_coding_passes: u8,
+) -> Result<PreparedEncodeSubband, &'static str> {
+    if width == 0 || height == 0 {
+        return Ok(PreparedEncodeSubband {
+            code_blocks: Vec::new(),
+            preencoded_ht_code_blocks: None,
+            num_cbs_x: 0,
+            num_cbs_y: 0,
+            code_block_width: cb_width,
+            code_block_height: cb_height,
+            width,
+            height,
+            sub_band_type,
+            total_bitplanes: 0,
+            block_coding_mode,
+            ht_target_coding_passes,
+        });
+    }
+
+    debug_assert!(step_size.exponent <= u16::from(u8::MAX));
+    let base_total_bitplanes = guard_bits
+        .saturating_add(step_size.exponent as u8)
+        .saturating_sub(1);
+    let total_bitplanes = base_total_bitplanes
+        .checked_add(roi_shift)
+        .ok_or("ROI maxshift exceeds supported coded bitplane count")?;
+    let num_cbs_x = width.div_ceil(cb_width);
+    let num_cbs_y = height.div_ceil(cb_height);
+    let mut quantized = coefficients.to_vec();
+    apply_roi_maxshift_encode_i64(
+        &mut quantized,
+        width,
+        height,
+        roi_shift,
+        roi_regions,
+        roi_scale,
+    )?;
+
+    let mut code_blocks = Vec::with_capacity((num_cbs_x * num_cbs_y) as usize);
+    for cby in 0..num_cbs_y {
+        for cbx in 0..num_cbs_x {
+            let x0 = cbx * cb_width;
+            let y0 = cby * cb_height;
+            let x1 = (x0 + cb_width).min(width);
+            let y1 = (y0 + cb_height).min(height);
+            let cbw = x1 - x0;
+            let cbh = y1 - y0;
+
+            let cb_coeffs = copy_code_block_coefficients_i64(
                 &quantized,
                 width as usize,
                 x0 as usize,
@@ -4115,6 +6964,7 @@ fn prepare_subband(
         sub_band_type,
         total_bitplanes,
         block_coding_mode,
+        ht_target_coding_passes,
     })
 }
 
@@ -4144,6 +6994,7 @@ fn prepare_subband_cpu_quantized(
             sub_band_type,
             total_bitplanes: 0,
             block_coding_mode,
+            ht_target_coding_passes: 1,
         });
     }
 
@@ -4172,7 +7023,10 @@ fn prepare_subband_cpu_quantized(
                 y0 as usize,
                 cbw as usize,
                 cbh as usize,
-            );
+            )
+            .into_iter()
+            .map(i64::from)
+            .collect();
 
             code_blocks.push(PreparedEncodeCodeBlock {
                 coefficients: cb_coeffs,
@@ -4194,6 +7048,7 @@ fn prepare_subband_cpu_quantized(
         sub_band_type,
         total_bitplanes,
         block_coding_mode,
+        ht_target_coding_passes: 1,
     })
 }
 
@@ -4303,7 +7158,7 @@ fn encode_prepared_resolution_packets_layered(
                 BlockCodingMode::Classic => {
                     for block in subband.code_blocks {
                         let block_idx = layered_subband.blocks.len();
-                        let encoded = bitplane_encode::encode_code_block_segments_with_style(
+                        let encoded = bitplane_encode::encode_code_block_segments_with_style_i64(
                             &block.coefficients,
                             block.width,
                             block.height,
@@ -4344,26 +7199,37 @@ fn encode_prepared_resolution_packets_layered(
                         encode_all_ht_code_blocks(core::slice::from_ref(&subband), accelerator)?;
                     let block_count = encoded_blocks.len();
                     for (block_idx, encoded) in encoded_blocks.into_iter().enumerate() {
-                        let target_layer = if quality_layer_byte_targets.is_empty() {
-                            ht_target_layer(block_idx, block_count, layer_count)?
+                        let segment_layers = if quality_layer_byte_targets.is_empty() {
+                            ht_unbudgeted_segment_layers(
+                                &encoded,
+                                num_layers,
+                                block_idx,
+                                block_count,
+                            )?
                         } else {
-                            ht_candidates.push(HtSegmentAssignmentCandidate {
-                                block_index: ht_block_index,
-                                rate: u64::try_from(encoded.data.len())
-                                    .map_err(|_| "HTJ2K packet contribution length exceeds u64")?,
-                            });
-                            ht_locations.push(HtSegmentLocation {
-                                packet_idx,
-                                subband_idx,
-                                block_idx: layered_subband.blocks.len(),
-                            });
-                            layer_count.saturating_sub(1)
+                            let segment_count = ht_segment_count(&encoded);
+                            let mut segment_layers = Vec::with_capacity(segment_count);
+                            for segment_idx in 0..segment_count {
+                                ht_candidates.push(HtSegmentAssignmentCandidate {
+                                    block_index: ht_block_index,
+                                    segment_index: segment_idx,
+                                    rate: ht_segment_rate(&encoded, segment_idx)?,
+                                });
+                                ht_locations.push(HtSegmentLocation {
+                                    packet_idx,
+                                    subband_idx,
+                                    block_idx: layered_subband.blocks.len(),
+                                    segment_idx,
+                                });
+                                segment_layers.push(layer_count.saturating_sub(1));
+                            }
+                            segment_layers
                         };
                         layered_subband
                             .blocks
                             .push(LayeredPreparedBlock::HighThroughput {
                                 encoded,
-                                target_layer,
+                                segment_layers,
                             });
                         ht_block_index = ht_block_index
                             .checked_add(1)
@@ -4426,11 +7292,15 @@ fn encode_prepared_resolution_packets_layered(
                 .blocks
                 .get_mut(location.block_idx)
                 .ok_or("HTJ2K block index mismatch")?;
-            let LayeredPreparedBlock::HighThroughput { target_layer, .. } = block else {
+            let LayeredPreparedBlock::HighThroughput { segment_layers, .. } = block else {
                 return Err("HTJ2K segment assignment referenced classic block");
             };
-            *target_layer = layer;
+            let segment_layer = segment_layers
+                .get_mut(location.segment_idx)
+                .ok_or("HTJ2K segment index mismatch")?;
+            *segment_layer = layer;
         }
+        enforce_ht_segment_layer_monotonicity(&mut layered_packets);
     }
 
     let mut resolution_packets = Vec::with_capacity(layered_packets.len() * layer_count);
@@ -4459,8 +7329,8 @@ fn encode_prepared_resolution_packets_layered(
                     } => classic_layer_contributions(encoded, num_layers, &segment_layers)?,
                     LayeredPreparedBlock::HighThroughput {
                         encoded,
-                        target_layer,
-                    } => ht_layer_contributions(encoded, num_layers, target_layer)?,
+                        segment_layers,
+                    } => ht_layer_contributions(encoded, num_layers, &segment_layers)?,
                 };
                 for (layer_idx, contribution) in contributions.into_iter().enumerate() {
                     layer_subbands[layer_idx].code_blocks.push(contribution);
@@ -4550,7 +7420,7 @@ fn classic_multilayer_code_block_style() -> CodeBlockStyle {
 }
 
 struct LayeredPreparedPacket {
-    component: u8,
+    component: u16,
     resolution: u32,
     precinct: u64,
     subbands: Vec<LayeredPreparedSubband>,
@@ -4569,7 +7439,7 @@ enum LayeredPreparedBlock {
     },
     HighThroughput {
         encoded: bitplane_encode::EncodedCodeBlock,
-        target_layer: usize,
+        segment_layers: Vec<usize>,
     },
 }
 
@@ -4592,6 +7462,7 @@ struct ClassicSegmentLocation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HtSegmentAssignmentCandidate {
     block_index: usize,
+    segment_index: usize,
     rate: u64,
 }
 
@@ -4600,6 +7471,7 @@ struct HtSegmentLocation {
     packet_idx: usize,
     subband_idx: usize,
     block_idx: usize,
+    segment_idx: usize,
 }
 
 struct ClassicLayerBudgetAllocator {
@@ -4807,6 +7679,24 @@ fn enforce_classic_segment_layer_monotonicity(layered_packets: &mut [LayeredPrep
     }
 }
 
+fn enforce_ht_segment_layer_monotonicity(layered_packets: &mut [LayeredPreparedPacket]) {
+    for packet in layered_packets {
+        for subband in &mut packet.subbands {
+            for block in &mut subband.blocks {
+                if let LayeredPreparedBlock::HighThroughput { segment_layers, .. } = block {
+                    let mut min_layer = 0usize;
+                    for layer in segment_layers {
+                        if *layer < min_layer {
+                            *layer = min_layer;
+                        }
+                        min_layer = *layer;
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn assign_ht_segment_layers_by_budget(
     candidates: &[HtSegmentAssignmentCandidate],
     layer_count: usize,
@@ -4815,16 +7705,92 @@ fn assign_ht_segment_layers_by_budget(
     let mut allocator = ClassicLayerBudgetAllocator::new(cumulative_targets, layer_count)?;
     let mut assignments = vec![layer_count.saturating_sub(1); candidates.len()];
     let mut candidate_order: Vec<_> = (0..candidates.len()).collect();
-    candidate_order.sort_by_key(|&idx| candidates[idx].block_index);
+    candidate_order
+        .sort_by_key(|&idx| (candidates[idx].block_index, candidates[idx].segment_index));
+    let mut block_min_layers = vec![
+        0usize;
+        candidates
+            .iter()
+            .map(|c| c.block_index)
+            .max()
+            .map_or(0, |idx| idx + 1)
+    ];
 
     for candidate_idx in candidate_order {
         let candidate = candidates
             .get(candidate_idx)
             .ok_or("HTJ2K segment candidate index mismatch")?;
-        assignments[candidate_idx] = allocator.assign_segment(0, candidate.rate)?;
+        let min_layer = *block_min_layers
+            .get(candidate.block_index)
+            .ok_or("HTJ2K segment candidate block index mismatch")?;
+        let layer = allocator.assign_segment(min_layer, candidate.rate)?;
+        assignments[candidate_idx] = layer;
+        if let Some(block_layer) = block_min_layers.get_mut(candidate.block_index) {
+            *block_layer = layer;
+        }
     }
 
     Ok(assignments)
+}
+
+fn ht_segment_count(encoded: &bitplane_encode::EncodedCodeBlock) -> usize {
+    match encoded.num_coding_passes {
+        0 => 0,
+        1 => 1,
+        _ => 2,
+    }
+}
+
+fn ht_segment_rate(
+    encoded: &bitplane_encode::EncodedCodeBlock,
+    segment_idx: usize,
+) -> Result<u64, &'static str> {
+    match segment_idx {
+        0 if encoded.num_coding_passes > 0 => Ok(u64::from(encoded.ht_cleanup_length)),
+        1 if encoded.num_coding_passes > 1 => Ok(u64::from(encoded.ht_refinement_length)),
+        _ => Err("HTJ2K segment index out of range"),
+    }
+}
+
+fn ht_unbudgeted_segment_layers(
+    encoded: &bitplane_encode::EncodedCodeBlock,
+    num_layers: u8,
+    block_idx: usize,
+    block_count: usize,
+) -> Result<Vec<usize>, &'static str> {
+    let segment_count = ht_segment_count(encoded);
+    if segment_count == 0 {
+        return Ok(Vec::new());
+    }
+    let layer_count = usize::from(num_layers);
+    if layer_count == 0 {
+        return Err("HTJ2K layer allocation requires non-empty inputs");
+    }
+    if encoded.num_coding_passes == 1 {
+        return Ok(vec![ht_target_layer(block_idx, block_count, layer_count)?]);
+    }
+
+    let mut segment_layers = Vec::with_capacity(segment_count);
+    let mut min_layer = 0usize;
+    for (_, end_pass) in [(0, 1), (1, encoded.num_coding_passes)] {
+        let mut assigned = None;
+        for layer_idx in min_layer..layer_count {
+            let cumulative_passes = if layer_idx + 1 == layer_count {
+                encoded.num_coding_passes
+            } else {
+                layer_pass_count(encoded.num_coding_passes, layer_idx + 1, num_layers)?
+            };
+            if end_pass <= cumulative_passes {
+                assigned = Some(layer_idx);
+                break;
+            }
+        }
+        let assigned =
+            assigned.ok_or("HTJ2K quality layer split must align to segment boundaries")?;
+        segment_layers.push(assigned);
+        min_layer = assigned;
+    }
+    Ok(segment_layers)
 }
 
 fn classic_unbudgeted_segment_layers(
@@ -4957,40 +7923,78 @@ fn ht_target_layer(
 fn ht_layer_contributions(
     encoded: bitplane_encode::EncodedCodeBlock,
     num_layers: u8,
-    target_layer: usize,
+    segment_layers: &[usize],
 ) -> Result<Vec<CodeBlockPacketData>, &'static str> {
     let layer_count = usize::from(num_layers);
-    if target_layer >= layer_count {
-        return Err("HTJ2K target layer out of range");
+    if segment_layers.len() != ht_segment_count(&encoded) {
+        return Err("HTJ2K segment assignment count mismatch");
+    }
+    if segment_layers.iter().any(|&layer| layer >= layer_count) {
+        return Err("HTJ2K segment layer exceeds layer count");
+    }
+    if segment_layers
+        .windows(2)
+        .any(|layers| layers[1] < layers[0])
+    {
+        return Err("HTJ2K segment layers must be monotonic");
     }
 
-    let mut data = Some(encoded.data);
+    let cleanup_len = usize::try_from(encoded.ht_cleanup_length)
+        .map_err(|_| "HTJ2K cleanup segment length overflow")?;
+    let refinement_len = usize::try_from(encoded.ht_refinement_length)
+        .map_err(|_| "HTJ2K refinement segment length overflow")?;
+    let refinement_start = cleanup_len;
+    let refinement_end = refinement_start
+        .checked_add(refinement_len)
+        .ok_or("HTJ2K refinement segment range overflow")?;
+    if encoded.num_coding_passes > 0 && cleanup_len == 0 {
+        return Err("HTJ2K cleanup segment is missing");
+    }
+    if encoded.num_coding_passes > 1 && refinement_len == 0 {
+        return Err("HTJ2K refinement segment is missing");
+    }
+    if refinement_end > encoded.data.len() {
+        return Err("HTJ2K segment range invalid");
+    }
+
     let mut contributions = Vec::with_capacity(layer_count);
     for layer_idx in 0..layer_count {
-        let include = layer_idx == target_layer && encoded.num_coding_passes > 0;
-        let layer_data = if include {
-            data.take()
-                .ok_or("HTJ2K layer contribution data was already consumed")?
-        } else {
-            Vec::new()
-        };
+        let mut data = Vec::new();
+        let mut ht_cleanup_length = 0u32;
+        let mut ht_refinement_length = 0u32;
+        let mut num_coding_passes = 0u8;
+
+        if segment_layers.first() == Some(&layer_idx) {
+            data.extend_from_slice(
+                encoded
+                    .data
+                    .get(..cleanup_len)
+                    .ok_or("HTJ2K cleanup segment range invalid")?,
+            );
+            ht_cleanup_length = encoded.ht_cleanup_length;
+            num_coding_passes = num_coding_passes
+                .checked_add(1)
+                .ok_or("HTJ2K packet contribution pass count overflow")?;
+        }
+
+        if encoded.num_coding_passes > 1 && segment_layers.get(1) == Some(&layer_idx) {
+            data.extend_from_slice(
+                encoded
+                    .data
+                    .get(refinement_start..refinement_end)
+                    .ok_or("HTJ2K refinement segment range invalid")?,
+            );
+            ht_refinement_length = encoded.ht_refinement_length;
+            num_coding_passes = num_coding_passes
+                .checked_add(encoded.num_coding_passes - 1)
+                .ok_or("HTJ2K packet contribution pass count overflow")?;
+        }
+
         contributions.push(CodeBlockPacketData {
-            data: layer_data,
-            ht_cleanup_length: if include {
-                encoded.ht_cleanup_length
-            } else {
-                0
-            },
-            ht_refinement_length: if include {
-                encoded.ht_refinement_length
-            } else {
-                0
-            },
-            num_coding_passes: if include {
-                encoded.num_coding_passes
-            } else {
-                0
-            },
+            data,
+            ht_cleanup_length,
+            ht_refinement_length,
+            num_coding_passes,
             classic_segment_lengths: Vec::new(),
             num_zero_bitplanes: encoded.num_zero_bitplanes,
             previously_included: false,
@@ -5097,21 +8101,30 @@ fn encode_all_ht_code_blocks(
         return Err("mixed preencoded and quantized HT subbands are unsupported");
     }
 
-    let jobs: Vec<_> = prepared_subbands
+    let job_coefficients = prepared_subbands
         .iter()
-        .flat_map(|subband| {
-            subband
-                .code_blocks
-                .iter()
-                .map(move |block| crate::J2kHtCodeBlockEncodeJob {
-                    coefficients: &block.coefficients,
-                    width: block.width,
-                    height: block.height,
-                    total_bitplanes: subband.total_bitplanes,
-                    target_coding_passes: 1,
-                })
-        })
-        .collect();
+        .flat_map(|subband| subband.code_blocks.iter())
+        .map(|block| downcast_i64_coefficients_to_i32(&block.coefficients))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut jobs = Vec::with_capacity(job_coefficients.len());
+    let mut coefficient_idx = 0usize;
+    for subband in prepared_subbands {
+        for block in &subband.code_blocks {
+            let coefficients = job_coefficients
+                .get(coefficient_idx)
+                .ok_or("HT coefficient storage count mismatch")?;
+            jobs.push(crate::J2kHtCodeBlockEncodeJob {
+                coefficients,
+                width: block.width,
+                height: block.height,
+                total_bitplanes: subband.total_bitplanes,
+                target_coding_passes: subband.ht_target_coding_passes,
+            });
+            coefficient_idx = coefficient_idx
+                .checked_add(1)
+                .ok_or("HT coefficient storage count overflow")?;
+        }
+    }
 
     if let Some(encoded) = accelerator.encode_ht_code_blocks(&jobs)? {
         if encoded.len() != jobs.len() {
@@ -5137,6 +8150,7 @@ fn encode_all_ht_code_blocks(
                 job.width,
                 job.height,
                 job.total_bitplanes,
+                job.target_coding_passes,
                 accelerator,
             )
         })
@@ -5148,23 +8162,53 @@ fn encode_all_tier1_code_blocks(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
     let style = default_public_code_block_style();
-    let jobs: Vec<_> = prepared_subbands
+    let can_use_i32_jobs = prepared_subbands
         .iter()
-        .flat_map(|subband| {
-            let public_sub_band_type = public_sub_band_type(subband.sub_band_type);
-            subband
-                .code_blocks
-                .iter()
-                .map(move |block| J2kTier1CodeBlockEncodeJob {
-                    coefficients: &block.coefficients,
-                    width: block.width,
-                    height: block.height,
-                    sub_band_type: public_sub_band_type,
-                    total_bitplanes: subband.total_bitplanes,
-                    style,
-                })
-        })
-        .collect();
+        .flat_map(|subband| &subband.code_blocks)
+        .all(|block| coefficients_fit_i32(&block.coefficients));
+    if !can_use_i32_jobs {
+        let mut encoded = Vec::new();
+        for subband in prepared_subbands {
+            encoded.reserve(subband.code_blocks.len());
+            for block in &subband.code_blocks {
+                encoded.push(bitplane_encode::encode_code_block_i64(
+                    &block.coefficients,
+                    block.width,
+                    block.height,
+                    subband.sub_band_type,
+                    subband.total_bitplanes,
+                ));
+            }
+        }
+        return Ok(encoded);
+    }
+
+    let job_coefficients = prepared_subbands
+        .iter()
+        .flat_map(|subband| subband.code_blocks.iter())
+        .map(|block| downcast_i64_coefficients_to_i32(&block.coefficients))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut jobs = Vec::with_capacity(job_coefficients.len());
+    let mut coefficient_idx = 0usize;
+    for subband in prepared_subbands {
+        let public_sub_band_type = public_sub_band_type(subband.sub_band_type);
+        for block in &subband.code_blocks {
+            let coefficients = job_coefficients
+                .get(coefficient_idx)
+                .ok_or("classic coefficient storage count mismatch")?;
+            jobs.push(J2kTier1CodeBlockEncodeJob {
+                coefficients,
+                width: block.width,
+                height: block.height,
+                sub_band_type: public_sub_band_type,
+                total_bitplanes: subband.total_bitplanes,
+                style,
+            });
+            coefficient_idx = coefficient_idx
+                .checked_add(1)
+                .ok_or("classic coefficient storage count overflow")?;
+        }
+    }
 
     if let Some(encoded) = accelerator.encode_tier1_code_blocks(&jobs)? {
         if encoded.len() != jobs.len() {
@@ -5181,17 +8225,15 @@ fn encode_all_tier1_code_blocks(
     }
 
     let mut encoded = Vec::with_capacity(jobs.len());
-    for subband in prepared_subbands {
-        for block in &subband.code_blocks {
-            encoded.push(encode_tier1_code_block(
-                &block.coefficients,
-                block.width,
-                block.height,
-                subband.sub_band_type,
-                subband.total_bitplanes,
-                accelerator,
-            )?);
-        }
+    for job in &jobs {
+        encoded.push(encode_tier1_code_block(
+            job.coefficients,
+            job.width,
+            job.height,
+            internal_sub_band_type(job.sub_band_type),
+            job.total_bitplanes,
+            accelerator,
+        )?);
     }
     Ok(encoded)
 }
@@ -5199,16 +8241,20 @@ fn encode_all_tier1_code_blocks(
 fn encode_all_ht_code_blocks_serial_cpu(
     jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
-    if jobs.iter().any(|job| job.target_coding_passes != 1) {
-        return Err("CPU HTJ2K code-block fallback supports cleanup-only encode");
+    if jobs
+        .iter()
+        .any(|job| !(1..=3).contains(&job.target_coding_passes))
+    {
+        return Err("CPU HTJ2K code-block fallback supports at most three HT coding passes");
     }
     jobs.iter()
         .map(|job| {
-            ht_block_encode::encode_code_block(
+            ht_block_encode::encode_code_block_with_passes(
                 job.coefficients,
                 job.width,
                 job.height,
                 job.total_bitplanes,
+                job.target_coding_passes,
             )
         })
         .collect()
@@ -5218,16 +8264,20 @@ fn encode_all_ht_code_blocks_serial_cpu(
 fn encode_all_ht_code_blocks_parallel(
     jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
-    if jobs.iter().any(|job| job.target_coding_passes != 1) {
-        return Err("CPU HTJ2K code-block fallback supports cleanup-only encode");
+    if jobs
+        .iter()
+        .any(|job| !(1..=3).contains(&job.target_coding_passes))
+    {
+        return Err("CPU HTJ2K code-block fallback supports at most three HT coding passes");
     }
     jobs.par_iter()
         .map(|job| {
-            ht_block_encode::encode_code_block(
+            ht_block_encode::encode_code_block_with_passes(
                 job.coefficients,
                 job.width,
                 job.height,
                 job.total_bitplanes,
+                job.target_coding_passes,
             )
         })
         .collect()
@@ -5237,16 +8287,20 @@ fn encode_all_ht_code_blocks_parallel(
 fn encode_all_ht_code_blocks_parallel(
     jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
-    if jobs.iter().any(|job| job.target_coding_passes != 1) {
-        return Err("CPU HTJ2K code-block fallback supports cleanup-only encode");
+    if jobs
+        .iter()
+        .any(|job| !(1..=3).contains(&job.target_coding_passes))
+    {
+        return Err("CPU HTJ2K code-block fallback supports at most three HT coding passes");
     }
     jobs.iter()
         .map(|job| {
-            ht_block_encode::encode_code_block(
+            ht_block_encode::encode_code_block_with_passes(
                 job.coefficients,
                 job.width,
                 job.height,
                 job.total_bitplanes,
+                job.target_coding_passes,
             )
         })
         .collect()
@@ -5291,6 +8345,7 @@ fn encode_ht_code_block(
     width: u32,
     height: u32,
     total_bitplanes: u8,
+    target_coding_passes: u8,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<bitplane_encode::EncodedCodeBlock, &'static str> {
     if let Some(encoded) = accelerator.encode_ht_code_block(crate::J2kHtCodeBlockEncodeJob {
@@ -5298,12 +8353,18 @@ fn encode_ht_code_block(
         width,
         height,
         total_bitplanes,
-        target_coding_passes: 1,
+        target_coding_passes,
     })? {
         return Ok(ht_encoded_code_block_from_accelerator(encoded));
     }
 
-    ht_block_encode::encode_code_block(coefficients, width, height, total_bitplanes)
+    ht_block_encode::encode_code_block_with_passes(
+        coefficients,
+        width,
+        height,
+        total_bitplanes,
+        target_coding_passes,
+    )
 }
 
 fn ht_encoded_code_block_from_accelerator(
@@ -5390,7 +8451,7 @@ fn default_public_code_block_style() -> crate::J2kCodeBlockStyle {
 pub(crate) fn deinterleave_to_f32(
     pixels: &[u8],
     num_pixels: usize,
-    num_components: u8,
+    num_components: u16,
     bit_depth: u8,
     signed: bool,
 ) -> Vec<Vec<f32>> {
@@ -5403,32 +8464,23 @@ pub(crate) fn deinterleave_to_f32(
     let unsigned_offset = if signed {
         0.0
     } else {
-        (1u32 << (bit_depth as u32 - 1)) as f32
+        (1_u64 << (u32::from(bit_depth) - 1)) as f32
     };
 
-    if bit_depth <= 8 {
-        for (i, pixel) in pixels.chunks_exact(nc).take(num_pixels).enumerate() {
-            for (c, component) in components.iter_mut().enumerate().take(nc) {
-                let val = pixel[c];
-                component[i] = if signed {
-                    (val as i8) as f32
-                } else {
-                    val as f32 - unsigned_offset
-                };
-            }
-        }
-    } else {
-        // 16-bit samples (little-endian)
-        for (i, pixel) in pixels.chunks_exact(nc * 2).take(num_pixels).enumerate() {
-            for (c, component) in components.iter_mut().enumerate().take(nc) {
-                let offset = c * 2;
-                let val = u16::from_le_bytes([pixel[offset], pixel[offset + 1]]);
-                component[i] = if signed {
-                    (val as i16) as f32
-                } else {
-                    val as f32 - unsigned_offset
-                };
-            }
+    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth).unwrap_or(2);
+    for (i, pixel) in pixels
+        .chunks_exact(nc * bytes_per_sample)
+        .take(num_pixels)
+        .enumerate()
+    {
+        for (c, component) in components.iter_mut().enumerate().take(nc) {
+            let offset = c * bytes_per_sample;
+            let raw = read_le_sample_value(&pixel[offset..offset + bytes_per_sample], bit_depth);
+            component[i] = if signed {
+                sign_extend_sample(raw, bit_depth) as f32
+            } else {
+                raw as f32 - unsigned_offset
+            };
         }
     }
 
@@ -6067,6 +9119,10 @@ mod tests {
             2,
             2,
             SubBandType::LowLow,
+            0,
+            &[],
+            1,
+            1,
             &mut accelerator,
         )
         .expect("fused HT subband prepare");
@@ -6085,6 +9141,242 @@ mod tests {
         assert_eq!(accelerator.ht_batch_calls, 0);
         assert_eq!(precincts[0].code_blocks.len(), 4);
         assert_eq!(precincts[0].code_blocks[2].data, vec![2, 0]);
+    }
+
+    #[test]
+    fn ht_target_coding_passes_tracks_ht_quality_layers() {
+        let mut options = EncodeOptions {
+            use_ht_block_coding: true,
+            reversible: false,
+            num_layers: 1,
+            ..EncodeOptions::default()
+        };
+
+        assert_eq!(ht_target_coding_passes_for_options(&options), 1);
+
+        options.num_layers = 2;
+        assert_eq!(ht_target_coding_passes_for_options(&options), 2);
+
+        options.num_layers = 3;
+        assert_eq!(ht_target_coding_passes_for_options(&options), 3);
+
+        options.num_layers = 4;
+        assert_eq!(ht_target_coding_passes_for_options(&options), 3);
+
+        options.reversible = true;
+        assert_eq!(ht_target_coding_passes_for_options(&options), 3);
+
+        options.reversible = false;
+        options.use_ht_block_coding = false;
+        assert_eq!(ht_target_coding_passes_for_options(&options), 1);
+    }
+
+    #[test]
+    fn packet_header_validation_allows_chunked_ppm_and_ppt_payloads() {
+        const MARKER_PAYLOAD_LIMIT: usize = u16::MAX as usize - 3;
+        let ppm_headers = vec![vec![0_u8; MARKER_PAYLOAD_LIMIT - 2], vec![1_u8; 1]];
+        let ppt_headers = vec![vec![2_u8; MARKER_PAYLOAD_LIMIT + 1]];
+
+        validate_packet_header_marker_payloads(true, false, &[&ppm_headers])
+            .expect("chunked PPM payload should validate");
+        validate_packet_header_marker_payloads(false, true, &[&ppt_headers])
+            .expect("chunked PPT payload should validate");
+    }
+
+    #[test]
+    fn ht_cpu_fallback_encodes_two_pass_sigprop_refinement() {
+        let coefficients: Vec<i32> = (0usize..64 * 64)
+            .map(|index| {
+                let value = ((((index * 31) ^ (index / 3)) & 0x00ff) as i32 - 127) * 2;
+                if index.is_multiple_of(11) {
+                    0
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let jobs = [crate::J2kHtCodeBlockEncodeJob {
+            coefficients: &coefficients,
+            width: 64,
+            height: 64,
+            total_bitplanes: 10,
+            target_coding_passes: 2,
+        }];
+
+        let encoded = encode_all_ht_code_blocks_serial_cpu(&jobs).expect("two-pass CPU HT encode");
+
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0].num_coding_passes, 2);
+        assert_eq!(encoded[0].ht_refinement_length, 48);
+        assert_eq!(
+            encoded[0].data.len(),
+            encoded[0].ht_cleanup_length as usize + encoded[0].ht_refinement_length as usize
+        );
+        assert!(encoded[0].data[encoded[0].ht_cleanup_length as usize..]
+            .iter()
+            .all(|byte| *byte == 0));
+
+        let segments = crate::j2c::ht_block_decode::HtCodeBlockSegments::from_combined_payload(
+            &encoded[0].data,
+            encoded[0].ht_cleanup_length,
+            encoded[0].ht_refinement_length,
+        )
+        .expect("split HT segments");
+        let mut decoded = vec![0u32; coefficients.len()];
+        crate::j2c::ht_block_decode::decode_segments_validated(
+            &segments,
+            encoded[0].num_zero_bitplanes,
+            10,
+            encoded[0].num_coding_passes,
+            false,
+            true,
+            &mut decoded,
+            64,
+            64,
+            64,
+        )
+        .expect("decode two-pass HT block");
+        let decoded_i32 = decoded
+            .into_iter()
+            .map(|value| crate::j2c::ht_block_decode::coefficient_to_i32(value, 10))
+            .collect::<Vec<_>>();
+        let max_abs_delta = decoded_i32
+            .iter()
+            .zip(&coefficients)
+            .map(|(actual, expected)| actual.abs_diff(*expected))
+            .max()
+            .unwrap_or(0);
+
+        assert!(
+            max_abs_delta <= 1,
+            "two-pass HT sigprop decode must stay within one coefficient LSB"
+        );
+    }
+
+    #[test]
+    fn ht_cpu_fallback_sigprop_refinement_encodes_new_significance_bits() {
+        let mut coefficients = vec![0_i32; 8 * 8];
+        for row in 0..8 {
+            coefficients[row * 8] = 3;
+            coefficients[row * 8 + 1] = 1;
+            coefficients[row * 8 + 2] = -1;
+        }
+        let jobs = [crate::J2kHtCodeBlockEncodeJob {
+            coefficients: &coefficients,
+            width: 8,
+            height: 8,
+            total_bitplanes: 4,
+            target_coding_passes: 2,
+        }];
+
+        let encoded = encode_all_ht_code_blocks_serial_cpu(&jobs).expect("two-pass CPU HT encode");
+
+        assert_eq!(encoded[0].num_coding_passes, 2);
+        assert!(encoded[0].ht_refinement_length > 0);
+        assert!(
+            encoded[0].data[encoded[0].ht_cleanup_length as usize..]
+                .iter()
+                .any(|byte| *byte != 0),
+            "sigprop refinement should encode new significance/sign bits"
+        );
+
+        let segments = crate::j2c::ht_block_decode::HtCodeBlockSegments::from_combined_payload(
+            &encoded[0].data,
+            encoded[0].ht_cleanup_length,
+            encoded[0].ht_refinement_length,
+        )
+        .expect("split HT segments");
+        let mut decoded = vec![0u32; coefficients.len()];
+        crate::j2c::ht_block_decode::decode_segments_validated(
+            &segments,
+            encoded[0].num_zero_bitplanes,
+            4,
+            encoded[0].num_coding_passes,
+            false,
+            true,
+            &mut decoded,
+            8,
+            8,
+            8,
+        )
+        .expect("decode two-pass HT block");
+        let decoded_i32 = decoded
+            .into_iter()
+            .map(|value| crate::j2c::ht_block_decode::coefficient_to_i32(value, 4))
+            .collect::<Vec<_>>();
+
+        assert_eq!(decoded_i32, coefficients);
+    }
+
+    #[test]
+    fn ht_cpu_fallback_encodes_three_pass_magref_refinement() {
+        let mut coefficients = vec![0_i32; 8 * 8];
+        for row in 0..8 {
+            let base = row * 8;
+            coefficients[base] = 2;
+            coefficients[base + 1] = 3;
+            coefficients[base + 2] = 1;
+            coefficients[base + 3] = -1;
+            coefficients[base + 4] = -2;
+            coefficients[base + 5] = -3;
+        }
+        let jobs = [crate::J2kHtCodeBlockEncodeJob {
+            coefficients: &coefficients,
+            width: 8,
+            height: 8,
+            total_bitplanes: 4,
+            target_coding_passes: 3,
+        }];
+
+        let encoded =
+            encode_all_ht_code_blocks_serial_cpu(&jobs).expect("three-pass CPU HT encode");
+
+        assert_eq!(encoded[0].num_coding_passes, 3);
+        assert!(encoded[0].ht_refinement_length > 0);
+
+        let segments = crate::j2c::ht_block_decode::HtCodeBlockSegments::from_combined_payload(
+            &encoded[0].data,
+            encoded[0].ht_cleanup_length,
+            encoded[0].ht_refinement_length,
+        )
+        .expect("split HT segments");
+        let mut decoded = vec![0u32; coefficients.len()];
+        crate::j2c::ht_block_decode::decode_segments_validated(
+            &segments,
+            encoded[0].num_zero_bitplanes,
+            4,
+            encoded[0].num_coding_passes,
+            false,
+            true,
+            &mut decoded,
+            8,
+            8,
+            8,
+        )
+        .expect("decode three-pass HT block");
+        let decoded_i32 = decoded
+            .into_iter()
+            .map(|value| crate::j2c::ht_block_decode::coefficient_to_i32(value, 4))
+            .collect::<Vec<_>>();
+
+        assert_eq!(decoded_i32, coefficients);
+    }
+
+    #[test]
+    fn ht_cpu_fallback_rejects_unsupported_refinement_pass_count() {
+        let coefficients = vec![1_i32; 64 * 64];
+        let jobs = [crate::J2kHtCodeBlockEncodeJob {
+            coefficients: &coefficients,
+            width: 64,
+            height: 64,
+            total_bitplanes: 2,
+            target_coding_passes: 4,
+        }];
+
+        let err = encode_all_ht_code_blocks_serial_cpu(&jobs)
+            .expect_err("CPU HT encode must reject unsupported pass requests");
+
+        assert!(err.contains("at most three HT coding passes"));
     }
 
     #[test]
@@ -6209,6 +9501,69 @@ mod tests {
         let actual = encode_preencoded_htj2k_97(&preencoded, &options).expect("preencoded encode");
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn preencoded_htj2k97_preserves_refinement_segments_in_packet_body() {
+        let options = EncodeOptions {
+            num_decomposition_levels: 0,
+            reversible: false,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        };
+        let guard_bits = options.guard_bits.max(2);
+        let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+            8,
+            0,
+            false,
+            guard_bits,
+            options.irreversible_quantization_scale,
+            options.irreversible_quantization_subband_scales,
+        );
+        let total_bitplanes = guard_bits
+            .saturating_add(step_sizes[0].exponent as u8)
+            .saturating_sub(1);
+        let payload = [0x12, 0x34, 0x56, 0x78];
+        let image = PreencodedHtj2k97Image {
+            width: 1,
+            height: 1,
+            bit_depth: 8,
+            signed: false,
+            components: vec![PreencodedHtj2k97Component {
+                x_rsiz: 1,
+                y_rsiz: 1,
+                resolutions: vec![PreencodedHtj2k97Resolution {
+                    subbands: vec![PreencodedHtj2k97Subband {
+                        sub_band_type: J2kSubBandType::LowLow,
+                        num_cbs_x: 1,
+                        num_cbs_y: 1,
+                        total_bitplanes,
+                        code_blocks: vec![PreencodedHtj2k97CodeBlock {
+                            width: 1,
+                            height: 1,
+                            encoded: EncodedHtJ2kCodeBlock {
+                                data: payload.to_vec(),
+                                cleanup_length: 2,
+                                refinement_length: 2,
+                                num_coding_passes: 3,
+                                num_zero_bitplanes: 0,
+                            },
+                        }],
+                    }],
+                }],
+            }],
+        };
+
+        let codestream =
+            encode_preencoded_htj2k_97(&image, &options).expect("preencoded refinement encode");
+        let eoc = codestream
+            .windows(2)
+            .rposition(|marker| marker == [0xff, crate::j2c::codestream::markers::EOC])
+            .expect("EOC marker");
+
+        assert_eq!(&codestream[eoc - payload.len()..eoc], payload);
     }
 
     #[test]
@@ -6513,6 +9868,10 @@ mod tests {
             cb_width,
             cb_height,
             sub_band_type,
+            0,
+            &[],
+            1,
+            1,
             &mut accelerator,
         )?;
 
@@ -6524,12 +9883,14 @@ mod tests {
             code_blocks: prepared
                 .code_blocks
                 .into_iter()
-                .map(|block| PrequantizedHtj2k97CodeBlock {
-                    coefficients: block.coefficients,
-                    width: block.width,
-                    height: block.height,
+                .map(|block| {
+                    Ok(PrequantizedHtj2k97CodeBlock {
+                        coefficients: downcast_i64_coefficients_to_i32(&block.coefficients)?,
+                        width: block.width,
+                        height: block.height,
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, &'static str>>()?,
         })
     }
 
@@ -7086,7 +10447,7 @@ mod tests {
             &pixels,
             WIDTH,
             HEIGHT,
-            NUM_COMPONENTS,
+            NUM_COMPONENTS.into(),
             BIT_DEPTH,
             false,
             &options,
@@ -7103,7 +10464,7 @@ mod tests {
                 &pixels,
                 WIDTH,
                 HEIGHT,
-                NUM_COMPONENTS,
+                NUM_COMPONENTS.into(),
                 BIT_DEPTH,
                 false,
                 &options,
@@ -7147,7 +10508,7 @@ mod tests {
             &pixels,
             WIDTH,
             HEIGHT,
-            NUM_COMPONENTS,
+            NUM_COMPONENTS.into(),
             BIT_DEPTH,
             false,
             &EncodeOptions::default(),
@@ -7171,7 +10532,8 @@ mod tests {
         assert_eq!(decoded.height, HEIGHT, "height mismatch");
         assert_eq!(decoded.bit_depth, BIT_DEPTH, "bit_depth mismatch");
         assert_eq!(
-            decoded.num_components, NUM_COMPONENTS,
+            decoded.num_components,
+            u16::from(NUM_COMPONENTS),
             "component count mismatch"
         );
         assert_eq!(
@@ -7207,7 +10569,7 @@ mod tests {
             &pixels,
             WIDTH,
             HEIGHT,
-            NUM_COMPONENTS,
+            NUM_COMPONENTS.into(),
             BIT_DEPTH,
             false,
             &EncodeOptions::default(),
@@ -7231,7 +10593,8 @@ mod tests {
         assert_eq!(decoded.height, HEIGHT, "height mismatch");
         assert_eq!(decoded.bit_depth, BIT_DEPTH, "bit_depth mismatch");
         assert_eq!(
-            decoded.num_components, NUM_COMPONENTS,
+            decoded.num_components,
+            u16::from(NUM_COMPONENTS),
             "component count mismatch"
         );
         assert_eq!(
@@ -7332,14 +10695,17 @@ mod tests {
         let candidates = vec![
             HtSegmentAssignmentCandidate {
                 block_index: 0,
+                segment_index: 0,
                 rate: 900,
             },
             HtSegmentAssignmentCandidate {
                 block_index: 1,
+                segment_index: 0,
                 rate: 200,
             },
             HtSegmentAssignmentCandidate {
                 block_index: 2,
+                segment_index: 0,
                 rate: 200,
             },
         ];
@@ -7351,6 +10717,99 @@ mod tests {
             assignments,
             vec![1, 0, 0],
             "HTJ2K early layers should be filled by segment byte budget, not block index"
+        );
+    }
+
+    #[test]
+    fn ht_layer_assignment_keeps_refinement_after_cleanup() {
+        let candidates = vec![
+            HtSegmentAssignmentCandidate {
+                block_index: 0,
+                segment_index: 0,
+                rate: 200,
+            },
+            HtSegmentAssignmentCandidate {
+                block_index: 0,
+                segment_index: 1,
+                rate: 50,
+            },
+        ];
+
+        let assignments = assign_ht_segment_layers_by_budget(&candidates, 2, &[256, 2_000])
+            .expect("HTJ2K segment assignment");
+
+        assert_eq!(
+            assignments,
+            vec![0, 0],
+            "a refinement segment may share the cleanup layer but must not precede it"
+        );
+    }
+
+    #[test]
+    fn ht_layer_contributions_split_cleanup_and_refinement_across_layers() {
+        let encoded = bitplane_encode::EncodedCodeBlock {
+            data: vec![0x11, 0x22, 0x33, 0x44, 0x55],
+            num_coding_passes: 3,
+            num_zero_bitplanes: 2,
+            ht_cleanup_length: 3,
+            ht_refinement_length: 2,
+        };
+
+        let contributions = ht_layer_contributions(encoded, 2, &[0, 1]).expect("split HT layers");
+
+        assert_eq!(contributions.len(), 2);
+        assert_eq!(contributions[0].data, vec![0x11, 0x22, 0x33]);
+        assert_eq!(contributions[0].ht_cleanup_length, 3);
+        assert_eq!(contributions[0].ht_refinement_length, 0);
+        assert_eq!(contributions[0].num_coding_passes, 1);
+        assert_eq!(contributions[1].data, vec![0x44, 0x55]);
+        assert_eq!(contributions[1].ht_cleanup_length, 0);
+        assert_eq!(contributions[1].ht_refinement_length, 2);
+        assert_eq!(contributions[1].num_coding_passes, 2);
+    }
+
+    #[test]
+    fn htj2k_lossy_quality_layers_decode_split_refinement_layer() {
+        let width = 32;
+        let height = 32;
+        let pixels = gradient_u8(width, height);
+        let codestream = encode_htj2k(
+            &pixels,
+            width,
+            height,
+            1,
+            8,
+            false,
+            &EncodeOptions {
+                num_decomposition_levels: 0,
+                reversible: false,
+                guard_bits: 2,
+                num_layers: 2,
+                ..Default::default()
+            },
+        )
+        .expect("HTJ2K layered encode");
+
+        let image = Image::new(
+            &codestream,
+            &DecodeSettings {
+                resolve_palette_indices: true,
+                strict: true,
+                target_resolution: None,
+            },
+        )
+        .expect("parse layered HT codestream");
+        let decoded = image.decode_native().expect("decode layered HT codestream");
+
+        assert_eq!(decoded.width, width);
+        assert_eq!(decoded.height, height);
+        assert_eq!(decoded.bit_depth, 8);
+        assert_not_flat_128(&decoded.data);
+        assert!(
+            psnr_db(&pixels, &decoded.data) >= 30.0,
+            "psnr={} max_abs={}",
+            psnr_db(&pixels, &decoded.data),
+            max_abs_error(&pixels, &decoded.data)
         );
     }
 }

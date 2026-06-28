@@ -73,7 +73,7 @@ pub struct EncodedJ2kCodeBlock {
     pub missing_bit_planes: u8,
 }
 
-/// Adapter encoded HTJ2K cleanup code-block payload for backend experimentation.
+/// Adapter encoded HTJ2K cleanup/refinement code-block payload for backend experimentation.
 #[derive(Debug, Clone)]
 pub struct EncodedHtJ2kCodeBlock {
     /// Combined cleanup/refinement bytes for this code block.
@@ -96,7 +96,7 @@ pub struct J2kDeinterleaveToF32Job<'a> {
     /// Number of pixels to convert.
     pub num_pixels: usize,
     /// Number of interleaved components per pixel.
-    pub num_components: u8,
+    pub num_components: u16,
     /// Source sample bit depth.
     pub bit_depth: u8,
     /// Whether source samples are signed.
@@ -268,12 +268,14 @@ pub struct J2kHtCodeBlockEncodeJob<'a> {
     pub total_bitplanes: u8,
     /// Requested HT coding passes for this contribution.
     ///
-    /// `1` is cleanup-only. Higher values require an accelerator that can
-    /// encode those passes and must not be silently reduced by CPU fallback.
+    /// `1` is cleanup-only. `2` requests cleanup plus significance-propagation
+    /// refinement on the native CPU path. `3` additionally requests one
+    /// magnitude-refinement pass. Higher values require an accelerator and
+    /// must not be silently reduced by CPU fallback.
     pub target_coding_passes: u8,
 }
 
-/// Adapter HTJ2K cleanup encode job for one unquantized sub-band.
+/// Adapter HTJ2K cleanup/refinement encode job for one unquantized sub-band.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kHtSubbandEncodeJob<'a> {
     /// Source sub-band coefficients in row-major order.
@@ -308,7 +310,7 @@ pub struct J2kHtj2kTileEncodeJob<'a> {
     /// Tile/image height in samples.
     pub height: u32,
     /// Number of interleaved image components.
-    pub num_components: u8,
+    pub num_components: u16,
     /// Source component bit depth.
     pub bit_depth: u8,
     /// Whether source samples are signed.
@@ -408,7 +410,7 @@ pub struct J2kPacketizationPacketDescriptor {
     /// Resolution index in the output progression.
     pub resolution: u32,
     /// Component index in the output progression.
-    pub component: u8,
+    pub component: u16,
     /// Precinct index in the output progression.
     pub precinct: u64,
 }
@@ -421,7 +423,7 @@ pub struct J2kPacketizationEncodeJob<'a> {
     /// Number of layers to write.
     pub num_layers: u8,
     /// Number of image components.
-    pub num_components: u8,
+    pub num_components: u16,
     /// Total number of code-block contributions.
     pub code_block_count: u32,
     /// Packet progression order to emit.

@@ -41,6 +41,7 @@ pub(crate) struct J2kLosslessDeinterleaveParams {
     pub(crate) dst_height: u32,
     pub(crate) components: u32,
     pub(crate) bytes_per_sample: u32,
+    pub(crate) bit_depth: u32,
     pub(crate) sample_offset: u32,
     pub(crate) signed_samples: u32,
 }

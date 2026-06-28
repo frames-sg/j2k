@@ -1,6 +1,7 @@
 use j2k_native::{
-    encode, encode_precomputed_htj2k_53, encode_precomputed_htj2k_97, DecodeSettings,
-    EncodeOptions, Image, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level,
+    encode, encode_component_planes_53, encode_precomputed_htj2k_53, encode_precomputed_htj2k_97,
+    encode_precomputed_j2k_53, DecodeSettings, DecoderContext, EncodeComponentPlane, EncodeOptions,
+    Image, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level,
     J2kForwardDwt97Output, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
     PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
 };
@@ -89,6 +90,34 @@ fn precomputed_zero_grayscale_53_coefficients_decode_with_native_decoder() {
 }
 
 #[test]
+fn precomputed_53_encode_roundtrips_more_than_four_components() {
+    let image = PrecomputedHtj2k53Image {
+        width: 8,
+        height: 8,
+        bit_depth: 8,
+        signed: false,
+        components: (0..5)
+            .map(|_| PrecomputedHtj2k53Component {
+                x_rsiz: 1,
+                y_rsiz: 1,
+                dwt: zero_dwt53(8, 8),
+            })
+            .collect(),
+    };
+    let bytes = encode_precomputed_htj2k_53(&image, &precomputed_options())
+        .expect("encode five-component precomputed 5/3 HTJ2K coefficients");
+    let decoded = Image::new(&bytes, &DecodeSettings::default())
+        .expect("native parser accepts five-component codestream")
+        .decode_native()
+        .expect("native decoder accepts five-component codestream");
+
+    assert_eq!((decoded.width, decoded.height), (8, 8));
+    assert_eq!(decoded.num_components, 5);
+    assert_eq!(decoded.data.len(), 8 * 8 * 5);
+    assert!(decoded.data.iter().all(|&sample| sample == 128));
+}
+
+#[test]
 fn precomputed_encode_writes_component_sampling_in_siz() {
     let image = PrecomputedHtj2k53Image {
         width: 16,
@@ -124,6 +153,136 @@ fn precomputed_encode_writes_component_sampling_in_siz() {
     assert_eq!(bytes[component_info + 5], 2);
     assert_eq!(bytes[component_info + 7], 2);
     assert_eq!(bytes[component_info + 8], 2);
+
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse sampled codestream");
+    let mut context = DecoderContext::default();
+    let components = image
+        .decode_components_with_context(&mut context)
+        .expect("decode sampled component planes");
+    let sampling = components
+        .planes()
+        .iter()
+        .map(|plane| plane.sampling())
+        .collect::<Vec<_>>();
+    assert_eq!(sampling, [(1, 1), (2, 2), (2, 2)]);
+}
+
+#[test]
+fn precomputed_classic_53_encode_preserves_component_sampling_in_siz() {
+    let image = PrecomputedHtj2k53Image {
+        width: 16,
+        height: 16,
+        bit_depth: 8,
+        signed: false,
+        components: vec![
+            PrecomputedHtj2k53Component {
+                x_rsiz: 1,
+                y_rsiz: 1,
+                dwt: zero_dwt53(16, 16),
+            },
+            PrecomputedHtj2k53Component {
+                x_rsiz: 2,
+                y_rsiz: 2,
+                dwt: zero_dwt53(8, 8),
+            },
+            PrecomputedHtj2k53Component {
+                x_rsiz: 2,
+                y_rsiz: 2,
+                dwt: zero_dwt53(8, 8),
+            },
+        ],
+    };
+
+    let bytes = encode_precomputed_j2k_53(&image, &precomputed_options())
+        .expect("encode precomputed sampled classic J2K coefficients");
+    let decoded = Image::new(&bytes, &DecodeSettings::default())
+        .expect("native parser accepts sampled classic codestream")
+        .decode_native()
+        .expect("native decoder accepts sampled classic codestream");
+
+    assert_eq!((decoded.width, decoded.height), (16, 16));
+    assert_eq!(decoded.num_components, 3);
+
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse sampled codestream");
+    let mut context = DecoderContext::default();
+    let components = image
+        .decode_components_with_context(&mut context)
+        .expect("decode sampled classic component planes");
+    let sampling = components
+        .planes()
+        .iter()
+        .map(|plane| plane.sampling())
+        .collect::<Vec<_>>();
+    assert_eq!(sampling, [(1, 1), (2, 2), (2, 2)]);
+}
+
+#[test]
+fn component_plane_53_encode_preserves_sampling_for_classic_and_htj2k() {
+    let luma = vec![128_u8; 16 * 16];
+    let chroma_blue = vec![96_u8; 8 * 8];
+    let chroma_red = vec![160_u8; 8 * 8];
+    let planes = [
+        EncodeComponentPlane {
+            data: &luma,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+        EncodeComponentPlane {
+            data: &chroma_blue,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+        EncodeComponentPlane {
+            data: &chroma_red,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+    ];
+
+    for use_ht_block_coding in [false, true] {
+        let options = EncodeOptions {
+            reversible: true,
+            use_ht_block_coding,
+            num_decomposition_levels: 1,
+            use_mct: false,
+            validate_high_throughput_codestream: false,
+            ..EncodeOptions::default()
+        };
+        let bytes = encode_component_planes_53(&planes, 16, 16, 8, false, &options)
+            .expect("component-plane encode");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse codestream");
+        let mut context = DecoderContext::default();
+        let components = image
+            .decode_components_with_context(&mut context)
+            .expect("decode component planes");
+        let sampling = components
+            .planes()
+            .iter()
+            .map(|plane| plane.sampling())
+            .collect::<Vec<_>>();
+
+        assert_eq!(sampling, [(1, 1), (2, 2), (2, 2)]);
+    }
+}
+
+#[test]
+fn raw_pixel_encode_rejects_component_sampling_without_component_sized_dwt() {
+    let pixels = vec![0; 16 * 16 * 3];
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        use_mct: false,
+        component_sampling: Some(vec![(1, 1), (2, 2), (2, 2)]),
+        ..EncodeOptions::default()
+    };
+
+    let err = encode(&pixels, 16, 16, 3, 8, false, &options)
+        .expect_err("raw pixel encode cannot infer sampled component grids");
+
+    assert_eq!(
+        err,
+        "component sampling requires component-sized DWT geometry"
+    );
 }
 
 #[test]
@@ -190,6 +349,34 @@ fn precomputed_zero_grayscale_97_coefficients_decode_with_native_decoder() {
 
     assert_eq!((decoded.width, decoded.height), (8, 8));
     assert_eq!(decoded.num_components, 1);
+    assert!(decoded.data.iter().all(|&sample| sample == 128));
+}
+
+#[test]
+fn precomputed_97_encode_roundtrips_more_than_four_components() {
+    let image = PrecomputedHtj2k97Image {
+        width: 8,
+        height: 8,
+        bit_depth: 8,
+        signed: false,
+        components: (0..5)
+            .map(|_| PrecomputedHtj2k97Component {
+                x_rsiz: 1,
+                y_rsiz: 1,
+                dwt: zero_dwt97(8, 8),
+            })
+            .collect(),
+    };
+    let bytes = encode_precomputed_htj2k_97(&image, &precomputed_lossy_options())
+        .expect("encode five-component precomputed 9/7 HTJ2K coefficients");
+    let decoded = Image::new(&bytes, &DecodeSettings::default())
+        .expect("native parser accepts five-component 9/7 codestream")
+        .decode_native()
+        .expect("native decoder accepts five-component 9/7 codestream");
+
+    assert_eq!((decoded.width, decoded.height), (8, 8));
+    assert_eq!(decoded.num_components, 5);
+    assert_eq!(decoded.data.len(), 8 * 8 * 5);
     assert!(decoded.data.iter().all(|&sample| sample == 128));
 }
 

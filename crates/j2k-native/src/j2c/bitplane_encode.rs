@@ -273,7 +273,18 @@ pub(crate) fn encode_code_block(
     sub_band_type: SubBandType,
     total_bitplanes: u8,
 ) -> EncodedCodeBlock {
-    encode_code_block_with_style(
+    let coefficients = i32_coefficients_to_i64(coefficients);
+    encode_code_block_i64(&coefficients, width, height, sub_band_type, total_bitplanes)
+}
+
+pub(crate) fn encode_code_block_i64(
+    coefficients: &[i64],
+    width: u32,
+    height: u32,
+    sub_band_type: SubBandType,
+    total_bitplanes: u8,
+) -> EncodedCodeBlock {
+    encode_code_block_with_style_i64(
         coefficients,
         width,
         height,
@@ -283,13 +294,20 @@ pub(crate) fn encode_code_block(
     )
 }
 
+fn i32_coefficients_to_i64(coefficients: &[i32]) -> Vec<i64> {
+    coefficients
+        .iter()
+        .map(|&coefficient| i64::from(coefficient))
+        .collect()
+}
+
 fn prepare_padded_coefficients(
-    coefficients: &[i32],
+    coefficients: &[i64],
     w: usize,
     h: usize,
     pw: usize,
-) -> (Vec<u32>, Vec<u8>) {
-    let mut magnitudes = vec![0u32; pw * (h + 2)];
+) -> (Vec<u64>, Vec<u8>) {
+    let mut magnitudes = vec![0u64; pw * (h + 2)];
     let mut states = vec![0u8; magnitudes.len()];
 
     for y in 0..h {
@@ -306,8 +324,28 @@ fn prepare_padded_coefficients(
     (magnitudes, states)
 }
 
+#[allow(dead_code)]
 pub(crate) fn encode_code_block_with_style(
     coefficients: &[i32],
+    width: u32,
+    height: u32,
+    sub_band_type: SubBandType,
+    total_bitplanes: u8,
+    style: &CodeBlockStyle,
+) -> EncodedCodeBlock {
+    let coefficients = i32_coefficients_to_i64(coefficients);
+    encode_code_block_with_style_i64(
+        &coefficients,
+        width,
+        height,
+        sub_band_type,
+        total_bitplanes,
+        style,
+    )
+}
+
+pub(crate) fn encode_code_block_with_style_i64(
+    coefficients: &[i64],
     width: u32,
     height: u32,
     sub_band_type: SubBandType,
@@ -334,7 +372,7 @@ pub(crate) fn encode_code_block_with_style(
         };
     }
 
-    let num_bitplanes = 32 - max_magnitude.leading_zeros();
+    let num_bitplanes = 64 - max_magnitude.leading_zeros();
     debug_assert!(num_bitplanes as u8 <= total_bitplanes);
     let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes as u8);
 
@@ -353,7 +391,7 @@ pub(crate) fn encode_code_block_with_style(
 
     // Process bitplanes from MSB to LSB
     for bp in (0..num_bitplanes).rev() {
-        let bit_mask = 1u32 << bp;
+        let bit_mask = 1u64 << bp;
         let is_first_bitplane = bp == num_bitplanes - 1;
 
         if is_first_bitplane {
@@ -460,8 +498,27 @@ pub(crate) fn encode_code_block_segments_with_style(
     total_bitplanes: u8,
     style: &CodeBlockStyle,
 ) -> EncodedCodeBlockWithSegments {
+    let coefficients = i32_coefficients_to_i64(coefficients);
+    encode_code_block_segments_with_style_i64(
+        &coefficients,
+        width,
+        height,
+        sub_band_type,
+        total_bitplanes,
+        style,
+    )
+}
+
+pub(crate) fn encode_code_block_segments_with_style_i64(
+    coefficients: &[i64],
+    width: u32,
+    height: u32,
+    sub_band_type: SubBandType,
+    total_bitplanes: u8,
+    style: &CodeBlockStyle,
+) -> EncodedCodeBlockWithSegments {
     if !style.termination_on_each_pass && !style.selective_arithmetic_coding_bypass {
-        let encoded = encode_code_block_with_style(
+        let encoded = encode_code_block_with_style_i64(
             coefficients,
             width,
             height,
@@ -512,7 +569,7 @@ pub(crate) fn encode_code_block_segments_with_style(
         };
     }
 
-    let num_bitplanes = 32 - max_magnitude.leading_zeros();
+    let num_bitplanes = 64 - max_magnitude.leading_zeros();
     debug_assert!(num_bitplanes as u8 <= total_bitplanes);
     let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes as u8);
     let pw = w + 2;
@@ -601,7 +658,7 @@ pub(crate) fn encode_code_block_segments_with_style(
         }
 
         let current_bitplane = usize::from(coding_pass.div_ceil(3));
-        let bit_mask = 1u32 << (num_bitplanes as usize - 1 - current_bitplane);
+        let bit_mask = 1u64 << (num_bitplanes as usize - 1 - current_bitplane);
         match coding_pass % 3 {
             0 => {
                 let encoder = arithmetic_encoder
@@ -808,7 +865,7 @@ fn push_segment(
 }
 
 fn segment_distortion_delta(
-    coefficients: &[i32],
+    coefficients: &[i64],
     start_coding_pass: u8,
     end_coding_pass: u8,
     num_bitplanes: u8,
@@ -820,7 +877,7 @@ fn segment_distortion_delta(
 }
 
 fn coefficient_distortion_after_passes(
-    coefficients: &[i32],
+    coefficients: &[i64],
     completed_passes: u8,
     num_bitplanes: u8,
 ) -> f64 {
@@ -830,17 +887,17 @@ fn coefficient_distortion_after_passes(
             let magnitude = coefficient.unsigned_abs();
             let reconstructed =
                 reconstructed_magnitude_after_passes(magnitude, completed_passes, num_bitplanes);
-            let error = f64::from(magnitude.saturating_sub(reconstructed));
+            let error = magnitude.saturating_sub(reconstructed) as f64;
             error * error
         })
         .sum()
 }
 
 fn reconstructed_magnitude_after_passes(
-    magnitude: u32,
+    magnitude: u64,
     completed_passes: u8,
     num_bitplanes: u8,
-) -> u32 {
+) -> u64 {
     if magnitude == 0 || completed_passes == 0 || num_bitplanes == 0 {
         return 0;
     }
@@ -855,7 +912,7 @@ fn reconstructed_magnitude_after_passes(
     }
 
     let lower_bits = u32::from(num_bitplanes - retained_bitplanes);
-    let mask = !((1u32 << lower_bits) - 1);
+    let mask = !((1u64 << lower_bits) - 1);
     magnitude & mask
 }
 
@@ -874,7 +931,7 @@ fn clear_coded_in_current_pass(states: &mut [u8], coded_indices: &mut Vec<usize>
 
 /// Significance Propagation Pass (D.3.1)
 fn significance_propagation_pass(
-    magnitudes: &[u32],
+    magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
     coded_indices: &mut Vec<usize>,
@@ -883,7 +940,7 @@ fn significance_propagation_pass(
     w: usize,
     h: usize,
     pw: usize,
-    bit_mask: u32,
+    bit_mask: u64,
     sub_band_type: SubBandType,
     style: &CodeBlockStyle,
 ) {
@@ -919,7 +976,7 @@ fn significance_propagation_pass(
 }
 
 fn significance_propagation_pass_impl<const VERTICAL_CAUSAL: bool>(
-    magnitudes: &[u32],
+    magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
     coded_indices: &mut Vec<usize>,
@@ -928,7 +985,7 @@ fn significance_propagation_pass_impl<const VERTICAL_CAUSAL: bool>(
     w: usize,
     h: usize,
     pw: usize,
-    bit_mask: u32,
+    bit_mask: u64,
     sub_band_type: SubBandType,
 ) {
     for y_base in (0..h).step_by(4) {
@@ -959,7 +1016,7 @@ fn significance_propagation_pass_impl<const VERTICAL_CAUSAL: bool>(
 }
 
 fn significance_propagation_pass_raw(
-    magnitudes: &[u32],
+    magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
     coded_indices: &mut Vec<usize>,
@@ -967,7 +1024,7 @@ fn significance_propagation_pass_raw(
     w: usize,
     h: usize,
     pw: usize,
-    bit_mask: u32,
+    bit_mask: u64,
     style: &CodeBlockStyle,
 ) {
     if style.vertically_causal_context {
@@ -998,7 +1055,7 @@ fn significance_propagation_pass_raw(
 }
 
 fn significance_propagation_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
-    magnitudes: &[u32],
+    magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
     coded_indices: &mut Vec<usize>,
@@ -1006,7 +1063,7 @@ fn significance_propagation_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
     w: usize,
     h: usize,
     pw: usize,
-    bit_mask: u32,
+    bit_mask: u64,
 ) {
     for y_base in (0..h).step_by(4) {
         for x in 0..w {
@@ -1031,7 +1088,7 @@ fn significance_propagation_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
 
 /// Magnitude Refinement Pass (D.3.3)
 fn magnitude_refinement_pass(
-    magnitudes: &[u32],
+    magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
     encoder: &mut ArithmeticEncoder,
@@ -1039,7 +1096,7 @@ fn magnitude_refinement_pass(
     w: usize,
     h: usize,
     pw: usize,
-    bit_mask: u32,
+    bit_mask: u64,
     style: &CodeBlockStyle,
 ) {
     if style.vertically_causal_context {
@@ -1054,7 +1111,7 @@ fn magnitude_refinement_pass(
 }
 
 fn magnitude_refinement_pass_impl<const VERTICAL_CAUSAL: bool>(
-    magnitudes: &[u32],
+    magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
     encoder: &mut ArithmeticEncoder,
@@ -1062,7 +1119,7 @@ fn magnitude_refinement_pass_impl<const VERTICAL_CAUSAL: bool>(
     w: usize,
     h: usize,
     pw: usize,
-    bit_mask: u32,
+    bit_mask: u64,
 ) {
     for y_base in (0..h).step_by(4) {
         for x in 0..w {
@@ -1087,14 +1144,14 @@ fn magnitude_refinement_pass_impl<const VERTICAL_CAUSAL: bool>(
 }
 
 fn magnitude_refinement_pass_raw(
-    magnitudes: &[u32],
+    magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
     writer: &mut BitWriter,
     w: usize,
     h: usize,
     pw: usize,
-    bit_mask: u32,
+    bit_mask: u64,
     style: &CodeBlockStyle,
 ) {
     if style.vertically_causal_context {
@@ -1109,14 +1166,14 @@ fn magnitude_refinement_pass_raw(
 }
 
 fn magnitude_refinement_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
-    magnitudes: &[u32],
+    magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
     writer: &mut BitWriter,
     w: usize,
     h: usize,
     pw: usize,
-    bit_mask: u32,
+    bit_mask: u64,
 ) {
     for y_base in (0..h).step_by(4) {
         for x in 0..w {
@@ -1138,7 +1195,7 @@ fn magnitude_refinement_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
 
 /// Cleanup Pass (D.3.4)
 fn cleanup_pass(
-    magnitudes: &[u32],
+    magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
     encoder: &mut ArithmeticEncoder,
@@ -1146,7 +1203,7 @@ fn cleanup_pass(
     w: usize,
     h: usize,
     pw: usize,
-    bit_mask: u32,
+    bit_mask: u64,
     sub_band_type: SubBandType,
     style: &CodeBlockStyle,
 ) {
@@ -1180,7 +1237,7 @@ fn cleanup_pass(
 }
 
 fn cleanup_pass_impl<const VERTICAL_CAUSAL: bool>(
-    magnitudes: &[u32],
+    magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
     encoder: &mut ArithmeticEncoder,
@@ -1188,7 +1245,7 @@ fn cleanup_pass_impl<const VERTICAL_CAUSAL: bool>(
     w: usize,
     h: usize,
     pw: usize,
-    bit_mask: u32,
+    bit_mask: u64,
     sub_band_type: SubBandType,
 ) {
     for y_base in (0..h).step_by(4) {
@@ -1525,7 +1582,7 @@ mod tests {
 
     #[test]
     fn padded_coefficient_preparation_stores_sign_in_state_flags() {
-        let coeffs = vec![7i32, -3, 0, -9];
+        let coeffs = vec![7i64, -3, 0, -9];
         let (magnitudes, states) = prepare_padded_coefficients(&coeffs, 2, 2, 4);
 
         assert_eq!(magnitudes[5], 7);

@@ -232,6 +232,27 @@ pub fn minimal_j2k_codestream() -> Vec<u8> {
     bytes
 }
 
+/// Rewrites one component's SIZ sampling factors in a raw codestream fixture.
+///
+/// # Panics
+///
+/// Panics if `codestream` does not contain a SIZ marker or the requested
+/// component descriptor is not present.
+pub fn rewrite_j2k_component_sampling(
+    codestream: &mut [u8],
+    component: usize,
+    x_rsiz: u8,
+    y_rsiz: u8,
+) {
+    let siz = codestream
+        .windows(2)
+        .position(|marker| marker == [0xFF, 0x51])
+        .expect("SIZ marker");
+    let component_offset = siz + 40 + component * 3;
+    codestream[component_offset + 1] = x_rsiz;
+    codestream[component_offset + 2] = y_rsiz;
+}
+
 /// Minimal JP2 wrapper around [`minimal_j2k_codestream`].
 pub fn minimal_jp2() -> Vec<u8> {
     wrap_jp2_codestream(&minimal_j2k_codestream(), 128, 64, 3, 8, 16)
@@ -342,7 +363,7 @@ fn encode_htj2k_fixture(
         pixels,
         width,
         height,
-        components,
+        u16::from(components),
         8,
         false,
         &htj2k_options(reversible),
@@ -448,8 +469,22 @@ pub fn classic_j2k_gray8_fixture(width: u32, height: u32) -> Vec<u8> {
         .expect("encode classic J2K grayscale fixture")
 }
 
-#[cfg(feature = "j2k-native-fixtures")]
+/// `OpenHTJ2K` refinement fixture with a compact output plane.
+pub fn openhtj2k_refinement_fixture() -> &'static [u8] {
+    include_bytes!("../fixtures/htj2k/openhtj2k_ds0_ht_12_b11.j2k")
+}
+
+/// Expected grayscale pixels for [`openhtj2k_refinement_fixture`].
+pub fn openhtj2k_refinement_pixels() -> &'static [u8] {
+    include_bytes!("../fixtures/htj2k/openhtj2k_ds0_ht_12_b11.gray")
+}
+
 /// `OpenHTJ2K` odd refinement fixture used by CUDA plan tests.
 pub fn openhtj2k_refinement_odd_fixture() -> &'static [u8] {
     include_bytes!("../fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k")
+}
+
+/// Expected grayscale pixels for [`openhtj2k_refinement_odd_fixture`].
+pub fn openhtj2k_refinement_odd_pixels() -> &'static [u8] {
+    include_bytes!("../fixtures/htj2k/openhtj2k_ds0_ht_09_b11.gray")
 }

@@ -250,7 +250,7 @@ fn encode_one(args: &[String]) -> Result<(), String> {
         &image.pixels,
         image.width,
         image.height,
-        image.components,
+        u16::from(image.components),
         8,
         false,
     )

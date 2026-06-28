@@ -27,7 +27,9 @@ pub use fixtures::{
     jpeg_grayscale_8x8, jpeg_grayscale_8x8_gray, minimal_baseline_jpeg,
     minimal_baseline_jpeg_with_restart_interval, minimal_gray8_jpeg,
     minimal_grayscale_jpeg_with_dimensions, minimal_j2k_codestream, minimal_jp2,
-    restart_coded_grayscale_jpeg, wrap_jp2_codestream, wrap_jp2_rgba_codestream,
+    openhtj2k_refinement_fixture, openhtj2k_refinement_odd_fixture,
+    openhtj2k_refinement_odd_pixels, openhtj2k_refinement_pixels, restart_coded_grayscale_jpeg,
+    rewrite_j2k_component_sampling, wrap_jp2_codestream, wrap_jp2_rgba_codestream,
     JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB, JPEG_BASELINE_420_RESTART_32X16,
     JPEG_BASELINE_420_RESTART_32X16_RGB, JPEG_BASELINE_422_16X8, JPEG_BASELINE_422_16X8_RGB,
     JPEG_BASELINE_444_8X8, JPEG_BASELINE_444_8X8_RGB, JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY,
@@ -36,7 +38,7 @@ pub use fixtures::{
 pub use fixtures::{
     classic_j2k_gray8_fixture, htj2k_gray8_97_fixture, htj2k_gray8_fixture,
     htj2k_gray8_large_fixture, htj2k_rgb8_97_fixture, htj2k_rgb8_fixture,
-    htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture, openhtj2k_refinement_odd_fixture,
+    htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture,
 };
 pub use jpeg_fixtures::*;
 pub use metal_shader::{host_compiles_metal_pipeline, metal_kernel_names, unwired_metal_kernels};

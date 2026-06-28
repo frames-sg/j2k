@@ -5,7 +5,7 @@ mod codestream;
 
 use self::boxes::parse_jp2;
 use self::codestream::{parse_codestream, CodestreamInfo};
-use crate::J2kError;
+use crate::{J2kComponentInfo, J2kError, J2kFileMetadata, J2kSupportInfo};
 use j2k_core::{
     Colorspace, CompressedPayloadKind, CompressedTransferSyntax, Info, TileLayout, Unsupported,
 };
@@ -27,6 +27,7 @@ pub(crate) fn parse_image_info(input: &[u8]) -> Result<ParsedImageInfo, J2kError
             transfer_syntax: parsed.transfer_syntax(),
             payload_kind: CompressedPayloadKind::Jpeg2000Codestream,
             components,
+            file_metadata: None,
         });
     }
     Err(J2kError::Unsupported(Unsupported {
@@ -39,18 +40,23 @@ pub(crate) struct ParsedImageInfo {
     pub(crate) info: Info,
     pub(crate) transfer_syntax: CompressedTransferSyntax,
     pub(crate) payload_kind: CompressedPayloadKind,
-    pub(crate) components: Vec<ParsedComponentInfo>,
+    pub(crate) components: Vec<J2kComponentInfo>,
+    pub(crate) file_metadata: Option<J2kFileMetadata>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ParsedComponentInfo {
-    pub(crate) bit_depth: u8,
-    pub(crate) signed: bool,
-    pub(crate) x_rsiz: u8,
-    pub(crate) y_rsiz: u8,
+impl ParsedImageInfo {
+    pub(crate) fn into_support_info(self) -> J2kSupportInfo {
+        J2kSupportInfo {
+            info: self.info,
+            transfer_syntax: self.transfer_syntax,
+            payload_kind: self.payload_kind,
+            components: self.components,
+            file_metadata: self.file_metadata,
+        }
+    }
 }
 
-fn infer_colorspace(components: u8, has_mct: bool, reversible: bool) -> Colorspace {
+fn infer_colorspace(components: u16, has_mct: bool, reversible: bool) -> Colorspace {
     match (components, has_mct, reversible) {
         (1, _, _) => Colorspace::SGray,
         (3, false, _) => Colorspace::Rgb,
@@ -63,10 +69,10 @@ fn infer_colorspace(components: u8, has_mct: bool, reversible: bool) -> Colorspa
 #[derive(Debug, Clone)]
 struct ParsedSiz {
     dimensions: (u32, u32),
-    components: u8,
+    components: u16,
     bit_depth: u8,
     tile_layout: TileLayout,
-    component_info: Vec<ParsedComponentInfo>,
+    component_info: Vec<J2kComponentInfo>,
 }
 
 #[derive(Debug, Clone, Copy)]

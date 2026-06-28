@@ -43,9 +43,15 @@ Run this before publishing:
 
 ```bash
 cargo xtask release-integrity
+cargo xtask public-support --final
 ```
 
 The integrity gate parses cargo metadata, manifests, `.github/workflows/publish.yml`, and this release document. It fails if a publishable workspace crate is missing from publish order, docs.rs metadata, semver/doc gates, or release docs, or if a workspace crate is neither publishable nor explicitly `publish = false`.
+
+The public-support gate verifies that the JPEG 2000 Part 1, JP2, HTJ2K Part 15,
+JPH, known-limitation, and publication-gate rows remain synchronized with tests
+and the conformance manifest before a release can claim full scoped codec
+support.
 
 ## Required gates
 

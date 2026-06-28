@@ -54,6 +54,8 @@ pub enum CompressedPayloadKind {
     Jpeg2000Codestream,
     /// JP2 file-format wrapper around a JPEG 2000 codestream.
     Jp2File,
+    /// JPH file-format wrapper around an HTJ2K codestream.
+    JphFile,
 }
 
 /// A borrowed compressed frame/tile that may be copied unchanged.
@@ -192,7 +194,7 @@ pub struct PassthroughRequirements {
     /// Optional exact output dimensions.
     pub dimensions: Option<(u32, u32)>,
     /// Optional exact component count.
-    pub components: Option<u8>,
+    pub components: Option<u16>,
     /// Optional exact bit depth.
     pub bit_depth: Option<u8>,
     /// Optional exact colorspace.
@@ -229,6 +231,13 @@ impl PassthroughRequirements {
     /// Require an exact component count.
     #[must_use]
     pub const fn with_components(mut self, components: u8) -> Self {
+        self.components = Some(components as u16);
+        self
+    }
+
+    /// Require an exact JPEG 2000 component count.
+    #[must_use]
+    pub const fn with_component_count(mut self, components: u16) -> Self {
         self.components = Some(components);
         self
     }
@@ -300,9 +309,9 @@ pub enum PassthroughRejectReason {
     /// Source and destination component counts differ.
     ComponentsMismatch {
         /// Source component count found in the candidate.
-        source: u8,
+        source: u16,
         /// Required destination component count.
-        destination: u8,
+        destination: u16,
     },
     /// Source and destination bit depths differ.
     BitDepthMismatch {

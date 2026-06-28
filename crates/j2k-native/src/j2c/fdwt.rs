@@ -43,6 +43,26 @@ pub(crate) struct DwtLevel {
     pub(crate) high_height: u32,
 }
 
+/// Exact reversible 5-3 DWT coefficients for high-precision lossless encode.
+#[derive(Debug)]
+pub(crate) struct DwtDecompositionI64 {
+    pub(crate) ll: Vec<i64>,
+    pub(crate) ll_width: u32,
+    pub(crate) ll_height: u32,
+    pub(crate) levels: Vec<DwtLevelI64>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DwtLevelI64 {
+    pub(crate) hl: Vec<i64>,
+    pub(crate) lh: Vec<i64>,
+    pub(crate) hh: Vec<i64>,
+    pub(crate) low_width: u32,
+    pub(crate) low_height: u32,
+    pub(crate) high_width: u32,
+    pub(crate) high_height: u32,
+}
+
 /// Perform multi-level forward DWT on the given image samples.
 ///
 /// `samples` are in row-major order, `width × height`.
@@ -180,6 +200,120 @@ pub(crate) fn forward_dwt(
     }
 }
 
+/// Perform exact multi-level reversible 5-3 DWT on signed integer samples.
+pub(crate) fn forward_dwt_i64(
+    samples: &[i64],
+    width: u32,
+    height: u32,
+    num_levels: u8,
+) -> DwtDecompositionI64 {
+    let w = width as usize;
+    let h = height as usize;
+
+    let mut buffer = samples.to_vec();
+    let mut current_width = w;
+    let mut current_height = h;
+    let mut levels = Vec::with_capacity(num_levels as usize);
+
+    for _ in 0..num_levels {
+        if current_width < 2 && current_height < 2 {
+            break;
+        }
+
+        if current_height >= 2 {
+            let mut col_buf = vec![0_i64; current_height];
+            for x in 0..current_width {
+                for y in 0..current_height {
+                    col_buf[y] = buffer[y * w + x];
+                }
+
+                forward_lift_53_i64(&mut col_buf[..current_height]);
+
+                let num_low = current_height.div_ceil(2);
+                for i in 0..num_low {
+                    buffer[i * w + x] = col_buf[i * 2];
+                }
+                for i in 0..(current_height / 2) {
+                    buffer[(num_low + i) * w + x] = col_buf[i * 2 + 1];
+                }
+            }
+        }
+
+        if current_width >= 2 {
+            let mut row_buf = vec![0_i64; current_width];
+            for y in 0..current_height {
+                let row_start = y * w;
+                row_buf[..current_width]
+                    .copy_from_slice(&buffer[row_start..row_start + current_width]);
+
+                forward_lift_53_i64(&mut row_buf[..current_width]);
+
+                let num_low = current_width.div_ceil(2);
+                for i in 0..num_low {
+                    buffer[row_start + i] = row_buf[i * 2];
+                }
+                for i in 0..(current_width / 2) {
+                    buffer[row_start + num_low + i] = row_buf[i * 2 + 1];
+                }
+            }
+        }
+
+        let low_w = current_width.div_ceil(2);
+        let low_h = current_height.div_ceil(2);
+        let high_w = current_width / 2;
+        let high_h = current_height / 2;
+
+        let mut hl = vec![0_i64; high_w * low_h];
+        let mut lh = vec![0_i64; low_w * high_h];
+        let mut hh = vec![0_i64; high_w * high_h];
+
+        for y in 0..low_h {
+            for x in 0..high_w {
+                hl[y * high_w + x] = buffer[y * w + low_w + x];
+            }
+        }
+        for y in 0..high_h {
+            for x in 0..low_w {
+                lh[y * low_w + x] = buffer[(low_h + y) * w + x];
+            }
+        }
+        for y in 0..high_h {
+            for x in 0..high_w {
+                hh[y * high_w + x] = buffer[(low_h + y) * w + low_w + x];
+            }
+        }
+
+        levels.push(DwtLevelI64 {
+            hl,
+            lh,
+            hh,
+            low_width: low_w as u32,
+            low_height: low_h as u32,
+            high_width: high_w as u32,
+            high_height: high_h as u32,
+        });
+
+        current_width = low_w;
+        current_height = low_h;
+    }
+
+    let mut ll = vec![0_i64; current_width * current_height];
+    for y in 0..current_height {
+        for x in 0..current_width {
+            ll[y * current_width + x] = buffer[y * w + x];
+        }
+    }
+
+    levels.reverse();
+
+    DwtDecompositionI64 {
+        ll,
+        ll_width: current_width as u32,
+        ll_height: current_height as u32,
+        levels,
+    }
+}
+
 /// Forward 5-3 reversible lifting (integer arithmetic).
 ///
 /// Equations F-2 and F-3 from ITU-T T.800:
@@ -220,6 +354,35 @@ fn forward_lift_53(data: &mut [f32]) {
     }
 }
 
+fn forward_lift_53_i64(data: &mut [i64]) {
+    let n = data.len();
+    if n < 2 {
+        return;
+    }
+
+    if n.is_multiple_of(2) {
+        forward_lift_53_even_i64(data);
+        return;
+    }
+
+    let last_even = if n.is_multiple_of(2) { n - 2 } else { n - 1 };
+    for i in (1..n).step_by(2) {
+        let left = data[i - 1];
+        let right = if i + 1 < n {
+            data[i + 1]
+        } else {
+            data[last_even]
+        };
+        data[i] -= floor_div2_i64(left + right);
+    }
+
+    for i in (0..n).step_by(2) {
+        let left = if i > 0 { data[i - 1] } else { data[1] };
+        let right = if i + 1 < n { data[i + 1] } else { left };
+        data[i] += floor_div4_plus_half_i64(left + right);
+    }
+}
+
 fn forward_lift_53_even(data: &mut [f32]) {
     let n = data.len();
     debug_assert!(n >= 2);
@@ -234,6 +397,34 @@ fn forward_lift_53_even(data: &mut [f32]) {
     for i in (2..n).step_by(2) {
         data[i] += floor_f32((data[i - 1] + data[i + 1]) * 0.25 + 0.5);
     }
+}
+
+fn forward_lift_53_even_i64(data: &mut [i64]) {
+    let n = data.len();
+    debug_assert!(n >= 2);
+    debug_assert!(n.is_multiple_of(2));
+
+    for i in (1..n - 1).step_by(2) {
+        data[i] -= floor_div2_i64(data[i - 1] + data[i + 1]);
+    }
+    data[n - 1] -= data[n - 2];
+
+    data[0] += floor_div2_plus_half_i64(data[1]);
+    for i in (2..n).step_by(2) {
+        data[i] += floor_div4_plus_half_i64(data[i - 1] + data[i + 1]);
+    }
+}
+
+fn floor_div2_i64(value: i64) -> i64 {
+    value.div_euclid(2)
+}
+
+fn floor_div2_plus_half_i64(value: i64) -> i64 {
+    (value + 1).div_euclid(2)
+}
+
+fn floor_div4_plus_half_i64(value: i64) -> i64 {
+    (value + 2).div_euclid(4)
 }
 
 /// Forward 9-7 irreversible lifting (floating-point).
@@ -318,6 +509,75 @@ mod tests {
         // After forward transform, reconstruct with inverse and check
         inverse_lift_53(&mut data);
         assert!(approx_eq_slice(&data, &[10.0, 20.0, 30.0, 40.0], 0.001));
+    }
+
+    #[test]
+    fn forward_53_i64_round_trips_38_bit_values() {
+        let original = vec![
+            (1_i64 << 37) - 1,
+            -(1_i64 << 37),
+            (1_i64 << 36) + 17,
+            -((1_i64 << 36) - 9),
+            123_456_789,
+            -987_654_321,
+            0,
+        ];
+        let mut data = original.clone();
+
+        forward_lift_53_i64(&mut data);
+        inverse_lift_53_i64(&mut data);
+
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn forward_dwt_i64_matches_f32_path_for_exact_range() {
+        let samples_i64 = (0..25)
+            .map(|idx| i64::from(((idx * 37 + idx / 3) & 0xffff) - 32_768))
+            .collect::<Vec<_>>();
+        let samples_f32 = samples_i64
+            .iter()
+            .map(|sample| *sample as f32)
+            .collect::<Vec<_>>();
+
+        let i64_decomp = forward_dwt_i64(&samples_i64, 5, 5, 2);
+        let f32_decomp = forward_dwt(&samples_f32, 5, 5, 2, true);
+
+        assert_eq!(
+            i64_decomp
+                .ll
+                .iter()
+                .map(|sample| *sample as f32)
+                .collect::<Vec<_>>(),
+            f32_decomp.ll
+        );
+        assert_eq!(i64_decomp.levels.len(), f32_decomp.levels.len());
+        for (actual, expected) in i64_decomp.levels.iter().zip(&f32_decomp.levels) {
+            assert_eq!(
+                actual
+                    .hl
+                    .iter()
+                    .map(|sample| *sample as f32)
+                    .collect::<Vec<_>>(),
+                expected.hl
+            );
+            assert_eq!(
+                actual
+                    .lh
+                    .iter()
+                    .map(|sample| *sample as f32)
+                    .collect::<Vec<_>>(),
+                expected.lh
+            );
+            assert_eq!(
+                actual
+                    .hh
+                    .iter()
+                    .map(|sample| *sample as f32)
+                    .collect::<Vec<_>>(),
+                expected.hh
+            );
+        }
     }
 
     #[test]
@@ -421,6 +681,28 @@ mod tests {
                 data[last_even]
             };
             data[i] += ((left + right) * 0.5).floor();
+        }
+    }
+
+    fn inverse_lift_53_i64(data: &mut [i64]) {
+        let n = data.len();
+        if n < 2 {
+            return;
+        }
+        for i in (0..n).step_by(2) {
+            let left = if i > 0 { data[i - 1] } else { data[1] };
+            let right = if i + 1 < n { data[i + 1] } else { left };
+            data[i] -= floor_div4_plus_half_i64(left + right);
+        }
+        let last_even = if n.is_multiple_of(2) { n - 2 } else { n - 1 };
+        for i in (1..n).step_by(2) {
+            let left = data[i - 1];
+            let right = if i + 1 < n {
+                data[i + 1]
+            } else {
+                data[last_even]
+            };
+            data[i] += floor_div2_i64(left + right);
         }
     }
 

@@ -31,9 +31,9 @@ fn public_api_bench_exposes_cpu_decode_regression_surface() {
         "classic_repeated_512_roi256_batch16",
         "classic_distinct_512_roi256_batch16",
         "htj2k_repeated_512_roi256_batch16",
-        "htj2k_jp2_rgb8_repeated_512_roi256_batch16",
-        "htj2k_jp2_rgba8_repeated_512_roi256_batch16",
-        "htj2k_jp2_rgb8_repeated_256_roi128_batch16",
+        "htj2k_jph_rgb8_repeated_512_roi256_batch16",
+        "htj2k_jph_rgba8_repeated_512_roi256_batch16",
+        "htj2k_jph_rgb8_repeated_256_roi128_batch16",
         "htj2k_distinct_512_roi256_batch16",
         "htj2k_gray8_full_512x512",
     ] {

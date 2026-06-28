@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k::J2kDecoder;
+use j2k::{wrap_j2k_codestream, J2kDecoder, J2kFileWrapOptions};
 use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::{encode_htj2k, EncodeOptions};
-use j2k_test_support::{gradient_u8, read_pnm_pixels, wrap_codestream_jp2, write_pnm};
+use j2k_test_support::{gradient_u8, read_pnm_pixels, write_pnm};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -182,15 +182,15 @@ fn ht_gray_full_decode_matches_grok() {
         return;
     };
     let pixels = gradient_u8(128, 128, 1);
-    let jp2 = ht_jp2(&pixels, 128, 128, 1);
+    let jph = ht_jph(&pixels, 128, 128, 1);
 
-    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut decoder = J2kDecoder::new(&jph).expect("decoder");
     let mut out = vec![0_u8; 128 * 128];
     decoder
         .decode_into(&mut out, 128, PixelFormat::Gray8)
         .expect("j2k decode");
 
-    let expected = decode_with_grok(&path, "grok_full_ht_gray", &jp2, ".pgm", &[]);
+    let expected = decode_with_grok(&path, "grok_full_ht_gray", &jph, ".pgm", &[]);
     assert_eq!(out, expected);
 }
 
@@ -200,7 +200,7 @@ fn ht_gray_region_decode_matches_grok_area_decode() {
         return;
     };
     let pixels = gradient_u8(128, 128, 1);
-    let jp2 = ht_jp2(&pixels, 128, 128, 1);
+    let jph = ht_jph(&pixels, 128, 128, 1);
     let roi = Rect {
         x: 16,
         y: 24,
@@ -208,7 +208,7 @@ fn ht_gray_region_decode_matches_grok_area_decode() {
         h: 48,
     };
 
-    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut decoder = J2kDecoder::new(&jph).expect("decoder");
     let mut out = vec![0_u8; roi.w as usize * roi.h as usize];
     decoder
         .decode_region_into(
@@ -223,7 +223,7 @@ fn ht_gray_region_decode_matches_grok_area_decode() {
     let expected = decode_with_grok(
         &path,
         "grok_region_ht_gray",
-        &jp2,
+        &jph,
         ".pgm",
         &[
             "-d",
@@ -239,9 +239,9 @@ fn ht_gray_scaled_decode_matches_grok_reduce() {
         return;
     };
     let pixels = gradient_u8(128, 128, 1);
-    let jp2 = ht_jp2(&pixels, 128, 128, 1);
+    let jph = ht_jph(&pixels, 128, 128, 1);
 
-    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut decoder = J2kDecoder::new(&jph).expect("decoder");
     let mut out = vec![0_u8; 32 * 32];
     decoder
         .decode_scaled_into(
@@ -253,7 +253,7 @@ fn ht_gray_scaled_decode_matches_grok_reduce() {
         )
         .expect("j2k scaled decode");
 
-    let expected = decode_with_grok(&path, "grok_scaled_ht_gray", &jp2, ".pgm", &["-r", "2"]);
+    let expected = decode_with_grok(&path, "grok_scaled_ht_gray", &jph, ".pgm", &["-r", "2"]);
     assert_eq!(out, expected);
 }
 
@@ -263,15 +263,15 @@ fn ht_rgb_full_decode_matches_grok() {
         return;
     };
     let pixels = gradient_u8(128, 128, 3);
-    let jp2 = ht_jp2(&pixels, 128, 128, 3);
+    let jph = ht_jph(&pixels, 128, 128, 3);
 
-    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut decoder = J2kDecoder::new(&jph).expect("decoder");
     let mut out = vec![0_u8; 128 * 128 * 3];
     decoder
         .decode_into(&mut out, 128 * 3, PixelFormat::Rgb8)
         .expect("j2k decode");
 
-    let expected = decode_with_grok(&path, "grok_full_ht_rgb", &jp2, ".ppm", &[]);
+    let expected = decode_with_grok(&path, "grok_full_ht_rgb", &jph, ".ppm", &[]);
     assert_eq!(out, expected);
 }
 
@@ -281,7 +281,7 @@ fn ht_rgb_region_decode_matches_grok_area_decode() {
         return;
     };
     let pixels = gradient_u8(128, 128, 3);
-    let jp2 = ht_jp2(&pixels, 128, 128, 3);
+    let jph = ht_jph(&pixels, 128, 128, 3);
     let roi = Rect {
         x: 16,
         y: 24,
@@ -289,7 +289,7 @@ fn ht_rgb_region_decode_matches_grok_area_decode() {
         h: 48,
     };
 
-    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut decoder = J2kDecoder::new(&jph).expect("decoder");
     let mut out = vec![0_u8; roi.w as usize * roi.h as usize * 3];
     decoder
         .decode_region_into(
@@ -304,7 +304,7 @@ fn ht_rgb_region_decode_matches_grok_area_decode() {
     let expected = decode_with_grok(
         &path,
         "grok_region_ht_rgb",
-        &jp2,
+        &jph,
         ".ppm",
         &[
             "-d",
@@ -320,9 +320,9 @@ fn ht_rgb_scaled_decode_matches_grok_reduce() {
         return;
     };
     let pixels = gradient_u8(128, 128, 3);
-    let jp2 = ht_jp2(&pixels, 128, 128, 3);
+    let jph = ht_jph(&pixels, 128, 128, 3);
 
-    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut decoder = J2kDecoder::new(&jph).expect("decoder");
     let mut out = vec![0_u8; 32 * 32 * 3];
     decoder
         .decode_scaled_into(
@@ -334,7 +334,7 @@ fn ht_rgb_scaled_decode_matches_grok_reduce() {
         )
         .expect("j2k scaled decode");
 
-    let expected = decode_with_grok(&path, "grok_scaled_ht_rgb", &jp2, ".ppm", &["-r", "2"]);
+    let expected = decode_with_grok(&path, "grok_scaled_ht_rgb", &jph, ".ppm", &["-r", "2"]);
     assert_eq!(out, expected);
 }
 
@@ -373,15 +373,15 @@ fn next_temp_id() -> usize {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-fn ht_jp2(pixels: &[u8], width: u32, height: u32, components: u8) -> Vec<u8> {
+fn ht_jph(pixels: &[u8], width: u32, height: u32, components: u8) -> Vec<u8> {
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 3,
         ..EncodeOptions::default()
     };
-    let codestream =
-        encode_htj2k(pixels, width, height, components, 8, false, &options).expect("encode ht");
-    wrap_codestream_jp2(&codestream, width, height, u16::from(components), 8, 17)
+    let codestream = encode_htj2k(pixels, width, height, components.into(), 8, false, &options)
+        .expect("encode ht");
+    wrap_j2k_codestream(&codestream, J2kFileWrapOptions::jph()).expect("wrap JPH")
 }
 
 fn grok_decompress_bin() -> Option<PathBuf> {

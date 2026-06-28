@@ -1,15 +1,40 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k::{J2kCodec, J2kContext, J2kDecoder, J2kError, J2kRowDecodeOptions};
+use j2k::{
+    encode_j2k_lossless_components, EncodeBackendPreference, J2kBlockCodingMode, J2kCodec,
+    J2kComponentPlane, J2kContext, J2kDecoder, J2kError, J2kLosslessComponentPlane,
+    J2kLosslessComponentSamples, J2kLosslessEncodeOptions, J2kRowDecodeOptions,
+    ReversibleTransform,
+};
 use j2k_core::{
     BufferError, DecoderContext, Downscale, ImageDecodeRows, PixelFormat, Rect, RowSink,
     TileBatchDecode,
 };
-use j2k_native::{encode, encode_htj2k, DecodeSettings, EncodeOptions, Image};
-use j2k_test_support::{
-    crop_interleaved_bytes, crop_interleaved_u8, wrap_jp2_codestream, wrap_jp2_rgba_codestream,
-    PixelRect,
+use j2k_native::{
+    encode, encode_htj2k, encode_precomputed_htj2k_53, DecodeSettings, EncodeOptions, Image,
+    J2kForwardDwt53Level, J2kForwardDwt53Output, PrecomputedHtj2k53Component,
+    PrecomputedHtj2k53Image,
 };
+use j2k_test_support::{
+    crop_interleaved_bytes, crop_interleaved_u8, openhtj2k_refinement_fixture,
+    openhtj2k_refinement_odd_fixture, openhtj2k_refinement_odd_pixels, openhtj2k_refinement_pixels,
+    wrap_jp2_codestream, wrap_jp2_rgba_codestream, PixelRect,
+};
+
+type OpenHtFixture = (&'static str, fn() -> &'static [u8], fn() -> &'static [u8]);
+
+const OPENHT_REFINEMENT_FIXTURES: &[OpenHtFixture] = &[
+    (
+        "ds0_ht_12_b11",
+        openhtj2k_refinement_fixture,
+        openhtj2k_refinement_pixels,
+    ),
+    (
+        "ds0_ht_09_b11",
+        openhtj2k_refinement_odd_fixture,
+        openhtj2k_refinement_odd_pixels,
+    ),
+];
 
 fn encode_codestream(
     pixels: &[u8],
@@ -25,9 +50,42 @@ fn encode_codestream(
         ..EncodeOptions::default()
     };
     encode(
-        pixels, width, height, components, bit_depth, false, &options,
+        pixels,
+        width,
+        height,
+        components.into(),
+        bit_depth,
+        false,
+        &options,
     )
     .expect("encode")
+}
+
+fn rewrite_component_descriptor(bytes: &mut [u8], component: usize, ssiz: u8) {
+    let siz_offset = bytes
+        .windows(2)
+        .position(|marker| marker == [0xff, 0x51])
+        .expect("SIZ marker");
+    bytes[siz_offset + 40 + component * 3] = ssiz;
+}
+
+fn unsigned_29_bytes(sample: u32) -> [u8; 4] {
+    [
+        (sample & 0xff) as u8,
+        ((sample >> 8) & 0xff) as u8,
+        ((sample >> 16) & 0xff) as u8,
+        ((sample >> 24) & 0x1f) as u8,
+    ]
+}
+
+fn encode_signed_codestream(pixels: &[u8], width: u32, height: u32, bit_depth: u8) -> Vec<u8> {
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        use_mct: false,
+        ..EncodeOptions::default()
+    };
+    encode(pixels, width, height, 1, bit_depth, true, &options).expect("encode signed")
 }
 
 fn encode_codestream_with_levels(
@@ -45,7 +103,13 @@ fn encode_codestream_with_levels(
         ..EncodeOptions::default()
     };
     encode(
-        pixels, width, height, components, bit_depth, false, &options,
+        pixels,
+        width,
+        height,
+        components.into(),
+        bit_depth,
+        false,
+        &options,
     )
     .expect("encode")
 }
@@ -63,7 +127,13 @@ fn encode_ht_codestream(
         ..EncodeOptions::default()
     };
     encode_htj2k(
-        pixels, width, height, components, bit_depth, false, &options,
+        pixels,
+        width,
+        height,
+        components.into(),
+        bit_depth,
+        false,
+        &options,
     )
     .expect("encode ht")
 }
@@ -247,6 +317,29 @@ fn decode_gray8_jp2_roundtrips_reversible_pixels() {
 }
 
 #[test]
+fn decode_components_exposes_signed_gray8_public_samples() {
+    let pixels = [(-10_i8) as u8, (-1_i8) as u8, 0_i8 as u8, 12_i8 as u8];
+    let codestream = encode_signed_codestream(&pixels, 2, 2, 8);
+
+    let support = J2kDecoder::inspect_support(&codestream).expect("inspect support");
+    assert!(support.has_signed_components());
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let components = decoder.decode_components().expect("decode components");
+
+    assert_eq!(components.dimensions(), (2, 2));
+    assert_eq!(components.planes().len(), 1);
+    assert!(components.planes()[0].signed());
+    assert_eq!(components.planes()[0].bit_depth(), 8);
+    assert_eq!(components.planes()[0].dimensions(), (2, 2));
+    let samples = components.planes()[0]
+        .samples()
+        .iter()
+        .map(|sample| sample.round() as i8)
+        .collect::<Vec<_>>();
+    assert_eq!(samples, [-10, -1, 0, 12]);
+}
+
+#[test]
 fn decode_gray16_roundtrips_native_samples() {
     let samples = [0_u16, 1024, 2048, 4095];
     let pixels: Vec<u8> = samples.into_iter().flat_map(u16::to_le_bytes).collect();
@@ -257,6 +350,344 @@ fn decode_gray16_roundtrips_native_samples() {
         .decode_into(&mut out, 2 * 2, PixelFormat::Gray16)
         .expect("decode");
     assert_eq!(out, pixels.as_slice());
+}
+
+#[test]
+fn decode_components_exposes_signed_gray16_public_samples() {
+    let samples = [-300_i16, -1, 0, 300];
+    let pixels = samples
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    let codestream = encode_signed_codestream(&pixels, 2, 2, 16);
+
+    let support = J2kDecoder::inspect_support(&codestream).expect("inspect support");
+    assert!(support.has_signed_components());
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let components = decoder.decode_components().expect("decode components");
+
+    assert_eq!(components.dimensions(), (2, 2));
+    assert_eq!(components.planes().len(), 1);
+    assert!(components.planes()[0].signed());
+    assert_eq!(components.planes()[0].bit_depth(), 16);
+    assert_eq!(components.planes()[0].dimensions(), (2, 2));
+    let decoded_samples = components.planes()[0]
+        .samples()
+        .iter()
+        .map(|sample| sample.round() as i16)
+        .collect::<Vec<_>>();
+    assert_eq!(decoded_samples, samples);
+}
+
+#[test]
+fn decode_region_components_exposes_plane_dimensions() {
+    let pixels = [1_u8, 2, 3, 4, 5, 6, 7, 8, 9];
+    let codestream = encode_codestream(&pixels, 3, 3, 1, 8, true);
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+
+    let components = decoder
+        .decode_region_components(Rect {
+            x: 1,
+            y: 1,
+            w: 2,
+            h: 1,
+        })
+        .expect("decode component region");
+
+    assert_eq!(components.dimensions(), (2, 1));
+    assert_eq!(components.planes().len(), 1);
+    assert_eq!(components.planes()[0].dimensions(), (2, 1));
+    assert_eq!(components.planes()[0].samples(), &[5.0, 6.0]);
+}
+
+#[test]
+fn decode_native_components_exposes_mixed_public_planes() {
+    let pixels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+    let mut codestream = encode_codestream(&pixels, 2, 2, 3, 8, true);
+    rewrite_component_descriptor(&mut codestream, 1, 11);
+    rewrite_component_descriptor(&mut codestream, 2, 0x87);
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+
+    let components = decoder
+        .decode_native_components()
+        .expect("native component decode");
+
+    assert_eq!(components.dimensions(), (2, 2));
+    assert_eq!(components.planes().len(), 3);
+    assert_eq!(components.planes()[0].bit_depth(), 8);
+    assert_eq!(components.planes()[0].bytes_per_sample(), 1);
+    assert_eq!(components.planes()[0].data().len(), 4);
+    assert_eq!(components.planes()[1].bit_depth(), 12);
+    assert_eq!(components.planes()[1].bytes_per_sample(), 2);
+    assert_eq!(components.planes()[1].data().len(), 8);
+    assert_eq!(components.planes()[2].bit_depth(), 8);
+    assert!(components.planes()[2].signed());
+    assert_eq!(components.planes()[2].data().len(), 4);
+
+    let region = decoder
+        .decode_native_region_components(Rect {
+            x: 1,
+            y: 0,
+            w: 1,
+            h: 2,
+        })
+        .expect("native component region decode");
+    assert_eq!(region.dimensions(), (1, 2));
+    assert!(region
+        .planes()
+        .iter()
+        .all(|plane| plane.dimensions() == (1, 2)));
+    assert_eq!(region.planes()[1].data().len(), 4);
+}
+
+#[test]
+fn decode_native_components_exposes_high_bit_public_plane() {
+    let samples = [0_u32, 1, (1_u32 << 28) + 7, (1_u32 << 29) - 1];
+    let pixels = samples
+        .iter()
+        .flat_map(|sample| unsigned_29_bytes(*sample))
+        .collect::<Vec<_>>();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        use_mct: false,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 2, 2, 1, 29, false, &options).expect("encode gray29");
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+
+    let components = decoder
+        .decode_native_components()
+        .expect("native high-bit component decode");
+
+    assert_eq!(components.dimensions(), (2, 2));
+    assert_eq!(components.planes().len(), 1);
+    assert_eq!(components.planes()[0].bit_depth(), 29);
+    assert_eq!(components.planes()[0].bytes_per_sample(), 4);
+    assert!(!components.planes()[0].signed());
+    assert_eq!(components.planes()[0].data(), pixels);
+}
+
+#[test]
+fn decode_native_region_components_exposes_high_bit_public_plane() {
+    let samples = [
+        0_u32,
+        1,
+        2,
+        3,
+        (1_u32 << 28) + 4,
+        (1_u32 << 28) + 5,
+        (1_u32 << 29) - 3,
+        (1_u32 << 29) - 2,
+        (1_u32 << 29) - 1,
+    ];
+    let pixels = samples
+        .iter()
+        .flat_map(|sample| unsigned_29_bytes(*sample))
+        .collect::<Vec<_>>();
+    let expected = [samples[4], samples[5]]
+        .iter()
+        .flat_map(|sample| unsigned_29_bytes(*sample))
+        .collect::<Vec<_>>();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 2,
+        use_mct: false,
+        ..EncodeOptions::default()
+    };
+    let codestream = encode(&pixels, 3, 3, 1, 29, false, &options).expect("encode gray29");
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+
+    let components = decoder
+        .decode_native_region_components(Rect {
+            x: 1,
+            y: 1,
+            w: 2,
+            h: 1,
+        })
+        .expect("native high-bit component region decode");
+
+    assert_eq!(components.dimensions(), (2, 1));
+    assert_eq!(components.planes().len(), 1);
+    assert_eq!(components.planes()[0].dimensions(), (2, 1));
+    assert_eq!(components.planes()[0].bit_depth(), 29);
+    assert_eq!(components.planes()[0].bytes_per_sample(), 4);
+    assert_eq!(components.planes()[0].data(), expected);
+}
+
+#[test]
+fn decode_native_region_components_covers_sampled_high_bit_public_planes() {
+    let pack_u29 = |values: &[u32]| {
+        values
+            .iter()
+            .flat_map(|sample| unsigned_29_bytes(*sample))
+            .collect::<Vec<_>>()
+    };
+    let full = (0_u32..25).map(|idx| 1_000 + idx).collect::<Vec<_>>();
+    let quarter_grid_values = (0_u32..9)
+        .map(|idx| (1_u32 << 28) + 100 + idx)
+        .collect::<Vec<_>>();
+    let offset_grid_values = (0_u32..9)
+        .map(|idx| (1_u32 << 28) + 1_000 + idx)
+        .collect::<Vec<_>>();
+    let full_bytes = pack_u29(&full);
+    let quarter_plane_bytes = pack_u29(&quarter_grid_values);
+    let offset_plane_bytes = pack_u29(&offset_grid_values);
+    let planes = [
+        J2kLosslessComponentPlane {
+            data: &full_bytes,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+        J2kLosslessComponentPlane {
+            data: &quarter_plane_bytes,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+        J2kLosslessComponentPlane {
+            data: &offset_plane_bytes,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+    ];
+    let samples = J2kLosslessComponentSamples::new(&planes, 5, 5, 29, false)
+        .expect("sampled high-bit component samples");
+    let encoded = encode_j2k_lossless_components(
+        samples,
+        &J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::CpuOnly)
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(1)),
+    )
+    .expect("sampled high-bit encode");
+    let mut decoder = J2kDecoder::new(&encoded.codestream).expect("decoder");
+
+    let components = decoder
+        .decode_native_region_components(Rect {
+            x: 1,
+            y: 1,
+            w: 3,
+            h: 3,
+        })
+        .expect("sampled high-bit native component region decode");
+
+    assert_eq!(components.dimensions(), (3, 3));
+    assert_eq!(components.planes().len(), 3);
+    assert_eq!(components.planes()[0].dimensions(), (3, 3));
+    assert_eq!(components.planes()[0].sampling(), (1, 1));
+    assert_eq!(
+        components.planes()[0].data(),
+        pack_u29(&[
+            full[6], full[7], full[8], full[11], full[12], full[13], full[16], full[17], full[18]
+        ])
+    );
+    assert_eq!(components.planes()[1].dimensions(), (3, 3));
+    assert_eq!(components.planes()[1].sampling(), (2, 2));
+    assert_eq!(
+        components.planes()[1].data(),
+        pack_u29(&[
+            quarter_grid_values[0],
+            quarter_grid_values[1],
+            quarter_grid_values[1],
+            quarter_grid_values[3],
+            quarter_grid_values[4],
+            quarter_grid_values[4],
+            quarter_grid_values[3],
+            quarter_grid_values[4],
+            quarter_grid_values[4],
+        ])
+    );
+    assert_eq!(components.planes()[2].dimensions(), (3, 3));
+    assert_eq!(components.planes()[2].sampling(), (2, 2));
+    assert_eq!(
+        components.planes()[2].data(),
+        pack_u29(&[
+            offset_grid_values[0],
+            offset_grid_values[1],
+            offset_grid_values[1],
+            offset_grid_values[3],
+            offset_grid_values[4],
+            offset_grid_values[4],
+            offset_grid_values[3],
+            offset_grid_values[4],
+            offset_grid_values[4],
+        ])
+    );
+}
+
+#[test]
+fn decode_components_exposes_public_sampling_metadata() {
+    let image = PrecomputedHtj2k53Image {
+        width: 16,
+        height: 16,
+        bit_depth: 8,
+        signed: false,
+        components: vec![
+            PrecomputedHtj2k53Component {
+                x_rsiz: 1,
+                y_rsiz: 1,
+                dwt: zero_dwt53(16, 16),
+            },
+            PrecomputedHtj2k53Component {
+                x_rsiz: 2,
+                y_rsiz: 2,
+                dwt: zero_dwt53(8, 8),
+            },
+            PrecomputedHtj2k53Component {
+                x_rsiz: 2,
+                y_rsiz: 2,
+                dwt: zero_dwt53(8, 8),
+            },
+        ],
+    };
+    let options = EncodeOptions {
+        num_decomposition_levels: 1,
+        reversible: true,
+        use_ht_block_coding: true,
+        use_mct: false,
+        validate_high_throughput_codestream: false,
+        ..EncodeOptions::default()
+    };
+    let codestream =
+        encode_precomputed_htj2k_53(&image, &options).expect("encode subsampled HTJ2K");
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+
+    let components = decoder.decode_components().expect("decode components");
+    let sampling = components
+        .planes()
+        .iter()
+        .map(J2kComponentPlane::sampling)
+        .collect::<Vec<_>>();
+    let dimensions = components
+        .planes()
+        .iter()
+        .map(J2kComponentPlane::dimensions)
+        .collect::<Vec<_>>();
+
+    assert_eq!(sampling, [(1, 1), (2, 2), (2, 2)]);
+    assert_eq!(dimensions, [(16, 16), (16, 16), (16, 16)]);
+}
+
+#[test]
+fn public_decode_matches_openhtj2k_refinement_fixtures() {
+    for (name, codestream, expected) in OPENHT_REFINEMENT_FIXTURES {
+        let codestream = codestream();
+        let expected = expected();
+        let mut decoder = J2kDecoder::new(codestream).unwrap_or_else(|err| {
+            panic!("{name}: public decoder did not accept OpenHTJ2K fixture: {err}")
+        });
+        let info = decoder.info();
+        let width = usize::try_from(info.dimensions.0).expect("width");
+        let height = usize::try_from(info.dimensions.1).expect("height");
+        let mut output = vec![0_u8; width * height];
+
+        decoder
+            .decode_into(&mut output, width, PixelFormat::Gray8)
+            .unwrap_or_else(|err| panic!("{name}: public decode failed: {err}"));
+
+        assert_eq!(output.as_slice(), expected, "{name}: decoded pixels");
+    }
 }
 
 #[test]
@@ -1125,4 +1556,28 @@ fn tile_batch_decode_matches_borrowed_decoder_for_htj2k() {
     )
     .expect("tile decode");
     assert_eq!(out, expected);
+}
+
+fn zero_dwt53(width: u32, height: u32) -> J2kForwardDwt53Output {
+    let low_width = width.div_ceil(2);
+    let low_height = height.div_ceil(2);
+    let high_width = width / 2;
+    let high_height = height / 2;
+
+    J2kForwardDwt53Output {
+        ll: vec![0.0; (low_width * low_height) as usize],
+        ll_width: low_width,
+        ll_height: low_height,
+        levels: vec![J2kForwardDwt53Level {
+            hl: vec![0.0; (high_width * low_height) as usize],
+            lh: vec![0.0; (low_width * high_height) as usize],
+            hh: vec![0.0; (high_width * high_height) as usize],
+            width,
+            height,
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+        }],
+    }
 }

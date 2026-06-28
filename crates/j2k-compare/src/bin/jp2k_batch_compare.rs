@@ -196,7 +196,7 @@ fn load_tiles(dir: &Path, limit: usize) -> Result<(Vec<TileInput>, usize), Strin
     Ok((tiles, skipped))
 }
 
-fn pixel_format(components: u8, bit_depth: u8) -> Option<PixelFormat> {
+fn pixel_format(components: u16, bit_depth: u8) -> Option<PixelFormat> {
     match (components, bit_depth) {
         (1, 8) => Some(PixelFormat::Gray8),
         (3, 8) => Some(PixelFormat::Rgb8),

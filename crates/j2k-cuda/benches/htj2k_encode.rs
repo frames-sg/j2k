@@ -168,7 +168,7 @@ fn encode_case_cpu(
         &case.pixels,
         case.width,
         case.height,
-        case.components,
+        u16::from(case.components),
         8,
         false,
     )
@@ -191,7 +191,7 @@ fn encode_case_cuda(
         &case.pixels,
         case.width,
         case.height,
-        case.components,
+        u16::from(case.components),
         8,
         false,
     )

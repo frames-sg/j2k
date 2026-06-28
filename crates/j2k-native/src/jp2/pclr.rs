@@ -21,13 +21,9 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
         let bit_depth = (descriptor & 0x7F)
             .checked_add(1)
             .ok_or(FormatError::InvalidBox)?;
-        let is_signed = (descriptor & 0x80) != 0;
+        let signed = (descriptor & 0x80) != 0;
 
-        if is_signed {
-            bail!(FormatError::InvalidBox);
-        }
-
-        columns.push(PaletteColumn { bit_depth });
+        columns.push(PaletteColumn { bit_depth, signed });
     }
 
     let mut entries = Vec::with_capacity(num_entries);
@@ -75,4 +71,5 @@ impl PaletteBox {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PaletteColumn {
     pub(crate) bit_depth: u8,
+    pub(crate) signed: bool,
 }

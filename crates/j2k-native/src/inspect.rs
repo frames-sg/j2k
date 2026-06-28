@@ -510,6 +510,21 @@ mod tests {
         assert!(matches!(err, J2kCodestreamHeaderError::InvalidSiz { .. }));
     }
 
+    #[test]
+    fn inspect_accepts_legal_38_bit_component_metadata() {
+        let mut bytes = minimal_codestream();
+        rewrite_component_descriptor(&mut bytes, 0, 37);
+        rewrite_component_descriptor(&mut bytes, 1, 0x80 | 37);
+
+        let header = inspect_j2k_codestream_header(&bytes).expect("legal 38-bit SIZ inspect");
+
+        assert_eq!(header.bit_depth, 38);
+        assert_eq!(header.component_info[0].bit_depth, 38);
+        assert!(!header.component_info[0].signed);
+        assert_eq!(header.component_info[1].bit_depth, 38);
+        assert!(header.component_info[1].signed);
+    }
+
     fn minimal_codestream() -> Vec<u8> {
         let mut bytes = vec![0xFF, 0x4F];
         let mut siz = Vec::new();
@@ -563,5 +578,13 @@ mod tests {
         let component_offset = siz + 40 + component * 3;
         bytes[component_offset + 1] = x_rsiz;
         bytes[component_offset + 2] = y_rsiz;
+    }
+
+    fn rewrite_component_descriptor(bytes: &mut [u8], component: usize, ssiz: u8) {
+        let siz = bytes
+            .windows(2)
+            .position(|marker| marker == [0xFF, 0x51])
+            .expect("SIZ marker");
+        bytes[siz + 40 + component * 3] = ssiz;
     }
 }

@@ -94,9 +94,14 @@ struct J2kLosslessDeinterleaveParams {
     uint dst_height;
     uint components;
     uint bytes_per_sample;
+    uint bit_depth;
     uint sample_offset;
     uint signed_samples;
 };
+
+inline uint j2k_lossless_precision_mask(uint bit_depth) {
+    return (1u << bit_depth) - 1u;
+}
 
 inline float j2k_lossless_load_sample(
     device const uchar *src,
@@ -104,6 +109,7 @@ inline float j2k_lossless_load_sample(
     uint component,
     uint components,
     uint bytes_per_sample,
+    uint bit_depth,
     uint sample_offset,
     uint signed_samples,
     bool inside_src
@@ -112,16 +118,26 @@ inline float j2k_lossless_load_sample(
         return signed_samples == 0u ? -float(int(sample_offset)) : 0.0f;
     }
     if (bytes_per_sample == 1u) {
-        const uint raw = uint(src[base + component]);
+        const uint raw = uint(src[base + component]) & j2k_lossless_precision_mask(bit_depth);
         if (signed_samples != 0u) {
-            return float(raw >= 128u ? int(raw) - 256 : int(raw));
+            const uint sign_bit = 1u << (bit_depth - 1u);
+            const int signed_raw = (raw & sign_bit) != 0u
+                ? int(raw) - int(1u << bit_depth)
+                : int(raw);
+            return float(signed_raw);
         }
         return float(int(raw) - int(sample_offset));
     }
     const uint byte_offset = base + component * 2u;
-    const uint raw = uint(src[byte_offset]) | (uint(src[byte_offset + 1u]) << 8u);
+    const uint raw = (
+        uint(src[byte_offset]) | (uint(src[byte_offset + 1u]) << 8u)
+    ) & j2k_lossless_precision_mask(bit_depth);
     if (signed_samples != 0u) {
-        return float(raw >= 32768u ? int(raw) - 65536 : int(raw));
+        const uint sign_bit = 1u << (bit_depth - 1u);
+        const int signed_raw = (raw & sign_bit) != 0u
+            ? int(raw) - int(1u << bit_depth)
+            : int(raw);
+        return float(signed_raw);
     }
     return float(int(raw) - int(sample_offset));
 }
@@ -149,6 +165,7 @@ kernel void j2k_lossless_deinterleave_to_planes(
         0u,
         params.components,
         params.bytes_per_sample,
+        params.bit_depth,
         params.sample_offset,
         params.signed_samples,
         inside_src
@@ -160,6 +177,7 @@ kernel void j2k_lossless_deinterleave_to_planes(
             1u,
             params.components,
             params.bytes_per_sample,
+            params.bit_depth,
             params.sample_offset,
             params.signed_samples,
             inside_src
@@ -172,6 +190,7 @@ kernel void j2k_lossless_deinterleave_to_planes(
             2u,
             params.components,
             params.bytes_per_sample,
+            params.bit_depth,
             params.sample_offset,
             params.signed_samples,
             inside_src
@@ -184,6 +203,7 @@ kernel void j2k_lossless_deinterleave_to_planes(
             3u,
             params.components,
             params.bytes_per_sample,
+            params.bit_depth,
             params.sample_offset,
             params.signed_samples,
             inside_src

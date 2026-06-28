@@ -10,9 +10,10 @@ use super::progression::ProgressionData;
 use super::tag_tree::TagNode;
 use super::tile::{Tile, TilePart};
 use crate::error::{bail, Result, TileError};
+use crate::packet_math::bits_for_ht_refinement_only_length;
 use crate::reader::BitReader;
 
-pub(crate) const MAX_BITPLANE_COUNT: u8 = 32;
+pub(crate) const MAX_BITPLANE_COUNT: u8 = 63;
 
 pub(crate) fn parse<'a, 'b>(
     tile: &'b Tile<'a>,
@@ -163,7 +164,6 @@ fn resolve_classic_segments(
     storage: &mut DecompositionStorage<'_>,
     component_info: &ComponentInfo,
 ) -> Option<()> {
-    // We don't support more than 32-bit precision.
     const MAX_CODING_PASSES: u8 = 1 + 3 * (MAX_BITPLANE_COUNT - 1);
 
     let sub_band = &storage.sub_bands[sub_band_dx];
@@ -322,13 +322,6 @@ fn resolve_ht_segments(
             continue;
         }
 
-        if !inclusion.included_first_time
-            || code_block.number_of_coding_passes != 0
-            || code_block.non_empty_layer_count != 0
-        {
-            return None;
-        }
-
         let layer =
             &mut storage.layers[code_block.layers.clone()][progression_data.layer_num as usize];
 
@@ -344,39 +337,67 @@ fn resolve_ht_segments(
 
         ltrace!("HT raw number of coding passes: {}", raw_num_passes);
 
-        let parsed = parse_ht_segment_lengths(
-            reader,
-            raw_num_passes,
-            code_block.missing_bit_planes,
-            &mut code_block.l_block,
-        )?;
-
-        code_block.missing_bit_planes = parsed.missing_bit_planes;
-
         let start = storage.segments.len();
-        storage.segments.push(Segment {
-            idx: 0,
-            coding_pases: 1,
-            data_length: parsed.cleanup_length,
-            data: &[],
-        });
+        if inclusion.included_first_time {
+            if code_block.number_of_coding_passes != 0 || code_block.non_empty_layer_count != 0 {
+                return None;
+            }
 
-        ltrace!("HT cleanup length {}", parsed.cleanup_length);
+            let parsed = parse_ht_segment_lengths(
+                reader,
+                raw_num_passes,
+                code_block.missing_bit_planes,
+                &mut code_block.l_block,
+            )?;
 
-        if parsed.actual_passes > 1 {
+            code_block.missing_bit_planes = parsed.missing_bit_planes;
+
             storage.segments.push(Segment {
-                idx: 1,
-                coding_pases: parsed.actual_passes - 1,
-                data_length: parsed.refinement_length,
+                idx: 0,
+                coding_pases: 1,
+                data_length: parsed.cleanup_length,
                 data: &[],
             });
 
-            ltrace!("HT refinement length {}", parsed.refinement_length);
+            ltrace!("HT cleanup length {}", parsed.cleanup_length);
+
+            if parsed.actual_passes > 1 {
+                storage.segments.push(Segment {
+                    idx: 1,
+                    coding_pases: parsed.actual_passes - 1,
+                    data_length: parsed.refinement_length,
+                    data: &[],
+                });
+
+                ltrace!("HT refinement length {}", parsed.refinement_length);
+            }
+
+            code_block.number_of_coding_passes = parsed.actual_passes;
+        } else {
+            if code_block.number_of_coding_passes == 0 || raw_num_passes == 0 {
+                return None;
+            }
+            let cumulative_passes = code_block
+                .number_of_coding_passes
+                .checked_add(raw_num_passes)?;
+            if cumulative_passes > MAX_CODING_PASSES {
+                return None;
+            }
+            let refinement_length =
+                parse_ht_refinement_only_length(reader, raw_num_passes, &mut code_block.l_block)?;
+            storage.segments.push(Segment {
+                idx: 1,
+                coding_pases: raw_num_passes,
+                data_length: refinement_length,
+                data: &[],
+            });
+            code_block.number_of_coding_passes = cumulative_passes;
+
+            ltrace!("HT refinement length {}", refinement_length);
         }
 
         let end = storage.segments.len();
         layer.segments = Some(start..end);
-        code_block.number_of_coding_passes = parsed.actual_passes;
         code_block.non_empty_layer_count = code_block.non_empty_layer_count.checked_add(1)?;
     }
 
@@ -569,6 +590,26 @@ fn parse_ht_segment_lengths(
         cleanup_length,
         refinement_length,
     })
+}
+
+fn parse_ht_refinement_only_length(
+    reader: &mut BitReader<'_>,
+    num_coding_passes: u8,
+    l_block: &mut u32,
+) -> Option<u32> {
+    if num_coding_passes == 0 {
+        return None;
+    }
+
+    *l_block = l_block.checked_add(read_lblock_increment(reader)?)?;
+
+    let length_bits = bits_for_ht_refinement_only_length(*l_block, num_coding_passes);
+    let length = reader.read_bits_with_stuffing(length_bits as u8)?;
+    if length == 0 || length >= 2047 {
+        return None;
+    }
+
+    Some(length)
 }
 
 /// Calculate the segment index for the given pass in arithmetic decoder

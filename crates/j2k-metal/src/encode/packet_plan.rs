@@ -106,9 +106,9 @@ pub(super) fn packet_descriptors_for_lossless_device_order(
                             .to_string(),
                     }
                 })?,
-                component: u8::try_from(packet_index % component_count).map_err(|_| {
+                component: u16::try_from(packet_index % component_count).map_err(|_| {
                     crate::Error::MetalKernel {
-                        message: "J2K Metal resident encode packet component exceeds u8"
+                        message: "J2K Metal resident encode packet component exceeds u16"
                             .to_string(),
                     }
                 })?,

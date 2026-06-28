@@ -115,7 +115,7 @@ pub trait J2kEncodeStageAccelerator {
         Ok(None)
     }
 
-    /// Optionally quantize and encode one HTJ2K cleanup-only sub-band.
+    /// Optionally quantize and encode one HTJ2K cleanup/refinement sub-band.
     fn encode_ht_subband(
         &mut self,
         _job: J2kHtSubbandEncodeJob<'_>,

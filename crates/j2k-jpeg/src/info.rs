@@ -420,7 +420,7 @@ impl Info {
     pub fn to_core_info(&self) -> j2k_core::Info {
         j2k_core::Info {
             dimensions: self.dimensions,
-            components: self.sampling.len() as u8,
+            components: self.sampling.len() as u16,
             colorspace: core_colorspace(self.color_space),
             bit_depth: self.bit_depth,
             tile_layout: None,

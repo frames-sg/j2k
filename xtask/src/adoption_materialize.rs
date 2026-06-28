@@ -229,7 +229,7 @@ fn encode_source_codestream(
         &image.pixels,
         image.width,
         image.height,
-        image.channels,
+        u16::from(image.channels),
         8,
         false,
     )

@@ -258,7 +258,13 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         let bit_depth = 8u8;
         let signed = false;
 
-        let native = deinterleave_reference(&pixels, num_pixels, num_components, bit_depth, signed);
+        let native = deinterleave_reference(
+            &pixels,
+            num_pixels,
+            u16::from(num_components),
+            bit_depth,
+            signed,
+        );
         let cuda_out = context
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 8-bit unsigned RGB");
@@ -284,7 +290,13 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         let bit_depth = 8u8;
         let signed = true;
 
-        let native = deinterleave_reference(&pixels, num_pixels, num_components, bit_depth, signed);
+        let native = deinterleave_reference(
+            &pixels,
+            num_pixels,
+            u16::from(num_components),
+            bit_depth,
+            signed,
+        );
         let cuda_out = context
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 8-bit signed gray");
@@ -312,7 +324,13 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         let bit_depth = 16u8;
         let signed = false;
 
-        let native = deinterleave_reference(&pixels, num_pixels, num_components, bit_depth, signed);
+        let native = deinterleave_reference(
+            &pixels,
+            num_pixels,
+            u16::from(num_components),
+            bit_depth,
+            signed,
+        );
         let cuda_out = context
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 16-bit unsigned RGB");
@@ -337,7 +355,13 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         let bit_depth = 16u8;
         let signed = true;
 
-        let native = deinterleave_reference(&pixels, num_pixels, num_components, bit_depth, signed);
+        let native = deinterleave_reference(
+            &pixels,
+            num_pixels,
+            u16::from(num_components),
+            bit_depth,
+            signed,
+        );
         let cuda_out = context
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 16-bit signed gray");
@@ -536,7 +560,7 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
                         pixels.as_slice(),
                         cell.w,
                         cell.h,
-                        cell.comps,
+                        u16::from(cell.comps),
                         cell.depth,
                         cell.signed,
                     )

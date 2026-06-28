@@ -4,16 +4,21 @@ use alloc::{vec, vec::Vec};
 use core::convert::Infallible;
 
 use super::bitplane_encode::EncodedCodeBlock;
+use super::ht_block_decode::sigma_stride;
 use super::ht_encode_tables::{
     HtUvlcTableEntry, HT_UVLC_ENCODE_TABLE, HT_VLC_ENCODE_TABLE0, HT_VLC_ENCODE_TABLE1,
 };
 use crate::HtCleanupEncodeDistribution;
 
 const MEL_EXP: [usize; 13] = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 5];
-const MAX_HT_BITPLANES: u8 = 30;
+const MAX_HT_BITPLANES: u8 = 31;
 const MEL_SIZE: usize = 192;
 const VLC_SIZE: usize = 3072 - MEL_SIZE;
 const MS_SIZE: usize = (16384usize * 16).div_ceil(15);
+const SIGPROP_SPREAD_MASKS: [u32; 16] = [
+    0x33, 0x76, 0xEC, 0xC8, 0x330, 0x760, 0xEC0, 0xC80, 0x3300, 0x7600, 0xEC00, 0xC800, 0x33000,
+    0x76000, 0xEC000, 0xC8000,
+];
 
 #[inline(always)]
 fn increment_limited_count(counts: &mut [u64; 32], value: i32) {
@@ -280,14 +285,119 @@ impl MagSgnEncoder {
     }
 }
 
+struct ForwardRefinementBitWriter {
+    data: Vec<u8>,
+    used_bits: u8,
+    max_bits: u8,
+    tmp: u8,
+}
+
+impl ForwardRefinementBitWriter {
+    fn new() -> Self {
+        Self {
+            data: Vec::new(),
+            used_bits: 0,
+            max_bits: 8,
+            tmp: 0,
+        }
+    }
+
+    fn push_bit(&mut self, bit: bool) {
+        if bit {
+            self.tmp |= 1 << self.used_bits;
+        }
+        self.used_bits += 1;
+        if self.used_bits == self.max_bits {
+            self.flush_full_byte();
+        }
+    }
+
+    fn flush_full_byte(&mut self) {
+        self.data.push(self.tmp);
+        self.max_bits = if self.tmp == 0xFF { 7 } else { 8 };
+        self.tmp = 0;
+        self.used_bits = 0;
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.used_bits > 0 {
+            self.data.push(self.tmp);
+        }
+        if self.data.is_empty() {
+            self.data.push(0);
+        }
+        self.data
+    }
+}
+
+struct ReverseRefinementBitWriter {
+    bits: Vec<bool>,
+}
+
+impl ReverseRefinementBitWriter {
+    fn new() -> Self {
+        Self { bits: Vec::new() }
+    }
+
+    fn push_bit(&mut self, bit: bool) {
+        self.bits.push(bit);
+    }
+
+    fn finish(self) -> Vec<u8> {
+        let mut read_order = Vec::new();
+        let mut offset = 0usize;
+        let mut unstuff = true;
+
+        while offset < self.bits.len() {
+            let remaining = self.bits.len() - offset;
+            let first_seven_are_ones =
+                remaining >= 7 && self.bits[offset..offset + 7].iter().all(|bit| *bit);
+            let capacity = if unstuff && first_seven_are_ones {
+                7
+            } else {
+                8
+            };
+            let take = capacity.min(remaining);
+            let mut byte = 0u8;
+            for bit_idx in 0..take {
+                if self.bits[offset + bit_idx] {
+                    byte |= 1 << bit_idx;
+                }
+            }
+            read_order.push(byte);
+            offset += take;
+            unstuff = byte > 0x8F;
+        }
+
+        if read_order.is_empty() {
+            read_order.push(0);
+        }
+        read_order.reverse();
+        read_order
+    }
+}
+
 pub(crate) fn encode_code_block(
     coefficients: &[i32],
     width: u32,
     height: u32,
     total_bitplanes: u8,
 ) -> Result<EncodedCodeBlock, &'static str> {
+    encode_code_block_with_passes(coefficients, width, height, total_bitplanes, 1)
+}
+
+pub(crate) fn encode_code_block_with_passes(
+    coefficients: &[i32],
+    width: u32,
+    height: u32,
+    total_bitplanes: u8,
+    target_coding_passes: u8,
+) -> Result<EncodedCodeBlock, &'static str> {
     if total_bitplanes == 0 || total_bitplanes > MAX_HT_BITPLANES {
-        return Err("HTJ2K scalar encoder currently supports 1..=30 bitplanes");
+        return Err("HTJ2K scalar encoder currently supports 1..=31 bitplanes");
+    }
+    if target_coding_passes == 0 || target_coding_passes > 3 {
+        return Err("HTJ2K scalar encoder currently supports cleanup, sigprop, and one magref refinement pass");
     }
 
     let Some(max_magnitude) = max_nonzero_magnitude(coefficients) else {
@@ -305,7 +415,13 @@ pub(crate) fn encode_code_block(
         return Err("HTJ2K block magnitude exceeds configured bitplane count");
     }
 
-    let missing_msbs = total_bitplanes.saturating_sub(1);
+    let effective_coding_passes = if target_coding_passes >= 2 && total_bitplanes > 1 {
+        target_coding_passes
+    } else {
+        1
+    };
+    let cleanup_bitplanes = if effective_coding_passes >= 2 { 2 } else { 1 };
+    let missing_msbs = total_bitplanes.saturating_sub(cleanup_bitplanes);
     let data = encode_cleanup_segment_from_coefficients(
         coefficients,
         missing_msbs,
@@ -315,14 +431,278 @@ pub(crate) fn encode_code_block(
     )?;
     let ht_cleanup_length =
         u32::try_from(data.len()).map_err(|_| "HTJ2K cleanup segment exceeds u32 length")?;
+    let mut data = data;
+    let ht_refinement_length = if effective_coding_passes > 1 {
+        let refinement = encode_refinement_segment(
+            coefficients,
+            width as usize,
+            height as usize,
+            1_i32 << (cleanup_bitplanes - 1),
+            effective_coding_passes,
+        )?;
+        let refinement_len = refinement.len();
+        data.extend_from_slice(&refinement);
+        u32::try_from(refinement_len).map_err(|_| "HTJ2K refinement segment exceeds u32 length")?
+    } else {
+        0_u32
+    };
 
     Ok(EncodedCodeBlock {
         data,
-        num_coding_passes: 1,
+        num_coding_passes: effective_coding_passes,
         num_zero_bitplanes: missing_msbs,
         ht_cleanup_length,
-        ht_refinement_length: 0,
+        ht_refinement_length,
     })
+}
+
+fn encode_refinement_segment(
+    coefficients: &[i32],
+    width: usize,
+    height: usize,
+    cleanup_significance_threshold: i32,
+    num_coding_passes: u8,
+) -> Result<Vec<u8>, &'static str> {
+    let width_u32 = u32::try_from(width).map_err(|_| "HTJ2K code-block width exceeds u32 range")?;
+    let height_u32 =
+        u32::try_from(height).map_err(|_| "HTJ2K code-block height exceeds u32 range")?;
+    let mstr = sigma_stride(width_u32);
+    let sigma_rows = height_u32.div_ceil(4) as usize + 1;
+    let mut sigma = vec![0u16; sigma_rows * mstr];
+    build_sigma_from_coefficients(
+        coefficients,
+        width,
+        height,
+        cleanup_significance_threshold,
+        mstr,
+        &mut sigma,
+    )?;
+    let mut refinement =
+        write_sigprop_refinement_bits(&sigma, coefficients, width_u32, height_u32, mstr)?;
+    if num_coding_passes > 2 {
+        let magref =
+            write_magref_refinement_bits(&sigma, coefficients, width_u32, height_u32, mstr)?;
+        refinement.extend_from_slice(&magref);
+    }
+    Ok(refinement)
+}
+
+fn build_sigma_from_coefficients(
+    coefficients: &[i32],
+    width: usize,
+    height: usize,
+    significance_threshold: i32,
+    mstr: usize,
+    sigma: &mut [u16],
+) -> Result<(), &'static str> {
+    if coefficients.len() < width.saturating_mul(height) {
+        return Err("HTJ2K coefficient block is shorter than its dimensions");
+    }
+
+    let group_rows = height.div_ceil(4);
+    let group_cols = width.div_ceil(4);
+    for group_y in 0..group_rows {
+        let sigma_row = group_y
+            .checked_mul(mstr)
+            .ok_or("HTJ2K sigma row offset overflow")?;
+        for group_x in 0..group_cols {
+            let mut bits = 0u16;
+            for dy in 0..4 {
+                let y = group_y * 4 + dy;
+                if y >= height {
+                    continue;
+                }
+                let row = y
+                    .checked_mul(width)
+                    .ok_or("HTJ2K coefficient row offset overflow")?;
+                for dx in 0..4 {
+                    let x = group_x * 4 + dx;
+                    if x >= width {
+                        continue;
+                    }
+                    if coefficients[row + x].unsigned_abs() >= significance_threshold as u32 {
+                        bits |= 1u16 << (dx * 4 + dy);
+                    }
+                }
+            }
+            sigma[sigma_row + group_x] = bits;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_sigprop_refinement_bits(
+    sigma: &[u16],
+    coefficients: &[i32],
+    width: u32,
+    height: u32,
+    mstr: usize,
+) -> Result<Vec<u8>, &'static str> {
+    let mut prev_row_sig = vec![0u16; width.div_ceil(4) as usize + 8];
+    let mut writer = ForwardRefinementBitWriter::new();
+    let width_usize = width as usize;
+
+    for y in (0..height).step_by(4) {
+        let mut pattern = 0xFFFFu32;
+        if height - y < 4 {
+            pattern = 0x7777;
+            if height - y < 3 {
+                pattern = 0x3333;
+                if height - y < 2 {
+                    pattern = 0x1111;
+                }
+            }
+        }
+
+        let mut prev = 0u32;
+        let cur_row = (y >> 2) as usize * mstr;
+        let next_row = cur_row + mstr;
+
+        for x in (0..width).step_by(4) {
+            let mut col_pattern = pattern;
+            let shift_cols = (x as i32 + 4 - width as i32).max(0) as u32;
+            col_pattern >>= shift_cols * 4;
+
+            let idx = (x >> 2) as usize;
+            let ps = read_sigma_pair(&prev_row_sig, idx)?;
+            let ns = read_sigma_pair(sigma, next_row + idx)?;
+            let mut u = (ps & 0x8888_8888) >> 3;
+            u |= (ns & 0x1111_1111) << 3;
+
+            let cs = read_sigma_pair(sigma, cur_row + idx)?;
+            let mut mbr = cs;
+            mbr |= (cs & 0x7777_7777) << 1;
+            mbr |= (cs & 0xEEEE_EEEE) >> 1;
+            mbr |= u;
+            let t = mbr;
+            mbr |= t << 4;
+            mbr |= t >> 4;
+            mbr |= prev >> 12;
+            mbr &= col_pattern;
+            mbr &= !cs;
+
+            let mut new_sig = 0u32;
+            if mbr != 0 {
+                let inv_sig = !cs & col_pattern;
+                let mut candidates = mbr;
+                let mut processed = 0u32;
+
+                while candidates != 0 {
+                    let bit = candidates.trailing_zeros();
+                    let sample_mask = 1u32 << bit;
+                    candidates &= !sample_mask;
+                    processed |= sample_mask;
+
+                    let coeff = coefficient_for_sigprop_bit(coefficients, width_usize, x, y, bit)?;
+                    let significant = coeff != 0;
+                    writer.push_bit(significant);
+                    if significant {
+                        new_sig |= sample_mask;
+                        candidates |= SIGPROP_SPREAD_MASKS[bit as usize] & inv_sig & !processed;
+                    }
+                }
+
+                let mut sign_bits = new_sig;
+                while sign_bits != 0 {
+                    let bit = sign_bits.trailing_zeros();
+                    sign_bits &= !(1u32 << bit);
+                    let coeff = coefficient_for_sigprop_bit(coefficients, width_usize, x, y, bit)?;
+                    writer.push_bit(coeff < 0);
+                }
+            }
+
+            let combined_sig = new_sig | cs;
+            prev_row_sig[idx] = combined_sig as u16;
+            if idx + 1 < prev_row_sig.len() {
+                prev_row_sig[idx + 1] = (combined_sig >> 16) as u16;
+            }
+
+            let t = combined_sig;
+            let mut next_prev = combined_sig;
+            next_prev |= (t & 0x7777) << 1;
+            next_prev |= (t & 0xEEEE) >> 1;
+            prev = (next_prev | u) & 0xF000;
+        }
+    }
+
+    Ok(writer.finish())
+}
+
+fn write_magref_refinement_bits(
+    sigma: &[u16],
+    coefficients: &[i32],
+    width: u32,
+    height: u32,
+    mstr: usize,
+) -> Result<Vec<u8>, &'static str> {
+    let mut writer = ReverseRefinementBitWriter::new();
+    let width_usize = width as usize;
+
+    for y in (0..height).step_by(4) {
+        let mut cur_sig_idx = (y >> 2) as usize * mstr;
+
+        for x in (0..width).step_by(8) {
+            let sig = read_sigma_pair(sigma, cur_sig_idx)?;
+            cur_sig_idx += 2;
+            let mut col_mask = 0xFu32;
+
+            if sig != 0 {
+                for _ in 0..8 {
+                    if (sig & col_mask) != 0 {
+                        let mut sample_mask = 0x1111_1111u32 & col_mask;
+
+                        for _ in 0..4 {
+                            if (sig & sample_mask) != 0 {
+                                let bit = sample_mask.trailing_zeros();
+                                let coeff = coefficient_for_sigprop_bit(
+                                    coefficients,
+                                    width_usize,
+                                    x,
+                                    y,
+                                    bit,
+                                )?;
+                                writer.push_bit((coeff.unsigned_abs() & 1) != 0);
+                            }
+                            sample_mask <<= 1;
+                        }
+                    }
+                    col_mask <<= 4;
+                }
+            }
+        }
+    }
+
+    Ok(writer.finish())
+}
+
+fn coefficient_for_sigprop_bit(
+    coefficients: &[i32],
+    width: usize,
+    group_x: u32,
+    group_y: u32,
+    bit: u32,
+) -> Result<i32, &'static str> {
+    let x = group_x as usize + (bit >> 2) as usize;
+    let y = group_y as usize + (bit & 3) as usize;
+    let idx = y
+        .checked_mul(width)
+        .and_then(|row| row.checked_add(x))
+        .ok_or("HTJ2K sigprop coefficient offset overflow")?;
+    coefficients
+        .get(idx)
+        .copied()
+        .ok_or("HTJ2K sigprop coefficient offset out of range")
+}
+
+fn read_sigma_pair(values: &[u16], index: usize) -> Result<u32, &'static str> {
+    let high_index = index
+        .checked_add(1)
+        .ok_or("HTJ2K sigma pair offset overflow")?;
+    if high_index >= values.len() {
+        return Err("HTJ2K sigma pair is out of range");
+    }
+    Ok(u32::from(values[index]) | (u32::from(values[high_index]) << 16))
 }
 
 pub(crate) fn collect_encode_distribution(
@@ -332,7 +712,7 @@ pub(crate) fn collect_encode_distribution(
     total_bitplanes: u8,
 ) -> Result<HtCleanupEncodeDistribution, &'static str> {
     if total_bitplanes == 0 || total_bitplanes > MAX_HT_BITPLANES {
-        return Err("HTJ2K scalar encoder currently supports 1..=30 bitplanes");
+        return Err("HTJ2K scalar encoder currently supports 1..=31 bitplanes");
     }
 
     let Some(max_magnitude) = max_nonzero_magnitude(coefficients) else {
@@ -664,16 +1044,17 @@ fn process_sample(
     e_qmax: &mut i32,
     s: &mut [u32; 8],
 ) {
-    let mut val = value.wrapping_add(value);
-    val >>= p;
-    val &= !1u32;
+    let magnitude = value & 0x7FFF_FFFF;
+    let mut val = (u64::from(magnitude) << 1) >> p;
+    val &= !1u64;
     if val != 0 {
         *rho_acc |= 1 << (slot & 0x3);
         val -= 1;
-        e_q[slot] = (u32::BITS - val.leading_zeros()) as i32;
+        let val_u32 = val as u32;
+        e_q[slot] = (u32::BITS - val_u32.leading_zeros()) as i32;
         *e_qmax = (*e_qmax).max(e_q[slot]);
         val -= 1;
-        s[slot] = val + (value >> 31);
+        s[slot] = (val as u32) + (value >> 31);
     }
 }
 
@@ -1511,10 +1892,10 @@ fn encode_mag_signs(
 
         let reduction = ((u32::from(e_k) >> shift) & 1) as i32;
         let magnitude_bits = (u_q - reduction) as u32;
-        let payload = if magnitude_bits == 0 {
-            0
-        } else {
-            s[offset + sample_offset] & ((1u32 << magnitude_bits) - 1)
+        let payload = match magnitude_bits {
+            0 => 0,
+            32.. => s[offset + sample_offset],
+            bits => s[offset + sample_offset] & ((1u32 << bits) - 1),
         };
         ms.encode(payload, magnitude_bits)
     };

@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>J2K: Rust JPEG 2000 / HTJ2K GPU Codec</title>
-  <meta name="description" content="J2K is a Rust JPEG 2000 / HTJ2K codec workspace with CPU decode and encode APIs plus CUDA and Apple Metal GPU adapter crates.">
+  <meta name="description" content="J2K is a Rust JPEG 2000 Part 1 / HTJ2K Part 15 codec workspace with JP2/JPH still-image wrappers, CPU APIs, and CUDA plus Apple Metal adapter crates.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/">
   <meta property="og:title" content="J2K: Rust JPEG 2000 / HTJ2K GPU Codec">
-  <meta property="og:description" content="Rust JPEG 2000, JPEG2000, JP2, J2K, HTJ2K, CUDA, and Metal GPU codec crates.">
+  <meta property="og:description" content="Rust JPEG 2000 Part 1, HTJ2K Part 15, JP2, JPH, J2K, CUDA, and Metal GPU codec crates.">
   <meta property="og:url" content="https://frames-sg.github.io/j2k/">
   <meta property="og:type" content="website">
   <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
@@ -15,7 +15,7 @@
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="J2K: Rust JPEG 2000 / HTJ2K GPU Codec">
-  <meta name="twitter:description" content="Rust JPEG 2000, HTJ2K, JP2, J2K codec crates with CUDA and Apple Metal GPU adapters.">
+  <meta name="twitter:description" content="Rust JPEG 2000 Part 1, HTJ2K Part 15, JP2/JPH codec crates with CUDA and Apple Metal GPU adapters.">
   <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
@@ -30,7 +30,7 @@
     "programmingLanguage": "Rust",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
     "url": "https://frames-sg.github.io/j2k/",
-    "description": "Rust JPEG 2000 and HTJ2K codec APIs with CUDA and Apple Metal GPU adapter support."
+    "description": "Rust JPEG 2000 Part 1 and HTJ2K Part 15 codec APIs with JP2/JPH still-image wrappers and CUDA plus Apple Metal adapter support."
   }
   </script>
 </head>
@@ -53,7 +53,7 @@
       <div class="wrap narrow">
         <p class="eyebrow">Project documentation</p>
         <h1>J2K: Rust JPEG 2000 / HTJ2K GPU Codec</h1>
-        <p class="lead">Rust crates for JPEG 2000 and HTJ2K inspection, decode, encode, recode, and JPEG-to-J2K/HTJ2K transcode workflows. CPU is the portable baseline; CUDA and Apple Metal adapter crates cover supported GPU paths.</p>
+        <p class="lead">Rust crates for JPEG 2000 Part 1 and HTJ2K Part 15 inspection, decode, encode, recode, and JPEG-to-J2K/HTJ2K transcode workflows. JP2 and JPH still-image wrappers are in scope; JPX / Part 2 extensions are not part of the support claim.</p>
         <div class="actions">
           <a class="button primary" href="https://crates.io/crates/j2k">crates.io</a>
           <a class="button" href="https://docs.rs/j2k">API docs</a>
@@ -66,8 +66,29 @@
       <div class="wrap">
         <figure class="pipeline">
           <img class="diagram" src="assets/j2k-gpu-pipeline.svg?v=3" alt="J2K pipeline: JPEG 2000, HTJ2K, and JPEG inputs flow through the j2k crate, which routes to CPU baseline, CUDA, and Metal backends.">
-          <figcaption>One public crate, three input formats, three backends. CPU is the baseline; CUDA and Metal accelerate supported shapes.</figcaption>
+          <figcaption>One public crate, still-image J2K/JP2 and HTJ2K/JPH surfaces, and three backends. CPU is the baseline; CUDA and Metal accelerate supported shapes.</figcaption>
         </figure>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="wrap">
+        <h2>Support boundary</h2>
+        <div class="grid three">
+          <article class="card">
+            <h3>JPEG 2000 Part 1</h3>
+            <p>Raw J2K/J2C codestream parse, inspect, decode, encode, ROI, progression, tile-part, packet-marker, signed, high-bit, and component-plane surfaces are tracked by the public support matrix.</p>
+          </article>
+          <article class="card">
+            <h3>HTJ2K Part 15</h3>
+            <p>HT cleanup and refinement decode/encode, quality layers, rate behavior, raw HT codestreams, and JPH still-image wrapping are in scope.</p>
+          </article>
+          <article class="card">
+            <h3>Wrappers and limits</h3>
+            <p>JP2 and JPH still-image metadata paths are covered. JPX / JPEG 2000 Part 2 extensions and public speed claims require separate evidence.</p>
+          </article>
+        </div>
+        <p class="note">Exact row-by-row status lives in <a href="https://github.com/frames-sg/j2k/blob/main/docs/public-support.md">docs/public-support.md</a>. Benchmark/adoption claims remain blocked until external corpus and comparator evidence is present.</p>
       </div>
     </section>
 
@@ -102,7 +123,7 @@ j2k transcode input.jpg output.j2k --htj2k --lossless-53</pre>
             <tbody>
               <tr>
                 <td><code>j2k</code></td>
-                <td>Public API for JPEG 2000 / HTJ2K inspection, decode, encode, and recode.</td>
+                <td>Public API for JPEG 2000 Part 1 / HTJ2K Part 15 inspection, decode, encode, recode, JP2, and JPH.</td>
               </tr>
               <tr>
                 <td><code>j2k-cuda</code></td>
@@ -131,11 +152,11 @@ j2k transcode input.jpg output.j2k --htj2k --lossless-53</pre>
         <div>
           <h2>Topic pages</h2>
           <ul class="link-list">
-            <li><a href="rust-jpeg2000-codec/">Rust JPEG 2000 Codec</a><span>Decode, encode, JP2/J2K codestreams, and crate selection.</span></li>
+            <li><a href="rust-jpeg2000-codec/">Rust JPEG 2000 Codec</a><span>Part 1 decode, encode, JP2/J2K codestreams, and crate selection.</span></li>
             <li><a href="gpu-jpeg2000-rust/">GPU JPEG2000 Rust</a><span>Backend behavior, CPU fallback, CUDA, Metal, and strict device requests.</span></li>
             <li><a href="cuda-jpeg2000-rust/">CUDA JPEG2000 Rust</a><span>NVIDIA adapter crates and runtime feature boundaries.</span></li>
             <li><a href="metal-jpeg2000-rust/">Metal JPEG2000 Rust</a><span>Apple Metal adapter crates for macOS GPU-backed paths.</span></li>
-            <li><a href="htj2k-rust/">HTJ2K Rust</a><span>High-throughput JPEG 2000 APIs, recode, and transcode routes.</span></li>
+            <li><a href="htj2k-rust/">HTJ2K Rust</a><span>Part 15 HT block coding, JPH wrapping, recode, and transcode routes.</span></li>
           </ul>
         </div>
         <div class="copy">

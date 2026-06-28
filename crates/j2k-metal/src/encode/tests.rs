@@ -147,7 +147,7 @@ fn metal_encode_deinterleave_public_layouts_match_native_reference() {
             &pixels,
             5,
             1,
-            case.num_components,
+            u16::from(case.num_components),
             case.bit_depth,
             case.signed,
         )
@@ -156,7 +156,7 @@ fn metal_encode_deinterleave_public_layouts_match_native_reference() {
             &pixels,
             5,
             1,
-            case.num_components,
+            u16::from(case.num_components),
             case.bit_depth,
             case.signed,
         )
@@ -165,7 +165,7 @@ fn metal_encode_deinterleave_public_layouts_match_native_reference() {
         let job = J2kDeinterleaveToF32Job {
             pixels: &pixels,
             num_pixels: 5,
-            num_components: case.num_components,
+            num_components: u16::from(case.num_components),
             bit_depth: case.bit_depth,
             signed: case.signed,
         };

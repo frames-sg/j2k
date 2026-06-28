@@ -108,6 +108,8 @@ fn curate_one(
     if !matches!(info.components, 1 | 3) {
         return Err(format!("unsupported-components-{}", info.components));
     }
+    let components = u8::try_from(info.components)
+        .map_err(|_| format!("unsupported-components-{}", info.components))?;
     if info.bit_depth != 8 {
         return Err(format!("unsupported-bit-depth-{}", info.bit_depth));
     }
@@ -115,8 +117,8 @@ fn curate_one(
     if codec == "unknown" {
         return Err("unknown-codec".to_string());
     }
-    let baseline = validate_full_decode(&bytes, info.dimensions, info.components)?;
-    validate_external_comparators(&bytes, info.components, &baseline)?;
+    let baseline = validate_full_decode(&bytes, info.dimensions, components)?;
+    validate_external_comparators(&bytes, components, &baseline)?;
     let extension = path
         .extension()
         .and_then(|value| value.to_str())

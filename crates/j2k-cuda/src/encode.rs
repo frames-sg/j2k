@@ -359,6 +359,14 @@ struct CudaEncodeFormat {
 }
 
 #[cfg(feature = "cuda-runtime")]
+fn cuda_component_count_u8(
+    num_components: u16,
+    reason: &'static str,
+) -> core::result::Result<u8, &'static str> {
+    u8::try_from(num_components).map_err(|_| reason)
+}
+
+#[cfg(feature = "cuda-runtime")]
 fn cuda_encode_format(format: PixelFormat) -> Result<CudaEncodeFormat, crate::Error> {
     let components =
         u8::try_from(format.channels()).map_err(|_| crate::Error::UnsupportedCudaRequest {
@@ -398,7 +406,7 @@ fn encode_lossless_cuda_tile_with_report(
         &dummy,
         tile.output_width,
         tile.output_height,
-        format.components,
+        u16::from(format.components),
         format.bit_depth,
         false,
     )?;
@@ -1604,6 +1612,10 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         self.deinterleave_attempts = self.deinterleave_attempts.saturating_add(1);
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
+            let num_components = cuda_component_count_u8(
+                job.num_components,
+                "CUDA deinterleave encode supports at most 255 components",
+            )?;
             let (output, elapsed_us) = time_cuda_stage(
                 "j2k.j2k.cuda.encode.deinterleave",
                 &context,
@@ -1612,7 +1624,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                     context.j2k_deinterleave_to_f32(
                         job.pixels,
                         job.num_pixels,
-                        job.num_components,
+                        num_components,
                         job.bit_depth,
                         job.signed,
                     )
@@ -2620,6 +2632,10 @@ fn cuda_encode_htj2k_tile_body(
     collect_profile: bool,
 ) -> core::result::Result<Option<CudaEncodedHtj2kTile>, &'static str> {
     validate_cuda_htj2k_tile_job(job)?;
+    let num_components = cuda_component_count_u8(
+        job.num_components,
+        "CUDA HTJ2K tile encode supports at most 255 components",
+    )?;
     let num_pixels = (job.width as usize)
         .checked_mul(job.height as usize)
         .ok_or("CUDA HTJ2K tile dimensions are too large")?;
@@ -2631,7 +2647,7 @@ fn cuda_encode_htj2k_tile_body(
             context.j2k_deinterleave_to_f32_resident(
                 job.pixels,
                 num_pixels,
-                job.num_components,
+                num_components,
                 job.bit_depth,
                 job.signed,
             )
@@ -2652,6 +2668,10 @@ fn cuda_encode_htj2k_tile_body(
 fn validate_cuda_htj2k_tile_job(
     job: J2kHtj2kTileEncodeJob<'_>,
 ) -> core::result::Result<(), &'static str> {
+    let _ = cuda_component_count_u8(
+        job.num_components,
+        "CUDA HTJ2K tile encode supports at most 255 components",
+    )?;
     if job
         .component_sampling
         .iter()
@@ -2696,6 +2716,10 @@ fn cuda_encode_htj2k_device_tile_body(
     collect_profile: bool,
 ) -> core::result::Result<Option<CudaEncodedHtj2kTile>, &'static str> {
     validate_cuda_htj2k_tile_job(job)?;
+    let num_components = cuda_component_count_u8(
+        job.num_components,
+        "CUDA HTJ2K tile encode supports at most 255 components",
+    )?;
     let format = cuda_encode_format(tile.format).map_err(|_| "CUDA HTJ2K tile format failed")?;
     if job.width != tile.output_width || job.height != tile.output_height {
         return Err("CUDA HTJ2K tile encode job dimensions do not match CUDA tile");
@@ -2703,7 +2727,10 @@ fn cuda_encode_htj2k_device_tile_body(
     if tile.width != tile.output_width || tile.height != tile.output_height {
         return Err("CUDA HTJ2K tile encode does not support input padding");
     }
-    if job.num_components != format.components || job.bit_depth != format.bit_depth || job.signed {
+    if job.num_components != u16::from(format.components)
+        || job.bit_depth != format.bit_depth
+        || job.signed
+    {
         return Err("CUDA HTJ2K tile encode job sample format does not match CUDA tile");
     }
     let (components, deinterleave_us) = time_cuda_stage(
@@ -2717,7 +2744,7 @@ fn cuda_encode_htj2k_device_tile_body(
                 width: tile.width,
                 height: tile.height,
                 pitch_bytes: tile.pitch_bytes,
-                num_components: job.num_components,
+                num_components,
                 bit_depth: job.bit_depth,
                 signed: job.signed,
             })
@@ -2810,6 +2837,8 @@ fn cuda_encode_htj2k_resident_components_body(
         }
     } else {
         for component in 0..job.num_components {
+            let component_u8 =
+                cuda_component_count_u8(component, "CUDA HTJ2K tile component index exceeds 255")?;
             let packets = if job.reversible {
                 let (dwt, dwt_us) = time_cuda_stage(
                     "j2k.htj2k.encode.tile.dwt53",
@@ -2818,7 +2847,7 @@ fn cuda_encode_htj2k_resident_components_body(
                     || {
                         context.j2k_forward_dwt53_resident_component(
                             &components,
-                            component,
+                            component_u8,
                             job.width,
                             job.height,
                             job.num_decomposition_levels,
@@ -2846,7 +2875,7 @@ fn cuda_encode_htj2k_resident_components_body(
                     || {
                         context.j2k_forward_dwt97_resident_component(
                             &components,
-                            component,
+                            component_u8,
                             job.width,
                             job.height,
                             job.num_decomposition_levels,
@@ -3084,7 +3113,7 @@ fn cuda_tile_subband_range_bits(bit_depth: u8, subband_kind: CudaTileSubbandKind
 #[cfg(feature = "cuda-runtime")]
 fn cuda_order_component_resolution_packets(
     component_resolution_packets: Vec<Vec<CudaEncodedHtj2kResolution>>,
-    num_components: u8,
+    num_components: u16,
 ) -> core::result::Result<Vec<CudaEncodedHtj2kResolution>, &'static str> {
     if component_resolution_packets.len() != usize::from(num_components) {
         return Err("CUDA HTJ2K tile component packet count mismatch");
@@ -3245,7 +3274,7 @@ fn cuda_packetize_tile_body(
 fn cuda_tile_packet_descriptors(
     packet_count: usize,
     num_layers: u8,
-    num_components: u8,
+    num_components: u16,
 ) -> core::result::Result<Vec<J2kPacketizationPacketDescriptor>, &'static str> {
     if num_layers != 1 {
         return Err("CUDA HTJ2K tile encode currently prepares one packet layer");
@@ -3261,8 +3290,8 @@ fn cuda_tile_packet_descriptors(
                 layer: 0,
                 resolution: u32::try_from(packet_index / component_count)
                     .map_err(|_| "CUDA HTJ2K tile packet resolution exceeds u32")?,
-                component: u8::try_from(packet_index % component_count)
-                    .map_err(|_| "CUDA HTJ2K tile packet component exceeds u8")?,
+                component: u16::try_from(packet_index % component_count)
+                    .map_err(|_| "CUDA HTJ2K tile packet component exceeds u16")?,
                 precinct: 0,
             })
         })
@@ -3619,7 +3648,7 @@ mod tests {
             pixels,
             width,
             height,
-            components,
+            u16::from(components),
             bit_depth,
             signed,
             options,

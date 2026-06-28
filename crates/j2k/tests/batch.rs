@@ -2,11 +2,11 @@
 
 use j2k::{
     decode_tiles_into, decode_tiles_region_into, decode_tiles_region_scaled_into,
-    decode_tiles_scaled_into, Downscale, J2kDecoder, PixelFormat, Rect, TileBatchOptions,
-    TileDecodeJob, TileRegionDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    decode_tiles_scaled_into, wrap_j2k_codestream, Downscale, J2kDecoder, J2kFileWrapOptions,
+    PixelFormat, Rect, TileBatchOptions, TileDecodeJob, TileRegionDecodeJob,
+    TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
-use j2k_test_support::wrap_codestream_jp2;
 use std::num::NonZeroUsize;
 
 fn encode_codestream(
@@ -22,7 +22,13 @@ fn encode_codestream(
         ..EncodeOptions::default()
     };
     encode(
-        pixels, width, height, components, bit_depth, false, &options,
+        pixels,
+        width,
+        height,
+        components.into(),
+        bit_depth,
+        false,
+        &options,
     )
     .expect("encode")
 }
@@ -40,7 +46,13 @@ fn encode_ht_codestream(
         ..EncodeOptions::default()
     };
     encode_htj2k(
-        pixels, width, height, components, bit_depth, false, &options,
+        pixels,
+        width,
+        height,
+        components.into(),
+        bit_depth,
+        false,
+        &options,
     )
     .expect("encode HTJ2K")
 }
@@ -57,8 +69,8 @@ fn ht_rgb_fixture() -> Vec<u8> {
     encode_ht_codestream(&pixels, 16, 16, 3, 8)
 }
 
-fn ht_rgb_jp2_fixture() -> Vec<u8> {
-    wrap_codestream_jp2(&ht_rgb_fixture(), 16, 16, 3, 8, 16)
+fn ht_rgb_jph_fixture() -> Vec<u8> {
+    wrap_j2k_codestream(&ht_rgb_fixture(), J2kFileWrapOptions::jph()).expect("wrap JPH")
 }
 
 fn decode_rgb8_reference(bytes: &[u8]) -> (Vec<u8>, usize) {
@@ -415,17 +427,17 @@ fn production_batch_region_scaled_htj2k_rgb_matches_single_decode() {
 }
 
 #[test]
-fn production_batch_region_scaled_htj2k_jp2_rgb_matches_single_decode() {
-    let jp2 = ht_rgb_jp2_fixture();
+fn production_batch_region_scaled_htj2k_jph_rgb_matches_single_decode() {
+    let jph = ht_rgb_jph_fixture();
 
-    assert_region_scaled_batch_matches_single_decode(&jp2, PixelFormat::Rgb8);
+    assert_region_scaled_batch_matches_single_decode(&jph, PixelFormat::Rgb8);
 }
 
 #[test]
-fn production_batch_region_scaled_htj2k_jp2_rgba_matches_single_decode() {
-    let jp2 = ht_rgb_jp2_fixture();
+fn production_batch_region_scaled_htj2k_jph_rgba_matches_single_decode() {
+    let jph = ht_rgb_jph_fixture();
 
-    assert_region_scaled_batch_matches_single_decode(&jp2, PixelFormat::Rgba8);
+    assert_region_scaled_batch_matches_single_decode(&jph, PixelFormat::Rgba8);
 }
 
 #[test]

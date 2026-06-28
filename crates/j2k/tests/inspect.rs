@@ -6,7 +6,9 @@ use j2k_core::{
     PassthroughRequirements,
 };
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
-use j2k_test_support::{minimal_j2k_codestream, minimal_jp2, wrap_jp2_codestream};
+use j2k_test_support::{
+    minimal_j2k_codestream, minimal_jp2, rewrite_j2k_component_sampling, wrap_jp2_codestream,
+};
 
 fn codestream_without_siz() -> Vec<u8> {
     let mut bytes = vec![0xFF, 0x4F];
@@ -104,8 +106,22 @@ fn ht_jp2() -> Vec<u8> {
     wrap_jp2_codestream(&ht_codestream(), 2, 2, 1, 8, 17)
 }
 
+fn ht_jph() -> Vec<u8> {
+    let mut bytes = ht_jp2();
+    bytes[20..24].copy_from_slice(b"jph ");
+    bytes[28..32].copy_from_slice(b"jph ");
+    bytes
+}
+
 fn classic_lossless_jp2() -> Vec<u8> {
     wrap_jp2_codestream(&classic_lossless_codestream(), 2, 2, 1, 8, 17)
+}
+
+fn classic_lossless_jph() -> Vec<u8> {
+    let mut bytes = classic_lossless_jp2();
+    bytes[20..24].copy_from_slice(b"jph ");
+    bytes[28..32].copy_from_slice(b"jph ");
+    bytes
 }
 
 fn jp2_with_jp2c_before_jp2h() -> Vec<u8> {
@@ -144,14 +160,12 @@ fn rewrite_siz_u32(bytes: &mut [u8], payload_offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
 }
 
-fn rewrite_component_sampling(bytes: &mut [u8], component: usize, x_rsiz: u8, y_rsiz: u8) {
-    let siz = bytes
+fn rewrite_component_descriptor(bytes: &mut [u8], component: usize, ssiz: u8) {
+    let siz_offset = bytes
         .windows(2)
         .position(|marker| marker == [0xFF, 0x51])
         .expect("SIZ marker");
-    let component_offset = siz + 40 + component * 3;
-    bytes[component_offset + 1] = x_rsiz;
-    bytes[component_offset + 2] = y_rsiz;
+    bytes[siz_offset + 40 + component * 3] = ssiz;
 }
 
 #[test]
@@ -172,7 +186,7 @@ fn inspect_raw_codestream_reports_core_info() {
 #[test]
 fn inspect_raw_codestream_rejects_zero_component_sampling() {
     let mut bytes = minimal_j2k_codestream();
-    rewrite_component_sampling(&mut bytes, 0, 0, 1);
+    rewrite_j2k_component_sampling(&mut bytes, 0, 0, 1);
 
     let err = J2kDecoder::inspect(&bytes).expect_err("zero sampling must reject");
 
@@ -226,14 +240,31 @@ fn inspect_raw_codestream_rejects_excessive_tile_count() {
 }
 
 #[test]
-fn inspect_spec_valid_component_count_above_u8_is_unsupported() {
+fn inspect_spec_valid_component_count_above_u8_is_reported_exactly() {
     let bytes = codestream_with_component_count(256);
-    let err = J2kDecoder::inspect(&bytes).expect_err("component count unsupported");
+    let info = J2kDecoder::inspect(&bytes).expect("component count is inspectable");
+    let support_info = J2kDecoder::inspect_support(&bytes).expect("support info");
 
-    let J2kError::Unsupported(unsupported) = err else {
-        panic!("expected unsupported component count, got {err:?}");
-    };
-    assert_eq!(unsupported.what, "component count > 255");
+    assert_eq!(info.components, 256);
+    assert_eq!(support_info.component_count(), 256);
+    assert_eq!(support_info.components.len(), 256);
+}
+
+#[test]
+fn inspect_reports_legal_38_bit_component_metadata() {
+    let mut bytes = minimal_j2k_codestream();
+    rewrite_component_descriptor(&mut bytes, 0, 37);
+    rewrite_component_descriptor(&mut bytes, 1, 0x80 | 0x25);
+
+    let info = J2kDecoder::inspect(&bytes).expect("38-bit codestream inspect");
+    let support_info = J2kDecoder::inspect_support(&bytes).expect("38-bit support info");
+
+    assert_eq!(info.bit_depth, 38);
+    assert_eq!(support_info.info.bit_depth, 38);
+    assert_eq!(support_info.components[0].bit_depth, 38);
+    assert!(!support_info.components[0].signed);
+    assert_eq!(support_info.components[1].bit_depth, 38);
+    assert!(support_info.components[1].signed);
 }
 
 #[test]
@@ -245,7 +276,7 @@ fn inspect_jp2_uses_container_colorspace() {
 
 #[test]
 fn view_and_decoder_share_inspect_info() {
-    let bytes = ht_jp2();
+    let bytes = ht_jph();
     let view = J2kView::parse(&bytes).expect("view");
     let dec = J2kDecoder::from_view(view).expect("decoder");
     assert_eq!(dec.info().dimensions, (2, 2));
@@ -317,11 +348,42 @@ fn inspect_ht_codestream_reports_core_info() {
 }
 
 #[test]
-fn inspect_ht_jp2_reports_core_info() {
-    let info = J2kDecoder::inspect(&ht_jp2()).expect("ht jp2 inspect");
-    assert_eq!(info.dimensions, (2, 2));
-    assert_eq!(info.components, 1);
-    assert_eq!(info.colorspace, Colorspace::SGray);
+fn inspect_ht_jp2_rejects_file_type_mismatch() {
+    let err = J2kDecoder::inspect(&ht_jp2()).expect_err("HT codestream in JP2 must be rejected");
+    assert!(matches!(err, J2kError::InvalidBox { .. }));
+}
+
+#[test]
+fn inspect_ht_jph_reports_file_wrapper() {
+    let support_info = J2kDecoder::inspect_support(&ht_jph()).expect("jph inspect");
+
+    assert_eq!(support_info.info.dimensions, (2, 2));
+    assert_eq!(support_info.info.components, 1);
+    assert_eq!(
+        support_info.transfer_syntax,
+        CompressedTransferSyntax::HtJpeg2000Lossless
+    );
+    assert_eq!(support_info.payload_kind, CompressedPayloadKind::JphFile);
+}
+
+#[test]
+fn inspect_jph_rejects_classic_codestream() {
+    let err = J2kDecoder::inspect_support(&classic_lossless_jph())
+        .expect_err("JPH must carry HTJ2K codestream");
+
+    assert!(matches!(err, J2kError::InvalidBox { .. }));
+}
+
+#[test]
+fn decoder_exposes_component_planes() {
+    let bytes = classic_lossless_codestream();
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let components = decoder.decode_components().expect("component decode");
+
+    assert_eq!(components.dimensions(), (2, 2));
+    assert_eq!(components.planes().len(), 1);
+    assert_eq!(components.planes()[0].bit_depth(), 8);
+    assert_eq!(components.planes()[0].samples().len(), 4);
 }
 
 #[test]
@@ -353,6 +415,25 @@ fn j2k_view_exposes_classic_lossless_codestream_passthrough_candidate() {
         candidate.payload_kind(),
         CompressedPayloadKind::Jpeg2000Codestream
     );
+}
+
+#[test]
+fn j2k_view_exposes_full_support_metadata() {
+    let bytes = ht_codestream();
+    let view = J2kView::parse(&bytes).expect("view");
+    let support_info = view.support_info().expect("support info");
+
+    assert_eq!(
+        support_info.transfer_syntax,
+        CompressedTransferSyntax::HtJpeg2000Lossless
+    );
+    assert_eq!(
+        support_info.payload_kind,
+        CompressedPayloadKind::Jpeg2000Codestream
+    );
+    assert!(!support_info.has_signed_components());
+    assert!(!support_info.has_mixed_bit_depths());
+    assert!(!support_info.has_component_subsampling());
 }
 
 #[test]

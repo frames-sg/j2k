@@ -9,20 +9,36 @@ use j2k::adapter::encode_stage::{
     J2kTier1CodeBlockEncodeJob,
 };
 use j2k::{
-    encode_j2k_lossless, encode_j2k_lossless_with_accelerator, j2k_lossless_decomposition_levels,
-    j2k_lossless_decomposition_levels_for_options,
+    encode_j2k_lossless, encode_j2k_lossless_components, encode_j2k_lossless_typed_components,
+    encode_j2k_lossless_with_accelerator, encode_j2k_lossless_with_roi_regions,
+    j2k_lossless_decomposition_levels, j2k_lossless_decomposition_levels_for_options,
     j2k_lossless_decomposition_levels_for_progression, EncodeBackendPreference, J2kBlockCodingMode,
-    J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
+    J2kEncodeValidation, J2kLosslessComponentPlane, J2kLosslessComponentSamples,
+    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kLosslessTypedComponentPlane,
+    J2kLosslessTypedComponentSamples, J2kMarkerSegment, J2kProgressionOrder, J2kRoiRegion,
     ReversibleTransform,
 };
 use j2k_core::{BackendKind, CodecError};
-use j2k_native::{DecodeSettings, Image};
+use j2k_native::{inspect_j2k_codestream_header, DecodeSettings, DecoderContext, Image};
 
 fn decode_native(codestream: &[u8]) -> j2k_native::RawBitmap {
     Image::new(codestream, &DecodeSettings::default())
         .expect("encoded codestream should parse")
         .decode_native()
         .expect("encoded codestream should decode")
+}
+
+fn strict_decode_native(codestream: &[u8]) -> j2k_native::RawBitmap {
+    Image::new(
+        codestream,
+        &DecodeSettings {
+            strict: true,
+            ..DecodeSettings::default()
+        },
+    )
+    .expect("strict encoded codestream should parse")
+    .decode_native()
+    .expect("strict encoded codestream should decode")
 }
 
 fn cpu_options() -> J2kLosslessEncodeOptions {
@@ -35,6 +51,797 @@ fn auto_options() -> J2kLosslessEncodeOptions {
 
 fn require_device_options() -> J2kLosslessEncodeOptions {
     J2kLosslessEncodeOptions::default().with_backend(EncodeBackendPreference::RequireDevice)
+}
+
+#[test]
+fn lossless_component_plane_encode_preserves_sampling_for_classic_and_htj2k() {
+    let luma = vec![128_u8; 16 * 16];
+    let chroma_blue = vec![96_u8; 8 * 8];
+    let chroma_red = vec![160_u8; 8 * 8];
+    let planes = [
+        J2kLosslessComponentPlane {
+            data: &luma,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+        J2kLosslessComponentPlane {
+            data: &chroma_blue,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+        J2kLosslessComponentPlane {
+            data: &chroma_red,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+    ];
+    let samples =
+        J2kLosslessComponentSamples::new(&planes, 16, 16, 8, false).expect("component samples");
+
+    for block_coding_mode in [
+        J2kBlockCodingMode::Classic,
+        J2kBlockCodingMode::HighThroughput,
+    ] {
+        let encoded = encode_j2k_lossless_components(
+            samples,
+            &cpu_options()
+                .with_block_coding_mode(block_coding_mode)
+                .with_reversible_transform(ReversibleTransform::None53)
+                .with_validation(J2kEncodeValidation::CpuRoundTrip),
+        )
+        .expect("component-plane encode");
+
+        assert_eq!(encoded.components, 3);
+        let image = Image::new(&encoded.codestream, &DecodeSettings::default())
+            .expect("parse component-plane codestream");
+        let mut context = DecoderContext::default();
+        let components = image
+            .decode_components_with_context(&mut context)
+            .expect("decode component-plane codestream");
+        let sampling = components
+            .planes()
+            .iter()
+            .map(j2k_native::ComponentPlane::sampling)
+            .collect::<Vec<_>>();
+
+        assert_eq!(sampling, [(1, 1), (2, 2), (2, 2)]);
+    }
+}
+
+#[test]
+fn lossless_component_plane_encode_round_trips_full_resolution_gray29_planes() {
+    let first_values = [0_u32, 1, (1_u32 << 28) + 7, (1_u32 << 29) - 1];
+    let second_values = [42_u32, 65_537, (1_u32 << 27) + 9, (1_u32 << 28) - 1];
+    let first = first_values
+        .iter()
+        .flat_map(|sample| unsigned_31_bytes(*sample))
+        .collect::<Vec<_>>();
+    let second = second_values
+        .iter()
+        .flat_map(|sample| unsigned_31_bytes(*sample))
+        .collect::<Vec<_>>();
+    let planes = [
+        J2kLosslessComponentPlane {
+            data: &first,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+        J2kLosslessComponentPlane {
+            data: &second,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+    ];
+    let samples = J2kLosslessComponentSamples::new(&planes, 2, 2, 29, false)
+        .expect("high-bit component samples");
+
+    let encoded = encode_j2k_lossless_components(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(1)),
+    )
+    .expect("high-bit component-plane encode");
+
+    assert_eq!(encoded.components, 2);
+    assert_eq!(encoded.bit_depth, 29);
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default()).expect("parse gray29");
+    let decoded = image
+        .decode_native_components()
+        .expect("decode native components");
+    assert_eq!(decoded.planes().len(), 2);
+    assert_eq!(decoded.planes()[0].data(), first);
+    assert_eq!(decoded.planes()[1].data(), second);
+}
+
+#[test]
+fn lossless_component_plane_encode_round_trips_sampled_high_bit_planes() {
+    let luma = (0..16_u32)
+        .flat_map(|idx| unsigned_31_bytes(((idx * 1_000_003) + 17) & ((1_u32 << 29) - 1)))
+        .collect::<Vec<_>>();
+    let chroma = (0..4_u32)
+        .flat_map(|idx| unsigned_31_bytes(((idx * 3_000_011) + 255) & ((1_u32 << 29) - 1)))
+        .collect::<Vec<_>>();
+    let planes = [
+        J2kLosslessComponentPlane {
+            data: &luma,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+        J2kLosslessComponentPlane {
+            data: &chroma,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+    ];
+    let samples = J2kLosslessComponentSamples::new(&planes, 4, 4, 29, false)
+        .expect("sampled high-bit component samples");
+
+    let encoded = encode_j2k_lossless_components(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(1))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+    )
+    .expect("sampled high-bit component-plane encode");
+
+    assert_eq!(encoded.components, 2);
+    assert_eq!(encoded.bit_depth, 29);
+
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("parse sampled high-bit component codestream");
+    let decoded = image
+        .decode_native_components()
+        .expect("decode sampled high-bit components");
+
+    assert_eq!(decoded.planes().len(), 2);
+    assert_eq!(decoded.planes()[0].sampling(), (1, 1));
+    assert_eq!(decoded.planes()[0].data(), luma);
+    assert_eq!(decoded.planes()[1].sampling(), (2, 2));
+    let chroma_expanded = expand_component_plane_bytes(&chroma, 4, 4, 2, 2, 4);
+    assert_eq!(decoded.planes()[1].data(), chroma_expanded);
+}
+
+#[test]
+fn lossless_component_plane_encode_round_trips_sampled_high_bit_multi_tile_planes() {
+    let luma = (0..16_u32)
+        .flat_map(|idx| unsigned_31_bytes((idx * 17_000_003) & ((1_u32 << 29) - 1)))
+        .collect::<Vec<_>>();
+    let chroma = [0_u32, 1, (1_u32 << 28) + 17, (1_u32 << 29) - 1]
+        .iter()
+        .flat_map(|sample| unsigned_31_bytes(*sample))
+        .collect::<Vec<_>>();
+    let planes = [
+        J2kLosslessComponentPlane {
+            data: &luma,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+        J2kLosslessComponentPlane {
+            data: &chroma,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+    ];
+    let samples =
+        J2kLosslessComponentSamples::new(&planes, 4, 4, 29, false).expect("component samples");
+
+    let encoded = encode_j2k_lossless_components(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(1))
+            .with_tile_size(Some((2, 2)))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+    )
+    .expect("sampled high-bit multi-tile component-plane encode");
+
+    let sot_count = encoded
+        .codestream
+        .windows(2)
+        .filter(|marker| *marker == [0xff, 0x90])
+        .count();
+    assert_eq!(sot_count, 4);
+
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("parse sampled high-bit multi-tile component codestream");
+    let decoded = image
+        .decode_native_components()
+        .expect("decode sampled high-bit multi-tile components");
+
+    assert_eq!(decoded.planes().len(), 2);
+    assert_eq!(decoded.planes()[0].sampling(), (1, 1));
+    assert_eq!(decoded.planes()[0].data(), luma);
+    assert_eq!(decoded.planes()[1].sampling(), (2, 2));
+    let chroma_expanded = expand_component_plane_bytes(&chroma, 4, 4, 2, 2, 4);
+    assert_eq!(decoded.planes()[1].data(), chroma_expanded);
+}
+
+#[test]
+fn lossless_component_plane_encode_round_trips_unaligned_sampled_high_bit_multi_tile_planes() {
+    let luma = (0..25_u32)
+        .flat_map(|idx| unsigned_31_bytes((idx * 11_000_017) & ((1_u32 << 29) - 1)))
+        .collect::<Vec<_>>();
+    let chroma = (0..9_u32)
+        .flat_map(|idx| unsigned_31_bytes(((idx * 19_000_031) + 7) & ((1_u32 << 29) - 1)))
+        .collect::<Vec<_>>();
+    let planes = [
+        J2kLosslessComponentPlane {
+            data: &luma,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+        J2kLosslessComponentPlane {
+            data: &chroma,
+            x_rsiz: 2,
+            y_rsiz: 2,
+        },
+    ];
+    let samples =
+        J2kLosslessComponentSamples::new(&planes, 5, 5, 29, false).expect("component samples");
+
+    let encoded = encode_j2k_lossless_components(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(1))
+            .with_tile_size(Some((3, 3)))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+    )
+    .expect("unaligned sampled high-bit multi-tile component-plane encode");
+
+    let sot_count = encoded
+        .codestream
+        .windows(2)
+        .filter(|marker| *marker == [0xff, 0x90])
+        .count();
+    assert_eq!(sot_count, 4);
+
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("parse unaligned sampled high-bit multi-tile component codestream");
+    let decoded = image
+        .decode_native_components()
+        .expect("decode unaligned sampled high-bit multi-tile components");
+
+    assert_eq!(decoded.planes().len(), 2);
+    assert_eq!(decoded.planes()[0].sampling(), (1, 1));
+    assert_eq!(decoded.planes()[0].data(), luma);
+    assert_eq!(decoded.planes()[1].sampling(), (2, 2));
+    let chroma_expanded = expand_component_plane_bytes(&chroma, 5, 5, 2, 2, 4);
+    assert_eq!(decoded.planes()[1].data(), chroma_expanded);
+}
+
+#[test]
+fn lossless_component_plane_encode_round_trips_full_resolution_gray35_planes() {
+    let mask = (1_u64 << 35) - 1;
+    let gray = (0..64_u64 * 64)
+        .flat_map(|idx| {
+            let sample = idx
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add((idx / 64).wrapping_mul(1_048_583))
+                & mask;
+            unsigned_35_bytes(sample)
+        })
+        .collect::<Vec<_>>();
+    let planes = [J2kLosslessComponentPlane {
+        data: &gray,
+        x_rsiz: 1,
+        y_rsiz: 1,
+    }];
+    let samples =
+        J2kLosslessComponentSamples::new(&planes, 64, 64, 35, false).expect("gray35 samples");
+
+    let encoded = encode_j2k_lossless_components(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(1))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+    )
+    .expect("gray35 component-plane encode");
+
+    assert_eq!(encoded.components, 1);
+    assert_eq!(encoded.bit_depth, 35);
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("parse gray35 component codestream");
+    let decoded = image
+        .decode_native_components()
+        .expect("decode gray35 components");
+
+    assert_eq!(decoded.planes().len(), 1);
+    assert_eq!(decoded.planes()[0].sampling(), (1, 1));
+    assert_eq!(decoded.planes()[0].bit_depth(), 35);
+    assert_eq!(decoded.planes()[0].data(), gray);
+}
+
+fn expand_component_plane_bytes(
+    component: &[u8],
+    width: u32,
+    height: u32,
+    x_rsiz: u8,
+    y_rsiz: u8,
+    bytes_per_sample: usize,
+) -> Vec<u8> {
+    let component_width = width.div_ceil(u32::from(x_rsiz)) as usize;
+    let mut expanded = Vec::with_capacity(width as usize * height as usize * bytes_per_sample);
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let component_idx =
+                (y / usize::from(y_rsiz)) * component_width + (x / usize::from(x_rsiz));
+            let start = component_idx * bytes_per_sample;
+            expanded.extend_from_slice(&component[start..start + bytes_per_sample]);
+        }
+    }
+    expanded
+}
+
+#[test]
+fn lossless_typed_component_plane_encode_preserves_mixed_metadata() {
+    let unsigned = [3_u8, 17, 99, 201];
+    let signed_values = [-12_i16, -1, 0, 511];
+    let signed = signed_values
+        .iter()
+        .flat_map(|sample| {
+            let raw = (i32::from(*sample) & 0x0fff) as u16;
+            raw.to_le_bytes()
+        })
+        .collect::<Vec<_>>();
+    let planes = [
+        J2kLosslessTypedComponentPlane {
+            data: &unsigned,
+            x_rsiz: 1,
+            y_rsiz: 1,
+            bit_depth: 8,
+            signed: false,
+        },
+        J2kLosslessTypedComponentPlane {
+            data: &signed,
+            x_rsiz: 1,
+            y_rsiz: 1,
+            bit_depth: 12,
+            signed: true,
+        },
+    ];
+    let samples =
+        J2kLosslessTypedComponentSamples::new(&planes, 2, 2).expect("typed component samples");
+
+    let encoded = encode_j2k_lossless_typed_components(
+        samples,
+        &cpu_options()
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+    )
+    .expect("typed component encode");
+
+    assert_eq!(encoded.components, 2);
+    assert_eq!(encoded.bit_depth, 12);
+    assert!(!encoded.signed);
+
+    let support = j2k::J2kDecoder::inspect_support(&encoded.codestream).expect("support info");
+    assert!(support.has_mixed_bit_depths());
+    assert!(support.has_signed_components());
+    assert_eq!(support.components[0].bit_depth, 8);
+    assert!(!support.components[0].signed);
+    assert_eq!(support.components[1].bit_depth, 12);
+    assert!(support.components[1].signed);
+
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("parse typed component codestream");
+    let mut context = DecoderContext::default();
+    let decoded = image
+        .decode_components_with_context(&mut context)
+        .expect("decode typed component codestream");
+    let decoded_signed = decoded.planes()[1]
+        .samples()
+        .iter()
+        .map(|sample| sample.round() as i16)
+        .collect::<Vec<_>>();
+
+    assert_eq!(decoded_signed, signed_values);
+}
+
+#[test]
+fn lossless_typed_component_plane_encode_round_trips_mixed_high_bit_metadata() {
+    let unsigned = [0_u32, 1, (1_u32 << 28) + 17, (1_u32 << 29) - 1]
+        .iter()
+        .flat_map(|sample| unsigned_31_bytes(*sample))
+        .collect::<Vec<_>>();
+    let signed_values = [-2048_i16, -1, 0, 2047];
+    let signed = signed_values
+        .iter()
+        .flat_map(|sample| {
+            let raw = (i32::from(*sample) & 0x0fff) as u16;
+            raw.to_le_bytes()
+        })
+        .collect::<Vec<_>>();
+    let canonical_signed = signed_values
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    let planes = [
+        J2kLosslessTypedComponentPlane {
+            data: &unsigned,
+            x_rsiz: 1,
+            y_rsiz: 1,
+            bit_depth: 29,
+            signed: false,
+        },
+        J2kLosslessTypedComponentPlane {
+            data: &signed,
+            x_rsiz: 1,
+            y_rsiz: 1,
+            bit_depth: 12,
+            signed: true,
+        },
+    ];
+    let samples = J2kLosslessTypedComponentSamples::new(&planes, 2, 2)
+        .expect("mixed high-bit typed component samples");
+
+    let encoded = encode_j2k_lossless_typed_components(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(1))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+    )
+    .expect("mixed high-bit typed component encode");
+
+    assert_eq!(encoded.components, 2);
+    assert_eq!(encoded.bit_depth, 29);
+    assert!(!encoded.signed);
+
+    let support = j2k::J2kDecoder::inspect_support(&encoded.codestream).expect("support info");
+    assert!(support.has_mixed_bit_depths());
+    assert!(support.has_signed_components());
+    assert_eq!(support.components[0].bit_depth, 29);
+    assert!(!support.components[0].signed);
+    assert_eq!(support.components[1].bit_depth, 12);
+    assert!(support.components[1].signed);
+
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("parse mixed high-bit typed component codestream");
+    let decoded = image
+        .decode_native_components()
+        .expect("decode mixed high-bit typed component codestream");
+
+    assert_eq!(decoded.planes()[0].data(), unsigned);
+    assert_eq!(decoded.planes()[1].data(), canonical_signed);
+}
+
+#[test]
+fn lossless_typed_component_plane_encode_round_trips_mixed_high_bit_multi_tile_metadata() {
+    let unsigned = (0..16_u32)
+        .flat_map(|idx| {
+            let sample = (idx * 17_000_003 + (idx / 4) * 9_000_001) & ((1_u32 << 29) - 1);
+            unsigned_31_bytes(sample)
+        })
+        .collect::<Vec<_>>();
+    let signed_values = [
+        -2048_i16, -1024, -257, -1, 0, 1, 255, 1024, 2047, 1536, -1536, 17, -17, 33, -33, 511,
+    ];
+    let signed = signed_values
+        .iter()
+        .flat_map(|sample| {
+            let raw = (i32::from(*sample) & 0x0fff) as u16;
+            raw.to_le_bytes()
+        })
+        .collect::<Vec<_>>();
+    let canonical_signed = signed_values
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    let planes = [
+        J2kLosslessTypedComponentPlane {
+            data: &unsigned,
+            x_rsiz: 1,
+            y_rsiz: 1,
+            bit_depth: 29,
+            signed: false,
+        },
+        J2kLosslessTypedComponentPlane {
+            data: &signed,
+            x_rsiz: 1,
+            y_rsiz: 1,
+            bit_depth: 12,
+            signed: true,
+        },
+    ];
+    let samples = J2kLosslessTypedComponentSamples::new(&planes, 4, 4)
+        .expect("mixed high-bit typed component samples");
+
+    let encoded = encode_j2k_lossless_typed_components(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(1))
+            .with_tile_size(Some((2, 2)))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+    )
+    .expect("mixed high-bit typed multi-tile component encode");
+
+    let sot_count = encoded
+        .codestream
+        .windows(2)
+        .filter(|marker| *marker == [0xff, 0x90])
+        .count();
+    assert_eq!(sot_count, 4);
+
+    let support = j2k::J2kDecoder::inspect_support(&encoded.codestream).expect("support info");
+    assert!(support.has_mixed_bit_depths());
+    assert!(support.has_signed_components());
+    assert_eq!(support.components[0].bit_depth, 29);
+    assert!(!support.components[0].signed);
+    assert_eq!(support.components[1].bit_depth, 12);
+    assert!(support.components[1].signed);
+
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("parse mixed high-bit typed multi-tile component codestream");
+    let decoded = image
+        .decode_native_components()
+        .expect("decode mixed high-bit typed multi-tile component codestream");
+
+    assert_eq!(decoded.planes()[0].data(), unsigned);
+    assert_eq!(decoded.planes()[1].data(), canonical_signed);
+}
+
+#[test]
+fn lossless_typed_component_plane_encode_round_trips_mixed_35_bit_metadata() {
+    let mask = (1_u64 << 35) - 1;
+    let unsigned = (0..64_u64 * 64)
+        .flat_map(|idx| {
+            let sample = idx
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add((idx / 64).wrapping_mul(1_048_583))
+                & mask;
+            unsigned_35_bytes(sample)
+        })
+        .collect::<Vec<_>>();
+    let signed_values = (0..64_i32 * 64)
+        .map(|idx| ((idx * 37) % 4096) as i16 - 2048)
+        .collect::<Vec<_>>();
+    let signed = signed_values
+        .iter()
+        .flat_map(|sample| {
+            let raw = (i32::from(*sample) & 0x0fff) as u16;
+            raw.to_le_bytes()
+        })
+        .collect::<Vec<_>>();
+    let canonical_signed = signed_values
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    let planes = [
+        J2kLosslessTypedComponentPlane {
+            data: &unsigned,
+            x_rsiz: 1,
+            y_rsiz: 1,
+            bit_depth: 35,
+            signed: false,
+        },
+        J2kLosslessTypedComponentPlane {
+            data: &signed,
+            x_rsiz: 1,
+            y_rsiz: 1,
+            bit_depth: 12,
+            signed: true,
+        },
+    ];
+    let samples = J2kLosslessTypedComponentSamples::new(&planes, 64, 64)
+        .expect("mixed 35-bit typed component samples");
+
+    let encoded = encode_j2k_lossless_typed_components(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(1))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+    )
+    .expect("mixed 35-bit typed component encode");
+
+    assert_eq!(encoded.components, 2);
+    assert_eq!(encoded.bit_depth, 35);
+    assert!(!encoded.signed);
+
+    let support = j2k::J2kDecoder::inspect_support(&encoded.codestream).expect("support info");
+    assert!(support.has_mixed_bit_depths());
+    assert!(support.has_signed_components());
+    assert_eq!(support.components[0].bit_depth, 35);
+    assert!(!support.components[0].signed);
+    assert_eq!(support.components[1].bit_depth, 12);
+    assert!(support.components[1].signed);
+
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("parse mixed 35-bit typed component codestream");
+    let decoded = image
+        .decode_native_components()
+        .expect("decode mixed 35-bit typed component codestream");
+
+    assert_eq!(decoded.planes()[0].bit_depth(), 35);
+    assert_eq!(decoded.planes()[0].data(), unsigned);
+    assert_eq!(decoded.planes()[1].bit_depth(), 12);
+    assert_eq!(decoded.planes()[1].data(), canonical_signed);
+}
+
+#[test]
+fn cpu_lossless_rectangular_roi_roundtrips_and_writes_rgn() {
+    let pixels: Vec<_> = (0..64 * 64).map(|idx| (idx % 251) as u8).collect();
+    let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+    let roi = [J2kRoiRegion {
+        component: 0,
+        x: 8,
+        y: 12,
+        width: 24,
+        height: 20,
+        shift: 12,
+    }];
+
+    let encoded = encode_j2k_lossless_with_roi_regions(
+        samples,
+        &cpu_options()
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+        &roi,
+    )
+    .expect("lossless ROI encode");
+    let rgn = marker_offset(&encoded.codestream, 0x5E).expect("RGN marker");
+
+    assert_eq!(
+        &encoded.codestream[rgn + 2..rgn + 7],
+        &[0x00, 0x05, 0x00, 0x00, 0x0C]
+    );
+
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_multi_tile_rectangular_roi_roundtrips_and_writes_rgn() {
+    let pixels: Vec<_> = (0..96 * 80).map(|idx| (idx % 251) as u8).collect();
+    let samples = J2kLosslessSamples::new(&pixels, 96, 80, 1, 8, false).unwrap();
+    let roi = [J2kRoiRegion {
+        component: 0,
+        x: 24,
+        y: 20,
+        width: 48,
+        height: 44,
+        shift: 12,
+    }];
+
+    let encoded = encode_j2k_lossless_with_roi_regions(
+        samples,
+        &cpu_options()
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_tile_size(Some((32, 32)))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+        &roi,
+    )
+    .expect("multi-tile lossless ROI encode");
+    let rgn = marker_offset(&encoded.codestream, 0x5E).expect("RGN marker");
+    let sot_count = encoded
+        .codestream
+        .windows(2)
+        .filter(|marker| *marker == [0xff, 0x90])
+        .count();
+
+    assert_eq!(
+        &encoded.codestream[rgn + 2..rgn + 7],
+        &[0x00, 0x05, 0x00, 0x00, 0x0C]
+    );
+    assert!(sot_count > 1, "fixture should exercise multi-tile output");
+
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_htj2k_rectangular_roi_roundtrips_at_31_coded_bitplanes() {
+    let pixels: Vec<_> = (0..16 * 16).map(|idx| (idx % 251) as u8).collect();
+    let samples = J2kLosslessSamples::new(&pixels, 16, 16, 1, 8, false).unwrap();
+    let roi = [J2kRoiRegion {
+        component: 0,
+        x: 4,
+        y: 5,
+        width: 7,
+        height: 6,
+        shift: 23,
+    }];
+
+    let encoded = encode_j2k_lossless_with_roi_regions(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(0))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+        &roi,
+    )
+    .expect("HTJ2K ROI encode at 31 coded bitplanes");
+    let rgn = marker_offset(&encoded.codestream, 0x5E).expect("RGN marker");
+
+    assert_eq!(
+        &encoded.codestream[rgn + 2..rgn + 7],
+        &[0x00, 0x05, 0x00, 0x00, 0x17]
+    );
+
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_classic_high_bit_rectangular_roi_roundtrips_at_50_coded_bitplanes() {
+    let pixels = (0_u32..16 * 16)
+        .flat_map(|idx| unsigned_31_bytes((idx * 37) & ((1_u32 << 25) - 1)))
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 16, 16, 1, 25, false).unwrap();
+    let roi = [J2kRoiRegion {
+        component: 0,
+        x: 2,
+        y: 2,
+        width: 8,
+        height: 8,
+        shift: 25,
+    }];
+
+    let encoded = encode_j2k_lossless_with_roi_regions(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(0))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip),
+        &roi,
+    )
+    .expect("classic high-bit ROI encode at 50 coded bitplanes");
+    let rgn = marker_offset(&encoded.codestream, 0x5E).expect("RGN marker");
+
+    assert_eq!(
+        &encoded.codestream[rgn + 2..rgn + 7],
+        &[0x00, 0x05, 0x00, 0x00, 0x19]
+    );
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_classic_high_bit_rectangular_roi_rejects_56_coded_bitplanes_explicitly() {
+    let pixels = (0_u32..16 * 16)
+        .flat_map(|idx| unsigned_31_bytes((idx * 37) & ((1_u32 << 25) - 1)))
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 16, 16, 1, 25, false).unwrap();
+    let roi = [J2kRoiRegion {
+        component: 0,
+        x: 2,
+        y: 2,
+        width: 8,
+        height: 8,
+        shift: 31,
+    }];
+
+    let err = encode_j2k_lossless_with_roi_regions(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::None53)
+            .with_max_decomposition_levels(Some(0)),
+        &roi,
+    )
+    .expect_err("classic ROI maxshift must report the coded-bitplane limit");
+
+    assert!(matches!(err, j2k::J2kError::Unsupported(_)));
+    assert!(
+        err.to_string()
+            .contains("ROI maxshift exceeds supported coded bitplane count"),
+        "unexpected error: {err}"
+    );
 }
 
 fn deinterleave_to_f32_for_test(job: J2kDeinterleaveToF32Job<'_>) -> Vec<Vec<f32>> {
@@ -231,6 +1038,224 @@ fn cpu_lossless_all_progression_orders_write_cod_marker_and_round_trip() {
 }
 
 #[test]
+fn cpu_lossless_multi_tile_codestream_decodes() {
+    let pixels: Vec<u8> = (0..96 * 80)
+        .map(|index| (((index * 17) + (index / 9)) & 0xff) as u8)
+        .collect();
+    let samples = J2kLosslessSamples::new(&pixels, 96, 80, 1, 8, false).unwrap();
+
+    let encoded = encode_j2k_lossless(samples, &cpu_options().with_tile_size(Some((48, 40))))
+        .expect("lossless multi-tile encode");
+
+    let sot_count = encoded
+        .codestream
+        .windows(2)
+        .filter(|marker| *marker == [0xff, 0x90])
+        .count();
+    assert_eq!(sot_count, 4);
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.width, 96);
+    assert_eq!(decoded.height, 80);
+    assert_eq!(decoded.num_components, 1);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_emits_packet_markers_that_strict_decode_uses() {
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|index| (((index * 31) ^ (index / 7)) & 0xff) as u8)
+        .collect();
+    let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options().with_marker_segments(&[
+            J2kMarkerSegment::Tlm,
+            J2kMarkerSegment::Plt,
+            J2kMarkerSegment::Plm,
+            J2kMarkerSegment::Sop,
+            J2kMarkerSegment::Eph,
+        ]),
+    )
+    .expect("lossless packet-marker encode");
+
+    for marker in [0x55, 0x57, 0x58, 0x91, 0x92] {
+        assert!(
+            encoded
+                .codestream
+                .windows(2)
+                .any(|window| window == [0xff, marker]),
+            "marker FF{marker:02X} must be emitted"
+        );
+    }
+    let decoded = strict_decode_native(&encoded.codestream);
+    assert_eq!(decoded.width, 64);
+    assert_eq!(decoded.height, 64);
+    assert_eq!(decoded.num_components, 1);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_emits_ppm_and_ppt_that_strict_decode_uses() {
+    for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
+        let pixels: Vec<u8> = (0..64 * 64)
+            .map(|index| (((index * 17) ^ (index / 5)) & 0xff) as u8)
+            .collect();
+        let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+
+        let encoded = encode_j2k_lossless(
+            samples,
+            &cpu_options()
+                .with_max_decomposition_levels(Some(0))
+                .with_marker_segments(&[marker]),
+        )
+        .expect("lossless separated packet-header encode");
+
+        assert!(
+            encoded
+                .codestream
+                .windows(2)
+                .any(|window| window == [0xff, marker_byte]),
+            "marker FF{marker_byte:02X} must be emitted"
+        );
+        let decoded = strict_decode_native(&encoded.codestream);
+        assert_eq!(decoded.width, 64);
+        assert_eq!(decoded.height, 64);
+        assert_eq!(decoded.num_components, 1);
+        assert_eq!(decoded.data, pixels);
+    }
+}
+
+#[test]
+fn cpu_lossless_multi_tile_emits_ppm_and_ppt_that_strict_decode_uses() {
+    for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
+        let pixels: Vec<u8> = (0..64 * 64)
+            .map(|index| (((index * 29) ^ (index / 11)) & 0xff) as u8)
+            .collect();
+        let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+
+        let encoded = encode_j2k_lossless(
+            samples,
+            &cpu_options()
+                .with_max_decomposition_levels(Some(0))
+                .with_tile_size(Some((32, 32)))
+                .with_marker_segments(&[marker]),
+        )
+        .expect("lossless multi-tile separated packet-header encode");
+
+        assert!(
+            encoded
+                .codestream
+                .windows(2)
+                .any(|window| window == [0xff, marker_byte]),
+            "marker FF{marker_byte:02X} must be emitted"
+        );
+        let sot_count = encoded
+            .codestream
+            .windows(2)
+            .filter(|marker| *marker == [0xff, 0x90])
+            .count();
+        assert_eq!(sot_count, 4);
+        let decoded = strict_decode_native(&encoded.codestream);
+        assert_eq!(decoded.width, 64);
+        assert_eq!(decoded.height, 64);
+        assert_eq!(decoded.num_components, 1);
+        assert_eq!(decoded.data, pixels);
+    }
+}
+
+#[test]
+fn cpu_lossless_emits_multiple_tile_parts_that_strict_decode_uses() {
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|index| (((index * 19) ^ (index / 3)) & 0xff) as u8)
+        .collect();
+    let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_max_decomposition_levels(Some(2))
+            .with_tile_part_packet_limit(Some(1)),
+    )
+    .expect("lossless multi-tile-part encode");
+
+    let tile_parts = sot_tile_part_fields(&encoded.codestream);
+    assert!(tile_parts.len() > 1, "expected multiple tile-parts");
+    for (index, (tile_index, tile_part_index, num_tile_parts)) in tile_parts.iter().enumerate() {
+        assert_eq!(*tile_index, 0);
+        assert_eq!(*tile_part_index, index as u8);
+        assert_eq!(*num_tile_parts, tile_parts.len() as u8);
+    }
+
+    let decoded = strict_decode_native(&encoded.codestream);
+    assert_eq!(decoded.width, 64);
+    assert_eq!(decoded.height, 64);
+    assert_eq!(decoded.num_components, 1);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_emits_tlm_for_multiple_tile_parts() {
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|index| (((index * 37) ^ (index / 13)) & 0xff) as u8)
+        .collect();
+    let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_max_decomposition_levels(Some(2))
+            .with_tile_part_packet_limit(Some(1))
+            .with_marker_segments(&[J2kMarkerSegment::Tlm]),
+    )
+    .expect("lossless multi-tile-part TLM encode");
+
+    let tlm = tlm_tile_part_lengths(&encoded.codestream);
+    let sot = sot_tile_part_lengths(&encoded.codestream);
+    assert!(sot.len() > 1, "expected multiple tile-parts");
+    assert_eq!(tlm, sot);
+
+    let decoded = strict_decode_native(&encoded.codestream);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_emits_ppm_and_ppt_across_multiple_tile_parts_that_strict_decode_uses() {
+    for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
+        let pixels: Vec<u8> = (0..64 * 64)
+            .map(|index| (((index * 41) ^ (index / 19)) & 0xff) as u8)
+            .collect();
+        let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+
+        let encoded = encode_j2k_lossless(
+            samples,
+            &cpu_options()
+                .with_max_decomposition_levels(Some(2))
+                .with_tile_part_packet_limit(Some(1))
+                .with_marker_segments(&[marker]),
+        )
+        .expect("lossless multi-tile-part separated packet-header encode");
+
+        assert!(
+            encoded
+                .codestream
+                .windows(2)
+                .any(|window| window == [0xff, marker_byte]),
+            "marker FF{marker_byte:02X} must be emitted"
+        );
+        assert!(
+            sot_tile_part_fields(&encoded.codestream).len() > 1,
+            "expected multiple tile-parts"
+        );
+        let decoded = strict_decode_native(&encoded.codestream);
+        assert_eq!(decoded.width, 64);
+        assert_eq!(decoded.height, 64);
+        assert_eq!(decoded.num_components, 1);
+        assert_eq!(decoded.data, pixels);
+    }
+}
+
+#[test]
 fn default_lossless_policy_enables_one_reversible_dwt_level_for_wsi_tiles() {
     let gray = vec![0; 64 * 64];
     let gray_samples = J2kLosslessSamples::new(&gray, 64, 64, 1, 8, false).unwrap();
@@ -311,6 +1336,23 @@ fn cpu_lossless_round_trips_gray8() {
     assert_eq!(decoded.width, 7);
     assert_eq!(decoded.height, 5);
     assert_eq!(decoded.num_components, 1);
+    assert_eq!(decoded.bit_depth, 8);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_round_trips_component_count_above_u8() {
+    let pixels = (0_u8..=255).collect::<Vec<_>>();
+    let samples =
+        J2kLosslessSamples::new(&pixels, 1, 1, 256, 8, false).expect("256-component sample");
+
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("lossless encode");
+
+    assert_eq!(encoded.components, 256);
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.width, 1);
+    assert_eq!(decoded.height, 1);
+    assert_eq!(decoded.num_components, 256);
     assert_eq!(decoded.bit_depth, 8);
     assert_eq!(decoded.data, pixels);
 }
@@ -401,6 +1443,501 @@ fn auto_lossless_round_trips_rgb16_odd_dimensions() {
     assert_eq!(decoded.height, 3);
     assert_eq!(decoded.num_components, 3);
     assert_eq!(decoded.bit_depth, 16);
+    assert_eq!(decoded.data, pixels);
+}
+
+fn unsigned_24_bytes(sample: u32) -> [u8; 3] {
+    [
+        (sample & 0xff) as u8,
+        ((sample >> 8) & 0xff) as u8,
+        ((sample >> 16) & 0xff) as u8,
+    ]
+}
+
+fn signed_24_bytes(sample: i32) -> [u8; 3] {
+    unsigned_24_bytes((sample as u32) & 0x00ff_ffff)
+}
+
+fn unsigned_38_bytes(sample: u64) -> [u8; 5] {
+    [
+        (sample & 0xff) as u8,
+        ((sample >> 8) & 0xff) as u8,
+        ((sample >> 16) & 0xff) as u8,
+        ((sample >> 24) & 0xff) as u8,
+        ((sample >> 32) & 0x3f) as u8,
+    ]
+}
+
+fn unsigned_31_bytes(sample: u32) -> [u8; 4] {
+    [
+        (sample & 0xff) as u8,
+        ((sample >> 8) & 0xff) as u8,
+        ((sample >> 16) & 0xff) as u8,
+        ((sample >> 24) & 0x7f) as u8,
+    ]
+}
+
+fn unsigned_32_bytes(sample: u32) -> [u8; 4] {
+    sample.to_le_bytes()
+}
+
+fn unsigned_35_bytes(sample: u64) -> [u8; 5] {
+    [
+        (sample & 0xff) as u8,
+        ((sample >> 8) & 0xff) as u8,
+        ((sample >> 16) & 0xff) as u8,
+        ((sample >> 24) & 0xff) as u8,
+        ((sample >> 32) & 0x07) as u8,
+    ]
+}
+
+fn unsigned_37_bytes(sample: u64) -> [u8; 5] {
+    [
+        (sample & 0xff) as u8,
+        ((sample >> 8) & 0xff) as u8,
+        ((sample >> 16) & 0xff) as u8,
+        ((sample >> 24) & 0xff) as u8,
+        ((sample >> 32) & 0x1f) as u8,
+    ]
+}
+
+fn signed_29_bytes(sample: i32) -> [u8; 4] {
+    sample.to_le_bytes()
+}
+
+#[test]
+fn cpu_lossless_round_trips_gray24() {
+    let values = [0_u32, 1, 255, 256, 65_535, 65_536, 0x12_34_56, 0xff_ff_ff];
+    let pixels = values
+        .iter()
+        .flat_map(|sample| unsigned_24_bytes(*sample))
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 4, 2, 1, 24, false).unwrap();
+
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("cpu gray24 encode");
+
+    assert_eq!(encoded.bit_depth, 24);
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.width, 4);
+    assert_eq!(decoded.height, 2);
+    assert_eq!(decoded.num_components, 1);
+    assert_eq!(decoded.bit_depth, 24);
+    assert_eq!(decoded.bytes_per_sample, 3);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_classic_gray29_round_trips_native_bytes() {
+    let values = [
+        0_u32,
+        1,
+        255,
+        65_535,
+        16_777_216,
+        (1_u32 << 28) + 17,
+        (1_u32 << 28) - 1,
+        1_u32 << 28,
+        (1_u32 << 29) - 1,
+    ];
+    let pixels = values
+        .iter()
+        .flat_map(|sample| unsigned_31_bytes(*sample))
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 3, 3, 1, 29, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(2)),
+    )
+    .expect("cpu gray29 classic encode");
+
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert_eq!(encoded.width, 3);
+    assert_eq!(encoded.height, 3);
+    assert_eq!(encoded.components, 1);
+    assert_eq!(encoded.bit_depth, 29);
+    assert!(!encoded.signed);
+
+    let header = inspect_j2k_codestream_header(&encoded.codestream).expect("inspect gray29");
+    assert_eq!(header.dimensions, (3, 3));
+    assert_eq!(header.components, 1);
+    assert_eq!(header.bit_depth, 29);
+    assert_eq!(header.component_info[0].bit_depth, 29);
+    assert!(!header.component_info[0].signed);
+
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default()).expect("parse gray29");
+    assert_eq!(image.width(), 3);
+    assert_eq!(image.height(), 3);
+    assert_eq!(image.original_bit_depth(), 29);
+    let decoded = image.decode_native().expect("decode gray29");
+    assert_eq!(decoded.bit_depth, 29);
+    assert_eq!(decoded.bytes_per_sample, 4);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_classic_gray32_dwt_round_trips_native_bytes() {
+    let pixels = (0..64_u32 * 64)
+        .flat_map(|idx| {
+            let sample = idx
+                .wrapping_mul(2_654_435_761)
+                .wrapping_add((idx / 64).wrapping_mul(97_531));
+            unsigned_32_bytes(sample)
+        })
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 32, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(1)),
+    )
+    .expect("cpu gray32 classic encode");
+
+    assert_eq!(encoded.bit_depth, 32);
+    let header = inspect_j2k_codestream_header(&encoded.codestream).expect("inspect gray32");
+    assert_eq!(header.bit_depth, 32);
+    assert_eq!(header.component_info[0].bit_depth, 32);
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.bit_depth, 32);
+    assert_eq!(decoded.bytes_per_sample, 4);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_classic_gray35_dwt_round_trips_native_bytes() {
+    let mask = (1_u64 << 35) - 1;
+    let pixels = (0..64_u64 * 64)
+        .flat_map(|idx| {
+            let sample = idx
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add((idx / 64).wrapping_mul(1_048_583))
+                & mask;
+            unsigned_35_bytes(sample)
+        })
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 35, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(1)),
+    )
+    .expect("cpu gray35 classic encode");
+
+    assert_eq!(encoded.bit_depth, 35);
+    let header = inspect_j2k_codestream_header(&encoded.codestream).expect("inspect gray35");
+    assert_eq!(header.bit_depth, 35);
+    assert_eq!(header.component_info[0].bit_depth, 35);
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.bit_depth, 35);
+    assert_eq!(decoded.bytes_per_sample, 5);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_classic_gray37_without_dwt_round_trips_native_bytes() {
+    let values = [
+        0_u64,
+        1,
+        255,
+        65_535,
+        16_777_216,
+        1_u64 << 32,
+        (1_u64 << 36) + 17,
+        (1_u64 << 37) - 1,
+        (1_u64 << 36) - 3,
+    ];
+    let pixels = values
+        .iter()
+        .flat_map(|sample| unsigned_37_bytes(*sample))
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 3, 3, 1, 37, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(0)),
+    )
+    .expect("cpu gray37 classic encode");
+
+    assert_eq!(encoded.bit_depth, 37);
+    let header = inspect_j2k_codestream_header(&encoded.codestream).expect("inspect gray37");
+    assert_eq!(header.bit_depth, 37);
+    assert_eq!(header.component_info[0].bit_depth, 37);
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.bit_depth, 37);
+    assert_eq!(decoded.bytes_per_sample, 5);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_classic_gray29_multi_tile_round_trips_native_bytes() {
+    let mut pixels = Vec::new();
+    for y in 0..6_u32 {
+        for x in 0..6_u32 {
+            let sample = (x * 17_000_003 + y * 9_000_001 + (x ^ y) * 123_457) & ((1_u32 << 29) - 1);
+            pixels.extend_from_slice(&unsigned_31_bytes(sample));
+        }
+    }
+    let samples = J2kLosslessSamples::new(&pixels, 6, 6, 1, 29, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(1))
+            .with_tile_size(Some((3, 3))),
+    )
+    .expect("cpu gray29 classic multi-tile encode");
+
+    let sot_count = encoded
+        .codestream
+        .windows(2)
+        .filter(|marker| *marker == [0xff, 0x90])
+        .count();
+    assert_eq!(sot_count, 4);
+
+    let image =
+        Image::new(&encoded.codestream, &DecodeSettings::default()).expect("parse gray29 tiles");
+    let decoded = image.decode_native().expect("decode gray29 tiles");
+    assert_eq!(decoded.width, 6);
+    assert_eq!(decoded.height, 6);
+    assert_eq!(decoded.num_components, 1);
+    assert_eq!(decoded.bit_depth, 29);
+    assert_eq!(decoded.bytes_per_sample, 4);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_classic_rejects_gray38_explicitly() {
+    let pixels = [
+        0_u64,
+        1,
+        255,
+        65_535,
+        16_777_216,
+        (1_u64 << 32) + 17,
+        (1_u64 << 37) - 1,
+        1_u64 << 37,
+        (1_u64 << 38) - 1,
+    ]
+    .iter()
+    .flat_map(|sample| unsigned_38_bytes(*sample))
+    .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 3, 3, 1, 38, false).unwrap();
+
+    let err = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(2)),
+    )
+    .expect_err("classic gray38 encode should be explicitly unsupported");
+
+    assert!(
+        err.to_string()
+            .contains("no-quantization guard/exponent signaling limit"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn cpu_lossless_classic_signed_gray29_round_trips_native_bytes() {
+    let values = [
+        -(1_i32 << 28),
+        -65_537,
+        -1,
+        0,
+        1,
+        65_537,
+        (1_i32 << 28) - 1,
+        123_456,
+        -123_456,
+    ];
+    let pixels = values
+        .iter()
+        .flat_map(|sample| signed_29_bytes(*sample))
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 3, 3, 1, 29, true).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(2)),
+    )
+    .expect("cpu signed gray29 classic encode");
+
+    assert_eq!(encoded.bit_depth, 29);
+    assert!(encoded.signed);
+    let image =
+        Image::new(&encoded.codestream, &DecodeSettings::default()).expect("parse signed gray29");
+    let decoded = image.decode_native().expect("decode signed gray29");
+    assert_eq!(decoded.bit_depth, 29);
+    assert_eq!(decoded.bytes_per_sample, 4);
+    assert!(decoded.signed);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_classic_rgb29_rct_round_trips_native_bytes() {
+    let mut pixels = Vec::new();
+    for y in 0..3_u32 {
+        for x in 0..3_u32 {
+            for c in 0..3_u32 {
+                let sample =
+                    (x * 17_000_003 + y * 9_000_001 + c * 33_333_331) & ((1_u32 << 29) - 1);
+                pixels.extend_from_slice(&unsigned_31_bytes(sample));
+            }
+        }
+    }
+    let samples = J2kLosslessSamples::new(&pixels, 3, 3, 3, 29, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::Rct53)
+            .with_max_decomposition_levels(Some(2)),
+    )
+    .expect("cpu rgb29 classic encode");
+
+    assert_eq!(encoded.components, 3);
+    assert_eq!(encoded.bit_depth, 29);
+    let image = Image::new(&encoded.codestream, &DecodeSettings::default()).expect("parse rgb29");
+    let decoded = image.decode_native().expect("decode rgb29");
+    assert_eq!(decoded.num_components, 3);
+    assert_eq!(decoded.bit_depth, 29);
+    assert_eq!(decoded.bytes_per_sample, 4);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_htj2k_gray31_without_dwt_round_trips_native_bytes() {
+    let pixels = [
+        0_u32,
+        1,
+        255,
+        65_535,
+        16_777_216,
+        (1_u32 << 30) + 17,
+        (1_u32 << 30) - 1,
+        1_u32 << 30,
+        (1_u32 << 31) - 1,
+    ]
+    .iter()
+    .flat_map(|sample| unsigned_31_bytes(*sample))
+    .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 3, 3, 1, 31, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_max_decomposition_levels(Some(0)),
+    )
+    .expect("cpu HTJ2K gray31 encode");
+
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert_eq!(encoded.bit_depth, 31);
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.bit_depth, 31);
+    assert_eq!(decoded.bytes_per_sample, 4);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_htj2k_high_bit_dwt_rejects_explicitly() {
+    let pixels = (0_u32..(64 * 64))
+        .map(|index| match index % 8 {
+            0 => 0,
+            1 => 1,
+            2 => 65_535,
+            3 => 16_777_216,
+            4 => (1_u32 << 28) + 17,
+            5 => (1_u32 << 28) - 1,
+            6 => 1_u32 << 28,
+            _ => (1_u32 << 29) - 1,
+        })
+        .flat_map(unsigned_31_bytes)
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 29, false).unwrap();
+
+    let err = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_max_decomposition_levels(Some(1)),
+    )
+    .expect_err("HTJ2K high-bit DWT encode should be explicitly unsupported");
+
+    assert!(
+        err.to_string()
+            .contains("high-bit lossless encode with DWT"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn cpu_lossless_htj2k_gray29_without_dwt_round_trips_native_bytes() {
+    let pixels = [
+        0_u32,
+        1,
+        255,
+        65_535,
+        16_777_216,
+        (1_u32 << 28) + 17,
+        (1_u32 << 28) - 1,
+        1_u32 << 28,
+        (1_u32 << 29) - 1,
+    ]
+    .iter()
+    .flat_map(|sample| unsigned_31_bytes(*sample))
+    .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 3, 3, 1, 29, false).unwrap();
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_max_decomposition_levels(Some(0)),
+    )
+    .expect("cpu HTJ2K gray29 encode");
+
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert_eq!(encoded.bit_depth, 29);
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.bit_depth, 29);
+    assert_eq!(decoded.bytes_per_sample, 4);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_round_trips_signed_gray24() {
+    let values = [-8_388_608_i32, -65_536, -257, -1, 0, 257, 65_536, 8_388_607];
+    let pixels = values
+        .iter()
+        .flat_map(|sample| signed_24_bytes(*sample))
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&pixels, 4, 2, 1, 24, true).unwrap();
+
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("cpu signed gray24 encode");
+
+    assert_eq!(encoded.bit_depth, 24);
+    assert!(encoded.signed);
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.width, 4);
+    assert_eq!(decoded.height, 2);
+    assert_eq!(decoded.num_components, 1);
+    assert_eq!(decoded.bit_depth, 24);
+    assert!(decoded.signed);
+    assert_eq!(decoded.bytes_per_sample, 3);
     assert_eq!(decoded.data, pixels);
 }
 
@@ -844,10 +2381,126 @@ fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
     assert_eq!(decode_native(&encoded.codestream).data, pixels);
 }
 
+#[test]
+fn accelerator_facade_ht_lossless_quality_layers_request_refinement_passes() {
+    #[derive(Default)]
+    struct RefinementHtAccelerator {
+        max_target_coding_passes: u8,
+        ht_code_block: usize,
+    }
+
+    impl J2kEncodeStageAccelerator for RefinementHtAccelerator {
+        fn dispatch_report(&self) -> J2kEncodeDispatchReport {
+            J2kEncodeDispatchReport {
+                ht_code_block: self.ht_code_block,
+                ..J2kEncodeDispatchReport::default()
+            }
+        }
+
+        fn encode_ht_code_block(
+            &mut self,
+            job: J2kHtCodeBlockEncodeJob<'_>,
+        ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+            self.ht_code_block = self.ht_code_block.saturating_add(1);
+            self.max_target_coding_passes =
+                self.max_target_coding_passes.max(job.target_coding_passes);
+            j2k_native::encode_ht_code_block_scalar_with_passes(
+                job.coefficients,
+                job.width,
+                job.height,
+                job.total_bitplanes,
+                job.target_coding_passes,
+            )
+            .map(public_encoded_ht)
+            .map(Some)
+        }
+    }
+
+    let pixels: Vec<u8> = (0..64).map(|value| (value * 13) as u8).collect();
+    let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).unwrap();
+    let mut accelerator = RefinementHtAccelerator::default();
+
+    let encoded = encode_j2k_lossless_with_accelerator(
+        samples,
+        &auto_options()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_quality_layers(3),
+        BackendKind::Metal,
+        &mut accelerator,
+    )
+    .expect("HT lossless layered encode should dispatch");
+
+    assert_eq!(accelerator.max_target_coding_passes, 3);
+    assert!(accelerator.ht_code_block > 0);
+    assert_eq!(decode_native(&encoded.codestream).data, pixels);
+}
+
 fn marker_offset(codestream: &[u8], marker: u8) -> Option<usize> {
     codestream
         .windows(2)
         .position(|window| window == [0xFF, marker])
+}
+
+fn sot_tile_part_fields(codestream: &[u8]) -> Vec<(u16, u8, u8)> {
+    codestream
+        .windows(2)
+        .enumerate()
+        .filter_map(|(offset, marker)| {
+            if marker != [0xFF, 0x90] || offset + 12 > codestream.len() {
+                return None;
+            }
+            let tile_index = u16::from_be_bytes([codestream[offset + 4], codestream[offset + 5]]);
+            let tile_part_index = codestream[offset + 10];
+            let num_tile_parts = codestream[offset + 11];
+            Some((tile_index, tile_part_index, num_tile_parts))
+        })
+        .collect()
+}
+
+fn sot_tile_part_lengths(codestream: &[u8]) -> Vec<(u16, u32)> {
+    let mut offset = 0usize;
+    let mut fields = Vec::new();
+    while offset + 12 <= codestream.len() {
+        if codestream[offset] == 0xff && codestream[offset + 1] == 0x90 {
+            let tile_index = u16::from_be_bytes([codestream[offset + 4], codestream[offset + 5]]);
+            let tile_part_length = u32::from_be_bytes([
+                codestream[offset + 6],
+                codestream[offset + 7],
+                codestream[offset + 8],
+                codestream[offset + 9],
+            ]);
+            fields.push((tile_index, tile_part_length));
+            offset += 12;
+        } else {
+            offset += 1;
+        }
+    }
+    fields
+}
+
+fn tlm_tile_part_lengths(codestream: &[u8]) -> Vec<(u16, u32)> {
+    let mut offset = 0usize;
+    let mut fields = Vec::new();
+    while offset + 12 <= codestream.len() {
+        if codestream[offset] == 0xff && codestream[offset + 1] == 0x55 {
+            let marker_len =
+                u16::from_be_bytes([codestream[offset + 2], codestream[offset + 3]]) as usize;
+            assert_eq!(marker_len, 10);
+            assert_eq!(codestream[offset + 5], 0x22);
+            let tile_index = u16::from_be_bytes([codestream[offset + 6], codestream[offset + 7]]);
+            let tile_part_length = u32::from_be_bytes([
+                codestream[offset + 8],
+                codestream[offset + 9],
+                codestream[offset + 10],
+                codestream[offset + 11],
+            ]);
+            fields.push((tile_index, tile_part_length));
+            offset += 2 + marker_len;
+        } else {
+            offset += 1;
+        }
+    }
+    fields
 }
 
 #[test]

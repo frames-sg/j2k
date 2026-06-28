@@ -1,11 +1,264 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::backend::{ColorSpace, DecodedComponents, Image, RawBitmap};
+use crate::backend::{ColorSpace, DecodedComponents as NativeDecodedComponents, Image, RawBitmap};
 use crate::J2kError;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::convert::Infallible;
 use j2k_core::{validate_strided_output_buffer, DecodeOutcome, PixelFormat, Rect, Unsupported};
 pub(crate) type J2kDecodeOutcome = DecodeOutcome<Infallible>;
+
+/// Decoded JPEG 2000 color space metadata for component-plane outputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum J2kDecodedColorSpace {
+    /// Grayscale image data.
+    Gray,
+    /// RGB image data.
+    Rgb,
+    /// CMYK image data.
+    Cmyk,
+    /// Unknown image data with the given number of channels.
+    Unknown {
+        /// Number of channels represented by the color space.
+        num_channels: u16,
+    },
+    /// ICC-described image data.
+    Icc {
+        /// ICC profile bytes.
+        profile: Vec<u8>,
+        /// Number of channels represented by the ICC profile.
+        num_channels: u16,
+    },
+}
+
+impl J2kDecodedColorSpace {
+    fn from_native(color_space: &ColorSpace) -> Self {
+        match color_space {
+            ColorSpace::Gray => Self::Gray,
+            ColorSpace::RGB => Self::Rgb,
+            ColorSpace::CMYK => Self::Cmyk,
+            ColorSpace::Unknown { num_channels } => Self::Unknown {
+                num_channels: *num_channels,
+            },
+            ColorSpace::Icc {
+                profile,
+                num_channels,
+            } => Self::Icc {
+                profile: profile.clone(),
+                num_channels: *num_channels,
+            },
+        }
+    }
+}
+
+/// One borrowed decoded component plane.
+#[derive(Debug, Clone, Copy)]
+pub struct J2kComponentPlane<'a> {
+    samples: &'a [f32],
+    dimensions: (u32, u32),
+    bit_depth: u8,
+    signed: bool,
+    sampling: (u8, u8),
+}
+
+impl<'a> J2kComponentPlane<'a> {
+    fn from_native(plane: &j2k_native::ComponentPlane<'a>) -> Self {
+        Self {
+            samples: plane.samples(),
+            dimensions: plane.dimensions(),
+            bit_depth: plane.bit_depth(),
+            signed: plane.signed(),
+            sampling: plane.sampling(),
+        }
+    }
+
+    /// Component samples in row-major order.
+    #[must_use]
+    pub fn samples(&self) -> &'a [f32] {
+        self.samples
+    }
+
+    /// Width and height of this plane in decoded output samples.
+    #[must_use]
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`).
+    #[must_use]
+    pub fn sampling(&self) -> (u8, u8) {
+        self.sampling
+    }
+
+    /// Bit depth of this component plane.
+    #[must_use]
+    pub fn bit_depth(&self) -> u8 {
+        self.bit_depth
+    }
+
+    /// Whether this component plane stores signed sample values.
+    #[must_use]
+    pub fn signed(&self) -> bool {
+        self.signed
+    }
+}
+
+/// Borrowed decoded component planes for an image.
+#[derive(Debug, Clone)]
+pub struct J2kDecodedComponents<'a> {
+    dimensions: (u32, u32),
+    color_space: J2kDecodedColorSpace,
+    has_alpha: bool,
+    planes: Vec<J2kComponentPlane<'a>>,
+}
+
+impl<'a> J2kDecodedComponents<'a> {
+    pub(crate) fn from_native(decoded: &j2k_native::DecodedComponents<'a>) -> Self {
+        Self {
+            dimensions: decoded.dimensions(),
+            color_space: J2kDecodedColorSpace::from_native(decoded.color_space()),
+            has_alpha: decoded.has_alpha(),
+            planes: decoded
+                .planes()
+                .iter()
+                .map(J2kComponentPlane::from_native)
+                .collect(),
+        }
+    }
+
+    /// Dimensions of the decoded image represented by these planes.
+    #[must_use]
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Color space after JPEG 2000 color conversion has been applied.
+    #[must_use]
+    pub fn color_space(&self) -> &J2kDecodedColorSpace {
+        &self.color_space
+    }
+
+    /// Whether the decoded image has an alpha channel.
+    #[must_use]
+    pub fn has_alpha(&self) -> bool {
+        self.has_alpha
+    }
+
+    /// Borrowed decoded component planes in display order.
+    #[must_use]
+    pub fn planes(&self) -> &[J2kComponentPlane<'a>] {
+        &self.planes
+    }
+}
+
+/// One owned decoded component plane at native bit depth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct J2kNativeComponentPlane {
+    data: Vec<u8>,
+    dimensions: (u32, u32),
+    bit_depth: u8,
+    signed: bool,
+    sampling: (u8, u8),
+    bytes_per_sample: u8,
+}
+
+impl J2kNativeComponentPlane {
+    fn from_native(plane: &j2k_native::NativeComponentPlane) -> Self {
+        Self {
+            data: plane.data().to_vec(),
+            dimensions: plane.dimensions(),
+            bit_depth: plane.bit_depth(),
+            signed: plane.signed(),
+            sampling: plane.sampling(),
+            bytes_per_sample: plane.bytes_per_sample(),
+        }
+    }
+
+    /// Packed little-endian sample bytes for this component in row-major order.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Width and height of this decoded plane in output samples.
+    #[must_use]
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`).
+    #[must_use]
+    pub fn sampling(&self) -> (u8, u8) {
+        self.sampling
+    }
+
+    /// Bit depth of this component plane.
+    #[must_use]
+    pub fn bit_depth(&self) -> u8 {
+        self.bit_depth
+    }
+
+    /// Whether this component plane stores signed sample values.
+    #[must_use]
+    pub fn signed(&self) -> bool {
+        self.signed
+    }
+
+    /// Bytes used for each packed little-endian sample in [`Self::data`].
+    #[must_use]
+    pub fn bytes_per_sample(&self) -> u8 {
+        self.bytes_per_sample
+    }
+}
+
+/// Owned decoded native-bit-depth component planes for an image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct J2kDecodedNativeComponents {
+    dimensions: (u32, u32),
+    color_space: J2kDecodedColorSpace,
+    has_alpha: bool,
+    planes: Vec<J2kNativeComponentPlane>,
+}
+
+impl J2kDecodedNativeComponents {
+    pub(crate) fn from_native(decoded: &j2k_native::DecodedNativeComponents) -> Self {
+        Self {
+            dimensions: decoded.dimensions(),
+            color_space: J2kDecodedColorSpace::from_native(decoded.color_space()),
+            has_alpha: decoded.has_alpha(),
+            planes: decoded
+                .planes()
+                .iter()
+                .map(J2kNativeComponentPlane::from_native)
+                .collect(),
+        }
+    }
+
+    /// Dimensions of the decoded image represented by these planes.
+    #[must_use]
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Color space after JPEG 2000 color conversion has been applied.
+    #[must_use]
+    pub fn color_space(&self) -> &J2kDecodedColorSpace {
+        &self.color_space
+    }
+
+    /// Whether the decoded image has an alpha channel.
+    #[must_use]
+    pub fn has_alpha(&self) -> bool {
+        self.has_alpha
+    }
+
+    /// Decoded component planes in display order.
+    #[must_use]
+    pub fn planes(&self) -> &[J2kNativeComponentPlane] {
+        &self.planes
+    }
+}
 
 pub(crate) fn decode_image_into_with_native_context<'a>(
     image: &Image<'a>,
@@ -108,7 +361,7 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
 }
 
 fn write_components_u8_output(
-    components: &DecodedComponents<'_>,
+    components: &NativeDecodedComponents<'_>,
     out: &mut [u8],
     stride: usize,
     fmt: PixelFormat,

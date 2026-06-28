@@ -1,7 +1,7 @@
 //! The irreversible multi-component transformation, as specified in
 //! Annex G.2 and G.3.
 
-use super::codestream::{Header, WaveletTransform};
+use super::codestream::{ComponentInfo, Header, WaveletTransform};
 use super::decode::TileDecodeContext;
 use crate::error::{bail, err, ColorError, Result};
 use crate::math::{dispatch, f32x8, floor_f32, Level, Simd};
@@ -37,15 +37,22 @@ pub(crate) fn apply_inverse(
         bail!(ColorError::Mct);
     }
 
+    if s0.integer_container.is_some()
+        || s1.integer_container.is_some()
+        || s2.integer_container.is_some()
+    {
+        return apply_inverse_i64(transform, s0, s1, s2);
+    }
+
     let handled = if let Some(backend) = backend.as_deref_mut() {
         backend.decode_inverse_mct(J2kInverseMctJob {
             transform: J2kWaveletTransform::from(transform),
             plane0: &mut s0.container,
             plane1: &mut s1.container,
             plane2: &mut s2.container,
-            addend0: (1_u32 << (component_infos[0].size_info.precision - 1)) as f32,
-            addend1: (1_u32 << (component_infos[1].size_info.precision - 1)) as f32,
-            addend2: (1_u32 << (component_infos[2].size_info.precision - 1)) as f32,
+            addend0: unsigned_level_shift(&component_infos[0]),
+            addend1: unsigned_level_shift(&component_infos[1]),
+            addend2: unsigned_level_shift(&component_infos[2]),
         })?
     } else {
         false
@@ -61,6 +68,60 @@ pub(crate) fn apply_inverse(
     }
 
     Ok(())
+}
+
+fn apply_inverse_i64(
+    transform: WaveletTransform,
+    s0: &mut super::ComponentData,
+    s1: &mut super::ComponentData,
+    s2: &mut super::ComponentData,
+) -> Result<()> {
+    if transform != WaveletTransform::Reversible53 {
+        bail!(ColorError::Mct);
+    }
+
+    let (Some(y0), Some(y1), Some(y2)) = (
+        s0.integer_container.as_mut(),
+        s1.integer_container.as_mut(),
+        s2.integer_container.as_mut(),
+    ) else {
+        bail!(ColorError::Mct);
+    };
+    if y0.len() != y1.len() || y1.len() != y2.len() {
+        bail!(ColorError::Mct);
+    }
+
+    for ((y0, y1), y2) in y0.iter_mut().zip(y1.iter_mut()).zip(y2.iter_mut()) {
+        let src0 = *y0;
+        let src1 = *y1;
+        let src2 = *y2;
+        let green = src0 - floor_div_i64(src2 + src1, 4);
+        *y0 = src2 + green;
+        *y1 = green;
+        *y2 = src1 + green;
+    }
+
+    Ok(())
+}
+
+fn unsigned_level_shift(component_info: &ComponentInfo) -> f32 {
+    if component_info.size_info.signed {
+        0.0
+    } else {
+        (1_u32 << (component_info.size_info.precision - 1)) as f32
+    }
+}
+
+#[inline(always)]
+fn floor_div_i64(numerator: i64, denominator: i64) -> i64 {
+    debug_assert!(denominator > 0);
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    if remainder != 0 && remainder < 0 {
+        quotient - 1
+    } else {
+        quotient
+    }
 }
 
 fn apply_inner(transform: WaveletTransform, s0: &mut [f32], s1: &mut [f32], s2: &mut [f32]) {

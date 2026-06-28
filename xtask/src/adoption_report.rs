@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
@@ -32,8 +33,16 @@ pub(crate) fn adoption_report(args: impl Iterator<Item = String>) -> Result<(), 
     }
     let options = AdoptionReportOptions::parse(args.into_iter())?;
     let summary_path = options.run_dir.join("summary.json");
-    let summary_text = fs::read_to_string(&summary_path)
-        .map_err(|error| format!("read {}: {error}", summary_path.display()))?;
+    let summary_text = fs::read_to_string(&summary_path).map_err(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            format!(
+                "adoption benchmark summary is missing at {}. Run `cargo xtask adoption-benchmark` with external fixtures/comparators or pass `--run-dir` to a completed bundle. Public benchmark/adoption claims remain blocked until this external evidence exists.",
+                summary_path.display()
+            )
+        } else {
+            format!("read {}: {error}", summary_path.display())
+        }
+    })?;
     let summary: Value = serde_json::from_str(&summary_text)
         .map_err(|error| format!("parse {}: {error}", summary_path.display()))?;
 
@@ -1597,6 +1606,27 @@ benchmark_complete\ttrue\n",
         assert_eq!(table.headers[0], "decoder");
         assert_eq!(table.rows.len(), 2);
         assert_eq!(table.rows[1]["skip_reason"], "openjpeg-unavailable");
+    }
+
+    #[test]
+    fn report_requires_completed_external_benchmark_bundle() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let dir = std::env::current_dir()
+            .expect("current dir")
+            .join("target")
+            .join("adoption-report-missing-test")
+            .join(format!("{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let error =
+            adoption_report(["--run-dir".to_string(), dir.display().to_string()].into_iter())
+                .expect_err("missing adoption benchmark bundle should fail");
+
+        assert!(error.contains("adoption benchmark summary is missing"));
+        assert!(error.contains("Public benchmark/adoption claims remain blocked"));
     }
 
     #[test]

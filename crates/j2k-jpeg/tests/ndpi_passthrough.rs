@@ -358,7 +358,7 @@ fn ndpi_passthrough_candidate(
             let syntax = scan_zero_dimension_jpeg_syntax(bytes)?;
             let info = CoreInfo {
                 dimensions: ifd_metadata.dimensions,
-                components: ifd_metadata.components,
+                components: u16::from(ifd_metadata.components),
                 colorspace: ifd_metadata.colorspace,
                 bit_depth: ifd_metadata.bit_depth,
                 tile_layout: None,

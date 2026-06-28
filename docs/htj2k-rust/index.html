@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>HTJ2K Rust - J2K</title>
-  <meta name="description" content="HTJ2K Rust support in J2K: high-throughput JPEG 2000 decode, encode, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.">
+  <meta name="description" content="HTJ2K Rust support in J2K: JPEG 2000 Part 15 decode, encode, JPH wrapping, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/htj2k-rust/">
   <meta property="og:title" content="HTJ2K Rust">
-  <meta property="og:description" content="HTJ2K Rust support in J2K: high-throughput JPEG 2000 decode, encode, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.">
+  <meta property="og:description" content="HTJ2K Rust support in J2K: JPEG 2000 Part 15 decode, encode, JPH wrapping, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.">
   <meta property="og:url" content="https://frames-sg.github.io/j2k/htj2k-rust/">
   <meta property="og:type" content="article">
   <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
@@ -15,7 +15,7 @@
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="HTJ2K Rust">
-  <meta name="twitter:description" content="HTJ2K Rust support in J2K: high-throughput JPEG 2000 decode, encode, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.">
+  <meta name="twitter:description" content="HTJ2K Rust support in J2K: JPEG 2000 Part 15 decode, encode, JPH wrapping, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.">
   <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
@@ -24,7 +24,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "HTJ2K Rust",
-    "description": "HTJ2K Rust support in J2K: high-throughput JPEG 2000 decode, encode, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.",
+    "description": "HTJ2K Rust support in J2K: JPEG 2000 Part 15 decode, encode, JPH wrapping, recode, and JPEG-to-HTJ2K transcode APIs with optional CUDA and Metal adapters.",
     "url": "https://frames-sg.github.io/j2k/htj2k-rust/",
     "isPartOf": { "@type": "SoftwareSourceCode", "name": "J2K", "codeRepository": "https://github.com/frames-sg/j2k", "programmingLanguage": "Rust" }
   }
@@ -49,7 +49,7 @@
         <div>
           <p class="eyebrow">HTJ2K Rust</p>
           <h1>HTJ2K Rust</h1>
-          <p class="lead">J2K supports HTJ2K-oriented Rust APIs for decode, encode, recode, and JPEG-to-HTJ2K transcode workflows, with optional CUDA and Metal adapter crates for supported routes.</p>
+          <p class="lead">J2K supports HTJ2K Part 15 Rust APIs for HT codestream decode, encode, recode, JPH still-image wrapping, and JPEG-to-HTJ2K transcode workflows, with optional CUDA and Metal adapter crates for supported routes.</p>
           <div class="actions">
             <a class="button primary" href="https://crates.io/crates/j2k">j2k crate</a>
             <a class="button" href="https://crates.io/crates/j2k-transcode">j2k-transcode</a>
@@ -62,12 +62,12 @@
       <div class="wrap grid three">
         <article class="card">
           <h2>Decode and encode</h2>
-          <p>The <code>j2k</code> facade owns public JPEG 2000 / HTJ2K application APIs and reexports shared backend contracts.</p>
+          <p>The <code>j2k</code> facade owns public HTJ2K application APIs for raw HT codestreams and JPH still-image files, including cleanup and refinement packet paths.</p>
           <pre class="code">cargo add j2k</pre>
         </article>
         <article class="card">
           <h2>Recode</h2>
-          <p>Classic JPEG 2000 reversible inputs can be recoded to HTJ2K through the public recode API when supported.</p>
+          <p>Classic JPEG 2000 inputs use coefficient-domain recode where valid, and a pixel-preserving fallback for signed, high-bit, lossy, sampled, or otherwise incompatible coefficient-domain cases.</p>
         </article>
         <article class="card">
           <h2>Transcode</h2>
@@ -76,10 +76,26 @@
         </article>
       </div>
     </section>
+    <section class="section">
+      <div class="wrap grid three">
+        <article class="card">
+          <h2>Part 15 block coding</h2>
+          <p>HT cleanup, significance-propagation refinement, magnitude-refinement, packet length signaling, quality-layer contributions, and strict decode coverage are tracked by repo-local tests.</p>
+        </article>
+        <article class="card">
+          <h2>JPH files</h2>
+          <p>JPH wrapping and inspection reuse the JP2 box parser and validate HT codestream branding so HTJ2K files are distinct from classic JP2 files.</p>
+        </article>
+        <article class="card">
+          <h2>Limits</h2>
+          <p>HTJ2K requests above the Part 15 coded-bitplane limit reject explicitly. External OpenJPH/Kakadu parity remains publication evidence, not a silent runtime fallback.</p>
+        </article>
+      </div>
+    </section>
     <section class="section alt">
       <div class="wrap copy">
         <h2>Related search paths</h2>
-        <p>See <a href="../cuda-jpeg2000-rust/">CUDA JPEG2000 Rust</a>, <a href="../metal-jpeg2000-rust/">Metal JPEG2000 Rust</a>, and <a href="../gpu-jpeg2000-rust/">GPU JPEG2000 Rust</a> for backend-specific pages.</p>
+        <p>See <a href="../rust-jpeg2000-codec/">Rust JPEG 2000 Codec</a>, <a href="../cuda-jpeg2000-rust/">CUDA JPEG2000 Rust</a>, <a href="../metal-jpeg2000-rust/">Metal JPEG2000 Rust</a>, and <a href="../gpu-jpeg2000-rust/">GPU JPEG2000 Rust</a> for related codec and backend pages.</p>
       </div>
     </section>
   </main>

@@ -10,13 +10,11 @@ It is a maintained fork of the original `hayro-jpeg2000` project with
 DICOM-focused extensions, including native-bit-depth decode for 8/12/16-bit
 images and pure-Rust JPEG 2000 encoding.
 
-The crate can decode both raw JPEG 2000 codestreams (`.j2c`) and images wrapped
-inside the JP2 container format. The decoder supports the vast majority of features
-defined in the JPEG 2000 core coding system (ISO/IEC 15444-1) as well as some color
-spaces from the extensions (ISO/IEC 15444-2). There are still some missing pieces
-for some "obscure" features (for example support for progression order
-changes in tile-parts), but the features that commonly appear in real-world
-images are supported.
+The crate can decode raw JPEG 2000 codestreams (`.j2c`) and still-image JP2/JPH
+wrappers. It implements the JPEG 2000 core coding system (ISO/IEC 15444-1) and
+HTJ2K block coding (ISO/IEC 15444-15) through the support boundary documented in
+`docs/public-support.md`. The remaining declared gaps are tracked there instead
+of being hidden behind a broad "vast majority" claim.
 
 The crate offers both a high-level 8-bit decode path for general image use and
 a native-bit-depth decode path for integrations such as DICOM, plus encoder APIs
@@ -138,16 +136,20 @@ pub use error::{
     ValidationError,
 };
 pub use j2c::encode::{
-    encode, encode_htj2k, encode_precomputed_htj2k_53,
+    encode, encode_component_planes_53, encode_htj2k, encode_precomputed_htj2k_53,
     encode_precomputed_htj2k_53_with_accelerator, encode_precomputed_htj2k_53_with_mct,
     encode_precomputed_htj2k_53_with_mct_and_accelerator, encode_precomputed_htj2k_97,
     encode_precomputed_htj2k_97_batch_with_accelerator,
-    encode_precomputed_htj2k_97_with_accelerator, encode_preencoded_htj2k_97,
+    encode_precomputed_htj2k_97_with_accelerator, encode_precomputed_j2k_53,
+    encode_precomputed_j2k_53_with_accelerator, encode_precomputed_j2k_53_with_mct,
+    encode_precomputed_j2k_53_with_mct_and_accelerator, encode_preencoded_htj2k_97,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator,
     encode_preencoded_htj2k_97_owned_with_accelerator, encode_preencoded_htj2k_97_with_accelerator,
     encode_prequantized_htj2k_97, encode_prequantized_htj2k_97_with_accelerator,
-    encode_with_accelerator, irreversible_quantization_step_for_subband, EncodeOptions,
-    EncodeProgressionOrder,
+    encode_typed_component_planes_53, encode_with_accelerator,
+    encode_with_accelerator_and_roi_regions, encode_with_roi_regions,
+    irreversible_quantization_step_for_subband, EncodeComponentPlane, EncodeOptions,
+    EncodeProgressionOrder, EncodeRoiRegion, EncodeTypedComponentPlane,
 };
 pub use j2c::{CpuDecodeParallelism, DecoderContext, Reversible53CoefficientImage};
 pub use j2k_types::{
@@ -174,9 +176,8 @@ mod jp2;
 pub(crate) mod reader;
 pub use j2c::ht_encode_tables::HtUvlcTableEntry;
 
-const MAX_CLASSIC_DECODE_BITPLANES: u8 = 32;
+const MAX_CLASSIC_DECODE_BITPLANES: u8 = j2c::MAX_BITPLANE_COUNT;
 pub(crate) const MAX_J2K_SPEC_COMPONENTS: u16 = 16_384;
-pub(crate) const MAX_NATIVE_DECODE_COMPONENTS: u16 = u8::MAX as u16;
 pub(crate) const MAX_J2K_IMAGE_DIMENSION: u32 = 60_000;
 pub(crate) const MAX_J2K_TILE_COUNT: u64 = u16::MAX as u64 + 1;
 pub(crate) const DEFAULT_MAX_DECODE_BYTES: usize = 512 * 1024 * 1024;
@@ -229,6 +230,14 @@ pub(crate) fn checked_decode_sample_count(width: u32, height: u32) -> Result<usi
     {
         checked_decode_usize_product2(width as usize, height as usize)
     }
+}
+
+#[inline]
+fn native_bytes_per_sample(bit_depth: u8) -> Result<usize> {
+    if bit_depth == 0 || bit_depth > 63 {
+        bail!(ValidationError::ImageTooLarge);
+    }
+    Ok(usize::from(bit_depth).div_ceil(8).max(1))
 }
 
 /// Adapter HTJ2K code-block job description for backend experimentation.
@@ -494,7 +503,7 @@ pub trait J2kEncodeStageAccelerator {
         Ok(None)
     }
 
-    /// Optionally quantize and encode one HTJ2K cleanup-only sub-band.
+    /// Optionally quantize and encode one HTJ2K cleanup/refinement sub-band.
     ///
     /// Return `Ok(Some(outputs))` with one encoded output per code block in
     /// raster code-block order. Return `Ok(None)` to use the separate
@@ -799,24 +808,29 @@ pub(crate) fn add_roi_shift_to_bitplanes(
     Ok(coded_bitplanes)
 }
 
-pub(crate) fn apply_roi_maxshift_inverse_i32(coefficient: i32, roi_shift: u8) -> i32 {
+pub(crate) fn apply_roi_maxshift_inverse_i64(coefficient: i64, roi_shift: u8) -> i64 {
     if roi_shift == 0 || coefficient == 0 {
         return coefficient;
     }
 
-    let magnitude = i64::from(coefficient).abs();
-    let threshold = 1_i64.checked_shl(roi_shift as u32).unwrap_or(i64::MAX);
+    let magnitude = coefficient.unsigned_abs();
+    let threshold = 1_u64.checked_shl(roi_shift as u32).unwrap_or(u64::MAX);
     if magnitude < threshold {
         return coefficient;
     }
 
     let shifted = magnitude >> roi_shift;
-    let shifted = shifted.min(i64::from(i32::MAX)) as i32;
+    let shifted = shifted.min(i64::MAX as u64) as i64;
     if coefficient < 0 {
         -shifted
     } else {
         shifted
     }
+}
+
+pub(crate) fn apply_roi_maxshift_inverse_i32(coefficient: i32, roi_shift: u8) -> i32 {
+    apply_roi_maxshift_inverse_i64(i64::from(coefficient), roi_shift)
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 /// Adapter scalar classic J2K encoder helper for backend experimentation.
@@ -912,6 +926,30 @@ pub fn encode_ht_code_block_scalar(
 ) -> core::result::Result<EncodedHtJ2kCodeBlock, &'static str> {
     let encoded =
         j2c::ht_block_encode::encode_code_block(coefficients, width, height, total_bitplanes)?;
+    Ok(EncodedHtJ2kCodeBlock {
+        data: encoded.data,
+        cleanup_length: encoded.ht_cleanup_length,
+        refinement_length: encoded.ht_refinement_length,
+        num_coding_passes: encoded.num_coding_passes,
+        num_zero_bitplanes: encoded.num_zero_bitplanes,
+    })
+}
+
+/// Adapter scalar HTJ2K encoder helper with an explicit coding-pass request.
+pub fn encode_ht_code_block_scalar_with_passes(
+    coefficients: &[i32],
+    width: u32,
+    height: u32,
+    total_bitplanes: u8,
+    target_coding_passes: u8,
+) -> core::result::Result<EncodedHtJ2kCodeBlock, &'static str> {
+    let encoded = j2c::ht_block_encode::encode_code_block_with_passes(
+        coefficients,
+        width,
+        height,
+        total_bitplanes,
+        target_coding_passes,
+    )?;
     Ok(EncodedHtJ2kCodeBlock {
         data: encoded.data,
         cleanup_length: encoded.ht_cleanup_length,
@@ -1069,7 +1107,7 @@ pub fn quantize_reversible_reference(
 pub fn deinterleave_reference(
     pixels: &[u8],
     num_pixels: usize,
-    num_components: u8,
+    num_components: u16,
     bit_depth: u8,
     signed: bool,
 ) -> Vec<Vec<f32>> {
@@ -1210,7 +1248,7 @@ pub fn decode_j2k_code_block_scalar_with_workspace(
         let row_start = row_idx * job.output_stride;
         let output_row = &mut output[row_start..row_start + code_block_stride];
         for (coefficient, sample) in coeff_row.iter().zip(output_row.iter_mut()) {
-            let coefficient = apply_roi_maxshift_inverse_i32(coefficient.get(), job.roi_shift);
+            let coefficient = apply_roi_maxshift_inverse_i64(coefficient.get_i64(), job.roi_shift);
             *sample = coefficient as f32 * job.dequantization_step;
         }
     }
@@ -1309,7 +1347,7 @@ pub fn decode_j2k_code_block_scalar_with_workspace_profiled(
         let row_start = row_idx * job.output_stride;
         let output_row = &mut output[row_start..row_start + code_block_stride];
         for (coefficient, sample) in coeff_row.iter().zip(output_row.iter_mut()) {
-            let coefficient = apply_roi_maxshift_inverse_i32(coefficient.get(), job.roi_shift);
+            let coefficient = apply_roi_maxshift_inverse_i64(coefficient.get_i64(), job.roi_shift);
             *sample = coefficient as f32 * job.dequantization_step;
         }
     }
@@ -1856,13 +1894,19 @@ impl<'a> Image<'a> {
         &self,
         decoder_context: &'ctx mut DecoderContext<'a>,
     ) -> Result<DecodedComponents<'ctx>> {
+        self.validate_component_plane_precision()?;
         let decoded_image = self.prepare_decoded_image(decoder_context)?;
+        let sampling = self.component_plane_sampling(decoded_image.decoded_components.len());
         let planes = decoded_image
             .decoded_components
             .iter()
-            .map(|component| ComponentPlane {
+            .zip(sampling)
+            .map(|(component, sampling)| ComponentPlane {
                 samples: component.container.truncated(),
+                dimensions: (self.width(), self.height()),
                 bit_depth: component.bit_depth,
+                signed: component.signed,
+                sampling,
             })
             .collect();
 
@@ -1872,6 +1916,29 @@ impl<'a> Image<'a> {
             has_alpha: self.has_alpha,
             planes,
         })
+    }
+
+    /// Decode the image into owned native-bit-depth component planes.
+    ///
+    /// Unlike [`Self::decode_native`], this preserves per-component bit depth
+    /// and signedness metadata and does not require all components to share a
+    /// single packed interleaved representation.
+    pub fn decode_native_components(&self) -> Result<DecodedNativeComponents> {
+        let mut decoder_context = DecoderContext::default();
+        self.decode_native_components_with_context(&mut decoder_context)
+    }
+
+    /// Decode the image into owned native-bit-depth component planes using a
+    /// caller-provided decoder context.
+    pub fn decode_native_components_with_context(
+        &self,
+        decoder_context: &mut DecoderContext<'a>,
+    ) -> Result<DecodedNativeComponents> {
+        let decoded_image = self.prepare_decoded_image(decoder_context)?;
+        self.pack_native_component_planes(
+            decoded_image.decoded_components,
+            (self.width(), self.height()),
+        )
     }
 
     /// Build a adapter grayscale direct device plan without materializing host component planes.
@@ -1945,14 +2012,20 @@ impl<'a> Image<'a> {
         decoder_context: &'ctx mut DecoderContext<'a>,
         ht_decoder: &mut dyn HtCodeBlockDecoder,
     ) -> Result<DecodedComponents<'ctx>> {
+        self.validate_component_plane_precision()?;
         let decoded_image =
             self.prepare_decoded_image_with_ht_decoder(decoder_context, ht_decoder)?;
+        let sampling = self.component_plane_sampling(decoded_image.decoded_components.len());
         let planes = decoded_image
             .decoded_components
             .iter()
-            .map(|component| ComponentPlane {
+            .zip(sampling)
+            .map(|(component, sampling)| ComponentPlane {
                 samples: component.container.truncated(),
+                dimensions: (self.width(), self.height()),
                 bit_depth: component.bit_depth,
+                signed: component.signed,
+                sampling,
             })
             .collect();
 
@@ -1972,14 +2045,20 @@ impl<'a> Image<'a> {
         decoder_context: &'ctx mut DecoderContext<'a>,
     ) -> Result<DecodedComponents<'ctx>> {
         validate_roi((self.width(), self.height()), roi)?;
+        self.validate_component_plane_precision()?;
         let (_x, _y, width, height) = roi;
         let decoded_image = self.prepare_decoded_image_with_region(decoder_context, Some(roi))?;
+        let sampling = self.component_plane_sampling(decoded_image.decoded_components.len());
         let planes = decoded_image
             .decoded_components
             .iter()
-            .map(|component| ComponentPlane {
+            .zip(sampling)
+            .map(|(component, sampling)| ComponentPlane {
                 samples: component.container.truncated(),
+                dimensions: (width, height),
                 bit_depth: component.bit_depth,
+                signed: component.signed,
+                sampling,
             })
             .collect();
 
@@ -1991,6 +2070,22 @@ impl<'a> Image<'a> {
         })
     }
 
+    /// Decode a source-coordinate region into owned native-bit-depth component
+    /// planes using a caller-provided decoder context.
+    pub fn decode_native_region_components_with_context(
+        &self,
+        roi: (u32, u32, u32, u32),
+        decoder_context: &mut DecoderContext<'a>,
+    ) -> Result<DecodedNativeComponents> {
+        validate_roi((self.width(), self.height()), roi)?;
+        if self.requires_exact_integer_decode() {
+            return self.decode_native_region_components_via_full_decode(roi, decoder_context);
+        }
+        let (_x, _y, width, height) = roi;
+        let decoded_image = self.prepare_decoded_image_with_region(decoder_context, Some(roi))?;
+        self.pack_native_component_planes(decoded_image.decoded_components, (width, height))
+    }
+
     /// Decode borrowed component planes for a requested region while
     /// delegating code-block/transform stages through the adapter backend hook.
     pub fn decode_region_components_with_ht_decoder<'ctx>(
@@ -2000,18 +2095,24 @@ impl<'a> Image<'a> {
         ht_decoder: &mut dyn HtCodeBlockDecoder,
     ) -> Result<DecodedComponents<'ctx>> {
         validate_roi((self.width(), self.height()), roi)?;
+        self.validate_component_plane_precision()?;
         let (_x, _y, width, height) = roi;
         let decoded_image = self.prepare_decoded_image_with_region_and_ht_decoder(
             decoder_context,
             Some(roi),
             Some(ht_decoder),
         )?;
+        let sampling = self.component_plane_sampling(decoded_image.decoded_components.len());
         let planes = decoded_image
             .decoded_components
             .iter()
-            .map(|component| ComponentPlane {
+            .zip(sampling)
+            .map(|(component, sampling)| ComponentPlane {
                 samples: component.container.truncated(),
+                dimensions: (width, height),
                 bit_depth: component.bit_depth,
+                signed: component.signed,
+                sampling,
             })
             .collect();
 
@@ -2100,37 +2201,40 @@ impl<'a> Image<'a> {
         self.decode_native_region_with_context(roi, &mut DecoderContext::default())
     }
 
+    /// Decode a source-coordinate region into owned native-bit-depth component
+    /// planes.
+    pub fn decode_native_region_components(
+        &self,
+        roi: (u32, u32, u32, u32),
+    ) -> Result<DecodedNativeComponents> {
+        self.decode_native_region_components_with_context(roi, &mut DecoderContext::default())
+    }
+
     /// Decode the image at native bit depth using a caller-provided decoder
     /// context so allocations can be reused across repeated decodes.
     pub fn decode_native_with_context(
         &self,
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<RawBitmap> {
+        let bit_depth = self.uniform_header_bit_depth()?;
         self.decode_with_output_region(decoder_context, None)?;
 
         let components = &decoder_context.tile_decode_context.channel_data;
-        let bit_depth = self.original_bit_depth();
         let num_components =
-            u8::try_from(components.len()).map_err(|_| ValidationError::TooManyChannels)?;
+            u16::try_from(components.len()).map_err(|_| ValidationError::TooManyChannels)?;
         let width = self.width();
         let height = self.height();
         let pixel_count = checked_decode_sample_count(width, height)?;
+        let component_signed = Self::component_signedness(components);
+        let signed = component_signed.iter().all(|signed| *signed);
 
-        if bit_depth <= 8 {
-            let max_val = ((1u32 << bit_depth) - 1) as f32;
-            let capacity = checked_decode_byte_len2(pixel_count, num_components as usize)?;
+        let bytes_per_sample = native_bytes_per_sample(bit_depth)?;
+        if bytes_per_sample == 1 {
+            let capacity = checked_decode_byte_len2(pixel_count, usize::from(num_components))?;
             let mut data = Vec::with_capacity(capacity);
             for i in 0..pixel_count {
                 for component in components.iter() {
-                    let v = math::round_f32(component.container.truncated()[i]);
-                    let clamped = if v < 0.0 {
-                        0.0
-                    } else if v > max_val {
-                        max_val
-                    } else {
-                        v
-                    };
-                    data.push(clamped as u8);
+                    Self::push_component_native_sample_bytes(&mut data, component, i, bit_depth);
                 }
             }
             Ok(RawBitmap {
@@ -2138,25 +2242,21 @@ impl<'a> Image<'a> {
                 width,
                 height,
                 bit_depth,
+                signed,
+                component_signed,
                 num_components,
                 bytes_per_sample: 1,
             })
         } else {
-            let max_val = ((1u32 << bit_depth) - 1) as f32;
-            let capacity = checked_decode_byte_len3(pixel_count, num_components as usize, 2)?;
+            let capacity = checked_decode_byte_len3(
+                pixel_count,
+                usize::from(num_components),
+                bytes_per_sample,
+            )?;
             let mut data = Vec::with_capacity(capacity);
             for i in 0..pixel_count {
                 for component in components.iter() {
-                    let v = math::round_f32(component.container.truncated()[i]);
-                    let clamped = if v < 0.0 {
-                        0.0
-                    } else if v > max_val {
-                        max_val
-                    } else {
-                        v
-                    };
-                    let val = clamped as u16;
-                    data.extend_from_slice(&val.to_le_bytes());
+                    Self::push_component_native_sample_bytes(&mut data, component, i, bit_depth);
                 }
             }
             Ok(RawBitmap {
@@ -2164,8 +2264,11 @@ impl<'a> Image<'a> {
                 width,
                 height,
                 bit_depth,
+                signed,
+                component_signed,
                 num_components,
-                bytes_per_sample: 2,
+                bytes_per_sample: u8::try_from(bytes_per_sample)
+                    .map_err(|_| ValidationError::ImageTooLarge)?,
             })
         }
     }
@@ -2178,40 +2281,32 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<RawBitmap> {
         validate_roi((self.width(), self.height()), roi)?;
+        if self.requires_exact_integer_decode() {
+            return self.decode_native_region_via_full_decode(roi, decoder_context);
+        }
+        let bit_depth = self.uniform_header_bit_depth()?;
         self.decode_with_output_region(decoder_context, Some(roi))?;
 
         let components = &decoder_context.tile_decode_context.channel_data;
-        let bit_depth = self.original_bit_depth();
         let num_components =
-            u8::try_from(components.len()).map_err(|_| ValidationError::TooManyChannels)?;
-        let bytes_per_sample = if bit_depth <= 8 { 1 } else { 2 };
+            u16::try_from(components.len()).map_err(|_| ValidationError::TooManyChannels)?;
+        let bytes_per_sample = native_bytes_per_sample(bit_depth)?;
         let (_x, _y, width, height) = roi;
         let capacity = checked_decode_byte_len4(
             width as usize,
             height as usize,
-            num_components as usize,
+            usize::from(num_components),
             bytes_per_sample,
         )?;
         let mut data = Vec::with_capacity(capacity);
-        let max_val = ((1u32 << bit_depth) - 1) as f32;
+        let component_signed = Self::component_signedness(components);
+        let signed = component_signed.iter().all(|signed| *signed);
 
         for row in 0..height as usize {
             for col in 0..width as usize {
                 let idx = row * width as usize + col;
                 for component in components {
-                    let v = math::round_f32(component.container.truncated()[idx]);
-                    let clamped = if v < 0.0 {
-                        0.0
-                    } else if v > max_val {
-                        max_val
-                    } else {
-                        v
-                    };
-                    if bit_depth <= 8 {
-                        data.push(clamped as u8);
-                    } else {
-                        data.extend_from_slice(&(clamped as u16).to_le_bytes());
-                    }
+                    Self::push_component_native_sample_bytes(&mut data, component, idx, bit_depth);
                 }
             }
         }
@@ -2221,9 +2316,328 @@ impl<'a> Image<'a> {
             width,
             height,
             bit_depth,
+            signed,
+            component_signed,
             num_components,
-            bytes_per_sample: bytes_per_sample as u8,
+            bytes_per_sample: u8::try_from(bytes_per_sample)
+                .map_err(|_| ValidationError::ImageTooLarge)?,
         })
+    }
+
+    fn component_signedness(components: &[ComponentData]) -> Vec<bool> {
+        components
+            .iter()
+            .map(|component| component.signed)
+            .collect()
+    }
+
+    fn component_plane_sampling(&self, plane_count: usize) -> Vec<(u8, u8)> {
+        if self.settings.resolve_palette_indices && self.boxes.palette.is_some() {
+            return vec![(1, 1); plane_count];
+        }
+
+        let mut sampling = self
+            .header
+            .component_infos
+            .iter()
+            .take(plane_count)
+            .map(|component| {
+                (
+                    component.size_info.horizontal_resolution,
+                    component.size_info.vertical_resolution,
+                )
+            })
+            .collect::<Vec<_>>();
+        sampling.resize(plane_count, (1, 1));
+        sampling
+    }
+
+    fn uniform_header_bit_depth(&self) -> Result<u8> {
+        let Some(first) = self.header.component_infos.first() else {
+            bail!(DecodingError::CodeBlockDecodeFailure);
+        };
+        if self
+            .header
+            .component_infos
+            .iter()
+            .any(|component| component.size_info.precision != first.size_info.precision)
+        {
+            bail!(DecodingError::UnsupportedFeature(
+                "decode_native requires uniform component bit depths; use decode_components for mixed-depth images"
+            ));
+        }
+        if first.size_info.precision > 38 {
+            bail!(DecodingError::UnsupportedFeature(
+                "decode_native supports JPEG 2000 Part 1 component precision up to 38 bits"
+            ));
+        }
+        Ok(first.size_info.precision)
+    }
+
+    fn validate_component_plane_precision(&self) -> Result<()> {
+        if self
+            .header
+            .component_infos
+            .iter()
+            .any(|component| component.size_info.precision > 24)
+        {
+            bail!(DecodingError::UnsupportedFeature(
+                "decode_components currently supports component planes up to 24 bits per component"
+            ));
+        }
+        Ok(())
+    }
+
+    fn pack_native_component_planes(
+        &self,
+        components: &[ComponentData],
+        dimensions: (u32, u32),
+    ) -> Result<DecodedNativeComponents> {
+        let sampling = self.component_plane_sampling(components.len());
+        let mut planes = Vec::with_capacity(components.len());
+        for (component, sampling) in components.iter().zip(sampling) {
+            let bytes_per_sample = native_bytes_per_sample(component.bit_depth)?;
+            let sample_count = component
+                .integer_container
+                .as_ref()
+                .map_or(component.container.truncated().len(), Vec::len);
+            let plane_dimensions =
+                native_component_plane_dimensions(dimensions, sampling, sample_count)?;
+            let capacity = checked_decode_byte_len2(sample_count, bytes_per_sample)?;
+            let mut data = Vec::with_capacity(capacity);
+            for idx in 0..sample_count {
+                Self::push_component_native_sample_bytes(
+                    &mut data,
+                    component,
+                    idx,
+                    component.bit_depth,
+                );
+            }
+            planes.push(NativeComponentPlane {
+                data,
+                dimensions: plane_dimensions,
+                bit_depth: component.bit_depth,
+                signed: component.signed,
+                sampling,
+                bytes_per_sample: u8::try_from(bytes_per_sample)
+                    .map_err(|_| ValidationError::ImageTooLarge)?,
+            });
+        }
+
+        Ok(DecodedNativeComponents {
+            dimensions,
+            color_space: self.color_space.clone(),
+            has_alpha: self.has_alpha,
+            planes,
+        })
+    }
+
+    fn requires_exact_integer_decode(&self) -> bool {
+        self.header
+            .component_infos
+            .iter()
+            .any(|component| component.requires_exact_integer_decode())
+    }
+
+    fn decode_native_region_via_full_decode(
+        &self,
+        roi: (u32, u32, u32, u32),
+        decoder_context: &mut DecoderContext<'a>,
+    ) -> Result<RawBitmap> {
+        let full = self.decode_native_with_context(decoder_context)?;
+        let (x, y, width, height) = roi;
+        let bytes_per_pixel = usize::from(full.num_components)
+            .checked_mul(usize::from(full.bytes_per_sample))
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let row_bytes = (width as usize)
+            .checked_mul(bytes_per_pixel)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let capacity = checked_decode_byte_len3(height as usize, width as usize, bytes_per_pixel)?;
+        let mut data = Vec::with_capacity(capacity);
+        let full_width = full.width as usize;
+        for row in y as usize..(y + height) as usize {
+            let start = row
+                .checked_mul(full_width)
+                .and_then(|offset| offset.checked_add(x as usize))
+                .and_then(|sample| sample.checked_mul(bytes_per_pixel))
+                .ok_or(ValidationError::ImageTooLarge)?;
+            data.extend_from_slice(&full.data[start..start + row_bytes]);
+        }
+
+        Ok(RawBitmap {
+            data,
+            width,
+            height,
+            bit_depth: full.bit_depth,
+            signed: full.signed,
+            component_signed: full.component_signed,
+            num_components: full.num_components,
+            bytes_per_sample: full.bytes_per_sample,
+        })
+    }
+
+    fn decode_native_region_components_via_full_decode(
+        &self,
+        roi: (u32, u32, u32, u32),
+        decoder_context: &mut DecoderContext<'a>,
+    ) -> Result<DecodedNativeComponents> {
+        let full = self.decode_native_components_with_context(decoder_context)?;
+        let (x, y, width, height) = roi;
+        let mut planes = Vec::with_capacity(full.planes.len());
+        for plane in &full.planes {
+            let bytes_per_sample = usize::from(plane.bytes_per_sample);
+            let (crop_x, crop_y, crop_width, crop_height) = if plane.dimensions == full.dimensions {
+                (x, y, width, height)
+            } else {
+                let x1 = x.checked_add(width).ok_or(ValidationError::ImageTooLarge)?;
+                let y1 = y
+                    .checked_add(height)
+                    .ok_or(ValidationError::ImageTooLarge)?;
+                let (x_rsiz, y_rsiz) = plane.sampling;
+                let crop_x = x / u32::from(x_rsiz);
+                let crop_y = y / u32::from(y_rsiz);
+                let crop_x1 = x1.div_ceil(u32::from(x_rsiz)).min(plane.dimensions.0);
+                let crop_y1 = y1.div_ceil(u32::from(y_rsiz)).min(plane.dimensions.1);
+                (
+                    crop_x,
+                    crop_y,
+                    crop_x1.saturating_sub(crop_x),
+                    crop_y1.saturating_sub(crop_y),
+                )
+            };
+            let row_bytes = (crop_width as usize)
+                .checked_mul(bytes_per_sample)
+                .ok_or(ValidationError::ImageTooLarge)?;
+            let capacity = checked_decode_byte_len3(
+                crop_height as usize,
+                crop_width as usize,
+                bytes_per_sample,
+            )?;
+            let mut data = Vec::with_capacity(capacity);
+            let full_width = plane.dimensions.0 as usize;
+            for row in crop_y as usize..(crop_y + crop_height) as usize {
+                let start = row
+                    .checked_mul(full_width)
+                    .and_then(|offset| offset.checked_add(crop_x as usize))
+                    .and_then(|sample| sample.checked_mul(bytes_per_sample))
+                    .ok_or(ValidationError::ImageTooLarge)?;
+                data.extend_from_slice(&plane.data[start..start + row_bytes]);
+            }
+            planes.push(NativeComponentPlane {
+                data,
+                dimensions: (crop_width, crop_height),
+                bit_depth: plane.bit_depth,
+                signed: plane.signed,
+                sampling: plane.sampling,
+                bytes_per_sample: plane.bytes_per_sample,
+            });
+        }
+
+        Ok(DecodedNativeComponents {
+            dimensions: (width, height),
+            color_space: full.color_space,
+            has_alpha: full.has_alpha,
+            planes,
+        })
+    }
+
+    fn push_component_native_sample_bytes(
+        out: &mut Vec<u8>,
+        component: &ComponentData,
+        index: usize,
+        bit_depth: u8,
+    ) {
+        if let Some(samples) = component.integer_container.as_ref() {
+            Self::push_native_i64_sample_bytes(out, samples[index], bit_depth, component.signed);
+        } else {
+            Self::push_native_sample_bytes(
+                out,
+                component.container.truncated()[index],
+                bit_depth,
+                component.signed,
+            );
+        }
+    }
+
+    fn push_native_i64_sample_bytes(out: &mut Vec<u8>, sample: i64, bit_depth: u8, signed: bool) {
+        if signed {
+            let magnitude_bits = u32::from(bit_depth.saturating_sub(1));
+            let min = -(1_i64 << magnitude_bits);
+            let max = (1_i64 << magnitude_bits) - 1;
+            let clamped = sample.clamp(min, max);
+            if bit_depth <= 8 {
+                out.push((clamped as i8) as u8);
+            } else if bit_depth <= 16 {
+                out.extend_from_slice(&(clamped as i16).to_le_bytes());
+            } else {
+                let bytes = clamped.to_le_bytes();
+                let byte_count = native_bytes_per_sample(bit_depth).unwrap_or(8);
+                out.extend_from_slice(&bytes[..byte_count]);
+            }
+        } else {
+            let max = (1u64 << u32::from(bit_depth)) - 1;
+            let clamped = if sample <= 0 {
+                0
+            } else {
+                (sample as u64).min(max)
+            };
+            if bit_depth <= 8 {
+                out.push(clamped as u8);
+            } else if bit_depth <= 16 {
+                out.extend_from_slice(&(clamped as u16).to_le_bytes());
+            } else {
+                let bytes = clamped.to_le_bytes();
+                let byte_count = native_bytes_per_sample(bit_depth).unwrap_or(8);
+                out.extend_from_slice(&bytes[..byte_count]);
+            }
+        }
+    }
+
+    fn push_native_sample_bytes(out: &mut Vec<u8>, sample: f32, bit_depth: u8, signed: bool) {
+        let rounded = math::round_f32(sample);
+        if signed {
+            let magnitude_bits = u32::from(bit_depth.saturating_sub(1));
+            let min = -(1_i64 << magnitude_bits);
+            let max = (1_i64 << magnitude_bits) - 1;
+            let rounded = f64::from(rounded);
+            let clamped = if rounded.is_nan() {
+                0
+            } else if rounded <= min as f64 {
+                min
+            } else if rounded >= max as f64 {
+                max
+            } else {
+                rounded as i64
+            };
+            if bit_depth <= 8 {
+                out.push((clamped as i8) as u8);
+            } else if bit_depth <= 16 {
+                out.extend_from_slice(&(clamped as i16).to_le_bytes());
+            } else {
+                let bytes = clamped.to_le_bytes();
+                let byte_count = native_bytes_per_sample(bit_depth).unwrap_or(8);
+                out.extend_from_slice(&bytes[..byte_count]);
+            }
+        } else {
+            let max = (1u64 << u32::from(bit_depth)) - 1;
+            let rounded = f64::from(rounded);
+            let clamped = if rounded.is_nan() || rounded <= 0.0 {
+                0
+            } else if rounded >= max as f64 {
+                max
+            } else {
+                rounded as u64
+            };
+            if bit_depth <= 8 {
+                out.push(clamped as u8);
+            } else if bit_depth <= 16 {
+                out.extend_from_slice(&(clamped as u16).to_le_bytes());
+            } else {
+                let bytes = clamped.to_le_bytes();
+                let byte_count = native_bytes_per_sample(bit_depth).unwrap_or(8);
+                out.extend_from_slice(&bytes[..byte_count]);
+            }
+        }
     }
 
     /// Decode the image into the given buffer.
@@ -2305,6 +2719,7 @@ impl<'a> Image<'a> {
                         .map(|c| match c._association {
                             ChannelAssociation::WholeImage => u16::MAX,
                             ChannelAssociation::Colour(c) => c,
+                            ChannelAssociation::Unspecified => u16::MAX,
                         }),
                 )
                 .collect::<Vec<_>>();
@@ -2385,8 +2800,12 @@ pub(crate) fn resolve_alpha_and_color_space(
     let mut has_alpha = false;
 
     if let Some(cdef) = &boxes.channel_definition {
-        let last = cdef.channel_definitions.last().unwrap();
-        has_alpha = last.channel_type == ChannelType::Opacity;
+        has_alpha = cdef.channel_definitions.iter().any(|definition| {
+            matches!(
+                definition.channel_type,
+                ChannelType::Opacity | ChannelType::PremultipliedOpacity
+            )
+        });
     }
 
     let mut color_space = get_color_space(boxes, num_components)?;
@@ -2401,11 +2820,10 @@ pub(crate) fn resolve_alpha_and_color_space(
 
     // Validate the number of channels.
     if boxes.palette.is_none()
-        && actual_num_components
-            != (color_space.num_channels() + if has_alpha { 1 } else { 0 }) as usize
+        && actual_num_components != usize::from(color_space.num_channels() + u16::from(has_alpha))
     {
         if !settings.strict
-            && actual_num_components == color_space.num_channels() as usize + 1
+            && actual_num_components == usize::from(color_space.num_channels()) + 1
             && !has_alpha
         {
             // See OPENJPEG test case orb-blue10-lin-j2k. Assume that we have an
@@ -2424,7 +2842,10 @@ pub(crate) fn resolve_alpha_and_color_space(
                     color_space = ColorSpace::CMYK;
                 }
             } else {
-                bail!(ValidationError::TooManyChannels);
+                color_space = ColorSpace::Unknown {
+                    num_channels: u16::try_from(actual_num_components)
+                        .map_err(|_| ValidationError::TooManyChannels)?,
+                };
             }
         }
     }
@@ -2444,20 +2865,20 @@ pub enum ColorSpace {
     /// An unknown color space.
     Unknown {
         /// The number of channels of the color space.
-        num_channels: u8,
+        num_channels: u16,
     },
     /// An image based on an ICC profile.
     Icc {
         /// The raw data of the ICC profile.
         profile: Vec<u8>,
         /// The number of channels used by the ICC profile.
-        num_channels: u8,
+        num_channels: u16,
     },
 }
 
 impl ColorSpace {
     /// Return the number of expected channels for the color space.
-    pub fn num_channels(&self) -> u8 {
+    pub fn num_channels(&self) -> u16 {
         match self {
             Self::Gray => 1,
             Self::RGB => 3,
@@ -2512,16 +2933,99 @@ pub struct RawBitmap {
     pub height: u32,
     /// The original bit depth per sample (e.g., 8, 12, 16).
     pub bit_depth: u8,
+    /// Whether every component in this packed bitmap is signed.
+    ///
+    /// Use [`Self::component_signed`] for per-component signedness when
+    /// handling arbitrary JPEG 2000 component metadata.
+    pub signed: bool,
+    /// Per-component signedness in codestream/component order.
+    pub component_signed: Vec<bool>,
     /// The number of components (e.g., 1 for grayscale, 3 for RGB).
-    pub num_components: u8,
-    /// Bytes per sample: 1 for bit_depth ≤ 8, 2 for bit_depth > 8.
+    pub num_components: u16,
+    /// Bytes per sample in the packed little-endian native representation.
     pub bytes_per_sample: u8,
+}
+
+/// One owned decoded component plane at native bit depth.
+pub struct NativeComponentPlane {
+    data: Vec<u8>,
+    dimensions: (u32, u32),
+    bit_depth: u8,
+    signed: bool,
+    sampling: (u8, u8),
+    bytes_per_sample: u8,
+}
+
+impl NativeComponentPlane {
+    /// Packed little-endian sample bytes for this component in row-major order.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Width and height of this decoded plane in output samples.
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`) for
+    /// the source component represented by this plane.
+    pub fn sampling(&self) -> (u8, u8) {
+        self.sampling
+    }
+
+    /// Bit depth of this component plane.
+    pub fn bit_depth(&self) -> u8 {
+        self.bit_depth
+    }
+
+    /// Whether this component plane stores signed sample values.
+    pub fn signed(&self) -> bool {
+        self.signed
+    }
+
+    /// Bytes used for each packed little-endian sample in [`Self::data`].
+    pub fn bytes_per_sample(&self) -> u8 {
+        self.bytes_per_sample
+    }
+}
+
+/// Owned decoded native-bit-depth component planes for an image.
+pub struct DecodedNativeComponents {
+    dimensions: (u32, u32),
+    color_space: ColorSpace,
+    has_alpha: bool,
+    planes: Vec<NativeComponentPlane>,
+}
+
+impl DecodedNativeComponents {
+    /// Dimensions of the decoded image represented by these planes.
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Color space after JPEG 2000 color conversion has been applied.
+    pub fn color_space(&self) -> &ColorSpace {
+        &self.color_space
+    }
+
+    /// Whether the decoded image has an alpha channel.
+    pub fn has_alpha(&self) -> bool {
+        self.has_alpha
+    }
+
+    /// Decoded component planes in display order.
+    pub fn planes(&self) -> &[NativeComponentPlane] {
+        &self.planes
+    }
 }
 
 /// A borrowed decoded component plane.
 pub struct ComponentPlane<'a> {
     samples: &'a [f32],
+    dimensions: (u32, u32),
     bit_depth: u8,
+    signed: bool,
+    sampling: (u8, u8),
 }
 
 impl<'a> ComponentPlane<'a> {
@@ -2530,9 +3034,25 @@ impl<'a> ComponentPlane<'a> {
         self.samples
     }
 
+    /// Width and height of this plane in decoded output samples.
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`) for
+    /// the source component represented by this plane.
+    pub fn sampling(&self) -> (u8, u8) {
+        self.sampling
+    }
+
     /// Bit depth of this component plane.
     pub fn bit_depth(&self) -> u8 {
         self.bit_depth
+    }
+
+    /// Whether this component plane stores signed sample values.
+    pub fn signed(&self) -> bool {
+        self.signed
     }
 }
 
@@ -2673,7 +3193,8 @@ fn interleave_and_convert(image: &mut DecodedImage<'_>, buf: &mut [u8]) -> Resul
         for sample in 0..max_len {
             for channel in components.iter() {
                 *output_iter.next().unwrap() = math::round_f32(
-                    (channel.container[sample] / ((1_u32 << channel.bit_depth) - 1) as f32)
+                    (channel.container[sample]
+                        / ((1_u64 << u32::from(channel.bit_depth)) - 1) as f32)
                         * mul_factor,
                 ) as u8;
             }
@@ -2719,7 +3240,8 @@ fn interleave_and_convert_region(
                 let idx = row_base + col;
                 for component in components.iter() {
                     *output_iter.next().unwrap() = math::round_f32(
-                        (component.container[idx] / ((1_u32 << component.bit_depth) - 1) as f32)
+                        (component.container[idx]
+                            / ((1_u64 << u32::from(component.bit_depth)) - 1) as f32)
                             * mul_factor,
                     ) as u8;
                 }
@@ -2741,6 +3263,34 @@ fn validate_roi(dims: (u32, u32), roi: (u32, u32, u32, u32)) -> Result<()> {
         return Err(ValidationError::InvalidDimensions.into());
     }
     Ok(())
+}
+
+fn native_component_plane_dimensions(
+    reference_dimensions: (u32, u32),
+    sampling: (u8, u8),
+    sample_count: usize,
+) -> Result<(u32, u32)> {
+    let reference_sample_count =
+        checked_decode_sample_count(reference_dimensions.0, reference_dimensions.1)?;
+    if sample_count == reference_sample_count {
+        return Ok(reference_dimensions);
+    }
+
+    let (x_rsiz, y_rsiz) = sampling;
+    if x_rsiz == 0 || y_rsiz == 0 {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    let sampled_dimensions = (
+        reference_dimensions.0.div_ceil(u32::from(x_rsiz)),
+        reference_dimensions.1.div_ceil(u32::from(y_rsiz)),
+    );
+    let sampled_sample_count =
+        checked_decode_sample_count(sampled_dimensions.0, sampled_dimensions.1)?;
+    if sample_count == sampled_sample_count {
+        return Ok(sampled_dimensions);
+    }
+
+    bail!(DecodingError::CodeBlockDecodeFailure)
 }
 
 fn convert_color_space(image: &mut DecodedImage<'_>, bit_depth: u8) -> Result<()> {
@@ -2800,7 +3350,7 @@ fn get_color_space(boxes: &ImageBoxes, num_components: usize) -> Result<ColorSpa
             if let Some(metadata) = ICCMetadata::from_data(icc) {
                 ColorSpace::Icc {
                     profile: icc.clone(),
-                    num_channels: metadata.color_space.num_components(),
+                    num_channels: u16::from(metadata.color_space.num_components()),
                 }
             } else {
                 // See OPENJPEG test orb-blue10-lin-jp2.jp2. They seem to
@@ -2815,7 +3365,7 @@ fn get_color_space(boxes: &ImageBoxes, num_components: usize) -> Result<ColorSpa
             3 => ColorSpace::RGB,
             4 => ColorSpace::CMYK,
             _ => ColorSpace::Unknown {
-                num_channels: num_components as u8,
+                num_channels: u16::try_from(num_components).unwrap_or(u16::MAX),
             },
         },
     };
@@ -2861,21 +3411,42 @@ fn resolve_palette_indices(
 
                 for &sample in component.container.truncated() {
                     let index = math::round_f32(sample) as i64;
-                    let value = palette
+                    let raw = palette
                         .map(index as usize, column_idx)
                         .ok_or(ColorError::PaletteResolutionFailed)?;
-                    mapped.push(value as f32);
+                    let value = if column_info.signed {
+                        sign_extend_palette_value(raw, column_info.bit_depth) as f32
+                    } else {
+                        raw as f32
+                    };
+                    mapped.push(value);
                 }
 
                 resolved.push(ComponentData {
                     container: math::SimdBuffer::new(mapped),
+                    integer_container: None,
                     bit_depth: column_info.bit_depth,
+                    signed: column_info.signed,
                 });
             }
         }
     }
 
     Ok(resolved)
+}
+
+fn sign_extend_palette_value(raw: u64, bit_depth: u8) -> i64 {
+    if bit_depth == 0 {
+        return raw as i64;
+    }
+    if bit_depth >= 64 {
+        return raw as i64;
+    }
+
+    let mask = (1_u64 << bit_depth) - 1;
+    let value = raw & mask;
+    let shift = 64 - u32::from(bit_depth);
+    ((value << shift) as i64) >> shift
 }
 
 #[inline(always)]
@@ -2906,27 +3477,28 @@ fn cielab_to_rgb<S: Simd>(
     let ra = lab.ra.unwrap_or(170);
     let rb = lab.ra.unwrap_or(200);
     let ol = lab.ol.unwrap_or(0);
-    let oa = lab.oa.unwrap_or(1 << (bit_depth - 1));
-    let ob = lab
-        .ob
-        .unwrap_or((1 << (bit_depth - 2)) + (1 << (bit_depth - 3)));
+    let default_oa = (1_u64 << u32::from(bit_depth - 1)).min(u64::from(u32::MAX)) as u32;
+    let default_ob = ((1_u64 << u32::from(bit_depth - 2)) + (1_u64 << u32::from(bit_depth - 3)))
+        .min(u64::from(u32::MAX)) as u32;
+    let oa = lab.oa.unwrap_or(default_oa);
+    let ob = lab.ob.unwrap_or(default_ob);
 
     // Copied from OpenJPEG.
-    let min_l = -(rl as f32 * ol as f32) / ((1 << prec0) - 1) as f32;
+    let min_l = -(rl as f32 * ol as f32) / ((1_u64 << u32::from(prec0)) - 1) as f32;
     let max_l = min_l + rl as f32;
-    let min_a = -(ra as f32 * oa as f32) / ((1 << prec1) - 1) as f32;
+    let min_a = -(ra as f32 * oa as f32) / ((1_u64 << u32::from(prec1)) - 1) as f32;
     let max_a = min_a + ra as f32;
-    let min_b = -(rb as f32 * ob as f32) / ((1 << prec2) - 1) as f32;
+    let min_b = -(rb as f32 * ob as f32) / ((1_u64 << u32::from(prec2)) - 1) as f32;
     let max_b = min_b + rb as f32;
 
-    let bit_max = (1_u32 << bit_depth) - 1;
+    let bit_max = ((1_u64 << u32::from(bit_depth)) - 1).min(u64::from(u32::MAX)) as u32;
 
     // Note that we are not doing the actual conversion with the ICC profile yet,
     // just decoding the raw LAB values.
     // We leave applying the ICC profile to the user.
-    let divisor_l = ((1 << prec0) - 1) as f32;
-    let divisor_a = ((1 << prec1) - 1) as f32;
-    let divisor_b = ((1 << prec2) - 1) as f32;
+    let divisor_l = ((1_u64 << u32::from(prec0)) - 1) as f32;
+    let divisor_a = ((1_u64 << u32::from(prec1)) - 1) as f32;
+    let divisor_b = ((1_u64 << u32::from(prec2)) - 1) as f32;
 
     let scale_l_final = bit_max as f32 / 100.0;
     let scale_ab_final = bit_max as f32 / 255.0;
@@ -2968,8 +3540,8 @@ fn cielab_to_rgb<S: Simd>(
 
 #[inline(always)]
 fn sycc_to_rgb<S: Simd>(simd: S, components: &mut [ComponentData], bit_depth: u8) -> Result<()> {
-    let offset = (1_u32 << (bit_depth as u32 - 1)) as f32;
-    let max_value = ((1_u32 << bit_depth as u32) - 1) as f32;
+    let offset = (1_u64 << (u32::from(bit_depth) - 1)) as f32;
+    let max_value = ((1_u64 << u32::from(bit_depth)) - 1) as f32;
 
     let (head, _) = components
         .split_at_mut_checked(3)
@@ -3049,6 +3621,23 @@ mod tests {
         assert_eq!(apply_roi_maxshift_inverse_i32(256, 7), 2);
         assert_eq!(apply_roi_maxshift_inverse_i32(-256, 7), -2);
         assert_eq!(apply_roi_maxshift_inverse_i32(42, 0), 42);
+        assert_eq!(apply_roi_maxshift_inverse_i64(1_i64 << 38, 7), 1_i64 << 31);
+        assert_eq!(
+            apply_roi_maxshift_inverse_i64(-(1_i64 << 38), 7),
+            -(1_i64 << 31)
+        );
+    }
+
+    #[test]
+    fn classic_decode_adapter_accepts_legal_38_bit_roi_bitplane_count() {
+        assert_eq!(
+            add_roi_shift_to_bitplanes(38, 0, MAX_CLASSIC_DECODE_BITPLANES).unwrap(),
+            38
+        );
+        assert_eq!(
+            add_roi_shift_to_bitplanes(37, 1, MAX_CLASSIC_DECODE_BITPLANES).unwrap(),
+            38
+        );
     }
 
     #[test]
@@ -3589,6 +4178,44 @@ mod tests {
         encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode classic gray8")
     }
 
+    #[test]
+    fn native_bytes_per_sample_tracks_high_bit_depths() {
+        for (bit_depth, expected) in [
+            (1_u8, 1_usize),
+            (8, 1),
+            (9, 2),
+            (16, 2),
+            (17, 3),
+            (24, 3),
+            (32, 4),
+            (38, 5),
+        ] {
+            assert_eq!(native_bytes_per_sample(bit_depth).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn native_sample_packing_writes_high_bit_unsigned_little_endian_bytes() {
+        let mut out = Vec::new();
+        Image::push_native_sample_bytes(&mut out, 0x12_34_56 as f32, 24, false);
+        assert_eq!(out, [0x56, 0x34, 0x12]);
+
+        out.clear();
+        Image::push_native_sample_bytes(&mut out, f32::MAX, 24, false);
+        assert_eq!(out, [0xff, 0xff, 0xff]);
+    }
+
+    #[test]
+    fn native_sample_packing_writes_high_bit_signed_little_endian_bytes() {
+        let mut out = Vec::new();
+        Image::push_native_sample_bytes(&mut out, -1.0, 38, true);
+        assert_eq!(out, [0xff, 0xff, 0xff, 0xff, 0xff]);
+
+        out.clear();
+        Image::push_native_sample_bytes(&mut out, -((1_i64 << 37) as f32), 38, true);
+        assert_eq!(out, [0x00, 0x00, 0x00, 0x00, 0xe0]);
+    }
+
     fn rewrite_siz_to_single_large_tile(codestream: &mut [u8], dimensions: u32) {
         let siz = codestream
             .windows(2)
@@ -3655,27 +4282,29 @@ mod tests {
     }
 
     #[test]
-    fn native_decode_rejects_component_count_above_u8_before_bitmap_truncation() {
+    fn native_parse_accepts_spec_component_count_above_u8() {
         let mut bytes = fixture_gray();
-        rewrite_siz_component_count(&mut bytes, MAX_NATIVE_DECODE_COMPONENTS + 1);
+        rewrite_siz_component_count(&mut bytes, MAX_J2K_SPEC_COMPONENTS + 1);
 
         let err = match Image::new(&bytes, &DecodeSettings::default()) {
             Err(err) => err,
-            Ok(_) => {
-                panic!("native decode must reject component counts that cannot fit RawBitmap")
-            }
+            Ok(_) => panic!("component count above the JPEG 2000 spec cap must still reject"),
         };
-
         assert_eq!(
             err,
             DecodeError::Validation(ValidationError::TooManyChannels)
         );
+
+        let mut bytes = fixture_gray();
+        rewrite_siz_component_count(&mut bytes, 256);
+        Image::new(&bytes, &DecodeSettings::default())
+            .expect("component count above u8 should parse within the JPEG 2000 spec cap");
     }
 
     #[test]
     fn tile_parse_rejects_component_tile_structural_bomb_before_allocation() {
         let mut bytes = fixture_gray();
-        rewrite_siz_component_count(&mut bytes, MAX_NATIVE_DECODE_COMPONENTS);
+        rewrite_siz_component_count(&mut bytes, MAX_J2K_SPEC_COMPONENTS);
         rewrite_siz_tile_grid(&mut bytes, (256, 256), (1, 1));
         let parsed = j2c::parse_raw(&bytes, &DecodeSettings::default()).expect("raw header parses");
         let mut context = j2c::DecoderContext::default();
@@ -3805,11 +4434,27 @@ mod tests {
             ..EncodeOptions::default()
         };
         if classic {
-            encode(&pixels, width, height, components, 8, false, &options)
-                .expect("encode ROI classic fixture")
+            encode(
+                &pixels,
+                width,
+                height,
+                components.into(),
+                8,
+                false,
+                &options,
+            )
+            .expect("encode ROI classic fixture")
         } else {
-            encode_htj2k(&pixels, width, height, components, 8, false, &options)
-                .expect("encode ROI HT fixture")
+            encode_htj2k(
+                &pixels,
+                width,
+                height,
+                components.into(),
+                8,
+                false,
+                &options,
+            )
+            .expect("encode ROI HT fixture")
         }
     }
 

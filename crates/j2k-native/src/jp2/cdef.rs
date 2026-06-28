@@ -60,6 +60,8 @@ pub(crate) struct ChannelDefinition {
 pub(crate) enum ChannelType {
     Colour,
     Opacity,
+    PremultipliedOpacity,
+    Unspecified,
 }
 
 impl ChannelType {
@@ -67,7 +69,8 @@ impl ChannelType {
         match value {
             0 => Some(Self::Colour),
             1 => Some(Self::Opacity),
-            // We don't support the others.
+            2 => Some(Self::PremultipliedOpacity),
+            u16::MAX => Some(Self::Unspecified),
             _ => None,
         }
     }
@@ -77,14 +80,14 @@ impl ChannelType {
 pub(crate) enum ChannelAssociation {
     WholeImage,
     Colour(u16),
+    Unspecified,
 }
 
 impl ChannelAssociation {
     fn from_raw(value: u16) -> Option<Self> {
         match value {
             0 => Some(Self::WholeImage),
-            // Unspecified.
-            u16::MAX => None,
+            u16::MAX => Some(Self::Unspecified),
             v => Some(Self::Colour(v)),
         }
     }

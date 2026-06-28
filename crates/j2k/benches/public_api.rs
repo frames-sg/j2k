@@ -3,12 +3,13 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use j2k::{
     decode_tiles_region_scaled_into, encode_j2k_lossless, recode_j2k_to_htj2k_lossless,
-    CpuDecodeParallelism, DecoderContext, Downscale, EncodeBackendPreference, ImageDecodeRows,
-    J2kBlockCodingMode, J2kCodec, J2kContext, J2kDecoder, J2kEncodeValidation,
-    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kScratchPool, J2kToHtj2kOptions, PixelFormat,
-    Rect, RowSink, TileBatchDecode, TileBatchOptions, TileRegionScaledDecodeJob,
+    wrap_j2k_codestream, CpuDecodeParallelism, DecoderContext, Downscale, EncodeBackendPreference,
+    ImageDecodeRows, J2kBlockCodingMode, J2kCodec, J2kContext, J2kDecoder, J2kEncodeValidation,
+    J2kFileWrapOptions, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kScratchPool,
+    J2kToHtj2kOptions, PixelFormat, Rect, RowSink, TileBatchDecode, TileBatchOptions,
+    TileRegionScaledDecodeJob,
 };
-use j2k_test_support::{patterned_gray8, patterned_rgb8, wrap_codestream_jp2};
+use j2k_test_support::{patterned_gray8, patterned_rgb8};
 
 const TILE_SIDE: u32 = 128;
 const ROI_SIDE: u32 = 64;
@@ -569,10 +570,12 @@ fn bench_tile_batch(c: &mut Criterion) {
 fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
     let repeated_classic = encode_rgb8_codestream(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE);
     let repeated_htj2k = encode_ht_rgb8_codestream(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE);
-    let repeated_htj2k_jp2 =
-        wrap_codestream_jp2(&repeated_htj2k, CPU_MATRIX_SIDE, CPU_MATRIX_SIDE, 3, 8, 16);
+    let repeated_htj2k_jph =
+        wrap_j2k_codestream(&repeated_htj2k, J2kFileWrapOptions::jph()).expect("wrap HTJ2K JPH");
     let repeated_htj2k_256 = encode_ht_rgb8_codestream(256, 256);
-    let repeated_htj2k_256_jp2 = wrap_codestream_jp2(&repeated_htj2k_256, 256, 256, 3, 8, 16);
+    let repeated_htj2k_256_jph =
+        wrap_j2k_codestream(&repeated_htj2k_256, J2kFileWrapOptions::jph())
+            .expect("wrap 256 HTJ2K JPH");
     let mut distinct_classic = Vec::with_capacity(BATCH_SIZE);
     let mut distinct_htj2k = Vec::with_capacity(BATCH_SIZE);
     for idx in 0..BATCH_SIZE {
@@ -683,13 +686,13 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
             std::hint::black_box((outputs, outcomes));
         });
     });
-    group.bench_function("htj2k_jp2_rgb8_repeated_512_roi256_batch16", |b| {
+    group.bench_function("htj2k_jph_rgb8_repeated_512_roi256_batch16", |b| {
         b.iter(|| {
             let mut outputs = vec![vec![0_u8; output_len]; BATCH_SIZE];
             let mut jobs = outputs
                 .iter_mut()
                 .map(|out| TileRegionScaledDecodeJob {
-                    input: std::hint::black_box(repeated_htj2k_jp2.as_slice()),
+                    input: std::hint::black_box(repeated_htj2k_jph.as_slice()),
                     out,
                     stride,
                     roi,
@@ -701,17 +704,17 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 PixelFormat::Rgb8,
                 TileBatchOptions::default(),
             )
-            .expect("decode repeated HTJ2K JP2 RGB ROI+scale batch");
+            .expect("decode repeated HTJ2K JPH RGB ROI+scale batch");
             std::hint::black_box((outputs, outcomes));
         });
     });
-    group.bench_function("htj2k_jp2_rgba8_repeated_512_roi256_batch16", |b| {
+    group.bench_function("htj2k_jph_rgba8_repeated_512_roi256_batch16", |b| {
         b.iter(|| {
             let mut outputs = vec![vec![0_u8; rgba_output_len]; BATCH_SIZE];
             let mut jobs = outputs
                 .iter_mut()
                 .map(|out| TileRegionScaledDecodeJob {
-                    input: std::hint::black_box(repeated_htj2k_jp2.as_slice()),
+                    input: std::hint::black_box(repeated_htj2k_jph.as_slice()),
                     out,
                     stride: rgba_stride,
                     roi,
@@ -723,17 +726,17 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 PixelFormat::Rgba8,
                 TileBatchOptions::default(),
             )
-            .expect("decode repeated HTJ2K JP2 RGBA ROI+scale batch");
+            .expect("decode repeated HTJ2K JPH RGBA ROI+scale batch");
             std::hint::black_box((outputs, outcomes));
         });
     });
-    group.bench_function("htj2k_jp2_rgb8_repeated_256_roi128_batch16", |b| {
+    group.bench_function("htj2k_jph_rgb8_repeated_256_roi128_batch16", |b| {
         b.iter(|| {
             let mut outputs = vec![vec![0_u8; output_len_256]; BATCH_SIZE];
             let mut jobs = outputs
                 .iter_mut()
                 .map(|out| TileRegionScaledDecodeJob {
-                    input: std::hint::black_box(repeated_htj2k_256_jp2.as_slice()),
+                    input: std::hint::black_box(repeated_htj2k_256_jph.as_slice()),
                     out,
                     stride: stride_256,
                     roi: roi_256,
@@ -745,7 +748,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 PixelFormat::Rgb8,
                 TileBatchOptions::default(),
             )
-            .expect("decode repeated 256 HTJ2K JP2 RGB ROI+scale batch");
+            .expect("decode repeated 256 HTJ2K JPH RGB ROI+scale batch");
             std::hint::black_box((outputs, outcomes));
         });
     });

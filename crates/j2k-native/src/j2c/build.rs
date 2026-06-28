@@ -29,6 +29,13 @@ fn build_decompositions(tile: &Tile<'_>, storage: &mut DecompositionStorage<'_>)
     } else {
         storage.coefficients.resize(total_coefficients, 0.0);
     }
+    if storage.exact_integer_decode {
+        if storage.coefficients_i64.is_empty() {
+            storage.coefficients_i64 = vec![0; total_coefficients];
+        } else {
+            storage.coefficients_i64.resize(total_coefficients, 0);
+        }
+    }
     let mut coefficient_counter = 0;
 
     for (component_idx, component_tile) in tile.component_tiles().enumerate() {
@@ -104,6 +111,9 @@ fn build_decompositions(tile: &Tile<'_>, storage: &mut DecompositionStorage<'_>)
     }
 
     if coefficient_counter != storage.coefficients.len() {
+        return Err(DecodingError::InvalidPrecinct.into());
+    }
+    if storage.exact_integer_decode && coefficient_counter != storage.coefficients_i64.len() {
         return Err(DecodingError::InvalidPrecinct.into());
     }
 

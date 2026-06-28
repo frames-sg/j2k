@@ -14,6 +14,7 @@ mod adoption_materialize;
 mod adoption_report;
 mod perf_guard;
 mod process;
+mod public_support;
 
 const PUBLISHABLE_PACKAGES: &[&str] = &[
     "j2k-core",
@@ -135,6 +136,7 @@ fn run() -> Result<(), String> {
         "adoption-manifest" => adoption_manifest::adoption_manifest(env::args().skip(2)),
         "adoption-materialize" => adoption_materialize::adoption_materialize(env::args().skip(2)),
         "adoption-report" => adoption_report::adoption_report(env::args().skip(2)),
+        "public-support" => public_support::public_support(env::args().skip(2)),
         "j2k-bench-signoff" => j2k_bench_signoff(),
         "j2k-perf-guard" => perf_guard::j2k_perf_guard(env::args().skip(2)),
         "fuzz-build" => fuzz_build(),
@@ -1643,6 +1645,7 @@ fn print_help() {
            adoption-manifest generate decode and encode fixture manifests for adoption benchmarks\n\
            adoption-materialize stage source images into fixed J2K/HTJ2K fixtures and manifests\n\
            adoption-report render a marketing-safe report from an adoption benchmark bundle\n\
+          public-support verify the public J2K/HTJ2K support matrix and publication gates [--final]\n\
           j2k-bench-signoff run required OpenJPEG/Grok parity and J2K compare bench compile gates\n\
           j2k-perf-guard compare CPU J2K Criterion medians against a baseline git ref\n\
            fuzz-build    compile fuzz harnesses\n\

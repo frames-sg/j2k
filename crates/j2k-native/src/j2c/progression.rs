@@ -17,7 +17,7 @@ use core::iter;
 pub(crate) struct ProgressionData {
     pub(crate) layer_num: u8,
     pub(crate) resolution: u8,
-    pub(crate) component: u8,
+    pub(crate) component: u16,
     pub(crate) precinct: u64,
 }
 
@@ -25,7 +25,7 @@ pub(crate) struct IteratorInput<'a> {
     layers: (u8, u8),
     tile: &'a Tile<'a>,
     resolutions: (u8, u8),
-    components: (u8, u8),
+    components: (u16, u16),
 }
 
 impl<'a> IteratorInput<'a> {
@@ -35,7 +35,7 @@ impl<'a> IteratorInput<'a> {
             // Will be clamped automatically.
             (0, u8::MAX),
             (0, u8::MAX),
-            (0, u8::MAX),
+            (0, u16::MAX),
         )
     }
 
@@ -43,7 +43,7 @@ impl<'a> IteratorInput<'a> {
         tile: &'a Tile<'a>,
         resolutions: (u8, u8),
         layers: (u8, u8),
-        components: (u8, u8),
+        components: (u16, u16),
     ) -> Self {
         Self::try_new_with_custom_bounds(tile, resolutions, layers, components)
             .expect("valid progression iterator bounds")
@@ -53,7 +53,7 @@ impl<'a> IteratorInput<'a> {
         tile: &'a Tile<'a>,
         mut resolutions: (u8, u8),
         mut layers: (u8, u8),
-        mut components: (u8, u8),
+        mut components: (u16, u16),
     ) -> Option<Self> {
         let max_resolution = tile
             .component_infos
@@ -62,7 +62,7 @@ impl<'a> IteratorInput<'a> {
             .max()
             .unwrap_or(0);
         let max_layer = tile.num_layers;
-        let max_component = tile.component_infos.len() as u8;
+        let max_component = tile.component_infos.len() as u16;
 
         // Make sure we don't exceed what's actually possible
         resolutions.1 = resolutions.1.min(max_resolution);
@@ -97,7 +97,7 @@ impl<'a> IteratorInput<'a> {
         self.resolutions.1
     }
 
-    fn max_resolution(&self, component_idx: u8) -> u8 {
+    fn max_resolution(&self, component_idx: u16) -> u8 {
         self.total_max_resolution()
             // It's possible that the different component tiles have different resolution levels
             // (self.resolutions.1 stores the maximum across all component tiles), so
@@ -105,11 +105,11 @@ impl<'a> IteratorInput<'a> {
             .min(self.tile.component_infos[component_idx as usize].num_resolution_levels())
     }
 
-    fn min_comp(&self) -> u8 {
+    fn min_comp(&self) -> u16 {
         self.components.0
     }
 
-    fn max_comp(&self) -> u8 {
+    fn max_comp(&self) -> u16 {
         self.components.1
     }
 
@@ -314,7 +314,7 @@ struct PrecinctStore {
     resolution: u8,
     precinct_y: u32,
     precinct_x: u32,
-    component_idx: u8,
+    component_idx: u16,
     precinct_idx: u64,
 }
 
@@ -340,7 +340,7 @@ fn position_progression_common<'a>(
             elements.extend(resolution_tile.precincts()?.map(|d| PrecinctStore {
                 precinct_y: d.r_y,
                 precinct_x: d.r_x,
-                component_idx: component_idx as u8,
+                component_idx: component_idx as u16,
                 resolution: resolution as u8,
                 precinct_idx: d.idx,
             }));

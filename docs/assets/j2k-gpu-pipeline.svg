@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 492" role="img" aria-labelledby="title desc">
   <title id="title">J2K Rust JPEG 2000 codec pipeline</title>
-  <desc id="desc">JPEG 2000, HTJ2K, and JPEG inputs all enter the Rust j2k crate, which routes work to three parallel backends: a CPU baseline plus optional CUDA and Metal GPU adapters.</desc>
+  <desc id="desc">JPEG 2000 Part 1, HTJ2K Part 15, JP2/JPH, and JPEG inputs all enter the Rust j2k crate, which routes work to three parallel backends: a CPU baseline plus optional CUDA and Metal GPU adapters.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 z" fill="#b7410e"/>
@@ -25,7 +25,7 @@
     <text x="66" y="72" font-size="22" font-weight="700">JPEG 2000</text>
     <text x="66" y="98" font-size="15" fill="#52616b">JP2, J2K, J2C</text>
     <text x="302" y="72" font-size="22" font-weight="700">HTJ2K</text>
-    <text x="302" y="98" font-size="15" fill="#52616b">Part 15 codestreams</text>
+    <text x="302" y="98" font-size="15" fill="#52616b">Part 15, JPH</text>
     <text x="538" y="72" font-size="22" font-weight="700">JPEG input</text>
     <text x="538" y="98" font-size="15" fill="#52616b">Transcode paths</text>
 

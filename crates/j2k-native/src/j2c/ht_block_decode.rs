@@ -1023,11 +1023,21 @@ fn decode_mag_sgn_sample_with_vn(
     magsgn.advance(m_n);
 
     let mut value = ms_val << 31;
-    let mask = if m_n == 0 { 0 } else { (1_u32 << m_n) - 1 };
+    let mask = match m_n {
+        0 => 0,
+        32.. => u32::MAX,
+        bits => (1_u32 << bits) - 1,
+    };
     let mut v_n = ms_val & mask;
-    v_n |= ((inf >> (8 + bit)) & 1) << m_n;
+    if m_n < 32 {
+        v_n |= ((inf >> (8 + bit)) & 1) << m_n;
+    }
     v_n |= 1;
-    value |= (v_n + 2) << (p - 1);
+    if p == 0 {
+        value |= ((u64::from(v_n) + 1) >> 1) as u32;
+    } else {
+        value |= (v_n + 2) << (p - 1);
+    }
     (value, v_n)
 }
 
@@ -1035,7 +1045,7 @@ fn cleanup_symbol_stride(width: u32) -> usize {
     ((width + 2 + 7) & !7) as usize
 }
 
-fn sigma_stride(width: u32) -> usize {
+pub(crate) fn sigma_stride(width: u32) -> usize {
     ((width.div_ceil(4) + 2 + 7) & !7) as usize
 }
 
@@ -1769,10 +1779,6 @@ fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
         return None;
     }
 
-    if missing_msbs == 30 {
-        return None;
-    }
-
     if missing_msbs == 29 && num_passes > 1 {
         num_passes = 1;
     }
@@ -1938,6 +1944,57 @@ mod tests {
         let total_bitplanes = 6u8;
         let encoded = encode_code_block(&original, 4, 4, total_bitplanes).expect("encode HT block");
         assert_eq!(encoded.num_coding_passes, 1);
+
+        let mut decoded = vec![0u32; original.len()];
+        let mut scratch = HtBlockDecodeScratch::default();
+        let mut observer = NoHtDecodeStats;
+        let decoded_ok = decode_impl::<PHASE_LIMIT_MAGREF, _>(
+            &encoded.data,
+            &[],
+            &mut decoded,
+            u32::from(encoded.num_zero_bitplanes),
+            u32::from(encoded.num_coding_passes),
+            4,
+            4,
+            4,
+            false,
+            &mut scratch,
+            &mut observer,
+        );
+        assert!(decoded_ok.is_some(), "encoded={:02x?}", encoded.data);
+
+        let decoded_i32: Vec<i32> = decoded
+            .into_iter()
+            .map(|value| coefficient_to_i32(value, total_bitplanes))
+            .collect();
+        assert_eq!(decoded_i32, original, "encoded={:02x?}", encoded.data);
+    }
+
+    #[test]
+    fn direct_ht_block_roundtrip_31_bit_cleanup_path() {
+        let original = vec![
+            0,
+            1,
+            -1,
+            255,
+            -255,
+            65_535,
+            -65_535,
+            16_777_216,
+            -16_777_216,
+            (1_i32 << 30) + 17,
+            -((1_i32 << 30) + 17),
+            (1_i32 << 30) - 1,
+            -((1_i32 << 30) - 1),
+            1_i32 << 30,
+            -(1_i32 << 30),
+            i32::MAX,
+        ];
+        let total_bitplanes = 31u8;
+        let encoded =
+            encode_code_block(&original, 4, 4, total_bitplanes).expect("encode HT31 block");
+        assert_eq!(encoded.num_coding_passes, 1);
+        assert_eq!(encoded.num_zero_bitplanes, 30);
 
         let mut decoded = vec![0u32; original.len()];
         let mut scratch = HtBlockDecodeScratch::default();

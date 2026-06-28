@@ -5453,6 +5453,7 @@ pub(crate) fn encode_deinterleave_to_f32(
             dst_height: 1,
             components: u32::from(job.num_components),
             bytes_per_sample: bytes_per_sample as u32,
+            bit_depth: u32::from(job.bit_depth),
             sample_offset: encode_deinterleave_sample_offset(job.bit_depth, job.signed),
             signed_samples: u32::from(job.signed),
         };
@@ -8659,6 +8660,7 @@ fn dispatch_lossless_deinterleave(
         dst_height: job.output_height,
         components: u32::from(job.components),
         bytes_per_sample: u32::from(job.bytes_per_sample),
+        bit_depth: u32::from(job.bit_depth),
         sample_offset,
         signed_samples: 0,
     };
@@ -8716,6 +8718,7 @@ fn dispatch_lossless_deinterleave_rct_rgb8(
         dst_height: job.output_height,
         components: u32::from(job.components),
         bytes_per_sample: u32::from(job.bytes_per_sample),
+        bit_depth: u32::from(job.bit_depth),
         sample_offset,
         signed_samples: 0,
     };

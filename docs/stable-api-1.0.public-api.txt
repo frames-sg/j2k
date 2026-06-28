@@ -156,7 +156,7 @@ pub struct j2k::adapter::adaptive_route::J2kAdaptiveWorkload
 pub j2k::adapter::adaptive_route::J2kAdaptiveWorkload::batch_size: u16
 pub j2k::adapter::adaptive_route::J2kAdaptiveWorkload::bit_depth: u8
 pub j2k::adapter::adaptive_route::J2kAdaptiveWorkload::codec_mode: j2k::adapter::adaptive_route::J2kAdaptiveCodecMode
-pub j2k::adapter::adaptive_route::J2kAdaptiveWorkload::components: u8
+pub j2k::adapter::adaptive_route::J2kAdaptiveWorkload::components: u16
 pub j2k::adapter::adaptive_route::J2kAdaptiveWorkload::operation: j2k::adapter::adaptive_route::J2kAdaptiveOperation
 pub j2k::adapter::adaptive_route::J2kAdaptiveWorkload::output_residency: j2k::adapter::adaptive_route::J2kAdaptiveOutputResidency
 pub j2k::adapter::adaptive_route::J2kAdaptiveWorkload::quality_layers: u16
@@ -166,7 +166,7 @@ pub j2k::adapter::adaptive_route::J2kAdaptiveWorkload::scaled: bool
 pub j2k::adapter::adaptive_route::J2kAdaptiveWorkload::tile_size: (u32, u32)
 impl j2k::adapter::adaptive_route::J2kAdaptiveWorkload
 pub fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::logical_owner_for(self, j2k::adapter::adaptive_route::J2kAdaptiveStage) -> j2k::adapter::adaptive_route::J2kAdaptiveStageOwner
-pub const fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::new(j2k::adapter::adaptive_route::J2kAdaptiveOperation, j2k::adapter::adaptive_route::J2kAdaptiveCodecMode, j2k::adapter::adaptive_route::J2kAdaptiveQualityMode, u8, u8, (u32, u32), u16) -> Self
+pub const fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::new(j2k::adapter::adaptive_route::J2kAdaptiveOperation, j2k::adapter::adaptive_route::J2kAdaptiveCodecMode, j2k::adapter::adaptive_route::J2kAdaptiveQualityMode, u16, u8, (u32, u32), u16) -> Self
 pub const fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::with_output_residency(self, j2k::adapter::adaptive_route::J2kAdaptiveOutputResidency) -> Self
 pub const fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::with_quality_layers(self, u16) -> Self
 pub const fn j2k::adapter::adaptive_route::J2kAdaptiveWorkload::with_roi(self, bool) -> Self
@@ -348,8 +348,12 @@ pub struct j2k::view::J2kDecoder<'a>
 impl<'a> j2k::view::J2kDecoder<'a>
 pub fn j2k::view::J2kDecoder<'a>::bytes(&self) -> &'a [u8]
 pub fn j2k::view::J2kDecoder<'a>::cpu_decode_parallelism(&self) -> j2k::CpuDecodeParallelism
+pub fn j2k::view::J2kDecoder<'a>::decode_components(&mut self) -> core::result::Result<j2k::J2kDecodedComponents<'_>, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::decode_into(&mut self, &mut [u8], usize, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::decode_into_with_scratch(&mut self, &mut j2k::scratch::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>
+pub fn j2k::view::J2kDecoder<'a>::decode_native_components(&mut self) -> core::result::Result<j2k::J2kDecodedNativeComponents, j2k::error::J2kError>
+pub fn j2k::view::J2kDecoder<'a>::decode_native_region_components(&mut self, j2k_core::types::Rect) -> core::result::Result<j2k::J2kDecodedNativeComponents, j2k::error::J2kError>
+pub fn j2k::view::J2kDecoder<'a>::decode_region_components(&mut self, j2k_core::types::Rect) -> core::result::Result<j2k::J2kDecodedComponents<'_>, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::decode_region_into(&mut self, &mut j2k::scratch::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::decode_region_scaled_into(&mut self, &mut j2k::scratch::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::decode_rows_u16_bounded<R: j2k_core::row_sink::RowSink<u16>>(&mut self, &mut R, j2k::view::J2kRowDecodeOptions) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k_core::traits::DecodeRowsError<j2k::error::J2kError, <R as j2k_core::row_sink::RowSink>::Error>>
@@ -358,9 +362,11 @@ pub fn j2k::view::J2kDecoder<'a>::decode_scaled_into(&mut self, &mut j2k::scratc
 pub fn j2k::view::J2kDecoder<'a>::from_view(j2k::view::J2kView<'a>) -> core::result::Result<Self, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::info(&self) -> &j2k_core::types::Info
 pub fn j2k::view::J2kDecoder<'a>::inspect(&'a [u8]) -> core::result::Result<j2k_core::types::Info, j2k::error::J2kError>
+pub fn j2k::view::J2kDecoder<'a>::inspect_support(&'a [u8]) -> core::result::Result<j2k::J2kSupportInfo, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::new(&'a [u8]) -> core::result::Result<Self, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::passthrough_candidate(&self) -> core::option::Option<j2k_core::passthrough::PassthroughCandidate<'a>>
 pub fn j2k::view::J2kDecoder<'a>::set_cpu_decode_parallelism(&mut self, j2k::CpuDecodeParallelism)
+pub fn j2k::view::J2kDecoder<'a>::support_info(&self) -> core::option::Option<&j2k::J2kSupportInfo>
 impl j2k_core::traits::ImageCodec for j2k::view::J2kDecoder<'_>
 pub type j2k::view::J2kDecoder<'_>::Error = j2k::error::J2kError
 pub type j2k::view::J2kDecoder<'_>::Pool = j2k::scratch::J2kScratchPool
@@ -394,6 +400,7 @@ pub fn j2k::view::J2kView<'a>::bytes(&self) -> &'a [u8]
 pub fn j2k::view::J2kView<'a>::info(&self) -> &j2k_core::types::Info
 pub fn j2k::view::J2kView<'a>::parse(&'a [u8]) -> core::result::Result<Self, j2k::error::J2kError>
 pub fn j2k::view::J2kView<'a>::passthrough_candidate(&self) -> core::option::Option<j2k_core::passthrough::PassthroughCandidate<'a>>
+pub fn j2k::view::J2kView<'a>::support_info(&self) -> core::option::Option<&j2k::J2kSupportInfo>
 pub enum j2k::CpuDecodeParallelism
 pub j2k::CpuDecodeParallelism::Auto
 pub j2k::CpuDecodeParallelism::Serial
@@ -404,6 +411,41 @@ pub j2k::EncodeBackendPreference::RequireDevice
 pub enum j2k::J2kBlockCodingMode
 pub j2k::J2kBlockCodingMode::Classic
 pub j2k::J2kBlockCodingMode::HighThroughput
+pub enum j2k::J2kChannelAssociation
+pub j2k::J2kChannelAssociation::Color
+pub j2k::J2kChannelAssociation::Color::index: u16
+pub j2k::J2kChannelAssociation::Unspecified
+pub j2k::J2kChannelAssociation::WholeImage
+pub enum j2k::J2kChannelType
+pub j2k::J2kChannelType::Color
+pub j2k::J2kChannelType::Opacity
+pub j2k::J2kChannelType::PremultipliedOpacity
+pub j2k::J2kChannelType::Unknown
+pub j2k::J2kChannelType::Unknown::value: u16
+pub j2k::J2kChannelType::Unspecified
+pub enum j2k::J2kColorSpec
+pub j2k::J2kColorSpec::Enumerated
+pub j2k::J2kColorSpec::Enumerated::value: u32
+pub j2k::J2kColorSpec::IccProfile
+pub j2k::J2kColorSpec::IccProfile::profile: alloc::vec::Vec<u8>
+pub j2k::J2kColorSpec::Unknown
+pub j2k::J2kColorSpec::Unknown::method: u8
+pub enum j2k::J2kComponentMappingType
+pub j2k::J2kComponentMappingType::Direct
+pub j2k::J2kComponentMappingType::Palette
+pub j2k::J2kComponentMappingType::Palette::column: u8
+pub j2k::J2kComponentMappingType::Unknown
+pub j2k::J2kComponentMappingType::Unknown::column: u8
+pub j2k::J2kComponentMappingType::Unknown::value: u8
+#[non_exhaustive] pub enum j2k::J2kDecodedColorSpace
+pub j2k::J2kDecodedColorSpace::Cmyk
+pub j2k::J2kDecodedColorSpace::Gray
+pub j2k::J2kDecodedColorSpace::Icc
+pub j2k::J2kDecodedColorSpace::Icc::num_channels: u16
+pub j2k::J2kDecodedColorSpace::Icc::profile: alloc::vec::Vec<u8>
+pub j2k::J2kDecodedColorSpace::Rgb
+pub j2k::J2kDecodedColorSpace::Unknown
+pub j2k::J2kDecodedColorSpace::Unknown::num_channels: u16
 pub enum j2k::J2kEncodeValidation
 pub j2k::J2kEncodeValidation::CpuRoundTrip
 pub j2k::J2kEncodeValidation::External
@@ -447,10 +489,19 @@ pub fn j2k::error::J2kError::is_buffer_error(&self) -> bool
 pub fn j2k::error::J2kError::is_not_implemented(&self) -> bool
 pub fn j2k::error::J2kError::is_truncated(&self) -> bool
 pub fn j2k::error::J2kError::is_unsupported(&self) -> bool
+#[non_exhaustive] pub enum j2k::J2kFileColorSpec<'a>
+pub j2k::J2kFileColorSpec::Enumerated(j2k_core::types::Colorspace)
+pub j2k::J2kFileColorSpec::IccProfile(&'a [u8])
+pub j2k::J2kFileColorSpec::Infer
+impl<'a> j2k::J2kFileColorSpec<'a>
+pub fn j2k::J2kFileColorSpec<'a>::from_file_metadata(&'a j2k::J2kFileMetadata) -> core::option::Option<Self>
+pub fn j2k::J2kFileColorSpec<'a>::from_inspected(&'a j2k::J2kColorSpec) -> core::option::Option<Self>
 pub enum j2k::J2kMarkerSegment
 pub j2k::J2kMarkerSegment::Eph
 pub j2k::J2kMarkerSegment::Plm
 pub j2k::J2kMarkerSegment::Plt
+pub j2k::J2kMarkerSegment::Ppm
+pub j2k::J2kMarkerSegment::Ppt
 pub j2k::J2kMarkerSegment::Sop
 pub j2k::J2kMarkerSegment::Tlm
 pub enum j2k::J2kProgressionOrder
@@ -464,6 +515,7 @@ pub j2k::J2kRateTarget::BitsPerPixel(f64)
 pub j2k::J2kRateTarget::Bytes(u64)
 pub j2k::J2kRateTarget::PsnrDb(f64)
 pub enum j2k::J2kToHtj2kMode
+pub j2k::J2kToHtj2kMode::CodestreamPreserving
 pub j2k::J2kToHtj2kMode::CoefficientPreserving
 pub j2k::J2kToHtj2kMode::Passthrough
 pub j2k::J2kToHtj2kMode::PixelPreserving
@@ -474,7 +526,7 @@ pub struct j2k::EncodedJ2k
 pub j2k::EncodedJ2k::backend: j2k_core::backend::BackendKind
 pub j2k::EncodedJ2k::bit_depth: u8
 pub j2k::EncodedJ2k::codestream: alloc::vec::Vec<u8>
-pub j2k::EncodedJ2k::components: u8
+pub j2k::EncodedJ2k::components: u16
 pub j2k::EncodedJ2k::dispatch_report: j2k_types::J2kEncodeDispatchReport
 pub j2k::EncodedJ2k::height: u32
 pub j2k::EncodedJ2k::signed: bool
@@ -483,12 +535,16 @@ pub struct j2k::EncodedLossyJ2k
 pub j2k::EncodedLossyJ2k::backend: j2k_core::backend::BackendKind
 pub j2k::EncodedLossyJ2k::bit_depth: u8
 pub j2k::EncodedLossyJ2k::codestream: alloc::vec::Vec<u8>
-pub j2k::EncodedLossyJ2k::components: u8
+pub j2k::EncodedLossyJ2k::components: u16
 pub j2k::EncodedLossyJ2k::dispatch_report: j2k_types::J2kEncodeDispatchReport
 pub j2k::EncodedLossyJ2k::height: u32
 pub j2k::EncodedLossyJ2k::report: j2k::J2kLossyEncodeReport
 pub j2k::EncodedLossyJ2k::signed: bool
 pub j2k::EncodedLossyJ2k::width: u32
+pub struct j2k::J2kChannelDefinition
+pub j2k::J2kChannelDefinition::association: j2k::J2kChannelAssociation
+pub j2k::J2kChannelDefinition::channel_index: u16
+pub j2k::J2kChannelDefinition::channel_type: j2k::J2kChannelType
 pub struct j2k::J2kCodec
 impl j2k_core::traits::ImageCodec for j2k::view::J2kCodec
 pub type j2k::view::J2kCodec::Error = j2k::error::J2kError
@@ -500,6 +556,21 @@ pub fn j2k::view::J2kCodec::decode_tile(&mut j2k_core::context::DecoderContext<S
 pub fn j2k::view::J2kCodec::decode_tile_region(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect) -> core::result::Result<j2k_core::types::DecodeOutcome<Self::Warning>, Self::Error>
 pub fn j2k::view::J2kCodec::decode_tile_region_scaled(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<j2k_core::types::DecodeOutcome<Self::Warning>, Self::Error>
 pub fn j2k::view::J2kCodec::decode_tile_scaled(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale) -> core::result::Result<j2k_core::types::DecodeOutcome<Self::Warning>, Self::Error>
+pub struct j2k::J2kComponentInfo
+pub j2k::J2kComponentInfo::bit_depth: u8
+pub j2k::J2kComponentInfo::signed: bool
+pub j2k::J2kComponentInfo::x_rsiz: u8
+pub j2k::J2kComponentInfo::y_rsiz: u8
+pub struct j2k::J2kComponentMapping
+pub j2k::J2kComponentMapping::component_index: u16
+pub j2k::J2kComponentMapping::mapping_type: j2k::J2kComponentMappingType
+pub struct j2k::J2kComponentPlane<'a>
+impl<'a> j2k::J2kComponentPlane<'a>
+pub fn j2k::J2kComponentPlane<'a>::bit_depth(&self) -> u8
+pub fn j2k::J2kComponentPlane<'a>::dimensions(&self) -> (u32, u32)
+pub fn j2k::J2kComponentPlane<'a>::samples(&self) -> &'a [f32]
+pub fn j2k::J2kComponentPlane<'a>::sampling(&self) -> (u8, u8)
+pub fn j2k::J2kComponentPlane<'a>::signed(&self) -> bool
 pub struct j2k::J2kContext
 impl j2k::context::J2kContext
 pub fn j2k::context::J2kContext::cpu_decode_parallelism(&self) -> j2k::CpuDecodeParallelism
@@ -508,12 +579,28 @@ pub fn j2k::context::J2kContext::set_cpu_decode_parallelism(&mut self, j2k::CpuD
 impl j2k_core::context::CodecContext for j2k::context::J2kContext
 pub fn j2k::context::J2kContext::cache_stats(&self) -> j2k_core::context::CacheStats
 pub fn j2k::context::J2kContext::clear(&mut self)
+pub struct j2k::J2kDecodedComponents<'a>
+impl<'a> j2k::J2kDecodedComponents<'a>
+pub fn j2k::J2kDecodedComponents<'a>::color_space(&self) -> &j2k::J2kDecodedColorSpace
+pub fn j2k::J2kDecodedComponents<'a>::dimensions(&self) -> (u32, u32)
+pub fn j2k::J2kDecodedComponents<'a>::has_alpha(&self) -> bool
+pub fn j2k::J2kDecodedComponents<'a>::planes(&self) -> &[j2k::J2kComponentPlane<'a>]
+pub struct j2k::J2kDecodedNativeComponents
+impl j2k::J2kDecodedNativeComponents
+pub fn j2k::J2kDecodedNativeComponents::color_space(&self) -> &j2k::J2kDecodedColorSpace
+pub fn j2k::J2kDecodedNativeComponents::dimensions(&self) -> (u32, u32)
+pub fn j2k::J2kDecodedNativeComponents::has_alpha(&self) -> bool
+pub fn j2k::J2kDecodedNativeComponents::planes(&self) -> &[j2k::J2kNativeComponentPlane]
 pub struct j2k::J2kDecoder<'a>
 impl<'a> j2k::view::J2kDecoder<'a>
 pub fn j2k::view::J2kDecoder<'a>::bytes(&self) -> &'a [u8]
 pub fn j2k::view::J2kDecoder<'a>::cpu_decode_parallelism(&self) -> j2k::CpuDecodeParallelism
+pub fn j2k::view::J2kDecoder<'a>::decode_components(&mut self) -> core::result::Result<j2k::J2kDecodedComponents<'_>, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::decode_into(&mut self, &mut [u8], usize, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::decode_into_with_scratch(&mut self, &mut j2k::scratch::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>
+pub fn j2k::view::J2kDecoder<'a>::decode_native_components(&mut self) -> core::result::Result<j2k::J2kDecodedNativeComponents, j2k::error::J2kError>
+pub fn j2k::view::J2kDecoder<'a>::decode_native_region_components(&mut self, j2k_core::types::Rect) -> core::result::Result<j2k::J2kDecodedNativeComponents, j2k::error::J2kError>
+pub fn j2k::view::J2kDecoder<'a>::decode_region_components(&mut self, j2k_core::types::Rect) -> core::result::Result<j2k::J2kDecodedComponents<'_>, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::decode_region_into(&mut self, &mut j2k::scratch::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::decode_region_scaled_into(&mut self, &mut j2k::scratch::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::decode_rows_u16_bounded<R: j2k_core::row_sink::RowSink<u16>>(&mut self, &mut R, j2k::view::J2kRowDecodeOptions) -> core::result::Result<j2k_core::types::DecodeOutcome<core::convert::Infallible>, j2k_core::traits::DecodeRowsError<j2k::error::J2kError, <R as j2k_core::row_sink::RowSink>::Error>>
@@ -522,9 +609,11 @@ pub fn j2k::view::J2kDecoder<'a>::decode_scaled_into(&mut self, &mut j2k::scratc
 pub fn j2k::view::J2kDecoder<'a>::from_view(j2k::view::J2kView<'a>) -> core::result::Result<Self, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::info(&self) -> &j2k_core::types::Info
 pub fn j2k::view::J2kDecoder<'a>::inspect(&'a [u8]) -> core::result::Result<j2k_core::types::Info, j2k::error::J2kError>
+pub fn j2k::view::J2kDecoder<'a>::inspect_support(&'a [u8]) -> core::result::Result<j2k::J2kSupportInfo, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::new(&'a [u8]) -> core::result::Result<Self, j2k::error::J2kError>
 pub fn j2k::view::J2kDecoder<'a>::passthrough_candidate(&self) -> core::option::Option<j2k_core::passthrough::PassthroughCandidate<'a>>
 pub fn j2k::view::J2kDecoder<'a>::set_cpu_decode_parallelism(&mut self, j2k::CpuDecodeParallelism)
+pub fn j2k::view::J2kDecoder<'a>::support_info(&self) -> core::option::Option<&j2k::J2kSupportInfo>
 impl j2k_core::traits::ImageCodec for j2k::view::J2kDecoder<'_>
 pub type j2k::view::J2kDecoder<'_>::Error = j2k::error::J2kError
 pub type j2k::view::J2kDecoder<'_>::Pool = j2k::scratch::J2kScratchPool
@@ -543,35 +632,108 @@ impl<'a> j2k_core::traits::ImageDecodeRows<'a, u16> for j2k::view::J2kDecoder<'a
 pub fn j2k::view::J2kDecoder<'a>::decode_rows<R: j2k_core::row_sink::RowSink<u16>>(&mut self, &mut R) -> core::result::Result<j2k_core::types::DecodeOutcome<Self::Warning>, j2k_core::traits::DecodeRowsError<Self::Error, <R as j2k_core::row_sink::RowSink>::Error>>
 impl<'a> j2k_core::traits::ImageDecodeRows<'a, u8> for j2k::view::J2kDecoder<'a>
 pub fn j2k::view::J2kDecoder<'a>::decode_rows<R: j2k_core::row_sink::RowSink<u8>>(&mut self, &mut R) -> core::result::Result<j2k_core::types::DecodeOutcome<Self::Warning>, j2k_core::traits::DecodeRowsError<Self::Error, <R as j2k_core::row_sink::RowSink>::Error>>
+pub struct j2k::J2kFileBoxMetadata<'a>
+pub j2k::J2kFileBoxMetadata::channel_definitions: &'a [j2k::J2kChannelDefinition]
+pub j2k::J2kFileBoxMetadata::component_mappings: &'a [j2k::J2kComponentMapping]
+pub j2k::J2kFileBoxMetadata::palette: core::option::Option<&'a j2k::J2kPaletteMetadata>
+impl j2k::J2kFileBoxMetadata<'_>
+pub const fn j2k::J2kFileBoxMetadata<'_>::empty() -> Self
+impl<'a> j2k::J2kFileBoxMetadata<'a>
+pub fn j2k::J2kFileBoxMetadata<'a>::from_file_metadata(&'a j2k::J2kFileMetadata) -> Self
+pub struct j2k::J2kFileMetadata
+pub j2k::J2kFileMetadata::bits_per_component: alloc::vec::Vec<j2k::J2kComponentInfo>
+pub j2k::J2kFileMetadata::channel_definitions: alloc::vec::Vec<j2k::J2kChannelDefinition>
+pub j2k::J2kFileMetadata::color_specs: alloc::vec::Vec<j2k::J2kColorSpec>
+pub j2k::J2kFileMetadata::component_mappings: alloc::vec::Vec<j2k::J2kComponentMapping>
+pub j2k::J2kFileMetadata::has_channel_definition: bool
+pub j2k::J2kFileMetadata::has_component_mapping: bool
+pub j2k::J2kFileMetadata::has_palette: bool
+pub j2k::J2kFileMetadata::palette: core::option::Option<j2k::J2kPaletteMetadata>
+impl j2k::J2kFileMetadata
+pub fn j2k::J2kFileMetadata::has_icc_profile(&self) -> bool
+pub struct j2k::J2kFileWrapOptions<'a>
+pub j2k::J2kFileWrapOptions::color: j2k::J2kFileColorSpec<'a>
+pub j2k::J2kFileWrapOptions::color_specs: &'a [j2k::J2kFileColorSpec<'a>]
+pub j2k::J2kFileWrapOptions::metadata: j2k::J2kFileBoxMetadata<'a>
+pub j2k::J2kFileWrapOptions::payload_kind: j2k_core::passthrough::CompressedPayloadKind
+impl j2k::J2kFileWrapOptions<'_>
+pub const fn j2k::J2kFileWrapOptions<'_>::jp2() -> Self
+pub const fn j2k::J2kFileWrapOptions<'_>::jph() -> Self
+impl<'a> j2k::J2kFileWrapOptions<'a>
+pub const fn j2k::J2kFileWrapOptions<'a>::with_color(self, j2k::J2kFileColorSpec<'a>) -> Self
+pub const fn j2k::J2kFileWrapOptions<'a>::with_color_specs(self, &'a [j2k::J2kFileColorSpec<'a>]) -> Self
+pub const fn j2k::J2kFileWrapOptions<'a>::with_metadata(self, j2k::J2kFileBoxMetadata<'a>) -> Self
+pub struct j2k::J2kLosslessComponentPlane<'a>
+pub j2k::J2kLosslessComponentPlane::data: &'a [u8]
+pub j2k::J2kLosslessComponentPlane::x_rsiz: u8
+pub j2k::J2kLosslessComponentPlane::y_rsiz: u8
+pub struct j2k::J2kLosslessComponentSamples<'a>
+pub j2k::J2kLosslessComponentSamples::bit_depth: u8
+pub j2k::J2kLosslessComponentSamples::height: u32
+pub j2k::J2kLosslessComponentSamples::planes: &'a [j2k::J2kLosslessComponentPlane<'a>]
+pub j2k::J2kLosslessComponentSamples::signed: bool
+pub j2k::J2kLosslessComponentSamples::width: u32
+impl<'a> j2k::J2kLosslessComponentSamples<'a>
+pub fn j2k::J2kLosslessComponentSamples<'a>::components(&self) -> u16
+pub fn j2k::J2kLosslessComponentSamples<'a>::new(&'a [j2k::J2kLosslessComponentPlane<'a>], u32, u32, u8, bool) -> core::result::Result<Self, j2k::error::J2kError>
 #[non_exhaustive] pub struct j2k::J2kLosslessEncodeOptions
 pub j2k::J2kLosslessEncodeOptions::backend: j2k::EncodeBackendPreference
 pub j2k::J2kLosslessEncodeOptions::block_coding_mode: j2k::J2kBlockCodingMode
 pub j2k::J2kLosslessEncodeOptions::max_decomposition_levels: core::option::Option<u8>
 pub j2k::J2kLosslessEncodeOptions::progression: j2k::J2kProgressionOrder
+pub j2k::J2kLosslessEncodeOptions::quality_layers: u8
 pub j2k::J2kLosslessEncodeOptions::reversible_transform: j2k::ReversibleTransform
+pub j2k::J2kLosslessEncodeOptions::tile_part_packet_limit: core::option::Option<u16>
+pub j2k::J2kLosslessEncodeOptions::tile_size: core::option::Option<(u32, u32)>
 pub j2k::J2kLosslessEncodeOptions::validation: j2k::J2kEncodeValidation
+pub j2k::J2kLosslessEncodeOptions::write_eph: bool
+pub j2k::J2kLosslessEncodeOptions::write_plm: bool
+pub j2k::J2kLosslessEncodeOptions::write_plt: bool
+pub j2k::J2kLosslessEncodeOptions::write_ppm: bool
+pub j2k::J2kLosslessEncodeOptions::write_ppt: bool
+pub j2k::J2kLosslessEncodeOptions::write_sop: bool
+pub j2k::J2kLosslessEncodeOptions::write_tlm: bool
 impl j2k::J2kLosslessEncodeOptions
 pub const fn j2k::J2kLosslessEncodeOptions::new(j2k::EncodeBackendPreference, j2k::J2kBlockCodingMode, j2k::J2kProgressionOrder, core::option::Option<u8>, j2k::ReversibleTransform, j2k::J2kEncodeValidation) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_accelerated_backend(self) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_backend(self, j2k::EncodeBackendPreference) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_block_coding_mode(self, j2k::J2kBlockCodingMode) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_cpu_only_backend(self) -> Self
+pub fn j2k::J2kLosslessEncodeOptions::with_marker_segments(self, &[j2k::J2kMarkerSegment]) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_max_decomposition_levels(self, core::option::Option<u8>) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_progression(self, j2k::J2kProgressionOrder) -> Self
+pub const fn j2k::J2kLosslessEncodeOptions::with_quality_layers(self, u8) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_reversible_transform(self, j2k::ReversibleTransform) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_strict_device_backend(self) -> Self
+pub const fn j2k::J2kLosslessEncodeOptions::with_tile_part_packet_limit(self, core::option::Option<u16>) -> Self
+pub const fn j2k::J2kLosslessEncodeOptions::with_tile_size(self, core::option::Option<(u32, u32)>) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_validation(self, j2k::J2kEncodeValidation) -> Self
 impl core::default::Default for j2k::J2kLosslessEncodeOptions
 pub fn j2k::J2kLosslessEncodeOptions::default() -> Self
 pub struct j2k::J2kLosslessSamples<'a>
 pub j2k::J2kLosslessSamples::bit_depth: u8
-pub j2k::J2kLosslessSamples::components: u8
+pub j2k::J2kLosslessSamples::components: u16
 pub j2k::J2kLosslessSamples::data: &'a [u8]
 pub j2k::J2kLosslessSamples::height: u32
 pub j2k::J2kLosslessSamples::signed: bool
 pub j2k::J2kLosslessSamples::width: u32
 impl<'a> j2k::J2kLosslessSamples<'a>
-pub fn j2k::J2kLosslessSamples<'a>::new(&'a [u8], u32, u32, u8, u8, bool) -> core::result::Result<Self, j2k::error::J2kError>
+pub fn j2k::J2kLosslessSamples<'a>::new(&'a [u8], u32, u32, u16, u8, bool) -> core::result::Result<Self, j2k::error::J2kError>
+pub struct j2k::J2kLosslessTypedComponentPlane<'a>
+pub j2k::J2kLosslessTypedComponentPlane::bit_depth: u8
+pub j2k::J2kLosslessTypedComponentPlane::data: &'a [u8]
+pub j2k::J2kLosslessTypedComponentPlane::signed: bool
+pub j2k::J2kLosslessTypedComponentPlane::x_rsiz: u8
+pub j2k::J2kLosslessTypedComponentPlane::y_rsiz: u8
+pub struct j2k::J2kLosslessTypedComponentSamples<'a>
+pub j2k::J2kLosslessTypedComponentSamples::height: u32
+pub j2k::J2kLosslessTypedComponentSamples::planes: &'a [j2k::J2kLosslessTypedComponentPlane<'a>]
+pub j2k::J2kLosslessTypedComponentSamples::width: u32
+impl<'a> j2k::J2kLosslessTypedComponentSamples<'a>
+pub fn j2k::J2kLosslessTypedComponentSamples<'a>::all_components_signed(&self) -> bool
+pub fn j2k::J2kLosslessTypedComponentSamples<'a>::components(&self) -> u16
+pub fn j2k::J2kLosslessTypedComponentSamples<'a>::max_bit_depth(&self) -> u8
+pub fn j2k::J2kLosslessTypedComponentSamples<'a>::new(&'a [j2k::J2kLosslessTypedComponentPlane<'a>], u32, u32) -> core::result::Result<Self, j2k::error::J2kError>
 #[non_exhaustive] pub struct j2k::J2kLossyEncodeOptions
 pub j2k::J2kLossyEncodeOptions::backend: j2k::EncodeBackendPreference
 pub j2k::J2kLossyEncodeOptions::block_coding_mode: j2k::J2kBlockCodingMode
@@ -583,6 +745,7 @@ pub j2k::J2kLossyEncodeOptions::psnr_iteration_budget: u8
 pub j2k::J2kLossyEncodeOptions::psnr_tolerance_db: f64
 pub j2k::J2kLossyEncodeOptions::quality_layers: alloc::vec::Vec<j2k::J2kQualityLayer>
 pub j2k::J2kLossyEncodeOptions::rate_target: core::option::Option<j2k::J2kRateTarget>
+pub j2k::J2kLossyEncodeOptions::tile_part_packet_limit: core::option::Option<u16>
 pub j2k::J2kLossyEncodeOptions::tile_size: core::option::Option<(u32, u32)>
 pub j2k::J2kLossyEncodeOptions::validation: j2k::J2kEncodeValidation
 impl j2k::J2kLossyEncodeOptions
@@ -596,6 +759,8 @@ pub fn j2k::J2kLossyEncodeOptions::with_progression(self, j2k::J2kProgressionOrd
 pub fn j2k::J2kLossyEncodeOptions::with_quality_layers(self, alloc::vec::Vec<j2k::J2kQualityLayer>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_rate_target(self, core::option::Option<j2k::J2kRateTarget>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_strict_device_backend(self) -> Self
+pub fn j2k::J2kLossyEncodeOptions::with_tile_part_packet_limit(self, core::option::Option<u16>) -> Self
+pub fn j2k::J2kLossyEncodeOptions::with_tile_size(self, core::option::Option<(u32, u32)>) -> Self
 pub fn j2k::J2kLossyEncodeOptions::with_validation(self, j2k::J2kEncodeValidation) -> Self
 impl core::default::Default for j2k::J2kLossyEncodeOptions
 pub fn j2k::J2kLossyEncodeOptions::default() -> Self
@@ -609,17 +774,38 @@ pub j2k::J2kLossyEncodeReport::quantization_scale: f32
 pub j2k::J2kLossyEncodeReport::target: core::option::Option<j2k::J2kRateTarget>
 pub struct j2k::J2kLossySamples<'a>
 pub j2k::J2kLossySamples::bit_depth: u8
-pub j2k::J2kLossySamples::components: u8
+pub j2k::J2kLossySamples::components: u16
 pub j2k::J2kLossySamples::data: &'a [u8]
 pub j2k::J2kLossySamples::height: u32
 pub j2k::J2kLossySamples::signed: bool
 pub j2k::J2kLossySamples::width: u32
 impl<'a> j2k::J2kLossySamples<'a>
-pub fn j2k::J2kLossySamples<'a>::new(&'a [u8], u32, u32, u8, u8, bool) -> core::result::Result<Self, j2k::error::J2kError>
+pub fn j2k::J2kLossySamples<'a>::new(&'a [u8], u32, u32, u16, u8, bool) -> core::result::Result<Self, j2k::error::J2kError>
+pub struct j2k::J2kNativeComponentPlane
+impl j2k::J2kNativeComponentPlane
+pub fn j2k::J2kNativeComponentPlane::bit_depth(&self) -> u8
+pub fn j2k::J2kNativeComponentPlane::bytes_per_sample(&self) -> u8
+pub fn j2k::J2kNativeComponentPlane::data(&self) -> &[u8]
+pub fn j2k::J2kNativeComponentPlane::dimensions(&self) -> (u32, u32)
+pub fn j2k::J2kNativeComponentPlane::sampling(&self) -> (u8, u8)
+pub fn j2k::J2kNativeComponentPlane::signed(&self) -> bool
+pub struct j2k::J2kPaletteColumn
+pub j2k::J2kPaletteColumn::bit_depth: u8
+pub j2k::J2kPaletteColumn::signed: bool
+pub struct j2k::J2kPaletteMetadata
+pub j2k::J2kPaletteMetadata::columns: alloc::vec::Vec<j2k::J2kPaletteColumn>
+pub j2k::J2kPaletteMetadata::entries: alloc::vec::Vec<alloc::vec::Vec<u64>>
 pub struct j2k::J2kQualityLayer
 pub j2k::J2kQualityLayer::target: j2k::J2kRateTarget
 impl j2k::J2kQualityLayer
 pub const fn j2k::J2kQualityLayer::new(j2k::J2kRateTarget) -> Self
+pub struct j2k::J2kRoiRegion
+pub j2k::J2kRoiRegion::component: u16
+pub j2k::J2kRoiRegion::height: u32
+pub j2k::J2kRoiRegion::shift: u8
+pub j2k::J2kRoiRegion::width: u32
+pub j2k::J2kRoiRegion::x: u32
+pub j2k::J2kRoiRegion::y: u32
 pub struct j2k::J2kRowDecodeOptions
 impl j2k::view::J2kRowDecodeOptions
 pub const fn j2k::view::J2kRowDecodeOptions::max_rows_per_stripe(self) -> u32
@@ -635,6 +821,17 @@ pub const fn j2k::scratch::J2kScratchPool::new() -> Self
 impl j2k_core::scratch::ScratchPool for j2k::scratch::J2kScratchPool
 pub fn j2k::scratch::J2kScratchPool::bytes_allocated(&self) -> usize
 pub fn j2k::scratch::J2kScratchPool::reset(&mut self)
+pub struct j2k::J2kSupportInfo
+pub j2k::J2kSupportInfo::components: alloc::vec::Vec<j2k::J2kComponentInfo>
+pub j2k::J2kSupportInfo::file_metadata: core::option::Option<j2k::J2kFileMetadata>
+pub j2k::J2kSupportInfo::info: j2k_core::types::Info
+pub j2k::J2kSupportInfo::payload_kind: j2k_core::passthrough::CompressedPayloadKind
+pub j2k::J2kSupportInfo::transfer_syntax: j2k_core::passthrough::CompressedTransferSyntax
+impl j2k::J2kSupportInfo
+pub fn j2k::J2kSupportInfo::component_count(&self) -> u16
+pub fn j2k::J2kSupportInfo::has_component_subsampling(&self) -> bool
+pub fn j2k::J2kSupportInfo::has_mixed_bit_depths(&self) -> bool
+pub fn j2k::J2kSupportInfo::has_signed_components(&self) -> bool
 #[non_exhaustive] pub struct j2k::J2kToHtj2kOptions
 pub j2k::J2kToHtj2kOptions::output_payload_kind: j2k_core::passthrough::CompressedPayloadKind
 pub j2k::J2kToHtj2kOptions::progression: j2k::J2kProgressionOrder
@@ -645,7 +842,7 @@ impl core::default::Default for j2k::J2kToHtj2kOptions
 pub fn j2k::J2kToHtj2kOptions::default() -> Self
 pub struct j2k::J2kToHtj2kReport
 pub j2k::J2kToHtj2kReport::bit_depth: u8
-pub j2k::J2kToHtj2kReport::components: u8
+pub j2k::J2kToHtj2kReport::components: u16
 pub j2k::J2kToHtj2kReport::height: u32
 pub j2k::J2kToHtj2kReport::input_payload_kind: j2k_core::passthrough::CompressedPayloadKind
 pub j2k::J2kToHtj2kReport::input_transfer_syntax: j2k_core::passthrough::CompressedTransferSyntax
@@ -659,6 +856,7 @@ pub fn j2k::view::J2kView<'a>::bytes(&self) -> &'a [u8]
 pub fn j2k::view::J2kView<'a>::info(&self) -> &j2k_core::types::Info
 pub fn j2k::view::J2kView<'a>::parse(&'a [u8]) -> core::result::Result<Self, j2k::error::J2kError>
 pub fn j2k::view::J2kView<'a>::passthrough_candidate(&self) -> core::option::Option<j2k_core::passthrough::PassthroughCandidate<'a>>
+pub fn j2k::view::J2kView<'a>::support_info(&self) -> core::option::Option<&j2k::J2kSupportInfo>
 pub struct j2k::ReencodedHtj2k
 pub j2k::ReencodedHtj2k::bytes: alloc::vec::Vec<u8>
 pub j2k::ReencodedHtj2k::report: j2k::J2kToHtj2kReport
@@ -671,13 +869,18 @@ pub fn j2k::decode_tiles_region_into(&mut [j2k::TileRegionDecodeJob<'_, '_>], j2
 pub fn j2k::decode_tiles_region_scaled_into(&mut [j2k::TileRegionScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<j2k_core::types::DecodeOutcome<core::convert::Infallible>>, j2k::TileBatchError>
 pub fn j2k::decode_tiles_scaled_into(&mut [j2k::TileScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<j2k_core::types::DecodeOutcome<core::convert::Infallible>>, j2k::TileBatchError>
 pub fn j2k::encode_j2k_lossless(j2k::J2kLosslessSamples<'_>, &j2k::J2kLosslessEncodeOptions) -> core::result::Result<j2k::EncodedJ2k, j2k::error::J2kError>
+pub fn j2k::encode_j2k_lossless_components(j2k::J2kLosslessComponentSamples<'_>, &j2k::J2kLosslessEncodeOptions) -> core::result::Result<j2k::EncodedJ2k, j2k::error::J2kError>
+pub fn j2k::encode_j2k_lossless_typed_components(j2k::J2kLosslessTypedComponentSamples<'_>, &j2k::J2kLosslessEncodeOptions) -> core::result::Result<j2k::EncodedJ2k, j2k::error::J2kError>
 pub fn j2k::encode_j2k_lossless_with_accelerator(j2k::J2kLosslessSamples<'_>, &j2k::J2kLosslessEncodeOptions, j2k_core::backend::BackendKind, &mut impl j2k::adapter::encode_stage::J2kEncodeStageAccelerator) -> core::result::Result<j2k::EncodedJ2k, j2k::error::J2kError>
+pub fn j2k::encode_j2k_lossless_with_roi_regions(j2k::J2kLosslessSamples<'_>, &j2k::J2kLosslessEncodeOptions, &[j2k::J2kRoiRegion]) -> core::result::Result<j2k::EncodedJ2k, j2k::error::J2kError>
 pub fn j2k::encode_j2k_lossy(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::error::J2kError>
 pub fn j2k::encode_j2k_lossy_with_accelerator(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions, j2k_core::backend::BackendKind, &mut impl j2k::adapter::encode_stage::J2kEncodeStageAccelerator) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::error::J2kError>
+pub fn j2k::encode_j2k_lossy_with_roi_regions(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions, &[j2k::J2kRoiRegion]) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::error::J2kError>
 pub fn j2k::j2k_lossless_decomposition_levels(j2k::J2kLosslessSamples<'_>) -> u8
 pub fn j2k::j2k_lossless_decomposition_levels_for_options(j2k::J2kLosslessSamples<'_>, j2k::J2kLosslessEncodeOptions) -> u8
 pub fn j2k::j2k_lossless_decomposition_levels_for_progression(j2k::J2kLosslessSamples<'_>, j2k::J2kProgressionOrder) -> u8
 pub fn j2k::recode_j2k_to_htj2k_lossless(&[u8], j2k::J2kToHtj2kOptions) -> core::result::Result<j2k::ReencodedHtj2k, j2k::error::J2kError>
+pub fn j2k::wrap_j2k_codestream(&[u8], j2k::J2kFileWrapOptions<'_>) -> core::result::Result<alloc::vec::Vec<u8>, j2k::error::J2kError>
 pub type j2k::TileBatchError = j2k_core::batch::TileBatchError<j2k::error::J2kError>
 pub type j2k::TileDecodeJob<'i, 'o> = j2k_core::batch::TileDecodeJob<'i, 'o>
 pub type j2k::TileRegionDecodeJob<'i, 'o> = j2k_core::batch::TileRegionDecodeJob<'i, 'o>
@@ -918,6 +1121,7 @@ pub mod j2k_core::passthrough
 pub j2k_core::passthrough::CompressedPayloadKind::Jp2File
 pub j2k_core::passthrough::CompressedPayloadKind::Jpeg2000Codestream
 pub j2k_core::passthrough::CompressedPayloadKind::JpegInterchange
+pub j2k_core::passthrough::CompressedPayloadKind::JphFile
 #[non_exhaustive] pub enum j2k_core::passthrough::CompressedTransferSyntax
 pub j2k_core::passthrough::CompressedTransferSyntax::HtJpeg2000Lossless
 pub j2k_core::passthrough::CompressedTransferSyntax::HtJpeg2000Lossy
@@ -941,8 +1145,8 @@ pub j2k_core::passthrough::PassthroughRejectReason::ColorspaceMismatch
 pub j2k_core::passthrough::PassthroughRejectReason::ColorspaceMismatch::destination: j2k_core::types::Colorspace
 pub j2k_core::passthrough::PassthroughRejectReason::ColorspaceMismatch::source: j2k_core::types::Colorspace
 pub j2k_core::passthrough::PassthroughRejectReason::ComponentsMismatch
-pub j2k_core::passthrough::PassthroughRejectReason::ComponentsMismatch::destination: u8
-pub j2k_core::passthrough::PassthroughRejectReason::ComponentsMismatch::source: u8
+pub j2k_core::passthrough::PassthroughRejectReason::ComponentsMismatch::destination: u16
+pub j2k_core::passthrough::PassthroughRejectReason::ComponentsMismatch::source: u16
 pub j2k_core::passthrough::PassthroughRejectReason::DimensionsMismatch
 pub j2k_core::passthrough::PassthroughRejectReason::DimensionsMismatch::destination: (u32, u32)
 pub j2k_core::passthrough::PassthroughRejectReason::DimensionsMismatch::source: (u32, u32)
@@ -968,7 +1172,7 @@ pub const fn j2k_core::passthrough::PassthroughCandidate<'a>::transfer_syntax(&s
 pub struct j2k_core::passthrough::PassthroughRequirements
 pub j2k_core::passthrough::PassthroughRequirements::bit_depth: core::option::Option<u8>
 pub j2k_core::passthrough::PassthroughRequirements::colorspace: core::option::Option<j2k_core::types::Colorspace>
-pub j2k_core::passthrough::PassthroughRequirements::components: core::option::Option<u8>
+pub j2k_core::passthrough::PassthroughRequirements::components: core::option::Option<u16>
 pub j2k_core::passthrough::PassthroughRequirements::dimensions: core::option::Option<(u32, u32)>
 pub j2k_core::passthrough::PassthroughRequirements::payload_kind: j2k_core::passthrough::CompressedPayloadKind
 pub j2k_core::passthrough::PassthroughRequirements::tile_layout: core::option::Option<j2k_core::types::TileLayout>
@@ -977,6 +1181,7 @@ impl j2k_core::passthrough::PassthroughRequirements
 pub const fn j2k_core::passthrough::PassthroughRequirements::new(j2k_core::passthrough::CompressedTransferSyntax, j2k_core::passthrough::CompressedPayloadKind) -> Self
 pub const fn j2k_core::passthrough::PassthroughRequirements::with_bit_depth(self, u8) -> Self
 pub const fn j2k_core::passthrough::PassthroughRequirements::with_colorspace(self, j2k_core::types::Colorspace) -> Self
+pub const fn j2k_core::passthrough::PassthroughRequirements::with_component_count(self, u16) -> Self
 pub const fn j2k_core::passthrough::PassthroughRequirements::with_components(self, u8) -> Self
 pub const fn j2k_core::passthrough::PassthroughRequirements::with_dimensions(self, (u32, u32)) -> Self
 pub const fn j2k_core::passthrough::PassthroughRequirements::with_tile_layout(self, j2k_core::types::TileLayout) -> Self
@@ -1166,7 +1371,7 @@ pub struct j2k_core::types::Info
 pub j2k_core::types::Info::bit_depth: u8
 pub j2k_core::types::Info::coded_unit_layout: core::option::Option<j2k_core::types::CodedUnitLayout>
 pub j2k_core::types::Info::colorspace: j2k_core::types::Colorspace
-pub j2k_core::types::Info::components: u8
+pub j2k_core::types::Info::components: u16
 pub j2k_core::types::Info::dimensions: (u32, u32)
 pub j2k_core::types::Info::resolution_levels: u8
 pub j2k_core::types::Info::restart_interval: core::option::Option<u32>
@@ -1244,6 +1449,7 @@ pub j2k_core::Colorspace::Ycck
 pub j2k_core::CompressedPayloadKind::Jp2File
 pub j2k_core::CompressedPayloadKind::Jpeg2000Codestream
 pub j2k_core::CompressedPayloadKind::JpegInterchange
+pub j2k_core::CompressedPayloadKind::JphFile
 #[non_exhaustive] pub enum j2k_core::CompressedTransferSyntax
 pub j2k_core::CompressedTransferSyntax::HtJpeg2000Lossless
 pub j2k_core::CompressedTransferSyntax::HtJpeg2000Lossy
@@ -1285,8 +1491,8 @@ pub j2k_core::PassthroughRejectReason::ColorspaceMismatch
 pub j2k_core::PassthroughRejectReason::ColorspaceMismatch::destination: j2k_core::types::Colorspace
 pub j2k_core::PassthroughRejectReason::ColorspaceMismatch::source: j2k_core::types::Colorspace
 pub j2k_core::PassthroughRejectReason::ComponentsMismatch
-pub j2k_core::PassthroughRejectReason::ComponentsMismatch::destination: u8
-pub j2k_core::PassthroughRejectReason::ComponentsMismatch::source: u8
+pub j2k_core::PassthroughRejectReason::ComponentsMismatch::destination: u16
+pub j2k_core::PassthroughRejectReason::ComponentsMismatch::source: u16
 pub j2k_core::PassthroughRejectReason::DimensionsMismatch
 pub j2k_core::PassthroughRejectReason::DimensionsMismatch::destination: (u32, u32)
 pub j2k_core::PassthroughRejectReason::DimensionsMismatch::source: (u32, u32)
@@ -1408,7 +1614,7 @@ pub struct j2k_core::Info
 pub j2k_core::Info::bit_depth: u8
 pub j2k_core::Info::coded_unit_layout: core::option::Option<j2k_core::types::CodedUnitLayout>
 pub j2k_core::Info::colorspace: j2k_core::types::Colorspace
-pub j2k_core::Info::components: u8
+pub j2k_core::Info::components: u16
 pub j2k_core::Info::dimensions: (u32, u32)
 pub j2k_core::Info::resolution_levels: u8
 pub j2k_core::Info::restart_interval: core::option::Option<u32>
@@ -1427,7 +1633,7 @@ pub const fn j2k_core::passthrough::PassthroughCandidate<'a>::transfer_syntax(&s
 pub struct j2k_core::PassthroughRequirements
 pub j2k_core::PassthroughRequirements::bit_depth: core::option::Option<u8>
 pub j2k_core::PassthroughRequirements::colorspace: core::option::Option<j2k_core::types::Colorspace>
-pub j2k_core::PassthroughRequirements::components: core::option::Option<u8>
+pub j2k_core::PassthroughRequirements::components: core::option::Option<u16>
 pub j2k_core::PassthroughRequirements::dimensions: core::option::Option<(u32, u32)>
 pub j2k_core::PassthroughRequirements::payload_kind: j2k_core::passthrough::CompressedPayloadKind
 pub j2k_core::PassthroughRequirements::tile_layout: core::option::Option<j2k_core::types::TileLayout>
@@ -1436,6 +1642,7 @@ impl j2k_core::passthrough::PassthroughRequirements
 pub const fn j2k_core::passthrough::PassthroughRequirements::new(j2k_core::passthrough::CompressedTransferSyntax, j2k_core::passthrough::CompressedPayloadKind) -> Self
 pub const fn j2k_core::passthrough::PassthroughRequirements::with_bit_depth(self, u8) -> Self
 pub const fn j2k_core::passthrough::PassthroughRequirements::with_colorspace(self, j2k_core::types::Colorspace) -> Self
+pub const fn j2k_core::passthrough::PassthroughRequirements::with_component_count(self, u16) -> Self
 pub const fn j2k_core::passthrough::PassthroughRequirements::with_components(self, u8) -> Self
 pub const fn j2k_core::passthrough::PassthroughRequirements::with_dimensions(self, (u32, u32)) -> Self
 pub const fn j2k_core::passthrough::PassthroughRequirements::with_tile_layout(self, j2k_core::types::TileLayout) -> Self
@@ -4966,13 +5173,13 @@ pub enum j2k_native::ColorSpace
 pub j2k_native::ColorSpace::CMYK
 pub j2k_native::ColorSpace::Gray
 pub j2k_native::ColorSpace::Icc
-pub j2k_native::ColorSpace::Icc::num_channels: u8
+pub j2k_native::ColorSpace::Icc::num_channels: u16
 pub j2k_native::ColorSpace::Icc::profile: alloc::vec::Vec<u8>
 pub j2k_native::ColorSpace::RGB
 pub j2k_native::ColorSpace::Unknown
-pub j2k_native::ColorSpace::Unknown::num_channels: u8
+pub j2k_native::ColorSpace::Unknown::num_channels: u16
 impl j2k_native::ColorSpace
-pub fn j2k_native::ColorSpace::num_channels(&self) -> u8
+pub fn j2k_native::ColorSpace::num_channels(&self) -> u16
 pub enum j2k_native::CpuDecodeParallelism
 pub j2k_native::CpuDecodeParallelism::Auto
 pub j2k_native::CpuDecodeParallelism::Serial
@@ -5115,7 +5322,10 @@ pub j2k_native::Bitmap::width: u32
 pub struct j2k_native::ComponentPlane<'a>
 impl<'a> j2k_native::ComponentPlane<'a>
 pub fn j2k_native::ComponentPlane<'a>::bit_depth(&self) -> u8
+pub fn j2k_native::ComponentPlane<'a>::dimensions(&self) -> (u32, u32)
 pub fn j2k_native::ComponentPlane<'a>::samples(&self) -> &'a [f32]
+pub fn j2k_native::ComponentPlane<'a>::sampling(&self) -> (u8, u8)
+pub fn j2k_native::ComponentPlane<'a>::signed(&self) -> bool
 pub struct j2k_native::DecodeSettings
 pub j2k_native::DecodeSettings::resolve_palette_indices: bool
 pub j2k_native::DecodeSettings::strict: bool
@@ -5128,12 +5338,22 @@ pub fn j2k_native::DecodedComponents<'a>::color_space(&self) -> &j2k_native::Col
 pub fn j2k_native::DecodedComponents<'a>::dimensions(&self) -> (u32, u32)
 pub fn j2k_native::DecodedComponents<'a>::has_alpha(&self) -> bool
 pub fn j2k_native::DecodedComponents<'a>::planes(&self) -> &[j2k_native::ComponentPlane<'a>]
+pub struct j2k_native::DecodedNativeComponents
+impl j2k_native::DecodedNativeComponents
+pub fn j2k_native::DecodedNativeComponents::color_space(&self) -> &j2k_native::ColorSpace
+pub fn j2k_native::DecodedNativeComponents::dimensions(&self) -> (u32, u32)
+pub fn j2k_native::DecodedNativeComponents::has_alpha(&self) -> bool
+pub fn j2k_native::DecodedNativeComponents::planes(&self) -> &[j2k_native::NativeComponentPlane]
 pub struct j2k_native::DecoderContext<'a>
 impl j2k_native::DecoderContext<'_>
 pub fn j2k_native::DecoderContext<'_>::cpu_decode_parallelism(&self) -> j2k_native::CpuDecodeParallelism
 pub fn j2k_native::DecoderContext<'_>::set_cpu_decode_parallelism(&mut self, j2k_native::CpuDecodeParallelism)
 impl core::default::Default for j2k_native::DecoderContext<'_>
 pub fn j2k_native::DecoderContext<'_>::default() -> Self
+pub struct j2k_native::EncodeComponentPlane<'a>
+pub j2k_native::EncodeComponentPlane::data: &'a [u8]
+pub j2k_native::EncodeComponentPlane::x_rsiz: u8
+pub j2k_native::EncodeComponentPlane::y_rsiz: u8
 pub struct j2k_native::EncodeOptions
 pub j2k_native::EncodeOptions::code_block_height_exp: u8
 pub j2k_native::EncodeOptions::code_block_width_exp: u8
@@ -5147,6 +5367,8 @@ pub j2k_native::EncodeOptions::precinct_exponents: alloc::vec::Vec<(u8, u8)>
 pub j2k_native::EncodeOptions::progression_order: j2k_native::EncodeProgressionOrder
 pub j2k_native::EncodeOptions::quality_layer_byte_targets: alloc::vec::Vec<u64>
 pub j2k_native::EncodeOptions::reversible: bool
+pub j2k_native::EncodeOptions::roi_component_shifts: alloc::vec::Vec<u8>
+pub j2k_native::EncodeOptions::tile_part_packet_limit: core::option::Option<u16>
 pub j2k_native::EncodeOptions::tile_size: core::option::Option<(u32, u32)>
 pub j2k_native::EncodeOptions::use_ht_block_coding: bool
 pub j2k_native::EncodeOptions::use_mct: bool
@@ -5154,10 +5376,25 @@ pub j2k_native::EncodeOptions::validate_high_throughput_codestream: bool
 pub j2k_native::EncodeOptions::write_eph: bool
 pub j2k_native::EncodeOptions::write_plm: bool
 pub j2k_native::EncodeOptions::write_plt: bool
+pub j2k_native::EncodeOptions::write_ppm: bool
+pub j2k_native::EncodeOptions::write_ppt: bool
 pub j2k_native::EncodeOptions::write_sop: bool
 pub j2k_native::EncodeOptions::write_tlm: bool
 impl core::default::Default for j2k_native::EncodeOptions
 pub fn j2k_native::EncodeOptions::default() -> Self
+pub struct j2k_native::EncodeRoiRegion
+pub j2k_native::EncodeRoiRegion::component: u16
+pub j2k_native::EncodeRoiRegion::height: u32
+pub j2k_native::EncodeRoiRegion::shift: u8
+pub j2k_native::EncodeRoiRegion::width: u32
+pub j2k_native::EncodeRoiRegion::x: u32
+pub j2k_native::EncodeRoiRegion::y: u32
+pub struct j2k_native::EncodeTypedComponentPlane<'a>
+pub j2k_native::EncodeTypedComponentPlane::bit_depth: u8
+pub j2k_native::EncodeTypedComponentPlane::data: &'a [u8]
+pub j2k_native::EncodeTypedComponentPlane::signed: bool
+pub j2k_native::EncodeTypedComponentPlane::x_rsiz: u8
+pub j2k_native::EncodeTypedComponentPlane::y_rsiz: u8
 pub struct j2k_native::HtCleanupEncodeDistribution
 pub j2k_native::HtCleanupEncodeDistribution::initial_quads: u64
 pub j2k_native::HtCleanupEncodeDistribution::initial_rho_counts: [u64; 16]
@@ -5252,7 +5489,11 @@ pub fn j2k_native::Image<'a>::decode_components_with_context<'ctx>(&self, &'ctx 
 pub fn j2k_native::Image<'a>::decode_components_with_ht_decoder<'ctx>(&self, &'ctx mut j2k_native::DecoderContext<'a>, &mut dyn j2k_native::HtCodeBlockDecoder) -> j2k_native::error::Result<j2k_native::DecodedComponents<'ctx>>
 pub fn j2k_native::Image<'a>::decode_into(&self, &mut [u8], &mut j2k_native::DecoderContext<'a>) -> j2k_native::error::Result<()>
 pub fn j2k_native::Image<'a>::decode_native(&self) -> j2k_native::error::Result<j2k_native::RawBitmap>
+pub fn j2k_native::Image<'a>::decode_native_components(&self) -> j2k_native::error::Result<j2k_native::DecodedNativeComponents>
+pub fn j2k_native::Image<'a>::decode_native_components_with_context(&self, &mut j2k_native::DecoderContext<'a>) -> j2k_native::error::Result<j2k_native::DecodedNativeComponents>
 pub fn j2k_native::Image<'a>::decode_native_region(&self, (u32, u32, u32, u32)) -> j2k_native::error::Result<j2k_native::RawBitmap>
+pub fn j2k_native::Image<'a>::decode_native_region_components(&self, (u32, u32, u32, u32)) -> j2k_native::error::Result<j2k_native::DecodedNativeComponents>
+pub fn j2k_native::Image<'a>::decode_native_region_components_with_context(&self, (u32, u32, u32, u32), &mut j2k_native::DecoderContext<'a>) -> j2k_native::error::Result<j2k_native::DecodedNativeComponents>
 pub fn j2k_native::Image<'a>::decode_native_region_with_context(&self, (u32, u32, u32, u32), &mut j2k_native::DecoderContext<'a>) -> j2k_native::error::Result<j2k_native::RawBitmap>
 pub fn j2k_native::Image<'a>::decode_native_with_context(&self, &mut j2k_native::DecoderContext<'a>) -> j2k_native::error::Result<j2k_native::RawBitmap>
 pub fn j2k_native::Image<'a>::decode_region(&self, (u32, u32, u32, u32)) -> j2k_native::error::Result<j2k_native::Bitmap>
@@ -5417,12 +5658,22 @@ pub j2k_native::J2kTier1TokenSegment::start_coding_pass: u8
 pub j2k_native::J2kTier1TokenSegment::token_bit_count: u32
 pub j2k_native::J2kTier1TokenSegment::token_bit_offset: u32
 pub j2k_native::J2kTier1TokenSegment::use_arithmetic: bool
+pub struct j2k_native::NativeComponentPlane
+impl j2k_native::NativeComponentPlane
+pub fn j2k_native::NativeComponentPlane::bit_depth(&self) -> u8
+pub fn j2k_native::NativeComponentPlane::bytes_per_sample(&self) -> u8
+pub fn j2k_native::NativeComponentPlane::data(&self) -> &[u8]
+pub fn j2k_native::NativeComponentPlane::dimensions(&self) -> (u32, u32)
+pub fn j2k_native::NativeComponentPlane::sampling(&self) -> (u8, u8)
+pub fn j2k_native::NativeComponentPlane::signed(&self) -> bool
 pub struct j2k_native::RawBitmap
 pub j2k_native::RawBitmap::bit_depth: u8
 pub j2k_native::RawBitmap::bytes_per_sample: u8
+pub j2k_native::RawBitmap::component_signed: alloc::vec::Vec<bool>
 pub j2k_native::RawBitmap::data: alloc::vec::Vec<u8>
 pub j2k_native::RawBitmap::height: u32
-pub j2k_native::RawBitmap::num_components: u8
+pub j2k_native::RawBitmap::num_components: u16
+pub j2k_native::RawBitmap::signed: bool
 pub j2k_native::RawBitmap::width: u32
 pub struct j2k_native::Reversible53CoefficientImage
 pub j2k_native::Reversible53CoefficientImage::code_block_height_exp: u8
@@ -5483,10 +5734,12 @@ pub fn j2k_native::decode_j2k_code_block_scalar_profiled(j2k_native::J2kCodeBloc
 pub fn j2k_native::decode_j2k_code_block_scalar_with_workspace(j2k_native::J2kCodeBlockDecodeJob<'_>, &mut [f32], &mut j2k_native::J2kCodeBlockDecodeWorkspace) -> j2k_native::error::Result<()>
 pub fn j2k_native::decode_j2k_code_block_scalar_with_workspace_profiled(j2k_native::J2kCodeBlockDecodeJob<'_>, &mut [f32], &mut j2k_native::J2kCodeBlockDecodeWorkspace, &mut j2k_native::J2kCodeBlockDecodeProfile) -> j2k_native::error::Result<()>
 pub fn j2k_native::decode_j2k_sub_band_scalar(j2k_native::J2kSubBandDecodeJob<'_>, &mut [f32]) -> j2k_native::error::Result<()>
-pub fn j2k_native::deinterleave_reference(&[u8], usize, u8, u8, bool) -> alloc::vec::Vec<alloc::vec::Vec<f32>>
-pub fn j2k_native::encode(&[u8], u32, u32, u8, u8, bool, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::deinterleave_reference(&[u8], usize, u16, u8, bool) -> alloc::vec::Vec<alloc::vec::Vec<f32>>
+pub fn j2k_native::encode(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::encode_component_planes_53(&[j2k_native::EncodeComponentPlane<'_>], u32, u32, u8, bool, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::encode_ht_code_block_scalar(&[i32], u32, u32, u8) -> core::result::Result<j2k_types::EncodedHtJ2kCodeBlock, &'static str>
-pub fn j2k_native::encode_htj2k(&[u8], u32, u32, u8, u8, bool, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::encode_ht_code_block_scalar_with_passes(&[i32], u32, u32, u8, u8) -> core::result::Result<j2k_types::EncodedHtJ2kCodeBlock, &'static str>
+pub fn j2k_native::encode_htj2k(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::encode_j2k_code_block_scalar_with_style(&[i32], u32, u32, j2k_types::J2kSubBandType, u8, j2k_types::J2kCodeBlockStyle) -> core::result::Result<j2k_types::EncodedJ2kCodeBlock, &'static str>
 pub fn j2k_native::encode_j2k_packetization_scalar(j2k_types::J2kPacketizationEncodeJob<'_>) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::encode_precomputed_htj2k_53(&j2k_types::PrecomputedHtj2k53Image, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
@@ -5496,13 +5749,20 @@ pub fn j2k_native::encode_precomputed_htj2k_53_with_mct_and_accelerator(&j2k_typ
 pub fn j2k_native::encode_precomputed_htj2k_97(&j2k_types::PrecomputedHtj2k97Image, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::encode_precomputed_htj2k_97_batch_with_accelerator(&[j2k_types::PrecomputedHtj2k97Image], &j2k_native::EncodeOptions, &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, &'static str>
 pub fn j2k_native::encode_precomputed_htj2k_97_with_accelerator(&j2k_types::PrecomputedHtj2k97Image, &j2k_native::EncodeOptions, &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::encode_precomputed_j2k_53(&j2k_types::PrecomputedHtj2k53Image, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::encode_precomputed_j2k_53_with_accelerator(&j2k_types::PrecomputedHtj2k53Image, &j2k_native::EncodeOptions, &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::encode_precomputed_j2k_53_with_mct(&j2k_types::PrecomputedHtj2k53Image, &j2k_native::EncodeOptions, bool) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::encode_precomputed_j2k_53_with_mct_and_accelerator(&j2k_types::PrecomputedHtj2k53Image, &j2k_native::EncodeOptions, bool, &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::encode_preencoded_htj2k_97(&j2k_types::PreencodedHtj2k97Image, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::encode_preencoded_htj2k_97_compact_owned_with_accelerator(j2k_types::PreencodedHtj2k97CompactImage, &j2k_native::EncodeOptions, &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::encode_preencoded_htj2k_97_owned_with_accelerator(j2k_types::PreencodedHtj2k97Image, &j2k_native::EncodeOptions, &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::encode_preencoded_htj2k_97_with_accelerator(&j2k_types::PreencodedHtj2k97Image, &j2k_native::EncodeOptions, &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::encode_prequantized_htj2k_97(&j2k_types::PrequantizedHtj2k97Image, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::encode_prequantized_htj2k_97_with_accelerator(&j2k_types::PrequantizedHtj2k97Image, &j2k_native::EncodeOptions, &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
-pub fn j2k_native::encode_with_accelerator(&[u8], u32, u32, u8, u8, bool, &j2k_native::EncodeOptions, &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::encode_typed_component_planes_53(&[j2k_native::EncodeTypedComponentPlane<'_>], u32, u32, &j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::encode_with_accelerator(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions, &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::encode_with_accelerator_and_roi_regions(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions, &[j2k_native::EncodeRoiRegion], &mut impl j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn j2k_native::encode_with_roi_regions(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions, &[j2k_native::EncodeRoiRegion]) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn j2k_native::execute_direct_color_plan_rgb8_into(&j2k_native::J2kDirectColorPlan, j2k_native::J2kRect, &mut j2k_native::J2kDirectCpuScratch, &mut [u8], usize) -> j2k_native::error::Result<()>
 pub fn j2k_native::execute_direct_color_plan_rgba8_into(&j2k_native::J2kDirectColorPlan, j2k_native::J2kRect, &mut j2k_native::J2kDirectCpuScratch, &mut [u8], usize) -> j2k_native::error::Result<()>
 pub fn j2k_native::forward_dwt53_reference(&[f32], u32, u32, u8) -> j2k_types::J2kForwardDwt53Output
@@ -5583,7 +5843,7 @@ pub j2k_types::J2kCodeBlockStyle::termination_on_each_pass: bool
 pub j2k_types::J2kCodeBlockStyle::vertically_causal_context: bool
 pub struct j2k_types::J2kDeinterleaveToF32Job<'a>
 pub j2k_types::J2kDeinterleaveToF32Job::bit_depth: u8
-pub j2k_types::J2kDeinterleaveToF32Job::num_components: u8
+pub j2k_types::J2kDeinterleaveToF32Job::num_components: u16
 pub j2k_types::J2kDeinterleaveToF32Job::num_pixels: usize
 pub j2k_types::J2kDeinterleaveToF32Job::pixels: &'a [u8]
 pub j2k_types::J2kDeinterleaveToF32Job::signed: bool
@@ -5673,7 +5933,7 @@ pub j2k_types::J2kHtj2kTileEncodeJob::code_block_width: u32
 pub j2k_types::J2kHtj2kTileEncodeJob::component_sampling: &'a [(u8, u8)]
 pub j2k_types::J2kHtj2kTileEncodeJob::guard_bits: u8
 pub j2k_types::J2kHtj2kTileEncodeJob::height: u32
-pub j2k_types::J2kHtj2kTileEncodeJob::num_components: u8
+pub j2k_types::J2kHtj2kTileEncodeJob::num_components: u16
 pub j2k_types::J2kHtj2kTileEncodeJob::num_decomposition_levels: u8
 pub j2k_types::J2kHtj2kTileEncodeJob::pixels: &'a [u8]
 pub j2k_types::J2kHtj2kTileEncodeJob::progression_order: j2k_types::J2kPacketizationProgressionOrder
@@ -5693,14 +5953,14 @@ pub j2k_types::J2kPacketizationCodeBlock::num_zero_bitplanes: u8
 pub j2k_types::J2kPacketizationCodeBlock::previously_included: bool
 pub struct j2k_types::J2kPacketizationEncodeJob<'a>
 pub j2k_types::J2kPacketizationEncodeJob::code_block_count: u32
-pub j2k_types::J2kPacketizationEncodeJob::num_components: u8
+pub j2k_types::J2kPacketizationEncodeJob::num_components: u16
 pub j2k_types::J2kPacketizationEncodeJob::num_layers: u8
 pub j2k_types::J2kPacketizationEncodeJob::packet_descriptors: &'a [j2k_types::J2kPacketizationPacketDescriptor]
 pub j2k_types::J2kPacketizationEncodeJob::progression_order: j2k_types::J2kPacketizationProgressionOrder
 pub j2k_types::J2kPacketizationEncodeJob::resolution_count: u32
 pub j2k_types::J2kPacketizationEncodeJob::resolutions: &'a [j2k_types::J2kPacketizationResolution<'a>]
 pub struct j2k_types::J2kPacketizationPacketDescriptor
-pub j2k_types::J2kPacketizationPacketDescriptor::component: u8
+pub j2k_types::J2kPacketizationPacketDescriptor::component: u16
 pub j2k_types::J2kPacketizationPacketDescriptor::layer: u8
 pub j2k_types::J2kPacketizationPacketDescriptor::packet_index: u32
 pub j2k_types::J2kPacketizationPacketDescriptor::precinct: u64

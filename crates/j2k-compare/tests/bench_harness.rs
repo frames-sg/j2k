@@ -14,8 +14,8 @@ fn roi_batch_compare_binary_exposes_grok_wsi_surfaces() {
 
     for expected in [
         "htj2k_raw_rgb8_512_roi256_q4_repeated_batch16",
-        "htj2k_jp2_rgb8_512_roi256_q4_repeated_batch16",
-        "htj2k_jp2_rgb8_256_roi128_q4_repeated_batch16",
+        "htj2k_jph_rgb8_512_roi256_q4_repeated_batch16",
+        "htj2k_jph_rgb8_256_roi128_q4_repeated_batch16",
         "j2k",
         "grok",
     ] {
@@ -34,7 +34,7 @@ fn fixture_compare_binary_exposes_fair_fixture_matrix() {
         "J2K_FIXTURE_COMPARE_REPEATS",
         "J2K_FIXTURE_COMPARE_MODE",
         "classic_jp2_rgb8_128_roi64_q4",
-        "htj2k_jp2_rgb8_512_roi256_q4",
+        "htj2k_jph_rgb8_512_roi256_q4",
         "J2K_FIXTURE_COMPARE_BATCH_SIZES",
         "J2K_FIXTURE_COMPARE_CASE_BATCH_SIZES",
         "J2K_FIXTURE_COMPARE_MIXED_BATCH_SIZES",
@@ -450,7 +450,7 @@ fn encode_compare_kakadu_opt_in_skip_does_not_block_default_publication_gate() {
 #[test]
 fn fixture_compare_default_portable_native_excludes_openjpeg_noncomparable_rows() {
     let output = fixture_compare_command()
-        .arg("htj2k_jp2_rgb8")
+        .arg("htj2k_jph_rgb8")
         .output()
         .expect("run fixture compare");
 
@@ -461,10 +461,10 @@ fn fixture_compare_default_portable_native_excludes_openjpeg_noncomparable_rows(
     assert!(stdout.contains("selected_cases\t1"));
     assert!(stdout.contains("mode_excluded_case_count\t2"));
     assert!(stdout
-        .contains("mode_excluded_cases\thtj2k_jp2_rgb8_128_roi64_q4,htj2k_jp2_rgb8_512_roi256_q4"));
+        .contains("mode_excluded_cases\thtj2k_jph_rgb8_128_roi64_q4,htj2k_jph_rgb8_512_roi256_q4"));
     assert!(stdout.contains("skipped_comparators\tnone"));
-    assert!(!stdout.contains("htj2k_jp2_rgb8_128_roi64_q4\t"));
-    assert!(!stdout.contains("htj2k_jp2_rgb8_512_roi256_q4\t"));
+    assert!(!stdout.contains("htj2k_jph_rgb8_128_roi64_q4\t"));
+    assert!(!stdout.contains("htj2k_jph_rgb8_512_roi256_q4\t"));
     assert!(stdout.ends_with("benchmark_complete\ttrue\n"));
 }
 
@@ -472,7 +472,7 @@ fn fixture_compare_default_portable_native_excludes_openjpeg_noncomparable_rows(
 fn fixture_compare_capability_marks_openjpeg_htj2k_roi_scaled_noncomparable() {
     let output = fixture_compare_command()
         .env("J2K_FIXTURE_COMPARE_MODE", "capability")
-        .arg("htj2k_jp2_rgb8_128_roi64_q4")
+        .arg("htj2k_jph_rgb8_128_roi64_q4")
         .output()
         .expect("run fixture compare");
 
@@ -484,11 +484,11 @@ fn fixture_compare_capability_marks_openjpeg_htj2k_roi_scaled_noncomparable() {
     );
     assert!(stdout.contains("publication_eligible\tfalse"));
     assert!(stdout.contains(
-        "openjpeg\thtj2k_jp2_rgb8_128_roi64_q4\tcapability\tskipped\tj2k-generated-jp2-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjp2\troi-scaled"
+        "openjpeg\thtj2k_jph_rgb8_128_roi64_q4\tcapability\tskipped\tj2k-generated-jph-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjph\troi-scaled"
     ));
     assert!(stdout.contains("openjpeg-htj2k-roi-scaled-noncomparable"));
     assert!(stdout.contains(
-        "grok\thtj2k_jp2_rgb8_128_roi64_q4\tcapability\tnative\tj2k-generated-jp2-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjp2\troi-scaled"
+        "grok\thtj2k_jph_rgb8_128_roi64_q4\tcapability\tnative\tj2k-generated-jph-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjph\troi-scaled"
     ));
     assert!(stdout.ends_with("benchmark_complete\ttrue\n"));
 }
@@ -497,7 +497,7 @@ fn fixture_compare_capability_marks_openjpeg_htj2k_roi_scaled_noncomparable() {
 fn fixture_compare_portable_emulated_labels_openjpeg_task_equivalent_decode() {
     let output = fixture_compare_command()
         .env("J2K_FIXTURE_COMPARE_MODE", "portable-emulated")
-        .arg("htj2k_jp2_rgb8_128_roi64_q4")
+        .arg("htj2k_jph_rgb8_128_roi64_q4")
         .output()
         .expect("run fixture compare");
 
@@ -509,10 +509,10 @@ fn fixture_compare_portable_emulated_labels_openjpeg_task_equivalent_decode() {
     assert!(stdout.contains("mode_excluded_case_count\t0"));
     assert!(stdout.contains("skipped_comparators\tnone"));
     assert!(stdout.contains(
-        "openjpeg\thtj2k_jp2_rgb8_128_roi64_q4\tportable-emulated\temulated-full-scaled-crop\tj2k-generated-jp2-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjp2\troi-scaled"
+        "openjpeg\thtj2k_jph_rgb8_128_roi64_q4\tportable-emulated\temulated-full-scaled-crop\tj2k-generated-jph-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjph\troi-scaled"
     ));
     assert!(stdout.contains(
-        "grok\thtj2k_jp2_rgb8_128_roi64_q4\tportable-emulated\tnative\tj2k-generated-jp2-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjp2\troi-scaled"
+        "grok\thtj2k_jph_rgb8_128_roi64_q4\tportable-emulated\tnative\tj2k-generated-jph-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjph\troi-scaled"
     ));
     assert!(stdout.ends_with("benchmark_complete\ttrue\n"));
 }

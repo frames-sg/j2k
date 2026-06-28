@@ -82,7 +82,7 @@ fn cuda_htj2k_host_encode_reference_policy(
             workload.operation == J2kAdaptiveOperation::Encode
                 && workload.codec_mode == J2kAdaptiveCodecMode::Htj2k
                 && workload.quality_mode == J2kAdaptiveQualityMode::Lossless
-                && workload.components == policy.components
+                && workload.components == u16::from(policy.components)
                 && workload.bit_depth == 8
                 && workload.batch_size == 1
                 && !workload.roi
@@ -141,7 +141,7 @@ pub struct J2kAdaptiveWorkload {
     /// Lossless versus lossy mode.
     pub quality_mode: J2kAdaptiveQualityMode,
     /// Number of image components.
-    pub components: u8,
+    pub components: u16,
     /// Significant bits per component sample.
     pub bit_depth: u8,
     /// Tile dimensions in pixels.
@@ -165,7 +165,7 @@ impl J2kAdaptiveWorkload {
         operation: J2kAdaptiveOperation,
         codec_mode: J2kAdaptiveCodecMode,
         quality_mode: J2kAdaptiveQualityMode,
-        components: u8,
+        components: u16,
         bit_depth: u8,
         tile_size: (u32, u32),
         batch_size: u16,

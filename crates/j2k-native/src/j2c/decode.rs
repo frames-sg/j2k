@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use super::bitplane::{BitPlaneDecodeBuffers, BitPlaneDecodeContext};
 use super::build::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, SubBandType};
-use super::codestream::{ComponentInfo, Header, QuantizationStyle};
+use super::codestream::{ComponentInfo, Header, QuantizationStyle, WaveletTransform};
 use super::ht_block_decode::{self, HtBlockDecodeContext};
 use super::idwt::IDWTOutput;
 use super::progression::{progression_iterator, ProgressionData};
@@ -24,14 +24,14 @@ use crate::math::SimdBuffer;
 use crate::profile;
 use crate::reader::BitReader;
 use crate::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, checked_decode_byte_len3,
-    checked_decode_sample_count, decode_j2k_code_block_scalar, HtCodeBlockBatchJob,
-    HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan,
-    HtSubBandDecodeJob, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockSegment,
-    J2kCodeBlockStyle, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob,
-    J2kOwnedSubBandPlan, J2kRect, J2kStoreComponentJob, J2kSubBandDecodeJob, J2kSubBandType,
-    J2kWaveletTransform,
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, apply_roi_maxshift_inverse_i64,
+    checked_decode_byte_len3, checked_decode_sample_count, decode_j2k_code_block_scalar,
+    HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob,
+    HtOwnedSubBandPlan, HtSubBandDecodeJob, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob,
+    J2kCodeBlockSegment, J2kCodeBlockStyle, J2kDirectBandId, J2kDirectColorPlan,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
+    J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect, J2kStoreComponentJob,
+    J2kSubBandDecodeJob, J2kSubBandType, J2kWaveletTransform,
 };
 #[cfg(feature = "parallel")]
 use crate::{decode_ht_code_block_scalar_with_workspace, HtCodeBlockDecodeWorkspace};
@@ -136,7 +136,7 @@ pub(crate) fn build_direct_grayscale_plan<'a>(
         header,
         &ctx.storage,
         0,
-        (1_u32 << (component_info.size_info.precision - 1)) as f32,
+        component_unsigned_level_shift(component_info),
     )
 }
 
@@ -186,7 +186,7 @@ pub(crate) fn build_direct_color_plan<'a>(
         let addend = if tile.mct {
             0.0
         } else {
-            (1_u32 << (component_info.size_info.precision - 1)) as f32
+            component_unsigned_level_shift(component_info)
         };
         component_plans.push(build_component_plan_from_storage(
             tile,
@@ -759,6 +759,15 @@ fn decode_tile<'a, 'b>(
     profile_timings: &mut DecodeProfileTimings,
 ) -> Result<()> {
     storage.reset();
+    storage.exact_integer_decode = tile_requires_exact_integer_decode(tile);
+    if storage.exact_integer_decode {
+        validate_exact_integer_decode_tile(tile)?;
+        if tile_ctx.output_region.is_some() {
+            bail!(DecodingError::UnsupportedFeature(
+                "25-38 bit region decode requires exact integer region IDWT support"
+            ));
+        }
+    }
 
     // This is the method that orchestrates all steps.
 
@@ -770,6 +779,9 @@ fn decode_tile<'a, 'b>(
         storage.roi_plan = RoiPlan::build(tile, header, storage, output_region);
         if storage.roi_plan.is_some() {
             storage.coefficients.fill(0.0);
+            if storage.exact_integer_decode {
+                storage.coefficients_i64.fill(0);
+            }
         }
     }
     profile_timings.build_us += profile::elapsed_us(stage_start);
@@ -820,6 +832,33 @@ fn decode_tile<'a, 'b>(
         profile_timings.store_us += profile::elapsed_us(stage_start);
     }
 
+    Ok(())
+}
+
+fn tile_requires_exact_integer_decode(tile: &Tile<'_>) -> bool {
+    tile.component_infos
+        .iter()
+        .any(ComponentInfo::requires_exact_integer_decode)
+}
+
+fn validate_exact_integer_decode_tile(tile: &Tile<'_>) -> Result<()> {
+    for component in &tile.component_infos {
+        if component.size_info.precision > 38 {
+            bail!(DecodingError::UnsupportedFeature(
+                "JPEG 2000 Part 1 component precision is limited to 38 bits"
+            ));
+        }
+        if component.wavelet_transform() != WaveletTransform::Reversible53 {
+            bail!(DecodingError::UnsupportedFeature(
+                "25-38 bit decode currently requires reversible 5/3 coding"
+            ));
+        }
+        if component.quantization_info.quantization_style != QuantizationStyle::NoQuantization {
+            bail!(DecodingError::UnsupportedFeature(
+                "25-38 bit decode currently requires reversible no-quantization coding"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -960,10 +999,12 @@ pub(crate) struct DecompositionStorage<'a> {
     pub(crate) precincts: Vec<Precinct>,
     pub(crate) tag_tree_nodes: Vec<TagNode>,
     pub(crate) coefficients: Vec<f32>,
+    pub(crate) coefficients_i64: Vec<i64>,
     pub(crate) sub_bands: Vec<SubBand>,
     pub(crate) decompositions: Vec<Decomposition>,
     pub(crate) tile_decompositions: Vec<TileDecompositions>,
     pub(crate) roi_plan: Option<RoiPlan>,
+    pub(crate) exact_integer_decode: bool,
 }
 
 impl DecompositionStorage<'_> {
@@ -980,6 +1021,7 @@ impl DecompositionStorage<'_> {
         self.tile_decompositions.clear();
         self.tag_tree_nodes.clear();
         self.roi_plan = None;
+        self.exact_integer_decode = false;
     }
 }
 
@@ -993,6 +1035,8 @@ pub(crate) struct TileDecodeContext {
     pub(crate) idwt_output: IDWTOutput,
     /// A scratch buffer used during IDWT.
     pub(crate) idwt_scratch_buffer: Vec<f32>,
+    /// A scratch buffer used during exact reversible integer IDWT.
+    pub(crate) idwt_scratch_buffer_i64: Vec<i64>,
     /// A reusable context for decoding code blocks.
     pub(crate) bit_plane_decode_context: BitPlaneDecodeContext,
     /// Reusable buffers for decoding bitplanes.
@@ -1028,13 +1072,26 @@ impl TileDecodeContext {
             initial_tile.component_infos.len(),
             size_of::<f32>(),
         )?;
+        let exact_integer_decode = initial_tile
+            .component_infos
+            .iter()
+            .any(ComponentInfo::requires_exact_integer_decode);
+        if exact_integer_decode {
+            checked_decode_byte_len3(
+                sample_count,
+                initial_tile.component_infos.len(),
+                size_of::<i64>(),
+            )?;
+        }
 
         // Allocate per component here; the surrounding context reuses the
         // higher-level vectors while `SimdBuffer` owns its initialized storage.
         for info in &initial_tile.component_infos {
             self.channel_data.push(ComponentData {
                 container: SimdBuffer::zeros(sample_count),
+                integer_container: exact_integer_decode.then(|| vec![0; sample_count]),
                 bit_depth: info.size_info.precision,
+                signed: info.size_info.signed,
             });
         }
         Ok(())
@@ -1134,6 +1191,19 @@ fn decode_sub_band_bitplanes(
         .code_block_style
         .uses_high_throughput_block_coding()
     {
+        if storage.exact_integer_decode {
+            decode_sub_band_ht_blocks_i64(
+                sub_band_idx,
+                &sub_band,
+                component_info,
+                tile_ctx,
+                storage,
+                header,
+                num_bitplanes,
+                profile_enabled,
+            )?;
+            return Ok(());
+        }
         decode_sub_band_ht_blocks(
             sub_band_idx,
             &sub_band,
@@ -1152,6 +1222,19 @@ fn decode_sub_band_bitplanes(
 
     let coded_bitplanes =
         add_roi_shift_to_bitplanes(num_bitplanes, component_info.roi_shift, MAX_BITPLANE_COUNT)?;
+
+    if storage.exact_integer_decode {
+        decode_sub_band_classic_blocks_i64(
+            sub_band_idx,
+            &sub_band,
+            component_info,
+            tile_ctx,
+            storage,
+            header,
+            coded_bitplanes,
+        )?;
+        return Ok(());
+    }
 
     let classic_job_sub_band_type = match sub_band.sub_band_type {
         SubBandType::LowLow => J2kSubBandType::LowLow,
@@ -1307,10 +1390,72 @@ fn decode_sub_band_bitplanes(
                 let out_row = &mut base_store[base_idx..];
 
                 for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    let coefficient =
-                        apply_roi_maxshift_inverse_i32(coefficient.get(), component_info.roi_shift);
+                    let coefficient = apply_roi_maxshift_inverse_i64(
+                        coefficient.get_i64(),
+                        component_info.roi_shift,
+                    );
                     *output = coefficient as f32;
                     *output *= dequantization_step;
+                }
+
+                base_idx += output_stride;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn decode_sub_band_classic_blocks_i64(
+    sub_band_idx: usize,
+    sub_band: &SubBand,
+    component_info: &ComponentInfo,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'_>,
+    header: &Header<'_>,
+    coded_bitplanes: u8,
+) -> Result<()> {
+    for precinct in sub_band
+        .precincts
+        .clone()
+        .map(|idx| &storage.precincts[idx])
+    {
+        for code_block in precinct
+            .code_blocks
+            .clone()
+            .map(|idx| &storage.code_blocks[idx])
+        {
+            if !code_block_required_by_index(storage, sub_band_idx, code_block) {
+                tile_ctx.debug_counters.skipped_code_blocks += 1;
+                continue;
+            }
+            tile_ctx.debug_counters.decoded_code_blocks += 1;
+            let x_offset = code_block.rect.x0 - sub_band.rect.x0;
+            let y_offset = code_block.rect.y0 - sub_band.rect.y0;
+            let output_stride = sub_band.rect.width() as usize;
+            let base_idx = (y_offset * sub_band.rect.width()) as usize + x_offset as usize;
+
+            bitplane::decode(
+                code_block,
+                sub_band.sub_band_type,
+                coded_bitplanes,
+                &component_info.coding_style.parameters.code_block_style,
+                tile_ctx,
+                storage,
+                header.strict,
+            )?;
+
+            let base_store = &mut storage.coefficients_i64[sub_band.coefficients.clone()];
+            let mut base_idx = base_idx;
+
+            for coefficients in tile_ctx.bit_plane_decode_context.coefficient_rows() {
+                let out_row = &mut base_store[base_idx..];
+
+                for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
+                    *output = apply_roi_maxshift_inverse_i64(
+                        coefficient.get_i64(),
+                        component_info.roi_shift,
+                    );
                 }
 
                 base_idx += output_stride;
@@ -1714,6 +1859,92 @@ fn copy_decoded_ht_blocks_to_sub_band(
     Ok(())
 }
 
+fn decode_sub_band_ht_blocks_i64(
+    sub_band_idx: usize,
+    sub_band: &SubBand,
+    component_info: &ComponentInfo,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'_>,
+    header: &Header<'_>,
+    num_bitplanes: u8,
+    profile_enabled: bool,
+) -> Result<()> {
+    let coded_bitplanes = add_roi_shift_to_bitplanes(num_bitplanes, component_info.roi_shift, 31)?;
+    let stripe_causal = component_info
+        .coding_style
+        .parameters
+        .code_block_style
+        .vertically_causal_context;
+
+    for precinct in sub_band
+        .precincts
+        .clone()
+        .map(|idx| &storage.precincts[idx])
+    {
+        for code_block in precinct
+            .code_blocks
+            .clone()
+            .map(|idx| &storage.code_blocks[idx])
+        {
+            if !code_block_required_by_index(storage, sub_band_idx, code_block) {
+                tile_ctx.debug_counters.skipped_code_blocks += 1;
+                continue;
+            }
+
+            let actual_bitplanes = if header.strict {
+                coded_bitplanes
+                    .checked_sub(code_block.missing_bit_planes)
+                    .ok_or(DecodingError::InvalidBitplaneCount)?
+            } else {
+                coded_bitplanes.saturating_sub(code_block.missing_bit_planes)
+            };
+            let max_coding_passes = if actual_bitplanes == 0 {
+                0
+            } else {
+                1 + 3 * (actual_bitplanes - 1)
+            };
+            if code_block.number_of_coding_passes > max_coding_passes && header.strict {
+                bail!(DecodingError::TooManyCodingPasses);
+            }
+            if code_block.number_of_coding_passes == 0 || actual_bitplanes == 0 {
+                continue;
+            }
+
+            tile_ctx.debug_counters.decoded_code_blocks += 1;
+            ht_block_decode::decode_with_stats(
+                code_block,
+                coded_bitplanes,
+                stripe_causal,
+                &mut tile_ctx.ht_block_decode_context,
+                storage,
+                header.strict,
+                Some(&mut tile_ctx.debug_counters.ht_phase_stats),
+                profile_enabled,
+            )?;
+
+            let x_offset = code_block.rect.x0 - sub_band.rect.x0;
+            let y_offset = code_block.rect.y0 - sub_band.rect.y0;
+            let base_store = &mut storage.coefficients_i64[sub_band.coefficients.clone()];
+            let mut base_idx = (y_offset * sub_band.rect.width()) as usize + x_offset as usize;
+            let output_stride = sub_band.rect.width() as usize;
+
+            for coefficients in tile_ctx.ht_block_decode_context.coefficient_rows() {
+                let out_row = &mut base_store[base_idx..];
+
+                for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
+                    let coefficient =
+                        ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes) as i64;
+                    *output = apply_roi_maxshift_inverse_i64(coefficient, component_info.roi_shift);
+                }
+
+                base_idx += output_stride;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn decode_sub_band_ht_blocks(
     sub_band_idx: usize,
     sub_band: &SubBand,
@@ -1918,9 +2149,16 @@ fn apply_sign_shift(tile_ctx: &mut TileDecodeContext, component_infos: &[Compone
     for (channel_data, component_info) in
         tile_ctx.channel_data.iter_mut().zip(component_infos.iter())
     {
-        let addend = (1_u32 << (component_info.size_info.precision - 1)) as f32;
-        for sample in channel_data.container.deref_mut() {
-            *sample += addend;
+        if let Some(samples) = channel_data.integer_container.as_mut() {
+            let addend = component_unsigned_level_shift_i64(component_info);
+            for sample in samples {
+                *sample += addend;
+            }
+        } else {
+            let addend = component_unsigned_level_shift(component_info);
+            for sample in channel_data.container.deref_mut() {
+                *sample += addend;
+            }
         }
     }
 }
@@ -1933,6 +2171,13 @@ fn store<'a>(
     component_idx: usize,
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
 ) -> Result<()> {
+    if tile_ctx.channel_data[component_idx]
+        .integer_container
+        .is_some()
+    {
+        return store_i64(tile, header, tile_ctx, component_info, component_idx);
+    }
+
     let channel_data = &mut tile_ctx.channel_data[component_idx];
     let idwt_output = &mut tile_ctx.idwt_output;
 
@@ -1945,7 +2190,7 @@ fn store<'a>(
     let sign_shift = if tile.mct {
         0.0
     } else {
-        (1_u32 << (component_info.size_info.precision - 1)) as f32
+        component_unsigned_level_shift(component_info)
     };
 
     let (scale_x, scale_y) = (
@@ -2096,6 +2341,147 @@ fn store<'a>(
     }
 
     Ok(())
+}
+
+fn store_i64<'a>(
+    tile: &'a Tile<'a>,
+    header: &Header<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    component_info: &ComponentInfo,
+    component_idx: usize,
+) -> Result<()> {
+    if tile_ctx.output_region.is_some() {
+        bail!(DecodingError::UnsupportedFeature(
+            "25-38 bit region decode requires exact integer region IDWT support"
+        ));
+    }
+
+    let channel_data = &mut tile_ctx.channel_data[component_idx];
+    let idwt_output = &mut tile_ctx.idwt_output;
+    let output = channel_data
+        .integer_container
+        .as_mut()
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+
+    let component_tile = ComponentTile::new(tile, component_info);
+    let resolution_tile = ResolutionTile::new(
+        component_tile,
+        component_info.num_resolution_levels() - 1 - header.skipped_resolution_levels,
+    );
+
+    let sign_shift = if tile.mct {
+        0
+    } else {
+        component_unsigned_level_shift_i64(component_info)
+    };
+
+    let (scale_x, scale_y) = (
+        component_info.size_info.horizontal_resolution,
+        component_info.size_info.vertical_resolution,
+    );
+
+    let (image_x_offset, image_y_offset) = (
+        header.size_data.image_area_x_offset,
+        header.size_data.image_area_y_offset,
+    );
+
+    if scale_x == 1 && scale_y == 1 {
+        let source_x = image_x_offset.saturating_sub(idwt_output.rect.x0);
+        let source_y = image_y_offset.saturating_sub(idwt_output.rect.y0);
+        let copy_width = resolution_tile
+            .rect
+            .width()
+            .min(idwt_output.rect.width().saturating_sub(source_x));
+        let copy_height = resolution_tile
+            .rect
+            .height()
+            .min(idwt_output.rect.height().saturating_sub(source_y));
+        let output_x = resolution_tile.rect.x0.saturating_sub(image_x_offset);
+        let output_y = resolution_tile.rect.y0.saturating_sub(image_y_offset);
+        let input_width = idwt_output.rect.width() as usize;
+        let image_width = header.size_data.image_width() as usize;
+        let copy_width = copy_width as usize;
+
+        for row in 0..copy_height as usize {
+            let src_start = (source_y as usize + row)
+                .checked_mul(input_width)
+                .and_then(|offset| offset.checked_add(source_x as usize))
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let dst_start = (output_y as usize + row)
+                .checked_mul(image_width)
+                .and_then(|offset| offset.checked_add(output_x as usize))
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let src = &idwt_output.coefficients_i64[src_start..src_start + copy_width];
+            let dst = &mut output[dst_start..dst_start + copy_width];
+            if sign_shift == 0 {
+                dst.copy_from_slice(src);
+            } else {
+                for (dst, src) in dst.iter_mut().zip(src.iter().copied()) {
+                    *dst = src + sign_shift;
+                }
+            }
+        }
+    } else {
+        let image_width = header.size_data.image_width();
+        let image_height = header.size_data.image_height();
+
+        let x_shrink_factor = header.size_data.x_shrink_factor;
+        let y_shrink_factor = header.size_data.y_shrink_factor;
+
+        let x_offset = header
+            .size_data
+            .image_area_x_offset
+            .div_ceil(x_shrink_factor);
+        let y_offset = header
+            .size_data
+            .image_area_y_offset
+            .div_ceil(y_shrink_factor);
+
+        for y in resolution_tile.rect.y0..resolution_tile.rect.y1 {
+            let relative_y = (y - component_tile.rect.y0) as usize;
+            let reference_grid_y = (scale_y as u32 * y) / y_shrink_factor;
+
+            for x in resolution_tile.rect.x0..resolution_tile.rect.x1 {
+                let relative_x = (x - component_tile.rect.x0) as usize;
+                let reference_grid_x = (scale_x as u32 * x) / x_shrink_factor;
+
+                let sample = idwt_output.coefficients_i64
+                    [relative_y * idwt_output.rect.width() as usize + relative_x]
+                    + sign_shift;
+
+                for x_position in u32::max(reference_grid_x, x_offset)
+                    ..u32::min(reference_grid_x + scale_x as u32, image_width + x_offset)
+                {
+                    for y_position in u32::max(reference_grid_y, y_offset)
+                        ..u32::min(reference_grid_y + scale_y as u32, image_height + y_offset)
+                    {
+                        let pos = (y_position - y_offset) as usize * image_width as usize
+                            + (x_position - x_offset) as usize;
+
+                        output[pos] = sample;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn component_unsigned_level_shift(component_info: &ComponentInfo) -> f32 {
+    if component_info.size_info.signed {
+        0.0
+    } else {
+        (1_u64 << (component_info.size_info.precision - 1)) as f32
+    }
+}
+
+fn component_unsigned_level_shift_i64(component_info: &ComponentInfo) -> i64 {
+    if component_info.size_info.signed {
+        0
+    } else {
+        1_i64 << (component_info.size_info.precision - 1)
+    }
 }
 
 fn store_region<'a>(

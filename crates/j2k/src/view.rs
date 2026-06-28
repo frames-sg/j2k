@@ -7,11 +7,12 @@ use crate::{
     context::J2kContext,
     decode::{
         decode_image_into_with_native_context, decode_image_region_into_with_native_context,
-        validate_buffer, validate_region, J2kDecodeOutcome,
+        validate_buffer, validate_region, J2kDecodeOutcome, J2kDecodedComponents,
+        J2kDecodedNativeComponents,
     },
     parse::{parse_image_info, parse_info},
     scratch::J2kScratchPool,
-    CpuDecodeParallelism, J2kError,
+    CpuDecodeParallelism, J2kError, J2kSupportInfo,
 };
 use alloc::vec::Vec;
 use core::convert::Infallible;
@@ -28,6 +29,7 @@ use j2k_core::{
 pub struct J2kView<'a> {
     bytes: &'a [u8],
     info: Info,
+    support_info: Option<J2kSupportInfo>,
     image: Option<Image<'a>>,
     passthrough: Option<(CompressedTransferSyntax, CompressedPayloadKind)>,
 }
@@ -39,18 +41,20 @@ impl<'a> J2kView<'a> {
     /// Returns [`J2kError`] when the input is not a supported JP2/J2C/HTJ2K
     /// stream or when backend inspection rejects the codestream.
     pub fn parse(input: &'a [u8]) -> Result<Self, J2kError> {
-        let (info, passthrough) = match parse_image_info(input) {
-            Ok(parsed) => (
-                parsed.info,
-                Some((parsed.transfer_syntax, parsed.payload_kind)),
-            ),
-            Err(error) if should_retry_with_backend(&error) => (inspect_info(input)?, None),
+        let (info, support_info, passthrough) = match parse_image_info(input) {
+            Ok(parsed) => {
+                let support_info = parsed.into_support_info();
+                let passthrough = Some((support_info.transfer_syntax, support_info.payload_kind));
+                (support_info.info.clone(), Some(support_info), passthrough)
+            }
+            Err(error) if should_retry_with_backend(&error) => (inspect_info(input)?, None, None),
             Err(error) => return Err(error),
         };
         let image = Some(backend_image(input, DecodeSettings::default())?);
         Ok(Self {
             bytes: input,
             info,
+            support_info,
             image,
             passthrough,
         })
@@ -59,6 +63,12 @@ impl<'a> J2kView<'a> {
     /// Header-derived image metadata.
     pub fn info(&self) -> &Info {
         &self.info
+    }
+
+    /// Full JPEG 2000 / HTJ2K support metadata when header parsing classified
+    /// the payload without falling back to backend-only inspection.
+    pub fn support_info(&self) -> Option<&J2kSupportInfo> {
+        self.support_info.as_ref()
     }
 
     /// Original compressed bytes backing this view.
@@ -82,6 +92,7 @@ impl<'a> J2kView<'a> {
 pub struct J2kDecoder<'a> {
     bytes: &'a [u8],
     info: Info,
+    support_info: Option<J2kSupportInfo>,
     image: Option<Image<'a>>,
     native_context: j2k_native::DecoderContext<'a>,
     passthrough: Option<(CompressedTransferSyntax, CompressedPayloadKind)>,
@@ -162,6 +173,15 @@ impl<'a> J2kDecoder<'a> {
         }
     }
 
+    /// Inspect full JPEG 2000 / HTJ2K support metadata without decoding pixels.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the input cannot be parsed as a JP2/JPH file
+    /// or raw JPEG 2000 / HTJ2K codestream.
+    pub fn inspect_support(input: &'a [u8]) -> Result<J2kSupportInfo, J2kError> {
+        parse_image_info(input).map(crate::parse::ParsedImageInfo::into_support_info)
+    }
+
     /// Create a decoder from compressed bytes.
     ///
     /// # Errors
@@ -178,6 +198,7 @@ impl<'a> J2kDecoder<'a> {
         Ok(Self {
             bytes: view.bytes,
             info: view.info,
+            support_info: view.support_info,
             image: view.image,
             native_context: j2k_native::DecoderContext::default(),
             passthrough: view.passthrough,
@@ -187,6 +208,101 @@ impl<'a> J2kDecoder<'a> {
     /// Header-derived image metadata.
     pub fn info(&self) -> &Info {
         &self.info
+    }
+
+    /// Full JPEG 2000 / HTJ2K support metadata when available from parse.
+    pub fn support_info(&self) -> Option<&J2kSupportInfo> {
+        self.support_info.as_ref()
+    }
+
+    /// Decode the full image into borrowed component planes.
+    ///
+    /// This exposes the native component-plane path for callers that need
+    /// arbitrary component counts, per-component bit depths, or non-RGB
+    /// component interpretation. The returned planes borrow this decoder's
+    /// reusable native decode context.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the codestream cannot be decoded.
+    pub fn decode_components(&mut self) -> Result<J2kDecodedComponents<'_>, J2kError> {
+        self.ensure_image()?;
+        let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
+            return Err(J2kError::Backend(
+                "internal image cache missing".to_string(),
+            ));
+        };
+        image
+            .decode_components_with_context(native_context)
+            .map(|decoded| J2kDecodedComponents::from_native(&decoded))
+            .map_err(|err| J2kError::Backend(err.to_string()))
+    }
+
+    /// Decode a source-coordinate region into borrowed component planes.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the region is invalid or the codestream cannot
+    /// be decoded.
+    pub fn decode_region_components(
+        &mut self,
+        roi: Rect,
+    ) -> Result<J2kDecodedComponents<'_>, J2kError> {
+        validate_region(roi, self.info.dimensions)?;
+        self.ensure_image()?;
+        let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
+            return Err(J2kError::Backend(
+                "internal image cache missing".to_string(),
+            ));
+        };
+        image
+            .decode_region_components_with_context((roi.x, roi.y, roi.w, roi.h), native_context)
+            .map(|decoded| J2kDecodedComponents::from_native(&decoded))
+            .map_err(|err| J2kError::Backend(err.to_string()))
+    }
+
+    /// Decode the full image into owned native-bit-depth component planes.
+    ///
+    /// This preserves per-component bit depth, signedness, sampling, and byte
+    /// width for callers that cannot use a single interleaved packed bitmap.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the codestream cannot be decoded.
+    pub fn decode_native_components(&mut self) -> Result<J2kDecodedNativeComponents, J2kError> {
+        self.ensure_image()?;
+        let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
+            return Err(J2kError::Backend(
+                "internal image cache missing".to_string(),
+            ));
+        };
+        image
+            .decode_native_components_with_context(native_context)
+            .map(|decoded| J2kDecodedNativeComponents::from_native(&decoded))
+            .map_err(|err| J2kError::Backend(err.to_string()))
+    }
+
+    /// Decode a source-coordinate region into owned native-bit-depth component
+    /// planes.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the region is invalid or the codestream cannot
+    /// be decoded.
+    pub fn decode_native_region_components(
+        &mut self,
+        roi: Rect,
+    ) -> Result<J2kDecodedNativeComponents, J2kError> {
+        validate_region(roi, self.info.dimensions)?;
+        self.ensure_image()?;
+        let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
+            return Err(J2kError::Backend(
+                "internal image cache missing".to_string(),
+            ));
+        };
+        image
+            .decode_native_region_components_with_context(
+                (roi.x, roi.y, roi.w, roi.h),
+                native_context,
+            )
+            .map(|decoded| J2kDecodedNativeComponents::from_native(&decoded))
+            .map_err(|err| J2kError::Backend(err.to_string()))
     }
 
     /// Return the CPU decode parallelism policy for this decoder.
@@ -794,6 +910,7 @@ mod tests {
                 restart_interval: None,
                 resolution_levels: 1,
             },
+            support_info: None,
             image: None,
             native_context: j2k_native::DecoderContext::default(),
             passthrough: None,

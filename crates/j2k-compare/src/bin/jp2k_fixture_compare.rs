@@ -17,10 +17,11 @@ use j2k::{
     decode_tile_into_in_context, decode_tile_region_into_in_context,
     decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context,
     decode_tiles_into, decode_tiles_region_into, decode_tiles_region_scaled_into,
-    decode_tiles_scaled_into, encode_j2k_lossless, CpuDecodeParallelism, DecoderContext,
-    EncodeBackendPreference, J2kBlockCodingMode, J2kContext, J2kDecoder, J2kEncodeValidation,
-    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kScratchPool, TileBatchOptions, TileDecodeJob,
-    TileRegionDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    decode_tiles_scaled_into, encode_j2k_lossless, wrap_j2k_codestream, CpuDecodeParallelism,
+    DecoderContext, EncodeBackendPreference, J2kBlockCodingMode, J2kContext, J2kDecoder,
+    J2kEncodeValidation, J2kFileWrapOptions, J2kLosslessEncodeOptions, J2kLosslessSamples,
+    J2kScratchPool, TileBatchOptions, TileDecodeJob, TileRegionDecodeJob,
+    TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use j2k_compare::{grok, openjpeg, parse_positive_usize, sample_stats, usize_to_f64};
 use j2k_core::{tile_batch_worker_count, Downscale, PixelFormat, Rect};
@@ -714,8 +715,10 @@ fn fixture_cases() -> Result<Vec<FixtureCase>, String> {
         wrap_jp2_codestream(&classic_rgb_128, SMALL_SIDE, SMALL_SIDE, 3, 8, 16);
     let classic_rgb_512_jp2 =
         wrap_jp2_codestream(&classic_rgb_512, LARGE_SIDE, LARGE_SIDE, 3, 8, 16);
-    let htj2k_rgb_128_jp2 = wrap_jp2_codestream(&htj2k_rgb_128, SMALL_SIDE, SMALL_SIDE, 3, 8, 16);
-    let htj2k_rgb_512_jp2 = wrap_jp2_codestream(&htj2k_rgb_512, LARGE_SIDE, LARGE_SIDE, 3, 8, 16);
+    let htj2k_rgb_128_jph = wrap_j2k_codestream(&htj2k_rgb_128, J2kFileWrapOptions::jph())
+        .map_err(|error| format!("wrap generated HTJ2K 128 fixture as JPH: {error}"))?;
+    let htj2k_rgb_512_jph = wrap_j2k_codestream(&htj2k_rgb_512, J2kFileWrapOptions::jph())
+        .map_err(|error| format!("wrap generated HTJ2K 512 fixture as JPH: {error}"))?;
 
     Ok(vec![
         case_from_bytes(
@@ -797,30 +800,30 @@ fn fixture_cases() -> Result<Vec<FixtureCase>, String> {
             Operation::Full,
         )?,
         case_from_bytes(
-            "htj2k_jp2_rgb8_128_full",
-            generated_metadata("j2k-generated-jp2-wrapper"),
+            "htj2k_jph_rgb8_128_full",
+            generated_metadata("j2k-generated-jph-wrapper"),
             Codec::Htj2k,
-            Container::Jp2,
-            htj2k_rgb_128_jp2.clone(),
+            Container::Jph,
+            htj2k_rgb_128_jph.clone(),
             Operation::Full,
         )?,
         case_from_bytes(
-            "htj2k_jp2_rgb8_128_roi64_q4",
-            generated_metadata("j2k-generated-jp2-wrapper"),
+            "htj2k_jph_rgb8_128_roi64_q4",
+            generated_metadata("j2k-generated-jph-wrapper"),
             Codec::Htj2k,
-            Container::Jp2,
-            htj2k_rgb_128_jp2,
+            Container::Jph,
+            htj2k_rgb_128_jph,
             Operation::RegionScaled {
                 roi: roi64,
                 scale: Downscale::Quarter,
             },
         )?,
         case_from_bytes(
-            "htj2k_jp2_rgb8_512_roi256_q4",
-            generated_metadata("j2k-generated-jp2-wrapper"),
+            "htj2k_jph_rgb8_512_roi256_q4",
+            generated_metadata("j2k-generated-jph-wrapper"),
             Codec::Htj2k,
-            Container::Jp2,
-            htj2k_rgb_512_jp2,
+            Container::Jph,
+            htj2k_rgb_512_jph,
             Operation::RegionScaled {
                 roi: roi256,
                 scale: Downscale::Quarter,
@@ -1492,7 +1495,7 @@ fn codestream_payload(bytes: &[u8]) -> Option<&[u8]> {
     None
 }
 
-fn pixel_format(components: u8, bit_depth: u8) -> Option<PixelFormat> {
+fn pixel_format(components: u16, bit_depth: u8) -> Option<PixelFormat> {
     match (components, bit_depth) {
         (1, 8) => Some(PixelFormat::Gray8),
         (3, 8) => Some(PixelFormat::Rgb8),
@@ -1517,7 +1520,7 @@ fn encode_lossless(
     components: u8,
     codec: Codec,
 ) -> Result<Vec<u8>, String> {
-    let samples = J2kLosslessSamples::new(pixels, width, height, components, 8, false)
+    let samples = J2kLosslessSamples::new(pixels, width, height, u16::from(components), 8, false)
         .map_err(|error| error.to_string())?;
     let block_coding_mode = match codec {
         Codec::Classic => J2kBlockCodingMode::Classic,

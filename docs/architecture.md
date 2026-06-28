@@ -4,6 +4,12 @@ This document records current workspace boundaries. It is not a roadmap.
 
 The public crate release centers on `j2k`. Runtime backend selection defaults to `Auto`: CPU remains the portable baseline, and explicit CUDA or Metal requests are strict. The workspace README records the public support and codec API policy.
 
+The codec support boundary is JPEG 2000 Part 1 codestreams, JP2 still-image
+files, HTJ2K Part 15 codestreams, and JPH still-image files. JPX / JPEG 2000
+Part 2 extensions are out of scope unless required for standard JP2/JPH
+still-image correctness. Keep row-level status synchronized with
+[`docs/public-support.md`](public-support.md).
+
 ## Crate classes
 
 | Crate | Class | Role |

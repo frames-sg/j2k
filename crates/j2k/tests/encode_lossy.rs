@@ -6,9 +6,10 @@ use j2k::adapter::encode_stage::{
     J2kQuantizeSubbandJob,
 };
 use j2k::{
-    encode_j2k_lossy, encode_j2k_lossy_with_accelerator, EncodeBackendPreference,
-    J2kBlockCodingMode, J2kEncodeValidation, J2kLossyEncodeOptions, J2kLossySamples,
-    J2kMarkerSegment, J2kProgressionOrder, J2kQualityLayer, J2kRateTarget,
+    encode_j2k_lossy, encode_j2k_lossy_with_accelerator, encode_j2k_lossy_with_roi_regions,
+    EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLossyEncodeOptions,
+    J2kLossySamples, J2kMarkerSegment, J2kProgressionOrder, J2kQualityLayer, J2kRateTarget,
+    J2kRoiRegion,
 };
 use j2k_core::{BackendKind, CodecError};
 use j2k_native::{DecodeSettings, Image};
@@ -47,6 +48,31 @@ fn plt_packet_length_count(codestream: &[u8]) -> usize {
     plt_packet_lengths(codestream).len()
 }
 
+fn marker_offset(codestream: &[u8], marker: u8) -> Option<usize> {
+    codestream
+        .windows(2)
+        .position(|window| window == [0xFF, marker])
+}
+
+fn unsigned_29_bytes(sample: u32) -> [u8; 4] {
+    [
+        (sample & 0xff) as u8,
+        ((sample >> 8) & 0xff) as u8,
+        ((sample >> 16) & 0xff) as u8,
+        ((sample >> 24) & 0x1f) as u8,
+    ]
+}
+
+fn unsigned_38_bytes(sample: u64) -> [u8; 5] {
+    [
+        (sample & 0xff) as u8,
+        ((sample >> 8) & 0xff) as u8,
+        ((sample >> 16) & 0xff) as u8,
+        ((sample >> 24) & 0xff) as u8,
+        ((sample >> 32) & 0x3f) as u8,
+    ]
+}
+
 fn plt_packet_lengths(codestream: &[u8]) -> Vec<u32> {
     let plt = codestream
         .windows(2)
@@ -71,13 +97,122 @@ fn plt_packet_lengths(codestream: &[u8]) -> Vec<u32> {
 }
 
 #[test]
-fn lossy_sample_descriptor_rejects_more_than_sixteen_bits_explicitly() {
-    let pixels = vec![0u8; 2 * 2 * 2];
+fn cpu_lossy_rectangular_roi_writes_rgn_and_decodes() {
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|index| (((index * 13) ^ (index / 5)) & 0xFF) as u8)
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+    let roi = [J2kRoiRegion {
+        component: 0,
+        x: 8,
+        y: 12,
+        width: 24,
+        height: 20,
+        shift: 12,
+    }];
 
-    let err = J2kLossySamples::new(&pixels, 2, 2, 1, 17, false).unwrap_err();
+    let encoded = encode_j2k_lossy_with_roi_regions(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::CpuOnly)
+            .with_max_decomposition_levels(Some(1)),
+        &roi,
+    )
+    .expect("lossy ROI encode");
+    let rgn = marker_offset(&encoded.codestream, 0x5E).expect("RGN marker");
+
+    assert_eq!(
+        &encoded.codestream[rgn + 2..rgn + 7],
+        &[0x00, 0x05, 0x00, 0x00, 0x0C]
+    );
+
+    let decoded = strict_decode_native(&encoded.codestream);
+    assert_eq!(decoded.width, 64);
+    assert_eq!(decoded.height, 64);
+    assert_eq!(decoded.num_components, 1);
+}
+
+#[test]
+fn lossy_sample_descriptor_accepts_part1_high_bit_depths() {
+    let pixels = vec![0u8; 2 * 2 * 5];
+
+    let samples =
+        J2kLossySamples::new(&pixels, 2, 2, 1, 38, false).expect("38-bit lossy sample descriptor");
+
+    assert_eq!(samples.bit_depth, 38);
+}
+
+#[test]
+fn cpu_classic_lossy_gray29_decodes_native_bytes() {
+    let pixels = (0_u32..32 * 32)
+        .map(|idx| ((idx * 524_287) ^ (idx / 3)) & ((1_u32 << 29) - 1))
+        .flat_map(unsigned_29_bytes)
+        .collect::<Vec<_>>();
+    let samples = J2kLossySamples::new(&pixels, 32, 32, 1, 29, false).unwrap();
+
+    let encoded = encode_j2k_lossy(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::CpuOnly)
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(1)),
+    )
+    .expect("classic gray29 lossy encode");
+
+    assert_eq!(encoded.bit_depth, 29);
+    assert!(encoded.report.psnr_db.is_some());
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.bit_depth, 29);
+    assert_eq!(decoded.bytes_per_sample, 4);
+    assert_eq!(decoded.data.len(), pixels.len());
+}
+
+#[test]
+fn cpu_classic_lossy_gray38_decodes_native_bytes() {
+    let pixels = (0_u64..16 * 16)
+        .map(|idx| ((idx * 34_359_738_337) ^ (idx / 5)) & ((1_u64 << 38) - 1))
+        .flat_map(unsigned_38_bytes)
+        .collect::<Vec<_>>();
+    let samples = J2kLossySamples::new(&pixels, 16, 16, 1, 38, false).unwrap();
+
+    let encoded = encode_j2k_lossy(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::CpuOnly)
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(1)),
+    )
+    .expect("classic gray38 lossy encode");
+
+    assert_eq!(encoded.bit_depth, 38);
+    assert!(encoded.report.psnr_db.is_some());
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.bit_depth, 38);
+    assert_eq!(decoded.bytes_per_sample, 5);
+    assert_eq!(decoded.data.len(), pixels.len());
+}
+
+#[test]
+fn cpu_lossy_htj2k_high_bit_rejects_explicitly() {
+    let pixels = (0_u32..16 * 16)
+        .map(|idx| (idx * 1_048_573) & ((1_u32 << 29) - 1))
+        .flat_map(unsigned_29_bytes)
+        .collect::<Vec<_>>();
+    let samples = J2kLossySamples::new(&pixels, 16, 16, 1, 29, false).unwrap();
+
+    let err = encode_j2k_lossy(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::CpuOnly)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput),
+    )
+    .expect_err("HTJ2K high-bit lossy encode should be explicitly unsupported");
 
     assert!(err.is_unsupported());
-    assert!(err.to_string().contains("1-16 bits per sample"));
+    assert!(
+        err.to_string().contains("HTJ2K high-bit lossy encode"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -129,6 +264,51 @@ fn cpu_classic_lossy_bits_per_pixel_target_encodes_parseable_codestream() {
     assert_eq!(decoded.width, 64);
     assert_eq!(decoded.height, 64);
     assert_eq!(decoded.num_components, 1);
+}
+
+#[test]
+fn cpu_classic_lossy_roundtrips_more_than_four_components() {
+    let pixels: Vec<u8> = (0..16 * 16 * 5)
+        .map(|index| (((index * 7) + (index / 11)) & 0xFF) as u8)
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 16, 16, 5, 8, false).unwrap();
+
+    let encoded = encode_j2k_lossy(
+        samples,
+        &J2kLossyEncodeOptions::default().with_backend(EncodeBackendPreference::CpuOnly),
+    )
+    .expect("classic lossy five-component encode");
+    let decoded = strict_decode_native(&encoded.codestream);
+
+    assert_eq!(encoded.components, 5);
+    assert_eq!(decoded.width, 16);
+    assert_eq!(decoded.height, 16);
+    assert_eq!(decoded.num_components, 5);
+}
+
+#[test]
+fn cpu_classic_lossy_preserves_signed_component_metadata() {
+    let pixels: Vec<u8> = (0..16)
+        .map(|index| (i8::try_from(index).unwrap() - 8) as u8)
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 4, 4, 1, 8, true).unwrap();
+
+    let encoded = encode_j2k_lossy(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::CpuOnly)
+            .with_max_decomposition_levels(Some(0))
+            .with_rate_target(Some(J2kRateTarget::BitsPerPixel(8.0))),
+    )
+    .expect("classic signed lossy encode");
+    let decoded = strict_decode_native(&encoded.codestream);
+
+    assert_eq!(encoded.components, 1);
+    assert_eq!(encoded.bit_depth, 8);
+    assert!(encoded.signed);
+    assert!(decoded.signed);
+    assert_eq!(decoded.component_signed, vec![true]);
+    assert_eq!(decoded.data.len(), pixels.len());
 }
 
 #[test]
@@ -355,6 +535,75 @@ fn cpu_classic_lossy_emits_sop_and_eph_that_strict_decode_uses() {
 }
 
 #[test]
+fn cpu_classic_lossy_emits_ppm_and_ppt_that_strict_decode_uses() {
+    for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
+        let pixels: Vec<u8> = (0..64 * 64)
+            .map(|index| (((index * 23) ^ (index / 13)) & 0xFF) as u8)
+            .collect();
+        let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+
+        let encoded = encode_j2k_lossy(
+            samples,
+            &J2kLossyEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::CpuOnly)
+                .with_max_decomposition_levels(Some(0))
+                .with_marker_segments(vec![marker]),
+        )
+        .expect("classic lossy separated packet-header encode");
+
+        assert!(
+            encoded
+                .codestream
+                .windows(2)
+                .any(|window| window == [0xFF, marker_byte]),
+            "marker FF{marker_byte:02X} must be emitted"
+        );
+        let decoded = strict_decode_native(&encoded.codestream);
+        assert_eq!(decoded.width, 64);
+        assert_eq!(decoded.height, 64);
+        assert_eq!(decoded.num_components, 1);
+    }
+}
+
+#[test]
+fn cpu_classic_lossy_multi_tile_emits_ppm_and_ppt_that_strict_decode_uses() {
+    for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
+        let pixels: Vec<u8> = (0..64 * 64)
+            .map(|index| (((index * 37) ^ (index / 17)) & 0xFF) as u8)
+            .collect();
+        let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+
+        let encoded = encode_j2k_lossy(
+            samples,
+            &J2kLossyEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::CpuOnly)
+                .with_max_decomposition_levels(Some(0))
+                .with_tile_size(Some((32, 32)))
+                .with_marker_segments(vec![marker]),
+        )
+        .expect("classic lossy multi-tile separated packet-header encode");
+
+        assert!(
+            encoded
+                .codestream
+                .windows(2)
+                .any(|window| window == [0xFF, marker_byte]),
+            "marker FF{marker_byte:02X} must be emitted"
+        );
+        let sot_count = encoded
+            .codestream
+            .windows(2)
+            .filter(|marker| *marker == [0xFF, 0x90])
+            .count();
+        assert_eq!(sot_count, 4);
+        let decoded = strict_decode_native(&encoded.codestream);
+        assert_eq!(decoded.width, 64);
+        assert_eq!(decoded.height, 64);
+        assert_eq!(decoded.num_components, 1);
+    }
+}
+
+#[test]
 fn cpu_classic_lossy_multi_tile_codestream_decodes() {
     let pixels: Vec<u8> = (0..96 * 80)
         .map(|index| (((index * 23) + (index / 13)) & 0xFF) as u8)
@@ -420,6 +669,97 @@ fn cpu_classic_lossy_multi_tile_emits_plt_and_plm() {
     assert_eq!(decoded.width, 96);
     assert_eq!(decoded.height, 80);
     assert_eq!(decoded.num_components, 1);
+}
+
+#[test]
+fn cpu_classic_lossy_emits_multiple_tile_parts_that_strict_decode_uses() {
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|index| (((index * 29) + (index / 11)) & 0xFF) as u8)
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+    let options = J2kLossyEncodeOptions::default()
+        .with_backend(EncodeBackendPreference::CpuOnly)
+        .with_rate_target(Some(J2kRateTarget::BitsPerPixel(1.75)))
+        .with_max_decomposition_levels(Some(2))
+        .with_tile_part_packet_limit(Some(1));
+
+    let encoded =
+        encode_j2k_lossy(samples, &options).expect("classic lossy multi-tile-part encode");
+
+    let tile_parts = sot_tile_part_fields(&encoded.codestream);
+    assert!(tile_parts.len() > 1, "expected multiple tile-parts");
+    for (index, (tile_index, tile_part_index, num_tile_parts)) in tile_parts.iter().enumerate() {
+        assert_eq!(*tile_index, 0);
+        assert_eq!(*tile_part_index, index as u8);
+        assert_eq!(*num_tile_parts, tile_parts.len() as u8);
+    }
+
+    let decoded = strict_decode_native(&encoded.codestream);
+    assert_eq!(decoded.width, 64);
+    assert_eq!(decoded.height, 64);
+    assert_eq!(decoded.num_components, 1);
+}
+
+#[test]
+fn cpu_classic_lossy_emits_tlm_for_multiple_tile_parts() {
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|index| (((index * 43) + (index / 17)) & 0xFF) as u8)
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+    let options = J2kLossyEncodeOptions::default()
+        .with_backend(EncodeBackendPreference::CpuOnly)
+        .with_rate_target(Some(J2kRateTarget::BitsPerPixel(1.75)))
+        .with_max_decomposition_levels(Some(2))
+        .with_tile_part_packet_limit(Some(1))
+        .with_marker_segments(vec![J2kMarkerSegment::Tlm]);
+
+    let encoded = encode_j2k_lossy(samples, &options).expect("classic lossy TLM encode");
+
+    let tlm = tlm_tile_part_lengths(&encoded.codestream);
+    let sot = sot_tile_part_lengths(&encoded.codestream);
+    assert!(sot.len() > 1, "expected multiple tile-parts");
+    assert_eq!(tlm, sot);
+
+    let decoded = strict_decode_native(&encoded.codestream);
+    assert_eq!(decoded.width, 64);
+    assert_eq!(decoded.height, 64);
+    assert_eq!(decoded.num_components, 1);
+}
+
+#[test]
+fn cpu_classic_lossy_emits_ppm_and_ppt_across_multiple_tile_parts_that_strict_decode_uses() {
+    for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
+        let pixels: Vec<u8> = (0..64 * 64)
+            .map(|index| (((index * 47) ^ (index / 23)) & 0xFF) as u8)
+            .collect();
+        let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+
+        let encoded = encode_j2k_lossy(
+            samples,
+            &J2kLossyEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::CpuOnly)
+                .with_max_decomposition_levels(Some(2))
+                .with_tile_part_packet_limit(Some(1))
+                .with_marker_segments(vec![marker]),
+        )
+        .expect("classic lossy multi-tile-part separated packet-header encode");
+
+        assert!(
+            encoded
+                .codestream
+                .windows(2)
+                .any(|window| window == [0xFF, marker_byte]),
+            "marker FF{marker_byte:02X} must be emitted"
+        );
+        assert!(
+            sot_tile_part_fields(&encoded.codestream).len() > 1,
+            "expected multiple tile-parts"
+        );
+        let decoded = strict_decode_native(&encoded.codestream);
+        assert_eq!(decoded.width, 64);
+        assert_eq!(decoded.height, 64);
+        assert_eq!(decoded.num_components, 1);
+    }
 }
 
 #[test]
@@ -507,8 +847,70 @@ fn cpu_htj2k_lossy_reports_rate_granularity() {
     assert_eq!(decode_native(&encoded.codestream).num_components, 1);
 }
 
+fn sot_tile_part_fields(codestream: &[u8]) -> Vec<(u16, u8, u8)> {
+    codestream
+        .windows(2)
+        .enumerate()
+        .filter_map(|(offset, marker)| {
+            if marker != [0xFF, 0x90] || offset + 12 > codestream.len() {
+                return None;
+            }
+            let tile_index = u16::from_be_bytes([codestream[offset + 4], codestream[offset + 5]]);
+            let tile_part_index = codestream[offset + 10];
+            let num_tile_parts = codestream[offset + 11];
+            Some((tile_index, tile_part_index, num_tile_parts))
+        })
+        .collect()
+}
+
+fn sot_tile_part_lengths(codestream: &[u8]) -> Vec<(u16, u32)> {
+    let mut offset = 0usize;
+    let mut fields = Vec::new();
+    while offset + 12 <= codestream.len() {
+        if codestream[offset] == 0xff && codestream[offset + 1] == 0x90 {
+            let tile_index = u16::from_be_bytes([codestream[offset + 4], codestream[offset + 5]]);
+            let tile_part_length = u32::from_be_bytes([
+                codestream[offset + 6],
+                codestream[offset + 7],
+                codestream[offset + 8],
+                codestream[offset + 9],
+            ]);
+            fields.push((tile_index, tile_part_length));
+            offset += 12;
+        } else {
+            offset += 1;
+        }
+    }
+    fields
+}
+
+fn tlm_tile_part_lengths(codestream: &[u8]) -> Vec<(u16, u32)> {
+    let mut offset = 0usize;
+    let mut fields = Vec::new();
+    while offset + 12 <= codestream.len() {
+        if codestream[offset] == 0xff && codestream[offset + 1] == 0x55 {
+            let marker_len =
+                u16::from_be_bytes([codestream[offset + 2], codestream[offset + 3]]) as usize;
+            assert_eq!(marker_len, 10);
+            assert_eq!(codestream[offset + 5], 0x22);
+            let tile_index = u16::from_be_bytes([codestream[offset + 6], codestream[offset + 7]]);
+            let tile_part_length = u32::from_be_bytes([
+                codestream[offset + 8],
+                codestream[offset + 9],
+                codestream[offset + 10],
+                codestream[offset + 11],
+            ]);
+            fields.push((tile_index, tile_part_length));
+            offset += 2 + marker_len;
+        } else {
+            offset += 1;
+        }
+    }
+    fields
+}
+
 #[test]
-fn cpu_htj2k_lossy_multiple_quality_layers_use_segment_granularity() {
+fn cpu_htj2k_lossy_three_quality_layers_use_three_pass_segment_granularity() {
     let pixels: Vec<u8> = (0..64 * 64)
         .map(|index| (((index * 43) ^ (index / 29)) & 0xFF) as u8)
         .collect();
@@ -522,12 +924,13 @@ fn cpu_htj2k_lossy_multiple_quality_layers_use_segment_granularity() {
             .with_quality_layers(vec![
                 J2kQualityLayer::new(J2kRateTarget::BitsPerPixel(0.75)),
                 J2kQualityLayer::new(J2kRateTarget::BitsPerPixel(1.5)),
+                J2kQualityLayer::new(J2kRateTarget::BitsPerPixel(3.0)),
             ])
             .with_validation(J2kEncodeValidation::CpuRoundTrip),
     )
     .expect("HTJ2K multilayer lossy encode");
 
-    assert_eq!(encoded.report.quality_layers, 2);
+    assert_eq!(encoded.report.quality_layers, 3);
     assert!(encoded.report.ht_rate_granularity_bytes.is_some());
     let cod = encoded
         .codestream
@@ -536,7 +939,7 @@ fn cpu_htj2k_lossy_multiple_quality_layers_use_segment_granularity() {
         .expect("COD marker");
     assert_eq!(
         u16::from_be_bytes([encoded.codestream[cod + 6], encoded.codestream[cod + 7]]),
-        2
+        3
     );
     assert_eq!(decode_native(&encoded.codestream).num_components, 1);
 }
@@ -594,11 +997,13 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
             job: J2kHtCodeBlockEncodeJob<'_>,
         ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
             self.ht_code_block = self.ht_code_block.saturating_add(1);
-            j2k_native::encode_ht_code_block_scalar(
+            assert_eq!(job.target_coding_passes, 3);
+            j2k_native::encode_ht_code_block_scalar_with_passes(
                 job.coefficients,
                 job.width,
                 job.height,
                 job.total_bitplanes,
+                job.target_coding_passes,
             )
             .map(public_encoded_ht)
             .map(Some)
@@ -622,6 +1027,7 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
         .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
         .with_max_decomposition_levels(Some(0))
         .with_quality_layers(vec![
+            J2kQualityLayer::new(J2kRateTarget::Bytes(100_000)),
             J2kQualityLayer::new(J2kRateTarget::Bytes(100_000)),
             J2kQualityLayer::new(J2kRateTarget::Bytes(100_000)),
         ])

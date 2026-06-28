@@ -180,7 +180,7 @@ pub struct Info {
     /// Image dimensions in pixels.
     pub dimensions: (u32, u32),
     /// Number of image components.
-    pub components: u8,
+    pub components: u16,
     /// Color interpretation of the components.
     pub colorspace: Colorspace,
     /// Bits per component sample.

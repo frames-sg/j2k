@@ -13,6 +13,13 @@ GPU acceleration, and JPEG-to-J2K/HTJ2K transcoding. The public crate release
 centers on `j2k`, with lower-level crates for native codec internals, device
 adapters, JPEG input, and transcode pipelines.
 
+The codec support claim is intentionally scoped and explicit: full JPEG 2000
+Part 1 codestream support for still-image workflows, JP2 wrapping, HTJ2K
+Part 15 codestream support, and JPH wrapping. JPX / JPEG 2000 Part 2
+extensions are outside this claim unless a feature is required for standard
+JP2/JPH still-image correctness. The living support boundary is
+[docs/public-support.md](docs/public-support.md).
+
 The APIs are general codec APIs. Whole-slide imaging and DICOM tile workloads
 are the main public examples and benchmark fixtures because they stress
 large tiled images, strict color handling, and high-throughput GPU paths, but
@@ -83,9 +90,12 @@ The names `statumen` and `wsi-dicom` are not current package names.
 
 | Area | Current support | Notes |
 | --- | --- | --- |
-| JPEG 2000 / HTJ2K inspect | J2K codestream and JP2 header inspection | Unsupported or malformed input fails explicitly. |
-| JPEG 2000 / HTJ2K decode | Full-frame, ROI, scaled, row, and tile-batch API surfaces | CPU is the portable correctness baseline. |
-| JPEG 2000 / HTJ2K encode | Native Rust encode APIs plus encode-stage accelerator hooks | Stable public API is centered on `j2k`; adapter SPI remains experimental. |
+| JPEG 2000 Part 1 inspect | Raw J2K/J2C codestreams and JP2 still-image files | Unsupported or malformed input fails explicitly. |
+| JPEG 2000 Part 1 decode | Full-frame, ROI, scaled, row, tile-batch, and component-plane API surfaces | CPU is the portable correctness baseline. |
+| JPEG 2000 Part 1 encode | Native Rust encode APIs for codestream and JP2 output, including component-plane metadata | Stable public API is centered on `j2k`; adapter SPI remains experimental. |
+| HTJ2K Part 15 inspect/decode/encode | Raw HT codestreams and JPH still-image files, including cleanup and refinement paths | HT requests beyond the Part 15 coded-bitplane limit reject explicitly. |
+| JP2/JPH metadata | IHDR/COLR/BPCC/PCLR/CMAP/CDEF/ICC still-image metadata paths covered by repo-local tests | Broader external JP2/JPH metadata parity remains publication evidence. |
+| Recode | J2K-to-HTJ2K coefficient recode where valid, pixel-preserving fallback otherwise | Palette/component-mapped fallbacks intentionally drop mapping metadata after resolving pixels. |
 | JPEG input | JPEG inspect/decode through `j2k-jpeg` | Used by transcode and fixture workflows. |
 | JPEG-to-J2K/HTJ2K transcode | CPU transcode primitives plus CUDA/Metal accelerator adapters | CLI exposes the conservative lossless JPEG-to-HTJ2K command first. |
 | CUDA acceleration | J2K-owned CUDA kernels and optional cuda-oxide routes for selected stages | Requires self-hosted CUDA validation before performance claims. |
@@ -157,6 +167,8 @@ Reference files:
   benchmark commands and current CUDA/Metal evidence
 - [docs/env-vars.md](docs/env-vars.md) - supported `J2K_*`
   environment variables
+- [docs/public-support.md](docs/public-support.md) - exact J2K Part 1,
+  HTJ2K Part 15, JP2/JPH, and out-of-scope support boundary
 - [docs/release.md](docs/release.md) - release and package validation policy
 - [docs/stable-api-1.0.md](docs/stable-api-1.0.md) - stable API snapshot policy
 - [CHANGELOG.md](CHANGELOG.md) - current release notes
