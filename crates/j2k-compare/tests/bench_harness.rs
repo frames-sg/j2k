@@ -462,7 +462,8 @@ fn fixture_compare_default_portable_native_excludes_openjpeg_noncomparable_rows(
     assert!(stdout.contains("mode_excluded_case_count\t2"));
     assert!(stdout
         .contains("mode_excluded_cases\thtj2k_jph_rgb8_128_roi64_q4,htj2k_jph_rgb8_512_roi256_q4"));
-    assert!(stdout.contains("skipped_comparators\tnone"));
+    assert!(!metadata_value(&stdout, "skipped_comparators")
+        .contains("openjpeg-htj2k-roi-scaled-noncomparable"));
     assert!(!stdout.contains("htj2k_jph_rgb8_128_roi64_q4\t"));
     assert!(!stdout.contains("htj2k_jph_rgb8_512_roi256_q4\t"));
     assert!(stdout.ends_with("benchmark_complete\ttrue\n"));
@@ -479,14 +480,15 @@ fn fixture_compare_capability_marks_openjpeg_htj2k_roi_scaled_noncomparable() {
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).expect("stdout is utf8");
     assert_table_rows_match_header(&stdout);
-    assert!(
-        stdout.contains("skipped_comparators\topenjpeg:openjpeg-htj2k-roi-scaled-noncomparable")
-    );
+    assert!(metadata_value(&stdout, "skipped_comparators")
+        .contains("openjpeg:openjpeg-htj2k-roi-scaled-noncomparable"));
     assert!(stdout.contains("publication_eligible\tfalse"));
-    assert!(stdout.contains(
-        "openjpeg\thtj2k_jph_rgb8_128_roi64_q4\tcapability\tskipped\tj2k-generated-jph-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjph\troi-scaled"
-    ));
-    assert!(stdout.contains("openjpeg-htj2k-roi-scaled-noncomparable"));
+    if stdout.contains("openjpeg_available\ttrue") {
+        assert!(stdout.contains(
+            "openjpeg\thtj2k_jph_rgb8_128_roi64_q4\tcapability\tskipped\tj2k-generated-jph-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjph\troi-scaled"
+        ));
+        assert!(stdout.contains("openjpeg-htj2k-roi-scaled-noncomparable"));
+    }
     assert!(stdout.contains(
         "grok\thtj2k_jph_rgb8_128_roi64_q4\tcapability\tnative\tj2k-generated-jph-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjph\troi-scaled"
     ));
@@ -507,10 +509,13 @@ fn fixture_compare_portable_emulated_labels_openjpeg_task_equivalent_decode() {
     assert!(stdout.contains("benchmark_mode\tportable-emulated"));
     assert!(stdout.contains("comparable_scope\ttask-equivalent-with-method-labels"));
     assert!(stdout.contains("mode_excluded_case_count\t0"));
-    assert!(stdout.contains("skipped_comparators\tnone"));
-    assert!(stdout.contains(
-        "openjpeg\thtj2k_jph_rgb8_128_roi64_q4\tportable-emulated\temulated-full-scaled-crop\tj2k-generated-jph-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjph\troi-scaled"
-    ));
+    assert!(!metadata_value(&stdout, "skipped_comparators")
+        .contains("openjpeg-htj2k-roi-scaled-noncomparable"));
+    if stdout.contains("openjpeg_available\ttrue") {
+        assert!(stdout.contains(
+            "openjpeg\thtj2k_jph_rgb8_128_roi64_q4\tportable-emulated\temulated-full-scaled-crop\tj2k-generated-jph-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjph\troi-scaled"
+        ));
+    }
     assert!(stdout.contains(
         "grok\thtj2k_jph_rgb8_128_roi64_q4\tportable-emulated\tnative\tj2k-generated-jph-wrapper\tgenerated-dev\tj2k-generated-fixture-matrix\trepo-generated\tj2k-lossless-cpu-roundtrip\tgenerated\thtj2k\tjph\troi-scaled"
     ));

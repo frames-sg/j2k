@@ -9,6 +9,7 @@ extend-exclude = [
 APPn = "APPn"
 flate = "flate"
 iy = "iy"
+OME = "OME"
 ois = "ois"
 Pn = "Pn"
 Psot = "Psot"

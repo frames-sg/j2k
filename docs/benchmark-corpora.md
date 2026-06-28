@@ -5,6 +5,10 @@ Use a mix of standards conformance vectors, independent implementation test
 data, natural-image datasets encoded into J2K/HTJ2K with documented settings,
 and domain tiles.
 
+The tables below are an evidence plan, not a standing claim that every named
+dataset was present in a local run. A run may claim only the corpora present in
+its pinned manifest and summarized by `cargo xtask adoption-report`.
+
 ## Required Mix
 
 | Corpus | Use | Source | Repo handling |
@@ -187,8 +191,8 @@ Curiosity-style large TIFFs, or extracted WSI/domain tiles, use
 running the adoption bundle. The command stages each supported 8-bit grayscale
 or RGB source image to canonical PGM/PPM, encodes classic J2K and HTJ2K
 lossless codestreams through the public J2K CPU facade, emits both raw
-codestream and JP2-container variants for decode coverage, validates CPU round
-trips, and writes both manifests:
+codestream variants plus JP2 wrappers for classic J2K and JPH wrappers for
+HTJ2K decode coverage, validates CPU round trips, and writes both manifests:
 
 ```bash
 cargo xtask adoption-materialize \
@@ -201,7 +205,7 @@ cargo xtask adoption-materialize \
 The output layout is:
 
 - `decode-fixtures/classic/*.{j2k,jp2}` and
-  `decode-fixtures/htj2k/*.{j2k,jp2}` for decode comparisons and CUDA HTJ2K
+  `decode-fixtures/htj2k/*.{j2k,jph}` for decode comparisons and CUDA HTJ2K
   subset runs.
 - `staged-pnm/*.pgm` / `staged-pnm/*.ppm` for CPU, CUDA, and Metal encode
   source rows.
@@ -242,6 +246,8 @@ directories recursively and fails if a configured directory contains no
 
 ```bash
 J2K_REQUIRE_OPENJPEG=1 J2K_REQUIRE_GROK=1 \
+J2K_INCLUDE_OPENJPH=1 J2K_REQUIRE_OPENJPH=1 \
+J2K_OPENJPH_EXPAND_BIN=/path/to/ojph_expand \
 J2K_FIXTURE_COMPARE_INCLUDE_GENERATED=0 \
 J2K_FIXTURE_COMPARE_MANIFEST="corpus/vendor/fixtures.tsv" \
 J2K_FIXTURE_COMPARE_INPUT_DIRS="corpus/vendor/iso-j2k:corpus/vendor/openjpeg-data:corpus/vendor/openjph:corpus/vendor/jpylyzer-valid:corpus/vendor/kodak-htj2k:corpus/vendor/tecnick-htj2k:corpus/vendor/clic-htj2k:corpus/vendor/domain" \

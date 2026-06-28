@@ -8,6 +8,8 @@ use alloc::vec::Vec;
 use super::codestream::markers;
 use super::encode::EncodeProgressionOrder;
 
+const HT_RSIZ_CAPABILITY: u16 = 0x4000;
+
 /// Per-component SIZ sample metadata for codestream writing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EncodeComponentSampleInfo {
@@ -265,8 +267,13 @@ fn write_siz_marker(out: &mut Vec<u8>, params: &EncodeParams) {
 
     // Lsiz
     out.extend_from_slice(&marker_len.to_be_bytes());
-    // Rsiz (capabilities) — profile 0 (no extensions)
-    out.extend_from_slice(&0u16.to_be_bytes());
+    // Rsiz (capabilities). Part 15 codestreams used in JPH files must set the
+    // HT capability bit so strict HTJ2K decoders recognize the codestream.
+    let rsiz = match params.block_coding_mode {
+        BlockCodingMode::Classic => 0,
+        BlockCodingMode::HighThroughput => HT_RSIZ_CAPABILITY,
+    };
+    out.extend_from_slice(&rsiz.to_be_bytes());
     // Xsiz (reference grid width)
     out.extend_from_slice(&params.width.to_be_bytes());
     // Ysiz (reference grid height)
@@ -703,6 +710,7 @@ mod tests {
         // Verify SIZ marker
         assert_eq!(codestream[2], 0xFF);
         assert_eq!(codestream[3], markers::SIZ);
+        assert_eq!(&codestream[6..8], &[0x00, 0x00]);
 
         // Verify EOC marker
         let len = codestream.len();
@@ -910,6 +918,12 @@ mod tests {
         let tile_data = vec![0u8; 1];
         let step_sizes = vec![(12u16, 0u16), (13, 0), (13, 0), (14, 0)];
         let codestream = write_codestream(&params, &tile_data, &step_sizes);
+
+        let siz_offset = find_marker_offset(&codestream, markers::SIZ).expect("SIZ marker");
+        assert_eq!(
+            &codestream[siz_offset + 4..siz_offset + 6],
+            &HT_RSIZ_CAPABILITY.to_be_bytes()
+        );
 
         let cap_offset = find_marker_offset(&codestream, markers::CAP).expect("CAP marker");
         let cap_len = u16::from_be_bytes([codestream[cap_offset + 2], codestream[cap_offset + 3]]);

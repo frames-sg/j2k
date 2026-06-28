@@ -162,6 +162,8 @@ const REQUIRED_TEST_REFERENCES: &[&str] = &[
     "jph_file_type_rejects_classic_codestream",
     "jp2_file_type_rejects_htj2k_codestream",
     "jph_file_type_accepts_htj2k_codestream",
+    "test_write_ht_lossless_codestream_headers",
+    "materializes_source_images_into_decode_and_encode_manifests",
     "wrap_writes_bpcc_for_mixed_precision_and_signedness",
     "wrap_allows_icc_color_spec_for_non_enumerated_component_counts",
     "wrap_preserves_inspected_icc_metadata_when_rewrapping",

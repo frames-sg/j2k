@@ -195,7 +195,8 @@ A published benchmark must identify:
 
 Use `cargo xtask adoption-materialize` for source-image corpora that need fixed
 classic J2K/HTJ2K decode fixtures plus staged PGM/PPM encode inputs. It writes
-raw and JP2-container decode variants, `staged-pnm/`, `fixtures.tsv`, and
+raw codestream variants, JP2 wrappers for classic J2K, JPH wrappers for HTJ2K,
+`staged-pnm/`, `fixtures.tsv`, and
 `encode-fixtures.tsv` from the same source bytes. Materialized decode rows carry
 `source_fnv1a64` so raw plus boxed variants do not inflate the unique-source
 publication gate. Use `cargo xtask adoption-manifest` for existing native
