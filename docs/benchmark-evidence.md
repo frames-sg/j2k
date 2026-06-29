@@ -27,7 +27,7 @@ manifest-backed external rows for adoption-facing speed reports.
 
 Host:
 
-- Machine: `self-hosted NVIDIA benchmark host`
+- Machine: self-hosted NVIDIA benchmark host
 - GPU: NVIDIA RTX 4070 SUPER
 - CUDA target: `sm_89`
 - Corpus: pancreas JPEG tile corpus
