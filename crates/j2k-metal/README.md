@@ -7,9 +7,10 @@ supported workloads. It uses `j2k-metal-support` for runtime setup while
 keeping codec-specific kernels local.
 
 Encode support is stage-oriented unless a documented resident path accepts the
-shape. `Auto` host-output encode may dispatch benchmark-gated coefficient-prep
-stages for 512 x 512 and larger stage inputs, and the resident HTJ2K RGB8
-lossless shortcut is gated to 1,024 x 1,024 and larger tiles. Explicit Metal
+shape. `Auto` host-output encode may dispatch benchmark-gated hybrid Metal
+stages for 512 x 512 and larger stage inputs. Full resident host-output
+packetization/assembly is narrower: batched Gray8 can use it at the same stage
+gate, while RGB8 requires 1,024 x 1,024 or larger resident input. Explicit Metal
 requests are strict: supported shapes dispatch, and unsupported direct Metal
 requests return `UnsupportedMetalRequest` instead of silently changing backend.
 

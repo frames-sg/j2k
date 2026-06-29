@@ -39,6 +39,9 @@ use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::Instant;
 
+#[cfg(target_os = "macos")]
+const AUTO_HIGH_THROUGHPUT_RESIDENT_HOST_OUTPUT_RGB8_MIN_PIXELS: usize = 1024 * 1024;
+
 #[cfg(test)]
 use self::config::{
     default_gpu_encode_memory_budget_bytes_for_hw_mem, resident_lossless_chunk_ranges_for_test,
@@ -499,11 +502,12 @@ fn should_try_auto_resident_lossless_host_encode(
     options.backend == EncodeBackendPreference::Auto
         && options.block_coding_mode == J2kBlockCodingMode::HighThroughput
         && matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous)
-        && should_use_resident_htj2k_host_shape_for_auto(tile.output_width, tile.output_height)
         && should_try_auto_resident_lossless_host_format(
             tile.format,
             options.reversible_transform,
             batch_size,
+            tile.output_width,
+            tile.output_height,
         )
 }
 
@@ -512,10 +516,19 @@ fn should_try_auto_resident_lossless_host_format(
     format: PixelFormat,
     reversible_transform: ReversibleTransform,
     batch_size: usize,
+    output_width: u32,
+    output_height: u32,
 ) -> bool {
+    let pixels = (output_width as usize).saturating_mul(output_height as usize);
     match format {
-        PixelFormat::Gray8 => batch_size > 1,
-        PixelFormat::Rgb8 => reversible_transform == ReversibleTransform::Rct53,
+        PixelFormat::Gray8 => {
+            batch_size > 1
+                && should_use_resident_htj2k_host_shape_for_auto(output_width, output_height)
+        }
+        PixelFormat::Rgb8 => {
+            reversible_transform == ReversibleTransform::Rct53
+                && pixels >= AUTO_HIGH_THROUGHPUT_RESIDENT_HOST_OUTPUT_RGB8_MIN_PIXELS
+        }
         _ => false,
     }
 }

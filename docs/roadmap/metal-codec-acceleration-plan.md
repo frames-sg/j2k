@@ -243,8 +243,11 @@ Implementation direction:
 
 - Keep large Auto gate conservative.
 - Support `Gray8` and `Rgb8`.
-- Preserve RCT, DWT 5/3, HT cleanup encode, and CPU packetization until
-  resident packetization is benchmarked.
+- Preserve the hybrid RCT, DWT 5/3, HT cleanup encode, and CPU packetization
+  path for default host-output Auto routing.
+- Use full resident packetization and codestream assembly only for explicitly
+  resident output or the narrower Auto resident-input shapes that have parity
+  coverage and a separate benchmark gate.
 - Prefer `submit_lossless_batch_to_metal` for resident codestream outputs.
 
 Acceptance:

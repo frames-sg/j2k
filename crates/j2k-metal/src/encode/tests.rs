@@ -19,6 +19,7 @@ use j2k::{
 use j2k::{
     encode_j2k_lossy_with_accelerator, J2kBlockCodingMode, J2kEncodeValidation,
     J2kLossyEncodeOptions, J2kLossySamples, J2kMarkerSegment, J2kProgressionOrder,
+    ReversibleTransform,
 };
 #[cfg(target_os = "macos")]
 use j2k_core::CodecError;
@@ -1999,7 +2000,40 @@ fn metal_padded_private_rgb8_auto_host_encode_routes_away_from_resident_prep() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_htj2k_padded_private_rgb8_host_output_uses_full_resident_path() {
+fn auto_resident_host_output_policy_keeps_single_512_rgb8_on_hybrid_path() {
+    assert!(!super::should_try_auto_resident_lossless_host_format(
+        PixelFormat::Rgb8,
+        ReversibleTransform::Rct53,
+        1,
+        512,
+        512,
+    ));
+    assert!(super::should_try_auto_resident_lossless_host_format(
+        PixelFormat::Rgb8,
+        ReversibleTransform::Rct53,
+        1,
+        1024,
+        1024,
+    ));
+    assert!(super::should_try_auto_resident_lossless_host_format(
+        PixelFormat::Gray8,
+        ReversibleTransform::None53,
+        2,
+        512,
+        512,
+    ));
+    assert!(!super::should_try_auto_resident_lossless_host_format(
+        PixelFormat::Gray8,
+        ReversibleTransform::None53,
+        1,
+        512,
+        512,
+    ));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn auto_htj2k_padded_private_rgb8_host_output_uses_hybrid_path() {
     let width = 512u32;
     let height = 512u32;
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
@@ -2032,13 +2066,17 @@ fn auto_htj2k_padded_private_rgb8_host_output_uses_full_resident_path() {
         },
         &session,
     )
-    .expect("Auto HTJ2K resident host-output encode");
+    .expect("Auto HTJ2K hybrid host-output encode");
 
-    assert_eq!(encoded.encoded.backend, BackendKind::Metal);
-    assert!(!encoded.input_copy_used);
-    assert!(encoded.resident.coefficient_prep_used);
-    assert!(encoded.resident.packetization_used);
-    assert!(encoded.resident.codestream_assembly_used);
+    assert_eq!(encoded.encoded.backend, BackendKind::Cpu);
+    assert!(encoded.input_copy_used);
+    assert!(!encoded.resident.coefficient_prep_used);
+    assert!(!encoded.resident.packetization_used);
+    assert!(!encoded.resident.codestream_assembly_used);
+    assert!(encoded.encoded.dispatch_report.forward_rct > 0);
+    assert_eq!(encoded.encoded.dispatch_report.forward_dwt53, 3);
+    assert!(encoded.encoded.dispatch_report.ht_code_block > 0);
+    assert_eq!(encoded.encoded.dispatch_report.packetization, 0);
     let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
