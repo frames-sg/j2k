@@ -3627,6 +3627,11 @@ pub fn j2k_jpeg_metal::encode_jpeg_baseline_from_metal_buffer(j2k_jpeg_metal::Jp
 pub mod j2k_metal
 pub use j2k_metal::J2kContext
 pub use j2k_metal::J2kScratchPool
+pub enum j2k_metal::DecodeOperation
+pub j2k_metal::DecodeOperation::Full
+pub j2k_metal::DecodeOperation::Region
+pub j2k_metal::DecodeOperation::RegionScaled
+pub j2k_metal::DecodeOperation::Scaled
 pub enum j2k_metal::Error
 pub j2k_metal::Error::Buffer(j2k_core::error::BufferError)
 pub j2k_metal::Error::Decode(j2k::error::J2kError)
@@ -3674,18 +3679,32 @@ pub fn j2k_metal::Codec::submit_tile_region_scaled_to_device(&mut j2k_core::cont
 pub fn j2k_metal::Codec::submit_tile_region_to_device(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
 pub fn j2k_metal::Codec::submit_tile_scaled_to_device(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
 pub fn j2k_metal::Codec::submit_tile_to_device(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::pixel::PixelFormat, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
+pub struct j2k_metal::DecodeRouteReport
+pub j2k_metal::DecodeRouteReport::fallback_reason: core::option::Option<&'static str>
+pub j2k_metal::DecodeRouteReport::operation: j2k_metal::DecodeOperation
+pub j2k_metal::DecodeRouteReport::pixel_format: j2k_core::pixel::PixelFormat
+pub j2k_metal::DecodeRouteReport::requested_backend: j2k_core::backend::BackendRequest
+pub j2k_metal::DecodeRouteReport::selected_backend: j2k_core::backend::BackendKind
+pub j2k_metal::DecodeRouteReport::surface_residency: j2k_metal::SurfaceResidency
+pub struct j2k_metal::DecodeSurfaceWithReport
+pub j2k_metal::DecodeSurfaceWithReport::report: j2k_metal::DecodeRouteReport
+pub j2k_metal::DecodeSurfaceWithReport::surface: j2k_metal::Surface
 pub struct j2k_metal::J2kDecoder<'a>
 impl<'a> j2k_metal::J2kDecoder<'a>
 pub fn j2k_metal::J2kDecoder<'a>::decode_region_scaled_to_cpu_staged_metal_surface_with_session(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
+pub fn j2k_metal::J2kDecoder<'a>::decode_region_scaled_to_device_with_report(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_metal::DecodeSurfaceWithReport, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_region_scaled_to_device_with_session(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_region_scaled_to_host_surface(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_region_to_cpu_staged_metal_surface_with_session(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
+pub fn j2k_metal::J2kDecoder<'a>::decode_region_to_device_with_report(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_metal::DecodeSurfaceWithReport, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_region_to_device_with_session(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_region_to_host_surface(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_scaled_to_cpu_staged_metal_surface_with_session(&mut self, j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
+pub fn j2k_metal::J2kDecoder<'a>::decode_scaled_to_device_with_report(&mut self, j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_metal::DecodeSurfaceWithReport, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_scaled_to_device_with_session(&mut self, j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_scaled_to_host_surface(&mut self, j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_to_cpu_staged_metal_surface_with_session(&mut self, j2k_core::pixel::PixelFormat, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
+pub fn j2k_metal::J2kDecoder<'a>::decode_to_device_with_report(&mut self, j2k_core::pixel::PixelFormat, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_metal::DecodeSurfaceWithReport, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_to_device_with_session(&mut self, j2k_core::pixel::PixelFormat, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::decode_to_host_surface(&mut self, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_metal::Surface, j2k_metal::Error>
 pub fn j2k_metal::J2kDecoder<'a>::from_view(j2k::view::J2kView<'a>) -> core::result::Result<Self, j2k_metal::Error>
@@ -3775,7 +3794,9 @@ pub j2k_metal::MetalEncodedJ2k::height: u32
 pub j2k_metal::MetalEncodedJ2k::signed: bool
 pub j2k_metal::MetalEncodedJ2k::width: u32
 impl j2k_metal::MetalEncodedJ2k
+pub fn j2k_metal::MetalEncodedJ2k::codestream_allocation_len(&self) -> core::option::Option<usize>
 pub fn j2k_metal::MetalEncodedJ2k::codestream_bytes(&self) -> core::result::Result<&[u8], j2k_metal::Error>
+pub fn j2k_metal::MetalEncodedJ2k::codestream_memory_range(&self) -> core::option::Option<j2k_core::accelerator::DeviceMemoryRange>
 pub fn j2k_metal::MetalEncodedJ2k::to_encoded_j2k(&self) -> core::result::Result<j2k::encode::EncodedJ2k, j2k_metal::Error>
 pub struct j2k_metal::MetalLosslessBufferEncodeBatchOutcome
 pub j2k_metal::MetalLosslessBufferEncodeBatchOutcome::outcomes: alloc::vec::Vec<j2k_metal::MetalLosslessBufferEncodeOutcome>
@@ -4598,12 +4619,22 @@ pub j2k_transcode::accelerator::Dwt97BatchStageTimings::ht_codeblock_dispatches:
 pub j2k_transcode::accelerator::Dwt97BatchStageTimings::ht_compact_us: u128
 pub j2k_transcode::accelerator::Dwt97BatchStageTimings::ht_encode_us: u128
 pub j2k_transcode::accelerator::Dwt97BatchStageTimings::ht_kernel_us: u128
+pub j2k_transcode::accelerator::Dwt97BatchStageTimings::ht_output_readback_bytes: u64
+pub j2k_transcode::accelerator::Dwt97BatchStageTimings::ht_output_readback_transfers: usize
 pub j2k_transcode::accelerator::Dwt97BatchStageTimings::ht_output_readback_us: u128
+pub j2k_transcode::accelerator::Dwt97BatchStageTimings::ht_status_readback_bytes: u64
+pub j2k_transcode::accelerator::Dwt97BatchStageTimings::ht_status_readback_transfers: usize
 pub j2k_transcode::accelerator::Dwt97BatchStageTimings::ht_status_readback_us: u128
 pub j2k_transcode::accelerator::Dwt97BatchStageTimings::idct_row_lift_us: u128
+pub j2k_transcode::accelerator::Dwt97BatchStageTimings::pack_upload_bytes: u64
+pub j2k_transcode::accelerator::Dwt97BatchStageTimings::pack_upload_transfers: usize
 pub j2k_transcode::accelerator::Dwt97BatchStageTimings::pack_upload_us: u128
 pub j2k_transcode::accelerator::Dwt97BatchStageTimings::quantize_codeblock_us: u128
+pub j2k_transcode::accelerator::Dwt97BatchStageTimings::readback_bytes: u64
+pub j2k_transcode::accelerator::Dwt97BatchStageTimings::readback_transfers: usize
 pub j2k_transcode::accelerator::Dwt97BatchStageTimings::readback_us: u128
+pub j2k_transcode::accelerator::Dwt97BatchStageTimings::resident_dct_handoff_count: usize
+pub j2k_transcode::accelerator::Dwt97BatchStageTimings::resident_dwt_handoff_count: usize
 pub struct j2k_transcode::accelerator::Htj2k97CodeBlockOptions
 pub j2k_transcode::accelerator::Htj2k97CodeBlockOptions::bit_depth: u8
 pub j2k_transcode::accelerator::Htj2k97CodeBlockOptions::code_block_height_exp: u8
@@ -4763,6 +4794,36 @@ pub fn j2k_transcode::htj2k97_codeblock_oracle::htj2k97_subband_total_bitplanes(
 pub fn j2k_transcode::htj2k97_codeblock_oracle::prequantized_component_from_dwt97(&j2k_transcode::dct97_2d::Dwt97TwoDimensional<f64>, j2k_transcode::accelerator::Htj2k97CodeBlockOptions, u8, u8) -> j2k_types::PrequantizedHtj2k97Component
 pub fn j2k_transcode::htj2k97_codeblock_oracle::quantize_codeblock_subband(&[f64], usize, usize, j2k_types::J2kSubBandType, j2k_transcode::accelerator::Htj2k97CodeBlockOptions) -> j2k_types::PrequantizedHtj2k97Subband
 pub fn j2k_transcode::htj2k97_codeblock_oracle::validate_htj2k97_codeblock_options(j2k_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<(usize, usize), &'static str>
+pub enum j2k_transcode::ResidentColorModel
+pub j2k_transcode::ResidentColorModel::Grayscale
+pub j2k_transcode::ResidentColorModel::Rgb
+pub j2k_transcode::ResidentColorModel::Rgba
+pub j2k_transcode::ResidentColorModel::Unknown
+pub j2k_transcode::ResidentColorModel::YCbCr
+pub enum j2k_transcode::ResidentDctCoefficientOrder
+pub j2k_transcode::ResidentDctCoefficientOrder::Natural
+pub j2k_transcode::ResidentDctCoefficientOrder::ZigZag
+pub enum j2k_transcode::ResidentDwtSubbandKind
+pub j2k_transcode::ResidentDwtSubbandKind::HighHigh
+pub j2k_transcode::ResidentDwtSubbandKind::HighLow
+pub j2k_transcode::ResidentDwtSubbandKind::LowHigh
+pub j2k_transcode::ResidentDwtSubbandKind::LowLow
+pub enum j2k_transcode::ResidentHandoffError
+pub j2k_transcode::ResidentHandoffError::BackendMismatch
+pub j2k_transcode::ResidentHandoffError::BackendMismatch::actual: j2k_core::backend::BackendKind
+pub j2k_transcode::ResidentHandoffError::BackendMismatch::expected: j2k_core::backend::BackendKind
+pub j2k_transcode::ResidentHandoffError::CodestreamExceedsCapacity
+pub j2k_transcode::ResidentHandoffError::EmptyRange
+pub j2k_transcode::ResidentHandoffError::InvalidBitDepth
+pub j2k_transcode::ResidentHandoffError::LayoutExceedsBuffer
+pub j2k_transcode::ResidentHandoffError::OffsetOverflow
+pub j2k_transcode::ResidentHandoffError::RangeExceedsAllocation
+pub j2k_transcode::ResidentHandoffError::ZeroByteStride
+pub j2k_transcode::ResidentHandoffError::ZeroDimension
+pub j2k_transcode::ResidentHandoffError::ZeroSampling
+impl core::error::Error for j2k_transcode::ResidentHandoffError
+impl core::fmt::Display for j2k_transcode::ResidentHandoffError
+pub fn j2k_transcode::ResidentHandoffError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum j2k_transcode::TranscodePipelineStageKind
 pub j2k_transcode::TranscodePipelineStageKind::CodestreamAssembly
 pub j2k_transcode::TranscodePipelineStageKind::CoefficientPrep
@@ -4792,6 +4853,77 @@ pub const fn j2k_transcode::DctGridError::width(self) -> usize
 impl core::error::Error for j2k_transcode::DctGridError
 impl core::fmt::Display for j2k_transcode::DctGridError
 pub fn j2k_transcode::DctGridError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct j2k_transcode::ResidentBufferRef<'a>
+impl j2k_transcode::ResidentBufferRef<'_>
+pub const fn j2k_transcode::ResidentBufferRef<'_>::backend(&self) -> j2k_core::backend::BackendKind
+pub const fn j2k_transcode::ResidentBufferRef<'_>::byte_len(&self) -> usize
+pub const fn j2k_transcode::ResidentBufferRef<'_>::memory_range(&self) -> j2k_core::accelerator::DeviceMemoryRange
+pub fn j2k_transcode::ResidentBufferRef<'_>::new(j2k_core::accelerator::DeviceMemoryRange) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
+pub fn j2k_transcode::ResidentBufferRef<'_>::with_allocation_len(j2k_core::accelerator::DeviceMemoryRange, usize) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
+pub struct j2k_transcode::ResidentCodestreamBuffer<'a>
+pub j2k_transcode::ResidentCodestreamBuffer::buffer: j2k_transcode::ResidentBufferRef<'a>
+pub j2k_transcode::ResidentCodestreamBuffer::byte_len: usize
+pub j2k_transcode::ResidentCodestreamBuffer::capacity: usize
+impl<'a> j2k_transcode::ResidentCodestreamBuffer<'a>
+pub fn j2k_transcode::ResidentCodestreamBuffer<'a>::new(j2k_transcode::ResidentBufferRef<'a>, usize, usize) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
+pub fn j2k_transcode::ResidentCodestreamBuffer<'a>::require_backend(self, j2k_core::backend::BackendKind) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
+pub struct j2k_transcode::ResidentComponentGeometry
+pub j2k_transcode::ResidentComponentGeometry::component_index: usize
+pub j2k_transcode::ResidentComponentGeometry::height: u32
+pub j2k_transcode::ResidentComponentGeometry::sampling: j2k_transcode::ResidentSampling
+pub j2k_transcode::ResidentComponentGeometry::width: u32
+impl j2k_transcode::ResidentComponentGeometry
+pub const fn j2k_transcode::ResidentComponentGeometry::new(usize, u32, u32, j2k_transcode::ResidentSampling) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
+pub struct j2k_transcode::ResidentDctGridLayout
+pub j2k_transcode::ResidentDctGridLayout::block_cols: u32
+pub j2k_transcode::ResidentDctGridLayout::block_rows: u32
+pub j2k_transcode::ResidentDctGridLayout::bytes_per_coefficient: usize
+pub j2k_transcode::ResidentDctGridLayout::coefficient_order: j2k_transcode::ResidentDctCoefficientOrder
+pub j2k_transcode::ResidentDctGridLayout::row_pitch_bytes: usize
+pub struct j2k_transcode::ResidentDwtSubband<'a>
+pub j2k_transcode::ResidentDwtSubband::buffer: j2k_transcode::ResidentBufferRef<'a>
+pub j2k_transcode::ResidentDwtSubband::bytes_per_coefficient: usize
+pub j2k_transcode::ResidentDwtSubband::color: j2k_transcode::ResidentColorModel
+pub j2k_transcode::ResidentDwtSubband::component: j2k_transcode::ResidentComponentGeometry
+pub j2k_transcode::ResidentDwtSubband::height: u32
+pub j2k_transcode::ResidentDwtSubband::level: u8
+pub j2k_transcode::ResidentDwtSubband::row_pitch_bytes: usize
+pub j2k_transcode::ResidentDwtSubband::sample: j2k_transcode::ResidentSampleInfo
+pub j2k_transcode::ResidentDwtSubband::subband: j2k_transcode::ResidentDwtSubbandKind
+pub j2k_transcode::ResidentDwtSubband::width: u32
+impl<'a> j2k_transcode::ResidentDwtSubband<'a>
+pub fn j2k_transcode::ResidentDwtSubband<'a>::new(j2k_transcode::ResidentBufferRef<'a>, j2k_transcode::ResidentComponentGeometry, j2k_transcode::ResidentSampleInfo, j2k_transcode::ResidentColorModel, j2k_transcode::ResidentDwtSubbandLayout) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
+pub fn j2k_transcode::ResidentDwtSubband<'a>::require_backend(self, j2k_core::backend::BackendKind) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
+pub struct j2k_transcode::ResidentDwtSubbandLayout
+pub j2k_transcode::ResidentDwtSubbandLayout::bytes_per_coefficient: usize
+pub j2k_transcode::ResidentDwtSubbandLayout::height: u32
+pub j2k_transcode::ResidentDwtSubbandLayout::level: u8
+pub j2k_transcode::ResidentDwtSubbandLayout::row_pitch_bytes: usize
+pub j2k_transcode::ResidentDwtSubbandLayout::subband: j2k_transcode::ResidentDwtSubbandKind
+pub j2k_transcode::ResidentDwtSubbandLayout::width: u32
+pub struct j2k_transcode::ResidentJpegDctGrid<'a>
+pub j2k_transcode::ResidentJpegDctGrid::block_cols: u32
+pub j2k_transcode::ResidentJpegDctGrid::block_rows: u32
+pub j2k_transcode::ResidentJpegDctGrid::buffer: j2k_transcode::ResidentBufferRef<'a>
+pub j2k_transcode::ResidentJpegDctGrid::bytes_per_coefficient: usize
+pub j2k_transcode::ResidentJpegDctGrid::coefficient_order: j2k_transcode::ResidentDctCoefficientOrder
+pub j2k_transcode::ResidentJpegDctGrid::color: j2k_transcode::ResidentColorModel
+pub j2k_transcode::ResidentJpegDctGrid::component: j2k_transcode::ResidentComponentGeometry
+pub j2k_transcode::ResidentJpegDctGrid::row_pitch_bytes: usize
+pub j2k_transcode::ResidentJpegDctGrid::sample: j2k_transcode::ResidentSampleInfo
+impl<'a> j2k_transcode::ResidentJpegDctGrid<'a>
+pub fn j2k_transcode::ResidentJpegDctGrid<'a>::new(j2k_transcode::ResidentBufferRef<'a>, j2k_transcode::ResidentComponentGeometry, j2k_transcode::ResidentSampleInfo, j2k_transcode::ResidentColorModel, j2k_transcode::ResidentDctGridLayout) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
+pub fn j2k_transcode::ResidentJpegDctGrid<'a>::require_backend(self, j2k_core::backend::BackendKind) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
+pub struct j2k_transcode::ResidentSampleInfo
+pub j2k_transcode::ResidentSampleInfo::bit_depth: u8
+pub j2k_transcode::ResidentSampleInfo::signed: bool
+impl j2k_transcode::ResidentSampleInfo
+pub const fn j2k_transcode::ResidentSampleInfo::new(u8, bool) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
+pub struct j2k_transcode::ResidentSampling
+pub j2k_transcode::ResidentSampling::x_rsiz: u8
+pub j2k_transcode::ResidentSampling::y_rsiz: u8
+impl j2k_transcode::ResidentSampling
+pub const fn j2k_transcode::ResidentSampling::new(u8, u8) -> core::result::Result<Self, j2k_transcode::ResidentHandoffError>
 pub struct j2k_transcode::TranscodePipelineMap
 pub j2k_transcode::TranscodePipelineMap::recommendation: j2k_transcode::TranscodeResidentStageRecommendation
 pub j2k_transcode::TranscodePipelineMap::stages: alloc::vec::Vec<j2k_transcode::TranscodePipelineStageReport>
@@ -4805,7 +4937,10 @@ pub j2k_transcode::TranscodePipelineStageReport::fallback_jobs: usize
 pub j2k_transcode::TranscodePipelineStageReport::metal_us: u128
 pub j2k_transcode::TranscodePipelineStageReport::note: &'static str
 pub j2k_transcode::TranscodePipelineStageReport::processor: j2k_transcode::TranscodeStageProcessor
+pub j2k_transcode::TranscodePipelineStageReport::resident_handoff_count: usize
 pub j2k_transcode::TranscodePipelineStageReport::stage: j2k_transcode::TranscodePipelineStageKind
+pub j2k_transcode::TranscodePipelineStageReport::transfer_bytes: u64
+pub j2k_transcode::TranscodePipelineStageReport::transfer_count: usize
 pub j2k_transcode::TranscodePipelineStageReport::transfer_us: u128
 pub struct j2k_transcode::TranscodeResidentStageRecommendation
 pub j2k_transcode::TranscodeResidentStageRecommendation::evidence_dispatches: usize
@@ -4956,6 +5091,15 @@ pub fn j2k_transcode::accelerator::TranscodeStageError::from(j2k_transcode_metal
 impl core::error::Error for j2k_transcode_metal::MetalTranscodeError
 impl core::fmt::Display for j2k_transcode_metal::MetalTranscodeError
 pub fn j2k_transcode_metal::MetalTranscodeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum j2k_transcode_metal::MetalTranscodeFallbackReason
+pub j2k_transcode_metal::MetalTranscodeFallbackReason::AutoAllTransformJobsFellBackToCpu
+pub j2k_transcode_metal::MetalTranscodeFallbackReason::AutoNoEligibleTransformStage
+pub j2k_transcode_metal::MetalTranscodeFallbackReason::AutoPartialTransformFallback
+pub j2k_transcode_metal::MetalTranscodeFallbackReason::CpuRequested
+impl j2k_transcode_metal::MetalTranscodeFallbackReason
+pub const fn j2k_transcode_metal::MetalTranscodeFallbackReason::as_str(self) -> &'static str
+impl core::fmt::Display for j2k_transcode_metal::MetalTranscodeFallbackReason
+pub fn j2k_transcode_metal::MetalTranscodeFallbackReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct j2k_transcode_metal::MetalDctToWaveletStageAccelerator
 impl j2k_transcode_metal::MetalDctToWaveletStageAccelerator
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::dct_grid_to_reversible_dwt53_batch(&mut self, &[j2k_transcode::accelerator::DctGridToReversibleDwt53Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_transcode::accelerator::ReversibleDwt53FirstLevel>>, j2k_transcode::accelerator::TranscodeStageError>
@@ -4997,6 +5141,18 @@ pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::dct_grid_to_rever
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::last_dwt97_batch_stage_timings(&self) -> core::option::Option<j2k_transcode::accelerator::Dwt97BatchStageTimings>
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::supports_dwt97_batch(&self) -> bool
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::supports_htj2k97_codeblock_batch(&self) -> bool
+pub struct j2k_transcode_metal::MetalEncodedTranscode
+pub j2k_transcode_metal::MetalEncodedTranscode::encoded: j2k_transcode::jpeg_to_htj2k::EncodedTranscode
+pub j2k_transcode_metal::MetalEncodedTranscode::route: j2k_transcode_metal::MetalTranscodeRouteReport
+pub struct j2k_transcode_metal::MetalEncodedTranscodeBatch
+pub j2k_transcode_metal::MetalEncodedTranscodeBatch::batch: j2k_transcode::jpeg_to_htj2k::EncodedTranscodeBatch
+pub j2k_transcode_metal::MetalEncodedTranscodeBatch::route: j2k_transcode_metal::MetalTranscodeRouteReport
+pub struct j2k_transcode_metal::MetalTranscodeRouteReport
+pub j2k_transcode_metal::MetalTranscodeRouteReport::fallback_reason: core::option::Option<j2k_transcode_metal::MetalTranscodeFallbackReason>
+pub j2k_transcode_metal::MetalTranscodeRouteReport::output_backend: j2k_core::backend::BackendKind
+pub j2k_transcode_metal::MetalTranscodeRouteReport::pipeline_map: j2k_transcode::pipeline_map::TranscodePipelineMap
+pub j2k_transcode_metal::MetalTranscodeRouteReport::request: j2k_core::backend::BackendRequest
+pub j2k_transcode_metal::MetalTranscodeRouteReport::selected_transform_backend: j2k_core::backend::BackendKind
 pub struct j2k_transcode_metal::MetalTranscodeSession
 impl j2k_transcode_metal::MetalTranscodeSession
 pub fn j2k_transcode_metal::MetalTranscodeSession::new(metal::device::Device) -> Self
@@ -5004,6 +5160,9 @@ pub fn j2k_transcode_metal::MetalTranscodeSession::system_default() -> core::res
 impl core::fmt::Debug for j2k_transcode_metal::MetalTranscodeSession
 pub fn j2k_transcode_metal::MetalTranscodeSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const j2k_transcode_metal::METAL_UNAVAILABLE: &str
+pub fn j2k_transcode_metal::jpeg_to_htj2k_batch_with_metal_route(&[j2k_transcode::jpeg_to_htj2k::JpegTileBatchInput<'_>], &j2k_transcode::jpeg_to_htj2k::JpegToHtj2kOptions, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_transcode_metal::MetalEncodedTranscodeBatch, j2k_transcode::jpeg_to_htj2k::JpegToHtj2kError>
+pub fn j2k_transcode_metal::jpeg_to_htj2k_with_metal_route(&[u8], &j2k_transcode::jpeg_to_htj2k::JpegToHtj2kOptions, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_transcode_metal::MetalEncodedTranscode, j2k_transcode::jpeg_to_htj2k::JpegToHtj2kError>
+pub fn j2k_transcode_metal::resident_codestream_buffer_from_metal_encoded_j2k(&j2k_metal::encode::encoded::MetalEncodedJ2k) -> core::result::Result<j2k_transcode::resident::ResidentCodestreamBuffer<'_>, j2k_transcode::resident::ResidentHandoffError>
 ```
 
 ## `j2k-native`
