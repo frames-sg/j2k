@@ -8,6 +8,7 @@ use std::time::Instant;
 use core::f32::consts::PI;
 use core::mem::{size_of, size_of_val};
 
+use j2k_core::{BackendKind, DeviceMemoryRange};
 use j2k_metal_support::{
     checked_buffer_contents_slice, checked_command_queue, shared_buffer_for_len,
     shared_buffer_with_slice, system_default_device, MetalPipelineLoader,
@@ -24,9 +25,14 @@ use j2k_transcode::dct97_2d::Dwt97TwoDimensional;
 use j2k_transcode::htj2k97_codeblock_oracle::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes,
 };
+use j2k_transcode::{
+    ResidentBufferRef, ResidentColorModel, ResidentComponentGeometry, ResidentDctCoefficientOrder,
+    ResidentDctGridLayout, ResidentDwtSubband, ResidentDwtSubbandKind, ResidentDwtSubbandLayout,
+    ResidentHandoffError, ResidentJpegDctGrid, ResidentSampleInfo, ResidentSampling,
+};
 use metal::{
-    Buffer, CommandQueue, ComputeCommandEncoderRef, ComputePipelineState, Device,
-    MTLResourceOptions, MTLSize,
+    foreign_types::ForeignType, Buffer, CommandQueue, ComputeCommandEncoderRef,
+    ComputePipelineState, Device, MTLResourceOptions, MTLSize,
 };
 
 use crate::weights::{SparseDwt53WeightRows, SparseDwt97WeightRows, SparseWeightRow};
@@ -39,6 +45,8 @@ const METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID: &str =
     "Metal reversible DCT 5/3 job has unsupported grid geometry";
 const METAL_DCT53_UNSUPPORTED_GRID: &str = "Metal DCT 5/3 job has unsupported grid geometry";
 const METAL_DCT97_UNSUPPORTED_GRID: &str = "Metal DCT 9/7 job has unsupported grid geometry";
+const METAL_RESIDENT_HANDOFF_VALIDATION_FAILED: &str =
+    "Metal resident transcode handoff descriptor validation failed";
 const DWT97_STAGED_MAX_AXIS: usize = 1024;
 const DWT97_STAGED_ROWS_PER_GROUP: usize = 2;
 const DWT97_STAGED_COLUMNS_PER_GROUP: usize = 4;
@@ -608,6 +616,12 @@ fn dispatch_dct_grid_to_dwt97_batch_staged_with_runtime(
     let output_buffers =
         projection_batch_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
     timings.pack_upload_us = pack_upload_start.elapsed().as_micros();
+    timings.pack_upload_transfers = usize::from(blocks.length() > 0);
+    timings.pack_upload_bytes = blocks.length();
+    timings.resident_dct_handoff_count =
+        validate_resident_dct_handoffs_for_dwt97_jobs(&blocks, jobs)?;
+    timings.resident_dwt_handoff_count =
+        validate_resident_dwt_handoffs_for_dwt97_jobs(&output_buffers, jobs, shape)?;
 
     let row_start = Instant::now();
     dispatch_dwt97_staged_row_lift(runtime, first.height, shape, &blocks, &row_buffers)?;
@@ -620,6 +634,8 @@ fn dispatch_dct_grid_to_dwt97_batch_staged_with_runtime(
     let readback_start = Instant::now();
     let bands = read_projected_batch_outputs(&output_buffers, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
     timings.readback_us = readback_start.elapsed().as_micros();
+    timings.readback_transfers = projection_batch_output_transfer_count(&output_buffers);
+    timings.readback_bytes = projection_batch_output_transfer_bytes(&output_buffers);
 
     Ok((
         bands
@@ -662,6 +678,12 @@ fn dispatch_dct_grid_to_htj2k97_codeblock_batch_with_runtime(
     let codeblock_buffers =
         dwt97_codeblock_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
     timings.pack_upload_us = pack_upload_start.elapsed().as_micros();
+    timings.pack_upload_transfers = usize::from(blocks.length() > 0);
+    timings.pack_upload_bytes = blocks.length();
+    timings.resident_dct_handoff_count =
+        validate_resident_dct_handoffs_for_htj2k_jobs(&blocks, jobs)?;
+    timings.resident_dwt_handoff_count =
+        validate_resident_dwt_handoffs_for_htj2k_jobs(&band_buffers, jobs, shape)?;
 
     let row_start = Instant::now();
     dispatch_dwt97_staged_row_lift(runtime, first.height, shape, &blocks, &row_buffers)?;
@@ -684,6 +706,8 @@ fn dispatch_dct_grid_to_htj2k97_codeblock_batch_with_runtime(
         METAL_DCT97_UNSUPPORTED_GRID,
     )?;
     timings.readback_us = readback_start.elapsed().as_micros();
+    timings.readback_transfers = dwt97_codeblock_output_transfer_count(&codeblock_buffers);
+    timings.readback_bytes = dwt97_codeblock_output_transfer_bytes(&codeblock_buffers);
 
     Ok((components, timings))
 }
@@ -1398,11 +1422,305 @@ struct ProjectionBatchOutputBuffers {
     hh: Buffer,
 }
 
+#[derive(Clone, Copy)]
+struct ResidentDwtBand<'a> {
+    buffer: &'a Buffer,
+    kind: ResidentDwtSubbandKind,
+    width: usize,
+    height: usize,
+    values_per_item: usize,
+}
+
 struct Dwt97CodeBlockOutputBuffers {
     ll: Buffer,
     hl: Buffer,
     lh: Buffer,
     hh: Buffer,
+}
+
+fn validate_resident_dct_handoffs_for_dwt97_jobs(
+    blocks: &Buffer,
+    jobs: &[DctGridToDwt97Job<'_>],
+) -> Result<usize, MetalTranscodeError> {
+    validate_resident_dct_handoffs(
+        blocks,
+        jobs.iter().enumerate().map(|(index, job)| {
+            (
+                index,
+                job.blocks.len(),
+                job.block_cols,
+                job.block_rows,
+                job.width,
+                job.height,
+                1,
+                1,
+            )
+        }),
+    )
+}
+
+fn validate_resident_dct_handoffs_for_htj2k_jobs(
+    blocks: &Buffer,
+    jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+) -> Result<usize, MetalTranscodeError> {
+    validate_resident_dct_handoffs(
+        blocks,
+        jobs.iter().enumerate().map(|(index, job)| {
+            (
+                index,
+                job.blocks.len(),
+                job.block_cols,
+                job.block_rows,
+                job.width,
+                job.height,
+                job.x_rsiz,
+                job.y_rsiz,
+            )
+        }),
+    )
+}
+
+fn validate_resident_dct_handoffs(
+    blocks: &Buffer,
+    jobs: impl Iterator<Item = (usize, usize, usize, usize, usize, usize, u8, u8)>,
+) -> Result<usize, MetalTranscodeError> {
+    let mut count = 0usize;
+    let mut byte_offset = 0usize;
+    for (component_index, block_count, block_cols, block_rows, width, height, x_rsiz, y_rsiz) in
+        jobs
+    {
+        let value_count = dwt97_block_value_count(block_count)?;
+        let byte_len = checked_byte_count(value_count, size_of::<f32>())?;
+        let buffer = resident_buffer_ref(blocks, byte_offset, byte_len)?;
+        let component =
+            resident_component_geometry(component_index, width, height, x_rsiz, y_rsiz)?;
+        let sample = resident_result(ResidentSampleInfo::new(32, true))?;
+        let row_coefficients = block_cols.checked_mul(DWT97_BLOCK_COEFFICIENTS).ok_or(
+            MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID),
+        )?;
+        let row_pitch_bytes = checked_byte_count(row_coefficients, size_of::<f32>())?;
+        resident_result(ResidentJpegDctGrid::new(
+            buffer,
+            component,
+            sample,
+            ResidentColorModel::Unknown,
+            ResidentDctGridLayout {
+                block_cols: u32_param(block_cols, METAL_DCT97_UNSUPPORTED_GRID)?,
+                block_rows: u32_param(block_rows, METAL_DCT97_UNSUPPORTED_GRID)?,
+                row_pitch_bytes,
+                bytes_per_coefficient: size_of::<f32>(),
+                coefficient_order: ResidentDctCoefficientOrder::Natural,
+            },
+        ))?
+        .require_backend(BackendKind::Metal)
+        .map_err(resident_handoff_error)?;
+        count = count.saturating_add(1);
+        byte_offset =
+            byte_offset
+                .checked_add(byte_len)
+                .ok_or(MetalTranscodeError::UnsupportedJob(
+                    METAL_DCT97_UNSUPPORTED_GRID,
+                ))?;
+    }
+    Ok(count)
+}
+
+fn validate_resident_dwt_handoffs_for_dwt97_jobs(
+    buffers: &ProjectionBatchOutputBuffers,
+    jobs: &[DctGridToDwt97Job<'_>],
+    shape: ProjectionBatchShape,
+) -> Result<usize, MetalTranscodeError> {
+    validate_resident_dwt_handoffs(
+        buffers,
+        shape,
+        jobs.iter()
+            .enumerate()
+            .map(|(index, job)| (index, job.width, job.height, 1, 1)),
+    )
+}
+
+fn validate_resident_dwt_handoffs_for_htj2k_jobs(
+    buffers: &ProjectionBatchOutputBuffers,
+    jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+    shape: ProjectionBatchShape,
+) -> Result<usize, MetalTranscodeError> {
+    validate_resident_dwt_handoffs(
+        buffers,
+        shape,
+        jobs.iter()
+            .enumerate()
+            .map(|(index, job)| (index, job.width, job.height, job.x_rsiz, job.y_rsiz)),
+    )
+}
+
+fn validate_resident_dwt_handoffs(
+    buffers: &ProjectionBatchOutputBuffers,
+    shape: ProjectionBatchShape,
+    jobs: impl Iterator<Item = (usize, usize, usize, u8, u8)>,
+) -> Result<usize, MetalTranscodeError> {
+    let bands = [
+        ResidentDwtBand {
+            buffer: &buffers.ll,
+            kind: ResidentDwtSubbandKind::LowLow,
+            width: shape.low_width,
+            height: shape.low_height,
+            values_per_item: shape.ll_len,
+        },
+        ResidentDwtBand {
+            buffer: &buffers.hl,
+            kind: ResidentDwtSubbandKind::HighLow,
+            width: shape.high_width,
+            height: shape.low_height,
+            values_per_item: shape.hl_len,
+        },
+        ResidentDwtBand {
+            buffer: &buffers.lh,
+            kind: ResidentDwtSubbandKind::LowHigh,
+            width: shape.low_width,
+            height: shape.high_height,
+            values_per_item: shape.lh_len,
+        },
+        ResidentDwtBand {
+            buffer: &buffers.hh,
+            kind: ResidentDwtSubbandKind::HighHigh,
+            width: shape.high_width,
+            height: shape.high_height,
+            values_per_item: shape.hh_len,
+        },
+    ];
+    let mut count = 0usize;
+    for (batch_index, width, height, x_rsiz, y_rsiz) in jobs {
+        let component = resident_component_geometry(batch_index, width, height, x_rsiz, y_rsiz)?;
+        for band in bands {
+            if band.width == 0 || band.height == 0 {
+                continue;
+            }
+            let item_offset = checked_byte_count(
+                batch_index.checked_mul(band.values_per_item).ok_or(
+                    MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID),
+                )?,
+                size_of::<f32>(),
+            )?;
+            let byte_len = checked_byte_count(band.values_per_item, size_of::<f32>())?;
+            let row_pitch_bytes = checked_byte_count(band.width, size_of::<f32>())?;
+            let buffer = resident_buffer_ref(band.buffer, item_offset, byte_len)?;
+            let sample = resident_result(ResidentSampleInfo::new(32, true))?;
+            resident_result(ResidentDwtSubband::new(
+                buffer,
+                component,
+                sample,
+                ResidentColorModel::Unknown,
+                ResidentDwtSubbandLayout {
+                    level: 1,
+                    subband: band.kind,
+                    width: u32_param(band.width, METAL_DCT97_UNSUPPORTED_GRID)?,
+                    height: u32_param(band.height, METAL_DCT97_UNSUPPORTED_GRID)?,
+                    row_pitch_bytes,
+                    bytes_per_coefficient: size_of::<f32>(),
+                },
+            ))?
+            .require_backend(BackendKind::Metal)
+            .map_err(resident_handoff_error)?;
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
+}
+
+fn resident_component_geometry(
+    component_index: usize,
+    width: usize,
+    height: usize,
+    x_rsiz: u8,
+    y_rsiz: u8,
+) -> Result<ResidentComponentGeometry, MetalTranscodeError> {
+    let sampling = resident_result(ResidentSampling::new(x_rsiz, y_rsiz))?;
+    resident_result(ResidentComponentGeometry::new(
+        component_index,
+        u32_param(width, METAL_DCT97_UNSUPPORTED_GRID)?,
+        u32_param(height, METAL_DCT97_UNSUPPORTED_GRID)?,
+        sampling,
+    ))
+}
+
+fn resident_buffer_ref(
+    buffer: &Buffer,
+    offset: usize,
+    len: usize,
+) -> Result<ResidentBufferRef<'_>, MetalTranscodeError> {
+    let allocation = u64::try_from(buffer.as_ptr() as usize)
+        .map_err(|_| MetalTranscodeError::Kernel(METAL_RESIDENT_HANDOFF_VALIDATION_FAILED))?;
+    let allocation_len = usize::try_from(buffer.length())
+        .map_err(|_| MetalTranscodeError::Kernel(METAL_RESIDENT_HANDOFF_VALIDATION_FAILED))?;
+    resident_result(ResidentBufferRef::with_allocation_len(
+        DeviceMemoryRange::new(BackendKind::Metal, allocation, offset, len),
+        allocation_len,
+    ))
+}
+
+fn checked_byte_count(
+    value_count: usize,
+    bytes_per_value: usize,
+) -> Result<usize, MetalTranscodeError> {
+    value_count
+        .checked_mul(bytes_per_value)
+        .ok_or(MetalTranscodeError::UnsupportedJob(
+            METAL_DCT97_UNSUPPORTED_GRID,
+        ))
+}
+
+fn resident_result<T>(result: Result<T, ResidentHandoffError>) -> Result<T, MetalTranscodeError> {
+    result.map_err(resident_handoff_error)
+}
+
+fn resident_handoff_error(_error: ResidentHandoffError) -> MetalTranscodeError {
+    MetalTranscodeError::Kernel(METAL_RESIDENT_HANDOFF_VALIDATION_FAILED)
+}
+
+fn projection_batch_output_transfer_count(buffers: &ProjectionBatchOutputBuffers) -> usize {
+    [
+        buffers.ll.length(),
+        buffers.hl.length(),
+        buffers.lh.length(),
+        buffers.hh.length(),
+    ]
+    .into_iter()
+    .filter(|bytes| *bytes > 0)
+    .count()
+}
+
+fn projection_batch_output_transfer_bytes(buffers: &ProjectionBatchOutputBuffers) -> u64 {
+    [
+        buffers.ll.length(),
+        buffers.hl.length(),
+        buffers.lh.length(),
+        buffers.hh.length(),
+    ]
+    .into_iter()
+    .fold(0_u64, u64::saturating_add)
+}
+
+fn dwt97_codeblock_output_transfer_count(buffers: &Dwt97CodeBlockOutputBuffers) -> usize {
+    [
+        buffers.ll.length(),
+        buffers.hl.length(),
+        buffers.lh.length(),
+        buffers.hh.length(),
+    ]
+    .into_iter()
+    .filter(|bytes| *bytes > 0)
+    .count()
+}
+
+fn dwt97_codeblock_output_transfer_bytes(buffers: &Dwt97CodeBlockOutputBuffers) -> u64 {
+    [
+        buffers.ll.length(),
+        buffers.hl.length(),
+        buffers.lh.length(),
+        buffers.hh.length(),
+    ]
+    .into_iter()
+    .fold(0_u64, u64::saturating_add)
 }
 
 fn projection_batch_output_buffers(

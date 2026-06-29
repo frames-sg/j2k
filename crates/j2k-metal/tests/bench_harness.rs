@@ -112,3 +112,30 @@ fn metal_encode_auto_routing_accepts_external_staged_pnm_sources() {
         );
     }
 }
+
+#[test]
+fn metal_decode_benchmark_accepts_external_codestream_fixtures() {
+    let path = manifest_dir().join("tests/metal_decode_benchmark.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("must read {}: {error}", path.display()));
+
+    for expected in [
+        "J2K_METAL_DECODE_INPUT_DIRS",
+        "J2K_METAL_DECODE_MANIFEST",
+        "J2K_METAL_DECODE_INCLUDE_GENERATED",
+        "j2k_metal_decode_io_policy",
+        "j2k_metal_decode_generated_case_count",
+        "j2k_metal_decode_external_case_count",
+        "j2k_metal_decode_bench",
+        "metal_resident_ms",
+        "metal_readback_ms",
+        "input_fnv1a64",
+        "raw-codestream",
+        "wrapper_container_not_claimed_for_metal_decode",
+    ] {
+        assert!(
+            source.contains(expected),
+            "Metal decode benchmark is missing `{expected}`"
+        );
+    }
+}

@@ -689,7 +689,8 @@ fn bench_jpeg_to_htj2k_wsi_integer_53_tile_batch(c: &mut Criterion) {
                                     &mut accelerator,
                                 )
                                 .expect("rayon JPEG tile batch transcode succeeds"),
-                            "rayon JPEG tile batch transcode",
+                            benchmark_name.as_str(),
+                            TranscodeBatchProfileRequest::Cpu,
                         ));
                     });
                 },
@@ -710,7 +711,8 @@ fn bench_jpeg_to_htj2k_wsi_integer_53_tile_batch(c: &mut Criterion) {
                                     &mut accelerator,
                                 )
                                 .expect("auto Metal JPEG tile batch transcode succeeds"),
-                            "auto Metal JPEG tile batch transcode",
+                            benchmark_name.as_str(),
+                            TranscodeBatchProfileRequest::MetalAuto,
                         ));
                     });
                 },
@@ -732,7 +734,8 @@ fn bench_jpeg_to_htj2k_wsi_integer_53_tile_batch(c: &mut Criterion) {
                                         &mut accelerator,
                                     )
                                     .expect("explicit Metal JPEG tile batch transcode succeeds"),
-                                "explicit Metal JPEG tile batch transcode",
+                                benchmark_name.as_str(),
+                                TranscodeBatchProfileRequest::MetalExplicit,
                             ));
                         });
                     },
@@ -782,7 +785,8 @@ fn tile_batch_inputs(jpeg: &[u8], batch_size: usize) -> Vec<JpegTileBatchInput<'
 
 fn expect_successful_batch(
     batch: EncodedTranscodeBatch,
-    context: &'static str,
+    context: &str,
+    request: TranscodeBatchProfileRequest,
 ) -> EncodedTranscodeBatch {
     assert_eq!(
         batch.report.failed_tiles, 0,
@@ -793,11 +797,32 @@ fn expect_successful_batch(
         batch.report.successful_tiles, batch.report.tile_count,
         "{context} produced an incomplete successful tile count"
     );
-    emit_transcode_batch_profile(&batch, context);
+    emit_transcode_batch_profile(&batch, context, request);
     batch
 }
 
-fn emit_transcode_batch_profile(batch: &EncodedTranscodeBatch, context: &'static str) {
+#[derive(Clone, Copy)]
+enum TranscodeBatchProfileRequest {
+    Cpu,
+    MetalAuto,
+    MetalExplicit,
+}
+
+impl TranscodeBatchProfileRequest {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::MetalAuto => "metal_auto",
+            Self::MetalExplicit => "metal_explicit",
+        }
+    }
+}
+
+fn emit_transcode_batch_profile(
+    batch: &EncodedTranscodeBatch,
+    context: &str,
+    request: TranscodeBatchProfileRequest,
+) {
     if std::env::var_os(TRANSCODE_PROFILE_STAGES_ENV).is_none() {
         return;
     }
@@ -810,8 +835,20 @@ fn emit_transcode_batch_profile(batch: &EncodedTranscodeBatch, context: &'static
         .extract_us
         .saturating_add(report.transform_us)
         .saturating_add(report.encode_us);
+    let transform_processor = transcode_transform_processor(request, &timings);
+    let path = transcode_profile_path(request, transform_processor);
+    let pipeline = transcode_profile_pipeline(transform_processor);
+    let device_to_host_transfer_count = timings
+        .dwt97_batch_readback_transfers
+        .saturating_add(timings.dwt97_batch_ht_status_readback_transfers)
+        .saturating_add(timings.dwt97_batch_ht_output_readback_transfers);
+    let device_to_host_transfer_bytes = timings
+        .dwt97_batch_readback_bytes
+        .saturating_add(timings.dwt97_batch_ht_status_readback_bytes)
+        .saturating_add(timings.dwt97_batch_ht_output_readback_bytes);
     eprintln!(
-        "j2k_profile codec=transcode op=transcode_batch path=metal_cpu_hybrid pipeline=jpeg_to_htj2k_hybrid context={context} coefficient_path={coefficient_path} extract_processor=cpu transform_processor=metal encode_processor=cpu tile_count={} successful_tiles={} failed_tiles={} transformed_components={} reversible_dwt53_batches={} reversible_dwt53_batch_jobs={} extract_us={} transform_us={} encode_us={} total_us={} source_raw_probe_us={} read_region_decode_us={} compose_pad_us={} generated_jpeg_encode_us={} jpeg_dct_extract_us={} jpeg_dct_repack_us={} dct_to_wavelet_total_us={} dct_to_wavelet_accelerator_us={} dct_to_wavelet_cpu_fallback_us={} dwt_decompose_us={} dwt97_batch_pack_upload_us={} dwt97_batch_idct_row_lift_us={} dwt97_batch_column_lift_us={} dwt97_batch_quantize_codeblock_us={} dwt97_batch_ht_encode_us={} dwt97_batch_ht_codeblock_dispatches={} dwt97_batch_readback_us={} htj2k_encode_us={} htj2k_encode_accelerator_dispatches={} htj2k_encode_ht_code_block_dispatches={} htj2k_encode_packetization_dispatches={} component_count={} batch_count={} batch_jobs={} accelerator_attempts={} accelerator_jobs={} accelerator_dispatches={} accelerator_dispatched_jobs={} cpu_fallback_jobs={}",
+        "j2k_profile codec=transcode op=transcode_batch request={} path={path} pipeline={pipeline} context={context} coefficient_path={coefficient_path} extract_processor=cpu transform_processor={transform_processor} encode_processor=cpu tile_count={} successful_tiles={} failed_tiles={} transformed_components={} reversible_dwt53_batches={} reversible_dwt53_batch_jobs={} extract_us={} transform_us={} encode_us={} total_us={} source_raw_probe_us={} read_region_decode_us={} compose_pad_us={} generated_jpeg_encode_us={} jpeg_dct_extract_us={} jpeg_dct_repack_us={} dct_to_wavelet_total_us={} dct_to_wavelet_accelerator_us={} dct_to_wavelet_cpu_fallback_us={} dwt_decompose_us={} dwt97_batch_pack_upload_us={} dwt97_batch_pack_upload_transfers={} dwt97_batch_pack_upload_bytes={} dwt97_batch_resident_dct_handoff_count={} dwt97_batch_idct_row_lift_us={} dwt97_batch_column_lift_us={} dwt97_batch_resident_dwt_handoff_count={} dwt97_batch_quantize_codeblock_us={} dwt97_batch_ht_encode_us={} dwt97_batch_ht_codeblock_dispatches={} dwt97_batch_ht_status_readback_us={} dwt97_batch_ht_status_readback_transfers={} dwt97_batch_ht_status_readback_bytes={} dwt97_batch_ht_output_readback_us={} dwt97_batch_ht_output_readback_transfers={} dwt97_batch_ht_output_readback_bytes={} dwt97_batch_readback_us={} dwt97_batch_readback_transfers={} dwt97_batch_readback_bytes={} host_to_device_transfer_count={} host_to_device_transfer_bytes={} device_to_host_transfer_count={} device_to_host_transfer_bytes={} htj2k_encode_us={} htj2k_encode_accelerator_dispatches={} htj2k_encode_ht_code_block_dispatches={} htj2k_encode_packetization_dispatches={} component_count={} batch_count={} batch_jobs={} accelerator_attempts={} accelerator_jobs={} accelerator_dispatches={} accelerator_dispatched_jobs={} cpu_fallback_jobs={}",
+        request.as_str(),
         report.tile_count,
         report.successful_tiles,
         report.failed_tiles,
@@ -833,12 +870,28 @@ fn emit_transcode_batch_profile(batch: &EncodedTranscodeBatch, context: &'static
         timings.dct_to_wavelet_cpu_fallback_us,
         timings.dwt_decompose_us,
         timings.dwt97_batch_pack_upload_us,
+        timings.dwt97_batch_pack_upload_transfers,
+        timings.dwt97_batch_pack_upload_bytes,
+        timings.dwt97_batch_resident_dct_handoff_count,
         timings.dwt97_batch_idct_row_lift_us,
         timings.dwt97_batch_column_lift_us,
+        timings.dwt97_batch_resident_dwt_handoff_count,
         timings.dwt97_batch_quantize_codeblock_us,
         timings.dwt97_batch_ht_encode_us,
         timings.dwt97_batch_ht_codeblock_dispatches,
+        timings.dwt97_batch_ht_status_readback_us,
+        timings.dwt97_batch_ht_status_readback_transfers,
+        timings.dwt97_batch_ht_status_readback_bytes,
+        timings.dwt97_batch_ht_output_readback_us,
+        timings.dwt97_batch_ht_output_readback_transfers,
+        timings.dwt97_batch_ht_output_readback_bytes,
         timings.dwt97_batch_readback_us,
+        timings.dwt97_batch_readback_transfers,
+        timings.dwt97_batch_readback_bytes,
+        timings.dwt97_batch_pack_upload_transfers,
+        timings.dwt97_batch_pack_upload_bytes,
+        device_to_host_transfer_count,
+        device_to_host_transfer_bytes,
         timings.htj2k_encode_us,
         timings.htj2k_encode_accelerator_dispatches,
         timings.htj2k_encode_ht_code_block_dispatches,
@@ -853,6 +906,61 @@ fn emit_transcode_batch_profile(batch: &EncodedTranscodeBatch, context: &'static
         timings.cpu_fallback_jobs,
     );
     eprint!("{}", report.pipeline_map().debug_report());
+}
+
+fn transcode_transform_processor(
+    request: TranscodeBatchProfileRequest,
+    timings: &j2k_transcode::TranscodeTimingReport,
+) -> &'static str {
+    if matches!(
+        request,
+        TranscodeBatchProfileRequest::MetalAuto | TranscodeBatchProfileRequest::MetalExplicit
+    ) && transcode_timings_indicate_metal_work(timings)
+    {
+        "metal"
+    } else {
+        "cpu"
+    }
+}
+
+fn transcode_timings_indicate_metal_work(timings: &j2k_transcode::TranscodeTimingReport) -> bool {
+    timings.accelerator_dispatches > 0
+        || timings.dwt97_batch_pack_upload_transfers > 0
+        || timings.dwt97_batch_pack_upload_bytes > 0
+        || timings.dwt97_batch_resident_dct_handoff_count > 0
+        || timings.dwt97_batch_idct_row_lift_us > 0
+        || timings.dwt97_batch_column_lift_us > 0
+        || timings.dwt97_batch_resident_dwt_handoff_count > 0
+        || timings.dwt97_batch_quantize_codeblock_us > 0
+        || timings.dwt97_batch_ht_encode_us > 0
+        || timings.dwt97_batch_ht_kernel_us > 0
+        || timings.dwt97_batch_ht_compact_us > 0
+        || timings.dwt97_batch_ht_codeblock_dispatches > 0
+        || timings.dwt97_batch_readback_transfers > 0
+        || timings.dwt97_batch_readback_bytes > 0
+        || timings.dwt97_batch_ht_status_readback_transfers > 0
+        || timings.dwt97_batch_ht_status_readback_bytes > 0
+        || timings.dwt97_batch_ht_output_readback_transfers > 0
+        || timings.dwt97_batch_ht_output_readback_bytes > 0
+}
+
+fn transcode_profile_path(
+    request: TranscodeBatchProfileRequest,
+    transform_processor: &'static str,
+) -> &'static str {
+    if transform_processor != "metal" {
+        return "cpu";
+    }
+    match request {
+        TranscodeBatchProfileRequest::Cpu => "cpu",
+        TranscodeBatchProfileRequest::MetalAuto => "auto",
+        TranscodeBatchProfileRequest::MetalExplicit => "metal",
+    }
+}
+
+fn transcode_profile_pipeline(transform_processor: &'static str) -> &'static str {
+    let _ = transform_processor;
+    "jpeg_to_htj2k"
 }
 
 fn metal_available() -> bool {

@@ -20,3 +20,24 @@ deinterleave, forward RCT/ICT, forward 5/3 and 9/7 DWT, and subband
 quantization. Classic Tier-1, HT code-block encode, packetization, and
 codestream assembly stay CPU for that route unless a documented resident path
 supports the shape with parity and benchmark evidence.
+
+Run the decode route-report example to inspect Auto CPU fallback and strict
+Metal behavior:
+
+```bash
+cargo run -p j2k-metal --example decode_route_report
+```
+
+Run the Auto HTJ2K encode report example to inspect final backend selection and
+per-stage Metal dispatch counts:
+
+```bash
+cargo run -p j2k-metal --example htj2k_encode_auto_report
+```
+
+Run the resident encode example on macOS to produce a Metal-backed HTJ2K
+codestream buffer and validate it through the CPU decoder:
+
+```bash
+cargo run -p j2k-metal --example resident_encode_buffer
+```

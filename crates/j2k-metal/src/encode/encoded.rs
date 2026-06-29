@@ -3,9 +3,9 @@
 #[cfg(target_os = "macos")]
 use j2k::EncodedJ2k;
 #[cfg(target_os = "macos")]
-use j2k_core::BackendKind;
+use j2k_core::{BackendKind, DeviceMemoryRange};
 #[cfg(target_os = "macos")]
-use metal::Buffer;
+use metal::{foreign_types::ForeignType, Buffer};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 #[cfg(target_os = "macos")]
@@ -40,6 +40,21 @@ pub struct MetalEncodedJ2k {
 
 #[cfg(target_os = "macos")]
 impl MetalEncodedJ2k {
+    /// Backend-visible memory range for the valid codestream capacity.
+    pub fn codestream_memory_range(&self) -> Option<DeviceMemoryRange> {
+        Some(DeviceMemoryRange::new(
+            BackendKind::Metal,
+            u64::try_from(self.codestream_buffer.as_ptr() as usize).ok()?,
+            self.byte_offset,
+            self.capacity,
+        ))
+    }
+
+    /// Backing Metal allocation length in bytes.
+    pub fn codestream_allocation_len(&self) -> Option<usize> {
+        usize::try_from(self.codestream_buffer.length()).ok()
+    }
+
     /// Borrow the finished codestream bytes from the backing Metal buffer.
     pub fn codestream_bytes(&self) -> Result<&[u8], crate::Error> {
         let end = self.byte_offset.checked_add(self.byte_len).ok_or_else(|| {

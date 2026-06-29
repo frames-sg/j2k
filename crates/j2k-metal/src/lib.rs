@@ -306,6 +306,74 @@ pub enum SurfaceResidency {
     CpuStagedMetalUpload,
 }
 
+/// Decode operation represented in a route report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeOperation {
+    /// Full-image decode.
+    Full,
+    /// Source-region decode.
+    Region,
+    /// Full-image scaled decode.
+    Scaled,
+    /// Source-region scaled decode.
+    RegionScaled,
+}
+
+/// Route details for a completed decode request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeRouteReport {
+    /// Decode operation requested by the caller.
+    pub operation: DecodeOperation,
+    /// Caller backend preference.
+    pub requested_backend: BackendRequest,
+    /// Backend that produced the returned surface.
+    pub selected_backend: BackendKind,
+    /// Requested output pixel format.
+    pub pixel_format: PixelFormat,
+    /// Residency of the returned surface.
+    pub surface_residency: SurfaceResidency,
+    /// Reason `Auto` selected CPU, when applicable.
+    pub fallback_reason: Option<&'static str>,
+}
+
+impl DecodeRouteReport {
+    fn from_surface(
+        operation: DecodeOperation,
+        requested_backend: BackendRequest,
+        pixel_format: PixelFormat,
+        surface: &Surface,
+    ) -> Self {
+        Self {
+            operation,
+            requested_backend,
+            selected_backend: surface.backend,
+            pixel_format,
+            surface_residency: surface.residency,
+            fallback_reason: decode_fallback_reason(requested_backend, surface.backend),
+        }
+    }
+}
+
+/// Decoded surface paired with the route details that produced it.
+#[derive(Clone)]
+pub struct DecodeSurfaceWithReport {
+    /// Returned decoded surface.
+    pub surface: Surface,
+    /// Route report for the completed decode.
+    pub report: DecodeRouteReport,
+}
+
+fn decode_fallback_reason(
+    requested_backend: BackendRequest,
+    selected_backend: BackendKind,
+) -> Option<&'static str> {
+    if requested_backend == BackendRequest::Auto && selected_backend == BackendKind::Cpu {
+        Some(routing::AUTO_DECODE_CPU_FALLBACK_REASON)
+    } else {
+        None
+    }
+}
+
 #[cfg(target_os = "macos")]
 const CPU_STAGED_METAL_REQUIRES_EXPLICIT_API: &str =
     "CPU-staged Metal upload requires the explicit CPU-staged API; BackendRequest::Metal only accepts resident Metal decode";
@@ -853,6 +921,70 @@ impl<'a> J2kDecoder<'a> {
     /// Borrow the underlying CPU J2K decoder.
     pub fn inner(&self) -> &CpuDecoder<'a> {
         &self.inner
+    }
+
+    /// Decode a full image and return route details with the surface.
+    pub fn decode_to_device_with_report(
+        &mut self,
+        fmt: PixelFormat,
+        backend: BackendRequest,
+    ) -> Result<DecodeSurfaceWithReport, Error> {
+        let surface = self.decode_to_surface_impl(fmt, backend)?;
+        Ok(surface_with_report(
+            surface,
+            DecodeOperation::Full,
+            backend,
+            fmt,
+        ))
+    }
+
+    /// Decode a source region and return route details with the surface.
+    pub fn decode_region_to_device_with_report(
+        &mut self,
+        fmt: PixelFormat,
+        roi: Rect,
+        backend: BackendRequest,
+    ) -> Result<DecodeSurfaceWithReport, Error> {
+        let surface = self.decode_region_to_surface_impl(fmt, roi, backend)?;
+        Ok(surface_with_report(
+            surface,
+            DecodeOperation::Region,
+            backend,
+            fmt,
+        ))
+    }
+
+    /// Decode a full image at reduced resolution and return route details.
+    pub fn decode_scaled_to_device_with_report(
+        &mut self,
+        fmt: PixelFormat,
+        scale: Downscale,
+        backend: BackendRequest,
+    ) -> Result<DecodeSurfaceWithReport, Error> {
+        let surface = self.decode_scaled_to_surface_impl(fmt, scale, backend)?;
+        Ok(surface_with_report(
+            surface,
+            DecodeOperation::Scaled,
+            backend,
+            fmt,
+        ))
+    }
+
+    /// Decode a scaled source region and return route details with the surface.
+    pub fn decode_region_scaled_to_device_with_report(
+        &mut self,
+        fmt: PixelFormat,
+        roi: Rect,
+        scale: Downscale,
+        backend: BackendRequest,
+    ) -> Result<DecodeSurfaceWithReport, Error> {
+        let surface = self.decode_region_scaled_to_surface_impl(fmt, roi, scale, backend)?;
+        Ok(surface_with_report(
+            surface,
+            DecodeOperation::RegionScaled,
+            backend,
+            fmt,
+        ))
     }
 
     /// Decode a full image into a Metal-resident device surface.
@@ -1792,11 +1924,6 @@ impl<'a> J2kDecoder<'a> {
         {
             return Err(error);
         }
-        if !matches!(fmt, PixelFormat::Gray8 | PixelFormat::Gray16) {
-            return Err(Error::UnsupportedMetalRequest {
-                reason: "J2K Metal session scaled decode currently supports Gray8/Gray16 only",
-            });
-        }
 
         #[cfg(target_os = "macos")]
         {
@@ -2278,6 +2405,17 @@ impl TileBatchDecodeManyDevice for Codec {
 impl TileBatchDecodeDevice for Codec {
     type Context = CpuJ2kContext;
     type DeviceSurface = Surface;
+}
+
+fn surface_with_report(
+    surface: Surface,
+    operation: DecodeOperation,
+    requested_backend: BackendRequest,
+    pixel_format: PixelFormat,
+) -> DecodeSurfaceWithReport {
+    let report =
+        DecodeRouteReport::from_surface(operation, requested_backend, pixel_format, &surface);
+    DecodeSurfaceWithReport { surface, report }
 }
 
 fn upload_surface(

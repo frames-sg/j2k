@@ -200,16 +200,26 @@ fn flatten_f64_blocks_to_f32(blocks: &[[[f64; 8]; 8]]) -> Vec<f32> {
 fn map_batch_timings(timings: CudaDwt97BatchStageTimings) -> Dwt97BatchStageTimings {
     Dwt97BatchStageTimings {
         pack_upload_us: timings.pack_upload_us,
+        pack_upload_transfers: usize::from(timings.pack_upload_us > 0),
+        pack_upload_bytes: 0,
+        resident_dct_handoff_count: 0,
         idct_row_lift_us: timings.idct_row_lift_us,
         column_lift_us: timings.column_lift_us,
+        resident_dwt_handoff_count: 0,
         quantize_codeblock_us: timings.quantize_codeblock_us,
         ht_encode_us: timings.ht_encode_us,
         ht_kernel_us: 0,
         ht_status_readback_us: 0,
+        ht_status_readback_transfers: 0,
+        ht_status_readback_bytes: 0,
         ht_compact_us: 0,
         ht_output_readback_us: 0,
+        ht_output_readback_transfers: 0,
+        ht_output_readback_bytes: 0,
         ht_codeblock_dispatches: timings.ht_codeblock_dispatches,
         readback_us: timings.readback_us,
+        readback_transfers: usize::from(timings.readback_us > 0),
+        readback_bytes: 0,
     }
 }
 
@@ -220,8 +230,12 @@ fn set_ht_encode_timings(
     timings.ht_encode_us = ht_timings.ht_encode_us;
     timings.ht_kernel_us = ht_timings.ht_kernel_us;
     timings.ht_status_readback_us = ht_timings.ht_status_readback_us;
+    timings.ht_status_readback_transfers = usize::from(ht_timings.ht_status_readback_us > 0);
+    timings.ht_status_readback_bytes = 0;
     timings.ht_compact_us = ht_timings.ht_compact_us;
     timings.ht_output_readback_us = ht_timings.ht_output_readback_us;
+    timings.ht_output_readback_transfers = usize::from(ht_timings.ht_output_readback_us > 0);
+    timings.ht_output_readback_bytes = 0;
 }
 
 fn add_ht_encode_timings(
@@ -233,18 +247,30 @@ fn add_ht_encode_timings(
     timings.ht_status_readback_us = timings
         .ht_status_readback_us
         .saturating_add(ht_timings.ht_status_readback_us);
+    timings.ht_status_readback_transfers = timings
+        .ht_status_readback_transfers
+        .saturating_add(usize::from(ht_timings.ht_status_readback_us > 0));
     timings.ht_compact_us = timings
         .ht_compact_us
         .saturating_add(ht_timings.ht_compact_us);
     timings.ht_output_readback_us = timings
         .ht_output_readback_us
         .saturating_add(ht_timings.ht_output_readback_us);
+    timings.ht_output_readback_transfers = timings
+        .ht_output_readback_transfers
+        .saturating_add(usize::from(ht_timings.ht_output_readback_us > 0));
 }
 
 fn accumulate_batch_timings(total: &mut Dwt97BatchStageTimings, next: Dwt97BatchStageTimings) {
     total.pack_upload_us = total.pack_upload_us.saturating_add(next.pack_upload_us);
     total.idct_row_lift_us = total.idct_row_lift_us.saturating_add(next.idct_row_lift_us);
     total.column_lift_us = total.column_lift_us.saturating_add(next.column_lift_us);
+    total.resident_dct_handoff_count = total
+        .resident_dct_handoff_count
+        .saturating_add(next.resident_dct_handoff_count);
+    total.resident_dwt_handoff_count = total
+        .resident_dwt_handoff_count
+        .saturating_add(next.resident_dwt_handoff_count);
     total.quantize_codeblock_us = total
         .quantize_codeblock_us
         .saturating_add(next.quantize_codeblock_us);
@@ -253,14 +279,36 @@ fn accumulate_batch_timings(total: &mut Dwt97BatchStageTimings, next: Dwt97Batch
     total.ht_status_readback_us = total
         .ht_status_readback_us
         .saturating_add(next.ht_status_readback_us);
+    total.ht_status_readback_transfers = total
+        .ht_status_readback_transfers
+        .saturating_add(next.ht_status_readback_transfers);
+    total.ht_status_readback_bytes = total
+        .ht_status_readback_bytes
+        .saturating_add(next.ht_status_readback_bytes);
     total.ht_compact_us = total.ht_compact_us.saturating_add(next.ht_compact_us);
     total.ht_output_readback_us = total
         .ht_output_readback_us
         .saturating_add(next.ht_output_readback_us);
+    total.ht_output_readback_transfers = total
+        .ht_output_readback_transfers
+        .saturating_add(next.ht_output_readback_transfers);
+    total.ht_output_readback_bytes = total
+        .ht_output_readback_bytes
+        .saturating_add(next.ht_output_readback_bytes);
     total.ht_codeblock_dispatches = total
         .ht_codeblock_dispatches
         .saturating_add(next.ht_codeblock_dispatches);
     total.readback_us = total.readback_us.saturating_add(next.readback_us);
+    total.pack_upload_transfers = total
+        .pack_upload_transfers
+        .saturating_add(next.pack_upload_transfers);
+    total.pack_upload_bytes = total
+        .pack_upload_bytes
+        .saturating_add(next.pack_upload_bytes);
+    total.readback_transfers = total
+        .readback_transfers
+        .saturating_add(next.readback_transfers);
+    total.readback_bytes = total.readback_bytes.saturating_add(next.readback_bytes);
 }
 
 fn dwt97_bands_to_f64(bands: CudaTranscodeDwt97Bands) -> Dwt97TwoDimensional<f64> {

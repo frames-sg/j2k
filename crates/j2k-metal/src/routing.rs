@@ -10,6 +10,9 @@ use j2k_metal_support::{
 
 use crate::Error;
 
+pub(crate) const AUTO_DECODE_CPU_FALLBACK_REASON: &str =
+    "J2K Metal Auto decode stays on CPU until decode benchmark evidence justifies Metal routing";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteDecision {
     CpuHost,

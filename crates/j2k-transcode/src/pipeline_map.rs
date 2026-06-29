@@ -86,6 +86,12 @@ pub struct TranscodePipelineStageReport {
     pub metal_us: u128,
     /// Host/device transfer time visible for this stage, in microseconds.
     pub transfer_us: u128,
+    /// Logical host/device transfer operations visible for this stage.
+    pub transfer_count: usize,
+    /// Host/device transfer bytes visible for this stage.
+    pub transfer_bytes: u64,
+    /// Validated resident handoff descriptors visible for this stage.
+    pub resident_handoff_count: usize,
     /// Dispatches observed for this stage.
     pub dispatches: usize,
     /// Component jobs that used CPU fallback at this stage.
@@ -140,12 +146,15 @@ impl TranscodePipelineMap {
         for stage in &self.stages {
             writeln!(
                 output,
-                "stage={} processor={} cpu_us={} metal_us={} transfer_us={} dispatches={} fallback_jobs={} note={}",
+                "stage={} processor={} cpu_us={} metal_us={} transfer_us={} transfer_count={} transfer_bytes={} resident_handoffs={} dispatches={} fallback_jobs={} note={}",
                 stage.stage,
                 stage.processor,
                 stage.cpu_us,
                 stage.metal_us,
                 stage.transfer_us,
+                stage.transfer_count,
+                stage.transfer_bytes,
+                stage.resident_handoff_count,
                 stage.dispatches,
                 stage.fallback_jobs,
                 stage.note,
@@ -196,6 +205,9 @@ fn entropy_decode_stage(timings: &TranscodeTimingReport) -> TranscodePipelineSta
         cpu_us: timings.jpeg_dct_extract_us,
         metal_us: 0,
         transfer_us: 0,
+        transfer_count: 0,
+        transfer_bytes: 0,
+        resident_handoff_count: 0,
         dispatches: 0,
         fallback_jobs: 0,
         note: "JPEG marker parsing, entropy decode, dequantization, and DCT coefficient extraction stay on CPU",
@@ -204,19 +216,30 @@ fn entropy_decode_stage(timings: &TranscodeTimingReport) -> TranscodePipelineSta
 
 fn coefficient_prep_stage(timings: &TranscodeTimingReport) -> TranscodePipelineStageReport {
     let transfer_us = timings.dwt97_batch_pack_upload_us;
+    let transfer_count = transfer_count_or_timing(
+        timings.dwt97_batch_pack_upload_transfers,
+        transfer_us,
+        timings.dwt97_batch_pack_upload_bytes,
+    );
+    let transfer_dispatch = usize::from(
+        transfer_us > 0 || transfer_count > 0 || timings.dwt97_batch_pack_upload_bytes > 0,
+    );
     TranscodePipelineStageReport {
         stage: TranscodePipelineStageKind::CoefficientPrep,
         processor: processor_for(
             timings.jpeg_dct_repack_us,
             0,
             transfer_us,
-            usize::from(transfer_us > 0),
+            transfer_dispatch,
             0,
         ),
         cpu_us: timings.jpeg_dct_repack_us,
         metal_us: 0,
         transfer_us,
-        dispatches: usize::from(transfer_us > 0),
+        transfer_count,
+        transfer_bytes: timings.dwt97_batch_pack_upload_bytes,
+        resident_handoff_count: timings.dwt97_batch_resident_dct_handoff_count,
+        dispatches: transfer_dispatch,
         fallback_jobs: 0,
         note: "DCT coefficient repack and Metal buffer pack/upload are visible before transform dispatch",
     }
@@ -248,6 +271,13 @@ fn transform_stage(timings: &TranscodeTimingReport) -> TranscodePipelineStageRep
         cpu_us,
         metal_us,
         transfer_us: timings.dwt97_batch_readback_us,
+        transfer_count: transfer_count_or_timing(
+            timings.dwt97_batch_readback_transfers,
+            timings.dwt97_batch_readback_us,
+            timings.dwt97_batch_readback_bytes,
+        ),
+        transfer_bytes: timings.dwt97_batch_readback_bytes,
+        resident_handoff_count: timings.dwt97_batch_resident_dwt_handoff_count,
         dispatches: timings.accelerator_dispatches,
         fallback_jobs: timings.cpu_fallback_jobs,
         note: "DCT-grid to DWT projection uses accelerator dispatches when available; Ok(None) jobs remain caller CPU fallback",
@@ -263,6 +293,13 @@ fn quantization_code_block_stage(timings: &TranscodeTimingReport) -> TranscodePi
     let transfer_us = timings
         .dwt97_batch_ht_status_readback_us
         .saturating_add(timings.dwt97_batch_ht_output_readback_us);
+    let transfer_count = timings
+        .dwt97_batch_ht_status_readback_transfers
+        .saturating_add(timings.dwt97_batch_ht_output_readback_transfers);
+    let transfer_bytes = timings
+        .dwt97_batch_ht_status_readback_bytes
+        .saturating_add(timings.dwt97_batch_ht_output_readback_bytes);
+    let transfer_count = transfer_count_or_timing(transfer_count, transfer_us, transfer_bytes);
     let dispatches = timings
         .dwt97_batch_ht_codeblock_dispatches
         .saturating_add(timings.htj2k_encode_ht_code_block_dispatches);
@@ -272,6 +309,9 @@ fn quantization_code_block_stage(timings: &TranscodeTimingReport) -> TranscodePi
         cpu_us: 0,
         metal_us,
         transfer_us,
+        transfer_count,
+        transfer_bytes,
+        resident_handoff_count: 0,
         dispatches,
         fallback_jobs: 0,
         note: "9/7 quantization/code-block layout is only isolated when a backend reports resident stage timings; otherwise it is inside native encode time",
@@ -286,6 +326,9 @@ fn packetization_stage(timings: &TranscodeTimingReport) -> TranscodePipelineStag
         cpu_us: 0,
         metal_us: 0,
         transfer_us: 0,
+        transfer_count: 0,
+        transfer_bytes: 0,
+        resident_handoff_count: 0,
         dispatches,
         fallback_jobs: 0,
         note: "Packetization dispatches are counted separately when an encode-stage accelerator handles them; CPU time is otherwise inside native encode time",
@@ -299,6 +342,9 @@ fn codestream_assembly_stage(timings: &TranscodeTimingReport) -> TranscodePipeli
         cpu_us: timings.htj2k_encode_us,
         metal_us: 0,
         transfer_us: 0,
+        transfer_count: 0,
+        transfer_bytes: 0,
+        resident_handoff_count: 0,
         dispatches: 0,
         fallback_jobs: 0,
         note: "Final marker, tile-part, packet byte ordering, and codestream assembly remain at the CPU/native encoder boundary",
@@ -401,5 +447,17 @@ fn processor_for(
         (true, true) => TranscodeStageProcessor::Hybrid,
         (false, true) => TranscodeStageProcessor::Metal,
         (_, false) => TranscodeStageProcessor::Cpu,
+    }
+}
+
+fn transfer_count_or_timing(
+    explicit_count: usize,
+    transfer_us: u128,
+    transfer_bytes: u64,
+) -> usize {
+    if explicit_count > 0 {
+        explicit_count
+    } else {
+        usize::from(transfer_us > 0 || transfer_bytes > 0)
     }
 }

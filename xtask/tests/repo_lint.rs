@@ -1465,8 +1465,12 @@ mod public_docs_policy {
         for example in [
             "crates/j2k/examples/decode_generated.rs",
             "crates/j2k-jpeg/examples/inspect.rs",
+            "crates/j2k-metal/examples/decode_route_report.rs",
+            "crates/j2k-metal/examples/htj2k_encode_auto_report.rs",
+            "crates/j2k-metal/examples/resident_encode_buffer.rs",
             "crates/j2k-tilecodec/examples/decompress.rs",
             "crates/j2k-transcode/examples/jpeg_to_htj2k.rs",
+            "crates/j2k-transcode-metal/examples/jpeg_to_htj2k_route_report.rs",
         ] {
             assert!(
                 root.join(example).exists(),

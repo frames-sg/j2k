@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env,
     ffi::OsString,
     fs,
@@ -48,11 +49,18 @@ const SCRUBBED_BENCH_ENV_VARS: &[&str] = &[
     "J2K_CUDA_ENCODE_INPUT_DIRS",
     "J2K_CUDA_ENCODE_MANIFEST",
     "J2K_CUDA_ENCODE_INCLUDE_GENERATED",
+    "J2K_METAL_DECODE_INPUT_DIRS",
+    "J2K_METAL_DECODE_MANIFEST",
+    "J2K_METAL_DECODE_INCLUDE_GENERATED",
     "J2K_METAL_ENCODE_INPUT_DIRS",
     "J2K_METAL_ENCODE_MANIFEST",
     "J2K_METAL_ENCODE_INCLUDE_GENERATED",
     "J2K_METAL_ENCODE_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES",
+    "J2K_TRANSCODE_METAL_PROFILE_STAGES",
 ];
+
+const METAL_TRANSCODE_BENCH_FILTER: &str =
+    "jpeg_to_htj2k_wsi_integer_53_tile_batch/srgb_ybr420_224_batch_128";
 
 #[derive(Debug, Clone)]
 pub(crate) struct AdoptionBenchmarkOptions {
@@ -140,11 +148,23 @@ pub(crate) fn adoption_benchmark(args: impl Iterator<Item = String>) -> Result<(
     }
 
     if options.metal {
+        steps.push(run_metal_decode_benchmark(&options)?);
         steps.push(run_metal_encode_auto_routing(&options)?);
+        steps.push(run_metal_transcode_benchmark(&options)?);
     } else {
+        steps.push(skipped_step(
+            "metal-decode-benchmark",
+            "not requested; pass --metal for Metal decode benchmark",
+            &options.out_dir,
+        ));
         steps.push(skipped_step(
             "metal-encode-auto-routing",
             "not requested; pass --metal for Metal hybrid encode routing benchmark",
+            &options.out_dir,
+        ));
+        steps.push(skipped_step(
+            "metal-transcode-benchmark",
+            "not requested; pass --metal for Metal transcode benchmark",
             &options.out_dir,
         ));
     }
@@ -443,6 +463,58 @@ fn run_cuda_htj2k_encode(options: &AdoptionBenchmarkOptions) -> Result<AdoptionS
     )
 }
 
+fn run_metal_decode_benchmark(options: &AdoptionBenchmarkOptions) -> Result<AdoptionStep, String> {
+    if env::consts::OS != "macos" && !options.require_metal {
+        return Ok(skipped_step(
+            "metal-decode-benchmark",
+            "not macOS; Metal benchmark is macOS-only",
+            &options.out_dir,
+        ));
+    }
+    let args = vec![
+        "test".to_string(),
+        "-p".to_string(),
+        "j2k-metal".to_string(),
+        "--release".to_string(),
+        "--test".to_string(),
+        "metal_decode_benchmark".to_string(),
+        "metal_decode_benchmark".to_string(),
+        "--".to_string(),
+        "--ignored".to_string(),
+        "--nocapture".to_string(),
+    ];
+    let mut envs = Vec::new();
+    if let Some(input_dirs) = &options.input_dirs {
+        envs.push((
+            "J2K_METAL_DECODE_INPUT_DIRS".to_string(),
+            benchmark_env_path_list(input_dirs, "--fixtures")?,
+        ));
+    }
+    if let Some(manifest) = &options.manifest {
+        envs.push((
+            "J2K_METAL_DECODE_MANIFEST".to_string(),
+            benchmark_env_path(manifest, "--manifest")?,
+        ));
+    }
+    if !options.include_generated {
+        envs.push((
+            "J2K_METAL_DECODE_INCLUDE_GENERATED".to_string(),
+            "0".to_string(),
+        ));
+    }
+    if options.require_metal {
+        envs.push(("J2K_REQUIRE_METAL_BENCH".to_string(), "1".to_string()));
+    }
+    run_logged_owned(
+        "metal-decode-benchmark",
+        cargo(),
+        &args,
+        &envs,
+        None,
+        &options.out_dir,
+    )
+}
+
 fn run_metal_encode_auto_routing(
     options: &AdoptionBenchmarkOptions,
 ) -> Result<AdoptionStep, String> {
@@ -493,6 +565,42 @@ fn run_metal_encode_auto_routing(
         &args,
         &envs,
         None,
+        &options.out_dir,
+    )
+}
+
+fn run_metal_transcode_benchmark(
+    options: &AdoptionBenchmarkOptions,
+) -> Result<AdoptionStep, String> {
+    if env::consts::OS != "macos" && !options.require_metal {
+        return Ok(skipped_step(
+            "metal-transcode-benchmark",
+            "not macOS; Metal transcode benchmark is macOS-only",
+            &options.out_dir,
+        ));
+    }
+    let args = vec![
+        "bench".to_string(),
+        "-p".to_string(),
+        "j2k-transcode-metal".to_string(),
+        "--bench".to_string(),
+        "dct97".to_string(),
+        "--".to_string(),
+        METAL_TRANSCODE_BENCH_FILTER.to_string(),
+    ];
+    let mut envs = vec![(
+        "J2K_TRANSCODE_METAL_PROFILE_STAGES".to_string(),
+        "1".to_string(),
+    )];
+    if options.require_metal {
+        envs.push(("J2K_REQUIRE_METAL_BENCH".to_string(), "1".to_string()));
+    }
+    run_logged_owned(
+        "metal-transcode-benchmark",
+        cargo(),
+        &args,
+        &envs,
+        Some(&criterion_target_dir(options, "metal-transcode-benchmark")),
         &options.out_dir,
     )
 }
@@ -618,14 +726,34 @@ fn existing_steps(options: &AdoptionBenchmarkOptions) -> Result<Vec<AdoptionStep
 
     if options.metal {
         steps.push(existing_ran_step(
+            "metal-decode-benchmark",
+            None,
+            &options.out_dir,
+        )?);
+        steps.push(existing_ran_step(
             "metal-encode-auto-routing",
             None,
             &options.out_dir,
         )?);
+        steps.push(existing_ran_step(
+            "metal-transcode-benchmark",
+            Some(&criterion_target_dir(options, "metal-transcode-benchmark")),
+            &options.out_dir,
+        )?);
     } else {
+        steps.push(skipped_step(
+            "metal-decode-benchmark",
+            "not requested; pass --metal for Metal decode benchmark",
+            &options.out_dir,
+        ));
         steps.push(skipped_step(
             "metal-encode-auto-routing",
             "not requested; pass --metal for Metal hybrid encode routing benchmark",
+            &options.out_dir,
+        ));
+        steps.push(skipped_step(
+            "metal-transcode-benchmark",
+            "not requested; pass --metal for Metal transcode benchmark",
             &options.out_dir,
         ));
     }
@@ -786,8 +914,15 @@ fn write_summary(options: &AdoptionBenchmarkOptions, steps: &[AdoptionStep]) -> 
             "metadata_error": error,
         })
     });
-    let metal_summary = read_metal_encode_summary(
+    let metal_decode_summary =
+        read_metal_decode_summary(&options.out_dir.join("metal-decode-benchmark.out"), steps);
+    let metal_encode_summary = read_metal_encode_summary(
         &options.out_dir.join("metal-encode-auto-routing.out"),
+        steps,
+    );
+    let metal_transcode_summary = read_metal_transcode_summary(
+        &options.out_dir.join("metal-transcode-benchmark.out"),
+        &options.out_dir.join("metal-transcode-benchmark.err"),
         steps,
     );
     let cuda_encode_metadata = read_tsv_metadata(
@@ -830,11 +965,13 @@ fn write_summary(options: &AdoptionBenchmarkOptions, steps: &[AdoptionStep]) -> 
         "cuda_htj2k_decode": cuda_decode_metadata,
         "cuda_htj2k_encode": cuda_encode_metadata,
         "criterion": criterion_estimates,
-        "metal_encode_auto_routing": metal_summary,
+        "metal_decode_benchmark": metal_decode_summary,
+        "metal_encode_auto_routing": metal_encode_summary,
+        "metal_transcode_benchmark": metal_transcode_summary,
         "steps": steps.iter().map(step_json).collect::<Vec<_>>(),
         "scrubbed_env_vars": SCRUBBED_BENCH_ENV_VARS,
-        "fixture_comparability_scope": "cpu-fixture-compare uses external encoded fixtures and requires independently sourced native compressed J2K and HTJ2K fixtures for publishable decode claims; repo-materialized natural-image codestreams are useful workload diagnostics but do not satisfy native compressed codec coverage by themselves. Optional OpenJPH rows are opt-in HTJ2K/JPH-compatible CLI rows labeled by decode_method and are not part of the default J2K/OpenJPEG/Grok in-process matrix; optional Kakadu rows are opt-in CLI/file-output context rows labeled by decode_method or encode_method and are not part of the default in-process/publication matrix. cuda-htj2k-decode consumes the same external fixture dirs and manifest when --fixtures/--manifest are provided but measures only the supported HTJ2K subset and reports skipped fixture counts. cpu-encode-compare is classic lossless J2K-in-JP2 CLI throughput: source images are staged to identical PNM files before the run, but timed rows launch the CLI and include PNM read, JP2 write, and output-stat work; it is not filesystem-free codec timing and not an HTJ2K encode benchmark. cuda-htj2k-encode and metal-encode-auto-routing consume staged PGM/PPM source images from --encode-fixtures/--encode-manifest when supplied and label external host-input rows separately from generated component rows. Metal resident rows are HTJ2K lossless host-output comparisons only when packetization_used=true and codestream_assembly_used=true; resident_buffer_ms is GPU-pipeline context and not a direct CPU codec comparison. CPU public API rows remain component microbenchmarks",
-        "publication_note": "CPU fixture compare and CPU encode compare must both report publication_eligible=true, publication_blockers=none, and benchmark_complete=true before use in adoption claims; CPU decode publishability also requires independent native compressed classic J2K and HTJ2K coverage, not only codestreams generated by this repo. CPU encode rows are classic lossless JP2 only. CUDA decode hardware rows must be run with --require-cuda and the same pinned fixture manifest for supported-HTJ2K-subset claims; CUDA encode hardware rows must be run with --require-cuda and J2K_CUDA_ENCODE_MANIFEST-backed staged PNM sources before they are described as using the same encode source matrix; Metal encode hardware rows must be run with --require-metal and J2K_METAL_ENCODE_MANIFEST-backed staged PNM sources before they are described as using the same encode source matrix. Use resident_host_ms vs cpu_ms for resident Metal speed claims; keep j2k_metal_encode_auto_bench and resident_buffer_ms labeled separately."
+        "fixture_comparability_scope": "cpu-fixture-compare uses external encoded fixtures and requires independently sourced native compressed J2K and HTJ2K fixtures for publishable decode claims; repo-materialized natural-image codestreams are useful workload diagnostics but do not satisfy native compressed codec coverage by themselves. Optional OpenJPH rows are opt-in HTJ2K/JPH-compatible CLI rows labeled by decode_method and are not part of the default J2K/OpenJPEG/Grok in-process matrix; optional Kakadu rows are opt-in CLI/file-output context rows labeled by decode_method or encode_method and are not part of the default J2K/OpenJPEG/Grok in-process matrix. cuda-htj2k-decode consumes the same external fixture dirs and manifest when --fixtures/--manifest are provided but measures only the supported HTJ2K subset and reports skipped fixture counts. metal-decode-benchmark consumes the same external fixture dirs and manifest when --fixtures/--manifest are provided, but currently publishes only raw-codestream Metal buffer rows; JP2/JPH wrapper rows are skipped until wrapper-specific strict Metal parity is claimed. cpu-encode-compare is classic lossless J2K-in-JP2 CLI throughput: source images are staged to identical PNM files before the run, but timed rows launch the CLI and include PNM read, JP2 write, and output-stat work; it is not filesystem-free codec timing and not an HTJ2K encode benchmark. cuda-htj2k-encode and metal-encode-auto-routing consume staged PGM/PPM source images from --encode-fixtures/--encode-manifest when supplied and label external host-input rows separately from generated component rows. Metal resident encode rows are HTJ2K lossless host-output comparisons only when packetization_used=true and codestream_assembly_used=true; resident_buffer_ms is GPU-pipeline context and not a direct CPU codec comparison. Metal transcode rows currently use generated same-geometry JPEG tile batches and are batch-route evidence only; they do not satisfy external corpus transcode adoption claims. CPU public API rows remain component microbenchmarks",
+        "publication_note": "CPU fixture compare and CPU encode compare must both report publication_eligible=true, publication_blockers=none, and benchmark_complete=true before use in adoption claims; CPU decode publishability also requires independent native compressed classic J2K and HTJ2K coverage, not only codestreams generated by this repo. CPU encode rows are classic lossless JP2 only. CUDA decode hardware rows must be run with --require-cuda and the same pinned fixture manifest for supported-HTJ2K-subset claims; Metal decode hardware rows must be run with --require-metal and the same pinned fixture manifest before they are used for Metal decode speed claims. CUDA encode hardware rows must be run with --require-cuda and J2K_CUDA_ENCODE_MANIFEST-backed staged PNM sources before they are described as using the same encode source matrix; Metal encode hardware rows must be run with --require-metal and J2K_METAL_ENCODE_MANIFEST-backed staged PNM sources before they are described as using the same encode source matrix. Metal transcode rows must be run with --require-metal before same-geometry batch Metal speed claims; generated transcode rows must stay labeled as generated batch-route evidence. Use metal_readback_ms vs cpu_ms for host-observable Metal decode claims; use metal_resident_ms only for resident/no-readback context. Use resident_host_ms vs cpu_ms for resident Metal encode claims only on rows where packetization_used=true and codestream_assembly_used=true; keep j2k_metal_encode_auto_bench and resident_buffer_ms labeled separately."
     });
     let data = serde_json::to_string_pretty(&value)
         .map_err(|err| format!("failed to serialize adoption benchmark summary: {err}"))?;
@@ -895,6 +1032,94 @@ fn criterion_summary_json(steps: &[AdoptionStep]) -> serde_json::Value {
         "count": total_count,
         "steps": step_summaries,
         "estimates": all_estimates,
+    })
+}
+
+fn read_metal_decode_summary(path: &Path, steps: &[AdoptionStep]) -> serde_json::Value {
+    let Some(step) = steps
+        .iter()
+        .find(|step| step.name == "metal-decode-benchmark")
+    else {
+        return serde_json::json!({
+            "output": path.display().to_string(),
+            "status": "missing-step",
+        });
+    };
+    if let StepStatus::Skipped { reason } = &step.status {
+        return serde_json::json!({
+            "output": path.display().to_string(),
+            "status": "skipped",
+            "reason": reason,
+        });
+    }
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            return serde_json::json!({
+                "output": path.display().to_string(),
+                "status": "error",
+                "error": format!("failed to read Metal decode benchmark output: {error}"),
+            });
+        }
+    };
+
+    let mut benches = Vec::new();
+    let mut metadata = serde_json::Map::new();
+    let mut skipped_cases = Vec::new();
+    for line in text.lines() {
+        if let Some(row) = parse_metal_decode_bench_line(line) {
+            benches.push(row);
+        } else if let Some((key, value)) = line.split_once('\t') {
+            if key.starts_with("j2k_metal_decode_") {
+                metadata.insert(
+                    key.to_string(),
+                    serde_json::Value::String(value.to_string()),
+                );
+            }
+        } else if let Some(rest) = line.strip_prefix("j2k_metal_decode_skipped_case ") {
+            skipped_cases.push(serde_json::Value::String(rest.to_string()));
+        }
+    }
+
+    let skipped_benches = benches
+        .iter()
+        .filter(|row| {
+            row.get("metal_resident_ms")
+                .and_then(serde_json::Value::as_str)
+                == Some("skipped")
+                || row
+                    .get("metal_readback_ms")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("skipped")
+        })
+        .count();
+    let verified_benches = benches
+        .iter()
+        .filter(|row| {
+            row.get("cpu_ms")
+                .and_then(serde_json::Value::as_f64)
+                .is_some()
+                && row
+                    .get("metal_resident_ms")
+                    .and_then(serde_json::Value::as_f64)
+                    .is_some()
+                && row
+                    .get("metal_readback_ms")
+                    .and_then(serde_json::Value::as_f64)
+                    .is_some()
+        })
+        .count();
+
+    serde_json::json!({
+        "output": path.display().to_string(),
+        "status": "ran",
+        "bench_count": benches.len(),
+        "skipped_bench_count": skipped_benches,
+        "verified_bench_count": verified_benches,
+        "skipped_case_count": skipped_cases.len(),
+        "skipped_cases": skipped_cases,
+        "metadata": metadata,
+        "benches": benches,
     })
 }
 
@@ -1013,6 +1238,226 @@ fn read_metal_encode_summary(path: &Path, steps: &[AdoptionStep]) -> serde_json:
         "stage_benches": stage_benches,
         "resident_benches": resident_benches,
     })
+}
+
+fn read_metal_transcode_summary(
+    stdout_path: &Path,
+    stderr_path: &Path,
+    steps: &[AdoptionStep],
+) -> serde_json::Value {
+    let Some(step) = steps
+        .iter()
+        .find(|step| step.name == "metal-transcode-benchmark")
+    else {
+        return serde_json::json!({
+            "stdout": stdout_path.display().to_string(),
+            "stderr": stderr_path.display().to_string(),
+            "status": "missing-step",
+        });
+    };
+    if let StepStatus::Skipped { reason } = &step.status {
+        return serde_json::json!({
+            "stdout": stdout_path.display().to_string(),
+            "stderr": stderr_path.display().to_string(),
+            "status": "skipped",
+            "reason": reason,
+        });
+    }
+    let stdout = match fs::read_to_string(stdout_path) {
+        Ok(text) => text,
+        Err(error) => {
+            return serde_json::json!({
+                "stdout": stdout_path.display().to_string(),
+                "stderr": stderr_path.display().to_string(),
+                "status": "error",
+                "error": format!("failed to read Metal transcode benchmark stdout: {error}"),
+            });
+        }
+    };
+    let stderr = match fs::read_to_string(stderr_path) {
+        Ok(text) => text,
+        Err(error) => {
+            return serde_json::json!({
+                "stdout": stdout_path.display().to_string(),
+                "stderr": stderr_path.display().to_string(),
+                "status": "error",
+                "error": format!("failed to read Metal transcode benchmark stderr: {error}"),
+            });
+        }
+    };
+
+    let mut profiles = Vec::new();
+    for line in stdout.lines().chain(stderr.lines()) {
+        if let Some(row) = parse_metal_transcode_profile_line(line) {
+            profiles.push(row);
+        }
+    }
+
+    let cpu_contexts = profile_contexts(&profiles, "cpu", "cpu");
+    let auto_metal_contexts = profile_contexts(&profiles, "metal_auto", "metal");
+    let explicit_metal_contexts = profile_contexts(&profiles, "metal_explicit", "metal");
+    let cpu_profiles = profiles
+        .iter()
+        .filter(|row| {
+            row.get("request").and_then(serde_json::Value::as_str) == Some("cpu")
+                && row
+                    .get("transform_processor")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("cpu")
+        })
+        .count();
+    let auto_metal_profiles = profiles
+        .iter()
+        .filter(|row| {
+            row.get("request").and_then(serde_json::Value::as_str) == Some("metal_auto")
+                && row
+                    .get("transform_processor")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("metal")
+        })
+        .count();
+    let explicit_metal_profiles = profiles
+        .iter()
+        .filter(|row| {
+            row.get("request").and_then(serde_json::Value::as_str) == Some("metal_explicit")
+                && row
+                    .get("transform_processor")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("metal")
+        })
+        .count();
+    let mut metal_contexts = auto_metal_contexts.clone();
+    metal_contexts.extend(explicit_metal_contexts.iter().cloned());
+    let comparison_context_count = cpu_contexts.intersection(&metal_contexts).count();
+    let verified_profiles = profiles
+        .iter()
+        .filter(|row| {
+            row.get("transform_processor")
+                .and_then(serde_json::Value::as_str)
+                == Some("metal")
+                && row
+                    .get("accelerator_dispatches")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+                    > 0
+                && row
+                    .get("successful_tiles")
+                    .and_then(serde_json::Value::as_u64)
+                    == row.get("tile_count").and_then(serde_json::Value::as_u64)
+        })
+        .count();
+
+    serde_json::json!({
+        "stdout": stdout_path.display().to_string(),
+        "stderr": stderr_path.display().to_string(),
+        "status": "ran",
+        "bench_filter": METAL_TRANSCODE_BENCH_FILTER,
+        "profile_count": profiles.len(),
+        "verified_profile_count": verified_profiles,
+        "cpu_profile_count": cpu_profiles,
+        "auto_metal_profile_count": auto_metal_profiles,
+        "explicit_metal_profile_count": explicit_metal_profiles,
+        "comparison_context_count": comparison_context_count,
+        "profiles": profiles,
+    })
+}
+
+fn profile_contexts(
+    profiles: &[serde_json::Value],
+    request: &str,
+    transform_processor: &str,
+) -> BTreeSet<String> {
+    profiles
+        .iter()
+        .filter(|row| {
+            row.get("request").and_then(serde_json::Value::as_str) == Some(request)
+                && row
+                    .get("transform_processor")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(transform_processor)
+                && row
+                    .get("successful_tiles")
+                    .and_then(serde_json::Value::as_u64)
+                    == row.get("tile_count").and_then(serde_json::Value::as_u64)
+        })
+        .filter_map(|row| {
+            row.get("context")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn parse_metal_decode_bench_line(line: &str) -> Option<serde_json::Value> {
+    const PREFIX: &str = "j2k_metal_decode_bench ";
+    let rest = line.strip_prefix(PREFIX)?;
+    let fields = parse_key_value_fields(rest);
+    let mut row = serde_json::json!({
+        "case": required_field(&fields, "case")?,
+        "source": required_field(&fields, "source")?,
+        "codec": required_field(&fields, "codec")?,
+        "container": required_field(&fields, "container")?,
+        "operation": required_field(&fields, "operation")?,
+        "fmt": required_field(&fields, "fmt")?,
+        "size": required_field(&fields, "size")?,
+        "cpu_ms": parse_decimal_or_label_field(&fields, "cpu_ms")?,
+        "metal_resident_ms": parse_decimal_or_label_field(&fields, "metal_resident_ms")?,
+        "metal_readback_ms": parse_decimal_or_label_field(&fields, "metal_readback_ms")?,
+        "output_bytes": parse_integer_or_label_field(&fields, "output_bytes")?,
+    });
+    if let Some(error) = suffix_after_key(rest, "error") {
+        row["error"] = serde_json::Value::String(error.to_string());
+    }
+    Some(row)
+}
+
+fn parse_metal_transcode_profile_line(line: &str) -> Option<serde_json::Value> {
+    const PREFIX: &str = "j2k_profile ";
+    let fields = parse_key_value_fields(line.strip_prefix(PREFIX)?);
+    if required_field(&fields, "codec")? != "transcode"
+        || required_field(&fields, "op")? != "transcode_batch"
+    {
+        return None;
+    }
+    Some(serde_json::json!({
+        "request": required_field(&fields, "request")?,
+        "path": required_field(&fields, "path")?,
+        "pipeline": required_field(&fields, "pipeline")?,
+        "context": required_field(&fields, "context")?,
+        "coefficient_path": required_field(&fields, "coefficient_path")?,
+        "extract_processor": required_field(&fields, "extract_processor")?,
+        "transform_processor": required_field(&fields, "transform_processor")?,
+        "encode_processor": required_field(&fields, "encode_processor")?,
+        "tile_count": parse_integer_field(&fields, "tile_count")?,
+        "successful_tiles": parse_integer_field(&fields, "successful_tiles")?,
+        "failed_tiles": parse_integer_field(&fields, "failed_tiles")?,
+        "transformed_components": parse_integer_field(&fields, "transformed_components")?,
+        "total_us": parse_integer_field(&fields, "total_us")?,
+        "extract_us": parse_integer_field(&fields, "extract_us")?,
+        "transform_us": parse_integer_field(&fields, "transform_us")?,
+        "encode_us": parse_integer_field(&fields, "encode_us")?,
+        "dct_to_wavelet_total_us": parse_integer_field(&fields, "dct_to_wavelet_total_us")?,
+        "dct_to_wavelet_accelerator_us": parse_integer_field(&fields, "dct_to_wavelet_accelerator_us")?,
+        "dct_to_wavelet_cpu_fallback_us": parse_integer_field(&fields, "dct_to_wavelet_cpu_fallback_us")?,
+        "dwt97_batch_pack_upload_transfers": parse_integer_field(&fields, "dwt97_batch_pack_upload_transfers")?,
+        "dwt97_batch_pack_upload_bytes": parse_integer_field(&fields, "dwt97_batch_pack_upload_bytes")?,
+        "dwt97_batch_resident_dct_handoff_count": parse_integer_field(&fields, "dwt97_batch_resident_dct_handoff_count")?,
+        "dwt97_batch_resident_dwt_handoff_count": parse_integer_field(&fields, "dwt97_batch_resident_dwt_handoff_count")?,
+        "dwt97_batch_readback_transfers": parse_integer_field(&fields, "dwt97_batch_readback_transfers")?,
+        "dwt97_batch_readback_bytes": parse_integer_field(&fields, "dwt97_batch_readback_bytes")?,
+        "host_to_device_transfer_count": parse_integer_field(&fields, "host_to_device_transfer_count")?,
+        "host_to_device_transfer_bytes": parse_integer_field(&fields, "host_to_device_transfer_bytes")?,
+        "device_to_host_transfer_count": parse_integer_field(&fields, "device_to_host_transfer_count")?,
+        "device_to_host_transfer_bytes": parse_integer_field(&fields, "device_to_host_transfer_bytes")?,
+        "component_count": parse_integer_field(&fields, "component_count")?,
+        "batch_count": parse_integer_field(&fields, "batch_count")?,
+        "batch_jobs": parse_integer_field(&fields, "batch_jobs")?,
+        "accelerator_attempts": parse_integer_field(&fields, "accelerator_attempts")?,
+        "accelerator_jobs": parse_integer_field(&fields, "accelerator_jobs")?,
+        "accelerator_dispatches": parse_integer_field(&fields, "accelerator_dispatches")?,
+        "accelerator_dispatched_jobs": parse_integer_field(&fields, "accelerator_dispatched_jobs")?,
+        "cpu_fallback_jobs": parse_integer_field(&fields, "cpu_fallback_jobs")?,
+    }))
 }
 
 fn parse_metal_auto_bench_line(line: &str) -> Option<serde_json::Value> {
@@ -1387,7 +1832,7 @@ fn write_readme(options: &AdoptionBenchmarkOptions, steps: &[AdoptionStep]) -> R
         ));
     }
     out.push_str("\n## Publication Gate\n\n");
-    out.push_str("Do not publish this bundle unless `cpu-fixture-compare.out` and `cpu-encode-compare.out` both contain `publication_eligible\ttrue`, `publication_blockers\tnone`, `benchmark_complete\ttrue`, and mixed external batch rows. CPU decode publication requires independent native compressed classic J2K and HTJ2K coverage; repo-materialized natural-image codestreams are diagnostic workload rows, not enough by themselves. CPU encode rows compare the same staged PNM bytes for classic lossless JP2 only. Optional OpenJPH rows are CLI/file-output HTJ2K/JPH-compatible context rows and must be labeled separately from the default in-process decoder matrix. Optional Kakadu rows are proprietary CLI/file-output context rows and must be labeled separately from the default matrix. CUDA decode hardware rows must be run with `--require-cuda` and the same pinned fixture manifest for supported-HTJ2K-subset claims. CUDA and Metal encode hardware rows must be run with `--require-cuda` or `--require-metal` and manifest-backed staged PGM/PPM sources before they are described as using the same encode source matrix. For Metal resident encode claims, compare `resident_host_ms` with `cpu_ms` only on rows where `packetization_used=true` and `codestream_assembly_used=true`; `resident_buffer_ms` is GPU-pipeline context, not a host-codec apples-to-apples number.\n");
+    out.push_str("Do not publish this bundle unless `cpu-fixture-compare.out` and `cpu-encode-compare.out` both contain `publication_eligible\ttrue`, `publication_blockers\tnone`, `benchmark_complete\ttrue`, and mixed external batch rows. CPU decode publication requires independent native compressed classic J2K and HTJ2K coverage; repo-materialized natural-image codestreams are diagnostic workload rows, not enough by themselves. CPU encode rows compare the same staged PNM bytes for classic lossless JP2 only. Optional OpenJPH rows are CLI/file-output HTJ2K/JPH-compatible context rows and must be labeled separately from the default in-process decoder matrix. Optional Kakadu rows are proprietary CLI/file-output context rows and must be labeled separately from the default matrix. CUDA decode hardware rows must be run with `--require-cuda` and the same pinned fixture manifest for supported-HTJ2K-subset claims. Metal decode hardware rows must be run with `--require-metal` and the same pinned fixture manifest before they are used for Metal decode speed claims. CUDA and Metal encode hardware rows must be run with `--require-cuda` or `--require-metal` and manifest-backed staged PGM/PPM sources before they are described as using the same encode source matrix. Metal transcode rows must be run with `--require-metal` for same-geometry batch Metal speed claims and must remain labeled as generated batch-route evidence until external corpus transcode rows exist. For Metal decode claims, compare `metal_readback_ms` with `cpu_ms` for host-observable speed and keep `metal_resident_ms` labeled as no-readback context. For Metal resident encode claims, compare `resident_host_ms` with `cpu_ms` only on rows where `packetization_used=true` and `codestream_assembly_used=true`; `resident_buffer_ms` is GPU-pipeline context, not a host-codec apples-to-apples number.\n");
     if let Some(metadata) = cpu_metadata {
         out.push_str("\nCurrent CPU fixture status:\n\n");
         for key in [
@@ -1470,9 +1915,19 @@ fn write_readme(options: &AdoptionBenchmarkOptions, steps: &[AdoptionStep]) -> R
         ));
     }
     if steps.iter().any(|step| {
+        step.name == "metal-decode-benchmark" && matches!(&step.status, StepStatus::Ran)
+    }) {
+        out.push_str("\nMetal decode benchmark rows are summarized in `summary.json` from `metal-decode-benchmark.out`.\n");
+    }
+    if steps.iter().any(|step| {
         step.name == "metal-encode-auto-routing" && matches!(&step.status, StepStatus::Ran)
     }) {
         out.push_str("\nMetal encode auto-routing rows are summarized in `summary.json` from `metal-encode-auto-routing.out`.\n");
+    }
+    if steps.iter().any(|step| {
+        step.name == "metal-transcode-benchmark" && matches!(&step.status, StepStatus::Ran)
+    }) {
+        out.push_str("\nMetal transcode benchmark rows are summarized in `summary.json` from `metal-transcode-benchmark.out` and `metal-transcode-benchmark.err`.\n");
     }
 
     let path = options.out_dir.join("README.md");
@@ -1712,8 +2167,10 @@ fn parse_batch_size_list(value: &str, label: &str) -> Result<String, String> {
 mod tests {
     use super::{
         display_command, enforce_publication_gate, parse_metal_auto_bench_line,
-        parse_metal_auto_probe_line, parse_metal_resident_bench_line, parse_metal_stage_bench_line,
-        read_metal_encode_summary, AdoptionBenchmarkOptions, AdoptionStep, StepStatus,
+        parse_metal_auto_probe_line, parse_metal_decode_bench_line,
+        parse_metal_resident_bench_line, parse_metal_stage_bench_line,
+        parse_metal_transcode_profile_line, read_metal_decode_summary, read_metal_encode_summary,
+        read_metal_transcode_summary, AdoptionBenchmarkOptions, AdoptionStep, StepStatus,
     };
     use std::ffi::OsString;
 
@@ -1854,10 +2311,126 @@ mod tests {
         assert!(command.contains("-u J2K_CUDA_DECODE_INPUT_DIRS"));
         assert!(command.contains("-u J2K_CUDA_ENCODE_INPUT_DIRS"));
         assert!(command.contains("-u J2K_CUDA_ENCODE_MANIFEST"));
+        assert!(command.contains("-u J2K_METAL_DECODE_INPUT_DIRS"));
+        assert!(command.contains("-u J2K_METAL_DECODE_MANIFEST"));
         assert!(command.contains("-u J2K_METAL_ENCODE_INPUT_DIRS"));
         assert!(command.contains("-u J2K_METAL_ENCODE_MANIFEST"));
+        assert!(command.contains("-u J2K_TRANSCODE_METAL_PROFILE_STAGES"));
         assert!(command.contains("J2K_FIXTURE_COMPARE_REPEATS=1"));
         assert!(command.ends_with("cargo run"));
+    }
+
+    #[test]
+    fn parses_metal_decode_bench_row() {
+        let row = parse_metal_decode_bench_line(
+            "j2k_metal_decode_bench case=generated_htj2k_gray8_512 source=generated codec=htj2k container=raw-codestream operation=region_scaled fmt=gray8 size=256x256 cpu_ms=1.250 metal_resident_ms=0.500 metal_readback_ms=0.750 output_bytes=65536",
+        )
+        .expect("valid Metal decode row");
+
+        assert_eq!(row["case"], "generated_htj2k_gray8_512");
+        assert_eq!(row["codec"], "htj2k");
+        assert_eq!(row["operation"], "region_scaled");
+        assert_eq!(row["fmt"], "gray8");
+        assert_eq!(row["cpu_ms"], 1.25);
+        assert_eq!(row["metal_resident_ms"], 0.5);
+        assert_eq!(row["metal_readback_ms"], 0.75);
+        assert_eq!(row["output_bytes"], 65_536);
+    }
+
+    #[test]
+    fn parses_metal_transcode_profile_row() {
+        let row = parse_metal_transcode_profile_line(
+            "j2k_profile codec=transcode op=transcode_batch request=metal_explicit path=metal pipeline=jpeg_to_htj2k context=srgb_ybr420_224_batch_128 coefficient_path=dct97 extract_processor=cpu transform_processor=metal encode_processor=cpu tile_count=128 successful_tiles=128 failed_tiles=0 transformed_components=384 total_us=57500 extract_us=2100 transform_us=33100 encode_us=22300 dct_to_wavelet_total_us=33100 dct_to_wavelet_accelerator_us=30000 dct_to_wavelet_cpu_fallback_us=0 dwt97_batch_pack_upload_transfers=1 dwt97_batch_pack_upload_bytes=65536 dwt97_batch_resident_dct_handoff_count=384 dwt97_batch_resident_dwt_handoff_count=1536 dwt97_batch_readback_transfers=1 dwt97_batch_readback_bytes=65536 host_to_device_transfer_count=1 host_to_device_transfer_bytes=65536 device_to_host_transfer_count=1 device_to_host_transfer_bytes=65536 component_count=384 batch_count=1 batch_jobs=384 accelerator_attempts=384 accelerator_jobs=384 accelerator_dispatches=1 accelerator_dispatched_jobs=384 cpu_fallback_jobs=0",
+        )
+        .expect("valid Metal transcode profile row");
+
+        assert_eq!(row["request"], "metal_explicit");
+        assert_eq!(row["context"], "srgb_ybr420_224_batch_128");
+        assert_eq!(row["transform_processor"], "metal");
+        assert_eq!(row["tile_count"], 128);
+        assert_eq!(row["accelerator_dispatches"], 1);
+        assert_eq!(row["host_to_device_transfer_bytes"], 65_536);
+        assert_eq!(row["dwt97_batch_resident_dct_handoff_count"], 384);
+        assert_eq!(row["dwt97_batch_resident_dwt_handoff_count"], 1536);
+    }
+
+    #[test]
+    fn metal_decode_summary_counts_verified_and_skipped_rows() {
+        let out_dir = std::env::current_dir()
+            .expect("current dir")
+            .join("target")
+            .join("j2k-metal-decode-summary-test")
+            .join(std::process::id().to_string());
+        std::fs::create_dir_all(&out_dir).expect("create out dir");
+        let stdout = out_dir.join("metal-decode-benchmark.out");
+        std::fs::write(
+            &stdout,
+            concat!(
+                "j2k_metal_decode_bench case=a source=generated codec=j2k container=raw-codestream operation=full fmt=gray8 size=512x512 cpu_ms=1.000 metal_resident_ms=0.500 metal_readback_ms=0.700 output_bytes=262144\n",
+                "j2k_metal_decode_bench case=b source=generated codec=htj2k container=raw-codestream operation=region_scaled fmt=rgb8 size=256x256 cpu_ms=skipped metal_resident_ms=skipped metal_readback_ms=skipped output_bytes=skipped error=unsupported\n",
+                "j2k_metal_decode_skipped_case path=/tmp/wrapped.jph reason=wrapper_container_not_claimed_for_metal_decode container=jph\n",
+                "j2k_metal_decode_generated_case_count\t3\n",
+            ),
+        )
+        .expect("write Metal decode stdout");
+        let step = AdoptionStep {
+            name: "metal-decode-benchmark",
+            command: "cargo test".to_string(),
+            stdout: stdout.clone(),
+            stderr: out_dir.join("metal-decode-benchmark.err"),
+            criterion_root: None,
+            status: StepStatus::Ran,
+        };
+
+        let summary = read_metal_decode_summary(&stdout, &[step]);
+
+        assert_eq!(summary["bench_count"], 2);
+        assert_eq!(summary["skipped_bench_count"], 1);
+        assert_eq!(summary["verified_bench_count"], 1);
+        assert_eq!(summary["skipped_case_count"], 1);
+        assert_eq!(
+            summary["metadata"]["j2k_metal_decode_generated_case_count"],
+            "3"
+        );
+    }
+
+    #[test]
+    fn metal_transcode_summary_counts_comparable_cpu_and_metal_contexts() {
+        let out_dir = std::env::current_dir()
+            .expect("current dir")
+            .join("target")
+            .join("j2k-metal-transcode-summary-test")
+            .join(std::process::id().to_string());
+        std::fs::create_dir_all(&out_dir).expect("create out dir");
+        let stdout = out_dir.join("metal-transcode-benchmark.out");
+        let stderr = out_dir.join("metal-transcode-benchmark.err");
+        std::fs::write(&stdout, "criterion output\n").expect("write Metal transcode stdout");
+        std::fs::write(
+            &stderr,
+            concat!(
+                "j2k_profile codec=transcode op=transcode_batch request=cpu path=cpu pipeline=jpeg_to_htj2k context=srgb_ybr420_224_batch_128 coefficient_path=dct97 extract_processor=cpu transform_processor=cpu encode_processor=cpu tile_count=128 successful_tiles=128 failed_tiles=0 transformed_components=384 total_us=86000 extract_us=2000 transform_us=62000 encode_us=22000 dct_to_wavelet_total_us=62000 dct_to_wavelet_accelerator_us=0 dct_to_wavelet_cpu_fallback_us=62000 dwt97_batch_pack_upload_transfers=0 dwt97_batch_pack_upload_bytes=0 dwt97_batch_resident_dct_handoff_count=0 dwt97_batch_resident_dwt_handoff_count=0 dwt97_batch_readback_transfers=0 dwt97_batch_readback_bytes=0 host_to_device_transfer_count=0 host_to_device_transfer_bytes=0 device_to_host_transfer_count=0 device_to_host_transfer_bytes=0 component_count=384 batch_count=1 batch_jobs=384 accelerator_attempts=0 accelerator_jobs=0 accelerator_dispatches=0 accelerator_dispatched_jobs=0 cpu_fallback_jobs=384\n",
+                "j2k_profile codec=transcode op=transcode_batch request=metal_auto path=auto pipeline=jpeg_to_htj2k context=srgb_ybr420_224_batch_128 coefficient_path=dct97 extract_processor=cpu transform_processor=metal encode_processor=cpu tile_count=128 successful_tiles=128 failed_tiles=0 transformed_components=384 total_us=57000 extract_us=2000 transform_us=33000 encode_us=22000 dct_to_wavelet_total_us=33000 dct_to_wavelet_accelerator_us=30000 dct_to_wavelet_cpu_fallback_us=0 dwt97_batch_pack_upload_transfers=1 dwt97_batch_pack_upload_bytes=65536 dwt97_batch_resident_dct_handoff_count=384 dwt97_batch_resident_dwt_handoff_count=1536 dwt97_batch_readback_transfers=1 dwt97_batch_readback_bytes=65536 host_to_device_transfer_count=1 host_to_device_transfer_bytes=65536 device_to_host_transfer_count=1 device_to_host_transfer_bytes=65536 component_count=384 batch_count=1 batch_jobs=384 accelerator_attempts=384 accelerator_jobs=384 accelerator_dispatches=1 accelerator_dispatched_jobs=384 cpu_fallback_jobs=0\n",
+                "j2k_profile codec=transcode op=transcode_batch request=metal_explicit path=metal pipeline=jpeg_to_htj2k context=srgb_ybr420_224_batch_128 coefficient_path=dct97 extract_processor=cpu transform_processor=metal encode_processor=cpu tile_count=128 successful_tiles=128 failed_tiles=0 transformed_components=384 total_us=58000 extract_us=2000 transform_us=34000 encode_us=22000 dct_to_wavelet_total_us=34000 dct_to_wavelet_accelerator_us=31000 dct_to_wavelet_cpu_fallback_us=0 dwt97_batch_pack_upload_transfers=1 dwt97_batch_pack_upload_bytes=65536 dwt97_batch_resident_dct_handoff_count=384 dwt97_batch_resident_dwt_handoff_count=1536 dwt97_batch_readback_transfers=1 dwt97_batch_readback_bytes=65536 host_to_device_transfer_count=1 host_to_device_transfer_bytes=65536 device_to_host_transfer_count=1 device_to_host_transfer_bytes=65536 component_count=384 batch_count=1 batch_jobs=384 accelerator_attempts=384 accelerator_jobs=384 accelerator_dispatches=1 accelerator_dispatched_jobs=384 cpu_fallback_jobs=0\n",
+            ),
+        )
+        .expect("write Metal transcode stderr");
+        let step = AdoptionStep {
+            name: "metal-transcode-benchmark",
+            command: "cargo bench".to_string(),
+            stdout: stdout.clone(),
+            stderr: stderr.clone(),
+            criterion_root: None,
+            status: StepStatus::Ran,
+        };
+
+        let summary = read_metal_transcode_summary(&stdout, &stderr, &[step]);
+
+        assert_eq!(summary["profile_count"], 3);
+        assert_eq!(summary["verified_profile_count"], 2);
+        assert_eq!(summary["cpu_profile_count"], 1);
+        assert_eq!(summary["auto_metal_profile_count"], 1);
+        assert_eq!(summary["explicit_metal_profile_count"], 1);
+        assert_eq!(summary["comparison_context_count"], 1);
     }
 
     #[test]

@@ -469,10 +469,18 @@ pub struct TranscodeTimingReport {
     pub dwt_decompose_us: u128,
     /// Backend 9/7 batch host pack/upload time in microseconds.
     pub dwt97_batch_pack_upload_us: u128,
+    /// Logical host-to-device transfers during backend 9/7 batch pack/upload.
+    pub dwt97_batch_pack_upload_transfers: usize,
+    /// Host-to-device bytes during backend 9/7 batch pack/upload.
+    pub dwt97_batch_pack_upload_bytes: u64,
+    /// Resident JPEG DCT-grid descriptors validated during backend 9/7 batches.
+    pub dwt97_batch_resident_dct_handoff_count: usize,
     /// Backend 9/7 batch IDCT plus horizontal row-lift time in microseconds.
     pub dwt97_batch_idct_row_lift_us: u128,
     /// Backend 9/7 batch vertical column-lift time in microseconds.
     pub dwt97_batch_column_lift_us: u128,
+    /// Resident DWT subband descriptors validated during backend 9/7 batches.
+    pub dwt97_batch_resident_dwt_handoff_count: usize,
     /// Backend 9/7 batch quantize/code-block layout time in microseconds.
     pub dwt97_batch_quantize_codeblock_us: u128,
     /// Backend 9/7 resident HT code-block encode time in microseconds.
@@ -481,14 +489,26 @@ pub struct TranscodeTimingReport {
     pub dwt97_batch_ht_kernel_us: u128,
     /// Backend 9/7 resident HT status-buffer device-to-host readback time in microseconds.
     pub dwt97_batch_ht_status_readback_us: u128,
+    /// Logical device-to-host status readbacks after resident HT encode.
+    pub dwt97_batch_ht_status_readback_transfers: usize,
+    /// Device-to-host status bytes after resident HT encode.
+    pub dwt97_batch_ht_status_readback_bytes: u64,
     /// Backend 9/7 resident HT encoded-byte compaction kernel time in microseconds.
     pub dwt97_batch_ht_compact_us: u128,
     /// Backend 9/7 resident HT compacted encoded-byte device-to-host readback time in microseconds.
     pub dwt97_batch_ht_output_readback_us: u128,
+    /// Logical device-to-host output readbacks after resident HT compaction.
+    pub dwt97_batch_ht_output_readback_transfers: usize,
+    /// Device-to-host output bytes after resident HT compaction.
+    pub dwt97_batch_ht_output_readback_bytes: u64,
     /// Backend 9/7 resident HT code-block encode dispatches.
     pub dwt97_batch_ht_codeblock_dispatches: usize,
     /// Backend 9/7 batch output readback/unpack time in microseconds.
     pub dwt97_batch_readback_us: u128,
+    /// Logical device-to-host transfers during backend 9/7 batch output readback.
+    pub dwt97_batch_readback_transfers: usize,
+    /// Device-to-host bytes during backend 9/7 batch output readback.
+    pub dwt97_batch_readback_bytes: u64,
     /// HTJ2K encode time in microseconds.
     pub htj2k_encode_us: u128,
     /// Encode-stage accelerator dispatches during HTJ2K encode.
@@ -543,16 +563,26 @@ impl TranscodeTimingReport {
             dct_to_wavelet_cpu_fallback_us,
             dwt_decompose_us,
             dwt97_batch_pack_upload_us,
+            dwt97_batch_pack_upload_transfers,
+            dwt97_batch_pack_upload_bytes,
+            dwt97_batch_resident_dct_handoff_count,
             dwt97_batch_idct_row_lift_us,
             dwt97_batch_column_lift_us,
+            dwt97_batch_resident_dwt_handoff_count,
             dwt97_batch_quantize_codeblock_us,
             dwt97_batch_ht_encode_us,
             dwt97_batch_ht_kernel_us,
             dwt97_batch_ht_status_readback_us,
+            dwt97_batch_ht_status_readback_transfers,
+            dwt97_batch_ht_status_readback_bytes,
             dwt97_batch_ht_compact_us,
             dwt97_batch_ht_output_readback_us,
+            dwt97_batch_ht_output_readback_transfers,
+            dwt97_batch_ht_output_readback_bytes,
             dwt97_batch_ht_codeblock_dispatches,
             dwt97_batch_readback_us,
+            dwt97_batch_readback_transfers,
+            dwt97_batch_readback_bytes,
             htj2k_encode_us,
             htj2k_encode_accelerator_dispatches,
             htj2k_encode_ht_code_block_dispatches,
@@ -1882,12 +1912,24 @@ fn add_dwt97_batch_stage_timings(
     timings.dwt97_batch_pack_upload_us = timings
         .dwt97_batch_pack_upload_us
         .saturating_add(stage_timings.pack_upload_us);
+    timings.dwt97_batch_pack_upload_transfers = timings
+        .dwt97_batch_pack_upload_transfers
+        .saturating_add(stage_timings.pack_upload_transfers);
+    timings.dwt97_batch_pack_upload_bytes = timings
+        .dwt97_batch_pack_upload_bytes
+        .saturating_add(stage_timings.pack_upload_bytes);
+    timings.dwt97_batch_resident_dct_handoff_count = timings
+        .dwt97_batch_resident_dct_handoff_count
+        .saturating_add(stage_timings.resident_dct_handoff_count);
     timings.dwt97_batch_idct_row_lift_us = timings
         .dwt97_batch_idct_row_lift_us
         .saturating_add(stage_timings.idct_row_lift_us);
     timings.dwt97_batch_column_lift_us = timings
         .dwt97_batch_column_lift_us
         .saturating_add(stage_timings.column_lift_us);
+    timings.dwt97_batch_resident_dwt_handoff_count = timings
+        .dwt97_batch_resident_dwt_handoff_count
+        .saturating_add(stage_timings.resident_dwt_handoff_count);
     timings.dwt97_batch_quantize_codeblock_us = timings
         .dwt97_batch_quantize_codeblock_us
         .saturating_add(stage_timings.quantize_codeblock_us);
@@ -1900,18 +1942,36 @@ fn add_dwt97_batch_stage_timings(
     timings.dwt97_batch_ht_status_readback_us = timings
         .dwt97_batch_ht_status_readback_us
         .saturating_add(stage_timings.ht_status_readback_us);
+    timings.dwt97_batch_ht_status_readback_transfers = timings
+        .dwt97_batch_ht_status_readback_transfers
+        .saturating_add(stage_timings.ht_status_readback_transfers);
+    timings.dwt97_batch_ht_status_readback_bytes = timings
+        .dwt97_batch_ht_status_readback_bytes
+        .saturating_add(stage_timings.ht_status_readback_bytes);
     timings.dwt97_batch_ht_compact_us = timings
         .dwt97_batch_ht_compact_us
         .saturating_add(stage_timings.ht_compact_us);
     timings.dwt97_batch_ht_output_readback_us = timings
         .dwt97_batch_ht_output_readback_us
         .saturating_add(stage_timings.ht_output_readback_us);
+    timings.dwt97_batch_ht_output_readback_transfers = timings
+        .dwt97_batch_ht_output_readback_transfers
+        .saturating_add(stage_timings.ht_output_readback_transfers);
+    timings.dwt97_batch_ht_output_readback_bytes = timings
+        .dwt97_batch_ht_output_readback_bytes
+        .saturating_add(stage_timings.ht_output_readback_bytes);
     timings.dwt97_batch_ht_codeblock_dispatches = timings
         .dwt97_batch_ht_codeblock_dispatches
         .saturating_add(stage_timings.ht_codeblock_dispatches);
     timings.dwt97_batch_readback_us = timings
         .dwt97_batch_readback_us
         .saturating_add(stage_timings.readback_us);
+    timings.dwt97_batch_readback_transfers = timings
+        .dwt97_batch_readback_transfers
+        .saturating_add(stage_timings.readback_transfers);
+    timings.dwt97_batch_readback_bytes = timings
+        .dwt97_batch_readback_bytes
+        .saturating_add(stage_timings.readback_bytes);
 }
 
 fn record_accelerator_attempt(timings: &mut TranscodeTimingReport, job_count: usize) {

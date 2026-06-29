@@ -669,10 +669,16 @@ fn transcode_pipeline_map_reports_metal_residency_and_next_stage() {
         jpeg_dct_repack_us: 7,
         dct_to_wavelet_accelerator_us: 100,
         dwt97_batch_pack_upload_us: 9,
+        dwt97_batch_pack_upload_transfers: 1,
+        dwt97_batch_pack_upload_bytes: 256,
+        dwt97_batch_resident_dct_handoff_count: 4,
         dwt97_batch_idct_row_lift_us: 31,
         dwt97_batch_column_lift_us: 29,
+        dwt97_batch_resident_dwt_handoff_count: 16,
         dwt97_batch_quantize_codeblock_us: 13,
         dwt97_batch_readback_us: 17,
+        dwt97_batch_readback_transfers: 4,
+        dwt97_batch_readback_bytes: 512,
         htj2k_encode_us: 101,
         accelerator_attempts: 1,
         accelerator_jobs: 4,
@@ -700,7 +706,13 @@ fn transcode_pipeline_map_reports_metal_residency_and_next_stage() {
     let debug = map.debug_report();
 
     assert_eq!(coefficient_prep.processor, TranscodeStageProcessor::Hybrid);
+    assert_eq!(coefficient_prep.transfer_count, 1);
+    assert_eq!(coefficient_prep.transfer_bytes, 256);
+    assert_eq!(coefficient_prep.resident_handoff_count, 4);
     assert_eq!(transform.processor, TranscodeStageProcessor::Metal);
+    assert_eq!(transform.transfer_count, 4);
+    assert_eq!(transform.transfer_bytes, 512);
+    assert_eq!(transform.resident_handoff_count, 16);
     assert_eq!(code_block_prep.processor, TranscodeStageProcessor::Metal);
     assert_eq!(
         map.recommendation.stage,
@@ -712,6 +724,8 @@ fn transcode_pipeline_map_reports_metal_residency_and_next_stage() {
     );
     assert!(debug.contains("stage=entropy_decode processor=Cpu"));
     assert!(debug.contains("stage=transform processor=Metal"));
+    assert!(debug.contains("resident_handoffs=16"));
+    assert!(debug.contains("transfer_count=4 transfer_bytes=512"));
     assert!(debug.contains("recommend_next_stage=quantization_code_block_prep"));
 }
 

@@ -50,6 +50,14 @@ Runnable repository examples:
   ([crates/j2k-jpeg/examples/inspect.rs](crates/j2k-jpeg/examples/inspect.rs))
 - `cargo run -p j2k-transcode --example jpeg_to_htj2k`
   ([crates/j2k-transcode/examples/jpeg_to_htj2k.rs](crates/j2k-transcode/examples/jpeg_to_htj2k.rs))
+- `cargo run -p j2k-transcode-metal --example jpeg_to_htj2k_route_report`
+  ([crates/j2k-transcode-metal/examples/jpeg_to_htj2k_route_report.rs](crates/j2k-transcode-metal/examples/jpeg_to_htj2k_route_report.rs))
+- `cargo run -p j2k-metal --example decode_route_report`
+  ([crates/j2k-metal/examples/decode_route_report.rs](crates/j2k-metal/examples/decode_route_report.rs))
+- `cargo run -p j2k-metal --example htj2k_encode_auto_report`
+  ([crates/j2k-metal/examples/htj2k_encode_auto_report.rs](crates/j2k-metal/examples/htj2k_encode_auto_report.rs))
+- `cargo run -p j2k-metal --example resident_encode_buffer`
+  ([crates/j2k-metal/examples/resident_encode_buffer.rs](crates/j2k-metal/examples/resident_encode_buffer.rs))
 - `cargo run -p j2k-tilecodec --example decompress`
   ([crates/j2k-tilecodec/examples/decompress.rs](crates/j2k-tilecodec/examples/decompress.rs))
 

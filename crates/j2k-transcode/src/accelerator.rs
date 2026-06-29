@@ -185,10 +185,18 @@ pub struct Htj2k97CodeBlockOptions {
 pub struct Dwt97BatchStageTimings {
     /// Host packing, buffer allocation, and upload time in microseconds.
     pub pack_upload_us: u128,
+    /// Logical host-to-device transfers included in [`Self::pack_upload_us`].
+    pub pack_upload_transfers: usize,
+    /// Host-to-device bytes included in [`Self::pack_upload_us`].
+    pub pack_upload_bytes: u64,
+    /// Resident JPEG DCT-grid descriptors validated for this batch.
+    pub resident_dct_handoff_count: usize,
     /// Time spent in the IDCT plus horizontal 9/7 row-lift stage.
     pub idct_row_lift_us: u128,
     /// Time spent in the vertical 9/7 column-lift stage.
     pub column_lift_us: u128,
+    /// Resident DWT subband descriptors validated for this batch.
+    pub resident_dwt_handoff_count: usize,
     /// Time spent quantizing 9/7 bands into HTJ2K code-block layout.
     pub quantize_codeblock_us: u128,
     /// Time spent HT-encoding resident code-block coefficients.
@@ -197,14 +205,26 @@ pub struct Dwt97BatchStageTimings {
     pub ht_kernel_us: u128,
     /// Resident HT status-buffer device-to-host readback time in microseconds.
     pub ht_status_readback_us: u128,
+    /// Logical device-to-host status readbacks included in [`Self::ht_status_readback_us`].
+    pub ht_status_readback_transfers: usize,
+    /// Device-to-host status bytes included in [`Self::ht_status_readback_us`].
+    pub ht_status_readback_bytes: u64,
     /// Resident HT encoded-byte compaction kernel time in microseconds.
     pub ht_compact_us: u128,
     /// Resident HT compacted encoded-byte device-to-host readback time in microseconds.
     pub ht_output_readback_us: u128,
+    /// Logical device-to-host output readbacks included in [`Self::ht_output_readback_us`].
+    pub ht_output_readback_transfers: usize,
+    /// Device-to-host output bytes included in [`Self::ht_output_readback_us`].
+    pub ht_output_readback_bytes: u64,
     /// Number of HT code-block encode kernel dispatches in this batch.
     pub ht_codeblock_dispatches: usize,
     /// Time spent reading and unpacking Metal band buffers into host outputs.
     pub readback_us: u128,
+    /// Logical device-to-host transfers included in [`Self::readback_us`].
+    pub readback_transfers: usize,
+    /// Device-to-host bytes included in [`Self::readback_us`].
+    pub readback_bytes: u64,
 }
 
 /// Error returned by accelerated transcode stage backends.

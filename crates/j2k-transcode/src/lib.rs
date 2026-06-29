@@ -19,6 +19,7 @@ mod jpeg_to_htj2k;
 #[doc(hidden)]
 pub mod metrics;
 mod pipeline_map;
+mod resident;
 mod reversible53;
 
 pub use j2k::J2kProgressionOrder as EncodeProgressionOrder;
@@ -35,4 +36,10 @@ pub use jpeg_to_htj2k::{
 pub use pipeline_map::{
     TranscodePipelineMap, TranscodePipelineStageKind, TranscodePipelineStageReport,
     TranscodeResidentStageRecommendation, TranscodeStageProcessor,
+};
+pub use resident::{
+    ResidentBufferRef, ResidentCodestreamBuffer, ResidentColorModel, ResidentComponentGeometry,
+    ResidentDctCoefficientOrder, ResidentDctGridLayout, ResidentDwtSubband, ResidentDwtSubbandKind,
+    ResidentDwtSubbandLayout, ResidentHandoffError, ResidentJpegDctGrid, ResidentSampleInfo,
+    ResidentSampling,
 };

@@ -106,18 +106,81 @@ Metal acceleration is selective. Public claims should say Metal-accelerated
 stages, not complete end-to-end Metal coverage for every encode, decode, or
 transcode route.
 
-Existing Apple Silicon encode-stage routing evidence is recorded in
-`docs/roadmap/metal-encode-stage-coverage.md`. That evidence was collected with:
+The consolidated codec-only Metal plan lives in
+`docs/roadmap/metal-codec-acceleration-plan.md`. Existing Apple Silicon
+encode-stage routing evidence was collected with:
 
 ```bash
 cargo test -p j2k-metal --test encode_auto_routing_benchmark -- --ignored --nocapture
 ```
+
+Decode routing evidence can be collected with:
+
+```bash
+cargo test -p j2k-metal --release --test metal_decode_benchmark \
+  metal_decode_benchmark -- --ignored --nocapture
+```
+
+On June 28, 2026, commit `931d5815` plus local working-tree changes was tested
+on a MacBook Pro `Mac16,8`, Apple M4 Pro, 48 GB memory, macOS 26.5. Generated
+fixture rows showed no strict Metal decode win over CPU, so `Auto` decode
+should remain CPU for these shapes:
+
+| Generated row | CPU | Metal resident | Metal readback |
+| --- | ---: | ---: | ---: |
+| classic Gray8 512 full | 3.671 ms | 25.682 ms | 25.762 ms |
+| HTJ2K Gray8 512 full | 0.701 ms | 2.566 ms | 2.603 ms |
+| classic RGB8 512 full | 13.392 ms | 75.281 ms | 74.794 ms |
+| classic Gray8 1024 full | 7.923 ms | 28.216 ms | 28.626 ms |
+| HTJ2K Gray8 1024 full | 2.081 ms | 2.874 ms | 2.857 ms |
+| classic RGB8 1024 full | 28.058 ms | 83.760 ms | 83.090 ms |
+| classic RGB8 1024 region+scaled | 13.905 ms | 63.151 ms | 65.418 ms |
+
+Current evidence supports conservative Auto routing for large encode-stage
+inputs, not blanket Metal encode coverage. On an Apple M4 Pro, prior routing
+evidence showed coefficient-prep stage wins at 512 x 512 and larger stage
+inputs, with selected Auto rows such as lossless classic RGB8 improving from
+115.098 ms CPU to 65.294 ms Auto at 512 x 512, and lossless HTJ2K RGB8
+improving from 284.845 ms CPU to 10.012 ms Auto at 1024 x 1024. Treat these as
+routing evidence for the recorded host, not cross-machine performance claims.
+
+Metal JPEG-to-HTJ2K same-geometry batch transcode evidence was collected on
+June 28, 2026, commit `931d5815` plus local working-tree changes, on a MacBook
+Pro `Mac16,8`, Apple M4 Pro, 48 GB memory, macOS 26.5:
+
+```bash
+J2K_TRANSCODE_METAL_PROFILE_STAGES=1 \
+cargo bench -p j2k-transcode-metal --bench dct97 -- \
+  jpeg_to_htj2k_wsi_integer_53_tile_batch/srgb_ybr420_224_batch_128
+```
+
+Criterion row, lossless 5/3 HTJ2K, generated 224 x 224 sRGB/YBR 4:2:0 JPEG
+fixture, batch size 128:
+
+| Route | Time interval | Throughput interval |
+| --- | ---: | ---: |
+| Rayon CPU batch | 86.581-89.594 ms | 38.439-39.776 MiB/s |
+| Auto Metal batch | 57.334-58.776 ms | 58.593-60.066 MiB/s |
+| Strict Metal batch | 58.053-65.069 ms | 52.926-59.323 MiB/s |
+
+The same run emitted profile rows with one stable workload context,
+`srgb_ybr420_224_batch_128`: 93 CPU rows with
+`request=cpu path=cpu transform_processor=cpu`, 118 Auto rows with
+`request=metal_auto path=auto transform_processor=metal`, and 118 strict rows
+with `request=metal_explicit path=metal transform_processor=metal`. No CPU
+profile row was labeled as Metal.
+
+This row supports the existing same-geometry batch Auto Metal route for the
+measured 224 x 224 batch-128 shape on this host. It does not justify broad
+single-image transcode Auto expansion or distinct-geometry batch routing.
 
 Release validation should rerun the hardware tests before publishing:
 
 ```bash
 cargo test -p j2k-jpeg-metal --all-targets
 cargo test -p j2k-metal --all-targets
+cargo test -p j2k-metal --release --test metal_decode_benchmark \
+  metal_decode_benchmark -- --ignored --nocapture
 cargo test -p j2k-metal --test encode_auto_routing_benchmark -- --ignored --nocapture
 ```
 

@@ -9,12 +9,27 @@ use j2k_core::{
     TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
 };
 use j2k_metal::{
-    Codec, Error, J2kDecoder, J2kScratchPool, MetalBackendSession, MetalSession, MetalTileBatch,
-    SurfaceResidency,
+    Codec, DecodeOperation, Error, J2kDecoder, J2kScratchPool, MetalBackendSession, MetalSession,
+    MetalTileBatch, SurfaceResidency,
 };
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
 
 const UNSUPPORTED_RGBA16_REASON: &str = "J2K Metal does not support PixelFormat::Rgba16";
+const AUTO_DECODE_CPU_FALLBACK_REASON: &str =
+    "J2K Metal Auto decode stays on CPU until decode benchmark evidence justifies Metal routing";
+
+fn assert_unsupported_rgba16_report(result: Result<j2k_metal::DecodeSurfaceWithReport, Error>) {
+    match result {
+        Err(Error::UnsupportedMetalRequest { reason }) => {
+            assert_eq!(reason, UNSUPPORTED_RGBA16_REASON);
+        }
+        Err(other) => panic!("unexpected explicit Metal error: {other:?}"),
+        Ok(surface) => panic!(
+            "explicit Metal must not silently fall back; got {:?}",
+            surface.report.selected_backend
+        ),
+    }
+}
 
 fn fixture_rgb8() -> Vec<u8> {
     let pixels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
@@ -400,6 +415,43 @@ fn decode_to_device_with_session_uses_session_device() {
 
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+    let (buffer, _) = surface.metal_buffer().expect("metal buffer");
+    assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn decode_scaled_to_device_with_session_supports_rgb8_resident_surface() {
+    use metal::foreign_types::ForeignTypeRef;
+
+    let bytes = fixture_rgb8_sized(8, 8);
+    let scale = Downscale::Half;
+    let scaled = Rect {
+        x: 0,
+        y: 0,
+        w: 8,
+        h: 8,
+    }
+    .scaled_covering(scale);
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+
+    let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
+    let mut pool = J2kScratchPool::new();
+    let stride = scaled.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let mut host = vec![0u8; stride * scaled.h as usize];
+    host_decoder
+        .decode_scaled_into(&mut pool, &mut host, stride, PixelFormat::Rgb8, scale)
+        .expect("host scaled RGB8 decode");
+
+    let mut decoder = J2kDecoder::new(&bytes).expect("metal decoder");
+    let surface = decoder
+        .decode_scaled_to_device_with_session(PixelFormat::Rgb8, scale, &session)
+        .expect("session scaled RGB8 decode");
+
+    assert_eq!(surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+    assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
+    assert_eq!(surface.as_bytes(), host.as_slice());
     let (buffer, _) = surface.metal_buffer().expect("metal buffer");
     assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
 }
@@ -1515,6 +1567,92 @@ fn explicit_metal_unsupported_rgba16_error_is_codec_unsupported() {
 }
 
 #[test]
+fn auto_decode_report_explains_cpu_fallback_and_residency() {
+    let bytes = fixture_gray8();
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+
+    let reported = decoder
+        .decode_to_device_with_report(PixelFormat::Gray8, BackendRequest::Auto)
+        .expect("reported Auto decode");
+
+    assert_eq!(reported.surface.backend_kind(), BackendKind::Cpu);
+    assert_eq!(reported.surface.residency(), SurfaceResidency::Host);
+    assert!(reported.surface.metal_buffer().is_none());
+    assert_eq!(reported.report.operation, DecodeOperation::Full);
+    assert_eq!(reported.report.requested_backend, BackendRequest::Auto);
+    assert_eq!(reported.report.selected_backend, BackendKind::Cpu);
+    assert_eq!(reported.report.pixel_format, PixelFormat::Gray8);
+    assert_eq!(reported.report.surface_residency, SurfaceResidency::Host);
+    assert_eq!(
+        reported.report.fallback_reason,
+        Some(AUTO_DECODE_CPU_FALLBACK_REASON)
+    );
+}
+
+#[test]
+fn explicit_metal_decode_report_records_resident_surface() {
+    let bytes = fixture_gray8();
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+
+    let reported = decoder
+        .decode_to_device_with_report(PixelFormat::Gray8, BackendRequest::Metal)
+        .expect("reported explicit Metal decode");
+
+    assert_eq!(reported.surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(
+        reported.surface.residency(),
+        SurfaceResidency::MetalResidentDecode
+    );
+    assert_eq!(reported.report.operation, DecodeOperation::Full);
+    assert_eq!(reported.report.requested_backend, BackendRequest::Metal);
+    assert_eq!(reported.report.selected_backend, BackendKind::Metal);
+    assert_eq!(
+        reported.report.surface_residency,
+        SurfaceResidency::MetalResidentDecode
+    );
+    assert_eq!(reported.report.fallback_reason, None);
+}
+
+#[test]
+fn explicit_metal_unsupported_rgba16_report_variants_are_rejected() {
+    let bytes = fixture_rgb12();
+    let roi = Rect {
+        x: 0,
+        y: 0,
+        w: 2,
+        h: 1,
+    };
+    let scale = Downscale::Half;
+
+    let mut decoder = J2kDecoder::new(&bytes).expect("full decoder");
+    assert_unsupported_rgba16_report(
+        decoder.decode_to_device_with_report(PixelFormat::Rgba16, BackendRequest::Metal),
+    );
+
+    let mut decoder = J2kDecoder::new(&bytes).expect("region decoder");
+    assert_unsupported_rgba16_report(decoder.decode_region_to_device_with_report(
+        PixelFormat::Rgba16,
+        roi,
+        BackendRequest::Metal,
+    ));
+
+    let mut decoder = J2kDecoder::new(&bytes).expect("scaled decoder");
+    assert_unsupported_rgba16_report(decoder.decode_scaled_to_device_with_report(
+        PixelFormat::Rgba16,
+        scale,
+        BackendRequest::Metal,
+    ));
+
+    let mut decoder = J2kDecoder::new(&bytes).expect("region scaled decoder");
+    assert_unsupported_rgba16_report(decoder.decode_region_scaled_to_device_with_report(
+        PixelFormat::Rgba16,
+        roi,
+        scale,
+        BackendRequest::Metal,
+    ));
+}
+
+#[test]
 fn explicit_metal_region_and_scaled_grayscale_match_host_decode() {
     let bytes = fixture_gray8();
     let roi = Rect {
@@ -1563,6 +1701,41 @@ fn explicit_metal_region_and_scaled_grayscale_match_host_decode() {
     assert_eq!(scaled_surface.backend_kind(), BackendKind::Metal);
     assert_eq!(scaled_surface.dimensions(), (2, 2));
     assert_eq!(scaled_surface.as_bytes(), host_scaled.as_slice());
+}
+
+#[test]
+fn explicit_metal_scaled_rgb8_matches_host_decode() {
+    let bytes = fixture_rgb8_sized(8, 8);
+    let scale = Downscale::Half;
+    let scaled = Rect {
+        x: 0,
+        y: 0,
+        w: 8,
+        h: 8,
+    }
+    .scaled_covering(scale);
+
+    let mut host_decoder = J2kDecoder::new(&bytes).expect("host scaled decoder");
+    let stride = scaled.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let mut host = vec![0u8; stride * scaled.h as usize];
+    host_decoder
+        .decode_scaled_into(
+            &mut J2kScratchPool::new(),
+            &mut host,
+            stride,
+            PixelFormat::Rgb8,
+            scale,
+        )
+        .expect("host scaled RGB8 decode");
+
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let surface = decoder
+        .decode_scaled_to_device(PixelFormat::Rgb8, scale, BackendRequest::Metal)
+        .expect("explicit Metal scaled RGB8 decode");
+    assert_eq!(surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+    assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
+    assert_eq!(surface.as_bytes(), host.as_slice());
 }
 
 #[test]

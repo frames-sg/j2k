@@ -287,6 +287,103 @@ fn collect_required_metal_issues(summary: &Value, issues: &mut Vec<String>) {
     {
         issues.push("Metal required but metal_requested is not true".to_string());
     }
+    collect_required_metal_decode_issues(summary, issues);
+    collect_required_metal_encode_issues(summary, issues);
+    collect_required_metal_transcode_issues(summary, issues);
+}
+
+fn collect_required_metal_decode_issues(summary: &Value, issues: &mut Vec<String>) {
+    collect_step_ran_issue(
+        summary,
+        "metal-decode-benchmark",
+        "Metal decode benchmark",
+        issues,
+    );
+    let Some(metal) = collect_metadata_present_issue(
+        summary,
+        "metal_decode_benchmark",
+        "Metal decode metadata",
+        issues,
+    ) else {
+        return;
+    };
+    if metal.get("status").and_then(Value::as_str) != Some("ran") {
+        issues.push(format!(
+            "Metal decode status is {}",
+            metal
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("not-recorded")
+        ));
+    }
+    if let Some(error) = metal.get("error").and_then(Value::as_str) {
+        issues.push(format!("Metal decode output error: {error}"));
+    }
+    let bench_count = metal
+        .get("bench_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let verified_count = metal
+        .get("verified_bench_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if bench_count == 0 {
+        issues.push("Metal decode has no benchmark rows".to_string());
+    }
+    if verified_count == 0 {
+        issues.push("Metal decode has no verified CPU/Metal benchmark rows".to_string());
+    }
+    if bench_count > 0
+        && metal
+            .get("skipped_bench_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(bench_count)
+            == bench_count
+    {
+        issues.push("Metal decode has no measured benchmark rows".to_string());
+    }
+    if !has_verified_external_metal_decode_row(metal) {
+        issues.push("Metal decode has no verified external benchmark rows".to_string());
+    }
+    let Some(metadata) = metal.get("metadata") else {
+        issues.push("Metal decode metadata missing".to_string());
+        return;
+    };
+    collect_required_string_issue(
+        metadata,
+        "j2k_metal_decode_io_policy",
+        "metal_resident_ms-does-not-readback",
+        "Metal decode io_policy",
+        issues,
+    );
+    collect_not_set_issue(
+        metadata,
+        "j2k_metal_decode_input_dirs",
+        "Metal decode input dirs",
+        issues,
+    );
+    collect_not_set_issue(
+        metadata,
+        "j2k_metal_decode_manifest",
+        "Metal decode manifest",
+        issues,
+    );
+    collect_equals_issue(
+        metadata,
+        "j2k_metal_decode_generated_included",
+        "false",
+        "Metal decode generated inclusion",
+        issues,
+    );
+    collect_positive_count_issue(
+        metadata,
+        "j2k_metal_decode_external_case_count",
+        "Metal decode external case count",
+        issues,
+    );
+}
+
+fn collect_required_metal_encode_issues(summary: &Value, issues: &mut Vec<String>) {
     collect_step_ran_issue(
         summary,
         "metal-encode-auto-routing",
@@ -394,6 +491,84 @@ fn collect_required_metal_issues(summary: &Value, issues: &mut Vec<String>) {
         "Metal encode external case count",
         issues,
     );
+}
+
+fn collect_required_metal_transcode_issues(summary: &Value, issues: &mut Vec<String>) {
+    collect_step_ran_issue(
+        summary,
+        "metal-transcode-benchmark",
+        "Metal transcode benchmark",
+        issues,
+    );
+    let Some(metal) = collect_metadata_present_issue(
+        summary,
+        "metal_transcode_benchmark",
+        "Metal transcode metadata",
+        issues,
+    ) else {
+        return;
+    };
+    if metal.get("status").and_then(Value::as_str) != Some("ran") {
+        issues.push(format!(
+            "Metal transcode status is {}",
+            metal
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("not-recorded")
+        ));
+    }
+    if let Some(error) = metal.get("error").and_then(Value::as_str) {
+        issues.push(format!("Metal transcode output error: {error}"));
+    }
+    if metal
+        .get("profile_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        == 0
+    {
+        issues.push("Metal transcode has no profile rows".to_string());
+    }
+    if metal
+        .get("verified_profile_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        == 0
+    {
+        issues.push("Metal transcode has no verified Metal-dispatch profile rows".to_string());
+    }
+    if metal
+        .get("comparison_context_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        == 0
+    {
+        issues.push("Metal transcode has no comparable CPU/Metal profile context".to_string());
+    }
+    let auto_count = metal
+        .get("auto_metal_profile_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let explicit_count = metal
+        .get("explicit_metal_profile_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if auto_count + explicit_count == 0 {
+        issues.push("Metal transcode has no Metal-requested profile rows".to_string());
+    }
+}
+
+fn has_verified_external_metal_decode_row(metal: &Value) -> bool {
+    metal
+        .get("benches")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| {
+            rows.iter().any(|row| {
+                value_field(row, "source").starts_with("external:")
+                    && numeric_field(row, "cpu_ms").is_some()
+                    && numeric_field(row, "metal_resident_ms").is_some()
+                    && numeric_field(row, "metal_readback_ms").is_some()
+            })
+        })
 }
 
 fn collect_metadata_present_issue<'a>(
@@ -799,6 +974,49 @@ fn render_report(
         summary,
         &["cuda-htj2k-decode", "cuda-htj2k-encode"],
     );
+    if let Some(metal) = summary.get("metal_decode_benchmark") {
+        out.push_str("\nMetal decode benchmark summary:\n\n");
+        out.push_str(&format!(
+            "- status: {}\n",
+            metal
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("not-recorded")
+        ));
+        if let Some(metadata) = metal.get("metadata") {
+            metadata_list(
+                &mut out,
+                &[
+                    (
+                        "j2k_metal_decode_io_policy",
+                        scalar_label(metadata, "j2k_metal_decode_io_policy"),
+                    ),
+                    (
+                        "j2k_metal_decode_external_case_count",
+                        scalar_label(metadata, "j2k_metal_decode_external_case_count"),
+                    ),
+                    (
+                        "j2k_metal_decode_generated_included",
+                        scalar_label(metadata, "j2k_metal_decode_generated_included"),
+                    ),
+                    ("bench_count", scalar_label(metal, "bench_count")),
+                    (
+                        "skipped_bench_count",
+                        scalar_label(metal, "skipped_bench_count"),
+                    ),
+                    (
+                        "verified_bench_count",
+                        scalar_label(metal, "verified_bench_count"),
+                    ),
+                    (
+                        "skipped_case_count",
+                        scalar_label(metal, "skipped_case_count"),
+                    ),
+                ],
+            );
+        }
+        metal_decode_summary(&mut out, metal);
+    }
     if let Some(metal) = summary.get("metal_encode_auto_routing") {
         out.push_str("\nMetal auto-routing summary:\n\n");
         out.push_str(&format!(
@@ -854,6 +1072,40 @@ fn render_report(
         }
         metal_auto_summary(&mut out, metal);
         metal_resident_summary(&mut out, metal);
+    }
+    if let Some(metal) = summary.get("metal_transcode_benchmark") {
+        out.push_str("\nMetal transcode benchmark summary:\n\n");
+        out.push_str(&format!(
+            "- status: {}\n",
+            metal
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("not-recorded")
+        ));
+        metadata_list(
+            &mut out,
+            &[
+                ("bench_filter", scalar_label(metal, "bench_filter")),
+                ("profile_count", scalar_label(metal, "profile_count")),
+                (
+                    "verified_profile_count",
+                    scalar_label(metal, "verified_profile_count"),
+                ),
+                (
+                    "comparison_context_count",
+                    scalar_label(metal, "comparison_context_count"),
+                ),
+                (
+                    "auto_metal_profile_count",
+                    scalar_label(metal, "auto_metal_profile_count"),
+                ),
+                (
+                    "explicit_metal_profile_count",
+                    scalar_label(metal, "explicit_metal_profile_count"),
+                ),
+            ],
+        );
+        metal_transcode_summary(&mut out, metal);
     }
 
     out
@@ -1119,6 +1371,119 @@ struct MetalResidentGroup {
     host_readback_ms_total: f64,
 }
 
+#[derive(Default)]
+struct MetalDecodeGroup {
+    rows: usize,
+    cpu_ms_total: f64,
+    resident_ms_total: f64,
+    readback_ms_total: f64,
+}
+
+#[derive(Default)]
+struct MetalTranscodeGroup {
+    rows: usize,
+    total_ms_total: f64,
+    transfer_bytes_total: u64,
+    dct_handoffs_total: u64,
+    dwt_handoffs_total: u64,
+    dispatches_total: u64,
+    tiles_total: u64,
+}
+
+fn metal_decode_summary(out: &mut String, metal: &Value) {
+    let Some(rows) = metal.get("benches").and_then(Value::as_array) else {
+        out.push_str("\nNo Metal decode benchmark rows recorded.\n");
+        return;
+    };
+    let mut groups =
+        BTreeMap::<(String, String, String, String, String, String), MetalDecodeGroup>::new();
+    for row in rows {
+        let Some(cpu_ms) = numeric_field(row, "cpu_ms") else {
+            continue;
+        };
+        let Some(resident_ms) = numeric_field(row, "metal_resident_ms") else {
+            continue;
+        };
+        let Some(readback_ms) = numeric_field(row, "metal_readback_ms") else {
+            continue;
+        };
+        let key = (
+            metal_decode_source_category(row),
+            value_field(row, "codec"),
+            value_field(row, "container"),
+            value_field(row, "operation"),
+            value_field(row, "fmt"),
+            value_field(row, "size"),
+        );
+        let group = groups.entry(key).or_default();
+        group.rows += 1;
+        group.cpu_ms_total += cpu_ms;
+        group.resident_ms_total += resident_ms;
+        group.readback_ms_total += readback_ms;
+    }
+    if groups.is_empty() {
+        out.push_str("\nNo measured Metal decode benchmark rows recorded.\n");
+        return;
+    }
+
+    out.push_str("\nMetal decode row summary:\n\n");
+    let columns = [
+        "source",
+        "codec",
+        "container",
+        "operation",
+        "fmt",
+        "size",
+        "rows",
+        "cpu_ms_avg",
+        "metal_resident_ms_avg",
+        "metal_readback_ms_avg",
+        "readback_vs_cpu",
+        "winner",
+    ];
+    markdown_header(out, &columns);
+    for ((source, codec, container, operation, fmt, size), group) in groups {
+        let rows = group.rows as f64;
+        let cpu_avg = group.cpu_ms_total / rows;
+        let resident_avg = group.resident_ms_total / rows;
+        let readback_avg = group.readback_ms_total / rows;
+        let ratio = readback_avg / cpu_avg;
+        let winner = if readback_avg < cpu_avg {
+            "metal-readback"
+        } else if cpu_avg < readback_avg {
+            "cpu"
+        } else {
+            "tie"
+        };
+        markdown_row(
+            out,
+            [
+                source,
+                codec,
+                container,
+                operation,
+                fmt,
+                size,
+                group.rows.to_string(),
+                format!("{cpu_avg:.3}"),
+                format!("{resident_avg:.3}"),
+                format!("{readback_avg:.3}"),
+                format!("{ratio:.3}x"),
+                winner.to_string(),
+            ],
+        );
+    }
+}
+
+fn metal_decode_source_category(row: &Value) -> String {
+    let source = value_field(row, "source");
+    if source.starts_with("external:") {
+        "external".to_string()
+    } else {
+        source
+    }
+}
+
 fn metal_auto_summary(out: &mut String, metal: &Value) {
     let Some(rows) = metal.get("auto_benches").and_then(Value::as_array) else {
         out.push_str("\nNo Metal auto benchmark rows recorded.\n");
@@ -1290,10 +1655,87 @@ fn metal_resident_summary(out: &mut String, metal: &Value) {
     }
 }
 
+fn metal_transcode_summary(out: &mut String, metal: &Value) {
+    let Some(rows) = metal.get("profiles").and_then(Value::as_array) else {
+        out.push_str("\nNo Metal transcode profile rows recorded.\n");
+        return;
+    };
+    let mut groups = BTreeMap::<(String, String, String, String), MetalTranscodeGroup>::new();
+    for row in rows {
+        let Some(total_us) = numeric_field(row, "total_us") else {
+            continue;
+        };
+        let key = (
+            value_field(row, "context"),
+            value_field(row, "request"),
+            value_field(row, "transform_processor"),
+            value_field(row, "pipeline"),
+        );
+        let group = groups.entry(key).or_default();
+        group.rows += 1;
+        group.total_ms_total += total_us / 1000.0;
+        group.transfer_bytes_total += integer_field(row, "host_to_device_transfer_bytes")
+            .unwrap_or(0)
+            + integer_field(row, "device_to_host_transfer_bytes").unwrap_or(0);
+        group.dct_handoffs_total +=
+            integer_field(row, "dwt97_batch_resident_dct_handoff_count").unwrap_or(0);
+        group.dwt_handoffs_total +=
+            integer_field(row, "dwt97_batch_resident_dwt_handoff_count").unwrap_or(0);
+        group.dispatches_total += integer_field(row, "accelerator_dispatches").unwrap_or(0);
+        group.tiles_total += integer_field(row, "successful_tiles").unwrap_or(0);
+    }
+    if groups.is_empty() {
+        out.push_str("\nNo measured Metal transcode profile rows recorded.\n");
+        return;
+    }
+
+    out.push_str("\nMetal transcode profile summary:\n\n");
+    let columns = [
+        "context",
+        "request",
+        "transform_processor",
+        "pipeline",
+        "rows",
+        "total_ms_avg",
+        "successful_tiles",
+        "dct_handoffs",
+        "dwt_handoffs",
+        "accelerator_dispatches",
+        "transfer_bytes",
+    ];
+    markdown_header(out, &columns);
+    for ((context, request, transform_processor, pipeline), group) in groups {
+        markdown_row(
+            out,
+            [
+                context,
+                request,
+                transform_processor,
+                pipeline,
+                group.rows.to_string(),
+                format!("{:.3}", group.total_ms_total / group.rows as f64),
+                group.tiles_total.to_string(),
+                group.dct_handoffs_total.to_string(),
+                group.dwt_handoffs_total.to_string(),
+                group.dispatches_total.to_string(),
+                group.transfer_bytes_total.to_string(),
+            ],
+        );
+    }
+}
+
 fn numeric_field(row: &Value, key: &str) -> Option<f64> {
     match row.get(key)? {
         Value::Number(number) => number.as_f64(),
         Value::String(value) => value.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn integer_field(row: &Value, key: &str) -> Option<u64> {
+    match row.get(key)? {
+        Value::Number(number) => number.as_u64(),
+        Value::String(value) => value.parse::<u64>().ok(),
         _ => None,
     }
 }
@@ -1511,6 +1953,13 @@ mod tests {
                 "publication_blockers": "none",
                 "benchmark_complete": "true"
             },
+            "metal_decode_benchmark": {
+                "status": "ran",
+                "bench_count": 1,
+                "skipped_bench_count": 1,
+                "verified_bench_count": 0,
+                "metadata": {}
+            },
             "metal_encode_auto_routing": {
                 "status": "ran",
                 "auto_bench_count": 1,
@@ -1520,6 +1969,16 @@ mod tests {
                 "skipped_resident_bench_count": 1,
                 "resident_verified_bench_count": 0,
                 "metadata": {}
+            },
+            "metal_transcode_benchmark": {
+                "status": "ran",
+                "profile_count": 1,
+                "verified_profile_count": 0,
+                "cpu_profile_count": 1,
+                "auto_metal_profile_count": 0,
+                "explicit_metal_profile_count": 0,
+                "comparison_context_count": 0,
+                "profiles": []
             },
             "steps": [
                 {"name": "metal-encode-auto-routing", "status": "ran"}
@@ -1536,6 +1995,21 @@ mod tests {
         assert!(issues
             .iter()
             .any(|issue| issue.contains("Metal encode manifest not recorded")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("Metal decode has no verified CPU/Metal benchmark rows")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("Metal decode manifest not recorded")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("Metal transcode benchmark step status")));
+        assert!(issues.iter().any(|issue| {
+            issue.contains("Metal transcode has no verified Metal-dispatch profile rows")
+        }));
+        assert!(issues.iter().any(|issue| {
+            issue.contains("Metal transcode has no comparable CPU/Metal profile context")
+        }));
     }
 
     #[test]
@@ -1555,6 +2029,48 @@ mod tests {
                 "publication_blockers": "none",
                 "benchmark_complete": "true"
             },
+            "metal_decode_benchmark": {
+                "status": "ran",
+                "bench_count": 2,
+                "skipped_bench_count": 0,
+                "verified_bench_count": 2,
+                "skipped_case_count": 1,
+                "metadata": {
+                    "j2k_metal_decode_io_policy": "generated-fixtures-and-preloaded-external-codestreams;timed-full-rows-include-decode-work;metal_resident_ms-does-not-readback;metal_readback_ms-includes-host-visible-byte-access",
+                    "j2k_metal_decode_input_dirs": "/fixtures",
+                    "j2k_metal_decode_manifest": "/fixtures.tsv",
+                    "j2k_metal_decode_generated_included": "false",
+                    "j2k_metal_decode_external_case_count": "1"
+                },
+                "benches": [
+                    {
+                        "case": "external_gray8",
+                        "source": "external:/fixtures/external_gray8.j2k",
+                        "codec": "j2k",
+                        "container": "raw-codestream",
+                        "operation": "full",
+                        "fmt": "gray8",
+                        "size": "512x512",
+                        "cpu_ms": 3.0,
+                        "metal_resident_ms": 2.0,
+                        "metal_readback_ms": 2.5,
+                        "output_bytes": 262144
+                    },
+                    {
+                        "case": "external_gray8",
+                        "source": "external:/fixtures/external_gray8.j2k",
+                        "codec": "j2k",
+                        "container": "raw-codestream",
+                        "operation": "region_scaled",
+                        "fmt": "gray8",
+                        "size": "256x256",
+                        "cpu_ms": 1.5,
+                        "metal_resident_ms": 1.0,
+                        "metal_readback_ms": 1.2,
+                        "output_bytes": 65536
+                    }
+                ]
+            },
             "metal_encode_auto_routing": {
                 "status": "ran",
                 "auto_bench_count": 2,
@@ -1572,8 +2088,21 @@ mod tests {
                     "j2k_metal_encode_external_case_count": "24"
                 }
             },
+            "metal_transcode_benchmark": {
+                "status": "ran",
+                "bench_filter": "jpeg_to_htj2k_wsi_integer_53_tile_batch/srgb_ybr420_224_batch_128",
+                "profile_count": 3,
+                "verified_profile_count": 2,
+                "cpu_profile_count": 1,
+                "auto_metal_profile_count": 1,
+                "explicit_metal_profile_count": 1,
+                "comparison_context_count": 1,
+                "profiles": []
+            },
             "steps": [
-                {"name": "metal-encode-auto-routing", "status": "ran"}
+                {"name": "metal-decode-benchmark", "status": "ran"},
+                {"name": "metal-encode-auto-routing", "status": "ran"},
+                {"name": "metal-transcode-benchmark", "status": "ran"}
             ]
         });
 
@@ -1695,9 +2224,14 @@ benchmark_complete\ttrue\n",
         assert!(report.contains("CUDA Criterion estimate rows"));
         assert!(report.contains("cuda_decode_external_gray8"));
         assert!(report.contains("1.500"));
+        assert!(report.contains("Metal decode row summary"));
+        assert!(report.contains("metal-readback"));
         assert!(report.contains("Metal auto external row summary"));
         assert!(report.contains("metal-auto"));
         assert!(report.contains("0.400x"));
+        assert!(report.contains("Metal transcode profile summary"));
+        assert!(report.contains("metal_auto"));
+        assert!(report.contains("57.000"));
     }
 
     fn write_minimal_bundle(dir: &Path, publishable: bool) {
@@ -1750,6 +2284,33 @@ benchmark_complete\ttrue\n",
                     }
                 ]
             },
+            "metal_decode_benchmark": {
+                "status": "ran",
+                "bench_count": 1,
+                "skipped_bench_count": 0,
+                "verified_bench_count": 1,
+                "skipped_case_count": 0,
+                "metadata": {
+                    "j2k_metal_decode_io_policy": "generated-fixtures-and-preloaded-external-codestreams;timed-full-rows-include-decode-work;metal_resident_ms-does-not-readback;metal_readback_ms-includes-host-visible-byte-access",
+                    "j2k_metal_decode_external_case_count": "0",
+                    "j2k_metal_decode_generated_included": "true"
+                },
+                "benches": [
+                    {
+                        "case": "generated_gray8",
+                        "source": "generated",
+                        "codec": "j2k",
+                        "container": "raw-codestream",
+                        "operation": "full",
+                        "fmt": "gray8",
+                        "size": "512x512",
+                        "cpu_ms": 1.0,
+                        "metal_resident_ms": 0.5,
+                        "metal_readback_ms": 0.75,
+                        "output_bytes": 262144
+                    }
+                ]
+            },
             "metal_encode_auto_routing": {
                 "status": "ran",
                 "auto_bench_count": 2,
@@ -1776,6 +2337,46 @@ benchmark_complete\ttrue\n",
                         "size": "512x512",
                         "cpu_ms": 15.0,
                         "auto_ms": 6.0
+                    }
+                ]
+            },
+            "metal_transcode_benchmark": {
+                "status": "ran",
+                "bench_filter": "jpeg_to_htj2k_wsi_integer_53_tile_batch/srgb_ybr420_224_batch_128",
+                "profile_count": 2,
+                "verified_profile_count": 1,
+                "cpu_profile_count": 1,
+                "auto_metal_profile_count": 1,
+                "explicit_metal_profile_count": 0,
+                "comparison_context_count": 1,
+                "profiles": [
+                    {
+                        "request": "cpu",
+                        "path": "cpu",
+                        "pipeline": "jpeg_to_htj2k",
+                        "context": "srgb_ybr420_224_batch_128",
+                        "transform_processor": "cpu",
+                        "total_us": 86000,
+                        "successful_tiles": 128,
+                        "dwt97_batch_resident_dct_handoff_count": 0,
+                        "dwt97_batch_resident_dwt_handoff_count": 0,
+                        "accelerator_dispatches": 0,
+                        "host_to_device_transfer_bytes": 0,
+                        "device_to_host_transfer_bytes": 0
+                    },
+                    {
+                        "request": "metal_auto",
+                        "path": "auto",
+                        "pipeline": "jpeg_to_htj2k",
+                        "context": "srgb_ybr420_224_batch_128",
+                        "transform_processor": "metal",
+                        "total_us": 57000,
+                        "successful_tiles": 128,
+                        "dwt97_batch_resident_dct_handoff_count": 384,
+                        "dwt97_batch_resident_dwt_handoff_count": 1536,
+                        "accelerator_dispatches": 1,
+                        "host_to_device_transfer_bytes": 65536,
+                        "device_to_host_transfer_bytes": 65536
                     }
                 ]
             }
