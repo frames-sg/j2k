@@ -1,27 +1,27 @@
 # Benchmark Evidence
 
-This document records benchmark commands and environment details used for public
-performance claims. JSON and CSV artifacts remain the source of truth when they
-are produced by a benchmark harness.
+This document records published benchmark commands, measurements, and
+environment details. JSON and CSV artifacts remain the source of truth when
+they are produced by a benchmark harness.
 
 ## Publication Status
 
 The codec support boundary is tracked separately in
 [`docs/public-support.md`](public-support.md): JPEG 2000 Part 1 codestreams,
 JP2 still-image files, HTJ2K Part 15 codestreams, and JPH still-image files.
-That repo-local support gate can pass before public performance or adoption
-claims are eligible.
+That repo-local support gate is separate from performance reporting.
 
-Public benchmark/adoption claims require an external adoption benchmark bundle:
+This page is the current public benchmark evidence note. Broader adoption-facing
+speed reports require an external adoption benchmark bundle:
 
 ```bash
 cargo xtask adoption-report --run-dir target/j2k-adoption-benchmark/full
 ```
 
-Without a completed bundle, `cargo xtask adoption-report` must fail and report
-that public benchmark/adoption claims remain blocked. Generated repo-local
-fixtures and passing codec self-checks are implementation evidence, not
-publication evidence for speed or adoption claims.
+For adoption reports, `cargo xtask adoption-report` must require a completed
+external bundle and identify any missing evidence. Generated repo-local
+fixtures and passing codec self-checks remain implementation evidence; use
+manifest-backed external rows for adoption-facing speed reports.
 
 ## CUDA JPEG-to-HTJ2K Transcode
 
