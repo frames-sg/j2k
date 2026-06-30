@@ -16,7 +16,7 @@ use crate::{
         j2k_dwt53_launch_geometry, j2k_forward_rct_launch_geometry,
         j2k_idwt_multi_1d_launch_geometry, j2k_idwt_multi_coop_axis_launch_geometry,
         j2k_idwt_multi_coop_columns_launch_geometry, j2k_idwt_multi_coop_launch_geometry,
-        j2k_store_batch_launch_geometry, CudaKernel,
+        j2k_store_batch_launch_geometry, CudaKernel, CudaLaunchGeometry,
     },
     memory::{
         checked_image_words, pooled_device_buffer, CudaBufferPool, CudaDeviceBuffer,
@@ -1538,11 +1538,11 @@ impl CudaContext {
         let mut params = cuda_kernel_params!(jobs_ptr);
         let geometry = j2k_idwt_multi_coop_launch_geometry(max_rows, job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
-        self.launch_named_kernel(
+        self.launch_j2k_idwt_named_kernel(
             CudaKernel::J2kIdwtInterleaveHorizontal53Multi,
             geometry,
             &mut params,
-            CudaLaunchMode::from_synchronize(synchronize),
+            synchronize,
         )
     }
 
@@ -1558,11 +1558,11 @@ impl CudaContext {
         let mut params = cuda_kernel_params!(jobs_ptr);
         let geometry = j2k_idwt_multi_coop_axis_launch_geometry(max_rows, max_width, job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
-        self.launch_named_kernel(
+        self.launch_j2k_idwt_named_kernel(
             CudaKernel::J2kIdwtInterleaveHorizontal97Multi,
             geometry,
             &mut params,
-            CudaLaunchMode::from_synchronize(synchronize),
+            synchronize,
         )
     }
 
@@ -1666,11 +1666,11 @@ impl CudaContext {
         let mut params = cuda_kernel_params!(jobs_ptr);
         let geometry = j2k_idwt_multi_coop_launch_geometry(max_columns, job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
-        self.launch_named_kernel(
+        self.launch_j2k_idwt_named_kernel(
             CudaKernel::J2kIdwtVertical53Multi,
             geometry,
             &mut params,
-            CudaLaunchMode::from_synchronize(synchronize),
+            synchronize,
         )
     }
 
@@ -1701,12 +1701,7 @@ impl CudaContext {
         };
         let mut jobs_ptr = jobs_ptr;
         let mut params = cuda_kernel_params!(jobs_ptr);
-        self.launch_named_kernel(
-            kernel,
-            geometry,
-            &mut params,
-            CudaLaunchMode::from_synchronize(synchronize),
-        )
+        self.launch_j2k_idwt_named_kernel(kernel, geometry, &mut params, synchronize)
     }
 
     fn launch_j2k_store_gray8(
@@ -1846,28 +1841,30 @@ impl CudaContext {
         &self,
         kernel: CudaKernel,
     ) -> Result<crate::driver::CuFunction, CudaError> {
-        #[cfg(feature = "cuda-oxide-j2k-decode-store")]
-        {
-            if crate::build_flags::cuda_oxide_j2k_decode_store_enabled() {
-                return self
-                    .inner
-                    .cuda_oxide_j2k_decode_store_kernel_function(kernel);
-            }
-        }
-        self.inner.kernel_function(kernel)
+        self.inner
+            .cuda_oxide_j2k_decode_store_kernel_function(kernel)
     }
 
     fn j2k_idwt_kernel_function(
         &self,
         kernel: CudaKernel,
     ) -> Result<crate::driver::CuFunction, CudaError> {
-        #[cfg(feature = "cuda-oxide-j2k-idwt")]
-        {
-            if crate::build_flags::cuda_oxide_j2k_idwt_enabled() && kernel.is_j2k_idwt_stage() {
-                return self.inner.cuda_oxide_j2k_idwt_kernel_function(kernel);
-            }
+        self.inner.cuda_oxide_j2k_idwt_kernel_function(kernel)
+    }
+
+    fn launch_j2k_idwt_named_kernel<const N: usize>(
+        &self,
+        kernel: CudaKernel,
+        geometry: CudaLaunchGeometry,
+        params: &mut [*mut std::ffi::c_void; N],
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        let function = self.j2k_idwt_kernel_function(kernel)?;
+        if synchronize {
+            self.launch_kernel(function, geometry, params)
+        } else {
+            self.launch_kernel_async(function, geometry, params)
         }
-        self.inner.kernel_function(kernel)
     }
 }
 

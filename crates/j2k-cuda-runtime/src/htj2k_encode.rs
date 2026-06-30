@@ -1024,9 +1024,7 @@ impl CudaContext {
         uvlc_table: &CudaDeviceBuffer,
         status: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::Htj2kEncodeCodeblock)?;
+        let function = self.htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblock)?;
         let mut coefficients_ptr = coefficients.device_ptr();
         let mut output_ptr = output.device_ptr();
         let mut params_ptr = params_buffer.device_ptr();
@@ -1060,9 +1058,7 @@ impl CudaContext {
         statuses: &CudaDeviceBuffer,
         job_count: usize,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::Htj2kEncodeCodeblocks)?;
+        let function = self.htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocks)?;
         let mut coefficients_ptr = coefficients.device_ptr();
         let mut output_ptr = output.device_ptr();
         let mut jobs_ptr = jobs.device_ptr();
@@ -1098,9 +1094,8 @@ impl CudaContext {
         statuses: &CudaDeviceBuffer,
         job_count: usize,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInput)?;
+        let function =
+            self.htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInput)?;
         let mut output_ptr = output.device_ptr();
         let mut jobs_ptr = jobs.device_ptr();
         let mut vlc_table0_ptr = vlc_table0.device_ptr();
@@ -1134,9 +1129,8 @@ impl CudaContext {
         statuses: &CudaDeviceBuffer,
         job_count: usize,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup)?;
+        let function =
+            self.htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup)?;
         let mut output_ptr = output.device_ptr();
         let mut jobs_ptr = jobs.device_ptr();
         let mut vlc_table0_ptr = vlc_table0.device_ptr();
@@ -1171,8 +1165,7 @@ impl CudaContext {
         job_count: usize,
     ) -> Result<(), CudaError> {
         let function = self
-            .inner
-            .kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup64)?;
+            .htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup64)?;
         let mut output_ptr = output.device_ptr();
         let mut jobs_ptr = jobs.device_ptr();
         let mut vlc_table0_ptr = vlc_table0.device_ptr();
@@ -1215,15 +1208,11 @@ impl CudaContext {
     }
 
     fn htj2k_encode_kernel_function(&self, kernel: CudaKernel) -> Result<CuFunction, CudaError> {
-        #[cfg(feature = "cuda-oxide-j2k-encode")]
-        {
-            if crate::build_flags::cuda_oxide_j2k_encode_enabled()
-                && kernel.is_cuda_oxide_j2k_encode_stage()
-            {
-                return self.inner.cuda_oxide_j2k_encode_kernel_function(kernel);
-            }
+        if kernel.is_htj2k_encode_codeblock_stage() {
+            self.inner.cuda_oxide_htj2k_encode_kernel_function(kernel)
+        } else {
+            self.inner.cuda_oxide_j2k_encode_kernel_function(kernel)
         }
-        self.inner.kernel_function(kernel)
     }
 }
 

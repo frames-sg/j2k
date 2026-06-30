@@ -41,16 +41,20 @@ pub(crate) enum CudaKernel {
     Htj2kEncodeCodeblocksMultiInputCleanup64,
     Htj2kCompactCodeblocks,
     Htj2kPacketizeCleanup,
-    #[cfg_attr(not(j2k_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
     JpegDecodeFast420Rgb8,
-    #[cfg_attr(not(j2k_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
     JpegDecodeFast422Rgb8,
-    #[cfg_attr(not(j2k_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
     JpegDecodeFast444Rgb8,
-    #[cfg_attr(not(j2k_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
     JpegEntropySync420,
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
     JpegEntropyOverflow420,
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    JpegEncodeBaselineEntropy,
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    JpegEncodeBaselineEntropyBatch,
     J2kInverseDwtSingle,
     J2kInverseMct,
     J2kStoreGray16,
@@ -136,6 +140,29 @@ impl CudaKernel {
         )
     }
 
+    #[cfg_attr(not(feature = "cuda-oxide-htj2k-decode"), allow(dead_code))]
+    pub(crate) fn is_htj2k_decode_stage(self) -> bool {
+        matches!(
+            self,
+            Self::Htj2kDecodeCodeblocks
+                | Self::Htj2kDecodeCodeblocksMulti
+                | Self::Htj2kDecodeCodeblocksMultiCleanupOnly
+                | Self::Htj2kDecodeCodeblocksMultiCleanupDequantize
+        )
+    }
+
+    #[cfg_attr(not(feature = "cuda-oxide-htj2k-encode"), allow(dead_code))]
+    pub(crate) fn is_htj2k_encode_codeblock_stage(self) -> bool {
+        matches!(
+            self,
+            Self::Htj2kEncodeCodeblock
+                | Self::Htj2kEncodeCodeblocks
+                | Self::Htj2kEncodeCodeblocksMultiInput
+                | Self::Htj2kEncodeCodeblocksMultiInputCleanup
+                | Self::Htj2kEncodeCodeblocksMultiInputCleanup64
+        )
+    }
+
     #[cfg_attr(not(feature = "cuda-oxide-j2k-idwt"), allow(dead_code))]
     pub(crate) fn is_j2k_idwt_stage(self) -> bool {
         matches!(
@@ -199,79 +226,48 @@ impl CudaKernel {
             || self.is_transcode_dwt97_batch_stage()
     }
 
-    pub(crate) fn ptx(self) -> &'static [u8] {
-        match self {
-            Self::CopyU8 => COPY_U8_PTX,
-            Self::J2kDeinterleaveToF32
-            | Self::J2kDeinterleaveStridedToF32
-            | Self::J2kForwardRct
-            | Self::J2kForwardIct
-            | Self::J2kForwardDwt53Horizontal
-            | Self::J2kForwardDwt53Vertical
-            | Self::J2kForwardDwt97Horizontal
-            | Self::J2kForwardDwt97Vertical
-            | Self::J2kQuantizeSubband
-            | Self::J2kQuantizeSubbandStrided => J2K_ENCODE_PTX,
-            Self::Htj2kDecodeCodeblocks
-            | Self::Htj2kDecodeCodeblocksMulti
-            | Self::Htj2kDecodeCodeblocksMultiCleanupOnly
-            | Self::Htj2kDecodeCodeblocksMultiCleanupDequantize
-            | Self::J2kDequantizeHtj2kCodeblocks
-            | Self::J2kDequantizeHtj2kCodeblocksMulti
-            | Self::J2kDequantizeHtj2kCleanupJobsMulti
-            | Self::J2kIdwtInterleave
-            | Self::J2kIdwtInterleaveHorizontalMulti
-            | Self::J2kIdwtInterleaveHorizontal53Multi
-            | Self::J2kIdwtInterleaveHorizontal97Multi
-            | Self::J2kIdwtHorizontal
-            | Self::J2kIdwtHorizontal53
-            | Self::J2kIdwtHorizontal97
-            | Self::J2kIdwtVertical
-            | Self::J2kIdwtVerticalMulti
-            | Self::J2kIdwtVertical53Multi
-            | Self::J2kIdwtVertical97Multi
-            | Self::J2kIdwtVertical97MultiCols4
-            | Self::J2kIdwtVertical53
-            | Self::J2kIdwtVertical97
-            | Self::J2kInverseDwtSingle
-            | Self::J2kInverseMct
-            | Self::J2kStoreGray16
-            | Self::J2kStoreGray8
-            | Self::J2kStoreRgb16
-            | Self::J2kStoreRgb16Mct
-            | Self::J2kStoreRgb8
-            | Self::J2kStoreRgb8Mct
-            | Self::J2kStoreRgb8MctBatch => HTJ2K_DECODE_PTX,
-            Self::Htj2kEncodeCodeblock
-            | Self::Htj2kEncodeCodeblocks
-            | Self::Htj2kEncodeCodeblocksMultiInput
-            | Self::Htj2kEncodeCodeblocksMultiInputCleanup
-            | Self::Htj2kEncodeCodeblocksMultiInputCleanup64
-            | Self::Htj2kCompactCodeblocks
-            | Self::Htj2kPacketizeCleanup => HTJ2K_ENCODE_PTX,
-            Self::JpegDecodeFast420Rgb8
-            | Self::JpegDecodeFast422Rgb8
-            | Self::JpegDecodeFast444Rgb8
-            | Self::JpegEntropySync420
-            | Self::JpegEntropyOverflow420 => JPEG_DECODE_PTX,
-            Self::TranscodeReversible53Idct
-            | Self::TranscodeReversible53VerticalLow
-            | Self::TranscodeReversible53VerticalHigh
-            | Self::TranscodeReversible53HorizontalLow
-            | Self::TranscodeReversible53HorizontalHigh
-            | Self::TranscodeDwt97Idct
-            | Self::TranscodeDwt97RowLift
-            | Self::TranscodeDwt97ColumnLift
-            | Self::TranscodeDwt97IdctBatch
-            | Self::TranscodeDwt97IdctI16Batch
-            | Self::TranscodeDwt97RowLiftBatch
-            | Self::TranscodeDwt97RowLiftBatchCoop
-            | Self::TranscodeDwt97ColumnLiftBatch
-            | Self::TranscodeDwt97QuantizeCodeblocks
-            | Self::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch => TRANSCODE_PTX,
-        }
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    pub(crate) fn is_jpeg_entropy_stage(self) -> bool {
+        matches!(
+            self,
+            Self::JpegEntropySync420 | Self::JpegEntropyOverflow420
+        )
     }
 
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    pub(crate) fn is_cuda_oxide_jpeg_decode_stage(self) -> bool {
+        self.is_jpeg_entropy_stage()
+            || matches!(
+                self,
+                Self::JpegDecodeFast420Rgb8
+                    | Self::JpegDecodeFast422Rgb8
+                    | Self::JpegDecodeFast444Rgb8
+            )
+    }
+
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    pub(crate) fn is_cuda_oxide_jpeg_encode_stage(self) -> bool {
+        matches!(
+            self,
+            Self::JpegEncodeBaselineEntropy | Self::JpegEncodeBaselineEntropyBatch
+        )
+    }
+
+    #[cfg_attr(
+        not(any(
+            feature = "cuda-oxide-copy-u8",
+            feature = "cuda-oxide-j2k-encode",
+            feature = "cuda-oxide-j2k-decode-store",
+            feature = "cuda-oxide-j2k-dequantize",
+            feature = "cuda-oxide-j2k-idwt",
+            feature = "cuda-oxide-htj2k-decode",
+            feature = "cuda-oxide-htj2k-encode",
+            feature = "cuda-oxide-transcode",
+            feature = "cuda-oxide-jpeg-decode",
+            feature = "cuda-oxide-jpeg-encode"
+        )),
+        allow(dead_code)
+    )]
     pub(crate) fn entrypoint(self) -> &'static [u8] {
         match self {
             Self::CopyU8 => b"j2k_copy_u8\0",
@@ -332,6 +328,8 @@ impl CudaKernel {
             Self::JpegDecodeFast444Rgb8 => b"j2k_jpeg_decode_fast444_rgb8\0",
             Self::JpegEntropySync420 => b"j2k_jpeg_entropy_sync420\0",
             Self::JpegEntropyOverflow420 => b"j2k_jpeg_entropy_overflow420\0",
+            Self::JpegEncodeBaselineEntropy => b"j2k_jpeg_encode_baseline_entropy\0",
+            Self::JpegEncodeBaselineEntropyBatch => b"j2k_jpeg_encode_baseline_entropy_batch\0",
             Self::J2kInverseDwtSingle => b"j2k_inverse_dwt_single\0",
             Self::J2kInverseMct => b"j2k_inverse_mct\0",
             Self::J2kStoreGray16 => b"j2k_store_gray16\0",
@@ -374,15 +372,6 @@ const J2K_IDWT_COOP_THREADS_SMALL_CUDA: c_uint = 256;
 const J2K_IDWT_COOP_THREADS_LARGE_CUDA: c_uint = 512;
 const J2K_ENCODE_THREADS_X: c_uint = 16;
 const J2K_ENCODE_THREADS_Y: c_uint = 16;
-const J2K_ENCODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/j2k_encode_kernels.ptx"));
-const HTJ2K_DECODE_PTX: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/htj2k_decode_kernels.ptx"));
-const HTJ2K_ENCODE_PTX: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/htj2k_encode_kernels.ptx"));
-const JPEG_DECODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/jpeg_decode_kernels.ptx"));
-// Always resolves: build.rs writes a placeholder empty module when nvcc is
-// absent (the dispatch checks `j2k_cuda_transcode_ptx_built` before load).
-const TRANSCODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/transcode_kernels.ptx"));
 #[cfg(feature = "cuda-oxide-copy-u8")]
 const CUDA_OXIDE_COPY_U8_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_copy_u8.ptx"));
@@ -398,9 +387,21 @@ const CUDA_OXIDE_J2K_DEQUANTIZE_PTX: &[u8] =
 #[cfg(feature = "cuda-oxide-j2k-idwt")]
 const CUDA_OXIDE_J2K_IDWT_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_j2k_idwt.ptx"));
+#[cfg(feature = "cuda-oxide-htj2k-decode")]
+const CUDA_OXIDE_HTJ2K_DECODE_PTX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_htj2k_decode.ptx"));
+#[cfg(feature = "cuda-oxide-htj2k-encode")]
+const CUDA_OXIDE_HTJ2K_ENCODE_PTX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_htj2k_encode.ptx"));
 #[cfg(feature = "cuda-oxide-transcode")]
 const CUDA_OXIDE_TRANSCODE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_transcode.ptx"));
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
+const CUDA_OXIDE_JPEG_DECODE_PTX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_jpeg_decode.ptx"));
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+const CUDA_OXIDE_JPEG_ENCODE_PTX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_jpeg_encode.ptx"));
 const HTJ2K_DECODE_CODEBLOCK_THREADS: usize = 32;
 const HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA: c_uint = 32;
 const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
@@ -583,62 +584,34 @@ pub(crate) fn cuda_oxide_j2k_idwt_ptx() -> &'static [u8] {
     CUDA_OXIDE_J2K_IDWT_PTX
 }
 
+#[cfg(feature = "cuda-oxide-htj2k-decode")]
+pub(crate) fn cuda_oxide_htj2k_decode_ptx() -> &'static [u8] {
+    CUDA_OXIDE_HTJ2K_DECODE_PTX
+}
+
+#[cfg(feature = "cuda-oxide-htj2k-encode")]
+pub(crate) fn cuda_oxide_htj2k_encode_ptx() -> &'static [u8] {
+    CUDA_OXIDE_HTJ2K_ENCODE_PTX
+}
+
 #[cfg(feature = "cuda-oxide-transcode")]
 pub(crate) fn cuda_oxide_transcode_ptx() -> &'static [u8] {
     CUDA_OXIDE_TRANSCODE_PTX
 }
 
-const COPY_U8_PTX: &[u8] = concat!(
-    r"
-.version 7.0
-.target sm_52
-.address_size 64
-
-.visible .entry j2k_copy_u8(
-    .param .u64 dst,
-    .param .u64 src,
-    .param .u64 len
-)
-{
-    .reg .pred %p;
-    .reg .b32 %r<5>;
-    .reg .b64 %rd<7>;
-    .reg .b16 %u;
-
-    ld.param.u64 %rd1, [dst];
-    ld.param.u64 %rd2, [src];
-    ld.param.u64 %rd3, [len];
-    mov.u32 %r1, %tid.x;
-    mov.u32 %r2, %ctaid.x;
-    mov.u32 %r3, %ntid.x;
-    mad.lo.s32 %r4, %r2, %r3, %r1;
-    cvt.u64.u32 %rd4, %r4;
-    setp.ge.u64 %p, %rd4, %rd3;
-    @%p bra DONE;
-    add.u64 %rd5, %rd2, %rd4;
-    ld.global.u8 %u, [%rd5];
-    add.u64 %rd6, %rd1, %rd4;
-    st.global.u8 [%rd6], %u;
-DONE:
-    ret;
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
+pub(crate) fn cuda_oxide_jpeg_decode_ptx() -> &'static [u8] {
+    CUDA_OXIDE_JPEG_DECODE_PTX
 }
-",
-    "\0"
-)
-.as_bytes();
+
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+pub(crate) fn cuda_oxide_jpeg_encode_ptx() -> &'static [u8] {
+    CUDA_OXIDE_JPEG_ENCODE_PTX
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn copy_u8_kernel_metadata_matches_embedded_ptx() {
-        let ptx = CudaKernel::CopyU8.ptx();
-        assert_eq!(ptx.last(), Some(&0));
-        let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
-        assert!(source.contains(".visible .entry j2k_copy_u8("));
-        assert_eq!(CudaKernel::CopyU8.entrypoint(), b"j2k_copy_u8\0");
-    }
 
     #[cfg(all(feature = "cuda-oxide-copy-u8", j2k_cuda_oxide_copy_u8_built))]
     #[test]
@@ -651,7 +624,20 @@ mod tests {
     }
 
     #[test]
-    fn jpeg_decode_kernel_metadata_matches_source_entrypoints() {
+    fn jpeg_decode_entrypoints_are_stable() {
+        assert_eq!(CudaKernel::CopyU8.entrypoint(), b"j2k_copy_u8\0");
+        assert_eq!(
+            CudaKernel::JpegDecodeFast420Rgb8.entrypoint(),
+            b"j2k_jpeg_decode_fast420_rgb8\0"
+        );
+        assert_eq!(
+            CudaKernel::JpegDecodeFast422Rgb8.entrypoint(),
+            b"j2k_jpeg_decode_fast422_rgb8\0"
+        );
+        assert_eq!(
+            CudaKernel::JpegDecodeFast444Rgb8.entrypoint(),
+            b"j2k_jpeg_decode_fast444_rgb8\0"
+        );
         assert_eq!(
             CudaKernel::JpegEntropySync420.entrypoint(),
             b"j2k_jpeg_entropy_sync420\0"
@@ -660,72 +646,53 @@ mod tests {
             CudaKernel::JpegEntropyOverflow420.entrypoint(),
             b"j2k_jpeg_entropy_overflow420\0"
         );
+    }
 
-        let cuda_source = include_str!("jpeg_decode_kernels.cu");
-        assert!(cuda_source.contains("extern \"C\" __global__ void j2k_jpeg_entropy_sync420("));
-        assert!(cuda_source.contains("extern \"C\" __global__ void j2k_jpeg_entropy_overflow420("));
-        assert!(cuda_source.contains(
-            "const unsigned int remaining_bits = params.entropy_bits - state.start_bit;"
-        ));
-        let scanner_source = cuda_source
-            .split("__device__ bool j2k_jpeg_entropy_scan_one_symbol420(")
-            .nth(1)
-            .expect("entropy scanner source")
-            .split("extern \"C\" __global__ void j2k_jpeg_entropy_sync420(")
-            .next()
-            .expect("entropy scanner source before sync kernel");
-        let sync_source = cuda_source
-            .split("extern \"C\" __global__ void j2k_jpeg_entropy_sync420(")
-            .nth(1)
-            .expect("entropy sync source")
-            .split("extern \"C\" __global__ void j2k_jpeg_entropy_overflow420(")
-            .next()
-            .expect("entropy sync source before overflow kernel");
-        let overflow_source = cuda_source
-            .split("extern \"C\" __global__ void j2k_jpeg_entropy_overflow420(")
-            .nth(1)
-            .expect("entropy overflow source");
-        assert!(sync_source.contains("j2k_jpeg_entropy_scan_one_symbol420("));
-        assert!(overflow_source.contains("j2k_jpeg_entropy_scan_one_symbol420("));
-        assert!(overflow_source.contains("const unsigned char *entropy,"));
-        let huffman_recovery = scanner_source
-            .find("if (status.code == JPEG_STATUS_HUFFMAN) {")
-            .expect("self-sync Huffman recovery");
-        let one_bit_advance = scanner_source
-            .find("state.bit_pos += 1u;")
-            .expect("self-sync one-bit recovery advance");
-        assert!(huffman_recovery < one_bit_advance);
-        let truncated_recovery = scanner_source
-            .find("if (status.code == JPEG_STATUS_TRUNCATED) {")
-            .expect("self-sync truncated entropy recovery");
-        let amplitude_read = scanner_source
-            .find("if (!j2k_jpeg_ensure_bits(reader, entropy, params.entropy_len, coeff_bits))")
-            .expect("amplitude bit read");
-        assert!(truncated_recovery < amplitude_read);
-        assert!(!scanner_source.contains("state.zigzag_index + run >= 64u"));
-        assert!(!scanner_source.contains("run != 0u && run != 15u"));
-        assert!(cuda_source.contains("__device__ bool j2k_jpeg_decode_symbol_real("));
-        assert!(cuda_source.contains("__device__ bool j2k_jpeg_real_bits_consumed("));
-        assert!(scanner_source.contains(
-            "j2k_jpeg_decode_symbol_real(reader, entropy, params.entropy_len, table, &status, symbol)"
-        ));
-        let no_progress_guard = scanner_source
-            .find("if (!j2k_jpeg_real_bits_consumed(reader, before_pos, before_bits, consumed))")
-            .expect("real-bit progress guard");
-        let bit_pos_advance = scanner_source
-            .find("state.bit_pos += consumed;")
-            .expect("bit position advance");
-        assert!(no_progress_guard < bit_pos_advance);
-        let coefficient_advance = scanner_source
-            .find("state.zigzag_index += run + 1u;")
-            .expect("AC coefficient advance");
-        assert!(amplitude_read < coefficient_advance);
-        let eob_branch = scanner_source
-            .find("if (ssss == 0u && run != 15u) {")
-            .expect("EOB branch");
-        assert!(eob_branch < coefficient_advance);
-        assert!(overflow_source
-            .contains("stop_bit = state.bit_pos + min(overflow_limit, remaining_bits);"));
+    #[cfg(all(feature = "cuda-oxide-jpeg-decode", j2k_cuda_oxide_jpeg_decode_built))]
+    #[test]
+    fn cuda_oxide_jpeg_decode_kernel_metadata_matches_generated_ptx() {
+        let ptx = cuda_oxide_jpeg_decode_ptx();
+        assert_eq!(ptx.last(), Some(&0));
+        let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
+        let kernels = [
+            CudaKernel::JpegDecodeFast420Rgb8,
+            CudaKernel::JpegDecodeFast422Rgb8,
+            CudaKernel::JpegDecodeFast444Rgb8,
+            CudaKernel::JpegEntropySync420,
+            CudaKernel::JpegEntropyOverflow420,
+        ];
+        for kernel in kernels {
+            assert!(kernel.is_cuda_oxide_jpeg_decode_stage());
+            let entrypoint =
+                std::str::from_utf8(&kernel.entrypoint()[..kernel.entrypoint().len() - 1])
+                    .expect("entrypoint utf8");
+            assert!(
+                source.contains(&format!(".visible .entry {entrypoint}(")),
+                "missing cuda-oxide JPEG decode entrypoint {entrypoint}"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda-oxide-jpeg-encode", j2k_cuda_oxide_jpeg_encode_built))]
+    #[test]
+    fn cuda_oxide_jpeg_encode_kernel_metadata_matches_generated_ptx() {
+        let ptx = cuda_oxide_jpeg_encode_ptx();
+        assert_eq!(ptx.last(), Some(&0));
+        let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
+        let kernels = [
+            CudaKernel::JpegEncodeBaselineEntropy,
+            CudaKernel::JpegEncodeBaselineEntropyBatch,
+        ];
+        for kernel in kernels {
+            assert!(kernel.is_cuda_oxide_jpeg_encode_stage());
+            let entrypoint =
+                std::str::from_utf8(&kernel.entrypoint()[..kernel.entrypoint().len() - 1])
+                    .expect("entrypoint utf8");
+            assert!(
+                source.contains(&format!(".visible .entry {entrypoint}(")),
+                "missing cuda-oxide JPEG encode entrypoint {entrypoint}"
+            );
+        }
     }
 
     #[test]
@@ -761,8 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn j2k_encode_kernel_metadata_matches_generated_ptx() {
-        assert_eq!(J2K_ENCODE_PTX.last(), Some(&0));
+    fn j2k_encode_entrypoints_are_stable() {
         assert_eq!(
             CudaKernel::J2kDeinterleaveToF32.entrypoint(),
             b"j2k_deinterleave_to_f32\0"
@@ -793,10 +759,6 @@ mod tests {
             CudaKernel::J2kQuantizeSubbandStrided.entrypoint(),
             b"j2k_quantize_subband_strided\0"
         );
-        let source =
-            std::str::from_utf8(&J2K_ENCODE_PTX[..J2K_ENCODE_PTX.len() - 1]).expect("ptx utf8");
-        assert!(source.contains(".visible .entry j2k_deinterleave_to_f32("));
-        assert!(source.contains(".visible .entry j2k_quantize_subband_strided("));
     }
 
     #[cfg(all(feature = "cuda-oxide-j2k-encode", j2k_cuda_oxide_j2k_encode_built))]
@@ -958,244 +920,53 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "cuda-oxide-htj2k-decode", j2k_cuda_oxide_htj2k_decode_built))]
     #[test]
-    fn j2k_encode_kernel_uses_native_irreversible_delta_formula() {
-        let cuda_source = include_str!("j2k_encode_kernels.cu");
-        assert!(cuda_source.contains("const int exponent = int(range_bits) - int(step_exponent);"));
-        assert!(!cuda_source.contains("const int exponent = int(step_exponent) - int(range_bits);"));
-    }
-
-    #[test]
-    #[allow(clippy::too_many_lines)]
-    fn htj2k_decode_kernel_metadata_matches_generated_ptx() {
-        assert_eq!(HTJ2K_DECODE_PTX.last(), Some(&0));
-        assert_eq!(
-            CudaKernel::Htj2kDecodeCodeblocks.entrypoint(),
-            b"j2k_htj2k_decode_codeblocks\0"
-        );
-        assert_eq!(
-            CudaKernel::Htj2kDecodeCodeblocksMulti.entrypoint(),
-            b"j2k_htj2k_decode_codeblocks_multi\0"
-        );
-        assert_eq!(
-            CudaKernel::Htj2kDecodeCodeblocksMultiCleanupOnly.entrypoint(),
-            b"j2k_htj2k_decode_codeblocks_multi_cleanup_only\0"
-        );
-        assert_eq!(
-            CudaKernel::Htj2kDecodeCodeblocksMultiCleanupDequantize.entrypoint(),
-            b"j2k_htj2k_decode_codeblocks_multi_cleanup_dequantize\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kDequantizeHtj2kCodeblocks.entrypoint(),
-            b"j2k_dequantize_htj2k_codeblocks\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kDequantizeHtj2kCodeblocksMulti.entrypoint(),
-            b"j2k_dequantize_htj2k_codeblocks_multi\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kDequantizeHtj2kCleanupJobsMulti.entrypoint(),
-            b"j2k_dequantize_htj2k_cleanup_jobs_multi\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kIdwtInterleave.entrypoint(),
-            b"j2k_idwt_interleave\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kIdwtInterleaveHorizontalMulti.entrypoint(),
-            b"j2k_idwt_interleave_horizontal_multi\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kIdwtInterleaveHorizontal53Multi.entrypoint(),
-            b"j2k_idwt_interleave_horizontal_53_multi\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kIdwtInterleaveHorizontal97Multi.entrypoint(),
-            b"j2k_idwt_interleave_horizontal_97_multi\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kIdwtHorizontal.entrypoint(),
-            b"j2k_idwt_horizontal\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kIdwtVertical.entrypoint(),
-            b"j2k_idwt_vertical\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kIdwtVerticalMulti.entrypoint(),
-            b"j2k_idwt_vertical_multi\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kIdwtVertical53Multi.entrypoint(),
-            b"j2k_idwt_vertical_53_multi\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kIdwtVertical97Multi.entrypoint(),
-            b"j2k_idwt_vertical_97_multi\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kIdwtVertical97MultiCols4.entrypoint(),
-            b"j2k_idwt_vertical_97_multi_cols4\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kInverseDwtSingle.entrypoint(),
-            b"j2k_inverse_dwt_single\0"
-        );
-        assert_eq!(CudaKernel::J2kInverseMct.entrypoint(), b"j2k_inverse_mct\0");
-        assert_eq!(CudaKernel::J2kStoreGray8.entrypoint(), b"j2k_store_gray8\0");
-        assert_eq!(
-            CudaKernel::J2kStoreGray16.entrypoint(),
-            b"j2k_store_gray16\0"
-        );
-        assert_eq!(CudaKernel::J2kStoreRgb8.entrypoint(), b"j2k_store_rgb8\0");
-        assert_eq!(
-            CudaKernel::J2kStoreRgb8Mct.entrypoint(),
-            b"j2k_store_rgb8_mct\0"
-        );
-        assert_eq!(
-            CudaKernel::J2kStoreRgb8MctBatch.entrypoint(),
-            b"j2k_store_rgb8_mct_batch\0"
-        );
-        assert_eq!(CudaKernel::J2kStoreRgb16.entrypoint(), b"j2k_store_rgb16\0");
-        assert_eq!(
-            CudaKernel::J2kStoreRgb16Mct.entrypoint(),
-            b"j2k_store_rgb16_mct\0"
-        );
-        let source =
-            std::str::from_utf8(&HTJ2K_DECODE_PTX[..HTJ2K_DECODE_PTX.len() - 1]).expect("ptx utf8");
-        assert!(source.contains(".visible .entry j2k_htj2k_decode_codeblocks_multi("));
-        assert!(source.contains(".visible .entry j2k_htj2k_decode_codeblocks_multi_cleanup_only("));
-        assert!(source
-            .contains(".visible .entry j2k_htj2k_decode_codeblocks_multi_cleanup_dequantize("));
-        let cuda_source = include_str!("htj2k_decode_kernels.cu");
-        assert!(cuda_source.contains(
-            "extern \"C\" __global__ void j2k_htj2k_decode_codeblocks_multi_cleanup_dequantize("
-        ));
-        assert!(source.contains(".visible .entry j2k_dequantize_htj2k_codeblocks("));
-        assert!(source.contains(".visible .entry j2k_dequantize_htj2k_codeblocks_multi("));
-        assert!(source.contains(".visible .entry j2k_dequantize_htj2k_cleanup_jobs_multi("));
-        assert!(source.contains(".visible .entry j2k_idwt_interleave("));
-        assert!(source.contains(".visible .entry j2k_idwt_interleave_horizontal_multi("));
-        assert!(source.contains(".visible .entry j2k_idwt_interleave_horizontal_53_multi("));
-        assert!(source.contains(".visible .entry j2k_idwt_interleave_horizontal_97_multi("));
-        assert!(source.contains(".visible .entry j2k_idwt_horizontal("));
-        assert!(source.contains(".visible .entry j2k_idwt_vertical("));
-        assert!(source.contains(".visible .entry j2k_idwt_vertical_multi("));
-        assert!(source.contains(".visible .entry j2k_idwt_vertical_53_multi("));
-        assert!(source.contains(".visible .entry j2k_idwt_vertical_97_multi("));
-        assert!(source.contains(".visible .entry j2k_idwt_horizontal_53("));
-        assert!(source.contains(".visible .entry j2k_idwt_vertical_53("));
-        assert!(source.contains(".visible .entry j2k_idwt_horizontal_97("));
-        assert!(source.contains(".visible .entry j2k_idwt_vertical_97("));
-        assert!(source.contains(".visible .entry j2k_store_rgb8_mct("));
-        assert!(source.contains(".visible .entry j2k_store_rgb8_mct_batch("));
-        assert!(source.contains(".visible .entry j2k_store_rgb16_mct("));
-    }
-
-    #[test]
-    fn htj2k_decode_cleanup_kernels_guard_padded_launch_threads() {
-        let cuda_source = include_str!("htj2k_decode_kernels.cu");
-        assert!(cuda_source.contains("if (gid >= job_count)"));
-    }
-
-    #[test]
-    fn htj2k_encode_kernel_metadata_matches_generated_ptx() {
-        assert_eq!(HTJ2K_ENCODE_PTX.last(), Some(&0));
-        assert_eq!(
-            CudaKernel::Htj2kEncodeCodeblock.entrypoint(),
-            b"j2k_htj2k_encode_codeblock\0"
-        );
-        assert_eq!(
-            CudaKernel::Htj2kEncodeCodeblocks.entrypoint(),
-            b"j2k_htj2k_encode_codeblocks\0"
-        );
-        assert_eq!(
-            CudaKernel::Htj2kEncodeCodeblocksMultiInput.entrypoint(),
-            b"j2k_htj2k_encode_codeblocks_multi_input\0"
-        );
-        assert_eq!(
-            CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup.entrypoint(),
-            b"j2k_htj2k_encode_codeblocks_multi_input_cleanup\0"
-        );
-        assert_eq!(
-            CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup64.entrypoint(),
-            b"j2k_htj2k_encode_codeblocks_multi_input_cleanup_64\0"
-        );
-        assert_eq!(
-            CudaKernel::Htj2kPacketizeCleanup.entrypoint(),
-            b"j2k_htj2k_packetize_cleanup\0"
-        );
-        let source =
-            std::str::from_utf8(&HTJ2K_ENCODE_PTX[..HTJ2K_ENCODE_PTX.len() - 1]).expect("ptx utf8");
-        assert!(source.contains(".visible .entry j2k_htj2k_encode_codeblocks("));
-        assert!(source.contains(".visible .entry j2k_htj2k_encode_codeblocks_multi_input("));
-        if cfg!(j2k_cuda_htj2k_encode_ptx_built) {
+    fn cuda_oxide_htj2k_decode_kernel_metadata_matches_generated_ptx() {
+        let ptx = cuda_oxide_htj2k_decode_ptx();
+        assert_eq!(ptx.last(), Some(&0));
+        let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
+        let kernels = [
+            CudaKernel::Htj2kDecodeCodeblocks,
+            CudaKernel::Htj2kDecodeCodeblocksMulti,
+            CudaKernel::Htj2kDecodeCodeblocksMultiCleanupOnly,
+            CudaKernel::Htj2kDecodeCodeblocksMultiCleanupDequantize,
+        ];
+        for kernel in kernels {
+            assert!(kernel.is_htj2k_decode_stage());
+            let entrypoint =
+                std::str::from_utf8(&kernel.entrypoint()[..kernel.entrypoint().len() - 1])
+                    .expect("entrypoint utf8");
             assert!(
-                source.contains(".visible .entry j2k_htj2k_encode_codeblocks_multi_input_cleanup(")
+                source.contains(&format!(".visible .entry {entrypoint}(")),
+                "missing cuda-oxide HTJ2K decode entrypoint {entrypoint}"
             );
-            assert!(source
-                .contains(".visible .entry j2k_htj2k_encode_codeblocks_multi_input_cleanup_64("));
         }
-        assert!(source.contains(".visible .entry j2k_htj2k_packetize_cleanup("));
-        let cuda_source = include_str!("htj2k_encode_kernels.cu");
-        assert!(cuda_source.contains("j2k_ht_reduce_max_magnitude_cooperative"));
-        assert!(cuda_source.contains("j2k_packet_copy_body_cooperative"));
     }
 
+    #[cfg(all(feature = "cuda-oxide-htj2k-encode", j2k_cuda_oxide_htj2k_encode_built))]
     #[test]
-    fn htj2k_encode_kernel_reports_zero_passes_for_all_zero_codeblocks() {
-        let cuda_source = include_str!("htj2k_encode_kernels.cu");
-        assert!(cuda_source.contains(
-            "j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_OK, 0u, 0u, 0u, params.total_bitplanes);"
-        ));
-        assert!(!cuda_source.contains(
-            "j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_OK, 0u, 0u, 1u, params.total_bitplanes);"
-        ));
-    }
-
-    #[test]
-    fn htj2k_encode_kernel_uses_width_bounded_cleanup_scratch_clear() {
-        let cuda_source = include_str!("htj2k_encode_kernels.cu");
-        assert!(cuda_source.contains("FIXED_64 ? 34u : j2k_ht_cleanup_scratch_entries(width)"));
-        assert!(cuda_source.contains(
-            "params.width == 64u && params.height == 64u && params.coefficient_stride == 64u"
-        ));
-        assert!(!cuda_source.contains("idx < 513u; ++idx"));
-    }
-
-    #[test]
-    fn htj2k_encode_kernel_uses_shared_cleanup_scratch() {
-        let cuda_source = include_str!("htj2k_encode_kernels.cu");
-        assert!(cuda_source.contains("__shared__ uchar cleanup_e_val[J2K_HT_SIGPROP_SCRATCH];"));
-        assert!(cuda_source.contains("__shared__ uchar cleanup_cx_val[J2K_HT_SIGPROP_SCRATCH];"));
-        assert!(cuda_source.contains("cleanup_e_val,\n        cleanup_cx_val"));
-    }
-
-    #[test]
-    fn htj2k_encode_kernel_sizes_max_reduction_for_encode_launch_threads() {
-        let cuda_source = include_str!("htj2k_encode_kernels.cu");
-        assert!(cuda_source.contains("J2K_HT_ENCODE_THREADS = 128u"));
-        assert!(cuda_source.contains("__shared__ uint block_max[J2K_HT_ENCODE_THREADS];"));
-        assert!(!cuda_source.contains("__shared__ uint block_max[256];"));
-    }
-
-    #[test]
-    fn htj2k_encode_multi_input_kernel_declares_launch_bounds() {
-        let cuda_source = include_str!("htj2k_encode_kernels.cu");
-        let expected = concat!(
-            "extern \"C\" __global__ void __",
-            "launch_bounds__(J2K_HT_ENCODE_THREADS) ",
-            "j2k_htj2k_encode_codeblocks_multi_input"
-        );
-        assert!(cuda_source.contains(expected));
-        assert!(cuda_source.contains("j2k_htj2k_encode_codeblocks_multi_input_cleanup"));
-    }
-
-    #[test]
-    fn htj2k_encode_kernel_has_contiguous_max_reduction_fast_path() {
-        let cuda_source = include_str!("htj2k_encode_kernels.cu");
-        assert!(cuda_source.contains("if (coefficient_stride == width)"));
-        assert!(cuda_source.contains("j2k_classic_magnitude(coefficients[sample])"));
+    fn cuda_oxide_htj2k_encode_kernel_metadata_matches_generated_ptx() {
+        let ptx = cuda_oxide_htj2k_encode_ptx();
+        assert_eq!(ptx.last(), Some(&0));
+        let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
+        let kernels = [
+            CudaKernel::Htj2kEncodeCodeblock,
+            CudaKernel::Htj2kEncodeCodeblocks,
+            CudaKernel::Htj2kEncodeCodeblocksMultiInput,
+            CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup,
+            CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup64,
+        ];
+        for kernel in kernels {
+            assert!(kernel.is_htj2k_encode_codeblock_stage());
+            let entrypoint =
+                std::str::from_utf8(&kernel.entrypoint()[..kernel.entrypoint().len() - 1])
+                    .expect("entrypoint utf8");
+            assert!(
+                source.contains(&format!(".visible .entry {entrypoint}(")),
+                "missing cuda-oxide HTJ2K encode entrypoint {entrypoint}"
+            );
+        }
     }
 
     #[test]
@@ -1240,57 +1011,6 @@ mod tests {
             CudaKernel::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch.entrypoint(),
             b"transcode_dwt97_column_lift_quantize_codeblocks_batch\0"
         );
-        // All transcode kernels share the one translation unit's PTX.
-        assert_eq!(
-            CudaKernel::TranscodeDwt97QuantizeCodeblocks.ptx().as_ptr(),
-            TRANSCODE_PTX.as_ptr()
-        );
-
-        // The placeholder PTX is empty when nvcc is absent; only validate entry
-        // points are present once the runner actually compiled the kernels.
-        if cfg!(j2k_cuda_transcode_ptx_built) {
-            let source = std::str::from_utf8(&TRANSCODE_PTX[..TRANSCODE_PTX.len() - 1])
-                .expect("transcode ptx utf8");
-            assert!(source.contains(".visible .entry transcode_dwt97_idct_batch("));
-            assert!(source.contains(".visible .entry transcode_dwt97_idct_i16_batch("));
-            assert!(source.contains(".visible .entry transcode_dwt97_row_lift_batch("));
-            assert!(source.contains(".visible .entry transcode_dwt97_row_lift_batch_coop("));
-            assert!(source.contains(".visible .entry transcode_dwt97_column_lift_batch("));
-            assert!(source.contains(".visible .entry transcode_dwt97_quantize_codeblocks("));
-            assert!(source.contains(
-                ".visible .entry transcode_dwt97_column_lift_quantize_codeblocks_batch("
-            ));
-        }
-    }
-
-    #[test]
-    fn transcode_dwt97_idct_uses_precomputed_basis_table() {
-        let cuda_source = include_str!("transcode_kernels.cu");
-        assert!(cuda_source.contains("DWT97_IDCT8_BASIS"));
-        assert!(cuda_source.contains("DWT97_IDCT8_BASIS[sample_idx * 8 + freq]"));
-        assert!(!cuda_source.contains("sqrtf(1.0f / 8.0f)"));
-        assert!(!cuda_source.contains("cosf(angle)"));
-    }
-
-    #[test]
-    fn transcode_dwt97_idct_unrolls_fixed_basis_loops() {
-        let cuda_source = include_str!("transcode_kernels.cu");
-        assert!(cuda_source.contains("transcode_dwt97_idct_unroll_guard"));
-        assert!(
-            cuda_source.contains("#pragma unroll\n    for (int freq_y = 0; freq_y < 8; ++freq_y)")
-        );
-        assert!(cuda_source
-            .contains("#pragma unroll\n        for (int freq_x = 0; freq_x < 8; ++freq_x)"));
-    }
-
-    #[test]
-    fn transcode_dwt97_batch_row_lift_has_cooperative_kernel() {
-        let cuda_source = include_str!("transcode_kernels.cu");
-        assert!(cuda_source.contains("transcode_dwt97_row_lift_batch_coop("));
-        assert!(cuda_source.contains("DWT97_ROW_LIFT_MAX_WIDTH"));
-        assert!(cuda_source.contains(
-            "__shared__ f32 rows[DWT97_ROW_LIFT_ROWS_PER_BLOCK][DWT97_ROW_LIFT_MAX_WIDTH];"
-        ));
     }
 
     #[test]

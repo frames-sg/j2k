@@ -912,13 +912,7 @@ impl CudaContext {
     }
 
     fn j2k_encode_kernel_function(&self, kernel: CudaKernel) -> Result<CuFunction, CudaError> {
-        #[cfg(feature = "cuda-oxide-j2k-encode")]
-        {
-            if crate::build_flags::cuda_oxide_j2k_encode_enabled() {
-                return self.inner.cuda_oxide_j2k_encode_kernel_function(kernel);
-            }
-        }
-        self.inner.kernel_function(kernel)
+        self.inner.cuda_oxide_j2k_encode_kernel_function(kernel)
     }
 
     fn launch_j2k_forward_rct_ptrs(

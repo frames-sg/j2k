@@ -1100,7 +1100,7 @@ impl CudaContext {
             },
         )?;
 
-        self.launch_named_kernel(
+        self.launch_htj2k_decode_kernel(
             CudaKernel::Htj2kDecodeCodeblocks,
             geometry,
             &mut params,
@@ -1147,7 +1147,28 @@ impl CudaContext {
             },
         )?;
 
-        self.launch_named_kernel(kernel, geometry, &mut params, mode)
+        self.launch_htj2k_decode_kernel(kernel, geometry, &mut params, mode)
+    }
+
+    fn launch_htj2k_decode_kernel<const N: usize>(
+        &self,
+        kernel: CudaKernel,
+        geometry: CudaLaunchGeometry,
+        params: &mut [*mut std::ffi::c_void; N],
+        mode: CudaLaunchMode,
+    ) -> Result<(), CudaError> {
+        let function = self.htj2k_decode_kernel_function(kernel)?;
+        match mode {
+            CudaLaunchMode::Sync => self.launch_kernel(function, geometry, params),
+            CudaLaunchMode::Async => self.launch_kernel_async(function, geometry, params),
+        }
+    }
+
+    fn htj2k_decode_kernel_function(
+        &self,
+        kernel: CudaKernel,
+    ) -> Result<crate::driver::CuFunction, CudaError> {
+        self.inner.cuda_oxide_htj2k_decode_kernel_function(kernel)
     }
 
     fn launch_j2k_dequantize_htj2k_codeblocks(
@@ -1227,13 +1248,7 @@ impl CudaContext {
         &self,
         kernel: CudaKernel,
     ) -> Result<crate::driver::CuFunction, CudaError> {
-        #[cfg(feature = "cuda-oxide-j2k-dequantize")]
-        {
-            if crate::build_flags::cuda_oxide_j2k_dequantize_enabled() {
-                return self.inner.cuda_oxide_j2k_dequantize_kernel_function(kernel);
-            }
-        }
-        self.inner.kernel_function(kernel)
+        self.inner.cuda_oxide_j2k_dequantize_kernel_function(kernel)
     }
 }
 

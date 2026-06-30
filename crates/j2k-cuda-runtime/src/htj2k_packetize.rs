@@ -1,5 +1,4 @@
 use crate::{
-    build_flags::HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA,
     bytes::{
         htj2k_packetization_blocks_as_bytes, htj2k_packetization_packets_as_bytes,
         htj2k_packetization_statuses_as_bytes, htj2k_packetization_statuses_as_bytes_mut,
@@ -195,13 +194,6 @@ impl CudaContext {
         tag_nodes: &[CudaHtj2kPacketizationTagNodeState],
     ) -> Result<CudaHtj2kPacketizedTile, CudaError> {
         self.inner.set_current()?;
-        if !HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA
-            && blocks.iter().any(|block| block.num_coding_passes > 1)
-        {
-            return Err(CudaError::InvalidArgument {
-                message: "multi-pass HTJ2K packetization requires CUDA PTX rebuilt from htj2k_encode_kernels.cu".to_string(),
-            });
-        }
         let kernel_packets =
             htj2k_packetization_kernel_packets(packets, subbands, blocks, payload.len())?;
         validate_htj2k_packetization_tag_state(subbands, subband_tag_states, tag_nodes)?;
@@ -358,15 +350,7 @@ impl CudaContext {
     }
 
     fn htj2k_packetize_kernel_function(&self, kernel: CudaKernel) -> Result<CuFunction, CudaError> {
-        #[cfg(feature = "cuda-oxide-j2k-encode")]
-        {
-            if crate::build_flags::cuda_oxide_j2k_encode_enabled()
-                && kernel.is_cuda_oxide_j2k_encode_stage()
-            {
-                return self.inner.cuda_oxide_j2k_encode_kernel_function(kernel);
-            }
-        }
-        self.inner.kernel_function(kernel)
+        self.inner.cuda_oxide_j2k_encode_kernel_function(kernel)
     }
 }
 

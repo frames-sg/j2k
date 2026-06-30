@@ -2,7 +2,7 @@ use crate::{
     build_flags::{
         dwt97_fused_column_quantize_disabled, DWT97_ROW_LIFT_COOP_ROWS_PER_BLOCK,
         DWT97_ROW_LIFT_COOP_THREADS_X, DWT97_ROW_LIFT_MAX_WIDTH,
-        PINNED_POOLED_I16_UPLOAD_MAX_BYTES, TRANSCODE_PTX_BUILT_FROM_CUDA,
+        PINNED_POOLED_I16_UPLOAD_MAX_BYTES,
     },
     bytes::i16_slice_as_bytes,
     context::CudaContext,
@@ -244,15 +244,7 @@ impl CudaContext {
     }
 
     fn transcode_kernel_function(&self, kernel: CudaKernel) -> Result<CuFunction, CudaError> {
-        #[cfg(feature = "cuda-oxide-transcode")]
-        {
-            if crate::build_flags::cuda_oxide_transcode_enabled()
-                && kernel.is_cuda_oxide_transcode_stage()
-            {
-                return self.inner.cuda_oxide_transcode_kernel_function(kernel);
-            }
-        }
-        self.inner.kernel_function(kernel)
+        self.inner.cuda_oxide_transcode_kernel_function(kernel)
     }
 }
 
@@ -376,18 +368,7 @@ pub(crate) enum Dwt97BatchInput<'a> {
 }
 
 fn transcode_runtime_ptx_available() -> bool {
-    if TRANSCODE_PTX_BUILT_FROM_CUDA {
-        return true;
-    }
-    #[cfg(feature = "cuda-oxide-transcode")]
-    {
-        crate::build_flags::cuda_oxide_transcode_enabled()
-            && crate::build_flags::CUDA_OXIDE_TRANSCODE_PTX_BUILT
-    }
-    #[cfg(not(feature = "cuda-oxide-transcode"))]
-    {
-        false
-    }
+    crate::build_flags::transcode_kernels_built()
 }
 
 fn ensure_transcode_runtime_ptx_available() -> Result<(), CudaError> {
@@ -395,9 +376,8 @@ fn ensure_transcode_runtime_ptx_available() -> Result<(), CudaError> {
         Ok(())
     } else {
         Err(CudaError::InvalidArgument {
-            message:
-                "CUDA transcode kernels were not built and cuda-oxide transcode PTX is not enabled/built"
-                    .to_string(),
+            message: "CUDA Oxide transcode PTX was not built; enable j2k-cuda-runtime/cuda-oxide-transcode or a crate cuda-runtime feature that implies it, and use J2K_REQUIRE_CUDA_OXIDE_BUILD=1 on CUDA hosts"
+                .to_string(),
         })
     }
 }

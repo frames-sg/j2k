@@ -1,4 +1,11 @@
-#[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+#![allow(clippy::similar_names)]
+
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+use crate::bytes::{
+    cuda_jpeg_baseline_encode_huffman_table_as_bytes, cuda_jpeg_baseline_encode_params_as_bytes,
+    cuda_jpeg_baseline_encode_statuses_as_bytes, cuda_jpeg_baseline_encode_statuses_as_bytes_mut,
+};
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
 use crate::bytes::{
     cuda_jpeg_decode_statuses_as_bytes, cuda_jpeg_decode_statuses_as_bytes_mut,
     cuda_jpeg_entropy_checkpoints_as_bytes, cuda_jpeg_entropy_overflow_states_as_bytes,
@@ -12,7 +19,7 @@ use crate::{
     execution::{CudaExecutionStats, CudaKernelOutput},
     memory::CudaDeviceBuffer,
 };
-#[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+#[cfg(any(feature = "cuda-oxide-jpeg-decode", feature = "cuda-oxide-jpeg-encode"))]
 use crate::{
     execution::cuda_kernel_param,
     kernels::{CudaKernel, CudaLaunchGeometry},
@@ -209,7 +216,7 @@ impl CudaJpegChunkedEntropyConfig {
     }
 }
 
-#[cfg_attr(not(j2k_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
 pub(crate) fn jpeg_entropy_overflow_count(subsequence_count: usize) -> usize {
     subsequence_count.saturating_sub(1)
 }
@@ -295,6 +302,165 @@ impl CudaJpegChunkedEntropyReport {
     pub fn failed_state_count(&self) -> usize {
         self.states.iter().filter(|state| state.code != 0).count()
     }
+}
+
+/// CUDA baseline JPEG encode input sample format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CudaJpegBaselineEncodeFormat {
+    /// One byte per pixel grayscale input.
+    Gray8,
+    /// Three bytes per pixel RGB input.
+    Rgb8,
+}
+
+impl CudaJpegBaselineEncodeFormat {
+    /// Return the stable CUDA ABI value for this format.
+    pub fn abi(self) -> u32 {
+        match self {
+            Self::Gray8 => JPEG_BASELINE_ENCODE_FORMAT_GRAY8,
+            Self::Rgb8 => JPEG_BASELINE_ENCODE_FORMAT_RGB8,
+        }
+    }
+}
+
+const JPEG_BASELINE_ENCODE_FORMAT_GRAY8: u32 = 0;
+const JPEG_BASELINE_ENCODE_FORMAT_RGB8: u32 = 1;
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+const JPEG_BASELINE_ENCODE_STATUS_OK: u32 = 0;
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+const JPEG_BASELINE_ENCODE_STATUS_OVERFLOW: u32 = 1;
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+const JPEG_BASELINE_ENCODE_STATUS_MISSING_HUFFMAN: u32 = 2;
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+const JPEG_BASELINE_ENCODE_STATUS_INVALID_PARAMS: u32 = 3;
+
+/// CUDA baseline JPEG entropy encode parameters for one resident tile.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CudaJpegBaselineEncodeParams {
+    /// First byte of this input tile relative to the bound input pointer.
+    pub input_offset_bytes: u32,
+    /// Width of the valid input rectangle in pixels.
+    pub input_width: u32,
+    /// Height of the valid input rectangle in pixels.
+    pub input_height: u32,
+    /// Encoded frame width in pixels.
+    pub output_width: u32,
+    /// Encoded frame height in pixels.
+    pub output_height: u32,
+    /// Number of input bytes between consecutive rows.
+    pub pitch_bytes: u32,
+    /// Number of MCUs per encoded frame row.
+    pub mcus_per_row: u32,
+    /// Number of MCU rows in the encoded frame.
+    pub mcu_rows: u32,
+    /// Optional restart interval in MCUs, or zero when disabled.
+    pub restart_interval_mcus: u32,
+    /// Stable ABI value from [`CudaJpegBaselineEncodeFormat::abi`].
+    pub format: u32,
+    /// Number of encoded components.
+    pub components: u32,
+    /// Maximum horizontal sampling factor.
+    pub max_h: u32,
+    /// Maximum vertical sampling factor.
+    pub max_v: u32,
+    /// Component 0 horizontal sampling factor.
+    pub h0: u32,
+    /// Component 0 vertical sampling factor.
+    pub v0: u32,
+    /// Component 1 horizontal sampling factor.
+    pub h1: u32,
+    /// Component 1 vertical sampling factor.
+    pub v1: u32,
+    /// Component 2 horizontal sampling factor.
+    pub h2: u32,
+    /// Component 2 vertical sampling factor.
+    pub v2: u32,
+    /// First entropy-output byte for this tile inside a batch output allocation.
+    pub entropy_offset_bytes: u32,
+    /// Entropy-output capacity for this tile.
+    pub entropy_capacity: u32,
+}
+
+// SAFETY: `CudaJpegBaselineEncodeParams` is `#[repr(C)]` and contains only CUDA
+// scalar ABI fields passed by value through a kernel-parameter pointer.
+unsafe impl crate::execution::CudaKernelParam for CudaJpegBaselineEncodeParams {}
+
+/// CUDA baseline JPEG canonical Huffman table for encode kernels.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CudaJpegBaselineEncodeHuffmanTable {
+    /// Huffman code value by symbol.
+    pub codes: [u16; 256],
+    /// Huffman code length by symbol.
+    pub lens: [u8; 256],
+}
+
+impl Default for CudaJpegBaselineEncodeHuffmanTable {
+    fn default() -> Self {
+        Self {
+            codes: [0; 256],
+            lens: [0; 256],
+        }
+    }
+}
+
+/// CUDA baseline JPEG entropy encode status for one tile.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CudaJpegBaselineEncodeStatus {
+    pub(crate) code: u32,
+    pub(crate) entropy_len: u32,
+    pub(crate) detail: u32,
+    pub(crate) reserved: u32,
+}
+
+/// CUDA baseline JPEG entropy encode plan for one resident input tile.
+#[derive(Debug)]
+pub struct CudaJpegBaselineEntropyEncodeJob<'a> {
+    /// Resident CUDA input pixels.
+    pub input: &'a CudaDeviceBuffer,
+    /// Byte offset applied while binding the input buffer.
+    pub input_offset: usize,
+    /// Encoded tile parameters.
+    pub params: CudaJpegBaselineEncodeParams,
+    /// Luma quantization table in natural order.
+    pub q_luma: [u8; 64],
+    /// Chroma quantization table in natural order.
+    pub q_chroma: [u8; 64],
+    /// Luma DC Huffman table.
+    pub huff_dc_luma: CudaJpegBaselineEncodeHuffmanTable,
+    /// Luma AC Huffman table.
+    pub huff_ac_luma: CudaJpegBaselineEncodeHuffmanTable,
+    /// Chroma DC Huffman table.
+    pub huff_dc_chroma: CudaJpegBaselineEncodeHuffmanTable,
+    /// Chroma AC Huffman table.
+    pub huff_ac_chroma: CudaJpegBaselineEncodeHuffmanTable,
+    /// Entropy output capacity in bytes.
+    pub entropy_capacity: usize,
+}
+
+/// CUDA baseline JPEG entropy encode plan for same-buffer resident input tiles.
+#[derive(Debug)]
+pub struct CudaJpegBaselineEntropyEncodeBatchJob<'a> {
+    /// Resident CUDA input pixels shared by every tile.
+    pub input: &'a CudaDeviceBuffer,
+    /// Encoded tile parameters. Each entry contains its own input and entropy offset.
+    pub params: Vec<CudaJpegBaselineEncodeParams>,
+    /// Luma quantization table in natural order.
+    pub q_luma: [u8; 64],
+    /// Chroma quantization table in natural order.
+    pub q_chroma: [u8; 64],
+    /// Luma DC Huffman table.
+    pub huff_dc_luma: CudaJpegBaselineEncodeHuffmanTable,
+    /// Luma AC Huffman table.
+    pub huff_ac_luma: CudaJpegBaselineEncodeHuffmanTable,
+    /// Chroma DC Huffman table.
+    pub huff_dc_chroma: CudaJpegBaselineEncodeHuffmanTable,
+    /// Chroma AC Huffman table.
+    pub huff_ac_chroma: CudaJpegBaselineEncodeHuffmanTable,
+    /// Combined entropy output capacity in bytes.
+    pub entropy_capacity: usize,
 }
 
 /// Experimental J2K-owned CUDA JPEG entropy self-sync diagnostic plan.
@@ -388,7 +554,7 @@ pub struct CudaJpeg420Rgb8DecodePlan<'a> {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(not(j2k_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
 pub(crate) struct CudaJpeg420Params {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -406,7 +572,7 @@ unsafe impl crate::execution::CudaKernelParam for CudaJpeg420Params {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(not(j2k_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
 pub(crate) struct CudaJpegEntropyChunkParams {
     pub(crate) entropy_len: u32,
     pub(crate) entropy_bits: u32,
@@ -424,7 +590,7 @@ unsafe impl crate::execution::CudaKernelParam for CudaJpegEntropyChunkParams {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(not(j2k_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
 pub(crate) struct CudaJpegDecodeStatus {
     pub(crate) code: u32,
     pub(crate) detail: u32,
@@ -432,14 +598,14 @@ pub(crate) struct CudaJpegDecodeStatus {
     pub(crate) reserved: u32,
 }
 
-#[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CudaJpegRgb8ValidatedPlan {
     pub(crate) params: CudaJpeg420Params,
     pub(crate) output_len: usize,
 }
 
-#[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
 pub(crate) fn validate_jpeg_rgb8_plan(
     plan: &CudaJpegRgb8DecodePlan<'_>,
 ) -> Result<CudaJpegRgb8ValidatedPlan, CudaError> {
@@ -452,7 +618,7 @@ pub(crate) fn validate_jpeg_rgb8_plan(
     validate_jpeg_rgb8_plan_with_pitch(plan, out_stride as usize)
 }
 
-#[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
 pub(crate) fn validate_jpeg_rgb8_plan_with_pitch(
     plan: &CudaJpegRgb8DecodePlan<'_>,
     pitch_bytes: usize,
@@ -514,7 +680,7 @@ pub(crate) fn validate_jpeg_rgb8_plan_with_pitch(
     })
 }
 
-#[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
 pub(crate) fn validate_jpeg_entropy_chunk_plan(
     plan: &CudaJpegChunkedEntropyPlan<'_>,
     subsequences: usize,
@@ -565,7 +731,7 @@ pub(crate) fn cuda_jpeg_rgb8_plan_from_420<'a>(
     }
 }
 
-#[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
 pub(crate) fn jpeg_rgb8_kernel(sampling: CudaJpegRgb8Sampling) -> (CudaKernel, &'static str) {
     match sampling {
         CudaJpegRgb8Sampling::Fast420 => (
@@ -584,6 +750,185 @@ pub(crate) fn jpeg_rgb8_kernel(sampling: CudaJpegRgb8Sampling) -> (CudaKernel, &
 }
 
 impl CudaContext {
+    /// Encode one CUDA-resident tile into baseline JPEG entropy bytes.
+    pub fn encode_jpeg_baseline_entropy(
+        &self,
+        job: &CudaJpegBaselineEntropyEncodeJob<'_>,
+    ) -> Result<Vec<u8>, CudaError> {
+        #[cfg(not(feature = "cuda-oxide-jpeg-encode"))]
+        {
+            let _ = job;
+            Err(CudaError::InvalidArgument {
+                message: "CUDA JPEG baseline encode PTX was not built".to_string(),
+            })
+        }
+
+        #[cfg(feature = "cuda-oxide-jpeg-encode")]
+        {
+            self.inner.set_current()?;
+            let entropy = self.allocate(job.entropy_capacity)?;
+            let mut status = [CudaJpegBaselineEncodeStatus::default()];
+            let status_buffer =
+                self.upload(cuda_jpeg_baseline_encode_statuses_as_bytes(&status))?;
+            let q_luma = self.upload(&job.q_luma)?;
+            let q_chroma = self.upload(&job.q_chroma)?;
+            let huff_dc_luma = self.upload(cuda_jpeg_baseline_encode_huffman_table_as_bytes(
+                &job.huff_dc_luma,
+            ))?;
+            let huff_ac_luma = self.upload(cuda_jpeg_baseline_encode_huffman_table_as_bytes(
+                &job.huff_ac_luma,
+            ))?;
+            let huff_dc_chroma = self.upload(cuda_jpeg_baseline_encode_huffman_table_as_bytes(
+                &job.huff_dc_chroma,
+            ))?;
+            let huff_ac_chroma = self.upload(cuda_jpeg_baseline_encode_huffman_table_as_bytes(
+                &job.huff_ac_chroma,
+            ))?;
+            self.launch_jpeg_encode_baseline_entropy(
+                job.input,
+                job.input_offset,
+                &entropy,
+                &status_buffer,
+                job.params,
+                &q_luma,
+                &q_chroma,
+                &huff_dc_luma,
+                &huff_ac_luma,
+                &huff_dc_chroma,
+                &huff_ac_chroma,
+            )?;
+            status_buffer
+                .copy_to_host(cuda_jpeg_baseline_encode_statuses_as_bytes_mut(&mut status))?;
+            validate_jpeg_encode_status(status[0], "j2k_jpeg_encode_baseline_entropy")?;
+            let entropy_len =
+                usize::try_from(status[0].entropy_len).map_err(|_| CudaError::LengthTooLarge {
+                    len: status[0].entropy_len as usize,
+                })?;
+            if entropy_len > job.entropy_capacity {
+                return Err(CudaError::OutputTooSmall {
+                    required: entropy_len,
+                    have: job.entropy_capacity,
+                });
+            }
+            let mut out = vec![0u8; entropy_len];
+            entropy.copy_range_to_host(0, &mut out)?;
+            Ok(out)
+        }
+    }
+
+    /// Encode same-buffer CUDA-resident tiles into baseline JPEG entropy chunks.
+    #[allow(clippy::too_many_lines)]
+    pub fn encode_jpeg_baseline_entropy_batch(
+        &self,
+        job: &CudaJpegBaselineEntropyEncodeBatchJob<'_>,
+    ) -> Result<Vec<Vec<u8>>, CudaError> {
+        if job.params.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        #[cfg(not(feature = "cuda-oxide-jpeg-encode"))]
+        {
+            let _ = job;
+            Err(CudaError::InvalidArgument {
+                message: "CUDA JPEG baseline encode PTX was not built".to_string(),
+            })
+        }
+
+        #[cfg(feature = "cuda-oxide-jpeg-encode")]
+        {
+            self.inner.set_current()?;
+            let tile_count =
+                u32::try_from(job.params.len()).map_err(|_| CudaError::LengthTooLarge {
+                    len: job.params.len(),
+                })?;
+            let entropy = self.allocate(job.entropy_capacity)?;
+            let mut statuses = vec![CudaJpegBaselineEncodeStatus::default(); job.params.len()];
+            let status_buffer =
+                self.upload(cuda_jpeg_baseline_encode_statuses_as_bytes(&statuses))?;
+            let params_buffer =
+                self.upload(cuda_jpeg_baseline_encode_params_as_bytes(&job.params))?;
+            let q_luma = self.upload(&job.q_luma)?;
+            let q_chroma = self.upload(&job.q_chroma)?;
+            let huff_dc_luma = self.upload(cuda_jpeg_baseline_encode_huffman_table_as_bytes(
+                &job.huff_dc_luma,
+            ))?;
+            let huff_ac_luma = self.upload(cuda_jpeg_baseline_encode_huffman_table_as_bytes(
+                &job.huff_ac_luma,
+            ))?;
+            let huff_dc_chroma = self.upload(cuda_jpeg_baseline_encode_huffman_table_as_bytes(
+                &job.huff_dc_chroma,
+            ))?;
+            let huff_ac_chroma = self.upload(cuda_jpeg_baseline_encode_huffman_table_as_bytes(
+                &job.huff_ac_chroma,
+            ))?;
+            self.launch_jpeg_encode_baseline_entropy_batch(
+                job.input,
+                &entropy,
+                &status_buffer,
+                &params_buffer,
+                &q_luma,
+                &q_chroma,
+                &huff_dc_luma,
+                &huff_ac_luma,
+                &huff_dc_chroma,
+                &huff_ac_chroma,
+                tile_count,
+            )?;
+            status_buffer.copy_to_host(cuda_jpeg_baseline_encode_statuses_as_bytes_mut(
+                &mut statuses,
+            ))?;
+            let mut out = Vec::with_capacity(job.params.len());
+            for (index, (status, params)) in statuses.iter().copied().zip(&job.params).enumerate() {
+                validate_jpeg_encode_status(status, "j2k_jpeg_encode_baseline_entropy_batch")?;
+                let entropy_len =
+                    usize::try_from(status.entropy_len).map_err(|_| CudaError::LengthTooLarge {
+                        len: status.entropy_len as usize,
+                    })?;
+                let offset = usize::try_from(params.entropy_offset_bytes).map_err(|_| {
+                    CudaError::LengthTooLarge {
+                        len: params.entropy_offset_bytes as usize,
+                    }
+                })?;
+                let capacity = usize::try_from(params.entropy_capacity).map_err(|_| {
+                    CudaError::LengthTooLarge {
+                        len: params.entropy_capacity as usize,
+                    }
+                })?;
+                if entropy_len > capacity {
+                    return Err(CudaError::OutputTooSmall {
+                        required: entropy_len,
+                        have: capacity,
+                    });
+                }
+                let end = offset
+                    .checked_add(entropy_len)
+                    .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+                if end > job.entropy_capacity {
+                    return Err(CudaError::OutputTooSmall {
+                        required: end,
+                        have: job.entropy_capacity,
+                    });
+                }
+                let mut chunk = vec![0u8; entropy_len];
+                entropy
+                    .copy_range_to_host(offset, &mut chunk)
+                    .map_err(|error| {
+                        if matches!(error, CudaError::OutputTooSmall { .. }) {
+                            CudaError::InvalidArgument {
+                                message: format!(
+                                "JPEG CUDA encode batch tile {index} entropy range is out of bounds"
+                            ),
+                            }
+                        } else {
+                            error
+                        }
+                    })?;
+                out.push(chunk);
+            }
+            Ok(out)
+        }
+    }
+
     /// Run experimental 4:2:0 JPEG entropy self-sync diagnostics.
     pub fn diagnose_jpeg_420_entropy_self_sync(
         &self,
@@ -608,16 +953,15 @@ impl CudaContext {
             });
         }
 
-        #[cfg(not(j2k_cuda_jpeg_decode_ptx_built))]
+        #[cfg(not(feature = "cuda-oxide-jpeg-decode"))]
         {
             let _ = subsequences;
             Err(CudaError::InvalidArgument {
-                message: "J2K CUDA JPEG decode PTX was not built from jpeg_decode_kernels.cu"
-                    .to_string(),
+                message: "CUDA JPEG entropy diagnostic PTX was not built".to_string(),
             })
         }
 
-        #[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+        #[cfg(feature = "cuda-oxide-jpeg-decode")]
         {
             self.diagnose_jpeg_420_entropy_self_sync_nonempty(plan, subsequences)
         }
@@ -637,16 +981,15 @@ impl CudaContext {
         &self,
         plan: &CudaJpegRgb8DecodePlan<'_>,
     ) -> Result<CudaKernelOutput, CudaError> {
-        #[cfg(not(j2k_cuda_jpeg_decode_ptx_built))]
+        #[cfg(not(feature = "cuda-oxide-jpeg-decode"))]
         {
             let _ = plan;
             Err(CudaError::InvalidArgument {
-                message: "J2K CUDA JPEG decode PTX was not built from jpeg_decode_kernels.cu"
-                    .to_string(),
+                message: "CUDA JPEG RGB8 decode PTX was not built".to_string(),
             })
         }
 
-        #[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+        #[cfg(feature = "cuda-oxide-jpeg-decode")]
         {
             let validated = validate_jpeg_rgb8_plan(plan)?;
             self.inner.set_current()?;
@@ -677,16 +1020,15 @@ impl CudaContext {
         output: &CudaDeviceBuffer,
         pitch_bytes: usize,
     ) -> Result<CudaExecutionStats, CudaError> {
-        #[cfg(not(j2k_cuda_jpeg_decode_ptx_built))]
+        #[cfg(not(feature = "cuda-oxide-jpeg-decode"))]
         {
             let _ = (plan, output, pitch_bytes);
             Err(CudaError::InvalidArgument {
-                message: "J2K CUDA JPEG decode PTX was not built from jpeg_decode_kernels.cu"
-                    .to_string(),
+                message: "CUDA JPEG RGB8 decode PTX was not built".to_string(),
             })
         }
 
-        #[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+        #[cfg(feature = "cuda-oxide-jpeg-decode")]
         {
             let validated = validate_jpeg_rgb8_plan_with_pitch(plan, pitch_bytes)?;
             if output.byte_len() < validated.output_len {
@@ -700,7 +1042,7 @@ impl CudaContext {
         }
     }
 
-    #[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+    #[cfg(feature = "cuda-oxide-jpeg-decode")]
     #[allow(clippy::similar_names)]
     fn decode_jpeg_rgb8_owned_validated(
         &self,
@@ -759,7 +1101,7 @@ impl CudaContext {
         })
     }
 
-    #[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+    #[cfg(feature = "cuda-oxide-jpeg-decode")]
     #[allow(clippy::similar_names)]
     fn diagnose_jpeg_420_entropy_self_sync_nonempty(
         &self,
@@ -829,7 +1171,119 @@ impl CudaContext {
         })
     }
 
-    #[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+    #[cfg(feature = "cuda-oxide-jpeg-encode")]
+    #[allow(clippy::too_many_arguments)]
+    fn launch_jpeg_encode_baseline_entropy(
+        &self,
+        input: &CudaDeviceBuffer,
+        input_offset: usize,
+        entropy: &CudaDeviceBuffer,
+        status: &CudaDeviceBuffer,
+        mut params: CudaJpegBaselineEncodeParams,
+        q_luma: &CudaDeviceBuffer,
+        q_chroma: &CudaDeviceBuffer,
+        huff_dc_luma: &CudaDeviceBuffer,
+        huff_ac_luma: &CudaDeviceBuffer,
+        huff_dc_chroma: &CudaDeviceBuffer,
+        huff_ac_chroma: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        let function = self.jpeg_encode_kernel_function(CudaKernel::JpegEncodeBaselineEntropy)?;
+        let input_offset = u64::try_from(input_offset)
+            .map_err(|_| CudaError::LengthTooLarge { len: input_offset })?;
+        let mut input_ptr = input
+            .device_ptr()
+            .checked_add(input_offset)
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        let mut entropy_ptr = entropy.device_ptr();
+        let mut status_ptr = status.device_ptr();
+        let mut q_luma_ptr = q_luma.device_ptr();
+        let mut q_chroma_ptr = q_chroma.device_ptr();
+        let mut huff_dc_luma_ptr = huff_dc_luma.device_ptr();
+        let mut huff_ac_luma_ptr = huff_ac_luma.device_ptr();
+        let mut huff_dc_chroma_ptr = huff_dc_chroma.device_ptr();
+        let mut huff_ac_chroma_ptr = huff_ac_chroma.device_ptr();
+        let mut kernel_params = cuda_kernel_params!(
+            input_ptr,
+            entropy_ptr,
+            status_ptr,
+            params,
+            q_luma_ptr,
+            q_chroma_ptr,
+            huff_dc_luma_ptr,
+            huff_ac_luma_ptr,
+            huff_dc_chroma_ptr,
+            huff_ac_chroma_ptr
+        );
+        self.launch_kernel(
+            function,
+            CudaLaunchGeometry {
+                grid: (1, 1, 1),
+                block: (1, 1, 1),
+            },
+            &mut kernel_params,
+        )
+    }
+
+    #[cfg(feature = "cuda-oxide-jpeg-encode")]
+    #[allow(clippy::too_many_arguments)]
+    fn launch_jpeg_encode_baseline_entropy_batch(
+        &self,
+        input: &CudaDeviceBuffer,
+        entropy: &CudaDeviceBuffer,
+        status: &CudaDeviceBuffer,
+        params: &CudaDeviceBuffer,
+        q_luma: &CudaDeviceBuffer,
+        q_chroma: &CudaDeviceBuffer,
+        huff_dc_luma: &CudaDeviceBuffer,
+        huff_ac_luma: &CudaDeviceBuffer,
+        huff_dc_chroma: &CudaDeviceBuffer,
+        huff_ac_chroma: &CudaDeviceBuffer,
+        mut tile_count: u32,
+    ) -> Result<(), CudaError> {
+        let function =
+            self.jpeg_encode_kernel_function(CudaKernel::JpegEncodeBaselineEntropyBatch)?;
+        let mut input_ptr = input.device_ptr();
+        let mut entropy_ptr = entropy.device_ptr();
+        let mut status_ptr = status.device_ptr();
+        let mut params_ptr = params.device_ptr();
+        let mut q_luma_ptr = q_luma.device_ptr();
+        let mut q_chroma_ptr = q_chroma.device_ptr();
+        let mut huff_dc_luma_ptr = huff_dc_luma.device_ptr();
+        let mut huff_ac_luma_ptr = huff_ac_luma.device_ptr();
+        let mut huff_dc_chroma_ptr = huff_dc_chroma.device_ptr();
+        let mut huff_ac_chroma_ptr = huff_ac_chroma.device_ptr();
+        let mut kernel_params = cuda_kernel_params!(
+            input_ptr,
+            entropy_ptr,
+            status_ptr,
+            params_ptr,
+            q_luma_ptr,
+            q_chroma_ptr,
+            huff_dc_luma_ptr,
+            huff_ac_luma_ptr,
+            huff_dc_chroma_ptr,
+            huff_ac_chroma_ptr,
+            tile_count
+        );
+        self.launch_kernel(
+            function,
+            CudaLaunchGeometry {
+                grid: (tile_count, 1, 1),
+                block: (1, 1, 1),
+            },
+            &mut kernel_params,
+        )
+    }
+
+    #[cfg(feature = "cuda-oxide-jpeg-encode")]
+    fn jpeg_encode_kernel_function(
+        &self,
+        kernel: CudaKernel,
+    ) -> Result<crate::driver::CuFunction, CudaError> {
+        self.inner.cuda_oxide_jpeg_encode_kernel_function(kernel)
+    }
+
+    #[cfg(feature = "cuda-oxide-jpeg-decode")]
     #[allow(clippy::similar_names, clippy::too_many_arguments)]
     fn launch_jpeg_decode_rgb8(
         &self,
@@ -849,7 +1303,7 @@ impl CudaContext {
         checkpoints: &CudaDeviceBuffer,
         status: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(kernel)?;
+        let function = self.jpeg_rgb8_kernel_function(kernel)?;
         let mut entropy_ptr = entropy.device_ptr();
         let mut output_ptr = output.device_ptr();
         let mut y_quant_ptr = y_quant.device_ptr();
@@ -887,7 +1341,15 @@ impl CudaContext {
         self.launch_kernel(function, geometry, &mut kernel_params)
     }
 
-    #[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+    #[cfg(feature = "cuda-oxide-jpeg-decode")]
+    fn jpeg_rgb8_kernel_function(
+        &self,
+        kernel: CudaKernel,
+    ) -> Result<crate::driver::CuFunction, CudaError> {
+        self.inner.cuda_oxide_jpeg_decode_kernel_function(kernel)
+    }
+
+    #[cfg(feature = "cuda-oxide-jpeg-decode")]
     #[allow(clippy::similar_names, clippy::too_many_arguments)]
     fn launch_jpeg_entropy_sync420(
         &self,
@@ -901,7 +1363,7 @@ impl CudaContext {
         cr_ac: &CudaDeviceBuffer,
         states: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::JpegEntropySync420)?;
+        let function = self.jpeg_entropy_kernel_function(CudaKernel::JpegEntropySync420)?;
         let mut entropy_ptr = entropy.device_ptr();
         let mut y_dc_ptr = y_dc.device_ptr();
         let mut y_ac_ptr = y_ac.device_ptr();
@@ -929,7 +1391,7 @@ impl CudaContext {
         self.launch_kernel(function, geometry, &mut kernel_params)
     }
 
-    #[cfg(j2k_cuda_jpeg_decode_ptx_built)]
+    #[cfg(feature = "cuda-oxide-jpeg-decode")]
     #[allow(clippy::similar_names, clippy::too_many_arguments)]
     fn launch_jpeg_entropy_overflow420(
         &self,
@@ -944,9 +1406,7 @@ impl CudaContext {
         states: &CudaDeviceBuffer,
         overflows: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::JpegEntropyOverflow420)?;
+        let function = self.jpeg_entropy_kernel_function(CudaKernel::JpegEntropyOverflow420)?;
         let mut entropy_ptr = entropy.device_ptr();
         let mut y_dc_ptr = y_dc.device_ptr();
         let mut y_ac_ptr = y_ac.device_ptr();
@@ -978,5 +1438,35 @@ impl CudaContext {
         };
 
         self.launch_kernel(function, geometry, &mut kernel_params)
+    }
+
+    #[cfg(feature = "cuda-oxide-jpeg-decode")]
+    fn jpeg_entropy_kernel_function(
+        &self,
+        kernel: CudaKernel,
+    ) -> Result<crate::driver::CuFunction, CudaError> {
+        self.inner.cuda_oxide_jpeg_decode_kernel_function(kernel)
+    }
+}
+
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+fn validate_jpeg_encode_status(
+    status: CudaJpegBaselineEncodeStatus,
+    kernel: &'static str,
+) -> Result<(), CudaError> {
+    match status.code {
+        JPEG_BASELINE_ENCODE_STATUS_OK => Ok(()),
+        JPEG_BASELINE_ENCODE_STATUS_OVERFLOW
+        | JPEG_BASELINE_ENCODE_STATUS_MISSING_HUFFMAN
+        | JPEG_BASELINE_ENCODE_STATUS_INVALID_PARAMS => Err(CudaError::KernelStatus {
+            kernel,
+            code: status.code,
+            detail: status.detail,
+        }),
+        code => Err(CudaError::KernelStatus {
+            kernel,
+            code,
+            detail: status.detail,
+        }),
     }
 }

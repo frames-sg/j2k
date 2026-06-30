@@ -65,10 +65,7 @@ fn validate_dct_block_grid_checks_shape_and_coefficient_count() {
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
 #[test]
 fn cuda_oxide_reversible53_transcode_matches_scalar_fixture_when_required() {
-    if !cuda_runtime_required()
-        || std::env::var_os("J2K_CUDA_USE_OXIDE_TRANSCODE").is_none()
-        || !super::transcode_kernels_built()
-    {
+    if !cuda_runtime_required() || !super::transcode_kernels_built() {
         return;
     }
 
@@ -122,10 +119,7 @@ fn cuda_oxide_reversible53_transcode_matches_scalar_fixture_when_required() {
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
 #[test]
 fn cuda_oxide_dwt97_transcode_matches_scalar_fixture_when_required() {
-    if !cuda_runtime_required()
-        || std::env::var_os("J2K_CUDA_USE_OXIDE_TRANSCODE").is_none()
-        || !super::transcode_kernels_built()
-    {
+    if !cuda_runtime_required() || !super::transcode_kernels_built() {
         return;
     }
 
@@ -200,10 +194,7 @@ fn cuda_oxide_dwt97_transcode_matches_scalar_fixture_when_required() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
-    if !cuda_runtime_required()
-        || std::env::var_os("J2K_CUDA_USE_OXIDE_TRANSCODE").is_none()
-        || !super::transcode_kernels_built()
-    {
+    if !cuda_runtime_required() || !super::transcode_kernels_built() {
         return;
     }
 
@@ -575,6 +566,84 @@ fn jpeg_entropy_self_sync_returns_empty_report_for_empty_entropy_when_runtime_re
     assert_eq!(report.overflows.len(), 0);
 }
 
+#[cfg(all(
+    feature = "cuda-oxide-jpeg-decode",
+    not(j2k_cuda_oxide_jpeg_decode_built)
+))]
+#[test]
+fn cuda_oxide_jpeg_decode_missing_build_error_mentions_strict_gate() {
+    let error = super::build_flags::ensure_cuda_oxide_jpeg_decode_ptx_built()
+        .expect_err("missing JPEG Oxide PTX should be reported");
+    let message = error.to_string();
+    assert!(message.contains("cuda-oxide JPEG decode PTX was not built"));
+    assert!(message.contains("J2K_REQUIRE_CUDA_OXIDE_BUILD"));
+}
+
+#[cfg(all(
+    feature = "cuda-oxide-htj2k-decode",
+    not(j2k_cuda_oxide_htj2k_decode_built)
+))]
+#[test]
+fn cuda_oxide_htj2k_decode_missing_build_error_mentions_strict_gate() {
+    let error = super::build_flags::ensure_cuda_oxide_htj2k_decode_ptx_built()
+        .expect_err("missing HTJ2K Oxide PTX should be reported");
+    let message = error.to_string();
+    assert!(message.contains("cuda-oxide HTJ2K decode PTX was not built"));
+    assert!(message.contains("J2K_REQUIRE_CUDA_OXIDE_BUILD"));
+}
+
+#[cfg(all(
+    feature = "cuda-oxide-htj2k-encode",
+    not(j2k_cuda_oxide_htj2k_encode_built)
+))]
+#[test]
+fn cuda_oxide_htj2k_encode_missing_build_error_mentions_strict_gate() {
+    let error = super::build_flags::ensure_cuda_oxide_htj2k_encode_ptx_built()
+        .expect_err("missing HTJ2K encode Oxide PTX should be reported");
+    let message = error.to_string();
+    assert!(message.contains("cuda-oxide HTJ2K encode PTX was not built"));
+    assert!(message.contains("J2K_REQUIRE_CUDA_OXIDE_BUILD"));
+}
+
+#[cfg(all(feature = "cuda-oxide-jpeg-decode", j2k_cuda_oxide_jpeg_decode_built))]
+#[test]
+fn cuda_oxide_jpeg_entropy_self_sync_decodes_zero_stream_when_required() {
+    if !cuda_runtime_required() {
+        return;
+    }
+
+    let mut bits = [0u8; 16];
+    bits[0] = 1;
+    let table = CudaJpegHuffmanTable::from_jpeg_bits_values(bits, 1, [0; 256]).expect("zero table");
+    let entropy = [0u8; 2];
+    let context = CudaContext::system_default().expect("cuda context");
+    let plan = CudaJpegChunkedEntropyPlan {
+        config: CudaJpegChunkedEntropyConfig {
+            subsequence_words: 1,
+            sequence_len: 8,
+            max_overflow_subsequences: 1,
+        },
+        entropy_bytes: &entropy,
+        y_dc_table: table,
+        y_ac_table: table,
+        cb_dc_table: table,
+        cb_ac_table: table,
+        cr_dc_table: table,
+        cr_ac_table: table,
+    };
+
+    let report = context
+        .diagnose_jpeg_420_entropy_self_sync(&plan)
+        .expect("cuda-oxide JPEG entropy self-sync");
+    assert_eq!(report.subsequence_count(), 1);
+    assert_eq!(report.overflows.len(), 0);
+    assert_eq!(report.execution.kernel_dispatches(), 1);
+    assert_eq!(report.states[0].code, 0);
+    assert_eq!(report.states[0].start_bit, 0);
+    assert_eq!(report.states[0].end_bit, 16);
+    assert_eq!(report.states[0].bit_pos, 16);
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn runtime_raii_primitives_smoke_when_required() {
@@ -911,7 +980,7 @@ fn htj2k_encode_compact_jobs_pack_actual_payloads() {
 #[cfg(all(feature = "cuda-oxide-j2k-encode", j2k_cuda_oxide_j2k_encode_built))]
 #[test]
 fn cuda_oxide_htj2k_compact_codeblocks_assembles_payload_when_required() {
-    if !cuda_runtime_required() || std::env::var_os("J2K_CUDA_USE_OXIDE_J2K_ENCODE").is_none() {
+    if !cuda_runtime_required() {
         return;
     }
 

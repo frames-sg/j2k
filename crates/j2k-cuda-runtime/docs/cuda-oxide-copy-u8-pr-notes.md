@@ -2,12 +2,11 @@
 
 ## Summary
 
-- Adds an opt-in `cuda-oxide-copy-u8` feature for a Rust-authored `j2k_copy_u8`
-  CUDA kernel.
-- Keeps the existing checked-in PTX `CudaKernel::CopyU8` path as the default.
+- Keeps `cuda-oxide-copy-u8` as the Rust-authored `j2k_copy_u8` CUDA kernel
+  family.
+- Removes the old checked-in product PTX route from runtime dispatch.
 - Loads the cuda-oxide PTX through the existing `CudaContext` Driver API module
-  boundary with a separate module-cache key, so parity can compare both paths in
-  one context.
+  boundary and module cache.
 
 ## How To Enable
 
@@ -20,18 +19,18 @@ The build script stages the cuda-oxide device crate into `OUT_DIR`, runs
 generated NUL-terminated PTX when cuda-oxide is available. Ordinary
 `--all-features` builds on unsupported hosts write a placeholder PTX and do not
 set the generated-PTX cfg; runtime dispatch returns a typed error before loading
-that placeholder. Set `J2K_REQUIRE_CUDA_OXIDE_COPY_U8=1` on a Linux cuda-oxide
-host to make a missing generated PTX a build failure.
+that placeholder. Set `J2K_REQUIRE_CUDA_OXIDE_BUILD=1` on a Linux cuda-oxide
+host to make missing generated PTX a build failure.
 
 ## Build Friction
 
 - cuda-oxide is documented as an early alpha with expected bugs and API
   breakage.
-- cuda-oxide is currently Linux-only. On this macOS host, ordinary
-  `--all-features` builds skip generation with a warning; strict validation uses
-  `J2K_REQUIRE_CUDA_OXIDE_COPY_U8=1`.
-- The documented toolchain is heavier than the existing PTX fallback: pinned
-  Rust nightly, CUDA Toolkit, LLVM 21+, Clang 21+, and `cargo-oxide`.
+- cuda-oxide is currently Linux-only. On macOS, ordinary `--all-features` builds
+  skip generation with a warning; strict validation uses
+  `J2K_REQUIRE_CUDA_OXIDE_BUILD=1`.
+- The documented toolchain is heavier than placeholder doc builds: pinned Rust
+  nightly, CUDA Toolkit, LLVM 21+, Clang 21+, and `cargo-oxide`.
 - The nested device crate follows cuda-oxide's standalone project template with
   git dependencies pinned to `NVlabs/cuda-oxide` commit
   `a9f964a956f397dd0b3c8db88a3ca5824186c261`. Broader migration should move
@@ -40,11 +39,9 @@ host to make a missing generated PTX a build failure.
 
 ## Migration Viability
 
-CopyU8 is viable as an isolated opt-in spike because it has a simple raw-pointer
-ABI, no shared memory, and an existing CPU/CUDA parity surface. Broader kernel
-migration should remain gated until a Linux CUDA runner validates generated PTX,
-records build time, and confirms the pinned cuda-oxide toolchain remains
-destabilizing default builds.
+CopyU8 remains viable because it has a simple raw-pointer ABI, no shared memory,
+and an existing CPU/CUDA parity surface. CUDA Oxide validation runs on Linux CUDA
+hosts with strict PTX generation enabled.
 
 ## Guidance Applied
 
@@ -55,8 +52,8 @@ destabilizing default builds.
   [book quick start](https://nvlabs.github.io/cuda-oxide/index.html),
   [installation](https://nvlabs.github.io/cuda-oxide/getting-started/installation.html),
   [launch config](https://nvlabs.github.io/cuda-oxide/gpu-programming/launching-kernels.html).
-- Cargo features: kept `cuda-oxide-copy-u8` additive and out of `default`; the
-  existing PTX path is not disabled. Source:
+- Cargo features: kept `cuda-oxide-copy-u8` additive and out of `default` while
+  `cuda-runtime` enables it for product CUDA execution. Source:
   [Cargo feature unification](https://doc.rust-lang.org/cargo/reference/features.html#feature-unification).
 - Rust API Guidelines: used a direct, meaningful feature name without `use-` or
   `with-`, and made unsupported explicit builds fail at the boundary. Sources:

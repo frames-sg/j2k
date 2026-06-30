@@ -69,7 +69,9 @@ pub use j2k_encode::{
     CudaResidentDwt53Output, CudaResidentDwt97Output,
 };
 pub use jpeg::{
-    CudaJpeg420Rgb8DecodePlan, CudaJpegChunkedEntropyConfig, CudaJpegChunkedEntropyPlan,
+    CudaJpeg420Rgb8DecodePlan, CudaJpegBaselineEncodeFormat, CudaJpegBaselineEncodeHuffmanTable,
+    CudaJpegBaselineEncodeParams, CudaJpegBaselineEntropyEncodeBatchJob,
+    CudaJpegBaselineEntropyEncodeJob, CudaJpegChunkedEntropyConfig, CudaJpegChunkedEntropyPlan,
     CudaJpegChunkedEntropyReport, CudaJpegEntropyCheckpoint, CudaJpegEntropyOverflowState,
     CudaJpegEntropySyncState, CudaJpegHuffmanTable, CudaJpegRgb8DecodePlan, CudaJpegRgb8Sampling,
 };

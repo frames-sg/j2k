@@ -3,7 +3,7 @@ use crate::{
     context::{CudaContext, CudaKernelModule, CudaKernelName},
     driver::{CuDevicePtr, CuEvent, CuFunction, CuStream, CudaNvtxRange},
     error::CudaError,
-    kernels::{self, copy_u8_launch_geometry, CudaKernel},
+    kernels::{self, copy_u8_launch_geometry},
     memory::{CudaDeviceBuffer, CudaDeviceBufferRange, CudaPooledDeviceBuffer},
 };
 use std::{ffi::c_void, os::raw::c_uint};
@@ -95,20 +95,6 @@ impl CudaContext {
         self.synchronize()
     }
 
-    pub(crate) fn launch_named_kernel<const N: usize>(
-        &self,
-        kernel: CudaKernel,
-        geometry: kernels::CudaLaunchGeometry,
-        params: &mut [*mut c_void; N],
-        mode: CudaLaunchMode,
-    ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(kernel)?;
-        match mode {
-            CudaLaunchMode::Sync => self.launch_kernel(function, geometry, params),
-            CudaLaunchMode::Async => self.launch_kernel_async(function, geometry, params),
-        }
-    }
-
     pub(crate) fn launch_kernel_async(
         &self,
         function: CuFunction,
@@ -157,7 +143,7 @@ impl CudaContext {
         byte_len: usize,
     ) -> Result<CudaDeviceBuffer, CudaError> {
         self.copy_device_ptr_to_device_with_copy_u8_loader(src_ptr, byte_len, |context| {
-            context.inner.kernel_function(CudaKernel::CopyU8)
+            context.inner.cuda_oxide_copy_u8_kernel_function()
         })
     }
 
@@ -331,7 +317,7 @@ impl CudaContext {
         &self,
         kernel: CudaKernelName,
     ) -> Result<CudaKernelModule, CudaError> {
-        let _ = self.inner.kernel_function(kernel.kernel())?;
+        let _ = self.inner.cuda_oxide_kernel_function(kernel.kernel())?;
         Ok(CudaKernelModule {
             kernel,
             entrypoint: kernel.entrypoint(),
