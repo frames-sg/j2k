@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{ffi::OsStr, time::Duration};
+#[cfg(target_os = "macos")]
+use std::cell::RefCell;
+#[cfg(all(test, target_os = "macos"))]
+use std::ffi::OsStr;
+use std::time::Duration;
 
 use j2k_jpeg::adapter::JpegEntropyCheckpointV1;
 use j2k_jpeg::Decoder as CpuDecoder;
@@ -15,6 +19,15 @@ use super::{
 };
 
 const FAST420_BATCH_TIMING_ENV: &str = "J2K_JPEG_METAL_FAST420_BATCH_TIMING";
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    static FAST420_BATCH_PROFILE_SUMMARY: RefCell<j2k_profile::ProfileSummary> =
+        RefCell::new(j2k_profile::ProfileSummary::new(j2k_profile::same_summary_labels(&[
+            "mode",
+            "dimensions",
+        ])).emit_on_drop());
+}
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,33 +64,66 @@ impl FastBatchTiming {
         dimensions: (u32, u32),
         segment_count: usize,
     ) {
-        j2k_profile::emit_profile_row_now(
+        let fields = [
+            j2k_profile::ProfileField::label("mode", label),
+            j2k_profile::ProfileField::metric("tiles", tile_count, j2k_profile::MetricUnit::Count),
+            j2k_profile::ProfileField::label(
+                "dimensions",
+                format!("{}x{}", dimensions.0, dimensions.1),
+            ),
+            j2k_profile::ProfileField::metric(
+                "segments",
+                segment_count,
+                j2k_profile::MetricUnit::Count,
+            ),
+            j2k_profile::ProfileField::metric(
+                "accepted_us",
+                Self::micros(self.accepted),
+                j2k_profile::MetricUnit::Microseconds,
+            ),
+            j2k_profile::ProfileField::metric(
+                "entropy_concat_us",
+                Self::micros(self.entropy_concat),
+                j2k_profile::MetricUnit::Microseconds,
+            ),
+            j2k_profile::ProfileField::metric(
+                "buffer_alloc_us",
+                Self::micros(self.buffer_alloc),
+                j2k_profile::MetricUnit::Microseconds,
+            ),
+            j2k_profile::ProfileField::metric(
+                "encode_decode_us",
+                Self::micros(self.encode_decode),
+                j2k_profile::MetricUnit::Microseconds,
+            ),
+            j2k_profile::ProfileField::metric(
+                "wait_decode_us",
+                Self::micros(self.wait_decode),
+                j2k_profile::MetricUnit::Microseconds,
+            ),
+            j2k_profile::ProfileField::metric(
+                "encode_pack_us",
+                Self::micros(self.encode_pack),
+                j2k_profile::MetricUnit::Microseconds,
+            ),
+            j2k_profile::ProfileField::metric(
+                "wait_pack_us",
+                Self::micros(self.wait_pack),
+                j2k_profile::MetricUnit::Microseconds,
+            ),
+            j2k_profile::ProfileField::metric(
+                "total_us",
+                Self::micros(self.total),
+                j2k_profile::MetricUnit::Microseconds,
+            ),
+        ];
+        j2k_profile::emit_profile_fields(
+            fast420_batch_timing_stage_mode(),
+            &FAST420_BATCH_PROFILE_SUMMARY,
             "jpeg",
             "decode",
             tag,
-            &[
-                ("mode", label.to_string()),
-                ("tiles", tile_count.to_string()),
-                ("dimensions", format!("{}x{}", dimensions.0, dimensions.1)),
-                ("segments", segment_count.to_string()),
-                ("accepted_us", Self::micros(self.accepted).to_string()),
-                (
-                    "entropy_concat_us",
-                    Self::micros(self.entropy_concat).to_string(),
-                ),
-                (
-                    "buffer_alloc_us",
-                    Self::micros(self.buffer_alloc).to_string(),
-                ),
-                (
-                    "encode_decode_us",
-                    Self::micros(self.encode_decode).to_string(),
-                ),
-                ("wait_decode_us", Self::micros(self.wait_decode).to_string()),
-                ("encode_pack_us", Self::micros(self.encode_pack).to_string()),
-                ("wait_pack_us", Self::micros(self.wait_pack).to_string()),
-                ("total_us", Self::micros(self.total).to_string()),
-            ],
+            &fields,
         );
     }
 }
@@ -89,12 +135,24 @@ pub(super) fn fast_batch_decode_mode() -> FastBatchDecodeMode {
 
 #[cfg(target_os = "macos")]
 pub(super) fn fast420_batch_timing_enabled() -> bool {
-    fast420_batch_timing_value_enabled(std::env::var_os(FAST420_BATCH_TIMING_ENV).as_deref())
+    fast420_batch_timing_stage_mode() != j2k_profile::ProfileStageMode::Disabled
 }
 
 #[cfg(target_os = "macos")]
+fn fast420_batch_timing_stage_mode() -> j2k_profile::ProfileStageMode {
+    j2k_profile::profile_stage_mode_from_env(FAST420_BATCH_TIMING_ENV)
+}
+
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn fast420_batch_timing_value_enabled(value: Option<&OsStr>) -> bool {
-    value.is_some_and(|value| value == OsStr::new("1"))
+    fast420_batch_timing_value_mode(value) != j2k_profile::ProfileStageMode::Disabled
+}
+
+#[cfg(all(test, target_os = "macos"))]
+pub(super) fn fast420_batch_timing_value_mode(
+    value: Option<&OsStr>,
+) -> j2k_profile::ProfileStageMode {
+    j2k_profile::profile_stage_mode_from_value(value.and_then(OsStr::to_str))
 }
 
 #[cfg(target_os = "macos")]

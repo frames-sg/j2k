@@ -38,6 +38,16 @@ pub(crate) fn format_ms(ns: u128) -> String {
     format!("{:.3} ms", nanos_as_secs(ns) * 1_000.0)
 }
 
+pub(crate) fn escape_csv(raw: &str) -> String {
+    raw.replace('"', "\"\"")
+}
+
+pub(crate) fn escape_markdown_table_cell(raw: &str) -> String {
+    raw.replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('\n', "<br>")
+}
+
 fn nanos_as_secs(ns: u128) -> f64 {
     let capped = u64::try_from(ns).unwrap_or(u64::MAX);
     Duration::from_nanos(capped).as_secs_f64()

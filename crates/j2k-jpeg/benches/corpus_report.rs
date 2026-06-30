@@ -19,7 +19,7 @@ use common::{
     jpeg_decoder_decode, jpeg_decoder_decode_batch_region_scaled, jpeg_decoder_decode_batch_scaled,
     jpeg_decoder_decode_region, jpeg_decoder_decode_region_scaled, jpeg_decoder_decode_scaled,
     jpeg_decoder_inspect, load_bench_inputs,
-    report::{format_ns, report_iterations, write_reports},
+    report::{escape_csv, escape_markdown_table_cell, format_ns, report_iterations, write_reports},
     scaled_rect, zune_decode, zune_decode_batch_region_scaled, zune_decode_batch_scaled,
     zune_decode_region, zune_decode_region_scaled, zune_decode_scaled, zune_inspect, BenchInput,
     DecodeMode,
@@ -701,12 +701,12 @@ fn render_markdown(rows: &[ReportRow], iterations: usize) -> String {
         any_slower = true;
         md.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} |\n",
-            row.input_name,
-            row.operation.as_str(),
-            format_measurement(&row.j2k),
-            format_measurement(&row.jpeg_decoder),
-            format_measurement(&row.zune),
-            fastest.unwrap_or("n/a"),
+            escape_markdown_table_cell(&row.input_name),
+            escape_markdown_table_cell(row.operation.as_str()),
+            escape_markdown_table_cell(&format_measurement(&row.j2k)),
+            escape_markdown_table_cell(&format_measurement(&row.jpeg_decoder)),
+            escape_markdown_table_cell(&format_measurement(&row.zune)),
+            escape_markdown_table_cell(fastest.unwrap_or("n/a")),
         ));
     }
     if !any_slower {
@@ -724,11 +724,11 @@ fn render_markdown(rows: &[ReportRow], iterations: usize) -> String {
         any_failures = true;
         md.push_str(&format!(
             "| {} | {} | {} | {} | {} |\n",
-            row.input_name,
-            row.operation.as_str(),
-            row.j2k.error.as_deref().unwrap_or("ok"),
-            row.jpeg_decoder.error.as_deref().unwrap_or("ok"),
-            row.zune.error.as_deref().unwrap_or("ok"),
+            escape_markdown_table_cell(&row.input_name),
+            escape_markdown_table_cell(row.operation.as_str()),
+            escape_markdown_table_cell(row.j2k.error.as_deref().unwrap_or("ok")),
+            escape_markdown_table_cell(row.jpeg_decoder.error.as_deref().unwrap_or("ok")),
+            escape_markdown_table_cell(row.zune.error.as_deref().unwrap_or("ok")),
         ));
     }
     if !any_failures {
@@ -880,8 +880,4 @@ fn format_measurement(measurement: &Measurement) -> String {
 
 fn render_ns(measurement: &Measurement) -> String {
     measurement.ns.map_or_else(String::new, |ns| ns.to_string())
-}
-
-fn escape_csv(raw: &str) -> String {
-    raw.replace('"', "\"\"")
 }

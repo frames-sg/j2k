@@ -2,8 +2,11 @@
 
 #[cfg(test)]
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::sync::OnceLock;
+use std::time::Instant;
 
+use j2k_profile::{env_flag_from_env, same_summary_labels, ProfileStageMode, StageModeCache};
 use metal::{CommandBufferRef, ComputeCommandEncoderRef};
 
 const CLASSIC_SELECTIVE_BYPASS_ENV: &str = "J2K_METAL_CLASSIC_SELECTIVE_BYPASS";
@@ -65,11 +68,26 @@ pub(crate) const SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE: H
 #[cfg(test)]
 std::thread_local! {
     static CLASSIC_GPU_TOKEN_PACK_ROUTE_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
-    static METAL_PROFILE_STAGES_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+    static METAL_PROFILE_STAGES_OVERRIDE: Cell<Option<ProfileStageMode>> = const { Cell::new(None) };
+}
+
+thread_local! {
+    static METAL_DIRECT_PROFILE_SUMMARY: RefCell<j2k_profile::ProfileSummary> =
+        RefCell::new(j2k_profile::ProfileSummary::new(same_summary_labels(&[
+            "pipeline",
+            "label",
+            "stage",
+            "processor",
+            "metric",
+            "metric_kind",
+            "aggregation",
+            "fmt",
+            "batch_count",
+        ])).emit_on_drop());
 }
 
 fn env_flag_enabled(name: &str) -> bool {
-    matches!(std::env::var(name), Ok(value) if value == "1")
+    env_flag_from_env(name)
 }
 
 pub(crate) fn classic_selective_bypass_disabled() -> bool {
@@ -98,7 +116,7 @@ pub(crate) fn force_classic_gpu_token_pack_route_for_test(
 
 #[cfg(test)]
 pub(crate) struct MetalProfileStagesOverrideGuard {
-    previous: Option<bool>,
+    previous: Option<ProfileStageMode>,
 }
 
 #[cfg(test)]
@@ -112,7 +130,18 @@ impl Drop for MetalProfileStagesOverrideGuard {
 pub(crate) fn force_metal_profile_stages_for_test(
     enabled: bool,
 ) -> MetalProfileStagesOverrideGuard {
-    let previous = METAL_PROFILE_STAGES_OVERRIDE.with(|slot| slot.replace(Some(enabled)));
+    force_metal_profile_stage_mode_for_test(if enabled {
+        ProfileStageMode::Rows
+    } else {
+        ProfileStageMode::Disabled
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn force_metal_profile_stage_mode_for_test(
+    mode: ProfileStageMode,
+) -> MetalProfileStagesOverrideGuard {
+    let previous = METAL_PROFILE_STAGES_OVERRIDE.with(|slot| slot.replace(Some(mode)));
     MetalProfileStagesOverrideGuard { previous }
 }
 
@@ -144,13 +173,36 @@ pub(crate) fn classic_tier1_split_mq_byte_gpu_token_pack_disabled() -> bool {
     classic_tier1_split_mq_byte_gpu_token_pack_setting() == Some(false)
 }
 
-pub(crate) fn metal_profile_stages_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
+pub(crate) fn metal_profile_stage_mode() -> ProfileStageMode {
+    static MODE: StageModeCache = StageModeCache::new();
     #[cfg(test)]
-    if let Some(enabled) = METAL_PROFILE_STAGES_OVERRIDE.with(Cell::get) {
-        return enabled;
+    if let Some(mode) = METAL_PROFILE_STAGES_OVERRIDE.with(Cell::get) {
+        return mode;
     }
-    *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_STAGES_ENV))
+    MODE.mode_from_env(METAL_PROFILE_STAGES_ENV)
+}
+
+pub(crate) fn metal_profile_stages_enabled() -> bool {
+    metal_profile_stage_mode() != ProfileStageMode::Disabled
+}
+
+pub(crate) fn elapsed_since_us(started: Instant) -> u128 {
+    j2k_profile::elapsed_us(Some(started))
+}
+
+pub(crate) fn emit_metal_profile_row<K, V>(codec: &str, op: &str, path: &str, fields: &[(K, V)])
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    j2k_profile::emit_profile_row(
+        metal_profile_stage_mode(),
+        &METAL_DIRECT_PROFILE_SUMMARY,
+        codec,
+        op,
+        path,
+        fields,
+    );
 }
 
 fn metal_profile_signposts_enabled() -> bool {
@@ -295,5 +347,45 @@ pub(crate) fn hybrid_stage_signpost(name: HybridSignpostName) -> Option<HybridSt
 pub(crate) fn label_compute_encoder(encoder: &ComputeCommandEncoderRef, label: &str) {
     if metal_profile_stages_enabled() {
         encoder.set_label(label);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_profile_emitter_records_summary_rows_in_summary_mode() {
+        let _guard = force_metal_profile_stage_mode_for_test(ProfileStageMode::Summary);
+        METAL_DIRECT_PROFILE_SUMMARY.with(|summary| {
+            let _ = summary.borrow_mut().take_formatted_rows();
+        });
+
+        emit_metal_profile_row(
+            "j2k-metal",
+            "direct",
+            "decode",
+            &[
+                ("pipeline", "direct"),
+                ("label", "unit"),
+                ("stage", "hybrid"),
+                ("processor", "cpu"),
+                ("metric", "elapsed"),
+                ("metric_kind", "timing"),
+                ("aggregation", "sum"),
+                ("fmt", "rgb8"),
+                ("batch_count", "1"),
+                ("elapsed_us", "7"),
+            ],
+        );
+
+        let rows =
+            METAL_DIRECT_PROFILE_SUMMARY.with(|summary| summary.borrow_mut().take_formatted_rows());
+        assert_eq!(
+            rows,
+            vec![
+                "j2k_profile_summary codec=j2k-metal op=direct path=decode pipeline=direct label=unit stage=hybrid processor=cpu metric=elapsed metric_kind=timing aggregation=sum fmt=rgb8 batch_count=1 count=1 elapsed_us_sum=7 elapsed_us_avg=7"
+            ]
+        );
     }
 }

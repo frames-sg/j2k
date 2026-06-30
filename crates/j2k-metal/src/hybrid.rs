@@ -18,11 +18,11 @@ use j2k_native::{
 use metal::Device;
 use rayon::prelude::*;
 
+use crate::profile_env::{decode_profile_label, elapsed_since_us};
 use crate::{direct, Error, J2kDecoder, Surface};
 
 pub(crate) const RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED: &str =
     "J2K Metal ROI+scaled hybrid decode currently supports single-tile RGB direct plans for Rgb8/Rgba8/Rgb16";
-const METAL_PROFILE_DECODE_LABEL_ENV: &str = "J2K_METAL_PROFILE_DECODE_LABEL";
 const REGION_SCALED_COLOR_PLAN_CACHE_CAP: usize = 128;
 
 static REGION_SCALED_COLOR_PLAN_CACHE: OnceLock<
@@ -369,7 +369,9 @@ fn build_region_scaled_direct_color_plan(
     let total_started = profile_stages.then(Instant::now);
     let native_image_started = profile_stages.then(Instant::now);
     let image = build_region_scaled_native_image(input, scale)?;
-    let native_image_us = native_image_started.map(elapsed_us).unwrap_or_default();
+    let native_image_us = native_image_started
+        .map(elapsed_since_us)
+        .unwrap_or_default();
     let direct_plan_started = profile_stages.then(Instant::now);
     let mut context = NativeDecoderContext::default();
     let output_region = roi.scaled_covering(scale);
@@ -394,20 +396,22 @@ fn build_region_scaled_direct_color_plan(
             ))));
         }
     };
-    let direct_plan_us = direct_plan_started.map(elapsed_us).unwrap_or_default();
+    let direct_plan_us = direct_plan_started
+        .map(elapsed_since_us)
+        .unwrap_or_default();
     let prepare_started = profile_stages.then(Instant::now);
     let mut prepared = crate::compute::prepare_direct_color_plan_for_cpu_upload(&plan)?;
-    let prepare_us = prepare_started.map(elapsed_us).unwrap_or_default();
+    let prepare_us = prepare_started.map(elapsed_since_us).unwrap_or_default();
     let crop_started = profile_stages.then(Instant::now);
     crate::compute::crop_prepared_direct_color_plan_to_output_region(&mut prepared, output_region)?;
-    let crop_us = crop_started.map(elapsed_us).unwrap_or_default();
+    let crop_us = crop_started.map(elapsed_since_us).unwrap_or_default();
     if let Some(started) = total_started {
         emit_region_scaled_color_plan_build_timings(
             native_image_us,
             direct_plan_us,
             prepare_us,
             crop_us,
-            elapsed_us(started),
+            elapsed_since_us(started),
         );
     }
     Ok(prepared)
@@ -500,10 +504,6 @@ fn evict_one_region_scaled_color_plan_if_needed<T>(cache: &mut HashMap<u64, T>) 
     }
 }
 
-fn elapsed_us(started: Instant) -> u128 {
-    started.elapsed().as_micros()
-}
-
 fn emit_region_scaled_color_plan_build_timings(
     native_image_us: u128,
     direct_plan_us: u128,
@@ -527,7 +527,7 @@ fn emit_region_scaled_color_plan_build_timings(
         let metric = plan_stage_metric(stage);
         let metric_kind = plan_stage_metric_kind(stage);
         let aggregation = plan_stage_aggregation(stage);
-        j2k_profile::emit_profile_row_now(
+        crate::profile_env::emit_metal_profile_row(
             "j2k",
             "decode",
             "metal_cpu_hybrid_plan",
@@ -545,29 +545,6 @@ fn emit_region_scaled_color_plan_build_timings(
             ],
         );
     }
-}
-
-fn decode_profile_label() -> String {
-    std::env::var(METAL_PROFILE_DECODE_LABEL_ENV)
-        .ok()
-        .filter(|label| !label.is_empty())
-        .map_or_else(
-            || "unlabeled".to_string(),
-            |label| sanitize_profile_label(&label),
-        )
-}
-
-fn sanitize_profile_label(label: &str) -> String {
-    label
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 fn plan_stage_processor(stage: &str) -> &'static str {

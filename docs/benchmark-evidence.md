@@ -36,54 +36,15 @@ Host:
 - Options: one decomposition level, quantization scale `1.90`, one warmup,
   three timed iterations, minimum 100 tiles
 
-Original CUDA C baseline command:
-
-```bash
-export J2K_REQUIRE_CUDA_RUNTIME=1
-export J2K_REQUIRE_CUDA_KERNEL_BUILD=1
-export J2K_BENCH_JPEG_DIR=<pancreas-jpeg-tile-corpus>
-export CUDA_BENCH_MANIFEST=<test-only-cuda-benchmark-manifest>
-export ORIGINAL_CUDA_C_FEATURE=<original-cuda-c-baseline-feature>
-cargo run --release --manifest-path "$CUDA_BENCH_MANIFEST" \
-  --features "$ORIGINAL_CUDA_C_FEATURE" --bin transcode_compare -- \
-  --profile-j2k-cuda-only \
-  --decomposition-levels 1 \
-  --quant-scales 1.90 \
-  --warmup 1 \
-  --iterations 3 \
-  --min-tiles 100 \
-  --json target/bench-logs/transcode_original_v062.json \
-  --csv target/bench-logs/transcode_original_v062.csv
-```
-
-cuda-oxide command:
-
-```bash
-export J2K_REQUIRE_CUDA_RUNTIME=1
-export J2K_REQUIRE_CUDA_KERNEL_BUILD=1
-export J2K_BENCH_JPEG_DIR=<pancreas-jpeg-tile-corpus>
-export J2K_CUDA_OXIDE_ARCH=sm_89
-export J2K_REQUIRE_CUDA_OXIDE_TRANSCODE=1
-export J2K_REQUIRE_CUDA_OXIDE_J2K_ENCODE=1
-export J2K_CUDA_USE_OXIDE_TRANSCODE=1
-export J2K_CUDA_USE_OXIDE_J2K_ENCODE=1
-export CUDA_BENCH_MANIFEST=<test-only-cuda-benchmark-manifest>
-cargo run --release --manifest-path "$CUDA_BENCH_MANIFEST" \
-  --features cuda-oxide-transcode,cuda-oxide-j2k-encode \
-  --bin transcode_compare -- \
-  --profile-j2k-cuda-only \
-  --decomposition-levels 1 \
-  --quant-scales 1.90 \
-  --warmup 1 \
-  --iterations 3 \
-  --min-tiles 100 \
-  --json target/bench-logs/transcode_oxide_v062.json \
-  --csv target/bench-logs/transcode_oxide_v062.csv
-```
+Historical pre-retirement measurements were captured before the CUDA C/PTX path
+was removed. The original CUDA C command and the temporary comparison manifest
+are no longer active product workflows. Current CUDA benchmark runs use the
+`cuda-runtime` feature with `J2K_REQUIRE_CUDA_RUNTIME=1` and
+`J2K_REQUIRE_CUDA_OXIDE_BUILD=1`.
 
 Measured results:
 
-| Path | MP/s | Wall | GPU | IDCT + row |
+| Historical path | MP/s | Wall | GPU | IDCT + row |
 | --- | ---: | ---: | ---: | ---: |
 | Original CUDA C | 396.300 | 18.025 ms | 8.049 ms | 0.855 ms |
 | cuda-oxide before IDCT basis fix | 40.813 | 175.029 ms | 165.041 ms | 158.390 ms |
@@ -96,9 +57,104 @@ PTXAS evidence for the fix:
 - After: `transcode_dwt97_idct_i16_batch` reports `0 bytes stack frame`,
   `0 bytes spill stores`, and `0 bytes spill loads`.
 
-The remaining gap is IDCT register pressure. The cuda-oxide IDCT kernel reports
-94 registers after removing the stack frame, while the CUDA C path remains the
-compatibility/performance baseline.
+The remaining historical gap was IDCT register pressure. The cuda-oxide IDCT
+kernel reported 94 registers after removing the stack frame. CUDA C/PTX is no
+longer a supported product backend.
+
+## CUDA Oxide Migration Status
+
+The active roadmap is
+`docs/roadmap/metal-codec-acceleration-plan.md`, now repurposed as the CUDA
+Oxide GPU acceleration plan. `J2K_REQUIRE_CUDA_OXIDE_BUILD=1` is the shared
+strict build gate for Linux/NVIDIA validation hosts.
+
+The temporary NVIDIA comparator harness was removed after the final strict CUDA
+Oxide comparison was captured for decode, JPEG decode, and JPEG-to-HTJ2K
+transcode. The final comparison required a Linux/NVIDIA host with CUDA, NVIDIA
+JPEG/JPEG 2000 comparator libraries, and cuda-oxide available; it could not be
+produced by hosted CI or by macOS development machines.
+
+June 29, 2026 migration run on `cuda-wsl`:
+
+- Host: `jcwal@100.75.125.59`, hostname `PC`, WSL2 Linux
+- GPU: NVIDIA GeForce RTX 4070 SUPER, driver `596.49`
+- CUDA compiler: `cuda_13.2.r13.2/compiler.37668154_0`
+- Rust: `cargo 1.96.0`
+- cuda-oxide: `cargo-oxide 0.2.1`
+- Oxide arch: `sm_89`
+- Historical NVIDIA comparator build before harness removal: strict baseline
+  build mode with `NVCC=/usr/local/cuda/bin/nvcc`,
+  `NVJPEG2K_INCLUDE_DIR=/usr/include`, and
+  `NVJPEG2K_LIB_DIR=/usr/lib/x86_64-linux-gnu`
+- CUDA Oxide build: strict `J2K_REQUIRE_CUDA_OXIDE_BUILD=1`,
+  `J2K_REQUIRE_CUDA_RUNTIME=1`
+- Artifact directory: `target/bench-logs`
+
+Implemented CUDA Oxide-family evidence captured with strict build requirements:
+
+| Harness | Corpus | CUDA Oxide families | Result |
+| --- | --- | --- | --- |
+| `transcode_compare --profile-j2k-cuda-only` | 109 pancreas JPEG tiles, 7.143 MP, corpus hash `c1060319d3236928` | transcode + J2K encode | 391.430 MP/s, 18.250 ms wall, 9.001 ms GPU, 0 CPU fallback jobs |
+| `decode_compare --fixture-dim 512` | generated Gray8 and RGB8 HTJ2K fixtures | J2K decode store, dequantize, IDWT | Gray8: 1.789 ms wall / 1.477 ms GPU, PSNR `inf`; RGB8: 1.676 ms wall / 1.042 ms GPU, PSNR `inf` |
+| `cargo test -p j2k-cuda --all-targets --features cuda-runtime htj2k -- --nocapture` | generated HTJ2K smoke fixtures | HTJ2K cleanup/refinement decode, dequantize, IDWT, decode store | Full, ROI, scaled, ROI-scaled Gray8/RGB8/RGBA8 CUDA rows passed; batch RGB8/RGBA8 rows passed |
+| `cargo test -p j2k-cuda --all-targets --features cuda-runtime htj2k_encode -- --nocapture` | generated HTJ2K encode fixtures | HTJ2K codeblock encode + J2K encode compaction/packetization | Scalar codeblock parity passed; two-pass sigprop and three-pass sigprop/magref round-trip cases passed |
+| `cargo test -p j2k-jpeg-cuda --test encode --features cuda-runtime -- --nocapture` | generated resident RGB8 fixtures | JPEG baseline encode | Single resident CUDA buffer encode and same-buffer batch encode passed; CPU-backend request rejected without fallback |
+| `cargo test -p j2k-jpeg-cuda --all-targets --features cuda-runtime -- --nocapture` | generated JPEG fixtures | JPEG decode + JPEG baseline encode | 4 encode tests, 28 host-surface/decode tests, and CUDA JPEG bench harness targets passed |
+
+Final NVIDIA comparator capture before harness retirement:
+
+| Harness | Corpus | Artifacts | Result |
+| --- | --- | --- | --- |
+| `transcode_compare` | 109 pancreas JPEG tiles, 7.143 MP, corpus hash `c1060319d3236928` | `final_transcode_cuda_oxide_vs_nvjpeg2000_20260629.{json,csv,log}` | CUDA Oxide transform + CUDA HT block encode: 274.0 MP/s, 26.073 ms wall, 17.171 ms GPU, 0 CPU fallback jobs. NVIDIA reused-session serial: 52.2 MP/s, 136.851 ms wall, 128.608 ms GPU. Byte delta vs NVIDIA: -0.5368%; aggregate PSNR: CUDA Oxide 47.63 dB, NVIDIA 49.19 dB. |
+| `decode_compare` | 32 HTJ2K codestreams generated from pancreas JPEG tiles | `final_decode_cuda_oxide_vs_nvjpeg2000_20260629.{json,csv,log}` | CUDA Oxide decode mean: 1.328 ms wall, 1.022 ms GPU. NVIDIA nvJPEG2000 mean: 0.861 ms wall, 0.748 ms GPU. Mean PSNR vs CPU: CUDA Oxide 95.38 dB, NVIDIA 51.46 dB. |
+| `jpeg_decode_compare` | generated 1024 x 1024 stress JPEGs, subsampling 4:2:0 / 4:2:2 / 4:4:4 | `final_jpeg_decode_cuda_oxide_vs_nvjpeg_20260629.log` | CUDA Oxide JPEG decode vs nvJPEG wall mean: 3.461 ms vs 6.634 ms for 4:2:0, 4.086 ms vs 8.546 ms for 4:2:2, and 5.079 ms vs 11.921 ms for 4:4:4. Max delta vs CPU matched nvJPEG for 4:2:0 and 4:2:2; 4:4:4 was 0 for CUDA Oxide and 3 for nvJPEG. |
+
+The exact shell commands used for the final comparator capture are preserved in
+the corresponding `target/bench-logs/*20260629*.log` files. The
+`tests/nvidia-baseline` harness was removed after this capture, so those commands
+are historical evidence, not active workflow instructions.
+
+This final capture satisfies the NVIDIA comparator retirement gate. The
+remaining publication caveat is that these are repo-local retirement
+benchmarks, not a replacement for external adoption-report evidence.
+
+Additional strict HTJ2K decode CUDA Oxide validation:
+
+```bash
+export PATH=/home/jcwal/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH
+export LIBCLANG_PATH=/home/jcwal/.local/llvm18/usr/lib/llvm-18/lib
+export BINDGEN_EXTRA_CLANG_ARGS=-I/home/jcwal/.local/llvm18/usr/lib/llvm-18/lib/clang/18/include
+export LIBRARY_PATH=/home/jcwal/.local/llvm18/usr/lib/x86_64-linux-gnu:${LIBRARY_PATH:-}
+export LD_LIBRARY_PATH=/home/jcwal/.local/llvm18/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}
+export J2K_CUDA_OXIDE_ARCH=sm_89
+export J2K_REQUIRE_CUDA_OXIDE_BUILD=1
+
+cargo check -p j2k-cuda-runtime \
+  --features cuda-oxide-htj2k-decode,cuda-oxide-j2k-decode-store,cuda-oxide-j2k-dequantize,cuda-oxide-j2k-idwt
+
+cargo test -p j2k-cuda-runtime --lib \
+  --features cuda-oxide-htj2k-decode,cuda-oxide-j2k-decode-store,cuda-oxide-j2k-dequantize,cuda-oxide-j2k-idwt \
+  cuda_oxide_htj2k -- --nocapture
+
+cargo check -p j2k-cuda-runtime \
+  --features cuda-oxide-htj2k-encode,cuda-oxide-j2k-encode
+
+cargo test -p j2k-cuda-runtime --lib \
+  --features cuda-oxide-htj2k-encode,cuda-oxide-j2k-encode \
+  cuda_oxide_htj2k_encode -- --nocapture
+
+cargo check -p j2k-cuda-runtime \
+  --features cuda-oxide-jpeg-encode
+
+cargo test -p j2k-cuda-runtime --lib \
+  --features cuda-oxide-jpeg-encode \
+  cuda_oxide_jpeg_encode -- --nocapture
+```
+
+The cuda-oxide backend refresh on `cuda-wsl` also required
+`LIBRARY_PATH`/`LD_LIBRARY_PATH` to include
+`/home/jcwal/.local/llvm18/usr/lib/x86_64-linux-gnu` so the linker could find
+`libffi.so`.
 
 ## Metal Status
 

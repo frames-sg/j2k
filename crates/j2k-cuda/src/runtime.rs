@@ -21,24 +21,17 @@ pub(crate) fn wrap_surface(
     let pitch_bytes = dimensions.0 as usize * fmt.bytes_per_pixel();
     match backend {
         BackendRequest::Cpu | BackendRequest::Auto => {
-            if j2k_profile::gpu_route_profile_enabled() {
-                let request_s = format!("{backend:?}");
-                let fmt_s = format!("{fmt:?}");
-                let width_s = dimensions.0.to_string();
-                let height_s = dimensions.1.to_string();
-                j2k_profile::emit_gpu_route_profile(
-                    "j2k",
-                    "cuda",
-                    &[
-                        ("op", "wrap_surface"),
-                        ("request", request_s.as_str()),
-                        ("fmt", fmt_s.as_str()),
-                        ("width", width_s.as_str()),
-                        ("height", height_s.as_str()),
-                        ("decision", "host_surface"),
-                    ],
-                );
-            }
+            j2k_profile::emit_gpu_route_surface_profile(
+                ("j2k", "cuda"),
+                (
+                    "wrap_surface",
+                    format_args!("{backend:?}"),
+                    format_args!("{fmt:?}"),
+                    "host_surface",
+                ),
+                dimensions,
+                [],
+            );
             Ok(Surface {
                 backend: BackendKind::Cpu,
                 residency: SurfaceResidency::Host,
@@ -85,25 +78,21 @@ fn wrap_cuda_surface(
     let context = session.cuda_context()?;
     let output = context.copy_with_kernel(bytes).map_err(cuda_error)?;
     let (buffer, stats) = output.into_parts();
-    if j2k_profile::gpu_route_profile_enabled() {
-        let fmt_s = format!("{fmt:?}");
-        let width_s = dimensions.0.to_string();
-        let height_s = dimensions.1.to_string();
-        let kernel_dispatches_s = stats.kernel_dispatches().to_string();
-        j2k_profile::emit_gpu_route_profile(
-            "j2k",
-            "cuda",
-            &[
-                ("op", "wrap_surface"),
-                ("request", "Cuda"),
-                ("fmt", fmt_s.as_str()),
-                ("width", width_s.as_str()),
-                ("height", height_s.as_str()),
-                ("decision", "cuda_upload"),
-                ("kernel_dispatches", kernel_dispatches_s.as_str()),
-            ],
-        );
-    }
+    j2k_profile::emit_gpu_route_surface_profile(
+        ("j2k", "cuda"),
+        (
+            "wrap_surface",
+            "Cuda",
+            format_args!("{fmt:?}"),
+            "cuda_upload",
+        ),
+        dimensions,
+        [j2k_profile::ProfileField::metric(
+            "kernel_dispatches",
+            stats.kernel_dispatches(),
+            j2k_profile::MetricUnit::Count,
+        )],
+    );
     Ok(Surface {
         backend: BackendKind::Cuda,
         residency: SurfaceResidency::CpuStagedCudaUpload,
@@ -127,23 +116,17 @@ fn wrap_cuda_surface(
     _pitch_bytes: usize,
     _session: &mut CudaSession,
 ) -> Result<Surface, Error> {
-    if j2k_profile::gpu_route_profile_enabled() {
-        let fmt_s = format!("{fmt:?}");
-        let width_s = dimensions.0.to_string();
-        let height_s = dimensions.1.to_string();
-        j2k_profile::emit_gpu_route_profile(
-            "j2k",
-            "cuda",
-            &[
-                ("op", "wrap_surface"),
-                ("request", "Cuda"),
-                ("fmt", fmt_s.as_str()),
-                ("width", width_s.as_str()),
-                ("height", height_s.as_str()),
-                ("decision", "cuda_unavailable"),
-            ],
-        );
-    }
+    j2k_profile::emit_gpu_route_surface_profile(
+        ("j2k", "cuda"),
+        (
+            "wrap_surface",
+            "Cuda",
+            format_args!("{fmt:?}"),
+            "cuda_unavailable",
+        ),
+        dimensions,
+        [],
+    );
     Err(Error::CudaUnavailable)
 }
 

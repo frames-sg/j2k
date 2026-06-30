@@ -12,6 +12,7 @@
 
 mod codec;
 mod decoder;
+mod encode;
 mod error;
 mod owned_decode;
 mod runtime;
@@ -19,7 +20,13 @@ mod session;
 mod surface;
 
 pub use codec::Codec;
+#[cfg(feature = "cuda-runtime")]
+pub use codec::CudaJpegDecodeOutputTile;
 pub use decoder::Decoder;
+pub use encode::{
+    encode_jpeg_baseline_batch_from_cuda_buffers, encode_jpeg_baseline_from_cuda_buffer,
+    JpegBaselineCudaEncodeTile,
+};
 pub use error::Error;
 pub use j2k_jpeg::{DecoderContext, ScratchPool};
 pub use session::CudaSession;

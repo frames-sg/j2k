@@ -20,7 +20,11 @@ path = "src/lib.rs"
 
 [features]
 default = []
-cuda-runtime = ["dep:j2k-cuda-runtime"]
+cuda-runtime = [
+    "dep:j2k-cuda-runtime",
+    "j2k-cuda-runtime/cuda-oxide-jpeg-decode",
+    "j2k-cuda-runtime/cuda-oxide-jpeg-encode",
+]
 
 [dependencies]
 j2k-core = { path = "../j2k-core", version = "=0.6.2" }

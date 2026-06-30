@@ -29,9 +29,9 @@ pub use jpeg_to_htj2k::{
     jpeg_to_htj2k, jpeg_to_htj2k_batch, BatchTranscodeReport, EncodedTranscode,
     EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kCoefficientPath,
     JpegToHtj2kEncodeOptions, JpegToHtj2kError, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
-    TranscodeComponentReport, TranscodeReport, TranscodeTimingReport,
-    TranscodeValidationClassification, TranscodeValidationMetrics,
-    JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
+    TranscodeBatchProfileRequest, TranscodeBatchProfileRow, TranscodeComponentReport,
+    TranscodeReport, TranscodeTimingReport, TranscodeValidationClassification,
+    TranscodeValidationMetrics, JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
 };
 pub use pipeline_map::{
     TranscodePipelineMap, TranscodePipelineStageKind, TranscodePipelineStageReport,

@@ -159,12 +159,19 @@ fn shader_kernels_use_incremental_mx_my() {
 }
 
 #[test]
-fn fast420_batch_timing_env_requires_explicit_one() {
+fn fast420_batch_timing_env_uses_shared_stage_mode_parser() {
     assert!(fast420_batch_timing_value_enabled(Some(
         std::ffi::OsStr::new("1")
     )));
-    assert!(!fast420_batch_timing_value_enabled(Some(
+    assert!(fast420_batch_timing_value_enabled(Some(
         std::ffi::OsStr::new("true")
+    )));
+    assert_eq!(
+        fast420_batch_timing_value_mode(Some(std::ffi::OsStr::new("summary"))),
+        j2k_profile::ProfileStageMode::Summary
+    );
+    assert!(!fast420_batch_timing_value_enabled(Some(
+        std::ffi::OsStr::new("0")
     )));
     assert!(!fast420_batch_timing_value_enabled(None));
 }

@@ -236,17 +236,21 @@ fn route_report(
     request: BackendRequest,
     timings: &TranscodeTimingReport,
 ) -> MetalTranscodeRouteReport {
-    let selected_transform_backend = if timings_use_metal(timings) {
-        BackendKind::Metal
-    } else {
-        BackendKind::Cpu
-    };
+    let selected_transform_backend = selected_transform_backend(timings);
     MetalTranscodeRouteReport {
         request,
         selected_transform_backend,
         output_backend: BackendKind::Cpu,
         fallback_reason: fallback_reason(request, selected_transform_backend, timings),
         pipeline_map: timings.pipeline_map(),
+    }
+}
+
+fn selected_transform_backend(timings: &TranscodeTimingReport) -> BackendKind {
+    if timings.accelerator_work_observed() {
+        BackendKind::Metal
+    } else {
+        BackendKind::Cpu
     }
 }
 
@@ -274,7 +278,7 @@ fn fallback_reason(
 }
 
 fn ensure_strict_metal_dispatched(timings: &TranscodeTimingReport) -> Result<(), JpegToHtj2kError> {
-    if timings_use_metal(timings) {
+    if timings.accelerator_work_observed() {
         Ok(())
     } else {
         Err(JpegToHtj2kError::Accelerator(
@@ -286,24 +290,13 @@ fn ensure_strict_metal_dispatched(timings: &TranscodeTimingReport) -> Result<(),
 fn ensure_strict_metal_batch_dispatched(
     report: &BatchTranscodeReport,
 ) -> Result<(), JpegToHtj2kError> {
-    if report.successful_tiles == 0 || timings_use_metal(&report.timings) {
+    if report.successful_tiles == 0 || report.timings.accelerator_work_observed() {
         Ok(())
     } else {
         Err(JpegToHtj2kError::Accelerator(
             TranscodeStageError::Unsupported(STRICT_METAL_TRANSCODE_NO_DISPATCH),
         ))
     }
-}
-
-fn timings_use_metal(timings: &TranscodeTimingReport) -> bool {
-    timings.accelerator_dispatches > 0
-        || timings.dwt97_batch_idct_row_lift_us > 0
-        || timings.dwt97_batch_column_lift_us > 0
-        || timings.dwt97_batch_quantize_codeblock_us > 0
-        || timings.dwt97_batch_ht_encode_us > 0
-        || timings.dwt97_batch_ht_kernel_us > 0
-        || timings.dwt97_batch_ht_compact_us > 0
-        || timings.dwt97_batch_ht_codeblock_dispatches > 0
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -906,5 +899,49 @@ impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
 
     fn last_dwt97_batch_stage_timings(&self) -> Option<Dwt97BatchStageTimings> {
         self.last_dwt97_batch_stage_timings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use j2k_transcode::JpegToHtj2kCoefficientPath;
+
+    #[test]
+    fn route_report_uses_shared_accelerator_work_classifier() {
+        let timings = TranscodeTimingReport {
+            dwt97_batch_readback_bytes: 128,
+            ..TranscodeTimingReport::default()
+        };
+
+        let route = route_report(BackendRequest::Auto, &timings);
+
+        assert_eq!(route.selected_transform_backend, BackendKind::Metal);
+        assert_eq!(route.fallback_reason, None);
+    }
+
+    #[test]
+    fn strict_metal_accepts_shared_accelerator_work_evidence() {
+        let timings = TranscodeTimingReport {
+            dwt97_batch_pack_upload_transfers: 1,
+            ..TranscodeTimingReport::default()
+        };
+        let batch_report = BatchTranscodeReport {
+            tile_count: 1,
+            successful_tiles: 1,
+            failed_tiles: 0,
+            transformed_components: 1,
+            reversible_dwt53_batches: 0,
+            reversible_dwt53_batch_jobs: 0,
+            extract_us: 0,
+            transform_us: 0,
+            encode_us: 0,
+            timings,
+            coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
+        };
+
+        ensure_strict_metal_dispatched(&timings).expect("shared classifier marks Metal work");
+        ensure_strict_metal_batch_dispatched(&batch_report)
+            .expect("batch strict route uses shared classifier");
     }
 }

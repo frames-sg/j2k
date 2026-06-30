@@ -57,14 +57,14 @@ use self::batch_plan::{
     batched_fast_packets, core_rect_to_jpeg, BatchDeviceBufferCache, BatchedDecodeItem,
     BatchedFastPacket,
 };
-#[cfg(all(test, target_os = "macos"))]
-use self::batch_support::fast420_batch_timing_value_enabled;
 #[cfg(target_os = "macos")]
 use self::batch_support::{
     batch_entropy_buffers, fast420_batch_timing_enabled, fast_batch_decode_mode,
     region_scaled_batch_error_results, texture_batch_error_results, BatchEntropyBufferKeys,
     FastBatchDecodeMode, FastBatchTiming,
 };
+#[cfg(all(test, target_os = "macos"))]
+use self::batch_support::{fast420_batch_timing_value_enabled, fast420_batch_timing_value_mode};
 #[cfg(all(test, target_os = "macos"))]
 use self::kernel_helpers::choose_1d_threadgroup_width;
 #[cfg(target_os = "macos")]

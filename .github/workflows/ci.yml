@@ -54,6 +54,7 @@ jobs:
 
           gpu_prefixes = (
               "crates/j2k-cuda-runtime/",
+              "crates/j2k-profile/",
               "crates/j2k-jpeg-cuda/",
               "crates/j2k-cuda/",
               "crates/j2k-transcode-cuda/",

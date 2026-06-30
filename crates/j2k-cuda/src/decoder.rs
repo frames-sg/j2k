@@ -176,24 +176,17 @@ impl<'a> J2kDecoder<'a> {
         let dims = self.inner.info().dimensions;
         let stride = dims.0 as usize * fmt.bytes_per_pixel();
         let mut out = vec![0u8; stride * dims.1 as usize];
-        if j2k_profile::gpu_route_profile_enabled() {
-            let request_s = format!("{backend:?}");
-            let fmt_s = format!("{fmt:?}");
-            let width_s = dims.0.to_string();
-            let height_s = dims.1.to_string();
-            j2k_profile::emit_gpu_route_profile(
-                "j2k",
-                "cuda",
-                &[
-                    ("op", "full"),
-                    ("request", request_s.as_str()),
-                    ("fmt", fmt_s.as_str()),
-                    ("width", width_s.as_str()),
-                    ("height", height_s.as_str()),
-                    ("decision", "cpu_decode_then_wrap"),
-                ],
-            );
-        }
+        j2k_profile::emit_gpu_route_surface_profile(
+            ("j2k", "cuda"),
+            (
+                "full",
+                format_args!("{backend:?}"),
+                format_args!("{fmt:?}"),
+                "cpu_decode_then_wrap",
+            ),
+            dims,
+            [],
+        );
         self.inner
             .decode_into_with_scratch(&mut self.pool, &mut out, stride, fmt)?;
         wrap_surface(out, dims, fmt, backend, session)

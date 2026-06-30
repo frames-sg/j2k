@@ -936,8 +936,8 @@ fn manifest_optional_value(
 }
 
 fn codec_from_bytes(bytes: &[u8]) -> Option<&'static str> {
-    let codestream = codestream_payload(bytes)?;
-    match j2k_native::inspect_j2k_codestream_header(codestream) {
+    let payload = j2k::extract_j2k_codestream_payload(bytes).ok()?;
+    match j2k_native::inspect_j2k_codestream_header(payload.codestream()) {
         Ok(header) if header.high_throughput => Some("htj2k"),
         Ok(_) => Some("j2k"),
         Err(_) => Some("unknown"),
@@ -957,40 +957,6 @@ fn container_from_path_and_bytes(path: &Path, bytes: &[u8]) -> &'static str {
     } else {
         "raw-codestream"
     }
-}
-
-fn codestream_payload(bytes: &[u8]) -> Option<&[u8]> {
-    if j2k_native::looks_like_j2k_codestream(bytes) {
-        return Some(bytes);
-    }
-    if !bytes.starts_with(&[0, 0, 0, 12, b'j', b'P', b' ', b' ']) {
-        return None;
-    }
-    let mut offset = 0_usize;
-    while offset.checked_add(8)? <= bytes.len() {
-        let lbox = u32::from_be_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
-        let box_type = &bytes[offset + 4..offset + 8];
-        let (header_len, box_len) = match lbox {
-            0 => (8, bytes.len() - offset),
-            1 => {
-                if offset.checked_add(16)? > bytes.len() {
-                    return None;
-                }
-                let xlbox = u64::from_be_bytes(bytes[offset + 8..offset + 16].try_into().ok()?);
-                let box_len = usize::try_from(xlbox).ok()?;
-                (16, box_len)
-            }
-            value => (8, value),
-        };
-        if box_len < header_len || offset.checked_add(box_len)? > bytes.len() {
-            return None;
-        }
-        if box_type == b"jp2c" {
-            return Some(&bytes[offset + header_len..offset + box_len]);
-        }
-        offset += box_len;
-    }
-    None
 }
 
 fn fnv1a64_hex(bytes: &[u8]) -> String {

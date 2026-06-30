@@ -8,10 +8,20 @@
 
 **Docs & guides:** <https://frames-sg.github.io/j2k/>
 
+**Memory-safety-first, vendor-independent JPEG 2000 / HTJ2K.**
+
 J2K is a Rust image-codec workspace for JPEG 2000 / HTJ2K decode, encode,
-GPU acceleration, and JPEG-to-J2K/HTJ2K transcoding. The public crate release
-centers on `j2k`, with lower-level crates for native codec internals, device
-adapters, JPEG input, and transcode pipelines.
+recode, and JPEG-to-J2K/HTJ2K transcoding. It is built for teams that need a
+memory-safe Rust codec for untrusted still-image inputs, permissive
+MIT/Apache-2.0 licensing, and optional acceleration across both CUDA and Apple
+Metal without making a GPU vendor SDK the public API.
+
+Speed matters, but it is not the reason this project exists. The strategic
+gap is a memory-safety-first Rust codec with a portable CPU baseline,
+multi-vendor GPU adapters, explicit support boundaries, and reproducible
+benchmark gates. The public crate release centers on `j2k`, with lower-level
+crates for native codec internals, device adapters, JPEG input, and transcode
+pipelines.
 
 The codec support claim is intentionally scoped and explicit: full JPEG 2000
 Part 1 codestream support for still-image workflows, JP2 wrapping, HTJ2K
@@ -24,6 +34,23 @@ The APIs are general codec APIs. Whole-slide imaging and DICOM tile workloads
 are the main public examples and benchmark fixtures because they stress
 large tiled images, strict color handling, and high-throughput GPU paths, but
 the decoder, encoder, and transcode crates are not WSI-only.
+
+## Why J2K exists
+
+JPEG 2000 is still common in medical imaging, geospatial imagery, digital
+preservation, and large tiled-image systems, but the implementation landscape
+forces awkward tradeoffs:
+
+| Option | Tradeoff J2K avoids |
+| --- | --- |
+| NVIDIA CUDA JPEG 2000 runtime | CUDA/NVIDIA GPU stacks are a good fit for NVIDIA-only deployments, but not for portable Rust applications that also need Metal or CPU-first operation. |
+| [OpenJPEG](https://github.com/uclouvain/openjpeg) | Mature C implementation and useful comparator, but C codecs keep memory-safety risk on the adopter. |
+| [Grok](https://github.com/GrokImageCompression/grok) | Capable C++ JPEG 2000 / HTJ2K implementation, but AGPL licensing is not usable for every commercial or embedded integration. |
+
+J2K's intended position is different: a memory-safe Rust public API, isolated
+unsafe boundaries for FFI/GPU work, no active runtime dependency on NVIDIA's
+JPEG 2000 runtime, strict errors for unsupported device routes, and dual
+MIT/Apache-2.0 licensing.
 
 ## Quickstart
 
@@ -68,8 +95,8 @@ shapes return errors instead of silently changing the requested backend.
 `Auto` is an optimization policy, not a promise to use a device whenever one is
 available.
 
-CUDA paths use J2K-owned CUDA kernels and `cuda-runtime` support for CUDA
-device memory surfaces where implemented. NVIDIA performance claims require
+CUDA paths use J2K-owned kernels through `cuda-runtime` and are migrating to a
+CUDA Oxide-only device-kernel backend. NVIDIA performance claims require
 self-hosted benchmark evidence; hosted CI is not treated as NVIDIA performance
 evidence.
 
@@ -106,7 +133,7 @@ The names `statumen` and `wsi-dicom` are not current package names.
 | Recode | J2K-to-HTJ2K coefficient recode where valid, pixel-preserving fallback otherwise | Palette/component-mapped fallbacks intentionally drop mapping metadata after resolving pixels. |
 | JPEG input | JPEG inspect/decode through `j2k-jpeg` | Used by transcode and fixture workflows. |
 | JPEG-to-J2K/HTJ2K transcode | CPU transcode primitives plus CUDA/Metal accelerator adapters | CLI exposes the conservative lossless JPEG-to-HTJ2K command first. |
-| CUDA acceleration | J2K-owned CUDA kernels and optional cuda-oxide routes for selected stages | Requires self-hosted CUDA validation before performance claims. |
+| CUDA acceleration | J2K-owned CUDA kernels with CUDA Oxide as the target device-kernel backend | Requires self-hosted CUDA validation before performance claims. |
 | Metal acceleration | macOS Metal adapters for selected decode, encode-stage, and transcode stages | Auto routing stays conservative and benchmark-gated. |
 
 ## Fast Path For LLM-Assisted Use

@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Rust JPEG 2000 Codec - J2K</title>
-  <meta name="description" content="J2K is a Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.">
+  <title>Memory-Safe Rust JPEG 2000 Codec - J2K</title>
+  <meta name="description" content="J2K is a memory-safety-first Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/rust-jpeg2000-codec/">
-  <meta property="og:title" content="Rust JPEG 2000 Codec">
-  <meta property="og:description" content="J2K is a Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.">
+  <meta property="og:title" content="Memory-Safe Rust JPEG 2000 Codec">
+  <meta property="og:description" content="J2K is a memory-safety-first Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.">
   <meta property="og:url" content="https://frames-sg.github.io/j2k/rust-jpeg2000-codec/">
   <meta property="og:type" content="article">
   <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Rust JPEG 2000 Codec">
-  <meta name="twitter:description" content="J2K is a Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.">
+  <meta name="twitter:title" content="Memory-Safe Rust JPEG 2000 Codec">
+  <meta name="twitter:description" content="J2K is a memory-safety-first Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.">
   <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
@@ -23,8 +23,8 @@
   {
     "@context": "https://schema.org",
     "@type": "TechArticle",
-    "headline": "Rust JPEG 2000 Codec",
-    "description": "J2K is a Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.",
+    "headline": "Memory-Safe Rust JPEG 2000 Codec",
+    "description": "J2K is a memory-safety-first Rust JPEG 2000 Part 1 codec crate for J2K/J2C codestreams, JP2 still-image files, HTJ2K/JPH workflows, decode, encode, and recode.",
     "url": "https://frames-sg.github.io/j2k/rust-jpeg2000-codec/",
     "isPartOf": { "@type": "SoftwareSourceCode", "name": "J2K", "codeRepository": "https://github.com/frames-sg/j2k", "programmingLanguage": "Rust" }
   }
@@ -36,7 +36,7 @@
     <div class="bar">
       <a class="brand" href="../">J2K</a>
       <nav class="nav" aria-label="Primary">
-        <a href="../gpu-jpeg2000-rust/">GPU JPEG2000</a>
+        <a href="../gpu-jpeg2000-rust/">GPU Backends</a>
         <a href="../cuda-jpeg2000-rust/">CUDA</a>
         <a href="../metal-jpeg2000-rust/">Metal</a>
         <a href="../htj2k-rust/">HTJ2K</a>
@@ -48,8 +48,8 @@
       <div class="wrap hero-grid">
         <div>
           <p class="eyebrow">Rust JPEG 2000 codec</p>
-          <h1>Rust JPEG 2000 Codec</h1>
-          <p class="lead">Use <code>j2k</code> for JPEG 2000 Part 1 application code in Rust: inspect, decode, encode, recode, JP2 still-image containers, J2K/J2C codestreams, and HTJ2K/JPH paths.</p>
+          <h1>Memory-Safe Rust JPEG 2000 Codec</h1>
+          <p class="lead">Use <code>j2k</code> for memory-safe JPEG 2000 Part 1 application code in Rust: inspect, decode, encode, recode, JP2 still-image containers, J2K/J2C codestreams, and HTJ2K/JPH paths.</p>
           <div class="actions">
             <a class="button primary" href="https://crates.io/crates/j2k">cargo add j2k</a>
             <a class="button" href="https://docs.rs/j2k">API docs</a>
@@ -66,8 +66,8 @@
           <pre class="code">cargo add j2k</pre>
         </article>
         <article class="card">
-          <h2>Supported surfaces</h2>
-          <p>J2K exposes decode and encode APIs, component planes, row streaming, tile-batch decode, scaled region decode, scratch pools, backend requests, and compressed-payload passthrough checks.</p>
+          <h2>Audit posture</h2>
+          <p>J2K exposes safe Rust APIs for decode, encode, component planes, row streaming, tile-batch decode, scaled region decode, scratch pools, backend requests, and compressed-payload passthrough checks.</p>
         </article>
       </div>
     </section>
@@ -90,7 +90,7 @@
     <section class="section alt">
       <div class="wrap copy">
         <h2>Related pages</h2>
-        <p><a href="../gpu-jpeg2000-rust/">GPU JPEG2000 Rust</a>, <a href="../cuda-jpeg2000-rust/">CUDA JPEG2000 Rust</a>, <a href="../metal-jpeg2000-rust/">Metal JPEG2000 Rust</a>, and <a href="../htj2k-rust/">HTJ2K Rust</a>.</p>
+        <p><a href="../gpu-jpeg2000-rust/">GPU Backends</a>, <a href="../cuda-jpeg2000-rust/">CUDA JPEG2000 Rust</a>, <a href="../metal-jpeg2000-rust/">Metal JPEG2000 Rust</a>, and <a href="../htj2k-rust/">HTJ2K Rust</a>.</p>
       </div>
     </section>
   </main>

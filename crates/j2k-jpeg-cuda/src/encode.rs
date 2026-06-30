@@ -2,28 +2,32 @@
 
 #![allow(clippy::similar_names)]
 
-#[cfg(target_os = "macos")]
+#[cfg(feature = "cuda-runtime")]
 use j2k_core::PixelFormat;
-#[cfg(target_os = "macos")]
+#[cfg(feature = "cuda-runtime")]
+use j2k_cuda_runtime::{
+    CudaDeviceBuffer, CudaJpegBaselineEncodeFormat, CudaJpegBaselineEncodeHuffmanTable,
+    CudaJpegBaselineEncodeParams, CudaJpegBaselineEntropyEncodeBatchJob,
+    CudaJpegBaselineEntropyEncodeJob,
+};
+#[cfg(feature = "cuda-runtime")]
 use j2k_jpeg::adapter::{
     assemble_jpeg_baseline_frame, baseline_encode_tables, jpeg_baseline_entropy_capacity_bytes,
     validate_jpeg_baseline_dimensions, JpegBaselineHuffmanTable, JpegBaselineSampling,
 };
 use j2k_jpeg::{EncodedJpeg, JpegEncodeOptions};
-#[cfg(target_os = "macos")]
+#[cfg(feature = "cuda-runtime")]
 use j2k_jpeg::{JpegBackend, JpegEncodeError, JpegSubsampling};
-#[cfg(target_os = "macos")]
-use metal::Buffer;
 
-#[cfg(target_os = "macos")]
-use crate::compute;
+#[cfg(feature = "cuda-runtime")]
+use crate::runtime::cuda_error;
 
-#[cfg(target_os = "macos")]
+#[cfg(feature = "cuda-runtime")]
 #[derive(Debug, Clone, Copy)]
-/// Metal buffer and layout metadata for one baseline JPEG encode tile.
-pub struct JpegBaselineMetalEncodeTile<'a> {
-    /// Source Metal buffer containing RGB8 or Gray8 pixels.
-    pub buffer: &'a Buffer,
+/// CUDA buffer and layout metadata for one baseline JPEG encode tile.
+pub struct JpegBaselineCudaEncodeTile<'a> {
+    /// Source CUDA buffer containing RGB8 or Gray8 pixels.
+    pub buffer: &'a CudaDeviceBuffer,
     /// Byte offset of the first source pixel in `buffer`.
     pub byte_offset: usize,
     /// Width of the valid input region in pixels.
@@ -40,91 +44,90 @@ pub struct JpegBaselineMetalEncodeTile<'a> {
     pub format: PixelFormat,
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(feature = "cuda-runtime"))]
 #[derive(Debug, Clone, Copy)]
-/// Placeholder encode tile type for non-macOS builds.
-pub struct JpegBaselineMetalEncodeTile<'a> {
+/// Placeholder encode tile type for builds without `cuda-runtime`.
+pub struct JpegBaselineCudaEncodeTile<'a> {
     _private: core::marker::PhantomData<&'a ()>,
 }
 
-#[cfg(target_os = "macos")]
-/// Encode one Metal-resident tile as a baseline JPEG frame.
-pub fn encode_jpeg_baseline_from_metal_buffer(
-    tile: JpegBaselineMetalEncodeTile<'_>,
+#[cfg(feature = "cuda-runtime")]
+/// Encode one CUDA-resident tile as a baseline JPEG frame.
+pub fn encode_jpeg_baseline_from_cuda_buffer(
+    tile: JpegBaselineCudaEncodeTile<'_>,
     options: JpegEncodeOptions,
-    session: &crate::MetalBackendSession,
+    session: &mut crate::CudaSession,
 ) -> Result<EncodedJpeg, crate::Error> {
     validate_tile(tile, options)?;
     let tables = baseline_encode_tables(options)?;
     let sampling = tables.sampling;
-
     let entropy_capacity = entropy_capacity_bytes(
         tile.output_width,
         tile.output_height,
         sampling,
         options.restart_interval,
     )?;
-    let params = encode_params(tile, options, sampling, entropy_capacity)?;
-    let job = compute::JpegBaselineEntropyEncodeJob {
-        input: tile.buffer,
-        input_offset: tile.byte_offset,
-        params,
-        q_luma: tables.q_luma,
-        q_chroma: tables.q_chroma,
-        huff_dc_luma: compute_huffman_table(&tables.huff_dc_luma),
-        huff_ac_luma: compute_huffman_table(&tables.huff_ac_luma),
-        huff_dc_chroma: compute_huffman_table(&tables.huff_dc_chroma),
-        huff_ac_chroma: compute_huffman_table(&tables.huff_ac_chroma),
-        entropy_capacity,
-    };
-    let entropy = compute::encode_jpeg_baseline_entropy_with_session(session, &job)?;
-
+    let params = encode_params(tile, options, sampling, entropy_capacity, 0)?;
+    let _ = session;
+    let context = tile.buffer.context();
+    let entropy = context
+        .encode_jpeg_baseline_entropy(&CudaJpegBaselineEntropyEncodeJob {
+            input: tile.buffer,
+            input_offset: tile.byte_offset,
+            params,
+            q_luma: tables.q_luma,
+            q_chroma: tables.q_chroma,
+            huff_dc_luma: compute_huffman_table(&tables.huff_dc_luma),
+            huff_ac_luma: compute_huffman_table(&tables.huff_ac_luma),
+            huff_dc_chroma: compute_huffman_table(&tables.huff_dc_chroma),
+            huff_ac_chroma: compute_huffman_table(&tables.huff_ac_chroma),
+            entropy_capacity,
+        })
+        .map_err(cuda_error)?;
     assemble_jpeg_baseline_frame(
         &entropy,
         tile.output_width,
         tile.output_height,
         &tables,
         options,
-        JpegBackend::Metal,
+        JpegBackend::Cuda,
     )
     .map_err(Into::into)
 }
 
-#[cfg(target_os = "macos")]
-/// Encode multiple Metal-resident tiles as baseline JPEG frames.
+#[cfg(feature = "cuda-runtime")]
+/// Encode multiple CUDA-resident tiles as baseline JPEG frames.
 ///
-/// Consecutive tiles that share a source Metal buffer are submitted through a
-/// single entropy-kernel batch where possible. The returned frames preserve the
-/// input order.
-pub fn encode_jpeg_baseline_batch_from_metal_buffers(
-    tiles: &[JpegBaselineMetalEncodeTile<'_>],
+/// Consecutive tiles that share a source CUDA buffer are submitted through a
+/// single entropy-kernel batch. The returned frames preserve input order.
+pub fn encode_jpeg_baseline_batch_from_cuda_buffers(
+    tiles: &[JpegBaselineCudaEncodeTile<'_>],
     options: JpegEncodeOptions,
-    session: &crate::MetalBackendSession,
+    session: &mut crate::CudaSession,
 ) -> Result<Vec<EncodedJpeg>, crate::Error> {
     if tiles.is_empty() {
         return Ok(Vec::new());
     }
     if tiles.len() == 1 {
-        return encode_jpeg_baseline_from_metal_buffer(tiles[0], options, session)
+        return encode_jpeg_baseline_from_cuda_buffer(tiles[0], options, session)
             .map(|encoded| vec![encoded]);
     }
 
     let tables = baseline_encode_tables(options)?;
     let sampling = tables.sampling;
-
     let mut encoded = Vec::with_capacity(tiles.len());
     let mut start = 0usize;
     while start < tiles.len() {
         validate_tile(tiles[start], options)?;
-        let buffer_address = tiles[start].buffer.gpu_address();
+        let buffer_ptr = tiles[start].buffer.device_ptr();
         let mut end = start + 1;
-        while end < tiles.len() && tiles[end].buffer.gpu_address() == buffer_address {
+        while end < tiles.len() && tiles[end].buffer.device_ptr() == buffer_ptr {
             validate_tile(tiles[end], options)?;
             end += 1;
         }
 
         if end - start == 1 {
-            encoded.push(encode_jpeg_baseline_from_metal_buffer(
+            encoded.push(encode_jpeg_baseline_from_cuda_buffer(
                 tiles[start],
                 options,
                 session,
@@ -142,25 +145,24 @@ pub fn encode_jpeg_baseline_batch_from_metal_buffers(
                 sampling,
                 options.restart_interval,
             )?;
-            let mut param = encode_params(*tile, options, sampling, entropy_capacity)?;
-            param.input_offset_bytes =
-                u32::try_from(tile.byte_offset).map_err(|_| crate::Error::MetalKernel {
-                    message: "JPEG Baseline Metal batch input offset exceeds u32".to_string(),
-                })?;
-            param.entropy_offset_bytes =
-                u32::try_from(total_entropy_capacity).map_err(|_| crate::Error::MetalKernel {
-                    message: "JPEG Baseline Metal batch entropy offset exceeds u32".to_string(),
-                })?;
+            let param = encode_params(
+                *tile,
+                options,
+                sampling,
+                entropy_capacity,
+                total_entropy_capacity,
+            )?;
             total_entropy_capacity = total_entropy_capacity
                 .checked_add(entropy_capacity)
                 .ok_or_else(|| {
-                    metal_kernel_error("JPEG Baseline Metal batch entropy capacity overflow")
+                    cuda_request_error("JPEG Baseline CUDA batch entropy capacity overflow")
                 })?;
             params.push(param);
         }
-        let entropy_chunks = compute::encode_jpeg_baseline_entropy_batch_with_session(
-            session,
-            &compute::JpegBaselineEntropyEncodeBatchJob {
+        let entropy_chunks = tiles[start]
+            .buffer
+            .context()
+            .encode_jpeg_baseline_entropy_batch(&CudaJpegBaselineEntropyEncodeBatchJob {
                 input: tiles[start].buffer,
                 params,
                 q_luma: tables.q_luma,
@@ -170,8 +172,8 @@ pub fn encode_jpeg_baseline_batch_from_metal_buffers(
                 huff_dc_chroma: compute_huffman_table(&tables.huff_dc_chroma),
                 huff_ac_chroma: compute_huffman_table(&tables.huff_ac_chroma),
                 entropy_capacity: total_entropy_capacity,
-            },
-        )?;
+            })
+            .map_err(cuda_error)?;
         for (tile, entropy) in tiles[start..end].iter().zip(entropy_chunks.iter()) {
             encoded.push(assemble_jpeg_baseline_frame(
                 entropy,
@@ -179,7 +181,7 @@ pub fn encode_jpeg_baseline_batch_from_metal_buffers(
                 tile.output_height,
                 &tables,
                 options,
-                JpegBackend::Metal,
+                JpegBackend::Cuda,
             )?);
         }
         start = end;
@@ -187,43 +189,43 @@ pub fn encode_jpeg_baseline_batch_from_metal_buffers(
     Ok(encoded)
 }
 
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for batch Metal encode requests on non-macOS hosts.
-pub fn encode_jpeg_baseline_batch_from_metal_buffers(
-    tiles: &[JpegBaselineMetalEncodeTile<'_>],
+#[cfg(not(feature = "cuda-runtime"))]
+/// Return `Error::CudaUnavailable` for batch CUDA encode requests without `cuda-runtime`.
+pub fn encode_jpeg_baseline_batch_from_cuda_buffers(
+    tiles: &[JpegBaselineCudaEncodeTile<'_>],
     options: JpegEncodeOptions,
-    session: &crate::MetalBackendSession,
+    session: &mut crate::CudaSession,
 ) -> Result<Vec<EncodedJpeg>, crate::Error> {
     let _ = (tiles, options, session);
-    Err(crate::Error::MetalUnavailable)
+    Err(crate::Error::CudaUnavailable)
 }
 
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for Metal encode requests on non-macOS hosts.
-pub fn encode_jpeg_baseline_from_metal_buffer(
-    tile: JpegBaselineMetalEncodeTile<'_>,
+#[cfg(not(feature = "cuda-runtime"))]
+/// Return `Error::CudaUnavailable` for CUDA encode requests without `cuda-runtime`.
+pub fn encode_jpeg_baseline_from_cuda_buffer(
+    tile: JpegBaselineCudaEncodeTile<'_>,
     options: JpegEncodeOptions,
-    session: &crate::MetalBackendSession,
+    session: &mut crate::CudaSession,
 ) -> Result<EncodedJpeg, crate::Error> {
     let _ = (tile, options, session);
-    Err(crate::Error::MetalUnavailable)
+    Err(crate::Error::CudaUnavailable)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(feature = "cuda-runtime")]
 fn validate_tile(
-    tile: JpegBaselineMetalEncodeTile<'_>,
+    tile: JpegBaselineCudaEncodeTile<'_>,
     options: JpegEncodeOptions,
 ) -> Result<(), crate::Error> {
     match options.backend {
-        JpegBackend::Auto | JpegBackend::Metal => {}
+        JpegBackend::Auto | JpegBackend::Cuda => {}
         JpegBackend::Cpu => {
-            return Err(crate::Error::UnsupportedMetalRequest {
-                reason: "JPEG Baseline Metal encode does not accept Cpu backend",
+            return Err(crate::Error::UnsupportedCudaRequest {
+                reason: "JPEG Baseline CUDA encode does not accept Cpu backend",
             });
         }
-        JpegBackend::Cuda => {
-            return Err(crate::Error::UnsupportedMetalRequest {
-                reason: "JPEG Baseline Metal encode does not accept Cuda backend",
+        JpegBackend::Metal => {
+            return Err(crate::Error::UnsupportedCudaRequest {
+                reason: "JPEG Baseline CUDA encode does not accept Metal backend",
             });
         }
     }
@@ -235,8 +237,8 @@ fn validate_tile(
         return Err(JpegEncodeError::EmptyDimensions.into());
     }
     if tile.width > tile.output_width || tile.height > tile.output_height {
-        return Err(crate::Error::UnsupportedMetalRequest {
-            reason: "JPEG Baseline Metal encode input cannot exceed output dimensions",
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "JPEG Baseline CUDA encode input cannot exceed output dimensions",
         });
     }
 
@@ -258,72 +260,73 @@ fn validate_tile(
             .into());
         }
         _ => {
-            return Err(crate::Error::UnsupportedMetalRequest {
-                reason: "JPEG Baseline Metal encode supports only Gray8 and Rgb8 input buffers",
+            return Err(crate::Error::UnsupportedCudaRequest {
+                reason: "JPEG Baseline CUDA encode supports only Gray8 and Rgb8 input buffers",
             });
         }
     };
 
     let row_bytes = (tile.width as usize)
         .checked_mul(bytes_per_pixel)
-        .ok_or_else(|| metal_kernel_error("JPEG Baseline Metal encode row byte count overflow"))?;
+        .ok_or_else(|| cuda_request_error("JPEG Baseline CUDA encode row byte count overflow"))?;
     if tile.pitch_bytes < row_bytes {
-        return Err(crate::Error::MetalKernel {
-            message: format!(
-                "JPEG Baseline Metal encode pitch is shorter than one row: need {row_bytes}, got {}",
-                tile.pitch_bytes
-            ),
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "JPEG Baseline CUDA encode pitch is shorter than one row",
         });
     }
     let last_row = (tile.height as usize)
         .checked_sub(1)
         .and_then(|row| row.checked_mul(tile.pitch_bytes))
-        .ok_or_else(|| metal_kernel_error("JPEG Baseline Metal encode input range overflow"))?;
+        .ok_or_else(|| cuda_request_error("JPEG Baseline CUDA encode input range overflow"))?;
     let required_end = tile
         .byte_offset
         .checked_add(last_row)
         .and_then(|offset| offset.checked_add(row_bytes))
-        .ok_or_else(|| metal_kernel_error("JPEG Baseline Metal encode input range overflow"))?;
-    let buffer_len =
-        usize::try_from(tile.buffer.length()).map_err(|_| crate::Error::MetalKernel {
-            message: "JPEG Baseline Metal encode buffer length exceeds usize".to_string(),
-        })?;
-    if required_end > buffer_len {
-        return Err(crate::Error::MetalKernel {
-            message: format!(
-                "JPEG Baseline Metal encode input range exceeds buffer length: need {required_end}, buffer has {buffer_len}"
-            ),
+        .ok_or_else(|| cuda_request_error("JPEG Baseline CUDA encode input range overflow"))?;
+    if required_end > tile.buffer.byte_len() {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "JPEG Baseline CUDA encode input range exceeds buffer length",
         });
     }
 
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(feature = "cuda-runtime")]
 fn encode_params(
-    tile: JpegBaselineMetalEncodeTile<'_>,
+    tile: JpegBaselineCudaEncodeTile<'_>,
     options: JpegEncodeOptions,
     sampling: JpegBaselineSampling,
     entropy_capacity: usize,
-) -> Result<compute::JpegBaselineEncodeParams, crate::Error> {
+    entropy_offset: usize,
+) -> Result<CudaJpegBaselineEncodeParams, crate::Error> {
     let mcu_width = u32::from(sampling.max_h) * 8;
     let mcu_height = u32::from(sampling.max_v) * 8;
     let mcus_per_row = tile.output_width.div_ceil(mcu_width);
     let mcu_rows = tile.output_height.div_ceil(mcu_height);
-    let pitch_bytes = u32::try_from(tile.pitch_bytes).map_err(|_| crate::Error::MetalKernel {
-        message: "JPEG Baseline Metal encode pitch exceeds u32".to_string(),
-    })?;
+    let pitch_bytes =
+        u32::try_from(tile.pitch_bytes).map_err(|_| crate::Error::UnsupportedCudaRequest {
+            reason: "JPEG Baseline CUDA encode pitch exceeds CUDA kernel limits",
+        })?;
+    let input_offset_bytes =
+        u32::try_from(tile.byte_offset).map_err(|_| crate::Error::UnsupportedCudaRequest {
+            reason: "JPEG Baseline CUDA encode input offset exceeds CUDA kernel limits",
+        })?;
+    let entropy_offset_bytes =
+        u32::try_from(entropy_offset).map_err(|_| crate::Error::UnsupportedCudaRequest {
+            reason: "JPEG Baseline CUDA encode entropy offset exceeds CUDA kernel limits",
+        })?;
     let format = match tile.format {
-        PixelFormat::Gray8 => compute::JPEG_BASELINE_ENCODE_FORMAT_GRAY8,
-        PixelFormat::Rgb8 => compute::JPEG_BASELINE_ENCODE_FORMAT_RGB8,
+        PixelFormat::Gray8 => CudaJpegBaselineEncodeFormat::Gray8.abi(),
+        PixelFormat::Rgb8 => CudaJpegBaselineEncodeFormat::Rgb8.abi(),
         _ => {
-            return Err(crate::Error::UnsupportedMetalRequest {
-                reason: "JPEG Baseline Metal encode supports only Gray8 and Rgb8 input buffers",
+            return Err(crate::Error::UnsupportedCudaRequest {
+                reason: "JPEG Baseline CUDA encode supports only Gray8 and Rgb8 input buffers",
             });
         }
     };
-    Ok(compute::JpegBaselineEncodeParams {
-        input_offset_bytes: 0,
+    Ok(CudaJpegBaselineEncodeParams {
+        input_offset_bytes,
         input_width: tile.width,
         input_height: tile.height,
         output_width: tile.output_width,
@@ -342,16 +345,16 @@ fn encode_params(
         v1: u32::from(sampling.v[1]),
         h2: u32::from(sampling.h[2]),
         v2: u32::from(sampling.v[2]),
-        entropy_offset_bytes: 0,
+        entropy_offset_bytes,
         entropy_capacity: u32::try_from(entropy_capacity).map_err(|_| {
-            crate::Error::UnsupportedMetalRequest {
-                reason: "JPEG Baseline Metal encode entropy capacity exceeds Metal kernel limits",
+            crate::Error::UnsupportedCudaRequest {
+                reason: "JPEG Baseline CUDA encode entropy capacity exceeds CUDA kernel limits",
             }
         })?,
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(feature = "cuda-runtime")]
 fn entropy_capacity_bytes(
     width: u32,
     height: u32,
@@ -360,26 +363,22 @@ fn entropy_capacity_bytes(
 ) -> Result<usize, crate::Error> {
     let capacity = jpeg_baseline_entropy_capacity_bytes(width, height, sampling, restart_interval)?;
     if capacity > u32::MAX as usize {
-        return Err(crate::Error::UnsupportedMetalRequest {
-            reason: "JPEG Baseline Metal encode entropy capacity exceeds Metal kernel limits",
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "JPEG Baseline CUDA encode entropy capacity exceeds CUDA kernel limits",
         });
     }
     Ok(capacity)
 }
 
-#[cfg(target_os = "macos")]
-fn compute_huffman_table(
-    source: &JpegBaselineHuffmanTable,
-) -> compute::JpegBaselineEncodeHuffmanTable {
-    compute::JpegBaselineEncodeHuffmanTable {
+#[cfg(feature = "cuda-runtime")]
+fn compute_huffman_table(source: &JpegBaselineHuffmanTable) -> CudaJpegBaselineEncodeHuffmanTable {
+    CudaJpegBaselineEncodeHuffmanTable {
         codes: source.codes,
         lens: source.lens,
     }
 }
 
-#[cfg(target_os = "macos")]
-fn metal_kernel_error(message: &'static str) -> crate::Error {
-    crate::Error::MetalKernel {
-        message: message.to_string(),
-    }
+#[cfg(feature = "cuda-runtime")]
+fn cuda_request_error(reason: &'static str) -> crate::Error {
+    crate::Error::UnsupportedCudaRequest { reason }
 }

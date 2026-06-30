@@ -439,6 +439,394 @@ pub struct BatchTranscodeReport {
     pub coefficient_path: JpegToHtj2kCoefficientPath,
 }
 
+/// Stable profile request label for transcode batch telemetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscodeBatchProfileRequest {
+    /// CPU-only transcode request.
+    Cpu,
+    /// Auto-routing request that may use an accelerator.
+    MetalAuto,
+    /// Explicit Metal request.
+    MetalExplicit,
+}
+
+impl TranscodeBatchProfileRequest {
+    /// Stable `request` label emitted in `j2k_profile` rows.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::MetalAuto => "metal_auto",
+            Self::MetalExplicit => "metal_explicit",
+        }
+    }
+
+    /// Stable `transform_processor` label for this request and timing report.
+    #[must_use]
+    pub fn transform_processor(self, timings: &TranscodeTimingReport) -> &'static str {
+        if matches!(self, Self::MetalAuto | Self::MetalExplicit)
+            && timings.accelerator_work_observed()
+        {
+            "metal"
+        } else {
+            "cpu"
+        }
+    }
+
+    /// Stable `path` label for this request and timing report.
+    #[must_use]
+    pub fn profile_path(self, timings: &TranscodeTimingReport) -> &'static str {
+        if self.transform_processor(timings) != "metal" {
+            return "cpu";
+        }
+        match self {
+            Self::Cpu => "cpu",
+            Self::MetalAuto => "auto",
+            Self::MetalExplicit => "metal",
+        }
+    }
+}
+
+/// Shared transcode batch profile row fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscodeBatchProfileRow {
+    fields: Vec<(&'static str, String)>,
+}
+
+type TranscodeBatchProfileFields = Vec<(&'static str, String)>;
+
+impl TranscodeBatchProfileRow {
+    /// Build profile fields for a batch transcode report.
+    #[must_use]
+    pub fn new(
+        report: &BatchTranscodeReport,
+        context: impl AsRef<str>,
+        request: TranscodeBatchProfileRequest,
+    ) -> Self {
+        let timings = report.timings;
+        let context = context.as_ref().replace(' ', "_");
+        let coefficient_path = format!("{:?}", report.coefficient_path);
+        let total_us = report
+            .extract_us
+            .saturating_add(report.transform_us)
+            .saturating_add(report.encode_us);
+        let transform_processor = request.transform_processor(&timings);
+        let path = request.profile_path(&timings);
+
+        let mut fields = Vec::with_capacity(68);
+        Self::push_route_fields(
+            &mut fields,
+            request,
+            path,
+            context,
+            coefficient_path,
+            transform_processor,
+        );
+        Self::push_batch_fields(&mut fields, report, total_us);
+        Self::push_input_timing_fields(&mut fields, &timings);
+        Self::push_dwt97_timing_fields(&mut fields, &timings);
+        Self::push_transfer_fields(&mut fields, &timings);
+        Self::push_encode_timing_fields(&mut fields, &timings);
+        Self::push_accelerator_fields(&mut fields, &timings);
+        Self { fields }
+    }
+
+    fn push_route_fields(
+        fields: &mut TranscodeBatchProfileFields,
+        request: TranscodeBatchProfileRequest,
+        path: &str,
+        context: String,
+        coefficient_path: String,
+        transform_processor: &str,
+    ) {
+        fields.extend([
+            ("codec", "transcode".to_string()),
+            ("op", "transcode_batch".to_string()),
+            ("request", request.as_str().to_string()),
+            ("path", path.to_string()),
+            ("pipeline", "jpeg_to_htj2k".to_string()),
+            ("context", context),
+            ("coefficient_path", coefficient_path),
+            ("extract_processor", "cpu".to_string()),
+            ("transform_processor", transform_processor.to_string()),
+            ("encode_processor", "cpu".to_string()),
+        ]);
+    }
+
+    fn push_batch_fields(
+        fields: &mut TranscodeBatchProfileFields,
+        report: &BatchTranscodeReport,
+        total_us: u128,
+    ) {
+        fields.extend([
+            ("tile_count", report.tile_count.to_string()),
+            ("successful_tiles", report.successful_tiles.to_string()),
+            ("failed_tiles", report.failed_tiles.to_string()),
+            (
+                "transformed_components",
+                report.transformed_components.to_string(),
+            ),
+            (
+                "reversible_dwt53_batches",
+                report.reversible_dwt53_batches.to_string(),
+            ),
+            (
+                "reversible_dwt53_batch_jobs",
+                report.reversible_dwt53_batch_jobs.to_string(),
+            ),
+            ("extract_us", report.extract_us.to_string()),
+            ("transform_us", report.transform_us.to_string()),
+            ("encode_us", report.encode_us.to_string()),
+            ("total_us", total_us.to_string()),
+        ]);
+    }
+
+    fn push_input_timing_fields(
+        fields: &mut TranscodeBatchProfileFields,
+        timings: &TranscodeTimingReport,
+    ) {
+        fields.extend([
+            (
+                "source_raw_probe_us",
+                timings.source_raw_probe_us.to_string(),
+            ),
+            (
+                "read_region_decode_us",
+                timings.read_region_decode_us.to_string(),
+            ),
+            ("compose_pad_us", timings.compose_pad_us.to_string()),
+            (
+                "generated_jpeg_encode_us",
+                timings.generated_jpeg_encode_us.to_string(),
+            ),
+            (
+                "jpeg_dct_extract_us",
+                timings.jpeg_dct_extract_us.to_string(),
+            ),
+            ("jpeg_dct_repack_us", timings.jpeg_dct_repack_us.to_string()),
+            (
+                "dct_to_wavelet_total_us",
+                timings.dct_to_wavelet_total_us.to_string(),
+            ),
+            (
+                "dct_to_wavelet_accelerator_us",
+                timings.dct_to_wavelet_accelerator_us.to_string(),
+            ),
+            (
+                "dct_to_wavelet_cpu_fallback_us",
+                timings.dct_to_wavelet_cpu_fallback_us.to_string(),
+            ),
+            ("dwt_decompose_us", timings.dwt_decompose_us.to_string()),
+        ]);
+    }
+
+    fn push_dwt97_timing_fields(
+        fields: &mut TranscodeBatchProfileFields,
+        timings: &TranscodeTimingReport,
+    ) {
+        fields.extend([
+            (
+                "dwt97_batch_pack_upload_us",
+                timings.dwt97_batch_pack_upload_us.to_string(),
+            ),
+            (
+                "dwt97_batch_pack_upload_transfers",
+                timings.dwt97_batch_pack_upload_transfers.to_string(),
+            ),
+            (
+                "dwt97_batch_pack_upload_bytes",
+                timings.dwt97_batch_pack_upload_bytes.to_string(),
+            ),
+            (
+                "dwt97_batch_resident_dct_handoff_count",
+                timings.dwt97_batch_resident_dct_handoff_count.to_string(),
+            ),
+            (
+                "dwt97_batch_idct_row_lift_us",
+                timings.dwt97_batch_idct_row_lift_us.to_string(),
+            ),
+            (
+                "dwt97_batch_column_lift_us",
+                timings.dwt97_batch_column_lift_us.to_string(),
+            ),
+            (
+                "dwt97_batch_resident_dwt_handoff_count",
+                timings.dwt97_batch_resident_dwt_handoff_count.to_string(),
+            ),
+            (
+                "dwt97_batch_quantize_codeblock_us",
+                timings.dwt97_batch_quantize_codeblock_us.to_string(),
+            ),
+            (
+                "dwt97_batch_ht_encode_us",
+                timings.dwt97_batch_ht_encode_us.to_string(),
+            ),
+            (
+                "dwt97_batch_ht_codeblock_dispatches",
+                timings.dwt97_batch_ht_codeblock_dispatches.to_string(),
+            ),
+        ]);
+    }
+
+    fn push_transfer_fields(
+        fields: &mut TranscodeBatchProfileFields,
+        timings: &TranscodeTimingReport,
+    ) {
+        let device_to_host_transfer_count = timings
+            .dwt97_batch_readback_transfers
+            .saturating_add(timings.dwt97_batch_ht_status_readback_transfers)
+            .saturating_add(timings.dwt97_batch_ht_output_readback_transfers);
+        let device_to_host_transfer_bytes = timings
+            .dwt97_batch_readback_bytes
+            .saturating_add(timings.dwt97_batch_ht_status_readback_bytes)
+            .saturating_add(timings.dwt97_batch_ht_output_readback_bytes);
+
+        fields.extend([
+            (
+                "dwt97_batch_ht_status_readback_us",
+                timings.dwt97_batch_ht_status_readback_us.to_string(),
+            ),
+            (
+                "dwt97_batch_ht_status_readback_transfers",
+                timings.dwt97_batch_ht_status_readback_transfers.to_string(),
+            ),
+            (
+                "dwt97_batch_ht_status_readback_bytes",
+                timings.dwt97_batch_ht_status_readback_bytes.to_string(),
+            ),
+            (
+                "dwt97_batch_ht_output_readback_us",
+                timings.dwt97_batch_ht_output_readback_us.to_string(),
+            ),
+            (
+                "dwt97_batch_ht_output_readback_transfers",
+                timings.dwt97_batch_ht_output_readback_transfers.to_string(),
+            ),
+            (
+                "dwt97_batch_ht_output_readback_bytes",
+                timings.dwt97_batch_ht_output_readback_bytes.to_string(),
+            ),
+            (
+                "dwt97_batch_readback_us",
+                timings.dwt97_batch_readback_us.to_string(),
+            ),
+            (
+                "dwt97_batch_readback_transfers",
+                timings.dwt97_batch_readback_transfers.to_string(),
+            ),
+            (
+                "dwt97_batch_readback_bytes",
+                timings.dwt97_batch_readback_bytes.to_string(),
+            ),
+            (
+                "host_to_device_transfer_count",
+                timings.dwt97_batch_pack_upload_transfers.to_string(),
+            ),
+            (
+                "host_to_device_transfer_bytes",
+                timings.dwt97_batch_pack_upload_bytes.to_string(),
+            ),
+            (
+                "device_to_host_transfer_count",
+                device_to_host_transfer_count.to_string(),
+            ),
+            (
+                "device_to_host_transfer_bytes",
+                device_to_host_transfer_bytes.to_string(),
+            ),
+        ]);
+    }
+
+    fn push_encode_timing_fields(
+        fields: &mut TranscodeBatchProfileFields,
+        timings: &TranscodeTimingReport,
+    ) {
+        fields.extend([
+            ("htj2k_encode_us", timings.htj2k_encode_us.to_string()),
+            (
+                "htj2k_encode_accelerator_dispatches",
+                timings.htj2k_encode_accelerator_dispatches.to_string(),
+            ),
+            (
+                "htj2k_encode_ht_code_block_dispatches",
+                timings.htj2k_encode_ht_code_block_dispatches.to_string(),
+            ),
+            (
+                "htj2k_encode_packetization_dispatches",
+                timings.htj2k_encode_packetization_dispatches.to_string(),
+            ),
+            ("component_count", timings.component_count.to_string()),
+            ("batch_count", timings.batch_count.to_string()),
+            ("batch_jobs", timings.batch_jobs.to_string()),
+        ]);
+    }
+
+    fn push_accelerator_fields(
+        fields: &mut TranscodeBatchProfileFields,
+        timings: &TranscodeTimingReport,
+    ) {
+        fields.extend([
+            (
+                "accelerator_attempts",
+                timings.accelerator_attempts.to_string(),
+            ),
+            ("accelerator_jobs", timings.accelerator_jobs.to_string()),
+            (
+                "accelerator_dispatches",
+                timings.accelerator_dispatches.to_string(),
+            ),
+            (
+                "accelerator_dispatched_jobs",
+                timings.accelerator_dispatched_jobs.to_string(),
+            ),
+            ("cpu_fallback_jobs", timings.cpu_fallback_jobs.to_string()),
+        ]);
+    }
+
+    /// Ordered profile row fields.
+    #[must_use]
+    pub fn fields(&self) -> &[(&'static str, String)] {
+        &self.fields
+    }
+
+    /// Stable profile codec label.
+    #[must_use]
+    pub fn codec(&self) -> &str {
+        self.required_field("codec")
+    }
+
+    /// Stable profile operation label.
+    #[must_use]
+    pub fn op(&self) -> &str {
+        self.required_field("op")
+    }
+
+    /// Stable profile path label.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        self.required_field("path")
+    }
+
+    fn required_field(&self, key: &str) -> &str {
+        self.fields
+            .iter()
+            .find_map(|(field_key, value)| (*field_key == key).then_some(value.as_str()))
+            .expect("transcode batch profile row includes required prefix field")
+    }
+}
+
+impl BatchTranscodeReport {
+    /// Build shared profile fields for a batch transcode report.
+    #[must_use]
+    pub fn profile_row(
+        &self,
+        context: impl AsRef<str>,
+        request: TranscodeBatchProfileRequest,
+    ) -> TranscodeBatchProfileRow {
+        TranscodeBatchProfileRow::new(self, context, request)
+    }
+}
+
 /// Detailed timing and dispatch counters for JPEG-to-HTJ2K transcode.
 ///
 /// Durations are wall-clock microseconds measured around the current Rust API
@@ -542,6 +930,29 @@ pub struct TranscodeTimingReport {
 }
 
 impl TranscodeTimingReport {
+    /// Returns true when the report contains evidence that accelerator-backed
+    /// work executed for the transcode transform path.
+    pub fn accelerator_work_observed(&self) -> bool {
+        self.accelerator_dispatches > 0
+            || self.dwt97_batch_pack_upload_transfers > 0
+            || self.dwt97_batch_pack_upload_bytes > 0
+            || self.dwt97_batch_resident_dct_handoff_count > 0
+            || self.dwt97_batch_idct_row_lift_us > 0
+            || self.dwt97_batch_column_lift_us > 0
+            || self.dwt97_batch_resident_dwt_handoff_count > 0
+            || self.dwt97_batch_quantize_codeblock_us > 0
+            || self.dwt97_batch_ht_encode_us > 0
+            || self.dwt97_batch_ht_kernel_us > 0
+            || self.dwt97_batch_ht_compact_us > 0
+            || self.dwt97_batch_ht_codeblock_dispatches > 0
+            || self.dwt97_batch_readback_transfers > 0
+            || self.dwt97_batch_readback_bytes > 0
+            || self.dwt97_batch_ht_status_readback_transfers > 0
+            || self.dwt97_batch_ht_status_readback_bytes > 0
+            || self.dwt97_batch_ht_output_readback_transfers > 0
+            || self.dwt97_batch_ht_output_readback_bytes > 0
+    }
+
     fn add_assign(&mut self, other: Self) {
         macro_rules! saturating_add_fields {
             ($($field:ident),+ $(,)?) => {
@@ -4186,6 +4597,119 @@ mod tests {
         assert_eq!(report.tile_count, 7);
         assert_eq!(report.accelerator_jobs, 10);
         assert_eq!(report.cpu_fallback_jobs, 15);
+    }
+
+    #[test]
+    fn timing_report_classifies_accelerator_work_from_dispatch_and_resident_counters() {
+        assert!(!TranscodeTimingReport::default().accelerator_work_observed());
+
+        assert!(TranscodeTimingReport {
+            accelerator_dispatches: 1,
+            ..TranscodeTimingReport::default()
+        }
+        .accelerator_work_observed());
+
+        assert!(TranscodeTimingReport {
+            dwt97_batch_pack_upload_bytes: 1,
+            ..TranscodeTimingReport::default()
+        }
+        .accelerator_work_observed());
+
+        assert!(TranscodeTimingReport {
+            dwt97_batch_ht_output_readback_transfers: 1,
+            ..TranscodeTimingReport::default()
+        }
+        .accelerator_work_observed());
+    }
+
+    #[test]
+    fn transcode_batch_profile_row_preserves_labels_and_metric_rollups() {
+        let report = BatchTranscodeReport {
+            tile_count: 2,
+            successful_tiles: 2,
+            failed_tiles: 0,
+            transformed_components: 6,
+            reversible_dwt53_batches: 1,
+            reversible_dwt53_batch_jobs: 6,
+            extract_us: 10,
+            transform_us: 20,
+            encode_us: 30,
+            timings: TranscodeTimingReport {
+                jpeg_dct_extract_us: 11,
+                dct_to_wavelet_total_us: 22,
+                dwt97_batch_pack_upload_transfers: 1,
+                dwt97_batch_pack_upload_bytes: 8,
+                dwt97_batch_resident_dct_handoff_count: 3,
+                dwt97_batch_resident_dwt_handoff_count: 4,
+                dwt97_batch_ht_status_readback_transfers: 2,
+                dwt97_batch_ht_status_readback_bytes: 16,
+                dwt97_batch_ht_output_readback_transfers: 3,
+                dwt97_batch_ht_output_readback_bytes: 24,
+                dwt97_batch_readback_transfers: 5,
+                dwt97_batch_readback_bytes: 40,
+                htj2k_encode_us: 33,
+                component_count: 6,
+                batch_count: 1,
+                batch_jobs: 6,
+                accelerator_dispatches: 1,
+                accelerator_dispatched_jobs: 6,
+                cpu_fallback_jobs: 0,
+                ..TranscodeTimingReport::default()
+            },
+            coefficient_path: JpegToHtj2kCoefficientPath::IntegerDirect53,
+        };
+
+        let row = report.profile_row("fixture batch", TranscodeBatchProfileRequest::MetalAuto);
+        let fields = row.fields();
+        let get = |key: &str| {
+            fields
+                .iter()
+                .find_map(|(field_key, value)| (*field_key == key).then_some(value.as_str()))
+                .unwrap_or_else(|| panic!("missing profile field {key}"))
+        };
+
+        assert_eq!(fields[0].0, "codec");
+        assert_eq!(fields[1].0, "op");
+        assert_eq!(fields[2].0, "request");
+        assert_eq!(fields[3].0, "path");
+        assert_eq!(fields[4].0, "pipeline");
+        assert_eq!(fields[5].0, "context");
+        assert_eq!(get("codec"), "transcode");
+        assert_eq!(get("op"), "transcode_batch");
+        assert_eq!(get("request"), "metal_auto");
+        assert_eq!(get("path"), "auto");
+        assert_eq!(get("pipeline"), "jpeg_to_htj2k");
+        assert_eq!(get("context"), "fixture_batch");
+        assert_eq!(get("coefficient_path"), "IntegerDirect53");
+        assert_eq!(get("extract_processor"), "cpu");
+        assert_eq!(get("transform_processor"), "metal");
+        assert_eq!(get("encode_processor"), "cpu");
+        assert_eq!(get("tile_count"), "2");
+        assert_eq!(get("successful_tiles"), "2");
+        assert_eq!(get("transformed_components"), "6");
+        assert_eq!(get("total_us"), "60");
+        assert_eq!(get("jpeg_dct_extract_us"), "11");
+        assert_eq!(get("dct_to_wavelet_total_us"), "22");
+        assert_eq!(get("htj2k_encode_us"), "33");
+        assert_eq!(get("host_to_device_transfer_count"), "1");
+        assert_eq!(get("host_to_device_transfer_bytes"), "8");
+        assert_eq!(get("device_to_host_transfer_count"), "10");
+        assert_eq!(get("device_to_host_transfer_bytes"), "80");
+        assert_eq!(get("accelerator_dispatches"), "1");
+        assert_eq!(get("cpu_fallback_jobs"), "0");
+        assert_eq!(row.codec(), "transcode");
+        assert_eq!(row.op(), "transcode_batch");
+        assert_eq!(row.path(), "auto");
+
+        assert_eq!(
+            TranscodeBatchProfileRequest::MetalExplicit
+                .profile_path(&TranscodeTimingReport::default()),
+            "cpu"
+        );
+        assert_eq!(
+            TranscodeBatchProfileRequest::Cpu.profile_path(&report.timings),
+            "cpu"
+        );
     }
 
     #[derive(Default)]

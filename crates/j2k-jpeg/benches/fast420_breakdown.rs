@@ -11,7 +11,10 @@ mod common;
 use common::{
     j2k_decode_tile_batch_sequential, libjpeg_turbo_available, libjpeg_turbo_decode_batch,
     load_bench_inputs,
-    report::{format_ms, median_ns, report_iterations, write_reports},
+    report::{
+        escape_csv, escape_markdown_table_cell, format_ms, median_ns, report_iterations,
+        write_reports,
+    },
     TurboJpegDecoder,
 };
 use j2k_jpeg::bench_support::{bench_profile_fast420_tile_batch, BenchFast420Profile};
@@ -82,8 +85,8 @@ fn render_csv(rows: &[BreakdownRow]) -> String {
     for row in rows {
         let counts = row.profile.block_activity_counts();
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            row.input_name,
+            "\"{}\",{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            escape_csv(&row.input_name),
             row.j2k_ns,
             row.turbo_ns.map_or_else(String::new, |ns| ns.to_string()),
             row.turbo_ns
@@ -147,7 +150,7 @@ fn render_markdown(rows: &[BreakdownRow], iterations: usize) -> String {
         let counts = row.profile.block_activity_counts();
         md.push_str(&format!(
             "| {} | {} | {} | {} | {} ({:.1}%) | {} ({:.1}%) | {} ({:.1}%) | {}/{}/{} |\n",
-            row.input_name,
+            escape_markdown_table_cell(&row.input_name),
             format_ms(row.j2k_ns),
             row.turbo_ns.map_or_else(|| "n/a".to_string(), format_ms),
             row.turbo_ns.map_or_else(

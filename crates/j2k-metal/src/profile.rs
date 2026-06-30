@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::cell::RefCell;
-use std::sync::OnceLock;
-use std::time::Instant;
 
-use j2k_profile::{profile_stage_mode_from_env, same_summary_labels, ProfileStageMode};
-
-const METAL_PROFILE_STAGES_ENV: &str = "J2K_METAL_PROFILE_STAGES";
+use j2k_profile::same_summary_labels;
 
 thread_local! {
     static METAL_BATCH_PROFILE_SUMMARY: RefCell<j2k_profile::ProfileSummary> =
@@ -24,7 +20,7 @@ thread_local! {
         ])).emit_on_drop());
 }
 
-pub(crate) type ProfileInstant = Instant;
+pub(crate) use j2k_profile::{elapsed_us, profile_now};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MetalBatchProfileRow<'a> {
@@ -41,21 +37,12 @@ pub(crate) struct MetalBatchProfileRow<'a> {
     pub(crate) outcome: &'a str,
 }
 
-pub(crate) fn metal_profile_stage_mode() -> ProfileStageMode {
-    static MODE: OnceLock<ProfileStageMode> = OnceLock::new();
-    *MODE.get_or_init(|| profile_stage_mode_from_env(METAL_PROFILE_STAGES_ENV))
+pub(crate) fn metal_profile_stage_mode() -> j2k_profile::ProfileStageMode {
+    crate::profile_env::metal_profile_stage_mode()
 }
 
 pub(crate) fn metal_profile_stages_enabled() -> bool {
-    metal_profile_stage_mode() != ProfileStageMode::Disabled
-}
-
-pub(crate) fn profile_now(enabled: bool) -> Option<ProfileInstant> {
-    enabled.then(Instant::now)
-}
-
-pub(crate) fn elapsed_us(start: Option<ProfileInstant>) -> u128 {
-    start.map_or(0, |start| start.elapsed().as_micros())
+    metal_profile_stage_mode() != j2k_profile::ProfileStageMode::Disabled
 }
 
 pub(crate) fn emit_metal_batch_profile_row(path: &str, row: &MetalBatchProfileRow<'_>) {
@@ -155,6 +142,42 @@ mod tests {
                 ("output_count".to_string(), "16".to_string()),
                 ("elapsed_us".to_string(), "42".to_string()),
                 ("outcome".to_string(), "metal_surface".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn metal_batch_profile_uses_shared_summary_stage_mode() {
+        let _guard = crate::profile_env::force_metal_profile_stage_mode_for_test(
+            j2k_profile::ProfileStageMode::Summary,
+        );
+        METAL_BATCH_PROFILE_SUMMARY.with(|summary| {
+            let _ = summary.borrow_mut().take_formatted_rows();
+        });
+
+        emit_metal_batch_profile_row(
+            "decode",
+            &MetalBatchProfileRow {
+                slice: "decode_batch",
+                stage: "execute",
+                pipeline: "metal_cpu_hybrid",
+                processor: "hybrid",
+                route: "auto",
+                backend: "Auto",
+                fmt: "Rgb8",
+                request_count: 2,
+                output_count: 2,
+                elapsed_us: 42,
+                outcome: "metal_surface",
+            },
+        );
+
+        let rows =
+            METAL_BATCH_PROFILE_SUMMARY.with(|summary| summary.borrow_mut().take_formatted_rows());
+        assert_eq!(
+            rows,
+            vec![
+                "j2k_profile_summary codec=j2k op=metal_batch path=decode slice=decode_batch stage=execute pipeline=metal_cpu_hybrid processor=hybrid metric_kind=wall_elapsed aggregation=exclusive route=auto backend=Auto fmt=Rgb8 outcome=metal_surface count=1 elapsed_us_sum=42 elapsed_us_avg=42 output_count_sum=2 request_count_sum=2"
             ]
         );
     }

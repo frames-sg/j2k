@@ -58,7 +58,7 @@ j2k-cuda-runtime -> j2k-core
 j2k-transcode-metal -> j2k-core, j2k-metal, j2k-metal-support, j2k-transcode
 j2k-transcode-cuda -> j2k-cuda-runtime, j2k-native, j2k-transcode
 j2k-cli -> j2k, j2k-jpeg, j2k-transcode
-xtask -> j2k, j2k-compare, j2k-native, j2k-test-support
+xtask -> j2k, j2k-compare, j2k-native, j2k-profile, j2k-test-support
 ```
 
 ## Backend policy
@@ -68,9 +68,10 @@ stage acceleration, but they must preserve explicit unsupported errors for
 unsupported requests.
 
 CUDA adapters use `j2k-cuda-runtime`, which owns the shared CUDA Driver API
-runtime, kernel modules, and host launch orchestration for supported CUDA codec
-stages. `cuda-runtime` support is an implementation dependency, not proof of
-NVIDIA performance.
+runtime, CUDA Oxide module loading, and host launch orchestration for supported
+CUDA codec stages. The migration target is CUDA Oxide-only device kernels while
+retaining Rust host-side Driver API orchestration. `cuda-runtime` support is an
+implementation dependency, not proof of NVIDIA performance.
 
 Metal adapters use `j2k-metal-support` for device, queue, shader-library,
 pipeline loading, and route-label helpers. Codec-specific kernels stay in codec

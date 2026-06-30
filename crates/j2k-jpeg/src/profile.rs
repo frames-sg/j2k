@@ -4,9 +4,7 @@ use std::cell::RefCell;
 use std::sync::OnceLock;
 
 pub(crate) use j2k_profile::duration_us_string;
-use j2k_profile::{
-    profile_stage_mode_from_env, same_summary_labels, ProfileStageMode, SummaryLabel,
-};
+use j2k_profile::{same_summary_labels, ProfileStageMode, StageModeCache, SummaryLabel};
 
 #[cfg(test)]
 pub(crate) use j2k_profile::ProfileSummary;
@@ -19,8 +17,8 @@ pub(crate) fn jpeg_profile_stages_enabled() -> bool {
 }
 
 fn jpeg_profile_stage_mode() -> ProfileStageMode {
-    static MODE: OnceLock<ProfileStageMode> = OnceLock::new();
-    *MODE.get_or_init(|| profile_stage_mode_from_env(JPEG_PROFILE_STAGES_ENV))
+    static MODE: StageModeCache = StageModeCache::new();
+    MODE.mode_from_env(JPEG_PROFILE_STAGES_ENV)
 }
 
 pub(crate) fn emit_jpeg_profile_row(op: &str, path: &str, fields: &[(&str, &str)]) {
@@ -53,9 +51,14 @@ mod tests {
 
     #[test]
     fn profile_summary_groups_rows_and_averages_timing_fields() {
-        let mut summary = ProfileSummary::new(summary_label_fields().iter().cloned());
-        j2k_profile::record_timing_summary_str(
-            &mut summary,
+        thread_local! {
+            static TEST_SUMMARY: RefCell<ProfileSummary> =
+                RefCell::new(ProfileSummary::new(summary_label_fields().iter().cloned()));
+        }
+
+        j2k_profile::emit_profile_row_with_timing_summary(
+            ProfileStageMode::Summary,
+            &TEST_SUMMARY,
             "jpeg",
             "decode",
             "cpu",
@@ -69,8 +72,9 @@ mod tests {
             ],
             SUMMARY_LABEL_FIELD_KEYS,
         );
-        j2k_profile::record_timing_summary_str(
-            &mut summary,
+        j2k_profile::emit_profile_row_with_timing_summary(
+            ProfileStageMode::Summary,
+            &TEST_SUMMARY,
             "jpeg",
             "decode",
             "cpu",
@@ -85,11 +89,13 @@ mod tests {
             SUMMARY_LABEL_FIELD_KEYS,
         );
 
-        assert_eq!(
-            summary.format_rows(),
-            vec![
-                "j2k_profile_summary codec=jpeg op=decode path=cpu mode=full fmt=Rgb8 count=2 decode_us_sum=12 decode_us_avg=6 total_us_sum=16 total_us_avg=8"
-            ]
-        );
+        TEST_SUMMARY.with(|summary| {
+            assert_eq!(
+                summary.borrow().format_rows(),
+                vec![
+                    "j2k_profile_summary codec=jpeg op=decode path=cpu mode=full fmt=Rgb8 count=2 decode_us_sum=12 decode_us_avg=6 total_us_sum=16 total_us_avg=8"
+                ]
+            );
+        });
     }
 }

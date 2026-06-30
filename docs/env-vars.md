@@ -26,8 +26,8 @@ Stability values:
 | `J2K_CUDA_DISABLE_STAGE_TIMINGS` | Disables CUDA stage timing collection for benchmark runs. | Timings enabled | Experimental |
 | `J2K_CUDA_DISABLE_DWT97_FUSED_COLUMN_QUANTIZE` | Disables the fused CUDA DWT 9/7 column quantize path. | Fused path enabled when supported | Experimental |
 | `J2K_CUDA_DISABLE_COMPACT_PREENCODED` | Forces the CUDA transcode adapter to decline compact preencoded resident HT encode support. | Compact resident support enabled when supported | Experimental |
-| `J2K_JPEG_METAL_FAST420_BATCH_TIMING` | Emits JPEG Metal fast 4:2:0 batch timing profile rows when set to `1`. | Disabled | Experimental |
-| `J2K_METAL_PROFILE_STAGES` | Enables J2K Metal stage profile rows when set to `1`. | Disabled | Experimental |
+| `J2K_JPEG_METAL_FAST420_BATCH_TIMING` | Emits JPEG Metal fast 4:2:0 batch timing profiles. Use `1` for rows or `summary` for aggregate rows. | Disabled | Experimental |
+| `J2K_METAL_PROFILE_STAGES` | Enables J2K Metal stage profile rows for truthy values such as `1`; `summary` / `aggregate` emits aggregate rows where the profile path supports summaries. | Disabled | Experimental |
 | `J2K_METAL_PROFILE_SIGNPOSTS` | Enables J2K Metal OS signposts when set to `1` and stage profiling is enabled. | Disabled | Experimental |
 | `J2K_METAL_PROFILE_DECODE_LABEL` | Labels J2K Metal decode profile rows. Non-alphanumeric characters are sanitized. | `unlabeled` | Experimental |
 | `J2K_METAL_PROFILE_DECODE_SPLIT_COMMANDS` | Adds split-command decode timing rows when J2K Metal stage profiling is enabled. | Disabled | Experimental |
@@ -40,7 +40,7 @@ Stability values:
 | `J2K_METAL_PROFILE_CLASSIC_TIER1_TOKEN_EMIT` | Emits classic Tier-1 token-emission profiling when J2K Metal stage profiling is enabled. | Disabled | Experimental |
 | `J2K_METAL_PROFILE_CLASSIC_TIER1_SPLIT_TOKEN_EMIT` | Emits classic Tier-1 split-token-emission profiling when J2K Metal stage profiling is enabled. | Disabled | Experimental |
 | `J2K_METAL_PROFILE_CLASSIC_TIER1_TOKEN_PACK` | Emits classic Tier-1 token-pack profiling and also enables token-emission profiling. | Disabled | Experimental |
-| `J2K_TRANSCODE_METAL_PROFILE_STAGES` | Enables transcode Metal profiling rows in the DCT 5/3 and 9/7 benchmark harness. | Disabled | Benchmark |
+| `J2K_TRANSCODE_METAL_PROFILE_STAGES` | Enables transcode Metal profiling in the DCT 5/3 and 9/7 benchmark harness. Use `1` for rows or `summary` for aggregate rows. | Disabled | Benchmark |
 
 ## Experimental Backend Routing
 
@@ -53,17 +53,7 @@ Stability values:
 | `J2K_METAL_CLASSIC_TIER1_SPLIT_MQ_BYTE_GPU_TOKEN_PACK` | Set to `1` to request, or `0` to disable, the split MQ-byte GPU token-pack route. | Auto | Experimental |
 | `J2K_HYBRID_FLAT_CPU_TIER1` | Forces flat CPU Tier-1 batching for J2K Metal hybrid decode when set to a truthy value accepted by the adapter. | Adapter default | Experimental |
 | `J2K_CUDA_OXIDE_ARCH` | Overrides the cuda-oxide build target when a `j2k-cuda-runtime/cuda-oxide-*` feature is enabled. | `sm_80` | Experimental |
-| `J2K_CUDA_USE_OXIDE_J2K_DECODE_STORE` | Routes supported J2K decode store and inverse-MCT CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-decode-store` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
-| `J2K_CUDA_USE_OXIDE_J2K_DEQUANTIZE` | Routes supported J2K HTJ2K dequantize CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-dequantize` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
-| `J2K_CUDA_USE_OXIDE_J2K_ENCODE` | Routes supported J2K encode-stage CUDA kernels, HTJ2K encoded-byte compaction, and HTJ2K packetization through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-encode` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
-| `J2K_CUDA_USE_OXIDE_J2K_IDWT` | Routes supported generic J2K inverse-DWT CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-j2k-idwt` is enabled and PTX was generated. | Built-in CUDA C PTX | Experimental |
-| `J2K_CUDA_USE_OXIDE_TRANSCODE` | Routes supported reversible 5/3 and irreversible 9/7 transcode CUDA kernels through the cuda-oxide PTX when `j2k-cuda-runtime/cuda-oxide-transcode` is enabled and PTX was generated. This includes staged, batched, code-block quantize, and fused i16 9/7 paths. | Built-in CUDA C PTX | Experimental |
-| `J2K_REQUIRE_CUDA_OXIDE_COPY_U8` | Requires cuda-oxide CopyU8 PTX generation when `j2k-cuda-runtime/cuda-oxide-copy-u8` is enabled. | Disabled | Experimental |
-| `J2K_REQUIRE_CUDA_OXIDE_J2K_DECODE_STORE` | Requires cuda-oxide J2K decode store/inverse-MCT PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-decode-store` is enabled. | Disabled | Experimental |
-| `J2K_REQUIRE_CUDA_OXIDE_J2K_DEQUANTIZE` | Requires cuda-oxide J2K HTJ2K dequantize PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-dequantize` is enabled. | Disabled | Experimental |
-| `J2K_REQUIRE_CUDA_OXIDE_J2K_ENCODE` | Requires cuda-oxide J2K encode-stage, HTJ2K compaction, and HTJ2K packetization PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-encode` is enabled. | Disabled | Experimental |
-| `J2K_REQUIRE_CUDA_OXIDE_J2K_IDWT` | Requires cuda-oxide J2K generic inverse-DWT PTX generation when `j2k-cuda-runtime/cuda-oxide-j2k-idwt` is enabled. | Disabled | Experimental |
-| `J2K_REQUIRE_CUDA_OXIDE_TRANSCODE` | Requires cuda-oxide reversible 5/3 transcode PTX generation when `j2k-cuda-runtime/cuda-oxide-transcode` is enabled. | Disabled | Experimental |
+| `J2K_REQUIRE_CUDA_OXIDE_BUILD` | Requires every enabled cuda-oxide PTX project to build successfully. Use this on Linux/NVIDIA validation and benchmark hosts. | Disabled | Test/CI |
 
 ## Test And CI Gates
 
@@ -74,13 +64,10 @@ Stability values:
 | `J2K_REQUIRE_OPENJPH` | Makes optional OpenJPH fixture comparator rows fail instead of skip when `ojph_expand` is unavailable. Intended only for HTJ2K/JPH-compatible CLI context rows. | Skip unavailable OpenJPH path unless explicitly included | Benchmark |
 | `J2K_REQUIRE_KAKADU` | Makes optional Kakadu fixture/encoder comparator rows fail instead of skip when `kdu_expand` or `kdu_compress` is unavailable. Intended only for proprietary CLI/file-output context rows. | Skip unavailable Kakadu path unless explicitly included | Benchmark |
 | `J2K_REQUIRE_LIBJPEG_TURBO` | Makes libjpeg-turbo comparison tests fail instead of skip when the bench feature/tooling is unavailable. | Skip unavailable comparator path | Test/CI |
-| `J2K_REQUIRE_CUDA_RUNTIME` | Makes CUDA tests and NVIDIA comparison harnesses require a usable CUDA runtime instead of skipping. | Skip runtime-only CUDA paths | Test/CI |
-| `J2K_REQUIRE_CUDA_HTJ2K_STRICT` | Requires CUDA HTJ2K strict validation and makes CUDA kernel build failures fatal in the runtime build script. | Non-strict when runtime unavailable | Test/CI |
-| `J2K_REQUIRE_CUDA_KERNEL_BUILD` | Makes CUDA kernel compilation failures fatal in the runtime build script. | Kernel build may be skipped when unsupported | Test/CI |
+| `J2K_REQUIRE_CUDA_RUNTIME` | Makes CUDA tests and benchmarks require a usable CUDA runtime instead of skipping. | Skip runtime-only CUDA paths | Test/CI |
 | `J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE` | Requires CUDA JPEG hardware decode coverage in relevant CUDA tests/benches. | Hardware decode may skip | Test/CI |
 | `J2K_REQUIRE_CUDA_BENCH` | Makes CUDA benchmark probes fail instead of skip when CUDA is unavailable or does not dispatch. | Skip unavailable CUDA benchmark paths | Benchmark |
 | `J2K_REQUIRE_METAL_BENCH` | Makes Metal benchmark probes fail instead of skip when Metal is unavailable or does not dispatch. | Skip unavailable Metal benchmark paths | Benchmark |
-| `J2K_REQUIRE_NV_BASELINE_BUILD` | Makes the standalone GPU baseline harness require its CUDA build dependencies. | Baseline build may skip unavailable pieces | Test/CI |
 | `J2K_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS` | Allows hosted macOS CI to run J2K Metal runtime tests that are otherwise skipped there. | Hosted runtime tests skipped | Test/CI |
 | `J2K_REQUIRE_WSI_ROOT` | Makes external JPEG WSI tests fail if `J2K_WSI_ROOT` is missing or empty. | Skip external WSI tests | Test/CI |
 | `J2K_REQUIRE_TRANSCODE_WSI_ROOT` | Makes transcode corpus validation require `J2K_TRANSCODE_WSI_ROOT`. | Skip external transcode WSI corpus | Test/CI |

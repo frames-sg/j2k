@@ -21,11 +21,6 @@ on:
         type: boolean
         required: false
         default: false
-      run-nvidia-baseline:
-        description: "Run the nvJPEG/nvJPEG2000 baseline comparison (requires nvJPEG2000 installed on the runner)"
-        type: boolean
-        required: false
-        default: false
       run-cuda-htj2k-decode-profile:
         description: "Collect CUDA HTJ2K decode RCA/profile log, trace, and Criterion artifacts"
         type: boolean
@@ -103,9 +98,8 @@ jobs:
     name: CUDA API compatibility on x86_64
     runs-on: [self-hosted, Linux, X64, cuda]
     env:
-      NVCC: /usr/local/cuda/bin/nvcc
       J2K_REQUIRE_CUDA_RUNTIME: "1"
-      J2K_REQUIRE_CUDA_HTJ2K_STRICT: "1"
+      J2K_REQUIRE_CUDA_OXIDE_BUILD: "1"
       J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE: "1"
       RUST_TEST_THREADS: "1"
     steps:
@@ -148,105 +142,6 @@ jobs:
           echo "transcode parity tests passed: ${passed:-0}"
           test "${passed:-0}" -ge 7 || { echo "Expected at least 7 executed transcode parity tests, got ${passed:-0} — tests may have silently skipped"; exit 1; }
       - run: cargo test -p j2k-cuda --all-targets --features cuda-profiling
-      # Opt-in test-only NVIDIA codec comparator. Requires a separately-installed
-      # library (set NVJPEG2K_LIB_DIR / NVJPEG2K_INCLUDE_DIR if it is not under
-      # /usr/local/cuda). Set the repo variable J2K_BENCH_SVS to an .svs on
-      # the runner to extract real WSI tiles; or J2K_BENCH_JPEG_DIR to a
-      # pre-extracted tile directory. With neither, it runs the committed pancreas
-      # tile corpus and requires at least 100 benchmark tiles.
-      - name: NVIDIA baseline comparison
-        if: ${{ inputs.run-nvidia-baseline }}
-        env:
-          J2K_REQUIRE_CUDA_RUNTIME: "1"
-          J2K_REQUIRE_CUDA_HTJ2K_STRICT: "1"
-          J2K_REQUIRE_NV_BASELINE_BUILD: "1"
-          J2K_BENCH_SVS: ${{ vars.J2K_BENCH_SVS }}
-          J2K_BENCH_JPEG_DIR: ${{ vars.J2K_BENCH_JPEG_DIR }}
-        run: |
-          set -e
-          DIR="${J2K_BENCH_JPEG_DIR:-}"
-          if [ -z "$DIR" ] && [ -n "${J2K_BENCH_SVS:-}" ]; then
-            if [ ! -f "${J2K_BENCH_SVS}" ]; then
-              echo "Configured J2K_BENCH_SVS does not exist: ${J2K_BENCH_SVS}" >&2
-              exit 1
-            fi
-            echo "extracting benchmark tiles from ${J2K_BENCH_SVS}"
-            cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --bin svs_extract -- \
-              "${J2K_BENCH_SVS}" "${RUNNER_TEMP:-/tmp}/svs_bench_tiles" \
-              --limit 256 --stride 51 --quality 85 --min-tissue 0.6
-            DIR="${RUNNER_TEMP:-/tmp}/svs_bench_tiles"
-          fi
-          # Default to the committed pancreas tissue tiles when nothing else is set.
-          if [ -z "$DIR" ]; then
-            DIR="tests/nvidia-baseline/benchtiles/pancreas"
-          fi
-          export J2K_BENCH_JPEG_DIR="$DIR"
-          echo "benchmark JPEG dir: ${J2K_BENCH_JPEG_DIR}"
-          cargo test --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --all-targets
-          cargo clippy --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --all-targets -- -D warnings
-          cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --bin transcode_compare -- \
-            --decomposition-levels 1 \
-            --quant-scales 1.90 \
-            --match-nvidia-bytes \
-            --match-tolerance 0.20 \
-            --min-tiles 100 \
-            --warmup 3 \
-            --iterations 8 \
-            --json target/transcode_compare_level1.json \
-            --csv target/transcode_compare_level1.csv
-          python3 -m json.tool target/transcode_compare_level1.json >/dev/null
-          python3 tests/nvidia-baseline/scripts/assert_transcode_perf.py \
-            --json target/transcode_compare_level1.json \
-            --label cuda-htj2k-transcode-level1-rate-match \
-            --min-cuda-ht-mps "${J2K_LEVEL1_CUDA_HT_MIN_MPS:-350}" \
-            --min-cuda-ht-speedup-vs-nvidia "${J2K_LEVEL1_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA:-4.0}" \
-            --max-byte-delta-abs 0.20 \
-            --min-ht-codeblock-dispatches 1
-          cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --bin transcode_compare -- \
-            --decomposition-levels 2 \
-            --quant-scales 1.00 \
-            --subband-scales 1.00,1.00,1.00,1.00 \
-            --match-nvidia-bytes \
-            --match-tolerance 0.20 \
-            --min-tiles 100 \
-            --warmup 3 \
-            --iterations 8 \
-            --json target/transcode_compare_level2.json \
-            --csv target/transcode_compare_level2.csv
-          python3 -m json.tool target/transcode_compare_level2.json >/dev/null
-          python3 tests/nvidia-baseline/scripts/assert_transcode_perf.py \
-            --json target/transcode_compare_level2.json \
-            --label cuda-htj2k-transcode-level2-rate-match \
-            --min-cuda-ht-mps "${J2K_LEVEL2_CUDA_HT_MIN_MPS:-60}" \
-            --min-cuda-ht-speedup-vs-nvidia "${J2K_LEVEL2_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA:-1.10}" \
-            --max-byte-delta-abs 0.20 \
-            --min-ht-codeblock-dispatches 1
-          cp target/transcode_compare_level2.json target/transcode_compare.json
-          cp target/transcode_compare_level2.csv target/transcode_compare.csv
-          cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --bin decode_compare -- \
-            --jpeg-dir "${J2K_BENCH_JPEG_DIR}" \
-            --warmup 2 \
-            --iterations 10 \
-            --min-inputs 100 \
-            --max-inputs 100 \
-            --json target/decode_compare.json \
-            --csv target/decode_compare.csv
-          python3 -m json.tool target/decode_compare.json >/dev/null
-      - name: Upload NVIDIA baseline comparison artifacts
-        if: ${{ inputs.run-nvidia-baseline && always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: nvidia-baseline-comparison
-          path: |
-            target/transcode_compare.json
-            target/transcode_compare.csv
-            target/transcode_compare_level1.json
-            target/transcode_compare_level1.csv
-            target/transcode_compare_level2.json
-            target/transcode_compare_level2.csv
-            target/decode_compare.json
-            target/decode_compare.csv
-          if-no-files-found: warn
       - run: cargo clippy -p j2k-cuda-runtime --all-targets -- -D warnings
       - run: cargo clippy -p j2k-cuda-runtime --all-targets --features cuda-profiling -- -D warnings
       - run: cargo clippy -p j2k-cuda --all-targets --features cuda-runtime -- -D warnings
@@ -275,7 +170,7 @@ jobs:
         if: ${{ inputs.run-cuda-htj2k-decode-profile }}
         env:
           J2K_REQUIRE_CUDA_RUNTIME: "1"
-          J2K_REQUIRE_CUDA_HTJ2K_STRICT: "1"
+          J2K_REQUIRE_CUDA_OXIDE_BUILD: "1"
           J2K_REQUIRE_CUDA_BENCH: "1"
           J2K_PROFILE_STAGES: summary
           J2K_CUDA_TRACE: ${{ github.workspace }}/target/cuda_htj2k_decode_trace.json

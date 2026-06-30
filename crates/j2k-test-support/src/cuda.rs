@@ -7,9 +7,9 @@ pub fn cuda_runtime_required() -> bool {
     std::env::var_os("J2K_REQUIRE_CUDA_RUNTIME").is_some()
 }
 
-/// Returns true when HTJ2K CUDA tests should require strict GPU execution.
-pub fn cuda_htj2k_strict_required() -> bool {
-    std::env::var_os("J2K_REQUIRE_CUDA_HTJ2K_STRICT").is_some()
+/// Returns true when CUDA tests should require strict CUDA Oxide PTX generation.
+pub fn cuda_strict_oxide_required() -> bool {
+    std::env::var_os("J2K_REQUIRE_CUDA_OXIDE_BUILD").is_some()
 }
 
 /// Returns true when JPEG CUDA tests should require hardware JPEG decode.

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="J2K: Rust JPEG 2000 / HTJ2K GPU codec">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="J2K: memory-safe Rust JPEG 2000 / HTJ2K codec">
   <rect width="1200" height="630" fill="#ffffff"/>
   <rect width="1200" height="630" fill="#fdf4ef"/>
   <rect x="0" y="0" width="1200" height="12" fill="#b7410e"/>
@@ -6,14 +6,14 @@
   <g font-family="Inter, Arial, sans-serif">
     <!-- brand mark -->
     <rect x="80" y="86" width="84" height="84" rx="18" fill="#b7410e"/>
-    <text x="122" y="146" text-anchor="middle" font-size="40" font-weight="800" fill="#ffffff" letter-spacing="-1">J2K</text>
+    <text x="122" y="146" text-anchor="middle" font-size="40" font-weight="800" fill="#ffffff" letter-spacing="0">J2K</text>
 
     <text x="184" y="146" font-size="40" font-weight="800" fill="#1f2933">frames-sg/j2k</text>
 
-    <text x="80" y="288" font-size="74" font-weight="800" fill="#1f2933">Rust JPEG 2000 / HTJ2K</text>
-    <text x="80" y="372" font-size="74" font-weight="800" fill="#b7410e">GPU codec</text>
+    <text x="80" y="288" font-size="70" font-weight="800" fill="#1f2933">Memory-safe Rust</text>
+    <text x="80" y="372" font-size="70" font-weight="800" fill="#b7410e">JPEG 2000 / HTJ2K</text>
 
-    <text x="80" y="446" font-size="32" fill="#5b6770">One crate · decode · encode · recode · JPEG transcode</text>
+    <text x="80" y="446" font-size="32" fill="#5b6770">Memory-safe codec under MIT / Apache-2.0</text>
     <text x="80" y="492" font-size="32" fill="#5b6770">CPU baseline + CUDA &amp; Apple Metal backends</text>
 
     <!-- install chip -->

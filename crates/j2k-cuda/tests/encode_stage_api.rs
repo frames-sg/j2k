@@ -14,9 +14,12 @@ use j2k::{
 use j2k_core::{CodecError, PixelFormat};
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda::{
-    encode_lossless_from_cuda_buffer, encode_lossless_from_cuda_buffer_with_report,
-    encode_lossless_from_cuda_buffers, submit_lossless_from_cuda_buffer, CudaLosslessEncodeTile,
-    CudaSession,
+    encode_lossless_from_cuda_buffer, encode_lossless_from_cuda_buffer_to_cuda_buffer,
+    encode_lossless_from_cuda_buffer_to_cuda_buffer_with_report,
+    encode_lossless_from_cuda_buffer_with_report, encode_lossless_from_cuda_buffers,
+    encode_lossless_from_cuda_buffers_to_cuda_buffers,
+    encode_lossless_from_cuda_buffers_to_cuda_buffers_with_report,
+    submit_lossless_from_cuda_buffer, CudaLosslessEncodeTile, CudaSession,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaContext;
@@ -96,11 +99,53 @@ fn cuda_lossless_device_buffer_api_shapes_are_public() {
         )
             -> Result<Vec<j2k::EncodedJ2k>, j2k_cuda::Error>;
     fn assert_batch_fn(_f: BatchEncodeFn) {}
+    fn assert_single_resident_fn(
+        _f: for<'tile, 'options, 'session> fn(
+            CudaLosslessEncodeTile<'tile>,
+            &'options J2kLosslessEncodeOptions,
+            &'session mut CudaSession,
+        )
+            -> Result<j2k_cuda::CudaEncodedJ2k, j2k_cuda::Error>,
+    ) {
+    }
+    fn assert_single_resident_report_fn(
+        _f: for<'tile, 'options, 'session> fn(
+            CudaLosslessEncodeTile<'tile>,
+            &'options J2kLosslessEncodeOptions,
+            &'session mut CudaSession,
+        ) -> Result<
+            j2k_cuda::CudaLosslessBufferEncodeOutcome,
+            j2k_cuda::Error,
+        >,
+    ) {
+    }
+    type BatchResidentEncodeFn = for<'slice, 'tile, 'options, 'session> fn(
+        &'slice [CudaLosslessEncodeTile<'tile>],
+        &'options J2kLosslessEncodeOptions,
+        &'session mut CudaSession,
+    ) -> Result<
+        Vec<j2k_cuda::CudaEncodedJ2k>,
+        j2k_cuda::Error,
+    >;
+    fn assert_batch_resident_fn(_f: BatchResidentEncodeFn) {}
+    type BatchResidentReportEncodeFn = for<'slice, 'tile, 'options, 'session> fn(
+        &'slice [CudaLosslessEncodeTile<'tile>],
+        &'options J2kLosslessEncodeOptions,
+        &'session mut CudaSession,
+    ) -> Result<
+        Vec<j2k_cuda::CudaLosslessBufferEncodeOutcome>,
+        j2k_cuda::Error,
+    >;
+    fn assert_batch_resident_report_fn(_f: BatchResidentReportEncodeFn) {}
 
     assert_single_fn(encode_lossless_from_cuda_buffer);
     assert_single_report_fn(encode_lossless_from_cuda_buffer_with_report);
     assert_submit_fn(submit_lossless_from_cuda_buffer);
     assert_batch_fn(encode_lossless_from_cuda_buffers);
+    assert_single_resident_fn(encode_lossless_from_cuda_buffer_to_cuda_buffer);
+    assert_single_resident_report_fn(encode_lossless_from_cuda_buffer_to_cuda_buffer_with_report);
+    assert_batch_resident_fn(encode_lossless_from_cuda_buffers_to_cuda_buffers);
+    assert_batch_resident_report_fn(encode_lossless_from_cuda_buffers_to_cuda_buffers_with_report);
 }
 
 #[cfg(feature = "cuda-runtime")]

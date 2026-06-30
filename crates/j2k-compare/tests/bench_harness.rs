@@ -192,7 +192,7 @@ fn encode_compare_binary_exposes_fair_encoder_matrix() {
         "generated-fixtures-included",
         "input_mib_per_second_median",
         "validate_encoded_profile",
-        "jp2_codestream_payload",
+        "extract_j2k_codestream_payload",
         "cod_profile",
         "openjpeg-compress-version-unavailable",
         "grok-compress-version-unavailable",

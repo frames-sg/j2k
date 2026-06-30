@@ -20,9 +20,15 @@ path = "src/lib.rs"
 
 [features]
 default = []
-cuda-runtime = ["dep:j2k-cuda-runtime"]
+cuda-runtime = [
+    "dep:j2k-cuda-runtime",
+    "j2k-cuda-runtime/cuda-oxide-j2k-encode",
+    "j2k-cuda-runtime/cuda-oxide-htj2k-encode",
+    "j2k-cuda-runtime/cuda-oxide-transcode",
+]
 cuda-profiling = ["cuda-runtime", "j2k-cuda-runtime/cuda-profiling"]
 cuda-oxide-j2k-encode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-j2k-encode"]
+cuda-oxide-htj2k-encode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-htj2k-encode"]
 cuda-oxide-transcode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-transcode"]
 
 [dependencies]

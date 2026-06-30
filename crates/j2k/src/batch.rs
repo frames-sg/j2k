@@ -11,8 +11,8 @@ use j2k_core::{
 };
 use j2k_native::{
     execute_direct_color_plan_rgb8_into, execute_direct_color_plan_rgba8_into,
-    DecodeError as NativeDecodeError, DecodingError as NativeDecodingError, J2kDirectColorPlan,
-    J2kDirectCpuScratch, J2kRect,
+    inspect_j2k_codestream_header, DecodeError as NativeDecodeError,
+    DecodingError as NativeDecodingError, J2kDirectColorPlan, J2kDirectCpuScratch, J2kRect,
 };
 
 use crate::backend::{self, DecodeSettings};
@@ -627,117 +627,10 @@ fn build_direct_color_region_plan(
 }
 
 fn input_declares_htj2k(input: &[u8]) -> bool {
-    const JP2_SIGNATURE_PREFIX: [u8; 8] = [0, 0, 0, 12, b'j', b'P', b' ', b' '];
-
-    if raw_codestream_declares_htj2k(input) {
-        return true;
-    }
-    if !input.starts_with(&JP2_SIGNATURE_PREFIX) {
-        return false;
-    }
-    jp2_codestream_declares_htj2k(input)
-}
-
-fn jp2_codestream_declares_htj2k(input: &[u8]) -> bool {
-    let mut offset = 0usize;
-    while offset < input.len() {
-        let Some((box_type, payload_start, end)) = read_jp2_box_header(input, offset) else {
-            return false;
-        };
-        if end > input.len() {
-            return false;
-        }
-        if &box_type == b"jp2c" {
-            return raw_codestream_declares_htj2k(&input[payload_start..end]);
-        }
-        offset = end;
-    }
-    false
-}
-
-fn read_jp2_box_header(input: &[u8], offset: usize) -> Option<([u8; 4], usize, usize)> {
-    let header = input.get(offset..offset.checked_add(8)?)?;
-    let lbox = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
-    let box_type = [header[4], header[5], header[6], header[7]];
-    match lbox {
-        0 => Some((box_type, offset.checked_add(8)?, input.len())),
-        1 => {
-            let extended = input.get(offset.checked_add(8)?..offset.checked_add(16)?)?;
-            let xlbox = u64::from_be_bytes([
-                extended[0],
-                extended[1],
-                extended[2],
-                extended[3],
-                extended[4],
-                extended[5],
-                extended[6],
-                extended[7],
-            ]);
-            if xlbox < 16 || xlbox > usize::MAX as u64 {
-                return None;
-            }
-            let end = offset.checked_add(xlbox as usize)?;
-            Some((box_type, offset.checked_add(16)?, end))
-        }
-        length if length < 8 => None,
-        length => {
-            let end = offset.checked_add(length as usize)?;
-            Some((box_type, offset.checked_add(8)?, end))
-        }
-    }
-}
-
-fn raw_codestream_declares_htj2k(input: &[u8]) -> bool {
-    const MARKER_SOC: u8 = 0x4f;
-    const MARKER_CAP: u8 = 0x50;
-    const MARKER_COD: u8 = 0x52;
-    const MARKER_SOT: u8 = 0x90;
-    const MARKER_SOD: u8 = 0x93;
-    const MARKER_EOC: u8 = 0xd9;
-
-    if input.len() < 2 || input[0] != 0xff || input[1] != MARKER_SOC {
-        return false;
-    }
-
-    let mut offset = 2usize;
-    while offset + 2 <= input.len() {
-        if input[offset] != 0xff {
-            return false;
-        }
-        let marker = input[offset + 1];
-        offset += 2;
-        match marker {
-            MARKER_SOT | MARKER_SOD | MARKER_EOC => return false,
-            MARKER_CAP => return true,
-            MARKER_COD => {
-                let Some(payload) = read_codestream_segment_payload(input, &mut offset) else {
-                    return false;
-                };
-                if payload.get(8).is_some_and(|style| style & 0x40 != 0) {
-                    return true;
-                }
-            }
-            _ => {
-                if read_codestream_segment_payload(input, &mut offset).is_none() {
-                    return false;
-                }
-            }
-        }
-    }
-    false
-}
-
-fn read_codestream_segment_payload<'a>(input: &'a [u8], offset: &mut usize) -> Option<&'a [u8]> {
-    let len_bytes = input.get(*offset..offset.checked_add(2)?)?;
-    let len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
-    if len < 2 {
-        return None;
-    }
-    let payload_start = offset.checked_add(2)?;
-    let payload_end = offset.checked_add(len)?;
-    let payload = input.get(payload_start..payload_end)?;
-    *offset = payload_end;
-    Some(payload)
+    crate::extract_j2k_codestream_payload(input)
+        .ok()
+        .and_then(|payload| inspect_j2k_codestream_header(payload.codestream()).ok())
+        .is_some_and(|metadata| metadata.high_throughput)
 }
 
 fn direct_color_plan_uses_only_htj2k(plan: &J2kDirectColorPlan) -> bool {
@@ -795,5 +688,10 @@ mod tests {
         assert!(input_declares_htj2k(&jp2_htj2k));
         assert!(!input_declares_htj2k(&raw_classic));
         assert!(!input_declares_htj2k(&jp2_classic));
+
+        let mut malformed_jp2 = jp2_htj2k;
+        malformed_jp2[11] = 0;
+        assert!(!input_declares_htj2k(&malformed_jp2));
+        assert!(!input_declares_htj2k(&malformed_jp2[..8]));
     }
 }

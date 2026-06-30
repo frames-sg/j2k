@@ -8,7 +8,9 @@ use std::{
 use j2k_core::PixelFormat;
 use j2k_native::{HtCodeBlockDecodeProfile, J2kCodeBlockDecodeProfile};
 
-use crate::profile_env::{decode_profile_label, metal_profile_stages_enabled};
+use crate::profile_env::{
+    decode_profile_label, elapsed_since_us, emit_metal_profile_row, metal_profile_stages_enabled,
+};
 
 #[cfg(target_os = "macos")]
 use super::{completed_command_buffer_gpu_duration, DecodeHybridSplitCommandBuffers};
@@ -150,7 +152,7 @@ impl CpuTier1DecodeSubstageCounters {
 }
 
 pub(super) fn elapsed_us(started: Instant) -> u128 {
-    started.elapsed().as_micros()
+    elapsed_since_us(started)
 }
 
 #[cfg(target_os = "macos")]
@@ -274,7 +276,7 @@ pub(super) fn emit_direct_hybrid_stage_timings(
         let metric = stage_metric(stage);
         let metric_kind = stage_metric_kind(stage);
         let aggregation = stage_aggregation(stage);
-        j2k_profile::emit_profile_row_now(
+        emit_metal_profile_row(
             "j2k",
             "decode",
             "metal_cpu_hybrid",

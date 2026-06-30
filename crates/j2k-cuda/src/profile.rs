@@ -2,11 +2,9 @@
 
 use core::fmt::Write as _;
 use std::cell::RefCell;
-use std::sync::OnceLock;
-use std::time::Instant;
 
 use j2k_core::BackendKind;
-use j2k_profile::{profile_stage_mode_from_env, ProfileStageMode};
+use j2k_profile::{ProfileStageMode, StageModeCache};
 
 use crate::SurfaceResidency;
 
@@ -154,23 +152,17 @@ impl CudaHtj2kEncodeProfileReport {
     }
 }
 
-pub(crate) type ProfileInstant = Instant;
+#[cfg(feature = "cuda-runtime")]
+pub(crate) use j2k_profile::ProfileInstant;
+pub(crate) use j2k_profile::{elapsed_us, profile_now};
 
 fn profile_stage_mode() -> ProfileStageMode {
-    static MODE: OnceLock<ProfileStageMode> = OnceLock::new();
-    *MODE.get_or_init(|| profile_stage_mode_from_env(PROFILE_ENV_VAR))
+    static MODE: StageModeCache = StageModeCache::new();
+    MODE.mode_from_env(PROFILE_ENV_VAR)
 }
 
 pub(crate) fn profile_stages_enabled() -> bool {
     profile_stage_mode() != ProfileStageMode::Disabled
-}
-
-pub(crate) fn profile_now(enabled: bool) -> Option<ProfileInstant> {
-    enabled.then(Instant::now)
-}
-
-pub(crate) fn elapsed_us(start: Option<ProfileInstant>) -> u128 {
-    start.map_or(0, |start| start.elapsed().as_micros())
 }
 
 #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
@@ -311,7 +303,13 @@ fn export_trace_if_requested(path: &str, report: &CudaHtj2kProfileReport) {
     };
     let trace = chrome_trace_json(path, report);
     if let Err(error) = std::fs::write(&trace_path, trace) {
-        std::eprintln!("j2k_profile codec=j2k op=cuda_htj2k_trace path=cuda error={error}");
+        let error = error.to_string();
+        j2k_profile::emit_profile_row_now(
+            "j2k",
+            "cuda_htj2k_trace",
+            "cuda",
+            &[("error", error.as_str())],
+        );
     }
 }
 
@@ -358,7 +356,13 @@ fn export_encode_trace_if_requested(path: &str, report: &CudaHtj2kEncodeProfileR
     };
     let trace = chrome_encode_trace_json(path, report);
     if let Err(error) = std::fs::write(&trace_path, trace) {
-        std::eprintln!("j2k_profile codec=j2k op=cuda_htj2k_encode_trace path=cuda error={error}");
+        let error = error.to_string();
+        j2k_profile::emit_profile_row_now(
+            "j2k",
+            "cuda_htj2k_encode_trace",
+            "cuda",
+            &[("error", error.as_str())],
+        );
     }
 }
 

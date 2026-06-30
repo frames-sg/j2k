@@ -1219,7 +1219,12 @@ fn validate_encoded_profile(
     encoder: EncoderKind,
 ) -> Result<(), String> {
     let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
-    let codestream = jp2_codestream_payload(&bytes)?;
+    let payload = j2k::extract_j2k_codestream_payload(&bytes)
+        .map_err(|error| format!("extract {} codestream: {error}", path.display()))?;
+    if payload.payload_kind() == j2k::CompressedPayloadKind::Jpeg2000Codestream {
+        return Err("encoded output is not a JP2 container".to_string());
+    }
+    let codestream = payload.codestream();
     let header = j2k_native::inspect_j2k_codestream_header(codestream)
         .map_err(|error| format!("inspect {} profile: {error}", path.display()))?;
     if header.dimensions != (case.width, case.height) {
@@ -1568,55 +1573,6 @@ struct CodProfile {
     code_block_height_exp: u8,
     code_block_style: u8,
     transform: u8,
-}
-
-fn jp2_codestream_payload(bytes: &[u8]) -> Result<&[u8], String> {
-    if !bytes.starts_with(&[0, 0, 0, 12, b'j', b'P', b' ', b' ']) {
-        return Err("encoded output is not a JP2 container".to_string());
-    }
-    let mut offset = 0_usize;
-    while offset.checked_add(8).is_some_and(|end| end <= bytes.len()) {
-        let lbox = u32::from_be_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .map_err(|_| "invalid JP2 lbox".to_string())?,
-        ) as usize;
-        let box_type = &bytes[offset + 4..offset + 8];
-        let (header_len, box_len) = match lbox {
-            0 => (8, bytes.len() - offset),
-            1 => {
-                let xlbox_offset = offset
-                    .checked_add(16)
-                    .ok_or_else(|| "JP2 extended box offset overflow".to_string())?;
-                if xlbox_offset > bytes.len() {
-                    return Err("truncated JP2 extended box length".to_string());
-                }
-                let xlbox = u64::from_be_bytes(
-                    bytes[offset + 8..offset + 16]
-                        .try_into()
-                        .map_err(|_| "invalid JP2 xlbox".to_string())?,
-                );
-                let box_len = usize::try_from(xlbox)
-                    .map_err(|_| "JP2 extended box length overflows usize".to_string())?;
-                (16, box_len)
-            }
-            value => (8, value),
-        };
-        if box_len < header_len {
-            return Err("invalid JP2 box length".to_string());
-        }
-        let box_end = offset
-            .checked_add(box_len)
-            .ok_or_else(|| "JP2 box length overflow".to_string())?;
-        if box_end > bytes.len() {
-            return Err("truncated JP2 box".to_string());
-        }
-        if box_type == b"jp2c" {
-            return Ok(&bytes[offset + header_len..box_end]);
-        }
-        offset = box_end;
-    }
-    Err("JP2 container is missing jp2c codestream box".to_string())
 }
 
 fn cod_profile(codestream: &[u8]) -> Result<CodProfile, String> {

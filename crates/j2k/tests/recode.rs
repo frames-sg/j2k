@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{
-    encode_j2k_lossless, wrap_j2k_codestream, J2kBlockCodingMode, J2kChannelAssociation,
-    J2kChannelDefinition, J2kChannelType, J2kColorSpec, J2kComponentMapping,
+    encode_j2k_lossless, extract_j2k_codestream_payload, wrap_j2k_codestream, J2kBlockCodingMode,
+    J2kChannelAssociation, J2kChannelDefinition, J2kChannelType, J2kColorSpec, J2kComponentMapping,
     J2kComponentMappingType, J2kEncodeValidation, J2kError, J2kFileBoxMetadata, J2kFileColorSpec,
     J2kFileWrapOptions, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kPaletteColumn,
     J2kPaletteMetadata, J2kToHtj2kMode, J2kToHtj2kOptions, ReversibleTransform,
@@ -181,7 +181,9 @@ fn raw_htj2k_lossless_can_be_wrapped_as_jph_without_reencode() {
         recoded.report.output_payload_kind,
         CompressedPayloadKind::JphFile
     );
-    assert_eq!(extract_jp2c_payload(&recoded.bytes), htj2k.as_slice());
+    let payload =
+        extract_j2k_codestream_payload(&recoded.bytes).expect("recoded codestream payload");
+    assert_eq!(payload.codestream(), htj2k.as_slice());
     let support = j2k::J2kDecoder::inspect_support(&recoded.bytes).expect("inspect JPH");
     assert_eq!(support.payload_kind, CompressedPayloadKind::JphFile);
     assert_eq!(decode_native(&recoded.bytes).data, pixels);
@@ -853,25 +855,4 @@ fn zero_dwt97(width: u32, height: u32) -> J2kForwardDwt97Output {
             high_height,
         }],
     }
-}
-
-fn extract_jp2c_payload(file: &[u8]) -> &[u8] {
-    let mut offset = 0;
-    while offset + 8 <= file.len() {
-        let length = u32::from_be_bytes([
-            file[offset],
-            file[offset + 1],
-            file[offset + 2],
-            file[offset + 3],
-        ]) as usize;
-        let box_type = &file[offset + 4..offset + 8];
-        assert!(length >= 8, "invalid JP2/JPH box length");
-        let end = offset + length;
-        assert!(end <= file.len(), "truncated JP2/JPH box");
-        if box_type == b"jp2c" {
-            return &file[offset + 8..end];
-        }
-        offset = end;
-    }
-    panic!("jp2c box missing");
 }

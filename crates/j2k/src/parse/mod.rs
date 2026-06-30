@@ -3,7 +3,7 @@
 mod boxes;
 mod codestream;
 
-use self::boxes::parse_jp2;
+use self::boxes::{extract_jp2_codestream_payload, parse_jp2};
 use self::codestream::{parse_codestream, CodestreamInfo};
 use crate::{J2kComponentInfo, J2kError, J2kFileMetadata, J2kSupportInfo};
 use j2k_core::{
@@ -28,6 +28,60 @@ pub(crate) fn parse_image_info(input: &[u8]) -> Result<ParsedImageInfo, J2kError
             payload_kind: CompressedPayloadKind::Jpeg2000Codestream,
             components,
             file_metadata: None,
+        });
+    }
+    Err(J2kError::Unsupported(Unsupported {
+        what: "input is not a JP2 container or raw JPEG 2000 codestream",
+    }))
+}
+
+/// Borrowed raw codestream slice extracted from raw JPEG 2000 bytes or a JP2/JPH wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct J2kCodestreamPayload<'a> {
+    codestream: &'a [u8],
+    payload_kind: CompressedPayloadKind,
+    codestream_offset: usize,
+}
+
+impl<'a> J2kCodestreamPayload<'a> {
+    /// Raw JPEG 2000 codestream bytes.
+    #[must_use]
+    pub const fn codestream(self) -> &'a [u8] {
+        self.codestream
+    }
+
+    /// Encapsulation shape the codestream was extracted from.
+    #[must_use]
+    pub const fn payload_kind(self) -> CompressedPayloadKind {
+        self.payload_kind
+    }
+
+    /// Byte offset where the codestream payload starts in the original input.
+    #[must_use]
+    pub const fn codestream_offset(self) -> usize {
+        self.codestream_offset
+    }
+}
+
+/// Return the raw JPEG 2000 codestream payload from raw codestream, JP2, or JPH input.
+///
+/// This helper validates only the wrapper framing needed to locate the borrowed
+/// codestream slice. Full JP2 metadata and ordering validation remains part of
+/// the decoder inspect path.
+pub fn extract_j2k_codestream_payload(input: &[u8]) -> Result<J2kCodestreamPayload<'_>, J2kError> {
+    if codestream::looks_like_codestream(input) {
+        return Ok(J2kCodestreamPayload {
+            codestream: input,
+            payload_kind: CompressedPayloadKind::Jpeg2000Codestream,
+            codestream_offset: 0,
+        });
+    }
+    if boxes::looks_like_jp2(input) {
+        let (payload_kind, codestream_offset, codestream) = extract_jp2_codestream_payload(input)?;
+        return Ok(J2kCodestreamPayload {
+            codestream,
+            payload_kind,
+            codestream_offset,
         });
     }
     Err(J2kError::Unsupported(Unsupported {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{BackendRequest, BufferError, CodecError};
-use j2k_jpeg::JpegError;
+use j2k_jpeg::{JpegEncodeError, JpegError};
 
 #[derive(Debug, thiserror::Error)]
 /// Errors returned by the CUDA JPEG adapter.
@@ -9,6 +9,9 @@ pub enum Error {
     /// Error returned by the CPU JPEG parser or fallback decoder.
     #[error(transparent)]
     Decode(#[from] JpegError),
+    /// Error returned by JPEG baseline encode setup or frame assembly.
+    #[error(transparent)]
+    Encode(#[from] JpegEncodeError),
     /// Output buffer validation failed.
     #[error(transparent)]
     Buffer(#[from] BufferError),
@@ -52,10 +55,25 @@ impl CodecError for Error {
                 | Self::UnsupportedCudaRequest { .. }
                 | Self::CudaUnavailable
         ) || matches!(self, Self::Decode(inner) if inner.is_unsupported())
+            || matches!(
+                self,
+                Self::Encode(
+                    JpegEncodeError::UnsupportedBackend { .. }
+                        | JpegEncodeError::IncompatibleSubsampling { .. }
+                )
+            )
     }
 
     fn is_buffer_error(&self) -> bool {
         matches!(self, Self::Buffer(_))
             || matches!(self, Self::Decode(inner) if inner.is_buffer_error())
+            || matches!(
+                self,
+                Self::Encode(
+                    JpegEncodeError::SampleLength { .. }
+                        | JpegEncodeError::EmptyDimensions
+                        | JpegEncodeError::DimensionsTooLarge { .. }
+                )
+            )
     }
 }

@@ -17,8 +17,8 @@ mod pixels;
 
 pub use corpus::{collect_jpeg_paths, is_jpeg_path, paths_from_env};
 pub use cuda::{
-    cuda_bench_required, cuda_htj2k_strict_required, cuda_jpeg_hardware_decode_required,
-    cuda_runtime_required,
+    cuda_bench_required, cuda_jpeg_hardware_decode_required, cuda_runtime_required,
+    cuda_strict_oxide_required,
 };
 pub use fixtures::{
     baseline_grayscale_jpeg, jpeg_baseline_420_16x16, jpeg_baseline_420_16x16_rgb,

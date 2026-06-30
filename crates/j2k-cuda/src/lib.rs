@@ -36,10 +36,15 @@ pub use encode::{
 };
 #[cfg(feature = "cuda-runtime")]
 pub use encode::{
-    encode_lossless_from_cuda_buffer, encode_lossless_from_cuda_buffer_with_report,
-    encode_lossless_from_cuda_buffers, encode_lossless_from_cuda_buffers_with_report,
-    submit_lossless_from_cuda_buffer, submit_lossless_from_cuda_buffers, CudaLosslessEncodeOutcome,
-    CudaLosslessEncodeResidency, CudaLosslessEncodeTile, SubmittedJ2kLosslessCudaEncode,
+    encode_lossless_from_cuda_buffer, encode_lossless_from_cuda_buffer_to_cuda_buffer,
+    encode_lossless_from_cuda_buffer_to_cuda_buffer_with_report,
+    encode_lossless_from_cuda_buffer_with_report, encode_lossless_from_cuda_buffers,
+    encode_lossless_from_cuda_buffers_to_cuda_buffers,
+    encode_lossless_from_cuda_buffers_to_cuda_buffers_with_report,
+    encode_lossless_from_cuda_buffers_with_report, submit_lossless_from_cuda_buffer,
+    submit_lossless_from_cuda_buffers, CudaEncodedJ2k, CudaLosslessBufferEncodeOutcome,
+    CudaLosslessEncodeOutcome, CudaLosslessEncodeResidency, CudaLosslessEncodeTile,
+    CudaResidentCodestreamBuffer, SubmittedJ2kLosslessCudaEncode,
     SubmittedJ2kLosslessCudaEncodeBatch,
 };
 pub use error::Error;

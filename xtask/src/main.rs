@@ -12,6 +12,7 @@ mod adoption_curate;
 mod adoption_manifest;
 mod adoption_materialize;
 mod adoption_report;
+mod markdown;
 mod perf_guard;
 mod process;
 mod public_support;
@@ -839,6 +840,14 @@ fn no_std() -> Result<(), String> {
         &[],
     )?;
     run_cargo(&["check", "-p", "j2k-core", "--target", NO_STD_TARGET])?;
+    run_cargo(&[
+        "check",
+        "-p",
+        "j2k-profile",
+        "--no-default-features",
+        "--target",
+        NO_STD_TARGET,
+    ])?;
     run_cargo(&[
         "check",
         "-p",

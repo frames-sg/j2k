@@ -87,17 +87,16 @@ pub(crate) fn decide_route(backend: BackendRequest, fmt: PixelFormat) -> RouteDe
         },
     };
     if j2k_profile::gpu_route_profile_enabled() {
-        let request_s = format!("{backend:?}");
-        let fmt_s = format!("{fmt:?}");
         let labels = j2k_route_decision_profile(decision);
-        j2k_profile::emit_gpu_route_profile(
+        j2k_profile::emit_gpu_route_fields(
             "j2k",
             "metal",
             &[
-                ("request", request_s.as_str()),
-                ("fmt", fmt_s.as_str()),
-                ("decision", labels.decision),
-                ("reason", labels.reason),
+                j2k_profile::ProfileField::label("request", format_args!("{backend:?}")),
+                j2k_profile::ProfileField::label("fmt", format_args!("{fmt:?}")),
+                j2k_profile::ProfileField::label("op", "full"),
+                j2k_profile::ProfileField::label("decision", labels.decision),
+                j2k_profile::ProfileField::label("reason", labels.reason),
             ],
         );
     }

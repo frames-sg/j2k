@@ -8,6 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::markdown::{escape_inline_code, markdown_header, markdown_row};
 use crate::perf_guard::{discover_estimates, BenchEstimate};
 
 const SCRUBBED_BENCH_ENV_VARS: &[&str] = &[
@@ -451,7 +452,7 @@ fn run_cuda_htj2k_encode(options: &AdoptionBenchmarkOptions) -> Result<AdoptionS
     }
     if options.require_cuda {
         envs.push(("J2K_REQUIRE_CUDA_BENCH".to_string(), "1".to_string()));
-        envs.push(("J2K_REQUIRE_CUDA_KERNEL_BUILD".to_string(), "1".to_string()));
+        envs.push(("J2K_REQUIRE_CUDA_OXIDE_BUILD".to_string(), "1".to_string()));
     }
     run_logged_owned(
         "cuda-htj2k-encode",
@@ -1391,7 +1392,7 @@ fn profile_contexts(
 fn parse_metal_decode_bench_line(line: &str) -> Option<serde_json::Value> {
     const PREFIX: &str = "j2k_metal_decode_bench ";
     let rest = line.strip_prefix(PREFIX)?;
-    let fields = parse_key_value_fields(rest);
+    let fields = j2k_profile::parse_profile_key_value_fields(rest);
     let mut row = serde_json::json!({
         "case": required_field(&fields, "case")?,
         "source": required_field(&fields, "source")?,
@@ -1412,57 +1413,59 @@ fn parse_metal_decode_bench_line(line: &str) -> Option<serde_json::Value> {
 }
 
 fn parse_metal_transcode_profile_line(line: &str) -> Option<serde_json::Value> {
-    const PREFIX: &str = "j2k_profile ";
-    let fields = parse_key_value_fields(line.strip_prefix(PREFIX)?);
-    if required_field(&fields, "codec")? != "transcode"
-        || required_field(&fields, "op")? != "transcode_batch"
+    let fields = j2k_profile::parse_profile_line(line)?;
+    if fields.kind() != j2k_profile::ParsedProfileKind::Row
+        || fields.get("codec")? != "transcode"
+        || fields.get("op")? != "transcode_batch"
     {
         return None;
     }
+    let required = |key: &str| fields.get(key).map(str::to_string);
+    let integer = |key: &str| fields.get(key)?.parse::<u64>().ok();
     Some(serde_json::json!({
-        "request": required_field(&fields, "request")?,
-        "path": required_field(&fields, "path")?,
-        "pipeline": required_field(&fields, "pipeline")?,
-        "context": required_field(&fields, "context")?,
-        "coefficient_path": required_field(&fields, "coefficient_path")?,
-        "extract_processor": required_field(&fields, "extract_processor")?,
-        "transform_processor": required_field(&fields, "transform_processor")?,
-        "encode_processor": required_field(&fields, "encode_processor")?,
-        "tile_count": parse_integer_field(&fields, "tile_count")?,
-        "successful_tiles": parse_integer_field(&fields, "successful_tiles")?,
-        "failed_tiles": parse_integer_field(&fields, "failed_tiles")?,
-        "transformed_components": parse_integer_field(&fields, "transformed_components")?,
-        "total_us": parse_integer_field(&fields, "total_us")?,
-        "extract_us": parse_integer_field(&fields, "extract_us")?,
-        "transform_us": parse_integer_field(&fields, "transform_us")?,
-        "encode_us": parse_integer_field(&fields, "encode_us")?,
-        "dct_to_wavelet_total_us": parse_integer_field(&fields, "dct_to_wavelet_total_us")?,
-        "dct_to_wavelet_accelerator_us": parse_integer_field(&fields, "dct_to_wavelet_accelerator_us")?,
-        "dct_to_wavelet_cpu_fallback_us": parse_integer_field(&fields, "dct_to_wavelet_cpu_fallback_us")?,
-        "dwt97_batch_pack_upload_transfers": parse_integer_field(&fields, "dwt97_batch_pack_upload_transfers")?,
-        "dwt97_batch_pack_upload_bytes": parse_integer_field(&fields, "dwt97_batch_pack_upload_bytes")?,
-        "dwt97_batch_resident_dct_handoff_count": parse_integer_field(&fields, "dwt97_batch_resident_dct_handoff_count")?,
-        "dwt97_batch_resident_dwt_handoff_count": parse_integer_field(&fields, "dwt97_batch_resident_dwt_handoff_count")?,
-        "dwt97_batch_readback_transfers": parse_integer_field(&fields, "dwt97_batch_readback_transfers")?,
-        "dwt97_batch_readback_bytes": parse_integer_field(&fields, "dwt97_batch_readback_bytes")?,
-        "host_to_device_transfer_count": parse_integer_field(&fields, "host_to_device_transfer_count")?,
-        "host_to_device_transfer_bytes": parse_integer_field(&fields, "host_to_device_transfer_bytes")?,
-        "device_to_host_transfer_count": parse_integer_field(&fields, "device_to_host_transfer_count")?,
-        "device_to_host_transfer_bytes": parse_integer_field(&fields, "device_to_host_transfer_bytes")?,
-        "component_count": parse_integer_field(&fields, "component_count")?,
-        "batch_count": parse_integer_field(&fields, "batch_count")?,
-        "batch_jobs": parse_integer_field(&fields, "batch_jobs")?,
-        "accelerator_attempts": parse_integer_field(&fields, "accelerator_attempts")?,
-        "accelerator_jobs": parse_integer_field(&fields, "accelerator_jobs")?,
-        "accelerator_dispatches": parse_integer_field(&fields, "accelerator_dispatches")?,
-        "accelerator_dispatched_jobs": parse_integer_field(&fields, "accelerator_dispatched_jobs")?,
-        "cpu_fallback_jobs": parse_integer_field(&fields, "cpu_fallback_jobs")?,
+        "request": required("request")?,
+        "path": required("path")?,
+        "pipeline": required("pipeline")?,
+        "context": required("context")?,
+        "coefficient_path": required("coefficient_path")?,
+        "extract_processor": required("extract_processor")?,
+        "transform_processor": required("transform_processor")?,
+        "encode_processor": required("encode_processor")?,
+        "tile_count": integer("tile_count")?,
+        "successful_tiles": integer("successful_tiles")?,
+        "failed_tiles": integer("failed_tiles")?,
+        "transformed_components": integer("transformed_components")?,
+        "total_us": integer("total_us")?,
+        "extract_us": integer("extract_us")?,
+        "transform_us": integer("transform_us")?,
+        "encode_us": integer("encode_us")?,
+        "dct_to_wavelet_total_us": integer("dct_to_wavelet_total_us")?,
+        "dct_to_wavelet_accelerator_us": integer("dct_to_wavelet_accelerator_us")?,
+        "dct_to_wavelet_cpu_fallback_us": integer("dct_to_wavelet_cpu_fallback_us")?,
+        "dwt97_batch_pack_upload_transfers": integer("dwt97_batch_pack_upload_transfers")?,
+        "dwt97_batch_pack_upload_bytes": integer("dwt97_batch_pack_upload_bytes")?,
+        "dwt97_batch_resident_dct_handoff_count": integer("dwt97_batch_resident_dct_handoff_count")?,
+        "dwt97_batch_resident_dwt_handoff_count": integer("dwt97_batch_resident_dwt_handoff_count")?,
+        "dwt97_batch_readback_transfers": integer("dwt97_batch_readback_transfers")?,
+        "dwt97_batch_readback_bytes": integer("dwt97_batch_readback_bytes")?,
+        "host_to_device_transfer_count": integer("host_to_device_transfer_count")?,
+        "host_to_device_transfer_bytes": integer("host_to_device_transfer_bytes")?,
+        "device_to_host_transfer_count": integer("device_to_host_transfer_count")?,
+        "device_to_host_transfer_bytes": integer("device_to_host_transfer_bytes")?,
+        "component_count": integer("component_count")?,
+        "batch_count": integer("batch_count")?,
+        "batch_jobs": integer("batch_jobs")?,
+        "accelerator_attempts": integer("accelerator_attempts")?,
+        "accelerator_jobs": integer("accelerator_jobs")?,
+        "accelerator_dispatches": integer("accelerator_dispatches")?,
+        "accelerator_dispatched_jobs": integer("accelerator_dispatched_jobs")?,
+        "cpu_fallback_jobs": integer("cpu_fallback_jobs")?,
     }))
 }
 
 fn parse_metal_auto_bench_line(line: &str) -> Option<serde_json::Value> {
     const PREFIX: &str = "j2k_metal_encode_auto_bench ";
-    let fields = parse_key_value_fields(line.strip_prefix(PREFIX)?);
+    let fields = j2k_profile::parse_profile_key_value_fields(line.strip_prefix(PREFIX)?);
     let auto_ms = required_field(&fields, "auto_ms")?;
     Some(serde_json::json!({
         "mode": required_field(&fields, "mode")?,
@@ -1477,7 +1480,7 @@ fn parse_metal_auto_bench_line(line: &str) -> Option<serde_json::Value> {
 fn parse_metal_auto_probe_line(line: &str) -> Option<serde_json::Value> {
     const PREFIX: &str = "j2k_metal_encode_auto_probe ";
     let rest = line.strip_prefix(PREFIX)?;
-    let fields = parse_key_value_fields(rest);
+    let fields = j2k_profile::parse_profile_key_value_fields(rest);
     let mut row = serde_json::json!({
         "mode": required_field(&fields, "mode")?,
         "codec": required_field(&fields, "codec")?,
@@ -1496,7 +1499,7 @@ fn parse_metal_auto_probe_line(line: &str) -> Option<serde_json::Value> {
 fn parse_metal_stage_bench_line(line: &str) -> Option<serde_json::Value> {
     const PREFIX: &str = "j2k_metal_encode_stage_bench ";
     let rest = line.strip_prefix(PREFIX)?;
-    let fields = parse_key_value_fields(rest);
+    let fields = j2k_profile::parse_profile_key_value_fields(rest);
     let metal_ms = required_field(&fields, "metal_ms")?;
     let mut row = serde_json::json!({
         "stage": required_field(&fields, "stage")?,
@@ -1516,7 +1519,7 @@ fn parse_metal_stage_bench_line(line: &str) -> Option<serde_json::Value> {
 fn parse_metal_resident_bench_line(line: &str) -> Option<serde_json::Value> {
     const PREFIX: &str = "j2k_metal_encode_resident_bench ";
     let rest = line.strip_prefix(PREFIX)?;
-    let fields = parse_key_value_fields(rest);
+    let fields = j2k_profile::parse_profile_key_value_fields(rest);
     let mut row = serde_json::json!({
         "mode": required_field(&fields, "mode")?,
         "codec": required_field(&fields, "codec")?,
@@ -1547,33 +1550,27 @@ fn parse_metal_resident_bench_line(line: &str) -> Option<serde_json::Value> {
     Some(row)
 }
 
-fn parse_key_value_fields(text: &str) -> Vec<(&str, &str)> {
-    text.split_whitespace()
-        .filter_map(|part| part.split_once('='))
-        .collect()
-}
-
-fn required_field(fields: &[(&str, &str)], key: &str) -> Option<String> {
+fn required_field(fields: &[(String, String)], key: &str) -> Option<String> {
     fields
         .iter()
-        .find_map(|(field_key, value)| (*field_key == key).then(|| (*value).to_string()))
+        .find_map(|(field_key, value)| (field_key == key).then(|| value.clone()))
 }
 
-fn optional_field<'a>(fields: &'a [(&str, &str)], key: &str) -> Option<&'a str> {
+fn optional_field<'a>(fields: &'a [(String, String)], key: &str) -> Option<&'a str> {
     fields
         .iter()
-        .find_map(|(field_key, value)| (*field_key == key).then_some(*value))
+        .find_map(|(field_key, value)| (field_key == key).then_some(value.as_str()))
 }
 
-fn parse_decimal_field(fields: &[(&str, &str)], key: &str) -> Option<f64> {
+fn parse_decimal_field(fields: &[(String, String)], key: &str) -> Option<f64> {
     required_field(fields, key)?.parse().ok()
 }
 
-fn parse_integer_field(fields: &[(&str, &str)], key: &str) -> Option<u64> {
+fn parse_integer_field(fields: &[(String, String)], key: &str) -> Option<u64> {
     required_field(fields, key)?.parse().ok()
 }
 
-fn parse_bool_field(fields: &[(&str, &str)], key: &str) -> Option<bool> {
+fn parse_bool_field(fields: &[(String, String)], key: &str) -> Option<bool> {
     match required_field(fields, key)?.as_str() {
         "true" => Some(true),
         "false" => Some(false),
@@ -1581,11 +1578,17 @@ fn parse_bool_field(fields: &[(&str, &str)], key: &str) -> Option<bool> {
     }
 }
 
-fn parse_decimal_or_label_field(fields: &[(&str, &str)], key: &str) -> Option<serde_json::Value> {
+fn parse_decimal_or_label_field(
+    fields: &[(String, String)],
+    key: &str,
+) -> Option<serde_json::Value> {
     parse_decimal_or_label(required_field(fields, key)?)
 }
 
-fn parse_integer_or_label_field(fields: &[(&str, &str)], key: &str) -> Option<serde_json::Value> {
+fn parse_integer_or_label_field(
+    fields: &[(String, String)],
+    key: &str,
+) -> Option<serde_json::Value> {
     let value = required_field(fields, key)?;
     if let Ok(number) = value.parse::<u64>() {
         return Some(serde_json::Value::Number(number.into()));
@@ -1816,20 +1819,22 @@ fn write_readme(options: &AdoptionBenchmarkOptions, steps: &[AdoptionStep]) -> R
     ));
     out.push_str(&format!("- Quick mode: `{}`\n\n", options.quick));
     out.push_str("## Steps\n\n");
-    out.push_str("| Step | Status | Output | Error log |\n");
-    out.push_str("| --- | --- | --- | --- |\n");
+    markdown_header(&mut out, &["Step", "Status", "Output", "Error log"]);
     for step in steps {
         let status = match &step.status {
             StepStatus::Ran => "ran".to_string(),
             StepStatus::Skipped { reason } => format!("skipped: {reason}"),
         };
-        out.push_str(&format!(
-            "| `{}` | {} | `{}` | `{}` |\n",
-            step.name,
-            status,
-            step.stdout.display(),
-            step.stderr.display()
-        ));
+        let name = format!("`{}`", escape_inline_code(step.name));
+        let stdout = format!(
+            "`{}`",
+            escape_inline_code(&step.stdout.display().to_string())
+        );
+        let stderr = format!(
+            "`{}`",
+            escape_inline_code(&step.stderr.display().to_string())
+        );
+        markdown_row(&mut out, [name, status, stdout, stderr]);
     }
     out.push_str("\n## Publication Gate\n\n");
     out.push_str("Do not publish this bundle unless `cpu-fixture-compare.out` and `cpu-encode-compare.out` both contain `publication_eligible\ttrue`, `publication_blockers\tnone`, `benchmark_complete\ttrue`, and mixed external batch rows. CPU decode publication requires independent native compressed classic J2K and HTJ2K coverage; repo-materialized natural-image codestreams are diagnostic workload rows, not enough by themselves. CPU encode rows compare the same staged PNM bytes for classic lossless JP2 only. Optional OpenJPH rows are CLI/file-output HTJ2K/JPH-compatible context rows and must be labeled separately from the default in-process decoder matrix. Optional Kakadu rows are proprietary CLI/file-output context rows and must be labeled separately from the default matrix. CUDA decode hardware rows must be run with `--require-cuda` and the same pinned fixture manifest for supported-HTJ2K-subset claims. Metal decode hardware rows must be run with `--require-metal` and the same pinned fixture manifest before they are used for Metal decode speed claims. CUDA and Metal encode hardware rows must be run with `--require-cuda` or `--require-metal` and manifest-backed staged PGM/PPM sources before they are described as using the same encode source matrix. Metal transcode rows must be run with `--require-metal` for same-geometry batch Metal speed claims and must remain labeled as generated batch-route evidence until external corpus transcode rows exist. For Metal decode claims, compare `metal_readback_ms` with `cpu_ms` for host-observable speed and keep `metal_resident_ms` labeled as no-readback context. For Metal resident encode claims, compare `resident_host_ms` with `cpu_ms` only on rows where `packetization_used=true` and `codestream_assembly_used=true`; `resident_buffer_ms` is GPU-pipeline context, not a host-codec apples-to-apples number.\n");

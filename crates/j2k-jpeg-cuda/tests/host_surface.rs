@@ -105,6 +105,36 @@ fn explicit_cuda_region_scaled_surface_fails_without_owned_cuda_path() {
 }
 
 #[test]
+fn explicit_cuda_region_surface_fails_without_owned_cuda_path() {
+    let roi = Rect {
+        x: 4,
+        y: 4,
+        w: 10,
+        h: 10,
+    };
+    let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
+
+    let error = decoder
+        .decode_region_to_device(PixelFormat::Rgb8, roi, BackendRequest::Cuda)
+        .expect_err("strict CUDA region decode should be unsupported");
+
+    assert!(error.is_unsupported());
+    assert!(error.to_string().contains("region output"));
+}
+
+#[test]
+fn explicit_cuda_scaled_surface_fails_without_owned_cuda_path() {
+    let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
+
+    let error = decoder
+        .decode_scaled_to_device(PixelFormat::Rgb8, Downscale::Half, BackendRequest::Cuda)
+        .expect_err("strict CUDA scaled decode should be unsupported");
+
+    assert!(error.is_unsupported());
+    assert!(error.to_string().contains("scaled output"));
+}
+
+#[test]
 fn explicit_cuda_download_respects_padded_stride_when_cuda_runtime_required() {
     if !cuda_runtime_required() {
         return;
@@ -436,6 +466,50 @@ fn tile_batch_region_scaled_cuda_surface_fails_without_owned_cuda_path() {
     )
     .expect_err("strict CUDA tile-batch region+scaled decode should be unsupported");
     assert!(error.is_unsupported());
+}
+
+#[test]
+fn tile_batch_region_cuda_surface_fails_without_owned_cuda_path() {
+    let roi = Rect {
+        x: 4,
+        y: 4,
+        w: 10,
+        h: 10,
+    };
+    let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut pool = j2k_jpeg::ScratchPool::new();
+
+    let error = Codec::decode_tile_region_to_device(
+        &mut ctx,
+        &mut pool,
+        BASELINE_420,
+        PixelFormat::Rgb8,
+        roi,
+        BackendRequest::Cuda,
+    )
+    .expect_err("strict CUDA tile-batch region decode should be unsupported");
+
+    assert!(error.is_unsupported());
+    assert!(error.to_string().contains("region output"));
+}
+
+#[test]
+fn tile_batch_scaled_cuda_surface_fails_without_owned_cuda_path() {
+    let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut pool = j2k_jpeg::ScratchPool::new();
+
+    let error = Codec::decode_tile_scaled_to_device(
+        &mut ctx,
+        &mut pool,
+        BASELINE_420,
+        PixelFormat::Rgb8,
+        Downscale::Half,
+        BackendRequest::Cuda,
+    )
+    .expect_err("strict CUDA tile-batch scaled decode should be unsupported");
+
+    assert!(error.is_unsupported());
+    assert!(error.to_string().contains("scaled output"));
 }
 
 #[test]
@@ -785,6 +859,68 @@ fn explicit_cuda_decodes_422_and_444_into_caller_owned_buffers_when_required() {
         assert!(
             max_delta <= OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA,
             "direct J2K-owned CUDA decode differed from the CPU reference by max channel delta {max_delta}"
+        );
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn explicit_cuda_decodes_batch_into_caller_owned_buffers_when_required() {
+    if !cuda_jpeg_hardware_decode_required() {
+        return;
+    }
+
+    let cases = [
+        (BASELINE_420, (16_u32, 16_u32)),
+        (BASELINE_422, (16_u32, 8_u32)),
+    ];
+    let mut session = CudaSession::default();
+    let buffers = cases
+        .iter()
+        .map(|(_, dimensions)| {
+            let pitch = dimensions.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
+            session
+                .take_owned_cuda_output_buffer(pitch * dimensions.1 as usize)
+                .expect("device output buffer")
+        })
+        .collect::<Vec<_>>();
+    let tiles = cases
+        .iter()
+        .zip(buffers.iter())
+        .map(
+            |((input, dimensions), buffer)| j2k_jpeg_cuda::CudaJpegDecodeOutputTile {
+                input,
+                output: buffer,
+                pitch_bytes: dimensions.0 as usize * PixelFormat::Rgb8.bytes_per_pixel(),
+            },
+        )
+        .collect::<Vec<_>>();
+
+    let stats = Codec::decode_tiles_rgb8_into_cuda_buffers_with_session(&tiles, &mut session)
+        .expect("direct owned CUDA batch decode");
+
+    assert_eq!(stats.len(), cases.len());
+    assert_eq!(session.owned_cuda_packet_cache_len(), cases.len());
+    for ((input, dimensions), (buffer, stats)) in cases.iter().zip(buffers.iter().zip(stats)) {
+        assert!(stats.used_owned_cuda_decode());
+        let pitch = dimensions.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
+        let mut downloaded = vec![0u8; pitch * dimensions.1 as usize];
+        buffer
+            .copy_to_host(&mut downloaded)
+            .expect("download buffer");
+        let (expected, _) = j2k_jpeg::Decoder::new(input)
+            .expect("host decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("host decode");
+        let max_delta = downloaded
+            .iter()
+            .zip(expected)
+            .map(|(actual, expected)| actual.abs_diff(expected))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_delta <= OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA,
+            "direct J2K-owned CUDA batch decode differed from the CPU reference by max channel delta {max_delta}"
         );
     }
 }

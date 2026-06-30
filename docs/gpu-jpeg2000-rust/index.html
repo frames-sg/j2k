@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GPU JPEG2000 Rust - J2K</title>
-  <meta name="description" content="GPU JPEG2000 Rust support in J2K: CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <title>Vendor-Independent GPU JPEG2000 Rust - J2K</title>
+  <meta name="description" content="Vendor-independent GPU JPEG2000 Rust support in J2K: a CPU correctness baseline with CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K paths.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/gpu-jpeg2000-rust/">
-  <meta property="og:title" content="GPU JPEG2000 Rust">
-  <meta property="og:description" content="GPU JPEG2000 Rust support in J2K: CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <meta property="og:title" content="Vendor-Independent GPU JPEG2000 Rust">
+  <meta property="og:description" content="J2K keeps a CPU correctness baseline while exposing CUDA and Apple Metal adapters for supported JPEG 2000 / HTJ2K paths.">
   <meta property="og:url" content="https://frames-sg.github.io/j2k/gpu-jpeg2000-rust/">
   <meta property="og:type" content="article">
   <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="GPU JPEG2000 Rust">
-  <meta name="twitter:description" content="GPU JPEG2000 Rust support in J2K: CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.">
+  <meta name="twitter:title" content="Vendor-Independent GPU JPEG2000 Rust">
+  <meta name="twitter:description" content="J2K keeps a CPU correctness baseline while exposing CUDA and Apple Metal adapters for supported JPEG 2000 / HTJ2K paths.">
   <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
@@ -23,8 +23,8 @@
   {
     "@context": "https://schema.org",
     "@type": "TechArticle",
-    "headline": "GPU JPEG2000 Rust",
-    "description": "GPU JPEG2000 Rust support in J2K: CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K decode, encode-stage, and transcode paths.",
+    "headline": "Vendor-Independent GPU JPEG2000 Rust",
+    "description": "Vendor-independent GPU JPEG2000 Rust support in J2K: a CPU correctness baseline with CUDA and Apple Metal adapter crates for supported JPEG 2000 / HTJ2K paths.",
     "url": "https://frames-sg.github.io/j2k/gpu-jpeg2000-rust/",
     "isPartOf": { "@type": "SoftwareSourceCode", "name": "J2K", "codeRepository": "https://github.com/frames-sg/j2k", "programmingLanguage": "Rust" }
   }
@@ -47,30 +47,30 @@
     <section class="hero">
       <div class="wrap hero-grid">
         <div>
-          <p class="eyebrow">GPU JPEG2000 Rust</p>
-          <h1>GPU JPEG2000 Rust</h1>
-          <p class="lead">J2K keeps CPU decode and encode as the correctness baseline while exposing CUDA and Apple Metal GPU adapters for supported JPEG 2000 / HTJ2K paths.</p>
+          <p class="eyebrow">GPU backends</p>
+          <h1>Vendor-Independent GPU JPEG2000 Rust</h1>
+          <p class="lead">J2K treats GPU acceleration as an optional backend layer: CPU decode and encode remain the correctness baseline, while CUDA and Apple Metal adapters cover supported JPEG 2000 / HTJ2K paths.</p>
           <div class="actions">
             <a class="button primary" href="https://crates.io/crates/j2k">j2k crate</a>
             <a class="button" href="https://github.com/frames-sg/j2k">Source</a>
           </div>
         </div>
-        <img class="diagram" src="../assets/j2k-gpu-pipeline.svg?v=3" alt="GPU JPEG2000 Rust backend map">
+        <img class="diagram" src="../assets/j2k-gpu-pipeline.svg?v=3" alt="J2K CPU, CUDA, and Metal backend map">
       </div>
     </section>
     <section class="section">
       <div class="wrap grid three">
         <article class="card">
           <h2>CPU baseline</h2>
-          <p>Portable CPU paths remain available for general JPEG 2000 / HTJ2K application code.</p>
+          <p>Portable CPU paths remain available for general JPEG 2000 / HTJ2K application code and for unsupported device shapes.</p>
         </article>
         <article class="card">
           <h2>CUDA</h2>
-          <p><code>j2k-cuda</code>, <code>j2k-jpeg-cuda</code>, and <code>j2k-transcode-cuda</code> integrate NVIDIA device surfaces and kernels for supported shapes.</p>
+          <p><code>j2k-cuda</code>, <code>j2k-jpeg-cuda</code>, and <code>j2k-transcode-cuda</code> integrate J2K-owned kernels, CUDA device surfaces, and strict route policy for supported shapes.</p>
         </article>
         <article class="card">
           <h2>Metal</h2>
-          <p><code>j2k-metal</code>, <code>j2k-jpeg-metal</code>, and <code>j2k-transcode-metal</code> integrate Apple Metal-backed paths on macOS.</p>
+          <p><code>j2k-metal</code>, <code>j2k-jpeg-metal</code>, and <code>j2k-transcode-metal</code> integrate Apple Metal-backed paths on macOS under the same support boundary.</p>
         </article>
       </div>
     </section>
@@ -85,7 +85,7 @@
   </main>
   <footer class="site-footer">
     <div class="wrap footer-inner">
-      <p>GPU JPEG2000 Rust documentation for J2K.</p>
+      <p>Vendor-independent GPU backend documentation for J2K.</p>
       <p><a href="../sitemap.xml">Sitemap</a></p>
     </div>
   </footer>

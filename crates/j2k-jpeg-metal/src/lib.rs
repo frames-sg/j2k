@@ -44,10 +44,6 @@ use j2k_jpeg::{
     Decoder as CpuDecoder, DecoderContext as CpuDecoderContext, JpegError, JpegView,
     ScratchPool as CpuScratchPool, Warning as CpuWarning,
 };
-use j2k_metal_support::{
-    cpu_host_route, metal_kernel_route, metal_unavailable_route, reject_explicit_metal_route,
-    reject_unsupported_backend_route, MetalRouteProfileLabels,
-};
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{system_default_device, MetalSupportError};
 
@@ -2723,22 +2719,21 @@ fn choose_route(
     );
     let decision = routing::decide_route(backend, capabilities);
     if j2k_profile::gpu_route_profile_enabled() {
-        let request_s = format!("{backend:?}");
-        let fmt_s = format!("{fmt:?}");
-        let has_fast_packet_s = capabilities.has_fast_packet().to_string();
-        let supports_format_s = capabilities.supports_output_format().to_string();
-        let labels = jpeg_route_decision_profile(decision);
-        j2k_profile::emit_gpu_route_profile(
+        let labels = decision.profile_labels();
+        j2k_profile::emit_gpu_route_fields(
             "jpeg",
             "metal",
             &[
-                ("request", request_s.as_str()),
-                ("fmt", fmt_s.as_str()),
-                ("op", jpeg_batch_op_profile(op)),
-                ("has_fast_packet", has_fast_packet_s.as_str()),
-                ("supports_output_format", supports_format_s.as_str()),
-                ("decision", labels.decision),
-                ("reason", labels.reason),
+                j2k_profile::ProfileField::label("request", format_args!("{backend:?}")),
+                j2k_profile::ProfileField::label("fmt", format_args!("{fmt:?}")),
+                j2k_profile::ProfileField::label("op", jpeg_batch_op_profile(op)),
+                j2k_profile::ProfileField::label("has_fast_packet", capabilities.has_fast_packet()),
+                j2k_profile::ProfileField::label(
+                    "supports_output_format",
+                    capabilities.supports_output_format(),
+                ),
+                j2k_profile::ProfileField::label("decision", labels.decision),
+                j2k_profile::ProfileField::label("reason", labels.reason),
             ],
         );
     }
@@ -2751,25 +2746,6 @@ fn jpeg_batch_op_profile(op: batch::BatchOp) -> &'static str {
         batch::BatchOp::Region(_) => "region",
         batch::BatchOp::Scaled(_) => "scaled",
         batch::BatchOp::RegionScaled { .. } => "region_scaled",
-    }
-}
-
-fn jpeg_route_decision_profile(decision: routing::RouteDecision) -> MetalRouteProfileLabels {
-    match decision {
-        routing::RouteDecision::CpuHost => cpu_host_route(),
-        routing::RouteDecision::MetalKernel => metal_kernel_route(),
-        routing::RouteDecision::RejectExplicitMetal { reason } => {
-            let reason_code = if reason.contains("fast") {
-                "no_fast_packet"
-            } else {
-                "unsupported_format"
-            };
-            reject_explicit_metal_route(reason_code)
-        }
-        routing::RouteDecision::RejectUnsupportedBackend { .. } => {
-            reject_unsupported_backend_route()
-        }
-        routing::RouteDecision::MetalUnavailable => metal_unavailable_route(),
     }
 }
 

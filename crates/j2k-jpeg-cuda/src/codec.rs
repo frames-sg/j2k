@@ -24,6 +24,18 @@ use crate::{CudaSession, Error, Surface};
 /// JPEG codec marker used by J2K's generic CUDA decode traits.
 pub struct Codec;
 
+#[cfg(feature = "cuda-runtime")]
+#[derive(Debug, Clone, Copy)]
+/// Caller-owned CUDA output target for one full-frame RGB8 JPEG decode.
+pub struct CudaJpegDecodeOutputTile<'a> {
+    /// Baseline JPEG input bytes.
+    pub input: &'a [u8],
+    /// CUDA output buffer that receives tightly packed RGB8 rows.
+    pub output: &'a CudaDeviceBuffer,
+    /// Number of bytes between consecutive output rows.
+    pub pitch_bytes: usize,
+}
+
 impl ImageCodec for Codec {
     type Error = Error;
     type Warning = CpuWarning;
@@ -63,6 +75,29 @@ impl Codec {
     ) -> Result<crate::CudaSurfaceStats, Error> {
         let dimensions = CpuDecoder::inspect(input)?.dimensions;
         decode_owned_cuda_rgb8_into(input, dimensions, session, output, pitch_bytes)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    /// Decode full JPEG tiles to caller-owned CUDA RGB8 memory using a session.
+    ///
+    /// This is a strict J2K-owned CUDA-kernel path and currently supports
+    /// full-tile RGB8 fast 4:2:0, 4:2:2, and 4:4:4 YCbCr JPEG inputs. Returned
+    /// stats preserve the input tile order.
+    pub fn decode_tiles_rgb8_into_cuda_buffers_with_session(
+        tiles: &[CudaJpegDecodeOutputTile<'_>],
+        session: &mut CudaSession,
+    ) -> Result<Vec<crate::CudaSurfaceStats>, Error> {
+        tiles
+            .iter()
+            .map(|tile| {
+                Self::decode_tile_rgb8_into_cuda_buffer_with_session(
+                    tile.input,
+                    tile.output,
+                    tile.pitch_bytes,
+                    session,
+                )
+            })
+            .collect()
     }
 
     /// Decode many JPEG tiles to J2K surfaces using a caller-owned CUDA session.

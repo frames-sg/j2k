@@ -7,6 +7,8 @@ use std::{
 
 use serde_json::Value;
 
+use crate::markdown::{escape_inline_code as escape_inline, markdown_header, markdown_row};
+
 const DEFAULT_REPORT_NAME: &str = "adoption-report.md";
 
 #[derive(Debug)]
@@ -1756,25 +1758,6 @@ fn ns_to_ms_label(value: Option<f64>) -> String {
         .unwrap_or_else(|| "NA".to_string())
 }
 
-fn markdown_header(out: &mut String, columns: &[&str]) {
-    markdown_row(out, columns.iter().copied());
-    markdown_row(out, columns.iter().map(|_| "---"));
-}
-
-fn markdown_row<I, S>(out: &mut String, values: I)
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    out.push('|');
-    for value in values {
-        out.push(' ');
-        out.push_str(&escape_cell(value.as_ref()));
-        out.push_str(" |");
-    }
-    out.push('\n');
-}
-
 fn row_value(row: &BTreeMap<String, String>, column: &str) -> String {
     row.get(column)
         .filter(|value| !value.is_empty())
@@ -1802,14 +1785,6 @@ fn scalar_label(value: &Value, key: &str) -> String {
         Some(other) => other.to_string(),
         None => "not-recorded".to_string(),
     }
-}
-
-fn escape_cell(value: &str) -> String {
-    value.replace('|', "\\|").replace('\n', " ")
-}
-
-fn escape_inline(value: &str) -> String {
-    value.replace('`', "'").replace('\n', " ")
 }
 
 #[cfg(test)]

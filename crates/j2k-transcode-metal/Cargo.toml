@@ -32,6 +32,7 @@ j2k-metal-support = { path = "../j2k-metal-support", version = "=0.6.2" }
 criterion = { workspace = true }
 j2k-native = { path = "../j2k-native", version = "=0.6.2" }
 j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.2" }
+j2k-profile = { path = "../j2k-profile", version = "=0.6.2" }
 j2k-test-support = { path = "../j2k-test-support" }
 
 [[bench]]

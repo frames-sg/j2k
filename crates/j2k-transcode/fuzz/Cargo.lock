@@ -129,6 +129,7 @@ name = "j2k-transcode"
 version = "0.6.2"
 dependencies = [
  "j2k",
+ "j2k-core",
  "j2k-jpeg",
  "j2k-native",
  "rayon",

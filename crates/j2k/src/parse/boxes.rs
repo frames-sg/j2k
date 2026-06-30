@@ -15,16 +15,42 @@ pub(crate) fn looks_like_jp2(input: &[u8]) -> bool {
     input.starts_with(&JP2_SIGNATURE_PREFIX)
 }
 
-pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
-    if input.len() < JP2_SIGNATURE.len() {
-        return Err(InputError::TooShort {
-            need: JP2_SIGNATURE.len(),
-            have: input.len(),
-        }
-        .into());
-    }
+pub(crate) fn extract_jp2_codestream_payload(
+    input: &[u8],
+) -> Result<(CompressedPayloadKind, usize, &[u8]), J2kError> {
+    let mut saw_signature = false;
+    let mut payload_kind = CompressedPayloadKind::Jp2File;
+    let mut codestream = None;
 
-    let mut offset = 0usize;
+    walk_top_level_boxes(input, |top_level_box| {
+        match &top_level_box.header.box_type {
+            b"jP  " => {
+                validate_signature_box(top_level_box.offset, saw_signature, top_level_box.payload)?;
+                saw_signature = true;
+            }
+            b"ftyp" => {
+                payload_kind = classify_file_type_box(top_level_box.payload, top_level_box.offset)?;
+            }
+            b"jp2c" => {
+                codestream = Some((
+                    payload_kind,
+                    top_level_box.header.payload_start,
+                    top_level_box.payload,
+                ));
+                return Ok(BoxWalk::Stop);
+            }
+            _ => {}
+        }
+        Ok(BoxWalk::Continue)
+    })?;
+
+    if !saw_signature {
+        return Err(J2kError::MissingRequiredBox { box_type: "jP  " });
+    }
+    codestream.ok_or(J2kError::MissingRequiredBox { box_type: "jp2c" })
+}
+
+pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
     let mut saw_signature = false;
     let mut saw_ftyp = false;
     let mut saw_jp2h = false;
@@ -34,56 +60,31 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
     let mut codestream = None;
     let mut payload_kind = CompressedPayloadKind::Jp2File;
 
-    while offset < input.len() {
-        let header = read_box_header(input, offset)?;
-        if header.end > input.len() {
-            return Err(InputError::TruncatedAt {
-                offset,
-                segment: "box payload",
-            }
-            .into());
-        }
-        let payload = &input[header.payload_start..header.end];
-        match &header.box_type {
+    walk_top_level_boxes(input, |top_level_box| {
+        match &top_level_box.header.box_type {
             b"jP  " => {
-                if saw_signature || offset != 0 {
-                    return Err(J2kError::InvalidBox {
-                        offset,
-                        what: "signature box must appear exactly once at the start of the file",
-                    });
-                }
-                if payload != &JP2_SIGNATURE[8..] {
-                    return Err(J2kError::InvalidBox {
-                        offset,
-                        what: "invalid JP2 signature payload",
-                    });
-                }
+                validate_signature_box(top_level_box.offset, saw_signature, top_level_box.payload)?;
                 saw_signature = true;
             }
             b"ftyp" => {
                 if !saw_signature || saw_ftyp || saw_jp2h || codestream.is_some() {
                     return Err(J2kError::InvalidBox {
-                        offset,
+                        offset: top_level_box.offset,
                         what: "file type box must appear exactly once before jp2h and jp2c",
                     });
                 }
-                if payload.len() < 8 {
-                    return Err(J2kError::InvalidBox {
-                        offset,
-                        what: "ftyp payload shorter than 8 bytes",
-                    });
-                }
-                payload_kind = classify_file_type(payload);
+                payload_kind = classify_file_type_box(top_level_box.payload, top_level_box.offset)?;
                 saw_ftyp = true;
             }
             b"jp2h" => {
                 if !saw_ftyp || saw_jp2h || codestream.is_some() {
                     return Err(J2kError::InvalidBox {
-                        offset,
+                        offset: top_level_box.offset,
                         what: "jp2h must appear exactly once after ftyp and before jp2c",
                     });
                 }
-                let (ihdr, metadata) = parse_jp2h(payload, header.payload_start)?;
+                let (ihdr, metadata) =
+                    parse_jp2h(top_level_box.payload, top_level_box.header.payload_start)?;
                 saw_jp2h = true;
                 saw_ihdr = ihdr.is_some();
                 image_header = ihdr;
@@ -92,16 +93,16 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
             b"jp2c" => {
                 if !saw_jp2h || codestream.is_some() {
                     return Err(J2kError::InvalidBox {
-                        offset,
+                        offset: top_level_box.offset,
                         what: "jp2c must appear exactly once after jp2h",
                     });
                 }
-                codestream = Some(payload);
+                codestream = Some(top_level_box.payload);
             }
             _ => {}
         }
-        offset = header.end;
-    }
+        Ok(BoxWalk::Continue)
+    })?;
 
     if !saw_signature {
         return Err(J2kError::MissingRequiredBox { box_type: "jP  " });
@@ -145,6 +146,88 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
         components,
         file_metadata,
     })
+}
+
+#[derive(Clone, Copy)]
+struct TopLevelBox<'a> {
+    offset: usize,
+    header: BoxHeader,
+    payload: &'a [u8],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoxWalk {
+    Continue,
+    Stop,
+}
+
+fn walk_top_level_boxes<'a>(
+    input: &'a [u8],
+    mut visit: impl FnMut(TopLevelBox<'a>) -> Result<BoxWalk, J2kError>,
+) -> Result<(), J2kError> {
+    if input.len() < JP2_SIGNATURE.len() {
+        return Err(InputError::TooShort {
+            need: JP2_SIGNATURE.len(),
+            have: input.len(),
+        }
+        .into());
+    }
+
+    let mut offset = 0usize;
+    while offset < input.len() {
+        let header = read_box_header(input, offset)?;
+        if header.end > input.len() {
+            return Err(InputError::TruncatedAt {
+                offset,
+                segment: "box payload",
+            }
+            .into());
+        }
+        let payload = &input[header.payload_start..header.end];
+        if visit(TopLevelBox {
+            offset,
+            header,
+            payload,
+        })? == BoxWalk::Stop
+        {
+            break;
+        }
+        offset = header.end;
+    }
+    Ok(())
+}
+
+fn validate_signature_box(
+    offset: usize,
+    saw_signature: bool,
+    payload: &[u8],
+) -> Result<(), J2kError> {
+    if saw_signature || offset != 0 {
+        return Err(J2kError::InvalidBox {
+            offset,
+            what: "signature box must appear exactly once at the start of the file",
+        });
+    }
+    if payload != &JP2_SIGNATURE[8..] {
+        return Err(J2kError::InvalidBox {
+            offset,
+            what: "invalid JP2 signature payload",
+        });
+    }
+    Ok(())
+}
+
+fn classify_file_type_box(
+    payload: &[u8],
+    offset: usize,
+) -> Result<CompressedPayloadKind, J2kError> {
+    if payload.len() < 8 {
+        return Err(J2kError::InvalidBox {
+            offset,
+            what: "ftyp payload shorter than 8 bytes",
+        });
+    }
+    Ok(classify_file_type(payload))
 }
 
 fn classify_file_type(payload: &[u8]) -> CompressedPayloadKind {

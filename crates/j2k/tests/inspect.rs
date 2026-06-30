@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k::{J2kDecoder, J2kError, J2kView};
+use j2k::{extract_j2k_codestream_payload, J2kDecoder, J2kError, J2kView};
 use j2k_core::{
     Colorspace, CompressedPayloadKind, CompressedTransferSyntax, InputError, PassthroughDecision,
     PassthroughRequirements,
@@ -143,11 +143,38 @@ fn jp2_with_jp2c_before_jp2h() -> Vec<u8> {
     bytes
 }
 
+fn jp2_shell() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
+        b' ',
+    ]);
+    bytes
+}
+
+fn push_extended_box(out: &mut Vec<u8>, box_type: [u8; 4], payload: &[u8]) {
+    push_u32(out, 1);
+    out.extend_from_slice(&box_type);
+    push_u64(out, (payload.len() + 16) as u64);
+    out.extend_from_slice(payload);
+}
+
+fn push_zero_length_box(out: &mut Vec<u8>, box_type: [u8; 4], payload: &[u8]) {
+    push_u32(out, 0);
+    out.extend_from_slice(&box_type);
+    out.extend_from_slice(payload);
+}
+
 fn push_u16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
 fn push_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn push_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
@@ -272,6 +299,101 @@ fn inspect_jp2_uses_container_colorspace() {
     let info = J2kDecoder::inspect(&minimal_jp2()).expect("jp2 inspect");
     assert_eq!(info.dimensions, (128, 64));
     assert_eq!(info.colorspace, Colorspace::SRgb);
+}
+
+#[test]
+fn extract_codestream_payload_accepts_raw_jp2_and_jph_inputs() {
+    let raw = minimal_j2k_codestream();
+    let raw_payload = extract_j2k_codestream_payload(&raw).expect("raw payload");
+    assert_eq!(raw_payload.codestream(), raw.as_slice());
+    assert_eq!(
+        raw_payload.payload_kind(),
+        CompressedPayloadKind::Jpeg2000Codestream
+    );
+    assert_eq!(raw_payload.codestream_offset(), 0);
+
+    let jp2 = wrap_jp2_codestream(&raw, 128, 64, 3, 8, 16);
+    let wrapped_classic_payload = extract_j2k_codestream_payload(&jp2).expect("jp2 payload");
+    assert_eq!(wrapped_classic_payload.codestream(), raw.as_slice());
+    assert_eq!(
+        wrapped_classic_payload.payload_kind(),
+        CompressedPayloadKind::Jp2File
+    );
+    assert!(wrapped_classic_payload.codestream_offset() > 0);
+
+    let jph = ht_jph();
+    let high_throughput_file_payload = extract_j2k_codestream_payload(&jph).expect("jph payload");
+    assert_eq!(
+        high_throughput_file_payload.payload_kind(),
+        CompressedPayloadKind::JphFile
+    );
+    assert!(high_throughput_file_payload
+        .codestream()
+        .starts_with(&[0xFF, 0x4F]));
+}
+
+#[test]
+fn extract_codestream_payload_rejects_malformed_wrappers() {
+    let mut bad_signature = minimal_jp2();
+    bad_signature[11] = 0;
+    let err =
+        extract_j2k_codestream_payload(&bad_signature).expect_err("invalid signature payload");
+    assert!(matches!(err, J2kError::InvalidBox { .. }));
+
+    let truncated = &minimal_jp2()[..10];
+    let err = extract_j2k_codestream_payload(truncated).expect_err("truncated signature");
+    assert!(matches!(err, J2kError::Input(InputError::TooShort { .. })));
+}
+
+#[test]
+fn extract_codestream_payload_accepts_extended_length_jp2c_box() {
+    let raw = minimal_j2k_codestream();
+    let mut jp2 = jp2_shell();
+    push_extended_box(&mut jp2, *b"jp2c", &raw);
+
+    let payload = extract_j2k_codestream_payload(&jp2).expect("extended-length jp2c payload");
+
+    assert_eq!(payload.codestream(), raw.as_slice());
+    assert_eq!(payload.payload_kind(), CompressedPayloadKind::Jp2File);
+}
+
+#[test]
+fn extract_codestream_payload_accepts_terminal_zero_length_jp2c_box() {
+    let raw = minimal_j2k_codestream();
+    let mut jp2 = jp2_shell();
+    push_zero_length_box(&mut jp2, *b"jp2c", &raw);
+
+    let payload = extract_j2k_codestream_payload(&jp2).expect("length-zero terminal jp2c payload");
+
+    assert_eq!(payload.codestream(), raw.as_slice());
+    assert_eq!(payload.payload_kind(), CompressedPayloadKind::Jp2File);
+}
+
+#[test]
+fn extract_codestream_payload_rejects_short_box_length() {
+    let mut jp2 = jp2_shell();
+    push_u32(&mut jp2, 7);
+    jp2.extend_from_slice(b"free");
+
+    let err = extract_j2k_codestream_payload(&jp2).expect_err("short box length must reject");
+
+    assert!(matches!(err, J2kError::InvalidBox { .. }));
+}
+
+#[test]
+fn extract_codestream_payload_rejects_truncated_extended_box_header() {
+    let mut jp2 = jp2_shell();
+    push_u32(&mut jp2, 1);
+    jp2.extend_from_slice(b"free");
+    jp2.extend_from_slice(&[0, 0, 0, 0]);
+
+    let err =
+        extract_j2k_codestream_payload(&jp2).expect_err("truncated extended header must reject");
+
+    assert!(matches!(
+        err,
+        J2kError::Input(InputError::TruncatedAt { .. })
+    ));
 }
 
 #[test]

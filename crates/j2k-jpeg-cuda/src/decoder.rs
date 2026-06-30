@@ -36,24 +36,17 @@ impl<'a> Decoder<'a> {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
-        if j2k_profile::gpu_route_profile_enabled() {
-            let request_s = format!("{backend:?}");
-            let fmt_s = format!("{fmt:?}");
-            let width_s = self.inner.info().dimensions.0.to_string();
-            let height_s = self.inner.info().dimensions.1.to_string();
-            j2k_profile::emit_gpu_route_profile(
-                "jpeg",
-                "cuda",
-                &[
-                    ("op", "full"),
-                    ("request", request_s.as_str()),
-                    ("fmt", fmt_s.as_str()),
-                    ("width", width_s.as_str()),
-                    ("height", height_s.as_str()),
-                    ("decision", "begin"),
-                ],
-            );
-        }
+        j2k_profile::emit_gpu_route_surface_profile(
+            ("jpeg", "cuda"),
+            (
+                "full",
+                format_args!("{backend:?}"),
+                format_args!("{fmt:?}"),
+                "begin",
+            ),
+            self.inner.info().dimensions,
+            [],
+        );
         if backend == BackendRequest::Cuda {
             if fmt == PixelFormat::Rgb8 {
                 return self.decode_cuda_rgb8(session);
@@ -61,20 +54,16 @@ impl<'a> Decoder<'a> {
             return Err(unsupported_owned_cuda_output_format());
         }
         let (bytes, _outcome) = self.inner.decode(fmt)?;
-        if j2k_profile::gpu_route_profile_enabled() {
-            let request_s = format!("{backend:?}");
-            let fmt_s = format!("{fmt:?}");
-            j2k_profile::emit_gpu_route_profile(
-                "jpeg",
-                "cuda",
-                &[
-                    ("op", "full"),
-                    ("request", request_s.as_str()),
-                    ("fmt", fmt_s.as_str()),
-                    ("decision", "cpu_decode_then_wrap"),
-                ],
-            );
-        }
+        j2k_profile::emit_gpu_route_decision_profile(
+            ("jpeg", "cuda"),
+            (
+                "full",
+                format_args!("{backend:?}"),
+                format_args!("{fmt:?}"),
+                "cpu_decode_then_wrap",
+            ),
+            [],
+        );
         wrap_surface(bytes, self.inner.info().dimensions, fmt, backend, session)
     }
 
@@ -82,41 +71,26 @@ impl<'a> Decoder<'a> {
     fn decode_cuda_rgb8(&mut self, session: &mut CudaSession) -> Result<Surface, Error> {
         let dimensions = self.inner.info().dimensions;
         let surface = decode_owned_cuda_rgb8(decoder_bytes(&self.inner), dimensions, session)?;
-        if j2k_profile::gpu_route_profile_enabled() {
-            let width_s = dimensions.0.to_string();
-            let height_s = dimensions.1.to_string();
-            j2k_profile::emit_gpu_route_profile(
-                "jpeg",
-                "cuda",
-                &[
-                    ("op", "full"),
-                    ("request", "Cuda"),
-                    ("fmt", "Rgb8"),
-                    ("width", width_s.as_str()),
-                    ("height", height_s.as_str()),
-                    ("decision", "owned_cuda"),
-                ],
-            );
-        }
+        j2k_profile::emit_gpu_route_surface_profile(
+            ("jpeg", "cuda"),
+            ("full", "Cuda", "Rgb8", "owned_cuda"),
+            dimensions,
+            [],
+        );
         Ok(surface)
     }
 
     #[cfg(not(feature = "cuda-runtime"))]
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
     fn decode_cuda_rgb8(&mut self, _session: &mut CudaSession) -> Result<Surface, Error> {
-        if j2k_profile::gpu_route_profile_enabled() {
-            j2k_profile::emit_gpu_route_profile(
-                "jpeg",
-                "cuda",
-                &[
-                    ("op", "full"),
-                    ("request", "Cuda"),
-                    ("fmt", "Rgb8"),
-                    ("decision", "owned_cuda_unavailable"),
-                    ("reason", "cuda_runtime_feature_disabled"),
-                ],
-            );
-        }
+        j2k_profile::emit_gpu_route_decision_profile(
+            ("jpeg", "cuda"),
+            ("full", "Cuda", "Rgb8", "owned_cuda_unavailable"),
+            [j2k_profile::ProfileField::label(
+                "reason",
+                "cuda_runtime_feature_disabled",
+            )],
+        );
         Err(Error::CudaUnavailable)
     }
 

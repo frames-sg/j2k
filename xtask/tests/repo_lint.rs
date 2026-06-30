@@ -115,6 +115,72 @@ mod source_policy {
     }
 
     #[test]
+    fn cuda_runtime_rejects_product_cuda_c_and_checked_in_ptx() {
+        let root = repo_root();
+        let cuda_runtime_src = root.join("crates/j2k-cuda-runtime/src");
+        let mut forbidden = Vec::new();
+        let mut pending = vec![cuda_runtime_src.clone()];
+
+        while let Some(dir) = pending.pop() {
+            for entry in
+                fs::read_dir(&dir).unwrap_or_else(|err| panic!("read {}: {err}", dir.display()))
+            {
+                let entry = entry.expect("read directory entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                if !matches!(path.extension().and_then(OsStr::to_str), Some("cu" | "ptx")) {
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&cuda_runtime_src)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if rel.starts_with("fixtures/") || rel.starts_with("test-fixtures/") {
+                    continue;
+                }
+                forbidden.push(rel);
+            }
+        }
+
+        forbidden.sort();
+        assert!(
+            forbidden.is_empty(),
+            "product CUDA C sources and checked-in product PTX are retired; use CUDA Oxide projects instead:\n{}",
+            forbidden.join("\n")
+        );
+    }
+
+    #[test]
+    fn cuda_runtime_dispatch_does_not_read_deprecated_oxide_route_selectors() {
+        let root = repo_root();
+        let runtime_src = root.join("crates/j2k-cuda-runtime/src");
+        let mut violations = Vec::new();
+
+        for path in rust_sources(&runtime_src) {
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+            if source.contains("J2K_CUDA_USE_OXIDE") {
+                violations.push(
+                    path.strip_prefix(root)
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string(),
+                );
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "CUDA Oxide route selection must be feature-driven, not runtime-env driven:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    #[test]
     fn cuda_adapter_crates_keep_public_libs_as_module_shells() {
         let root = repo_root();
         let expected_modules = [
@@ -304,7 +370,6 @@ mod architecture_policy {
         for (manifest, package) in [
             ("crates/j2k-test-support/Cargo.toml", "j2k-test-support"),
             ("xtask/Cargo.toml", "xtask"),
-            ("tests/nvidia-baseline/Cargo.toml", "j2k-nvidia-baseline"),
         ] {
             let source = fs::read_to_string(root.join(manifest))
                 .unwrap_or_else(|err| panic!("read {manifest}: {err}"));
@@ -797,7 +862,7 @@ mod docs_and_workflows_policy {
             "self-hosted",
             "metal",
             "cuda",
-            "NVCC: /usr/local/cuda/bin/nvcc",
+            "J2K_REQUIRE_CUDA_OXIDE_BUILD",
             "cargo test -p j2k-jpeg-metal",
             "cargo test -p j2k-metal",
             "cargo test -p j2k-jpeg-cuda",
@@ -823,8 +888,8 @@ mod docs_and_workflows_policy {
 
         for required in [
             "runs-on: [self-hosted, Linux, X64, cuda]",
-            "NVCC: /usr/local/cuda/bin/nvcc",
             "J2K_REQUIRE_CUDA_RUNTIME",
+            "J2K_REQUIRE_CUDA_OXIDE_BUILD",
         "J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE",
         "J2K_GPU_BENCH_DIM",
         "J2K_GPU_BENCH_BATCH",
@@ -869,21 +934,52 @@ mod docs_and_workflows_policy {
     }
 
     #[test]
-    fn cuda_build_scripts_do_not_probe_default_nvcc() {
+    fn cuda_runtime_build_script_does_not_use_nvcc() {
         let root = repo_root();
-        for relative in [
-            "crates/j2k-cuda-runtime/build.rs",
-            "tests/nvidia-baseline/build.rs",
-        ] {
+        for relative in ["crates/j2k-cuda-runtime/build.rs"] {
             let source = fs::read_to_string(root.join(relative))
                 .unwrap_or_else(|err| panic!("read {relative}: {err}"));
+            for forbidden in ["NVCC", "nvcc"] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{relative} must not invoke or probe {forbidden}; CUDA product kernels are built by CUDA Oxide"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cuda_oxide_shared_strict_build_gate_is_wired_and_documented() {
+        let root = repo_root();
+        let build_script = fs::read_to_string(root.join("crates/j2k-cuda-runtime/build.rs"))
+            .expect("read j2k-cuda-runtime build script");
+        let env_docs = fs::read_to_string(root.join("docs/env-vars.md")).expect("read env docs");
+        let roadmap =
+            fs::read_to_string(root.join("docs/roadmap/metal-codec-acceleration-plan.md"))
+                .expect("read GPU acceleration roadmap");
+
+        for source in [&build_script, &env_docs, &roadmap] {
             assert!(
-                !source.contains("unwrap_or_else(|| \"nvcc\".into())"),
-                "{relative} must not default to PATH nvcc"
+                source.contains("J2K_REQUIRE_CUDA_OXIDE_BUILD"),
+                "shared CUDA Oxide strict build gate must be wired and documented"
             );
+        }
+
+        for per_family_gate in [
+            "J2K_REQUIRE_CUDA_OXIDE_COPY_U8",
+            "J2K_REQUIRE_CUDA_OXIDE_J2K_ENCODE",
+            "J2K_REQUIRE_CUDA_OXIDE_J2K_DECODE_STORE",
+            "J2K_REQUIRE_CUDA_OXIDE_J2K_DEQUANTIZE",
+            "J2K_REQUIRE_CUDA_OXIDE_J2K_IDWT",
+            "J2K_REQUIRE_CUDA_OXIDE_HTJ2K_DECODE",
+            "J2K_REQUIRE_CUDA_OXIDE_HTJ2K_ENCODE",
+            "J2K_REQUIRE_CUDA_OXIDE_TRANSCODE",
+            "J2K_REQUIRE_CUDA_OXIDE_JPEG_DECODE",
+            "J2K_REQUIRE_CUDA_OXIDE_JPEG_ENCODE",
+        ] {
             assert!(
-                source.contains("requires absolute NVCC"),
-                "{relative} must require absolute NVCC in strict mode"
+                !build_script.contains(per_family_gate) && !env_docs.contains(per_family_gate),
+                "per-family CUDA Oxide strict build gate `{per_family_gate}` must not be wired or documented; use J2K_REQUIRE_CUDA_OXIDE_BUILD"
             );
         }
     }
@@ -927,33 +1023,21 @@ mod docs_and_workflows_policy {
     }
 
     #[test]
-    fn nvidia_baseline_workflow_exports_direct_decode_artifacts() {
+    fn nvidia_baseline_workflow_is_retired() {
         let root = repo_root();
         let workflow_path = root.join(".github/workflows/gpu-validation.yml");
         let workflow = fs::read_to_string(&workflow_path).expect("read GPU validation workflow");
-        let cuda_job = workflow_job(&workflow, "cuda-x86_64-compatibility");
 
-        for required in [
+        for forbidden in [
             "run-nvidia-baseline",
             "--bin transcode_compare",
-            "--decomposition-levels 1",
-            "--decomposition-levels 2",
-            "target/transcode_compare_level1.json",
-            "target/transcode_compare_level2.json",
             "tests/nvidia-baseline/scripts/assert_transcode_perf.py",
-            "J2K_LEVEL1_CUDA_HT_MIN_MPS",
-            "J2K_LEVEL2_CUDA_HT_MIN_MPS",
             "--bin decode_compare",
-            "--jpeg-dir \"${J2K_BENCH_JPEG_DIR}\"",
-            "--min-inputs 100",
-            "target/decode_compare.json",
-            "target/decode_compare.csv",
-            "python3 -m json.tool target/decode_compare.json",
             "nvidia-baseline-comparison",
         ] {
             assert!(
-                workflow.contains(required) || cuda_job.contains(required),
-                "{} NVIDIA baseline gate must contain `{required}`",
+                !workflow.contains(forbidden),
+                "{} must not contain active NVIDIA baseline workflow reference `{forbidden}`",
                 workflow_path
                     .strip_prefix(root)
                     .unwrap_or(&workflow_path)
@@ -963,15 +1047,16 @@ mod docs_and_workflows_policy {
     }
 
     #[test]
-    fn nvidia_codec_comparator_stays_test_only() {
+    fn nvidia_codec_comparator_is_historical_only() {
         let root = repo_root();
         let needles = [
+            "tests/nvidia-baseline",
             "j2k-nvidia-baseline",
             "nvjpeg2000",
             "nvjpeg2k",
             "nvidia-baseline",
+            "run-nvidia-baseline",
         ];
-        let mut seen = 0usize;
         let mut violations = Vec::new();
 
         for path in repo_text_files(root) {
@@ -984,9 +1069,7 @@ mod docs_and_workflows_policy {
                 if !needles.iter().any(|needle| lower.contains(needle)) {
                     continue;
                 }
-                seen += 1;
-                let allowed = rel_s.starts_with("./tests/nvidia-baseline/")
-                    || rel_s == "./.github/workflows/gpu-validation.yml"
+                let allowed = rel_s == "./docs/benchmark-evidence.md"
                     || rel_s == "./xtask/tests/repo_lint.rs";
                 if !allowed {
                     violations.push(format!("{}:{}:{}", rel_s, line_idx + 1, line));
@@ -994,13 +1077,12 @@ mod docs_and_workflows_policy {
             }
         }
 
-        assert!(
-            seen > 0,
-            "repo must contain the test-only NVIDIA comparator guard input"
-        );
+        let evidence = fs::read_to_string(root.join("docs/benchmark-evidence.md"))
+            .expect("read benchmark evidence");
+        assert!(evidence.contains("Final NVIDIA comparator capture"));
         assert!(
             violations.is_empty(),
-            "NVIDIA codec comparator references must stay test-only:\n{}",
+            "NVIDIA codec comparator references must be historical docs only:\n{}",
             violations.join("\n")
         );
     }
@@ -1979,17 +2061,32 @@ fn is_allowed_signinum_history_reference(root: &Path, path: &Path) -> bool {
 fn j2k_env_tokens(source: &str) -> BTreeSet<String> {
     let mut tokens = BTreeSet::new();
     for line in source.lines() {
-        let mut rest = line;
-        while let Some(start) = rest.find("J2K_") {
-            let token_start = start;
-            let token_end = rest[token_start..]
+        let mut offset = 0;
+        while let Some(relative_start) = line[offset..].find("J2K_") {
+            let token_start = offset + relative_start;
+            if token_start > 0 {
+                let previous = line[..token_start].chars().next_back().unwrap();
+                if previous.is_ascii_alphanumeric() || previous == '_' {
+                    offset = token_start + "J2K_".len();
+                    continue;
+                }
+            }
+            let token_end = line[token_start..]
                 .find(|ch: char| !(ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_'))
-                .map_or(rest.len(), |end| token_start + end);
-            tokens.insert(rest[token_start..token_end].to_string());
-            rest = &rest[token_end..];
+                .map_or(line.len(), |end| token_start + end);
+            tokens.insert(line[token_start..token_end].to_string());
+            offset = token_end;
         }
     }
     tokens
+}
+
+#[test]
+fn j2k_env_tokens_ignore_embedded_htj2k_suffixes() {
+    let tokens =
+        j2k_env_tokens(r#"println!("cargo:rerun-if-env-changed=J2K_HTJ2K_DECODE_FIXTURE");"#);
+    assert!(tokens.contains("J2K_HTJ2K_DECODE_FIXTURE"));
+    assert!(!tokens.contains("J2K_DECODE"));
 }
 
 fn is_internal_j2k_token(token: &str) -> bool {

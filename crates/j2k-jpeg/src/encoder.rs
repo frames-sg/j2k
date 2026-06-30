@@ -32,6 +32,8 @@ pub enum JpegBackend {
     Cpu,
     /// Use a Metal encoder when called through the Metal integration.
     Metal,
+    /// Use a CUDA encoder when called through the CUDA integration.
+    Cuda,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,7 +230,7 @@ pub fn encode_jpeg_baseline(
 ) -> Result<EncodedJpeg, JpegEncodeError> {
     match options.backend {
         JpegBackend::Auto | JpegBackend::Cpu => encode_jpeg_baseline_cpu(samples, options),
-        JpegBackend::Metal => Err(JpegEncodeError::UnsupportedBackend {
+        JpegBackend::Metal | JpegBackend::Cuda => Err(JpegEncodeError::UnsupportedBackend {
             backend: options.backend,
         }),
     }

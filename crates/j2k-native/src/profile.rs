@@ -2,12 +2,9 @@
 use core::cell::RefCell;
 
 #[cfg(feature = "std")]
-use j2k_profile::{profile_stage_mode_from_env, ProfileStageMode};
+use j2k_profile::{ProfileStageMode, StageModeCache};
 
-#[cfg(feature = "std")]
-use std::sync::OnceLock;
-#[cfg(feature = "std")]
-use std::time::Instant;
+pub(crate) use j2k_profile::{elapsed_us, profile_now, ProfileInstant};
 
 #[cfg(all(test, feature = "std"))]
 pub(crate) use j2k_profile::ProfileSummary;
@@ -28,39 +25,13 @@ pub(crate) fn profile_stages_enabled() -> bool {
 
 #[cfg(feature = "std")]
 fn profile_stage_mode() -> ProfileStageMode {
-    static MODE: OnceLock<ProfileStageMode> = OnceLock::new();
-    *MODE.get_or_init(|| profile_stage_mode_from_env(PROFILE_ENV_VAR))
+    static MODE: StageModeCache = StageModeCache::new();
+    MODE.mode_from_env(PROFILE_ENV_VAR)
 }
 
 #[cfg(not(feature = "std"))]
 pub(crate) fn profile_stages_enabled() -> bool {
     false
-}
-
-#[cfg(feature = "std")]
-pub(crate) type ProfileInstant = Instant;
-
-#[cfg(not(feature = "std"))]
-pub(crate) struct ProfileInstant;
-
-#[cfg(feature = "std")]
-pub(crate) fn profile_now(enabled: bool) -> Option<ProfileInstant> {
-    enabled.then(Instant::now)
-}
-
-#[cfg(not(feature = "std"))]
-pub(crate) fn profile_now(_enabled: bool) -> Option<ProfileInstant> {
-    None
-}
-
-#[cfg(feature = "std")]
-pub(crate) fn elapsed_us(start: Option<ProfileInstant>) -> u128 {
-    start.map_or(0, |start| start.elapsed().as_micros())
-}
-
-#[cfg(not(feature = "std"))]
-pub(crate) fn elapsed_us(_start: Option<ProfileInstant>) -> u128 {
-    0
 }
 
 #[cfg(feature = "std")]

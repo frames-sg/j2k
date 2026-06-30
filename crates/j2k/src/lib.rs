@@ -78,6 +78,8 @@ pub use recode::{
 
 pub use wrap::{wrap_j2k_codestream, J2kFileBoxMetadata, J2kFileColorSpec, J2kFileWrapOptions};
 
+pub use parse::{extract_j2k_codestream_payload, J2kCodestreamPayload};
+
 pub use j2k_core::{
     BackendKind, BackendRequest, BufferError, CodecError, CompressedPayloadKind,
     CompressedTransferSyntax, DecodeOutcome, DecodeRowsError, DecoderContext, Downscale,
