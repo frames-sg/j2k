@@ -253,21 +253,7 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(
-        not(any(
-            feature = "cuda-oxide-copy-u8",
-            feature = "cuda-oxide-j2k-encode",
-            feature = "cuda-oxide-j2k-decode-store",
-            feature = "cuda-oxide-j2k-dequantize",
-            feature = "cuda-oxide-j2k-idwt",
-            feature = "cuda-oxide-htj2k-decode",
-            feature = "cuda-oxide-htj2k-encode",
-            feature = "cuda-oxide-transcode",
-            feature = "cuda-oxide-jpeg-decode",
-            feature = "cuda-oxide-jpeg-encode"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(j2k_cuda_oxide_enabled), allow(dead_code))]
     pub(crate) fn entrypoint(self) -> &'static [u8] {
         match self {
             Self::CopyU8 => b"j2k_copy_u8\0",

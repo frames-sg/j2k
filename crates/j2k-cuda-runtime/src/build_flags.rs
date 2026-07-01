@@ -1,16 +1,5 @@
 use crate::driver::CuResult;
-#[cfg(any(
-    feature = "cuda-oxide-copy-u8",
-    feature = "cuda-oxide-j2k-encode",
-    feature = "cuda-oxide-j2k-decode-store",
-    feature = "cuda-oxide-j2k-dequantize",
-    feature = "cuda-oxide-j2k-idwt",
-    feature = "cuda-oxide-htj2k-decode",
-    feature = "cuda-oxide-htj2k-encode",
-    feature = "cuda-oxide-transcode",
-    feature = "cuda-oxide-jpeg-decode",
-    feature = "cuda-oxide-jpeg-encode"
-))]
+#[cfg(j2k_cuda_oxide_enabled)]
 use crate::error::CudaError;
 use std::{os::raw::c_uint, sync::OnceLock};
 
@@ -28,18 +17,7 @@ pub(crate) const DWT97_ROW_LIFT_COOP_ROWS_PER_BLOCK: c_uint = 4;
 
 pub(crate) const CUDA_IDWT_TRACE_ENV_VAR: &str = "J2K_CUDA_IDWT_TRACE";
 
-#[cfg(any(
-    feature = "cuda-oxide-copy-u8",
-    feature = "cuda-oxide-j2k-encode",
-    feature = "cuda-oxide-j2k-decode-store",
-    feature = "cuda-oxide-j2k-dequantize",
-    feature = "cuda-oxide-j2k-idwt",
-    feature = "cuda-oxide-htj2k-decode",
-    feature = "cuda-oxide-htj2k-encode",
-    feature = "cuda-oxide-transcode",
-    feature = "cuda-oxide-jpeg-decode",
-    feature = "cuda-oxide-jpeg-encode"
-))]
+#[cfg(j2k_cuda_oxide_enabled)]
 pub(crate) const REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR: &str = "J2K_REQUIRE_CUDA_OXIDE_BUILD";
 
 pub(crate) const DWT97_FUSED_COLUMN_QUANTIZE_DISABLE_ENV_VAR: &str =
@@ -59,167 +37,101 @@ pub(crate) fn dwt97_fused_column_quantize_disabled() -> bool {
         .get_or_init(|| std::env::var_os(DWT97_FUSED_COLUMN_QUANTIZE_DISABLE_ENV_VAR).is_some())
 }
 
-#[cfg(feature = "cuda-oxide-copy-u8")]
-pub(crate) fn ensure_cuda_oxide_copy_u8_ptx_built() -> Result<(), CudaError> {
-    if CUDA_OXIDE_COPY_U8_PTX_BUILT {
+#[cfg(j2k_cuda_oxide_enabled)]
+fn ensure_cuda_oxide_ptx_built(built: bool, display_name: &str) -> Result<(), CudaError> {
+    if built {
         Ok(())
     } else {
         Err(CudaError::InvalidArgument {
             message: format!(
-                "cuda-oxide CopyU8 PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
+                "{display_name} PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
             ),
         })
     }
 }
 
-#[cfg(feature = "cuda-oxide-j2k-encode")]
-pub(crate) fn ensure_cuda_oxide_j2k_encode_ptx_built() -> Result<(), CudaError> {
-    if CUDA_OXIDE_J2K_ENCODE_PTX_BUILT {
-        Ok(())
-    } else {
-        Err(CudaError::InvalidArgument {
-            message: format!(
-                "cuda-oxide J2K encode PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
-            ),
-        })
-    }
+macro_rules! cuda_oxide_ptx_guard {
+    (feature = $feature:literal, $ensure_fn:ident, $built_const:ident, $display_name:literal, $built_cfg:meta) => {
+        #[cfg(feature = $feature)]
+        pub(crate) fn $ensure_fn() -> Result<(), CudaError> {
+            ensure_cuda_oxide_ptx_built($built_const, $display_name)
+        }
+
+        #[cfg(feature = $feature)]
+        pub(crate) const $built_const: bool = cfg!($built_cfg);
+    };
 }
 
-#[cfg(feature = "cuda-oxide-j2k-decode-store")]
-pub(crate) fn ensure_cuda_oxide_j2k_decode_store_ptx_built() -> Result<(), CudaError> {
-    if CUDA_OXIDE_J2K_DECODE_STORE_PTX_BUILT {
-        Ok(())
-    } else {
-        Err(CudaError::InvalidArgument {
-            message: format!(
-                "cuda-oxide J2K decode store PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
-            ),
-        })
-    }
-}
-
-#[cfg(feature = "cuda-oxide-j2k-dequantize")]
-pub(crate) fn ensure_cuda_oxide_j2k_dequantize_ptx_built() -> Result<(), CudaError> {
-    if CUDA_OXIDE_J2K_DEQUANTIZE_PTX_BUILT {
-        Ok(())
-    } else {
-        Err(CudaError::InvalidArgument {
-            message: format!(
-                "cuda-oxide J2K dequantize PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
-            ),
-        })
-    }
-}
-
-#[cfg(feature = "cuda-oxide-j2k-idwt")]
-pub(crate) fn ensure_cuda_oxide_j2k_idwt_ptx_built() -> Result<(), CudaError> {
-    if CUDA_OXIDE_J2K_IDWT_PTX_BUILT {
-        Ok(())
-    } else {
-        Err(CudaError::InvalidArgument {
-            message: format!(
-                "cuda-oxide J2K IDWT PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
-            ),
-        })
-    }
-}
-
-#[cfg(feature = "cuda-oxide-transcode")]
-pub(crate) fn ensure_cuda_oxide_transcode_ptx_built() -> Result<(), CudaError> {
-    if CUDA_OXIDE_TRANSCODE_PTX_BUILT {
-        Ok(())
-    } else {
-        Err(CudaError::InvalidArgument {
-            message: format!(
-                "cuda-oxide transcode PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
-            ),
-        })
-    }
-}
-
-#[cfg(feature = "cuda-oxide-htj2k-decode")]
-pub(crate) fn ensure_cuda_oxide_htj2k_decode_ptx_built() -> Result<(), CudaError> {
-    if CUDA_OXIDE_HTJ2K_DECODE_PTX_BUILT {
-        Ok(())
-    } else {
-        Err(CudaError::InvalidArgument {
-            message: format!(
-                "cuda-oxide HTJ2K decode PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
-            ),
-        })
-    }
-}
-
-#[cfg(feature = "cuda-oxide-htj2k-encode")]
-pub(crate) fn ensure_cuda_oxide_htj2k_encode_ptx_built() -> Result<(), CudaError> {
-    if CUDA_OXIDE_HTJ2K_ENCODE_PTX_BUILT {
-        Ok(())
-    } else {
-        Err(CudaError::InvalidArgument {
-            message: format!(
-                "cuda-oxide HTJ2K encode PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
-            ),
-        })
-    }
-}
-
-#[cfg(feature = "cuda-oxide-jpeg-decode")]
-pub(crate) fn ensure_cuda_oxide_jpeg_decode_ptx_built() -> Result<(), CudaError> {
-    if CUDA_OXIDE_JPEG_DECODE_PTX_BUILT {
-        Ok(())
-    } else {
-        Err(CudaError::InvalidArgument {
-            message: format!(
-                "cuda-oxide JPEG decode PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
-            ),
-        })
-    }
-}
-
-#[cfg(feature = "cuda-oxide-jpeg-encode")]
-pub(crate) fn ensure_cuda_oxide_jpeg_encode_ptx_built() -> Result<(), CudaError> {
-    if CUDA_OXIDE_JPEG_ENCODE_PTX_BUILT {
-        Ok(())
-    } else {
-        Err(CudaError::InvalidArgument {
-            message: format!(
-                "cuda-oxide JPEG encode PTX was not built; set {REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR} on a Linux cuda-oxide host to require it"
-            ),
-        })
-    }
-}
-
-#[cfg(feature = "cuda-oxide-copy-u8")]
-pub(crate) const CUDA_OXIDE_COPY_U8_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_copy_u8_built);
-
-#[cfg(feature = "cuda-oxide-j2k-encode")]
-pub(crate) const CUDA_OXIDE_J2K_ENCODE_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_j2k_encode_built);
-
-#[cfg(feature = "cuda-oxide-j2k-decode-store")]
-pub(crate) const CUDA_OXIDE_J2K_DECODE_STORE_PTX_BUILT: bool =
-    cfg!(j2k_cuda_oxide_j2k_decode_store_built);
-
-#[cfg(feature = "cuda-oxide-j2k-dequantize")]
-pub(crate) const CUDA_OXIDE_J2K_DEQUANTIZE_PTX_BUILT: bool =
-    cfg!(j2k_cuda_oxide_j2k_dequantize_built);
-
-#[cfg(feature = "cuda-oxide-j2k-idwt")]
-pub(crate) const CUDA_OXIDE_J2K_IDWT_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_j2k_idwt_built);
-
-#[cfg(feature = "cuda-oxide-transcode")]
-pub(crate) const CUDA_OXIDE_TRANSCODE_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_transcode_built);
-
-#[cfg(feature = "cuda-oxide-htj2k-decode")]
-pub(crate) const CUDA_OXIDE_HTJ2K_DECODE_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_htj2k_decode_built);
-
-#[cfg(feature = "cuda-oxide-htj2k-encode")]
-pub(crate) const CUDA_OXIDE_HTJ2K_ENCODE_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_htj2k_encode_built);
-
-#[cfg(feature = "cuda-oxide-jpeg-decode")]
-pub(crate) const CUDA_OXIDE_JPEG_DECODE_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_jpeg_decode_built);
-
-#[cfg(feature = "cuda-oxide-jpeg-encode")]
-pub(crate) const CUDA_OXIDE_JPEG_ENCODE_PTX_BUILT: bool = cfg!(j2k_cuda_oxide_jpeg_encode_built);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-copy-u8",
+    ensure_cuda_oxide_copy_u8_ptx_built,
+    CUDA_OXIDE_COPY_U8_PTX_BUILT,
+    "cuda-oxide CopyU8",
+    j2k_cuda_oxide_copy_u8_built
+);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-j2k-encode",
+    ensure_cuda_oxide_j2k_encode_ptx_built,
+    CUDA_OXIDE_J2K_ENCODE_PTX_BUILT,
+    "cuda-oxide J2K encode",
+    j2k_cuda_oxide_j2k_encode_built
+);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-j2k-decode-store",
+    ensure_cuda_oxide_j2k_decode_store_ptx_built,
+    CUDA_OXIDE_J2K_DECODE_STORE_PTX_BUILT,
+    "cuda-oxide J2K decode store",
+    j2k_cuda_oxide_j2k_decode_store_built
+);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-j2k-dequantize",
+    ensure_cuda_oxide_j2k_dequantize_ptx_built,
+    CUDA_OXIDE_J2K_DEQUANTIZE_PTX_BUILT,
+    "cuda-oxide J2K dequantize",
+    j2k_cuda_oxide_j2k_dequantize_built
+);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-j2k-idwt",
+    ensure_cuda_oxide_j2k_idwt_ptx_built,
+    CUDA_OXIDE_J2K_IDWT_PTX_BUILT,
+    "cuda-oxide J2K IDWT",
+    j2k_cuda_oxide_j2k_idwt_built
+);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-transcode",
+    ensure_cuda_oxide_transcode_ptx_built,
+    CUDA_OXIDE_TRANSCODE_PTX_BUILT,
+    "cuda-oxide transcode",
+    j2k_cuda_oxide_transcode_built
+);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-htj2k-decode",
+    ensure_cuda_oxide_htj2k_decode_ptx_built,
+    CUDA_OXIDE_HTJ2K_DECODE_PTX_BUILT,
+    "cuda-oxide HTJ2K decode",
+    j2k_cuda_oxide_htj2k_decode_built
+);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-htj2k-encode",
+    ensure_cuda_oxide_htj2k_encode_ptx_built,
+    CUDA_OXIDE_HTJ2K_ENCODE_PTX_BUILT,
+    "cuda-oxide HTJ2K encode",
+    j2k_cuda_oxide_htj2k_encode_built
+);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-jpeg-decode",
+    ensure_cuda_oxide_jpeg_decode_ptx_built,
+    CUDA_OXIDE_JPEG_DECODE_PTX_BUILT,
+    "cuda-oxide JPEG decode",
+    j2k_cuda_oxide_jpeg_decode_built
+);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-jpeg-encode",
+    ensure_cuda_oxide_jpeg_encode_ptx_built,
+    CUDA_OXIDE_JPEG_ENCODE_PTX_BUILT,
+    "cuda-oxide JPEG encode",
+    j2k_cuda_oxide_jpeg_encode_built
+);
 
 /// Whether the coefficient-domain transcode CUDA Oxide kernels were compiled.
 /// Backends check this to return a structured unavailable error on non-strict

@@ -4,6 +4,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const REQUIRE_CUDA_OXIDE_BUILD_ENV: &str = "J2K_REQUIRE_CUDA_OXIDE_BUILD";
+const CUDA_OXIDE_FEATURE_ENV_VARS: &[&str] = &[
+    "CARGO_FEATURE_CUDA_OXIDE_COPY_U8",
+    "CARGO_FEATURE_CUDA_OXIDE_J2K_ENCODE",
+    "CARGO_FEATURE_CUDA_OXIDE_J2K_DECODE_STORE",
+    "CARGO_FEATURE_CUDA_OXIDE_J2K_DEQUANTIZE",
+    "CARGO_FEATURE_CUDA_OXIDE_J2K_IDWT",
+    "CARGO_FEATURE_CUDA_OXIDE_HTJ2K_DECODE",
+    "CARGO_FEATURE_CUDA_OXIDE_HTJ2K_ENCODE",
+    "CARGO_FEATURE_CUDA_OXIDE_TRANSCODE",
+    "CARGO_FEATURE_CUDA_OXIDE_JPEG_DECODE",
+    "CARGO_FEATURE_CUDA_OXIDE_JPEG_ENCODE",
+];
 
 fn main() {
     emit_build_script_metadata();
@@ -79,6 +91,13 @@ fn emit_build_script_metadata() {
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_transcode_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_jpeg_decode_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_jpeg_encode_built)");
+    println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_enabled)");
+    if CUDA_OXIDE_FEATURE_ENV_VARS
+        .iter()
+        .any(|feature| env::var_os(feature).is_some())
+    {
+        println!("cargo:rustc-cfg=j2k_cuda_oxide_enabled");
+    }
 }
 
 fn compile_cuda_oxide_feature_projects(out_dir: &Path) {

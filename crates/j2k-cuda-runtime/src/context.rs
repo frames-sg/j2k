@@ -18,18 +18,7 @@ use crate::build_flags::ensure_cuda_oxide_jpeg_decode_ptx_built;
 use crate::build_flags::ensure_cuda_oxide_jpeg_encode_ptx_built;
 #[cfg(feature = "cuda-oxide-transcode")]
 use crate::build_flags::ensure_cuda_oxide_transcode_ptx_built;
-#[cfg(any(
-    feature = "cuda-oxide-copy-u8",
-    feature = "cuda-oxide-j2k-encode",
-    feature = "cuda-oxide-j2k-decode-store",
-    feature = "cuda-oxide-j2k-dequantize",
-    feature = "cuda-oxide-j2k-idwt",
-    feature = "cuda-oxide-htj2k-decode",
-    feature = "cuda-oxide-htj2k-encode",
-    feature = "cuda-oxide-transcode",
-    feature = "cuda-oxide-jpeg-decode",
-    feature = "cuda-oxide-jpeg-encode"
-))]
+#[cfg(j2k_cuda_oxide_enabled)]
 use crate::kernels;
 use crate::{
     build_flags::CUDA_IDWT_TRACE_ENV_VAR,
@@ -48,18 +37,7 @@ use crate::{
     kernels::CudaKernel,
     memory::{pooled_device_buffer, CudaDeviceBuffer, CudaPooledDeviceBuffer},
 };
-#[cfg(any(
-    feature = "cuda-oxide-copy-u8",
-    feature = "cuda-oxide-j2k-encode",
-    feature = "cuda-oxide-j2k-decode-store",
-    feature = "cuda-oxide-j2k-dequantize",
-    feature = "cuda-oxide-j2k-idwt",
-    feature = "cuda-oxide-htj2k-decode",
-    feature = "cuda-oxide-htj2k-encode",
-    feature = "cuda-oxide-transcode",
-    feature = "cuda-oxide-jpeg-decode",
-    feature = "cuda-oxide-jpeg-encode"
-))]
+#[cfg(j2k_cuda_oxide_enabled)]
 use std::ffi::{c_char, c_void};
 use std::{
     collections::HashMap,
@@ -421,18 +399,7 @@ impl ContextInner {
         })
     }
 
-    #[cfg(any(
-        feature = "cuda-oxide-copy-u8",
-        feature = "cuda-oxide-j2k-encode",
-        feature = "cuda-oxide-j2k-decode-store",
-        feature = "cuda-oxide-j2k-dequantize",
-        feature = "cuda-oxide-j2k-idwt",
-        feature = "cuda-oxide-htj2k-decode",
-        feature = "cuda-oxide-htj2k-encode",
-        feature = "cuda-oxide-transcode",
-        feature = "cuda-oxide-jpeg-decode",
-        feature = "cuda-oxide-jpeg-encode"
-    ))]
+    #[cfg(j2k_cuda_oxide_enabled)]
     fn kernel_function_from_key(&self, key: CompiledKernelKey) -> Result<CuFunction, CudaError> {
         match key {
             #[cfg(feature = "cuda-oxide-copy-u8")]
@@ -1058,21 +1025,7 @@ impl CudaContext {
     }
 }
 
-#[cfg_attr(
-    not(any(
-        feature = "cuda-oxide-copy-u8",
-        feature = "cuda-oxide-j2k-encode",
-        feature = "cuda-oxide-j2k-decode-store",
-        feature = "cuda-oxide-j2k-dequantize",
-        feature = "cuda-oxide-j2k-idwt",
-        feature = "cuda-oxide-htj2k-decode",
-        feature = "cuda-oxide-htj2k-encode",
-        feature = "cuda-oxide-transcode",
-        feature = "cuda-oxide-jpeg-decode",
-        feature = "cuda-oxide-jpeg-encode"
-    )),
-    allow(dead_code)
-)]
+#[cfg_attr(not(j2k_cuda_oxide_enabled), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct CompiledKernel {
     pub(crate) module: CuModule,
@@ -1103,18 +1056,7 @@ pub(crate) enum CompiledKernelKey {
     CudaOxideJpegEncode(CudaKernel),
 }
 
-#[cfg(any(
-    feature = "cuda-oxide-copy-u8",
-    feature = "cuda-oxide-j2k-encode",
-    feature = "cuda-oxide-j2k-decode-store",
-    feature = "cuda-oxide-j2k-dequantize",
-    feature = "cuda-oxide-j2k-idwt",
-    feature = "cuda-oxide-htj2k-decode",
-    feature = "cuda-oxide-htj2k-encode",
-    feature = "cuda-oxide-transcode",
-    feature = "cuda-oxide-jpeg-decode",
-    feature = "cuda-oxide-jpeg-encode"
-))]
+#[cfg(j2k_cuda_oxide_enabled)]
 impl CompiledKernelKey {
     pub(crate) fn kernel(self) -> CudaKernel {
         match self {
@@ -1171,18 +1113,7 @@ impl CompiledKernelKey {
     }
 }
 
-#[cfg(any(
-    feature = "cuda-oxide-copy-u8",
-    feature = "cuda-oxide-j2k-encode",
-    feature = "cuda-oxide-j2k-decode-store",
-    feature = "cuda-oxide-j2k-dequantize",
-    feature = "cuda-oxide-j2k-idwt",
-    feature = "cuda-oxide-htj2k-decode",
-    feature = "cuda-oxide-htj2k-encode",
-    feature = "cuda-oxide-transcode",
-    feature = "cuda-oxide-jpeg-decode",
-    feature = "cuda-oxide-jpeg-encode"
-))]
+#[cfg(j2k_cuda_oxide_enabled)]
 impl CompiledKernel {
     pub(crate) fn load(context: &ContextInner, key: CompiledKernelKey) -> Result<Self, CudaError> {
         context.set_current()?;
