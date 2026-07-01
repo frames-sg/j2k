@@ -65,6 +65,13 @@ pub enum MetalSupportError {
         /// Error reported by the Objective-C message send.
         message: String,
     },
+    /// A committed Metal command buffer did not complete successfully.
+    CommandBuffer {
+        /// Best-effort label assigned to the command buffer.
+        label: String,
+        /// Final command-buffer status reported by Metal.
+        status: String,
+    },
     /// Metal shader source compilation failed.
     ShaderLibrary {
         /// Compiler error reported by Metal.
@@ -122,6 +129,9 @@ impl fmt::Display for MetalSupportError {
             Self::CommandQueue { message } => {
                 write!(f, "Metal command queue creation failed: {message}")
             }
+            Self::CommandBuffer { label, status } => {
+                write!(f, "Metal command buffer `{label}` completed with status {status}")
+            }
             Self::ShaderLibrary { message } => {
                 write!(f, "Metal shader library compilation failed: {message}")
             }
@@ -169,8 +179,9 @@ use j2k_core::GpuAbi;
 use metal::{
     foreign_types::ForeignType,
     objc::{runtime::Sel, Message},
-    Buffer, CommandQueue, CompileOptions, ComputeCommandEncoderRef, ComputePipelineState, Device,
-    Library, MTLCommandQueue, MTLResourceOptions, MTLSize,
+    Buffer, CommandBufferRef, CommandQueue, CompileOptions, ComputeCommandEncoderRef,
+    ComputePipelineState, Device, Library, MTLCommandBufferStatus, MTLCommandQueue,
+    MTLResourceOptions, MTLSize,
 };
 
 #[cfg(target_os = "macos")]
@@ -196,6 +207,34 @@ pub fn checked_command_queue(device: &Device) -> Result<CommandQueue, MetalSuppo
     } else {
         // SAFETY: Objective-C/Metal pointers are null-checked or range-validated before wrapping.
         Ok(unsafe { CommandQueue::from_ptr(queue) })
+    }
+}
+
+#[cfg(target_os = "macos")]
+/// Commit a command buffer, wait for completion, and surface failed completion.
+pub fn commit_and_wait(command_buffer: &CommandBufferRef) -> Result<(), MetalSupportError> {
+    command_buffer.commit();
+    wait_for_completion(command_buffer)
+}
+
+#[cfg(target_os = "macos")]
+/// Wait for an already committed command buffer and surface failed completion.
+pub fn wait_for_completion(command_buffer: &CommandBufferRef) -> Result<(), MetalSupportError> {
+    command_buffer.wait_until_completed();
+    ensure_completed(command_buffer)
+}
+
+#[cfg(target_os = "macos")]
+/// Surface a failed command buffer after the caller has already synchronized it.
+pub fn ensure_completed(command_buffer: &CommandBufferRef) -> Result<(), MetalSupportError> {
+    let status = command_buffer.status();
+    if status == MTLCommandBufferStatus::Completed {
+        Ok(())
+    } else {
+        Err(MetalSupportError::CommandBuffer {
+            label: "unlabeled".to_string(),
+            status: format!("{status:?}"),
+        })
     }
 }
 
@@ -543,9 +582,9 @@ impl MetalPipelineLoader {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
-        checked_buffer_contents_slice, checked_buffer_contents_slice_mut, one_d_threads_per_group,
-        shared_buffer_for_len, shared_buffer_with_slice, system_default_device,
-        two_d_threads_per_group, MetalSupportError,
+        checked_buffer_contents_slice, checked_buffer_contents_slice_mut, checked_command_queue,
+        commit_and_wait, one_d_threads_per_group, shared_buffer_for_len, shared_buffer_with_slice,
+        system_default_device, two_d_threads_per_group, MetalSupportError,
     };
 
     #[test]
@@ -567,6 +606,18 @@ mod tests {
         let threads = two_d_threads_per_group(32, 1024);
 
         assert_eq!((threads.width, threads.height, threads.depth), (32, 32, 1));
+    }
+
+    #[test]
+    fn commit_and_wait_accepts_unlabeled_command_buffer() {
+        let Ok(device) = system_default_device() else {
+            eprintln!("skipping command buffer completion test: no Metal device");
+            return;
+        };
+        let queue = checked_command_queue(&device).expect("Metal command queue");
+        let command_buffer = queue.new_command_buffer();
+
+        commit_and_wait(command_buffer).expect("unlabeled command buffer completion");
     }
 
     #[test]

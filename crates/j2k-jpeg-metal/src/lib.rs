@@ -4962,8 +4962,7 @@ mod tests {
             metal::MTLBlitOption::None,
         );
         blit.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        j2k_metal_support::commit_and_wait(command_buffer).expect("texture readback blit");
 
         // SAFETY: Metal surface byte views are bounded by validated dimensions and formats.
         unsafe { core::slice::from_raw_parts(buffer.contents().cast::<u8>(), byte_len).to_vec() }

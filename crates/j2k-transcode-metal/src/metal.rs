@@ -10,8 +10,8 @@ use core::mem::{size_of, size_of_val};
 
 use j2k_core::{BackendKind, DeviceMemoryRange};
 use j2k_metal_support::{
-    checked_buffer_contents_slice, checked_command_queue, shared_buffer_for_len,
-    shared_buffer_with_slice, system_default_device, MetalPipelineLoader,
+    checked_buffer_contents_slice, checked_command_queue, commit_and_wait, private_buffer,
+    shared_buffer_for_len, shared_buffer_with_slice, system_default_device, MetalPipelineLoader,
 };
 use j2k_transcode::accelerator::{
     idct_blocks_to_signed_samples_rayon, DctGridToDwt53Job, DctGridToDwt97Job,
@@ -31,7 +31,7 @@ use j2k_transcode::{
     ResidentHandoffError, ResidentJpegDctGrid, ResidentSampleInfo, ResidentSampling,
 };
 use metal::{
-    foreign_types::ForeignType, Buffer, CommandQueue, ComputeCommandEncoderRef,
+    foreign_types::ForeignType, Buffer, CommandBufferRef, CommandQueue, ComputeCommandEncoderRef,
     ComputePipelineState, Device, MTLResourceOptions, MTLSize,
 };
 
@@ -429,8 +429,8 @@ fn dispatch_reversible_dwt53_batch_with_runtime(
     );
 
     encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait(command_buffer)
+        .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
 
     read_reversible_batch_outputs(output_buffers, output_shape)
 }
@@ -623,12 +623,29 @@ fn dispatch_dct_grid_to_dwt97_batch_staged_with_runtime(
     timings.resident_dwt_handoff_count =
         validate_resident_dwt_handoffs_for_dwt97_jobs(&output_buffers, jobs, shape)?;
 
+    let command_buffer = runtime.queue.new_command_buffer();
+    command_buffer.set_label("j2k-transcode-metal dct97 staged lift batch");
     let row_start = Instant::now();
-    dispatch_dwt97_staged_row_lift(runtime, first.height, shape, &blocks, &row_buffers)?;
+    encode_dwt97_staged_row_lift(
+        command_buffer,
+        runtime,
+        first.height,
+        shape,
+        &blocks,
+        &row_buffers,
+    )?;
     timings.idct_row_lift_us = row_start.elapsed().as_micros();
 
     let column_start = Instant::now();
-    dispatch_dwt97_staged_column_lift(runtime, shape, &row_buffers, &output_buffers)?;
+    encode_dwt97_staged_column_lift(
+        command_buffer,
+        runtime,
+        shape,
+        &row_buffers,
+        &output_buffers,
+    )?;
+    commit_and_wait(command_buffer)
+        .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
     timings.column_lift_us = column_start.elapsed().as_micros();
 
     let readback_start = Instant::now();
@@ -674,7 +691,7 @@ fn dispatch_dct_grid_to_htj2k97_codeblock_batch_with_runtime(
     let blocks = dwt97_codeblock_batch_blocks_buffer(&runtime.device, jobs)?;
     let row_buffers = dwt97_staged_row_buffers(runtime, shape)?;
     let band_buffers =
-        projection_batch_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
+        projection_batch_private_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
     let codeblock_buffers =
         dwt97_codeblock_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
     timings.pack_upload_us = pack_upload_start.elapsed().as_micros();
@@ -685,16 +702,34 @@ fn dispatch_dct_grid_to_htj2k97_codeblock_batch_with_runtime(
     timings.resident_dwt_handoff_count =
         validate_resident_dwt_handoffs_for_htj2k_jobs(&band_buffers, jobs, shape)?;
 
+    let command_buffer = runtime.queue.new_command_buffer();
+    command_buffer.set_label("j2k-transcode-metal dct97 codeblock pipeline batch");
     let row_start = Instant::now();
-    dispatch_dwt97_staged_row_lift(runtime, first.height, shape, &blocks, &row_buffers)?;
+    encode_dwt97_staged_row_lift(
+        command_buffer,
+        runtime,
+        first.height,
+        shape,
+        &blocks,
+        &row_buffers,
+    )?;
     timings.idct_row_lift_us = row_start.elapsed().as_micros();
 
     let column_start = Instant::now();
-    dispatch_dwt97_staged_column_lift(runtime, shape, &row_buffers, &band_buffers)?;
+    encode_dwt97_staged_column_lift(command_buffer, runtime, shape, &row_buffers, &band_buffers)?;
     timings.column_lift_us = column_start.elapsed().as_micros();
 
     let quantize_start = Instant::now();
-    dispatch_dwt97_quantize_codeblocks(runtime, shape, options, &band_buffers, &codeblock_buffers)?;
+    encode_dwt97_quantize_codeblocks(
+        command_buffer,
+        runtime,
+        shape,
+        options,
+        &band_buffers,
+        &codeblock_buffers,
+    )?;
+    commit_and_wait(command_buffer)
+        .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
     timings.quantize_codeblock_us = quantize_start.elapsed().as_micros();
 
     let readback_start = Instant::now();
@@ -783,7 +818,7 @@ fn dwt97_staged_row_buffers(
 ) -> Result<Dwt97StagedRowBuffers, MetalTranscodeError> {
     let height = shape.height as usize;
     Ok(Dwt97StagedRowBuffers {
-        low: output_buffer(
+        low: private_f32_buffer(
             &runtime.device,
             checked_batch_len(
                 height * shape.low_width,
@@ -791,7 +826,7 @@ fn dwt97_staged_row_buffers(
                 METAL_DCT97_UNSUPPORTED_GRID,
             )?,
         ),
-        high: output_buffer(
+        high: private_f32_buffer(
             &runtime.device,
             checked_batch_len(
                 height * shape.high_width,
@@ -802,7 +837,8 @@ fn dwt97_staged_row_buffers(
     })
 }
 
-fn dispatch_dwt97_staged_row_lift(
+fn encode_dwt97_staged_row_lift(
+    command_buffer: &CommandBufferRef,
     runtime: &MetalRuntime,
     height: usize,
     shape: ProjectionBatchShape,
@@ -819,8 +855,6 @@ fn dispatch_dwt97_staged_row_lift(
     };
     let row_groups = height.div_ceil(DWT97_STAGED_ROWS_PER_GROUP);
 
-    let command_buffer = runtime.queue.new_command_buffer();
-    command_buffer.set_label("j2k-transcode-metal dct97 idct row lift batch");
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.set_compute_pipeline_state(&runtime.dct97_idct_row_lift_batch);
     encoder.set_buffer(0, Some(blocks), 0);
@@ -841,12 +875,11 @@ fn dispatch_dwt97_staged_row_lift(
         staged_threads_per_group(),
     );
     encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
     Ok(())
 }
 
-fn dispatch_dwt97_staged_column_lift(
+fn encode_dwt97_staged_column_lift(
+    command_buffer: &CommandBufferRef,
     runtime: &MetalRuntime,
     shape: ProjectionBatchShape,
     row_buffers: &Dwt97StagedRowBuffers,
@@ -878,8 +911,6 @@ fn dispatch_dwt97_staged_column_lift(
         .max(shape.high_width)
         .div_ceil(DWT97_STAGED_COLUMNS_PER_GROUP);
 
-    let command_buffer = runtime.queue.new_command_buffer();
-    command_buffer.set_label("j2k-transcode-metal dct97 column lift batch");
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.set_compute_pipeline_state(&runtime.dct97_column_lift_batch);
     encoder.set_buffer(0, Some(&row_buffers.low), 0);
@@ -902,12 +933,11 @@ fn dispatch_dwt97_staged_column_lift(
         staged_threads_per_group(),
     );
     encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
     Ok(())
 }
 
-fn dispatch_dwt97_quantize_codeblocks(
+fn encode_dwt97_quantize_codeblocks(
+    command_buffer: &CommandBufferRef,
     runtime: &MetalRuntime,
     shape: ProjectionBatchShape,
     options: Htj2k97CodeBlockOptions,
@@ -916,8 +946,6 @@ fn dispatch_dwt97_quantize_codeblocks(
 ) -> Result<(), MetalTranscodeError> {
     let cb_width = code_block_len_from_exp(options.code_block_width_exp)?;
     let cb_height = code_block_len_from_exp(options.code_block_height_exp)?;
-    let command_buffer = runtime.queue.new_command_buffer();
-    command_buffer.set_label("j2k-transcode-metal dct97 quantize codeblocks batch");
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.set_compute_pipeline_state(&runtime.dct97_quantize_codeblocks_batch);
     dispatch_dwt97_quantize_codeblock_band(
@@ -977,8 +1005,6 @@ fn dispatch_dwt97_quantize_codeblocks(
         },
     )?;
     encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
     Ok(())
 }
 
@@ -1298,8 +1324,8 @@ fn dispatch_projected_bands_with_runtime(
     );
 
     encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait(command_buffer)
+        .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
 
     Ok(ProjectedBands {
         ll: read_f32_buffer(&ll_buffer, low_width * low_height)?,
@@ -1748,6 +1774,31 @@ fn projection_batch_output_buffers(
     })
 }
 
+fn projection_batch_private_output_buffers(
+    runtime: &MetalRuntime,
+    shape: ProjectionBatchShape,
+    unsupported_grid: &'static str,
+) -> Result<ProjectionBatchOutputBuffers, MetalTranscodeError> {
+    Ok(ProjectionBatchOutputBuffers {
+        ll: private_f32_buffer(
+            &runtime.device,
+            checked_batch_len(shape.ll_len, shape.batch_count, unsupported_grid)?,
+        ),
+        hl: private_f32_buffer(
+            &runtime.device,
+            checked_batch_len(shape.hl_len, shape.batch_count, unsupported_grid)?,
+        ),
+        lh: private_f32_buffer(
+            &runtime.device,
+            checked_batch_len(shape.lh_len, shape.batch_count, unsupported_grid)?,
+        ),
+        hh: private_f32_buffer(
+            &runtime.device,
+            checked_batch_len(shape.hh_len, shape.batch_count, unsupported_grid)?,
+        ),
+    })
+}
+
 fn dwt97_codeblock_output_buffers(
     runtime: &MetalRuntime,
     shape: ProjectionBatchShape,
@@ -1853,8 +1904,8 @@ fn dispatch_projection_batch_bands(
     );
 
     encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait(command_buffer)
+        .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
     Ok(())
 }
 
@@ -2526,6 +2577,10 @@ fn buffer_f32_capacity(buffer: &Buffer) -> usize {
 
 fn output_buffer(device: &Device, value_count: usize) -> Buffer {
     shared_buffer_for_len::<f32>(device, value_count)
+}
+
+fn private_f32_buffer(device: &Device, value_count: usize) -> Buffer {
+    private_buffer(device, value_count.saturating_mul(size_of::<f32>()))
 }
 
 fn output_i32_buffer(device: &Device, value_count: usize) -> Buffer {

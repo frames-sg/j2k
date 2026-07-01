@@ -62,11 +62,11 @@ use j2k_native::{
 };
 
 #[cfg(target_os = "macos")]
-use j2k_metal_support::{system_default_device, MetalSupportError};
+use j2k_metal_support::{commit_and_wait, system_default_device, MetalSupportError};
 #[cfg(target_os = "macos")]
 use metal::foreign_types::ForeignType;
 #[cfg(target_os = "macos")]
-use metal::{Buffer, Device, MTLCommandBufferStatus, MTLResourceOptions};
+use metal::{Buffer, Device, MTLResourceOptions};
 
 #[doc(hidden)]
 pub use batch::{benchmark_group_region_scaled_requests, BenchmarkGroupedRequests};
@@ -130,16 +130,9 @@ pub fn benchmark_private_buffer_with_bytes(
     let blit = command_buffer.new_blit_command_encoder();
     blit.copy_from_buffer(&upload, 0, &private, 0, byte_len);
     blit.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
-    if command_buffer.status() != MTLCommandBufferStatus::Completed {
-        return Err(Error::MetalKernel {
-            message: format!(
-                "J2K Metal benchmark private input upload failed with status {:?}",
-                command_buffer.status()
-            ),
-        });
-    }
+    commit_and_wait(command_buffer).map_err(|error| Error::MetalKernel {
+        message: format!("J2K Metal benchmark private input upload failed: {error}"),
+    })?;
     Ok(private)
 }
 
@@ -174,16 +167,9 @@ pub fn benchmark_overwrite_private_buffer_with_bytes(
     let blit = command_buffer.new_blit_command_encoder();
     blit.copy_from_buffer(&upload, 0, dst, 0, byte_len);
     blit.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
-    if command_buffer.status() != MTLCommandBufferStatus::Completed {
-        return Err(Error::MetalKernel {
-            message: format!(
-                "J2K Metal benchmark private input overwrite failed with status {:?}",
-                command_buffer.status()
-            ),
-        });
-    }
+    commit_and_wait(command_buffer).map_err(|error| Error::MetalKernel {
+        message: format!("J2K Metal benchmark private input overwrite failed: {error}"),
+    })?;
     Ok(())
 }
 

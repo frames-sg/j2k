@@ -25,7 +25,10 @@ use j2k_jpeg::{
     ColorSpace as JpegColorSpace, Decoder as CpuDecoder,
 };
 #[cfg(target_os = "macos")]
-use j2k_metal_support::{checked_command_queue, MetalPipelineLoader, MetalSupportError};
+use j2k_metal_support::{
+    checked_command_queue, commit_and_wait, wait_for_completion, MetalPipelineLoader,
+    MetalSupportError,
+};
 #[cfg(target_os = "macos")]
 use metal::{
     Buffer, CommandBuffer, CommandBufferRef, CommandQueue, ComputePipelineState, Device,
@@ -407,6 +410,20 @@ pub(crate) fn runtime_initialization_error(error: &MetalSupportError) -> Error {
 }
 
 #[cfg(target_os = "macos")]
+pub(super) fn commit_and_wait_jpeg(command_buffer: &CommandBufferRef) -> Result<(), Error> {
+    commit_and_wait(command_buffer).map_err(|error| Error::MetalKernel {
+        message: error.to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_completion_jpeg(command_buffer: &CommandBufferRef) -> Result<(), Error> {
+    wait_for_completion(command_buffer).map_err(|error| Error::MetalKernel {
+        message: error.to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn encode_jpeg_baseline_entropy_with_session(
     session: &crate::MetalBackendSession,
     job: &JpegBaselineEntropyEncodeJob<'_>,
@@ -477,8 +494,7 @@ pub(crate) fn encode_jpeg_baseline_entropy_with_session(
             },
         );
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_jpeg(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe { *(status_buffer.contents().cast::<JpegBaselineEncodeStatus>()) };
@@ -581,8 +597,7 @@ pub(crate) fn encode_jpeg_baseline_entropy_batch_with_session(
             },
         );
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_jpeg(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status_slice = unsafe {
@@ -2924,8 +2939,7 @@ fn copy_grouped_surfaces_to_output(
             );
         }
         blit.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_jpeg(command_buffer)?;
     }
 
     Ok(mapped_results)
@@ -3107,8 +3121,7 @@ fn copy_rgb8_surfaces_to_rgba_textures(
             dispatch_2d_pipeline(encoder, &runtime.rgb8_to_rgba_texture_pipeline, dimensions);
         }
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_jpeg(command_buffer)?;
     }
 
     Ok(mapped_results)
@@ -3556,7 +3569,7 @@ fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_with_mode_and_output<
                     .elapsed();
                 command_buffer.commit();
                 let timing_wait_start = Instant::now();
-                command_buffer.wait_until_completed();
+                wait_for_completion_jpeg(command_buffer)?;
                 timing.wait_decode = timing_wait_start.elapsed();
                 command_buffer = runtime.queue.new_command_buffer();
             }
@@ -3651,7 +3664,7 @@ fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_with_mode_and_output<
     command_buffer.commit();
     if timing_enabled {
         let timing_wait_start = Instant::now();
-        command_buffer.wait_until_completed();
+        wait_for_completion_jpeg(command_buffer)?;
         timing.wait_pack = timing_wait_start.elapsed();
         timing.total = timing_total_start
             .expect("timing start is set when timing is enabled")
@@ -3664,7 +3677,7 @@ fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_with_mode_and_output<
             segment_count,
         );
     } else {
-        command_buffer.wait_until_completed();
+        wait_for_completion_jpeg(command_buffer)?;
     }
     #[cfg(test)]
     drop(split_scratch);
@@ -4126,8 +4139,7 @@ fn try_decode_fast_subsampled_full_rgba_batch_to_textures<P: FastSubsampledMetal
             },
         )?;
 
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_jpeg(command_buffer)?;
         drop(batch_scratch);
 
         if let Some(results) =
@@ -4267,8 +4279,7 @@ fn try_decode_fast_subsampled_full_rgba_batch_to_textures<P: FastSubsampledMetal
         (packed_pair_extent(width), P::packed_height_extent(height)),
     )?;
 
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
     drop(batch_scratch);
 
     if let Some(results) =
@@ -4563,8 +4574,7 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
     );
     pack_encoder.end_encoding();
 
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
     drop(batch_scratch);
 
     if let Some(results) =
@@ -4857,8 +4867,7 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
         decoder_encoder.end_encoding();
     }
 
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
     drop(batch_scratch);
 
     if let Some(results) =
@@ -5326,8 +5335,7 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
     );
     pack_encoder.end_encoding();
 
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
     drop(batch_scratch);
 
     if let Some(results) =
@@ -5779,8 +5787,7 @@ fn try_decode_fast444_region_scaled_rgba_batch_to_textures(
         out_dims,
     )?;
 
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
     drop(batch_scratch);
 
     if let Some(results) =
@@ -6201,8 +6208,7 @@ fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output<
     );
     pack_encoder.end_encoding();
 
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
     drop(batch_scratch);
 
     if let Some(results) =
@@ -6641,8 +6647,7 @@ fn try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures<P: FastSubsam
         first_plan.out_dims,
     )?;
 
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
     drop(batch_scratch);
 
     if let Some(results) =
@@ -7241,8 +7246,7 @@ fn decode_full_batch_to_surfaces_with_runtime(
             encoded.push(item);
         }
 
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_jpeg(command_buffer)?;
 
         for item in encoded {
             if let Some(status) =
@@ -7394,8 +7398,7 @@ fn decode_fast_subsampled_to_rgb_buffer<P: FastSubsampledMetal>(
         pack_encoder.end_encoding();
     }
 
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
     let command_buffer = command_buffer.to_owned();
 
     if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
@@ -7439,8 +7442,7 @@ fn try_decode_fast_subsampled_region_to_surface<P: FastSubsampledMetal>(
             h: roi.h,
         },
     )?;
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&item.status_buffer, item.decode_threads) {
         return Err(map_status(status));
@@ -7470,8 +7472,7 @@ fn try_decode_fast_subsampled_scaled_to_surface<P: FastSubsampledMetal>(
     let command_buffer = runtime.queue.new_command_buffer();
     let item =
         encode_fast_subsampled_scaled_batch_item(runtime, command_buffer, 0, packet, fmt, scale)?;
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&item.status_buffer, item.decode_threads) {
         return Err(map_status(status));
@@ -7648,8 +7649,7 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
     dispatch_2d_pipeline(pack_encoder, pack_pipeline, (scaled_roi.w, scaled_roi.h));
     pack_encoder.end_encoding();
 
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
         return Err(map_status(status));
@@ -7811,8 +7811,7 @@ fn try_decode_fast444_to_surface(
         decode_threads,
     );
     decoder_encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
         return Err(decode_error_from_cpu(decoder, fmt, status));
@@ -7892,8 +7891,7 @@ fn try_decode_fast444_to_private_rgb8_tile(
         decode_threads,
     );
     decoder_encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
         return Err(decode_error_from_cpu(decoder, PixelFormat::Rgb8, status));
@@ -7907,7 +7905,7 @@ fn try_decode_fast444_to_private_rgb8_tile(
             plane1: Some(chroma_blue_plane),
             plane2: Some(chroma_red_plane),
         }
-        .dispatch_private_rgb8_with_runtime(runtime, status_buffer),
+        .dispatch_private_rgb8_with_runtime(runtime, status_buffer)?,
     ))
 }
 
@@ -7998,8 +7996,7 @@ fn try_decode_fast444_region_to_surface(
         decode_threads,
     );
     decoder_encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
         return Err(decode_error_from_cpu(decoder, fmt, status));
@@ -8090,8 +8087,7 @@ fn try_decode_fast444_scaled_to_surface(
         decode_threads,
     );
     decoder_encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
         return Err(decode_error_from_cpu(decoder, fmt, status));
@@ -8205,8 +8201,7 @@ fn try_decode_fast444_scaled_region_to_surface(
         decode_threads,
     );
     decoder_encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_jpeg(command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
         return Err(decode_error_from_cpu(decoder, fmt, status));

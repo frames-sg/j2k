@@ -14,8 +14,9 @@ use j2k_core::{PixelFormat, Rect};
 use j2k_metal_support::system_default_device;
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{
-    checked_command_queue, dispatch_1d_pipeline, dispatch_2d_pipeline, dispatch_3d_pipeline,
-    dispatch_single_thread, MetalPipelineLoader, MetalSupportError,
+    checked_command_queue, commit_and_wait, dispatch_1d_pipeline, dispatch_2d_pipeline,
+    dispatch_3d_pipeline, dispatch_single_thread, wait_for_completion, MetalPipelineLoader,
+    MetalSupportError,
 };
 #[cfg(target_os = "macos")]
 use j2k_native::{
@@ -607,6 +608,20 @@ pub(crate) fn runtime_initialization_error(error: &MetalSupportError) -> Error {
 }
 
 #[cfg(target_os = "macos")]
+pub(super) fn commit_and_wait_metal(command_buffer: &CommandBufferRef) -> Result<(), Error> {
+    commit_and_wait(command_buffer).map_err(|error| Error::MetalKernel {
+        message: error.to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn wait_for_completion_metal(command_buffer: &CommandBufferRef) -> Result<(), Error> {
+    wait_for_completion(command_buffer).map_err(|error| Error::MetalKernel {
+        message: error.to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
 struct RuntimeOverrideGuard {
     previous: Option<Arc<MetalRuntime>>,
 }
@@ -874,8 +889,7 @@ impl PlaneStage {
         let command_buffer = runtime.queue.new_command_buffer();
         let surface =
             encode_plane_stage_to_surface_in_command_buffer(runtime, command_buffer, &self, fmt)?;
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
         Ok(surface)
     }
 }
@@ -3059,8 +3073,7 @@ pub(crate) fn execute_repeated_prepared_direct_grayscale_plan(
             &mut status_checks,
             &mut scratch_buffers,
         )?;
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
         for status_check in status_checks {
             validate_direct_status(status_check)?;
         }
@@ -3089,8 +3102,7 @@ pub(crate) fn execute_prepared_direct_grayscale_plan(
             &mut status_checks,
             &mut scratch_buffers,
         )?;
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
         for status_check in status_checks {
             validate_direct_status(status_check)?;
         }
@@ -3173,8 +3185,7 @@ pub(crate) fn execute_prepared_direct_grayscale_plan_batch(
             )?);
         }
 
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
         for status_check in status_checks {
             validate_direct_status(status_check)?;
         }
@@ -3311,7 +3322,7 @@ fn execute_direct_color_plan_batch_with_tier1_options(
                 split_command_buffers.commit_in_order();
                 let wait_started = Instant::now();
                 let _wait_signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_COMMAND_WAIT);
-                split_command_buffers.mct_pack.wait_until_completed();
+                wait_for_completion_metal(&split_command_buffers.mct_pack)?;
                 stage_timings.command_wait += elapsed_us(wait_started);
                 record_completed_decode_split_gpu_stages(
                     &mut stage_timings,
@@ -3356,7 +3367,7 @@ fn execute_direct_color_plan_batch_with_tier1_options(
                 command_buffer.commit();
                 let wait_started = profile_hybrid_stages.then(Instant::now);
                 let _wait_signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_COMMAND_WAIT);
-                command_buffer.wait_until_completed();
+                wait_for_completion_metal(command_buffer)?;
                 if let Some(started) = wait_started {
                     stage_timings.command_wait += elapsed_us(started);
                 }
@@ -3399,7 +3410,7 @@ fn execute_direct_color_plan_batch_with_tier1_options(
         command_buffer.commit();
         let wait_started = profile_hybrid_stages.then(Instant::now);
         let _wait_signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_COMMAND_WAIT);
-        command_buffer.wait_until_completed();
+        wait_for_completion_metal(command_buffer)?;
         if let Some(started) = wait_started {
             stage_timings.command_wait += elapsed_us(started);
         }
@@ -5217,8 +5228,7 @@ pub(crate) fn encode_forward_dwt53(
             levels_run = levels_run.saturating_add(1);
         }
 
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         let active_buffer = if active_is_a { &buffer_a } else { &buffer_b };
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
@@ -5384,8 +5394,7 @@ pub(crate) fn encode_forward_dwt97(
             levels_run = levels_run.saturating_add(1);
         }
 
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         let active_buffer = if active_is_a { &buffer_a } else { &buffer_b };
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
@@ -5479,8 +5488,7 @@ pub(crate) fn encode_deinterleave_to_f32(
             (pixel_count, 1),
         );
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         let planes = plane_buffers
             .iter()
@@ -6203,7 +6211,7 @@ struct J2kBatchedPacketPayloadCopyDispatch<'a> {
 pub(crate) fn wait_resident_lossless_codestream(
     pending: J2kPendingResidentLosslessCodestream,
 ) -> Result<J2kResidentLosslessCodestream, Error> {
-    wait_resident_codestream_command_buffer(&pending.command_buffer);
+    wait_resident_codestream_command_buffer(&pending.command_buffer)?;
     let gpu_duration = completed_command_buffers_gpu_duration(
         &pending.retained_command_buffers,
         &pending.command_buffer,
@@ -6244,7 +6252,7 @@ pub(crate) fn wait_resident_lossless_codestream(
 pub(crate) fn wait_resident_lossless_codestream_batch(
     pending: J2kPendingResidentLosslessCodestreamBatch,
 ) -> Result<J2kResidentLosslessCodestreamBatchResult, Error> {
-    wait_resident_codestream_command_buffer(&pending.command_buffer);
+    wait_resident_codestream_command_buffer(&pending.command_buffer)?;
     finish_completed_resident_lossless_codestream_batch(pending)
 }
 
@@ -6255,7 +6263,7 @@ pub(crate) fn wait_resident_lossless_codestream_batches(
     if let Some(last) = pending_batches.last() {
         // These command buffers are submitted on the same Metal queue before
         // harvest, so completing the final one implies earlier chunks are done.
-        wait_resident_codestream_command_buffer(&last.command_buffer);
+        wait_resident_codestream_command_buffer(&last.command_buffer)?;
     }
     pending_batches
         .into_iter()
@@ -8358,11 +8366,11 @@ fn record_resident_tier1_output_usage(
 }
 
 #[cfg(target_os = "macos")]
-fn wait_resident_codestream_command_buffer(command_buffer: &CommandBufferRef) {
+fn wait_resident_codestream_command_buffer(command_buffer: &CommandBufferRef) -> Result<(), Error> {
     #[cfg(test)]
     test_counters::record_resident_codestream_command_buffer_wait();
     let _signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_COMMAND_WAIT);
-    command_buffer.wait_until_completed();
+    wait_for_completion_metal(command_buffer)
 }
 
 #[cfg(target_os = "macos")]
@@ -9727,8 +9735,7 @@ pub(crate) fn encode_forward_rct(
             },
         );
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe { status_buffer.contents().cast::<J2kMctStatus>().read() };
@@ -9805,8 +9812,7 @@ pub(crate) fn encode_forward_ict(
             },
         );
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe { status_buffer.contents().cast::<J2kMctStatus>().read() };
@@ -9884,8 +9890,7 @@ pub(crate) fn encode_quantize_subband(job: J2kQuantizeSubbandJob<'_>) -> Result<
         );
         dispatch_1d_pipeline(encoder, &runtime.quantize_subband, u64::from(len_u32));
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let coefficients =
@@ -9969,8 +9974,7 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
             },
         );
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe { status_buffer.contents().cast::<J2kMctStatus>().read() };
@@ -10155,8 +10159,7 @@ pub(crate) fn decode_store_component_and_capture(
         );
         dispatch_2d_pipeline(encoder, &runtime.store_component, (copy_width, copy_height));
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
         Ok(output_buffer)
     })
 }
@@ -10493,8 +10496,7 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
             },
         );
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
         Ok(())
     })
 }
@@ -10776,8 +10778,7 @@ pub(crate) fn decode_irreversible97_single_decomposition_idwt(
         encoder.set_buffer(6, Some(&status_buffer), 0);
         dispatch_single_thread(encoder);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe { status_buffer.contents().cast::<J2kIdwtStatus>().read() };
@@ -11025,8 +11026,7 @@ fn dispatch_classic_cleanup_batched(
         );
     }
     encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_metal(command_buffer)?;
 
     // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let statuses = unsafe {
@@ -12563,8 +12563,7 @@ pub(crate) fn encode_classic_tier1_code_blocks(
         encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
         dispatch_1d_pipeline(encoder, classic_encode_pipeline, u64::from(job_count));
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let statuses = unsafe {
@@ -12727,8 +12726,7 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test(
             &status_buffer,
             &segment_buffer,
         );
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let statuses = unsafe {
@@ -12918,8 +12916,7 @@ fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_for_test_wi
             &status_buffer,
             &segment_buffer,
         );
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let statuses = unsafe {
@@ -13131,8 +13128,7 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_t
             token_segment_byte_len as u64,
         );
         blit.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let counters = unsafe {
@@ -13479,8 +13475,7 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_cpu_pack_
             &job_buffer,
             &batch_jobs,
         )?;
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         let job_count =
             usize::try_from(split_buffers.job_count).map_err(|_| Error::MetalKernel {
@@ -13945,8 +13940,7 @@ pub(crate) fn encode_classic_tier1_code_block(
         encoder.set_buffer(4, Some(&segment_buffer), 0);
         dispatch_single_thread(encoder);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe {
@@ -14146,8 +14140,7 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
             status_bytes as u64,
         );
         blit.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let statuses = unsafe {
@@ -14289,8 +14282,7 @@ fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
     dispatch_1d_pipeline(encoder, pipeline, u64::from(job_count));
     encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_metal(command_buffer)?;
 
     // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let statuses = unsafe {
@@ -14381,8 +14373,7 @@ pub(crate) fn encode_ht_cleanup_code_block(
         encoder.set_buffer(6, Some(&status_buffer), 0);
         dispatch_single_thread(encoder);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe { status_buffer.contents().cast::<J2kHtEncodeStatus>().read() };
@@ -14707,8 +14698,7 @@ pub(crate) fn encode_tier2_packetization(
         encoder.set_buffer(10, Some(&state_block_buffer), 0);
         dispatch_single_thread(encoder);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe {
@@ -17182,8 +17172,7 @@ fn dispatch_ht_cleanup(
     encoder.set_buffer(7, Some(&status_buffer), 0);
     dispatch_single_thread(encoder);
     encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_metal(command_buffer)?;
 
     // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let status = unsafe { status_buffer.contents().cast::<J2kHtStatus>().read() };
@@ -17243,8 +17232,7 @@ fn dispatch_ht_cleanup_batched(
         },
     );
     encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    commit_and_wait_metal(command_buffer)?;
 
     // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let statuses = unsafe {

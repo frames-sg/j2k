@@ -11,9 +11,9 @@ use crate::buffers::new_private_buffer;
 use crate::{Error, Surface};
 
 use super::{
-    batch_output_buffer_or_new, bind_three_plane_pack, validate_rgba_texture_batch_output,
-    JpegPackParams, JpegRgb8ToRgbaTextureParams, MetalRuntime, MODE_GRAY, MODE_RGB, MODE_YCBCR,
-    OUT_GRAY, OUT_RGB, OUT_RGBA,
+    batch_output_buffer_or_new, bind_three_plane_pack, commit_and_wait_jpeg,
+    validate_rgba_texture_batch_output, JpegPackParams, JpegRgb8ToRgbaTextureParams, MetalRuntime,
+    MODE_GRAY, MODE_RGB, MODE_YCBCR, OUT_GRAY, OUT_RGB, OUT_RGBA,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,7 +131,7 @@ impl PlaneStage {
                 PixelFormat::Rgb8 | PixelFormat::Rgba8,
             )
             | (PlaneMode::Rgb, PixelFormat::Gray8) => {
-                Ok(self.dispatch_with_runtime(runtime, fmt, residency))
+                self.dispatch_with_runtime(runtime, fmt, residency)
             }
             _ => Err(Error::MetalKernel {
                 message: format!("unsupported JPEG Metal pixel format {fmt:?}"),
@@ -144,7 +144,7 @@ impl PlaneStage {
         runtime: &MetalRuntime,
         fmt: PixelFormat,
         residency: PlaneStageResidency,
-    ) -> Surface {
+    ) -> Result<Surface, Error> {
         let pitch_bytes = self.dims.0 as usize * fmt.bytes_per_pixel();
         let out_buffer = runtime.device.new_buffer(
             (pitch_bytes * self.dims.1 as usize) as u64,
@@ -183,10 +183,11 @@ impl PlaneStage {
         );
         dispatch_2d_pipeline(encoder, &runtime.pack_pipeline, self.dims);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_jpeg(command_buffer)?;
 
-        surface_from_plane_buffer(out_buffer, self.dims, fmt, residency)
+        Ok(surface_from_plane_buffer(
+            out_buffer, self.dims, fmt, residency,
+        ))
     }
 
     pub(super) fn finish_rgb8_into_output_with_runtime(
@@ -227,8 +228,7 @@ impl PlaneStage {
         );
         dispatch_2d_pipeline(encoder, &runtime.pack_pipeline, self.dims);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_jpeg(command_buffer)?;
 
         Ok(Surface::from_metal_buffer_offset(
             out_buffer, self.dims, fmt, 0,
@@ -308,8 +308,7 @@ impl PlaneStage {
             self.dims,
         );
         texture_encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_jpeg(command_buffer)?;
 
         let texture = output.clone_texture(0).ok_or_else(|| Error::MetalKernel {
             message: "JPEG Metal batch texture output slot was missing".to_string(),
@@ -325,7 +324,7 @@ impl PlaneStage {
         self,
         runtime: &MetalRuntime,
         status_buffer: Buffer,
-    ) -> crate::ResidentPrivateJpegTile {
+    ) -> Result<crate::ResidentPrivateJpegTile, Error> {
         let fmt = PixelFormat::Rgb8;
         let pitch_bytes = self.dims.0 as usize * fmt.bytes_per_pixel();
         let out_buffer = new_private_buffer(&runtime.device, pitch_bytes * self.dims.1 as usize);
@@ -357,11 +356,10 @@ impl PlaneStage {
         );
         dispatch_2d_pipeline(encoder, &runtime.pack_pipeline, self.dims);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_jpeg(command_buffer)?;
         let command_buffer = command_buffer.to_owned();
 
-        crate::ResidentPrivateJpegTile {
+        Ok(crate::ResidentPrivateJpegTile {
             buffer: out_buffer,
             byte_offset: 0,
             dimensions: self.dims,
@@ -369,7 +367,7 @@ impl PlaneStage {
             pitch_bytes,
             status_buffer,
             command_buffer,
-        }
+        })
     }
 }
 

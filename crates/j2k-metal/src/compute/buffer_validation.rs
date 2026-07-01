@@ -8,8 +8,8 @@ use metal::{Buffer, MTLResourceOptions};
 use crate::{profile_env::label_command_buffer, Error};
 
 use super::{
-    with_runtime_for_session, J2kCopyInterleavedParams, J2kValidateBytesParams,
-    J2kValidateBytesStatus,
+    commit_and_wait_metal, with_runtime_for_session, J2kCopyInterleavedParams,
+    J2kValidateBytesParams, J2kValidateBytesStatus,
 };
 
 pub(crate) fn validate_metal_buffer_matches_bytes(
@@ -56,8 +56,7 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
         );
         dispatch_single_thread(encoder);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe {
@@ -125,8 +124,7 @@ pub(crate) fn validate_metal_buffers_match(
         );
         dispatch_single_thread(encoder);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
 
         // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe {
@@ -217,8 +215,7 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
             (dst_width, dst_height),
         );
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        commit_and_wait_metal(command_buffer)?;
         Ok(dst_buffer)
     })
 }

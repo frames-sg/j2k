@@ -129,8 +129,7 @@ fn download_rgba8_texture(
         metal::MTLBlitOption::None,
     );
     blit.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
+    j2k_metal_support::commit_and_wait(command_buffer).expect("viewport texture readback blit");
 
     // SAFETY: The test buffer size is computed from the validated viewport dimensions.
     unsafe { core::slice::from_raw_parts(buffer.contents().cast::<u8>(), byte_len).to_vec() }
