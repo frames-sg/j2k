@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_transcode::dct53_1d::{
+#[allow(dead_code, unreachable_pub)]
+#[path = "../src/dct53_1d.rs"]
+mod dct53_1d;
+#[allow(dead_code, unreachable_pub, unused_imports)]
+#[path = "../src/dct_grid.rs"]
+mod dct_grid;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/reversible53.rs"]
+mod reversible53;
+
+use dct53_1d::{
     dct8_blocks_to_dwt53_float_linear, dct8_blocks_to_dwt53_float_linear_with_len,
     dct8_to_dwt53_float_linear, dct8_to_dwt53_reversible_i16, idct8_blocks_then_dwt53_float,
     idct8_blocks_then_dwt53_float_with_len, idct8_rounded_then_dwt53_reversible,

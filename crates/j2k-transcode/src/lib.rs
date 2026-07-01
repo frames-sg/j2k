@@ -6,11 +6,7 @@ pub mod accelerator;
 
 #[doc(hidden)]
 pub mod corpus_validation;
-#[doc(hidden)]
-pub mod dct53_1d;
 pub mod dct53_2d;
-#[doc(hidden)]
-pub mod dct53_multilevel;
 pub mod dct97_2d;
 mod dct_grid;
 pub mod htj2k97_codeblock_oracle;

@@ -9,16 +9,35 @@ use j2k_test_support::{
     JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_RESTART_32X16, JPEG_BASELINE_422_16X8,
     JPEG_BASELINE_444_8X8, JPEG_GRAYSCALE_8X8,
 };
-use j2k_transcode::dct53_1d::{
+
+#[allow(dead_code, unreachable_pub)]
+#[path = "../src/dct53_1d.rs"]
+mod dct53_1d;
+#[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
+#[path = "../src/dct53_2d.rs"]
+mod dct53_2d;
+#[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
+#[path = "../src/dct53_multilevel.rs"]
+mod dct53_multilevel;
+#[allow(dead_code, unreachable_pub, unused_imports)]
+#[path = "../src/dct_grid.rs"]
+mod dct_grid;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/reversible53.rs"]
+mod reversible53;
+
+pub use dct_grid::DctGridError;
+
+use dct53_1d::{
     dct8_blocks_to_dwt53_float_linear, dct8_to_dwt53_float_linear, idct8_blocks_then_dwt53_float,
     idct8_then_dwt53_float,
 };
-use j2k_transcode::dct53_2d::{
+use dct53_2d::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
     dct8x8_blocks_to_dwt53_float_linear_with_scratch, dct8x8_to_dwt53_float_linear,
     idct8x8_then_dwt53_float, Dct53GridScratch,
 };
-use j2k_transcode::dct53_multilevel::{
+use dct53_multilevel::{
     dct8x8_to_dwt53_multilevel_float_linear, idct8x8_then_dwt53_multilevel_float,
 };
 use j2k_transcode::dct97_2d::{

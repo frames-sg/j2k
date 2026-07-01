@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_transcode::dct53_multilevel::{
+#[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
+#[path = "../src/dct53_2d.rs"]
+mod dct53_2d;
+#[allow(dead_code, unreachable_pub, unused_imports)]
+#[path = "../src/dct_grid.rs"]
+mod dct_grid;
+
+pub use dct_grid::DctGridError;
+
+#[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
+#[path = "../src/dct53_multilevel.rs"]
+mod dct53_multilevel;
+
+use dct53_multilevel::{
     dct8x8_to_dwt53_multilevel_float_linear, idct8x8_then_dwt53_multilevel_float,
 };
 
