@@ -16,6 +16,7 @@ still-image correctness. Keep row-level status synchronized with
 | --- | --- | --- |
 | `j2k` | public codec | Primary user-facing JPEG 2000 / HTJ2K API. |
 | `j2k-core` | core | Shared traits, errors, geometry, pixel formats, backend requests, and device-surface contracts. |
+| `j2k-codec-math` | support | No-std shared constants and pure math tables for CPU, CUDA-Oxide, and Metal parity. |
 | `j2k-jpeg`, `j2k-tilecodec` | codec | CPU/native codec implementations and stable codec APIs. |
 | `j2k-native` | engine | Native JPEG 2000 / HTJ2K engine used by J2K APIs and adapter validation. |
 | `j2k-profile`, `j2k-metal-support` | support | Runtime/profile helpers used by adapters and codec crates. |
@@ -43,11 +44,11 @@ still-image correctness. Keep row-level status synchronized with
 
 ```text
 j2k -> j2k-core, j2k-native, j2k-types
-j2k-native -> j2k-types, j2k-profile
+j2k-native -> j2k-codec-math, j2k-types, j2k-profile
 j2k-test-support -> j2k-native
 j2k-cuda -> j2k-core, j2k-cuda-runtime, j2k, j2k-native, j2k-profile
 j2k-metal -> j2k-core, j2k, j2k-native, j2k-metal-support, j2k-profile
-j2k-jpeg -> j2k-core, j2k-profile
+j2k-jpeg -> j2k-codec-math, j2k-core, j2k-profile
 j2k-jpeg-cuda -> j2k-core, j2k-cuda-runtime, j2k-jpeg, j2k-profile
 j2k-jpeg-metal -> j2k-core, j2k-jpeg, j2k-metal-support, j2k-profile
 j2k-tilecodec -> j2k-core
@@ -55,10 +56,10 @@ j2k-compare -> j2k-core, j2k, j2k-native, j2k-test-support
 j2k-transcode -> j2k-core, j2k, j2k-native, j2k-jpeg
 j2k-metal-support -> j2k-core
 j2k-cuda-runtime -> j2k-core
-j2k-transcode-metal -> j2k-core, j2k-metal, j2k-metal-support, j2k-transcode
+j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal, j2k-metal-support, j2k-transcode
 j2k-transcode-cuda -> j2k-cuda-runtime, j2k-native, j2k-transcode
 j2k-cli -> j2k, j2k-jpeg, j2k-transcode
-xtask -> j2k, j2k-compare, j2k-native, j2k-profile, j2k-test-support
+xtask -> j2k, j2k-codec-math, j2k-compare, j2k-native, j2k-profile, j2k-test-support
 ```
 
 ## Backend policy

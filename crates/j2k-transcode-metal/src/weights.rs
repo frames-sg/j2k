@@ -2,12 +2,14 @@
 
 //! Scalar-derived wavelet projection weight rows for Metal kernels.
 
-const ALPHA: f64 = -1.586_134_342_059_924;
-const BETA: f64 = -0.052_980_118_572_961;
-const GAMMA: f64 = 0.882_911_075_530_934;
-const DELTA: f64 = 0.443_506_852_043_971;
-const KAPPA: f64 = 1.230_174_104_914_001;
-const INV_KAPPA: f64 = 1.0 / KAPPA;
+use j2k_codec_math::dwt;
+
+const ALPHA: f64 = dwt::DWT97_ALPHA_F64;
+const BETA: f64 = dwt::DWT97_BETA_F64;
+const GAMMA: f64 = dwt::DWT97_GAMMA_F64;
+const DELTA: f64 = dwt::DWT97_DELTA_F64;
+const KAPPA: f64 = dwt::DWT97_KAPPA_F64;
+const INV_KAPPA: f64 = dwt::DWT97_INV_KAPPA_F64;
 
 /// One-dimensional 9/7 projection weights for every output row.
 #[derive(Debug, Clone, PartialEq)]

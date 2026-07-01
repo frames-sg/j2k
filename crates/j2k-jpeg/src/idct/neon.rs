@@ -17,22 +17,23 @@ use core::arch::aarch64::{
     vorrq_u64, vqmovn_s32, vqmovun_s16, vreinterpretq_u64_s16, vshlq_n_s32, vshrq_n_s32, vst1_u8,
     vsubq_s32, vtrnq_s32,
 };
+use j2k_codec_math::jpeg::idct;
 
-const CONST_BITS: i32 = 13;
-const PASS1_BITS: i32 = 2;
+const CONST_BITS: i32 = idct::CONST_BITS as i32;
+const PASS1_BITS: i32 = idct::PASS1_BITS as i32;
 
-const FIX_0_298631336: i32 = 2_446;
-const FIX_0_390180644: i32 = 3_196;
-const FIX_0_541196100: i32 = 4_433;
-const FIX_0_765366865: i32 = 6_270;
-const FIX_0_899976223: i32 = 7_373;
-const FIX_1_175875602: i32 = 9_633;
-const FIX_1_501321110: i32 = 12_299;
-const FIX_1_847759065: i32 = 15_137;
-const FIX_1_961570560: i32 = 16_069;
-const FIX_2_053119869: i32 = 16_819;
-const FIX_2_562915447: i32 = 20_995;
-const FIX_3_072711026: i32 = 25_172;
+const FIX_0_298631336: i32 = idct::FIX_0_298631336;
+const FIX_0_390180644: i32 = idct::FIX_0_390180644;
+const FIX_0_541196100: i32 = idct::FIX_0_541196100;
+const FIX_0_765366865: i32 = idct::FIX_0_765366865;
+const FIX_0_899976223: i32 = idct::FIX_0_899976223;
+const FIX_1_175875602: i32 = idct::FIX_1_175875602;
+const FIX_1_501321110: i32 = idct::FIX_1_501321110;
+const FIX_1_847759065: i32 = idct::FIX_1_847759065;
+const FIX_1_961570560: i32 = idct::FIX_1_961570560;
+const FIX_2_053119869: i32 = idct::FIX_2_053119869;
+const FIX_2_562915447: i32 = idct::FIX_2_562915447;
+const FIX_3_072711026: i32 = idct::FIX_3_072711026;
 
 /// Inverse DCT of one 8×8 block. Output is level-shifted (+128) and
 /// saturated to `[0, 255]`, matching the scalar path byte-for-byte.

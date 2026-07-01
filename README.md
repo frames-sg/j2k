@@ -111,6 +111,7 @@ Use lower-level crates only when you need a specific integration point:
 | --- | --- |
 | JPEG 2000 / HTJ2K inspect, decode, encode, and recode | `j2k` |
 | Shared traits and backend types | `j2k-core` |
+| Shared codec constants and pure math tables | `j2k-codec-math` |
 | JPEG inspect/decode and fixture/fallback encode | `j2k-jpeg` |
 | Native JPEG 2000 and HTJ2K codec engine | `j2k-native` |
 | JPEG to J2K/HTJ2K transcode | `j2k-transcode` |

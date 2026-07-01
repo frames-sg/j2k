@@ -94,26 +94,22 @@ struct J2kJpegBitReader {
     bits: u32,
 }
 
-const J2K_JPEG_ZIGZAG: [u8; 64] = [
-    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27,
-    20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
-    58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
-];
+const J2K_JPEG_ZIGZAG: [u8; 64] = j2k_codec_math::jpeg::ZIGZAG;
 
-const JPEG_CONST_BITS: i32 = 13;
-const JPEG_PASS1_BITS: i32 = 2;
-const JPEG_FIX_0_298631336: i32 = 2446;
-const JPEG_FIX_0_390180644: i32 = 3196;
-const JPEG_FIX_0_541196100: i32 = 4433;
-const JPEG_FIX_0_765366865: i32 = 6270;
-const JPEG_FIX_0_899976223: i32 = 7373;
-const JPEG_FIX_1_175875602: i32 = 9633;
-const JPEG_FIX_1_501321110: i32 = 12299;
-const JPEG_FIX_1_847759065: i32 = 15137;
-const JPEG_FIX_1_961570560: i32 = 16069;
-const JPEG_FIX_2_053119869: i32 = 16819;
-const JPEG_FIX_2_562915447: i32 = 20995;
-const JPEG_FIX_3_072711026: i32 = 25172;
+const JPEG_CONST_BITS: i32 = j2k_codec_math::jpeg::idct::CONST_BITS as i32;
+const JPEG_PASS1_BITS: i32 = j2k_codec_math::jpeg::idct::PASS1_BITS as i32;
+const JPEG_FIX_0_298631336: i32 = j2k_codec_math::jpeg::idct::FIX_0_298631336;
+const JPEG_FIX_0_390180644: i32 = j2k_codec_math::jpeg::idct::FIX_0_390180644;
+const JPEG_FIX_0_541196100: i32 = j2k_codec_math::jpeg::idct::FIX_0_541196100;
+const JPEG_FIX_0_765366865: i32 = j2k_codec_math::jpeg::idct::FIX_0_765366865;
+const JPEG_FIX_0_899976223: i32 = j2k_codec_math::jpeg::idct::FIX_0_899976223;
+const JPEG_FIX_1_175875602: i32 = j2k_codec_math::jpeg::idct::FIX_1_175875602;
+const JPEG_FIX_1_501321110: i32 = j2k_codec_math::jpeg::idct::FIX_1_501321110;
+const JPEG_FIX_1_847759065: i32 = j2k_codec_math::jpeg::idct::FIX_1_847759065;
+const JPEG_FIX_1_961570560: i32 = j2k_codec_math::jpeg::idct::FIX_1_961570560;
+const JPEG_FIX_2_053119869: i32 = j2k_codec_math::jpeg::idct::FIX_2_053119869;
+const JPEG_FIX_2_562915447: i32 = j2k_codec_math::jpeg::idct::FIX_2_562915447;
+const JPEG_FIX_3_072711026: i32 = j2k_codec_math::jpeg::idct::FIX_3_072711026;
 
 #[inline(always)]
 fn min_u32(a: u32, b: u32) -> u32 {

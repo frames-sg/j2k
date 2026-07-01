@@ -6,12 +6,12 @@ use cuda_host::cuda_module;
 const IDWT_COOP_SAMPLES: usize = 512;
 const IDWT_COLS4_COLUMNS: u32 = 4;
 const IDWT_COLS4_SAMPLES: usize = 256 * IDWT_COLS4_COLUMNS as usize;
-const IDWT_NEG_ALPHA: f32 = 1.5861343;
-const IDWT_NEG_BETA: f32 = 0.052980117;
-const IDWT_NEG_GAMMA: f32 = -0.8829111;
-const IDWT_NEG_DELTA: f32 = -0.44350687;
-const IDWT_KAPPA: f32 = 1.2301741;
-const IDWT_INV_KAPPA: f32 = 1.0 / IDWT_KAPPA;
+const IDWT_NEG_ALPHA: f32 = j2k_codec_math::dwt::IDWT97_NEG_ALPHA_F32;
+const IDWT_NEG_BETA: f32 = j2k_codec_math::dwt::IDWT97_NEG_BETA_F32;
+const IDWT_NEG_GAMMA: f32 = j2k_codec_math::dwt::IDWT97_NEG_GAMMA_F32;
+const IDWT_NEG_DELTA: f32 = j2k_codec_math::dwt::IDWT97_NEG_DELTA_F32;
+const IDWT_KAPPA: f32 = j2k_codec_math::dwt::DWT97_KAPPA_F32;
+const IDWT_INV_KAPPA: f32 = j2k_codec_math::dwt::DWT97_INV_KAPPA_F32;
 
 #[repr(C)]
 #[derive(Clone, Copy)]

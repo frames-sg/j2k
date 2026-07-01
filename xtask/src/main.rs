@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 mod adoption_benchmark;
 mod adoption_corpus;
@@ -21,6 +21,7 @@ const PUBLISHABLE_PACKAGES: &[&str] = &[
     "j2k-core",
     "j2k-profile",
     "j2k-types",
+    "j2k-codec-math",
     "j2k-cuda-runtime",
     "j2k-metal-support",
     "j2k-native",
@@ -37,7 +38,8 @@ const PUBLISHABLE_PACKAGES: &[&str] = &[
     "j2k-cli",
 ];
 
-const REGISTRY_INDEPENDENT_PACKAGES: &[&str] = &["j2k-core", "j2k-profile", "j2k-types"];
+const REGISTRY_INDEPENDENT_PACKAGES: &[&str] =
+    &["j2k-core", "j2k-profile", "j2k-types", "j2k-codec-math"];
 
 const STAGED_DEPENDENCY_PACKAGES: &[&str] = &[
     "j2k-cuda-runtime",
@@ -58,6 +60,7 @@ const STAGED_DEPENDENCY_PACKAGES: &[&str] = &[
 
 const CPU_RELEASE_PACKAGES: &[&str] = &[
     "j2k-core",
+    "j2k-codec-math",
     "j2k-jpeg",
     "j2k-types",
     "j2k-native",
@@ -69,6 +72,7 @@ const CPU_RELEASE_PACKAGES: &[&str] = &[
 const STABLE_SEMVER_PACKAGES: &[&str] = &[
     "j2k",
     "j2k-core",
+    "j2k-codec-math",
     "j2k-jpeg",
     "j2k-tilecodec",
     "j2k-jpeg-metal",
@@ -88,6 +92,7 @@ const STABLE_SEMVER_PACKAGES: &[&str] = &[
 const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
     "j2k",
     "j2k-core",
+    "j2k-codec-math",
     "j2k-jpeg",
     "j2k-tilecodec",
     "j2k-jpeg-metal",
@@ -106,6 +111,10 @@ const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
 
 const STABLE_API_SNAPSHOT: &str = "docs/stable-api-1.0.public-api.txt";
 const CARGO_PUBLIC_API_VERSION: &str = "0.52.0";
+const PANIC_SURFACE_UNWRAP_USED_BASELINE: usize = 17;
+const CODEC_MATH_DWT97_METAL_FRAGMENT: &str =
+    "crates/j2k-codec-math/generated/dwt97_constants.metal";
+const CODEC_MATH_DWT97_RUST_FRAGMENT: &str = "crates/j2k-codec-math/generated/dwt97_constants.rs";
 
 const NO_STD_TARGET: &str = "aarch64-unknown-none";
 const NO_STD_CORE_PORTABLE_TARGET: &str = "wasm32-unknown-unknown";
@@ -140,6 +149,7 @@ fn run() -> Result<(), String> {
         "public-support" => public_support::public_support(env::args().skip(2)),
         "j2k-bench-signoff" => j2k_bench_signoff(),
         "j2k-perf-guard" => perf_guard::j2k_perf_guard(env::args().skip(2)),
+        "codec-math-codegen" => codec_math_codegen(env::args().skip(2)),
         "fuzz-build" => fuzz_build(),
         "fuzz-run" => fuzz_run(),
         "stable-api" => stable_api(env::args().skip(2)),
@@ -147,6 +157,7 @@ fn run() -> Result<(), String> {
         "deny" => deny(),
         "miri" => miri(),
         "machete" => machete(),
+        "panic-surface" => panic_surface(),
         "no-std" => no_std(),
         "unsafe-audit" => verify_unsafe_audit(),
         "downstream-smoke" => downstream_smoke(),
@@ -167,6 +178,7 @@ fn run() -> Result<(), String> {
 
 fn ci() -> Result<(), String> {
     fmt()?;
+    codec_math_codegen(std::iter::empty::<String>())?;
     clippy()?;
     test()?;
     doc()?;
@@ -690,6 +702,159 @@ fn stable_api(args: impl Iterator<Item = String>) -> Result<(), String> {
     }
 }
 
+fn codec_math_codegen(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut write_fragments = false;
+    for arg in args {
+        match arg.as_str() {
+            "--write" => write_fragments = true,
+            "--help" | "-h" => {
+                print_codec_math_codegen_help();
+                return Ok(());
+            }
+            other => return Err(format!("unknown codec-math-codegen argument `{other}`")),
+        }
+    }
+
+    let fragments = [
+        (
+            CODEC_MATH_DWT97_METAL_FRAGMENT,
+            render_codec_math_dwt97_metal_fragment(),
+        ),
+        (
+            CODEC_MATH_DWT97_RUST_FRAGMENT,
+            render_codec_math_dwt97_rust_fragment(),
+        ),
+    ];
+
+    if write_fragments {
+        for (path, rendered) in fragments {
+            let path = Path::new(path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+            }
+            fs::write(path, rendered)
+                .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+        }
+        return Ok(());
+    }
+
+    let mut stale = Vec::new();
+    for (path, rendered) in fragments {
+        let committed =
+            fs::read_to_string(path).map_err(|err| format!("failed to read {path}: {err}"))?;
+        if committed != rendered {
+            stale.push(path);
+        }
+    }
+    if stale.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "codec math generated fragments are stale: {}; run `cargo xtask codec-math-codegen --write` and review the diff",
+            stale.join(", ")
+        ))
+    }
+}
+
+fn render_codec_math_dwt97_metal_fragment() -> String {
+    use j2k_codec_math::dwt;
+
+    [
+        "// Generated from crates/j2k-codec-math/src/dwt.rs.".to_string(),
+        format!(
+            "constant float CODEC_MATH_DWT97_ALPHA = {}f;",
+            compact_f32(dwt::DWT97_ALPHA_F32)
+        ),
+        format!(
+            "constant float CODEC_MATH_DWT97_BETA = {}f;",
+            compact_f32(dwt::DWT97_BETA_F32)
+        ),
+        format!(
+            "constant float CODEC_MATH_DWT97_GAMMA = {}f;",
+            compact_f32(dwt::DWT97_GAMMA_F32)
+        ),
+        format!(
+            "constant float CODEC_MATH_DWT97_DELTA = {}f;",
+            compact_f32(dwt::DWT97_DELTA_F32)
+        ),
+        format!(
+            "constant float CODEC_MATH_DWT97_KAPPA = {}f;",
+            compact_f32(dwt::DWT97_KAPPA_F32)
+        ),
+        "constant float CODEC_MATH_DWT97_INV_KAPPA = 1.0f / CODEC_MATH_DWT97_KAPPA;".to_string(),
+        format!(
+            "constant float CODEC_MATH_IDWT97_NEG_ALPHA = {}f;",
+            compact_f32(dwt::IDWT97_NEG_ALPHA_F32)
+        ),
+        format!(
+            "constant float CODEC_MATH_IDWT97_NEG_BETA = {}f;",
+            compact_f32(dwt::IDWT97_NEG_BETA_F32)
+        ),
+        format!(
+            "constant float CODEC_MATH_IDWT97_NEG_GAMMA = {}f;",
+            compact_f32(dwt::IDWT97_NEG_GAMMA_F32)
+        ),
+        format!(
+            "constant float CODEC_MATH_IDWT97_NEG_DELTA = {}f;",
+            compact_f32(dwt::IDWT97_NEG_DELTA_F32)
+        ),
+    ]
+    .join("\n")
+        + "\n"
+}
+
+fn render_codec_math_dwt97_rust_fragment() -> String {
+    use j2k_codec_math::dwt;
+
+    [
+        "// Generated from crates/j2k-codec-math/src/dwt.rs.".to_string(),
+        format!(
+            "pub const CODEC_MATH_DWT97_ALPHA: f32 = {};",
+            compact_f32(dwt::DWT97_ALPHA_F32)
+        ),
+        format!(
+            "pub const CODEC_MATH_DWT97_BETA: f32 = {};",
+            compact_f32(dwt::DWT97_BETA_F32)
+        ),
+        format!(
+            "pub const CODEC_MATH_DWT97_GAMMA: f32 = {};",
+            compact_f32(dwt::DWT97_GAMMA_F32)
+        ),
+        format!(
+            "pub const CODEC_MATH_DWT97_DELTA: f32 = {};",
+            compact_f32(dwt::DWT97_DELTA_F32)
+        ),
+        format!(
+            "pub const CODEC_MATH_DWT97_KAPPA: f32 = {};",
+            compact_f32(dwt::DWT97_KAPPA_F32)
+        ),
+        "pub const CODEC_MATH_DWT97_INV_KAPPA: f32 = 1.0 / CODEC_MATH_DWT97_KAPPA;".to_string(),
+        format!(
+            "pub const CODEC_MATH_IDWT97_NEG_ALPHA: f32 = {};",
+            compact_f32(dwt::IDWT97_NEG_ALPHA_F32)
+        ),
+        format!(
+            "pub const CODEC_MATH_IDWT97_NEG_BETA: f32 = {};",
+            compact_f32(dwt::IDWT97_NEG_BETA_F32)
+        ),
+        format!(
+            "pub const CODEC_MATH_IDWT97_NEG_GAMMA: f32 = {};",
+            compact_f32(dwt::IDWT97_NEG_GAMMA_F32)
+        ),
+        format!(
+            "pub const CODEC_MATH_IDWT97_NEG_DELTA: f32 = {};",
+            compact_f32(dwt::IDWT97_NEG_DELTA_F32)
+        ),
+    ]
+    .join("\n")
+        + "\n"
+}
+
+fn compact_f32(value: f32) -> String {
+    format!("{value:?}")
+}
+
 fn render_stable_api_snapshot() -> Result<String, String> {
     if !cfg!(target_os = "macos") {
         return Err(
@@ -833,6 +998,61 @@ fn machete() -> Result<(), String> {
     run_program(OsString::from("cargo-machete"), &[], &[])
 }
 
+fn panic_surface() -> Result<(), String> {
+    let output = Command::new(cargo())
+        .args([
+            "clippy",
+            "--workspace",
+            "--lib",
+            "--all-features",
+            "--message-format=json",
+            "--",
+            "-A",
+            "clippy::all",
+            "-W",
+            "clippy::unwrap_used",
+        ])
+        .output()
+        .map_err(|err| format!("failed to run cargo clippy panic-surface gate: {err}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!(
+            "cargo clippy panic-surface gate failed with status {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            output.status
+        ));
+    }
+
+    let unwrap_used_count = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| {
+            message
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|reason| reason == "compiler-message")
+                && message
+                    .get("message")
+                    .and_then(|message| message.get("code"))
+                    .and_then(|code| code.get("code"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|code| code == "clippy::unwrap_used")
+        })
+        .count();
+
+    if unwrap_used_count > PANIC_SURFACE_UNWRAP_USED_BASELINE {
+        return Err(format!(
+            "panic-surface ratchet exceeded: clippy::unwrap_used reported {unwrap_used_count}, baseline is {PANIC_SURFACE_UNWRAP_USED_BASELINE}"
+        ));
+    }
+
+    println!(
+        "panic-surface ratchet: clippy::unwrap_used {unwrap_used_count}/{PANIC_SURFACE_UNWRAP_USED_BASELINE}"
+    );
+    Ok(())
+}
+
 fn no_std() -> Result<(), String> {
     run_program(
         OsString::from("rustup"),
@@ -840,6 +1060,7 @@ fn no_std() -> Result<(), String> {
         &[],
     )?;
     run_cargo(&["check", "-p", "j2k-core", "--target", NO_STD_TARGET])?;
+    run_cargo(&["check", "-p", "j2k-codec-math", "--target", NO_STD_TARGET])?;
     run_cargo(&[
         "check",
         "-p",
@@ -865,6 +1086,13 @@ fn no_std() -> Result<(), String> {
         "check",
         "-p",
         "j2k-core",
+        "--target",
+        NO_STD_CORE_PORTABLE_TARGET,
+    ])?;
+    run_cargo(&[
+        "check",
+        "-p",
+        "j2k-codec-math",
         "--target",
         NO_STD_CORE_PORTABLE_TARGET,
     ])
@@ -1635,6 +1863,14 @@ fn print_stable_api_help() {
     );
 }
 
+fn print_codec_math_codegen_help() {
+    println!(
+        "usage: cargo xtask codec-math-codegen [--write]\n\n\
+         Without --write, checks generated Rust and Metal codec-math fragments \
+         against the Rust source of truth. With --write, refreshes the fragments."
+    );
+}
+
 fn print_help() {
     println!(
         "usage: cargo xtask <task>\n\n\
@@ -1657,6 +1893,7 @@ fn print_help() {
           public-support verify the public J2K/HTJ2K support matrix and publication gates [--final]\n\
           j2k-bench-signoff run required OpenJPEG/Grok parity and J2K compare bench compile gates\n\
           j2k-perf-guard compare CPU J2K Criterion medians against a baseline git ref\n\
+          codec-math-codegen check generated codec-math Rust and Metal fragments\n\
            fuzz-build    compile fuzz harnesses\n\
            fuzz-run      run scheduled fuzz targets with J2K_FUZZ_RUNS\n\
            stable-api    check the generated 1.0 public API inventory snapshot\n\
@@ -1664,6 +1901,7 @@ fn print_help() {
            deny          run cargo-deny\n\
            miri          run selected CPU/no_std crates under Miri\n\
            machete       run cargo-machete unused-dependency scan\n\
+           panic-surface run the production-library unwrap/expect ratchet\n\
            no-std        check no_std-compatible codec crates\n\
            unsafe-audit  verify docs/unsafe-audit.md lists unsafe Rust sources\n\
            downstream-smoke run facade and transcode examples used by integration docs\n\

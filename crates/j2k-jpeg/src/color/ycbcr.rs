@@ -9,11 +9,11 @@
 //!     G = Y - 0.34414 * (Cb - 128) - 0.71414 * (Cr - 128)
 //!     B = Y + 1.77200 * (Cb - 128)
 
-pub(crate) const FIX_1_40200: i32 = 91_881; // (int)(1.40200 * 65536 + 0.5)
-pub(crate) const FIX_0_34414: i32 = 22_554; // (int)(0.34414 * 65536 + 0.5)
-pub(crate) const FIX_0_71414: i32 = 46_802; // (int)(0.71414 * 65536 + 0.5)
-pub(crate) const FIX_1_77200: i32 = 116_130; // (int)(1.77200 * 65536 + 0.5)
-pub(crate) const ROUND: i32 = 1 << 15; // 0.5 in 16-bit fixed point
+pub(crate) const FIX_1_40200: i32 = j2k_codec_math::jpeg::ycbcr::FIX_1_40200;
+pub(crate) const FIX_0_34414: i32 = j2k_codec_math::jpeg::ycbcr::FIX_0_34414;
+pub(crate) const FIX_0_71414: i32 = j2k_codec_math::jpeg::ycbcr::FIX_0_71414;
+pub(crate) const FIX_1_77200: i32 = j2k_codec_math::jpeg::ycbcr::FIX_1_77200;
+pub(crate) const ROUND: i32 = j2k_codec_math::jpeg::ycbcr::ROUND;
 
 const fn clamp_to_u8(v: i32) -> u8 {
     if v < 0 {

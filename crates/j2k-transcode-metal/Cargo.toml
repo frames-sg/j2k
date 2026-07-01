@@ -19,6 +19,7 @@ name = "j2k_transcode_metal"
 path = "src/lib.rs"
 
 [dependencies]
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.6.2" }
 j2k-core = { path = "../j2k-core", version = "=0.6.2" }
 j2k-transcode = { path = "../j2k-transcode", version = "=0.6.2" }
 

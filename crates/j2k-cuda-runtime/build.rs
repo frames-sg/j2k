@@ -13,6 +13,10 @@ fn main() {
 }
 
 fn emit_build_script_metadata() {
+    println!("cargo:rerun-if-changed=../j2k-codec-math/src/lib.rs");
+    println!("cargo:rerun-if-changed=../j2k-codec-math/src/dwt.rs");
+    println!("cargo:rerun-if-changed=../j2k-codec-math/src/jpeg.rs");
+    println!("cargo:rerun-if-changed=../j2k-codec-math/src/mct.rs");
     println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/rust-toolchain.toml");
     println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/src/main.rs");
@@ -409,11 +413,45 @@ fn copy_cuda_oxide_file_as(
             )
         });
     }
-    fs::copy(&source, &dest).unwrap_or_else(|error| {
-        panic!(
-            "failed to stage cuda-oxide project file {} to {}: {error}",
-            source.display(),
-            dest.display()
-        )
-    });
+    if source_relative
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension == "in")
+    {
+        let source_text = fs::read_to_string(&source).unwrap_or_else(|error| {
+            panic!(
+                "failed to read cuda-oxide project template {}: {error}",
+                source.display()
+            )
+        });
+        let rendered = source_text.replace(
+            "__J2K_CODEC_MATH_PATH__",
+            &codec_math_crate_path().to_string_lossy(),
+        );
+        fs::write(&dest, rendered).unwrap_or_else(|error| {
+            panic!(
+                "failed to render cuda-oxide project template {} to {}: {error}",
+                source.display(),
+                dest.display()
+            )
+        });
+    } else {
+        fs::copy(&source, &dest).unwrap_or_else(|error| {
+            panic!(
+                "failed to stage cuda-oxide project file {} to {}: {error}",
+                source.display(),
+                dest.display()
+            )
+        });
+    }
+}
+
+fn codec_math_crate_path() -> PathBuf {
+    let manifest_dir = PathBuf::from(
+        env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
+    );
+    manifest_dir
+        .parent()
+        .expect("j2k-cuda-runtime lives under crates/")
+        .join("j2k-codec-math")
 }

@@ -10,14 +10,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::math::floor_f32;
+use j2k_codec_math::dwt;
 
 /// 9-7 filter lifting coefficients (Table F.4 in ITU-T T.800).
-const ALPHA: f32 = -1.586_134_3;
-const BETA: f32 = -0.052_980_117;
-const GAMMA: f32 = 0.882_911_1;
-const DELTA: f32 = 0.443_506_87;
-const KAPPA: f32 = 1.230_174_1;
-const INV_KAPPA: f32 = 1.0 / 1.230_174_1;
+const ALPHA: f32 = dwt::DWT97_ALPHA_F32;
+const BETA: f32 = dwt::DWT97_BETA_F32;
+const GAMMA: f32 = dwt::DWT97_GAMMA_F32;
+const DELTA: f32 = dwt::DWT97_DELTA_F32;
+const KAPPA: f32 = dwt::DWT97_KAPPA_F32;
+const INV_KAPPA: f32 = dwt::DWT97_INV_KAPPA_F32;
 
 /// Result of the forward DWT: wavelet coefficients organized by subbands.
 #[derive(Debug)]

@@ -362,12 +362,12 @@ fn reversible_lift_row(row: *mut i32, n: i32) {
     }
 }
 
-const DWT97_ALPHA: f32 = -1.586_134_3;
-const DWT97_BETA: f32 = -0.052_980_117;
-const DWT97_GAMMA: f32 = 0.882_911_1;
-const DWT97_DELTA: f32 = 0.443_506_87;
-const DWT97_KAPPA: f32 = 1.230_174_1;
-const DWT97_INV_KAPPA: f32 = 1.0 / DWT97_KAPPA;
+const DWT97_ALPHA: f32 = j2k_codec_math::dwt::DWT97_ALPHA_F32;
+const DWT97_BETA: f32 = j2k_codec_math::dwt::DWT97_BETA_F32;
+const DWT97_GAMMA: f32 = j2k_codec_math::dwt::DWT97_GAMMA_F32;
+const DWT97_DELTA: f32 = j2k_codec_math::dwt::DWT97_DELTA_F32;
+const DWT97_KAPPA: f32 = j2k_codec_math::dwt::DWT97_KAPPA_F32;
+const DWT97_INV_KAPPA: f32 = j2k_codec_math::dwt::DWT97_INV_KAPPA_F32;
 const DWT97_ROW_LIFT_MAX_WIDTH: usize = 1024;
 const DWT97_ROW_LIFT_ROWS_PER_BLOCK: usize = 4;
 const DWT97_ROW_LIFT_SHARED_SAMPLES: usize =

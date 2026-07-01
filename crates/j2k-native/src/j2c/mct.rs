@@ -6,6 +6,7 @@ use super::decode::TileDecodeContext;
 use crate::error::{bail, err, ColorError, Result};
 use crate::math::{dispatch, f32x8, floor_f32, Level, Simd};
 use crate::{HtCodeBlockDecoder, J2kInverseMctJob, J2kWaveletTransform};
+use j2k_codec_math::mct;
 
 /// Apply the inverse multi-component transform, as specified in G.2 and G.3.
 pub(crate) fn apply_inverse(
@@ -151,12 +152,12 @@ fn apply_inner_impl<S: Simd>(
                 let y_1 = f32x8::from_slice(simd, y1);
                 let y_2 = f32x8::from_slice(simd, y2);
 
-                let i0 = y_2.mul_add(f32x8::splat(simd, 1.402), y_0);
+                let i0 = y_2.mul_add(f32x8::splat(simd, mct::ICT_INV_R_CR), y_0);
                 let i1 = y_2.mul_add(
-                    f32x8::splat(simd, -0.71414),
-                    y_1.mul_add(f32x8::splat(simd, -0.34413), y_0),
+                    f32x8::splat(simd, mct::ICT_INV_G_CR),
+                    y_1.mul_add(f32x8::splat(simd, mct::ICT_INV_G_CB), y_0),
                 );
-                let i2 = y_1.mul_add(f32x8::splat(simd, 1.772), y_0);
+                let i2 = y_1.mul_add(f32x8::splat(simd, mct::ICT_INV_B_CB), y_0);
 
                 i0.store(y0);
                 i1.store(y1);
@@ -171,9 +172,9 @@ fn apply_inner_impl<S: Simd>(
                 let src0 = *y0;
                 let src1 = *y1;
                 let src2 = *y2;
-                *y0 = src0 + 1.402 * src2;
-                *y1 = src0 - 0.34413 * src1 - 0.71414 * src2;
-                *y2 = src0 + 1.772 * src1;
+                *y0 = src0 + mct::ICT_INV_R_CR * src2;
+                *y1 = src0 + mct::ICT_INV_G_CB * src1 + mct::ICT_INV_G_CR * src2;
+                *y2 = src0 + mct::ICT_INV_B_CB * src1;
             }
         }
         // Reversible MCT, specified in G.2.
@@ -190,7 +191,7 @@ fn apply_inner_impl<S: Simd>(
                 let y_1 = f32x8::from_slice(simd, y1);
                 let y_2 = f32x8::from_slice(simd, y2);
 
-                let i1 = y_0 - ((y_2 + y_1) * 0.25).floor();
+                let i1 = y_0 - ((y_2 + y_1) * mct::RCT_QUARTER).floor();
                 let i0 = y_2 + i1;
                 let i2 = y_1 + i1;
 
@@ -207,7 +208,7 @@ fn apply_inner_impl<S: Simd>(
                 let src0 = *y0;
                 let src1 = *y1;
                 let src2 = *y2;
-                let i1 = src0 - floor_f32((src2 + src1) * 0.25);
+                let i1 = src0 - floor_f32((src2 + src1) * mct::RCT_QUARTER);
                 *y0 = src2 + i1;
                 *y1 = i1;
                 *y2 = src1 + i1;

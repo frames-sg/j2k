@@ -69,8 +69,21 @@ jobs:
         env:
           CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
-  publish-j2k-cuda-runtime:
+  publish-j2k-codec-math:
     needs: [publish-j2k-types]
+    runs-on: ubuntu-latest
+    environment: crates-io-publish
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: scripts/publish-crate.sh j2k-codec-math
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+
+  publish-j2k-cuda-runtime:
+    needs: [publish-j2k-codec-math]
     runs-on: ubuntu-latest
     environment: crates-io-publish
     steps:

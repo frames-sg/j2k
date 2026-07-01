@@ -27,6 +27,7 @@ bench-libjpeg-turbo = []
 bench-internals = []
 
 [dependencies]
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.6.2" }
 j2k-core = { path = "../j2k-core", version = "=0.6.2" }
 j2k-profile = { path = "../j2k-profile", version = "=0.6.2" }
 thiserror = { workspace = true }

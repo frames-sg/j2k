@@ -500,6 +500,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "j2k-codec-math"
+version = "0.6.2"
+
+[[package]]
 name = "j2k-compare"
 version = "0.2.0"
 dependencies = [
@@ -548,6 +552,7 @@ name = "j2k-jpeg"
 version = "0.6.2"
 dependencies = [
  "criterion",
+ "j2k-codec-math",
  "j2k-core",
  "j2k-profile",
  "j2k-test-support",
@@ -620,6 +625,7 @@ version = "0.6.2"
 dependencies = [
  "criterion",
  "fearless_simd",
+ "j2k-codec-math",
  "j2k-profile",
  "j2k-types",
  "libm",
@@ -680,6 +686,7 @@ name = "j2k-transcode-metal"
 version = "0.6.2"
 dependencies = [
  "criterion",
+ "j2k-codec-math",
  "j2k-core",
  "j2k-jpeg",
  "j2k-metal",
@@ -1508,6 +1515,7 @@ version = "0.0.0"
 dependencies = [
  "image",
  "j2k",
+ "j2k-codec-math",
  "j2k-compare",
  "j2k-native",
  "j2k-profile",

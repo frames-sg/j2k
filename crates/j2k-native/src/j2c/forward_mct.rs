@@ -7,6 +7,7 @@
 use alloc::vec::Vec;
 
 use crate::math::floor_f32;
+use j2k_codec_math::mct;
 
 /// Apply the forward Reversible Color Transform (RCT) in-place.
 ///
@@ -33,7 +34,7 @@ pub(crate) fn forward_rct(components: &mut [Vec<f32>]) {
         let g0 = *g;
         let b0 = *b;
 
-        let y = floor_f32((r0 + 2.0 * g0 + b0) * 0.25);
+        let y = floor_f32((r0 + 2.0 * g0 + b0) * mct::RCT_QUARTER);
         let cb = b0 - g0;
         let cr = r0 - g0;
 
@@ -68,9 +69,9 @@ pub(crate) fn forward_ict(components: &mut [Vec<f32>]) {
         let g0 = *g;
         let b0 = *b;
 
-        let y = 0.299 * r0 + 0.587 * g0 + 0.114 * b0;
-        let cb = -0.16875 * r0 - 0.33126 * g0 + 0.5 * b0;
-        let cr = 0.5 * r0 - 0.41869 * g0 - 0.08131 * b0;
+        let y = mct::ICT_FWD_Y_R * r0 + mct::ICT_FWD_Y_G * g0 + mct::ICT_FWD_Y_B * b0;
+        let cb = mct::ICT_FWD_CB_R * r0 + mct::ICT_FWD_CB_G * g0 + mct::ICT_FWD_CB_B * b0;
+        let cr = mct::ICT_FWD_CR_R * r0 + mct::ICT_FWD_CR_G * g0 + mct::ICT_FWD_CR_B * b0;
 
         *r = y;
         *g = cb;

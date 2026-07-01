@@ -14,22 +14,23 @@
 //! debug builds. libjpeg-turbo exhibits the same modular behavior in release.
 
 use core::num::Wrapping;
+use j2k_codec_math::jpeg::idct;
 
-const CONST_BITS: usize = 13;
-const PASS1_BITS: usize = 2;
+const CONST_BITS: usize = idct::CONST_BITS;
+const PASS1_BITS: usize = idct::PASS1_BITS;
 
-const FIX_0_298631336: Wrapping<i32> = Wrapping(2446);
-const FIX_0_390180644: Wrapping<i32> = Wrapping(3196);
-const FIX_0_541196100: Wrapping<i32> = Wrapping(4433);
-const FIX_0_765366865: Wrapping<i32> = Wrapping(6270);
-const FIX_0_899976223: Wrapping<i32> = Wrapping(7373);
-const FIX_1_175875602: Wrapping<i32> = Wrapping(9633);
-const FIX_1_501321110: Wrapping<i32> = Wrapping(12299);
-const FIX_1_847759065: Wrapping<i32> = Wrapping(15137);
-const FIX_1_961570560: Wrapping<i32> = Wrapping(16069);
-const FIX_2_053119869: Wrapping<i32> = Wrapping(16819);
-const FIX_2_562915447: Wrapping<i32> = Wrapping(20995);
-const FIX_3_072711026: Wrapping<i32> = Wrapping(25172);
+const FIX_0_298631336: Wrapping<i32> = Wrapping(idct::FIX_0_298631336);
+const FIX_0_390180644: Wrapping<i32> = Wrapping(idct::FIX_0_390180644);
+const FIX_0_541196100: Wrapping<i32> = Wrapping(idct::FIX_0_541196100);
+const FIX_0_765366865: Wrapping<i32> = Wrapping(idct::FIX_0_765366865);
+const FIX_0_899976223: Wrapping<i32> = Wrapping(idct::FIX_0_899976223);
+const FIX_1_175875602: Wrapping<i32> = Wrapping(idct::FIX_1_175875602);
+const FIX_1_501321110: Wrapping<i32> = Wrapping(idct::FIX_1_501321110);
+const FIX_1_847759065: Wrapping<i32> = Wrapping(idct::FIX_1_847759065);
+const FIX_1_961570560: Wrapping<i32> = Wrapping(idct::FIX_1_961570560);
+const FIX_2_053119869: Wrapping<i32> = Wrapping(idct::FIX_2_053119869);
+const FIX_2_562915447: Wrapping<i32> = Wrapping(idct::FIX_2_562915447);
+const FIX_3_072711026: Wrapping<i32> = Wrapping(idct::FIX_3_072711026);
 
 /// Inverse DCT of a single 8×8 block, with level shift and clamping.
 pub(crate) fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {

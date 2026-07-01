@@ -15,6 +15,7 @@ use crate::{
     HtCodeBlockDecoder, J2kIdwtBand, J2kRect, J2kSingleDecompositionIdwtJob, J2kWaveletTransform,
     Result,
 };
+use j2k_codec_math::dwt;
 
 /// The output from performing the IDWT operation.
 pub(crate) struct IDWTOutput {
@@ -1064,12 +1065,12 @@ fn reversible_filter_53r_i64(scanline: &mut [i64], width: usize, x0: usize) {
 /// The 1D Filter 9-7I procedure from F.3.8.2.
 fn irreversible_filter_97i(scanline: &mut [f32], width: usize, x0: usize) {
     // Table F.4.
-    const NEG_ALPHA: f32 = 1.586_134_3;
-    const NEG_BETA: f32 = 0.052_980_117;
-    const NEG_GAMMA: f32 = -0.882_911_1;
-    const NEG_DELTA: f32 = -0.443_506_87;
-    const KAPPA: f32 = 1.230_174_1;
-    const INV_KAPPA: f32 = 1.0 / KAPPA;
+    const NEG_ALPHA: f32 = dwt::IDWT97_NEG_ALPHA_F32;
+    const NEG_BETA: f32 = dwt::IDWT97_NEG_BETA_F32;
+    const NEG_GAMMA: f32 = dwt::IDWT97_NEG_GAMMA_F32;
+    const NEG_DELTA: f32 = dwt::IDWT97_NEG_DELTA_F32;
+    const KAPPA: f32 = dwt::DWT97_KAPPA_F32;
+    const INV_KAPPA: f32 = dwt::DWT97_INV_KAPPA_F32;
 
     let first_even = x0 % 2;
     let first_odd = 1 - first_even;
@@ -1411,13 +1412,13 @@ fn irreversible_filter_97i_simd<S: Simd>(
     width: usize,
     y0: usize,
 ) {
-    const NEG_ALPHA: f32 = 1.586_134_3;
-    const NEG_BETA: f32 = 0.052_980_117;
-    const NEG_GAMMA: f32 = -0.882_911_1;
-    const NEG_DELTA: f32 = -0.443_506_87;
-    const KAPPA: f32 = 1.230_174_1;
+    const NEG_ALPHA: f32 = dwt::IDWT97_NEG_ALPHA_F32;
+    const NEG_BETA: f32 = dwt::IDWT97_NEG_BETA_F32;
+    const NEG_GAMMA: f32 = dwt::IDWT97_NEG_GAMMA_F32;
+    const NEG_DELTA: f32 = dwt::IDWT97_NEG_DELTA_F32;
+    const KAPPA: f32 = dwt::DWT97_KAPPA_F32;
 
-    const INV_KAPPA: f32 = 1.0 / KAPPA;
+    const INV_KAPPA: f32 = dwt::DWT97_INV_KAPPA_F32;
 
     let neg_alpha = f32x8::splat(simd, NEG_ALPHA);
     let neg_beta = f32x8::splat(simd, NEG_BETA);

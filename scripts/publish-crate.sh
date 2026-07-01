@@ -8,6 +8,7 @@ publishable_crates=(
  j2k-core
  j2k-profile
  j2k-types
+ j2k-codec-math
  j2k-cuda-runtime
  j2k-metal-support
  j2k-native

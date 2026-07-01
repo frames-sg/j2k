@@ -556,6 +556,11 @@ pub fn j2k::view::J2kCodec::decode_tile(&mut j2k_core::context::DecoderContext<S
 pub fn j2k::view::J2kCodec::decode_tile_region(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect) -> core::result::Result<j2k_core::types::DecodeOutcome<Self::Warning>, Self::Error>
 pub fn j2k::view::J2kCodec::decode_tile_region_scaled(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<j2k_core::types::DecodeOutcome<Self::Warning>, Self::Error>
 pub fn j2k::view::J2kCodec::decode_tile_scaled(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale) -> core::result::Result<j2k_core::types::DecodeOutcome<Self::Warning>, Self::Error>
+pub struct j2k::J2kCodestreamPayload<'a>
+impl<'a> j2k::J2kCodestreamPayload<'a>
+pub const fn j2k::J2kCodestreamPayload<'a>::codestream(self) -> &'a [u8]
+pub const fn j2k::J2kCodestreamPayload<'a>::codestream_offset(self) -> usize
+pub const fn j2k::J2kCodestreamPayload<'a>::payload_kind(self) -> j2k_core::passthrough::CompressedPayloadKind
 pub struct j2k::J2kComponentInfo
 pub j2k::J2kComponentInfo::bit_depth: u8
 pub j2k::J2kComponentInfo::signed: bool
@@ -876,6 +881,7 @@ pub fn j2k::encode_j2k_lossless_with_roi_regions(j2k::J2kLosslessSamples<'_>, &j
 pub fn j2k::encode_j2k_lossy(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::error::J2kError>
 pub fn j2k::encode_j2k_lossy_with_accelerator(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions, j2k_core::backend::BackendKind, &mut impl j2k::adapter::encode_stage::J2kEncodeStageAccelerator) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::error::J2kError>
 pub fn j2k::encode_j2k_lossy_with_roi_regions(j2k::J2kLossySamples<'_>, &j2k::J2kLossyEncodeOptions, &[j2k::J2kRoiRegion]) -> core::result::Result<j2k::EncodedLossyJ2k, j2k::error::J2kError>
+pub fn j2k::extract_j2k_codestream_payload(&[u8]) -> core::result::Result<j2k::J2kCodestreamPayload<'_>, j2k::error::J2kError>
 pub fn j2k::j2k_lossless_decomposition_levels(j2k::J2kLosslessSamples<'_>) -> u8
 pub fn j2k::j2k_lossless_decomposition_levels_for_options(j2k::J2kLosslessSamples<'_>, j2k::J2kLosslessEncodeOptions) -> u8
 pub fn j2k::j2k_lossless_decomposition_levels_for_progression(j2k::J2kLosslessSamples<'_>, j2k::J2kProgressionOrder) -> u8
@@ -1882,6 +1888,67 @@ pub fn j2k_core::validate_strided_output_buffer((u32, u32), usize, usize, j2k_co
 pub type j2k_core::IndexedBatchResult<T, E> = (usize, core::result::Result<T, E>)
 ```
 
+## `j2k-codec-math`
+
+```text
+pub mod j2k_codec_math
+pub mod j2k_codec_math::dwt
+pub const j2k_codec_math::dwt::DWT97_ALPHA_F32: f32
+pub const j2k_codec_math::dwt::DWT97_ALPHA_F64: f64
+pub const j2k_codec_math::dwt::DWT97_BETA_F32: f32
+pub const j2k_codec_math::dwt::DWT97_BETA_F64: f64
+pub const j2k_codec_math::dwt::DWT97_DELTA_F32: f32
+pub const j2k_codec_math::dwt::DWT97_DELTA_F64: f64
+pub const j2k_codec_math::dwt::DWT97_GAMMA_F32: f32
+pub const j2k_codec_math::dwt::DWT97_GAMMA_F64: f64
+pub const j2k_codec_math::dwt::DWT97_INV_KAPPA_F32: f32
+pub const j2k_codec_math::dwt::DWT97_INV_KAPPA_F64: f64
+pub const j2k_codec_math::dwt::DWT97_KAPPA_F32: f32
+pub const j2k_codec_math::dwt::DWT97_KAPPA_F64: f64
+pub const j2k_codec_math::dwt::IDWT97_NEG_ALPHA_F32: f32
+pub const j2k_codec_math::dwt::IDWT97_NEG_BETA_F32: f32
+pub const j2k_codec_math::dwt::IDWT97_NEG_DELTA_F32: f32
+pub const j2k_codec_math::dwt::IDWT97_NEG_GAMMA_F32: f32
+pub mod j2k_codec_math::jpeg
+pub mod j2k_codec_math::jpeg::idct
+pub const j2k_codec_math::jpeg::idct::CONST_BITS: usize
+pub const j2k_codec_math::jpeg::idct::FIX_0_298631336: i32
+pub const j2k_codec_math::jpeg::idct::FIX_0_390180644: i32
+pub const j2k_codec_math::jpeg::idct::FIX_0_541196100: i32
+pub const j2k_codec_math::jpeg::idct::FIX_0_765366865: i32
+pub const j2k_codec_math::jpeg::idct::FIX_0_899976223: i32
+pub const j2k_codec_math::jpeg::idct::FIX_1_175875602: i32
+pub const j2k_codec_math::jpeg::idct::FIX_1_501321110: i32
+pub const j2k_codec_math::jpeg::idct::FIX_1_847759065: i32
+pub const j2k_codec_math::jpeg::idct::FIX_1_961570560: i32
+pub const j2k_codec_math::jpeg::idct::FIX_2_053119869: i32
+pub const j2k_codec_math::jpeg::idct::FIX_2_562915447: i32
+pub const j2k_codec_math::jpeg::idct::FIX_3_072711026: i32
+pub const j2k_codec_math::jpeg::idct::PASS1_BITS: usize
+pub mod j2k_codec_math::jpeg::ycbcr
+pub const j2k_codec_math::jpeg::ycbcr::FIX_0_34414: i32
+pub const j2k_codec_math::jpeg::ycbcr::FIX_0_71414: i32
+pub const j2k_codec_math::jpeg::ycbcr::FIX_1_40200: i32
+pub const j2k_codec_math::jpeg::ycbcr::FIX_1_77200: i32
+pub const j2k_codec_math::jpeg::ycbcr::ROUND: i32
+pub const j2k_codec_math::jpeg::ZIGZAG: [u8; 64]
+pub mod j2k_codec_math::mct
+pub const j2k_codec_math::mct::ICT_FWD_CB_B: f32
+pub const j2k_codec_math::mct::ICT_FWD_CB_G: f32
+pub const j2k_codec_math::mct::ICT_FWD_CB_R: f32
+pub const j2k_codec_math::mct::ICT_FWD_CR_B: f32
+pub const j2k_codec_math::mct::ICT_FWD_CR_G: f32
+pub const j2k_codec_math::mct::ICT_FWD_CR_R: f32
+pub const j2k_codec_math::mct::ICT_FWD_Y_B: f32
+pub const j2k_codec_math::mct::ICT_FWD_Y_G: f32
+pub const j2k_codec_math::mct::ICT_FWD_Y_R: f32
+pub const j2k_codec_math::mct::ICT_INV_B_CB: f32
+pub const j2k_codec_math::mct::ICT_INV_G_CB: f32
+pub const j2k_codec_math::mct::ICT_INV_G_CR: f32
+pub const j2k_codec_math::mct::ICT_INV_R_CR: f32
+pub const j2k_codec_math::mct::RCT_QUARTER: f32
+```
+
 ## `j2k-jpeg`
 
 ```text
@@ -2342,6 +2409,7 @@ pub mod j2k_jpeg::encoder
 pub enum j2k_jpeg::encoder::JpegBackend
 pub j2k_jpeg::encoder::JpegBackend::Auto
 pub j2k_jpeg::encoder::JpegBackend::Cpu
+pub j2k_jpeg::encoder::JpegBackend::Cuda
 pub j2k_jpeg::encoder::JpegBackend::Metal
 pub enum j2k_jpeg::encoder::JpegEncodeError
 pub j2k_jpeg::encoder::JpegEncodeError::DimensionsTooLarge
@@ -2773,6 +2841,7 @@ pub j2k_jpeg::HuffmanFailure::TableExhausted
 pub enum j2k_jpeg::JpegBackend
 pub j2k_jpeg::JpegBackend::Auto
 pub j2k_jpeg::JpegBackend::Cpu
+pub j2k_jpeg::JpegBackend::Cuda
 pub j2k_jpeg::JpegBackend::Metal
 pub enum j2k_jpeg::JpegDecodeOp
 pub j2k_jpeg::JpegDecodeOp::Full
@@ -4066,6 +4135,7 @@ pub j2k_jpeg_cuda::Error::CudaRuntime
 pub j2k_jpeg_cuda::Error::CudaRuntime::message: alloc::string::String
 pub j2k_jpeg_cuda::Error::CudaUnavailable
 pub j2k_jpeg_cuda::Error::Decode(j2k_jpeg::error::JpegError)
+pub j2k_jpeg_cuda::Error::Encode(j2k_jpeg::encoder::JpegEncodeError)
 pub j2k_jpeg_cuda::Error::UnsupportedBackend
 pub j2k_jpeg_cuda::Error::UnsupportedBackend::request: j2k_core::backend::BackendRequest
 pub j2k_jpeg_cuda::Error::UnsupportedCudaRequest
@@ -4078,6 +4148,7 @@ pub fn j2k_jpeg_cuda::Error::is_unsupported(&self) -> bool
 pub struct j2k_jpeg_cuda::Codec
 impl j2k_jpeg_cuda::Codec
 pub fn j2k_jpeg_cuda::Codec::decode_tile_rgb8_into_cuda_buffer_with_session(&[u8], &j2k_cuda_runtime::memory::CudaDeviceBuffer, usize, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<j2k_jpeg_cuda::CudaSurfaceStats, j2k_jpeg_cuda::Error>
+pub fn j2k_jpeg_cuda::Codec::decode_tiles_rgb8_into_cuda_buffers_with_session(&[j2k_jpeg_cuda::CudaJpegDecodeOutputTile<'_>], &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg_cuda::CudaSurfaceStats>, j2k_jpeg_cuda::Error>
 pub fn j2k_jpeg_cuda::Codec::decode_tiles_to_device_with_session(&[&[u8]], j2k_core::pixel::PixelFormat, j2k_core::backend::BackendRequest, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg_cuda::Surface>, j2k_jpeg_cuda::Error>
 pub fn j2k_jpeg_cuda::Codec::diagnose_tile_rgb8_chunked_entropy_with_session(&[u8], j2k_cuda_runtime::jpeg::CudaJpegChunkedEntropyConfig, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<j2k_cuda_runtime::jpeg::CudaJpegChunkedEntropyReport, j2k_jpeg_cuda::Error>
 impl j2k_core::traits::ImageCodec for j2k_jpeg_cuda::Codec
@@ -4100,6 +4171,10 @@ pub fn j2k_jpeg_cuda::Codec::submit_tile_region_scaled_to_device(&mut j2k_core::
 pub fn j2k_jpeg_cuda::Codec::submit_tile_region_to_device(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
 pub fn j2k_jpeg_cuda::Codec::submit_tile_scaled_to_device(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
 pub fn j2k_jpeg_cuda::Codec::submit_tile_to_device(&mut j2k_core::context::DecoderContext<Self::Context>, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::pixel::PixelFormat, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
+pub struct j2k_jpeg_cuda::CudaJpegDecodeOutputTile<'a>
+pub j2k_jpeg_cuda::CudaJpegDecodeOutputTile::input: &'a [u8]
+pub j2k_jpeg_cuda::CudaJpegDecodeOutputTile::output: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
+pub j2k_jpeg_cuda::CudaJpegDecodeOutputTile::pitch_bytes: usize
 pub struct j2k_jpeg_cuda::CudaSession
 impl j2k_jpeg_cuda::CudaSession
 pub fn j2k_jpeg_cuda::CudaSession::is_runtime_initialized(&self) -> bool
@@ -4154,6 +4229,15 @@ pub fn j2k_jpeg_cuda::Decoder<'a>::submit_region_scaled_to_device(&mut self, &mu
 pub fn j2k_jpeg_cuda::Decoder<'a>::submit_region_to_device(&mut self, &mut Self::Session, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
 pub fn j2k_jpeg_cuda::Decoder<'a>::submit_scaled_to_device(&mut self, &mut Self::Session, j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
 pub fn j2k_jpeg_cuda::Decoder<'a>::submit_to_device(&mut self, &mut Self::Session, j2k_core::pixel::PixelFormat, j2k_core::backend::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
+pub struct j2k_jpeg_cuda::JpegBaselineCudaEncodeTile<'a>
+pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::buffer: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
+pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::byte_offset: usize
+pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::format: j2k_core::pixel::PixelFormat
+pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::height: u32
+pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::output_height: u32
+pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::output_width: u32
+pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::pitch_bytes: usize
+pub j2k_jpeg_cuda::JpegBaselineCudaEncodeTile::width: u32
 pub struct j2k_jpeg_cuda::Surface
 impl j2k_jpeg_cuda::Surface
 pub fn j2k_jpeg_cuda::Surface::as_host_bytes(&self) -> core::option::Option<&[u8]>
@@ -4168,6 +4252,8 @@ pub fn j2k_jpeg_cuda::Surface::execution_stats(&self) -> j2k_core::accelerator::
 pub fn j2k_jpeg_cuda::Surface::memory_range(&self) -> core::option::Option<j2k_core::accelerator::DeviceMemoryRange>
 pub fn j2k_jpeg_cuda::Surface::pixel_format(&self) -> j2k_core::pixel::PixelFormat
 pub fn j2k_jpeg_cuda::Surface::residency(&self) -> j2k_core::accelerator::SurfaceResidency
+pub fn j2k_jpeg_cuda::encode_jpeg_baseline_batch_from_cuda_buffers(&[j2k_jpeg_cuda::JpegBaselineCudaEncodeTile<'_>], j2k_jpeg::encoder::JpegEncodeOptions, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::encoder::EncodedJpeg>, j2k_jpeg_cuda::Error>
+pub fn j2k_jpeg_cuda::encode_jpeg_baseline_from_cuda_buffer(j2k_jpeg_cuda::JpegBaselineCudaEncodeTile<'_>, j2k_jpeg::encoder::JpegEncodeOptions, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<j2k_jpeg::encoder::EncodedJpeg, j2k_jpeg_cuda::Error>
 ```
 
 ## `j2k-cuda`
@@ -4271,6 +4357,13 @@ pub j2k_cuda::CudaEncodeStageTimings::quantize_us: u128
 impl j2k_cuda::CudaEncodeStageTimings
 pub const fn j2k_cuda::CudaEncodeStageTimings::saturating_add(self, Self) -> Self
 pub const fn j2k_cuda::CudaEncodeStageTimings::total_us(self) -> u128
+pub struct j2k_cuda::CudaEncodedJ2k
+pub j2k_cuda::CudaEncodedJ2k::codestream: j2k_cuda::CudaResidentCodestreamBuffer
+pub j2k_cuda::CudaEncodedJ2k::encoded: j2k::encode::EncodedJ2k
+impl j2k_cuda::CudaEncodedJ2k
+pub fn j2k_cuda::CudaEncodedJ2k::codestream(&self) -> &j2k_cuda::CudaResidentCodestreamBuffer
+pub fn j2k_cuda::CudaEncodedJ2k::encoded(&self) -> &j2k::encode::EncodedJ2k
+pub fn j2k_cuda::CudaEncodedJ2k::into_parts(self) -> (j2k::encode::EncodedJ2k, j2k_cuda::CudaResidentCodestreamBuffer)
 #[repr(C)] pub struct j2k_cuda::CudaHtj2kCodeBlock
 pub j2k_cuda::CudaHtj2kCodeBlock::cleanup_length: u32
 pub j2k_cuda::CudaHtj2kCodeBlock::dequantization_step: f32
@@ -4388,6 +4481,10 @@ pub j2k_cuda::CudaHtj2kSubband::x0: u32
 pub j2k_cuda::CudaHtj2kSubband::x1: u32
 pub j2k_cuda::CudaHtj2kSubband::y0: u32
 pub j2k_cuda::CudaHtj2kSubband::y1: u32
+pub struct j2k_cuda::CudaLosslessBufferEncodeOutcome
+pub j2k_cuda::CudaLosslessBufferEncodeOutcome::codestream_upload_duration: core::time::Duration
+pub j2k_cuda::CudaLosslessBufferEncodeOutcome::encoded: j2k_cuda::CudaEncodedJ2k
+pub j2k_cuda::CudaLosslessBufferEncodeOutcome::host_outcome: j2k_cuda::CudaLosslessEncodeOutcome
 pub struct j2k_cuda::CudaLosslessEncodeOutcome
 pub j2k_cuda::CudaLosslessEncodeOutcome::encode_duration: core::time::Duration
 pub j2k_cuda::CudaLosslessEncodeOutcome::encoded: j2k::encode::EncodedJ2k
@@ -4411,6 +4508,12 @@ pub j2k_cuda::CudaLosslessEncodeTile::output_height: u32
 pub j2k_cuda::CudaLosslessEncodeTile::output_width: u32
 pub j2k_cuda::CudaLosslessEncodeTile::pitch_bytes: usize
 pub j2k_cuda::CudaLosslessEncodeTile::width: u32
+pub struct j2k_cuda::CudaResidentCodestreamBuffer
+impl j2k_cuda::CudaResidentCodestreamBuffer
+pub fn j2k_cuda::CudaResidentCodestreamBuffer::buffer(&self) -> &j2k_cuda_runtime::memory::CudaDeviceBuffer
+pub fn j2k_cuda::CudaResidentCodestreamBuffer::byte_len(&self) -> usize
+pub fn j2k_cuda::CudaResidentCodestreamBuffer::download(&self) -> core::result::Result<alloc::vec::Vec<u8>, j2k_cuda::Error>
+pub fn j2k_cuda::CudaResidentCodestreamBuffer::into_buffer(self) -> j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub struct j2k_cuda::CudaSession
 impl j2k_cuda::CudaSession
 pub fn j2k_cuda::CudaSession::is_runtime_initialized(&self) -> bool
@@ -4502,8 +4605,12 @@ pub fn j2k_cuda::Surface::residency(&self) -> j2k_core::accelerator::SurfaceResi
 pub fn j2k_cuda::encode_j2k_lossless_with_cuda(j2k::encode::J2kLosslessSamples<'_>, &j2k::encode::J2kLosslessEncodeOptions) -> core::result::Result<j2k::encode::EncodedJ2k, j2k_cuda::Error>
 pub fn j2k_cuda::encode_j2k_lossless_with_cuda_and_profile(j2k::encode::J2kLosslessSamples<'_>, &j2k::encode::J2kLosslessEncodeOptions) -> core::result::Result<(j2k::encode::EncodedJ2k, j2k_cuda::CudaHtj2kEncodeProfileReport), j2k_cuda::Error>
 pub fn j2k_cuda::encode_lossless_from_cuda_buffer(j2k_cuda::CudaLosslessEncodeTile<'_>, &j2k::encode::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<j2k::encode::EncodedJ2k, j2k_cuda::Error>
+pub fn j2k_cuda::encode_lossless_from_cuda_buffer_to_cuda_buffer(j2k_cuda::CudaLosslessEncodeTile<'_>, &j2k::encode::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<j2k_cuda::CudaEncodedJ2k, j2k_cuda::Error>
+pub fn j2k_cuda::encode_lossless_from_cuda_buffer_to_cuda_buffer_with_report(j2k_cuda::CudaLosslessEncodeTile<'_>, &j2k::encode::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<j2k_cuda::CudaLosslessBufferEncodeOutcome, j2k_cuda::Error>
 pub fn j2k_cuda::encode_lossless_from_cuda_buffer_with_report(j2k_cuda::CudaLosslessEncodeTile<'_>, &j2k::encode::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<j2k_cuda::CudaLosslessEncodeOutcome, j2k_cuda::Error>
 pub fn j2k_cuda::encode_lossless_from_cuda_buffers(&[j2k_cuda::CudaLosslessEncodeTile<'_>], &j2k::encode::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k::encode::EncodedJ2k>, j2k_cuda::Error>
+pub fn j2k_cuda::encode_lossless_from_cuda_buffers_to_cuda_buffers(&[j2k_cuda::CudaLosslessEncodeTile<'_>], &j2k::encode::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_cuda::CudaEncodedJ2k>, j2k_cuda::Error>
+pub fn j2k_cuda::encode_lossless_from_cuda_buffers_to_cuda_buffers_with_report(&[j2k_cuda::CudaLosslessEncodeTile<'_>], &j2k::encode::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_cuda::CudaLosslessBufferEncodeOutcome>, j2k_cuda::Error>
 pub fn j2k_cuda::encode_lossless_from_cuda_buffers_with_report(&[j2k_cuda::CudaLosslessEncodeTile<'_>], &j2k::encode::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_cuda::CudaLosslessEncodeOutcome>, j2k_cuda::Error>
 pub fn j2k_cuda::submit_lossless_from_cuda_buffer(j2k_cuda::CudaLosslessEncodeTile<'_>, &j2k::encode::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<j2k_cuda::SubmittedJ2kLosslessCudaEncode, j2k_cuda::Error>
 pub fn j2k_cuda::submit_lossless_from_cuda_buffers(&[j2k_cuda::CudaLosslessEncodeTile<'_>], &j2k::encode::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<j2k_cuda::SubmittedJ2kLosslessCudaEncodeBatch, j2k_cuda::Error>
@@ -4525,6 +4632,8 @@ pub use j2k_transcode::JpegToHtj2kEncodeOptions
 pub use j2k_transcode::JpegToHtj2kError
 pub use j2k_transcode::JpegToHtj2kOptions
 pub use j2k_transcode::JpegToHtj2kTranscoder
+pub use j2k_transcode::TranscodeBatchProfileRequest
+pub use j2k_transcode::TranscodeBatchProfileRow
 pub use j2k_transcode::TranscodeComponentReport
 pub use j2k_transcode::TranscodeReport
 pub use j2k_transcode::TranscodeTimingReport
@@ -5016,6 +5125,9 @@ pub j2k_metal_support::MetalSupportError::BufferBounds::buffer_len: usize
 pub j2k_metal_support::MetalSupportError::BufferBounds::byte_len: usize
 pub j2k_metal_support::MetalSupportError::BufferBounds::offset_bytes: usize
 pub j2k_metal_support::MetalSupportError::BufferContentsUnavailable
+pub j2k_metal_support::MetalSupportError::CommandBuffer
+pub j2k_metal_support::MetalSupportError::CommandBuffer::label: alloc::string::String
+pub j2k_metal_support::MetalSupportError::CommandBuffer::status: alloc::string::String
 pub j2k_metal_support::MetalSupportError::CommandQueue
 pub j2k_metal_support::MetalSupportError::CommandQueue::message: alloc::string::String
 pub j2k_metal_support::MetalSupportError::CommandQueueUnavailable
@@ -5055,11 +5167,13 @@ pub unsafe fn j2k_metal_support::buffer_contents_slice_mut<T: j2k_core::accelera
 pub fn j2k_metal_support::checked_buffer_contents_slice<T: j2k_core::accelerator::GpuAbi>(&metal::buffer::Buffer, usize, usize) -> core::result::Result<&[T], j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::checked_buffer_contents_slice_mut<T: j2k_core::accelerator::GpuAbi>(&mut metal::buffer::Buffer, usize, usize) -> core::result::Result<&mut [T], j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::checked_command_queue(&metal::device::Device) -> core::result::Result<metal::commandqueue::CommandQueue, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::commit_and_wait(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
 pub const fn j2k_metal_support::cpu_host_route() -> j2k_metal_support::MetalRouteProfileLabels
 pub fn j2k_metal_support::dispatch_1d_pipeline(&metal::encoder::ComputeCommandEncoderRef, &metal::pipeline::compute::ComputePipelineState, u64)
 pub fn j2k_metal_support::dispatch_2d_pipeline(&metal::encoder::ComputeCommandEncoderRef, &metal::pipeline::compute::ComputePipelineState, (u32, u32))
 pub fn j2k_metal_support::dispatch_3d_pipeline(&metal::encoder::ComputeCommandEncoderRef, &metal::pipeline::compute::ComputePipelineState, (u32, u32, u32))
 pub fn j2k_metal_support::dispatch_single_thread(&metal::encoder::ComputeCommandEncoderRef)
+pub fn j2k_metal_support::ensure_completed(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
 pub const fn j2k_metal_support::metal_kernel_route() -> j2k_metal_support::MetalRouteProfileLabels
 pub const fn j2k_metal_support::metal_unavailable_route() -> j2k_metal_support::MetalRouteProfileLabels
 pub const fn j2k_metal_support::mtl_size(u64, u64, u64) -> metal::types::MTLSize
@@ -5075,6 +5189,7 @@ pub fn j2k_metal_support::shared_buffer_with_bytes(&metal::device::Device, &[u8]
 pub fn j2k_metal_support::shared_buffer_with_slice<T: j2k_core::accelerator::GpuAbi>(&metal::device::Device, &[T]) -> metal::buffer::Buffer
 pub fn j2k_metal_support::system_default_device() -> core::result::Result<metal::device::Device, j2k_metal_support::MetalSupportError>
 pub const fn j2k_metal_support::two_d_threads_per_group(u64, u64) -> metal::types::MTLSize
+pub fn j2k_metal_support::wait_for_completion(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
 ```
 
 ## `j2k-transcode-metal`
@@ -6270,6 +6385,11 @@ pub j2k_cuda_runtime::CudaError::Unavailable
 pub j2k_cuda_runtime::CudaError::Unavailable::message: alloc::string::String
 impl j2k_cuda_runtime::CudaError
 pub fn j2k_cuda_runtime::CudaError::is_unavailable(&self) -> bool
+pub enum j2k_cuda_runtime::CudaJpegBaselineEncodeFormat
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeFormat::Gray8
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeFormat::Rgb8
+impl j2k_cuda_runtime::CudaJpegBaselineEncodeFormat
+pub fn j2k_cuda_runtime::CudaJpegBaselineEncodeFormat::abi(self) -> u32
 pub enum j2k_cuda_runtime::CudaJpegRgb8Sampling
 pub j2k_cuda_runtime::CudaJpegRgb8Sampling::Fast420
 pub j2k_cuda_runtime::CudaJpegRgb8Sampling::Fast422
@@ -6387,6 +6507,8 @@ pub fn j2k_cuda_runtime::CudaContext::decode_jpeg_420_rgb8_owned_into(&self, &j2
 pub fn j2k_cuda_runtime::CudaContext::decode_jpeg_rgb8_owned(&self, &j2k_cuda_runtime::CudaJpegRgb8DecodePlan<'_>) -> core::result::Result<j2k_cuda_runtime::CudaKernelOutput, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::decode_jpeg_rgb8_owned_into(&self, &j2k_cuda_runtime::CudaJpegRgb8DecodePlan<'_>, &j2k_cuda_runtime::CudaDeviceBuffer, usize) -> core::result::Result<j2k_cuda_runtime::CudaExecutionStats, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::diagnose_jpeg_420_entropy_self_sync(&self, &j2k_cuda_runtime::CudaJpegChunkedEntropyPlan<'_>) -> core::result::Result<j2k_cuda_runtime::CudaJpegChunkedEntropyReport, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaContext::encode_jpeg_baseline_entropy(&self, &j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob<'_>) -> core::result::Result<alloc::vec::Vec<u8>, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaContext::encode_jpeg_baseline_entropy_batch(&self, &j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob<'_>) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, j2k_cuda_runtime::CudaError>
 impl j2k_cuda_runtime::CudaContext
 pub fn j2k_cuda_runtime::CudaContext::encode_htj2k_codeblock(&self, &[i32], u32, u32, u8, j2k_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kEncodedCodeBlock, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::encode_htj2k_codeblock_regions_resident(&self, &j2k_cuda_runtime::CudaDeviceBuffer, usize, &[j2k_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob], j2k_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kEncodedCodeBlocks, j2k_cuda_runtime::CudaError>
@@ -6906,6 +7028,58 @@ pub j2k_cuda_runtime::CudaJpeg420Rgb8DecodePlan::mcus_per_row: u32
 pub j2k_cuda_runtime::CudaJpeg420Rgb8DecodePlan::y_ac_table: j2k_cuda_runtime::CudaJpegHuffmanTable
 pub j2k_cuda_runtime::CudaJpeg420Rgb8DecodePlan::y_dc_table: j2k_cuda_runtime::CudaJpegHuffmanTable
 pub j2k_cuda_runtime::CudaJpeg420Rgb8DecodePlan::y_quant: [u16; 64]
+#[repr(C)] pub struct j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable::codes: [u16; 256]
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable::lens: [u8; 256]
+impl core::default::Default for j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub fn j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable::default() -> Self
+impl j2k_core::accelerator::GpuAbi for j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub const j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable::NAME: &'static str
+#[repr(C)] pub struct j2k_cuda_runtime::CudaJpegBaselineEncodeParams
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::components: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::entropy_capacity: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::entropy_offset_bytes: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::format: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::h0: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::h1: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::h2: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::input_height: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::input_offset_bytes: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::input_width: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::max_h: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::max_v: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::mcu_rows: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::mcus_per_row: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::output_height: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::output_width: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::pitch_bytes: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::restart_interval_mcus: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::v0: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::v1: u32
+pub j2k_cuda_runtime::CudaJpegBaselineEncodeParams::v2: u32
+impl j2k_core::accelerator::GpuAbi for j2k_cuda_runtime::CudaJpegBaselineEncodeParams
+pub const j2k_cuda_runtime::CudaJpegBaselineEncodeParams::NAME: &'static str
+pub struct j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob<'a>
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob::entropy_capacity: usize
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob::huff_ac_chroma: j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob::huff_ac_luma: j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob::huff_dc_chroma: j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob::huff_dc_luma: j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob::input: &'a j2k_cuda_runtime::CudaDeviceBuffer
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob::params: alloc::vec::Vec<j2k_cuda_runtime::CudaJpegBaselineEncodeParams>
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob::q_chroma: [u8; 64]
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeBatchJob::q_luma: [u8; 64]
+pub struct j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob<'a>
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob::entropy_capacity: usize
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob::huff_ac_chroma: j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob::huff_ac_luma: j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob::huff_dc_chroma: j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob::huff_dc_luma: j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob::input: &'a j2k_cuda_runtime::CudaDeviceBuffer
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob::input_offset: usize
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob::params: j2k_cuda_runtime::CudaJpegBaselineEncodeParams
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob::q_chroma: [u8; 64]
+pub j2k_cuda_runtime::CudaJpegBaselineEntropyEncodeJob::q_luma: [u8; 64]
 pub struct j2k_cuda_runtime::CudaJpegChunkedEntropyConfig
 pub j2k_cuda_runtime::CudaJpegChunkedEntropyConfig::max_overflow_subsequences: u32
 pub j2k_cuda_runtime::CudaJpegChunkedEntropyConfig::sequence_len: u32

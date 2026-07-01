@@ -8,12 +8,12 @@
 use cuda_device::{SharedArray, kernel, thread};
 use cuda_host::cuda_module;
 
-const J2K_FDWT97_ALPHA: f32 = -1.5861343;
-const J2K_FDWT97_BETA: f32 = -0.052980117;
-const J2K_FDWT97_GAMMA: f32 = 0.8829111;
-const J2K_FDWT97_DELTA: f32 = 0.44350687;
-const J2K_FDWT97_KAPPA: f32 = 1.2301741;
-const J2K_FDWT97_INV_KAPPA: f32 = 1.0 / J2K_FDWT97_KAPPA;
+const J2K_FDWT97_ALPHA: f32 = j2k_codec_math::dwt::DWT97_ALPHA_F32;
+const J2K_FDWT97_BETA: f32 = j2k_codec_math::dwt::DWT97_BETA_F32;
+const J2K_FDWT97_GAMMA: f32 = j2k_codec_math::dwt::DWT97_GAMMA_F32;
+const J2K_FDWT97_DELTA: f32 = j2k_codec_math::dwt::DWT97_DELTA_F32;
+const J2K_FDWT97_KAPPA: f32 = j2k_codec_math::dwt::DWT97_KAPPA_F32;
+const J2K_FDWT97_INV_KAPPA: f32 = j2k_codec_math::dwt::DWT97_INV_KAPPA_F32;
 const J2K_HT_MEL_SIZE: u32 = 192;
 const J2K_HT_VLC_SIZE: u32 = 3072 - J2K_HT_MEL_SIZE;
 const J2K_HT_MS_SIZE: u32 = ((16384 * 16) + 14) / 15;

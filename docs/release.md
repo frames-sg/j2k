@@ -13,20 +13,21 @@ Publish in this order:
 1. `j2k-core`
 2. `j2k-profile`
 3. `j2k-types`
-4. `j2k-cuda-runtime`
-5. `j2k-metal-support`
-6. `j2k-native`
-7. `j2k-jpeg`
-8. `j2k-tilecodec`
-9. `j2k`
-10. `j2k-transcode`
-11. `j2k-transcode-cuda`
-12. `j2k-jpeg-metal`
-13. `j2k-metal`
-14. `j2k-transcode-metal`
-15. `j2k-jpeg-cuda`
-16. `j2k-cuda`
-17. `j2k-cli`
+4. `j2k-codec-math`
+5. `j2k-cuda-runtime`
+6. `j2k-metal-support`
+7. `j2k-native`
+8. `j2k-jpeg`
+9. `j2k-tilecodec`
+10. `j2k`
+11. `j2k-transcode`
+12. `j2k-transcode-cuda`
+13. `j2k-jpeg-metal`
+14. `j2k-metal`
+15. `j2k-transcode-metal`
+16. `j2k-jpeg-cuda`
+17. `j2k-cuda`
+18. `j2k-cli`
 
 Publish preflight must account for staged unpublished workspace dependencies.
 Use package listing and dry-run checks according to dependency availability:
@@ -42,11 +43,17 @@ strict dry-run publishing is blocked by unpublished workspace dependencies.
 Run this before publishing:
 
 ```bash
+cargo xtask codec-math-codegen
 cargo xtask release-integrity
 cargo xtask public-support --final
 ```
 
-The integrity gate parses cargo metadata, manifests, `.github/workflows/publish.yml`, and this release document. It fails if a publishable workspace crate is missing from publish order, docs.rs metadata, semver/doc gates, or release docs, or if a workspace crate is neither publishable nor explicitly `publish = false`.
+The codec-math codegen gate verifies generated Rust and Metal fragments against
+the Rust source of truth. The integrity gate parses cargo metadata, manifests,
+`.github/workflows/publish.yml`, and this release document. It fails if a
+publishable workspace crate is missing from publish order, docs.rs metadata,
+semver/doc gates, or release docs, or if a workspace crate is neither
+publishable nor explicitly `publish = false`.
 
 The public-support gate verifies that the JPEG 2000 Part 1, JP2, HTJ2K Part 15,
 JPH, known-limitation, and publication-gate rows remain synchronized with tests
@@ -60,6 +67,8 @@ Hosted CI must pass before release staging:
 - formatting
 - tests
 - clippy
+- panic-surface ratchet via `cargo xtask panic-surface`
+- codec math fragment freshness via `cargo xtask codec-math-codegen`
 - release integrity
 - package validation
 - semver checks for stable packages
@@ -71,6 +80,11 @@ Hosted CI must pass before release staging:
 
 Metal runtime validation runs on macOS where available. J2K Metal Criterion
 bench signoff is reset until new narrow profiling benches are added.
+
+Rust currently reports a future-incompatibility warning for transitive
+`block v0.1.6` through `metal v0.33.0`. Track this as Metal dependency debt
+until upstream `metal` removes or updates the dependency; do not downgrade,
+fork, or silence it without a replacement path and release note.
 
 CUDA validation requires a self-hosted CUDA environment for runtime and NVIDIA performance evidence. CUDA paths use J2K-owned CUDA kernels, cuda-runtime integration, and CUDA device memory surfaces for supported shapes. NVIDIA performance claims require recorded self-hosted benchmark output.
 
