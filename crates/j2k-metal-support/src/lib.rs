@@ -8,6 +8,7 @@ use core::fmt;
 
 /// Stable profile labels for a Metal backend route decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MetalRouteProfileLabels {
     /// Route decision label emitted in GPU route profiles.
     pub decision: &'static str,

@@ -9,14 +9,15 @@ use super::MetalLosslessBufferEncodeOutcome;
 
 /// Optional resident Metal encode stage timings.
 ///
-/// API note: this diagnostic report is constructed by this crate. It is not
-/// `#[non_exhaustive]`, but adapter releases may add diagnostic fields as the
-/// resident encode path gains more profiling detail.
+/// API note: this diagnostic report is constructed by this crate. Adapter
+/// releases may add diagnostic fields as the resident encode path gains more
+/// profiling detail.
 ///
 /// Unless a field explicitly says otherwise, timing fields are host-side
 /// `Instant` buckets for RCA and should not be read as exact GPU execution
 /// elapsed time.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MetalLosslessEncodeStageStats {
     /// Time spent planning the resident encode batch.
     pub plan_duration: Duration,
@@ -479,6 +480,12 @@ macro_rules! stage_stat_from_resident {
 macro_rules! j2k_metal_stage_stats_impls {
     ($(($field:ident, $class:ident, $source:ident)),* $(,)?) => {
         impl MetalLosslessEncodeStageStats {
+            /// Create an empty stage timing report.
+            #[must_use]
+            pub fn new() -> Self {
+                Self::default()
+            }
+
             /// Return whether any non-zero timing was recorded.
             pub fn has_timings(&self) -> bool {
                 let mut any = false;
@@ -682,6 +689,7 @@ pub(super) fn add_resident_prep_wall_duration(
 
 /// Resolved resident Metal lossless J2K/HTJ2K tile batch encode metrics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MetalLosslessEncodeBatchStats {
     /// Caller-requested maximum number of in-flight tiles.
     pub configured_inflight_tiles: Option<usize>,
@@ -699,6 +707,14 @@ pub struct MetalLosslessEncodeBatchStats {
     pub encode_wall_duration: Duration,
     /// Resident encode stage timing summary.
     pub stage_stats: MetalLosslessEncodeStageStats,
+}
+
+impl MetalLosslessEncodeBatchStats {
+    /// Create an empty batch metrics report.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 /// Resident Metal lossless J2K/HTJ2K tile batch output and batch-level metrics.

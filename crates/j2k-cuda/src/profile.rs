@@ -18,6 +18,7 @@ thread_local! {
 
 /// Detailed route-overhead timings for strict CUDA HTJ2K decode.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CudaHtj2kDecodeProfileDetail {
     /// End-to-end profiled decode wall time.
     pub wall_total_us: u128,
@@ -49,8 +50,17 @@ pub struct CudaHtj2kDecodeProfileDetail {
     pub store_dispatch_count: usize,
 }
 
+impl CudaHtj2kDecodeProfileDetail {
+    /// Create an empty decode profile detail.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// Structured stage timings for a strict CUDA HTJ2K operation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CudaHtj2kProfileReport {
     /// CPU marker/box parse time.
     pub parse_us: u128,
@@ -89,6 +99,12 @@ pub struct CudaHtj2kProfileReport {
 }
 
 impl CudaHtj2kProfileReport {
+    /// Create an empty decode profile report.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Emit the report using `J2K_PROFILE_STAGES`, when enabled.
     pub fn emit(&self, path: &str) {
         emit_htj2k_profile_row(path, self);
@@ -98,6 +114,7 @@ impl CudaHtj2kProfileReport {
 
 /// Structured stage timings for a strict CUDA HTJ2K encode operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CudaHtj2kEncodeProfileReport {
     /// Pixel deinterleave and level-shift CUDA stage time.
     pub deinterleave_us: u128,
@@ -145,6 +162,12 @@ impl Default for CudaHtj2kEncodeProfileReport {
 }
 
 impl CudaHtj2kEncodeProfileReport {
+    /// Create an empty encode profile report.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Emit the report using `J2K_PROFILE_STAGES`, when enabled.
     pub fn emit(&self, path: &str) {
         emit_htj2k_encode_profile_row(path, self);

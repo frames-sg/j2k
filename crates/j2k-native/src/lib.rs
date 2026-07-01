@@ -1258,6 +1258,7 @@ pub fn decode_j2k_code_block_scalar_with_workspace(
 
 /// Adapter scalar classic J2K pass timings for backend experimentation.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct J2kCodeBlockDecodeProfile {
     /// Significance propagation pass elapsed time in microseconds.
     pub sigprop_us: u128,
@@ -1272,6 +1273,12 @@ pub struct J2kCodeBlockDecodeProfile {
 }
 
 impl J2kCodeBlockDecodeProfile {
+    /// Create an empty profile accumulator.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     fn add_native_stats(&mut self, stats: j2c::bitplane::J2kBlockDecodeStats) {
         self.sigprop_us += stats.sigprop_us;
         self.magref_us += stats.magref_us;
@@ -1466,6 +1473,7 @@ impl HtCodeBlockDecodeWorkspace {
 
 /// Adapter scalar HTJ2K phase timings for backend experimentation.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HtCodeBlockDecodeProfile {
     /// Number of decoded HT code blocks.
     pub blocks: u128,
@@ -1488,6 +1496,12 @@ pub struct HtCodeBlockDecodeProfile {
 }
 
 impl HtCodeBlockDecodeProfile {
+    /// Create an empty profile accumulator.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     fn add_native_stats(&mut self, stats: j2c::ht_block_decode::HtBlockDecodeStats) {
         self.blocks += stats.blocks;
         self.refinement_blocks += stats.refinement_blocks;

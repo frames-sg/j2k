@@ -3882,7 +3882,7 @@ pub struct j2k_metal::MetalLosslessEncodeBatchRequest<'a, 'b>
 pub j2k_metal::MetalLosslessEncodeBatchRequest::config: j2k_metal::MetalLosslessEncodeConfig
 pub j2k_metal::MetalLosslessEncodeBatchRequest::staging: j2k_metal::MetalEncodeInputStaging
 pub j2k_metal::MetalLosslessEncodeBatchRequest::tiles: &'a [j2k_metal::MetalLosslessEncodeTile<'b>]
-pub struct j2k_metal::MetalLosslessEncodeBatchStats
+#[non_exhaustive] pub struct j2k_metal::MetalLosslessEncodeBatchStats
 pub j2k_metal::MetalLosslessEncodeBatchStats::configured_inflight_tiles: core::option::Option<usize>
 pub j2k_metal::MetalLosslessEncodeBatchStats::configured_memory_budget_bytes: core::option::Option<usize>
 pub j2k_metal::MetalLosslessEncodeBatchStats::effective_inflight_tiles: usize
@@ -3891,6 +3891,8 @@ pub j2k_metal::MetalLosslessEncodeBatchStats::encode_wall_duration: core::time::
 pub j2k_metal::MetalLosslessEncodeBatchStats::estimated_peak_bytes_per_tile: usize
 pub j2k_metal::MetalLosslessEncodeBatchStats::max_observed_inflight_tiles: usize
 pub j2k_metal::MetalLosslessEncodeBatchStats::stage_stats: j2k_metal::MetalLosslessEncodeStageStats
+impl j2k_metal::MetalLosslessEncodeBatchStats
+pub fn j2k_metal::MetalLosslessEncodeBatchStats::new() -> Self
 pub struct j2k_metal::MetalLosslessEncodeConfig
 pub j2k_metal::MetalLosslessEncodeConfig::gpu_encode_inflight_tiles: core::option::Option<usize>
 pub j2k_metal::MetalLosslessEncodeConfig::gpu_encode_memory_budget_bytes: core::option::Option<usize>
@@ -3907,7 +3909,7 @@ pub struct j2k_metal::MetalLosslessEncodeResidency
 pub j2k_metal::MetalLosslessEncodeResidency::codestream_assembly_used: bool
 pub j2k_metal::MetalLosslessEncodeResidency::coefficient_prep_used: bool
 pub j2k_metal::MetalLosslessEncodeResidency::packetization_used: bool
-pub struct j2k_metal::MetalLosslessEncodeStageStats
+#[non_exhaustive] pub struct j2k_metal::MetalLosslessEncodeStageStats
 pub j2k_metal::MetalLosslessEncodeStageStats::chunk_count: usize
 pub j2k_metal::MetalLosslessEncodeStageStats::classic_block_encode_duration: core::time::Duration
 pub j2k_metal::MetalLosslessEncodeStageStats::classic_block_gpu_duration: core::time::Duration
@@ -4057,6 +4059,7 @@ pub j2k_metal::MetalLosslessEncodeStageStats::tile_count: usize
 impl j2k_metal::MetalLosslessEncodeStageStats
 pub fn j2k_metal::MetalLosslessEncodeStageStats::add_assign(&mut self, Self)
 pub fn j2k_metal::MetalLosslessEncodeStageStats::has_timings(&self) -> bool
+pub fn j2k_metal::MetalLosslessEncodeStageStats::new() -> Self
 pub struct j2k_metal::MetalLosslessEncodeTile<'a>
 pub j2k_metal::MetalLosslessEncodeTile::buffer: &'a metal::buffer::Buffer
 pub j2k_metal::MetalLosslessEncodeTile::byte_offset: usize
@@ -4393,7 +4396,7 @@ pub fn j2k_cuda::CudaHtj2kDecodePlan::payload(&self) -> &[u8]
 pub fn j2k_cuda::CudaHtj2kDecodePlan::store_steps(&self) -> &[j2k_cuda::CudaHtj2kStoreStep]
 pub fn j2k_cuda::CudaHtj2kDecodePlan::subbands(&self) -> &[j2k_cuda::CudaHtj2kSubband]
 pub fn j2k_cuda::CudaHtj2kDecodePlan::transform(&self) -> j2k_cuda::CudaHtj2kTransform
-pub struct j2k_cuda::CudaHtj2kDecodeProfileDetail
+#[non_exhaustive] pub struct j2k_cuda::CudaHtj2kDecodeProfileDetail
 pub j2k_cuda::CudaHtj2kDecodeProfileDetail::dequant_dispatch_count: usize
 pub j2k_cuda::CudaHtj2kDecodeProfileDetail::ht_dispatch_count: usize
 pub j2k_cuda::CudaHtj2kDecodeProfileDetail::idwt_dispatch_count: usize
@@ -4406,7 +4409,9 @@ pub j2k_cuda::CudaHtj2kDecodeProfileDetail::status_d2h_us: u128
 pub j2k_cuda::CudaHtj2kDecodeProfileDetail::store_dispatch_count: usize
 pub j2k_cuda::CudaHtj2kDecodeProfileDetail::table_upload_us: u128
 pub j2k_cuda::CudaHtj2kDecodeProfileDetail::wall_total_us: u128
-pub struct j2k_cuda::CudaHtj2kEncodeProfileReport
+impl j2k_cuda::CudaHtj2kDecodeProfileDetail
+pub fn j2k_cuda::CudaHtj2kDecodeProfileDetail::new() -> Self
+#[non_exhaustive] pub struct j2k_cuda::CudaHtj2kEncodeProfileReport
 pub j2k_cuda::CudaHtj2kEncodeProfileReport::backend: j2k_core::backend::BackendKind
 pub j2k_cuda::CudaHtj2kEncodeProfileReport::block_count: usize
 pub j2k_cuda::CudaHtj2kEncodeProfileReport::codestream_bytes: usize
@@ -4421,6 +4426,7 @@ pub j2k_cuda::CudaHtj2kEncodeProfileReport::quantize_us: u128
 pub j2k_cuda::CudaHtj2kEncodeProfileReport::total_us: u128
 impl j2k_cuda::CudaHtj2kEncodeProfileReport
 pub fn j2k_cuda::CudaHtj2kEncodeProfileReport::emit(&self, &str)
+pub fn j2k_cuda::CudaHtj2kEncodeProfileReport::new() -> Self
 impl core::default::Default for j2k_cuda::CudaHtj2kEncodeProfileReport
 pub fn j2k_cuda::CudaHtj2kEncodeProfileReport::default() -> Self
 #[repr(C)] pub struct j2k_cuda::CudaHtj2kIdwtStep
@@ -4435,7 +4441,7 @@ pub j2k_cuda::CudaHtj2kIdwtStep::ll_rect: j2k_cuda::CudaHtj2kRect
 pub j2k_cuda::CudaHtj2kIdwtStep::output_band_id: j2k_cuda::CudaHtj2kBandId
 pub j2k_cuda::CudaHtj2kIdwtStep::rect: j2k_cuda::CudaHtj2kRect
 pub j2k_cuda::CudaHtj2kIdwtStep::transform: j2k_cuda::CudaHtj2kTransform
-pub struct j2k_cuda::CudaHtj2kProfileReport
+#[non_exhaustive] pub struct j2k_cuda::CudaHtj2kProfileReport
 pub j2k_cuda::CudaHtj2kProfileReport::block_count: usize
 pub j2k_cuda::CudaHtj2kProfileReport::dequant_us: u128
 pub j2k_cuda::CudaHtj2kProfileReport::detail: j2k_cuda::CudaHtj2kDecodeProfileDetail
@@ -4454,6 +4460,7 @@ pub j2k_cuda::CudaHtj2kProfileReport::store_us: u128
 pub j2k_cuda::CudaHtj2kProfileReport::total_us: u128
 impl j2k_cuda::CudaHtj2kProfileReport
 pub fn j2k_cuda::CudaHtj2kProfileReport::emit(&self, &str)
+pub fn j2k_cuda::CudaHtj2kProfileReport::new() -> Self
 #[repr(C)] pub struct j2k_cuda::CudaHtj2kRect
 pub j2k_cuda::CudaHtj2kRect::x0: u32
 pub j2k_cuda::CudaHtj2kRect::x1: u32
@@ -5157,7 +5164,7 @@ impl j2k_metal_support::MetalPipelineLoader
 pub fn j2k_metal_support::MetalPipelineLoader::library(&self) -> &metal::library::Library
 pub fn j2k_metal_support::MetalPipelineLoader::new(&metal::device::Device, &str) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::MetalPipelineLoader::pipeline(&self, &str) -> core::result::Result<metal::pipeline::compute::ComputePipelineState, j2k_metal_support::MetalSupportError>
-pub struct j2k_metal_support::MetalRouteProfileLabels
+#[non_exhaustive] pub struct j2k_metal_support::MetalRouteProfileLabels
 pub j2k_metal_support::MetalRouteProfileLabels::decision: &'static str
 pub j2k_metal_support::MetalRouteProfileLabels::reason: &'static str
 impl j2k_metal_support::MetalRouteProfileLabels
@@ -5702,7 +5709,7 @@ pub j2k_native::HtCodeBlockDecodeJob::roi_shift: u8
 pub j2k_native::HtCodeBlockDecodeJob::strict: bool
 pub j2k_native::HtCodeBlockDecodeJob::stripe_causal: bool
 pub j2k_native::HtCodeBlockDecodeJob::width: u32
-pub struct j2k_native::HtCodeBlockDecodeProfile
+#[non_exhaustive] pub struct j2k_native::HtCodeBlockDecodeProfile
 pub j2k_native::HtCodeBlockDecodeProfile::blocks: u128
 pub j2k_native::HtCodeBlockDecodeProfile::cleanup_bytes: u128
 pub j2k_native::HtCodeBlockDecodeProfile::cleanup_us: u128
@@ -5712,6 +5719,8 @@ pub j2k_native::HtCodeBlockDecodeProfile::refinement_blocks: u128
 pub j2k_native::HtCodeBlockDecodeProfile::refinement_bytes: u128
 pub j2k_native::HtCodeBlockDecodeProfile::sigma_us: u128
 pub j2k_native::HtCodeBlockDecodeProfile::sigprop_us: u128
+impl j2k_native::HtCodeBlockDecodeProfile
+pub fn j2k_native::HtCodeBlockDecodeProfile::new() -> Self
 pub struct j2k_native::HtCodeBlockDecodeWorkspace
 impl j2k_native::HtCodeBlockDecodeWorkspace
 pub fn j2k_native::HtCodeBlockDecodeWorkspace::coefficient_capacity(&self) -> usize
@@ -5801,12 +5810,14 @@ pub j2k_native::J2kCodeBlockDecodeJob::style: j2k_types::J2kCodeBlockStyle
 pub j2k_native::J2kCodeBlockDecodeJob::sub_band_type: j2k_types::J2kSubBandType
 pub j2k_native::J2kCodeBlockDecodeJob::total_bitplanes: u8
 pub j2k_native::J2kCodeBlockDecodeJob::width: u32
-pub struct j2k_native::J2kCodeBlockDecodeProfile
+#[non_exhaustive] pub struct j2k_native::J2kCodeBlockDecodeProfile
 pub j2k_native::J2kCodeBlockDecodeProfile::bypass_us: u128
 pub j2k_native::J2kCodeBlockDecodeProfile::cleanup_us: u128
 pub j2k_native::J2kCodeBlockDecodeProfile::magref_us: u128
 pub j2k_native::J2kCodeBlockDecodeProfile::output_convert_us: u128
 pub j2k_native::J2kCodeBlockDecodeProfile::sigprop_us: u128
+impl j2k_native::J2kCodeBlockDecodeProfile
+pub fn j2k_native::J2kCodeBlockDecodeProfile::new() -> Self
 pub struct j2k_native::J2kCodeBlockDecodeWorkspace
 pub struct j2k_native::J2kCodestreamComponentHeader
 pub j2k_native::J2kCodestreamComponentHeader::bit_depth: u8
