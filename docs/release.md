@@ -78,6 +78,15 @@ Hosted CI must pass before release staging:
 - bounded fuzz run
 - coverage via `cargo llvm-cov --fail-under-lines 80`
 
+Benchmark compilation is a release build-health gate, not a performance
+regression threshold. A release may claim performance only when the relevant
+CPU, Metal, or CUDA benchmark artifacts are recorded in
+[`docs/benchmark-evidence.md`](benchmark-evidence.md) or an attached run
+bundle. `cargo xtask j2k-perf-guard` is available for explicit CPU Criterion
+median regression signoff, but it is not part of the default release gate until
+the release checklist supplies a baseline ref and artifact retention policy.
+GPU performance signoff remains hardware-runner evidence, not hosted CI.
+
 Metal runtime validation runs on macOS where available. J2K Metal Criterion
 bench signoff is reset until new narrow profiling benches are added.
 
