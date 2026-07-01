@@ -8,9 +8,10 @@ use crate::{batch, Error};
 use super::{
     checked_u32, fast444_scaled_region_params, fast_subsampled_full_mcu_scaled_window,
     fast_subsampled_scaled_params, fast_subsampled_scaled_region_params,
-    fast_subsampled_windowed_pack_params_for_dims, FastSubsampledMetal, FastSubsampledPacket,
-    JpegFast444ScaledParams, JpegFastRegionScaledBatchParams, JpegWindowedPackBatchParams,
-    JpegWindowedTexturePackBatchParams, PlaneMode, MODE_YCBCR, OUT_RGB,
+    fast_subsampled_windowed_pack_params_for_dims, FastPacketAccess, FastSubsampledMetal,
+    FastSubsampledPacket, JpegFast444ScaledParams, JpegFastRegionScaledBatchParams,
+    JpegWindowedPackBatchParams, JpegWindowedTexturePackBatchParams, PlaneMode, MODE_YCBCR,
+    OUT_RGB,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -40,12 +41,13 @@ pub(super) fn windowed_texture_pack_params(
     }
 }
 
-pub(super) fn fast_subsampled_packets_share_full_rgb_batch_shape<P: FastSubsampledPacket>(
+fn fast_packets_share_batch_shape<P: FastPacketAccess>(
     first: &P,
     packet: &P,
     segment_count: usize,
+    restart_packets_supported: bool,
 ) -> bool {
-    (P::FULL_RGB_BATCH_SUPPORTS_RESTART || packet.restart_interval_mcus() == 0)
+    (restart_packets_supported || packet.restart_interval_mcus() == 0)
         && packet.dimensions() == first.dimensions()
         && packet.mcus_per_row() == first.mcus_per_row()
         && packet.mcu_rows() == first.mcu_rows()
@@ -61,22 +63,43 @@ pub(super) fn fast_subsampled_packets_share_full_rgb_batch_shape<P: FastSubsampl
         && packet.cr_ac_table() == first.cr_ac_table()
 }
 
-pub(super) fn fast_subsampled_full_rgb_batch_groups<P: FastSubsampledPacket>(
-    packets: &[&P],
-) -> Option<Vec<Vec<usize>>> {
+pub(super) fn fast_subsampled_packets_share_full_rgb_batch_shape<P: FastSubsampledPacket>(
+    first: &P,
+    packet: &P,
+    segment_count: usize,
+) -> bool {
+    fast_packets_share_batch_shape(
+        first,
+        packet,
+        segment_count,
+        P::FULL_RGB_BATCH_SUPPORTS_RESTART,
+    )
+}
+
+fn fast_full_rgb_batch_groups<P, K>(
+    packets: &[(&P, K)],
+    restart_packets_supported: bool,
+) -> Option<Vec<Vec<usize>>>
+where
+    P: FastPacketAccess,
+    K: Copy + Eq,
+{
     let mut groups = Vec::<Vec<usize>>::new();
-    'packet: for (index, packet) in packets.iter().copied().enumerate() {
+    'packet: for (index, (packet, key)) in packets.iter().copied().enumerate() {
         if packet.entropy_bytes().is_empty() || packet.entropy_checkpoints().is_empty() {
             return None;
         }
 
         for group in &mut groups {
-            let first = packets[group[0]];
-            if fast_subsampled_packets_share_full_rgb_batch_shape(
-                first,
-                packet,
-                first.entropy_checkpoints().len(),
-            ) {
+            let (first, first_key) = packets[group[0]];
+            if key == first_key
+                && fast_packets_share_batch_shape(
+                    first,
+                    packet,
+                    first.entropy_checkpoints().len(),
+                    restart_packets_supported,
+                )
+            {
                 group.push(index);
                 continue 'packet;
             }
@@ -84,6 +107,13 @@ pub(super) fn fast_subsampled_full_rgb_batch_groups<P: FastSubsampledPacket>(
         groups.push(vec![index]);
     }
     Some(groups)
+}
+
+pub(super) fn fast_subsampled_full_rgb_batch_groups<P: FastSubsampledPacket>(
+    packets: &[&P],
+) -> Option<Vec<Vec<usize>>> {
+    let keyed_packets: Vec<(&P, ())> = packets.iter().copied().map(|packet| (packet, ())).collect();
+    fast_full_rgb_batch_groups(&keyed_packets, P::FULL_RGB_BATCH_SUPPORTS_RESTART)
 }
 
 pub(super) fn fast_subsampled_region_scaled_batch_plan<P: FastSubsampledPacket>(
@@ -225,50 +255,13 @@ pub(super) fn fast444_packets_share_region_scaled_batch_shape(
     packet: &JpegFast444PacketV1,
     segment_count: usize,
 ) -> bool {
-    packet.restart_interval_mcus == 0
-        && packet.dimensions == first.dimensions
-        && packet.mcus_per_row == first.mcus_per_row
-        && packet.mcu_rows == first.mcu_rows
-        && packet.entropy_checkpoints.len() == segment_count
-        && packet.y_quant == first.y_quant
-        && packet.cb_quant == first.cb_quant
-        && packet.cr_quant == first.cr_quant
-        && packet.y_dc_table == first.y_dc_table
-        && packet.y_ac_table == first.y_ac_table
-        && packet.cb_dc_table == first.cb_dc_table
-        && packet.cb_ac_table == first.cb_ac_table
-        && packet.cr_dc_table == first.cr_dc_table
-        && packet.cr_ac_table == first.cr_ac_table
+    fast_packets_share_batch_shape(first, packet, segment_count, false)
 }
 
 pub(super) fn fast444_full_rgb_batch_groups(
     packets: &[(&JpegFast444PacketV1, PlaneMode)],
 ) -> Option<Vec<Vec<usize>>> {
-    let mut groups = Vec::<Vec<usize>>::new();
-    'packet: for (index, (packet, mode)) in packets.iter().copied().enumerate() {
-        if packet.restart_interval_mcus != 0
-            || packet.entropy_bytes.is_empty()
-            || packet.entropy_checkpoints.is_empty()
-        {
-            return None;
-        }
-
-        for group in &mut groups {
-            let (first, first_mode) = packets[group[0]];
-            if mode == first_mode
-                && fast444_packets_share_region_scaled_batch_shape(
-                    first,
-                    packet,
-                    first.entropy_checkpoints.len(),
-                )
-            {
-                group.push(index);
-                continue 'packet;
-            }
-        }
-        groups.push(vec![index]);
-    }
-    Some(groups)
+    fast_full_rgb_batch_groups(packets, false)
 }
 
 struct Fast444RegionScaledGroup {
