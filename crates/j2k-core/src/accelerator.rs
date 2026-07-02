@@ -115,25 +115,6 @@ pub trait AcceleratorSession {
     }
 }
 
-/// Backend failure class used before mapping into codec-specific errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BackendFailureKind {
-    /// Requested backend is not available on this host or build.
-    Unavailable,
-    /// Request shape is outside the backend implementation.
-    Unsupported,
-    /// Runtime/device/queue/context setup failed.
-    Runtime,
-    /// Kernel or shader execution failed.
-    Kernel,
-    /// Backend state lock or session state was poisoned.
-    StatePoisoned,
-    /// Backend rejected malformed caller input.
-    InvalidInput,
-    /// Backend allocation failed.
-    OutOfMemory,
-}
-
 /// Marker trait for host-side values whose memory layout is part of a GPU ABI.
 ///
 /// # Safety

@@ -40,8 +40,7 @@ pub mod traits;
 pub mod types;
 
 pub use accelerator::{
-    AcceleratorSession, BackendFailureKind, DeviceMemoryRange, ExecutionStats, GpuAbi,
-    SurfaceResidency,
+    AcceleratorSession, DeviceMemoryRange, ExecutionStats, GpuAbi, SurfaceResidency,
 };
 pub use backend::{BackendCapabilities, BackendKind, BackendRequest, CpuFeatures};
 pub use batch::{
@@ -71,6 +70,4 @@ pub use traits::{
     ReadySubmission, TileBatchDecode, TileBatchDecodeDevice, TileBatchDecodeManyDevice,
     TileBatchDecodeSubmit, TileDecompress,
 };
-pub use types::{
-    CodedUnitLayout, Colorspace, DecodeOutcome, DecodeRequest, Info, Rect, TileLayout, WarningKind,
-};
+pub use types::{CodedUnitLayout, Colorspace, DecodeOutcome, Info, Rect, TileLayout};

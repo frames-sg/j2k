@@ -12,7 +12,7 @@ use crate::{
     sample::Sample,
     scale::Downscale,
     scratch::ScratchPool,
-    types::{DecodeOutcome, DecodeRequest, Info, Rect},
+    types::{DecodeOutcome, Info, Rect},
 };
 
 /// Error wrapper used by row-streaming decode when either the codec or the
@@ -173,25 +173,6 @@ pub trait ImageDecode<'a>: ImageCodec + Sized + 'a {
         roi: Rect,
         scale: Downscale,
     ) -> Result<DecodeOutcome<Self::Warning>, Self::Error>;
-
-    /// Decode a normalized full/ROI/scaled request into caller-owned output.
-    fn decode_request_into(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        request: DecodeRequest,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        match (request.roi, request.scale) {
-            (None, Downscale::None) => self.decode_into_with_scratch(pool, out, stride, fmt),
-            (Some(roi), Downscale::None) => self.decode_region_into(pool, out, stride, fmt, roi),
-            (None, scale) => self.decode_scaled_into(pool, out, stride, fmt, scale),
-            (Some(roi), scale) => {
-                self.decode_region_scaled_into(pool, out, stride, fmt, roi, scale)
-            }
-        }
-    }
 }
 
 /// Decode API for implementations that can submit work to a device backend.
@@ -238,26 +219,6 @@ pub trait ImageDecodeSubmit<'a>: ImageDecode<'a> {
         scale: Downscale,
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error>;
-
-    /// Submit a normalized full/ROI/scaled decode request to a device backend.
-    fn submit_request_to_device(
-        &mut self,
-        session: &mut Self::Session,
-        fmt: PixelFormat,
-        backend: BackendRequest,
-        request: DecodeRequest,
-    ) -> Result<Self::SubmittedSurface, Self::Error> {
-        match (request.roi, request.scale) {
-            (None, Downscale::None) => self.submit_to_device(session, fmt, backend),
-            (Some(roi), Downscale::None) => {
-                self.submit_region_to_device(session, fmt, roi, backend)
-            }
-            (None, scale) => self.submit_scaled_to_device(session, fmt, scale, backend),
-            (Some(roi), scale) => {
-                self.submit_region_scaled_to_device(session, fmt, roi, scale, backend)
-            }
-        }
-    }
 }
 
 /// Synchronous device-output decode API.
@@ -402,28 +363,6 @@ pub trait TileBatchDecode: ImageCodec {
         roi: Rect,
         scale: Downscale,
     ) -> Result<DecodeOutcome<Self::Warning>, Self::Error>;
-
-    /// Decode one tile for a normalized full/ROI/scaled request.
-    fn decode_tile_request<'a>(
-        ctx: &mut DecoderContext<Self::Context>,
-        pool: &mut Self::Pool,
-        input: &'a [u8],
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        request: DecodeRequest,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        match (request.roi, request.scale) {
-            (None, Downscale::None) => Self::decode_tile(ctx, pool, input, out, stride, fmt),
-            (Some(roi), Downscale::None) => {
-                Self::decode_tile_region(ctx, pool, input, out, stride, fmt, roi)
-            }
-            (None, scale) => Self::decode_tile_scaled(ctx, pool, input, out, stride, fmt, scale),
-            (Some(roi), scale) => {
-                Self::decode_tile_region_scaled(ctx, pool, input, out, stride, fmt, roi, scale)
-            }
-        }
-    }
 }
 
 /// Tile-batch helpers that return synchronous device surfaces.
@@ -618,32 +557,6 @@ pub trait TileBatchDecodeSubmit: ImageCodec {
         scale: Downscale,
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error>;
-
-    /// Submit one tile for a normalized full/ROI/scaled request.
-    fn submit_tile_request_to_device<'a>(
-        ctx: &mut DecoderContext<Self::Context>,
-        session: &mut Self::Session,
-        pool: &mut Self::Pool,
-        input: &'a [u8],
-        fmt: PixelFormat,
-        backend: BackendRequest,
-        request: DecodeRequest,
-    ) -> Result<Self::SubmittedSurface, Self::Error> {
-        match (request.roi, request.scale) {
-            (None, Downscale::None) => {
-                Self::submit_tile_to_device(ctx, session, pool, input, fmt, backend)
-            }
-            (Some(roi), Downscale::None) => {
-                Self::submit_tile_region_to_device(ctx, session, pool, input, fmt, roi, backend)
-            }
-            (None, scale) => {
-                Self::submit_tile_scaled_to_device(ctx, session, pool, input, fmt, scale, backend)
-            }
-            (Some(roi), scale) => Self::submit_tile_region_scaled_to_device(
-                ctx, session, pool, input, fmt, roi, scale, backend,
-            ),
-        }
-    }
 }
 
 /// Tile payload decompression API for container codecs such as Deflate, Zstd,

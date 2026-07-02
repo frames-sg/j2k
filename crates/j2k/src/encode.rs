@@ -22,6 +22,40 @@ const MAX_PART1_SAMPLE_BIT_DEPTH: u8 = 38;
 const MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES: u16 = 37;
 const MAX_HTJ2K_ENCODE_BITPLANES: u16 = 31;
 
+macro_rules! define_encoded_j2k {
+    (
+        $(#[$attr:meta])*
+        pub struct $name:ident {
+            $($extra_fields:tt)*
+        }
+    ) => {
+        $(#[$attr])*
+        pub struct $name {
+            /// Raw JPEG 2000 codestream bytes.
+            pub codestream: Vec<u8>,
+            /// Backend that satisfied the encode contract.
+            pub backend: BackendKind,
+            /// Encode-stage dispatches observed while producing this codestream.
+            ///
+            /// This can be nonzero even when [`Self::backend`] is [`BackendKind::Cpu`]
+            /// for Auto routes that used one or more device stages but did not satisfy
+            /// every stage required for a fully device-backed encode contract.
+            pub dispatch_report: J2kEncodeDispatchReport,
+            /// Encoded image width in pixels.
+            pub width: u32,
+            /// Encoded image height in pixels.
+            pub height: u32,
+            /// Encoded component count.
+            pub components: u16,
+            /// Encoded significant bits per sample.
+            pub bit_depth: u8,
+            /// Whether encoded samples are signed.
+            pub signed: bool,
+            $($extra_fields)*
+        }
+    };
+}
+
 /// Backend preference for JPEG 2000 lossless encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum EncodeBackendPreference {
@@ -871,29 +905,11 @@ impl<'a> J2kLossySamples<'a> {
     }
 }
 
-/// Encoded JPEG 2000 lossless codestream and encode metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EncodedJ2k {
-    /// Raw JPEG 2000 codestream bytes.
-    pub codestream: Vec<u8>,
-    /// Backend that satisfied the encode contract.
-    pub backend: BackendKind,
-    /// Encode-stage dispatches observed while producing this codestream.
-    ///
-    /// This can be nonzero even when [`Self::backend`] is [`BackendKind::Cpu`]
-    /// for Auto routes that used one or more device stages but did not satisfy
-    /// every stage required for a fully device-backed encode contract.
-    pub dispatch_report: J2kEncodeDispatchReport,
-    /// Encoded image width in pixels.
-    pub width: u32,
-    /// Encoded image height in pixels.
-    pub height: u32,
-    /// Encoded component count.
-    pub components: u16,
-    /// Encoded significant bits per sample.
-    pub bit_depth: u8,
-    /// Whether encoded samples are signed.
-    pub signed: bool,
+define_encoded_j2k! {
+    /// Encoded JPEG 2000 lossless codestream and encode metadata.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EncodedJ2k {
+    }
 }
 
 /// Metrics reported by stable lossy JPEG 2000 encoding.
@@ -915,31 +931,13 @@ pub struct J2kLossyEncodeReport {
     pub ht_rate_granularity_bytes: Option<u64>,
 }
 
-/// Encoded JPEG 2000 lossy codestream and encode metadata.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EncodedLossyJ2k {
-    /// Raw JPEG 2000 codestream bytes.
-    pub codestream: Vec<u8>,
-    /// Backend that satisfied the encode contract.
-    pub backend: BackendKind,
-    /// Encode-stage dispatches observed while producing this codestream.
-    ///
-    /// This can be nonzero even when [`Self::backend`] is [`BackendKind::Cpu`]
-    /// for Auto routes that used one or more device stages but did not satisfy
-    /// every stage required for a fully device-backed encode contract.
-    pub dispatch_report: J2kEncodeDispatchReport,
-    /// Encoded image width in pixels.
-    pub width: u32,
-    /// Encoded image height in pixels.
-    pub height: u32,
-    /// Encoded component count.
-    pub components: u16,
-    /// Encoded significant bits per sample.
-    pub bit_depth: u8,
-    /// Whether encoded samples are signed.
-    pub signed: bool,
-    /// Lossy encode metrics.
-    pub report: J2kLossyEncodeReport,
+define_encoded_j2k! {
+    /// Encoded JPEG 2000 lossy codestream and encode metadata.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct EncodedLossyJ2k {
+        /// Lossy encode metrics.
+        pub report: J2kLossyEncodeReport,
+    }
 }
 
 /// Encode interleaved samples into a raw JPEG 2000 lossless codestream.

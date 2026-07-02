@@ -8,6 +8,56 @@ use core::convert::Infallible;
 use j2k_core::{validate_strided_output_buffer, DecodeOutcome, PixelFormat, Rect, Unsupported};
 pub(crate) type J2kDecodeOutcome = DecodeOutcome<Infallible>;
 
+macro_rules! impl_component_plane_metadata_accessors {
+    () => {
+        /// Width and height of this decoded plane in output samples.
+        #[must_use]
+        pub fn dimensions(&self) -> (u32, u32) {
+            self.dimensions
+        }
+
+        /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`).
+        #[must_use]
+        pub fn sampling(&self) -> (u8, u8) {
+            self.sampling
+        }
+
+        /// Bit depth of this component plane.
+        #[must_use]
+        pub fn bit_depth(&self) -> u8 {
+            self.bit_depth
+        }
+
+        /// Whether this component plane stores signed sample values.
+        #[must_use]
+        pub fn signed(&self) -> bool {
+            self.signed
+        }
+    };
+}
+
+macro_rules! impl_decoded_components_metadata_accessors {
+    () => {
+        /// Dimensions of the decoded image represented by these planes.
+        #[must_use]
+        pub fn dimensions(&self) -> (u32, u32) {
+            self.dimensions
+        }
+
+        /// Color space after JPEG 2000 color conversion has been applied.
+        #[must_use]
+        pub fn color_space(&self) -> &J2kDecodedColorSpace {
+            &self.color_space
+        }
+
+        /// Whether the decoded image has an alpha channel.
+        #[must_use]
+        pub fn has_alpha(&self) -> bool {
+            self.has_alpha
+        }
+    };
+}
+
 /// Decoded JPEG 2000 color space metadata for component-plane outputs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -79,29 +129,7 @@ impl<'a> J2kComponentPlane<'a> {
         self.samples
     }
 
-    /// Width and height of this plane in decoded output samples.
-    #[must_use]
-    pub fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
-    }
-
-    /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`).
-    #[must_use]
-    pub fn sampling(&self) -> (u8, u8) {
-        self.sampling
-    }
-
-    /// Bit depth of this component plane.
-    #[must_use]
-    pub fn bit_depth(&self) -> u8 {
-        self.bit_depth
-    }
-
-    /// Whether this component plane stores signed sample values.
-    #[must_use]
-    pub fn signed(&self) -> bool {
-        self.signed
-    }
+    impl_component_plane_metadata_accessors!();
 }
 
 /// Borrowed decoded component planes for an image.
@@ -127,23 +155,7 @@ impl<'a> J2kDecodedComponents<'a> {
         }
     }
 
-    /// Dimensions of the decoded image represented by these planes.
-    #[must_use]
-    pub fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
-    }
-
-    /// Color space after JPEG 2000 color conversion has been applied.
-    #[must_use]
-    pub fn color_space(&self) -> &J2kDecodedColorSpace {
-        &self.color_space
-    }
-
-    /// Whether the decoded image has an alpha channel.
-    #[must_use]
-    pub fn has_alpha(&self) -> bool {
-        self.has_alpha
-    }
+    impl_decoded_components_metadata_accessors!();
 
     /// Borrowed decoded component planes in display order.
     #[must_use]
@@ -181,29 +193,7 @@ impl J2kNativeComponentPlane {
         &self.data
     }
 
-    /// Width and height of this decoded plane in output samples.
-    #[must_use]
-    pub fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
-    }
-
-    /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`).
-    #[must_use]
-    pub fn sampling(&self) -> (u8, u8) {
-        self.sampling
-    }
-
-    /// Bit depth of this component plane.
-    #[must_use]
-    pub fn bit_depth(&self) -> u8 {
-        self.bit_depth
-    }
-
-    /// Whether this component plane stores signed sample values.
-    #[must_use]
-    pub fn signed(&self) -> bool {
-        self.signed
-    }
+    impl_component_plane_metadata_accessors!();
 
     /// Bytes used for each packed little-endian sample in [`Self::data`].
     #[must_use]
@@ -235,23 +225,7 @@ impl J2kDecodedNativeComponents {
         }
     }
 
-    /// Dimensions of the decoded image represented by these planes.
-    #[must_use]
-    pub fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
-    }
-
-    /// Color space after JPEG 2000 color conversion has been applied.
-    #[must_use]
-    pub fn color_space(&self) -> &J2kDecodedColorSpace {
-        &self.color_space
-    }
-
-    /// Whether the decoded image has an alpha channel.
-    #[must_use]
-    pub fn has_alpha(&self) -> bool {
-        self.has_alpha
-    }
+    impl_decoded_components_metadata_accessors!();
 
     /// Decoded component planes in display order.
     #[must_use]

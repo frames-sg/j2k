@@ -3,6 +3,32 @@
 This changelog tracks the current staged release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+Breaking public API cleanup; the next release from this line must bump to
+0.7.0.
+
+- Removes unused public API: `j2k-core` `DecodeRequest` (with the four
+  `*_request` trait default methods), `BackendFailureKind`, and `WarningKind`;
+  `j2k-profile` `MetricUnit` (with the `unit` parameter of
+  `ProfileField::metric`/`metric_with_summary`), `emit_gpu_route_profile`,
+  `flush_profile_summary_to`, `ProfileSummary::flush_to`, and
+  `ProfileField::raw`; `j2k-metal-support` `MetalDeviceSession` and the unsafe
+  `buffer_contents_slice`/`buffer_contents_slice_mut` wrappers (use the
+  `checked_*` variants).
+- Removes the redundant `cuda-oxide-*` passthrough features from `j2k-cuda`
+  and `j2k-transcode-cuda`; enable `cuda-runtime` instead, which already
+  activates the underlying kernel families.
+- Moves the test-only `corpus_validation`, `dct53_1d`, and `dct53_multilevel`
+  modules out of the shipped `j2k-transcode` library into test support files.
+- Marks GPU diagnostic profile structs `#[non_exhaustive]` (from the previous
+  cleanup pass); downstream literal construction must switch to the provided
+  constructors.
+- Internal: consolidates duplicated test fixtures/helpers into
+  `j2k-test-support` and xtask-shared modules, macro-generates the CUDA
+  GPU-ABI byte-view wrappers, and collapses repeated classic Tier-1
+  profiling-label chains in `j2k-metal`.
+
 ## [0.6.2]
 
 - Defines the public codec claim as JPEG 2000 Part 1 codestream support, JP2

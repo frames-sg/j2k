@@ -112,38 +112,7 @@ pub fn decode_tiles_into(
     fmt: PixelFormat,
     options: TileBatchOptions,
 ) -> Result<Vec<BatchOutcome>, TileBatchError> {
-    if jobs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let job_count = jobs.len();
-    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
-    let chunk_size = job_count.div_ceil(worker_count);
-    let results =
-        std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(worker_count);
-            for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
-                let start_index = chunk_index * chunk_size;
-                let inner_parallelism = inner_parallelism_for_batch(job_count);
-                handles.push(scope.spawn(move || {
-                    decode_tile_job_chunk(start_index, chunk, fmt, inner_parallelism)
-                }));
-            }
-
-            let mut results = Vec::with_capacity(job_count);
-            for handle in handles {
-                match handle.join() {
-                    Ok(chunk_results) => results.extend(chunk_results),
-                    Err(payload) => std::panic::resume_unwind(payload),
-                }
-            }
-            results
-        });
-
-    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
-        index,
-        source,
-    })
+    decode_tile_job_batch(jobs, fmt, options, decode_tile_job_chunk)
 }
 
 /// Decode independent J2K/HTJ2K tile regions into caller-owned output buffers
@@ -153,37 +122,7 @@ pub fn decode_tiles_region_into(
     fmt: PixelFormat,
     options: TileBatchOptions,
 ) -> Result<Vec<BatchOutcome>, TileBatchError> {
-    if jobs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let job_count = jobs.len();
-    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
-    let chunk_size = job_count.div_ceil(worker_count);
-    let results = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(worker_count);
-        for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
-            let start_index = chunk_index * chunk_size;
-            let inner_parallelism = inner_parallelism_for_batch(job_count);
-            handles.push(scope.spawn(move || {
-                decode_tile_region_job_chunk(start_index, chunk, fmt, inner_parallelism)
-            }));
-        }
-
-        let mut results = Vec::with_capacity(job_count);
-        for handle in handles {
-            match handle.join() {
-                Ok(chunk_results) => results.extend(chunk_results),
-                Err(payload) => std::panic::resume_unwind(payload),
-            }
-        }
-        results
-    });
-
-    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
-        index,
-        source,
-    })
+    decode_tile_job_batch(jobs, fmt, options, decode_tile_region_job_chunk)
 }
 
 /// Decode independent J2K/HTJ2K tiles at reduced resolution into caller-owned
@@ -192,6 +131,20 @@ pub fn decode_tiles_scaled_into(
     jobs: &mut [TileScaledDecodeJob<'_, '_>],
     fmt: PixelFormat,
     options: TileBatchOptions,
+) -> Result<Vec<BatchOutcome>, TileBatchError> {
+    decode_tile_job_batch(jobs, fmt, options, decode_tile_scaled_job_chunk)
+}
+
+fn decode_tile_job_batch<J: Send>(
+    jobs: &mut [J],
+    fmt: PixelFormat,
+    options: TileBatchOptions,
+    decode_chunk: fn(
+        usize,
+        &mut [J],
+        PixelFormat,
+        CpuDecodeParallelism,
+    ) -> Vec<J2kIndexedBatchResult>,
 ) -> Result<Vec<BatchOutcome>, TileBatchError> {
     if jobs.is_empty() {
         return Ok(Vec::new());
@@ -205,9 +158,9 @@ pub fn decode_tiles_scaled_into(
         for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
             let start_index = chunk_index * chunk_size;
             let inner_parallelism = inner_parallelism_for_batch(job_count);
-            handles.push(scope.spawn(move || {
-                decode_tile_scaled_job_chunk(start_index, chunk, fmt, inner_parallelism)
-            }));
+            handles.push(
+                scope.spawn(move || decode_chunk(start_index, chunk, fmt, inner_parallelism)),
+            );
         }
 
         let mut results = Vec::with_capacity(job_count);

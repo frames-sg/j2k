@@ -378,30 +378,6 @@ fn backend_request_exposes_adaptive_cpu_and_strict_aliases() {
 }
 
 #[test]
-fn decode_request_default_and_scaled_rects_are_stable() {
-    let full = j2k_core::DecodeRequest::default();
-    assert!(full.is_full_resolution_full_image());
-    assert_eq!(full.decoded_rect((17, 9)), Rect::full((17, 9)));
-
-    let roi = Rect {
-        x: 3,
-        y: 5,
-        w: 9,
-        h: 7,
-    };
-    let request = j2k_core::DecodeRequest::region_scaled(roi, Downscale::Quarter);
-    assert_eq!(
-        request.decoded_rect((99, 99)),
-        Rect {
-            x: 0,
-            y: 1,
-            w: 3,
-            h: 2
-        }
-    );
-}
-
-#[test]
 fn execution_stats_and_gpu_abi_helpers_are_stable() {
     let combined = j2k_core::ExecutionStats {
         submissions: 1,
