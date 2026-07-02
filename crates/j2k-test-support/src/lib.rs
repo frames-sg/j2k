@@ -12,19 +12,18 @@ mod corpus;
 mod cuda;
 mod fixtures;
 mod jpeg_fixtures;
+mod manifest;
 mod metal_shader;
 mod pixels;
 
 pub use corpus::{collect_jpeg_paths, is_jpeg_path, paths_from_env};
 pub use cuda::{
-    cuda_bench_required, cuda_jpeg_hardware_decode_required, cuda_runtime_required,
-    cuda_strict_oxide_required,
+    cuda_jpeg_hardware_decode_required, cuda_runtime_required, cuda_strict_oxide_required,
 };
 pub use fixtures::{
-    baseline_grayscale_jpeg, jpeg_baseline_420_16x16, jpeg_baseline_420_16x16_rgb,
-    jpeg_baseline_420_restart_32x16, jpeg_baseline_420_restart_32x16_rgb, jpeg_baseline_422_16x8,
-    jpeg_baseline_422_16x8_rgb, jpeg_baseline_444_8x8, jpeg_baseline_444_8x8_rgb,
-    jpeg_grayscale_8x8, jpeg_grayscale_8x8_gray, minimal_baseline_jpeg,
+    baseline_grayscale_jpeg, jpeg_baseline_420_16x16, jpeg_baseline_420_restart_32x16,
+    jpeg_baseline_420_restart_32x16_rgb, jpeg_baseline_422_16x8, jpeg_baseline_422_16x8_rgb,
+    jpeg_baseline_444_8x8, jpeg_baseline_444_8x8_rgb, jpeg_grayscale_8x8, minimal_baseline_jpeg,
     minimal_baseline_jpeg_with_restart_interval, minimal_gray8_jpeg,
     minimal_grayscale_jpeg_with_dimensions, minimal_j2k_codestream, minimal_jp2,
     openhtj2k_refinement_fixture, openhtj2k_refinement_odd_fixture,
@@ -41,9 +40,13 @@ pub use fixtures::{
     htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture,
 };
 pub use jpeg_fixtures::*;
+pub use manifest::{
+    canonicalize_manifest_row_path, manifest_column, manifest_field, manifest_optional_value,
+    optional_manifest_column,
+};
 pub use metal_shader::{host_compiles_metal_pipeline, metal_kernel_names, unwired_metal_kernels};
 pub use pixels::{
-    centered_rect, crop_interleaved_bytes, crop_interleaved_u16, crop_interleaved_u8,
+    crop_interleaved_bytes, crop_interleaved_u16, crop_interleaved_u8,
     project_scaled_interleaved_u16, project_scaled_interleaved_u8, rgb16le_to_rgba16le,
     rgb16ne_to_opaque_rgba16ne, rgb8_to_rgba8, scaled_rect_covering, u16_samples_to_le_bytes,
     PixelRect,
@@ -281,10 +284,18 @@ pub fn read_pnm_image(path: impl AsRef<Path>) -> io::Result<PnmImage> {
 /// Computes the FNV-1a 64-bit digest used by benchmark manifests.
 #[must_use]
 pub fn fnv1a64_hex(bytes: &[u8]) -> String {
+    fnv1a64_hex_slices(&[bytes])
+}
+
+/// Computes the FNV-1a 64-bit digest of concatenated slices.
+#[must_use]
+pub fn fnv1a64_hex_slices(slices: &[&[u8]]) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    for bytes in slices {
+        for byte in *bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
     }
     format!("{hash:016x}")
 }

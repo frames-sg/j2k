@@ -25,7 +25,19 @@ use j2k::{
 };
 use j2k_compare::{grok, openjpeg, parse_positive_usize, sample_stats, usize_to_f64};
 use j2k_core::{tile_batch_worker_count, Downscale, PixelFormat, Rect};
-use j2k_test_support::{patterned_gray8, patterned_rgb8, wrap_jp2_codestream};
+use j2k_test_support::{
+    fnv1a64_hex, fnv1a64_hex_slices, patterned_gray8, patterned_rgb8, wrap_jp2_codestream,
+};
+
+mod common;
+
+use common::{
+    build_profile_label, canonicalize_manifest_row_path, combined_batch_sizes,
+    default_batch_sizes_present, env_falsey, env_truthy, git_dirty_label, git_dirty_status,
+    git_revision, git_revision_label, host_hardware_label, is_publishable_license_status,
+    join_string_labels, join_usizes, mib_per_second, optional_manifest_column, parse_batch_sizes,
+    sanitized_stem,
+};
 
 const DEFAULT_REPEATS: usize = 5;
 const DEFAULT_CASE_BATCH_SIZES: &[usize] = &[1];
@@ -511,36 +523,12 @@ fn legacy_batch_sizes_from_env() -> Result<Option<Vec<usize>>, String> {
     Ok(None)
 }
 
-fn combined_batch_sizes(case_batch_sizes: &[usize], mixed_batch_sizes: &[usize]) -> Vec<usize> {
-    let mut values = case_batch_sizes
-        .iter()
-        .chain(mixed_batch_sizes.iter())
-        .copied()
-        .collect::<Vec<_>>();
-    values.sort_unstable();
-    values.dedup();
-    values
-}
-
 fn batch_input_copy_count(batch_size: usize) -> usize {
     if batch_size <= 1 {
         1
     } else {
         batch_size.clamp(2, BATCH_INPUT_COPY_LIMIT)
     }
-}
-
-fn parse_batch_sizes(value: &str, label: &str) -> Result<Vec<usize>, String> {
-    let values = value
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|part| parse_positive_usize(part, label))
-        .collect::<Result<Vec<_>, _>>()?;
-    if values.is_empty() {
-        return Err(format!("{label} must include at least one batch size"));
-    }
-    Ok(values)
 }
 
 fn validate_comparator_gates() -> Result<(), String> {
@@ -566,18 +554,6 @@ fn validate_comparator_gates() -> Result<(), String> {
         );
     }
     Ok(())
-}
-
-fn env_truthy(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
-}
-
-fn env_falsey(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
 }
 
 fn include_generated_fixtures() -> bool {
@@ -1082,92 +1058,6 @@ fn fixture_manifest_from_env() -> Result<Option<FixtureManifest>, String> {
     Ok(Some(FixtureManifest { entries }))
 }
 
-fn canonicalize_manifest_row_path(
-    raw_path: &str,
-    base: &Path,
-    relocation_roots: &[PathBuf],
-    manifest_label: &str,
-    manifest_path: &Path,
-    row_number: usize,
-) -> Result<PathBuf, String> {
-    let raw = Path::new(raw_path);
-    let resolved_path = if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        base.join(raw)
-    };
-    match resolved_path.canonicalize() {
-        Ok(path) => Ok(path),
-        Err(primary_error) => {
-            let candidates = manifest_relocation_candidates(raw, relocation_roots);
-            if candidates.len() == 1 {
-                Ok(candidates[0].clone())
-            } else if !candidates.is_empty() {
-                Err(format!(
-                    "{manifest_label} {} row {row_number} path {} is ambiguous after suffix remap: {}",
-                    manifest_path.display(),
-                    raw_path,
-                    join_path_labels(&candidates)
-                ))
-            } else {
-                Err(format!(
-                    "{manifest_label} {} row {row_number} path {} cannot be canonicalized: {primary_error}; no suffix remap found under {}",
-                    manifest_path.display(),
-                    resolved_path.display(),
-                    join_path_labels(relocation_roots)
-                ))
-            }
-        }
-    }
-}
-
-fn manifest_relocation_candidates(raw_path: &Path, relocation_roots: &[PathBuf]) -> Vec<PathBuf> {
-    let suffixes = normal_path_suffixes(raw_path);
-    let mut candidates = Vec::new();
-    for root in relocation_roots {
-        for suffix in &suffixes {
-            let candidate = root.join(suffix);
-            let Ok(canonical) = candidate.canonicalize() else {
-                continue;
-            };
-            if !candidates.contains(&canonical) {
-                candidates.push(canonical);
-            }
-        }
-    }
-    candidates
-}
-
-fn normal_path_suffixes(path: &Path) -> Vec<PathBuf> {
-    let parts = path
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(part) => Some(part.to_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let mut suffixes = Vec::new();
-    for start in 0..parts.len() {
-        let mut suffix = PathBuf::new();
-        for part in &parts[start..] {
-            suffix.push(part);
-        }
-        suffixes.push(suffix);
-    }
-    suffixes
-}
-
-fn join_path_labels(paths: &[PathBuf]) -> String {
-    if paths.is_empty() {
-        return "none".to_string();
-    }
-    paths
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
 fn external_fixture_metadata(
     path: &Path,
     bytes: &[u8],
@@ -1251,12 +1141,7 @@ fn external_fixture_metadata(
 }
 
 fn manifest_column(headers: &[&str], name: &str) -> Result<usize, String> {
-    optional_manifest_column(headers, name)
-        .ok_or_else(|| format!("fixture manifest is missing required {name:?} column"))
-}
-
-fn optional_manifest_column(headers: &[&str], name: &str) -> Option<usize> {
-    headers.iter().position(|header| *header == name)
+    common::manifest_column(headers, name, "fixture")
 }
 
 fn manifest_field<'a>(
@@ -1265,10 +1150,7 @@ fn manifest_field<'a>(
     name: &str,
     row_number: usize,
 ) -> Result<&'a str, String> {
-    fields
-        .get(index)
-        .copied()
-        .ok_or_else(|| format!("fixture manifest row {row_number} is missing {name:?} field"))
+    common::manifest_field(fields, index, name, row_number, "fixture")
 }
 
 fn manifest_required_value(
@@ -1277,14 +1159,7 @@ fn manifest_required_value(
     name: &str,
     row_number: usize,
 ) -> Result<String, String> {
-    let value = manifest_field(fields, index, name, row_number)?.trim();
-    if value.is_empty() {
-        return Err(format!(
-            "fixture manifest row {row_number} has empty required {name:?} field"
-        ));
-    }
-    validate_manifest_value(value, name, row_number)?;
-    Ok(value.to_string())
+    common::manifest_required_value(fields, index, name, row_number, "fixture")
 }
 
 fn manifest_optional_value(
@@ -1293,24 +1168,7 @@ fn manifest_optional_value(
     name: &str,
     row_number: usize,
 ) -> Result<Option<String>, String> {
-    let Some(index) = index else {
-        return Ok(None);
-    };
-    let value = manifest_field(fields, index, name, row_number)?.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    validate_manifest_value(value, name, row_number)?;
-    Ok(Some(value.to_string()))
-}
-
-fn validate_manifest_value(value: &str, name: &str, row_number: usize) -> Result<(), String> {
-    if value.chars().any(char::is_control) {
-        return Err(format!(
-            "fixture manifest row {row_number} field {name:?} contains a control character"
-        ));
-    }
-    Ok(())
+    common::manifest_optional_value(fields, index, name, row_number, "fixture")
 }
 
 fn parse_manifest_codec(value: Option<&str>, row_number: usize) -> Result<Option<Codec>, String> {
@@ -1377,21 +1235,6 @@ fn is_j2k_path(path: &Path) -> bool {
                 "j2k" | "j2c" | "jp2" | "jph" | "jhc"
             )
         })
-}
-
-fn sanitized_stem(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("unnamed")
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 fn external_corpus_category(path: &Path) -> String {
@@ -1656,21 +1499,6 @@ fn emit_metadata(context: MetadataContext<'_>) {
     println!("kakadu_version\t{}", kakadu_version_label());
 }
 
-fn join_usizes(values: &[usize]) -> String {
-    values
-        .iter()
-        .map(usize::to_string)
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn mib_per_second(bytes: usize, elapsed_us: f64) -> f64 {
-    if elapsed_us <= 0.0 {
-        return 0.0;
-    }
-    (usize_to_f64(bytes) / (1024.0 * 1024.0)) / (elapsed_us / 1_000_000.0)
-}
-
 fn batch_input_copy_counts_label(batch_sizes: &[usize]) -> String {
     batch_sizes
         .iter()
@@ -1795,41 +1623,6 @@ fn external_manifest_missing_case_count(cases: &[FixtureCase]) -> usize {
 
 fn fixture_manifest_label() -> String {
     std::env::var("J2K_FIXTURE_COMPARE_MANIFEST").unwrap_or_else(|_| "not set".to_string())
-}
-
-fn build_profile_label() -> &'static str {
-    if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release-like"
-    }
-}
-
-fn git_revision_label() -> String {
-    git_revision().unwrap_or_else(|error| format!("unavailable:{error}"))
-}
-
-fn git_revision() -> Result<String, String> {
-    command_stdout("git", &["rev-parse", "--short=12", "HEAD"])
-}
-
-fn git_dirty_label() -> String {
-    git_dirty_status().map_or_else(|error| format!("unavailable:{error}"), str::to_string)
-}
-
-fn git_dirty_status() -> Result<&'static str, String> {
-    let output = Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .map_err(|error| format!("git:{error}"))?;
-    if !output.status.success() {
-        return Err(format!("git:status:{}", output.status));
-    }
-    if output.stdout.is_empty() {
-        Ok("clean")
-    } else {
-        Ok("dirty")
-    }
 }
 
 fn required_comparators_label() -> String {
@@ -1977,13 +1770,13 @@ fn publication_blockers(
     if repeats < DEFAULT_REPEATS {
         blockers.push(format!("repeats-below-{DEFAULT_REPEATS}"));
     }
-    if !default_case_batch_sizes_present(case_batch_sizes) {
+    if !default_batch_sizes_present(case_batch_sizes, DEFAULT_CASE_BATCH_SIZES) {
         blockers.push(format!(
             "default-case-batch-sizes-missing:{}",
             join_usizes(DEFAULT_CASE_BATCH_SIZES)
         ));
     }
-    if !default_mixed_batch_sizes_present(mixed_batch_sizes) {
+    if !default_batch_sizes_present(mixed_batch_sizes, DEFAULT_MIXED_BATCH_SIZES) {
         blockers.push(format!(
             "default-mixed-batch-sizes-missing:{}",
             join_usizes(DEFAULT_MIXED_BATCH_SIZES)
@@ -2221,47 +2014,7 @@ fn mixed_unique_input_count_for_format_operation(
         .map_or(0, |mixed_batch| unique_input_count(&mixed_batch.cases))
 }
 
-fn is_publishable_license_status(status: &str) -> bool {
-    matches!(
-        status.trim().to_ascii_lowercase().as_str(),
-        "apache-2.0"
-            | "bsd"
-            | "bsd-2-clause"
-            | "bsd-3-clause"
-            | "cc-by"
-            | "cc-by-4.0"
-            | "cc0"
-            | "mit"
-            | "open-data"
-            | "permissive"
-            | "permissive-test-fixture"
-            | "public-domain"
-            | "redistributable"
-            | "redistributable-with-attribution"
-    )
-}
-
-fn default_case_batch_sizes_present(batch_sizes: &[usize]) -> bool {
-    DEFAULT_CASE_BATCH_SIZES
-        .iter()
-        .all(|required| batch_sizes.contains(required))
-}
-
-fn default_mixed_batch_sizes_present(batch_sizes: &[usize]) -> bool {
-    DEFAULT_MIXED_BATCH_SIZES
-        .iter()
-        .all(|required| batch_sizes.contains(required))
-}
-
 fn join_labels(values: &[&str]) -> String {
-    if values.is_empty() {
-        "none".to_string()
-    } else {
-        values.join(",")
-    }
-}
-
-fn join_string_labels(values: &[String]) -> String {
     if values.is_empty() {
         "none".to_string()
     } else {
@@ -2307,48 +2060,6 @@ fn j2k_inner_parallelism_label(batch_sizes: &[usize]) -> String {
         .map(|batch_size| format!("{batch_size}:serial"))
         .collect::<Vec<_>>()
         .join(",")
-}
-
-fn host_hardware_label() -> String {
-    host_hardware_from_platform().unwrap_or_else(|error| format!("unavailable:{error}"))
-}
-
-#[cfg(target_os = "macos")]
-fn host_hardware_from_platform() -> Result<String, String> {
-    command_stdout("sysctl", &["-n", "machdep.cpu.brand_string"])
-}
-
-#[cfg(target_os = "linux")]
-fn host_hardware_from_platform() -> Result<String, String> {
-    let cpuinfo =
-        std::fs::read_to_string("/proc/cpuinfo").map_err(|error| format!("cpuinfo:{error}"))?;
-    cpuinfo
-        .lines()
-        .find_map(|line| line.strip_prefix("model name\t: "))
-        .map(str::to_string)
-        .ok_or_else(|| "cpuinfo:model-name-missing".to_string())
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn host_hardware_from_platform() -> Result<String, String> {
-    Err("unsupported-platform".to_string())
-}
-
-fn command_stdout(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|error| format!("{program}:{error}"))?;
-    if !output.status.success() {
-        return Err(format!("{program}:status:{}", output.status));
-    }
-    let stdout = String::from_utf8(output.stdout).map_err(|error| format!("{program}:{error}"))?;
-    let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        Err(format!("{program}:empty-output"))
-    } else {
-        Ok(trimmed.to_string())
-    }
 }
 
 fn validate_cases(
@@ -3660,17 +3371,13 @@ fn mixed_skip_row(
     batch_size: usize,
     reason: &'static str,
 ) -> String {
-    [
-        decoder.label().to_string(),
-        mixed_batch.name.clone(),
-        benchmark_mode.label().to_string(),
-        "skipped".to_string(),
-        "external:mixed".to_string(),
-        mixed_case_value_label(mixed_batch, |case| case.corpus_category.as_str()),
-        mixed_case_value_label(mixed_batch, |case| case.corpus_name.as_str()),
-        mixed_case_value_label(mixed_batch, |case| case.license_status.as_str()),
-        mixed_case_value_label(mixed_batch, |case| case.encode_command.as_str()),
-        mixed_case_value_label(mixed_batch, |case| case.manifest_status.as_str()),
+    let mut row = common::skipped_external_mixed_prefix(
+        decoder.label(),
+        &mixed_batch.name,
+        benchmark_mode.label(),
+    );
+    row.extend(mixed_fixture_corpus_columns(mixed_batch));
+    row.extend([
         mixed_case_value_label(mixed_batch, |case| case.codec.label()),
         mixed_case_value_label(mixed_batch, |case| case.container.label()),
         mixed_batch.operation_class.label().to_string(),
@@ -3678,20 +3385,28 @@ fn mixed_skip_row(
         "mixed".to_string(),
         "mixed".to_string(),
         "mixed".to_string(),
-        batch_size.to_string(),
-        repeats.to_string(),
-        mixed_input_bytes_per_repeat(mixed_batch, batch_size).to_string(),
+    ]);
+    common::append_batch_input_columns(
+        &mut row,
+        batch_size,
+        repeats,
+        mixed_input_bytes_per_repeat(mixed_batch, batch_size),
         mixed_input_digest(mixed_batch, batch_size),
-        mixed_source_digest(mixed_batch, batch_size),
-        "NA".to_string(),
-        "NA".to_string(),
-        "NA".to_string(),
-        "NA".to_string(),
-        "NA".to_string(),
-        "NA".to_string(),
-        reason.to_string(),
+    );
+    row.push(mixed_source_digest(mixed_batch, batch_size));
+    common::append_na_columns(&mut row, 6);
+    row.push(reason.to_string());
+    common::join_tsv_row(row)
+}
+
+fn mixed_fixture_corpus_columns(mixed_batch: &MixedFixtureBatch) -> [String; 5] {
+    [
+        mixed_case_value_label(mixed_batch, |case| case.corpus_category.as_str()),
+        mixed_case_value_label(mixed_batch, |case| case.corpus_name.as_str()),
+        mixed_case_value_label(mixed_batch, |case| case.license_status.as_str()),
+        mixed_case_value_label(mixed_batch, |case| case.encode_command.as_str()),
+        mixed_case_value_label(mixed_batch, |case| case.manifest_status.as_str()),
     ]
-    .join("\t")
 }
 
 fn skip_row(
@@ -3802,21 +3517,6 @@ fn scale_label(scale: Downscale) -> String {
         Downscale::Eighth => "8".to_string(),
         _ => format!("{scale:?}"),
     }
-}
-
-fn fnv1a64_hex(bytes: &[u8]) -> String {
-    fnv1a64_hex_slices(&[bytes])
-}
-
-fn fnv1a64_hex_slices(slices: &[&[u8]]) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for bytes in slices {
-        for byte in *bytes {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    format!("{hash:016x}")
 }
 
 #[cfg(test)]

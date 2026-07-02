@@ -6,7 +6,7 @@ use j2k::{
     encode_j2k_lossless, EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation,
     J2kLosslessEncodeOptions, J2kLosslessSamples,
 };
-use j2k_test_support::{patterned_gray8, wrap_jp2_codestream};
+use j2k_test_support::{fnv1a64_hex, patterned_gray8, wrap_jp2_codestream};
 
 #[test]
 fn roi_batch_compare_binary_exposes_grok_wsi_surfaces() {
@@ -854,15 +854,6 @@ fn htj2k_gray_fixture(width: u32, height: u32) -> Vec<u8> {
 
 fn classic_gray_fixture(width: u32, height: u32) -> Vec<u8> {
     gray_fixture(width, height, J2kBlockCodingMode::Classic)
-}
-
-fn fnv1a64_hex(bytes: &[u8]) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
 }
 
 fn gray_fixture(width: u32, height: u32, block_coding_mode: J2kBlockCodingMode) -> Vec<u8> {
