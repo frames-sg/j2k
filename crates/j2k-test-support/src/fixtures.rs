@@ -27,19 +27,9 @@ pub fn jpeg_baseline_420_16x16() -> Vec<u8> {
     JPEG_BASELINE_420_16X16.to_vec()
 }
 
-/// Reference RGB pixels for [`jpeg_baseline_420_16x16`].
-pub fn jpeg_baseline_420_16x16_rgb() -> Vec<u8> {
-    JPEG_BASELINE_420_16X16_RGB.to_vec()
-}
-
 /// An 8x8 grayscale baseline JPEG.
 pub fn jpeg_grayscale_8x8() -> Vec<u8> {
     JPEG_GRAYSCALE_8X8.to_vec()
-}
-
-/// Reference grayscale pixels for [`jpeg_grayscale_8x8`].
-pub fn jpeg_grayscale_8x8_gray() -> Vec<u8> {
-    JPEG_GRAYSCALE_8X8_GRAY.to_vec()
 }
 
 /// An 8x8 baseline JPEG with 4:4:4 sampling.

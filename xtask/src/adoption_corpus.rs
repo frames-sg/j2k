@@ -250,3 +250,21 @@ fn extension_matches(path: &Path, extensions: &[&str]) -> bool {
             extensions.contains(&extension.as_str())
         })
 }
+
+/// Lowercases `value` into `[a-z0-9_]`, falling back when nothing survives.
+pub(crate) fn sanitize_id(value: &str, fallback: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}

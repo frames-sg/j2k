@@ -4,8 +4,6 @@
 
 pub mod accelerator;
 
-#[doc(hidden)]
-pub mod corpus_validation;
 pub mod dct53_2d;
 pub mod dct97_2d;
 mod dct_grid;

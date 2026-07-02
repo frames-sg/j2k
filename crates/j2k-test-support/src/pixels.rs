@@ -18,18 +18,6 @@ impl PixelRect {
     }
 }
 
-/// Returns a centered rectangle capped to the provided dimensions.
-pub fn centered_rect((width, height): (u32, u32), side: u32) -> PixelRect {
-    let w = side.min(width);
-    let h = side.min(height);
-    PixelRect {
-        x: (width - w) / 2,
-        y: (height - h) / 2,
-        w,
-        h,
-    }
-}
-
 /// Returns the downscaled rectangle that fully covers `rect`.
 pub fn scaled_rect_covering(rect: PixelRect, denom: u32) -> PixelRect {
     let x1 = (rect.x + rect.w).div_ceil(denom);

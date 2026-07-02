@@ -1,12 +1,11 @@
 use std::{
     collections::BTreeMap,
-    env,
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
 };
 
-use crate::process::{self, CommandContext};
+use crate::process::{self, cargo, CommandContext};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BenchEstimate {
@@ -761,10 +760,6 @@ fn help_text() -> String {
 fn path_str(path: &Path) -> Result<&str, String> {
     path.to_str()
         .ok_or_else(|| format!("path is not valid UTF-8: {}", path.display()))
-}
-
-fn cargo() -> OsString {
-    env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
 #[cfg(test)]

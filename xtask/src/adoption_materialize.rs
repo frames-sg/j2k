@@ -12,7 +12,7 @@ use j2k_test_support::{fnv1a64_hex, pnm_bytes};
 
 use crate::adoption_corpus::{
     canonical_label, collect_encode_source_paths, corpus_category, corpus_name, load_source_image,
-    manifest_row, validate_tsv_field, SourceImage,
+    manifest_row, sanitize_id, validate_tsv_field, SourceImage,
 };
 
 const MIN_PROFILE_DIMENSION: u32 = 128;
@@ -268,26 +268,9 @@ fn materialized_id(index: usize, path: &Path, source_hash: &str) -> String {
         .unwrap_or("source");
     format!(
         "{index:06}_{}_{}",
-        sanitize_id(stem),
+        sanitize_id(stem, "source"),
         &source_hash[..8.min(source_hash.len())]
     )
-}
-
-fn sanitize_id(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-        } else if !out.ends_with('_') {
-            out.push('_');
-        }
-    }
-    let trimmed = out.trim_matches('_');
-    if trimmed.is_empty() {
-        "source".to_string()
-    } else {
-        trimmed.to_string()
-    }
 }
 
 fn encode_command_label(

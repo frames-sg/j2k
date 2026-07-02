@@ -935,13 +935,6 @@ pub fn lossless_predictor_rgb_16bit_3x3_jpeg(predictor: u8) -> Vec<u8> {
     lossless_rgb_16bit_jpeg(3, 3, predictor, &LOSSLESS_RGB_16BIT_3X3_PIXELS)
 }
 
-/// A 3x3 16-bit SOF3 lossless APP14 RGB JPEG with unsupported 4:2:2 sampling.
-pub fn lossless_rgb_16bit_422_3x3_jpeg() -> Vec<u8> {
-    let mut bytes = lossless_predictor_rgb_16bit_3x3_jpeg(1);
-    set_first_sof3_component_sampling(&mut bytes, 0x21);
-    bytes
-}
-
 /// A 4x2 8-bit SOF3 lossless APP14 RGB JPEG with valid 4:2:2 sampling.
 pub fn lossless_rgb_8bit_422_4x2_jpeg(predictor: u8) -> Vec<u8> {
     lossless_color_8bit_422_jpeg(

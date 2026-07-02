@@ -16,9 +16,3 @@ pub fn cuda_strict_oxide_required() -> bool {
 pub fn cuda_jpeg_hardware_decode_required() -> bool {
     std::env::var_os("J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE").is_some()
 }
-
-/// Returns true when CUDA benches should require the runtime instead of skipping.
-pub fn cuda_bench_required() -> bool {
-    std::env::var_os("J2K_REQUIRE_CUDA_BENCH").is_some()
-        || std::env::var_os("J2K_REQUIRE_CUDA_RUNTIME").is_some()
-}

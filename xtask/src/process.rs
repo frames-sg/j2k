@@ -1,8 +1,14 @@
 use std::{
+    env,
     ffi::OsString,
     path::Path,
     process::{Command, Output},
 };
+
+/// Path to the cargo binary driving this xtask invocation.
+pub(crate) fn cargo() -> OsString {
+    env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CommandContext<'a> {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[allow(dead_code, unreachable_pub)]
-#[path = "../src/dct53_1d.rs"]
+#[path = "support/dct53_1d.rs"]
 mod dct53_1d;
 #[allow(dead_code, unreachable_pub, unused_imports)]
 #[path = "../src/dct_grid.rs"]

@@ -17,6 +17,8 @@ mod perf_guard;
 mod process;
 mod public_support;
 
+use process::cargo;
+
 const PUBLISHABLE_PACKAGES: &[&str] = &[
     "j2k-core",
     "j2k-profile",
@@ -1681,10 +1683,6 @@ fn run_program_in_dir_owned_with_program(
             .current_dir(Path::new(dir))
             .envs(envs),
     )
-}
-
-fn cargo() -> OsString {
-    env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
 fn command_output(program: &str, args: &[&str]) -> Result<String, String> {

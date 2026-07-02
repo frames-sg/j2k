@@ -10,6 +10,7 @@ use std::{
 
 use crate::markdown::{escape_inline_code, markdown_header, markdown_row};
 use crate::perf_guard::{discover_estimates, BenchEstimate};
+use crate::process::cargo;
 
 const SCRUBBED_BENCH_ENV_VARS: &[&str] = &[
     "J2K_FIXTURE_COMPARE_MODE",
@@ -2016,10 +2017,6 @@ fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
-}
-
-fn cargo() -> OsString {
-    env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
 impl AdoptionBenchmarkOptions {

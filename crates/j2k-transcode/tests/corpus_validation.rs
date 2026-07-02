@@ -3,7 +3,11 @@
 use j2k_test_support::{
     JPEG_BASELINE_420_16X16, JPEG_BASELINE_422_16X8, JPEG_BASELINE_444_8X8, JPEG_GRAYSCALE_8X8,
 };
-use j2k_transcode::corpus_validation::{
+#[allow(dead_code, unreachable_pub)]
+#[path = "support/corpus_validation.rs"]
+mod corpus_validation;
+
+use corpus_validation::{
     load_external_wsi_fixtures, validate_transcode_corpus, CorpusFixture, CorpusValidationError,
     CorpusValidationOptions,
 };

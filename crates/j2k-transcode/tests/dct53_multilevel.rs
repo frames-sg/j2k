@@ -10,7 +10,7 @@ mod dct_grid;
 pub use dct_grid::DctGridError;
 
 #[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
-#[path = "../src/dct53_multilevel.rs"]
+#[path = "support/dct53_multilevel.rs"]
 mod dct53_multilevel;
 
 use dct53_multilevel::{

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{
+use j2k_transcode::{
     jpeg_to_htj2k, JpegToHtj2kError, JpegToHtj2kOptions, TranscodeValidationClassification,
 };
 

@@ -11,13 +11,13 @@ use j2k_test_support::{
 };
 
 #[allow(dead_code, unreachable_pub)]
-#[path = "../src/dct53_1d.rs"]
+#[path = "../tests/support/dct53_1d.rs"]
 mod dct53_1d;
 #[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
 #[path = "../src/dct53_2d.rs"]
 mod dct53_2d;
 #[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
-#[path = "../src/dct53_multilevel.rs"]
+#[path = "../tests/support/dct53_multilevel.rs"]
 mod dct53_multilevel;
 #[allow(dead_code, unreachable_pub, unused_imports)]
 #[path = "../src/dct_grid.rs"]

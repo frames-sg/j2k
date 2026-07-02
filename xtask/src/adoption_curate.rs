@@ -11,7 +11,7 @@ use j2k_test_support::fnv1a64_hex;
 
 use crate::adoption_corpus::{
     canonical_label, codec_from_bytes, collect_decode_fixture_paths, container_from_path_and_bytes,
-    corpus_category, corpus_name, manifest_row, validate_tsv_field,
+    corpus_category, corpus_name, manifest_row, sanitize_id, validate_tsv_field,
 };
 
 #[derive(Debug)]
@@ -128,9 +128,10 @@ fn curate_one(
         sanitize_id(
             path.file_stem()
                 .and_then(|value| value.to_str())
-                .unwrap_or("fixture")
+                .unwrap_or("fixture"),
+            "fixture"
         ),
-        sanitize_id(extension)
+        sanitize_id(extension, "fixture")
     ));
     fs::copy(path, &staged).map_err(|err| format!("copy to {}: {err}", staged.display()))?;
     let input_hash = fnv1a64_hex(&bytes);
@@ -362,23 +363,6 @@ fn parse_positive_usize(value: &str, label: &str) -> Result<usize, String> {
         return Err(format!("{label} must be greater than zero"));
     }
     Ok(parsed)
-}
-
-fn sanitize_id(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-        } else if !out.ends_with('_') {
-            out.push('_');
-        }
-    }
-    let trimmed = out.trim_matches('_');
-    if trimmed.is_empty() {
-        "fixture".to_string()
-    } else {
-        trimmed.to_string()
-    }
 }
 
 fn help_text() -> String {
