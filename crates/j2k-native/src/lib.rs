@@ -86,6 +86,69 @@ use crate::jp2::colr::{CieLab, EnumeratedColorspace};
 use crate::jp2::icc::ICCMetadata;
 use crate::jp2::{DecodedImage, ImageBoxes};
 
+macro_rules! define_ht_code_block_job {
+    (
+        $(#[$meta:meta])*
+        pub struct $name:ident $(<$lt:lifetime>)? {
+            $($prefix:tt)*
+        }
+    ) => {
+        $(#[$meta])*
+        pub struct $name $(<$lt>)? {
+            $($prefix)*
+            /// Cleanup segment length in bytes.
+            pub cleanup_length: u32,
+            /// Refinement segment length in bytes.
+            pub refinement_length: u32,
+            /// Code-block width in samples.
+            pub width: u32,
+            /// Code-block height in samples.
+            pub height: u32,
+            /// Output row stride, in samples, for the target sub-band storage.
+            pub output_stride: usize,
+            /// Missing most-significant bit planes for this code block.
+            pub missing_bit_planes: u8,
+            /// Number of coding passes present for this code block.
+            pub number_of_coding_passes: u8,
+            /// Total coded bitplanes for the parent sub-band.
+            pub num_bitplanes: u8,
+            /// Region-of-interest maxshift value from RGN marker metadata.
+            pub roi_shift: u8,
+            /// Whether vertically causal context was enabled.
+            pub stripe_causal: bool,
+            /// Whether strict decode validation is enabled for the parent image.
+            pub strict: bool,
+            /// Dequantization step to apply to decoded coefficients.
+            pub dequantization_step: f32,
+        }
+    };
+}
+
+macro_rules! impl_component_plane_metadata_accessors {
+    () => {
+        /// Width and height of this plane in output samples.
+        pub fn dimensions(&self) -> (u32, u32) {
+            self.dimensions
+        }
+
+        /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`) for
+        /// the source component represented by this plane.
+        pub fn sampling(&self) -> (u8, u8) {
+            self.sampling
+        }
+
+        /// Bit depth of this component plane.
+        pub fn bit_depth(&self) -> u8 {
+            self.bit_depth
+        }
+
+        /// Whether this component plane stores signed sample values.
+        pub fn signed(&self) -> bool {
+            self.signed
+        }
+    };
+}
+
 pub mod error;
 mod inspect;
 #[macro_use]
@@ -240,35 +303,13 @@ fn native_bytes_per_sample(bit_depth: u8) -> Result<usize> {
     Ok(usize::from(bit_depth).div_ceil(8).max(1))
 }
 
-/// Adapter HTJ2K code-block job description for backend experimentation.
-#[derive(Debug, Clone, Copy)]
-pub struct HtCodeBlockDecodeJob<'a> {
-    /// Combined cleanup/refinement bytes for the code block.
-    pub data: &'a [u8],
-    /// Cleanup segment length in bytes.
-    pub cleanup_length: u32,
-    /// Refinement segment length in bytes.
-    pub refinement_length: u32,
-    /// Code-block width in samples.
-    pub width: u32,
-    /// Code-block height in samples.
-    pub height: u32,
-    /// Output row stride, in samples, for the target sub-band storage.
-    pub output_stride: usize,
-    /// Missing most-significant bit planes for this code block.
-    pub missing_bit_planes: u8,
-    /// Number of coding passes present for this code block.
-    pub number_of_coding_passes: u8,
-    /// Total coded bitplanes for the parent sub-band.
-    pub num_bitplanes: u8,
-    /// Region-of-interest maxshift value from RGN marker metadata.
-    pub roi_shift: u8,
-    /// Whether vertically causal context was enabled.
-    pub stripe_causal: bool,
-    /// Whether strict decode validation is enabled for the parent image.
-    pub strict: bool,
-    /// Dequantization step to apply to decoded coefficients.
-    pub dequantization_step: f32,
+define_ht_code_block_job! {
+    /// Adapter HTJ2K code-block job description for backend experimentation.
+    #[derive(Debug, Clone, Copy)]
+    pub struct HtCodeBlockDecodeJob<'a> {
+        /// Combined cleanup/refinement bytes for the code block.
+        pub data: &'a [u8],
+    }
 }
 
 /// Adapter HTJ2K scalar decode phase limit for backend experimentation.
@@ -850,24 +891,7 @@ pub fn encode_j2k_code_block_scalar_with_style(
         total_bitplanes,
         &internal_j2k_code_block_style(style),
     );
-    let segments = encoded
-        .segments
-        .into_iter()
-        .map(|segment| J2kCodeBlockSegment {
-            data_offset: segment.data_offset,
-            data_length: segment.data_length,
-            start_coding_pass: segment.start_coding_pass,
-            end_coding_pass: segment.end_coding_pass,
-            use_arithmetic: segment.use_arithmetic,
-        })
-        .collect();
-
-    Ok(EncodedJ2kCodeBlock {
-        data: encoded.data,
-        segments,
-        number_of_coding_passes: encoded.num_coding_passes,
-        missing_bit_planes: encoded.num_zero_bitplanes,
-    })
+    Ok(encoded_j2k_code_block_from_internal(encoded))
 }
 
 /// Adapter scalar Classic Tier-1 compact token packer for backend experimentation.
@@ -897,6 +921,12 @@ pub fn pack_j2k_code_block_scalar_from_tier1_tokens(
         number_of_coding_passes,
         missing_bit_planes,
     )?;
+    Ok(encoded_j2k_code_block_from_internal(encoded))
+}
+
+fn encoded_j2k_code_block_from_internal(
+    encoded: j2c::bitplane_encode::EncodedCodeBlockWithSegments,
+) -> EncodedJ2kCodeBlock {
     let segments = encoded
         .segments
         .into_iter()
@@ -909,12 +939,12 @@ pub fn pack_j2k_code_block_scalar_from_tier1_tokens(
         })
         .collect();
 
-    Ok(EncodedJ2kCodeBlock {
+    EncodedJ2kCodeBlock {
         data: encoded.data,
         segments,
         number_of_coding_passes: encoded.num_coding_passes,
         missing_bit_planes: encoded.num_zero_bitplanes,
-    })
+    }
 }
 
 /// Adapter scalar HTJ2K cleanup-only encoder helper for backend experimentation.
@@ -1203,22 +1233,10 @@ pub fn decode_j2k_code_block_scalar_with_workspace(
     output: &mut [f32],
     workspace: &mut J2kCodeBlockDecodeWorkspace,
 ) -> Result<()> {
-    let required_len = if job.height == 0 {
-        0
-    } else {
-        job.output_stride
-            .checked_mul(job.height as usize - 1)
-            .and_then(|prefix| prefix.checked_add(job.width as usize))
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?
-    };
-    if output.len() < required_len {
-        bail!(DecodingError::CodeBlockDecodeFailure);
-    }
-
+    let layout =
+        checked_code_block_output_layout(job.width, job.height, job.output_stride, output.len())?;
     let style = internal_j2k_code_block_style(job.style);
     let sub_band_type = internal_j2k_sub_band_type(job.sub_band_type);
-    let code_block_stride =
-        usize::try_from(job.width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
     let coded_bitplanes = add_roi_shift_to_bitplanes(
         job.total_bitplanes,
         job.roi_shift,
@@ -1239,21 +1257,61 @@ pub fn decode_j2k_code_block_scalar_with_workspace(
         &mut workspace.bit_plane_decode_context,
     )?;
 
-    for (row_idx, coeff_row) in workspace
-        .bit_plane_decode_context
+    write_j2k_code_block_output(&workspace.bit_plane_decode_context, job, layout, output);
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CodeBlockOutputLayout {
+    stride: usize,
+    len: usize,
+}
+
+fn checked_code_block_output_layout(
+    width: u32,
+    height: u32,
+    output_stride: usize,
+    output_len: usize,
+) -> Result<CodeBlockOutputLayout> {
+    let stride = usize::try_from(width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+    let height = height as usize;
+    let required_len = if height == 0 {
+        0
+    } else {
+        output_stride
+            .checked_mul(height - 1)
+            .and_then(|prefix| prefix.checked_add(stride))
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?
+    };
+    if output_len < required_len {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    let len = stride
+        .checked_mul(height)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+
+    Ok(CodeBlockOutputLayout { stride, len })
+}
+
+fn write_j2k_code_block_output(
+    decode_context: &j2c::bitplane::BitPlaneDecodeContext,
+    job: J2kCodeBlockDecodeJob<'_>,
+    layout: CodeBlockOutputLayout,
+    output: &mut [f32],
+) {
+    for (row_idx, coeff_row) in decode_context
         .coefficient_rows()
         .enumerate()
         .take(job.height as usize)
     {
         let row_start = row_idx * job.output_stride;
-        let output_row = &mut output[row_start..row_start + code_block_stride];
+        let output_row = &mut output[row_start..row_start + layout.stride];
         for (coefficient, sample) in coeff_row.iter().zip(output_row.iter_mut()) {
             let coefficient = apply_roi_maxshift_inverse_i64(coefficient.get_i64(), job.roi_shift);
             *sample = coefficient as f32 * job.dequantization_step;
         }
     }
-
-    Ok(())
 }
 
 /// Adapter scalar classic J2K pass timings for backend experimentation.
@@ -1304,22 +1362,10 @@ pub fn decode_j2k_code_block_scalar_with_workspace_profiled(
     workspace: &mut J2kCodeBlockDecodeWorkspace,
     profile: &mut J2kCodeBlockDecodeProfile,
 ) -> Result<()> {
-    let required_len = if job.height == 0 {
-        0
-    } else {
-        job.output_stride
-            .checked_mul(job.height as usize - 1)
-            .and_then(|prefix| prefix.checked_add(job.width as usize))
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?
-    };
-    if output.len() < required_len {
-        bail!(DecodingError::CodeBlockDecodeFailure);
-    }
-
+    let layout =
+        checked_code_block_output_layout(job.width, job.height, job.output_stride, output.len())?;
     let style = internal_j2k_code_block_style(job.style);
     let sub_band_type = internal_j2k_sub_band_type(job.sub_band_type);
-    let code_block_stride =
-        usize::try_from(job.width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
     let coded_bitplanes = add_roi_shift_to_bitplanes(
         job.total_bitplanes,
         job.roi_shift,
@@ -1345,19 +1391,7 @@ pub fn decode_j2k_code_block_scalar_with_workspace_profiled(
     profile.add_native_stats(stats);
 
     let output_convert_started = profile::profile_now(true);
-    for (row_idx, coeff_row) in workspace
-        .bit_plane_decode_context
-        .coefficient_rows()
-        .enumerate()
-        .take(job.height as usize)
-    {
-        let row_start = row_idx * job.output_stride;
-        let output_row = &mut output[row_start..row_start + code_block_stride];
-        for (coefficient, sample) in coeff_row.iter().zip(output_row.iter_mut()) {
-            let coefficient = apply_roi_maxshift_inverse_i64(coefficient.get_i64(), job.roi_shift);
-            *sample = coefficient as f32 * job.dequantization_step;
-        }
-    }
+    write_j2k_code_block_output(&workspace.bit_plane_decode_context, job, layout, output);
     profile.output_convert_us += profile::elapsed_us(output_convert_started);
 
     Ok(())
@@ -1551,23 +1585,8 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace<const PHASE_LIMIT: u8>(
     output: &mut [f32],
     workspace: &mut HtCodeBlockDecodeWorkspace,
 ) -> Result<()> {
-    let required_len = if job.height == 0 {
-        0
-    } else {
-        job.output_stride
-            .checked_mul(job.height as usize - 1)
-            .and_then(|prefix| prefix.checked_add(job.width as usize))
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?
-    };
-    if output.len() < required_len {
-        bail!(DecodingError::CodeBlockDecodeFailure);
-    }
-    let code_block_stride =
-        usize::try_from(job.width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
-    let code_block_len = code_block_stride
-        .checked_mul(job.height as usize)
-        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-
+    let layout =
+        checked_code_block_output_layout(job.width, job.height, job.output_stride, output.len())?;
     let segments = j2c::ht_block_decode::HtCodeBlockSegments::from_combined_payload(
         job.data,
         job.cleanup_length,
@@ -1575,7 +1594,7 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace<const PHASE_LIMIT: u8>(
     )?;
     let coded_bitplanes = add_roi_shift_to_bitplanes(job.num_bitplanes, job.roi_shift, 31)?;
     workspace.coefficients.clear();
-    workspace.coefficients.resize(code_block_len, 0);
+    workspace.coefficients.resize(layout.len, 0);
     j2c::ht_block_decode::decode_segments_validated_with_scratch_for_phase::<PHASE_LIMIT>(
         &segments,
         job.missing_bit_planes,
@@ -1592,21 +1611,13 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace<const PHASE_LIMIT: u8>(
         false,
     )?;
 
-    for (row_idx, coeff_row) in workspace
-        .coefficients
-        .chunks_exact(code_block_stride)
-        .enumerate()
-        .take(job.height as usize)
-    {
-        let row_start = row_idx * job.output_stride;
-        let output_row = &mut output[row_start..row_start + code_block_stride];
-        for (coefficient, sample) in coeff_row.iter().copied().zip(output_row.iter_mut()) {
-            let coefficient =
-                j2c::ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
-            let coefficient = apply_roi_maxshift_inverse_i32(coefficient, job.roi_shift);
-            *sample = coefficient as f32 * job.dequantization_step;
-        }
-    }
+    write_ht_code_block_output(
+        &workspace.coefficients,
+        job,
+        layout,
+        coded_bitplanes,
+        output,
+    );
 
     Ok(())
 }
@@ -1617,23 +1628,8 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace_profiled<const PHASE_LIM
     workspace: &mut HtCodeBlockDecodeWorkspace,
     profile: &mut HtCodeBlockDecodeProfile,
 ) -> Result<()> {
-    let required_len = if job.height == 0 {
-        0
-    } else {
-        job.output_stride
-            .checked_mul(job.height as usize - 1)
-            .and_then(|prefix| prefix.checked_add(job.width as usize))
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?
-    };
-    if output.len() < required_len {
-        bail!(DecodingError::CodeBlockDecodeFailure);
-    }
-    let code_block_stride =
-        usize::try_from(job.width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
-    let code_block_len = code_block_stride
-        .checked_mul(job.height as usize)
-        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-
+    let layout =
+        checked_code_block_output_layout(job.width, job.height, job.output_stride, output.len())?;
     let segments = j2c::ht_block_decode::HtCodeBlockSegments::from_combined_payload(
         job.data,
         job.cleanup_length,
@@ -1641,7 +1637,7 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace_profiled<const PHASE_LIM
     )?;
     let coded_bitplanes = add_roi_shift_to_bitplanes(job.num_bitplanes, job.roi_shift, 31)?;
     workspace.coefficients.clear();
-    workspace.coefficients.resize(code_block_len, 0);
+    workspace.coefficients.resize(layout.len, 0);
     let mut stats = j2c::ht_block_decode::HtBlockDecodeStats::default();
     j2c::ht_block_decode::decode_segments_validated_with_scratch_for_phase::<PHASE_LIMIT>(
         &segments,
@@ -1660,14 +1656,31 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace_profiled<const PHASE_LIM
     )?;
     profile.add_native_stats(stats);
 
-    for (row_idx, coeff_row) in workspace
-        .coefficients
-        .chunks_exact(code_block_stride)
+    write_ht_code_block_output(
+        &workspace.coefficients,
+        job,
+        layout,
+        coded_bitplanes,
+        output,
+    );
+
+    Ok(())
+}
+
+fn write_ht_code_block_output(
+    coefficients: &[u32],
+    job: HtCodeBlockDecodeJob<'_>,
+    layout: CodeBlockOutputLayout,
+    coded_bitplanes: u8,
+    output: &mut [f32],
+) {
+    for (row_idx, coeff_row) in coefficients
+        .chunks_exact(layout.stride)
         .enumerate()
         .take(job.height as usize)
     {
         let row_start = row_idx * job.output_stride;
-        let output_row = &mut output[row_start..row_start + code_block_stride];
+        let output_row = &mut output[row_start..row_start + layout.stride];
         for (coefficient, sample) in coeff_row.iter().copied().zip(output_row.iter_mut()) {
             let coefficient =
                 j2c::ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
@@ -1675,8 +1688,6 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace_profiled<const PHASE_LIM
             *sample = coefficient as f32 * job.dequantization_step;
         }
     }
-
-    Ok(())
 }
 
 /// Adapter HTJ2K SigProp benchmark state for backend experimentation.
@@ -1910,26 +1921,10 @@ impl<'a> Image<'a> {
     ) -> Result<DecodedComponents<'ctx>> {
         self.validate_component_plane_precision()?;
         let decoded_image = self.prepare_decoded_image(decoder_context)?;
-        let sampling = self.component_plane_sampling(decoded_image.decoded_components.len());
-        let planes = decoded_image
-            .decoded_components
-            .iter()
-            .zip(sampling)
-            .map(|(component, sampling)| ComponentPlane {
-                samples: component.container.truncated(),
-                dimensions: (self.width(), self.height()),
-                bit_depth: component.bit_depth,
-                signed: component.signed,
-                sampling,
-            })
-            .collect();
-
-        Ok(DecodedComponents {
-            dimensions: (self.width(), self.height()),
-            color_space: self.color_space.clone(),
-            has_alpha: self.has_alpha,
-            planes,
-        })
+        Ok(self.borrow_component_planes(
+            decoded_image.decoded_components.as_slice(),
+            (self.width(), self.height()),
+        ))
     }
 
     /// Decode the image into owned native-bit-depth component planes.
@@ -2029,26 +2024,10 @@ impl<'a> Image<'a> {
         self.validate_component_plane_precision()?;
         let decoded_image =
             self.prepare_decoded_image_with_ht_decoder(decoder_context, ht_decoder)?;
-        let sampling = self.component_plane_sampling(decoded_image.decoded_components.len());
-        let planes = decoded_image
-            .decoded_components
-            .iter()
-            .zip(sampling)
-            .map(|(component, sampling)| ComponentPlane {
-                samples: component.container.truncated(),
-                dimensions: (self.width(), self.height()),
-                bit_depth: component.bit_depth,
-                signed: component.signed,
-                sampling,
-            })
-            .collect();
-
-        Ok(DecodedComponents {
-            dimensions: (self.width(), self.height()),
-            color_space: self.color_space.clone(),
-            has_alpha: self.has_alpha,
-            planes,
-        })
+        Ok(self.borrow_component_planes(
+            decoded_image.decoded_components.as_slice(),
+            (self.width(), self.height()),
+        ))
     }
 
     /// Decode borrowed component planes for a requested region using a
@@ -2062,26 +2041,8 @@ impl<'a> Image<'a> {
         self.validate_component_plane_precision()?;
         let (_x, _y, width, height) = roi;
         let decoded_image = self.prepare_decoded_image_with_region(decoder_context, Some(roi))?;
-        let sampling = self.component_plane_sampling(decoded_image.decoded_components.len());
-        let planes = decoded_image
-            .decoded_components
-            .iter()
-            .zip(sampling)
-            .map(|(component, sampling)| ComponentPlane {
-                samples: component.container.truncated(),
-                dimensions: (width, height),
-                bit_depth: component.bit_depth,
-                signed: component.signed,
-                sampling,
-            })
-            .collect();
-
-        Ok(DecodedComponents {
-            dimensions: (width, height),
-            color_space: self.color_space.clone(),
-            has_alpha: self.has_alpha,
-            planes,
-        })
+        Ok(self
+            .borrow_component_planes(decoded_image.decoded_components.as_slice(), (width, height)))
     }
 
     /// Decode a source-coordinate region into owned native-bit-depth component
@@ -2116,26 +2077,8 @@ impl<'a> Image<'a> {
             Some(roi),
             Some(ht_decoder),
         )?;
-        let sampling = self.component_plane_sampling(decoded_image.decoded_components.len());
-        let planes = decoded_image
-            .decoded_components
-            .iter()
-            .zip(sampling)
-            .map(|(component, sampling)| ComponentPlane {
-                samples: component.container.truncated(),
-                dimensions: (width, height),
-                bit_depth: component.bit_depth,
-                signed: component.signed,
-                sampling,
-            })
-            .collect();
-
-        Ok(DecodedComponents {
-            dimensions: (width, height),
-            color_space: self.color_space.clone(),
-            has_alpha: self.has_alpha,
-            planes,
-        })
+        Ok(self
+            .borrow_component_planes(decoded_image.decoded_components.as_slice(), (width, height)))
     }
 
     /// Decode a region of the image and return it as an 8-bit interleaved bitmap.
@@ -2364,6 +2307,32 @@ impl<'a> Image<'a> {
             .collect::<Vec<_>>();
         sampling.resize(plane_count, (1, 1));
         sampling
+    }
+
+    fn borrow_component_planes<'ctx>(
+        &self,
+        components: &'ctx [ComponentData],
+        dimensions: (u32, u32),
+    ) -> DecodedComponents<'ctx> {
+        let sampling = self.component_plane_sampling(components.len());
+        let planes = components
+            .iter()
+            .zip(sampling)
+            .map(|(component, sampling)| ComponentPlane {
+                samples: component.container.truncated(),
+                dimensions,
+                bit_depth: component.bit_depth,
+                signed: component.signed,
+                sampling,
+            })
+            .collect();
+
+        DecodedComponents {
+            dimensions,
+            color_space: self.color_space.clone(),
+            has_alpha: self.has_alpha,
+            planes,
+        }
     }
 
     fn uniform_header_bit_depth(&self) -> Result<u8> {
@@ -2976,26 +2945,7 @@ impl NativeComponentPlane {
         &self.data
     }
 
-    /// Width and height of this decoded plane in output samples.
-    pub fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
-    }
-
-    /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`) for
-    /// the source component represented by this plane.
-    pub fn sampling(&self) -> (u8, u8) {
-        self.sampling
-    }
-
-    /// Bit depth of this component plane.
-    pub fn bit_depth(&self) -> u8 {
-        self.bit_depth
-    }
-
-    /// Whether this component plane stores signed sample values.
-    pub fn signed(&self) -> bool {
-        self.signed
-    }
+    impl_component_plane_metadata_accessors!();
 
     /// Bytes used for each packed little-endian sample in [`Self::data`].
     pub fn bytes_per_sample(&self) -> u8 {
@@ -3048,26 +2998,7 @@ impl<'a> ComponentPlane<'a> {
         self.samples
     }
 
-    /// Width and height of this plane in decoded output samples.
-    pub fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
-    }
-
-    /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`) for
-    /// the source component represented by this plane.
-    pub fn sampling(&self) -> (u8, u8) {
-        self.sampling
-    }
-
-    /// Bit depth of this component plane.
-    pub fn bit_depth(&self) -> u8 {
-        self.bit_depth
-    }
-
-    /// Whether this component plane stores signed sample values.
-    pub fn signed(&self) -> bool {
-        self.signed
-    }
+    impl_component_plane_metadata_accessors!();
 }
 
 /// Borrowed decoded component planes for an image.
@@ -3761,13 +3692,7 @@ mod tests {
         let height = 64u32;
         let sample_count = width as usize * height as usize;
         let total_bitplanes = 12;
-        let style = J2kCodeBlockStyle {
-            selective_arithmetic_coding_bypass: false,
-            reset_context_probabilities: false,
-            termination_on_each_pass: false,
-            vertically_causal_context: false,
-            segmentation_symbols: false,
-        };
+        let style = default_classic_test_style();
         let coefficients = (0..sample_count)
             .map(|idx| {
                 let value = i32::try_from((idx * 37) % 4095).expect("sample value fits i32") - 2048;
@@ -3787,21 +3712,7 @@ mod tests {
             style,
         )
         .expect("encode classic block");
-        let job = J2kCodeBlockDecodeJob {
-            data: &encoded.data,
-            segments: &encoded.segments,
-            width,
-            height,
-            output_stride: width as usize,
-            missing_bit_planes: encoded.missing_bit_planes,
-            number_of_coding_passes: encoded.number_of_coding_passes,
-            total_bitplanes,
-            roi_shift: 0,
-            sub_band_type: J2kSubBandType::LowLow,
-            style,
-            strict: true,
-            dequantization_step: 1.0,
-        };
+        let job = classic_low_low_decode_job(&encoded, width, height, total_bitplanes, style);
         let mut expected = vec![0.0_f32; sample_count];
         let mut actual = vec![0.0_f32; sample_count];
         let mut profile = J2kCodeBlockDecodeProfile::default();
@@ -3817,13 +3728,7 @@ mod tests {
     #[test]
     fn classic_scalar_workspace_reuse_matches_fresh_decode() {
         let total_bitplanes = 6;
-        let style = J2kCodeBlockStyle {
-            selective_arithmetic_coding_bypass: false,
-            reset_context_probabilities: false,
-            termination_on_each_pass: false,
-            vertically_causal_context: false,
-            segmentation_symbols: false,
-        };
+        let style = default_classic_test_style();
         let mut workspace = J2kCodeBlockDecodeWorkspace::default();
 
         for (width, height, seed) in [(8, 8, 0x31), (4, 16, 0x47)] {
@@ -3846,21 +3751,7 @@ mod tests {
                 style,
             )
             .expect("encode classic block");
-            let job = J2kCodeBlockDecodeJob {
-                data: &encoded.data,
-                segments: &encoded.segments,
-                width,
-                height,
-                output_stride: width as usize,
-                missing_bit_planes: encoded.missing_bit_planes,
-                number_of_coding_passes: encoded.number_of_coding_passes,
-                total_bitplanes,
-                roi_shift: 0,
-                sub_band_type: J2kSubBandType::LowLow,
-                style,
-                strict: true,
-                dequantization_step: 1.0,
-            };
+            let job = classic_low_low_decode_job(&encoded, width, height, total_bitplanes, style);
             let mut fresh = vec![0.0_f32; width as usize * height as usize];
             let mut reused = vec![0.0_f32; width as usize * height as usize];
 
@@ -3869,6 +3760,40 @@ mod tests {
                 .expect("workspace classic decode");
 
             assert_eq!(reused, fresh);
+        }
+    }
+
+    fn default_classic_test_style() -> J2kCodeBlockStyle {
+        J2kCodeBlockStyle {
+            selective_arithmetic_coding_bypass: false,
+            reset_context_probabilities: false,
+            termination_on_each_pass: false,
+            vertically_causal_context: false,
+            segmentation_symbols: false,
+        }
+    }
+
+    fn classic_low_low_decode_job<'a>(
+        encoded: &'a EncodedJ2kCodeBlock,
+        width: u32,
+        height: u32,
+        total_bitplanes: u8,
+        style: J2kCodeBlockStyle,
+    ) -> J2kCodeBlockDecodeJob<'a> {
+        J2kCodeBlockDecodeJob {
+            data: &encoded.data,
+            segments: &encoded.segments,
+            width,
+            height,
+            output_stride: width as usize,
+            missing_bit_planes: encoded.missing_bit_planes,
+            number_of_coding_passes: encoded.number_of_coding_passes,
+            total_bitplanes,
+            roi_shift: 0,
+            sub_band_type: J2kSubBandType::LowLow,
+            style,
+            strict: true,
+            dequantization_step: 1.0,
         }
     }
 

@@ -2413,95 +2413,87 @@ impl PrecomputedDwtGeometryView for J2kForwardDwt97Output {
     }
 }
 
-fn precomputed_level_count(components: &[PrecomputedHtj2k53Component]) -> Result<u8, &'static str> {
-    let first = components
-        .first()
-        .ok_or("unsupported component count")?
-        .dwt
-        .levels
-        .len();
+fn uniform_level_count<T>(
+    components: &[T],
+    len_of: impl Fn(&T) -> usize,
+    first_to_levels: impl Fn(usize) -> Result<usize, &'static str>,
+    mismatch: &'static str,
+) -> Result<u8, &'static str> {
+    let first_len = len_of(components.first().ok_or("unsupported component count")?);
+    let levels = first_to_levels(first_len)?;
     if components
         .iter()
-        .any(|component| component.dwt.levels.len() != first)
+        .any(|component| len_of(component) != first_len)
     {
-        return Err("precomputed components must use the same decomposition level count");
+        return Err(mismatch);
     }
-    u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
+    u8::try_from(levels).map_err(|_| "decomposition level count exceeds u8")
+}
+
+fn dwt_levels_only(levels: usize) -> Result<usize, &'static str> {
+    Ok(levels)
+}
+
+fn precomputed_level_count(components: &[PrecomputedHtj2k53Component]) -> Result<u8, &'static str> {
+    uniform_level_count(
+        components,
+        |component| component.dwt.levels.len(),
+        dwt_levels_only,
+        "precomputed components must use the same decomposition level count",
+    )
 }
 
 fn precomputed_97_level_count(
     components: &[PrecomputedHtj2k97Component],
 ) -> Result<u8, &'static str> {
-    let first = components
-        .first()
-        .ok_or("unsupported component count")?
-        .dwt
-        .levels
-        .len();
-    if components
-        .iter()
-        .any(|component| component.dwt.levels.len() != first)
-    {
-        return Err("precomputed components must use the same decomposition level count");
-    }
-    u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
+    uniform_level_count(
+        components,
+        |component| component.dwt.levels.len(),
+        dwt_levels_only,
+        "precomputed components must use the same decomposition level count",
+    )
 }
 
 fn prequantized_97_level_count(
     components: &[PrequantizedHtj2k97Component],
 ) -> Result<u8, &'static str> {
-    let first = components
-        .first()
-        .ok_or("unsupported component count")?
-        .resolutions
-        .len()
-        .checked_sub(1)
-        .ok_or("prequantized components must contain at least one decomposition level")?;
-    if components
-        .iter()
-        .any(|component| component.resolutions.len() != first + 1)
-    {
-        return Err("prequantized components must use the same decomposition level count");
-    }
-    u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
+    uniform_level_count(
+        components,
+        |component| component.resolutions.len(),
+        |len| {
+            len.checked_sub(1)
+                .ok_or("prequantized components must contain at least one decomposition level")
+        },
+        "prequantized components must use the same decomposition level count",
+    )
 }
 
 fn preencoded_97_level_count(
     components: &[PreencodedHtj2k97Component],
 ) -> Result<u8, &'static str> {
-    let first = components
-        .first()
-        .ok_or("unsupported component count")?
-        .resolutions
-        .len()
-        .checked_sub(1)
-        .ok_or("preencoded components must contain at least one decomposition level")?;
-    if components
-        .iter()
-        .any(|component| component.resolutions.len() != first + 1)
-    {
-        return Err("preencoded components must use the same decomposition level count");
-    }
-    u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
+    uniform_level_count(
+        components,
+        |component| component.resolutions.len(),
+        |len| {
+            len.checked_sub(1)
+                .ok_or("preencoded components must contain at least one decomposition level")
+        },
+        "preencoded components must use the same decomposition level count",
+    )
 }
 
 fn preencoded_compact_97_level_count(
     components: &[PreencodedHtj2k97CompactComponent],
 ) -> Result<u8, &'static str> {
-    let first = components
-        .first()
-        .ok_or("unsupported component count")?
-        .resolutions
-        .len()
-        .checked_sub(1)
-        .ok_or("preencoded components must contain at least one decomposition level")?;
-    if components
-        .iter()
-        .any(|component| component.resolutions.len() != first + 1)
-    {
-        return Err("preencoded components must use the same decomposition level count");
-    }
-    u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
+    uniform_level_count(
+        components,
+        |component| component.resolutions.len(),
+        |len| {
+            len.checked_sub(1)
+                .ok_or("preencoded components must contain at least one decomposition level")
+        },
+        "preencoded components must use the same decomposition level count",
+    )
 }
 
 fn validate_prequantized_htj2k97_image(

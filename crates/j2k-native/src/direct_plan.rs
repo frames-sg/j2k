@@ -109,39 +109,17 @@ pub struct J2kOwnedCodeBlockBatchJob {
     pub dequantization_step: f32,
 }
 
-/// Adapter owned HTJ2K batched code-block decode job.
-#[derive(Debug, Clone)]
-pub struct HtOwnedCodeBlockBatchJob {
-    /// X offset within the target sub-band coefficient buffer.
-    pub output_x: u32,
-    /// Y offset within the target sub-band coefficient buffer.
-    pub output_y: u32,
-    /// Combined cleanup/refinement bytes for the code block.
-    pub data: Vec<u8>,
-    /// Cleanup segment length in bytes.
-    pub cleanup_length: u32,
-    /// Refinement segment length in bytes.
-    pub refinement_length: u32,
-    /// Code-block width in samples.
-    pub width: u32,
-    /// Code-block height in samples.
-    pub height: u32,
-    /// Output row stride, in samples, for the target sub-band storage.
-    pub output_stride: usize,
-    /// Missing most-significant bit planes for this code block.
-    pub missing_bit_planes: u8,
-    /// Number of coding passes present for this code block.
-    pub number_of_coding_passes: u8,
-    /// Total coded bitplanes for the parent sub-band.
-    pub num_bitplanes: u8,
-    /// Region-of-interest maxshift value from RGN marker metadata.
-    pub roi_shift: u8,
-    /// Whether vertically causal context was enabled.
-    pub stripe_causal: bool,
-    /// Whether strict decode validation is enabled for the parent image.
-    pub strict: bool,
-    /// Dequantization step to apply to decoded coefficients.
-    pub dequantization_step: f32,
+define_ht_code_block_job! {
+    /// Adapter owned HTJ2K batched code-block decode job.
+    #[derive(Debug, Clone)]
+    pub struct HtOwnedCodeBlockBatchJob {
+        /// X offset within the target sub-band coefficient buffer.
+        pub output_x: u32,
+        /// Y offset within the target sub-band coefficient buffer.
+        pub output_y: u32,
+        /// Combined cleanup/refinement bytes for the code block.
+        pub data: Vec<u8>,
+    }
 }
 
 /// Adapter single grayscale IDWT step for a direct device plan.

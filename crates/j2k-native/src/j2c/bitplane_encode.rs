@@ -324,26 +324,6 @@ fn prepare_padded_coefficients(
     (magnitudes, states)
 }
 
-#[allow(dead_code)]
-pub(crate) fn encode_code_block_with_style(
-    coefficients: &[i32],
-    width: u32,
-    height: u32,
-    sub_band_type: SubBandType,
-    total_bitplanes: u8,
-    style: &CodeBlockStyle,
-) -> EncodedCodeBlock {
-    let coefficients = i32_coefficients_to_i64(coefficients);
-    encode_code_block_with_style_i64(
-        &coefficients,
-        width,
-        height,
-        sub_band_type,
-        total_bitplanes,
-        style,
-    )
-}
-
 pub(crate) fn encode_code_block_with_style_i64(
     coefficients: &[i64],
     width: u32,

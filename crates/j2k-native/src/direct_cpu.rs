@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::ops::Range;
 
 use crate::error::{bail, DecodingError, Result};
 use crate::j2c::idwt;
@@ -279,30 +280,21 @@ fn execute_classic_sub_band(
     plan: &J2kOwnedSubBandPlan,
     bands: &mut DirectComponentBandScratch,
 ) -> Result<()> {
-    let required_len = checked_area(plan.width, plan.height)?;
-    let band_index = bands.prepare_band(plan.band_id, plan.rect, required_len);
-    let output = &mut bands.bands[band_index].coefficients;
-    let sub_band_width =
-        usize::try_from(plan.width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+    let (output, sub_band_width) =
+        prepare_sub_band_output(bands, plan.band_id, plan.rect, plan.width, plan.height)?;
 
     for job in &plan.jobs {
-        let base_idx = checked_block_base(job.output_x, job.output_y, sub_band_width)?;
-        let block_len = checked_block_output_len(job.output_stride, job.width, job.height)?;
-        let end_idx = base_idx
-            .checked_add(block_len)
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-        if end_idx > output.len()
-            || job
-                .output_x
-                .checked_add(job.width)
-                .is_none_or(|x| x > plan.width)
-            || job
-                .output_y
-                .checked_add(job.height)
-                .is_none_or(|y| y > plan.height)
-        {
-            bail!(DecodingError::CodeBlockDecodeFailure);
-        }
+        let output_range = checked_sub_band_job_output_range(
+            job.output_x,
+            job.output_y,
+            job.output_stride,
+            job.width,
+            job.height,
+            sub_band_width,
+            plan.width,
+            plan.height,
+            output.len(),
+        )?;
 
         let code_block = J2kCodeBlockDecodeJob {
             data: &job.data,
@@ -319,7 +311,7 @@ fn execute_classic_sub_band(
             strict: job.strict,
             dequantization_step: job.dequantization_step,
         };
-        decode_j2k_code_block_scalar(code_block, &mut output[base_idx..end_idx])?;
+        decode_j2k_code_block_scalar(code_block, &mut output[output_range])?;
     }
     Ok(())
 }
@@ -328,30 +320,21 @@ fn execute_ht_sub_band(
     plan: &HtOwnedSubBandPlan,
     bands: &mut DirectComponentBandScratch,
 ) -> Result<()> {
-    let required_len = checked_area(plan.width, plan.height)?;
-    let band_index = bands.prepare_band(plan.band_id, plan.rect, required_len);
-    let output = &mut bands.bands[band_index].coefficients;
-    let sub_band_width =
-        usize::try_from(plan.width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+    let (output, sub_band_width) =
+        prepare_sub_band_output(bands, plan.band_id, plan.rect, plan.width, plan.height)?;
 
     for job in &plan.jobs {
-        let base_idx = checked_block_base(job.output_x, job.output_y, sub_band_width)?;
-        let block_len = checked_block_output_len(job.output_stride, job.width, job.height)?;
-        let end_idx = base_idx
-            .checked_add(block_len)
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-        if end_idx > output.len()
-            || job
-                .output_x
-                .checked_add(job.width)
-                .is_none_or(|x| x > plan.width)
-            || job
-                .output_y
-                .checked_add(job.height)
-                .is_none_or(|y| y > plan.height)
-        {
-            bail!(DecodingError::CodeBlockDecodeFailure);
-        }
+        let output_range = checked_sub_band_job_output_range(
+            job.output_x,
+            job.output_y,
+            job.output_stride,
+            job.width,
+            job.height,
+            sub_band_width,
+            plan.width,
+            plan.height,
+            output.len(),
+        )?;
 
         let code_block = HtCodeBlockDecodeJob {
             data: &job.data,
@@ -368,9 +351,24 @@ fn execute_ht_sub_band(
             strict: job.strict,
             dequantization_step: job.dequantization_step,
         };
-        decode_ht_code_block_scalar(code_block, &mut output[base_idx..end_idx])?;
+        decode_ht_code_block_scalar(code_block, &mut output[output_range])?;
     }
     Ok(())
+}
+
+fn prepare_sub_band_output(
+    bands: &mut DirectComponentBandScratch,
+    band_id: J2kDirectBandId,
+    rect: J2kRect,
+    width: u32,
+    height: u32,
+) -> Result<(&mut [f32], usize)> {
+    let required_len = checked_area(width, height)?;
+    let band_index = bands.prepare_band(band_id, rect, required_len);
+    let output = bands.bands[band_index].coefficients.as_mut_slice();
+    let sub_band_width =
+        usize::try_from(width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+    Ok((output, sub_band_width))
 }
 
 fn execute_idwt_step(
@@ -617,6 +615,32 @@ fn checked_block_base(output_x: u32, output_y: u32, stride: usize) -> Result<usi
         .and_then(|y| y.checked_mul(stride))
         .and_then(|base| base.checked_add(output_x as usize))
         .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn checked_sub_band_job_output_range(
+    output_x: u32,
+    output_y: u32,
+    output_stride: usize,
+    width: u32,
+    height: u32,
+    sub_band_width: usize,
+    plan_width: u32,
+    plan_height: u32,
+    output_len: usize,
+) -> Result<Range<usize>> {
+    let base_idx = checked_block_base(output_x, output_y, sub_band_width)?;
+    let block_len = checked_block_output_len(output_stride, width, height)?;
+    let end_idx = base_idx
+        .checked_add(block_len)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    if end_idx > output_len
+        || output_x.checked_add(width).is_none_or(|x| x > plan_width)
+        || output_y.checked_add(height).is_none_or(|y| y > plan_height)
+    {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    Ok(base_idx..end_idx)
 }
 
 fn checked_block_output_len(stride: usize, width: u32, height: u32) -> Result<usize> {
