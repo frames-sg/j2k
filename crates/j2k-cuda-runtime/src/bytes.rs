@@ -72,142 +72,102 @@ impl_cuda_gpu_abi! {
     CudaJ2kStoreRgb16MctJob,
 }
 
-pub(crate) fn f32_slice_as_bytes(samples: &[f32]) -> &[u8] {
-    <f32 as GpuAbi>::slice_as_bytes(samples)
+macro_rules! gpu_ref_bytes {
+    ($($(#[$attr:meta])* $name:ident: $ty:ty;)+) => {
+        $(
+            $(#[$attr])*
+            pub(crate) fn $name(value: &$ty) -> &[u8] {
+                <$ty as GpuAbi>::as_bytes(value)
+            }
+        )+
+    };
 }
 
-pub(crate) fn f32_slice_as_bytes_mut(samples: &mut [f32]) -> &mut [u8] {
-    <f32 as GpuAbi>::slice_as_bytes_mut(samples)
+macro_rules! gpu_slice_bytes {
+    ($($(#[$attr:meta])* $name:ident: $ty:ty;)+) => {
+        $(
+            $(#[$attr])*
+            pub(crate) fn $name(values: &[$ty]) -> &[u8] {
+                <$ty as GpuAbi>::slice_as_bytes(values)
+            }
+        )+
+    };
 }
 
-pub(crate) fn i16_slice_as_bytes(samples: &[i16]) -> &[u8] {
-    <i16 as GpuAbi>::slice_as_bytes(samples)
+macro_rules! gpu_slice_bytes_mut {
+    ($($(#[$attr:meta])* $name:ident: $ty:ty;)+) => {
+        $(
+            $(#[$attr])*
+            pub(crate) fn $name(values: &mut [$ty]) -> &mut [u8] {
+                <$ty as GpuAbi>::slice_as_bytes_mut(values)
+            }
+        )+
+    };
 }
 
-pub(crate) fn i32_slice_as_bytes(samples: &[i32]) -> &[u8] {
-    <i32 as GpuAbi>::slice_as_bytes(samples)
+gpu_ref_bytes! {
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    cuda_jpeg_huffman_table_as_bytes: CudaJpegHuffmanTable;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    cuda_jpeg_baseline_encode_huffman_table_as_bytes: CudaJpegBaselineEncodeHuffmanTable;
+    store_gray8_job_as_bytes: CudaJ2kStoreGray8Job;
+    store_gray16_job_as_bytes: CudaJ2kStoreGray16Job;
+    inverse_mct_job_as_bytes: CudaJ2kInverseMctJob;
+    store_rgb8_job_as_bytes: CudaJ2kStoreRgb8Job;
+    store_rgb16_job_as_bytes: CudaJ2kStoreRgb16Job;
+    store_rgb16_mct_job_as_bytes: CudaJ2kStoreRgb16MctJob;
+    htj2k_encode_params_as_bytes: CudaHtj2kEncodeParams;
+    htj2k_encode_status_as_bytes: CudaHtj2kEncodeStatus;
+    idwt_job_as_bytes: CudaJ2kIdwtJob;
 }
 
-pub(crate) fn i32_slice_as_bytes_mut(samples: &mut [i32]) -> &mut [u8] {
-    <i32 as GpuAbi>::slice_as_bytes_mut(samples)
+gpu_slice_bytes! {
+    f32_slice_as_bytes: f32;
+    i16_slice_as_bytes: i16;
+    i32_slice_as_bytes: i32;
+    u16_slice_as_bytes: u16;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    cuda_jpeg_entropy_checkpoints_as_bytes: CudaJpegEntropyCheckpoint;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    cuda_jpeg_decode_statuses_as_bytes: CudaJpegDecodeStatus;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    cuda_jpeg_entropy_sync_states_as_bytes: CudaJpegEntropySyncState;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    cuda_jpeg_entropy_overflow_states_as_bytes: CudaJpegEntropyOverflowState;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    cuda_jpeg_baseline_encode_params_as_bytes: CudaJpegBaselineEncodeParams;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    cuda_jpeg_baseline_encode_statuses_as_bytes: CudaJpegBaselineEncodeStatus;
+    store_rgb8_mct_batch_jobs_as_bytes: CudaJ2kStoreRgb8MctBatchJob;
+    htj2k_encode_jobs_as_bytes: CudaHtj2kEncodeKernelJob;
+    htj2k_encode_multi_input_jobs_as_bytes: CudaHtj2kEncodeMultiInputKernelJob;
+    htj2k_encode_compact_jobs_as_bytes: CudaHtj2kEncodeCompactJob;
+    htj2k_packetization_packets_as_bytes: CudaHtj2kPacketizationKernelPacket;
+    htj2k_packetization_subbands_as_bytes: CudaHtj2kPacketizationSubband;
+    htj2k_packetization_blocks_as_bytes: CudaHtj2kPacketizationBlock;
+    htj2k_packetization_subband_tag_states_as_bytes: CudaHtj2kPacketizationSubbandTagState;
+    htj2k_packetization_tag_nodes_as_bytes: CudaHtj2kPacketizationTagNodeState;
+    htj2k_packetization_statuses_as_bytes: CudaHtj2kPacketizationStatus;
+    htj2k_jobs_as_bytes: CudaHtj2kCodeBlockKernelJob;
+    htj2k_cleanup_multi_jobs_as_bytes: CudaHtj2kCleanupMultiKernelJob;
+    htj2k_dequantize_jobs_as_bytes: CudaHtj2kDequantizeKernelJob;
+    idwt_multi_jobs_as_bytes: CudaJ2kIdwtMultiKernelJob;
 }
 
-pub(crate) fn u16_slice_as_bytes(samples: &[u16]) -> &[u8] {
-    <u16 as GpuAbi>::slice_as_bytes(samples)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_huffman_table_as_bytes(table: &CudaJpegHuffmanTable) -> &[u8] {
-    <CudaJpegHuffmanTable as GpuAbi>::as_bytes(table)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_entropy_checkpoints_as_bytes(
-    checkpoints: &[CudaJpegEntropyCheckpoint],
-) -> &[u8] {
-    <CudaJpegEntropyCheckpoint as GpuAbi>::slice_as_bytes(checkpoints)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_decode_statuses_as_bytes(statuses: &[CudaJpegDecodeStatus]) -> &[u8] {
-    <CudaJpegDecodeStatus as GpuAbi>::slice_as_bytes(statuses)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_decode_statuses_as_bytes_mut(
-    statuses: &mut [CudaJpegDecodeStatus],
-) -> &mut [u8] {
-    <CudaJpegDecodeStatus as GpuAbi>::slice_as_bytes_mut(statuses)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_entropy_sync_states_as_bytes(states: &[CudaJpegEntropySyncState]) -> &[u8] {
-    <CudaJpegEntropySyncState as GpuAbi>::slice_as_bytes(states)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_entropy_sync_states_as_bytes_mut(
-    states: &mut [CudaJpegEntropySyncState],
-) -> &mut [u8] {
-    <CudaJpegEntropySyncState as GpuAbi>::slice_as_bytes_mut(states)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_entropy_overflow_states_as_bytes(
-    states: &[CudaJpegEntropyOverflowState],
-) -> &[u8] {
-    <CudaJpegEntropyOverflowState as GpuAbi>::slice_as_bytes(states)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_entropy_overflow_states_as_bytes_mut(
-    states: &mut [CudaJpegEntropyOverflowState],
-) -> &mut [u8] {
-    <CudaJpegEntropyOverflowState as GpuAbi>::slice_as_bytes_mut(states)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_baseline_encode_params_as_bytes(
-    params: &[CudaJpegBaselineEncodeParams],
-) -> &[u8] {
-    <CudaJpegBaselineEncodeParams as GpuAbi>::slice_as_bytes(params)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_baseline_encode_huffman_table_as_bytes(
-    table: &CudaJpegBaselineEncodeHuffmanTable,
-) -> &[u8] {
-    <CudaJpegBaselineEncodeHuffmanTable as GpuAbi>::as_bytes(table)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_baseline_encode_statuses_as_bytes(
-    statuses: &[CudaJpegBaselineEncodeStatus],
-) -> &[u8] {
-    <CudaJpegBaselineEncodeStatus as GpuAbi>::slice_as_bytes(statuses)
-}
-
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
-pub(crate) fn cuda_jpeg_baseline_encode_statuses_as_bytes_mut(
-    statuses: &mut [CudaJpegBaselineEncodeStatus],
-) -> &mut [u8] {
-    <CudaJpegBaselineEncodeStatus as GpuAbi>::slice_as_bytes_mut(statuses)
-}
-
-pub(crate) fn store_gray8_job_as_bytes(job: &CudaJ2kStoreGray8Job) -> &[u8] {
-    <CudaJ2kStoreGray8Job as GpuAbi>::as_bytes(job)
-}
-
-pub(crate) fn store_gray16_job_as_bytes(job: &CudaJ2kStoreGray16Job) -> &[u8] {
-    <CudaJ2kStoreGray16Job as GpuAbi>::as_bytes(job)
-}
-
-pub(crate) fn inverse_mct_job_as_bytes(job: &CudaJ2kInverseMctJob) -> &[u8] {
-    <CudaJ2kInverseMctJob as GpuAbi>::as_bytes(job)
-}
-
-pub(crate) fn store_rgb8_job_as_bytes(job: &CudaJ2kStoreRgb8Job) -> &[u8] {
-    <CudaJ2kStoreRgb8Job as GpuAbi>::as_bytes(job)
-}
-
-pub(crate) fn store_rgb16_job_as_bytes(job: &CudaJ2kStoreRgb16Job) -> &[u8] {
-    <CudaJ2kStoreRgb16Job as GpuAbi>::as_bytes(job)
-}
-
-pub(crate) fn store_rgb8_mct_batch_jobs_as_bytes(jobs: &[CudaJ2kStoreRgb8MctBatchJob]) -> &[u8] {
-    <CudaJ2kStoreRgb8MctBatchJob as GpuAbi>::slice_as_bytes(jobs)
-}
-
-pub(crate) fn store_rgb16_mct_job_as_bytes(job: &CudaJ2kStoreRgb16MctJob) -> &[u8] {
-    <CudaJ2kStoreRgb16MctJob as GpuAbi>::as_bytes(job)
-}
-
-pub(crate) fn htj2k_encode_params_as_bytes(params: &CudaHtj2kEncodeParams) -> &[u8] {
-    <CudaHtj2kEncodeParams as GpuAbi>::as_bytes(params)
-}
-
-pub(crate) fn htj2k_encode_status_as_bytes(status: &CudaHtj2kEncodeStatus) -> &[u8] {
-    <CudaHtj2kEncodeStatus as GpuAbi>::as_bytes(status)
+gpu_slice_bytes_mut! {
+    f32_slice_as_bytes_mut: f32;
+    i32_slice_as_bytes_mut: i32;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    cuda_jpeg_decode_statuses_as_bytes_mut: CudaJpegDecodeStatus;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    cuda_jpeg_entropy_sync_states_as_bytes_mut: CudaJpegEntropySyncState;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    cuda_jpeg_entropy_overflow_states_as_bytes_mut: CudaJpegEntropyOverflowState;
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    cuda_jpeg_baseline_encode_statuses_as_bytes_mut: CudaJpegBaselineEncodeStatus;
+    htj2k_encode_statuses_as_bytes_mut: CudaHtj2kEncodeStatus;
+    htj2k_packetization_statuses_as_bytes_mut: CudaHtj2kPacketizationStatus;
+    htj2k_statuses_as_bytes_mut: CudaHtj2kStatus;
 }
 
 pub(crate) fn htj2k_encode_status_as_bytes_mut(status: &mut CudaHtj2kEncodeStatus) -> &mut [u8] {
@@ -220,92 +180,8 @@ pub(crate) fn htj2k_encode_statuses_byte_len(count: usize) -> Result<usize, Cuda
         .ok_or(CudaError::LengthTooLarge { len: count })
 }
 
-pub(crate) fn htj2k_encode_jobs_as_bytes(jobs: &[CudaHtj2kEncodeKernelJob]) -> &[u8] {
-    <CudaHtj2kEncodeKernelJob as GpuAbi>::slice_as_bytes(jobs)
-}
-
-pub(crate) fn htj2k_encode_multi_input_jobs_as_bytes(
-    jobs: &[CudaHtj2kEncodeMultiInputKernelJob],
-) -> &[u8] {
-    <CudaHtj2kEncodeMultiInputKernelJob as GpuAbi>::slice_as_bytes(jobs)
-}
-
-pub(crate) fn htj2k_encode_compact_jobs_as_bytes(jobs: &[CudaHtj2kEncodeCompactJob]) -> &[u8] {
-    <CudaHtj2kEncodeCompactJob as GpuAbi>::slice_as_bytes(jobs)
-}
-
-pub(crate) fn htj2k_encode_statuses_as_bytes_mut(
-    statuses: &mut [CudaHtj2kEncodeStatus],
-) -> &mut [u8] {
-    <CudaHtj2kEncodeStatus as GpuAbi>::slice_as_bytes_mut(statuses)
-}
-
-pub(crate) fn htj2k_packetization_packets_as_bytes(
-    packets: &[CudaHtj2kPacketizationKernelPacket],
-) -> &[u8] {
-    <CudaHtj2kPacketizationKernelPacket as GpuAbi>::slice_as_bytes(packets)
-}
-
-pub(crate) fn htj2k_packetization_subbands_as_bytes(
-    subbands: &[CudaHtj2kPacketizationSubband],
-) -> &[u8] {
-    <CudaHtj2kPacketizationSubband as GpuAbi>::slice_as_bytes(subbands)
-}
-
-pub(crate) fn htj2k_packetization_blocks_as_bytes(blocks: &[CudaHtj2kPacketizationBlock]) -> &[u8] {
-    <CudaHtj2kPacketizationBlock as GpuAbi>::slice_as_bytes(blocks)
-}
-
-pub(crate) fn htj2k_packetization_subband_tag_states_as_bytes(
-    states: &[CudaHtj2kPacketizationSubbandTagState],
-) -> &[u8] {
-    <CudaHtj2kPacketizationSubbandTagState as GpuAbi>::slice_as_bytes(states)
-}
-
-pub(crate) fn htj2k_packetization_tag_nodes_as_bytes(
-    nodes: &[CudaHtj2kPacketizationTagNodeState],
-) -> &[u8] {
-    <CudaHtj2kPacketizationTagNodeState as GpuAbi>::slice_as_bytes(nodes)
-}
-
-pub(crate) fn htj2k_packetization_statuses_as_bytes(
-    statuses: &[CudaHtj2kPacketizationStatus],
-) -> &[u8] {
-    <CudaHtj2kPacketizationStatus as GpuAbi>::slice_as_bytes(statuses)
-}
-
-pub(crate) fn htj2k_packetization_statuses_as_bytes_mut(
-    statuses: &mut [CudaHtj2kPacketizationStatus],
-) -> &mut [u8] {
-    <CudaHtj2kPacketizationStatus as GpuAbi>::slice_as_bytes_mut(statuses)
-}
-
-pub(crate) fn htj2k_jobs_as_bytes(jobs: &[CudaHtj2kCodeBlockKernelJob]) -> &[u8] {
-    <CudaHtj2kCodeBlockKernelJob as GpuAbi>::slice_as_bytes(jobs)
-}
-
-pub(crate) fn htj2k_cleanup_multi_jobs_as_bytes(jobs: &[CudaHtj2kCleanupMultiKernelJob]) -> &[u8] {
-    <CudaHtj2kCleanupMultiKernelJob as GpuAbi>::slice_as_bytes(jobs)
-}
-
-pub(crate) fn htj2k_dequantize_jobs_as_bytes(jobs: &[CudaHtj2kDequantizeKernelJob]) -> &[u8] {
-    <CudaHtj2kDequantizeKernelJob as GpuAbi>::slice_as_bytes(jobs)
-}
-
 pub(crate) fn htj2k_statuses_byte_len(count: usize) -> Result<usize, CudaError> {
     count
         .checked_mul(std::mem::size_of::<CudaHtj2kStatus>())
         .ok_or(CudaError::LengthTooLarge { len: count })
-}
-
-pub(crate) fn htj2k_statuses_as_bytes_mut(statuses: &mut [CudaHtj2kStatus]) -> &mut [u8] {
-    <CudaHtj2kStatus as GpuAbi>::slice_as_bytes_mut(statuses)
-}
-
-pub(crate) fn idwt_job_as_bytes(job: &CudaJ2kIdwtJob) -> &[u8] {
-    <CudaJ2kIdwtJob as GpuAbi>::as_bytes(job)
-}
-
-pub(crate) fn idwt_multi_jobs_as_bytes(jobs: &[CudaJ2kIdwtMultiKernelJob]) -> &[u8] {
-    <CudaJ2kIdwtMultiKernelJob as GpuAbi>::slice_as_bytes(jobs)
 }

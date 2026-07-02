@@ -14,6 +14,10 @@ use j2k_core::{
 };
 use j2k_cuda::{Codec, CudaSession, J2kDecoder, SurfaceResidency};
 use j2k_native::{encode_htj2k, EncodeOptions};
+use j2k_test_support::{
+    canonicalize_manifest_row_path, fnv1a64_hex, manifest_column, manifest_field,
+    manifest_optional_value, optional_manifest_column,
+};
 
 const TILE_DIM: u32 = 512;
 const BATCH_SIZES: &[usize] = &[8, 16, 32, 64];
@@ -24,6 +28,7 @@ const DECODE_MEASUREMENT: Duration = Duration::from_secs(1);
 const MIXED_BATCH_FULL_CORPUS_MAX_BATCH: usize = 16;
 const MIXED_BATCH_TILE_MIN_PIXELS: u64 = 64 * 64;
 const MIXED_BATCH_TILE_MAX_PIXELS: u64 = 1024 * 1024;
+const CUDA_DECODE_MANIFEST_LABEL: &str = "CUDA decode manifest";
 
 struct DecodeBenchCase {
     id: String,
@@ -705,7 +710,7 @@ fn cuda_decode_manifest() -> Result<Option<CudaDecodeManifest>, String> {
         .next()
         .ok_or_else(|| format!("CUDA decode manifest {} is empty", path.display()))?;
     let headers = header.split('\t').collect::<Vec<_>>();
-    let path_index = manifest_column(&headers, "path")?;
+    let path_index = manifest_column(&headers, CUDA_DECODE_MANIFEST_LABEL, "path")?;
     let hash_index = optional_manifest_column(&headers, "input_fnv1a64");
     let codec_index = optional_manifest_column(&headers, "codec");
     let container_index = optional_manifest_column(&headers, "container");
@@ -716,24 +721,43 @@ fn cuda_decode_manifest() -> Result<Option<CudaDecodeManifest>, String> {
         }
         let fields = line.split('\t').collect::<Vec<_>>();
         let row_number = line_index + 2;
-        let raw_path = manifest_field(&fields, path_index, "path", row_number)?;
+        let raw_path = manifest_field(
+            &fields,
+            CUDA_DECODE_MANIFEST_LABEL,
+            path_index,
+            "path",
+            row_number,
+        )?;
         let canonical_path = canonicalize_manifest_row_path(
             raw_path,
             base,
             &relocation_roots,
-            "CUDA decode manifest",
+            CUDA_DECODE_MANIFEST_LABEL,
             &path,
             row_number,
         )?;
         let entry = CudaDecodeManifestEntry {
             input_fnv1a64: manifest_optional_value(
                 &fields,
+                CUDA_DECODE_MANIFEST_LABEL,
                 hash_index,
                 "input_fnv1a64",
                 row_number,
             )?,
-            codec: manifest_optional_value(&fields, codec_index, "codec", row_number)?,
-            container: manifest_optional_value(&fields, container_index, "container", row_number)?,
+            codec: manifest_optional_value(
+                &fields,
+                CUDA_DECODE_MANIFEST_LABEL,
+                codec_index,
+                "codec",
+                row_number,
+            )?,
+            container: manifest_optional_value(
+                &fields,
+                CUDA_DECODE_MANIFEST_LABEL,
+                container_index,
+                "container",
+                row_number,
+            )?,
         };
         if entries.insert(canonical_path, entry).is_some() {
             return Err(format!(
@@ -743,92 +767,6 @@ fn cuda_decode_manifest() -> Result<Option<CudaDecodeManifest>, String> {
         }
     }
     Ok(Some(CudaDecodeManifest { entries }))
-}
-
-fn canonicalize_manifest_row_path(
-    raw_path: &str,
-    base: &Path,
-    relocation_roots: &[PathBuf],
-    manifest_label: &str,
-    manifest_path: &Path,
-    row_number: usize,
-) -> Result<PathBuf, String> {
-    let raw = Path::new(raw_path);
-    let resolved_path = if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        base.join(raw)
-    };
-    match resolved_path.canonicalize() {
-        Ok(path) => Ok(path),
-        Err(primary_error) => {
-            let candidates = manifest_relocation_candidates(raw, relocation_roots);
-            if candidates.len() == 1 {
-                Ok(candidates[0].clone())
-            } else if !candidates.is_empty() {
-                Err(format!(
-                    "{manifest_label} {} row {row_number} path {} is ambiguous after suffix remap: {}",
-                    manifest_path.display(),
-                    raw_path,
-                    join_path_labels(&candidates)
-                ))
-            } else {
-                Err(format!(
-                    "{manifest_label} {} row {row_number} path {} cannot be canonicalized: {primary_error}; no suffix remap found under {}",
-                    manifest_path.display(),
-                    resolved_path.display(),
-                    join_path_labels(relocation_roots)
-                ))
-            }
-        }
-    }
-}
-
-fn manifest_relocation_candidates(raw_path: &Path, relocation_roots: &[PathBuf]) -> Vec<PathBuf> {
-    let suffixes = normal_path_suffixes(raw_path);
-    let mut candidates = Vec::new();
-    for root in relocation_roots {
-        for suffix in &suffixes {
-            let candidate = root.join(suffix);
-            let Ok(canonical) = candidate.canonicalize() else {
-                continue;
-            };
-            if !candidates.contains(&canonical) {
-                candidates.push(canonical);
-            }
-        }
-    }
-    candidates
-}
-
-fn normal_path_suffixes(path: &Path) -> Vec<PathBuf> {
-    let parts = path
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(part) => Some(part.to_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let mut suffixes = Vec::new();
-    for start in 0..parts.len() {
-        let mut suffix = PathBuf::new();
-        for part in &parts[start..] {
-            suffix.push(part);
-        }
-        suffixes.push(suffix);
-    }
-    suffixes
-}
-
-fn join_path_labels(paths: &[PathBuf]) -> String {
-    if paths.is_empty() {
-        return "none".to_string();
-    }
-    paths
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 fn validate_manifest_entry(
@@ -893,48 +831,6 @@ fn validate_manifest_entry(
     Ok(())
 }
 
-fn manifest_column(headers: &[&str], name: &str) -> Result<usize, String> {
-    optional_manifest_column(headers, name)
-        .ok_or_else(|| format!("CUDA decode manifest is missing required {name:?} column"))
-}
-
-fn optional_manifest_column(headers: &[&str], name: &str) -> Option<usize> {
-    headers.iter().position(|header| *header == name)
-}
-
-fn manifest_field<'a>(
-    fields: &'a [&str],
-    index: usize,
-    name: &str,
-    row_number: usize,
-) -> Result<&'a str, String> {
-    fields
-        .get(index)
-        .copied()
-        .ok_or_else(|| format!("CUDA decode manifest row {row_number} is missing {name:?} field"))
-}
-
-fn manifest_optional_value(
-    fields: &[&str],
-    index: Option<usize>,
-    name: &str,
-    row_number: usize,
-) -> Result<Option<String>, String> {
-    let Some(index) = index else {
-        return Ok(None);
-    };
-    let value = manifest_field(fields, index, name, row_number)?.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    if value.chars().any(char::is_control) {
-        return Err(format!(
-            "CUDA decode manifest row {row_number} field {name:?} contains a control character"
-        ));
-    }
-    Ok(Some(value.to_string()))
-}
-
 fn codec_from_bytes(bytes: &[u8]) -> Option<&'static str> {
     let payload = j2k::extract_j2k_codestream_payload(bytes).ok()?;
     match j2k_native::inspect_j2k_codestream_header(payload.codestream()) {
@@ -957,15 +853,6 @@ fn container_from_path_and_bytes(path: &Path, bytes: &[u8]) -> &'static str {
     } else {
         "raw-codestream"
     }
-}
-
-fn fnv1a64_hex(bytes: &[u8]) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
 }
 
 fn sanitized_stem(path: &Path) -> String {

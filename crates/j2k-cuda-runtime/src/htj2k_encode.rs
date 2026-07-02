@@ -220,70 +220,70 @@ impl CudaHtj2kEncodedCodeBlock {
         &self.data
     }
 
-    /// HTJ2K cleanup segment length in bytes.
-    pub fn cleanup_length(&self) -> u32 {
-        if self.status.number_of_coding_passes <= 1 {
-            self.status.data_len
-        } else {
-            self.status.reserved0
-        }
-    }
-
-    /// HTJ2K refinement segment length in bytes.
-    pub fn refinement_length(&self) -> u32 {
-        if self.status.number_of_coding_passes <= 1 {
-            0
-        } else {
-            self.status.reserved1
-        }
-    }
-
-    /// Number of coding passes in the encoded payload.
-    pub fn num_coding_passes(&self) -> u8 {
-        u8::try_from(self.status.number_of_coding_passes).unwrap_or(u8::MAX)
-    }
-
-    /// Number of missing most-significant bitplanes.
-    pub fn num_zero_bitplanes(&self) -> u8 {
-        u8::try_from(self.status.missing_bit_planes).unwrap_or(u8::MAX)
-    }
+    impl_cuda_htj2k_encoded_status_accessors!();
 
     /// Consume this code block and return its encoded payload plus segment
     /// metadata.
     pub fn into_parts(self) -> (Vec<u8>, u32, u32, u8, u8) {
-        let cleanup_length = if self.status.number_of_coding_passes <= 1 {
-            self.status.data_len
-        } else {
-            self.status.reserved0
-        };
-        let refinement_length = if self.status.number_of_coding_passes <= 1 {
-            0
-        } else {
-            self.status.reserved1
-        };
         (
             self.data,
-            cleanup_length,
-            refinement_length,
-            u8::try_from(self.status.number_of_coding_passes).unwrap_or(u8::MAX),
-            u8::try_from(self.status.missing_bit_planes).unwrap_or(u8::MAX),
+            htj2k_encoded_cleanup_length(self.status),
+            htj2k_encoded_refinement_length(self.status),
+            htj2k_encoded_num_coding_passes(self.status),
+            htj2k_encoded_num_zero_bitplanes(self.status),
         )
     }
+}
 
-    /// Kernel status row downloaded after dispatch.
-    pub fn status(&self) -> CudaHtj2kEncodeStatus {
-        self.status
+pub(crate) fn htj2k_encoded_cleanup_length(status: CudaHtj2kEncodeStatus) -> u32 {
+    if status.number_of_coding_passes <= 1 {
+        status.data_len
+    } else {
+        status.reserved0
+    }
+}
+
+pub(crate) fn htj2k_encoded_refinement_length(status: CudaHtj2kEncodeStatus) -> u32 {
+    if status.number_of_coding_passes <= 1 {
+        0
+    } else {
+        status.reserved1
+    }
+}
+
+pub(crate) fn htj2k_encoded_num_coding_passes(status: CudaHtj2kEncodeStatus) -> u8 {
+    u8::try_from(status.number_of_coding_passes).unwrap_or(u8::MAX)
+}
+
+pub(crate) fn htj2k_encoded_num_zero_bitplanes(status: CudaHtj2kEncodeStatus) -> u8 {
+    u8::try_from(status.missing_bit_planes).unwrap_or(u8::MAX)
+}
+
+fn empty_htj2k_encoded_code_blocks() -> CudaHtj2kEncodedCodeBlocks {
+    CudaHtj2kEncodedCodeBlocks {
+        code_blocks: Vec::new(),
+        execution: CudaExecutionStats::default(),
+        stage_timings: CudaHtj2kEncodeStageTimings::default(),
+    }
+}
+
+fn validate_resident_coefficient_capacity(
+    coefficients: &CudaDeviceBuffer,
+    coefficient_count: usize,
+) -> Result<(), CudaError> {
+    let available_coefficients = coefficients.typed_view::<i32>()?.len();
+    if available_coefficients < coefficient_count {
+        return Err(CudaError::OutputTooSmall {
+            required: coefficient_count
+                .checked_mul(std::mem::size_of::<i32>())
+                .ok_or(CudaError::LengthTooLarge {
+                    len: coefficient_count,
+                })?,
+            have: coefficients.byte_len(),
+        });
     }
 
-    /// CUDA execution counters for the encode dispatch.
-    pub fn execution(&self) -> CudaExecutionStats {
-        self.execution
-    }
-
-    /// CUDA event timings for the encode dispatch.
-    pub fn stage_timings(&self) -> CudaHtj2kEncodeStageTimings {
-        self.stage_timings
-    }
+    Ok(())
 }
 
 /// Host-visible HTJ2K cleanup-pass encode batch produced by one CUDA kernel dispatch.
@@ -537,24 +537,9 @@ impl CudaContext {
         pool: &CudaBufferPool,
     ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
         if jobs.is_empty() {
-            return Ok(CudaHtj2kEncodedCodeBlocks {
-                code_blocks: Vec::new(),
-                execution: CudaExecutionStats::default(),
-                stage_timings: CudaHtj2kEncodeStageTimings::default(),
-            });
+            return Ok(empty_htj2k_encoded_code_blocks());
         }
-        let available_coefficients = coefficients.typed_view::<i32>()?.len();
-        if available_coefficients < coefficient_count {
-            return Err(CudaError::OutputTooSmall {
-                required: coefficient_count
-                    .checked_mul(std::mem::size_of::<i32>())
-                    .ok_or(CudaError::LengthTooLarge {
-                        len: coefficient_count,
-                    })?,
-                have: coefficients.byte_len(),
-            });
-        }
-
+        validate_resident_coefficient_capacity(coefficients, coefficient_count)?;
         let kernel_jobs = htj2k_encode_kernel_jobs(jobs, coefficient_count)?;
         self.inner.set_current()?;
         self.encode_htj2k_kernel_jobs_device_with_resources_and_pool(
@@ -651,24 +636,9 @@ impl CudaContext {
         pool: &CudaBufferPool,
     ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
         if jobs.is_empty() {
-            return Ok(CudaHtj2kEncodedCodeBlocks {
-                code_blocks: Vec::new(),
-                execution: CudaExecutionStats::default(),
-                stage_timings: CudaHtj2kEncodeStageTimings::default(),
-            });
+            return Ok(empty_htj2k_encoded_code_blocks());
         }
-        let available_coefficients = coefficients.typed_view::<i32>()?.len();
-        if available_coefficients < coefficient_count {
-            return Err(CudaError::OutputTooSmall {
-                required: coefficient_count
-                    .checked_mul(std::mem::size_of::<i32>())
-                    .ok_or(CudaError::LengthTooLarge {
-                        len: coefficient_count,
-                    })?,
-                have: coefficients.byte_len(),
-            });
-        }
-
+        validate_resident_coefficient_capacity(coefficients, coefficient_count)?;
         let kernel_jobs = htj2k_encode_region_kernel_jobs(jobs, coefficient_count)?;
         self.inner.set_current()?;
         self.encode_htj2k_kernel_jobs_device_with_resources_and_pool(

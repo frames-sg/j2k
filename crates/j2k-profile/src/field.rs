@@ -3,31 +3,12 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 
-/// Unit attached to a typed profiling metric.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MetricUnit {
-    /// Dimensionless count.
-    Count,
-    /// Bytes.
-    Bytes,
-    /// Nanoseconds.
-    Nanoseconds,
-    /// Microseconds.
-    Microseconds,
-    /// Milliseconds.
-    Milliseconds,
-    /// Domain-specific unit not modeled by the common variants.
-    Other(String),
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ProfileFieldKind {
     /// Field is intended to identify/group rows.
     Label,
     /// Field is a metric and may be aggregated by summaries.
     Metric {
-        /// Metric unit.
-        unit: MetricUnit,
         /// Whether summaries should aggregate this metric.
         summarize: bool,
     },
@@ -48,30 +29,17 @@ impl ProfileField {
     }
 
     /// Creates a summarizable metric field.
-    pub fn metric(key: impl AsRef<str>, value: impl fmt::Display, unit: MetricUnit) -> Self {
-        Self::new(
-            key,
-            value,
-            ProfileFieldKind::Metric {
-                unit,
-                summarize: true,
-            },
-        )
+    pub fn metric(key: impl AsRef<str>, value: impl fmt::Display) -> Self {
+        Self::new(key, value, ProfileFieldKind::Metric { summarize: true })
     }
 
     /// Creates a metric field with explicit summary behavior.
     pub fn metric_with_summary(
         key: impl AsRef<str>,
         value: impl fmt::Display,
-        unit: MetricUnit,
         summarize: bool,
     ) -> Self {
-        Self::new(key, value, ProfileFieldKind::Metric { unit, summarize })
-    }
-
-    /// Creates a raw compatibility field that is treated as a label by typed summaries.
-    pub fn raw(key: impl AsRef<str>, value: impl fmt::Display) -> Self {
-        Self::label(key, value)
+        Self::new(key, value, ProfileFieldKind::Metric { summarize })
     }
 
     fn new(key: impl AsRef<str>, value: impl fmt::Display, kind: ProfileFieldKind) -> Self {
@@ -93,13 +61,7 @@ impl ProfileField {
     }
 
     pub(crate) fn summarize_metric(&self) -> bool {
-        matches!(
-            self.kind,
-            ProfileFieldKind::Metric {
-                summarize: true,
-                ..
-            }
-        )
+        matches!(self.kind, ProfileFieldKind::Metric { summarize: true })
     }
 }
 

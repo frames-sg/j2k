@@ -103,14 +103,6 @@ pub fn emit_profile_fields(
     }
 }
 
-/// Flushes a thread-local profile summary into a caller-provided sink.
-pub fn flush_profile_summary_to(
-    summary: &'static std::thread::LocalKey<std::cell::RefCell<ProfileSummary>>,
-    sink: impl FnMut(&str),
-) {
-    summary.with(|summary| summary.borrow_mut().flush_to(sink));
-}
-
 /// Emits string-valued rows, or records a timing-filtered summary row.
 pub fn emit_profile_row_with_timing_summary(
     mode: ProfileStageMode,

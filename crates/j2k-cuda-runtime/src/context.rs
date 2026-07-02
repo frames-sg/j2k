@@ -31,6 +31,8 @@ use crate::{
         CudaHtj2kDecodeStageTimings, CudaQueuedHtj2kCleanup,
     },
     htj2k_encode::{
+        htj2k_encoded_cleanup_length, htj2k_encoded_num_coding_passes,
+        htj2k_encoded_num_zero_bitplanes, htj2k_encoded_refinement_length,
         CudaHtj2kEncodeStageTimings, CudaHtj2kEncodeStatus, CudaHtj2kEncodedCodeBlock,
         CudaHtj2kEncodedCodeBlocks,
     },
@@ -517,68 +519,17 @@ impl CudaHtj2kCompactEncodedCodeBlock {
         self.payload_range.clone()
     }
 
-    /// HTJ2K cleanup segment length in bytes.
-    pub fn cleanup_length(&self) -> u32 {
-        if self.status.number_of_coding_passes <= 1 {
-            self.status.data_len
-        } else {
-            self.status.reserved0
-        }
-    }
-
-    /// HTJ2K refinement segment length in bytes.
-    pub fn refinement_length(&self) -> u32 {
-        if self.status.number_of_coding_passes <= 1 {
-            0
-        } else {
-            self.status.reserved1
-        }
-    }
-
-    /// Number of coding passes in the encoded payload.
-    pub fn num_coding_passes(&self) -> u8 {
-        u8::try_from(self.status.number_of_coding_passes).unwrap_or(u8::MAX)
-    }
-
-    /// Number of missing most-significant bitplanes.
-    pub fn num_zero_bitplanes(&self) -> u8 {
-        u8::try_from(self.status.missing_bit_planes).unwrap_or(u8::MAX)
-    }
+    impl_cuda_htj2k_encoded_status_accessors!();
 
     /// Consume this code block and return its payload range plus segment metadata.
     pub fn into_parts(self) -> (std::ops::Range<usize>, u32, u32, u8, u8) {
-        let cleanup_length = if self.status.number_of_coding_passes <= 1 {
-            self.status.data_len
-        } else {
-            self.status.reserved0
-        };
-        let refinement_length = if self.status.number_of_coding_passes <= 1 {
-            0
-        } else {
-            self.status.reserved1
-        };
         (
             self.payload_range,
-            cleanup_length,
-            refinement_length,
-            u8::try_from(self.status.number_of_coding_passes).unwrap_or(u8::MAX),
-            u8::try_from(self.status.missing_bit_planes).unwrap_or(u8::MAX),
+            htj2k_encoded_cleanup_length(self.status),
+            htj2k_encoded_refinement_length(self.status),
+            htj2k_encoded_num_coding_passes(self.status),
+            htj2k_encoded_num_zero_bitplanes(self.status),
         )
-    }
-
-    /// Kernel status row downloaded after dispatch.
-    pub fn status(&self) -> CudaHtj2kEncodeStatus {
-        self.status
-    }
-
-    /// CUDA execution counters for the encode dispatch.
-    pub fn execution(&self) -> CudaExecutionStats {
-        self.execution
-    }
-
-    /// CUDA event timings for the encode dispatch.
-    pub fn stage_timings(&self) -> CudaHtj2kEncodeStageTimings {
-        self.stage_timings
     }
 }
 

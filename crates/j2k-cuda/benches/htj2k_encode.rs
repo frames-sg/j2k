@@ -21,7 +21,10 @@ use j2k_cuda_runtime::{
 use j2k_native::{
     encode_ht_code_block_scalar, ht_uvlc_encode_table, ht_vlc_encode_table0, ht_vlc_encode_table1,
 };
-use j2k_test_support::read_pnm_image;
+use j2k_test_support::{
+    canonicalize_manifest_row_path, fnv1a64_hex, manifest_column, manifest_field,
+    manifest_optional_value, optional_manifest_column, read_pnm_image,
+};
 
 const TILE_DIM: u32 = 512;
 const CODE_BLOCK_DIM: u32 = 64;
@@ -31,6 +34,7 @@ const REGION_BLOCKS_Y: u32 = 8;
 const ENCODE_SAMPLE_SIZE: usize = 10;
 const ENCODE_WARM_UP: Duration = Duration::from_millis(500);
 const ENCODE_MEASUREMENT: Duration = Duration::from_secs(1);
+const CUDA_ENCODE_MANIFEST_LABEL: &str = "CUDA encode manifest";
 
 struct EncodeBenchCase {
     id: String,
@@ -463,7 +467,7 @@ fn cuda_encode_manifest() -> Result<Option<CudaEncodeManifest>, String> {
         .next()
         .ok_or_else(|| format!("CUDA encode manifest {} is empty", path.display()))?;
     let headers = header.split('\t').collect::<Vec<_>>();
-    let path_index = manifest_column(&headers, "path")?;
+    let path_index = manifest_column(&headers, CUDA_ENCODE_MANIFEST_LABEL, "path")?;
     let hash_index = optional_manifest_column(&headers, "input_fnv1a64");
     let mut entries = HashMap::new();
     for (line_index, line) in lines.enumerate() {
@@ -472,18 +476,25 @@ fn cuda_encode_manifest() -> Result<Option<CudaEncodeManifest>, String> {
         }
         let fields = line.split('\t').collect::<Vec<_>>();
         let row_number = line_index + 2;
-        let raw_path = manifest_field(&fields, path_index, "path", row_number)?;
+        let raw_path = manifest_field(
+            &fields,
+            CUDA_ENCODE_MANIFEST_LABEL,
+            path_index,
+            "path",
+            row_number,
+        )?;
         let canonical_path = canonicalize_manifest_row_path(
             raw_path,
             base,
             &relocation_roots,
-            "CUDA encode manifest",
+            CUDA_ENCODE_MANIFEST_LABEL,
             &path,
             row_number,
         )?;
         let entry = CudaEncodeManifestEntry {
             input_fnv1a64: manifest_optional_value(
                 &fields,
+                CUDA_ENCODE_MANIFEST_LABEL,
                 hash_index,
                 "input_fnv1a64",
                 row_number,
@@ -497,92 +508,6 @@ fn cuda_encode_manifest() -> Result<Option<CudaEncodeManifest>, String> {
         }
     }
     Ok(Some(CudaEncodeManifest { entries }))
-}
-
-fn canonicalize_manifest_row_path(
-    raw_path: &str,
-    base: &Path,
-    relocation_roots: &[PathBuf],
-    manifest_label: &str,
-    manifest_path: &Path,
-    row_number: usize,
-) -> Result<PathBuf, String> {
-    let raw = Path::new(raw_path);
-    let resolved_path = if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        base.join(raw)
-    };
-    match resolved_path.canonicalize() {
-        Ok(path) => Ok(path),
-        Err(primary_error) => {
-            let candidates = manifest_relocation_candidates(raw, relocation_roots);
-            if candidates.len() == 1 {
-                Ok(candidates[0].clone())
-            } else if !candidates.is_empty() {
-                Err(format!(
-                    "{manifest_label} {} row {row_number} path {} is ambiguous after suffix remap: {}",
-                    manifest_path.display(),
-                    raw_path,
-                    join_path_labels(&candidates)
-                ))
-            } else {
-                Err(format!(
-                    "{manifest_label} {} row {row_number} path {} cannot be canonicalized: {primary_error}; no suffix remap found under {}",
-                    manifest_path.display(),
-                    resolved_path.display(),
-                    join_path_labels(relocation_roots)
-                ))
-            }
-        }
-    }
-}
-
-fn manifest_relocation_candidates(raw_path: &Path, relocation_roots: &[PathBuf]) -> Vec<PathBuf> {
-    let suffixes = normal_path_suffixes(raw_path);
-    let mut candidates = Vec::new();
-    for root in relocation_roots {
-        for suffix in &suffixes {
-            let candidate = root.join(suffix);
-            let Ok(canonical) = candidate.canonicalize() else {
-                continue;
-            };
-            if !candidates.contains(&canonical) {
-                candidates.push(canonical);
-            }
-        }
-    }
-    candidates
-}
-
-fn normal_path_suffixes(path: &Path) -> Vec<PathBuf> {
-    let parts = path
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(part) => Some(part.to_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let mut suffixes = Vec::new();
-    for start in 0..parts.len() {
-        let mut suffix = PathBuf::new();
-        for part in &parts[start..] {
-            suffix.push(part);
-        }
-        suffixes.push(suffix);
-    }
-    suffixes
-}
-
-fn join_path_labels(paths: &[PathBuf]) -> String {
-    if paths.is_empty() {
-        return "none".to_string();
-    }
-    paths
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 fn validate_cuda_encode_manifest_entry(
@@ -619,48 +544,6 @@ fn validate_cuda_encode_manifest_entry(
         ));
     }
     Ok(())
-}
-
-fn manifest_column(headers: &[&str], name: &str) -> Result<usize, String> {
-    optional_manifest_column(headers, name)
-        .ok_or_else(|| format!("CUDA encode manifest is missing required {name:?} column"))
-}
-
-fn optional_manifest_column(headers: &[&str], name: &str) -> Option<usize> {
-    headers.iter().position(|header| *header == name)
-}
-
-fn manifest_field<'a>(
-    fields: &'a [&str],
-    index: usize,
-    name: &str,
-    row_number: usize,
-) -> Result<&'a str, String> {
-    fields
-        .get(index)
-        .copied()
-        .ok_or_else(|| format!("CUDA encode manifest row {row_number} is missing {name:?} field"))
-}
-
-fn manifest_optional_value(
-    fields: &[&str],
-    index: Option<usize>,
-    name: &str,
-    row_number: usize,
-) -> Result<Option<String>, String> {
-    let Some(index) = index else {
-        return Ok(None);
-    };
-    let value = manifest_field(fields, index, name, row_number)?.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    if value.chars().any(char::is_control) {
-        return Err(format!(
-            "CUDA encode manifest row {row_number} field {name:?} contains a control character"
-        ));
-    }
-    Ok(Some(value.to_string()))
 }
 
 fn external_source_label(path: &Path) -> Result<String, String> {
@@ -977,15 +860,6 @@ fn coefficients_as_bytes(coefficients: &[i32]) -> Vec<u8> {
 
 fn dimensions_label(case: &EncodeBenchCase) -> String {
     format!("{}x{}", case.width, case.height)
-}
-
-fn fnv1a64_hex(bytes: &[u8]) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
 }
 
 fn area_len(width: u32, height: u32) -> usize {

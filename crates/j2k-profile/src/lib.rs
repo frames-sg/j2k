@@ -18,17 +18,17 @@ mod timing;
 #[cfg(feature = "std")]
 pub use emit::{
     emit_profile_fields, emit_profile_line, emit_profile_row, emit_profile_row_now,
-    emit_profile_row_u128, emit_profile_row_with_timing_summary, flush_profile_summary_to,
+    emit_profile_row_u128, emit_profile_row_with_timing_summary,
 };
 pub use env::profile_stage_mode_from_value;
 #[cfg(feature = "std")]
 pub use env::{env_flag_from_env, profile_stage_mode_from_env, StageModeCache};
-pub use field::{MetricUnit, ProfileField};
+pub use field::ProfileField;
 pub use format::format_profile_key_value_fields;
 #[cfg(feature = "std")]
 pub use gpu_route::{
-    emit_gpu_route_decision_profile, emit_gpu_route_fields, emit_gpu_route_profile,
-    emit_gpu_route_surface_profile, gpu_route_profile_enabled,
+    emit_gpu_route_decision_profile, emit_gpu_route_fields, emit_gpu_route_surface_profile,
+    gpu_route_profile_enabled,
 };
 pub use parse::{
     parse_profile_key_value_fields, parse_profile_line, ParsedProfileFields, ParsedProfileKind,
@@ -535,7 +535,7 @@ mod tests {
     fn formats_typed_profile_fields_like_compat_rows() {
         let fields = [
             ProfileField::label("stage", "entropy"),
-            ProfileField::metric("elapsed_us", 9_u128, MetricUnit::Microseconds),
+            ProfileField::metric("elapsed_us", 9_u128),
         ];
 
         assert_eq!(
@@ -549,8 +549,8 @@ mod tests {
         let mut summary = ProfileSummary::new(same_summary_labels(&["stage"]));
         let fields = [
             ProfileField::label("stage", "entropy"),
-            ProfileField::metric("elapsed_us", 9_u128, MetricUnit::Microseconds),
-            ProfileField::metric_with_summary("output_bytes", 512_u128, MetricUnit::Bytes, false),
+            ProfileField::metric("elapsed_us", 9_u128),
+            ProfileField::metric_with_summary("output_bytes", 512_u128, false),
         ];
 
         summary.record_fields("jpeg", "decode", "cpu", &fields);

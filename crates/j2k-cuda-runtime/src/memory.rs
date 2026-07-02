@@ -773,35 +773,7 @@ impl CudaDeviceBuffer {
 
     /// Copy a byte range from this device buffer into caller-owned host output.
     pub fn copy_range_to_host(&self, offset: usize, out: &mut [u8]) -> Result<(), CudaError> {
-        let end = offset
-            .checked_add(out.len())
-            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-        if end > self.len {
-            return Err(CudaError::OutputTooSmall {
-                required: end,
-                have: self.len,
-            });
-        }
-        if out.is_empty() {
-            return Ok(());
-        }
-
-        self.context.inner.set_current()?;
-        let source = self
-            .ptr
-            .checked_add(
-                u64::try_from(offset).map_err(|_| CudaError::LengthTooLarge { len: offset })?,
-            )
-            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-        // SAFETY: `source` is inside this live device allocation, and `out`
-        // is valid for the requested range length after the bounds check above.
-        self.context.inner.driver.check("cuMemcpyDtoH_v2", unsafe {
-            (self.context.inner.driver.cu_memcpy_dtoh)(
-                out.as_mut_ptr().cast::<c_void>(),
-                source,
-                out.len(),
-            )
-        })
+        self.copy_byte_range_to_host_elements(offset, out)
     }
 
     /// Copy a byte range from this device buffer into uninitialized host output.
@@ -810,8 +782,20 @@ impl CudaDeviceBuffer {
         offset: usize,
         out: &mut [std::mem::MaybeUninit<u8>],
     ) -> Result<(), CudaError> {
+        self.copy_byte_range_to_host_elements(offset, out)
+    }
+
+    fn copy_byte_range_to_host_elements<T>(
+        &self,
+        offset: usize,
+        out: &mut [T],
+    ) -> Result<(), CudaError> {
+        let byte_len = out
+            .len()
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
         let end = offset
-            .checked_add(out.len())
+            .checked_add(byte_len)
             .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
         if end > self.len {
             return Err(CudaError::OutputTooSmall {
@@ -819,7 +803,7 @@ impl CudaDeviceBuffer {
                 have: self.len,
             });
         }
-        if out.is_empty() {
+        if byte_len == 0 {
             return Ok(());
         }
 
@@ -830,14 +814,13 @@ impl CudaDeviceBuffer {
                 u64::try_from(offset).map_err(|_| CudaError::LengthTooLarge { len: offset })?,
             )
             .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-        // SAFETY: `source` is inside this live device allocation, and `out`
-        // points at writable spare capacity for exactly the requested byte
-        // count. The caller decides when those bytes become initialized.
+        // SAFETY: `source` is inside this live device allocation, and `out` is
+        // a writable host slice covering exactly `byte_len` bytes.
         self.context.inner.driver.check("cuMemcpyDtoH_v2", unsafe {
             (self.context.inner.driver.cu_memcpy_dtoh)(
                 out.as_mut_ptr().cast::<c_void>(),
                 source,
-                out.len(),
+                byte_len,
             )
         })
     }

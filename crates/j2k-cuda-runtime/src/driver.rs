@@ -112,38 +112,10 @@ pub(crate) struct Driver {
     pub(crate) cu_memcpy_dtoh: CuMemcpyDtoH,
     pub(crate) cu_memset_d32: CuMemsetD32,
     pub(crate) cu_get_error_name: CuGetErrorName,
-    #[cfg_attr(
-        not(any(
-            feature = "cuda-oxide-copy-u8",
-            feature = "cuda-oxide-j2k-encode",
-            feature = "cuda-oxide-j2k-decode-store",
-            feature = "cuda-oxide-j2k-dequantize",
-            feature = "cuda-oxide-j2k-idwt",
-            feature = "cuda-oxide-htj2k-decode",
-            feature = "cuda-oxide-htj2k-encode",
-            feature = "cuda-oxide-transcode",
-            feature = "cuda-oxide-jpeg-decode",
-            feature = "cuda-oxide-jpeg-encode"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(j2k_cuda_oxide_enabled), allow(dead_code))]
     pub(crate) cu_module_load_data: CuModuleLoadData,
     pub(crate) cu_module_unload: CuModuleUnload,
-    #[cfg_attr(
-        not(any(
-            feature = "cuda-oxide-copy-u8",
-            feature = "cuda-oxide-j2k-encode",
-            feature = "cuda-oxide-j2k-decode-store",
-            feature = "cuda-oxide-j2k-dequantize",
-            feature = "cuda-oxide-j2k-idwt",
-            feature = "cuda-oxide-htj2k-decode",
-            feature = "cuda-oxide-htj2k-encode",
-            feature = "cuda-oxide-transcode",
-            feature = "cuda-oxide-jpeg-decode",
-            feature = "cuda-oxide-jpeg-encode"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(j2k_cuda_oxide_enabled), allow(dead_code))]
     pub(crate) cu_module_get_function: CuModuleGetFunction,
     pub(crate) cu_launch_kernel: CuLaunchKernel,
     pub(crate) cu_ctx_synchronize: CuCtxSynchronize,

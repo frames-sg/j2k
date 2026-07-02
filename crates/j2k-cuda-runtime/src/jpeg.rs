@@ -25,6 +25,48 @@ use crate::{
     kernels::{CudaKernel, CudaLaunchGeometry},
 };
 
+macro_rules! define_cuda_jpeg_rgb8_decode_plan {
+    (
+        $(#[$meta:meta])*
+        pub struct $name:ident <'a> {
+            $($prefix:tt)*
+        }
+    ) => {
+        $(#[$meta])*
+        pub struct $name<'a> {
+            $($prefix)*
+            /// Image dimensions as `(width, height)`.
+            pub dimensions: (u32, u32),
+            /// Number of MCUs per row.
+            pub mcus_per_row: u32,
+            /// Number of MCU rows.
+            pub mcu_rows: u32,
+            /// Entropy-coded scan payload with byte stuffing/restart markers removed.
+            pub entropy_bytes: &'a [u8],
+            /// Entropy resume checkpoints.
+            pub entropy_checkpoints: &'a [CudaJpegEntropyCheckpoint],
+            /// Luma quantization table in JPEG zigzag order.
+            pub y_quant: [u16; 64],
+            /// Cb quantization table in JPEG zigzag order.
+            pub cb_quant: [u16; 64],
+            /// Cr quantization table in JPEG zigzag order.
+            pub cr_quant: [u16; 64],
+            /// Y DC Huffman table.
+            pub y_dc_table: CudaJpegHuffmanTable,
+            /// Y AC Huffman table.
+            pub y_ac_table: CudaJpegHuffmanTable,
+            /// Cb DC Huffman table.
+            pub cb_dc_table: CudaJpegHuffmanTable,
+            /// Cb AC Huffman table.
+            pub cb_ac_table: CudaJpegHuffmanTable,
+            /// Cr DC Huffman table.
+            pub cr_dc_table: CudaJpegHuffmanTable,
+            /// Cr AC Huffman table.
+            pub cr_ac_table: CudaJpegHuffmanTable,
+        }
+    };
+}
+
 /// Prepared baseline JPEG Huffman table for CUDA JPEG decode kernels.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -484,72 +526,20 @@ pub struct CudaJpegChunkedEntropyPlan<'a> {
     pub cr_ac_table: CudaJpegHuffmanTable,
 }
 
-/// J2K-owned CUDA baseline JPEG RGB8 decode plan.
-#[derive(Debug)]
-pub struct CudaJpegRgb8DecodePlan<'a> {
-    /// MCU sampling/kernel shape.
-    pub sampling: CudaJpegRgb8Sampling,
-    /// Image dimensions as `(width, height)`.
-    pub dimensions: (u32, u32),
-    /// Number of MCUs per row.
-    pub mcus_per_row: u32,
-    /// Number of MCU rows.
-    pub mcu_rows: u32,
-    /// Entropy-coded scan payload with byte stuffing/restart markers removed.
-    pub entropy_bytes: &'a [u8],
-    /// Entropy resume checkpoints.
-    pub entropy_checkpoints: &'a [CudaJpegEntropyCheckpoint],
-    /// Luma quantization table in JPEG zigzag order.
-    pub y_quant: [u16; 64],
-    /// Cb quantization table in JPEG zigzag order.
-    pub cb_quant: [u16; 64],
-    /// Cr quantization table in JPEG zigzag order.
-    pub cr_quant: [u16; 64],
-    /// Y DC Huffman table.
-    pub y_dc_table: CudaJpegHuffmanTable,
-    /// Y AC Huffman table.
-    pub y_ac_table: CudaJpegHuffmanTable,
-    /// Cb DC Huffman table.
-    pub cb_dc_table: CudaJpegHuffmanTable,
-    /// Cb AC Huffman table.
-    pub cb_ac_table: CudaJpegHuffmanTable,
-    /// Cr DC Huffman table.
-    pub cr_dc_table: CudaJpegHuffmanTable,
-    /// Cr AC Huffman table.
-    pub cr_ac_table: CudaJpegHuffmanTable,
+define_cuda_jpeg_rgb8_decode_plan! {
+    /// J2K-owned CUDA baseline JPEG RGB8 decode plan.
+    #[derive(Debug)]
+    pub struct CudaJpegRgb8DecodePlan<'a> {
+        /// MCU sampling/kernel shape.
+        pub sampling: CudaJpegRgb8Sampling,
+    }
 }
 
-/// J2K-owned CUDA baseline JPEG 4:2:0 decode plan.
-#[derive(Debug)]
-pub struct CudaJpeg420Rgb8DecodePlan<'a> {
-    /// Image dimensions as `(width, height)`.
-    pub dimensions: (u32, u32),
-    /// Number of MCUs per row.
-    pub mcus_per_row: u32,
-    /// Number of MCU rows.
-    pub mcu_rows: u32,
-    /// Entropy-coded scan payload with byte stuffing/restart markers removed.
-    pub entropy_bytes: &'a [u8],
-    /// Entropy resume checkpoints.
-    pub entropy_checkpoints: &'a [CudaJpegEntropyCheckpoint],
-    /// Luma quantization table in JPEG zigzag order.
-    pub y_quant: [u16; 64],
-    /// Cb quantization table in JPEG zigzag order.
-    pub cb_quant: [u16; 64],
-    /// Cr quantization table in JPEG zigzag order.
-    pub cr_quant: [u16; 64],
-    /// Y DC Huffman table.
-    pub y_dc_table: CudaJpegHuffmanTable,
-    /// Y AC Huffman table.
-    pub y_ac_table: CudaJpegHuffmanTable,
-    /// Cb DC Huffman table.
-    pub cb_dc_table: CudaJpegHuffmanTable,
-    /// Cb AC Huffman table.
-    pub cb_ac_table: CudaJpegHuffmanTable,
-    /// Cr DC Huffman table.
-    pub cr_dc_table: CudaJpegHuffmanTable,
-    /// Cr AC Huffman table.
-    pub cr_ac_table: CudaJpegHuffmanTable,
+define_cuda_jpeg_rgb8_decode_plan! {
+    /// J2K-owned CUDA baseline JPEG 4:2:0 decode plan.
+    #[derive(Debug)]
+    pub struct CudaJpeg420Rgb8DecodePlan<'a> {
+    }
 }
 
 #[repr(C)]

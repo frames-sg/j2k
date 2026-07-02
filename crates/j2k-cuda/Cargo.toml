@@ -31,18 +31,6 @@ cuda-runtime = [
     "j2k-cuda-runtime/cuda-oxide-htj2k-encode",
 ]
 cuda-profiling = ["cuda-runtime", "j2k-cuda-runtime/cuda-profiling"]
-cuda-oxide-j2k-encode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-j2k-encode"]
-cuda-oxide-j2k-decode-store = [
-    "cuda-runtime",
-    "j2k-cuda-runtime/cuda-oxide-j2k-decode-store",
-]
-cuda-oxide-j2k-dequantize = [
-    "cuda-runtime",
-    "j2k-cuda-runtime/cuda-oxide-j2k-dequantize",
-]
-cuda-oxide-j2k-idwt = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-j2k-idwt"]
-cuda-oxide-htj2k-decode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-htj2k-decode"]
-cuda-oxide-htj2k-encode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-htj2k-encode"]
 
 [dependencies]
 j2k-core = { path = "../j2k-core", version = "=0.6.2" }

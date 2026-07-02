@@ -90,7 +90,6 @@ fn wrap_cuda_surface(
         [j2k_profile::ProfileField::metric(
             "kernel_dispatches",
             stats.kernel_dispatches(),
-            j2k_profile::MetricUnit::Count,
         )],
     );
     Ok(Surface {

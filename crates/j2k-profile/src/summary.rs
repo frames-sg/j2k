@@ -96,14 +96,6 @@ impl ProfileSummary {
         }
     }
 
-    /// Flushes accumulated rows to a caller-provided sink and clears them.
-    #[cfg(feature = "std")]
-    pub fn flush_to(&mut self, mut sink: impl FnMut(&str)) {
-        for row in self.take_formatted_rows() {
-            sink(&row);
-        }
-    }
-
     #[cfg(all(test, feature = "std"))]
     pub(crate) const fn emit_on_drop_enabled(&self) -> bool {
         self.emit_on_drop

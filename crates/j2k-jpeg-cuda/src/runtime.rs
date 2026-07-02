@@ -69,15 +69,10 @@ fn wrap_cuda_surface(
         ),
         dimensions,
         [
-            j2k_profile::ProfileField::metric(
-                "kernel_dispatches",
-                stats.kernel_dispatches(),
-                j2k_profile::MetricUnit::Count,
-            ),
+            j2k_profile::ProfileField::metric("kernel_dispatches", stats.kernel_dispatches()),
             j2k_profile::ProfileField::metric(
                 "copy_kernel_dispatches",
                 stats.copy_kernel_dispatches(),
-                j2k_profile::MetricUnit::Count,
             ),
         ],
     );

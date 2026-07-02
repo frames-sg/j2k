@@ -27,9 +27,6 @@ cuda-runtime = [
     "j2k-cuda-runtime/cuda-oxide-transcode",
 ]
 cuda-profiling = ["cuda-runtime", "j2k-cuda-runtime/cuda-profiling"]
-cuda-oxide-j2k-encode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-j2k-encode"]
-cuda-oxide-htj2k-encode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-htj2k-encode"]
-cuda-oxide-transcode = ["cuda-runtime", "j2k-cuda-runtime/cuda-oxide-transcode"]
 
 [dependencies]
 j2k-transcode = { path = "../j2k-transcode", version = "=0.6.2" }

@@ -95,23 +95,6 @@ thread_local! {
 }
 
 #[cfg(feature = "std")]
-/// Emits or records a GPU route profile row.
-pub fn emit_gpu_route_profile<K, V>(codec: &str, path: &str, fields: &[(K, V)])
-where
-    K: AsRef<str>,
-    V: AsRef<str>,
-{
-    crate::emit_profile_row(
-        gpu_route_profile_stage_mode(),
-        &GPU_ROUTE_PROFILE_SUMMARY,
-        codec,
-        "gpu_route",
-        path,
-        fields,
-    );
-}
-
-#[cfg(feature = "std")]
 /// Emits or records a typed GPU route profile row with caller-defined field order.
 pub fn emit_gpu_route_fields(codec: &str, path: &str, fields: &[ProfileField]) {
     crate::emit_profile_fields(
@@ -178,18 +161,14 @@ pub fn emit_gpu_route_surface_profile<R, F>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{format::format_profile_fields, MetricUnit};
+    use crate::format::format_profile_fields;
 
     #[test]
     fn surface_route_fields_preserve_compat_order() {
         let fields = gpu_route_surface_fields(
             ("wrap_surface", "Cuda", "Rgb8", "cuda_upload"),
             (16, 8),
-            [ProfileField::metric(
-                "kernel_dispatches",
-                2_u32,
-                MetricUnit::Count,
-            )],
+            [ProfileField::metric("kernel_dispatches", 2_u32)],
         );
 
         assert_eq!(
