@@ -79,16 +79,7 @@ fn decode_fast_subsampled_to_rgb_buffer<P: FastSubsampledMetal>(
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, packet.entropy_checkpoints())?;
 
-    let dc_tables = [
-        PreparedHuffmanHost::from(packet.y_dc_table()),
-        PreparedHuffmanHost::from(packet.cb_dc_table()),
-        PreparedHuffmanHost::from(packet.cr_dc_table()),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(packet.y_ac_table()),
-        PreparedHuffmanHost::from(packet.cb_ac_table()),
-        PreparedHuffmanHost::from(packet.cr_ac_table()),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let out_buffer = (fmt != PixelFormat::Gray8).then(|| {
         runtime.device.new_buffer(
@@ -339,16 +330,7 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, packet.entropy_checkpoints())?;
 
-    let dc_tables = [
-        PreparedHuffmanHost::from(packet.y_dc_table()),
-        PreparedHuffmanHost::from(packet.cb_dc_table()),
-        PreparedHuffmanHost::from(packet.cr_dc_table()),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(packet.y_ac_table()),
-        PreparedHuffmanHost::from(packet.cb_ac_table()),
-        PreparedHuffmanHost::from(packet.cr_ac_table()),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let out_buffer = runtime.device.new_buffer(
         (pack_params.out_stride as usize * scaled_roi.h as usize) as u64,
@@ -516,16 +498,7 @@ fn try_decode_fast444_to_surface(
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, &packet.entropy_checkpoints)?;
 
-    let dc_tables = [
-        PreparedHuffmanHost::from(&packet.y_dc_table),
-        PreparedHuffmanHost::from(&packet.cb_dc_table),
-        PreparedHuffmanHost::from(&packet.cr_dc_table),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(&packet.y_ac_table),
-        PreparedHuffmanHost::from(&packet.cb_ac_table),
-        PreparedHuffmanHost::from(&packet.cr_ac_table),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let command_buffer = runtime.queue.new_command_buffer();
     let decoder_encoder = command_buffer.new_compute_command_encoder();
@@ -596,16 +569,7 @@ fn try_decode_fast444_to_private_rgb8_tile(
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, &packet.entropy_checkpoints)?;
 
-    let dc_tables = [
-        PreparedHuffmanHost::from(&packet.y_dc_table),
-        PreparedHuffmanHost::from(&packet.cb_dc_table),
-        PreparedHuffmanHost::from(&packet.cr_dc_table),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(&packet.y_ac_table),
-        PreparedHuffmanHost::from(&packet.cb_ac_table),
-        PreparedHuffmanHost::from(&packet.cr_ac_table),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let command_buffer = runtime.queue.new_command_buffer();
     let decoder_encoder = command_buffer.new_compute_command_encoder();
@@ -701,16 +665,7 @@ fn try_decode_fast444_region_to_surface(
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, &packet.entropy_checkpoints)?;
 
-    let dc_tables = [
-        PreparedHuffmanHost::from(&packet.y_dc_table),
-        PreparedHuffmanHost::from(&packet.cb_dc_table),
-        PreparedHuffmanHost::from(&packet.cr_dc_table),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(&packet.y_ac_table),
-        PreparedHuffmanHost::from(&packet.cb_ac_table),
-        PreparedHuffmanHost::from(&packet.cr_ac_table),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let command_buffer = runtime.queue.new_command_buffer();
     let decoder_encoder = command_buffer.new_compute_command_encoder();
@@ -792,16 +747,7 @@ fn try_decode_fast444_scaled_to_surface(
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, &packet.entropy_checkpoints)?;
 
-    let dc_tables = [
-        PreparedHuffmanHost::from(&packet.y_dc_table),
-        PreparedHuffmanHost::from(&packet.cb_dc_table),
-        PreparedHuffmanHost::from(&packet.cr_dc_table),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(&packet.y_ac_table),
-        PreparedHuffmanHost::from(&packet.cb_ac_table),
-        PreparedHuffmanHost::from(&packet.cr_ac_table),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let command_buffer = runtime.queue.new_command_buffer();
     let decoder_encoder = command_buffer.new_compute_command_encoder();
@@ -906,16 +852,7 @@ fn try_decode_fast444_scaled_region_to_surface(
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, &packet.entropy_checkpoints)?;
 
-    let dc_tables = [
-        PreparedHuffmanHost::from(&packet.y_dc_table),
-        PreparedHuffmanHost::from(&packet.cb_dc_table),
-        PreparedHuffmanHost::from(&packet.cr_dc_table),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(&packet.y_ac_table),
-        PreparedHuffmanHost::from(&packet.cb_ac_table),
-        PreparedHuffmanHost::from(&packet.cr_ac_table),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
     let command_buffer = runtime.queue.new_command_buffer();
     let decoder_encoder = command_buffer.new_compute_command_encoder();
@@ -1228,4 +1165,3 @@ pub(crate) fn decode_region_scaled_to_surface(
         stage.finish_with_runtime(runtime, fmt)
     })
 }
-

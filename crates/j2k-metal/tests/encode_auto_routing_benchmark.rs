@@ -35,7 +35,11 @@ use j2k_native::{
     deinterleave_reference, forward_dwt53_reference, forward_dwt97_reference,
     forward_ict_reference, forward_rct_reference, quantize_subband_reference,
 };
-use j2k_test_support::{fnv1a64_hex, patterned_gray8, patterned_rgb8, read_pnm_image};
+use j2k_test_support::{
+    canonicalize_manifest_row_path, fnv1a64_hex, manifest_column, manifest_field,
+    manifest_optional_value, optional_manifest_column, patterned_gray8, patterned_rgb8,
+    read_pnm_image,
+};
 #[cfg(target_os = "macos")]
 use metal::Buffer;
 
@@ -47,6 +51,7 @@ const DEFAULT_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ITERS: usize = 5;
 const AUTO_STAGE_MIN_PIXELS: u64 = 512 * 512;
 const AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS: u64 = 512 * 512;
+const METAL_ENCODE_MANIFEST_LABEL: &str = "Metal encode manifest";
 
 #[test]
 #[ignore = "benchmark harness; run explicitly with --ignored --nocapture"]
@@ -788,7 +793,7 @@ fn metal_encode_manifest() -> Result<Option<MetalEncodeManifest>, String> {
         .next()
         .ok_or_else(|| format!("Metal encode manifest {} is empty", path.display()))?;
     let headers = header.split('\t').collect::<Vec<_>>();
-    let path_index = manifest_column(&headers, "path")?;
+    let path_index = manifest_column(&headers, METAL_ENCODE_MANIFEST_LABEL, "path")?;
     let hash_index = optional_manifest_column(&headers, "input_fnv1a64");
     let mut entries = HashMap::new();
     for (line_index, line) in lines.enumerate() {
@@ -797,18 +802,25 @@ fn metal_encode_manifest() -> Result<Option<MetalEncodeManifest>, String> {
         }
         let fields = line.split('\t').collect::<Vec<_>>();
         let row_number = line_index + 2;
-        let raw_path = manifest_field(&fields, path_index, "path", row_number)?;
+        let raw_path = manifest_field(
+            &fields,
+            METAL_ENCODE_MANIFEST_LABEL,
+            path_index,
+            "path",
+            row_number,
+        )?;
         let canonical_path = canonicalize_manifest_row_path(
             raw_path,
             base,
             &relocation_roots,
-            "Metal encode manifest",
+            METAL_ENCODE_MANIFEST_LABEL,
             &path,
             row_number,
         )?;
         let entry = MetalEncodeManifestEntry {
             input_fnv1a64: manifest_optional_value(
                 &fields,
+                METAL_ENCODE_MANIFEST_LABEL,
                 hash_index,
                 "input_fnv1a64",
                 row_number,
@@ -822,92 +834,6 @@ fn metal_encode_manifest() -> Result<Option<MetalEncodeManifest>, String> {
         }
     }
     Ok(Some(MetalEncodeManifest { entries }))
-}
-
-fn canonicalize_manifest_row_path(
-    raw_path: &str,
-    base: &Path,
-    relocation_roots: &[PathBuf],
-    manifest_label: &str,
-    manifest_path: &Path,
-    row_number: usize,
-) -> Result<PathBuf, String> {
-    let raw = Path::new(raw_path);
-    let resolved_path = if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        base.join(raw)
-    };
-    match resolved_path.canonicalize() {
-        Ok(path) => Ok(path),
-        Err(primary_error) => {
-            let candidates = manifest_relocation_candidates(raw, relocation_roots);
-            if candidates.len() == 1 {
-                Ok(candidates[0].clone())
-            } else if !candidates.is_empty() {
-                Err(format!(
-                    "{manifest_label} {} row {row_number} path {} is ambiguous after suffix remap: {}",
-                    manifest_path.display(),
-                    raw_path,
-                    join_path_labels(&candidates)
-                ))
-            } else {
-                Err(format!(
-                    "{manifest_label} {} row {row_number} path {} cannot be canonicalized: {primary_error}; no suffix remap found under {}",
-                    manifest_path.display(),
-                    resolved_path.display(),
-                    join_path_labels(relocation_roots)
-                ))
-            }
-        }
-    }
-}
-
-fn manifest_relocation_candidates(raw_path: &Path, relocation_roots: &[PathBuf]) -> Vec<PathBuf> {
-    let suffixes = normal_path_suffixes(raw_path);
-    let mut candidates = Vec::new();
-    for root in relocation_roots {
-        for suffix in &suffixes {
-            let candidate = root.join(suffix);
-            let Ok(canonical) = candidate.canonicalize() else {
-                continue;
-            };
-            if !candidates.contains(&canonical) {
-                candidates.push(canonical);
-            }
-        }
-    }
-    candidates
-}
-
-fn normal_path_suffixes(path: &Path) -> Vec<PathBuf> {
-    let parts = path
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(part) => Some(part.to_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let mut suffixes = Vec::new();
-    for start in 0..parts.len() {
-        let mut suffix = PathBuf::new();
-        for part in &parts[start..] {
-            suffix.push(part);
-        }
-        suffixes.push(suffix);
-    }
-    suffixes
-}
-
-fn join_path_labels(paths: &[PathBuf]) -> String {
-    if paths.is_empty() {
-        return "none".to_string();
-    }
-    paths
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 fn validate_metal_encode_manifest_entry(
@@ -944,48 +870,6 @@ fn validate_metal_encode_manifest_entry(
         ));
     }
     Ok(())
-}
-
-fn manifest_column(headers: &[&str], name: &str) -> Result<usize, String> {
-    optional_manifest_column(headers, name)
-        .ok_or_else(|| format!("Metal encode manifest is missing required {name:?} column"))
-}
-
-fn optional_manifest_column(headers: &[&str], name: &str) -> Option<usize> {
-    headers.iter().position(|header| *header == name)
-}
-
-fn manifest_field<'a>(
-    fields: &'a [&str],
-    index: usize,
-    name: &str,
-    row_number: usize,
-) -> Result<&'a str, String> {
-    fields
-        .get(index)
-        .copied()
-        .ok_or_else(|| format!("Metal encode manifest row {row_number} is missing {name:?} field"))
-}
-
-fn manifest_optional_value(
-    fields: &[&str],
-    index: Option<usize>,
-    name: &str,
-    row_number: usize,
-) -> Result<Option<String>, String> {
-    let Some(index) = index else {
-        return Ok(None);
-    };
-    let value = manifest_field(fields, index, name, row_number)?.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    if value.chars().any(char::is_control) {
-        return Err(format!(
-            "Metal encode manifest row {row_number} field {name:?} contains a control character"
-        ));
-    }
-    Ok(Some(value.to_string()))
 }
 
 fn external_source_label(path: &Path) -> Result<String, String> {

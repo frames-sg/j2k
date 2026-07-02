@@ -10,6 +10,79 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]
 
+macro_rules! define_ensure_prepared_direct_plan {
+    (
+        with_session: $with_session:ident,
+        plain: $plain:ident,
+        prepare_fresh: $prepare_fresh:ident,
+        plan_field: $plan_field:ident,
+        prepared_field: $prepared_field:ident,
+        prepared_ty: $prepared_ty:path,
+        cache_key: $cache_key:ident,
+        cached: $cached:ident,
+        store: $store:ident,
+        build: $build:ident,
+        prepare: $prepare:path,
+        label: $label:literal
+    ) => {
+        #[cfg(target_os = "macos")]
+        fn $with_session(
+            &mut self,
+            session: &MetalBackendSession,
+        ) -> Result<Option<Arc<$prepared_ty>>, Error> {
+            let cache_key = $cache_key(self.inner.bytes());
+            if self.$prepared_field.is_none() {
+                if let Some((plan, prepared)) = $cached(session, cache_key) {
+                    self.$plan_field = Some(plan);
+                    self.$prepared_field = Some(prepared);
+                }
+            }
+            self.$prepare_fresh(Some((session, cache_key)))
+        }
+
+        #[cfg(target_os = "macos")]
+        fn $plain(&mut self) -> Result<Option<Arc<$prepared_ty>>, Error> {
+            self.$prepare_fresh(None)
+        }
+
+        #[cfg(target_os = "macos")]
+        fn $prepare_fresh(
+            &mut self,
+            session_cache: Option<(&MetalBackendSession, u64)>,
+        ) -> Result<Option<Arc<$prepared_ty>>, Error> {
+            if self.$prepared_field.is_none() {
+                self.ensure_native_image()?;
+                let (Some(image), native_context) =
+                    (self.native_image.as_ref(), &mut self.native_context)
+                else {
+                    return Err(Error::Decode(J2kError::Backend(
+                        "native image cache missing".to_string(),
+                    )));
+                };
+                let plan = match image.$build(native_context) {
+                    Ok(plan) => plan,
+                    Err(error) if direct::is_unsupported_direct_plan_error(&error.to_string()) => {
+                        return Ok(None);
+                    }
+                    Err(error) => {
+                        return Err(Error::Decode(J2kError::Backend(format!(
+                            "failed to build J2K MetalDirect {} plan: {error}",
+                            $label
+                        ))));
+                    }
+                };
+                let prepared = Arc::new($prepare(&plan)?);
+                if let Some((session, cache_key)) = session_cache {
+                    $store(session, cache_key, &plan, prepared.clone());
+                }
+                self.$plan_field = Some(plan);
+                self.$prepared_field = Some(prepared);
+            }
+            Ok(self.$prepared_field.clone())
+        }
+    };
+}
+
 mod batch;
 #[cfg(target_os = "macos")]
 mod buffer_pool;
@@ -1193,150 +1266,34 @@ impl<'a> J2kDecoder<'a> {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
-    fn ensure_prepared_direct_gray_plan_with_session(
-        &mut self,
-        session: &MetalBackendSession,
-    ) -> Result<Option<Arc<crate::compute::PreparedDirectGrayscalePlan>>, Error> {
-        let cache_key = direct_gray_plan_cache_key(self.inner.bytes());
-        if self.native_prepared_direct_gray_plan.is_none() {
-            if let Some((plan, prepared)) = cached_session_direct_gray_plan(session, cache_key) {
-                self.native_direct_gray_plan = Some(plan);
-                self.native_prepared_direct_gray_plan = Some(prepared);
-            }
-        }
-        if self.native_prepared_direct_gray_plan.is_none() {
-            self.ensure_native_image()?;
-            let (Some(image), native_context) =
-                (self.native_image.as_ref(), &mut self.native_context)
-            else {
-                return Err(Error::Decode(J2kError::Backend(
-                    "native image cache missing".to_string(),
-                )));
-            };
-
-            let plan = match image.build_direct_grayscale_plan_with_context(native_context) {
-                Ok(plan) => plan,
-                Err(error) if direct::is_unsupported_direct_plan_error(&error.to_string()) => {
-                    return Ok(None);
-                }
-                Err(error) => {
-                    return Err(Error::Decode(J2kError::Backend(format!(
-                        "failed to build J2K MetalDirect grayscale plan: {error}"
-                    ))));
-                }
-            };
-            let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(&plan)?);
-            store_session_direct_gray_plan(session, cache_key, &plan, prepared.clone());
-            self.native_direct_gray_plan = Some(plan);
-            self.native_prepared_direct_gray_plan = Some(prepared);
-        }
-
-        Ok(self.native_prepared_direct_gray_plan.clone())
+    define_ensure_prepared_direct_plan! {
+        with_session: ensure_prepared_direct_gray_plan_with_session,
+        plain: ensure_prepared_direct_gray_plan,
+        prepare_fresh: prepare_fresh_direct_gray_plan,
+        plan_field: native_direct_gray_plan,
+        prepared_field: native_prepared_direct_gray_plan,
+        prepared_ty: crate::compute::PreparedDirectGrayscalePlan,
+        cache_key: direct_gray_plan_cache_key,
+        cached: cached_session_direct_gray_plan,
+        store: store_session_direct_gray_plan,
+        build: build_direct_grayscale_plan_with_context,
+        prepare: crate::compute::prepare_direct_grayscale_plan,
+        label: "grayscale"
     }
 
-    #[cfg(target_os = "macos")]
-    fn ensure_prepared_direct_color_plan_with_session(
-        &mut self,
-        session: &MetalBackendSession,
-    ) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
-        let cache_key = direct_plan_cache_key(self.inner.bytes());
-        if self.native_prepared_direct_color_plan.is_none() {
-            if let Some((plan, prepared)) = cached_session_direct_color_plan(session, cache_key) {
-                self.native_direct_color_plan = Some(plan);
-                self.native_prepared_direct_color_plan = Some(prepared);
-            }
-        }
-        if self.native_prepared_direct_color_plan.is_none() {
-            self.ensure_native_image()?;
-            let (Some(image), native_context) =
-                (self.native_image.as_ref(), &mut self.native_context)
-            else {
-                return Err(Error::Decode(J2kError::Backend(
-                    "native image cache missing".to_string(),
-                )));
-            };
-
-            let plan = match image.build_direct_color_plan_with_context(native_context) {
-                Ok(plan) => plan,
-                Err(error) if direct::is_unsupported_direct_plan_error(&error.to_string()) => {
-                    return Ok(None);
-                }
-                Err(error) => {
-                    return Err(Error::Decode(J2kError::Backend(format!(
-                        "failed to build J2K MetalDirect color plan: {error}"
-                    ))));
-                }
-            };
-            let prepared = Arc::new(crate::compute::prepare_direct_color_plan(&plan)?);
-            store_session_direct_color_plan(session, cache_key, &plan, prepared.clone());
-            self.native_direct_color_plan = Some(plan);
-            self.native_prepared_direct_color_plan = Some(prepared);
-        }
-
-        Ok(self.native_prepared_direct_color_plan.clone())
-    }
-
-    #[cfg(target_os = "macos")]
-    fn ensure_prepared_direct_gray_plan(
-        &mut self,
-    ) -> Result<Option<Arc<crate::compute::PreparedDirectGrayscalePlan>>, Error> {
-        if self.native_prepared_direct_gray_plan.is_none() {
-            self.ensure_native_image()?;
-            let (Some(image), native_context) =
-                (self.native_image.as_ref(), &mut self.native_context)
-            else {
-                return Err(Error::Decode(J2kError::Backend(
-                    "native image cache missing".to_string(),
-                )));
-            };
-            let plan = match image.build_direct_grayscale_plan_with_context(native_context) {
-                Ok(plan) => plan,
-                Err(error) if direct::is_unsupported_direct_plan_error(&error.to_string()) => {
-                    return Ok(None);
-                }
-                Err(error) => {
-                    return Err(Error::Decode(J2kError::Backend(format!(
-                        "failed to build J2K MetalDirect grayscale plan: {error}"
-                    ))));
-                }
-            };
-            let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(&plan)?);
-            self.native_direct_gray_plan = Some(plan);
-            self.native_prepared_direct_gray_plan = Some(prepared);
-        }
-        Ok(self.native_prepared_direct_gray_plan.clone())
-    }
-
-    #[cfg(target_os = "macos")]
-    fn ensure_prepared_direct_color_plan(
-        &mut self,
-    ) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
-        if self.native_prepared_direct_color_plan.is_none() {
-            self.ensure_native_image()?;
-            let (Some(image), native_context) =
-                (self.native_image.as_ref(), &mut self.native_context)
-            else {
-                return Err(Error::Decode(J2kError::Backend(
-                    "native image cache missing".to_string(),
-                )));
-            };
-            let plan = match image.build_direct_color_plan_with_context(native_context) {
-                Ok(plan) => plan,
-                Err(error) if direct::is_unsupported_direct_plan_error(&error.to_string()) => {
-                    return Ok(None);
-                }
-                Err(error) => {
-                    return Err(Error::Decode(J2kError::Backend(format!(
-                        "failed to build J2K MetalDirect color plan: {error}"
-                    ))));
-                }
-            };
-            let prepared = Arc::new(crate::compute::prepare_direct_color_plan(&plan)?);
-            self.native_direct_color_plan = Some(plan);
-            self.native_prepared_direct_color_plan = Some(prepared);
-        }
-        Ok(self.native_prepared_direct_color_plan.clone())
+    define_ensure_prepared_direct_plan! {
+        with_session: ensure_prepared_direct_color_plan_with_session,
+        plain: ensure_prepared_direct_color_plan,
+        prepare_fresh: prepare_fresh_direct_color_plan,
+        plan_field: native_direct_color_plan,
+        prepared_field: native_prepared_direct_color_plan,
+        prepared_ty: crate::compute::PreparedDirectColorPlan,
+        cache_key: direct_plan_cache_key,
+        cached: cached_session_direct_color_plan,
+        store: store_session_direct_color_plan,
+        build: build_direct_color_plan_with_context,
+        prepare: crate::compute::prepare_direct_color_plan,
+        label: "color"
     }
 
     #[cfg(target_os = "macos")]

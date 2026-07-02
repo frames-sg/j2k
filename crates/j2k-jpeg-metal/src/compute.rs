@@ -73,8 +73,8 @@ use self::kernel_helpers::choose_1d_threadgroup_width;
 #[cfg(target_os = "macos")]
 use self::kernel_helpers::{
     bind_fast_decode_entropy_inputs, bind_three_plane_pack, dispatch_1d_pipeline,
-    dispatch_2d_pipeline, dispatch_3d_pipeline, packed_pair_extent, pixel_format_to_out_format,
-    plane_mode_to_u32,
+    dispatch_2d_pipeline, dispatch_3d_pipeline, fast_packet_huffman_tables, packed_pair_extent,
+    pixel_format_to_out_format, plane_mode_to_u32,
 };
 #[cfg(target_os = "macos")]
 use self::region_scaled_plan::{

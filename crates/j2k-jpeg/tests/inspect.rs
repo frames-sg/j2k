@@ -14,67 +14,10 @@ use j2k_jpeg::{
 
 use fixtures::progressive_8x8_jpeg;
 use j2k_test_support as fixtures;
-use j2k_test_support::restart_coded_grayscale_jpeg;
-
-fn minimal_baseline_jpeg() -> Vec<u8> {
-    // Same construction as parse::header::tests — duplicated here because
-    // integration tests cannot access pub(crate) helpers.
-    let mut v = Vec::new();
-    v.extend_from_slice(&[0xFF, 0xD8]);
-    v.extend_from_slice(&[0xFF, 0xDB, 0x00, 67, 0x00]);
-    v.extend(core::iter::repeat_n(1u8, 64));
-    v.extend_from_slice(&[
-        0xFF,
-        0xC0,
-        0x00,
-        17,
-        8,
-        0,
-        16,
-        0,
-        16,
-        3,
-        1,
-        (2 << 4) | 2,
-        0,
-        2,
-        (1 << 4) | 1,
-        0,
-        3,
-        (1 << 4) | 1,
-        0,
-    ]);
-    // DHT length = 2 (length field) + 1 (Tc/Th) + 16 (bits[]) + 1 (value) = 20
-    v.extend_from_slice(&[
-        0xFF, 0xC4, 0x00, 20, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xAA,
-    ]);
-    v.extend_from_slice(&[
-        0xFF, 0xC4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xBB,
-    ]);
-    v.extend_from_slice(&[0xFF, 0xDA, 0x00, 12, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0]);
-    v.extend_from_slice(&[0x00, 0xFF, 0xD9]);
-    v
-}
-
-fn minimal_baseline_jpeg_with_restart_interval(interval: u16) -> Vec<u8> {
-    let mut bytes = minimal_baseline_jpeg();
-    let sos_pos = bytes
-        .windows(2)
-        .position(|window| window == [0xff, 0xda])
-        .expect("SOS marker");
-    bytes.splice(
-        sos_pos..sos_pos,
-        [
-            0xff,
-            0xdd,
-            0x00,
-            0x04,
-            (interval >> 8) as u8,
-            interval as u8,
-        ],
-    );
-    bytes
-}
+use j2k_test_support::{
+    minimal_baseline_jpeg, minimal_baseline_jpeg_with_restart_interval,
+    restart_coded_grayscale_jpeg,
+};
 
 fn minimal_jpeg_with_sof_marker(marker: u8) -> Vec<u8> {
     let mut bytes = minimal_baseline_jpeg();

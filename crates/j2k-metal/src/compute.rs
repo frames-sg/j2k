@@ -11580,6 +11580,33 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
 }
 
 #[cfg(target_os = "macos")]
+const CLASSIC_TIER1_DENSITY_LABEL: &str = "j2k classic resident Tier-1 density profile";
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_RAW_PACK_LABEL: &str = "j2k classic resident Tier-1 raw-pack profile";
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_ARITHMETIC_PACK_LABEL: &str =
+    "j2k classic resident Tier-1 arithmetic-pack profile";
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_SYMBOL_PLAN_LABEL: &str = "j2k classic resident Tier-1 symbol plan";
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_PASS_PLAN_LABEL: &str = "j2k classic resident Tier-1 pass plan";
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_TOKEN_EMIT_LABEL: &str = "j2k classic resident Tier-1 token emit";
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_SPLIT_TOKEN_EMIT_LABEL: &str = "j2k classic resident Tier-1 split token emit";
+#[cfg(target_os = "macos")]
+const CLASSIC_RESIDENT_PACKETIZATION_LABEL: &str = "j2k classic resident packetization";
+
+/// Label of the first enabled downstream classic Tier-1 profiling stage.
+#[cfg(target_os = "macos")]
+fn next_enabled_classic_stage_label(candidates: &[(bool, &'static str)]) -> &'static str {
+    candidates
+        .iter()
+        .find_map(|&(enabled, label)| enabled.then_some(label))
+        .unwrap_or(CLASSIC_RESIDENT_PACKETIZATION_LABEL)
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
     session: &crate::MetalBackendSession,
     items: Vec<J2kResidentBatchEncodeItem>,
@@ -11619,6 +11646,26 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
         let profile_classic_tier1_token_emit = metal_profile_classic_tier1_token_emit_enabled();
         let profile_classic_tier1_split_token_emit =
             metal_profile_classic_tier1_split_token_emit_enabled();
+        let classic_token_pack_next_label = next_enabled_classic_stage_label(&[
+            (profile_classic_tier1_density, CLASSIC_TIER1_DENSITY_LABEL),
+            (profile_classic_tier1_raw_pack, CLASSIC_TIER1_RAW_PACK_LABEL),
+            (
+                profile_classic_tier1_arithmetic_pack,
+                CLASSIC_TIER1_ARITHMETIC_PACK_LABEL,
+            ),
+            (
+                profile_classic_tier1_symbol_plan,
+                CLASSIC_TIER1_SYMBOL_PLAN_LABEL,
+            ),
+            (
+                profile_classic_tier1_token_emit,
+                CLASSIC_TIER1_TOKEN_EMIT_LABEL,
+            ),
+            (
+                profile_classic_tier1_split_token_emit,
+                CLASSIC_TIER1_SPLIT_TOKEN_EMIT_LABEL,
+            ),
+        ]);
         let shared_coefficient_buffer = prepared_tiles.first().and_then(|first| {
             let ptr = first.coefficient_buffer.as_ptr();
             prepared_tiles
@@ -11902,21 +11949,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                         classic_block_encode_duration.saturating_add(started.elapsed());
                 }
                 if split_command_buffers {
-                    let next_label = if profile_classic_tier1_density {
-                        "j2k classic resident Tier-1 density profile"
-                    } else if profile_classic_tier1_raw_pack {
-                        "j2k classic resident Tier-1 raw-pack profile"
-                    } else if profile_classic_tier1_arithmetic_pack {
-                        "j2k classic resident Tier-1 arithmetic-pack profile"
-                    } else if profile_classic_tier1_symbol_plan {
-                        "j2k classic resident Tier-1 symbol plan"
-                    } else if profile_classic_tier1_token_emit {
-                        "j2k classic resident Tier-1 token emit"
-                    } else if profile_classic_tier1_split_token_emit {
-                        "j2k classic resident Tier-1 split token emit"
-                    } else {
-                        "j2k classic resident packetization"
-                    };
+                    let next_label = classic_token_pack_next_label;
                     command_buffer = finish_resident_encode_split_command_buffer_timed(
                         command_buffer,
                         runtime,
@@ -11968,21 +12001,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                         classic_block_encode_duration.saturating_add(started.elapsed());
                 }
                 if split_command_buffers {
-                    let next_label = if profile_classic_tier1_density {
-                        "j2k classic resident Tier-1 density profile"
-                    } else if profile_classic_tier1_raw_pack {
-                        "j2k classic resident Tier-1 raw-pack profile"
-                    } else if profile_classic_tier1_arithmetic_pack {
-                        "j2k classic resident Tier-1 arithmetic-pack profile"
-                    } else if profile_classic_tier1_symbol_plan {
-                        "j2k classic resident Tier-1 symbol plan"
-                    } else if profile_classic_tier1_token_emit {
-                        "j2k classic resident Tier-1 token emit"
-                    } else if profile_classic_tier1_split_token_emit {
-                        "j2k classic resident Tier-1 split token emit"
-                    } else {
-                        "j2k classic resident packetization"
-                    };
+                    let next_label = classic_token_pack_next_label;
                     command_buffer = finish_resident_encode_split_command_buffer_timed(
                         command_buffer,
                         runtime,
@@ -12017,21 +12036,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                         classic_block_encode_duration.saturating_add(started.elapsed());
                 }
                 if split_command_buffers {
-                    let next_label = if profile_classic_tier1_density {
-                        "j2k classic resident Tier-1 density profile"
-                    } else if profile_classic_tier1_raw_pack {
-                        "j2k classic resident Tier-1 raw-pack profile"
-                    } else if profile_classic_tier1_arithmetic_pack {
-                        "j2k classic resident Tier-1 arithmetic-pack profile"
-                    } else if profile_classic_tier1_symbol_plan {
-                        "j2k classic resident Tier-1 symbol plan"
-                    } else if profile_classic_tier1_token_emit {
-                        "j2k classic resident Tier-1 token emit"
-                    } else if profile_classic_tier1_split_token_emit {
-                        "j2k classic resident Tier-1 split token emit"
-                    } else {
-                        "j2k classic resident packetization"
-                    };
+                    let next_label = classic_token_pack_next_label;
                     command_buffer = finish_resident_encode_split_command_buffer_timed(
                         command_buffer,
                         runtime,
@@ -12055,19 +12060,25 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 &tier1_jobs,
             )?;
             if readback.is_some() && split_command_buffers {
-                let next_label = if profile_classic_tier1_raw_pack {
-                    "j2k classic resident Tier-1 raw-pack profile"
-                } else if profile_classic_tier1_arithmetic_pack {
-                    "j2k classic resident Tier-1 arithmetic-pack profile"
-                } else if profile_classic_tier1_symbol_plan {
-                    "j2k classic resident Tier-1 symbol plan"
-                } else if profile_classic_tier1_token_emit {
-                    "j2k classic resident Tier-1 token emit"
-                } else if profile_classic_tier1_split_token_emit {
-                    "j2k classic resident Tier-1 split token emit"
-                } else {
-                    "j2k classic resident packetization"
-                };
+                let next_label = next_enabled_classic_stage_label(&[
+                    (profile_classic_tier1_raw_pack, CLASSIC_TIER1_RAW_PACK_LABEL),
+                    (
+                        profile_classic_tier1_arithmetic_pack,
+                        CLASSIC_TIER1_ARITHMETIC_PACK_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_symbol_plan,
+                        CLASSIC_TIER1_SYMBOL_PLAN_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_token_emit,
+                        CLASSIC_TIER1_TOKEN_EMIT_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_split_token_emit,
+                        CLASSIC_TIER1_SPLIT_TOKEN_EMIT_LABEL,
+                    ),
+                ]);
                 command_buffer = finish_resident_encode_split_command_buffer_timed(
                     command_buffer,
                     runtime,
@@ -12092,17 +12103,24 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 tier1_output_capacity_total,
             )?;
             if buffer.is_some() && split_command_buffers {
-                let next_label = if profile_classic_tier1_arithmetic_pack {
-                    "j2k classic resident Tier-1 arithmetic-pack profile"
-                } else if profile_classic_tier1_symbol_plan {
-                    "j2k classic resident Tier-1 symbol plan"
-                } else if profile_classic_tier1_token_emit {
-                    "j2k classic resident Tier-1 token emit"
-                } else if profile_classic_tier1_split_token_emit {
-                    "j2k classic resident Tier-1 split token emit"
-                } else {
-                    "j2k classic resident packetization"
-                };
+                let next_label = next_enabled_classic_stage_label(&[
+                    (
+                        profile_classic_tier1_arithmetic_pack,
+                        CLASSIC_TIER1_ARITHMETIC_PACK_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_symbol_plan,
+                        CLASSIC_TIER1_SYMBOL_PLAN_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_token_emit,
+                        CLASSIC_TIER1_TOKEN_EMIT_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_split_token_emit,
+                        CLASSIC_TIER1_SPLIT_TOKEN_EMIT_LABEL,
+                    ),
+                ]);
                 command_buffer = finish_resident_encode_split_command_buffer_timed(
                     command_buffer,
                     runtime,
@@ -12127,15 +12145,20 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 tier1_output_capacity_total,
             )?;
             if buffer.is_some() && split_command_buffers {
-                let next_label = if profile_classic_tier1_symbol_plan {
-                    "j2k classic resident Tier-1 symbol plan"
-                } else if profile_classic_tier1_token_emit {
-                    "j2k classic resident Tier-1 token emit"
-                } else if profile_classic_tier1_split_token_emit {
-                    "j2k classic resident Tier-1 split token emit"
-                } else {
-                    "j2k classic resident packetization"
-                };
+                let next_label = next_enabled_classic_stage_label(&[
+                    (
+                        profile_classic_tier1_symbol_plan,
+                        CLASSIC_TIER1_SYMBOL_PLAN_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_token_emit,
+                        CLASSIC_TIER1_TOKEN_EMIT_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_split_token_emit,
+                        CLASSIC_TIER1_SPLIT_TOKEN_EMIT_LABEL,
+                    ),
+                ]);
                 command_buffer = finish_resident_encode_split_command_buffer_timed(
                     command_buffer,
                     runtime,
@@ -12159,15 +12182,20 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 &tier1_jobs,
             )?;
             if readback.is_some() && split_command_buffers {
-                let next_label = if profile_classic_tier1_pass_plan {
-                    "j2k classic resident Tier-1 pass plan"
-                } else if profile_classic_tier1_token_emit {
-                    "j2k classic resident Tier-1 token emit"
-                } else if profile_classic_tier1_split_token_emit {
-                    "j2k classic resident Tier-1 split token emit"
-                } else {
-                    "j2k classic resident packetization"
-                };
+                let next_label = next_enabled_classic_stage_label(&[
+                    (
+                        profile_classic_tier1_pass_plan,
+                        CLASSIC_TIER1_PASS_PLAN_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_token_emit,
+                        CLASSIC_TIER1_TOKEN_EMIT_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_split_token_emit,
+                        CLASSIC_TIER1_SPLIT_TOKEN_EMIT_LABEL,
+                    ),
+                ]);
                 command_buffer = finish_resident_encode_split_command_buffer_timed(
                     command_buffer,
                     runtime,
@@ -12191,13 +12219,16 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 &tier1_jobs,
             )?;
             if readback.is_some() && split_command_buffers {
-                let next_label = if profile_classic_tier1_token_emit {
-                    "j2k classic resident Tier-1 token emit"
-                } else if profile_classic_tier1_split_token_emit {
-                    "j2k classic resident Tier-1 split token emit"
-                } else {
-                    "j2k classic resident packetization"
-                };
+                let next_label = next_enabled_classic_stage_label(&[
+                    (
+                        profile_classic_tier1_token_emit,
+                        CLASSIC_TIER1_TOKEN_EMIT_LABEL,
+                    ),
+                    (
+                        profile_classic_tier1_split_token_emit,
+                        CLASSIC_TIER1_SPLIT_TOKEN_EMIT_LABEL,
+                    ),
+                ]);
                 command_buffer = finish_resident_encode_split_command_buffer_timed(
                     command_buffer,
                     runtime,
@@ -12223,11 +12254,10 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 &tier1_jobs,
             )?;
             if readback.is_some() && split_command_buffers {
-                let next_label = if profile_classic_tier1_split_token_emit {
-                    "j2k classic resident Tier-1 split token emit"
-                } else {
-                    "j2k classic resident packetization"
-                };
+                let next_label = next_enabled_classic_stage_label(&[(
+                    profile_classic_tier1_split_token_emit,
+                    CLASSIC_TIER1_SPLIT_TOKEN_EMIT_LABEL,
+                )]);
                 command_buffer = finish_resident_encode_split_command_buffer_timed(
                     command_buffer,
                     runtime,

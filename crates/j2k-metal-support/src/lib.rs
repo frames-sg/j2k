@@ -270,42 +270,6 @@ pub fn named_pipeline(
 }
 
 #[cfg(target_os = "macos")]
-/// Caller-owned Metal device session shared by adapter crates.
-#[derive(Clone)]
-pub struct MetalDeviceSession {
-    device: Device,
-}
-
-#[cfg(target_os = "macos")]
-impl MetalDeviceSession {
-    /// Create a session bound to an existing Metal device.
-    #[must_use]
-    pub fn new(device: Device) -> Self {
-        Self { device }
-    }
-
-    /// Create a session from the system default Metal device.
-    pub fn system_default() -> Result<Self, MetalSupportError> {
-        system_default_device().map(Self::new)
-    }
-
-    /// Metal device used by this session.
-    #[must_use]
-    pub fn device(&self) -> &metal::DeviceRef {
-        self.device.as_ref()
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl core::fmt::Debug for MetalDeviceSession {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("MetalDeviceSession")
-            .field("device", &self.device.name())
-            .finish()
-    }
-}
-
-#[cfg(target_os = "macos")]
 /// Allocate a shared Metal buffer, clamping zero-length requests to one byte.
 #[must_use]
 pub fn shared_buffer(device: &Device, bytes: usize) -> Buffer {
@@ -433,40 +397,6 @@ pub fn checked_buffer_contents_slice_mut<T: GpuAbi>(
     // borrow of `buffer` prevents another safe mutable slice from this helper.
     // SAFETY: Objective-C/Metal pointers are null-checked or range-validated before wrapping.
     Ok(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
-}
-
-#[cfg(target_os = "macos")]
-/// Borrow typed contents from a shared Metal buffer.
-///
-/// # Safety
-/// The caller must ensure the buffer is CPU-visible, contains at least
-/// `offset_bytes + len * size_of::<T>()` initialized bytes, and is not mutably
-/// aliased for the returned lifetime.
-#[must_use]
-pub unsafe fn buffer_contents_slice<T: GpuAbi>(
-    buffer: &Buffer,
-    offset_bytes: usize,
-    len: usize,
-) -> &[T] {
-    checked_buffer_contents_slice(buffer, offset_bytes, len)
-        .expect("Metal buffer contents slice violates unsafe API contract")
-}
-
-#[cfg(target_os = "macos")]
-/// Mutably borrow typed contents from a shared Metal buffer.
-///
-/// # Safety
-/// The caller must ensure the buffer is CPU-visible, contains at least
-/// `offset_bytes + len * size_of::<T>()` initialized bytes, and no other alias
-/// can read or write the same memory for the returned lifetime.
-#[must_use]
-pub unsafe fn buffer_contents_slice_mut<T: GpuAbi>(
-    buffer: &mut Buffer,
-    offset_bytes: usize,
-    len: usize,
-) -> &mut [T] {
-    checked_buffer_contents_slice_mut(buffer, offset_bytes, len)
-        .expect("Metal mutable buffer contents slice violates unsafe API contract")
 }
 
 #[cfg(target_os = "macos")]

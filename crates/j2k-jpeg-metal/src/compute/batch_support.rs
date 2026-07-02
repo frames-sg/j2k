@@ -66,56 +66,23 @@ impl FastBatchTiming {
     ) {
         let fields = [
             j2k_profile::ProfileField::label("mode", label),
-            j2k_profile::ProfileField::metric("tiles", tile_count, j2k_profile::MetricUnit::Count),
+            j2k_profile::ProfileField::metric("tiles", tile_count),
             j2k_profile::ProfileField::label(
                 "dimensions",
                 format!("{}x{}", dimensions.0, dimensions.1),
             ),
-            j2k_profile::ProfileField::metric(
-                "segments",
-                segment_count,
-                j2k_profile::MetricUnit::Count,
-            ),
-            j2k_profile::ProfileField::metric(
-                "accepted_us",
-                Self::micros(self.accepted),
-                j2k_profile::MetricUnit::Microseconds,
-            ),
+            j2k_profile::ProfileField::metric("segments", segment_count),
+            j2k_profile::ProfileField::metric("accepted_us", Self::micros(self.accepted)),
             j2k_profile::ProfileField::metric(
                 "entropy_concat_us",
                 Self::micros(self.entropy_concat),
-                j2k_profile::MetricUnit::Microseconds,
             ),
-            j2k_profile::ProfileField::metric(
-                "buffer_alloc_us",
-                Self::micros(self.buffer_alloc),
-                j2k_profile::MetricUnit::Microseconds,
-            ),
-            j2k_profile::ProfileField::metric(
-                "encode_decode_us",
-                Self::micros(self.encode_decode),
-                j2k_profile::MetricUnit::Microseconds,
-            ),
-            j2k_profile::ProfileField::metric(
-                "wait_decode_us",
-                Self::micros(self.wait_decode),
-                j2k_profile::MetricUnit::Microseconds,
-            ),
-            j2k_profile::ProfileField::metric(
-                "encode_pack_us",
-                Self::micros(self.encode_pack),
-                j2k_profile::MetricUnit::Microseconds,
-            ),
-            j2k_profile::ProfileField::metric(
-                "wait_pack_us",
-                Self::micros(self.wait_pack),
-                j2k_profile::MetricUnit::Microseconds,
-            ),
-            j2k_profile::ProfileField::metric(
-                "total_us",
-                Self::micros(self.total),
-                j2k_profile::MetricUnit::Microseconds,
-            ),
+            j2k_profile::ProfileField::metric("buffer_alloc_us", Self::micros(self.buffer_alloc)),
+            j2k_profile::ProfileField::metric("encode_decode_us", Self::micros(self.encode_decode)),
+            j2k_profile::ProfileField::metric("wait_decode_us", Self::micros(self.wait_decode)),
+            j2k_profile::ProfileField::metric("encode_pack_us", Self::micros(self.encode_pack)),
+            j2k_profile::ProfileField::metric("wait_pack_us", Self::micros(self.wait_pack)),
+            j2k_profile::ProfileField::metric("total_us", Self::micros(self.total)),
         ];
         j2k_profile::emit_profile_fields(
             fast420_batch_timing_stage_mode(),

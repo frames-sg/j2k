@@ -310,6 +310,28 @@ fn decode_rgb8_decoder_region_scaled_batch_into_resizable_metal_textures_with_se
 }
 
 #[cfg(target_os = "macos")]
+fn assert_reusable_rgba_texture_tiles(
+    session: &MetalBackendSession,
+    output: &MetalBatchTextureOutput,
+    tiles: Vec<Result<MetalTextureTile, Error>>,
+    dimensions: (u32, u32),
+    expected_tiles: &[&[u8]],
+) {
+    assert_eq!(tiles.len(), expected_tiles.len());
+    for (index, tile) in tiles.into_iter().enumerate() {
+        let tile = tile.expect("texture tile");
+        assert_eq!(tile.dimensions(), dimensions);
+        assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+        assert!(std::ptr::eq(
+            tile.texture(),
+            output.texture(index).expect("output texture")
+        ));
+        let actual_rgba = download_rgba8_texture(session, tile.texture(), tile.dimensions());
+        assert_eq!(actual_rgba.as_slice(), expected_tiles[index]);
+    }
+}
+
+#[cfg(target_os = "macos")]
 use j2k_jpeg::adapter::build_fast422_packet;
 use j2k_jpeg::adapter::{build_fast420_packet, build_fast444_packet};
 #[cfg(target_os = "macos")]
@@ -2183,20 +2205,8 @@ fn rgb8_decoder_batch_resizes_reusable_metal_textures() {
 
     assert_eq!(output.dimensions(), (16, 16));
     assert_eq!(output.tile_capacity(), 2);
-    assert_eq!(tiles.len(), 2);
-    for (index, tile) in tiles.into_iter().enumerate() {
-        let tile = tile.expect("texture tile");
-        assert_eq!(tile.dimensions(), (16, 16));
-        assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
-        assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
-        ));
-        assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
-            expected_rgba
-        );
-    }
+    let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
+    assert_reusable_rgba_texture_tiles(&session, &output, tiles, (16, 16), &expected_tiles);
 }
 
 #[cfg(target_os = "macos")]
@@ -3475,20 +3485,8 @@ fn rgb8_fast444_texture_batch_decode_fuses_directly_into_reusable_metal_textures
     let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
         .expect("decode into reusable textures");
 
-    assert_eq!(tiles.len(), 2);
-    for (index, tile) in tiles.into_iter().enumerate() {
-        let tile = tile.expect("texture tile");
-        assert_eq!(tile.dimensions(), (8, 8));
-        assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
-        assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
-        ));
-        assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
-            expected_rgba
-        );
-    }
+    let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
+    assert_reusable_rgba_texture_tiles(&session, &output, tiles, (8, 8), &expected_tiles);
     assert_eq!(
         compute::jpeg_private_buffer_allocations_for_test(),
         0,
@@ -3643,20 +3641,8 @@ fn rgb8_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_textures
     let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
         .expect("decode into reusable textures");
 
-    assert_eq!(tiles.len(), 2);
-    for (index, tile) in tiles.into_iter().enumerate() {
-        let tile = tile.expect("texture tile");
-        assert_eq!(tile.dimensions(), (16, 8));
-        assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
-        assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
-        ));
-        assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
-            expected_rgba
-        );
-    }
+    let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
+    assert_reusable_rgba_texture_tiles(&session, &output, tiles, (16, 8), &expected_tiles);
     assert_eq!(
         compute::jpeg_private_buffer_allocations_for_test(),
         0,
@@ -3697,20 +3683,8 @@ fn rgb8_wide_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_tex
     let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
         .expect("decode into reusable textures");
 
-    assert_eq!(tiles.len(), 2);
-    for (index, tile) in tiles.into_iter().enumerate() {
-        let tile = tile.expect("texture tile");
-        assert_eq!(tile.dimensions(), dimensions);
-        assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
-        assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
-        ));
-        assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
-            expected_rgba
-        );
-    }
+    let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
+    assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
     assert_eq!(
         compute::jpeg_private_buffer_allocations_for_test(),
         0,
@@ -3921,20 +3895,8 @@ fn rgb8_wide_row_fast420_texture_batch_decode_fuses_directly_into_reusable_metal
     let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
         .expect("decode into reusable textures");
 
-    assert_eq!(tiles.len(), 2);
-    for (index, tile) in tiles.into_iter().enumerate() {
-        let tile = tile.expect("texture tile");
-        assert_eq!(tile.dimensions(), dimensions);
-        assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
-        assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
-        ));
-        assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
-            expected_rgba
-        );
-    }
+    let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
+    assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
     assert_eq!(
             compute::jpeg_private_buffer_allocations_for_test(),
             0,
@@ -3975,20 +3937,8 @@ fn rgb8_multi_row_fast420_texture_batch_decode_fuses_directly_into_reusable_meta
     let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
         .expect("decode into reusable textures");
 
-    assert_eq!(tiles.len(), 2);
-    for (index, tile) in tiles.into_iter().enumerate() {
-        let tile = tile.expect("texture tile");
-        assert_eq!(tile.dimensions(), dimensions);
-        assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
-        assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
-        ));
-        assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
-            expected_rgba
-        );
-    }
+    let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
+    assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
     assert_eq!(
             compute::jpeg_private_buffer_allocations_for_test(),
             0,
@@ -4029,20 +3979,8 @@ fn rgb8_multi_axis_fast420_texture_batch_decode_fuses_directly_into_reusable_met
         let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
             .expect("decode into reusable textures");
 
-        assert_eq!(tiles.len(), 2);
-        for (index, tile) in tiles.into_iter().enumerate() {
-            let tile = tile.expect("texture tile");
-            assert_eq!(tile.dimensions(), dimensions);
-            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
-            assert!(std::ptr::eq(
-                tile.texture(),
-                output.texture(index).expect("output texture")
-            ));
-            assert_eq!(
-                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
-                expected_rgba
-            );
-        }
+        let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
+        assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
         assert_eq!(
                 compute::jpeg_private_buffer_allocations_for_test(),
                 0,
@@ -4085,20 +4023,8 @@ fn rgb8_chunked_multi_axis_fast420_texture_batch_decode_fuses_directly_into_reus
     let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
         .expect("decode into reusable textures");
 
-    assert_eq!(tiles.len(), 2);
-    for (index, tile) in tiles.into_iter().enumerate() {
-        let tile = tile.expect("texture tile");
-        assert_eq!(tile.dimensions(), dimensions);
-        assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
-        assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
-        ));
-        assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
-            expected_rgba
-        );
-    }
+    let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
+    assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
     assert_eq!(
             compute::jpeg_private_buffer_allocations_for_test(),
             0,
@@ -4139,20 +4065,8 @@ fn rgb8_restart_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_
     let tiles = decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
         .expect("decode into reusable textures");
 
-    assert_eq!(tiles.len(), 2);
-    for (index, tile) in tiles.into_iter().enumerate() {
-        let tile = tile.expect("texture tile");
-        assert_eq!(tile.dimensions(), dimensions);
-        assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
-        assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
-        ));
-        assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
-            expected_rgba
-        );
-    }
+    let expected_tiles = [expected_rgba.as_slice(), expected_rgba.as_slice()];
+    assert_reusable_rgba_texture_tiles(&session, &output, tiles, dimensions, &expected_tiles);
     assert_eq!(
             compute::jpeg_private_buffer_allocations_for_test(),
             0,

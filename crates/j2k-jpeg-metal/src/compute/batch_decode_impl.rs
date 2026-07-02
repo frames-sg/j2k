@@ -247,16 +247,7 @@ fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_with_mode_and_output<
             .elapsed();
     }
 
-    let dc_tables = [
-        PreparedHuffmanHost::from(first.y_dc_table()),
-        PreparedHuffmanHost::from(first.cb_dc_table()),
-        PreparedHuffmanHost::from(first.cr_dc_table()),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(first.y_ac_table()),
-        PreparedHuffmanHost::from(first.cb_ac_table()),
-        PreparedHuffmanHost::from(first.cr_ac_table()),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
 
     let mut command_buffer = runtime.queue.new_command_buffer();
     #[cfg(test)]
@@ -705,16 +696,7 @@ fn try_decode_fast_subsampled_full_rgba_batch_to_textures<P: FastSubsampledMetal
             }
             None => None,
         };
-        let dc_tables = [
-            PreparedHuffmanHost::from(first.y_dc_table()),
-            PreparedHuffmanHost::from(first.cb_dc_table()),
-            PreparedHuffmanHost::from(first.cr_dc_table()),
-        ];
-        let ac_tables = [
-            PreparedHuffmanHost::from(first.y_ac_table()),
-            PreparedHuffmanHost::from(first.cb_ac_table()),
-            PreparedHuffmanHost::from(first.cr_ac_table()),
-        ];
+        let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
 
         let tile_index_ctx = format!("{} texture batch tile index", P::FAMILY_NAME);
         let texture_decode_pipeline = P::rgba_texture_batch_decode_pipeline(runtime);
@@ -883,16 +865,7 @@ fn try_decode_fast_subsampled_full_rgba_batch_to_textures<P: FastSubsampledMetal
     let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
     let status_buffer =
         batch_scratch.shared_buffer_with_slice(&runtime.device, P::TEXTURE_KEYS.status, &statuses);
-    let dc_tables = [
-        PreparedHuffmanHost::from(first.y_dc_table()),
-        PreparedHuffmanHost::from(first.cb_dc_table()),
-        PreparedHuffmanHost::from(first.cr_dc_table()),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(first.y_ac_table()),
-        PreparedHuffmanHost::from(first.cb_ac_table()),
-        PreparedHuffmanHost::from(first.cr_ac_table()),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
 
     let command_buffer = runtime.queue.new_command_buffer();
     match decode_mode {
@@ -1243,16 +1216,7 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
     let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
     let status_buffer =
         batch_scratch.shared_buffer_with_slice(&runtime.device, "fast444_full_status", &statuses);
-    let dc_tables = [
-        PreparedHuffmanHost::from(&first.y_dc_table),
-        PreparedHuffmanHost::from(&first.cb_dc_table),
-        PreparedHuffmanHost::from(&first.cr_dc_table),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(&first.y_ac_table),
-        PreparedHuffmanHost::from(&first.cb_ac_table),
-        PreparedHuffmanHost::from(&first.cr_ac_table),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
 
     let command_buffer = runtime.queue.new_command_buffer();
     let decoder_encoder = command_buffer.new_compute_command_encoder();
@@ -1493,16 +1457,7 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
         "fast444_texture_status",
         &statuses,
     );
-    let dc_tables = [
-        PreparedHuffmanHost::from(&first.y_dc_table),
-        PreparedHuffmanHost::from(&first.cb_dc_table),
-        PreparedHuffmanHost::from(&first.cr_dc_table),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(&first.y_ac_table),
-        PreparedHuffmanHost::from(&first.cb_ac_table),
-        PreparedHuffmanHost::from(&first.cr_ac_table),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
 
     let command_buffer = runtime.queue.new_command_buffer();
     for index in 0..tile_count {
@@ -2000,16 +1955,7 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
         "fast444_region_scaled_status",
         &statuses,
     );
-    let dc_tables = [
-        PreparedHuffmanHost::from(&first.y_dc_table),
-        PreparedHuffmanHost::from(&first.cb_dc_table),
-        PreparedHuffmanHost::from(&first.cr_dc_table),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(&first.y_ac_table),
-        PreparedHuffmanHost::from(&first.cb_ac_table),
-        PreparedHuffmanHost::from(&first.cr_ac_table),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
 
     let command_buffer = runtime.queue.new_command_buffer();
     let decoder_encoder = command_buffer.new_compute_command_encoder();
@@ -2452,16 +2398,7 @@ fn try_decode_fast444_region_scaled_rgba_batch_to_textures(
         "fast444_region_scaled_texture_status",
         &statuses,
     );
-    let dc_tables = [
-        PreparedHuffmanHost::from(&first.y_dc_table),
-        PreparedHuffmanHost::from(&first.cb_dc_table),
-        PreparedHuffmanHost::from(&first.cr_dc_table),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(&first.y_ac_table),
-        PreparedHuffmanHost::from(&first.cb_ac_table),
-        PreparedHuffmanHost::from(&first.cr_ac_table),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
 
     let command_buffer = runtime.queue.new_command_buffer();
     let decoder_encoder = command_buffer.new_compute_command_encoder();
@@ -2878,16 +2815,7 @@ fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output<
         P::REGION_SCALED_KEYS.status,
         &statuses,
     );
-    let dc_tables = [
-        PreparedHuffmanHost::from(first.y_dc_table()),
-        PreparedHuffmanHost::from(first.cb_dc_table()),
-        PreparedHuffmanHost::from(first.cr_dc_table()),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(first.y_ac_table()),
-        PreparedHuffmanHost::from(first.cb_ac_table()),
-        PreparedHuffmanHost::from(first.cr_ac_table()),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
 
     let command_buffer = runtime.queue.new_command_buffer();
     let decoder_encoder = command_buffer.new_compute_command_encoder();
@@ -3322,16 +3250,7 @@ fn try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures<P: FastSubsam
         P::REGION_SCALED_TEXTURE_KEYS.status,
         &statuses,
     );
-    let dc_tables = [
-        PreparedHuffmanHost::from(first.y_dc_table()),
-        PreparedHuffmanHost::from(first.cb_dc_table()),
-        PreparedHuffmanHost::from(first.cr_dc_table()),
-    ];
-    let ac_tables = [
-        PreparedHuffmanHost::from(first.y_ac_table()),
-        PreparedHuffmanHost::from(first.cb_ac_table()),
-        PreparedHuffmanHost::from(first.cr_ac_table()),
-    ];
+    let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
 
     let command_buffer = runtime.queue.new_command_buffer();
     let decoder_encoder = command_buffer.new_compute_command_encoder();
@@ -3981,4 +3900,3 @@ fn decode_full_batch_to_surfaces_with_runtime(
     }
     Ok(Some(results))
 }
-

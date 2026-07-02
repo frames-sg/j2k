@@ -12,7 +12,10 @@ use std::{
 use j2k_core::{BackendKind, BackendRequest, DeviceSurface, Downscale, PixelFormat, Rect};
 use j2k_metal::{DecodeOperation, J2kDecoder, SurfaceResidency};
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
-use j2k_test_support::{fnv1a64_hex, patterned_gray8, patterned_rgb8};
+use j2k_test_support::{
+    fnv1a64_hex, manifest_column, manifest_field, manifest_optional_value,
+    optional_manifest_column, patterned_gray8, patterned_rgb8,
+};
 
 const GENERATED_DIMS: &[u32] = &[512, 1024];
 const ITERS: usize = 5;
@@ -20,6 +23,7 @@ const METAL_DECODE_INPUT_DIRS_ENV: &str = "J2K_METAL_DECODE_INPUT_DIRS";
 const METAL_DECODE_MANIFEST_ENV: &str = "J2K_METAL_DECODE_MANIFEST";
 const METAL_DECODE_INCLUDE_GENERATED_ENV: &str = "J2K_METAL_DECODE_INCLUDE_GENERATED";
 const REQUIRE_METAL_BENCH_ENV: &str = "J2K_REQUIRE_METAL_BENCH";
+const METAL_DECODE_MANIFEST_LABEL: &str = "Metal decode manifest";
 
 #[derive(Clone)]
 struct DecodeBenchCase {
@@ -445,8 +449,8 @@ fn metal_decode_manifest() -> Result<Option<DecodeManifest>, String> {
         .next()
         .ok_or_else(|| format!("Metal decode manifest {} is empty", path.display()))?;
     let headers = header.split('\t').collect::<Vec<_>>();
-    let path_index = manifest_column(&headers, "path")?;
-    let hash_index = manifest_column(&headers, "input_fnv1a64")?;
+    let path_index = manifest_column(&headers, METAL_DECODE_MANIFEST_LABEL, "path")?;
+    let hash_index = manifest_column(&headers, METAL_DECODE_MANIFEST_LABEL, "input_fnv1a64")?;
     let codec_index = optional_manifest_column(&headers, "codec");
     let container_index = optional_manifest_column(&headers, "container");
     let base = path.parent().unwrap_or_else(|| Path::new("."));
@@ -457,7 +461,13 @@ fn metal_decode_manifest() -> Result<Option<DecodeManifest>, String> {
         }
         let fields = line.split('\t').collect::<Vec<_>>();
         let row_number = line_index + 2;
-        let raw_path = manifest_field(&fields, path_index, "path", row_number)?;
+        let raw_path = manifest_field(
+            &fields,
+            METAL_DECODE_MANIFEST_LABEL,
+            path_index,
+            "path",
+            row_number,
+        )?;
         let resolved = if Path::new(raw_path).is_absolute() {
             PathBuf::from(raw_path)
         } else {
@@ -471,10 +481,28 @@ fn metal_decode_manifest() -> Result<Option<DecodeManifest>, String> {
             )
         })?;
         let entry = DecodeManifestEntry {
-            input_fnv1a64: manifest_field(&fields, hash_index, "input_fnv1a64", row_number)?
-                .to_string(),
-            codec: manifest_optional_value(&fields, codec_index, "codec", row_number)?,
-            container: manifest_optional_value(&fields, container_index, "container", row_number)?,
+            input_fnv1a64: manifest_field(
+                &fields,
+                METAL_DECODE_MANIFEST_LABEL,
+                hash_index,
+                "input_fnv1a64",
+                row_number,
+            )?
+            .to_string(),
+            codec: manifest_optional_value(
+                &fields,
+                METAL_DECODE_MANIFEST_LABEL,
+                codec_index,
+                "codec",
+                row_number,
+            )?,
+            container: manifest_optional_value(
+                &fields,
+                METAL_DECODE_MANIFEST_LABEL,
+                container_index,
+                "container",
+                row_number,
+            )?,
         };
         if entries.insert(canonical, entry).is_some() {
             return Err(format!(
@@ -584,48 +612,6 @@ fn env_falsey(name: &str) -> bool {
     std::env::var(name)
         .ok()
         .is_some_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
-}
-
-fn manifest_column(headers: &[&str], name: &str) -> Result<usize, String> {
-    optional_manifest_column(headers, name)
-        .ok_or_else(|| format!("Metal decode manifest is missing required {name:?} column"))
-}
-
-fn optional_manifest_column(headers: &[&str], name: &str) -> Option<usize> {
-    headers.iter().position(|header| *header == name)
-}
-
-fn manifest_field<'a>(
-    fields: &'a [&str],
-    index: usize,
-    name: &str,
-    row_number: usize,
-) -> Result<&'a str, String> {
-    fields
-        .get(index)
-        .copied()
-        .ok_or_else(|| format!("Metal decode manifest row {row_number} is missing {name:?} field"))
-}
-
-fn manifest_optional_value(
-    fields: &[&str],
-    index: Option<usize>,
-    name: &str,
-    row_number: usize,
-) -> Result<Option<String>, String> {
-    let Some(index) = index else {
-        return Ok(None);
-    };
-    let value = manifest_field(fields, index, name, row_number)?.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    if value.chars().any(char::is_control) {
-        return Err(format!(
-            "Metal decode manifest row {row_number} field {name:?} contains a control character"
-        ));
-    }
-    Ok(Some(value.to_string()))
 }
 
 fn operation_label(operation: DecodeOperation) -> &'static str {

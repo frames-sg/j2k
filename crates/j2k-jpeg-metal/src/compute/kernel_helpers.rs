@@ -6,7 +6,8 @@ use j2k_core::PixelFormat;
 use metal::{Buffer, ComputePipelineState, MTLSize};
 
 use super::{
-    PlaneMode, PreparedHuffmanHost, MODE_GRAY, MODE_RGB, MODE_YCBCR, OUT_GRAY, OUT_RGB, OUT_RGBA,
+    FastPacketAccess, PlaneMode, PreparedHuffmanHost, MODE_GRAY, MODE_RGB, MODE_YCBCR, OUT_GRAY,
+    OUT_RGB, OUT_RGBA,
 };
 
 #[cfg(target_os = "macos")]
@@ -52,6 +53,23 @@ pub(super) fn bind_fast_decode_entropy_inputs<P>(
     encoder.set_buffer(14, Some(restart_offsets_buffer), 0);
     encoder.set_buffer(15, Some(status_buffer), 0);
     encoder.set_buffer(16, Some(entropy_checkpoints_buffer), 0);
+}
+
+pub(super) fn fast_packet_huffman_tables<P: FastPacketAccess>(
+    packet: &P,
+) -> ([PreparedHuffmanHost; 3], [PreparedHuffmanHost; 3]) {
+    (
+        [
+            PreparedHuffmanHost::from(packet.y_dc_table()),
+            PreparedHuffmanHost::from(packet.cb_dc_table()),
+            PreparedHuffmanHost::from(packet.cr_dc_table()),
+        ],
+        [
+            PreparedHuffmanHost::from(packet.y_ac_table()),
+            PreparedHuffmanHost::from(packet.cb_ac_table()),
+            PreparedHuffmanHost::from(packet.cr_ac_table()),
+        ],
+    )
 }
 
 /// Bind the shared three-plane pack kernel layout at slots 0-4: the component
