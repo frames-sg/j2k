@@ -22,9 +22,10 @@ fn cuda_transcode_kernel_gate() -> bool {
     if super::transcode_kernels_built() {
         return true;
     }
-    if j2k_test_support::cuda_strict_oxide_required() {
-        panic!("J2K_REQUIRE_CUDA_OXIDE_BUILD is set but transcode kernels were not built");
-    }
+    assert!(
+        !j2k_test_support::cuda_strict_oxide_required(),
+        "J2K_REQUIRE_CUDA_OXIDE_BUILD is set but transcode kernels were not built"
+    );
     eprintln!(
         "{} gate=J2K_REQUIRE_CUDA_OXIDE_BUILD context={} reason=transcode-kernels-not-built",
         j2k_test_support::GPU_TEST_SKIP_MARKER,
@@ -211,6 +212,11 @@ fn cuda_oxide_dwt97_transcode_matches_scalar_fixture_when_required() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
+    const WIDE_PATTERN: [f32; 17] = [
+        -2.0, -1.75, -1.25, -0.5, 0.0, 0.25, 0.75, 1.0, 1.5, 2.0, -2.5, 2.5, -3.0, 3.0, -0.25, 0.5,
+        1.25,
+    ];
+
     if !cuda_runtime_gate() || !cuda_transcode_kernel_gate() {
         return;
     }
@@ -250,10 +256,6 @@ fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
     let wide_width = 1032;
     let wide_height = 8;
     let mut wide_blocks = vec![0.0f32; wide_block_cols * 64];
-    const WIDE_PATTERN: [f32; 17] = [
-        -2.0, -1.75, -1.25, -0.5, 0.0, 0.25, 0.75, 1.0, 1.5, 2.0, -2.5, 2.5, -3.0, 3.0, -0.25, 0.5,
-        1.25,
-    ];
     for (index, value) in wide_blocks.iter_mut().enumerate() {
         *value = WIDE_PATTERN[index % WIDE_PATTERN.len()];
     }
@@ -451,6 +453,10 @@ fn expected_dwt97_codeblocks(
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test mirrors CUDA deadzone quantization for bounded fixture coefficients"
+)]
 fn quantize_dwt97_deadzone(value: f32, inv_delta: f32) -> i32 {
     let sign = if value < 0.0 { -1 } else { 1 };
     sign * (value.abs() * inv_delta).floor() as i32
@@ -460,15 +466,15 @@ fn quantize_dwt97_deadzone(value: f32, inv_delta: f32) -> i32 {
 fn download_device_codeblock_bands(
     bands: &super::CudaHtj2k97DeviceCodeblockBands,
 ) -> super::CudaHtj2k97CodeblockBands {
-    let ll_len = bands.item_count * bands.low_width * bands.low_height;
-    let hl_len = bands.item_count * bands.high_width * bands.low_height;
-    let lh_len = bands.item_count * bands.low_width * bands.high_height;
-    let hh_len = bands.item_count * bands.high_width * bands.high_height;
+    let low_low_len = bands.item_count * bands.low_width * bands.low_height;
+    let high_low_len = bands.item_count * bands.high_width * bands.low_height;
+    let low_high_len = bands.item_count * bands.low_width * bands.high_height;
+    let high_high_len = bands.item_count * bands.high_width * bands.high_height;
     super::CudaHtj2k97CodeblockBands {
-        ll: download_pooled_i32(&bands.ll, ll_len),
-        hl: download_pooled_i32(&bands.hl, hl_len),
-        lh: download_pooled_i32(&bands.lh, lh_len),
-        hh: download_pooled_i32(&bands.hh, hh_len),
+        ll: download_pooled_i32(&bands.ll, low_low_len),
+        hl: download_pooled_i32(&bands.hl, high_low_len),
+        lh: download_pooled_i32(&bands.lh, low_high_len),
+        hh: download_pooled_i32(&bands.hh, high_high_len),
         item_count: bands.item_count,
         low_width: bands.low_width,
         low_height: bands.low_height,
@@ -1135,16 +1141,16 @@ fn htj2k_encode_compact_jobs_reject_payloads_larger_than_capacity() {
 #[cfg(all(feature = "cuda-oxide-j2k-encode", j2k_cuda_oxide_j2k_encode_built))]
 #[test]
 fn cuda_oxide_htj2k_compact_codeblocks_assembles_payload_when_required() {
-    if !cuda_runtime_gate() {
-        return;
-    }
-
     const J2K_HT_MEL_SIZE: usize = 192;
     const J2K_HT_VLC_SIZE: usize = 3072 - J2K_HT_MEL_SIZE;
-    const J2K_HT_MS_SIZE: usize = ((16384 * 16) + 14) / 15;
+    const J2K_HT_MS_SIZE: usize = (16384usize * 16).div_ceil(15);
     const J2K_HT_MEL_OFFSET: usize = J2K_HT_MS_SIZE;
     const J2K_HT_VLC_OFFSET: usize = J2K_HT_MS_SIZE + J2K_HT_MEL_SIZE;
     const J2K_HT_COMPACT_ASSEMBLE_FLAG: u32 = 0x8000_0000;
+
+    if !cuda_runtime_gate() {
+        return;
+    }
 
     let context = CudaContext::system_default().expect("CUDA context");
     let source_offset = 3usize;
@@ -1659,7 +1665,7 @@ fn cuda_oxide_copy_u8_matches_builtin_copy_and_cpu_when_required() {
 
     let context = CudaContext::system_default().expect("CUDA context");
     let input = (0..4099)
-        .map(|index| ((index * 31 + 17) % 251) as u8)
+        .map(|index| u8::try_from((index * 31 + 17) % 251).expect("modulo 251 fits u8"))
         .collect::<Vec<_>>();
 
     let builtin = context

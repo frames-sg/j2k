@@ -240,6 +240,11 @@ fn cuda_runtime_build_script_does_not_use_nvcc() {
         repo_root(),
         &[FilePatternCheck::new("crates/j2k-cuda-runtime/build.rs")
             .named("CUDA runtime build script")
+            .required(&[
+                ".env_remove(\"RUSTC\")",
+                ".env_remove(\"RUSTC_WRAPPER\")",
+                ".env_remove(\"RUSTC_WORKSPACE_WRAPPER\")",
+            ])
             .forbidden(&["NVCC", "nvcc"])],
     );
 }

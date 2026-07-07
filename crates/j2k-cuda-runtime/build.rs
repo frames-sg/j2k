@@ -337,6 +337,8 @@ fn compile_cuda_oxide_project(
         .arg(&arch)
         .env_remove("RUSTUP_TOOLCHAIN")
         .env_remove("RUSTC")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("RUSTDOC")
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
