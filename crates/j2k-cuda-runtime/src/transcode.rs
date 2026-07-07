@@ -21,6 +21,7 @@ use std::os::raw::c_uint;
 /// Reversible 5/3 transcode bands downloaded from the device. Layout matches
 /// `j2k_transcode::accelerator::ReversibleDwt53FirstLevel`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[doc(hidden)]
 pub struct CudaTranscodeReversible53Bands {
     /// Low-horizontal, low-vertical band (`low_width * low_height`).
     pub ll: Vec<i32>,
@@ -68,6 +69,7 @@ impl CudaContext {
     /// of 64 `i16` coefficients. `width`/`height` are the logical component
     /// dimensions (<= `block_cols*8` / `block_rows*8`).
     #[allow(clippy::too_many_lines)]
+    #[doc(hidden)]
     pub fn j2k_transcode_reversible_dwt53(
         &self,
         dequantized_blocks: &[i16],
@@ -251,6 +253,7 @@ impl CudaContext {
 /// Irreversible single-level 9/7 transcode bands downloaded from the device.
 /// Device math is f32; callers widen to f64 (parity is within tolerance).
 #[derive(Clone, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct CudaTranscodeDwt97Bands {
     /// Low-horizontal, low-vertical band (`low_width * low_height`).
     pub ll: Vec<f32>,
@@ -274,6 +277,7 @@ pub struct CudaTranscodeDwt97Bands {
 /// code-block quantization batch. The dispatch layer derives the deltas from
 /// the `j2k-transcode` code-block oracle so the numbers stay authoritative.
 #[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
 pub struct CudaHtj2k97QuantizeParams {
     /// `1/Δ` for the LL subband.
     pub inv_delta_ll: f32,
@@ -287,6 +291,64 @@ pub struct CudaHtj2k97QuantizeParams {
     pub cb_width: usize,
     /// Code-block height in coefficients (`1 << (code_block_height_exp + 2)`).
     pub cb_height: usize,
+}
+
+/// Shared same-geometry shape for CUDA 9/7 DCT-grid batches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct CudaDwt97BatchGeometry {
+    /// Number of items in the batch.
+    pub item_count: usize,
+    /// Number of 8x8 DCT blocks per item row.
+    pub block_cols: usize,
+    /// Number of 8x8 DCT blocks per item column.
+    pub block_rows: usize,
+    /// Logical item width in samples.
+    pub width: usize,
+    /// Logical item height in samples.
+    pub height: usize,
+}
+
+/// Host f32 input plus caller-owned transient buffer pool for a CUDA 9/7 DWT batch.
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub struct CudaDwt97BatchWithPoolRequest<'a> {
+    /// Natural-order 8x8 DCT coefficients for every item in the batch.
+    pub blocks: &'a [f32],
+    /// Shared geometry for every item in `blocks`.
+    pub geometry: CudaDwt97BatchGeometry,
+    /// Pool used for transient device buffers.
+    pub pool: &'a CudaBufferPool,
+}
+
+/// Host f32 input plus caller-owned transient buffer pool for a CUDA 9/7
+/// code-block quantization batch.
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub struct CudaHtj2k97CodeblockBatchWithPoolRequest<'a> {
+    /// Natural-order 8x8 DCT coefficients for every item in the batch.
+    pub blocks: &'a [f32],
+    /// Shared geometry for every item in `blocks`.
+    pub geometry: CudaDwt97BatchGeometry,
+    /// Per-subband quantization and code-block geometry.
+    pub params: CudaHtj2k97QuantizeParams,
+    /// Pool used for transient device buffers.
+    pub pool: &'a CudaBufferPool,
+}
+
+/// Host i16 input plus caller-owned transient buffer pool for a CUDA 9/7
+/// code-block quantization batch.
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub struct CudaHtj2k97I16CodeblockBatchWithPoolRequest<'a> {
+    /// Natural-order 8x8 DCT coefficients for every item in the batch.
+    pub blocks: &'a [i16],
+    /// Shared geometry for every item in `blocks`.
+    pub geometry: CudaDwt97BatchGeometry,
+    /// Per-subband quantization and code-block geometry.
+    pub params: CudaHtj2k97QuantizeParams,
+    /// Pool used for transient device buffers.
+    pub pool: &'a CudaBufferPool,
 }
 
 #[derive(Clone, Copy)]
@@ -304,6 +366,7 @@ pub(crate) struct Dwt97CodeblockBandBuffers<'a> {
 /// row-major), matching the `j2k-transcode` code-block oracle layout. The
 /// dispatch layer reslices these into prequantized HTJ2K components.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[doc(hidden)]
 pub struct CudaHtj2k97CodeblockBands {
     /// LL subband (`item_count * low_width * low_height`).
     pub ll: Vec<i32>,
@@ -328,6 +391,7 @@ pub struct CudaHtj2k97CodeblockBands {
 /// Device-resident per-item raw code-block-major quantized 9/7 bands from the
 /// fused transcode batch.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct CudaHtj2k97DeviceCodeblockBands {
     /// LL subband (`item_count * low_width * low_height`).
     pub ll: CudaPooledDeviceBuffer,
@@ -365,6 +429,66 @@ pub(crate) struct Dwt97BatchDeviceBands {
 pub(crate) enum Dwt97BatchInput<'a> {
     F32(&'a [f32]),
     I16(&'a [i16]),
+}
+
+#[derive(Clone, Copy)]
+struct Dwt97BatchDeviceRequest<'a> {
+    input: Dwt97BatchInput<'a>,
+    geometry: CudaDwt97BatchGeometry,
+    pool: &'a CudaBufferPool,
+}
+
+#[derive(Clone, Copy)]
+struct Htj2k97I16ResidentFusedRequest<'a> {
+    blocks: &'a [i16],
+    geometry: CudaDwt97BatchGeometry,
+    params: CudaHtj2k97QuantizeParams,
+    pool: &'a CudaBufferPool,
+}
+
+struct Dwt97ColumnLiftBatchLaunch<'a> {
+    rows_buffer: &'a CudaDeviceBuffer,
+    band_width: i32,
+    height: i32,
+    low_height: i32,
+    high_height: i32,
+    items: u32,
+    low_out: &'a CudaDeviceBuffer,
+    high_out: &'a CudaDeviceBuffer,
+}
+
+struct Dwt97ColumnLiftQuantizeCodeblocksBatchLaunch<'a> {
+    column: Dwt97ColumnLiftBatchLaunch<'a>,
+    cb_width: i32,
+    cb_height: i32,
+    inv_delta_low: f32,
+    inv_delta_high: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(not(feature = "cuda-oxide-transcode"), allow(dead_code))]
+struct Dwt97ColumnLiftQuantizeCodeblocksParams {
+    cb_width: i32,
+    cb_height: i32,
+    inv_delta_low: f32,
+    inv_delta_high: f32,
+}
+
+// SAFETY: `Dwt97ColumnLiftQuantizeCodeblocksParams` is `#[repr(C)]` and
+// contains only CUDA scalar ABI fields passed by value through a
+// kernel-parameter pointer.
+unsafe impl crate::execution::CudaKernelParam for Dwt97ColumnLiftQuantizeCodeblocksParams {}
+
+struct Dwt97QuantizeCodeblocksLaunch<'a> {
+    band: &'a CudaDeviceBuffer,
+    output: &'a CudaDeviceBuffer,
+    width: i32,
+    height: i32,
+    cb_width: i32,
+    cb_height: i32,
+    inv_delta: f32,
+    items: u32,
 }
 
 fn transcode_runtime_ptx_available() -> bool {
@@ -479,6 +603,7 @@ impl CudaContext {
     /// natural-order coefficients), matching the `j2k-transcode` scalar
     /// oracle within f32 tolerance.
     #[allow(clippy::too_many_lines)]
+    #[doc(hidden)]
     pub fn j2k_transcode_dwt97(
         &self,
         blocks: &[f32],
@@ -638,44 +763,25 @@ impl CudaContext {
 
 impl CudaContext {
     /// Compute a same-geometry batch of irreversible single-level 9/7 transforms
-    /// with one batched launch per stage, returning per-item bands plus real
-    /// backend stage timings. All jobs must share geometry (`block_cols`,
-    /// `block_rows`, `width`, `height`); `blocks` is the items' natural-order
-    /// `f32` coefficients laid out contiguously (`item_count * block_cols *
-    /// block_rows * 64`). Bit-identical to running `j2k_transcode_dwt97` per item.
-    #[allow(clippy::similar_names)]
-    pub fn j2k_transcode_dwt97_batch(
-        &self,
-        blocks: &[f32],
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-    ) -> Result<(Vec<CudaTranscodeDwt97Bands>, CudaDwt97BatchStageTimings), CudaError> {
-        let pool = self.buffer_pool();
-        self.j2k_transcode_dwt97_batch_with_pool(
-            blocks, item_count, block_cols, block_rows, width, height, &pool,
-        )
-    }
-
-    /// Compute a same-geometry batch of irreversible single-level 9/7 transforms
     /// while reusing device buffers from `pool` for transient stage storage.
-    #[allow(clippy::too_many_arguments, clippy::similar_names)]
+    #[allow(clippy::similar_names)]
+    #[doc(hidden)]
     pub fn j2k_transcode_dwt97_batch_with_pool(
         &self,
-        blocks: &[f32],
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-        pool: &CudaBufferPool,
+        request: CudaDwt97BatchWithPoolRequest<'_>,
     ) -> Result<(Vec<CudaTranscodeDwt97Bands>, CudaDwt97BatchStageTimings), CudaError> {
+        let CudaDwt97BatchWithPoolRequest {
+            blocks,
+            geometry,
+            pool,
+        } = request;
+        let CudaDwt97BatchGeometry { item_count, .. } = geometry;
         let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
-            .transcode_dwt97_batch_to_device(
-                blocks, item_count, block_cols, block_rows, width, height, pool,
-            )?;
+            .transcode_dwt97_batch_input_to_device(Dwt97BatchDeviceRequest {
+                input: Dwt97BatchInput::F32(blocks),
+                geometry,
+                pool,
+            })?;
         let Dwt97BatchDeviceBands {
             ll,
             lh,
@@ -728,46 +834,27 @@ impl CudaContext {
     }
 
     /// Compute a same-geometry batch directly into device-resident
-    /// prequantized HTJ2K code-block coefficients: staged 9/7 followed by
-    /// per-subband deadzone quantization into code-block-major `i32` layout.
-    /// `params` carries the per-subband inverse step sizes and the code-block
-    /// geometry.
-    #[allow(clippy::too_many_arguments)]
-    pub fn j2k_transcode_htj2k97_codeblock_batch_resident(
-        &self,
-        blocks: &[f32],
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-        params: CudaHtj2k97QuantizeParams,
-    ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
-        let pool = self.buffer_pool();
-        self.j2k_transcode_htj2k97_codeblock_batch_resident_with_pool(
-            blocks, item_count, block_cols, block_rows, width, height, params, &pool,
-        )
-    }
-
-    /// Compute a same-geometry batch directly into device-resident
     /// prequantized HTJ2K code-block coefficients while reusing transient stage
     /// buffers from `pool`.
-    #[allow(clippy::similar_names, clippy::too_many_arguments)]
+    #[allow(clippy::similar_names)]
+    #[doc(hidden)]
     pub fn j2k_transcode_htj2k97_codeblock_batch_resident_with_pool(
         &self,
-        blocks: &[f32],
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-        params: CudaHtj2k97QuantizeParams,
-        pool: &CudaBufferPool,
+        request: CudaHtj2k97CodeblockBatchWithPoolRequest<'_>,
     ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        let CudaHtj2k97CodeblockBatchWithPoolRequest {
+            blocks,
+            geometry,
+            params,
+            pool,
+        } = request;
+        let CudaDwt97BatchGeometry { item_count, .. } = geometry;
         let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
-            .transcode_dwt97_batch_to_device(
-                blocks, item_count, block_cols, block_rows, width, height, pool,
-            )?;
+            .transcode_dwt97_batch_input_to_device(Dwt97BatchDeviceRequest {
+                input: Dwt97BatchInput::F32(blocks),
+                geometry,
+                pool,
+            })?;
         let low_width = bands.low_width;
         let low_height = bands.low_height;
         let high_width = bands.high_width;
@@ -832,28 +919,36 @@ impl CudaContext {
     /// Compute a same-geometry i16 batch directly into device-resident
     /// prequantized HTJ2K code-block coefficients while reusing transient stage
     /// buffers from `pool`.
-    #[allow(clippy::similar_names, clippy::too_many_arguments)]
+    #[allow(clippy::similar_names)]
+    #[doc(hidden)]
     pub fn j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
         &self,
-        blocks: &[i16],
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-        params: CudaHtj2k97QuantizeParams,
-        pool: &CudaBufferPool,
+        request: CudaHtj2k97I16CodeblockBatchWithPoolRequest<'_>,
     ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        let CudaHtj2k97I16CodeblockBatchWithPoolRequest {
+            blocks,
+            geometry,
+            params,
+            pool,
+        } = request;
+        let CudaDwt97BatchGeometry { item_count, .. } = geometry;
         if !dwt97_fused_column_quantize_disabled() {
             return self.j2k_transcode_htj2k97_codeblock_i16_batch_resident_fused_with_pool(
-                blocks, item_count, block_cols, block_rows, width, height, params, pool,
+                Htj2k97I16ResidentFusedRequest {
+                    blocks,
+                    geometry,
+                    params,
+                    pool,
+                },
             );
         }
 
         let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
-            .transcode_dwt97_i16_batch_to_device(
-                blocks, item_count, block_cols, block_rows, width, height, pool,
-            )?;
+            .transcode_dwt97_batch_input_to_device(Dwt97BatchDeviceRequest {
+                input: Dwt97BatchInput::I16(blocks),
+                geometry,
+                pool,
+            })?;
         let low_width = bands.low_width;
         let low_height = bands.low_height;
         let high_width = bands.high_width;
@@ -915,22 +1010,24 @@ impl CudaContext {
         ))
     }
 
-    #[allow(
-        clippy::similar_names,
-        clippy::too_many_arguments,
-        clippy::too_many_lines
-    )]
+    #[allow(clippy::similar_names, clippy::too_many_lines)]
     fn j2k_transcode_htj2k97_codeblock_i16_batch_resident_fused_with_pool(
         &self,
-        blocks: &[i16],
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-        params: CudaHtj2k97QuantizeParams,
-        pool: &CudaBufferPool,
+        request: Htj2k97I16ResidentFusedRequest<'_>,
     ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        let Htj2k97I16ResidentFusedRequest {
+            blocks,
+            geometry,
+            params,
+            pool,
+        } = request;
+        let CudaDwt97BatchGeometry {
+            item_count,
+            block_cols,
+            block_rows,
+            width,
+            height,
+        } = geometry;
         ensure_transcode_runtime_ptx_available()?;
         let grid = validate_dct_block_grid(
             block_cols,
@@ -1013,34 +1110,42 @@ impl CudaContext {
         let ((), column_quantize_us) = self.time_default_stream_us(|| {
             if dims.low_width > 0 {
                 self.launch_transcode_dwt97_column_lift_quantize_codeblocks_batch(
-                    pooled_device_buffer(&row_low)?,
-                    dims.low_width,
-                    dims.height,
-                    low_height_i32,
-                    high_height_i32,
-                    items,
-                    pooled_device_buffer(&ll_q)?,
-                    pooled_device_buffer(&lh_q)?,
-                    cb_w,
-                    cb_h,
-                    params.inv_delta_ll,
-                    params.inv_delta_lh,
+                    &Dwt97ColumnLiftQuantizeCodeblocksBatchLaunch {
+                        column: Dwt97ColumnLiftBatchLaunch {
+                            rows_buffer: pooled_device_buffer(&row_low)?,
+                            band_width: dims.low_width,
+                            height: dims.height,
+                            low_height: low_height_i32,
+                            high_height: high_height_i32,
+                            items,
+                            low_out: pooled_device_buffer(&ll_q)?,
+                            high_out: pooled_device_buffer(&lh_q)?,
+                        },
+                        cb_width: cb_w,
+                        cb_height: cb_h,
+                        inv_delta_low: params.inv_delta_ll,
+                        inv_delta_high: params.inv_delta_lh,
+                    },
                 )?;
             }
             if dims.high_width > 0 {
                 self.launch_transcode_dwt97_column_lift_quantize_codeblocks_batch(
-                    pooled_device_buffer(&row_high)?,
-                    dims.high_width,
-                    dims.height,
-                    low_height_i32,
-                    high_height_i32,
-                    items,
-                    pooled_device_buffer(&hl_q)?,
-                    pooled_device_buffer(&hh_q)?,
-                    cb_w,
-                    cb_h,
-                    params.inv_delta_hl,
-                    params.inv_delta_hh,
+                    &Dwt97ColumnLiftQuantizeCodeblocksBatchLaunch {
+                        column: Dwt97ColumnLiftBatchLaunch {
+                            rows_buffer: pooled_device_buffer(&row_high)?,
+                            band_width: dims.high_width,
+                            height: dims.height,
+                            low_height: low_height_i32,
+                            high_height: high_height_i32,
+                            items,
+                            low_out: pooled_device_buffer(&hl_q)?,
+                            high_out: pooled_device_buffer(&hh_q)?,
+                        },
+                        cb_width: cb_w,
+                        cb_height: cb_h,
+                        inv_delta_low: params.inv_delta_hl,
+                        inv_delta_high: params.inv_delta_hh,
+                    },
                 )?;
             }
             Ok(())
@@ -1071,44 +1176,27 @@ impl CudaContext {
     }
 
     /// Compute a same-geometry batch directly into host-owned prequantized
-    /// HTJ2K code-block coefficients: staged 9/7 followed by per-subband
-    /// deadzone quantization into code-block-major `i32` layout.
-    #[allow(clippy::too_many_arguments)]
-    pub fn j2k_transcode_htj2k97_codeblock_batch(
-        &self,
-        blocks: &[f32],
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-        params: CudaHtj2k97QuantizeParams,
-    ) -> Result<(CudaHtj2k97CodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
-        let pool = self.buffer_pool();
-        self.j2k_transcode_htj2k97_codeblock_batch_with_pool(
-            blocks, item_count, block_cols, block_rows, width, height, params, &pool,
-        )
-    }
-
-    /// Compute a same-geometry batch directly into host-owned prequantized
     /// HTJ2K code-block coefficients while reusing transient stage buffers
     /// from `pool`.
-    #[allow(clippy::similar_names, clippy::too_many_arguments)]
+    #[allow(clippy::similar_names)]
+    #[doc(hidden)]
     pub fn j2k_transcode_htj2k97_codeblock_batch_with_pool(
         &self,
-        blocks: &[f32],
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-        params: CudaHtj2k97QuantizeParams,
-        pool: &CudaBufferPool,
+        request: CudaHtj2k97CodeblockBatchWithPoolRequest<'_>,
     ) -> Result<(CudaHtj2k97CodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        let CudaHtj2k97CodeblockBatchWithPoolRequest {
+            blocks,
+            geometry,
+            params,
+            pool,
+        } = request;
+        let CudaDwt97BatchGeometry { item_count, .. } = geometry;
         let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
-            .transcode_dwt97_batch_to_device(
-                blocks, item_count, block_cols, block_rows, width, height, pool,
-            )?;
+            .transcode_dwt97_batch_input_to_device(Dwt97BatchDeviceRequest {
+                input: Dwt97BatchInput::F32(blocks),
+                geometry,
+                pool,
+            })?;
         let low_width = bands.low_width;
         let low_height = bands.low_height;
         let high_width = bands.high_width;
@@ -1178,63 +1266,20 @@ impl CudaContext {
     /// row lift, batched column lift) and return the device-resident bands plus
     /// the three pre-readback stage timings.
     #[allow(clippy::too_many_lines)]
-    #[allow(clippy::too_many_arguments)]
-    fn transcode_dwt97_batch_to_device(
-        &self,
-        blocks: &[f32],
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-        pool: &CudaBufferPool,
-    ) -> Result<(Dwt97BatchDeviceBands, u128, u128, u128), CudaError> {
-        self.transcode_dwt97_batch_input_to_device(
-            Dwt97BatchInput::F32(blocks),
-            item_count,
-            block_cols,
-            block_rows,
-            width,
-            height,
-            pool,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn transcode_dwt97_i16_batch_to_device(
-        &self,
-        blocks: &[i16],
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-        pool: &CudaBufferPool,
-    ) -> Result<(Dwt97BatchDeviceBands, u128, u128, u128), CudaError> {
-        self.transcode_dwt97_batch_input_to_device(
-            Dwt97BatchInput::I16(blocks),
-            item_count,
-            block_cols,
-            block_rows,
-            width,
-            height,
-            pool,
-        )
-    }
-
-    #[allow(clippy::too_many_lines)]
-    #[allow(clippy::too_many_arguments)]
     fn transcode_dwt97_batch_input_to_device(
         &self,
-        input: Dwt97BatchInput<'_>,
-        item_count: usize,
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-        pool: &CudaBufferPool,
+        request: Dwt97BatchDeviceRequest<'_>,
     ) -> Result<(Dwt97BatchDeviceBands, u128, u128, u128), CudaError> {
         ensure_transcode_runtime_ptx_available()?;
+        let input = request.input;
+        let pool = request.pool;
+        let CudaDwt97BatchGeometry {
+            item_count,
+            block_cols,
+            block_rows,
+            width,
+            height,
+        } = request.geometry;
         let grid = validate_dct_block_grid(
             block_cols,
             block_rows,
@@ -1309,28 +1354,28 @@ impl CudaContext {
         // Stage: batched vertical 9/7 column lift for both low and high rows.
         let ((), column_lift_us) = self.time_default_stream_us(|| {
             if dims.low_width > 0 {
-                self.launch_transcode_dwt97_column_lift_batch(
-                    pooled_device_buffer(&row_low)?,
-                    dims.low_width,
-                    dims.height,
-                    low_height_i32,
-                    high_height_i32,
+                self.launch_transcode_dwt97_column_lift_batch(&Dwt97ColumnLiftBatchLaunch {
+                    rows_buffer: pooled_device_buffer(&row_low)?,
+                    band_width: dims.low_width,
+                    height: dims.height,
+                    low_height: low_height_i32,
+                    high_height: high_height_i32,
                     items,
-                    pooled_device_buffer(&ll)?,
-                    pooled_device_buffer(&lh)?,
-                )?;
+                    low_out: pooled_device_buffer(&ll)?,
+                    high_out: pooled_device_buffer(&lh)?,
+                })?;
             }
             if dims.high_width > 0 {
-                self.launch_transcode_dwt97_column_lift_batch(
-                    pooled_device_buffer(&row_high)?,
-                    dims.high_width,
-                    dims.height,
-                    low_height_i32,
-                    high_height_i32,
+                self.launch_transcode_dwt97_column_lift_batch(&Dwt97ColumnLiftBatchLaunch {
+                    rows_buffer: pooled_device_buffer(&row_high)?,
+                    band_width: dims.high_width,
+                    height: dims.height,
+                    low_height: low_height_i32,
+                    high_height: high_height_i32,
                     items,
-                    pooled_device_buffer(&hl)?,
-                    pooled_device_buffer(&hh)?,
-                )?;
+                    low_out: pooled_device_buffer(&hl)?,
+                    high_out: pooled_device_buffer(&hh)?,
+                })?;
             }
             Ok(())
         })?;
@@ -1465,80 +1510,69 @@ impl CudaContext {
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn launch_transcode_dwt97_column_lift_batch(
         &self,
-        rows_buffer: &CudaDeviceBuffer,
-        band_width: i32,
-        height: i32,
-        low_height: i32,
-        high_height: i32,
-        items: u32,
-        low_out: &CudaDeviceBuffer,
-        high_out: &CudaDeviceBuffer,
+        request: &Dwt97ColumnLiftBatchLaunch<'_>,
     ) -> Result<(), CudaError> {
-        let columns =
-            usize::try_from(band_width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let columns = usize::try_from(request.band_width)
+            .map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         if columns == 0 {
             return Ok(());
         }
         let function = self.transcode_kernel_function(CudaKernel::TranscodeDwt97ColumnLiftBatch)?;
-        let mut rows_ptr = rows_buffer.device_ptr();
-        let mut band = band_width;
-        let mut rows = height;
-        let mut low_h = low_height;
-        let mut high_h = high_height;
-        let mut low_ptr = low_out.device_ptr();
-        let mut high_ptr = high_out.device_ptr();
+        let mut rows_ptr = request.rows_buffer.device_ptr();
+        let mut band = request.band_width;
+        let mut rows = request.height;
+        let mut low_h = request.low_height;
+        let mut high_h = request.high_height;
+        let mut low_ptr = request.low_out.device_ptr();
+        let mut high_ptr = request.high_out.device_ptr();
         let mut params =
             cuda_kernel_params!(rows_ptr, band, rows, low_h, high_h, low_ptr, high_ptr);
         let base =
             copy_u8_launch_geometry(columns).ok_or(CudaError::LengthTooLarge { len: columns })?;
-        let geometry = with_grid_y(base, items);
+        let geometry = with_grid_y(base, request.items);
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn launch_transcode_dwt97_column_lift_quantize_codeblocks_batch(
         &self,
-        rows_buffer: &CudaDeviceBuffer,
-        band_width: i32,
-        height: i32,
-        low_height: i32,
-        high_height: i32,
-        items: u32,
-        low_out: &CudaDeviceBuffer,
-        high_out: &CudaDeviceBuffer,
-        cb_width: i32,
-        cb_height: i32,
-        inv_delta_low: f32,
-        inv_delta_high: f32,
+        request: &Dwt97ColumnLiftQuantizeCodeblocksBatchLaunch<'_>,
     ) -> Result<(), CudaError> {
-        let columns =
-            usize::try_from(band_width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let columns = usize::try_from(request.column.band_width)
+            .map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         if columns == 0 {
             return Ok(());
         }
         let function = self.transcode_kernel_function(
             CudaKernel::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch,
         )?;
-        let mut rows_ptr = rows_buffer.device_ptr();
-        let mut band = band_width;
-        let mut rows = height;
-        let mut low_h = low_height;
-        let mut high_h = high_height;
-        let mut low_ptr = low_out.device_ptr();
-        let mut high_ptr = high_out.device_ptr();
-        let mut cb_w = cb_width;
-        let mut cb_h = cb_height;
-        let mut inv_low = inv_delta_low;
-        let mut inv_high = inv_delta_high;
+        let mut rows_ptr = request.column.rows_buffer.device_ptr();
+        let mut band = request.column.band_width;
+        let mut rows = request.column.height;
+        let mut low_h = request.column.low_height;
+        let mut high_h = request.column.high_height;
+        let mut low_ptr = request.column.low_out.device_ptr();
+        let mut high_ptr = request.column.high_out.device_ptr();
+        let mut kernel_params_value = Dwt97ColumnLiftQuantizeCodeblocksParams {
+            cb_width: request.cb_width,
+            cb_height: request.cb_height,
+            inv_delta_low: request.inv_delta_low,
+            inv_delta_high: request.inv_delta_high,
+        };
         let mut params = cuda_kernel_params!(
-            rows_ptr, band, rows, low_h, high_h, low_ptr, high_ptr, cb_w, cb_h, inv_low, inv_high
+            rows_ptr,
+            band,
+            rows,
+            low_h,
+            high_h,
+            low_ptr,
+            high_ptr,
+            kernel_params_value
         );
         let base =
             copy_u8_launch_geometry(columns).ok_or(CudaError::LengthTooLarge { len: columns })?;
-        let geometry = with_grid_y(base, items);
+        let geometry = with_grid_y(base, request.column.items);
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
@@ -1559,73 +1593,65 @@ impl CudaContext {
         let cb_width = to_i32(params.cb_width)?;
         let cb_height = to_i32(params.cb_height)?;
 
-        self.launch_transcode_dwt97_quantize_codeblocks(
-            pooled_device_buffer(&bands.ll)?,
-            outputs.ll,
-            low_width,
-            low_height,
+        self.launch_transcode_dwt97_quantize_codeblocks(&Dwt97QuantizeCodeblocksLaunch {
+            band: pooled_device_buffer(&bands.ll)?,
+            output: outputs.ll,
+            width: low_width,
+            height: low_height,
             cb_width,
             cb_height,
-            params.inv_delta_ll,
+            inv_delta: params.inv_delta_ll,
             items,
-        )?;
-        self.launch_transcode_dwt97_quantize_codeblocks(
-            pooled_device_buffer(&bands.hl)?,
-            outputs.hl,
-            high_width,
-            low_height,
+        })?;
+        self.launch_transcode_dwt97_quantize_codeblocks(&Dwt97QuantizeCodeblocksLaunch {
+            band: pooled_device_buffer(&bands.hl)?,
+            output: outputs.hl,
+            width: high_width,
+            height: low_height,
             cb_width,
             cb_height,
-            params.inv_delta_hl,
+            inv_delta: params.inv_delta_hl,
             items,
-        )?;
-        self.launch_transcode_dwt97_quantize_codeblocks(
-            pooled_device_buffer(&bands.lh)?,
-            outputs.lh,
-            low_width,
-            high_height,
+        })?;
+        self.launch_transcode_dwt97_quantize_codeblocks(&Dwt97QuantizeCodeblocksLaunch {
+            band: pooled_device_buffer(&bands.lh)?,
+            output: outputs.lh,
+            width: low_width,
+            height: high_height,
             cb_width,
             cb_height,
-            params.inv_delta_lh,
+            inv_delta: params.inv_delta_lh,
             items,
-        )?;
-        self.launch_transcode_dwt97_quantize_codeblocks(
-            pooled_device_buffer(&bands.hh)?,
-            outputs.hh,
-            high_width,
-            high_height,
+        })?;
+        self.launch_transcode_dwt97_quantize_codeblocks(&Dwt97QuantizeCodeblocksLaunch {
+            band: pooled_device_buffer(&bands.hh)?,
+            output: outputs.hh,
+            width: high_width,
+            height: high_height,
             cb_width,
             cb_height,
-            params.inv_delta_hh,
+            inv_delta: params.inv_delta_hh,
             items,
-        )?;
+        })?;
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn launch_transcode_dwt97_quantize_codeblocks(
         &self,
-        band: &CudaDeviceBuffer,
-        output: &CudaDeviceBuffer,
-        width: i32,
-        height: i32,
-        cb_width: i32,
-        cb_height: i32,
-        inv_delta: f32,
-        items: u32,
+        request: &Dwt97QuantizeCodeblocksLaunch<'_>,
     ) -> Result<(), CudaError> {
-        if width <= 0 || height <= 0 {
+        if request.width <= 0 || request.height <= 0 {
             return Ok(());
         }
         let function =
             self.transcode_kernel_function(CudaKernel::TranscodeDwt97QuantizeCodeblocks)?;
-        let mut band_ptr = band.device_ptr();
-        let mut output_ptr = output.device_ptr();
-        let mut width = width;
-        let mut height = height;
-        let mut cb_width = cb_width;
-        let mut cb_height = cb_height;
-        let mut inv_delta = inv_delta;
+        let mut band_ptr = request.band.device_ptr();
+        let mut output_ptr = request.output.device_ptr();
+        let mut width = request.width;
+        let mut height = request.height;
+        let mut cb_width = request.cb_width;
+        let mut cb_height = request.cb_height;
+        let mut inv_delta = request.inv_delta;
         let mut params = cuda_kernel_params!(
             band_ptr, output_ptr, width, height, cb_width, cb_height, inv_delta
         );
@@ -1633,7 +1659,7 @@ impl CudaContext {
         let grid_h = u32::try_from(height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let base = j2k_dwt53_launch_geometry(grid_w, grid_h)
             .ok_or(CudaError::LengthTooLarge { len: 0 })?;
-        let geometry = with_grid_z(base, items);
+        let geometry = with_grid_z(base, request.items);
         self.launch_kernel_async(function, geometry, &mut params)
     }
 }

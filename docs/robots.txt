@@ -2,5 +2,3 @@ User-agent: *
 Allow: /
 
 Sitemap: https://frames-sg.github.io/j2k/sitemap.xml
-Sitemap: https://frames-sg.github.io/j2k/j2k-sitemap.xml
-Sitemap: https://frames-sg.github.io/j2k/sitemap.txt

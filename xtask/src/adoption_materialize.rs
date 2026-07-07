@@ -105,30 +105,30 @@ pub(crate) fn adoption_materialize(args: impl Iterator<Item = String>) -> Result
 
         for profile in &options.profiles {
             let codestream = encode_source_codestream(&source_image, *profile)?;
-            write_decode_fixture_variant(
-                &options,
-                &mut decode_rows,
-                &decode_dir,
-                &id,
+            write_decode_fixture_variant(DecodeFixtureVariant {
+                options: &options,
+                decode_rows: &mut decode_rows,
+                decode_dir: &decode_dir,
+                id: &id,
                 source,
                 root,
-                &source_hash,
-                *profile,
-                DecodeContainer::RawCodestream,
-                &codestream,
-            )?;
-            write_decode_fixture_variant(
-                &options,
-                &mut decode_rows,
-                &decode_dir,
-                &id,
+                source_hash: &source_hash,
+                profile: *profile,
+                container: DecodeContainer::RawCodestream,
+                codestream: &codestream,
+            })?;
+            write_decode_fixture_variant(DecodeFixtureVariant {
+                options: &options,
+                decode_rows: &mut decode_rows,
+                decode_dir: &decode_dir,
+                id: &id,
                 source,
                 root,
-                &source_hash,
-                *profile,
-                profile.file_container(),
-                &codestream,
-            )?;
+                source_hash: &source_hash,
+                profile: *profile,
+                container: profile.file_container(),
+                codestream: &codestream,
+            })?;
         }
 
         materialized.push(MaterializedSource {
@@ -155,43 +155,45 @@ pub(crate) fn adoption_materialize(args: impl Iterator<Item = String>) -> Result
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_decode_fixture_variant(
-    options: &AdoptionMaterializeOptions,
-    decode_rows: &mut String,
-    decode_dir: &Path,
-    id: &str,
-    source: &Path,
-    root: &Path,
-    source_hash: &str,
+struct DecodeFixtureVariant<'a> {
+    options: &'a AdoptionMaterializeOptions,
+    decode_rows: &'a mut String,
+    decode_dir: &'a Path,
+    id: &'a str,
+    source: &'a Path,
+    root: &'a Path,
+    source_hash: &'a str,
     profile: MaterializeProfile,
     container: DecodeContainer,
-    codestream: &[u8],
-) -> Result<(), String> {
-    let bytes = match container {
-        DecodeContainer::RawCodestream => codestream.to_vec(),
-        DecodeContainer::Jp2 => wrap_j2k_codestream(codestream, J2kFileWrapOptions::jp2())
+    codestream: &'a [u8],
+}
+
+fn write_decode_fixture_variant(request: DecodeFixtureVariant<'_>) -> Result<(), String> {
+    let bytes = match request.container {
+        DecodeContainer::RawCodestream => request.codestream.to_vec(),
+        DecodeContainer::Jp2 => wrap_j2k_codestream(request.codestream, J2kFileWrapOptions::jp2())
             .map_err(|err| format!("wrap classic fixture as JP2: {err}"))?,
-        DecodeContainer::Jph => wrap_j2k_codestream(codestream, J2kFileWrapOptions::jph())
+        DecodeContainer::Jph => wrap_j2k_codestream(request.codestream, J2kFileWrapOptions::jph())
             .map_err(|err| format!("wrap HTJ2K fixture as JPH: {err}"))?,
     };
-    let fixture_path = decode_dir
-        .join(profile.dir_name())
-        .join(format!("{id}.{}", container.extension()));
+    let fixture_path = request
+        .decode_dir
+        .join(request.profile.dir_name())
+        .join(format!("{}.{}", request.id, request.container.extension()));
     fs::write(&fixture_path, &bytes)
         .map_err(|err| format!("write fixture {}: {err}", fixture_path.display()))?;
     let fields = [
         canonical_label(&fixture_path)?,
-        corpus_category(source, options.corpus_category.as_deref()),
-        corpus_name(root, options.corpus_name.as_deref()),
-        options.license_status.clone(),
-        encode_command_label(&profile, container, source)?,
+        corpus_category(request.source, request.options.corpus_category.as_deref()),
+        corpus_name(request.root, request.options.corpus_name.as_deref()),
+        request.options.license_status.clone(),
+        encode_command_label(&request.profile, request.container, request.source)?,
         fnv1a64_hex(&bytes),
-        source_hash.to_string(),
-        profile.codec().to_string(),
-        container.manifest_label().to_string(),
+        request.source_hash.to_string(),
+        request.profile.codec().to_string(),
+        request.container.manifest_label().to_string(),
     ];
-    decode_rows.push_str(&manifest_row(&fields)?);
+    request.decode_rows.push_str(&manifest_row(&fields)?);
     Ok(())
 }
 

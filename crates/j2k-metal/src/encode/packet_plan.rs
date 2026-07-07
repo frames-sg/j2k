@@ -5,9 +5,10 @@ use j2k::{
     J2kProgressionOrder, ReversibleTransform,
 };
 use j2k_native::{
-    EncodeProgressionOrder, EncodedHtJ2kCodeBlock, J2kHtj2kTileEncodeJob,
-    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationPacketDescriptor,
-    J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
+    sort_packet_descriptors_for_progression, EncodeProgressionOrder, EncodedHtJ2kCodeBlock,
+    J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock,
+    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
+    J2kPacketizationSubband,
 };
 
 use super::plan::LosslessDeviceEncodePlan;
@@ -76,7 +77,11 @@ pub(super) fn should_use_resident_htj2k_host_shape_for_auto(width: u32, height: 
 }
 
 pub(super) fn should_use_resident_htj2k_host_tile_for_auto(job: J2kHtj2kTileEncodeJob<'_>) -> bool {
-    should_use_resident_htj2k_host_shape_for_auto(job.width, job.height)
+    let _ = job;
+    // The encode-stage tile callback represents one host-output frame. Keep
+    // Auto on CPU here; callers that can amortize resident setup should use
+    // the batch Metal-buffer APIs.
+    false
 }
 
 pub(super) fn packet_descriptors_for_lossless_device_order(
@@ -116,56 +121,11 @@ pub(super) fn packet_descriptors_for_lossless_device_order(
             })
         })
         .collect::<Result<Vec<_>, crate::Error>>()?;
-    sort_lossless_device_packet_descriptors(&mut descriptors, progression_order);
+    sort_packet_descriptors_for_progression(
+        &mut descriptors,
+        packetization_progression_order(progression_order),
+    );
     Ok(descriptors)
-}
-
-fn sort_lossless_device_packet_descriptors(
-    descriptors: &mut [J2kPacketizationPacketDescriptor],
-    progression_order: EncodeProgressionOrder,
-) {
-    match progression_order {
-        EncodeProgressionOrder::Lrcp => descriptors.sort_by_key(|descriptor| {
-            (
-                descriptor.layer,
-                descriptor.resolution,
-                descriptor.component,
-                descriptor.precinct,
-            )
-        }),
-        EncodeProgressionOrder::Rlcp => descriptors.sort_by_key(|descriptor| {
-            (
-                descriptor.resolution,
-                descriptor.layer,
-                descriptor.component,
-                descriptor.precinct,
-            )
-        }),
-        EncodeProgressionOrder::Rpcl => descriptors.sort_by_key(|descriptor| {
-            (
-                descriptor.resolution,
-                descriptor.precinct,
-                descriptor.component,
-                descriptor.layer,
-            )
-        }),
-        EncodeProgressionOrder::Pcrl => descriptors.sort_by_key(|descriptor| {
-            (
-                descriptor.precinct,
-                descriptor.component,
-                descriptor.resolution,
-                descriptor.layer,
-            )
-        }),
-        EncodeProgressionOrder::Cprl => descriptors.sort_by_key(|descriptor| {
-            (
-                descriptor.component,
-                descriptor.precinct,
-                descriptor.resolution,
-                descriptor.layer,
-            )
-        }),
-    }
 }
 
 pub(super) fn resident_packetization_resolutions_from_lossless_device_plan(

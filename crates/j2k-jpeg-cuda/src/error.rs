@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::{BackendRequest, BufferError, CodecError};
+use j2k_core::{
+    adapter_error_is_buffer_error, adapter_error_is_not_implemented, adapter_error_is_truncated,
+    adapter_error_is_unsupported, AdapterErrorKind, AdapterErrorParts, BackendRequest, BufferError,
+    CodecError,
+};
 use j2k_jpeg::{JpegEncodeError, JpegError};
 
 #[derive(Debug, thiserror::Error)]
@@ -39,41 +43,52 @@ pub enum Error {
     },
 }
 
+#[doc(hidden)]
+impl AdapterErrorParts for Error {
+    fn source_codec_error(&self) -> Option<&dyn CodecError> {
+        match self {
+            Self::Decode(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    fn adapter_error_kind(&self) -> AdapterErrorKind {
+        match self {
+            Self::UnsupportedBackend { .. }
+            | Self::UnsupportedCudaRequest { .. }
+            | Self::CudaUnavailable
+            | Self::Encode(
+                JpegEncodeError::UnsupportedBackend { .. }
+                | JpegEncodeError::IncompatibleSubsampling { .. },
+            ) => AdapterErrorKind::Unsupported,
+            Self::Buffer(_)
+            | Self::Encode(
+                JpegEncodeError::SampleLength { .. }
+                | JpegEncodeError::EmptyDimensions
+                | JpegEncodeError::DimensionsTooLarge { .. },
+            ) => AdapterErrorKind::Buffer,
+            Self::Decode(_) | Self::Encode(_) => AdapterErrorKind::Other,
+            #[cfg(feature = "cuda-runtime")]
+            Self::CudaRuntime { .. } => AdapterErrorKind::Other,
+        }
+    }
+}
+
+#[doc(hidden)]
 impl CodecError for Error {
     fn is_truncated(&self) -> bool {
-        matches!(self, Self::Decode(inner) if inner.is_truncated())
+        adapter_error_is_truncated(self)
     }
 
     fn is_not_implemented(&self) -> bool {
-        matches!(self, Self::Decode(inner) if inner.is_not_implemented())
+        adapter_error_is_not_implemented(self)
     }
 
     fn is_unsupported(&self) -> bool {
-        matches!(
-            self,
-            Self::UnsupportedBackend { .. }
-                | Self::UnsupportedCudaRequest { .. }
-                | Self::CudaUnavailable
-        ) || matches!(self, Self::Decode(inner) if inner.is_unsupported())
-            || matches!(
-                self,
-                Self::Encode(
-                    JpegEncodeError::UnsupportedBackend { .. }
-                        | JpegEncodeError::IncompatibleSubsampling { .. }
-                )
-            )
+        adapter_error_is_unsupported(self)
     }
 
     fn is_buffer_error(&self) -> bool {
-        matches!(self, Self::Buffer(_))
-            || matches!(self, Self::Decode(inner) if inner.is_buffer_error())
-            || matches!(
-                self,
-                Self::Encode(
-                    JpegEncodeError::SampleLength { .. }
-                        | JpegEncodeError::EmptyDimensions
-                        | JpegEncodeError::DimensionsTooLarge { .. }
-                )
-            )
+        adapter_error_is_buffer_error(self)
     }
 }

@@ -14,7 +14,7 @@ use crate::entropy::sequential::{
     decode_scan_baseline, decode_scan_baseline_rgb, decode_scan_fast_rgb_444,
     decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region,
     decode_scan_fast_tile_rgb_region_scaled, fast_tile_region_first_decode_mcu, finish_scan,
-    stripe_region_layout, PreparedComponentPlan, PreparedDecodePlan,
+    stripe_region_layout, FastTileRegionScaledRequest, PreparedComponentPlan, PreparedDecodePlan,
 };
 use crate::entropy::ZIGZAG;
 use crate::error::{JpegError, MarkerKind, Warning};
@@ -24,12 +24,12 @@ use crate::info::{
 };
 use crate::internal::bit_reader::BitReader;
 use crate::internal::checkpoint::{checkpoint_before_mcu, CpuCheckpointCache, DeviceCheckpoint};
-use crate::internal::scratch::{ScratchPool, SinkRows};
+use crate::internal::scratch::ScratchPool;
 use crate::lossless::{lossless_predict, LosslessSample};
 use crate::output::{
     validate_buffer, Gray8Writer, InterleavedRgbWriter, OutputWriter, Rgb8Writer, Rgba8Writer,
 };
-use crate::parse::header::{parse_header, parse_info, ParsedHeader};
+use crate::parse::header::{parse_info, ParsedHeader};
 use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
 use crate::profile::{duration_us_string, emit_jpeg_profile_row, jpeg_profile_stages_enabled};
 use crate::segment::PreparedJpeg;
@@ -39,9 +39,9 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 pub use j2k_core::TileBatchOptions;
 use j2k_core::{
-    CompressedPayloadKind, CompressedTransferSyntax, DecodeOutcome as CoreDecodeOutcome,
-    DecodeRowsError, DecoderContext as CoreDecoderContext, Downscale, ImageCodec, ImageDecode,
-    ImageDecodeRows, PassthroughCandidate, PixelFormat, RowSink, TileBatchDecode,
+    CompressedTransferSyntax, DecodeOutcome as CoreDecodeOutcome, DecodeRowsError,
+    DecoderContext as CoreDecoderContext, Downscale, ImageCodec, ImageDecode, ImageDecodeRows,
+    PixelFormat, RowSink, TileBatchDecode,
 };
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -54,6 +54,54 @@ std::thread_local! {
     static DEFAULT_SCRATCH: RefCell<ScratchPool> = RefCell::new(ScratchPool::new());
     static DEFAULT_CONTEXT: RefCell<DecoderContext> = RefCell::new(DecoderContext::new());
 }
+
+mod view;
+pub use self::view::JpegView;
+mod output_format;
+use self::output_format::{
+    allocate_output_buffer, checked_output_geometry, downscale_profile_name, jpeg_downscale,
+    output_format_from_parts, output_format_profile_name, scaled_dimensions, scaled_rect_covering,
+};
+mod extended12;
+use self::extended12::{
+    decode_extended12_block_pixels, decode_extended12_color_planes,
+    decode_extended12_four_component_planes, dequantize_progressive12_block,
+    extended12_color_sampling, extended12_four_component_sampling, lossless_color_sampling,
+    progressive_color_component_indices, progressive_color_sampling,
+    progressive_four_component_sampling, render_progressive12_color_planes,
+    render_progressive12_four_component_planes, upsample_h2v1_sample_at, upsample_h2v2_rows_at,
+    validate_extended12_color444_plan, validate_extended12_four_component444_plan,
+    write_extended12_block_region, write_extended12_color420_planes_region,
+    write_extended12_color422_planes_region, write_extended12_four_component_block_region,
+    write_extended12_four_component_planes_region, write_extended12_rgb_block_region,
+    Extended12ColorSampling, Extended12Output, Extended12RgbProjection, Extended12WriteRegion,
+};
+mod lossless_helpers;
+use self::lossless_helpers::{
+    decode_lossless_color_sample, decode_lossless_sampled_color_mcu, emit_decode_scan_profile,
+    lossless_predictor_gray_rows, lossless_predictor_value, lossless_predictor_value_u16,
+    restart_index_for_stream, validate_lossless_color_plan, write_lossless_color16_sampled_output,
+    write_lossless_color8_sampled_output, Extended12RestartTracker, LosslessColorIntoSample,
+    LosslessColorPlanes, LosslessColorRowSample, LosslessRestartTracker,
+    LosslessSampledColorPlanesMut, LosslessSampledMcu,
+};
+mod color_convert;
+use self::color_convert::{
+    convert_ycbcr16_to_rgb16_in_place, convert_ycbcr8_to_rgb8_in_place, copy_gray16_scaled_rect,
+    copy_gray8_scaled_rect, copy_rgb16_to_rgba16, copy_ycbcr16_row_to_rgb16,
+    copy_ycbcr8_row_to_rgb8, merged_warnings,
+};
+mod core_traits;
+use self::core_traits::{CroppedWriter, ProgressiveDownscaleWriter};
+mod lossless_region;
+use self::lossless_region::{LosslessRgbRegionFallback, LosslessRgbaAlpha};
+mod scratch;
+use self::scratch::{
+    checked_scratch_len, checked_usize_product, compute_decode_scratch_bytes,
+    compute_extended12_planes_scratch_bytes, compute_lossless_scratch_bytes,
+};
+mod sink_writer;
+pub(crate) use self::sink_writer::SinkWriter;
 
 /// Non-fatal outcome of a successful decode. See spec Section 2.
 ///
@@ -80,8 +128,70 @@ impl From<DecodeOutcome> for CoreDecodeOutcome<Warning> {
     }
 }
 
+/// Owned-output JPEG decode request.
+///
+/// This consolidates the full-image, region, and downscale axes for callers
+/// that want a freshly allocated tightly packed output buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecodeRequest {
+    /// Requested output pixel format.
+    pub fmt: PixelFormat,
+    /// Optional source-image region to decode.
+    pub region: Option<Rect>,
+    /// Requested decoder downscale.
+    pub scale: Downscale,
+}
+
+impl DecodeRequest {
+    /// Full-image decode at native scale.
+    pub const fn full(fmt: PixelFormat) -> Self {
+        Self {
+            fmt,
+            region: None,
+            scale: Downscale::None,
+        }
+    }
+
+    /// Full-image decode with downscale.
+    pub const fn scaled(fmt: PixelFormat, scale: Downscale) -> Self {
+        Self {
+            fmt,
+            region: None,
+            scale,
+        }
+    }
+
+    /// Region decode at native scale.
+    pub const fn region(fmt: PixelFormat, region: Rect) -> Self {
+        Self {
+            fmt,
+            region: Some(region),
+            scale: Downscale::None,
+        }
+    }
+
+    /// Region decode with downscale.
+    pub const fn region_scaled(fmt: PixelFormat, region: Rect, scale: Downscale) -> Self {
+        Self {
+            fmt,
+            region: Some(region),
+            scale,
+        }
+    }
+}
+
 /// One tile decode request for [`decode_tiles_into`].
 pub type TileDecodeJob<'i, 'o> = j2k_core::TileDecodeJob<'i, 'o>;
+
+/// Caller-owned output target for one context-reused tile decode helper.
+pub struct TileDecodeOutput<'o> {
+    /// Caller-owned output buffer.
+    pub out: &'o mut [u8],
+    /// Distance in bytes between output rows.
+    pub stride: usize,
+    /// Requested output pixel format.
+    pub fmt: PixelFormat,
+}
 
 /// One decode request for a JPEG tile already normalized by
 /// [`prepare_tiff_jpeg_tile`](crate::prepare_tiff_jpeg_tile).
@@ -143,109 +253,6 @@ pub trait ComponentRowWriter {
     ) -> Result<(), JpegError>;
 }
 
-/// A parsed borrowed view of a JPEG stream.
-#[derive(Debug)]
-pub struct JpegView<'a> {
-    bytes: &'a [u8],
-    header: ParsedHeader,
-    info: Info,
-    options: DecodeOptions,
-}
-
-impl<'a> JpegView<'a> {
-    /// Parse the stream into a borrowed view that can later build a decoder.
-    pub fn parse(input: &'a [u8]) -> Result<Self, JpegError> {
-        Self::parse_with_options(input, DecodeOptions::default())
-    }
-
-    /// Parse the stream with explicit decode options.
-    pub fn parse_with_options(input: &'a [u8], options: DecodeOptions) -> Result<Self, JpegError> {
-        let header = parse_header(input)?;
-        let mut info = header.info();
-        options.apply_to_info(&mut info);
-        Ok(Self {
-            bytes: input,
-            header,
-            info,
-            options,
-        })
-    }
-
-    /// Header-derived metadata for the parsed stream.
-    pub fn info(&self) -> &Info {
-        &self.info
-    }
-
-    /// Original compressed bytes backing this view.
-    pub fn bytes(&self) -> &'a [u8] {
-        self.bytes
-    }
-
-    /// Return a byte-preserving passthrough candidate for active DICOM/WSI
-    /// transfer syntaxes.
-    ///
-    /// Progressive JPEG is intentionally not exposed here because the active
-    /// conversion path should transcode it rather than introduce a retired or
-    /// unsupported destination syntax.
-    pub fn passthrough_candidate(&self) -> Option<PassthroughCandidate<'a>> {
-        jpeg_passthrough_syntax(&self.info).map(|transfer_syntax| {
-            PassthroughCandidate::new(
-                self.bytes,
-                transfer_syntax,
-                CompressedPayloadKind::JpegInterchange,
-                self.info.to_core_info(),
-            )
-        })
-    }
-
-    /// Build a restart-marker byte-offset index for the first scan.
-    ///
-    /// Offsets are absolute byte positions in the original JPEG byte slice.
-    /// Returns `Ok(None)` when the stream has no non-zero DRI marker.
-    pub fn restart_index(&self) -> Result<Option<RestartIndex>, JpegError> {
-        restart_index_for_stream(
-            self.bytes,
-            self.header.sos_offset,
-            &self.info,
-            self.info.restart_interval,
-        )
-    }
-
-    pub(crate) fn has_lossless_subsampled_color_capability_shape(&self) -> bool {
-        if self.info.sof_kind != SofKind::Lossless
-            || !matches!(self.info.color_space, ColorSpace::Rgb | ColorSpace::YCbCr)
-            || !matches!(self.info.bit_depth, 8 | 16)
-            || self.info.sampling.len() != 3
-            || !self
-                .info
-                .sampling
-                .components()
-                .iter()
-                .any(|&(h, v)| h != 1 || v != 1)
-            || self.header.scan_count != 1
-        {
-            return false;
-        }
-
-        let Some(scan) = self.header.scan.as_ref() else {
-            return false;
-        };
-        if !(1..=7).contains(&scan.ss)
-            || scan.se != 0
-            || scan.ah != 0
-            || scan.al != 0
-            || scan.components.len() != 3
-        {
-            return false;
-        }
-
-        scan.components.iter().all(|scan_component| {
-            find_component_index(&self.header.component_ids, scan_component.id).is_some()
-                && self.header.huffman_tables.dc[scan_component.dc_table as usize].is_some()
-        })
-    }
-}
-
 /// A borrowed view of a JPEG stream ready to decode. Constructed via
 /// [`Decoder::new`] or [`Decoder::from_view`]. `Decoder<'a>: Send + Sync`.
 #[derive(Debug)]
@@ -285,24 +292,11 @@ impl<'a> Decoder<'a> {
     /// Returns any structural, unsupported-SOF, or sanity-check error
     /// encountered before the Start-of-Scan marker. See [`JpegError`].
     pub fn inspect(input: &'a [u8]) -> Result<Info, JpegError> {
-        Self::inspect_with_options(input, DecodeOptions::default())
-    }
-
-    /// Parse headers with explicit decode options, without decoding pixels.
-    ///
-    /// The options are applied to the returned [`Info`] exactly as they would
-    /// be for [`Self::new_with_options`].
-    pub fn inspect_with_options(
-        input: &'a [u8],
-        options: DecodeOptions,
-    ) -> Result<Info, JpegError> {
-        let mut info = parse_info(input)?;
-        options.apply_to_info(&mut info);
+        let info = parse_info(input)?;
         Ok(info)
     }
 
-    /// Build a decoder with explicit decode options.
-    pub fn new_with_options(input: &'a [u8], options: DecodeOptions) -> Result<Self, JpegError> {
+    fn from_bytes_with_options(input: &'a [u8], options: DecodeOptions) -> Result<Self, JpegError> {
         let view = JpegView::parse_with_options(input, options)?;
         DEFAULT_CONTEXT.with(|ctx| Self::from_view_in_context(view, &mut ctx.borrow_mut()))
     }
@@ -319,7 +313,7 @@ impl<'a> Decoder<'a> {
     /// - [`JpegError::MissingHuffmanTable`] if the scan references a DC/AC
     ///   table slot that was never defined by a DHT segment.
     pub fn new(input: &'a [u8]) -> Result<Self, JpegError> {
-        Self::new_with_options(input, DecodeOptions::default())
+        Self::from_bytes_with_options(input, DecodeOptions::default())
     }
 
     /// Build a decoder from a previously parsed [`JpegView`].
@@ -803,23 +797,11 @@ impl<'a> Decoder<'a> {
         &self.info
     }
 
-    /// Return a byte-preserving passthrough candidate for this decoded stream.
-    pub fn passthrough_candidate(&self) -> Option<PassthroughCandidate<'a>> {
-        jpeg_passthrough_syntax(&self.info).map(|transfer_syntax| {
-            PassthroughCandidate::new(
-                self.bytes,
-                transfer_syntax,
-                CompressedPayloadKind::JpegInterchange,
-                self.info.to_core_info(),
-            )
-        })
-    }
-
     /// Build a restart-marker byte-offset index for the first scan.
     ///
     /// Offsets are absolute byte positions in the original JPEG byte slice.
     /// Returns `Ok(None)` when the stream has no non-zero DRI marker.
-    pub fn restart_index(&self) -> Result<Option<RestartIndex>, JpegError> {
+    pub(crate) fn restart_index(&self) -> Result<Option<RestartIndex>, JpegError> {
         restart_index_for_stream(
             self.bytes,
             Some(self.plan.scan_offset),
@@ -846,14 +828,14 @@ impl<'a> Decoder<'a> {
             .with(|pool| self.decode_into_with_scratch(&mut pool.borrow_mut(), out, stride, fmt))
     }
 
-    /// Decode the full image into a freshly allocated tightly-packed buffer.
-    ///
-    /// This is the owned-output counterpart to [`Self::decode_into`]. It
-    /// avoids pre-zeroing the destination buffer, which matters on WSI-sized
-    /// RGB outputs where the allocation itself can otherwise dominate the
-    /// benchmark.
-    pub fn decode(&self, fmt: PixelFormat) -> Result<(Vec<u8>, DecodeOutcome), JpegError> {
-        DEFAULT_SCRATCH.with(|pool| self.decode_with_scratch(&mut pool.borrow_mut(), fmt))
+    /// Decode into a freshly allocated tightly packed buffer using a request
+    /// object instead of a method-name cross-product.
+    pub fn decode_request(
+        &self,
+        request: DecodeRequest,
+    ) -> Result<(Vec<u8>, DecodeOutcome), JpegError> {
+        DEFAULT_SCRATCH
+            .with(|pool| self.decode_request_with_scratch(&mut pool.borrow_mut(), request))
     }
 
     /// Decode the full image into the caller's buffer using the core
@@ -870,39 +852,38 @@ impl<'a> Decoder<'a> {
         })
     }
 
-    /// Decode the full image into a freshly allocated tightly-packed buffer
-    /// using the core `PixelFormat` + `Downscale` contract.
-    pub fn decode_scaled(
-        &self,
-        fmt: PixelFormat,
-        scale: Downscale,
-    ) -> Result<(Vec<u8>, DecodeOutcome), JpegError> {
-        DEFAULT_SCRATCH
-            .with(|pool| self.decode_scaled_with_scratch(&mut pool.borrow_mut(), fmt, scale))
-    }
-
-    /// [`Self::decode`] with caller-owned scratch.
-    pub fn decode_with_scratch(
+    fn decode_request_with_scratch(
         &self,
         pool: &mut ScratchPool,
-        fmt: PixelFormat,
+        request: DecodeRequest,
     ) -> Result<(Vec<u8>, DecodeOutcome), JpegError> {
-        self.decode_scaled_with_scratch(pool, fmt, Downscale::None)
-    }
-
-    /// [`Self::decode_scaled`] with caller-owned scratch.
-    pub fn decode_scaled_with_scratch(
-        &self,
-        pool: &mut ScratchPool,
-        fmt: PixelFormat,
-        scale: Downscale,
-    ) -> Result<(Vec<u8>, DecodeOutcome), JpegError> {
-        let legacy = output_format_from_parts(self.info.sof_kind, fmt, scale)?;
-        let downscale = legacy.downscale();
-        let (width, height) = scaled_dimensions(self.info.dimensions, downscale);
-        let (stride, len) = checked_output_geometry(width, height, legacy.bytes_per_pixel())?;
+        let legacy = output_format_from_parts(self.info.sof_kind, request.fmt, request.scale)?;
+        let (stride, len) = if let Some(roi) = request.region {
+            let scaled_roi = scaled_rect_covering(roi, legacy.downscale())?;
+            checked_output_geometry(scaled_roi.w, scaled_roi.h, legacy.bytes_per_pixel())?
+        } else {
+            let (width, height) = scaled_dimensions(self.info.dimensions, legacy.downscale());
+            checked_output_geometry(width, height, legacy.bytes_per_pixel())?
+        };
         let mut out = allocate_output_buffer(len);
-        let outcome = self.decode_scaled_into_with_scratch(pool, &mut out, stride, fmt, scale)?;
+        let outcome = if let Some(roi) = request.region {
+            self.decode_region_scaled_into_with_scratch(
+                pool,
+                &mut out,
+                stride,
+                request.fmt,
+                roi,
+                request.scale,
+            )?
+        } else {
+            self.decode_scaled_into_with_scratch(
+                pool,
+                &mut out,
+                stride,
+                request.fmt,
+                request.scale,
+            )?
+        };
         Ok((out, outcome))
     }
 
@@ -925,6 +906,56 @@ impl<'a> Decoder<'a> {
         self.decode_scaled_into_with_scratch(pool, out, stride, fmt, Downscale::None)
     }
 
+    fn decode_lossless_output_format_region_scaled(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        fmt: OutputFormat,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Option<Result<DecodeOutcome, JpegError>> {
+        self.lossless_plan.as_ref()?;
+        let result = match fmt {
+            OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => {
+                LosslessRgbRegionFallback::for_color_space_8(self.info.color_space)
+                    .decode_rgb_region_scaled_into(self, out, stride, roi, downscale)
+            }
+            OutputFormat::Rgba8 { alpha } | OutputFormat::Rgba8Scaled { alpha, .. } => {
+                LosslessRgbRegionFallback::for_color_space_8(self.info.color_space)
+                    .decode_rgba_region_scaled_into(
+                        self,
+                        out,
+                        stride,
+                        roi,
+                        downscale,
+                        LosslessRgbaAlpha::U8(alpha),
+                    )
+            }
+            OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => {
+                self.decode_lossless_gray8_region_scaled_into(out, stride, roi, downscale)
+            }
+            OutputFormat::Gray16 | OutputFormat::Gray16Scaled { .. } => {
+                self.decode_lossless_gray16_region_scaled_into(out, stride, roi, downscale)
+            }
+            OutputFormat::Rgb16 | OutputFormat::Rgb16Scaled { .. } => {
+                LosslessRgbRegionFallback::for_color_space_16(self.info.color_space)
+                    .decode_rgb_region_scaled_into(self, out, stride, roi, downscale)
+            }
+            OutputFormat::Rgba16 { alpha } | OutputFormat::Rgba16Scaled { alpha, .. } => {
+                LosslessRgbRegionFallback::for_color_space_16(self.info.color_space)
+                    .decode_rgba_region_scaled_into(
+                        self,
+                        out,
+                        stride,
+                        roi,
+                        downscale,
+                        LosslessRgbaAlpha::U16(alpha),
+                    )
+            }
+        };
+        Some(result)
+    }
+
     fn decode_into_output_format_with_scratch(
         &self,
         pool: &mut ScratchPool,
@@ -939,190 +970,65 @@ impl<'a> Decoder<'a> {
         let scratch_bytes = self.decode_scratch_bytes(DEFAULT_MAX_DECODE_BYTES)?;
         let bpp = fmt.bytes_per_pixel();
         validate_buffer(out, stride, w, h, bpp)?;
+        let full_roi = Rect::full(self.info.dimensions);
+        if let Some(result) =
+            self.decode_lossless_output_format_region_scaled(out, stride, fmt, full_roi, downscale)
+        {
+            return result;
+        }
         let decode_start = profile_enabled.then(Instant::now);
         let result = match fmt {
             OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => {
-                if self.lossless_plan.is_some() {
-                    return match self.info.color_space {
-                        ColorSpace::YCbCr => self.decode_lossless_ycbcr8_region_scaled_into(
-                            out,
-                            stride,
-                            Rect::full(self.info.dimensions),
-                            downscale,
-                        ),
-                        _ => self.decode_lossless_rgb8_region_scaled_into(
-                            out,
-                            stride,
-                            Rect::full(self.info.dimensions),
-                            downscale,
-                        ),
-                    };
-                }
                 let mut writer = Rgb8Writer::new_with_backend(out, stride, w, self.backend);
-                self.decode_rgb_with_writer(
-                    pool,
-                    &mut writer,
-                    downscale,
-                    Rect::full(self.info.dimensions),
-                )
+                self.decode_rgb_with_writer(pool, &mut writer, downscale, full_roi)
             }
             OutputFormat::Rgba8 { alpha } | OutputFormat::Rgba8Scaled { alpha, .. } => {
-                if self.lossless_plan.is_some() {
-                    return self.decode_lossless_rgba8_region_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
-                        alpha,
-                    );
-                }
                 let mut writer = Rgba8Writer::new_with_backend(out, stride, w, alpha, self.backend);
-                self.decode_with_writer(
-                    pool,
-                    &mut writer,
-                    downscale,
-                    Rect::full(self.info.dimensions),
-                )
+                self.decode_with_writer(pool, &mut writer, downscale, full_roi)
             }
             OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => {
-                if self.lossless_plan.is_some() {
-                    return self.decode_lossless_gray8_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
-                    );
-                }
                 let mut writer = Gray8Writer::new(out, stride, w);
-                self.decode_with_writer(
-                    pool,
-                    &mut writer,
-                    downscale,
-                    Rect::full(self.info.dimensions),
-                )
+                self.decode_with_writer(pool, &mut writer, downscale, full_roi)
             }
             OutputFormat::Gray16 => {
-                if self.lossless_plan.is_some() {
-                    return self.decode_lossless_gray16_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
-                    );
-                }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_gray16_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
+                        out, stride, full_roi, downscale,
                     );
                 }
                 self.decode_extended12_gray16_into(out, stride)
             }
             OutputFormat::Gray16Scaled { .. } => {
-                if self.lossless_plan.is_some() {
-                    return self.decode_lossless_gray16_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
-                    );
-                }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_gray16_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
+                        out, stride, full_roi, downscale,
                     );
                 }
-                self.decode_extended12_gray16_region_scaled_into(
-                    out,
-                    stride,
-                    Rect::full(self.info.dimensions),
-                    downscale,
-                )
+                self.decode_extended12_gray16_region_scaled_into(out, stride, full_roi, downscale)
             }
             OutputFormat::Rgb16 => {
-                if self.lossless_plan.is_some() {
-                    return match self.info.color_space {
-                        ColorSpace::YCbCr => self.decode_lossless_ycbcr16_region_scaled_into(
-                            out,
-                            stride,
-                            Rect::full(self.info.dimensions),
-                            downscale,
-                        ),
-                        _ => self.decode_lossless_rgb16_region_scaled_into(
-                            out,
-                            stride,
-                            Rect::full(self.info.dimensions),
-                            downscale,
-                        ),
-                    };
-                }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_rgb16_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
+                        out, stride, full_roi, downscale,
                     );
                 }
                 self.decode_extended12_rgb16_into(out, stride)
             }
             OutputFormat::Rgb16Scaled { .. } => {
-                if self.lossless_plan.is_some() {
-                    return match self.info.color_space {
-                        ColorSpace::YCbCr => self.decode_lossless_ycbcr16_region_scaled_into(
-                            out,
-                            stride,
-                            Rect::full(self.info.dimensions),
-                            downscale,
-                        ),
-                        _ => self.decode_lossless_rgb16_region_scaled_into(
-                            out,
-                            stride,
-                            Rect::full(self.info.dimensions),
-                            downscale,
-                        ),
-                    };
-                }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_rgb16_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
+                        out, stride, full_roi, downscale,
                     );
                 }
-                self.decode_extended12_rgb16_region_scaled_into(
-                    out,
-                    stride,
-                    Rect::full(self.info.dimensions),
-                    downscale,
-                )
+                self.decode_extended12_rgb16_region_scaled_into(out, stride, full_roi, downscale)
             }
             OutputFormat::Rgba16 { alpha } | OutputFormat::Rgba16Scaled { alpha, .. } => {
-                if self.lossless_plan.is_some() {
-                    return self.decode_lossless_rgba16_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
-                        alpha,
-                    );
-                }
                 if matches!(
                     self.info.sof_kind,
                     SofKind::Extended12 | SofKind::Progressive12
                 ) {
                     return self.decode_12bit_rgba16_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
-                        alpha,
+                        out, stride, full_roi, downscale, alpha,
                     );
                 }
                 Err(JpegError::NotImplemented {
@@ -1330,7 +1236,7 @@ impl<'a> Decoder<'a> {
     pub fn decode_region_component_rows_with_scratch<W>(
         &self,
         pool: &mut ScratchPool,
-        writer: &mut W,
+        mut writer: &mut W,
         roi: Rect,
         scale: Downscale,
     ) -> Result<DecodeOutcome, JpegError>
@@ -1347,14 +1253,13 @@ impl<'a> Decoder<'a> {
 
         let downscale = jpeg_downscale(scale);
         let scaled_roi = scaled_rect_covering(roi, downscale)?;
-        let mut adapter = ComponentWriterAdapter { inner: writer };
 
         if roi == Rect::full(self.info.dimensions) {
-            self.decode_with_writer(pool, &mut adapter, downscale, roi)
+            self.decode_with_writer(pool, &mut writer, downscale, roi)
         } else {
             let (source_x0, source_width) =
                 self.source_window_for_output_rect(downscale, scaled_roi);
-            let mut cropped = CroppedWriter::new(adapter, scaled_roi, source_x0, source_width);
+            let mut cropped = CroppedWriter::new(writer, scaled_roi, source_x0, source_width);
             self.decode_with_writer(pool, &mut cropped, downscale, roi)
         }
     }
@@ -1376,59 +1281,8 @@ impl<'a> Decoder<'a> {
         })
     }
 
-    /// Decode `roi` into a freshly allocated tightly-packed buffer.
-    pub fn decode_region(
-        &self,
-        fmt: PixelFormat,
-        roi: Rect,
-    ) -> Result<(Vec<u8>, DecodeOutcome), JpegError> {
-        DEFAULT_SCRATCH
-            .with(|pool| self.decode_region_with_scratch(&mut pool.borrow_mut(), fmt, roi))
-    }
-
-    /// Decode `roi` into a freshly allocated tightly-packed buffer using the
-    /// core `PixelFormat` + `Downscale` contract.
-    pub fn decode_region_scaled(
-        &self,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-    ) -> Result<(Vec<u8>, DecodeOutcome), JpegError> {
-        DEFAULT_SCRATCH.with(|pool| {
-            self.decode_region_scaled_with_scratch(&mut pool.borrow_mut(), fmt, roi, scale)
-        })
-    }
-
-    /// [`Self::decode_region`] with caller-owned scratch.
-    pub fn decode_region_with_scratch(
-        &self,
-        pool: &mut ScratchPool,
-        fmt: PixelFormat,
-        roi: Rect,
-    ) -> Result<(Vec<u8>, DecodeOutcome), JpegError> {
-        self.decode_region_scaled_with_scratch(pool, fmt, roi, Downscale::None)
-    }
-
-    /// [`Self::decode_region_scaled`] with caller-owned scratch.
-    pub fn decode_region_scaled_with_scratch(
-        &self,
-        pool: &mut ScratchPool,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-    ) -> Result<(Vec<u8>, DecodeOutcome), JpegError> {
-        let legacy = output_format_from_parts(self.info.sof_kind, fmt, scale)?;
-        let scaled_roi = scaled_rect_covering(roi, legacy.downscale())?;
-        let (stride, len) =
-            checked_output_geometry(scaled_roi.w, scaled_roi.h, legacy.bytes_per_pixel())?;
-        let mut out = allocate_output_buffer(len);
-        let outcome =
-            self.decode_region_scaled_into_with_scratch(pool, &mut out, stride, fmt, roi, scale)?;
-        Ok((out, outcome))
-    }
-
     /// [`Self::decode_region_into`] with caller-owned scratch.
-    pub fn decode_region_into_with_scratch(
+    pub(crate) fn decode_region_into_with_scratch(
         &self,
         pool: &mut ScratchPool,
         out: &mut [u8],
@@ -1471,18 +1325,15 @@ impl<'a> Decoder<'a> {
             scaled_roi.h,
             fmt.bytes_per_pixel(),
         )?;
+        if let Some(result) =
+            self.decode_lossless_output_format_region_scaled(out, stride, fmt, roi, downscale)
+        {
+            return result;
+        }
 
         let decode_start = profile_enabled.then(Instant::now);
         let result = match fmt {
             OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => {
-                if self.lossless_plan.is_some() {
-                    return match self.info.color_space {
-                        ColorSpace::YCbCr => self
-                            .decode_lossless_ycbcr8_region_scaled_into(out, stride, roi, downscale),
-                        _ => self
-                            .decode_lossless_rgb8_region_scaled_into(out, stride, roi, downscale),
-                    };
-                }
                 if fmt == OutputFormat::Rgb8
                     && downscale == DownscaleFactor::Full
                     && self.progressive_plan.is_none()
@@ -1525,9 +1376,11 @@ impl<'a> Decoder<'a> {
                         scan_bytes,
                         pool,
                         &mut writer,
-                        scaled_roi,
-                        downscale,
-                        checkpoint.as_ref(),
+                        FastTileRegionScaledRequest {
+                            roi: scaled_roi,
+                            downscale,
+                            checkpoint: checkpoint.as_ref(),
+                        },
                     )?;
                     Ok(DecodeOutcome {
                         decoded: scaled_roi,
@@ -1543,10 +1396,6 @@ impl<'a> Decoder<'a> {
                 }
             }
             OutputFormat::Rgba8 { alpha } | OutputFormat::Rgba8Scaled { alpha, .. } => {
-                if self.lossless_plan.is_some() {
-                    return self
-                        .decode_lossless_rgba8_region_into(out, stride, roi, downscale, alpha);
-                }
                 let base =
                     Rgba8Writer::new_with_backend(out, stride, scaled_roi.w, alpha, self.backend);
                 let (source_x0, source_width) =
@@ -1555,10 +1404,6 @@ impl<'a> Decoder<'a> {
                 self.decode_with_writer(pool, &mut writer, downscale, roi)
             }
             OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => {
-                if self.lossless_plan.is_some() {
-                    return self
-                        .decode_lossless_gray8_region_scaled_into(out, stride, roi, downscale);
-                }
                 let base = Gray8Writer::new(out, stride, scaled_roi.w);
                 let (source_x0, source_width) =
                     self.source_window_for_output_rect(downscale, scaled_roi);
@@ -1566,10 +1411,6 @@ impl<'a> Decoder<'a> {
                 self.decode_with_writer(pool, &mut writer, downscale, roi)
             }
             OutputFormat::Gray16 => {
-                if self.lossless_plan.is_some() {
-                    return self
-                        .decode_lossless_gray16_region_scaled_into(out, stride, roi, downscale);
-                }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_gray16_region_scaled_into(
                         out, stride, roi, downscale,
@@ -1578,10 +1419,6 @@ impl<'a> Decoder<'a> {
                 self.decode_extended12_gray16_region_into(out, stride, roi)
             }
             OutputFormat::Gray16Scaled { .. } => {
-                if self.lossless_plan.is_some() {
-                    return self
-                        .decode_lossless_gray16_region_scaled_into(out, stride, roi, downscale);
-                }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_gray16_region_scaled_into(
                         out, stride, roi, downscale,
@@ -1590,15 +1427,6 @@ impl<'a> Decoder<'a> {
                 self.decode_extended12_gray16_region_scaled_into(out, stride, roi, downscale)
             }
             OutputFormat::Rgb16 => {
-                if self.lossless_plan.is_some() {
-                    return match self.info.color_space {
-                        ColorSpace::YCbCr => self.decode_lossless_ycbcr16_region_scaled_into(
-                            out, stride, roi, downscale,
-                        ),
-                        _ => self
-                            .decode_lossless_rgb16_region_scaled_into(out, stride, roi, downscale),
-                    };
-                }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_rgb16_region_scaled_into(
                         out, stride, roi, downscale,
@@ -1607,15 +1435,6 @@ impl<'a> Decoder<'a> {
                 self.decode_extended12_rgb16_region_into(out, stride, roi)
             }
             OutputFormat::Rgb16Scaled { .. } => {
-                if self.lossless_plan.is_some() {
-                    return match self.info.color_space {
-                        ColorSpace::YCbCr => self.decode_lossless_ycbcr16_region_scaled_into(
-                            out, stride, roi, downscale,
-                        ),
-                        _ => self
-                            .decode_lossless_rgb16_region_scaled_into(out, stride, roi, downscale),
-                    };
-                }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_rgb16_region_scaled_into(
                         out, stride, roi, downscale,
@@ -1624,11 +1443,6 @@ impl<'a> Decoder<'a> {
                 self.decode_extended12_rgb16_region_scaled_into(out, stride, roi, downscale)
             }
             OutputFormat::Rgba16 { alpha } | OutputFormat::Rgba16Scaled { alpha, .. } => {
-                if self.lossless_plan.is_some() {
-                    return self.decode_lossless_rgba16_region_scaled_into(
-                        out, stride, roi, downscale, alpha,
-                    );
-                }
                 if matches!(
                     self.info.sof_kind,
                     SofKind::Extended12 | SofKind::Progressive12
@@ -1733,76 +1547,6 @@ impl<'a> Decoder<'a> {
             roi,
         )
     }
-
-    /// Decode the full image into RGBA with a caller-chosen alpha byte.
-    pub fn decode_rgba8_into_with_alpha(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        alpha: u8,
-    ) -> Result<DecodeOutcome, JpegError> {
-        DEFAULT_SCRATCH.with(|pool| {
-            self.decode_rgba8_into_with_alpha_with_scratch(
-                &mut pool.borrow_mut(),
-                out,
-                stride,
-                alpha,
-            )
-        })
-    }
-
-    /// [`Self::decode_rgba8_into_with_alpha`] with caller-owned scratch.
-    pub fn decode_rgba8_into_with_alpha_with_scratch(
-        &self,
-        pool: &mut ScratchPool,
-        out: &mut [u8],
-        stride: usize,
-        alpha: u8,
-    ) -> Result<DecodeOutcome, JpegError> {
-        self.decode_into_output_format_with_scratch(
-            pool,
-            out,
-            stride,
-            OutputFormat::Rgba8 { alpha },
-        )
-    }
-
-    /// Decode a region into RGBA with a caller-chosen alpha byte.
-    pub fn decode_region_rgba8_into_with_alpha(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        roi: Rect,
-        alpha: u8,
-    ) -> Result<DecodeOutcome, JpegError> {
-        DEFAULT_SCRATCH.with(|pool| {
-            self.decode_region_rgba8_into_with_alpha_with_scratch(
-                &mut pool.borrow_mut(),
-                out,
-                stride,
-                roi,
-                alpha,
-            )
-        })
-    }
-
-    /// [`Self::decode_region_rgba8_into_with_alpha`] with caller-owned scratch.
-    pub fn decode_region_rgba8_into_with_alpha_with_scratch(
-        &self,
-        pool: &mut ScratchPool,
-        out: &mut [u8],
-        stride: usize,
-        roi: Rect,
-        alpha: u8,
-    ) -> Result<DecodeOutcome, JpegError> {
-        self.decode_region_into_output_format_with_scratch(
-            pool,
-            out,
-            stride,
-            OutputFormat::Rgba8 { alpha },
-            roi,
-        )
-    }
 }
 
 /// One-shot parse-plus-decode of an independent JPEG tile into the caller's
@@ -1843,6 +1587,7 @@ pub fn decode_tile_into(
 /// One-shot parse-plus-decode of an independent JPEG tile into the caller's
 /// buffer, reusing both caller-owned [`DecoderContext`] and caller-owned
 /// [`ScratchPool`].
+#[doc(hidden)]
 pub fn decode_tile_into_in_context(
     bytes: &[u8],
     ctx: &mut DecoderContext,
@@ -1865,6 +1610,7 @@ pub fn decode_tile_into_in_context(
 /// One-shot parse-plus-decode of an independent JPEG tile into the caller's
 /// buffer, reusing both caller-owned [`DecoderContext`] and caller-owned
 /// [`ScratchPool`], with explicit JPEG decode options.
+#[doc(hidden)]
 pub fn decode_tile_into_in_context_with_options(
     bytes: &[u8],
     ctx: &mut DecoderContext,
@@ -1936,6 +1682,7 @@ pub fn decode_tiles_into(
 ///
 /// # Errors
 /// Returns [`TileBatchError`] with the first failing tile index in input order.
+#[doc(hidden)]
 pub fn decode_tiles_into_with_options(
     jobs: &mut [TileDecodeJob<'_, '_>],
     fmt: PixelFormat,
@@ -1973,6 +1720,7 @@ pub fn decode_tiles_scaled_into(
 ///
 /// # Errors
 /// Returns [`TileBatchError`] with the first failing tile index in input order.
+#[doc(hidden)]
 pub fn decode_tiles_scaled_into_with_options(
     jobs: &mut [TileScaledDecodeJob<'_, '_>],
     fmt: PixelFormat,
@@ -2010,6 +1758,7 @@ pub fn decode_tiles_region_scaled_into(
 ///
 /// # Errors
 /// Returns [`TileBatchError`] with the first failing tile index in input order.
+#[doc(hidden)]
 pub fn decode_tiles_region_scaled_into_with_options(
     jobs: &mut [TileRegionScaledDecodeJob<'_, '_>],
     fmt: PixelFormat,
@@ -2026,22 +1775,19 @@ pub fn decode_tiles_region_scaled_into_with_options(
 /// One-shot parse-plus-region-decode of an independent JPEG tile into the
 /// caller's buffer, reusing both caller-owned [`DecoderContext`] and
 /// caller-owned [`ScratchPool`].
+#[doc(hidden)]
 pub fn decode_tile_region_into_in_context(
     bytes: &[u8],
     ctx: &mut DecoderContext,
     pool: &mut ScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
+    output: TileDecodeOutput<'_>,
     roi: Rect,
 ) -> Result<DecodeOutcome, JpegError> {
     decode_tile_region_into_in_context_with_options(
         bytes,
         ctx,
         pool,
-        out,
-        stride,
-        fmt,
+        output,
         roi,
         DecodeOptions::default(),
     )
@@ -2050,17 +1796,16 @@ pub fn decode_tile_region_into_in_context(
 /// One-shot parse-plus-region-decode of an independent JPEG tile into the
 /// caller's buffer, reusing caller-owned state and explicit JPEG decode
 /// options.
-#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
 pub fn decode_tile_region_into_in_context_with_options(
     bytes: &[u8],
     ctx: &mut DecoderContext,
     pool: &mut ScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
+    output: TileDecodeOutput<'_>,
     roi: Rect,
     options: DecodeOptions,
 ) -> Result<DecodeOutcome, JpegError> {
+    let TileDecodeOutput { out, stride, fmt } = output;
     let dec = Decoder::from_view_in_context(JpegView::parse_with_options(bytes, options)?, ctx)?;
     dec.decode_region_into_with_scratch(pool, out, stride, fmt, roi)
 }
@@ -2068,22 +1813,19 @@ pub fn decode_tile_region_into_in_context_with_options(
 /// One-shot parse-plus-scaled-decode of an independent JPEG tile into the
 /// caller's buffer, reusing both caller-owned [`DecoderContext`] and
 /// caller-owned [`ScratchPool`].
+#[doc(hidden)]
 pub fn decode_tile_scaled_into_in_context(
     bytes: &[u8],
     ctx: &mut DecoderContext,
     pool: &mut ScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
+    output: TileDecodeOutput<'_>,
     scale: Downscale,
 ) -> Result<DecodeOutcome, JpegError> {
     decode_tile_scaled_into_in_context_with_options(
         bytes,
         ctx,
         pool,
-        out,
-        stride,
-        fmt,
+        output,
         scale,
         DecodeOptions::default(),
     )
@@ -2092,17 +1834,16 @@ pub fn decode_tile_scaled_into_in_context(
 /// One-shot parse-plus-scaled-decode of an independent JPEG tile into the
 /// caller's buffer, reusing caller-owned state and explicit JPEG decode
 /// options.
-#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
 pub fn decode_tile_scaled_into_in_context_with_options(
     bytes: &[u8],
     ctx: &mut DecoderContext,
     pool: &mut ScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
+    output: TileDecodeOutput<'_>,
     scale: Downscale,
     options: DecodeOptions,
 ) -> Result<DecodeOutcome, JpegError> {
+    let TileDecodeOutput { out, stride, fmt } = output;
     let dec = Decoder::from_view_in_context(JpegView::parse_with_options(bytes, options)?, ctx)?;
     dec.decode_scaled_into_with_scratch(pool, out, stride, fmt, scale)
 }
@@ -2110,14 +1851,12 @@ pub fn decode_tile_scaled_into_in_context_with_options(
 /// One-shot parse-plus-region-scaled-decode of an independent JPEG tile into
 /// the caller's buffer, reusing both caller-owned [`DecoderContext`] and
 /// caller-owned [`ScratchPool`].
-#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
 pub fn decode_tile_region_scaled_into_in_context(
     bytes: &[u8],
     ctx: &mut DecoderContext,
     pool: &mut ScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
+    output: TileDecodeOutput<'_>,
     roi: Rect,
     scale: Downscale,
 ) -> Result<DecodeOutcome, JpegError> {
@@ -2125,9 +1864,7 @@ pub fn decode_tile_region_scaled_into_in_context(
         bytes,
         ctx,
         pool,
-        out,
-        stride,
-        fmt,
+        output,
         roi,
         scale,
         DecodeOptions::default(),
@@ -2137,37 +1874,19 @@ pub fn decode_tile_region_scaled_into_in_context(
 /// One-shot parse-plus-region-scaled-decode of an independent JPEG tile into
 /// the caller's buffer, reusing caller-owned state and explicit JPEG decode
 /// options.
-#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
 pub fn decode_tile_region_scaled_into_in_context_with_options(
     bytes: &[u8],
     ctx: &mut DecoderContext,
     pool: &mut ScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
+    output: TileDecodeOutput<'_>,
     roi: Rect,
     scale: Downscale,
     options: DecodeOptions,
 ) -> Result<DecodeOutcome, JpegError> {
+    let TileDecodeOutput { out, stride, fmt } = output;
     let dec = Decoder::from_view_in_context(JpegView::parse_with_options(bytes, options)?, ctx)?;
     dec.decode_region_scaled_into_with_scratch(pool, out, stride, fmt, roi, scale)
-}
-
-impl Decoder<'_> {
-    /// One-shot parse-plus-row-decode of a JPEG tile using caller-owned shared
-    /// table context and caller-owned scratch.
-    pub fn decode_tile<S>(
-        bytes: &[u8],
-        ctx: &mut DecoderContext,
-        pool: &mut ScratchPool,
-        sink: &mut S,
-    ) -> Result<DecodeOutcome, JpegError>
-    where
-        S: RowSink<u8, Error = JpegError>,
-    {
-        let dec = Decoder::from_view_in_context(JpegView::parse(bytes)?, ctx)?;
-        dec.decode_rows_with_scratch(pool, sink)
-    }
 }
 
 impl Decoder<'_> {
@@ -2194,10 +1913,12 @@ impl Decoder<'_> {
             return Ok(None);
         }
 
-        let mut cache = self
-            .cpu_entropy_checkpoints
-            .lock()
-            .expect("CPU entropy checkpoint cache mutex poisoned");
+        let mut cache =
+            self.cpu_entropy_checkpoints
+                .lock()
+                .map_err(|_| JpegError::InternalInvariant {
+                    reason: "CPU entropy checkpoint cache mutex poisoned",
+                })?;
         checkpoint_before_mcu(
             &self.plan,
             scan_bytes,
@@ -2381,23 +2102,14 @@ impl Decoder<'_> {
         let (width, height) = plan.dimensions;
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
-        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
         let total_samples = width.saturating_mul(height);
-        let mut samples_since_restart = 0u32;
-        let mut expected_rst = 0u8;
+        let mut restart_tracker =
+            LosslessRestartTracker::new(self.plan.restart_interval, total_samples);
         for y in 0..height as usize {
             for x in 0..width as usize {
                 let sample_index = y as u32 * width + x as u32;
-                if restart > 0 && samples_since_restart == restart {
-                    consume_lossless_restart(
-                        &mut br,
-                        sample_index,
-                        total_samples,
-                        &mut expected_rst,
-                    )?;
-                    samples_since_restart = 0;
-                }
-                let predictor = if restart > 0 && samples_since_restart == 0 {
+                let restart_first_sample = restart_tracker.begin_unit(&mut br, sample_index)?;
+                let predictor = if restart_first_sample {
                     128
                 } else {
                     lossless_predictor_value(plan.predictor, out, stride, x, y)
@@ -2405,7 +2117,7 @@ impl Decoder<'_> {
                 let diff = plan.dc_table.decode_fast_dc(&mut br)?;
                 let sample = <u8 as LosslessSample>::from_i32(predictor + diff)?;
                 out[y * stride + x] = sample;
-                samples_since_restart += 1;
+                restart_tracker.finish_unit();
             }
         }
 
@@ -2486,23 +2198,14 @@ impl Decoder<'_> {
 
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
-        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
         let total_samples = plan.dimensions.0.saturating_mul(height);
-        let mut samples_since_restart = 0u32;
-        let mut expected_rst = 0u8;
+        let mut restart_tracker =
+            LosslessRestartTracker::new(self.plan.restart_interval, total_samples);
         for y in 0..height as usize {
             for x in 0..width {
                 let sample_index = y as u32 * plan.dimensions.0 + x as u32;
-                if restart > 0 && samples_since_restart == restart {
-                    consume_lossless_restart(
-                        &mut br,
-                        sample_index,
-                        total_samples,
-                        &mut expected_rst,
-                    )?;
-                    samples_since_restart = 0;
-                }
-                let predictor = if restart > 0 && samples_since_restart == 0 {
+                let restart_first_sample = restart_tracker.begin_unit(&mut br, sample_index)?;
+                let predictor = if restart_first_sample {
                     P::RESTART_PREDICTOR
                 } else {
                     lossless_predictor_gray_rows::<P>(plan.predictor, curr_row, prev_row, x, y)
@@ -2510,7 +2213,7 @@ impl Decoder<'_> {
                 let diff = plan.dc_table.decode_fast_dc(&mut br)?;
                 let sample = P::from_i32(predictor + diff)?;
                 sample.write_le(&mut curr_row[x * P::BYTES..]);
-                samples_since_restart += 1;
+                restart_tracker.finish_unit();
             }
             emit_row(sink, y as u32, &curr_row[..row_len])?;
             core::mem::swap(prev_row, curr_row);
@@ -2553,12 +2256,26 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
     ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_lossless_color8_output_into(out, stride, ColorSpace::Rgb)
+    }
+
+    fn decode_lossless_color8_output_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        color_space: ColorSpace,
+    ) -> Result<DecodeOutcome, JpegError> {
         match lossless_color_sampling(&self.info) {
             Some(LosslessColorSampling::S444) => {
-                self.decode_lossless_color8_components_into(out, stride, ColorSpace::Rgb)
+                let outcome =
+                    self.decode_lossless_color8_components_into(out, stride, color_space)?;
+                if color_space == ColorSpace::YCbCr {
+                    convert_ycbcr8_to_rgb8_in_place(out, stride, self.info.dimensions);
+                }
+                Ok(outcome)
             }
             Some(LosslessColorSampling::S422 | LosslessColorSampling::S420) => {
-                self.decode_lossless_color8_sampled_into(out, stride, ColorSpace::Rgb)
+                self.decode_lossless_color8_sampled_into(out, stride, color_space)
             }
             None => Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
@@ -2581,70 +2298,31 @@ impl Decoder<'_> {
             .ok_or(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             })?;
-        if plan.bit_depth != P::BIT_DEPTH {
-            return Err(JpegError::UnsupportedBitDepth {
-                depth: plan.bit_depth,
-            });
-        }
-        if self.info.color_space != color_space {
-            return Err(JpegError::NotImplemented {
-                sof: self.info.sof_kind,
-            });
-        }
-        if self.plan.components.len() != 3 {
-            return Err(JpegError::UnsupportedComponentCount {
-                count: self.plan.components.len() as u8,
-            });
-        }
-        if !(1..=7).contains(&plan.predictor) {
-            return Err(JpegError::UnsupportedPredictor {
-                predictor: plan.predictor,
-            });
-        }
+        validate_lossless_color_plan::<P>(plan, &self.plan, &self.info, color_space)?;
 
         let (width, height) = plan.dimensions;
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
-        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
         let total_pixels = width.saturating_mul(height);
-        let mut pixels_since_restart = 0u32;
-        let mut expected_rst = 0u8;
+        let mut restart_tracker =
+            LosslessRestartTracker::new(self.plan.restart_interval, total_pixels);
         for y in 0..height as usize {
             for x in 0..width as usize {
                 let pixel_index = y as u32 * width + x as u32;
-                if restart > 0 && pixels_since_restart == restart {
-                    consume_lossless_restart(
-                        &mut br,
-                        pixel_index,
-                        total_pixels,
-                        &mut expected_rst,
-                    )?;
-                    pixels_since_restart = 0;
-                }
-                for component in &self.plan.components {
-                    if component.output_index >= 3 {
-                        return Err(JpegError::UnsupportedComponentCount {
-                            count: self.plan.components.len() as u8,
-                        });
-                    }
-                    let predictor = if restart > 0 && pixels_since_restart == 0 {
-                        P::RESTART_PREDICTOR
-                    } else {
-                        lossless_predictor_color_into::<P>(
-                            plan.predictor,
-                            out,
-                            stride,
-                            x,
-                            y,
-                            component.output_index,
-                        )
-                    };
-                    let diff = component.dc_table.decode_fast_dc(&mut br)?;
-                    let sample = P::from_i32(predictor + diff)?;
-                    let offset = y * stride + (x * 3 + component.output_index) * P::BYTES;
-                    sample.write_le(&mut out[offset..]);
-                }
-                pixels_since_restart += 1;
+                let restart_first_pixel = restart_tracker.begin_unit(&mut br, pixel_index)?;
+                decode_lossless_color_sample::<P, _>(
+                    &mut br,
+                    &self.plan.components,
+                    plan.predictor,
+                    restart_first_pixel,
+                    &mut LosslessColorIntoSample {
+                        out: &mut *out,
+                        stride,
+                        x,
+                        y,
+                    },
+                )?;
+                restart_tracker.finish_unit();
             }
         }
 
@@ -2687,16 +2365,6 @@ impl Decoder<'_> {
             .ok_or(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             })?;
-        if plan.bit_depth != P::BIT_DEPTH {
-            return Err(JpegError::UnsupportedBitDepth {
-                depth: plan.bit_depth,
-            });
-        }
-        if self.info.color_space != color_space {
-            return Err(JpegError::NotImplemented {
-                sof: self.info.sof_kind,
-            });
-        }
         let sampling = lossless_color_sampling(&self.info).ok_or(JpegError::NotImplemented {
             sof: self.info.sof_kind,
         })?;
@@ -2708,16 +2376,7 @@ impl Decoder<'_> {
                 sof: self.info.sof_kind,
             });
         }
-        if self.plan.components.len() != 3 {
-            return Err(JpegError::UnsupportedComponentCount {
-                count: self.plan.components.len() as u8,
-            });
-        }
-        if !(1..=7).contains(&plan.predictor) {
-            return Err(JpegError::UnsupportedPredictor {
-                predictor: plan.predictor,
-            });
-        }
+        validate_lossless_color_plan::<P>(plan, &self.plan, &self.info, color_space)?;
 
         let (width, height) = plan.dimensions;
         let width = width as usize;
@@ -2727,72 +2386,47 @@ impl Decoder<'_> {
         let mut c0 = vec![P::default(); width * height];
         let mut c1 = vec![P::default(); chroma_width * chroma_height];
         let mut c2 = vec![P::default(); chroma_width * chroma_height];
+        let mut planes = LosslessSampledColorPlanesMut {
+            c0: &mut c0,
+            c1: &mut c1,
+            c2: &mut c2,
+            dimensions: (width, height),
+            chroma_dimensions: (chroma_width, chroma_height),
+        };
 
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
-        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
         let total_mcus = (chroma_width * chroma_height) as u32;
-        let mut mcus_since_restart = 0u32;
-        let mut expected_rst = 0u8;
+        let mut restart_tracker =
+            LosslessRestartTracker::new(self.plan.restart_interval, total_mcus);
         for mcu_y in 0..chroma_height {
             for mcu_x in 0..chroma_width {
                 let mcu_index = (mcu_y * chroma_width + mcu_x) as u32;
-                if restart > 0 && mcus_since_restart == restart {
-                    consume_lossless_restart(&mut br, mcu_index, total_mcus, &mut expected_rst)?;
-                    mcus_since_restart = 0;
-                }
-                for component in &self.plan.components {
-                    let (plane, plane_width, plane_height) = match component.output_index {
-                        0 => (&mut c0, width, height),
-                        1 => (&mut c1, chroma_width, chroma_height),
-                        2 => (&mut c2, chroma_width, chroma_height),
-                        _ => {
-                            return Err(JpegError::UnsupportedComponentCount {
-                                count: self.plan.components.len() as u8,
-                            });
-                        }
-                    };
-                    for local_y in 0..component.v as usize {
-                        for local_x in 0..component.h as usize {
-                            let x = mcu_x * component.h as usize + local_x;
-                            let y = mcu_y * component.v as usize + local_y;
-                            if x >= plane_width || y >= plane_height {
-                                continue;
-                            }
-                            decode_lossless_plane_sample(
-                                &mut br,
-                                &component.dc_table,
-                                plan.predictor,
-                                plane,
-                                plane_width,
-                                LosslessPlaneSample {
-                                    x,
-                                    y,
-                                    restart_first_sample: restart > 0
-                                        && mcus_since_restart == 0
-                                        && local_x == 0
-                                        && local_y == 0,
-                                },
-                            )?;
-                        }
-                    }
-                }
-                mcus_since_restart += 1;
+                let restart_first_mcu = restart_tracker.begin_unit(&mut br, mcu_index)?;
+                decode_lossless_sampled_color_mcu::<P>(
+                    &mut br,
+                    &self.plan.components,
+                    plan.predictor,
+                    LosslessSampledMcu {
+                        x: mcu_x,
+                        y: mcu_y,
+                        restart_first_mcu,
+                    },
+                    &mut planes,
+                )?;
+                restart_tracker.finish_unit();
             }
         }
 
         let scan_warnings = finish_scan(&mut br, true)?;
+        let LosslessSampledColorPlanesMut { c0, c1, c2, .. } = planes;
         write_output(
             out,
             stride,
             color_space,
             sampling,
             (width, height),
-            LosslessColorPlanes {
-                c0: &c0,
-                c1: &c1,
-                c2: &c2,
-            },
+            LosslessColorPlanes { c0, c1, c2 },
         );
         Ok(DecodeOutcome {
             decoded: Rect::full(self.info.dimensions),
@@ -2819,108 +2453,7 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
     ) -> Result<DecodeOutcome, JpegError> {
-        match lossless_color_sampling(&self.info) {
-            Some(LosslessColorSampling::S444) => {
-                let outcome =
-                    self.decode_lossless_color8_components_into(out, stride, ColorSpace::YCbCr)?;
-                convert_ycbcr8_to_rgb8_in_place(out, stride, self.info.dimensions);
-                Ok(outcome)
-            }
-            Some(LosslessColorSampling::S422 | LosslessColorSampling::S420) => {
-                self.decode_lossless_color8_sampled_into(out, stride, ColorSpace::YCbCr)
-            }
-            None => Err(JpegError::NotImplemented {
-                sof: self.info.sof_kind,
-            }),
-        }
-    }
-
-    fn decode_lossless_rgb8_region_scaled_into(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        roi: Rect,
-        downscale: DownscaleFactor,
-    ) -> Result<DecodeOutcome, JpegError> {
-        if roi == Rect::full(self.info.dimensions) && downscale == DownscaleFactor::Full {
-            return self.decode_lossless_rgb8_into(out, stride);
-        }
-
-        let (width, height) = self.info.dimensions;
-        let full_stride = width as usize * 3;
-        let mut full =
-            allocate_output_buffer(checked_scratch_len(&[full_stride, height as usize])?);
-        let mut outcome = self.decode_lossless_rgb8_into(&mut full, full_stride)?;
-        let output_rect = scaled_rect_covering(roi, downscale)?;
-        copy_rgb8_scaled_rect(
-            &full,
-            (width, height),
-            output_rect,
-            downscale.denominator(),
-            out,
-            stride,
-        );
-        outcome.decoded = roi;
-        Ok(outcome)
-    }
-
-    fn decode_lossless_ycbcr8_region_scaled_into(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        roi: Rect,
-        downscale: DownscaleFactor,
-    ) -> Result<DecodeOutcome, JpegError> {
-        if roi == Rect::full(self.info.dimensions) && downscale == DownscaleFactor::Full {
-            return self.decode_lossless_ycbcr8_into(out, stride);
-        }
-
-        let (width, height) = self.info.dimensions;
-        let full_stride = width as usize * 3;
-        let mut full =
-            allocate_output_buffer(checked_scratch_len(&[full_stride, height as usize])?);
-        let mut outcome = self.decode_lossless_ycbcr8_into(&mut full, full_stride)?;
-        let output_rect = scaled_rect_covering(roi, downscale)?;
-        copy_rgb8_scaled_rect(
-            &full,
-            (width, height),
-            output_rect,
-            downscale.denominator(),
-            out,
-            stride,
-        );
-        outcome.decoded = roi;
-        Ok(outcome)
-    }
-
-    fn decode_lossless_rgba8_region_into(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        roi: Rect,
-        downscale: DownscaleFactor,
-        alpha: u8,
-    ) -> Result<DecodeOutcome, JpegError> {
-        let output_rect = scaled_rect_covering(roi, downscale)?;
-        let rgb_stride = output_rect.w as usize * 3;
-        let mut rgb =
-            allocate_output_buffer(checked_scratch_len(&[rgb_stride, output_rect.h as usize])?);
-        let outcome = match self.info.color_space {
-            ColorSpace::YCbCr => {
-                self.decode_lossless_ycbcr8_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)
-            }
-            _ => self.decode_lossless_rgb8_region_scaled_into(&mut rgb, rgb_stride, roi, downscale),
-        }?;
-        copy_rgb8_to_rgba8(
-            &rgb,
-            rgb_stride,
-            output_rect.w,
-            output_rect.h,
-            out,
-            stride,
-            alpha,
-        );
-        Ok(outcome)
+        self.decode_lossless_color8_output_into(out, stride, ColorSpace::YCbCr)
     }
 
     fn decode_lossless_color_rows<P, S>(
@@ -2942,26 +2475,7 @@ impl Decoder<'_> {
             .ok_or(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             })?;
-        if plan.bit_depth != P::BIT_DEPTH {
-            return Err(JpegError::UnsupportedBitDepth {
-                depth: plan.bit_depth,
-            });
-        }
-        if self.info.color_space != color_space {
-            return Err(JpegError::NotImplemented {
-                sof: self.info.sof_kind,
-            });
-        }
-        if self.plan.components.len() != 3 {
-            return Err(JpegError::UnsupportedComponentCount {
-                count: self.plan.components.len() as u8,
-            });
-        }
-        if !(1..=7).contains(&plan.predictor) {
-            return Err(JpegError::UnsupportedPredictor {
-                predictor: plan.predictor,
-            });
-        }
+        validate_lossless_color_plan::<P>(plan, &self.plan, &self.info, color_space)?;
 
         let (width, height) = plan.dimensions;
         let width = width as usize;
@@ -2971,47 +2485,27 @@ impl Decoder<'_> {
 
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
-        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
         let total_pixels = plan.dimensions.0.saturating_mul(height);
-        let mut pixels_since_restart = 0u32;
-        let mut expected_rst = 0u8;
+        let mut restart_tracker =
+            LosslessRestartTracker::new(self.plan.restart_interval, total_pixels);
         let mut conversion_row = conversion_row;
         for y in 0..height as usize {
             for x in 0..width {
                 let pixel_index = y as u32 * plan.dimensions.0 + x as u32;
-                if restart > 0 && pixels_since_restart == restart {
-                    consume_lossless_restart(
-                        &mut br,
-                        pixel_index,
-                        total_pixels,
-                        &mut expected_rst,
-                    )?;
-                    pixels_since_restart = 0;
-                }
-                for component in &self.plan.components {
-                    if component.output_index >= 3 {
-                        return Err(JpegError::UnsupportedComponentCount {
-                            count: self.plan.components.len() as u8,
-                        });
-                    }
-                    let predictor = if restart > 0 && pixels_since_restart == 0 {
-                        P::RESTART_PREDICTOR
-                    } else {
-                        lossless_predictor_color_rows::<P>(
-                            plan.predictor,
-                            curr_row,
-                            prev_row,
-                            x,
-                            y,
-                            component.output_index,
-                        )
-                    };
-                    let diff = component.dc_table.decode_fast_dc(&mut br)?;
-                    let sample = P::from_i32(predictor + diff)?;
-                    let offset = (x * 3 + component.output_index) * P::BYTES;
-                    sample.write_le(&mut curr_row[offset..]);
-                }
-                pixels_since_restart += 1;
+                let restart_first_pixel = restart_tracker.begin_unit(&mut br, pixel_index)?;
+                decode_lossless_color_sample::<P, _>(
+                    &mut br,
+                    &self.plan.components,
+                    plan.predictor,
+                    restart_first_pixel,
+                    &mut LosslessColorRowSample {
+                        curr_row: &mut *curr_row,
+                        prev_row: &*prev_row,
+                        x,
+                        y,
+                    },
+                )?;
+                restart_tracker.finish_unit();
             }
             let row = if color_space == ColorSpace::YCbCr {
                 let row = conversion_row
@@ -3103,15 +2597,26 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
     ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_lossless_color16_output_into(out, stride, ColorSpace::Rgb)
+    }
+
+    fn decode_lossless_color16_output_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        color_space: ColorSpace,
+    ) -> Result<DecodeOutcome, JpegError> {
         match lossless_color_sampling(&self.info) {
             Some(LosslessColorSampling::S444) => {
-                self.decode_lossless_color16_components_into(out, stride, ColorSpace::Rgb)
+                let outcome =
+                    self.decode_lossless_color16_components_into(out, stride, color_space)?;
+                if color_space == ColorSpace::YCbCr {
+                    convert_ycbcr16_to_rgb16_in_place(out, stride, self.info.dimensions);
+                }
+                Ok(outcome)
             }
-            Some(LosslessColorSampling::S422) => {
-                self.decode_lossless_color16_sampled_into(out, stride, ColorSpace::Rgb)
-            }
-            Some(LosslessColorSampling::S420) => {
-                self.decode_lossless_color16_sampled_into(out, stride, ColorSpace::Rgb)
+            Some(LosslessColorSampling::S422 | LosslessColorSampling::S420) => {
+                self.decode_lossless_color16_sampled_into(out, stride, color_space)
             }
             None => Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
@@ -3147,112 +2652,7 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
     ) -> Result<DecodeOutcome, JpegError> {
-        match lossless_color_sampling(&self.info) {
-            Some(LosslessColorSampling::S444) => {
-                let outcome =
-                    self.decode_lossless_color16_components_into(out, stride, ColorSpace::YCbCr)?;
-                convert_ycbcr16_to_rgb16_in_place(out, stride, self.info.dimensions);
-                Ok(outcome)
-            }
-            Some(LosslessColorSampling::S422) => {
-                self.decode_lossless_color16_sampled_into(out, stride, ColorSpace::YCbCr)
-            }
-            Some(LosslessColorSampling::S420) => {
-                self.decode_lossless_color16_sampled_into(out, stride, ColorSpace::YCbCr)
-            }
-            None => Err(JpegError::NotImplemented {
-                sof: self.info.sof_kind,
-            }),
-        }
-    }
-
-    fn decode_lossless_rgb16_region_scaled_into(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        roi: Rect,
-        downscale: DownscaleFactor,
-    ) -> Result<DecodeOutcome, JpegError> {
-        if roi == Rect::full(self.info.dimensions) && downscale == DownscaleFactor::Full {
-            return self.decode_lossless_rgb16_into(out, stride);
-        }
-
-        let (width, height) = self.info.dimensions;
-        let full_stride = width as usize * 6;
-        let mut full =
-            allocate_output_buffer(checked_scratch_len(&[full_stride, height as usize])?);
-        let mut outcome = self.decode_lossless_rgb16_into(&mut full, full_stride)?;
-        let output_rect = scaled_rect_covering(roi, downscale)?;
-        copy_rgb16_scaled_rect(
-            &full,
-            (width, height),
-            output_rect,
-            downscale.denominator(),
-            out,
-            stride,
-        );
-        outcome.decoded = roi;
-        Ok(outcome)
-    }
-
-    fn decode_lossless_ycbcr16_region_scaled_into(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        roi: Rect,
-        downscale: DownscaleFactor,
-    ) -> Result<DecodeOutcome, JpegError> {
-        if roi == Rect::full(self.info.dimensions) && downscale == DownscaleFactor::Full {
-            return self.decode_lossless_ycbcr16_into(out, stride);
-        }
-
-        let (width, height) = self.info.dimensions;
-        let full_stride = width as usize * 6;
-        let mut full =
-            allocate_output_buffer(checked_scratch_len(&[full_stride, height as usize])?);
-        let mut outcome = self.decode_lossless_ycbcr16_into(&mut full, full_stride)?;
-        let output_rect = scaled_rect_covering(roi, downscale)?;
-        copy_rgb16_scaled_rect(
-            &full,
-            (width, height),
-            output_rect,
-            downscale.denominator(),
-            out,
-            stride,
-        );
-        outcome.decoded = roi;
-        Ok(outcome)
-    }
-
-    fn decode_lossless_rgba16_region_scaled_into(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        roi: Rect,
-        downscale: DownscaleFactor,
-        alpha: u16,
-    ) -> Result<DecodeOutcome, JpegError> {
-        let output_rect = scaled_rect_covering(roi, downscale)?;
-        let rgb_stride = output_rect.w as usize * 6;
-        let mut rgb =
-            allocate_output_buffer(checked_scratch_len(&[rgb_stride, output_rect.h as usize])?);
-        let outcome = match self.info.color_space {
-            ColorSpace::YCbCr => self
-                .decode_lossless_ycbcr16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale),
-            _ => {
-                self.decode_lossless_rgb16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)
-            }
-        }?;
-        copy_rgb16_to_rgba16(
-            &rgb,
-            rgb_stride,
-            output_rect.w,
-            output_rect.h,
-            out,
-            stride,
-            alpha,
-        );
-        Ok(outcome)
+        self.decode_lossless_color16_output_into(out, stride, ColorSpace::YCbCr)
     }
 
     fn decode_12bit_rgba16_region_scaled_into(
@@ -3309,23 +2709,14 @@ impl Decoder<'_> {
         let (width, height) = plan.dimensions;
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
-        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
         let total_samples = width.saturating_mul(height);
-        let mut samples_since_restart = 0u32;
-        let mut expected_rst = 0u8;
+        let mut restart_tracker =
+            LosslessRestartTracker::new(self.plan.restart_interval, total_samples);
         for y in 0..height as usize {
             for x in 0..width as usize {
                 let sample_index = y as u32 * width + x as u32;
-                if restart > 0 && samples_since_restart == restart {
-                    consume_lossless_restart(
-                        &mut br,
-                        sample_index,
-                        total_samples,
-                        &mut expected_rst,
-                    )?;
-                    samples_since_restart = 0;
-                }
-                let predictor = if restart > 0 && samples_since_restart == 0 {
+                let restart_first_sample = restart_tracker.begin_unit(&mut br, sample_index)?;
+                let predictor = if restart_first_sample {
                     32768
                 } else {
                     lossless_predictor_value_u16(plan.predictor, out, stride, x, y)
@@ -3334,7 +2725,7 @@ impl Decoder<'_> {
                 let sample = <u16 as LosslessSample>::from_i32(predictor + diff)?;
                 let offset = y * stride + x * 2;
                 sample.write_le(&mut out[offset..offset + 2]);
-                samples_since_restart += 1;
+                restart_tracker.finish_unit();
             }
         }
 
@@ -3893,10 +3284,9 @@ impl Decoder<'_> {
         let mut prev_dc = 0i32;
         let mut coeff = CoefficientBlock::default();
         let mut pixels = [0u16; 64];
-        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
-        let mut mcus_since_restart = 0u32;
-        let mut expected_rst = 0u8;
         let total_mcus = mcu_cols * mcu_rows;
+        let mut restart_tracker =
+            Extended12RestartTracker::new(self.plan.restart_interval, total_mcus);
         let write_region = Extended12WriteRegion {
             output_rect,
             dimensions: (width, height),
@@ -3907,15 +3297,8 @@ impl Decoder<'_> {
         for mcu_y in 0..mcu_rows {
             for mcu_x in 0..mcu_cols {
                 let current_mcu = mcu_y * mcu_cols + mcu_x;
-                if restart > 0 && mcus_since_restart == restart {
-                    consume_extended12_restart(
-                        &mut br,
-                        current_mcu,
-                        total_mcus,
-                        &mut expected_rst,
-                    )?;
+                if restart_tracker.begin_mcu(&mut br, current_mcu)? {
                     prev_dc = 0;
-                    mcus_since_restart = 0;
                 }
                 decode_extended12_block_pixels(
                     &mut br,
@@ -3931,7 +3314,7 @@ impl Decoder<'_> {
                     (mcu_x * 8, mcu_y * 8),
                     &pixels,
                 );
-                mcus_since_restart += 1;
+                restart_tracker.finish_mcu();
             }
         }
 
@@ -3962,10 +3345,9 @@ impl Decoder<'_> {
         let mut coeffs: [CoefficientBlock; 3] =
             core::array::from_fn(|_| CoefficientBlock::default());
         let mut pixels = [[0u16; 64]; 3];
-        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
-        let mut mcus_since_restart = 0u32;
-        let mut expected_rst = 0u8;
         let total_mcus = mcu_cols * mcu_rows;
+        let mut restart_tracker =
+            Extended12RestartTracker::new(self.plan.restart_interval, total_mcus);
         let write_region = Extended12WriteRegion {
             output_rect,
             dimensions: (width, height),
@@ -3976,15 +3358,8 @@ impl Decoder<'_> {
         for mcu_y in 0..mcu_rows {
             for mcu_x in 0..mcu_cols {
                 let current_mcu = mcu_y * mcu_cols + mcu_x;
-                if restart > 0 && mcus_since_restart == restart {
-                    consume_extended12_restart(
-                        &mut br,
-                        current_mcu,
-                        total_mcus,
-                        &mut expected_rst,
-                    )?;
+                if restart_tracker.begin_mcu(&mut br, current_mcu)? {
                     prev_dc.fill(0);
-                    mcus_since_restart = 0;
                 }
                 for component in &self.plan.components {
                     let output_index = component.output_index;
@@ -4004,7 +3379,7 @@ impl Decoder<'_> {
                     (mcu_x * 8, mcu_y * 8),
                     &pixels,
                 );
-                mcus_since_restart += 1;
+                restart_tracker.finish_mcu();
             }
         }
 
@@ -4087,10 +3462,9 @@ impl Decoder<'_> {
         let mut coeffs: [CoefficientBlock; 4] =
             core::array::from_fn(|_| CoefficientBlock::default());
         let mut pixels = [[0u16; 64]; 4];
-        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
-        let mut mcus_since_restart = 0u32;
-        let mut expected_rst = 0u8;
         let total_mcus = mcu_cols * mcu_rows;
+        let mut restart_tracker =
+            Extended12RestartTracker::new(self.plan.restart_interval, total_mcus);
         let write_region = Extended12WriteRegion {
             output_rect,
             dimensions: (width, height),
@@ -4101,15 +3475,8 @@ impl Decoder<'_> {
         for mcu_y in 0..mcu_rows {
             for mcu_x in 0..mcu_cols {
                 let current_mcu = mcu_y * mcu_cols + mcu_x;
-                if restart > 0 && mcus_since_restart == restart {
-                    consume_extended12_restart(
-                        &mut br,
-                        current_mcu,
-                        total_mcus,
-                        &mut expected_rst,
-                    )?;
+                if restart_tracker.begin_mcu(&mut br, current_mcu)? {
                     prev_dc.fill(0);
-                    mcus_since_restart = 0;
                 }
                 for component in &self.plan.components {
                     let output_index = component.output_index;
@@ -4129,7 +3496,7 @@ impl Decoder<'_> {
                     (mcu_x * 8, mcu_y * 8),
                     &pixels,
                 );
-                mcus_since_restart += 1;
+                restart_tracker.finish_mcu();
             }
         }
 
@@ -4180,2370 +3547,6 @@ impl Decoder<'_> {
             decoded: roi,
             warnings: merged_warnings(&self.warnings, scan_warnings),
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum Extended12Output {
-    Gray16,
-    Rgb16,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Extended12ColorSampling {
-    S444,
-    S422,
-    S420,
-}
-
-fn lossless_color_sampling(info: &Info) -> Option<LosslessColorSampling> {
-    if info.sampling.len() != 3 {
-        return None;
-    }
-    match (
-        info.sampling.max_h,
-        info.sampling.max_v,
-        info.sampling.components(),
-    ) {
-        (1, 1, &[(1, 1), (1, 1), (1, 1)]) => Some(LosslessColorSampling::S444),
-        (2, 1, &[(2, 1), (1, 1), (1, 1)])
-            if matches!(info.bit_depth, 8 | 16) && info.dimensions.0.is_multiple_of(2) =>
-        {
-            Some(LosslessColorSampling::S422)
-        }
-        (2, 2, &[(2, 2), (1, 1), (1, 1)])
-            if matches!(info.bit_depth, 8 | 16)
-                && info.dimensions.0.is_multiple_of(2)
-                && info.dimensions.1.is_multiple_of(2) =>
-        {
-            Some(LosslessColorSampling::S420)
-        }
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum Extended12RgbProjection {
-    Identity,
-    YCbCr,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Extended12WriteRegion {
-    output_rect: Rect,
-    dimensions: (u32, u32),
-    downscale: DownscaleFactor,
-    output: Extended12Output,
-}
-
-struct Extended12Plane {
-    pixels: Vec<u16>,
-    stride: usize,
-    width: usize,
-}
-
-fn decode_extended12_block_pixels(
-    br: &mut BitReader<'_>,
-    component: &PreparedComponentPlan,
-    prev_dc: &mut i32,
-    coeff: &mut CoefficientBlock,
-    pixels: &mut [u16; 64],
-) -> Result<(), JpegError> {
-    let activity = decode_block_with_activity(
-        br,
-        &component.dc_table,
-        &component.ac_table,
-        prev_dc,
-        component.quant.as_ref(),
-        coeff,
-    )?;
-    match activity {
-        BlockActivity::DcOnly => {
-            pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(
-                coeff.dc_coeff(),
-            ));
-        }
-        BlockActivity::BottomHalfZero | BlockActivity::General => {
-            crate::idct::idct_islow_12bit(coeff.coefficients(), pixels);
-        }
-    }
-    Ok(())
-}
-
-fn decode_extended12_color_planes(
-    plan: &PreparedDecodePlan,
-    scan_bytes: &[u8],
-    sof: SofKind,
-) -> Result<([Extended12Plane; 3], Vec<Warning>), JpegError> {
-    if plan.components.len() != 3 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    let mut planes = extended12_planes_for_sequential_plan(plan, sof)?;
-    let mut br = BitReader::new(scan_bytes);
-    let mut prev_dc = [0i32; 3];
-    let mut coeffs: [CoefficientBlock; 3] = core::array::from_fn(|_| CoefficientBlock::default());
-    let mut pixels = [[0u16; 64]; 3];
-    let mcu_cols = plan
-        .dimensions
-        .0
-        .div_ceil(u32::from(plan.sampling.max_h) * 8);
-    let mcu_rows = plan
-        .dimensions
-        .1
-        .div_ceil(u32::from(plan.sampling.max_v) * 8);
-    let restart = u32::from(plan.restart_interval.unwrap_or(0));
-    let mut mcus_since_restart = 0u32;
-    let mut expected_rst = 0u8;
-    let total_mcus = mcu_cols * mcu_rows;
-
-    for mcu_y in 0..mcu_rows {
-        for mcu_x in 0..mcu_cols {
-            let current_mcu = mcu_y * mcu_cols + mcu_x;
-            if restart > 0 && mcus_since_restart == restart {
-                consume_extended12_restart(&mut br, current_mcu, total_mcus, &mut expected_rst)?;
-                prev_dc.fill(0);
-                mcus_since_restart = 0;
-            }
-            for component in &plan.components {
-                let output_index = component.output_index;
-                if output_index > 2 {
-                    return Err(JpegError::NotImplemented { sof });
-                }
-                for by in 0..u32::from(component.v) {
-                    for bx in 0..u32::from(component.h) {
-                        decode_extended12_block_pixels(
-                            &mut br,
-                            component,
-                            &mut prev_dc[output_index],
-                            &mut coeffs[output_index],
-                            &mut pixels[output_index],
-                        )?;
-                        deposit_extended12_block(
-                            &mut planes[output_index],
-                            (mcu_x * u32::from(component.h) + bx) as usize * 8,
-                            (mcu_y * u32::from(component.v) + by) as usize * 8,
-                            &pixels[output_index],
-                        );
-                    }
-                }
-            }
-            mcus_since_restart += 1;
-        }
-    }
-
-    let scan_warnings = finish_scan(&mut br, true)?;
-    Ok((planes, scan_warnings))
-}
-
-fn decode_extended12_four_component_planes(
-    plan: &PreparedDecodePlan,
-    scan_bytes: &[u8],
-    sof: SofKind,
-) -> Result<([Extended12Plane; 4], Vec<Warning>), JpegError> {
-    if plan.components.len() != 4 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    let mut planes = extended12_four_component_planes_for_sequential_plan(plan, sof)?;
-    let mut br = BitReader::new(scan_bytes);
-    let mut prev_dc = [0i32; 4];
-    let mut coeffs: [CoefficientBlock; 4] = core::array::from_fn(|_| CoefficientBlock::default());
-    let mut pixels = [[0u16; 64]; 4];
-    let mcu_cols = plan
-        .dimensions
-        .0
-        .div_ceil(u32::from(plan.sampling.max_h) * 8);
-    let mcu_rows = plan
-        .dimensions
-        .1
-        .div_ceil(u32::from(plan.sampling.max_v) * 8);
-    let restart = u32::from(plan.restart_interval.unwrap_or(0));
-    let mut mcus_since_restart = 0u32;
-    let mut expected_rst = 0u8;
-    let total_mcus = mcu_cols * mcu_rows;
-
-    for mcu_y in 0..mcu_rows {
-        for mcu_x in 0..mcu_cols {
-            let current_mcu = mcu_y * mcu_cols + mcu_x;
-            if restart > 0 && mcus_since_restart == restart {
-                consume_extended12_restart(&mut br, current_mcu, total_mcus, &mut expected_rst)?;
-                prev_dc.fill(0);
-                mcus_since_restart = 0;
-            }
-            for component in &plan.components {
-                let output_index = component.output_index;
-                if output_index > 3 {
-                    return Err(JpegError::NotImplemented { sof });
-                }
-                for by in 0..u32::from(component.v) {
-                    for bx in 0..u32::from(component.h) {
-                        decode_extended12_block_pixels(
-                            &mut br,
-                            component,
-                            &mut prev_dc[output_index],
-                            &mut coeffs[output_index],
-                            &mut pixels[output_index],
-                        )?;
-                        deposit_extended12_block(
-                            &mut planes[output_index],
-                            (mcu_x * u32::from(component.h) + bx) as usize * 8,
-                            (mcu_y * u32::from(component.v) + by) as usize * 8,
-                            &pixels[output_index],
-                        );
-                    }
-                }
-            }
-            mcus_since_restart += 1;
-        }
-    }
-
-    let scan_warnings = finish_scan(&mut br, true)?;
-    Ok((planes, scan_warnings))
-}
-
-fn extended12_planes_for_sequential_plan(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<[Extended12Plane; 3], JpegError> {
-    let mcu_cols = plan
-        .dimensions
-        .0
-        .div_ceil(u32::from(plan.sampling.max_h) * 8);
-    let mcu_rows = plan
-        .dimensions
-        .1
-        .div_ceil(u32::from(plan.sampling.max_v) * 8);
-    let mut widths = [0usize; 3];
-    let mut strides = [0usize; 3];
-    let mut heights = [0usize; 3];
-    let mut lens = [0usize; 3];
-    for component in &plan.components {
-        if component.output_index > 2 {
-            return Err(JpegError::NotImplemented { sof });
-        }
-        widths[component.output_index] =
-            plan.dimensions
-                .0
-                .saturating_mul(u32::from(component.h))
-                .div_ceil(u32::from(plan.sampling.max_h)) as usize;
-        strides[component.output_index] =
-            checked_scratch_len(&[mcu_cols as usize, usize::from(component.h), 8])?;
-        heights[component.output_index] =
-            checked_scratch_len(&[mcu_rows as usize, usize::from(component.v), 8])?;
-        lens[component.output_index] = checked_scratch_len(&[
-            strides[component.output_index],
-            heights[component.output_index],
-            core::mem::size_of::<u16>(),
-        ])? / core::mem::size_of::<u16>();
-    }
-    Ok(core::array::from_fn(|index| Extended12Plane {
-        pixels: vec![0u16; lens[index]],
-        stride: strides[index],
-        width: widths[index],
-    }))
-}
-
-fn extended12_four_component_planes_for_sequential_plan(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<[Extended12Plane; 4], JpegError> {
-    let mcu_cols = plan
-        .dimensions
-        .0
-        .div_ceil(u32::from(plan.sampling.max_h) * 8);
-    let mcu_rows = plan
-        .dimensions
-        .1
-        .div_ceil(u32::from(plan.sampling.max_v) * 8);
-    let mut widths = [0usize; 4];
-    let mut strides = [0usize; 4];
-    let mut heights = [0usize; 4];
-    let mut lens = [0usize; 4];
-    for component in &plan.components {
-        if component.output_index > 3 {
-            return Err(JpegError::NotImplemented { sof });
-        }
-        widths[component.output_index] =
-            plan.dimensions
-                .0
-                .saturating_mul(u32::from(component.h))
-                .div_ceil(u32::from(plan.sampling.max_h)) as usize;
-        strides[component.output_index] =
-            checked_scratch_len(&[mcu_cols as usize, usize::from(component.h), 8])?;
-        heights[component.output_index] =
-            checked_scratch_len(&[mcu_rows as usize, usize::from(component.v), 8])?;
-        lens[component.output_index] = checked_scratch_len(&[
-            strides[component.output_index],
-            heights[component.output_index],
-            core::mem::size_of::<u16>(),
-        ])? / core::mem::size_of::<u16>();
-    }
-    Ok(core::array::from_fn(|index| Extended12Plane {
-        pixels: vec![0u16; lens[index]],
-        stride: strides[index],
-        width: widths[index],
-    }))
-}
-
-fn render_progressive12_color_planes(
-    plan: &PreparedProgressivePlan,
-    coeffs: &[Vec<[i32; 64]>],
-) -> Result<[Extended12Plane; 3], JpegError> {
-    let mut planes = progressive12_color_planes(plan)?;
-    let mut dequant = [0i16; 64];
-    let mut pixels = [0u16; 64];
-    for (component_index, component) in plan.components.iter().enumerate() {
-        let output_index = component.output_index;
-        if output_index > 2 {
-            return Err(JpegError::NotImplemented {
-                sof: SofKind::Progressive12,
-            });
-        }
-        for by in 0..component.block_rows as usize {
-            for bx in 0..component.block_cols as usize {
-                let block_index = by * component.block_cols as usize + bx;
-                dequantize_progressive12_block(
-                    &coeffs[component_index][block_index],
-                    &component.quant,
-                    &mut dequant,
-                );
-                if dequant[1..].iter().all(|&coeff| coeff == 0) {
-                    pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(dequant[0]));
-                } else {
-                    crate::idct::idct_islow_12bit(&dequant, &mut pixels);
-                }
-                deposit_extended12_block(&mut planes[output_index], bx * 8, by * 8, &pixels);
-            }
-        }
-    }
-    Ok(planes)
-}
-
-fn render_progressive12_four_component_planes(
-    plan: &PreparedProgressivePlan,
-    coeffs: &[Vec<[i32; 64]>],
-) -> Result<[Extended12Plane; 4], JpegError> {
-    let mut planes = progressive12_four_component_planes(plan)?;
-    let mut dequant = [0i16; 64];
-    let mut pixels = [0u16; 64];
-    for (component_index, component) in plan.components.iter().enumerate() {
-        let output_index = component.output_index;
-        if output_index > 3 {
-            return Err(JpegError::NotImplemented {
-                sof: SofKind::Progressive12,
-            });
-        }
-        for by in 0..component.block_rows as usize {
-            for bx in 0..component.block_cols as usize {
-                let block_index = by * component.block_cols as usize + bx;
-                dequantize_progressive12_block(
-                    &coeffs[component_index][block_index],
-                    &component.quant,
-                    &mut dequant,
-                );
-                if dequant[1..].iter().all(|&coeff| coeff == 0) {
-                    pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(dequant[0]));
-                } else {
-                    crate::idct::idct_islow_12bit(&dequant, &mut pixels);
-                }
-                deposit_extended12_block(&mut planes[output_index], bx * 8, by * 8, &pixels);
-            }
-        }
-    }
-    Ok(planes)
-}
-
-fn progressive12_color_planes(
-    plan: &PreparedProgressivePlan,
-) -> Result<[Extended12Plane; 3], JpegError> {
-    let mut widths = [0usize; 3];
-    let mut strides = [0usize; 3];
-    let mut heights = [0usize; 3];
-    for component in &plan.components {
-        if component.output_index > 2 {
-            return Err(JpegError::NotImplemented {
-                sof: SofKind::Progressive12,
-            });
-        }
-        widths[component.output_index] = component.sample_width as usize;
-        strides[component.output_index] = component.block_cols as usize * 8;
-        heights[component.output_index] = component.block_rows as usize * 8;
-    }
-    Ok(core::array::from_fn(|index| Extended12Plane {
-        pixels: vec![0u16; strides[index] * heights[index]],
-        stride: strides[index],
-        width: widths[index],
-    }))
-}
-
-fn progressive12_four_component_planes(
-    plan: &PreparedProgressivePlan,
-) -> Result<[Extended12Plane; 4], JpegError> {
-    let mut widths = [0usize; 4];
-    let mut strides = [0usize; 4];
-    let mut heights = [0usize; 4];
-    for component in &plan.components {
-        if component.output_index > 3 {
-            return Err(JpegError::NotImplemented {
-                sof: SofKind::Progressive12,
-            });
-        }
-        widths[component.output_index] = component.sample_width as usize;
-        strides[component.output_index] = component.block_cols as usize * 8;
-        heights[component.output_index] = component.block_rows as usize * 8;
-    }
-    Ok(core::array::from_fn(|index| Extended12Plane {
-        pixels: vec![0u16; strides[index] * heights[index]],
-        stride: strides[index],
-        width: widths[index],
-    }))
-}
-
-fn deposit_extended12_block(plane: &mut Extended12Plane, x: usize, y: usize, block: &[u16; 64]) {
-    for row in 0..8 {
-        let dst_start = (y + row) * plane.stride + x;
-        let src_start = row * 8;
-        plane.pixels[dst_start..dst_start + 8].copy_from_slice(&block[src_start..src_start + 8]);
-    }
-}
-
-fn validate_extended12_color444_plan(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<(), JpegError> {
-    if plan.components.len() != 3 || plan.sampling.max_h != 1 || plan.sampling.max_v != 1 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    let mut seen = [false; 3];
-    for component in &plan.components {
-        if component.h != 1 || component.v != 1 || component.output_index > 2 {
-            return Err(JpegError::NotImplemented { sof });
-        }
-        if seen[component.output_index] {
-            return Err(JpegError::NotImplemented { sof });
-        }
-        seen[component.output_index] = true;
-    }
-    if seen.iter().any(|&present| !present) {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    Ok(())
-}
-
-fn validate_extended12_four_component444_plan(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<(), JpegError> {
-    if extended12_four_component_sampling(plan, sof)? != Extended12ColorSampling::S444 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    Ok(())
-}
-
-fn extended12_color_sampling(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<Extended12ColorSampling, JpegError> {
-    if plan.components.len() != 3 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    let components = color_component_sampling_from_sequential(plan, sof)?;
-    color_sampling_from_components(plan.sampling.max_h, plan.sampling.max_v, components, sof)
-}
-
-fn extended12_four_component_sampling(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<Extended12ColorSampling, JpegError> {
-    if plan.components.len() != 4 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    let components = four_component_sampling_from_sequential(plan, sof)?;
-    four_component_sampling_from_components(
-        plan.sampling.max_h,
-        plan.sampling.max_v,
-        components,
-        sof,
-    )
-}
-
-fn color_component_sampling_from_sequential(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<[(u8, u8); 3], JpegError> {
-    let mut components = [(0u8, 0u8); 3];
-    let mut seen = [false; 3];
-    for component in &plan.components {
-        if component.output_index > 2 || seen[component.output_index] {
-            return Err(JpegError::NotImplemented { sof });
-        }
-        seen[component.output_index] = true;
-        components[component.output_index] = (component.h, component.v);
-    }
-    if seen.iter().any(|&present| !present) {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    Ok(components)
-}
-
-fn four_component_sampling_from_sequential(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<[(u8, u8); 4], JpegError> {
-    let mut components = [(0u8, 0u8); 4];
-    let mut seen = [false; 4];
-    for component in &plan.components {
-        if component.output_index > 3 || seen[component.output_index] {
-            return Err(JpegError::NotImplemented { sof });
-        }
-        seen[component.output_index] = true;
-        components[component.output_index] = (component.h, component.v);
-    }
-    if seen.iter().any(|&present| !present) {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    Ok(components)
-}
-
-fn progressive_color_sampling(
-    plan: &PreparedProgressivePlan,
-    sof: SofKind,
-) -> Result<Extended12ColorSampling, JpegError> {
-    if plan.components.len() != 3 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    let components = color_component_sampling_from_progressive(plan, sof)?;
-    color_sampling_from_components(plan.sampling.max_h, plan.sampling.max_v, components, sof)
-}
-
-fn progressive_four_component_sampling(
-    plan: &PreparedProgressivePlan,
-    sof: SofKind,
-) -> Result<Extended12ColorSampling, JpegError> {
-    if plan.components.len() != 4 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    let components = four_component_sampling_from_progressive(plan, sof)?;
-    four_component_sampling_from_components(
-        plan.sampling.max_h,
-        plan.sampling.max_v,
-        components,
-        sof,
-    )
-}
-
-fn color_component_sampling_from_progressive(
-    plan: &PreparedProgressivePlan,
-    sof: SofKind,
-) -> Result<[(u8, u8); 3], JpegError> {
-    let mut components = [(0u8, 0u8); 3];
-    let mut seen = [false; 3];
-    for component in &plan.components {
-        if component.output_index > 2 || seen[component.output_index] {
-            return Err(JpegError::NotImplemented { sof });
-        }
-        seen[component.output_index] = true;
-        components[component.output_index] = (component.h, component.v);
-    }
-    if seen.iter().any(|&present| !present) {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    Ok(components)
-}
-
-fn four_component_sampling_from_progressive(
-    plan: &PreparedProgressivePlan,
-    sof: SofKind,
-) -> Result<[(u8, u8); 4], JpegError> {
-    let mut components = [(0u8, 0u8); 4];
-    let mut seen = [false; 4];
-    for component in &plan.components {
-        if component.output_index > 3 || seen[component.output_index] {
-            return Err(JpegError::NotImplemented { sof });
-        }
-        seen[component.output_index] = true;
-        components[component.output_index] = (component.h, component.v);
-    }
-    if seen.iter().any(|&present| !present) {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    Ok(components)
-}
-
-fn color_sampling_from_components(
-    max_h: u8,
-    max_v: u8,
-    components: [(u8, u8); 3],
-    sof: SofKind,
-) -> Result<Extended12ColorSampling, JpegError> {
-    match (max_h, max_v, components) {
-        (1, 1, [(1, 1), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S444),
-        (2, 1, [(2, 1), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S422),
-        (2, 2, [(2, 2), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S420),
-        _ => Err(JpegError::NotImplemented { sof }),
-    }
-}
-
-fn four_component_sampling_from_components(
-    max_h: u8,
-    max_v: u8,
-    components: [(u8, u8); 4],
-    sof: SofKind,
-) -> Result<Extended12ColorSampling, JpegError> {
-    match (max_h, max_v, components) {
-        (1, 1, [(1, 1), (1, 1), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S444),
-        (2, 1, [(2, 1), (1, 1), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S422),
-        (2, 2, [(2, 2), (1, 1), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S420),
-        _ => Err(JpegError::NotImplemented { sof }),
-    }
-}
-
-fn progressive_color_component_indices(
-    plan: &PreparedProgressivePlan,
-) -> Result<[usize; 3], JpegError> {
-    let mut indices = [usize::MAX; 3];
-    for (component_index, component) in plan.components.iter().enumerate() {
-        if component.output_index < 3 {
-            if indices[component.output_index] != usize::MAX {
-                return Err(JpegError::NotImplemented {
-                    sof: SofKind::Progressive12,
-                });
-            }
-            indices[component.output_index] = component_index;
-        }
-    }
-    if indices.contains(&usize::MAX) {
-        return Err(JpegError::NotImplemented {
-            sof: SofKind::Progressive12,
-        });
-    }
-    Ok(indices)
-}
-
-fn dequantize_progressive12_block(coeffs: &[i32; 64], quant: &[u16; 64], out: &mut [i16; 64]) {
-    out.fill(0);
-    for k in 0..64 {
-        let natural_idx = usize::from(ZIGZAG[k]);
-        let value = coeffs[natural_idx].wrapping_mul(i32::from(quant[k]));
-        out[natural_idx] = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-    }
-}
-
-fn write_extended12_rgb_block_region(
-    out: &mut [u8],
-    stride: usize,
-    region: Extended12WriteRegion,
-    projection: Extended12RgbProjection,
-    block_origin: (u32, u32),
-    pixels: &[[u16; 64]; 3],
-) {
-    let (width, height) = region.dimensions;
-    let (x0, y0) = block_origin;
-    let block_x1 = (x0 + 8).min(width);
-    let block_y1 = (y0 + 8).min(height);
-    let denom = region.downscale.denominator();
-    let output_rect = region.output_rect;
-    for output_y in output_rect.y..output_rect.y + output_rect.h {
-        let source_y = output_y.saturating_mul(denom).min(height - 1);
-        if source_y < y0 || source_y >= block_y1 {
-            continue;
-        }
-        let src_row = (source_y - y0) as usize;
-        let dst_row = (output_y - output_rect.y) as usize;
-        for output_x in output_rect.x..output_rect.x + output_rect.w {
-            let source_x = output_x.saturating_mul(denom).min(width - 1);
-            if source_x < x0 || source_x >= block_x1 {
-                continue;
-            }
-            let src_col = (source_x - x0) as usize;
-            let src_index = src_row * 8 + src_col;
-            let dst_col = (output_x - output_rect.x) as usize;
-            let dst_start = dst_row * stride + dst_col * 6;
-            let dst = &mut out[dst_start..dst_start + 6];
-            let (r, g, b) = match projection {
-                Extended12RgbProjection::Identity => (
-                    pixels[0][src_index],
-                    pixels[1][src_index],
-                    pixels[2][src_index],
-                ),
-                Extended12RgbProjection::YCbCr => crate::color::ycbcr::ycbcr12_to_rgb16(
-                    pixels[0][src_index],
-                    pixels[1][src_index],
-                    pixels[2][src_index],
-                ),
-            };
-            dst[0..2].copy_from_slice(&r.to_le_bytes());
-            dst[2..4].copy_from_slice(&g.to_le_bytes());
-            dst[4..6].copy_from_slice(&b.to_le_bytes());
-        }
-    }
-}
-
-fn write_extended12_four_component_block_region(
-    out: &mut [u8],
-    stride: usize,
-    region: Extended12WriteRegion,
-    color_space: ColorSpace,
-    block_origin: (u32, u32),
-    pixels: &[[u16; 64]; 4],
-) {
-    let (width, height) = region.dimensions;
-    let (x0, y0) = block_origin;
-    let block_x1 = (x0 + 8).min(width);
-    let block_y1 = (y0 + 8).min(height);
-    let denom = region.downscale.denominator();
-    let output_rect = region.output_rect;
-    for output_y in output_rect.y..output_rect.y + output_rect.h {
-        let source_y = output_y.saturating_mul(denom).min(height - 1);
-        if source_y < y0 || source_y >= block_y1 {
-            continue;
-        }
-        let src_row = (source_y - y0) as usize;
-        let dst_row = (output_y - output_rect.y) as usize;
-        for output_x in output_rect.x..output_rect.x + output_rect.w {
-            let source_x = output_x.saturating_mul(denom).min(width - 1);
-            if source_x < x0 || source_x >= block_x1 {
-                continue;
-            }
-            let src_col = (source_x - x0) as usize;
-            let src_index = src_row * 8 + src_col;
-            let (r, g, b) = match color_space {
-                ColorSpace::Cmyk => crate::color::cmyk::inverted_cmyk12_to_rgb16(
-                    pixels[0][src_index],
-                    pixels[1][src_index],
-                    pixels[2][src_index],
-                    pixels[3][src_index],
-                ),
-                ColorSpace::Ycck => crate::color::cmyk::ycck12_to_rgb16(
-                    pixels[0][src_index],
-                    pixels[1][src_index],
-                    pixels[2][src_index],
-                    pixels[3][src_index],
-                ),
-                _ => unreachable!("12-bit four-component path only accepts CMYK/YCCK"),
-            };
-            let dst_col = (output_x - output_rect.x) as usize;
-            let dst_start = dst_row * stride + dst_col * 6;
-            let dst = &mut out[dst_start..dst_start + 6];
-            dst[0..2].copy_from_slice(&r.to_le_bytes());
-            dst[2..4].copy_from_slice(&g.to_le_bytes());
-            dst[4..6].copy_from_slice(&b.to_le_bytes());
-        }
-    }
-}
-
-fn write_extended12_color422_planes_region(
-    out: &mut [u8],
-    stride: usize,
-    region: Extended12WriteRegion,
-    projection: Extended12RgbProjection,
-    planes: &[Extended12Plane; 3],
-) {
-    let (width, height) = region.dimensions;
-    let denom = region.downscale.denominator();
-    let output_rect = region.output_rect;
-    for output_y in output_rect.y..output_rect.y + output_rect.h {
-        let source_y = output_y.saturating_mul(denom).min(height - 1) as usize;
-        let dst_row = (output_y - output_rect.y) as usize;
-        for output_x in output_rect.x..output_rect.x + output_rect.w {
-            let source_x = output_x.saturating_mul(denom).min(width - 1) as usize;
-            let y = planes[0].pixels[source_y * planes[0].stride + source_x];
-            let chroma_y = source_y.min(planes[1].pixels.len() / planes[1].stride - 1);
-            let cb_row = &planes[1].pixels
-                [chroma_y * planes[1].stride..chroma_y * planes[1].stride + planes[1].width];
-            let cr_row = &planes[2].pixels
-                [chroma_y * planes[2].stride..chroma_y * planes[2].stride + planes[2].width];
-            let c1 = upsample_h2v1_12bit_at(cb_row, source_x);
-            let c2 = upsample_h2v1_12bit_at(cr_row, source_x);
-            let (r, g, b) = match projection {
-                Extended12RgbProjection::Identity => (y, c1, c2),
-                Extended12RgbProjection::YCbCr => crate::color::ycbcr::ycbcr12_to_rgb16(y, c1, c2),
-            };
-            let dst_col = (output_x - output_rect.x) as usize;
-            let dst_start = dst_row * stride + dst_col * 6;
-            let dst = &mut out[dst_start..dst_start + 6];
-            dst[0..2].copy_from_slice(&r.to_le_bytes());
-            dst[2..4].copy_from_slice(&g.to_le_bytes());
-            dst[4..6].copy_from_slice(&b.to_le_bytes());
-        }
-    }
-}
-
-fn write_extended12_color420_planes_region(
-    out: &mut [u8],
-    stride: usize,
-    region: Extended12WriteRegion,
-    projection: Extended12RgbProjection,
-    planes: &[Extended12Plane; 3],
-) {
-    let (width, height) = region.dimensions;
-    let denom = region.downscale.denominator();
-    let output_rect = region.output_rect;
-    for output_y in output_rect.y..output_rect.y + output_rect.h {
-        let source_y = output_y.saturating_mul(denom).min(height - 1) as usize;
-        let dst_row = (output_y - output_rect.y) as usize;
-        for output_x in output_rect.x..output_rect.x + output_rect.w {
-            let source_x = output_x.saturating_mul(denom).min(width - 1) as usize;
-            let y = planes[0].pixels[source_y * planes[0].stride + source_x];
-            let chroma_height = planes[1].pixels.len() / planes[1].stride;
-            let chroma_y = (source_y / 2).min(chroma_height - 1);
-            let prev_y = chroma_y.saturating_sub(1);
-            let next_y = (chroma_y + 1).min(chroma_height - 1);
-            let c1 = upsample_h2v2_12bit_at(
-                extended12_plane_row(&planes[1], prev_y),
-                extended12_plane_row(&planes[1], chroma_y),
-                extended12_plane_row(&planes[1], next_y),
-                source_x,
-                !source_y.is_multiple_of(2),
-            );
-            let c2 = upsample_h2v2_12bit_at(
-                extended12_plane_row(&planes[2], prev_y),
-                extended12_plane_row(&planes[2], chroma_y),
-                extended12_plane_row(&planes[2], next_y),
-                source_x,
-                !source_y.is_multiple_of(2),
-            );
-            let (r, g, b) = match projection {
-                Extended12RgbProjection::Identity => (y, c1, c2),
-                Extended12RgbProjection::YCbCr => crate::color::ycbcr::ycbcr12_to_rgb16(y, c1, c2),
-            };
-            let dst_col = (output_x - output_rect.x) as usize;
-            let dst_start = dst_row * stride + dst_col * 6;
-            let dst = &mut out[dst_start..dst_start + 6];
-            dst[0..2].copy_from_slice(&r.to_le_bytes());
-            dst[2..4].copy_from_slice(&g.to_le_bytes());
-            dst[4..6].copy_from_slice(&b.to_le_bytes());
-        }
-    }
-}
-
-fn write_extended12_four_component_planes_region(
-    out: &mut [u8],
-    stride: usize,
-    region: Extended12WriteRegion,
-    color_space: ColorSpace,
-    sampling: Extended12ColorSampling,
-    planes: &[Extended12Plane; 4],
-) {
-    let (width, height) = region.dimensions;
-    let denom = region.downscale.denominator();
-    let output_rect = region.output_rect;
-    for output_y in output_rect.y..output_rect.y + output_rect.h {
-        let source_y = output_y.saturating_mul(denom).min(height - 1) as usize;
-        let dst_row = (output_y - output_rect.y) as usize;
-        for output_x in output_rect.x..output_rect.x + output_rect.w {
-            let source_x = output_x.saturating_mul(denom).min(width - 1) as usize;
-            let c0 = planes[0].pixels[source_y * planes[0].stride + source_x];
-            let (c1, c2, c3) = match sampling {
-                Extended12ColorSampling::S444 => (
-                    sample_extended12_plane_at(&planes[1], source_x, source_y),
-                    sample_extended12_plane_at(&planes[2], source_x, source_y),
-                    sample_extended12_plane_at(&planes[3], source_x, source_y),
-                ),
-                Extended12ColorSampling::S422 => (
-                    upsample_extended12_plane_h2v1_at(&planes[1], source_x, source_y),
-                    upsample_extended12_plane_h2v1_at(&planes[2], source_x, source_y),
-                    upsample_extended12_plane_h2v1_at(&planes[3], source_x, source_y),
-                ),
-                Extended12ColorSampling::S420 => (
-                    upsample_extended12_plane_h2v2_at(&planes[1], source_x, source_y),
-                    upsample_extended12_plane_h2v2_at(&planes[2], source_x, source_y),
-                    upsample_extended12_plane_h2v2_at(&planes[3], source_x, source_y),
-                ),
-            };
-            let (r, g, b) = match color_space {
-                ColorSpace::Cmyk => crate::color::cmyk::inverted_cmyk12_to_rgb16(c0, c1, c2, c3),
-                ColorSpace::Ycck => crate::color::cmyk::ycck12_to_rgb16(c0, c1, c2, c3),
-                _ => unreachable!("12-bit four-component plane path only accepts CMYK/YCCK"),
-            };
-            let dst_col = (output_x - output_rect.x) as usize;
-            let dst_start = dst_row * stride + dst_col * 6;
-            let dst = &mut out[dst_start..dst_start + 6];
-            dst[0..2].copy_from_slice(&r.to_le_bytes());
-            dst[2..4].copy_from_slice(&g.to_le_bytes());
-            dst[4..6].copy_from_slice(&b.to_le_bytes());
-        }
-    }
-}
-
-fn sample_extended12_plane_at(plane: &Extended12Plane, source_x: usize, source_y: usize) -> u16 {
-    let height = plane.pixels.len() / plane.stride;
-    let y = source_y.min(height - 1);
-    let x = source_x.min(plane.width - 1);
-    plane.pixels[y * plane.stride + x]
-}
-
-fn upsample_extended12_plane_h2v1_at(
-    plane: &Extended12Plane,
-    source_x: usize,
-    source_y: usize,
-) -> u16 {
-    let height = plane.pixels.len() / plane.stride;
-    let y = source_y.min(height - 1);
-    upsample_h2v1_12bit_at(extended12_plane_row(plane, y), source_x)
-}
-
-fn upsample_extended12_plane_h2v2_at(
-    plane: &Extended12Plane,
-    source_x: usize,
-    source_y: usize,
-) -> u16 {
-    let height = plane.pixels.len() / plane.stride;
-    let chroma_y = (source_y / 2).min(height - 1);
-    let prev_y = chroma_y.saturating_sub(1);
-    let next_y = (chroma_y + 1).min(height - 1);
-    upsample_h2v2_12bit_at(
-        extended12_plane_row(plane, prev_y),
-        extended12_plane_row(plane, chroma_y),
-        extended12_plane_row(plane, next_y),
-        source_x,
-        !source_y.is_multiple_of(2),
-    )
-}
-
-fn extended12_plane_row(plane: &Extended12Plane, y: usize) -> &[u16] {
-    let row_start = y * plane.stride;
-    &plane.pixels[row_start..row_start + plane.width]
-}
-
-fn upsample_h2v1_12bit_at(row: &[u16], output_x: usize) -> u16 {
-    debug_assert!(!row.is_empty());
-    if row.len() == 1 {
-        return row[0];
-    }
-    let sample = output_x / 2;
-    if output_x == 0 {
-        row[0]
-    } else if output_x == row.len() * 2 - 1 {
-        row[row.len() - 1]
-    } else if output_x.is_multiple_of(2) {
-        ((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4) as u16
-    } else {
-        ((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4) as u16
-    }
-}
-
-fn upsample_h2v2_12bit_at(
-    prev: &[u16],
-    curr: &[u16],
-    next: &[u16],
-    output_x: usize,
-    output_is_bottom: bool,
-) -> u16 {
-    debug_assert!(!curr.is_empty());
-    debug_assert_eq!(prev.len(), curr.len());
-    debug_assert_eq!(next.len(), curr.len());
-    let near = if output_is_bottom { next } else { prev };
-    let colsum = |index: usize| 3 * u32::from(curr[index]) + u32::from(near[index]);
-    if curr.len() == 1 {
-        return ((4 * colsum(0) + 8) >> 4) as u16;
-    }
-
-    let sample = output_x / 2;
-    let this = colsum(sample);
-    match output_x {
-        0 => ((this * 4 + 8) >> 4) as u16,
-        _ if output_x == curr.len() * 2 - 1 => ((this * 4 + 7) >> 4) as u16,
-        _ if output_x.is_multiple_of(2) => {
-            let last = colsum(sample - 1);
-            ((this * 3 + last + 8) >> 4) as u16
-        }
-        _ => {
-            let next = colsum(sample + 1);
-            ((this * 3 + next + 7) >> 4) as u16
-        }
-    }
-}
-
-fn write_extended12_block_region(
-    out: &mut [u8],
-    stride: usize,
-    region: Extended12WriteRegion,
-    block_origin: (u32, u32),
-    pixels: &[u16; 64],
-) {
-    let (width, height) = region.dimensions;
-    let (x0, y0) = block_origin;
-    let block_x1 = (x0 + 8).min(width);
-    let block_y1 = (y0 + 8).min(height);
-    let denom = region.downscale.denominator();
-    let bytes_per_pixel = match region.output {
-        Extended12Output::Gray16 => 2,
-        Extended12Output::Rgb16 => 6,
-    };
-    let output_rect = region.output_rect;
-    for output_y in output_rect.y..output_rect.y + output_rect.h {
-        let source_y = output_y.saturating_mul(denom).min(height - 1);
-        if source_y < y0 || source_y >= block_y1 {
-            continue;
-        }
-        let src_row = (source_y - y0) as usize;
-        let dst_row = (output_y - output_rect.y) as usize;
-        for output_x in output_rect.x..output_rect.x + output_rect.w {
-            let source_x = output_x.saturating_mul(denom).min(width - 1);
-            if source_x < x0 || source_x >= block_x1 {
-                continue;
-            }
-            let src_col = (source_x - x0) as usize;
-            let sample = pixels[src_row * 8 + src_col].to_le_bytes();
-            let dst_col = (output_x - output_rect.x) as usize;
-            let dst_start = dst_row * stride + dst_col * bytes_per_pixel;
-            let dst = &mut out[dst_start..dst_start + bytes_per_pixel];
-            match region.output {
-                Extended12Output::Gray16 => {
-                    dst.copy_from_slice(&sample);
-                }
-                Extended12Output::Rgb16 => {
-                    dst[0..2].copy_from_slice(&sample);
-                    dst[2..4].copy_from_slice(&sample);
-                    dst[4..6].copy_from_slice(&sample);
-                }
-            }
-        }
-    }
-}
-
-fn restart_index_for_stream(
-    bytes: &[u8],
-    scan_data_offset: Option<usize>,
-    info: &Info,
-    restart_interval: Option<u16>,
-) -> Result<Option<RestartIndex>, JpegError> {
-    let Some(interval_mcus) = restart_interval
-        .filter(|&interval| interval > 0)
-        .map(u32::from)
-    else {
-        return Ok(None);
-    };
-    let scan_data_offset = scan_data_offset.ok_or(JpegError::MissingMarker {
-        marker: MarkerKind::Sos,
-    })?;
-    if !matches!(info.sof_kind, SofKind::Baseline8 | SofKind::Extended8) || info.scan_count != 1 {
-        return Err(JpegError::NotImplemented { sof: info.sof_kind });
-    }
-    let total_mcus = info.mcu_geometry.count;
-    let expected_restarts = total_mcus.saturating_sub(1) / interval_mcus;
-    let mut segments = Vec::new();
-    segments.push(RestartSegment {
-        start_mcu: 0,
-        entropy_offset: scan_data_offset,
-        marker_offset: None,
-        marker: None,
-    });
-
-    let mut found_restarts = 0u32;
-    let mut expected_rst = 0xd0u8;
-    let mut pos = scan_data_offset;
-    while pos < bytes.len() {
-        if bytes[pos] != 0xff {
-            pos += 1;
-            continue;
-        }
-
-        let mut marker_code_pos = pos + 1;
-        while marker_code_pos < bytes.len() && bytes[marker_code_pos] == 0xff {
-            marker_code_pos += 1;
-        }
-        if marker_code_pos >= bytes.len() {
-            return Err(JpegError::Truncated {
-                offset: pos,
-                expected: 1,
-            });
-        }
-
-        let marker = bytes[marker_code_pos];
-        let marker_offset = marker_code_pos - 1;
-        match marker {
-            0x00 => pos = marker_code_pos + 1,
-            0xd0..=0xd7 => {
-                if found_restarts >= expected_restarts {
-                    return Err(JpegError::UnexpectedMarker {
-                        offset: marker_offset,
-                        expected: MarkerKind::Eoi,
-                        found: marker,
-                    });
-                }
-                if marker != expected_rst {
-                    return Err(JpegError::RestartMismatch {
-                        offset: marker_offset,
-                        expected: expected_rst & 0x07,
-                        found: marker,
-                    });
-                }
-                found_restarts += 1;
-                segments.push(RestartSegment {
-                    start_mcu: found_restarts.saturating_mul(interval_mcus),
-                    entropy_offset: marker_code_pos + 1,
-                    marker_offset: Some(marker_offset),
-                    marker: Some(marker),
-                });
-                expected_rst = if expected_rst == 0xd7 {
-                    0xd0
-                } else {
-                    expected_rst + 1
-                };
-                pos = marker_code_pos + 1;
-            }
-            0xd9 => {
-                if found_restarts != expected_restarts {
-                    return Err(JpegError::UnexpectedEoi {
-                        mcu_at: found_restarts
-                            .saturating_add(1)
-                            .saturating_mul(interval_mcus),
-                        mcu_total: total_mcus,
-                    });
-                }
-                return Ok(Some(RestartIndex {
-                    scan_data_offset,
-                    interval_mcus,
-                    segments,
-                }));
-            }
-            found => {
-                return Err(JpegError::UnexpectedMarker {
-                    offset: marker_offset,
-                    expected: MarkerKind::Eoi,
-                    found,
-                });
-            }
-        }
-    }
-
-    Err(JpegError::MissingMarker {
-        marker: MarkerKind::Eoi,
-    })
-}
-
-fn output_format_profile_name(fmt: OutputFormat) -> &'static str {
-    match fmt {
-        OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => "Rgb8",
-        OutputFormat::Rgba8 { .. } | OutputFormat::Rgba8Scaled { .. } => "Rgba8",
-        OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => "Gray8",
-        OutputFormat::Gray16 | OutputFormat::Gray16Scaled { .. } => "Gray16",
-        OutputFormat::Rgb16 | OutputFormat::Rgb16Scaled { .. } => "Rgb16",
-        OutputFormat::Rgba16 { .. } | OutputFormat::Rgba16Scaled { .. } => "Rgba16",
-    }
-}
-
-fn downscale_profile_name(downscale: DownscaleFactor) -> &'static str {
-    match downscale {
-        DownscaleFactor::Full => "full",
-        DownscaleFactor::Half => "half",
-        DownscaleFactor::Quarter => "quarter",
-        DownscaleFactor::Eighth => "eighth",
-    }
-}
-
-fn emit_decode_scan_profile(
-    scan_path: &str,
-    dimensions: (u32, u32),
-    decoded: Rect,
-    downscale: DownscaleFactor,
-    elapsed: Duration,
-) {
-    let source_width_s = dimensions.0.to_string();
-    let source_height_s = dimensions.1.to_string();
-    let decoded_x_s = decoded.x.to_string();
-    let decoded_y_s = decoded.y.to_string();
-    let decoded_w_s = decoded.w.to_string();
-    let decoded_h_s = decoded.h.to_string();
-    let scan_us = duration_us_string(elapsed);
-    emit_jpeg_profile_row(
-        "decode_scan",
-        "cpu",
-        &[
-            ("scan_path", scan_path),
-            ("downscale", downscale_profile_name(downscale)),
-            ("source_width", source_width_s.as_str()),
-            ("source_height", source_height_s.as_str()),
-            ("decoded_x", decoded_x_s.as_str()),
-            ("decoded_y", decoded_y_s.as_str()),
-            ("decoded_w", decoded_w_s.as_str()),
-            ("decoded_h", decoded_h_s.as_str()),
-            ("scan_us", scan_us.as_str()),
-        ],
-    );
-}
-
-fn consume_lossless_restart(
-    br: &mut BitReader<'_>,
-    sample_index: u32,
-    total_samples: u32,
-    expected_rst: &mut u8,
-) -> Result<(), JpegError> {
-    br.reset_at_restart();
-    let _ = br.ensure_bits(1);
-    let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
-        mcu_at: sample_index,
-        mcu_total: total_samples,
-    })?;
-    let expected = 0xD0 | *expected_rst;
-    if marker != expected {
-        return Err(JpegError::RestartMismatch {
-            offset: br.position(),
-            expected: *expected_rst,
-            found: marker,
-        });
-    }
-    *expected_rst = (*expected_rst + 1) & 0x07;
-    br.reset_at_restart();
-    Ok(())
-}
-
-fn consume_extended12_restart(
-    br: &mut BitReader<'_>,
-    mcu_index: u32,
-    total_mcus: u32,
-    expected_rst: &mut u8,
-) -> Result<(), JpegError> {
-    let _ = br.ensure_bits(1);
-    let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
-        mcu_at: mcu_index,
-        mcu_total: total_mcus,
-    })?;
-    let expected = 0xD0 | *expected_rst;
-    if marker != expected {
-        return Err(JpegError::RestartMismatch {
-            offset: br.position(),
-            expected: *expected_rst,
-            found: marker,
-        });
-    }
-    *expected_rst = (*expected_rst + 1) & 0x07;
-    br.reset_at_restart();
-    Ok(())
-}
-
-fn lossless_predictor_value(predictor: u8, out: &[u8], stride: usize, x: usize, y: usize) -> i32 {
-    lossless_predict(predictor, 128, x, y, |sx, sy| {
-        i32::from(out[sy * stride + sx])
-    })
-}
-
-fn lossless_predictor_color_into<P: LosslessSample>(
-    predictor: u8,
-    out: &[u8],
-    stride: usize,
-    x: usize,
-    y: usize,
-    component: usize,
-) -> i32 {
-    lossless_predict(predictor, P::RESTART_PREDICTOR, x, y, |sx, sy| {
-        P::read_le(&out[sy * stride + (sx * 3 + component) * P::BYTES..])
-    })
-}
-
-fn lossless_predictor_gray_rows<P: LosslessSample>(
-    predictor: u8,
-    curr_row: &[u8],
-    prev_row: &[u8],
-    x: usize,
-    y: usize,
-) -> i32 {
-    lossless_predict(predictor, P::RESTART_PREDICTOR, x, y, |sx, sy| {
-        let row = if sy == y { curr_row } else { prev_row };
-        P::read_le(&row[sx * P::BYTES..])
-    })
-}
-
-fn lossless_predictor_color_rows<P: LosslessSample>(
-    predictor: u8,
-    curr_row: &[u8],
-    prev_row: &[u8],
-    x: usize,
-    y: usize,
-    component: usize,
-) -> i32 {
-    lossless_predict(predictor, P::RESTART_PREDICTOR, x, y, |sx, sy| {
-        let row = if sy == y { curr_row } else { prev_row };
-        P::read_le(&row[(sx * 3 + component) * P::BYTES..])
-    })
-}
-
-#[derive(Clone, Copy)]
-struct LosslessPlaneSample {
-    x: usize,
-    y: usize,
-    restart_first_sample: bool,
-}
-
-fn decode_lossless_plane_sample<P: LosslessSample>(
-    br: &mut BitReader<'_>,
-    table: &HuffmanTable,
-    predictor: u8,
-    plane: &mut [P],
-    width: usize,
-    sample: LosslessPlaneSample,
-) -> Result<(), JpegError> {
-    let predicted = if sample.restart_first_sample {
-        P::RESTART_PREDICTOR
-    } else {
-        lossless_predictor_plane(predictor, plane, width, sample.x, sample.y)
-    };
-    let diff = table.decode_fast_dc(br)?;
-    plane[sample.y * width + sample.x] = P::from_i32(predicted + diff)?;
-    Ok(())
-}
-
-fn lossless_predictor_plane<P: LosslessSample>(
-    predictor: u8,
-    plane: &[P],
-    width: usize,
-    x: usize,
-    y: usize,
-) -> i32 {
-    lossless_predict(predictor, P::RESTART_PREDICTOR, x, y, |sx, sy| {
-        plane[sy * width + sx].into()
-    })
-}
-
-struct LosslessColorPlanes<'a, P> {
-    c0: &'a [P],
-    c1: &'a [P],
-    c2: &'a [P],
-}
-
-fn write_lossless_color8_sampled_output(
-    out: &mut [u8],
-    stride: usize,
-    color_space: ColorSpace,
-    sampling: LosslessColorSampling,
-    dimensions: (usize, usize),
-    planes: LosslessColorPlanes<'_, u8>,
-) {
-    let (width, height) = dimensions;
-    let chroma_width = width.div_ceil(2);
-    let chroma_height = match sampling {
-        LosslessColorSampling::S422 => height,
-        LosslessColorSampling::S420 => height.div_ceil(2),
-        LosslessColorSampling::S444 => unreachable!("sampled writer is not used for 4:4:4"),
-    };
-    for y in 0..height {
-        for x in 0..width {
-            let c0_sample = planes.c0[y * width + x];
-            let (c1_sample, c2_sample) = match sampling {
-                LosslessColorSampling::S422 => {
-                    let c1_row = &planes.c1[y * chroma_width..(y + 1) * chroma_width];
-                    let c2_row = &planes.c2[y * chroma_width..(y + 1) * chroma_width];
-                    (
-                        upsample_h2v1_u8_at(c1_row, x),
-                        upsample_h2v1_u8_at(c2_row, x),
-                    )
-                }
-                LosslessColorSampling::S420 => (
-                    upsample_h2v2_u8_at(planes.c1, chroma_width, chroma_height, width, x, y),
-                    upsample_h2v2_u8_at(planes.c2, chroma_width, chroma_height, width, x, y),
-                ),
-                LosslessColorSampling::S444 => unreachable!("sampled writer is not used for 4:4:4"),
-            };
-            let (r, g, b) = match color_space {
-                ColorSpace::Rgb => (c0_sample, c1_sample, c2_sample),
-                ColorSpace::YCbCr => {
-                    crate::color::ycbcr::ycbcr_to_rgb(c0_sample, c1_sample, c2_sample)
-                }
-                _ => unreachable!("lossless sampled color path only accepts RGB/YCbCr"),
-            };
-            let dst = y * stride + x * 3;
-            out[dst..dst + 3].copy_from_slice(&[r, g, b]);
-        }
-    }
-}
-
-fn write_lossless_color16_sampled_output(
-    out: &mut [u8],
-    stride: usize,
-    color_space: ColorSpace,
-    sampling: LosslessColorSampling,
-    dimensions: (usize, usize),
-    planes: LosslessColorPlanes<'_, u16>,
-) {
-    let (width, height) = dimensions;
-    let chroma_width = width.div_ceil(2);
-    let chroma_height = match sampling {
-        LosslessColorSampling::S422 => height,
-        LosslessColorSampling::S420 => height.div_ceil(2),
-        LosslessColorSampling::S444 => unreachable!("sampled writer is not used for 4:4:4"),
-    };
-    for y in 0..height {
-        for x in 0..width {
-            let c0_sample = planes.c0[y * width + x];
-            let (c1_sample, c2_sample) = match sampling {
-                LosslessColorSampling::S422 => {
-                    let c1_row = &planes.c1[y * chroma_width..(y + 1) * chroma_width];
-                    let c2_row = &planes.c2[y * chroma_width..(y + 1) * chroma_width];
-                    (
-                        upsample_h2v1_u16_at(c1_row, x),
-                        upsample_h2v1_u16_at(c2_row, x),
-                    )
-                }
-                LosslessColorSampling::S420 => (
-                    upsample_h2v2_u16_at(planes.c1, chroma_width, chroma_height, width, x, y),
-                    upsample_h2v2_u16_at(planes.c2, chroma_width, chroma_height, width, x, y),
-                ),
-                LosslessColorSampling::S444 => unreachable!("sampled writer is not used for 4:4:4"),
-            };
-            let (r, g, b) = match color_space {
-                ColorSpace::Rgb => (c0_sample, c1_sample, c2_sample),
-                ColorSpace::YCbCr => {
-                    crate::color::ycbcr::ycbcr16_to_rgb16(c0_sample, c1_sample, c2_sample)
-                }
-                _ => unreachable!("lossless 4:2:2 color path only accepts RGB/YCbCr"),
-            };
-            let dst = y * stride + x * 6;
-            out[dst..dst + 2].copy_from_slice(&r.to_le_bytes());
-            out[dst + 2..dst + 4].copy_from_slice(&g.to_le_bytes());
-            out[dst + 4..dst + 6].copy_from_slice(&b.to_le_bytes());
-        }
-    }
-}
-
-fn upsample_h2v2_u8_at(
-    plane: &[u8],
-    chroma_width: usize,
-    chroma_height: usize,
-    output_width: usize,
-    output_x: usize,
-    output_y: usize,
-) -> u8 {
-    debug_assert!(!plane.is_empty());
-    debug_assert!(chroma_width > 0);
-    debug_assert!(chroma_height > 0);
-    let chroma_y = output_y / 2;
-    let current = &plane[chroma_y * chroma_width..(chroma_y + 1) * chroma_width];
-    let near_y = if output_y.is_multiple_of(2) {
-        chroma_y.saturating_sub(1)
-    } else {
-        (chroma_y + 1).min(chroma_height - 1)
-    };
-    let near = &plane[near_y * chroma_width..(near_y + 1) * chroma_width];
-    let colsum = |index: usize| 3 * u32::from(current[index]) + u32::from(near[index]);
-    if chroma_width == 1 {
-        return ((4 * colsum(0) + 8) >> 4) as u8;
-    }
-
-    let sample = output_x / 2;
-    let this = colsum(sample);
-    match output_x {
-        0 => ((this * 4 + 8) >> 4) as u8,
-        _ if output_x == output_width - 1 => ((this * 4 + 7) >> 4) as u8,
-        _ if output_x.is_multiple_of(2) => {
-            let last = colsum(sample - 1);
-            ((this * 3 + last + 8) >> 4) as u8
-        }
-        _ => {
-            let next = colsum(sample + 1);
-            ((this * 3 + next + 7) >> 4) as u8
-        }
-    }
-}
-
-fn upsample_h2v1_u8_at(row: &[u8], output_x: usize) -> u8 {
-    debug_assert!(!row.is_empty());
-    if row.len() == 1 {
-        return row[0];
-    }
-    let sample = output_x / 2;
-    if output_x == 0 {
-        row[0]
-    } else if output_x == row.len() * 2 - 1 {
-        row[row.len() - 1]
-    } else if output_x.is_multiple_of(2) {
-        ((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4) as u8
-    } else {
-        ((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4) as u8
-    }
-}
-
-fn upsample_h2v2_u16_at(
-    plane: &[u16],
-    chroma_width: usize,
-    chroma_height: usize,
-    output_width: usize,
-    output_x: usize,
-    output_y: usize,
-) -> u16 {
-    debug_assert!(!plane.is_empty());
-    debug_assert!(chroma_width > 0);
-    debug_assert!(chroma_height > 0);
-    let chroma_y = output_y / 2;
-    let current = &plane[chroma_y * chroma_width..(chroma_y + 1) * chroma_width];
-    let near_y = if output_y.is_multiple_of(2) {
-        chroma_y.saturating_sub(1)
-    } else {
-        (chroma_y + 1).min(chroma_height - 1)
-    };
-    let near = &plane[near_y * chroma_width..(near_y + 1) * chroma_width];
-    let colsum = |index: usize| 3 * u32::from(current[index]) + u32::from(near[index]);
-    if chroma_width == 1 {
-        return ((4 * colsum(0) + 8) >> 4) as u16;
-    }
-
-    let sample = output_x / 2;
-    let this = colsum(sample);
-    match output_x {
-        0 => ((this * 4 + 8) >> 4) as u16,
-        _ if output_x == output_width - 1 => ((this * 4 + 7) >> 4) as u16,
-        _ if output_x.is_multiple_of(2) => {
-            let last = colsum(sample - 1);
-            ((this * 3 + last + 8) >> 4) as u16
-        }
-        _ => {
-            let next = colsum(sample + 1);
-            ((this * 3 + next + 7) >> 4) as u16
-        }
-    }
-}
-
-fn upsample_h2v1_u16_at(row: &[u16], output_x: usize) -> u16 {
-    debug_assert!(!row.is_empty());
-    if row.len() == 1 {
-        return row[0];
-    }
-    let sample = output_x / 2;
-    if output_x == 0 {
-        row[0]
-    } else if output_x == row.len() * 2 - 1 {
-        row[row.len() - 1]
-    } else if output_x.is_multiple_of(2) {
-        ((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4) as u16
-    } else {
-        ((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4) as u16
-    }
-}
-
-fn lossless_predictor_value_u16(
-    predictor: u8,
-    out: &[u8],
-    stride: usize,
-    x: usize,
-    y: usize,
-) -> i32 {
-    lossless_predict(predictor, 32768, x, y, |sx, sy| {
-        i32::from(read_gray16_sample(out, sy * stride + sx * 2))
-    })
-}
-
-fn read_gray16_sample(out: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([out[offset], out[offset + 1]])
-}
-
-fn merged_warnings(header_warnings: &[Warning], scan_warnings: Vec<Warning>) -> Vec<Warning> {
-    if header_warnings.is_empty() {
-        return scan_warnings;
-    }
-    if scan_warnings.is_empty() {
-        return header_warnings.to_vec();
-    }
-    let mut warnings = Vec::with_capacity(header_warnings.len() + scan_warnings.len());
-    warnings.extend_from_slice(header_warnings);
-    warnings.extend(scan_warnings);
-    warnings
-}
-
-fn copy_gray8_scaled_rect(
-    full: &[u8],
-    dimensions: (u32, u32),
-    output_rect: Rect,
-    denom: u32,
-    out: &mut [u8],
-    stride: usize,
-) {
-    let (width, height) = dimensions;
-    for output_y in output_rect.y..output_rect.y + output_rect.h {
-        let source_y = output_y.saturating_mul(denom).min(height - 1);
-        let dst_row = (output_y - output_rect.y) as usize;
-        let dst_start = dst_row * stride;
-        let dst = &mut out[dst_start..dst_start + output_rect.w as usize];
-        for (dst_px, output_x) in (output_rect.x..output_rect.x + output_rect.w).enumerate() {
-            let source_x = output_x.saturating_mul(denom).min(width - 1);
-            let src = source_y as usize * width as usize + source_x as usize;
-            dst[dst_px] = full[src];
-        }
-    }
-}
-
-fn copy_rgb8_scaled_rect(
-    full: &[u8],
-    dimensions: (u32, u32),
-    output_rect: Rect,
-    denom: u32,
-    out: &mut [u8],
-    stride: usize,
-) {
-    let (width, height) = dimensions;
-    for output_y in output_rect.y..output_rect.y + output_rect.h {
-        let source_y = output_y.saturating_mul(denom).min(height - 1);
-        let dst_row = (output_y - output_rect.y) as usize;
-        for output_x in output_rect.x..output_rect.x + output_rect.w {
-            let source_x = output_x.saturating_mul(denom).min(width - 1);
-            let src = (source_y as usize * width as usize + source_x as usize) * 3;
-            let dst = dst_row * stride + (output_x - output_rect.x) as usize * 3;
-            out[dst..dst + 3].copy_from_slice(&full[src..src + 3]);
-        }
-    }
-}
-
-fn convert_ycbcr8_to_rgb8_in_place(out: &mut [u8], stride: usize, dimensions: (u32, u32)) {
-    let (width, height) = dimensions;
-    let row_bytes = width as usize * 3;
-    for y in 0..height as usize {
-        let row = &mut out[y * stride..y * stride + row_bytes];
-        for pixel in row.chunks_exact_mut(3) {
-            let (r, g, b) = crate::color::ycbcr::ycbcr_to_rgb(pixel[0], pixel[1], pixel[2]);
-            pixel.copy_from_slice(&[r, g, b]);
-        }
-    }
-}
-
-fn copy_ycbcr8_row_to_rgb8(src: &[u8], dst: &mut [u8]) {
-    debug_assert_eq!(src.len(), dst.len());
-    for (source, target) in src.chunks_exact(3).zip(dst.chunks_exact_mut(3)) {
-        let (r, g, b) = crate::color::ycbcr::ycbcr_to_rgb(source[0], source[1], source[2]);
-        target.copy_from_slice(&[r, g, b]);
-    }
-}
-
-fn copy_rgb8_to_rgba8(
-    src: &[u8],
-    src_stride: usize,
-    width: u32,
-    height: u32,
-    dst: &mut [u8],
-    dst_stride: usize,
-    alpha: u8,
-) {
-    let src_row_bytes = width as usize * 3;
-    let dst_row_bytes = width as usize * 4;
-    for y in 0..height as usize {
-        let src_row = &src[y * src_stride..y * src_stride + src_row_bytes];
-        let dst_row = &mut dst[y * dst_stride..y * dst_stride + dst_row_bytes];
-        for (source, target) in src_row.chunks_exact(3).zip(dst_row.chunks_exact_mut(4)) {
-            target.copy_from_slice(&[source[0], source[1], source[2], alpha]);
-        }
-    }
-}
-
-fn copy_rgb16_to_rgba16(
-    src: &[u8],
-    src_stride: usize,
-    width: u32,
-    height: u32,
-    dst: &mut [u8],
-    dst_stride: usize,
-    alpha: u16,
-) {
-    let src_row_bytes = width as usize * 6;
-    let dst_row_bytes = width as usize * 8;
-    let alpha = alpha.to_le_bytes();
-    for y in 0..height as usize {
-        let src_row = &src[y * src_stride..y * src_stride + src_row_bytes];
-        let dst_row = &mut dst[y * dst_stride..y * dst_stride + dst_row_bytes];
-        for (source, target) in src_row.chunks_exact(6).zip(dst_row.chunks_exact_mut(8)) {
-            target[..6].copy_from_slice(source);
-            target[6..8].copy_from_slice(&alpha);
-        }
-    }
-}
-
-fn convert_ycbcr16_to_rgb16_in_place(out: &mut [u8], stride: usize, dimensions: (u32, u32)) {
-    let (width, height) = dimensions;
-    let row_bytes = width as usize * 6;
-    for y in 0..height as usize {
-        let row = &mut out[y * stride..y * stride + row_bytes];
-        for pixel in row.chunks_exact_mut(6) {
-            let y = u16::from_le_bytes([pixel[0], pixel[1]]);
-            let cb = u16::from_le_bytes([pixel[2], pixel[3]]);
-            let cr = u16::from_le_bytes([pixel[4], pixel[5]]);
-            let (r, g, b) = crate::color::ycbcr::ycbcr16_to_rgb16(y, cb, cr);
-            pixel[0..2].copy_from_slice(&r.to_le_bytes());
-            pixel[2..4].copy_from_slice(&g.to_le_bytes());
-            pixel[4..6].copy_from_slice(&b.to_le_bytes());
-        }
-    }
-}
-
-fn copy_ycbcr16_row_to_rgb16(src: &[u8], dst: &mut [u8]) {
-    debug_assert_eq!(src.len(), dst.len());
-    for (source, target) in src.chunks_exact(6).zip(dst.chunks_exact_mut(6)) {
-        let y = u16::from_le_bytes([source[0], source[1]]);
-        let cb = u16::from_le_bytes([source[2], source[3]]);
-        let cr = u16::from_le_bytes([source[4], source[5]]);
-        let (r, g, b) = crate::color::ycbcr::ycbcr16_to_rgb16(y, cb, cr);
-        target[0..2].copy_from_slice(&r.to_le_bytes());
-        target[2..4].copy_from_slice(&g.to_le_bytes());
-        target[4..6].copy_from_slice(&b.to_le_bytes());
-    }
-}
-
-fn copy_rgb16_scaled_rect(
-    full: &[u8],
-    dimensions: (u32, u32),
-    output_rect: Rect,
-    denom: u32,
-    out: &mut [u8],
-    stride: usize,
-) {
-    let (width, height) = dimensions;
-    let full_stride = width as usize * 6;
-    for output_y in output_rect.y..output_rect.y + output_rect.h {
-        let source_y = output_y.saturating_mul(denom).min(height - 1);
-        let dst_row = (output_y - output_rect.y) as usize;
-        for output_x in output_rect.x..output_rect.x + output_rect.w {
-            let source_x = output_x.saturating_mul(denom).min(width - 1);
-            let src = source_y as usize * full_stride + source_x as usize * 6;
-            let dst = dst_row * stride + (output_x - output_rect.x) as usize * 6;
-            out[dst..dst + 6].copy_from_slice(&full[src..src + 6]);
-        }
-    }
-}
-
-fn copy_gray16_scaled_rect(
-    full: &[u8],
-    dimensions: (u32, u32),
-    output_rect: Rect,
-    denom: u32,
-    out: &mut [u8],
-    stride: usize,
-) {
-    let (width, height) = dimensions;
-    let full_stride = width as usize * 2;
-    for output_y in output_rect.y..output_rect.y + output_rect.h {
-        let source_y = output_y.saturating_mul(denom).min(height - 1);
-        let dst_row = (output_y - output_rect.y) as usize;
-        for output_x in output_rect.x..output_rect.x + output_rect.w {
-            let source_x = output_x.saturating_mul(denom).min(width - 1);
-            let src = source_y as usize * full_stride + source_x as usize * 2;
-            let dst = dst_row * stride + (output_x - output_rect.x) as usize * 2;
-            out[dst..dst + 2].copy_from_slice(&full[src..src + 2]);
-        }
-    }
-}
-
-fn jpeg_passthrough_syntax(info: &Info) -> Option<CompressedTransferSyntax> {
-    match info.sof_kind {
-        SofKind::Baseline8 if info.bit_depth == 8 => Some(CompressedTransferSyntax::JpegBaseline8),
-        SofKind::Extended8 | SofKind::Extended12 => {
-            Some(CompressedTransferSyntax::JpegExtendedSequential)
-        }
-        SofKind::Baseline8 | SofKind::Progressive8 | SofKind::Progressive12 | SofKind::Lossless => {
-            None
-        }
-    }
-}
-
-fn core_outcome(outcome: DecodeOutcome) -> CoreDecodeOutcome<Warning> {
-    outcome.into()
-}
-
-fn jpeg_downscale(scale: Downscale) -> DownscaleFactor {
-    match scale {
-        Downscale::None => DownscaleFactor::Full,
-        Downscale::Half => DownscaleFactor::Half,
-        Downscale::Quarter => DownscaleFactor::Quarter,
-        Downscale::Eighth => DownscaleFactor::Eighth,
-        _ => unreachable!("unsupported Downscale variant"),
-    }
-}
-
-fn output_format_from_parts(
-    sof_kind: SofKind,
-    fmt: PixelFormat,
-    scale: Downscale,
-) -> Result<OutputFormat, JpegError> {
-    if matches!(sof_kind, SofKind::Extended12 | SofKind::Progressive12) {
-        return match (sof_kind, fmt, scale) {
-            (SofKind::Extended12, PixelFormat::Gray16, Downscale::None) => Ok(OutputFormat::Gray16),
-            (SofKind::Extended12, PixelFormat::Gray16, scale) => Ok(OutputFormat::Gray16Scaled {
-                factor: jpeg_downscale(scale),
-            }),
-            (SofKind::Extended12, PixelFormat::Rgb16, Downscale::None) => Ok(OutputFormat::Rgb16),
-            (SofKind::Extended12, PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
-                factor: jpeg_downscale(scale),
-            }),
-            (SofKind::Extended12, PixelFormat::Rgba16, Downscale::None) => {
-                Ok(OutputFormat::Rgba16 { alpha: u16::MAX })
-            }
-            (SofKind::Extended12, PixelFormat::Rgba16, scale) => Ok(OutputFormat::Rgba16Scaled {
-                alpha: u16::MAX,
-                factor: jpeg_downscale(scale),
-            }),
-            (SofKind::Progressive12, PixelFormat::Gray16, Downscale::None) => {
-                Ok(OutputFormat::Gray16)
-            }
-            (SofKind::Progressive12, PixelFormat::Gray16, scale) => {
-                Ok(OutputFormat::Gray16Scaled {
-                    factor: jpeg_downscale(scale),
-                })
-            }
-            (SofKind::Progressive12, PixelFormat::Rgb16, Downscale::None) => {
-                Ok(OutputFormat::Rgb16)
-            }
-            (SofKind::Progressive12, PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
-                factor: jpeg_downscale(scale),
-            }),
-            (SofKind::Progressive12, PixelFormat::Rgba16, Downscale::None) => {
-                Ok(OutputFormat::Rgba16 { alpha: u16::MAX })
-            }
-            (SofKind::Progressive12, PixelFormat::Rgba16, scale) => {
-                Ok(OutputFormat::Rgba16Scaled {
-                    alpha: u16::MAX,
-                    factor: jpeg_downscale(scale),
-                })
-            }
-            (_, PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16, _) => {
-                Err(JpegError::NotImplemented { sof: sof_kind })
-            }
-            _ => Err(JpegError::UnsupportedBitDepth { depth: 12 }),
-        };
-    }
-    if sof_kind == SofKind::Lossless {
-        return match (fmt, scale) {
-            (PixelFormat::Gray8, Downscale::None) => Ok(OutputFormat::Gray8),
-            (PixelFormat::Gray8, scale) => Ok(OutputFormat::Gray8Scaled {
-                factor: jpeg_downscale(scale),
-            }),
-            (PixelFormat::Gray16, Downscale::None) => Ok(OutputFormat::Gray16),
-            (PixelFormat::Gray16, scale) => Ok(OutputFormat::Gray16Scaled {
-                factor: jpeg_downscale(scale),
-            }),
-            (PixelFormat::Rgb8, Downscale::None) => Ok(OutputFormat::Rgb8),
-            (PixelFormat::Rgb8, scale) => Ok(OutputFormat::Rgb8Scaled {
-                factor: jpeg_downscale(scale),
-            }),
-            (PixelFormat::Rgba8, Downscale::None) => Ok(OutputFormat::Rgba8 { alpha: 255 }),
-            (PixelFormat::Rgba8, scale) => Ok(OutputFormat::Rgba8Scaled {
-                alpha: 255,
-                factor: jpeg_downscale(scale),
-            }),
-            (PixelFormat::Rgb16, Downscale::None) => Ok(OutputFormat::Rgb16),
-            (PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
-                factor: jpeg_downscale(scale),
-            }),
-            (PixelFormat::Rgba16, Downscale::None) => Ok(OutputFormat::Rgba16 { alpha: u16::MAX }),
-            (PixelFormat::Rgba16, scale) => Ok(OutputFormat::Rgba16Scaled {
-                alpha: u16::MAX,
-                factor: jpeg_downscale(scale),
-            }),
-            _ => Err(JpegError::NotImplemented { sof: sof_kind }),
-        };
-    }
-
-    match (fmt, scale) {
-        (PixelFormat::Rgb8, Downscale::None) => Ok(OutputFormat::Rgb8),
-        (PixelFormat::Rgb8, scale) => Ok(OutputFormat::Rgb8Scaled {
-            factor: jpeg_downscale(scale),
-        }),
-        (PixelFormat::Gray8, Downscale::None) => Ok(OutputFormat::Gray8),
-        (PixelFormat::Gray8, scale) => Ok(OutputFormat::Gray8Scaled {
-            factor: jpeg_downscale(scale),
-        }),
-        (PixelFormat::Rgba8, Downscale::None) => Ok(OutputFormat::Rgba8 { alpha: 255 }),
-        (PixelFormat::Rgba8, scale) => Ok(OutputFormat::Rgba8Scaled {
-            alpha: 255,
-            factor: jpeg_downscale(scale),
-        }),
-        (PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16, _) => {
-            Err(JpegError::UnsupportedBitDepth { depth: 16 })
-        }
-        _ => Err(JpegError::DownscaleUnsupported { sof: sof_kind }),
-    }
-}
-
-impl ImageCodec for JpegCodec {
-    type Error = JpegError;
-    type Warning = Warning;
-    type Pool = ScratchPool;
-}
-
-impl ImageCodec for Decoder<'_> {
-    type Error = JpegError;
-    type Warning = Warning;
-    type Pool = ScratchPool;
-}
-
-impl<'a> ImageDecode<'a> for Decoder<'a> {
-    type View = JpegView<'a>;
-
-    fn inspect(input: &'a [u8]) -> Result<j2k_core::Info, Self::Error> {
-        Ok(Decoder::inspect(input)?.to_core_info())
-    }
-
-    fn parse(input: &'a [u8]) -> Result<Self::View, Self::Error> {
-        JpegView::parse(input)
-    }
-
-    fn from_view(view: Self::View) -> Result<Self, Self::Error> {
-        Decoder::from_view(view)
-    }
-
-    fn decode_into(
-        &mut self,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-    ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        Decoder::decode_into(self, out, stride, fmt).map(core_outcome)
-    }
-
-    fn decode_into_with_scratch(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-    ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        Decoder::decode_into_with_scratch(self, pool, out, stride, fmt).map(core_outcome)
-    }
-
-    fn decode_region_into(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        roi: j2k_core::Rect,
-    ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        Decoder::decode_region_into_with_scratch(self, pool, out, stride, fmt, roi.into())
-            .map(core_outcome)
-    }
-
-    fn decode_scaled_into(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        scale: Downscale,
-    ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        Decoder::decode_scaled_into_with_scratch(self, pool, out, stride, fmt, scale)
-            .map(core_outcome)
-    }
-
-    fn decode_region_scaled_into(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        roi: j2k_core::Rect,
-        scale: Downscale,
-    ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        Decoder::decode_region_scaled_into_with_scratch(
-            self,
-            pool,
-            out,
-            stride,
-            fmt,
-            roi.into(),
-            scale,
-        )
-        .map(core_outcome)
-    }
-}
-
-struct CoreRowSinkAdapter<'a, R: RowSink<u8>> {
-    sink: &'a mut R,
-    sink_error: Option<R::Error>,
-}
-
-impl<R: RowSink<u8>> RowSink<u8> for CoreRowSinkAdapter<'_, R> {
-    type Error = JpegError;
-
-    fn write_row(&mut self, y: u32, row: &[u8]) -> Result<(), JpegError> {
-        match self.sink.write_row(y, row) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                self.sink_error = Some(err);
-                Err(JpegError::RowSinkAborted)
-            }
-        }
-    }
-}
-
-impl<'a> ImageDecodeRows<'a, u8> for Decoder<'a> {
-    fn decode_rows<R: RowSink<u8>>(
-        &mut self,
-        sink: &mut R,
-    ) -> Result<CoreDecodeOutcome<Self::Warning>, DecodeRowsError<Self::Error, R::Error>> {
-        let mut adapter = CoreRowSinkAdapter {
-            sink,
-            sink_error: None,
-        };
-        match Decoder::decode_rows(self, &mut adapter) {
-            Ok(outcome) => Ok(core_outcome(outcome)),
-            Err(JpegError::RowSinkAborted) => Err(DecodeRowsError::Sink(
-                adapter
-                    .sink_error
-                    .expect("row sink abort stores the original sink error"),
-            )),
-            Err(err) => Err(DecodeRowsError::Decode(err)),
-        }
-    }
-}
-
-impl TileBatchDecode for JpegCodec {
-    type Context = DecoderContext;
-
-    fn decode_tile(
-        ctx: &mut CoreDecoderContext<Self::Context>,
-        pool: &mut Self::Pool,
-        input: &[u8],
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-    ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx.codec_mut())?;
-        dec.decode_into_with_scratch(pool, out, stride, fmt)
-            .map(core_outcome)
-    }
-
-    fn decode_tile_region(
-        ctx: &mut CoreDecoderContext<Self::Context>,
-        pool: &mut Self::Pool,
-        input: &[u8],
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        roi: j2k_core::Rect,
-    ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx.codec_mut())?;
-        dec.decode_region_into_with_scratch(pool, out, stride, fmt, roi.into())
-            .map(core_outcome)
-    }
-
-    fn decode_tile_scaled(
-        ctx: &mut CoreDecoderContext<Self::Context>,
-        pool: &mut Self::Pool,
-        input: &[u8],
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        scale: Downscale,
-    ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx.codec_mut())?;
-        dec.decode_scaled_into_with_scratch(pool, out, stride, fmt, scale)
-            .map(core_outcome)
-    }
-
-    fn decode_tile_region_scaled(
-        ctx: &mut CoreDecoderContext<Self::Context>,
-        pool: &mut Self::Pool,
-        input: &[u8],
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        roi: j2k_core::Rect,
-        scale: Downscale,
-    ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx.codec_mut())?;
-        dec.decode_region_scaled_into_with_scratch(pool, out, stride, fmt, roi.into(), scale)
-            .map(core_outcome)
-    }
-}
-
-#[allow(clippy::uninit_vec)]
-fn allocate_output_buffer(len: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(len);
-    // Safety: all owned-output entrypoints use tight row strides, and the
-    // decode writers fully initialize every byte in the destination on success.
-    // If decode returns an error, dropping a Vec<u8> with uninitialized bytes is
-    // still sound because `u8` has no drop glue.
-    unsafe {
-        out.set_len(len);
-    }
-    out
-}
-
-fn scaled_dimensions(dims: (u32, u32), factor: DownscaleFactor) -> (u32, u32) {
-    let denom = factor.denominator();
-    (dims.0.div_ceil(denom), dims.1.div_ceil(denom))
-}
-
-fn scaled_rect_covering(rect: Rect, factor: DownscaleFactor) -> Result<Rect, JpegError> {
-    let denom = factor.denominator();
-    let x_end = rect
-        .x
-        .checked_add(rect.w)
-        .ok_or(JpegError::RectOutOfBounds {
-            rect,
-            width: u32::MAX,
-            height: u32::MAX,
-        })?;
-    let y_end = rect
-        .y
-        .checked_add(rect.h)
-        .ok_or(JpegError::RectOutOfBounds {
-            rect,
-            width: u32::MAX,
-            height: u32::MAX,
-        })?;
-    let x0 = rect.x / denom;
-    let y0 = rect.y / denom;
-    let x1 = x_end.div_ceil(denom);
-    let y1 = y_end.div_ceil(denom);
-    Ok(Rect {
-        x: x0,
-        y: y0,
-        w: x1.saturating_sub(x0),
-        h: y1.saturating_sub(y0),
-    })
-}
-
-struct CroppedWriter<W> {
-    inner: W,
-    rect: Rect,
-    source_x0: u32,
-    source_width: u32,
-    top_row: Vec<u8>,
-    bottom_row: Vec<u8>,
-}
-
-struct ProgressiveDownscaleWriter<'a, W> {
-    inner: &'a mut W,
-    denom: u32,
-    scaled_width: usize,
-    r: Vec<u8>,
-    g: Vec<u8>,
-    b: Vec<u8>,
-}
-
-impl<'a, W> ProgressiveDownscaleWriter<'a, W> {
-    fn new(inner: &'a mut W, downscale: DownscaleFactor, dimensions: (u32, u32)) -> Self {
-        let denom = downscale.denominator();
-        let scaled_width = dimensions.0.div_ceil(denom) as usize;
-        Self {
-            inner,
-            denom,
-            scaled_width,
-            r: Vec::new(),
-            g: Vec::new(),
-            b: Vec::new(),
-        }
-    }
-
-    fn should_emit(&self, y: u32) -> bool {
-        y.is_multiple_of(self.denom)
-    }
-
-    fn sample_row(src: &[u8], denom: u32, width: usize, dst: &mut Vec<u8>) {
-        dst.resize(width, 0);
-        for (x, out) in dst.iter_mut().enumerate() {
-            let src_x = (x as u32)
-                .saturating_mul(denom)
-                .min(src.len().saturating_sub(1) as u32);
-            *out = src[src_x as usize];
-        }
-    }
-}
-
-impl<W: OutputWriter> OutputWriter for ProgressiveDownscaleWriter<'_, W> {
-    fn write_rgb_row(
-        &mut self,
-        y: u32,
-        r_row: &[u8],
-        g_row: &[u8],
-        b_row: &[u8],
-    ) -> Result<(), JpegError> {
-        if !self.should_emit(y) {
-            return Ok(());
-        }
-        Self::sample_row(r_row, self.denom, self.scaled_width, &mut self.r);
-        Self::sample_row(g_row, self.denom, self.scaled_width, &mut self.g);
-        Self::sample_row(b_row, self.denom, self.scaled_width, &mut self.b);
-        self.inner
-            .write_rgb_row(y / self.denom, &self.r, &self.g, &self.b)
-    }
-
-    fn write_ycbcr_row(
-        &mut self,
-        y: u32,
-        y_row: &[u8],
-        cb_row: &[u8],
-        cr_row: &[u8],
-    ) -> Result<(), JpegError> {
-        if !self.should_emit(y) {
-            return Ok(());
-        }
-        Self::sample_row(y_row, self.denom, self.scaled_width, &mut self.r);
-        Self::sample_row(cb_row, self.denom, self.scaled_width, &mut self.g);
-        Self::sample_row(cr_row, self.denom, self.scaled_width, &mut self.b);
-        self.inner
-            .write_ycbcr_row(y / self.denom, &self.r, &self.g, &self.b)
-    }
-
-    fn write_gray_row(&mut self, y: u32, gray_row: &[u8]) -> Result<(), JpegError> {
-        if !self.should_emit(y) {
-            return Ok(());
-        }
-        Self::sample_row(gray_row, self.denom, self.scaled_width, &mut self.r);
-        self.inner.write_gray_row(y / self.denom, &self.r)
-    }
-}
-
-struct ComponentWriterAdapter<'a, W> {
-    inner: &'a mut W,
-}
-
-impl<W: ComponentRowWriter> OutputWriter for ComponentWriterAdapter<'_, W> {
-    fn write_rgb_row(
-        &mut self,
-        y: u32,
-        r_row: &[u8],
-        g_row: &[u8],
-        b_row: &[u8],
-    ) -> Result<(), JpegError> {
-        self.inner.write_rgb_row(y, r_row, g_row, b_row)
-    }
-
-    fn write_ycbcr_row(
-        &mut self,
-        y: u32,
-        y_row: &[u8],
-        cb_row: &[u8],
-        cr_row: &[u8],
-    ) -> Result<(), JpegError> {
-        self.inner.write_ycbcr_row(y, y_row, cb_row, cr_row)
-    }
-
-    fn write_gray_row(&mut self, y: u32, gray_row: &[u8]) -> Result<(), JpegError> {
-        self.inner.write_gray_row(y, gray_row)
-    }
-}
-
-impl<W> CroppedWriter<W> {
-    fn new(inner: W, rect: Rect, source_x0: u32, source_width: u32) -> Self {
-        let row_len = source_width as usize * 3;
-        Self {
-            inner,
-            rect,
-            source_x0,
-            source_width,
-            top_row: vec![0; row_len],
-            bottom_row: vec![0; row_len],
-        }
-    }
-}
-
-impl<W: OutputWriter> OutputWriter for CroppedWriter<W> {
-    fn write_rgb_row(
-        &mut self,
-        y: u32,
-        r_row: &[u8],
-        g_row: &[u8],
-        b_row: &[u8],
-    ) -> Result<(), JpegError> {
-        if y < self.rect.y || y >= self.rect.y + self.rect.h {
-            return Ok(());
-        }
-        let x0 = self
-            .rect
-            .x
-            .checked_sub(self.source_x0)
-            .expect("crop window must cover requested rect") as usize;
-        let x1 = x0 + self.rect.w as usize;
-        self.inner.write_rgb_row(
-            y - self.rect.y,
-            &r_row[x0..x1],
-            &g_row[x0..x1],
-            &b_row[x0..x1],
-        )
-    }
-
-    fn write_ycbcr_row(
-        &mut self,
-        y: u32,
-        y_row: &[u8],
-        cb_row: &[u8],
-        cr_row: &[u8],
-    ) -> Result<(), JpegError> {
-        if y < self.rect.y || y >= self.rect.y + self.rect.h {
-            return Ok(());
-        }
-        let x0 = self
-            .rect
-            .x
-            .checked_sub(self.source_x0)
-            .expect("crop window must cover requested rect") as usize;
-        let x1 = x0 + self.rect.w as usize;
-        self.inner.write_ycbcr_row(
-            y - self.rect.y,
-            &y_row[x0..x1],
-            &cb_row[x0..x1],
-            &cr_row[x0..x1],
-        )
-    }
-
-    fn write_gray_row(&mut self, y: u32, gray_row: &[u8]) -> Result<(), JpegError> {
-        if y < self.rect.y || y >= self.rect.y + self.rect.h {
-            return Ok(());
-        }
-        let x0 = self
-            .rect
-            .x
-            .checked_sub(self.source_x0)
-            .expect("crop window must cover requested rect") as usize;
-        let x1 = x0 + self.rect.w as usize;
-        self.inner
-            .write_gray_row(y - self.rect.y, &gray_row[x0..x1])
-    }
-}
-
-impl<W: InterleavedRgbWriter> InterleavedRgbWriter for CroppedWriter<W> {
-    fn with_rgb_rows<R, F>(&mut self, y: u32, row_count: usize, fill: F) -> Result<R, JpegError>
-    where
-        F: FnOnce(&mut [u8], Option<&mut [u8]>) -> Result<R, JpegError>,
-    {
-        let row_len = self.source_width as usize * 3;
-        if self.top_row.len() != row_len {
-            self.top_row.resize(row_len, 0);
-            self.bottom_row.resize(row_len, 0);
-        }
-
-        let result = match row_count {
-            1 => fill(&mut self.top_row, None)?,
-            2 => fill(&mut self.top_row, Some(&mut self.bottom_row))?,
-            _ => unreachable!("CroppedWriter only supports one or two rows"),
-        };
-
-        let top_in = y >= self.rect.y && y < self.rect.y + self.rect.h;
-        let bottom_y = y + 1;
-        let bottom_in =
-            row_count == 2 && bottom_y >= self.rect.y && bottom_y < self.rect.y + self.rect.h;
-        let x0 = self
-            .rect
-            .x
-            .checked_sub(self.source_x0)
-            .expect("crop window must cover requested rect") as usize
-            * 3;
-        let x1 = x0 + self.rect.w as usize * 3;
-
-        match (top_in, bottom_in) {
-            (false, false) => {}
-            (true, false) => {
-                self.inner.with_rgb_rows(y - self.rect.y, 1, |dst, _| {
-                    dst.copy_from_slice(&self.top_row[x0..x1]);
-                    Ok(())
-                })?;
-            }
-            (false, true) => {
-                self.inner
-                    .with_rgb_rows(bottom_y - self.rect.y, 1, |dst, _| {
-                        dst.copy_from_slice(&self.bottom_row[x0..x1]);
-                        Ok(())
-                    })?;
-            }
-            (true, true) => {
-                self.inner
-                    .with_rgb_rows(y - self.rect.y, 2, |dst_top, dst_bottom| {
-                        dst_top.copy_from_slice(&self.top_row[x0..x1]);
-                        dst_bottom
-                            .expect("row_count=2 supplies bottom row")
-                            .copy_from_slice(&self.bottom_row[x0..x1]);
-                        Ok(())
-                    })?;
-            }
-        }
-
-        Ok(result)
     }
 }
 
@@ -6741,283 +3744,10 @@ fn compute_progressive_scratch_bytes(
     Ok(total)
 }
 
-struct SinkWriter<'a, S> {
-    sink: &'a mut S,
-    rows: SinkRows,
-    backend: Backend,
-}
-
-impl<'a, S> SinkWriter<'a, S> {
-    fn new(sink: &'a mut S, rows: SinkRows, backend: Backend) -> Self {
-        debug_assert_eq!(rows.top_row.len(), rows.bottom_row.len());
-        Self {
-            sink,
-            rows,
-            backend,
-        }
-    }
-
-    fn into_rows(self) -> SinkRows {
-        self.rows
-    }
-}
-
-impl<S> InterleavedRgbWriter for SinkWriter<'_, S>
-where
-    S: RowSink<u8, Error = JpegError>,
-{
-    fn with_rgb_rows<R, F>(&mut self, y: u32, row_count: usize, fill: F) -> Result<R, JpegError>
-    where
-        F: FnOnce(&mut [u8], Option<&mut [u8]>) -> Result<R, JpegError>,
-    {
-        let result = match row_count {
-            1 => fill(&mut self.rows.top_row, None),
-            2 => fill(&mut self.rows.top_row, Some(&mut self.rows.bottom_row)),
-            _ => unreachable!("SinkWriter only supports one or two rows"),
-        }?;
-        self.sink.write_row(y, &self.rows.top_row)?;
-        if row_count == 2 {
-            self.sink.write_row(y + 1, &self.rows.bottom_row)?;
-        }
-        Ok(result)
-    }
-}
-
-impl<S> OutputWriter for SinkWriter<'_, S>
-where
-    S: RowSink<u8, Error = JpegError>,
-{
-    fn write_rgb_row(
-        &mut self,
-        y: u32,
-        r_row: &[u8],
-        g_row: &[u8],
-        b_row: &[u8],
-    ) -> Result<(), JpegError> {
-        self.backend
-            .fill_rgb_row_from_rgb(r_row, g_row, b_row, &mut self.rows.top_row);
-        self.sink.write_row(y, &self.rows.top_row)
-    }
-
-    fn write_ycbcr_row(
-        &mut self,
-        y: u32,
-        y_row: &[u8],
-        cb_row: &[u8],
-        cr_row: &[u8],
-    ) -> Result<(), JpegError> {
-        self.backend
-            .fill_rgb_row_from_ycbcr(y_row, cb_row, cr_row, &mut self.rows.top_row);
-        self.sink.write_row(y, &self.rows.top_row)
-    }
-
-    fn write_gray_row(&mut self, y: u32, gray_row: &[u8]) -> Result<(), JpegError> {
-        self.backend
-            .fill_rgb_row_from_gray(gray_row, &mut self.rows.top_row);
-        self.sink.write_row(y, &self.rows.top_row)
-    }
-}
-
 fn find_component_index(component_ids: &[u8], id: u8) -> Option<usize> {
     component_ids
         .iter()
         .position(|&component_id| component_id == id)
-}
-
-fn compute_decode_scratch_bytes(
-    (width, height): (u32, u32),
-    sampling: crate::info::SamplingFactors,
-    cap: usize,
-) -> Result<usize, JpegError> {
-    let max_h = u32::from(sampling.max_h);
-    let max_v = u32::from(sampling.max_v);
-    let mcu_width = 8u32
-        .checked_mul(max_h)
-        .ok_or(JpegError::MemoryCapExceeded {
-            requested: usize::MAX,
-            cap,
-        })?;
-    let mcu_height = 8u32
-        .checked_mul(max_v)
-        .ok_or(JpegError::MemoryCapExceeded {
-            requested: usize::MAX,
-            cap,
-        })?;
-    let mcus_per_row = width.div_ceil(mcu_width);
-    let _mcu_rows = height.div_ceil(mcu_height);
-
-    let mut stripe_total = 0usize;
-    for (h, v) in sampling.iter() {
-        let cols = checked_usize_product(&[mcus_per_row as usize, usize::from(h), 8usize], cap)?;
-        let rows = checked_usize_product(&[usize::from(v), 8usize], cap)?;
-        let plane = cols.checked_mul(rows).ok_or(JpegError::MemoryCapExceeded {
-            requested: usize::MAX,
-            cap,
-        })?;
-        stripe_total = stripe_total
-            .checked_add(plane)
-            .ok_or(JpegError::MemoryCapExceeded {
-                requested: usize::MAX,
-                cap,
-            })?;
-        if stripe_total > cap {
-            return Err(JpegError::MemoryCapExceeded {
-                requested: stripe_total,
-                cap,
-            });
-        }
-    }
-
-    let stripe_buffers = checked_usize_product(&[stripe_total, 3], cap)?;
-    let row_scratch = checked_usize_product(&[width as usize, 7], cap)?;
-    let total = stripe_buffers
-        .checked_add(row_scratch)
-        .ok_or(JpegError::MemoryCapExceeded {
-            requested: usize::MAX,
-            cap,
-        })?;
-    if total > cap {
-        return Err(JpegError::MemoryCapExceeded {
-            requested: total,
-            cap,
-        });
-    }
-
-    Ok(total)
-}
-
-fn checked_usize_product(factors: &[usize], cap: usize) -> Result<usize, JpegError> {
-    let mut value = 1usize;
-    for factor in factors {
-        value = value
-            .checked_mul(*factor)
-            .ok_or(JpegError::MemoryCapExceeded {
-                requested: usize::MAX,
-                cap,
-            })?;
-    }
-    Ok(value)
-}
-
-/// Checked size for a transient full-frame intermediate buffer, enforcing the
-/// decode memory cap at the allocation site.
-fn checked_scratch_len(factors: &[usize]) -> Result<usize, JpegError> {
-    let cap = DEFAULT_MAX_DECODE_BYTES;
-    let len = checked_usize_product(factors, cap)?;
-    if len > cap {
-        return Err(JpegError::MemoryCapExceeded {
-            requested: len,
-            cap,
-        });
-    }
-    Ok(len)
-}
-
-fn output_cap_error(requested: usize) -> JpegError {
-    JpegError::MemoryCapExceeded {
-        requested,
-        cap: DEFAULT_MAX_DECODE_BYTES,
-    }
-}
-
-#[inline]
-fn checked_output_geometry(
-    width: u32,
-    height: u32,
-    bytes_per_pixel: usize,
-) -> Result<(usize, usize), JpegError> {
-    #[cfg(target_pointer_width = "64")]
-    {
-        // SOF parsing caps JPEG dimensions at 65_500, so these products cannot
-        // overflow usize on 64-bit targets. Keep the hot path to one cap check.
-        let stride = width as usize * bytes_per_pixel;
-        let len = stride * height as usize;
-        if len > DEFAULT_MAX_DECODE_BYTES {
-            return Err(output_cap_error(len));
-        }
-        Ok((stride, len))
-    }
-
-    #[cfg(not(target_pointer_width = "64"))]
-    {
-        let stride = checked_output_product(width as usize, bytes_per_pixel)?;
-        let len = checked_output_product(stride, height as usize)?;
-        Ok((stride, len))
-    }
-}
-
-#[cfg(not(target_pointer_width = "64"))]
-#[inline]
-fn checked_output_product(left: usize, right: usize) -> Result<usize, JpegError> {
-    let len = left
-        .checked_mul(right)
-        .ok_or_else(|| output_cap_error(usize::MAX))?;
-    if len > DEFAULT_MAX_DECODE_BYTES {
-        return Err(output_cap_error(len));
-    }
-    Ok(len)
-}
-
-fn compute_lossless_scratch_bytes(info: &Info, cap: usize) -> Result<usize, JpegError> {
-    // Only the sampled-color lossless paths materialize full-frame component
-    // planes; grayscale and 4:4:4 decode stream straight into caller buffers.
-    // Region/scaled lossless intermediates are capped at their allocation
-    // sites via checked_scratch_len.
-    if !matches!(
-        lossless_color_sampling(info),
-        Some(LosslessColorSampling::S422 | LosslessColorSampling::S420)
-    ) {
-        return Ok(0);
-    }
-    let width = info.dimensions.0 as usize;
-    let height = info.dimensions.1 as usize;
-    let bytes_per_sample: usize = if info.bit_depth > 8 { 2 } else { 1 };
-    let chroma_width = width.div_ceil(usize::from(info.sampling.max_h));
-    let chroma_height = height.div_ceil(usize::from(info.sampling.max_v));
-    let luma = checked_usize_product(&[width, height, bytes_per_sample], cap)?;
-    let chroma = checked_usize_product(&[chroma_width, chroma_height, bytes_per_sample, 2], cap)?;
-    let total = luma
-        .checked_add(chroma)
-        .ok_or(JpegError::MemoryCapExceeded {
-            requested: usize::MAX,
-            cap,
-        })?;
-    if total > cap {
-        return Err(JpegError::MemoryCapExceeded {
-            requested: total,
-            cap,
-        });
-    }
-    Ok(total)
-}
-
-fn compute_extended12_planes_scratch_bytes(
-    components: &[PreparedComponentPlan],
-    (width, height): (u32, u32),
-    sampling: crate::info::SamplingFactors,
-    cap: usize,
-) -> Result<usize, JpegError> {
-    let mcu_cols = width.div_ceil(u32::from(sampling.max_h) * 8) as usize;
-    let mcu_rows = height.div_ceil(u32::from(sampling.max_v) * 8) as usize;
-    let mut total = 0usize;
-    for component in components {
-        let stride = checked_usize_product(&[mcu_cols, usize::from(component.h), 8], cap)?;
-        let rows = checked_usize_product(&[mcu_rows, usize::from(component.v), 8], cap)?;
-        let plane = checked_usize_product(&[stride, rows, core::mem::size_of::<u16>()], cap)?;
-        total = total
-            .checked_add(plane)
-            .ok_or(JpegError::MemoryCapExceeded {
-                requested: usize::MAX,
-                cap,
-            })?;
-    }
-    if total > cap {
-        return Err(JpegError::MemoryCapExceeded {
-            requested: total,
-            cap,
-        });
-    }
-    Ok(total)
 }
 
 #[cfg(test)]

@@ -108,6 +108,7 @@ pub struct SubmittedJ2kLosslessMetalBufferEncodeBatch {
 }
 
 #[cfg(target_os = "macos")]
+#[doc(hidden)]
 impl DeviceSubmission for SubmittedJ2kLosslessMetalEncodeBatch {
     type Output = Vec<EncodedJ2k>;
     type Error = crate::Error;
@@ -135,6 +136,7 @@ impl DeviceSubmission for SubmittedJ2kLosslessMetalEncodeBatch {
 }
 
 #[cfg(target_os = "macos")]
+#[doc(hidden)]
 impl DeviceSubmission for SubmittedJ2kLosslessMetalBufferEncodeBatch {
     type Output = MetalLosslessBufferEncodeBatchOutcome;
     type Error = crate::Error;
@@ -157,6 +159,7 @@ impl DeviceSubmission for SubmittedJ2kLosslessMetalBufferEncodeBatch {
 }
 
 #[cfg(not(target_os = "macos"))]
+#[doc(hidden)]
 impl DeviceSubmission for SubmittedJ2kLosslessMetalEncodeBatch {
     type Output = Vec<EncodedJ2k>;
     type Error = crate::Error;
@@ -168,6 +171,7 @@ impl DeviceSubmission for SubmittedJ2kLosslessMetalEncodeBatch {
 }
 
 #[cfg(not(target_os = "macos"))]
+#[doc(hidden)]
 impl DeviceSubmission for SubmittedJ2kLosslessMetalBufferEncodeBatch {
     type Output = MetalLosslessBufferEncodeBatchOutcome;
     type Error = crate::Error;

@@ -10,6 +10,7 @@ use j2k_core::TileDecompress;
 /// Decoder for Zstandard-compressed tile payloads.
 pub struct ZstdCodec;
 
+#[doc(hidden)]
 impl TileDecompress for ZstdCodec {
     type Error = TileCodecError;
     type Pool = ZstdPool;

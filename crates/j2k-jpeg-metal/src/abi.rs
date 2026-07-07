@@ -19,11 +19,6 @@ pub(crate) const OUT_RGB: u32 = 1;
 #[cfg(target_os = "macos")]
 pub(crate) const OUT_RGBA: u32 = 2;
 
-#[cfg(target_os = "macos")]
-pub(crate) const JPEG_BASELINE_ENCODE_FORMAT_GRAY8: u32 = 0;
-#[cfg(target_os = "macos")]
-pub(crate) const JPEG_BASELINE_ENCODE_FORMAT_RGB8: u32 = 1;
-#[cfg(target_os = "macos")]
 pub(crate) const JPEG_BASELINE_ENCODE_STATUS_OK: u32 = 0;
 #[cfg(target_os = "macos")]
 pub(crate) const JPEG_BASELINE_ENCODE_STATUS_OVERFLOW: u32 = 1;
@@ -259,6 +254,7 @@ pub(crate) struct JpegFastRegionScaledBatchParams {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub(crate) struct JpegFast444TextureBatchParams {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -375,69 +371,33 @@ pub(crate) struct PreparedHuffmanHost {
 #[cfg(target_os = "macos")]
 impl From<&PacketHuffmanTable> for PreparedHuffmanHost {
     fn from(value: &PacketHuffmanTable) -> Self {
-        let mut min_code = [i32::MAX; 17];
-        let mut max_code = [-1i32; 17];
-        let mut val_offset = [0i32; 17];
+        let canonical = value
+            .derive_canonical()
+            .expect("backend packet Huffman table must be canonicalizable");
         let mut values = [0u8; 256];
         let mut fast_symbol = [0u8; 512];
         let mut fast_len = [0u8; 512];
         let values_len = usize::from(value.values_len);
         values[..values_len].copy_from_slice(&value.values[..values_len]);
 
-        let mut huffsize = [0u8; 256];
-        let mut huffsize_len = 0usize;
-        for (len_minus_1, &count) in value.bits.iter().enumerate() {
-            let len = u8::try_from(len_minus_1 + 1).expect("JPEG Huffman code length fits in u8");
-            for _ in 0..count {
-                huffsize[huffsize_len] = len;
-                huffsize_len += 1;
-            }
-        }
-
-        let mut huffcode = [0u16; 256];
-        let mut code = 0u32;
-        let mut si = huffsize.first().copied().unwrap_or(0);
-        for (idx, &size) in huffsize[..huffsize_len].iter().enumerate() {
-            while size != si {
-                code <<= 1;
-                si += 1;
-            }
-            huffcode[idx] = u16::try_from(code).expect("JPEG Huffman code fits in u16");
-            code += 1;
-        }
-
-        let mut idx = 0usize;
-        for (len_minus_1, &count) in value.bits.iter().enumerate() {
-            let len = len_minus_1 + 1;
-            let count = usize::from(count);
-            if count == 0 {
-                continue;
-            }
-            min_code[len] = i32::from(huffcode[idx]);
-            max_code[len] = i32::from(huffcode[idx + count - 1]);
-            val_offset[len] =
-                i32::try_from(idx).expect("JPEG Huffman value index fits in i32") - min_code[len];
-            idx += count;
-        }
-
-        for idx in 0..huffsize_len {
-            let len = usize::from(huffsize[idx]);
+        for (idx, &symbol) in values.iter().enumerate().take(canonical.huffsize_len) {
+            let len = usize::from(canonical.huffsize[idx]);
             if len == 0 || len > 9 {
                 continue;
             }
-            let code = usize::from(huffcode[idx]);
+            let code = usize::from(canonical.huffcode[idx]);
             let prefix = code << (9 - len);
             let fill = 1usize << (9 - len);
             for suffix in 0..fill {
-                fast_symbol[prefix | suffix] = values[idx];
-                fast_len[prefix | suffix] = huffsize[idx];
+                fast_symbol[prefix | suffix] = symbol;
+                fast_len[prefix | suffix] = canonical.huffsize[idx];
             }
         }
 
         Self {
-            min_code,
-            max_code,
-            val_offset,
+            min_code: canonical.min_code,
+            max_code: canonical.max_code,
+            val_offset: canonical.val_offset,
             values,
             fast_symbol,
             fast_len,

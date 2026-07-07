@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k::adapter::encode_stage::{
+use j2k::{
     EncodedHtJ2kCodeBlock, IrreversibleQuantizationSubbandScales, J2kEncodeStageAccelerator,
     J2kHtCodeBlockEncodeJob,
 };
@@ -17,12 +17,8 @@ use j2k_transcode::accelerator::{
     PrequantizedHtj2k97Subband, RayonReversibleDwt53Accelerator, ReversibleDwt53FirstLevel,
     TranscodeStageError,
 };
-use j2k_transcode::dct53_2d::{
-    dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch, Dwt53TwoDimensional,
-};
-use j2k_transcode::dct97_2d::{
-    dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
-};
+use j2k_transcode::{dct8x8_blocks_then_dwt97_float, Dwt97TwoDimensional};
+use j2k_transcode::{dct8x8_blocks_to_dwt53_float_linear, Dwt53TwoDimensional};
 use j2k_transcode::{
     jpeg_to_htj2k, EncodedTranscode, JpegTileBatchInput, JpegToHtj2kCoefficientPath,
     JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodePipelineStageKind, TranscodeStageProcessor,
@@ -539,7 +535,7 @@ fn ycbcr_420_validation_metrics_cover_native_component_coefficients() {
 }
 
 #[test]
-fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
+fn stateful_transcoder_matches_stateless_float_direct_output_after_larger_tile() {
     let larger_jpeg = JPEG_BASELINE_420_16X16;
     let smaller_jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions {
@@ -551,8 +547,6 @@ fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
     let larger = transcoder
         .transcode(larger_jpeg, &options)
         .expect("stateful transcode accepts 4:2:0 JPEG");
-    let capacity_after_larger = transcoder.dct_block_scratch_capacity();
-    assert!(capacity_after_larger >= 4);
 
     let smaller = transcoder
         .transcode(smaller_jpeg, &options)
@@ -562,10 +556,6 @@ fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
 
     assert_eq!(larger.report.component_count, 3);
     assert_eq!(smaller.report.component_count, 1);
-    assert_eq!(
-        transcoder.dct_block_scratch_capacity(),
-        capacity_after_larger
-    );
     assert_eq!(smaller.codestream, stateless.codestream);
 }
 
@@ -659,7 +649,6 @@ fn transcode_pipeline_map_covers_cpu_fallback_stages() {
         map.recommendation.stage,
         TranscodePipelineStageKind::Transform
     );
-    assert!(map.debug_report().contains("stage=transform processor=Cpu"));
 }
 
 #[test]
@@ -703,7 +692,6 @@ fn transcode_pipeline_map_reports_metal_residency_and_next_stage() {
         .iter()
         .find(|stage| stage.stage == TranscodePipelineStageKind::QuantizationCodeBlockPrep)
         .expect("pipeline map includes code-block prep stage");
-    let debug = map.debug_report();
 
     assert_eq!(coefficient_prep.processor, TranscodeStageProcessor::Hybrid);
     assert_eq!(coefficient_prep.transfer_count, 1);
@@ -722,11 +710,6 @@ fn transcode_pipeline_map_reports_metal_residency_and_next_stage() {
         map.recommendation.evidence_us >= timings.dwt97_batch_readback_us,
         "recommendation should cite readback or encode timing evidence"
     );
-    assert!(debug.contains("stage=entropy_decode processor=Cpu"));
-    assert!(debug.contains("stage=transform processor=Metal"));
-    assert!(debug.contains("resident_handoffs=16"));
-    assert!(debug.contains("transfer_count=4 transfer_bytes=512"));
-    assert!(debug.contains("recommend_next_stage=quantization_code_block_prep"));
 }
 
 #[test]
@@ -1177,7 +1160,7 @@ fn batch_transcode_reports_bad_tiles_without_aborting_valid_tiles() {
 }
 
 #[test]
-fn stateful_transcoder_reuses_integer_idct_block_scratch_across_tiles() {
+fn stateful_transcoder_matches_stateless_integer_direct_output_after_larger_tile() {
     let larger_jpeg = JPEG_BASELINE_420_16X16;
     let smaller_jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions::default();
@@ -1186,8 +1169,6 @@ fn stateful_transcoder_reuses_integer_idct_block_scratch_across_tiles() {
     let larger = transcoder
         .transcode(larger_jpeg, &options)
         .expect("stateful integer-direct transcode accepts 4:2:0 JPEG");
-    let capacity_after_larger = transcoder.integer_idct_block_scratch_capacity();
-    assert!(capacity_after_larger >= 4);
 
     let smaller = transcoder
         .transcode(smaller_jpeg, &options)
@@ -1197,10 +1178,6 @@ fn stateful_transcoder_reuses_integer_idct_block_scratch_across_tiles() {
 
     assert_eq!(larger.report.component_count, 3);
     assert_eq!(smaller.report.component_count, 1);
-    assert_eq!(
-        transcoder.integer_idct_block_scratch_capacity(),
-        capacity_after_larger
-    );
     assert_eq!(smaller.codestream, stateless.codestream);
 }
 
@@ -1213,8 +1190,6 @@ struct CountingAccelerator {
     dwt97_calls: usize,
     dwt97_batch_calls: usize,
     dwt97_batch_sizes: Vec<usize>,
-    dwt53_scratch: Dct53GridScratch,
-    dwt97_scratch: Dct97GridScratch,
 }
 
 impl DctToWaveletStageAccelerator for CountingAccelerator {
@@ -1257,13 +1232,12 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
         job: DctGridToDwt53Job<'_>,
     ) -> Result<Option<Dwt53TwoDimensional<f64>>, TranscodeStageError> {
         self.dwt53_calls += 1;
-        let dwt = dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+        let dwt = dct8x8_blocks_to_dwt53_float_linear(
             job.blocks,
             job.block_cols,
             job.block_rows,
             job.width,
             job.height,
-            &mut self.dwt53_scratch,
         )
         .map_err(|_| "test DCT 5/3 grid failed")?;
         Ok(Some(dwt))
@@ -1274,13 +1248,12 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
         job: DctGridToDwt97Job<'_>,
     ) -> Result<Option<Dwt97TwoDimensional<f64>>, TranscodeStageError> {
         self.dwt97_calls += 1;
-        let dwt = dct8x8_blocks_then_dwt97_float_with_scratch(
+        let dwt = dct8x8_blocks_then_dwt97_float(
             job.blocks,
             job.block_cols,
             job.block_rows,
             job.width,
             job.height,
-            &mut self.dwt97_scratch,
         )
         .map_err(|_| "test DCT 9/7 grid failed")?;
         Ok(Some(dwt))
@@ -1295,13 +1268,12 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
         let mut output = Vec::with_capacity(jobs.len());
         for job in jobs {
             output.push(
-                dct8x8_blocks_then_dwt97_float_with_scratch(
+                dct8x8_blocks_then_dwt97_float(
                     job.blocks,
                     job.block_cols,
                     job.block_rows,
                     job.width,
                     job.height,
-                    &mut self.dwt97_scratch,
                 )
                 .map_err(|_| "test batched DCT 9/7 grid failed")?,
             );

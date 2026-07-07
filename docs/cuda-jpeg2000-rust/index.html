@@ -81,8 +81,9 @@
       <div class="wrap copy">
         <h2>Validation posture</h2>
         <p>CUDA performance claims require self-hosted NVIDIA benchmark evidence. Hosted CI is not treated as NVIDIA performance evidence.</p>
+        <p><code>cuda-runtime</code> exposes CUDA Driver API dispatch, but product CUDA Oxide PTX is built only on supported Linux cuda-oxide hosts. Set <code>J2K_REQUIRE_CUDA_OXIDE_BUILD=1</code> on CUDA validation and benchmark hosts so placeholder PTX fails the build; runtime errors for placeholder kernels state that CUDA Oxide PTX was not built.</p>
         <p>CUDA adapters sit under the same codec support boundary as the public crate: JPEG 2000 Part 1, JP2 still-image files, HTJ2K Part 15, and JPH still-image files. Unsupported CUDA shapes return strict errors or stay on CPU under <code>Auto</code>.</p>
-        <p class="note">Public speed claims also require the external adoption benchmark bundle; generated local fixtures alone are not publication evidence.</p>
+        <p class="note">Current public benchmark evidence is in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>. Public speed claims also require a completed external adoption benchmark bundle with <code>publication_eligible=true</code>; generated local fixtures alone are not publication evidence.</p>
       </div>
     </section>
   </main>

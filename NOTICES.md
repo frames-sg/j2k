@@ -16,10 +16,12 @@
   code is incorporated into `j2k`.
 
 - **OpenHTJ2K conformance fixtures** — Tiny HTONLY codestream fixtures in
-  `crates/j2k-native/fixtures/htj2k/` are copied from OpenHTJ2K
+  `crates/j2k-native/fixtures/htj2k/` and mirrored shared-test copies in
+  `crates/j2k-test-support/fixtures/htj2k/` are copied from OpenHTJ2K
   commit `ffe5acf9f1eedb87c36c3fd2134fdc1ddea5e75f`. The retained upstream
-  BSD 3-Clause license is in
-  `crates/j2k-native/fixtures/htj2k/LICENSE.OpenHTJ2K`.
+  BSD 3-Clause license is adjacent to both fixture sets:
+  `crates/j2k-native/fixtures/htj2k/LICENSE.OpenHTJ2K` and
+  `crates/j2k-test-support/fixtures/htj2k/LICENSE.OpenHTJ2K`.
 
 - **Compact ICC Profiles** <https://github.com/saucecontrol/Compact-ICC-Profiles>
   — ICC profile assets in `crates/j2k-native/assets/` are used for

@@ -8,3 +8,9 @@ helpers used by the adapter crates.
 
 This crate is the shared CUDA engine layer, but not proof of NVIDIA performance.
 CUDA benchmark claims require self-hosted benchmark evidence.
+
+## Links
+
+- API docs: <https://docs.rs/j2k-cuda-runtime>
+- Repository: <https://github.com/frames-sg/j2k>
+- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

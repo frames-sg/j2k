@@ -92,6 +92,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "j2k-codec-math"
+version = "0.6.2"
+
+[[package]]
 name = "j2k-core"
 version = "0.6.2"
 dependencies = [
@@ -111,6 +115,7 @@ name = "j2k-native"
 version = "0.6.2"
 dependencies = [
  "fearless_simd",
+ "j2k-codec-math",
  "j2k-profile",
  "j2k-types",
  "libm",

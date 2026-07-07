@@ -23,6 +23,39 @@ external bundle and identify any missing evidence. Generated repo-local
 fixtures and passing codec self-checks remain implementation evidence; use
 manifest-backed external rows for adoption-facing speed reports.
 
+## Local Regression Guard - 2026-07-07
+
+Host:
+
+- Machine: local Apple Silicon development host
+- CPU: Apple M4 Pro
+- Architecture: `arm64`
+- Memory: 48 GB
+- OS: macOS 26.5 build `25F71`
+- Baseline ref: `HEAD` (`29143c8e`)
+
+Commands:
+
+```bash
+cargo xtask bench-build
+cargo xtask j2k-perf-guard --baseline-ref HEAD --quick
+```
+
+Result: both commands passed. The quick guard compared the current remediation
+tree against the local `HEAD` baseline with a +10% median regression threshold.
+The macOS host cannot build or run the Linux-only cuda-oxide kernels, so
+CUDA-labeled rows in this run are CPU fallback rows; strict CUDA runtime
+validation remains a separate Linux/NVIDIA hardware gate.
+
+Rows that previously regressed during the remediation and passed in the final
+quick guard:
+
+| Row | Baseline median | Current median | Delta |
+| --- | ---: | ---: | ---: |
+| `htj2k_cleanup_encode_distribution/rho_eq_uq_64x64/2459041792` | 8.592 us | 7.768 us | -9.59% |
+| `htj2k_cleanup_encode_distribution/rho_eq_uq_64x64/2459041793` | 8.548 us | 7.846 us | -8.22% |
+| `jpeg_cpu_encode_runtime/rgb8_512_420_restart_64` | 2.028 ms | 2.062 ms | +1.66% |
+
 ## CUDA JPEG-to-HTJ2K Transcode
 
 Host:
@@ -63,10 +96,8 @@ longer a supported product backend.
 
 ## CUDA Oxide Migration Status
 
-The active roadmap is
-`docs/roadmap/metal-codec-acceleration-plan.md`, now repurposed as the CUDA
-Oxide GPU acceleration plan. `J2K_REQUIRE_CUDA_OXIDE_BUILD=1` is the shared
-strict build gate for Linux/NVIDIA validation hosts.
+`J2K_REQUIRE_CUDA_OXIDE_BUILD=1` is the shared strict build gate for
+Linux/NVIDIA validation hosts.
 
 The temporary NVIDIA comparator harness was removed after the final strict CUDA
 Oxide comparison was captured for decode, JPEG decode, and JPEG-to-HTJ2K
@@ -74,18 +105,16 @@ transcode. The final comparison required a Linux/NVIDIA host with CUDA, NVIDIA
 JPEG/JPEG 2000 comparator libraries, and cuda-oxide available; it could not be
 produced by hosted CI or by macOS development machines.
 
-June 29, 2026 migration run on `cuda-wsl`:
+June 29, 2026 CUDA Oxide validation run:
 
-- Host: `jcwal@100.75.125.59`, hostname `PC`, WSL2 Linux
+- Host: self-hosted Linux/NVIDIA validation runner
 - GPU: NVIDIA GeForce RTX 4070 SUPER, driver `596.49`
 - CUDA compiler: `cuda_13.2.r13.2/compiler.37668154_0`
 - Rust: `cargo 1.96.0`
 - cuda-oxide: `cargo-oxide 0.2.1`
 - Oxide arch: `sm_89`
 - Historical NVIDIA comparator build before harness removal: strict baseline
-  build mode with `NVCC=/usr/local/cuda/bin/nvcc`,
-  `NVJPEG2K_INCLUDE_DIR=/usr/include`, and
-  `NVJPEG2K_LIB_DIR=/usr/lib/x86_64-linux-gnu`
+  build mode with host-local CUDA and nvJPEG/nvJPEG2000 headers/libraries
 - CUDA Oxide build: strict `J2K_REQUIRE_CUDA_OXIDE_BUILD=1`,
   `J2K_REQUIRE_CUDA_RUNTIME=1`
 - Artifact directory: `target/bench-logs`
@@ -118,14 +147,10 @@ This final capture satisfies the NVIDIA comparator retirement gate. The
 remaining publication caveat is that these are repo-local retirement
 benchmarks, not a replacement for external adoption-report evidence.
 
-Additional strict HTJ2K decode CUDA Oxide validation:
+Additional strict CUDA Oxide validation used the host's cuda-oxide, libclang,
+CUDA, and linker paths plus:
 
 ```bash
-export PATH=/home/jcwal/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH
-export LIBCLANG_PATH=/home/jcwal/.local/llvm18/usr/lib/llvm-18/lib
-export BINDGEN_EXTRA_CLANG_ARGS=-I/home/jcwal/.local/llvm18/usr/lib/llvm-18/lib/clang/18/include
-export LIBRARY_PATH=/home/jcwal/.local/llvm18/usr/lib/x86_64-linux-gnu:${LIBRARY_PATH:-}
-export LD_LIBRARY_PATH=/home/jcwal/.local/llvm18/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}
 export J2K_CUDA_OXIDE_ARCH=sm_89
 export J2K_REQUIRE_CUDA_OXIDE_BUILD=1
 
@@ -151,10 +176,8 @@ cargo test -p j2k-cuda-runtime --lib \
   cuda_oxide_jpeg_encode -- --nocapture
 ```
 
-The cuda-oxide backend refresh on `cuda-wsl` also required
-`LIBRARY_PATH`/`LD_LIBRARY_PATH` to include
-`/home/jcwal/.local/llvm18/usr/lib/x86_64-linux-gnu` so the linker could find
-`libffi.so`.
+The validation host also needed its linker search path to include the local
+LLVM/libffi runtime used by cuda-oxide.
 
 ## Metal Status
 
@@ -162,9 +185,7 @@ Metal acceleration is selective. Public claims should say Metal-accelerated
 stages, not complete end-to-end Metal coverage for every encode, decode, or
 transcode route.
 
-The consolidated codec-only Metal plan lives in
-`docs/roadmap/metal-codec-acceleration-plan.md`. Existing Apple Silicon
-encode-stage routing evidence was collected with:
+Existing Apple Silicon encode-stage routing evidence was collected with:
 
 ```bash
 cargo test -p j2k-metal --test encode_auto_routing_benchmark -- --ignored --nocapture
@@ -177,10 +198,10 @@ cargo test -p j2k-metal --release --test metal_decode_benchmark \
   metal_decode_benchmark -- --ignored --nocapture
 ```
 
-On June 28, 2026, commit `931d5815` plus local working-tree changes was tested
-on a MacBook Pro `Mac16,8`, Apple M4 Pro, 48 GB memory, macOS 26.5. Generated
-fixture rows showed no strict Metal decode win over CPU, so `Auto` decode
-should remain CPU for these shapes:
+On June 28, 2026, a local benchmark checkout was tested on a MacBook Pro
+`Mac16,8`, Apple M4 Pro, 48 GB memory, macOS 26.5. Generated fixture rows
+showed no strict Metal decode win over CPU, so `Auto` decode should remain CPU
+for these shapes:
 
 | Generated row | CPU | Metal resident | Metal readback |
 | --- | ---: | ---: | ---: |
@@ -201,8 +222,8 @@ improving from 284.845 ms CPU to 10.012 ms Auto at 1024 x 1024. Treat these as
 routing evidence for the recorded host, not cross-machine performance claims.
 
 Metal JPEG-to-HTJ2K same-geometry batch transcode evidence was collected on
-June 28, 2026, commit `931d5815` plus local working-tree changes, on a MacBook
-Pro `Mac16,8`, Apple M4 Pro, 48 GB memory, macOS 26.5:
+June 28, 2026, from the same local benchmark checkout on a MacBook Pro
+`Mac16,8`, Apple M4 Pro, 48 GB memory, macOS 26.5:
 
 ```bash
 J2K_TRANSCODE_METAL_PROFILE_STAGES=1 \

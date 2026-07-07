@@ -16,8 +16,8 @@ use crate::decoder::{
     decode_prepared_jpeg_tile_rgb8_in_context, decode_tile_into_in_context_with_options,
     decode_tile_region_scaled_into_in_context_with_options,
     decode_tile_scaled_into_in_context_with_options, DecodeOutcome, DecodedTile,
-    PreparedJpegTileJob, TileBatchError, TileDecodeJob, TileRegionScaledDecodeJob,
-    TileScaledDecodeJob,
+    PreparedJpegTileJob, TileBatchError, TileDecodeJob, TileDecodeOutput,
+    TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use crate::error::JpegError;
 use crate::info::DecodeOptions;
@@ -89,9 +89,11 @@ impl WorkerSlot {
                 job.input,
                 &mut self.ctx,
                 &mut self.pool,
-                job.out,
-                job.stride,
-                fmt,
+                TileDecodeOutput {
+                    out: job.out,
+                    stride: job.stride,
+                    fmt,
+                },
                 job.scale,
                 options,
             );
@@ -113,9 +115,11 @@ impl WorkerSlot {
                 job.input,
                 &mut self.ctx,
                 &mut self.pool,
-                job.out,
-                job.stride,
-                fmt,
+                TileDecodeOutput {
+                    out: job.out,
+                    stride: job.stride,
+                    fmt,
+                },
                 job.roi.into(),
                 job.scale,
                 options,
@@ -182,12 +186,14 @@ impl JpegBatchSession {
 
     /// Number of active workers used by the most recent non-empty decode call.
     #[must_use]
+    #[doc(hidden)]
     pub fn worker_count(&self) -> usize {
         self.active_workers
     }
 
     /// Number of worker slots retained by the session.
     #[must_use]
+    #[doc(hidden)]
     pub fn retained_worker_slots(&self) -> usize {
         self.workers.len()
     }

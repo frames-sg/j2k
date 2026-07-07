@@ -6,6 +6,7 @@ use super::codestream::{Header, WaveletTransform};
 use super::decode::{DecompositionStorage, OutputRegion};
 use super::rect::IntRect;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
+use crate::{idwt_required_input_window_for_rects, J2kRequiredBandRegion};
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoiPlan {
@@ -86,7 +87,7 @@ impl RoiPlan {
                     tile_decompositions.decompositions.start + local_decomposition_idx;
                 let decomposition = &decompositions[local_decomposition_idx];
                 let expanded = required_output.expanded_within(
-                    idwt_required_output_margin(component_info.wavelet_transform()),
+                    roi_required_output_margin(component_info.wavelet_transform()),
                     decomposition.rect,
                 );
                 plan.add_idwt_window(decomposition_idx, expanded);
@@ -146,24 +147,42 @@ impl RoiPlan {
         let lh = &storage.sub_bands[decomposition.sub_bands[1]];
         let hh = &storage.sub_bands[decomposition.sub_bands[2]];
 
-        let ll_window = idwt_input_required_region(
-            output_window,
-            decomposition.rect,
-            low_band_rect(decomposition.rect),
+        let ll_window = int_rect_from_required_region(idwt_required_input_window_for_rects(
+            required_region_from_int_rect(output_window),
+            decomposition.rect.into(),
+            low_band_rect(decomposition.rect).into(),
             true,
             true,
-        );
+        ));
         self.add_sub_band_window(
             decomposition.sub_bands[0],
-            idwt_input_required_region(output_window, decomposition.rect, hl.rect, false, true),
+            int_rect_from_required_region(idwt_required_input_window_for_rects(
+                required_region_from_int_rect(output_window),
+                decomposition.rect.into(),
+                hl.rect.into(),
+                false,
+                true,
+            )),
         );
         self.add_sub_band_window(
             decomposition.sub_bands[1],
-            idwt_input_required_region(output_window, decomposition.rect, lh.rect, true, false),
+            int_rect_from_required_region(idwt_required_input_window_for_rects(
+                required_region_from_int_rect(output_window),
+                decomposition.rect.into(),
+                lh.rect.into(),
+                true,
+                false,
+            )),
         );
         self.add_sub_band_window(
             decomposition.sub_bands[2],
-            idwt_input_required_region(output_window, decomposition.rect, hh.rect, false, false),
+            int_rect_from_required_region(idwt_required_input_window_for_rects(
+                required_region_from_int_rect(output_window),
+                decomposition.rect.into(),
+                hh.rect.into(),
+                false,
+                false,
+            )),
         );
 
         ll_window
@@ -186,63 +205,28 @@ fn low_band_rect(output_rect: IntRect) -> IntRect {
     )
 }
 
-fn idwt_required_output_margin(transform: WaveletTransform) -> u32 {
+fn native_wavelet_transform(transform: WaveletTransform) -> crate::J2kWaveletTransform {
     match transform {
-        WaveletTransform::Reversible53 => 16,
-        WaveletTransform::Irreversible97 => 40,
+        WaveletTransform::Reversible53 => crate::J2kWaveletTransform::Reversible53,
+        WaveletTransform::Irreversible97 => crate::J2kWaveletTransform::Irreversible97,
     }
 }
 
-fn idwt_input_required_region(
-    output_window: IntRect,
-    output_rect: IntRect,
-    band_rect: IntRect,
-    low_x: bool,
-    low_y: bool,
-) -> IntRect {
-    if output_window.is_empty() {
-        return IntRect::from_xywh(0, 0, 0, 0);
+fn roi_required_output_margin(transform: WaveletTransform) -> u32 {
+    crate::idwt_required_output_margin(native_wavelet_transform(transform))
+}
+
+fn required_region_from_int_rect(rect: IntRect) -> J2kRequiredBandRegion {
+    J2kRequiredBandRegion {
+        x0: rect.x0,
+        y0: rect.y0,
+        x1: rect.x1,
+        y1: rect.y1,
     }
+}
 
-    let x0 = band_rect.x0.saturating_add(idwt_band_index(
-        output_rect.x0,
-        output_window.x0.saturating_sub(output_rect.x0),
-        low_x,
-    ));
-    let x1 = band_rect.x0.saturating_add(
-        idwt_band_index(
-            output_rect.x0,
-            output_window
-                .x1
-                .saturating_sub(1)
-                .saturating_sub(output_rect.x0),
-            low_x,
-        )
-        .saturating_add(1),
-    );
-    let y0 = band_rect.y0.saturating_add(idwt_band_index(
-        output_rect.y0,
-        output_window.y0.saturating_sub(output_rect.y0),
-        low_y,
-    ));
-    let y1 = band_rect.y0.saturating_add(
-        idwt_band_index(
-            output_rect.y0,
-            output_window
-                .y1
-                .saturating_sub(1)
-                .saturating_sub(output_rect.y0),
-            low_y,
-        )
-        .saturating_add(1),
-    );
-
-    IntRect::from_ltrb(
-        x0.min(band_rect.x1),
-        y0.min(band_rect.y1),
-        x1.min(band_rect.x1),
-        y1.min(band_rect.y1),
-    )
+fn int_rect_from_required_region(region: J2kRequiredBandRegion) -> IntRect {
+    IntRect::from_ltrb(region.x0, region.y0, region.x1, region.y1)
 }
 
 pub(crate) fn idwt_band_coord(
@@ -251,20 +235,9 @@ pub(crate) fn idwt_band_coord(
     band_origin: u32,
     low: bool,
 ) -> u32 {
-    band_origin.saturating_add(idwt_band_index(
+    band_origin.saturating_add(crate::idwt_band_index(
         output_origin,
         output_coord.saturating_sub(output_origin),
         low,
     ))
-}
-
-fn idwt_band_index(origin: u32, local_coord: u32, low: bool) -> u32 {
-    let global = u64::from(origin) + u64::from(local_coord);
-    let origin = u64::from(origin);
-    let index = if low {
-        global.div_ceil(2).saturating_sub(origin.div_ceil(2))
-    } else {
-        (global / 2).saturating_sub(origin / 2)
-    };
-    u32::try_from(index).unwrap_or(u32::MAX)
 }

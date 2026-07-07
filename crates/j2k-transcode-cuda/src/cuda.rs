@@ -9,28 +9,26 @@
 //! [`CudaTranscodeError::UnsupportedJob`], which Auto mode treats as a scalar
 //! fallback and Explicit mode surfaces as an error.
 
-use j2k_transcode::accelerator::{
-    DctGridI16ToHtj2k97CodeBlockBatch, DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt53Job,
-    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job,
-    Dwt97BatchStageTimings, EncodedHtJ2kCodeBlock, Htj2k97CodeBlockOptions, J2kSubBandType,
-    PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactBatch, PreencodedHtj2k97CompactBatchGroups,
-    PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
-    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
-    PreencodedHtj2k97Component, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
-    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution,
-    PrequantizedHtj2k97Subband, ReversibleDwt53FirstLevel,
-};
-use j2k_transcode::dct53_2d::Dwt53TwoDimensional;
-use j2k_transcode::dct97_2d::Dwt97TwoDimensional;
-use j2k_transcode::htj2k97_codeblock_oracle::{
-    htj2k97_subband_delta, htj2k97_subband_total_bitplanes,
+use j2k_transcode::{
+    htj2k97_subband_delta, htj2k97_subband_total_bitplanes, DctGridI16ToHtj2k97CodeBlockBatch,
+    DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt53Job, DctGridToDwt97Job,
+    DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job, Dwt53TwoDimensional,
+    Dwt97BatchStageTimings, Dwt97TwoDimensional, EncodedHtJ2kCodeBlock, Htj2k97CodeBlockOptions,
+    J2kSubBandType, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactBatch,
+    PreencodedHtj2k97CompactBatchGroups, PreencodedHtj2k97CompactCodeBlock,
+    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactResolution,
+    PreencodedHtj2k97CompactSubband, PreencodedHtj2k97Component, PreencodedHtj2k97Resolution,
+    PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband, ReversibleDwt53FirstLevel,
 };
 
 use std::sync::Arc;
 
 use j2k_cuda_runtime::{
-    transcode_kernels_built, CudaBufferPool, CudaContext, CudaDwt97BatchStageTimings,
-    CudaHtj2k97CodeblockBands, CudaHtj2k97DeviceCodeblockBands, CudaHtj2k97QuantizeParams,
+    transcode_kernels_built, CudaBufferPool, CudaContext, CudaDwt97BatchGeometry,
+    CudaDwt97BatchStageTimings, CudaDwt97BatchWithPoolRequest, CudaHtj2k97CodeblockBands,
+    CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2k97DeviceCodeblockBands,
+    CudaHtj2k97I16CodeblockBatchWithPoolRequest, CudaHtj2k97QuantizeParams,
     CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeResidentTarget,
     CudaHtj2kEncodeResources, CudaHtj2kEncodeStageTimings, CudaHtj2kEncodeTables,
     CudaHtj2kEncodedCodeBlock, CudaPooledDeviceBuffer, CudaTranscodeDwt97Bands,
@@ -386,16 +384,19 @@ pub(crate) fn dispatch_dwt97_batch(
     for job in jobs {
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
+    let pool = session.buffer_pool(&context);
     let (bands, timings) = context
-        .j2k_transcode_dwt97_batch_with_pool(
-            &blocks,
-            jobs.len(),
-            first.block_cols,
-            first.block_rows,
-            first.width,
-            first.height,
-            &session.buffer_pool(&context),
-        )
+        .j2k_transcode_dwt97_batch_with_pool(CudaDwt97BatchWithPoolRequest {
+            blocks: &blocks,
+            geometry: CudaDwt97BatchGeometry {
+                item_count: jobs.len(),
+                block_cols: first.block_cols,
+                block_rows: first.block_rows,
+                width: first.width,
+                height: first.height,
+            },
+            pool: &pool,
+        })
         .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 batch transcode dispatch failed"))?;
     let outputs = bands.into_iter().map(dwt97_bands_to_f64).collect();
     Ok((outputs, map_batch_timings(timings)))
@@ -569,17 +570,20 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
     for job in jobs {
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
+    let pool = session.buffer_pool(&context);
     let (codeblock_bands, timings) = context
-        .j2k_transcode_htj2k97_codeblock_batch_with_pool(
-            &blocks,
-            jobs.len(),
-            first.block_cols,
-            first.block_rows,
-            first.width,
-            first.height,
+        .j2k_transcode_htj2k97_codeblock_batch_with_pool(CudaHtj2k97CodeblockBatchWithPoolRequest {
+            blocks: &blocks,
+            geometry: CudaDwt97BatchGeometry {
+                item_count: jobs.len(),
+                block_cols: first.block_cols,
+                block_rows: first.block_rows,
+                width: first.width,
+                height: first.height,
+            },
             params,
-            &session.buffer_pool(&context),
-        )
+            pool: &pool,
+        })
         .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 code-block batch dispatch failed"))?;
 
     let components = codeblock_bands_to_components(&codeblock_bands, jobs, options)?;
@@ -621,14 +625,18 @@ pub(crate) fn dispatch_htj2k97_preencoded_batch(
     let pool = session.buffer_pool(&context);
     let (device_bands, cuda_timings) = context
         .j2k_transcode_htj2k97_codeblock_batch_resident_with_pool(
-            &blocks,
-            jobs.len(),
-            first.block_cols,
-            first.block_rows,
-            first.width,
-            first.height,
-            params,
-            &pool,
+            CudaHtj2k97CodeblockBatchWithPoolRequest {
+                blocks: &blocks,
+                geometry: CudaDwt97BatchGeometry {
+                    item_count: jobs.len(),
+                    block_cols: first.block_cols,
+                    block_rows: first.block_rows,
+                    width: first.width,
+                    height: first.height,
+                },
+                params,
+                pool: &pool,
+            },
         )
         .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 resident batch dispatch failed"))?;
     let mut timings = map_batch_timings(cuda_timings);
@@ -691,14 +699,18 @@ fn dispatch_htj2k97_preencoded_i16_batch_with_sink<'a, 'j, R>(
     let pool = session.buffer_pool(&context);
     let (device_bands, cuda_timings) = context
         .j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
-            &blocks,
-            jobs.len(),
-            first.block_cols,
-            first.block_rows,
-            first.width,
-            first.height,
-            params,
-            &pool,
+            CudaHtj2k97I16CodeblockBatchWithPoolRequest {
+                blocks: &blocks,
+                geometry: CudaDwt97BatchGeometry {
+                    item_count: jobs.len(),
+                    block_cols: first.block_cols,
+                    block_rows: first.block_rows,
+                    width: first.width,
+                    height: first.height,
+                },
+                params,
+                pool: &pool,
+            },
         )
         .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 resident i16 batch dispatch failed"))?;
     let mut timings = map_batch_timings(cuda_timings);
@@ -806,14 +818,18 @@ fn dispatch_htj2k97_preencoded_i16_batch_groups_with_sink<'a, 'g, 'j, C, X: Defa
         }
         let (bands, group_timings) = context
             .j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
-                &blocks,
-                group.jobs.len(),
-                first.block_cols,
-                first.block_rows,
-                first.width,
-                first.height,
-                params,
-                &pool,
+                CudaHtj2k97I16CodeblockBatchWithPoolRequest {
+                    blocks: &blocks,
+                    geometry: CudaDwt97BatchGeometry {
+                        item_count: group.jobs.len(),
+                        block_cols: first.block_cols,
+                        block_rows: first.block_rows,
+                        width: first.width,
+                        height: first.height,
+                    },
+                    params,
+                    pool: &pool,
+                },
             )
             .map_err(|_| {
                 CudaTranscodeError::Kernel("CUDA grouped 9/7 resident i16 batch dispatch failed")
@@ -1523,7 +1539,6 @@ fn device_band_groups_to_compact_preencoded_components<J: Htj2k97ComponentJob>(
     Ok((payload, outputs, ht_timings, dispatches))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn resident_subband_encode_plan(
     coefficients: &CudaPooledDeviceBuffer,
     item_count: usize,
@@ -1768,7 +1783,7 @@ fn validate_band_len(
 fn validate_htj2k97_codeblock_options(
     options: Htj2k97CodeBlockOptions,
 ) -> Result<(usize, usize), CudaTranscodeError> {
-    j2k_transcode::htj2k97_codeblock_oracle::validate_htj2k97_codeblock_options(options)
+    j2k_transcode::validate_htj2k97_codeblock_options(options)
         .map_err(CudaTranscodeError::UnsupportedJob)
 }
 

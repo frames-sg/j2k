@@ -10,10 +10,7 @@ use j2k_native::{
 };
 
 use crate::{
-    adapter::encode_stage::{
-        J2kEncodeDispatchReport, J2kEncodeStageAccelerator, NativeEncodeStageAdapter,
-    },
-    J2kError,
+    J2kError, {J2kEncodeDispatchReport, J2kEncodeStageAccelerator},
 };
 
 const MAX_JPEG2000_PART1_COMPONENTS: u16 = 16_384;
@@ -539,9 +536,9 @@ struct SampleGeometry {
     expected_bytes: usize,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn validate_sample_geometry(
-    data: &[u8],
+#[derive(Debug, Clone, Copy)]
+struct SampleGeometryRequest<'a> {
+    data: &'a [u8],
     width: u32,
     height: u32,
     components: u16,
@@ -549,7 +546,21 @@ fn validate_sample_geometry(
     max_bit_depth: u8,
     component_what: &'static str,
     bit_depth_what: &'static str,
+}
+
+fn validate_sample_geometry(
+    request: SampleGeometryRequest<'_>,
 ) -> Result<SampleGeometry, J2kError> {
+    let SampleGeometryRequest {
+        data,
+        width,
+        height,
+        components,
+        bit_depth,
+        max_bit_depth,
+        component_what,
+        bit_depth_what,
+    } = request;
     if width == 0 || height == 0 {
         return Err(J2kError::InvalidSamples {
             what: "dimensions must be non-zero".to_string(),
@@ -598,16 +609,16 @@ impl<'a> J2kLosslessSamples<'a> {
         bit_depth: u8,
         signed: bool,
     ) -> Result<Self, J2kError> {
-        let geometry = validate_sample_geometry(
+        let geometry = validate_sample_geometry(SampleGeometryRequest {
             data,
             width,
             height,
             components,
             bit_depth,
-            MAX_PART1_SAMPLE_BIT_DEPTH,
-            "JPEG 2000 lossless encode supports 1-16384 component samples",
-            "JPEG 2000 lossless encode supports 1-38 bits per sample for classic reversible codestreams",
-        )?;
+            max_bit_depth: MAX_PART1_SAMPLE_BIT_DEPTH,
+            component_what: "JPEG 2000 lossless encode supports 1-16384 component samples",
+            bit_depth_what: "JPEG 2000 lossless encode supports 1-38 bits per sample for classic reversible codestreams",
+        })?;
         debug_assert_eq!(geometry.expected_bytes, data.len());
         Ok(Self {
             data,
@@ -883,16 +894,16 @@ impl<'a> J2kLossySamples<'a> {
         bit_depth: u8,
         signed: bool,
     ) -> Result<Self, J2kError> {
-        let geometry = validate_sample_geometry(
+        let geometry = validate_sample_geometry(SampleGeometryRequest {
             data,
             width,
             height,
             components,
             bit_depth,
-            MAX_PART1_SAMPLE_BIT_DEPTH,
-            "JPEG 2000 lossy encode supports 1-16384 component samples",
-            "JPEG 2000 lossy encode supports 1-38 bits per sample",
-        )?;
+            max_bit_depth: MAX_PART1_SAMPLE_BIT_DEPTH,
+            component_what: "JPEG 2000 lossy encode supports 1-16384 component samples",
+            bit_depth_what: "JPEG 2000 lossy encode supports 1-38 bits per sample",
+        })?;
         debug_assert_eq!(geometry.expected_bytes, data.len());
         Ok(Self {
             data,
@@ -1344,7 +1355,7 @@ fn encode_cpu(
         samples.signed,
         &options,
     )
-    .map_err(|err| J2kError::Backend(format!("JPEG 2000 lossless encode failed: {err}")))
+    .map_err(|err| J2kError::backend(format!("JPEG 2000 lossless encode failed: {err}")))
 }
 
 fn encode_cpu_with_roi_regions(
@@ -1372,7 +1383,7 @@ fn map_native_lossless_roi_encode_error(err: &'static str) -> J2kError {
         "ROI maxshift exceeds supported coded bitplane count" => {
             J2kError::Unsupported(Unsupported { what: err })
         }
-        _ => J2kError::Backend(format!("JPEG 2000 lossless ROI encode failed: {err}")),
+        _ => J2kError::backend(format!("JPEG 2000 lossless ROI encode failed: {err}")),
     }
 }
 
@@ -1466,7 +1477,7 @@ fn encode_cpu_components(
         &native_options,
     )
     .map_err(|err| {
-        J2kError::Backend(format!(
+        J2kError::backend(format!(
             "JPEG 2000 lossless component-plane encode failed: {err}"
         ))
     })
@@ -1529,7 +1540,7 @@ fn encode_cpu_typed_components(
         &native_options,
     )
     .map_err(|err| {
-        J2kError::Backend(format!(
+        J2kError::backend(format!(
             "JPEG 2000 lossless typed component-plane encode failed: {err}"
         ))
     })
@@ -1541,7 +1552,6 @@ fn encode_with_native_accelerator(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, J2kError> {
     let options = native_lossless_options(samples, options);
-    let mut native_accelerator = NativeEncodeStageAdapter::new(accelerator);
     j2k_native::encode_with_accelerator(
         samples.data,
         samples.width,
@@ -1550,9 +1560,9 @@ fn encode_with_native_accelerator(
         samples.bit_depth,
         samples.signed,
         &options,
-        &mut native_accelerator,
+        accelerator,
     )
-    .map_err(|err| J2kError::Backend(format!("JPEG 2000 lossless encode failed: {err}")))
+    .map_err(|err| J2kError::backend(format!("JPEG 2000 lossless encode failed: {err}")))
 }
 
 struct LossyAttempt {
@@ -1575,7 +1585,7 @@ fn encode_cpu_lossy(
         samples.signed,
         &options,
     )
-    .map_err(|err| J2kError::Backend(format!("JPEG 2000 lossy encode failed: {err}")))
+    .map_err(|err| J2kError::backend(format!("JPEG 2000 lossy encode failed: {err}")))
 }
 
 fn encode_cpu_lossy_with_roi_regions(
@@ -1595,7 +1605,7 @@ fn encode_cpu_lossy_with_roi_regions(
         &options,
         roi_regions,
     )
-    .map_err(|err| J2kError::Backend(format!("JPEG 2000 lossy ROI encode failed: {err}")))
+    .map_err(|err| J2kError::backend(format!("JPEG 2000 lossy ROI encode failed: {err}")))
 }
 
 fn encode_lossy_with_native_accelerator(
@@ -1605,7 +1615,6 @@ fn encode_lossy_with_native_accelerator(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, J2kError> {
     let options = native_lossy_options(samples, options, quantization_scale)?;
-    let mut native_accelerator = NativeEncodeStageAdapter::new(accelerator);
     j2k_native::encode_with_accelerator(
         samples.data,
         samples.width,
@@ -1614,9 +1623,9 @@ fn encode_lossy_with_native_accelerator(
         samples.bit_depth,
         samples.signed,
         &options,
-        &mut native_accelerator,
+        accelerator,
     )
-    .map_err(|err| J2kError::Backend(format!("JPEG 2000 lossy encode failed: {err}")))
+    .map_err(|err| J2kError::backend(format!("JPEG 2000 lossy encode failed: {err}")))
 }
 
 fn encode_lossy_targeted(
@@ -2254,9 +2263,13 @@ fn validate_lossy_roundtrip(
     }
 
     let decoded = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?
+        .map_err(|err| {
+            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+        })?
         .decode_native()
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
+        .map_err(|err| {
+            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+        })?;
 
     if decoded.width != samples.width
         || decoded.height != samples.height
@@ -2273,9 +2286,13 @@ fn validate_lossy_roundtrip(
 
 fn decoded_psnr(samples: J2kLossySamples<'_>, codestream: &[u8]) -> Result<f64, J2kError> {
     let decoded = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?
+        .map_err(|err| {
+            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+        })?
         .decode_native()
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
+        .map_err(|err| {
+            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+        })?;
     psnr_from_decoded(samples, &decoded.data)
 }
 
@@ -2384,7 +2401,7 @@ fn validate_lossless_roundtrip(
     }
     if samples.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
         let header = j2k_native::inspect_j2k_codestream_header(codestream).map_err(|err| {
-            J2kError::Backend(format!("encoded codestream validation failed: {err}"))
+            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
         })?;
         if header.dimensions != (samples.width, samples.height)
             || header.components != samples.components
@@ -2402,9 +2419,13 @@ fn validate_lossless_roundtrip(
     }
 
     let decoded = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?
+        .map_err(|err| {
+            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+        })?
         .decode_native()
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
+        .map_err(|err| {
+            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+        })?;
 
     if decoded.width != samples.width
         || decoded.height != samples.height
@@ -2446,12 +2467,15 @@ fn validate_lossless_component_roundtrip(
         return Ok(());
     }
 
-    let image = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
+    let image = Image::new(codestream, &DecodeSettings::default()).map_err(|err| {
+        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+    })?;
     let mut context = j2k_native::DecoderContext::default();
     let decoded = image
         .decode_components_with_context(&mut context)
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
+        .map_err(|err| {
+            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+        })?;
 
     if decoded.dimensions() != (samples.width, samples.height)
         || decoded.planes().len() != samples.planes.len()
@@ -2495,11 +2519,12 @@ fn validate_lossless_high_bit_component_roundtrip(
         return Ok(());
     }
 
-    let image = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
-    let decoded = image
-        .decode_native_components()
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
+    let image = Image::new(codestream, &DecodeSettings::default()).map_err(|err| {
+        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+    })?;
+    let decoded = image.decode_native_components().map_err(|err| {
+        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+    })?;
 
     if decoded.dimensions() != (samples.width, samples.height)
         || decoded.planes().len() != samples.planes.len()
@@ -2545,12 +2570,15 @@ fn validate_lossless_typed_component_roundtrip(
         );
     }
 
-    let image = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
+    let image = Image::new(codestream, &DecodeSettings::default()).map_err(|err| {
+        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+    })?;
     let mut context = j2k_native::DecoderContext::default();
     let decoded = image
         .decode_components_with_context(&mut context)
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
+        .map_err(|err| {
+            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+        })?;
 
     if decoded.dimensions() != (samples.width, samples.height)
         || decoded.planes().len() != samples.planes.len()
@@ -2594,11 +2622,12 @@ fn validate_lossless_high_bit_typed_component_roundtrip(
         return Ok(());
     }
 
-    let image = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
-    let decoded = image
-        .decode_native_components()
-        .map_err(|err| J2kError::Backend(format!("encoded codestream validation failed: {err}")))?;
+    let image = Image::new(codestream, &DecodeSettings::default()).map_err(|err| {
+        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+    })?;
+    let decoded = image.decode_native_components().map_err(|err| {
+        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
+    })?;
 
     if decoded.dimensions() != (samples.width, samples.height)
         || decoded.planes().len() != samples.planes.len()

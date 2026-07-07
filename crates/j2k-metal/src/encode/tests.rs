@@ -3,14 +3,6 @@
 use super::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
 use crate::compute;
-#[cfg(target_os = "macos")]
-use j2k::adapter::encode_stage::{
-    J2kDeinterleaveToF32Job, J2kForwardDwt53Job, J2kForwardIctJob, J2kQuantizeSubbandJob,
-    NativeEncodeStageAdapter,
-};
-use j2k::adapter::encode_stage::{
-    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardRctJob,
-};
 use j2k::{
     encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
     J2kLosslessEncodeOptions, J2kLosslessSamples,
@@ -22,14 +14,17 @@ use j2k::{
     ReversibleTransform,
 };
 #[cfg(target_os = "macos")]
+use j2k::{J2kDeinterleaveToF32Job, J2kForwardDwt53Job, J2kForwardIctJob, J2kQuantizeSubbandJob};
+use j2k::{J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardRctJob};
+#[cfg(target_os = "macos")]
 use j2k_core::CodecError;
 use j2k_core::DeviceSubmission;
 #[cfg(target_os = "macos")]
 use j2k_core::{BackendKind, PixelFormat};
 #[cfg(target_os = "macos")]
 use j2k_native::{
-    deinterleave_reference, forward_dwt53_reference,
-    quantize_reversible_reference as quantize_reference, EncodeOptions, J2kCodeBlockStyle,
+    forward_dwt53_reference, quantize_reversible_reference as quantize_reference,
+    try_deinterleave_reference, EncodeOptions, J2kCodeBlockStyle,
 };
 use j2k_native::{DecodeSettings, Image};
 #[cfg(target_os = "macos")]
@@ -170,13 +165,14 @@ fn metal_encode_deinterleave_public_layouts_match_native_reference() {
             bit_depth: case.bit_depth,
             signed: case.signed,
         };
-        let expected = deinterleave_reference(
+        let expected = try_deinterleave_reference(
             job.pixels,
             job.num_pixels,
             job.num_components,
             job.bit_depth,
             job.signed,
-        );
+        )
+        .expect("valid native deinterleave reference input");
         let mut accelerator = MetalEncodeStageAccelerator::default();
 
         let actual = accelerator
@@ -1059,26 +1055,33 @@ fn resident_classic_peak_estimate_matches_tight_batch_capacity() {
 #[cfg(target_os = "macos")]
 #[test]
 fn resident_classic_batch_retry_covers_tight_capacity_failures() {
-    let tight_tier1_error = crate::Error::MetalKernel {
+    let tight_tier1_error = crate::Error::MetalKernelRetryable {
         message: "packetization Metal encode kernel failure (detail=7, tier1_detail=4)".to_string(),
+        retry_class: crate::MetalKernelRetryClass::ResidentClassicBatch,
     };
     assert!(super::resident_classic_batch_encode_should_retry_conservative(&tight_tier1_error));
 
-    let tight_tier1_finish_error = crate::Error::MetalKernel {
+    let tight_tier1_finish_error = crate::Error::MetalKernelRetryable {
         message: "classic Tier-1 Metal encode kernel failure (detail=5)".to_string(),
+        retry_class: crate::MetalKernelRetryClass::ResidentClassicBatch,
     };
     assert!(
         super::resident_classic_batch_encode_should_retry_conservative(&tight_tier1_finish_error)
     );
 
-    let packet_error = crate::Error::MetalKernel {
+    let packet_error = crate::Error::MetalKernelRetryable {
         message: "packetization Metal encode kernel failure (detail=5)".to_string(),
+        retry_class: crate::MetalKernelRetryClass::ResidentClassicOrHtBatch,
     };
     assert!(super::resident_classic_batch_encode_should_retry_conservative(&packet_error));
+    assert!(super::resident_ht_batch_encode_should_retry_conservative(
+        &packet_error
+    ));
 
-    let codestream_error = crate::Error::MetalKernel {
+    let codestream_error = crate::Error::MetalKernelRetryable {
         message: "J2K batched codestream assembly Metal encode kernel failure (detail=2)"
             .to_string(),
+        retry_class: crate::MetalKernelRetryClass::ResidentClassicBatch,
     };
     assert!(super::resident_classic_batch_encode_should_retry_conservative(&codestream_error));
 
@@ -1775,7 +1778,7 @@ fn auto_htj2k_small_host_output_stays_cpu_below_resident_gate() {
         BackendKind::Metal,
         &mut accelerator,
     )
-    .expect("hybrid HTJ2K host-output encode");
+    .expect("Auto HTJ2K host-output encode");
     let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
@@ -1792,7 +1795,7 @@ fn auto_htj2k_small_host_output_stays_cpu_below_resident_gate() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_htj2k_large_host_output_uses_resident_metal_rct_dwt_and_ht_with_cpu_packetization() {
+fn auto_htj2k_large_host_output_stays_cpu_for_single_frame() {
     let width = 1024u32;
     let height = 1024u32;
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
@@ -1818,7 +1821,7 @@ fn auto_htj2k_large_host_output_uses_resident_metal_rct_dwt_and_ht_with_cpu_pack
         BackendKind::Metal,
         &mut accelerator,
     )
-    .expect("hybrid HTJ2K host-output encode");
+    .expect("Auto HTJ2K host-output encode");
     let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
@@ -1826,15 +1829,16 @@ fn auto_htj2k_large_host_output_uses_resident_metal_rct_dwt_and_ht_with_cpu_pack
 
     assert_eq!(decoded.data, pixels);
     assert_eq!(encoded.backend, BackendKind::Cpu);
-    assert!(accelerator.forward_rct_dispatches() > 0);
-    assert_eq!(accelerator.forward_dwt53_dispatches(), 3);
-    assert!(accelerator.ht_code_block_dispatches() > 0);
+    assert_eq!(accelerator.forward_rct_dispatches(), 0);
+    assert_eq!(accelerator.forward_dwt53_dispatches(), 0);
+    assert_eq!(accelerator.ht_code_block_dispatches(), 0);
     assert_eq!(accelerator.packetization_dispatches(), 0);
+    assert_eq!(encoded.dispatch_report, J2kEncodeDispatchReport::default());
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_htj2k_kodak_sized_rgb_host_output_uses_resident_metal() {
+fn auto_htj2k_kodak_sized_rgb_host_output_stays_cpu_for_single_frame() {
     let width = 768u32;
     let height = 512u32;
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
@@ -1860,7 +1864,7 @@ fn auto_htj2k_kodak_sized_rgb_host_output_uses_resident_metal() {
         BackendKind::Metal,
         &mut accelerator,
     )
-    .expect("hybrid HTJ2K host-output encode");
+    .expect("Auto HTJ2K host-output encode");
     let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
@@ -1868,15 +1872,16 @@ fn auto_htj2k_kodak_sized_rgb_host_output_uses_resident_metal() {
 
     assert_eq!(decoded.data, pixels);
     assert_eq!(encoded.backend, BackendKind::Cpu);
-    assert!(accelerator.forward_rct_dispatches() > 0);
-    assert_eq!(accelerator.forward_dwt53_dispatches(), 3);
-    assert!(accelerator.ht_code_block_dispatches() > 0);
+    assert_eq!(accelerator.forward_rct_dispatches(), 0);
+    assert_eq!(accelerator.forward_dwt53_dispatches(), 0);
+    assert_eq!(accelerator.ht_code_block_dispatches(), 0);
     assert_eq!(accelerator.packetization_dispatches(), 0);
+    assert_eq!(encoded.dispatch_report, J2kEncodeDispatchReport::default());
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_htj2k_gray_host_output_uses_resident_metal_dwt_and_ht_with_cpu_packetization() {
+fn auto_htj2k_gray_host_output_stays_cpu_for_single_frame() {
     let width = 512u32;
     let height = 512u32;
     let mut pixels = Vec::with_capacity(width as usize * height as usize);
@@ -1900,7 +1905,7 @@ fn auto_htj2k_gray_host_output_uses_resident_metal_dwt_and_ht_with_cpu_packetiza
         BackendKind::Metal,
         &mut accelerator,
     )
-    .expect("hybrid HTJ2K host-output encode");
+    .expect("Auto HTJ2K host-output encode");
     let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
@@ -1909,9 +1914,10 @@ fn auto_htj2k_gray_host_output_uses_resident_metal_dwt_and_ht_with_cpu_packetiza
     assert_eq!(decoded.data, pixels);
     assert_eq!(encoded.backend, BackendKind::Cpu);
     assert_eq!(accelerator.forward_rct_dispatches(), 0);
-    assert_eq!(accelerator.forward_dwt53_dispatches(), 1);
-    assert!(accelerator.ht_code_block_dispatches() > 0);
+    assert_eq!(accelerator.forward_dwt53_dispatches(), 0);
+    assert_eq!(accelerator.ht_code_block_dispatches(), 0);
     assert_eq!(accelerator.packetization_dispatches(), 0);
+    assert_eq!(encoded.dispatch_report, J2kEncodeDispatchReport::default());
 }
 
 #[cfg(target_os = "macos")]
@@ -1991,6 +1997,10 @@ fn metal_padded_private_rgb8_auto_host_encode_routes_away_from_resident_prep() {
     assert!(!encoded.resident.coefficient_prep_used);
     assert!(!encoded.resident.packetization_used);
     assert!(!encoded.resident.codestream_assembly_used);
+    assert_eq!(
+        encoded.encoded.dispatch_report,
+        J2kEncodeDispatchReport::default()
+    );
     let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
@@ -2000,7 +2010,7 @@ fn metal_padded_private_rgb8_auto_host_encode_routes_away_from_resident_prep() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_resident_host_output_policy_keeps_single_512_rgb8_on_hybrid_path() {
+fn auto_resident_host_output_policy_requires_batched_work() {
     assert!(!super::should_try_auto_resident_lossless_host_format(
         PixelFormat::Rgb8,
         ReversibleTransform::Rct53,
@@ -2008,10 +2018,17 @@ fn auto_resident_host_output_policy_keeps_single_512_rgb8_on_hybrid_path() {
         512,
         512,
     ));
-    assert!(super::should_try_auto_resident_lossless_host_format(
+    assert!(!super::should_try_auto_resident_lossless_host_format(
         PixelFormat::Rgb8,
         ReversibleTransform::Rct53,
         1,
+        1024,
+        1024,
+    ));
+    assert!(super::should_try_auto_resident_lossless_host_format(
+        PixelFormat::Rgb8,
+        ReversibleTransform::Rct53,
+        2,
         1024,
         1024,
     ));
@@ -2033,7 +2050,7 @@ fn auto_resident_host_output_policy_keeps_single_512_rgb8_on_hybrid_path() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_htj2k_padded_private_rgb8_host_output_uses_hybrid_path() {
+fn auto_htj2k_padded_private_rgb8_single_host_output_stays_cpu() {
     let width = 512u32;
     let height = 512u32;
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
@@ -2066,17 +2083,17 @@ fn auto_htj2k_padded_private_rgb8_host_output_uses_hybrid_path() {
         },
         &session,
     )
-    .expect("Auto HTJ2K hybrid host-output encode");
+    .expect("Auto HTJ2K single host-output encode");
 
     assert_eq!(encoded.encoded.backend, BackendKind::Cpu);
     assert!(encoded.input_copy_used);
     assert!(!encoded.resident.coefficient_prep_used);
     assert!(!encoded.resident.packetization_used);
     assert!(!encoded.resident.codestream_assembly_used);
-    assert!(encoded.encoded.dispatch_report.forward_rct > 0);
-    assert_eq!(encoded.encoded.dispatch_report.forward_dwt53, 3);
-    assert!(encoded.encoded.dispatch_report.ht_code_block > 0);
-    assert_eq!(encoded.encoded.dispatch_report.packetization, 0);
+    assert_eq!(
+        encoded.encoded.dispatch_report,
+        J2kEncodeDispatchReport::default()
+    );
     let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
@@ -2086,7 +2103,7 @@ fn auto_htj2k_padded_private_rgb8_host_output_uses_hybrid_path() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_htj2k_padded_private_gray8_single_host_output_uses_hybrid_path() {
+fn auto_htj2k_padded_private_gray8_single_host_output_stays_cpu() {
     let width = 512u32;
     let height = 512u32;
     let pixels: Vec<u8> = (0..width * height)
@@ -2120,6 +2137,10 @@ fn auto_htj2k_padded_private_gray8_single_host_output_uses_hybrid_path() {
     assert!(!encoded.resident.coefficient_prep_used);
     assert!(!encoded.resident.packetization_used);
     assert!(!encoded.resident.codestream_assembly_used);
+    assert_eq!(
+        encoded.encoded.dispatch_report,
+        J2kEncodeDispatchReport::default()
+    );
     let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
@@ -4706,7 +4727,6 @@ fn assert_metal_dwt97_matches_native_encode(
         .expect("native lossy DWT 9/7 encode");
     let mut accelerator = MetalEncodeStageAccelerator::for_forward_dwt97_encode();
     let actual = {
-        let mut adapter = NativeEncodeStageAdapter::new(&mut accelerator);
         j2k_native::encode_with_accelerator(
             pixels,
             width,
@@ -4715,7 +4735,7 @@ fn assert_metal_dwt97_matches_native_encode(
             8,
             false,
             &options,
-            &mut adapter,
+            &mut accelerator,
         )
         .expect("Metal DWT 9/7 lossy encode")
     };

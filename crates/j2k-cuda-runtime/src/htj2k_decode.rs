@@ -14,6 +14,7 @@ use crate::{
 };
 use std::{os::raw::c_uint, sync::Arc, time::Instant};
 
+#[doc(hidden)]
 /// HTJ2K code-block decode job consumed by the CUDA entropy kernel launcher.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CudaHtj2kCodeBlockJob {
@@ -64,6 +65,7 @@ pub(crate) struct CudaHtj2kCodeBlockKernelJob {
 }
 
 /// One output buffer and its code-block jobs for batched HTJ2K cleanup decode.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct CudaHtj2kCleanupTarget<'a> {
     /// Device buffer receiving decoded integer coefficient bits.
@@ -94,6 +96,7 @@ pub(crate) struct CudaHtj2kCleanupMultiKernelJob {
 }
 
 /// One output buffer and its code-block jobs for batched HTJ2K dequantization.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct CudaHtj2kDequantizeTarget<'a> {
     /// Device buffer containing decoded integer coefficient bits.
@@ -117,6 +120,7 @@ pub(crate) struct CudaHtj2kDequantizeKernelJob {
     pub(crate) dequantization_step: f32,
 }
 
+#[doc(hidden)]
 /// Static HTJ2K entropy lookup tables uploaded for CUDA code-block decode.
 #[derive(Clone, Copy, Debug)]
 pub struct CudaHtj2kDecodeTables<'a> {
@@ -131,6 +135,7 @@ pub struct CudaHtj2kDecodeTables<'a> {
 }
 
 /// Status written by the CUDA HTJ2K entropy decoder for one code-block job.
+#[doc(hidden)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kStatus {
@@ -152,6 +157,7 @@ impl CudaHtj2kStatus {
 }
 
 /// CUDA event timings for resident HTJ2K decode stages.
+#[doc(hidden)]
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kDecodeStageTimings {
@@ -171,6 +177,7 @@ pub struct CudaHtj2kDecodeStageTimings {
 }
 
 /// Device-resident HTJ2K entropy decode result.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaHtj2kDecodeOutput {
     pub(crate) coefficients: CudaDeviceBuffer,
@@ -207,6 +214,7 @@ impl CudaHtj2kDecodeOutput {
 }
 
 /// Device-resident HTJ2K entropy decode result borrowed from a CUDA buffer pool.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaPooledHtj2kDecodeOutput {
     pub(crate) coefficients: CudaPooledDeviceBuffer,
@@ -249,6 +257,7 @@ impl CudaPooledHtj2kDecodeOutput {
 }
 
 /// Device-resident static HTJ2K cleanup decode lookup tables.
+#[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct CudaHtj2kDecodeTableResources {
     pub(crate) inner: Arc<CudaHtj2kDecodeTableResourceInner>,
@@ -263,6 +272,7 @@ pub(crate) struct CudaHtj2kDecodeTableResourceInner {
 }
 
 /// Device-resident HTJ2K decode payload plus shared lookup tables reused across sub-band dispatches.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaHtj2kDecodeResources {
     pub(crate) payload: CudaHtj2kDecodePayload,
@@ -276,6 +286,36 @@ pub(crate) enum CudaHtj2kDecodePayload {
     Pooled(CudaPooledDeviceBuffer),
 }
 
+#[derive(Clone, Copy)]
+struct Htj2kDecodeKernelTables<'a> {
+    vlc_table0: &'a CudaDeviceBuffer,
+    vlc_table1: &'a CudaDeviceBuffer,
+    uvlc_table0: &'a CudaDeviceBuffer,
+    uvlc_table1: &'a CudaDeviceBuffer,
+}
+
+#[derive(Clone, Copy)]
+struct Htj2kDecodeCodeblocksLaunch<'a> {
+    payload: &'a CudaDeviceBuffer,
+    coefficients: &'a CudaDeviceBuffer,
+    jobs: &'a CudaDeviceBuffer,
+    tables: Htj2kDecodeKernelTables<'a>,
+    statuses: &'a CudaDeviceBuffer,
+    job_count: usize,
+    mode: CudaLaunchMode,
+}
+
+#[derive(Clone, Copy)]
+struct Htj2kDecodeCodeblocksMultiLaunch<'a> {
+    kernel: CudaKernel,
+    payload: &'a CudaDeviceBuffer,
+    jobs: &'a CudaDeviceBuffer,
+    tables: Htj2kDecodeKernelTables<'a>,
+    statuses: &'a CudaDeviceBuffer,
+    job_count: usize,
+    mode: CudaLaunchMode,
+}
+
 impl CudaHtj2kDecodePayload {
     fn buffer(&self) -> Result<&CudaDeviceBuffer, CudaError> {
         match self {
@@ -285,12 +325,22 @@ impl CudaHtj2kDecodePayload {
     }
 }
 
+fn htj2k_decode_kernel_tables(resources: &CudaHtj2kDecodeResources) -> Htj2kDecodeKernelTables<'_> {
+    Htj2kDecodeKernelTables {
+        vlc_table0: &resources.tables.inner.vlc_table0,
+        vlc_table1: &resources.tables.inner.vlc_table1,
+        uvlc_table0: &resources.tables.inner.uvlc_table0,
+        uvlc_table1: &resources.tables.inner.uvlc_table1,
+    }
+}
+
 pub(crate) const HTJ2K_STATUS_OK: u32 = 0;
 
 pub(crate) const HTJ2K_STATUS_UNSUPPORTED: u32 = 2;
 
 impl CudaContext {
     /// Decode HTJ2K code blocks into a device-resident f32 coefficient plane.
+    #[doc(hidden)]
     #[allow(clippy::similar_names)]
     pub fn decode_htj2k_codeblocks(
         &self,
@@ -306,24 +356,8 @@ impl CudaContext {
         self.decode_htj2k_codeblocks_with_resources(&resources, jobs, output_words)
     }
 
-    /// Decode HTJ2K code blocks without collecting CUDA event timings.
-    #[allow(clippy::similar_names)]
-    pub fn decode_htj2k_codeblocks_untimed(
-        &self,
-        payload: &[u8],
-        jobs: &[CudaHtj2kCodeBlockJob],
-        tables: CudaHtj2kDecodeTables<'_>,
-        output_words: usize,
-    ) -> Result<CudaHtj2kDecodeOutput, CudaError> {
-        if jobs.is_empty() {
-            return self.decode_empty_htj2k_codeblocks(jobs, output_words);
-        }
-        let resources = self.upload_htj2k_decode_resources(payload, tables)?;
-        self.decode_htj2k_codeblocks_with_resources_untimed(&resources, jobs, output_words)
-    }
-
     /// Upload HTJ2K decode payload and lookup tables once for reuse by sub-band dispatches.
-    pub fn upload_htj2k_decode_resources(
+    fn upload_htj2k_decode_resources(
         &self,
         payload: &[u8],
         tables: CudaHtj2kDecodeTables<'_>,
@@ -333,6 +367,7 @@ impl CudaContext {
     }
 
     /// Upload static HTJ2K cleanup decode lookup tables once for reuse.
+    #[doc(hidden)]
     pub fn upload_htj2k_decode_table_resources(
         &self,
         tables: CudaHtj2kDecodeTables<'_>,
@@ -349,6 +384,7 @@ impl CudaContext {
     }
 
     /// Upload an HTJ2K decode payload while reusing already resident cleanup tables.
+    #[doc(hidden)]
     pub fn upload_htj2k_decode_resources_with_tables(
         &self,
         payload: &[u8],
@@ -363,6 +399,7 @@ impl CudaContext {
     }
 
     /// Upload an HTJ2K decode payload into a pooled buffer while reusing already resident cleanup tables.
+    #[doc(hidden)]
     pub fn upload_htj2k_decode_resources_with_tables_and_pool(
         &self,
         payload: &[u8],
@@ -378,7 +415,7 @@ impl CudaContext {
     }
 
     /// Decode HTJ2K code blocks using already resident payload and lookup tables.
-    pub fn decode_htj2k_codeblocks_with_resources(
+    pub(crate) fn decode_htj2k_codeblocks_with_resources(
         &self,
         resources: &CudaHtj2kDecodeResources,
         jobs: &[CudaHtj2kCodeBlockJob],
@@ -387,96 +424,10 @@ impl CudaContext {
         self.decode_htj2k_codeblocks_with_resources_impl(resources, jobs, output_words, true)
     }
 
-    /// Decode HTJ2K code blocks using resident resources without CUDA event timings.
-    pub fn decode_htj2k_codeblocks_with_resources_untimed(
-        &self,
-        resources: &CudaHtj2kDecodeResources,
-        jobs: &[CudaHtj2kCodeBlockJob],
-        output_words: usize,
-    ) -> Result<CudaHtj2kDecodeOutput, CudaError> {
-        self.decode_htj2k_codeblocks_with_resources_impl(resources, jobs, output_words, false)
-    }
-
-    /// Decode HTJ2K code blocks using resident resources and caller-owned
-    /// transient buffer reuse.
-    pub fn decode_htj2k_codeblocks_with_resources_and_pool(
-        &self,
-        resources: &CudaHtj2kDecodeResources,
-        jobs: &[CudaHtj2kCodeBlockJob],
-        output_words: usize,
-        pool: &CudaBufferPool,
-    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
-        self.decode_htj2k_codeblocks_with_resources_and_pool_impl(
-            resources,
-            jobs,
-            output_words,
-            pool,
-            true,
-            true,
-        )
-    }
-
-    /// Decode HTJ2K code blocks using resident resources and caller-owned
-    /// transient buffer reuse, without CUDA event timings.
-    pub fn decode_htj2k_codeblocks_with_resources_untimed_and_pool(
-        &self,
-        resources: &CudaHtj2kDecodeResources,
-        jobs: &[CudaHtj2kCodeBlockJob],
-        output_words: usize,
-        pool: &CudaBufferPool,
-    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
-        self.decode_htj2k_codeblocks_with_resources_and_pool_impl(
-            resources,
-            jobs,
-            output_words,
-            pool,
-            false,
-            true,
-        )
-    }
-
-    /// Decode HTJ2K cleanup passes into resident coefficient buffers using
-    /// caller-owned transient buffer reuse. Dequantization is left to a later
-    /// dispatch.
-    pub fn decode_htj2k_codeblocks_cleanup_with_resources_and_pool(
-        &self,
-        resources: &CudaHtj2kDecodeResources,
-        jobs: &[CudaHtj2kCodeBlockJob],
-        output_words: usize,
-        pool: &CudaBufferPool,
-    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
-        self.decode_htj2k_codeblocks_with_resources_and_pool_impl(
-            resources,
-            jobs,
-            output_words,
-            pool,
-            true,
-            false,
-        )
-    }
-
-    /// Decode HTJ2K cleanup passes into resident coefficient buffers using
-    /// caller-owned transient buffer reuse, without CUDA event timings.
-    pub fn decode_htj2k_codeblocks_cleanup_with_resources_untimed_and_pool(
-        &self,
-        resources: &CudaHtj2kDecodeResources,
-        jobs: &[CudaHtj2kCodeBlockJob],
-        output_words: usize,
-        pool: &CudaBufferPool,
-    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
-        self.decode_htj2k_codeblocks_with_resources_and_pool_impl(
-            resources,
-            jobs,
-            output_words,
-            pool,
-            false,
-            false,
-        )
-    }
-
     /// Allocate and initialize an HTJ2K coefficient output buffer without
     /// launching entropy cleanup decode. This is used when cleanup work is
     /// batched across multiple output buffers.
+    #[doc(hidden)]
     pub fn allocate_htj2k_codeblock_coefficients_with_pool(
         &self,
         jobs: &[CudaHtj2kCodeBlockJob],
@@ -500,23 +451,10 @@ impl CudaContext {
         })
     }
 
-    /// Decode HTJ2K cleanup passes for multiple output buffers with one CUDA
-    /// dispatch. Dequantization is left to a later dispatch.
-    pub fn decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool(
-        &self,
-        resources: &CudaHtj2kDecodeResources,
-        targets: &[CudaHtj2kCleanupTarget<'_>],
-        pool: &CudaBufferPool,
-    ) -> Result<CudaExecutionStats, CudaError> {
-        self.decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool_timed(
-            resources, targets, pool, false,
-        )
-        .map(|(execution, _timings)| execution)
-    }
-
     /// Enqueue HTJ2K cleanup passes for multiple output buffers with one CUDA
     /// dispatch. The returned value must be kept live until `finish` validates
     /// the kernel statuses after the default stream has completed.
+    #[doc(hidden)]
     pub fn decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool(
         &self,
         resources: &CudaHtj2kDecodeResources,
@@ -535,21 +473,20 @@ impl CudaContext {
             });
         }
         let (decode_kernel, decode_kernel_name) = htj2k_decode_multi_kernel_for_jobs(&kernel_jobs);
+        let tables = htj2k_decode_kernel_tables(resources);
 
         let jobs_buffer = pool.upload(htj2k_cleanup_multi_jobs_as_bytes(&kernel_jobs))?;
         let status_buffer = pool.take(htj2k_statuses_byte_len(kernel_jobs.len())?)?;
-        let launch_result = self.launch_htj2k_decode_codeblocks_multi(
-            decode_kernel,
-            resources.payload.buffer()?,
-            pooled_device_buffer(&jobs_buffer)?,
-            &resources.tables.inner.vlc_table0,
-            &resources.tables.inner.vlc_table1,
-            &resources.tables.inner.uvlc_table0,
-            &resources.tables.inner.uvlc_table1,
-            pooled_device_buffer(&status_buffer)?,
-            kernel_jobs.len(),
-            CudaLaunchMode::Async,
-        );
+        let launch_result =
+            self.launch_htj2k_decode_codeblocks_multi(Htj2kDecodeCodeblocksMultiLaunch {
+                kernel: decode_kernel,
+                payload: resources.payload.buffer()?,
+                jobs: pooled_device_buffer(&jobs_buffer)?,
+                tables,
+                statuses: pooled_device_buffer(&status_buffer)?,
+                job_count: kernel_jobs.len(),
+                mode: CudaLaunchMode::Async,
+            });
         if let Err(error) = launch_result {
             let _ = self.synchronize();
             return Err(error);
@@ -575,6 +512,7 @@ impl CudaContext {
     /// Dequantization is left to a later dispatch. When `collect_stage_timings`
     /// is false, the cleanup kernel launch is left asynchronous and the
     /// mandatory status readback remains the completion point.
+    #[doc(hidden)]
     pub fn decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool_timed(
         &self,
         resources: &CudaHtj2kDecodeResources,
@@ -594,32 +532,27 @@ impl CudaContext {
         let jobs_buffer = pool.upload(htj2k_cleanup_multi_jobs_as_bytes(&kernel_jobs))?;
         let status_buffer = pool.take(htj2k_statuses_byte_len(kernel_jobs.len())?)?;
         let (decode_kernel, decode_kernel_name) = htj2k_decode_multi_kernel_for_jobs(&kernel_jobs);
+        let tables = htj2k_decode_kernel_tables(resources);
         if collect_stage_timings {
-            self.launch_htj2k_decode_codeblocks_multi(
-                decode_kernel,
-                resources.payload.buffer()?,
-                pooled_device_buffer(&jobs_buffer)?,
-                &resources.tables.inner.vlc_table0,
-                &resources.tables.inner.vlc_table1,
-                &resources.tables.inner.uvlc_table0,
-                &resources.tables.inner.uvlc_table1,
-                pooled_device_buffer(&status_buffer)?,
-                kernel_jobs.len(),
-                CudaLaunchMode::Sync,
-            )?;
+            self.launch_htj2k_decode_codeblocks_multi(Htj2kDecodeCodeblocksMultiLaunch {
+                kernel: decode_kernel,
+                payload: resources.payload.buffer()?,
+                jobs: pooled_device_buffer(&jobs_buffer)?,
+                tables,
+                statuses: pooled_device_buffer(&status_buffer)?,
+                job_count: kernel_jobs.len(),
+                mode: CudaLaunchMode::Sync,
+            })?;
         } else {
-            self.launch_htj2k_decode_codeblocks_multi(
-                decode_kernel,
-                resources.payload.buffer()?,
-                pooled_device_buffer(&jobs_buffer)?,
-                &resources.tables.inner.vlc_table0,
-                &resources.tables.inner.vlc_table1,
-                &resources.tables.inner.uvlc_table0,
-                &resources.tables.inner.uvlc_table1,
-                pooled_device_buffer(&status_buffer)?,
-                kernel_jobs.len(),
-                CudaLaunchMode::Async,
-            )?;
+            self.launch_htj2k_decode_codeblocks_multi(Htj2kDecodeCodeblocksMultiLaunch {
+                kernel: decode_kernel,
+                payload: resources.payload.buffer()?,
+                jobs: pooled_device_buffer(&jobs_buffer)?,
+                tables,
+                statuses: pooled_device_buffer(&status_buffer)?,
+                job_count: kernel_jobs.len(),
+                mode: CudaLaunchMode::Async,
+            })?;
         }
 
         let mut statuses = vec![CudaHtj2kStatus::default(); kernel_jobs.len()];
@@ -651,6 +584,7 @@ impl CudaContext {
     /// Decode HTJ2K cleanup-only passes and dequantize their coefficients in
     /// one CUDA dispatch. Targets containing refinement passes are rejected so
     /// callers can fall back to cleanup followed by dequantization.
+    #[doc(hidden)]
     pub fn decode_htj2k_codeblocks_cleanup_dequantize_multi_with_resources_and_pool_timed(
         &self,
         resources: &CudaHtj2kDecodeResources,
@@ -676,32 +610,27 @@ impl CudaContext {
 
         let jobs_buffer = pool.upload(htj2k_cleanup_multi_jobs_as_bytes(&kernel_jobs))?;
         let status_buffer = pool.take(htj2k_statuses_byte_len(kernel_jobs.len())?)?;
+        let tables = htj2k_decode_kernel_tables(resources);
         if collect_stage_timings {
-            self.launch_htj2k_decode_codeblocks_multi(
-                decode_kernel,
-                resources.payload.buffer()?,
-                pooled_device_buffer(&jobs_buffer)?,
-                &resources.tables.inner.vlc_table0,
-                &resources.tables.inner.vlc_table1,
-                &resources.tables.inner.uvlc_table0,
-                &resources.tables.inner.uvlc_table1,
-                pooled_device_buffer(&status_buffer)?,
-                kernel_jobs.len(),
-                CudaLaunchMode::Sync,
-            )?;
+            self.launch_htj2k_decode_codeblocks_multi(Htj2kDecodeCodeblocksMultiLaunch {
+                kernel: decode_kernel,
+                payload: resources.payload.buffer()?,
+                jobs: pooled_device_buffer(&jobs_buffer)?,
+                tables,
+                statuses: pooled_device_buffer(&status_buffer)?,
+                job_count: kernel_jobs.len(),
+                mode: CudaLaunchMode::Sync,
+            })?;
         } else {
-            self.launch_htj2k_decode_codeblocks_multi(
-                decode_kernel,
-                resources.payload.buffer()?,
-                pooled_device_buffer(&jobs_buffer)?,
-                &resources.tables.inner.vlc_table0,
-                &resources.tables.inner.vlc_table1,
-                &resources.tables.inner.uvlc_table0,
-                &resources.tables.inner.uvlc_table1,
-                pooled_device_buffer(&status_buffer)?,
-                kernel_jobs.len(),
-                CudaLaunchMode::Async,
-            )?;
+            self.launch_htj2k_decode_codeblocks_multi(Htj2kDecodeCodeblocksMultiLaunch {
+                kernel: decode_kernel,
+                payload: resources.payload.buffer()?,
+                jobs: pooled_device_buffer(&jobs_buffer)?,
+                tables,
+                statuses: pooled_device_buffer(&status_buffer)?,
+                job_count: kernel_jobs.len(),
+                mode: CudaLaunchMode::Async,
+            })?;
         }
 
         let mut statuses = vec![CudaHtj2kStatus::default(); kernel_jobs.len()];
@@ -803,97 +732,6 @@ impl CudaContext {
         })
     }
 
-    fn decode_htj2k_codeblocks_with_resources_and_pool_impl(
-        &self,
-        resources: &CudaHtj2kDecodeResources,
-        jobs: &[CudaHtj2kCodeBlockJob],
-        output_words: usize,
-        pool: &CudaBufferPool,
-        collect_stage_timings: bool,
-        dequantize: bool,
-    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
-        self.inner.set_current()?;
-        let output_bytes = output_words
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or(CudaError::LengthTooLarge { len: output_words })?;
-        let coefficients = pool.take(output_bytes)?;
-        let coefficient_buffer = pooled_device_buffer(&coefficients)?;
-        if htj2k_decode_needs_zero_fill(jobs, output_words)? {
-            self.memset_d32(coefficient_buffer, 0, output_words)?;
-        }
-        if jobs.is_empty() {
-            return Ok(CudaPooledHtj2kDecodeOutput {
-                coefficients,
-                execution: CudaExecutionStats::default(),
-                statuses: Vec::new(),
-                stage_timings: CudaHtj2kDecodeStageTimings::default(),
-            });
-        }
-
-        let kernel_jobs = htj2k_kernel_jobs(jobs, resources.payload_len, output_words)?;
-        let jobs_buffer = pool.upload(htj2k_jobs_as_bytes(&kernel_jobs))?;
-        let status_buffer = pool.take(htj2k_statuses_byte_len(jobs.len())?)?;
-
-        let has_refinement = jobs
-            .iter()
-            .any(|job| job.refinement_length > 0 || job.number_of_coding_passes > 1);
-        let jobs_device = pooled_device_buffer(&jobs_buffer)?;
-        let status_device = pooled_device_buffer(&status_buffer)?;
-        let (ht_cleanup_us, dequant_us, kernel_dispatches) = if dequantize {
-            let (ht_cleanup_us, dequant_us) = self.submit_htj2k_decode_and_dequantize(
-                resources,
-                coefficient_buffer,
-                jobs_device,
-                status_device,
-                jobs.len(),
-                collect_stage_timings,
-            )?;
-            (ht_cleanup_us, dequant_us, 2)
-        } else {
-            let ht_cleanup_us = self.submit_htj2k_decode_cleanup(
-                resources,
-                coefficient_buffer,
-                jobs_device,
-                status_device,
-                jobs.len(),
-                collect_stage_timings,
-            )?;
-            (ht_cleanup_us, 0, 1)
-        };
-
-        let mut statuses = vec![CudaHtj2kStatus::default(); jobs.len()];
-        if let Err(error) = status_buffer.copy_to_host(htj2k_statuses_as_bytes_mut(&mut statuses)) {
-            if !collect_stage_timings {
-                let _ = self.synchronize();
-            }
-            return Err(error);
-        }
-        if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
-            return Err(CudaError::KernelStatus {
-                kernel: "j2k_htj2k_decode_codeblocks",
-                code: status.code,
-                detail: status.detail,
-            });
-        }
-
-        Ok(CudaPooledHtj2kDecodeOutput {
-            coefficients,
-            execution: CudaExecutionStats {
-                kernel_dispatches,
-                copy_kernel_dispatches: 0,
-                decode_kernel_dispatches: kernel_dispatches,
-                hardware_decode: false,
-            },
-            statuses,
-            stage_timings: CudaHtj2kDecodeStageTimings {
-                ht_cleanup_us,
-                ht_refine_us: if has_refinement { ht_cleanup_us } else { 0 },
-                dequant_us,
-                ..CudaHtj2kDecodeStageTimings::default()
-            },
-        })
-    }
-
     fn submit_htj2k_decode_and_dequantize(
         &self,
         resources: &CudaHtj2kDecodeResources,
@@ -929,36 +767,31 @@ impl CudaContext {
         job_count: usize,
         collect_stage_timings: bool,
     ) -> Result<u128, CudaError> {
+        let tables = htj2k_decode_kernel_tables(resources);
         let ((), ht_cleanup_us) = self.time_default_stream_named_us_if(
             collect_stage_timings,
             "j2k.htj2k.decode.cleanup",
             || {
                 if !collect_stage_timings {
-                    return self.launch_htj2k_decode_codeblocks(
-                        resources.payload.buffer()?,
+                    return self.launch_htj2k_decode_codeblocks(Htj2kDecodeCodeblocksLaunch {
+                        payload: resources.payload.buffer()?,
                         coefficients,
-                        jobs_buffer,
-                        &resources.tables.inner.vlc_table0,
-                        &resources.tables.inner.vlc_table1,
-                        &resources.tables.inner.uvlc_table0,
-                        &resources.tables.inner.uvlc_table1,
-                        status_buffer,
+                        jobs: jobs_buffer,
+                        tables,
+                        statuses: status_buffer,
                         job_count,
-                        CudaLaunchMode::Async,
-                    );
+                        mode: CudaLaunchMode::Async,
+                    });
                 }
-                self.launch_htj2k_decode_codeblocks(
-                    resources.payload.buffer()?,
+                self.launch_htj2k_decode_codeblocks(Htj2kDecodeCodeblocksLaunch {
+                    payload: resources.payload.buffer()?,
                     coefficients,
-                    jobs_buffer,
-                    &resources.tables.inner.vlc_table0,
-                    &resources.tables.inner.vlc_table1,
-                    &resources.tables.inner.uvlc_table0,
-                    &resources.tables.inner.uvlc_table1,
-                    status_buffer,
+                    jobs: jobs_buffer,
+                    tables,
+                    statuses: status_buffer,
                     job_count,
-                    CudaLaunchMode::Sync,
-                )
+                    mode: CudaLaunchMode::Sync,
+                })
             },
         )?;
         Ok(ht_cleanup_us)
@@ -1004,29 +837,9 @@ impl CudaContext {
     }
 
     /// Dequantize HTJ2K code-block outputs that live in multiple device buffers
-    /// with one CUDA dispatch.
-    pub fn j2k_dequantize_htj2k_codeblocks_multi_device(
-        &self,
-        targets: &[CudaHtj2kDequantizeTarget<'_>],
-    ) -> Result<CudaExecutionStats, CudaError> {
-        let pool = self.buffer_pool();
-        self.j2k_dequantize_htj2k_codeblocks_multi_device_with_pool(targets, &pool)
-    }
-
-    /// Dequantize HTJ2K code-block outputs that live in multiple device buffers
     /// with one CUDA dispatch, reusing caller-owned transient storage.
+    #[doc(hidden)]
     pub fn j2k_dequantize_htj2k_codeblocks_multi_device_with_pool(
-        &self,
-        targets: &[CudaHtj2kDequantizeTarget<'_>],
-        pool: &CudaBufferPool,
-    ) -> Result<CudaExecutionStats, CudaError> {
-        self.j2k_dequantize_htj2k_codeblocks_multi_device_with_pool_impl(targets, pool, true)
-    }
-
-    /// Dequantize HTJ2K code-block outputs in multiple device buffers without
-    /// CUDA event timings. The launch is still synchronized before returning
-    /// so the pooled job upload cannot be reused while the kernel reads it.
-    pub fn j2k_dequantize_htj2k_codeblocks_multi_device_untimed_with_pool(
         &self,
         targets: &[CudaHtj2kDequantizeTarget<'_>],
         pool: &CudaBufferPool,
@@ -1059,27 +872,27 @@ impl CudaContext {
         })
     }
 
-    #[allow(clippy::similar_names, clippy::too_many_arguments)]
+    #[allow(clippy::similar_names)]
     fn launch_htj2k_decode_codeblocks(
         &self,
-        payload: &CudaDeviceBuffer,
-        coefficients: &CudaDeviceBuffer,
-        jobs: &CudaDeviceBuffer,
-        vlc_table0: &CudaDeviceBuffer,
-        vlc_table1: &CudaDeviceBuffer,
-        uvlc_table0: &CudaDeviceBuffer,
-        uvlc_table1: &CudaDeviceBuffer,
-        statuses: &CudaDeviceBuffer,
-        job_count: usize,
-        mode: CudaLaunchMode,
+        launch: Htj2kDecodeCodeblocksLaunch<'_>,
     ) -> Result<(), CudaError> {
+        let Htj2kDecodeCodeblocksLaunch {
+            payload,
+            coefficients,
+            jobs,
+            tables,
+            statuses,
+            job_count,
+            mode,
+        } = launch;
         let mut payload_ptr = payload.device_ptr();
         let mut coefficients_ptr = coefficients.device_ptr();
         let mut jobs_ptr = jobs.device_ptr();
-        let mut vlc_table0_ptr = vlc_table0.device_ptr();
-        let mut vlc_table1_ptr = vlc_table1.device_ptr();
-        let mut uvlc_table0_ptr = uvlc_table0.device_ptr();
-        let mut uvlc_table1_ptr = uvlc_table1.device_ptr();
+        let mut vlc_table0_ptr = tables.vlc_table0.device_ptr();
+        let mut vlc_table1_ptr = tables.vlc_table1.device_ptr();
+        let mut uvlc_table0_ptr = tables.uvlc_table0.device_ptr();
+        let mut uvlc_table1_ptr = tables.uvlc_table1.device_ptr();
         let mut statuses_ptr = statuses.device_ptr();
         let mut job_count = c_uint::try_from(job_count)
             .map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
@@ -1108,26 +921,26 @@ impl CudaContext {
         )
     }
 
-    #[allow(clippy::similar_names, clippy::too_many_arguments)]
+    #[allow(clippy::similar_names)]
     fn launch_htj2k_decode_codeblocks_multi(
         &self,
-        kernel: CudaKernel,
-        payload: &CudaDeviceBuffer,
-        jobs: &CudaDeviceBuffer,
-        vlc_table0: &CudaDeviceBuffer,
-        vlc_table1: &CudaDeviceBuffer,
-        uvlc_table0: &CudaDeviceBuffer,
-        uvlc_table1: &CudaDeviceBuffer,
-        statuses: &CudaDeviceBuffer,
-        job_count: usize,
-        mode: CudaLaunchMode,
+        launch: Htj2kDecodeCodeblocksMultiLaunch<'_>,
     ) -> Result<(), CudaError> {
+        let Htj2kDecodeCodeblocksMultiLaunch {
+            kernel,
+            payload,
+            jobs,
+            tables,
+            statuses,
+            job_count,
+            mode,
+        } = launch;
         let mut payload_ptr = payload.device_ptr();
         let mut jobs_ptr = jobs.device_ptr();
-        let mut vlc_table0_ptr = vlc_table0.device_ptr();
-        let mut vlc_table1_ptr = vlc_table1.device_ptr();
-        let mut uvlc_table0_ptr = uvlc_table0.device_ptr();
-        let mut uvlc_table1_ptr = uvlc_table1.device_ptr();
+        let mut vlc_table0_ptr = tables.vlc_table0.device_ptr();
+        let mut vlc_table1_ptr = tables.vlc_table1.device_ptr();
+        let mut uvlc_table0_ptr = tables.uvlc_table0.device_ptr();
+        let mut uvlc_table1_ptr = tables.uvlc_table1.device_ptr();
         let mut statuses_ptr = statuses.device_ptr();
         let mut job_count = c_uint::try_from(job_count)
             .map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
@@ -1254,6 +1067,7 @@ impl CudaContext {
 
 /// Enqueued HTJ2K cleanup work plus pooled resources/statuses that must stay
 /// live until `finish` validates kernel completion.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaQueuedHtj2kCleanup {
     pub(crate) resources: Vec<CudaPooledDeviceBuffer>,

@@ -40,6 +40,7 @@ j2k-test-support = { path = "../j2k-test-support" }
 [[bench]]
 name = "device_decode"
 harness = false
+test = false
 
 [lints.rust]
 unsafe_code = "allow"

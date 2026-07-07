@@ -6,9 +6,10 @@ use j2k_core::{
 use j2k_cuda::{Codec, CudaSession, Error, J2kDecoder, SurfaceResidency};
 use j2k_native::{encode, EncodeOptions};
 use j2k_test_support::{
-    cuda_runtime_required, cuda_strict_oxide_required, htj2k_gray8_97_fixture, htj2k_gray8_fixture,
-    htj2k_rgb8_97_fixture, htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture,
-    openhtj2k_refinement_odd_fixture, rgb16ne_to_opaque_rgba16ne,
+    cuda_device_unavailable_is_skip, cuda_runtime_and_strict_oxide_gate, cuda_runtime_gate,
+    htj2k_gray8_97_fixture, htj2k_gray8_fixture, htj2k_rgb8_97_fixture,
+    htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture, openhtj2k_refinement_odd_fixture,
+    rgb16ne_to_opaque_rgba16ne,
 };
 
 fn fixture() -> Vec<u8> {
@@ -196,7 +197,7 @@ fn explicit_cuda_request_validates_decode_before_upload() {
 
 #[test]
 fn explicit_cuda_request_returns_cuda_surface_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -226,7 +227,7 @@ fn explicit_cuda_request_returns_cuda_surface_when_cuda_runtime_required() {
 
 #[test]
 fn explicit_cuda_profile_reports_gpu_stage_timings_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -250,7 +251,7 @@ fn explicit_cuda_profile_reports_gpu_stage_timings_when_cuda_runtime_required() 
 
 #[test]
 fn explicit_cuda_region_surface_matches_host_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -292,7 +293,7 @@ fn explicit_cuda_region_surface_matches_host_when_cuda_runtime_required() {
 
 #[test]
 fn explicit_cuda_scaled_surface_matches_host_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -330,7 +331,7 @@ fn explicit_cuda_scaled_surface_matches_host_when_cuda_runtime_required() {
 
 #[test]
 fn explicit_cuda_rgb8_request_returns_resident_surface_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -410,7 +411,7 @@ fn explicit_cuda_rgba_requests_reach_runtime_boundary() {
 
 #[test]
 fn explicit_cuda_rgb8_region_surface_matches_host_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -452,7 +453,7 @@ fn explicit_cuda_rgb8_region_surface_matches_host_when_cuda_runtime_required() {
 
 #[test]
 fn explicit_cuda_scaled_rgb8_surface_matches_host_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -490,7 +491,7 @@ fn explicit_cuda_scaled_rgb8_surface_matches_host_when_cuda_runtime_required() {
 
 #[test]
 fn explicit_cuda_rgb8_region_scaled_surface_matches_host_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -535,7 +536,7 @@ fn explicit_cuda_rgb8_region_scaled_surface_matches_host_when_cuda_runtime_requi
 
 #[test]
 fn explicit_cuda_gray16_and_rgb16_requests_return_resident_surfaces_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -588,7 +589,7 @@ fn explicit_cuda_gray16_and_rgb16_requests_return_resident_surfaces_when_cuda_ru
 
 #[test]
 fn explicit_cuda_rgba8_and_rgba16_requests_return_resident_surfaces_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -692,7 +693,7 @@ fn explicit_cuda_16bit_and_rgba_region_scaled_requests_reach_runtime_boundary() 
 
 #[test]
 fn explicit_cuda_16bit_and_rgba_region_scaled_surfaces_match_host_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -798,7 +799,7 @@ fn explicit_cuda_irreversible_97_requests_reach_runtime_boundary() {
 
 #[test]
 fn explicit_cuda_irreversible_97_surfaces_match_host_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -883,7 +884,7 @@ fn explicit_cuda_refinement_fixture_request_reaches_runtime_boundary() {
 
 #[test]
 fn explicit_cuda_refinement_fixture_surface_matches_oracle_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -906,7 +907,7 @@ fn explicit_cuda_refinement_fixture_surface_matches_oracle_when_cuda_runtime_req
 
 #[test]
 fn explicit_cuda_refinement_fixture_profile_reports_refine_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -928,7 +929,7 @@ fn explicit_cuda_refinement_fixture_profile_reports_refine_when_cuda_runtime_req
 
 #[test]
 fn explicit_cpu_staged_cuda_api_marks_cpu_upload_residency_when_cuda_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -959,7 +960,7 @@ fn explicit_cpu_staged_cuda_api_marks_cpu_upload_residency_when_cuda_runtime_req
 
 #[test]
 fn explicit_cuda_region_scaled_surface_matches_host_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -1004,7 +1005,7 @@ fn explicit_cuda_region_scaled_surface_matches_host_when_cuda_runtime_required()
 
 #[test]
 fn explicit_cuda_download_respects_padded_stride_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -1097,7 +1098,7 @@ fn submit_to_device_auto_does_not_initialize_cuda_runtime() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn explicit_cuda_submissions_reuse_session_runtime_when_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -1204,7 +1205,7 @@ fn auto_region_scaled_surface_matches_host_decode() {
 
 #[test]
 fn tile_batch_region_cuda_surface_matches_host_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -1253,7 +1254,7 @@ fn tile_batch_region_cuda_surface_matches_host_when_cuda_runtime_required() {
 
 #[test]
 fn tile_batch_region_scaled_cuda_surface_matches_host_when_cuda_runtime_required() {
-    if !cuda_runtime_required() || !cuda_strict_oxide_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
         return;
     }
 
@@ -1375,9 +1376,9 @@ fn decode_tiles_to_device_explicit_cuda_rgb8_batch_matches_host_bytes() {
         BackendRequest::Cuda,
     ) {
         Ok(surfaces) => surfaces,
-        Err(Error::CudaUnavailable) if !cuda_runtime_required() => return,
+        Err(Error::CudaUnavailable) if cuda_device_unavailable_is_skip(module_path!()) => return,
         #[cfg(feature = "cuda-runtime")]
-        Err(Error::CudaRuntime { .. }) if !cuda_runtime_required() => return,
+        Err(Error::CudaRuntime { .. }) if cuda_device_unavailable_is_skip(module_path!()) => return,
         Err(error) => panic!("strict CUDA RGB8 batch decode failed: {error}"),
     };
 
@@ -1421,9 +1422,9 @@ fn decode_tiles_to_device_explicit_cuda_rgba8_batch_matches_host_bytes() {
         BackendRequest::Cuda,
     ) {
         Ok(surfaces) => surfaces,
-        Err(Error::CudaUnavailable) if !cuda_runtime_required() => return,
+        Err(Error::CudaUnavailable) if cuda_device_unavailable_is_skip(module_path!()) => return,
         #[cfg(feature = "cuda-runtime")]
-        Err(Error::CudaRuntime { .. }) if !cuda_runtime_required() => return,
+        Err(Error::CudaRuntime { .. }) if cuda_device_unavailable_is_skip(module_path!()) => return,
         Err(error) => panic!("strict CUDA Rgba8 batch decode failed: {error}"),
     };
 

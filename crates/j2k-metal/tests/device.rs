@@ -6,17 +6,34 @@ use j2k::J2kContext;
 use j2k_core::{
     BackendKind, BackendRequest, CodecError, DeviceSubmission, DeviceSurface, Downscale,
     ImageDecode, ImageDecodeDevice, PixelFormat, Rect, TileBatchDecodeDevice,
-    TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
+    TileBatchDecodeManyDevice, TileBatchDecodeSubmit, TileRegionScaledDeviceDecodeRequest,
 };
 use j2k_metal::{
-    Codec, DecodeOperation, Error, J2kDecoder, J2kScratchPool, MetalBackendSession, MetalSession,
-    MetalTileBatch, SurfaceResidency,
+    Codec, DecodeOperation, Error, J2kDecoder, J2kScratchPool, MetalBackendSession,
+    MetalDecodeRequest, MetalSession, MetalTileBatch, SurfaceResidency,
 };
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
 
 const UNSUPPORTED_RGBA16_REASON: &str = "J2K Metal does not support PixelFormat::Rgba16";
 const AUTO_DECODE_CPU_FALLBACK_REASON: &str =
     "J2K Metal Auto decode stays on CPU until decode benchmark evidence justifies Metal routing";
+
+macro_rules! submit_tile_region_scaled_to_device {
+    ($ctx:expr, $session:expr, $pool:expr, $input:expr, $fmt:expr, $roi:expr, $scale:expr, $backend:expr $(,)?) => {
+        Codec::submit_tile_region_scaled_to_device(
+            $ctx,
+            $session,
+            $pool,
+            TileRegionScaledDeviceDecodeRequest {
+                input: $input,
+                fmt: $fmt,
+                roi: $roi,
+                scale: $scale,
+                backend: $backend,
+            },
+        )
+    };
+}
 
 fn assert_unsupported_rgba16_report(result: Result<j2k_metal::DecodeSurfaceWithReport, Error>) {
     match result {
@@ -410,7 +427,10 @@ fn decode_to_device_with_session_uses_session_device() {
     let mut decoder = J2kDecoder::new(&bytes).expect("metal decoder");
 
     let surface = decoder
-        .decode_to_device_with_session(PixelFormat::Gray8, &session)
+        .decode_request_to_device_with_session(
+            MetalDecodeRequest::full(PixelFormat::Gray8, BackendRequest::Metal),
+            &session,
+        )
         .expect("session decode");
 
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
@@ -445,7 +465,10 @@ fn decode_scaled_to_device_with_session_supports_rgb8_resident_surface() {
 
     let mut decoder = J2kDecoder::new(&bytes).expect("metal decoder");
     let surface = decoder
-        .decode_scaled_to_device_with_session(PixelFormat::Rgb8, scale, &session)
+        .decode_request_to_device_with_session(
+            MetalDecodeRequest::scaled(PixelFormat::Rgb8, scale, BackendRequest::Metal),
+            &session,
+        )
         .expect("session scaled RGB8 decode");
 
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
@@ -471,7 +494,10 @@ fn explicit_cpu_staged_metal_api_uses_session_device_and_marks_residency() {
         .expect("host decode");
 
     let surface = decoder
-        .decode_to_cpu_staged_metal_surface_with_session(PixelFormat::Rgb8, &session)
+        .decode_request_to_cpu_staged_metal_surface_with_session(
+            MetalDecodeRequest::full(PixelFormat::Rgb8, BackendRequest::Metal),
+            &session,
+        )
         .expect("CPU-staged Metal surface");
 
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
@@ -489,7 +515,10 @@ fn decode_to_device_with_session_unsupported_rgba16_is_rejected() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut decoder = J2kDecoder::new(&bytes).expect("metal decoder");
 
-    let result = decoder.decode_to_device_with_session(PixelFormat::Rgba16, &session);
+    let result = decoder.decode_request_to_device_with_session(
+        MetalDecodeRequest::full(PixelFormat::Rgba16, BackendRequest::Metal),
+        &session,
+    );
 
     match result {
         Err(Error::UnsupportedMetalRequest { reason }) => {
@@ -766,16 +795,18 @@ fn metal_tile_batch_decodes_submitted_tiles_in_order() {
     assert!(batch.is_empty());
     assert_eq!(
         batch
-            .push_tile(&classic_bytes, PixelFormat::Gray8, BackendRequest::Metal)
+            .push_tile_request(
+                &classic_bytes,
+                MetalDecodeRequest::full(PixelFormat::Gray8, BackendRequest::Metal)
+            )
             .expect("push classic tile"),
         0
     );
     assert_eq!(
         batch
-            .push_shared_tile(
+            .push_shared_tile_request(
                 Arc::<[u8]>::from(reversed_bytes.as_slice()),
-                PixelFormat::Gray8,
-                BackendRequest::Metal,
+                MetalDecodeRequest::full(PixelFormat::Gray8, BackendRequest::Metal)
             )
             .expect("push reversed tile"),
         1
@@ -855,17 +886,22 @@ fn metal_tile_batch_supports_region_and_scaled_requests() {
 
     assert_eq!(
         batch
-            .push_tile_region(&bytes, PixelFormat::Gray8, roi, BackendRequest::Metal)
+            .push_tile_request(
+                &bytes,
+                MetalDecodeRequest::region(PixelFormat::Gray8, roi, BackendRequest::Metal)
+            )
             .expect("push region tile"),
         0
     );
     assert_eq!(
         batch
-            .push_tile_scaled(
+            .push_tile_request(
                 &bytes,
-                PixelFormat::Gray8,
-                Downscale::Half,
-                BackendRequest::Metal
+                MetalDecodeRequest::scaled(
+                    PixelFormat::Gray8,
+                    Downscale::Half,
+                    BackendRequest::Metal
+                )
             )
             .expect("push scaled tile"),
         1
@@ -894,12 +930,14 @@ fn metal_tile_batch_supports_region_scaled_requests() {
 
     assert_eq!(
         batch
-            .push_tile_region_scaled(
+            .push_tile_request(
                 &bytes,
-                PixelFormat::Gray8,
-                roi,
-                scale,
-                BackendRequest::Metal
+                MetalDecodeRequest::region_scaled(
+                    PixelFormat::Gray8,
+                    roi,
+                    scale,
+                    BackendRequest::Metal
+                )
             )
             .expect("push region scaled tile"),
         0
@@ -928,7 +966,7 @@ fn submitted_distinct_region_scaled_htj2k_grayscale_tiles_flush_as_one_device_ba
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
 
-    let ht_submission = Codec::submit_tile_region_scaled_to_device(
+    let ht_submission = submit_tile_region_scaled_to_device!(
         &mut ctx,
         &mut session,
         &mut pool,
@@ -939,7 +977,7 @@ fn submitted_distinct_region_scaled_htj2k_grayscale_tiles_flush_as_one_device_ba
         BackendRequest::Metal,
     )
     .expect("submit ht region-scaled tile");
-    let reversed_submission = Codec::submit_tile_region_scaled_to_device(
+    let reversed_submission = submit_tile_region_scaled_to_device!(
         &mut ctx,
         &mut session,
         &mut pool,
@@ -1014,7 +1052,7 @@ fn submitted_distinct_region_scaled_htj2k_gray16_tiles_flush_as_one_device_batch
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
 
-    let first_submission = Codec::submit_tile_region_scaled_to_device(
+    let first_submission = submit_tile_region_scaled_to_device!(
         &mut ctx,
         &mut session,
         &mut pool,
@@ -1025,7 +1063,7 @@ fn submitted_distinct_region_scaled_htj2k_gray16_tiles_flush_as_one_device_batch
         BackendRequest::Metal,
     )
     .expect("submit first ht gray16 region-scaled tile");
-    let second_submission = Codec::submit_tile_region_scaled_to_device(
+    let second_submission = submit_tile_region_scaled_to_device!(
         &mut ctx,
         &mut session,
         &mut pool,
@@ -1087,7 +1125,7 @@ fn submitted_auto_region_scaled_grayscale_keeps_short_batch_on_cpu() {
     let mut pool = J2kScratchPool::new();
     let submissions = (0..16)
         .map(|_| {
-            Codec::submit_tile_region_scaled_to_device(
+            submit_tile_region_scaled_to_device!(
                 &mut ctx,
                 &mut session,
                 &mut pool,
@@ -1127,7 +1165,7 @@ fn submitted_auto_region_scaled_rgb_tiles_flush_as_one_cpu_batch() {
     let mut pool = J2kScratchPool::new();
     let submissions = (0..3)
         .map(|_| {
-            Codec::submit_tile_region_scaled_to_device(
+            submit_tile_region_scaled_to_device!(
                 &mut ctx,
                 &mut session,
                 &mut pool,
@@ -1183,7 +1221,7 @@ fn submitted_auto_region_scaled_grayscale_batch64_uses_one_metal_batch() {
     let mut pool = J2kScratchPool::new();
     let submissions = (0..64)
         .map(|_| {
-            Codec::submit_tile_region_scaled_to_device(
+            submit_tile_region_scaled_to_device!(
                 &mut ctx,
                 &mut session,
                 &mut pool,
@@ -1240,7 +1278,7 @@ fn submitted_auto_region_scaled_ht_grayscale_1024_batch16_uses_one_metal_batch()
     let mut pool = J2kScratchPool::new();
     let submissions = (0..16)
         .map(|_| {
-            Codec::submit_tile_region_scaled_to_device(
+            submit_tile_region_scaled_to_device!(
                 &mut ctx,
                 &mut session,
                 &mut pool,
@@ -1297,7 +1335,7 @@ fn submitted_auto_region_scaled_rgb_1024_batch16_uses_hybrid_metal() {
     let mut pool = J2kScratchPool::new();
     let submissions = (0..16)
         .map(|_| {
-            Codec::submit_tile_region_scaled_to_device(
+            submit_tile_region_scaled_to_device!(
                 &mut ctx,
                 &mut session,
                 &mut pool,
@@ -1363,7 +1401,7 @@ fn submitted_auto_region_scaled_ht_grayscale_batch16_is_not_order_dependent() {
 
     let mut submissions = Vec::with_capacity(17);
     submissions.push(
-        Codec::submit_tile_region_scaled_to_device(
+        submit_tile_region_scaled_to_device!(
             &mut ctx,
             &mut session,
             &mut pool,
@@ -1377,7 +1415,7 @@ fn submitted_auto_region_scaled_ht_grayscale_batch16_is_not_order_dependent() {
     );
     for _ in 0..16 {
         submissions.push(
-            Codec::submit_tile_region_scaled_to_device(
+            submit_tile_region_scaled_to_device!(
                 &mut ctx,
                 &mut session,
                 &mut pool,
@@ -1572,7 +1610,10 @@ fn auto_decode_report_explains_cpu_fallback_and_residency() {
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
 
     let reported = decoder
-        .decode_to_device_with_report(PixelFormat::Gray8, BackendRequest::Auto)
+        .decode_request_to_device_with_report(MetalDecodeRequest::full(
+            PixelFormat::Gray8,
+            BackendRequest::Auto,
+        ))
         .expect("reported Auto decode");
 
     assert_eq!(reported.surface.backend_kind(), BackendKind::Cpu);
@@ -1595,7 +1636,10 @@ fn explicit_metal_decode_report_records_resident_surface() {
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
 
     let reported = decoder
-        .decode_to_device_with_report(PixelFormat::Gray8, BackendRequest::Metal)
+        .decode_request_to_device_with_report(MetalDecodeRequest::full(
+            PixelFormat::Gray8,
+            BackendRequest::Metal,
+        ))
         .expect("reported explicit Metal decode");
 
     assert_eq!(reported.surface.backend_kind(), BackendKind::Metal);
@@ -1625,30 +1669,23 @@ fn explicit_metal_unsupported_rgba16_report_variants_are_rejected() {
     let scale = Downscale::Half;
 
     let mut decoder = J2kDecoder::new(&bytes).expect("full decoder");
-    assert_unsupported_rgba16_report(
-        decoder.decode_to_device_with_report(PixelFormat::Rgba16, BackendRequest::Metal),
-    );
+    assert_unsupported_rgba16_report(decoder.decode_request_to_device_with_report(
+        MetalDecodeRequest::full(PixelFormat::Rgba16, BackendRequest::Metal),
+    ));
 
     let mut decoder = J2kDecoder::new(&bytes).expect("region decoder");
-    assert_unsupported_rgba16_report(decoder.decode_region_to_device_with_report(
-        PixelFormat::Rgba16,
-        roi,
-        BackendRequest::Metal,
+    assert_unsupported_rgba16_report(decoder.decode_request_to_device_with_report(
+        MetalDecodeRequest::region(PixelFormat::Rgba16, roi, BackendRequest::Metal),
     ));
 
     let mut decoder = J2kDecoder::new(&bytes).expect("scaled decoder");
-    assert_unsupported_rgba16_report(decoder.decode_scaled_to_device_with_report(
-        PixelFormat::Rgba16,
-        scale,
-        BackendRequest::Metal,
+    assert_unsupported_rgba16_report(decoder.decode_request_to_device_with_report(
+        MetalDecodeRequest::scaled(PixelFormat::Rgba16, scale, BackendRequest::Metal),
     ));
 
     let mut decoder = J2kDecoder::new(&bytes).expect("region scaled decoder");
-    assert_unsupported_rgba16_report(decoder.decode_region_scaled_to_device_with_report(
-        PixelFormat::Rgba16,
-        roi,
-        scale,
-        BackendRequest::Metal,
+    assert_unsupported_rgba16_report(decoder.decode_request_to_device_with_report(
+        MetalDecodeRequest::region_scaled(PixelFormat::Rgba16, roi, scale, BackendRequest::Metal),
     ));
 }
 

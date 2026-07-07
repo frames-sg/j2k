@@ -9,3 +9,9 @@ and adapters.
 
 Use this crate directly for JPEG input; use `j2k` for JPEG 2000 / HTJ2K and
 `j2k-transcode` for JPEG-to-J2K/HTJ2K transcode paths.
+
+## Links
+
+- API docs: <https://docs.rs/j2k-jpeg>
+- Repository: <https://github.com/frames-sg/j2k>
+- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

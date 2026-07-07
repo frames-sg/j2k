@@ -1,6 +1,8 @@
 use cuda_device::{kernel, thread};
 use cuda_host::cuda_module;
 
+include!("../../../cuda_oxide_simt_prelude.rs");
+
 const JPEG_STATUS_OK: u32 = 0;
 const JPEG_STATUS_TRUNCATED: u32 = 1;
 const JPEG_STATUS_HUFFMAN: u32 = 2;
@@ -94,6 +96,90 @@ struct J2kJpegBitReader {
     bits: u32,
 }
 
+#[derive(Clone, Copy)]
+struct Rgb420McuBlocks<'a> {
+    y0: &'a [u8; 64],
+    y1: &'a [u8; 64],
+    y2: &'a [u8; 64],
+    y3: &'a [u8; 64],
+    cb: &'a [u8; 64],
+    cr: &'a [u8; 64],
+}
+
+#[derive(Clone, Copy)]
+struct Rgb422McuBlocks<'a> {
+    y0: &'a [u8; 64],
+    y1: &'a [u8; 64],
+    cb: &'a [u8; 64],
+    cr: &'a [u8; 64],
+}
+
+#[derive(Clone, Copy)]
+struct Jpeg420EntropyTables {
+    y_dc: *const J2kJpegHuffmanTable,
+    y_ac: *const J2kJpegHuffmanTable,
+    cb_dc: *const J2kJpegHuffmanTable,
+    cb_ac: *const J2kJpegHuffmanTable,
+    cr_dc: *const J2kJpegHuffmanTable,
+    cr_ac: *const J2kJpegHuffmanTable,
+}
+
+impl Jpeg420EntropyTables {
+    #[inline(always)]
+    fn table_for(self, block_phase: u32, dc: bool) -> *const J2kJpegHuffmanTable {
+        if block_phase < 4 {
+            if dc {
+                self.y_dc
+            } else {
+                self.y_ac
+            }
+        } else if block_phase == 4 {
+            if dc {
+                self.cb_dc
+            } else {
+                self.cb_ac
+            }
+        } else if dc {
+            self.cr_dc
+        } else {
+            self.cr_ac
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct JpegDecodeQuantPtrs {
+    y: *const u16,
+    cb: *const u16,
+    cr: *const u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct JpegDecodeHuffmanPtrs {
+    y_dc: *const J2kJpegHuffmanTable,
+    y_ac: *const J2kJpegHuffmanTable,
+    cb_dc: *const J2kJpegHuffmanTable,
+    cb_ac: *const J2kJpegHuffmanTable,
+    cr_dc: *const J2kJpegHuffmanTable,
+    cr_ac: *const J2kJpegHuffmanTable,
+}
+
+impl From<JpegDecodeHuffmanPtrs> for Jpeg420EntropyTables {
+    #[inline(always)]
+    fn from(ptrs: JpegDecodeHuffmanPtrs) -> Self {
+        Self {
+            y_dc: ptrs.y_dc,
+            y_ac: ptrs.y_ac,
+            cb_dc: ptrs.cb_dc,
+            cb_ac: ptrs.cb_ac,
+            cr_dc: ptrs.cr_dc,
+            cr_ac: ptrs.cr_ac,
+        }
+    }
+}
+
 const J2K_JPEG_ZIGZAG: [u8; 64] = j2k_codec_math::jpeg::ZIGZAG;
 
 const JPEG_CONST_BITS: i32 = j2k_codec_math::jpeg::idct::CONST_BITS as i32;
@@ -122,19 +208,17 @@ fn min_u32(a: u32, b: u32) -> u32 {
 
 #[inline(always)]
 fn load_u8(ptr: *const u8, index: u32) -> u8 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_u16(ptr: *const u16, index: u32) -> u16 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn store_u8(ptr: *mut u8, index: u32, value: u8) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
@@ -142,12 +226,12 @@ fn load_checkpoint(
     ptr: *const J2kJpegEntropyCheckpoint,
     index: u32,
 ) -> J2kJpegEntropyCheckpoint {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_state(ptr: *const J2kJpegEntropySyncState, index: u32) -> J2kJpegEntropySyncState {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
@@ -156,9 +240,7 @@ fn store_state(
     index: u32,
     value: J2kJpegEntropySyncState,
 ) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
@@ -167,16 +249,12 @@ fn store_overflow(
     index: u32,
     value: J2kJpegEntropyOverflowState,
 ) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn store_decode_status(ptr: *mut J2kJpegDecodeStatus, index: u32, value: J2kJpegDecodeStatus) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
@@ -381,15 +459,38 @@ fn decode_symbol_real(
     false
 }
 
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-fn decode_block(
-    reader: &mut J2kJpegBitReader,
+#[derive(Clone, Copy)]
+struct JpegDecodeBlockContext {
     entropy: *const u8,
     entropy_len: u32,
     dc_table: *const J2kJpegHuffmanTable,
     ac_table: *const J2kJpegHuffmanTable,
     quant: *const u16,
+}
+
+impl JpegDecodeBlockContext {
+    #[inline(always)]
+    fn new(
+        entropy: *const u8,
+        entropy_len: u32,
+        dc_table: *const J2kJpegHuffmanTable,
+        ac_table: *const J2kJpegHuffmanTable,
+        quant: *const u16,
+    ) -> Self {
+        Self {
+            entropy,
+            entropy_len,
+            dc_table,
+            ac_table,
+            quant,
+        }
+    }
+}
+
+#[inline(always)]
+fn decode_block(
+    reader: &mut J2kJpegBitReader,
+    context: JpegDecodeBlockContext,
     prev_dc: &mut i32,
     status: &mut J2kJpegDecodeStatus,
     coeffs: &mut [i32; 64],
@@ -401,7 +502,14 @@ fn decode_block(
     }
 
     let mut ssss = 0;
-    if !decode_symbol(reader, entropy, entropy_len, dc_table, status, &mut ssss) {
+    if !decode_symbol(
+        reader,
+        context.entropy,
+        context.entropy_len,
+        context.dc_table,
+        status,
+        &mut ssss,
+    ) {
         return false;
     }
     if ssss > 15 {
@@ -411,8 +519,8 @@ fn decode_block(
     let mut diff = 0;
     if !receive_extend(
         reader,
-        entropy,
-        entropy_len,
+        context.entropy,
+        context.entropy_len,
         ssss as u32,
         status,
         &mut diff,
@@ -420,12 +528,19 @@ fn decode_block(
         return false;
     }
     *prev_dc += diff;
-    coeffs[0] = *prev_dc * load_u16(quant, 0) as i32;
+    coeffs[0] = *prev_dc * load_u16(context.quant, 0) as i32;
 
     let mut k = 1;
     while k < 64 {
         let mut packed = 0;
-        if !decode_symbol(reader, entropy, entropy_len, ac_table, status, &mut packed) {
+        if !decode_symbol(
+            reader,
+            context.entropy,
+            context.entropy_len,
+            context.ac_table,
+            status,
+            &mut packed,
+        ) {
             return false;
         }
         let run = (packed >> 4) as u32;
@@ -445,15 +560,15 @@ fn decode_block(
         let mut value = 0;
         if !receive_extend(
             reader,
-            entropy,
-            entropy_len,
+            context.entropy,
+            context.entropy_len,
             ssss as u32,
             status,
             &mut value,
         ) {
             return false;
         }
-        coeffs[zigzag(k) as usize] = value * load_u16(quant, k) as i32;
+        coeffs[zigzag(k) as usize] = value * load_u16(context.quant, k) as i32;
         k += 1;
     }
     true
@@ -741,18 +856,12 @@ fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8, r: &mut u8, g: &mut u8, b: &mut u8) {
 }
 
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
 fn store_rgb420_mcu(
     out: *mut u8,
     params: J2kJpeg420Params,
     mx: u32,
     my: u32,
-    y0: &[u8; 64],
-    y1: &[u8; 64],
-    y2: &[u8; 64],
-    y3: &[u8; 64],
-    cb: &[u8; 64],
-    cr: &[u8; 64],
+    blocks: Rgb420McuBlocks<'_>,
 ) {
     let base_x = mx * 16;
     let base_y = my * 16;
@@ -778,20 +887,34 @@ fn store_rgb420_mcu(
                 if px < params.width {
                     let yb = if yy < 8 {
                         if xx < 8 {
-                            y0
+                            blocks.y0
                         } else {
-                            y1
+                            blocks.y1
                         }
                     } else if xx < 8 {
-                        y2
+                        blocks.y2
                     } else {
-                        y3
+                        blocks.y3
                     };
                     let y_idx = (yy & 7) * 8 + (xx & 7);
                     let chroma_y = min_u32(yy / 2, chroma_rows - 1);
                     let bottom = (yy & 1) != 0;
-                    let cbv = h2v2_sample(cb, chroma_cols, chroma_rows, xx, chroma_y, bottom);
-                    let crv = h2v2_sample(cr, chroma_cols, chroma_rows, xx, chroma_y, bottom);
+                    let cbv = h2v2_sample(
+                        blocks.cb,
+                        chroma_cols,
+                        chroma_rows,
+                        xx,
+                        chroma_y,
+                        bottom,
+                    );
+                    let crv = h2v2_sample(
+                        blocks.cr,
+                        chroma_cols,
+                        chroma_rows,
+                        xx,
+                        chroma_y,
+                        bottom,
+                    );
                     let dst = py * params.out_stride + px * 3;
                     let mut r = 0;
                     let mut g = 0;
@@ -809,16 +932,12 @@ fn store_rgb420_mcu(
 }
 
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
 fn store_rgb422_mcu(
     out: *mut u8,
     params: J2kJpeg420Params,
     mx: u32,
     my: u32,
-    y0: &[u8; 64],
-    y1: &[u8; 64],
-    cb: &[u8; 64],
-    cr: &[u8; 64],
+    blocks: Rgb422McuBlocks<'_>,
 ) {
     let base_x = mx * 16;
     let base_y = my * 8;
@@ -843,10 +962,10 @@ fn store_rgb422_mcu(
             while xx < 16 {
                 let px = base_x + xx;
                 if px < params.width {
-                    let yb = if xx < 8 { y0 } else { y1 };
+                    let yb = if xx < 8 { blocks.y0 } else { blocks.y1 };
                     let y_idx = yy * 8 + (xx & 7);
-                    let cbv = h2v1_sample(cb, chroma_cols, xx, chroma_y);
-                    let crv = h2v1_sample(cr, chroma_cols, xx, chroma_y);
+                    let cbv = h2v1_sample(blocks.cb, chroma_cols, xx, chroma_y);
+                    let crv = h2v1_sample(blocks.cr, chroma_cols, xx, chroma_y);
                     let dst = py * params.out_stride + px * 3;
                     let mut r = 0;
                     let mut g = 0;
@@ -864,7 +983,6 @@ fn store_rgb422_mcu(
 }
 
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
 fn store_rgb444_mcu(
     out: *mut u8,
     params: J2kJpeg420Params,
@@ -909,38 +1027,16 @@ fn store_rgb444_mcu(
 }
 
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
 fn entropy_scan_one_symbol420(
     entropy: *const u8,
     params: J2kJpegEntropyChunkParams,
-    y_dc: *const J2kJpegHuffmanTable,
-    y_ac: *const J2kJpegHuffmanTable,
-    cb_dc: *const J2kJpegHuffmanTable,
-    cb_ac: *const J2kJpegHuffmanTable,
-    cr_dc: *const J2kJpegHuffmanTable,
-    cr_ac: *const J2kJpegHuffmanTable,
+    tables: Jpeg420EntropyTables,
     state: &mut J2kJpegEntropySyncState,
     reader: &mut J2kJpegBitReader,
     status: &mut J2kJpegDecodeStatus,
 ) -> bool {
     let dc = state.zigzag_index == 0;
-    let table = if state.block_phase < 4 {
-        if dc {
-            y_dc
-        } else {
-            y_ac
-        }
-    } else if state.block_phase == 4 {
-        if dc {
-            cb_dc
-        } else {
-            cb_ac
-        }
-    } else if dc {
-        cr_dc
-    } else {
-        cr_ac
-    };
+    let table = tables.table_for(state.block_phase, dc);
     let mut symbol = 0;
     let before_pos = reader.pos;
     let before_bits = reader.bits;
@@ -1016,16 +1112,10 @@ mod kernels {
     use super::*;
 
     #[kernel]
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn j2k_jpeg_entropy_sync420(
         entropy: *const u8,
         params: J2kJpegEntropyChunkParams,
-        y_dc: *const J2kJpegHuffmanTable,
-        y_ac: *const J2kJpegHuffmanTable,
-        cb_dc: *const J2kJpegHuffmanTable,
-        cb_ac: *const J2kJpegHuffmanTable,
-        cr_dc: *const J2kJpegHuffmanTable,
-        cr_ac: *const J2kJpegHuffmanTable,
+        huffman: JpegDecodeHuffmanPtrs,
         states: *mut J2kJpegEntropySyncState,
     ) {
         let gid = thread::index_1d().get() as u32;
@@ -1057,17 +1147,13 @@ mod kernels {
             position: 0,
             reserved: 0,
         };
+        let tables = Jpeg420EntropyTables::from(huffman);
 
         while state.bit_pos < state.end_bit && status.code == JPEG_STATUS_OK {
             if !entropy_scan_one_symbol420(
                 entropy,
                 params,
-                y_dc,
-                y_ac,
-                cb_dc,
-                cb_ac,
-                cr_dc,
-                cr_ac,
+                tables,
                 &mut state,
                 &mut reader,
                 &mut status,
@@ -1080,16 +1166,10 @@ mod kernels {
     }
 
     #[kernel]
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn j2k_jpeg_entropy_overflow420(
         entropy: *const u8,
         params: J2kJpegEntropyChunkParams,
-        y_dc: *const J2kJpegHuffmanTable,
-        y_ac: *const J2kJpegHuffmanTable,
-        cb_dc: *const J2kJpegHuffmanTable,
-        cb_ac: *const J2kJpegHuffmanTable,
-        cr_dc: *const J2kJpegHuffmanTable,
-        cr_ac: *const J2kJpegHuffmanTable,
+        huffman: JpegDecodeHuffmanPtrs,
         states: *const J2kJpegEntropySyncState,
         overflows: *mut J2kJpegEntropyOverflowState,
     ) {
@@ -1130,6 +1210,7 @@ mod kernels {
             position: 0,
             reserved: 0,
         };
+        let tables = Jpeg420EntropyTables::from(huffman);
 
         let mut stop_bit = state.bit_pos;
         if params.max_overflow_subsequences != 0
@@ -1159,12 +1240,7 @@ mod kernels {
                 if !entropy_scan_one_symbol420(
                     entropy,
                     params,
-                    y_dc,
-                    y_ac,
-                    cb_dc,
-                    cb_ac,
-                    cr_dc,
-                    cr_ac,
+                    tables,
                     &mut state,
                     &mut reader,
                     &mut status,
@@ -1193,20 +1269,12 @@ mod kernels {
     }
 
     #[kernel]
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn j2k_jpeg_decode_fast420_rgb8(
         entropy: *const u8,
         out: *mut u8,
         params: J2kJpeg420Params,
-        y_quant: *const u16,
-        cb_quant: *const u16,
-        cr_quant: *const u16,
-        y_dc: *const J2kJpegHuffmanTable,
-        y_ac: *const J2kJpegHuffmanTable,
-        cb_dc: *const J2kJpegHuffmanTable,
-        cb_ac: *const J2kJpegHuffmanTable,
-        cr_dc: *const J2kJpegHuffmanTable,
-        cr_ac: *const J2kJpegHuffmanTable,
+        quant: JpegDecodeQuantPtrs,
+        huffman: JpegDecodeHuffmanPtrs,
         checkpoints: *const J2kJpegEntropyCheckpoint,
         status: *mut J2kJpegDecodeStatus,
     ) {
@@ -1256,15 +1324,33 @@ mod kernels {
         let mut cb = [0u8; 64];
         let mut cr = [0u8; 64];
 
+        let y_decode = JpegDecodeBlockContext::new(
+            entropy,
+            params.entropy_len,
+            huffman.y_dc,
+            huffman.y_ac,
+            quant.y,
+        );
+        let cb_decode = JpegDecodeBlockContext::new(
+            entropy,
+            params.entropy_len,
+            huffman.cb_dc,
+            huffman.cb_ac,
+            quant.cb,
+        );
+        let cr_decode = JpegDecodeBlockContext::new(
+            entropy,
+            params.entropy_len,
+            huffman.cr_dc,
+            huffman.cr_ac,
+            quant.cr,
+        );
+
         let mut mcu = start_mcu;
         while mcu < end_mcu {
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                y_dc,
-                y_ac,
-                y_quant,
+                y_decode,
                 &mut y_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1275,11 +1361,7 @@ mod kernels {
             idct_islow(&coeffs, &mut y0);
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                y_dc,
-                y_ac,
-                y_quant,
+                y_decode,
                 &mut y_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1290,11 +1372,7 @@ mod kernels {
             idct_islow(&coeffs, &mut y1);
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                y_dc,
-                y_ac,
-                y_quant,
+                y_decode,
                 &mut y_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1305,11 +1383,7 @@ mod kernels {
             idct_islow(&coeffs, &mut y2);
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                y_dc,
-                y_ac,
-                y_quant,
+                y_decode,
                 &mut y_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1320,11 +1394,7 @@ mod kernels {
             idct_islow(&coeffs, &mut y3);
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                cb_dc,
-                cb_ac,
-                cb_quant,
+                cb_decode,
                 &mut cb_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1335,11 +1405,7 @@ mod kernels {
             idct_islow(&coeffs, &mut cb);
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                cr_dc,
-                cr_ac,
-                cr_quant,
+                cr_decode,
                 &mut cr_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1350,27 +1416,32 @@ mod kernels {
             idct_islow(&coeffs, &mut cr);
             let mx = mcu - (mcu / params.mcus_per_row) * params.mcus_per_row;
             let my = mcu / params.mcus_per_row;
-            store_rgb420_mcu(out, params, mx, my, &y0, &y1, &y2, &y3, &cb, &cr);
+            store_rgb420_mcu(
+                out,
+                params,
+                mx,
+                my,
+                Rgb420McuBlocks {
+                    y0: &y0,
+                    y1: &y1,
+                    y2: &y2,
+                    y3: &y3,
+                    cb: &cb,
+                    cr: &cr,
+                },
+            );
             mcu += 1;
         }
         store_decode_status(status, gid, thread_status);
     }
 
     #[kernel]
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn j2k_jpeg_decode_fast422_rgb8(
         entropy: *const u8,
         out: *mut u8,
         params: J2kJpeg420Params,
-        y_quant: *const u16,
-        cb_quant: *const u16,
-        cr_quant: *const u16,
-        y_dc: *const J2kJpegHuffmanTable,
-        y_ac: *const J2kJpegHuffmanTable,
-        cb_dc: *const J2kJpegHuffmanTable,
-        cb_ac: *const J2kJpegHuffmanTable,
-        cr_dc: *const J2kJpegHuffmanTable,
-        cr_ac: *const J2kJpegHuffmanTable,
+        quant: JpegDecodeQuantPtrs,
+        huffman: JpegDecodeHuffmanPtrs,
         checkpoints: *const J2kJpegEntropyCheckpoint,
         status: *mut J2kJpegDecodeStatus,
     ) {
@@ -1418,15 +1489,33 @@ mod kernels {
         let mut cb = [0u8; 64];
         let mut cr = [0u8; 64];
 
+        let y_decode = JpegDecodeBlockContext::new(
+            entropy,
+            params.entropy_len,
+            huffman.y_dc,
+            huffman.y_ac,
+            quant.y,
+        );
+        let cb_decode = JpegDecodeBlockContext::new(
+            entropy,
+            params.entropy_len,
+            huffman.cb_dc,
+            huffman.cb_ac,
+            quant.cb,
+        );
+        let cr_decode = JpegDecodeBlockContext::new(
+            entropy,
+            params.entropy_len,
+            huffman.cr_dc,
+            huffman.cr_ac,
+            quant.cr,
+        );
+
         let mut mcu = start_mcu;
         while mcu < end_mcu {
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                y_dc,
-                y_ac,
-                y_quant,
+                y_decode,
                 &mut y_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1437,11 +1526,7 @@ mod kernels {
             idct_islow(&coeffs, &mut y0);
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                y_dc,
-                y_ac,
-                y_quant,
+                y_decode,
                 &mut y_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1452,11 +1537,7 @@ mod kernels {
             idct_islow(&coeffs, &mut y1);
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                cb_dc,
-                cb_ac,
-                cb_quant,
+                cb_decode,
                 &mut cb_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1467,11 +1548,7 @@ mod kernels {
             idct_islow(&coeffs, &mut cb);
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                cr_dc,
-                cr_ac,
-                cr_quant,
+                cr_decode,
                 &mut cr_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1482,27 +1559,30 @@ mod kernels {
             idct_islow(&coeffs, &mut cr);
             let mx = mcu - (mcu / params.mcus_per_row) * params.mcus_per_row;
             let my = mcu / params.mcus_per_row;
-            store_rgb422_mcu(out, params, mx, my, &y0, &y1, &cb, &cr);
+            store_rgb422_mcu(
+                out,
+                params,
+                mx,
+                my,
+                Rgb422McuBlocks {
+                    y0: &y0,
+                    y1: &y1,
+                    cb: &cb,
+                    cr: &cr,
+                },
+            );
             mcu += 1;
         }
         store_decode_status(status, gid, thread_status);
     }
 
     #[kernel]
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn j2k_jpeg_decode_fast444_rgb8(
         entropy: *const u8,
         out: *mut u8,
         params: J2kJpeg420Params,
-        y_quant: *const u16,
-        cb_quant: *const u16,
-        cr_quant: *const u16,
-        y_dc: *const J2kJpegHuffmanTable,
-        y_ac: *const J2kJpegHuffmanTable,
-        cb_dc: *const J2kJpegHuffmanTable,
-        cb_ac: *const J2kJpegHuffmanTable,
-        cr_dc: *const J2kJpegHuffmanTable,
-        cr_ac: *const J2kJpegHuffmanTable,
+        quant: JpegDecodeQuantPtrs,
+        huffman: JpegDecodeHuffmanPtrs,
         checkpoints: *const J2kJpegEntropyCheckpoint,
         status: *mut J2kJpegDecodeStatus,
     ) {
@@ -1549,15 +1629,33 @@ mod kernels {
         let mut cb = [0u8; 64];
         let mut cr = [0u8; 64];
 
+        let y_decode = JpegDecodeBlockContext::new(
+            entropy,
+            params.entropy_len,
+            huffman.y_dc,
+            huffman.y_ac,
+            quant.y,
+        );
+        let cb_decode = JpegDecodeBlockContext::new(
+            entropy,
+            params.entropy_len,
+            huffman.cb_dc,
+            huffman.cb_ac,
+            quant.cb,
+        );
+        let cr_decode = JpegDecodeBlockContext::new(
+            entropy,
+            params.entropy_len,
+            huffman.cr_dc,
+            huffman.cr_ac,
+            quant.cr,
+        );
+
         let mut mcu = start_mcu;
         while mcu < end_mcu {
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                y_dc,
-                y_ac,
-                y_quant,
+                y_decode,
                 &mut y_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1568,11 +1666,7 @@ mod kernels {
             idct_islow(&coeffs, &mut y);
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                cb_dc,
-                cb_ac,
-                cb_quant,
+                cb_decode,
                 &mut cb_prev_dc,
                 &mut thread_status,
                 &mut coeffs,
@@ -1583,11 +1677,7 @@ mod kernels {
             idct_islow(&coeffs, &mut cb);
             if !decode_block(
                 &mut reader,
-                entropy,
-                params.entropy_len,
-                cr_dc,
-                cr_ac,
-                cr_quant,
+                cr_decode,
                 &mut cr_prev_dc,
                 &mut thread_status,
                 &mut coeffs,

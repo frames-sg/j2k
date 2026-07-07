@@ -92,6 +92,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "j2k-codec-math"
+version = "0.6.2"
+
+[[package]]
 name = "j2k-core"
 version = "0.6.2"
 dependencies = [
@@ -102,6 +106,7 @@ dependencies = [
 name = "j2k-jpeg"
 version = "0.6.2"
 dependencies = [
+ "j2k-codec-math",
  "j2k-core",
  "j2k-profile",
  "memchr",
@@ -114,6 +119,7 @@ name = "j2k-native"
 version = "0.6.2"
 dependencies = [
  "fearless_simd",
+ "j2k-codec-math",
  "j2k-profile",
  "j2k-types",
  "libm",
@@ -139,6 +145,7 @@ dependencies = [
 name = "j2k-transcode-fuzz"
 version = "0.1.0"
 dependencies = [
+ "j2k",
  "j2k-transcode",
  "libfuzzer-sys",
 ]

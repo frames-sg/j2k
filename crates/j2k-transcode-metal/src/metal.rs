@@ -10,25 +10,20 @@ use core::mem::{size_of, size_of_val};
 
 use j2k_core::{BackendKind, DeviceMemoryRange};
 use j2k_metal_support::{
-    checked_buffer_contents_slice, checked_command_queue, commit_and_wait, private_buffer,
-    shared_buffer_for_len, shared_buffer_with_slice, system_default_device, MetalPipelineLoader,
-};
-use j2k_transcode::accelerator::{
-    idct_blocks_to_signed_samples_rayon, DctGridToDwt53Job, DctGridToDwt97Job,
-    DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job, Dwt97BatchStageTimings,
-    Htj2k97CodeBlockOptions, J2kSubBandType, PrequantizedHtj2k97CodeBlock,
-    PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
-    ReversibleDwt53FirstLevel,
-};
-use j2k_transcode::dct53_2d::Dwt53TwoDimensional;
-use j2k_transcode::dct97_2d::Dwt97TwoDimensional;
-use j2k_transcode::htj2k97_codeblock_oracle::{
-    htj2k97_subband_delta, htj2k97_subband_total_bitplanes,
+    checked_buffer_contents_slice, checked_buffer_contents_slice_mut, checked_command_queue,
+    commit_and_wait, private_buffer, shared_buffer_for_len, shared_buffer_with_slice,
+    system_default_device, MetalPipelineLoader,
 };
 use j2k_transcode::{
+    htj2k97_subband_delta, htj2k97_subband_total_bitplanes, idct_blocks_to_signed_samples_rayon,
+    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
+    DctGridToReversibleDwt53Job, Dwt53TwoDimensional, Dwt97BatchStageTimings, Dwt97TwoDimensional,
+    Htj2k97CodeBlockOptions, J2kSubBandType, PrequantizedHtj2k97CodeBlock,
+    PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
     ResidentBufferRef, ResidentColorModel, ResidentComponentGeometry, ResidentDctCoefficientOrder,
     ResidentDctGridLayout, ResidentDwtSubband, ResidentDwtSubbandKind, ResidentDwtSubbandLayout,
     ResidentHandoffError, ResidentJpegDctGrid, ResidentSampleInfo, ResidentSampling,
+    ReversibleDwt53FirstLevel,
 };
 use metal::{
     foreign_types::ForeignType, Buffer, CommandBufferRef, CommandQueue, ComputeCommandEncoderRef,
@@ -38,7 +33,18 @@ use metal::{
 use crate::weights::{SparseDwt53WeightRows, SparseDwt97WeightRows, SparseWeightRow};
 use crate::MetalTranscodeError;
 
-const SHADER_SOURCE: &str = include_str!("dct97.metal");
+fn shader_source() -> String {
+    [
+        r"
+#include <metal_stdlib>
+using namespace metal;
+",
+        j2k_codec_math::generated::DWT97_CONSTANTS_METAL,
+        "\n",
+        include_str!("dct97.metal"),
+    ]
+    .concat()
+}
 const METAL_DCT_KERNEL_FAILED: &str = "Metal DCT wavelet projection failed";
 const METAL_DCT_RUNTIME_FAILED: &str = "Metal DCT wavelet runtime setup failed";
 const METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID: &str =
@@ -200,7 +206,7 @@ struct MetalSparseRow {
 }
 
 // SAFETY: Metal ABI structs are repr(C) plain data matching shader layouts.
-unsafe impl j2k_core::GpuAbi for MetalSparseRow {
+unsafe impl j2k_core::accelerator::GpuAbi for MetalSparseRow {
     const NAME: &'static str = "MetalSparseRow";
 }
 
@@ -212,7 +218,7 @@ struct MetalWeightTap {
 }
 
 // SAFETY: Metal ABI structs are repr(C) plain data matching shader layouts.
-unsafe impl j2k_core::GpuAbi for MetalWeightTap {
+unsafe impl j2k_core::accelerator::GpuAbi for MetalWeightTap {
     const NAME: &'static str = "MetalWeightTap";
 }
 
@@ -228,7 +234,8 @@ impl MetalRuntime {
     }
 
     fn new_with_device(device: Device) -> Result<Self, MetalTranscodeError> {
-        let loader = MetalPipelineLoader::new(&device, SHADER_SOURCE)
+        let shader_source = shader_source();
+        let loader = MetalPipelineLoader::new(&device, &shader_source)
             .map_err(|_| MetalTranscodeError::Runtime(METAL_DCT_RUNTIME_FAILED))?;
         let pipeline = |name| {
             loader
@@ -2395,7 +2402,7 @@ fn validate_htj2k97_codeblock_options(
 ) -> Result<(), MetalTranscodeError> {
     // Shared with CUDA so the two backends accept/reject identical options.
     // Option failures keep their own message instead of the grid-geometry one.
-    j2k_transcode::htj2k97_codeblock_oracle::validate_htj2k97_codeblock_options(options)
+    j2k_transcode::validate_htj2k97_codeblock_options(options)
         .map(|_| ())
         .map_err(MetalTranscodeError::UnsupportedJob)
 }
@@ -2457,7 +2464,7 @@ fn metal_sparse_rows(
     })
 }
 
-fn buffer_with_slice<T: j2k_core::GpuAbi>(device: &Device, values: &[T]) -> Buffer {
+fn buffer_with_slice<T: j2k_core::accelerator::GpuAbi>(device: &Device, values: &[T]) -> Buffer {
     shared_buffer_with_slice(device, values)
 }
 
@@ -2466,8 +2473,8 @@ fn dwt97_blocks_buffer(
     blocks: &[[[f64; 8]; 8]],
 ) -> Result<Buffer, MetalTranscodeError> {
     let value_count = dwt97_block_value_count(blocks.len())?;
-    let buffer = output_buffer(device, value_count);
-    write_dwt97_blocks_to_buffer(&buffer, blocks)?;
+    let mut buffer = output_buffer(device, value_count);
+    write_dwt97_blocks_to_buffer(&mut buffer, blocks)?;
     Ok(buffer)
 }
 
@@ -2476,10 +2483,10 @@ fn dwt97_batch_blocks_buffer(
     jobs: &[DctGridToDwt97Job<'_>],
 ) -> Result<Buffer, MetalTranscodeError> {
     let value_count = dwt97_jobs_value_count(jobs.iter().map(|job| job.blocks.len()))?;
-    let buffer = output_buffer(device, value_count);
+    let mut buffer = output_buffer(device, value_count);
     let mut offset = 0;
     for job in jobs {
-        offset += write_dwt97_blocks_to_buffer_at(&buffer, offset, job.blocks)?;
+        offset += write_dwt97_blocks_to_buffer_at(&mut buffer, offset, job.blocks)?;
     }
     debug_assert_eq!(offset, value_count);
     Ok(buffer)
@@ -2490,10 +2497,10 @@ fn dwt97_codeblock_batch_blocks_buffer(
     jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
 ) -> Result<Buffer, MetalTranscodeError> {
     let value_count = dwt97_jobs_value_count(jobs.iter().map(|job| job.blocks.len()))?;
-    let buffer = output_buffer(device, value_count);
+    let mut buffer = output_buffer(device, value_count);
     let mut offset = 0;
     for job in jobs {
-        offset += write_dwt97_blocks_to_buffer_at(&buffer, offset, job.blocks)?;
+        offset += write_dwt97_blocks_to_buffer_at(&mut buffer, offset, job.blocks)?;
     }
     debug_assert_eq!(offset, value_count);
     Ok(buffer)
@@ -2525,7 +2532,7 @@ fn dwt97_block_value_count(block_count: usize) -> Result<usize, MetalTranscodeEr
 }
 
 fn write_dwt97_blocks_to_buffer(
-    buffer: &Buffer,
+    buffer: &mut Buffer,
     blocks: &[[[f64; 8]; 8]],
 ) -> Result<(), MetalTranscodeError> {
     let written = write_dwt97_blocks_to_buffer_at(buffer, 0, blocks)?;
@@ -2534,7 +2541,7 @@ fn write_dwt97_blocks_to_buffer(
 }
 
 fn write_dwt97_blocks_to_buffer_at(
-    buffer: &Buffer,
+    buffer: &mut Buffer,
     start: usize,
     blocks: &[[[f64; 8]; 8]],
 ) -> Result<usize, MetalTranscodeError> {
@@ -2550,24 +2557,24 @@ fn write_dwt97_blocks_to_buffer_at(
         ));
     }
 
-    let mut offset = start;
-    // SAFETY: Metal ABI structs are repr(C) plain data matching shader layouts.
-    unsafe {
-        // SAFETY: `buffer_f32_capacity` above proves every write from
-        // `start..end` is within the shared f32 buffer. The buffer is newly
-        // allocated by these packers and is not aliased for CPU writes while
-        // this function fills it.
-        let values = buffer.contents().cast::<f32>();
-        for block in blocks {
-            for row in block {
-                for &coefficient in row {
-                    values.add(offset).write(coefficient as f32);
-                    offset += 1;
-                }
+    let byte_offset =
+        start
+            .checked_mul(size_of::<f32>())
+            .ok_or(MetalTranscodeError::UnsupportedJob(
+                METAL_DCT97_UNSUPPORTED_GRID,
+            ))?;
+    let values = checked_buffer_contents_slice_mut::<f32>(buffer, byte_offset, value_count)
+        .map_err(|_| MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID))?;
+    let mut offset = 0usize;
+    for block in blocks {
+        for row in block {
+            for &coefficient in row {
+                values[offset] = coefficient as f32;
+                offset += 1;
             }
         }
     }
-    Ok(offset - start)
+    Ok(offset)
 }
 
 fn buffer_f32_capacity(buffer: &Buffer) -> usize {

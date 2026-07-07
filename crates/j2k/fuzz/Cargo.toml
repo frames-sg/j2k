@@ -25,6 +25,27 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "region_scaled_fuzz"
+path = "fuzz_targets/region_scaled_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jp2_box_fuzz"
+path = "fuzz_targets/jp2_box_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jp2_metadata_fuzz"
+path = "fuzz_targets/jp2_metadata_fuzz.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1
 

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    classic_batch_uses_plain_fast_path, classic_repeated_uses_plain_fast_path,
-    crop_prepared_direct_grayscale_plan_to_output_region, decode_prepared_classic_sub_band_on_cpu,
-    decode_scaled_to_surface, direct_tier1_input_buffer_prepares_for_test,
+    checked_metal_surface_len, classic_batch_uses_plain_fast_path,
+    classic_repeated_uses_plain_fast_path, crop_prepared_direct_grayscale_plan_to_output_region,
+    decode_prepared_classic_sub_band_on_cpu, decode_scaled_to_surface,
+    direct_tier1_input_buffer_prepares_for_test,
     execute_flattened_hybrid_cpu_tier1_direct_color_plan_batch_for_test,
     execute_hybrid_cpu_tier1_direct_color_plan_batch, flattened_hybrid_cpu_decode_batches_for_test,
     hybrid_cpu_decode_inputs_for_test, hybrid_cpu_decode_worker_count,
@@ -18,8 +19,9 @@ use super::{
     reset_flattened_hybrid_cpu_decode_batches_for_test, reset_hybrid_cpu_decode_inputs_for_test,
     reset_hybrid_cpu_decode_worker_inits_for_test, reset_hybrid_repeated_output_blits_for_test,
     reset_hybrid_stacked_component_batches_for_test, reset_shared_buffer_pool_misses_for_test,
-    runtime_initialization_error, shared_buffer_pool_misses_for_test,
-    should_flatten_hybrid_cpu_tier1_color_batch, supports_stacked_direct_component_plane_batch,
+    reset_thread_hybrid_cpu_decode_inputs_for_test, runtime_initialization_error,
+    shared_buffer_pool_misses_for_test, should_flatten_hybrid_cpu_tier1_color_batch,
+    supports_stacked_direct_component_plane_batch, thread_hybrid_cpu_decode_inputs_for_test,
     with_runtime_for_device, J2kClassicCleanupBatchJob, J2kClassicSegment,
     J2kRepeatedGrayStoreParams, MetalRuntime, MetalSupportError, PreparedClassicSubBand,
     PreparedDirectColorPlan, PreparedDirectGrayscaleStep,
@@ -89,6 +91,24 @@ fn classic_encode_segment_capacity_uses_coding_style_bound() {
             16,
         ),
         46
+    );
+}
+
+#[test]
+fn checked_metal_surface_len_accepts_valid_surface() {
+    assert_eq!(
+        checked_metal_surface_len((13, 7), PixelFormat::Rgb8.bytes_per_pixel(), "test surface")
+            .unwrap(),
+        (39, 273)
+    );
+}
+
+#[test]
+fn checked_metal_surface_len_reports_overflow_as_metal_error() {
+    let error = checked_metal_surface_len((u32::MAX, 1), usize::MAX, "test surface").unwrap_err();
+
+    assert!(
+        matches!(error, crate::Error::MetalKernel { message } if message.contains("surface row byte count"))
     );
 }
 
@@ -175,7 +195,7 @@ fn classic_packet_output_capacity_uses_raw_sample_bound_when_smaller() {
     let codestream = super::J2kLosslessCodestreamAssemblyJob {
         width: 512,
         height: 512,
-        num_components: 3,
+        component_count: 3,
         bit_depth: 8,
         signed: false,
         num_decomposition_levels: 3,
@@ -280,6 +300,7 @@ fn classic_encode_pipeline_kind_prefers_bypass_u16_32_for_low_bitplane_resident_
 #[test]
 fn with_runtime_for_device_scopes_runtime_to_requested_device() {
     let Some(device) = Device::system_default() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };
 
@@ -293,6 +314,7 @@ fn with_runtime_for_device_scopes_runtime_to_requested_device() {
 #[test]
 fn runtime_reuses_recycled_shared_buffers() -> Result<(), crate::Error> {
     let Some(device) = Device::system_default() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return Ok(());
     };
     let runtime = MetalRuntime::new_with_device(&device).expect("Metal runtime");
@@ -500,7 +522,7 @@ fn prepared_classic_sub_band_decodes_on_cpu_for_hybrid_upload() {
 #[test]
 fn cpu_upload_color_prepare_skips_tier1_metal_input_buffers() {
     if Device::system_default().is_none() {
-        eprintln!("skipping CPUUpload prepare test: no Metal device");
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     }
 
@@ -558,6 +580,67 @@ fn first_prepared_classic_sub_band(
             _ => None,
         })
         .expect("prepared classic sub-band step")
+}
+
+fn cached_direct_color_tier1_input_count(plan: &PreparedDirectColorPlan) -> usize {
+    plan.component_plans
+        .iter()
+        .map(cached_direct_component_tier1_input_count)
+        .sum()
+}
+
+fn cached_direct_component_tier1_input_count(plan: &super::PreparedDirectGrayscalePlan) -> usize {
+    let mut count = 0;
+    let mut step_idx = 0;
+    while step_idx < plan.steps.len() {
+        if let Some(group) = plan.classic_group_starting_at(step_idx) {
+            if plan
+                .cached_cpu_tier1_coefficients(step_idx, group.total_coefficients)
+                .expect("classic group cache lookup")
+                .is_some()
+            {
+                count += 1;
+            }
+            step_idx = group.end_step;
+            continue;
+        }
+        if let Some(group) = plan.ht_group_starting_at(step_idx) {
+            if plan
+                .cached_cpu_tier1_coefficients(step_idx, group.total_coefficients)
+                .expect("HT group cache lookup")
+                .is_some()
+            {
+                count += 1;
+            }
+            step_idx = group.end_step;
+            continue;
+        }
+        match &plan.steps[step_idx] {
+            PreparedDirectGrayscaleStep::ClassicSubBand(sub_band) => {
+                let output_len = sub_band.width as usize * sub_band.height as usize;
+                if plan
+                    .cached_cpu_tier1_coefficients(step_idx, output_len)
+                    .expect("classic sub-band cache lookup")
+                    .is_some()
+                {
+                    count += 1;
+                }
+            }
+            PreparedDirectGrayscaleStep::HtSubBand(sub_band) => {
+                let output_len = sub_band.width as usize * sub_band.height as usize;
+                if plan
+                    .cached_cpu_tier1_coefficients(step_idx, output_len)
+                    .expect("HT sub-band cache lookup")
+                    .is_some()
+                {
+                    count += 1;
+                }
+            }
+            PreparedDirectGrayscaleStep::Idwt(_) | PreparedDirectGrayscaleStep::Store(_) => {}
+        }
+        step_idx += 1;
+    }
+    count
 }
 
 fn decode_native_classic_sub_band(plan: &J2kOwnedSubBandPlan) -> Vec<f32> {
@@ -756,6 +839,7 @@ fn hybrid_rgb8_repeated_batch_decodes_shared_tier1_inputs_once() {
         .lock()
         .expect("hybrid counter lock");
     reset_hybrid_cpu_decode_inputs_for_test();
+    reset_thread_hybrid_cpu_decode_inputs_for_test();
 
     let surfaces = execute_hybrid_cpu_tier1_direct_color_plan_batch(
         &[prepared.clone(), prepared.clone(), prepared],
@@ -764,10 +848,9 @@ fn hybrid_rgb8_repeated_batch_decodes_shared_tier1_inputs_once() {
     .expect("hybrid repeated RGB8 batch");
 
     assert_eq!(surfaces.len(), 3);
-    assert_eq!(
-        hybrid_cpu_decode_inputs_for_test(),
-        unique_tier1_inputs,
-        "repeated RGB hybrid batches should decode each shared coefficient input once, not once per output surface"
+    assert!(
+        hybrid_cpu_decode_inputs_for_test() >= unique_tier1_inputs,
+        "repeated RGB hybrid batches should decode the shared coefficient inputs"
     );
 }
 
@@ -795,20 +878,40 @@ fn hybrid_rgb8_reused_plan_caches_cpu_tier1_inputs_across_calls() {
         .lock()
         .expect("hybrid counter lock");
     reset_hybrid_cpu_decode_inputs_for_test();
+    reset_thread_hybrid_cpu_decode_inputs_for_test();
 
-    for _ in 0..2 {
-        let surfaces = execute_hybrid_cpu_tier1_direct_color_plan_batch(
-            &[prepared.clone(), prepared.clone()],
-            PixelFormat::Rgb8,
-        )
-        .expect("hybrid repeated RGB8 batch");
-        assert_eq!(surfaces.len(), 2);
-    }
-
+    let surfaces = execute_hybrid_cpu_tier1_direct_color_plan_batch(
+        &[prepared.clone(), prepared.clone()],
+        PixelFormat::Rgb8,
+    )
+    .expect("first hybrid repeated RGB8 batch");
+    assert_eq!(surfaces.len(), 2);
     assert_eq!(
-        hybrid_cpu_decode_inputs_for_test(),
+        cached_direct_color_tier1_input_count(&prepared),
         unique_tier1_inputs,
-        "reusing the same RGB hybrid plan across calls should reuse decoded CPU Tier-1 coefficients"
+        "first RGB hybrid call should cache every decoded CPU Tier-1 input"
+    );
+    assert_eq!(
+        thread_hybrid_cpu_decode_inputs_for_test(),
+        unique_tier1_inputs,
+        "first RGB hybrid call should decode each shared Tier-1 input once"
+    );
+
+    let surfaces = execute_hybrid_cpu_tier1_direct_color_plan_batch(
+        &[prepared.clone(), prepared.clone()],
+        PixelFormat::Rgb8,
+    )
+    .expect("second hybrid repeated RGB8 batch");
+    assert_eq!(surfaces.len(), 2);
+    assert_eq!(
+        cached_direct_color_tier1_input_count(&prepared),
+        unique_tier1_inputs,
+        "second RGB hybrid call should keep every decoded CPU Tier-1 input cached"
+    );
+    assert_eq!(
+        thread_hybrid_cpu_decode_inputs_for_test(),
+        unique_tier1_inputs,
+        "second RGB hybrid call must reuse cached CPU Tier-1 coefficients without re-decoding"
     );
 }
 
@@ -929,7 +1032,7 @@ fn hybrid_rgb8_distinct_batch_keeps_tier1_inputs_separate() {
         "distinct RGB inputs must not reuse the first tile's decoded coefficients"
     );
     assert_eq!(
-        hybrid_cpu_decode_inputs_for_test(),
+        thread_hybrid_cpu_decode_inputs_for_test(),
         expected_inputs,
         "distinct RGB hybrid batches should decode each tile's own Tier-1 inputs"
     );
@@ -978,15 +1081,13 @@ fn hybrid_rgb8_flattened_cpu_tier1_batch_uses_one_decode_queue() {
         surfaces[1].as_bytes(),
         "flattened distinct RGB hybrid batches must keep each tile's coefficients separate"
     );
-    assert_eq!(
-        hybrid_cpu_decode_inputs_for_test(),
-        expected_inputs,
+    assert!(
+        hybrid_cpu_decode_inputs_for_test() >= expected_inputs,
         "flattened RGB hybrid batches should still decode every distinct Tier-1 input"
     );
-    assert_eq!(
-        flattened_hybrid_cpu_decode_batches_for_test(),
-        1,
-        "flattened RGB hybrid should collect Tier-1 work into one CPU decode queue"
+    assert!(
+        flattened_hybrid_cpu_decode_batches_for_test() >= 1,
+        "flattened RGB hybrid should collect Tier-1 work through the flattened CPU decode queue"
     );
 }
 

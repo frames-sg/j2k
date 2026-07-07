@@ -1,6 +1,8 @@
 use cuda_device::{kernel, thread};
 use cuda_host::cuda_module;
 
+include!("../../../cuda_oxide_simt_prelude.rs");
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct J2kHtCleanupBatchJob {
@@ -53,19 +55,17 @@ struct J2kHtCleanupMultiBatchJob {
 
 #[inline(always)]
 fn load_u32(ptr: *const u32, index: u32) -> u32 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn store_u32(ptr: *mut u32, index: u32, value: u32) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn load_job<T: Copy>(ptr: *const T, index: u32) -> T {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]

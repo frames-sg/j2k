@@ -9,6 +9,8 @@
 use cuda_device::{kernel, thread};
 use cuda_host::cuda_module;
 
+include!("../../../cuda_oxide_simt_prelude.rs");
+
 const JPEG_BASELINE_ENCODE_FORMAT_GRAY8: u32 = 0;
 const JPEG_BASELINE_ENCODE_FORMAT_RGB8: u32 = 1;
 const JPEG_BASELINE_ENCODE_STATUS_OK: u32 = 0;
@@ -169,19 +171,17 @@ fn round_to_i32(value: f32) -> i32 {
 
 #[inline(always)]
 fn load_u8(ptr: *const u8, index: u32) -> u8 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn store_u8(ptr: *mut u8, index: u32, value: u8) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn load_params(ptr: *const J2kJpegBaselineEncodeParams, index: u32) -> J2kJpegBaselineEncodeParams {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
@@ -551,7 +551,6 @@ fn jpeg_encode_block(
     zero_run == 0 || jpeg_encode_write_symbol(entropy, capacity, writer, ac_table, 0, status)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn jpeg_encode_baseline_entropy_one(
     input: *const u8,
     entropy: *mut u8,
@@ -677,7 +676,6 @@ mod kernels {
     use super::*;
 
     #[kernel]
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn j2k_jpeg_encode_baseline_entropy(
         input: *const u8,
         entropy: *mut u8,
@@ -700,7 +698,6 @@ mod kernels {
     }
 
     #[kernel]
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn j2k_jpeg_encode_baseline_entropy_batch(
         input: *const u8,
         entropy: *mut u8,

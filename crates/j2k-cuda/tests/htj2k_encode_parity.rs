@@ -9,8 +9,7 @@
 use j2k_cuda_runtime::{CudaContext, CudaJ2kQuantizeJob};
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{
-    deinterleave_reference, forward_dwt53_reference, forward_rct_reference,
-    quantize_reversible_reference,
+    forward_rct_reference, quantize_reversible_reference, try_deinterleave_reference,
 };
 
 // ---------------------------------------------------------------------------
@@ -23,7 +22,7 @@ use j2k::{
     J2kLosslessEncodeOptions, J2kLosslessSamples,
 };
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda::{cuda_dwt53_output_to_j2k_for_test, encode_j2k_lossless_with_cuda};
+use j2k_cuda::encode_j2k_lossless_with_cuda;
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{DecodeSettings, Image};
 
@@ -32,134 +31,16 @@ use j2k_native::{DecodeSettings, Image};
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "cuda-runtime")]
-use j2k_test_support::cuda_runtime_required;
+use j2k_test_support::cuda_runtime_gate;
 
 // ---------------------------------------------------------------------------
-// DWT sub-band reshape
-//
-// The CUDA `j2k_forward_dwt53` output stores coefficients in a single
-// "polyphase-flat" plane that preserves the original image stride.  For a
-// MULTI-level DWT the deeper levels are nested inside the LL quadrant of the
-// previous level, so each sub-band must be addressed with an explicit (x0, y0)
-// origin — not anchored at the buffer origin.  Additionally, CUDA emits its
-// `levels()` finest→coarsest, while native `forward_dwt53_reference` returns
-// them coarsest→finest (it calls `levels.reverse()`), so a naive same-index
-// zip compares mismatched levels.
-//
-// Rather than re-derive this geometry in the test (the source of the original
-// bug), we reuse the EXACT production conversion `cuda_dwt53_output_to_j2k`
-// (re-exported as `cuda_dwt53_output_to_j2k_for_test`).  It extracts each band
-// with explicit offsets (HL at (low_width, 0), LH at (0, low_height), HH at
-// (low_width, low_height)) and reverses the level order, producing a
-// `J2kForwardDwt53Output` directly comparable to `forward_dwt53_reference`.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Test 1: forward DWT 5/3
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "cuda-runtime")]
-fn assert_cuda_forward_dwt53_matches_native(width: u32, height: u32, num_levels: u8) {
-    // Deterministic signed-ish integer samples in [-128, 127] so the lossless
-    // path keeps integer coefficients (f32::from is lossless for this range).
-    let samples: Vec<f32> = (0u32..width * height)
-        .map(|i| {
-            let v = i16::try_from((i * 7 + 3) % 256).expect("sample fits in i16") - 128;
-            f32::from(v)
-        })
-        .collect();
-
-    // Native CPU reference (levels ordered coarsest→finest; LL at deepest level).
-    let native = forward_dwt53_reference(&samples, width, height, num_levels);
-
-    // CUDA forward DWT (levels ordered finest→coarsest in the flat plane).
-    let context = CudaContext::system_default().expect("CUDA context");
-    let cuda_out = context
-        .j2k_forward_dwt53(&samples, width, height, num_levels)
-        .expect("CUDA forward DWT 5/3");
-
-    assert_eq!(
-        cuda_out.levels().len(),
-        native.levels.len(),
-        "level count (levels={num_levels})"
-    );
-    assert_eq!(
-        cuda_out.ll_dimensions(),
-        (native.ll_width, native.ll_height),
-        "LL dimensions (levels={num_levels})"
-    );
-
-    // Convert the flat CUDA plane to the native sub-band representation using
-    // the SAME production reshape the encoder uses.  This handles the nested
-    // per-level band offsets AND the finest→coarsest to coarsest→finest level
-    // reversal, so the result lines up index-for-index with `native`.
-    let cuda_as_native = cuda_dwt53_output_to_j2k_for_test(&cuda_out)
-        .expect("CUDA DWT output -> native subband reshape");
-
-    assert_eq!(
-        cuda_as_native.levels.len(),
-        native.levels.len(),
-        "reshaped level count (levels={num_levels})"
-    );
-    assert_eq!(
-        (cuda_as_native.ll_width, cuda_as_native.ll_height),
-        (native.ll_width, native.ll_height),
-        "reshaped LL dimensions (levels={num_levels})"
-    );
-
-    // Per-level HL/LH/HH parity (both now coarsest→finest at the same index).
-    for (level_idx, (cuda_level, native_level)) in cuda_as_native
-        .levels
-        .iter()
-        .zip(native.levels.iter())
-        .enumerate()
-    {
-        assert_eq!(
-            cuda_level.hl, native_level.hl,
-            "levels={num_levels} level {level_idx} HL mismatch"
-        );
-        assert_eq!(
-            cuda_level.lh, native_level.lh,
-            "levels={num_levels} level {level_idx} LH mismatch"
-        );
-        assert_eq!(
-            cuda_level.hh, native_level.hh,
-            "levels={num_levels} level {level_idx} HH mismatch"
-        );
-    }
-
-    // Deepest LL sub-band parity.
-    assert_eq!(
-        cuda_as_native.ll, native.ll,
-        "levels={num_levels} final LL mismatch"
-    );
-}
-
-#[cfg(feature = "cuda-runtime")]
-#[test]
-fn cuda_forward_dwt53_matches_native_reference_when_required() {
-    if !cuda_runtime_required() {
-        return;
-    }
-
-    // num_levels = 2 exercises the multi-level (nested-band) path that the
-    // original buggy reshape mishandled.  num_levels = 1 and 3 lock the level
-    // ordering for the single-level and deeper-nesting cases respectively.
-    // 40×24 stays divisible enough that every level keeps a non-degenerate
-    // high-pass quadrant.
-    assert_cuda_forward_dwt53_matches_native(40, 24, 1);
-    assert_cuda_forward_dwt53_matches_native(40, 24, 2);
-    assert_cuda_forward_dwt53_matches_native(40, 24, 3);
-}
-
-// ---------------------------------------------------------------------------
-// Test 2: forward RCT
+// Test 1: forward RCT
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_forward_rct_matches_native_reference_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -193,7 +74,7 @@ fn cuda_forward_rct_matches_native_reference_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_quantize_reversible_matches_native_reference_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -239,7 +120,7 @@ fn cuda_quantize_reversible_matches_native_reference_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_deinterleave_matches_native_reference_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -258,13 +139,14 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         let bit_depth = 8u8;
         let signed = false;
 
-        let native = deinterleave_reference(
+        let native = try_deinterleave_reference(
             &pixels,
             num_pixels,
             u16::from(num_components),
             bit_depth,
             signed,
-        );
+        )
+        .expect("valid native deinterleave reference input");
         let cuda_out = context
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 8-bit unsigned RGB");
@@ -290,13 +172,14 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         let bit_depth = 8u8;
         let signed = true;
 
-        let native = deinterleave_reference(
+        let native = try_deinterleave_reference(
             &pixels,
             num_pixels,
             u16::from(num_components),
             bit_depth,
             signed,
-        );
+        )
+        .expect("valid native deinterleave reference input");
         let cuda_out = context
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 8-bit signed gray");
@@ -324,13 +207,14 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         let bit_depth = 16u8;
         let signed = false;
 
-        let native = deinterleave_reference(
+        let native = try_deinterleave_reference(
             &pixels,
             num_pixels,
             u16::from(num_components),
             bit_depth,
             signed,
-        );
+        )
+        .expect("valid native deinterleave reference input");
         let cuda_out = context
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 16-bit unsigned RGB");
@@ -355,13 +239,14 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         let bit_depth = 16u8;
         let signed = true;
 
-        let native = deinterleave_reference(
+        let native = try_deinterleave_reference(
             &pixels,
             num_pixels,
             u16::from(num_components),
             bit_depth,
             signed,
-        );
+        )
+        .expect("valid native deinterleave reference input");
         let cuda_out = context
             .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, signed)
             .expect("CUDA deinterleave 16-bit signed gray");
@@ -527,7 +412,7 @@ const MATRIX_LEVELS: &[u8] = &[0, 1, 3];
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_facade_byte_matches_native_across_matrix_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -705,12 +590,12 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_tile_encode_hook_rejects_subsampling_with_typed_err_when_cuda_runtime_required() {
-    use j2k::adapter::encode_stage::{
+    use j2k::{
         J2kEncodeStageAccelerator as _, J2kHtj2kTileEncodeJob, J2kPacketizationProgressionOrder,
     };
     use j2k_cuda::CudaEncodeStageAccelerator;
 
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 

@@ -7,26 +7,18 @@ use j2k_core::{
 };
 use j2k_jpeg::{
     adapter::{
-        build_fast420_packet_for_decoder, build_fast422_packet_for_decoder,
-        build_fast444_packet_for_decoder, summarize_device_batch,
+        build_fast420_packet, build_fast422_packet, build_fast444_packet, decoder_bytes,
+        summarize_device_batch,
     },
-    decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context,
+    decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context, DecodeRequest,
     Decoder as CpuDecoder, DecoderContext as JpegDecoderContext, ScratchPool as CpuScratchPool,
 };
-use j2k_jpeg_metal::viewport::{
-    compose_viewport_cpu, compose_viewport_cpu_to_surface, compose_viewport_hybrid,
-    decode_viewport_region_cpu, decode_viewport_region_cpu_to_surface,
-    decode_viewport_region_hybrid, decode_viewport_to_surface, suggest_viewport_workload,
-    ViewportTile, ViewportWorkload,
+use j2k_jpeg_metal::{
+    decode_viewport_to_surface, suggest_viewport_workload, Codec, Decoder, MetalDecodeRequest,
+    MetalSession, ScratchPool, ViewportTile, ViewportWorkload,
 };
 #[cfg(target_os = "macos")]
-use j2k_jpeg_metal::viewport::{
-    decode_viewport_to_resizable_metal_buffer_with_decoder_session,
-    decode_viewport_to_resizable_metal_textures_with_decoder_session,
-};
-use j2k_jpeg_metal::{Codec, Decoder, MetalSession, ScratchPool};
-#[cfg(target_os = "macos")]
-use j2k_jpeg_metal::{MetalBackendSession, MetalBatchOutputBuffer, MetalBatchTextureOutput};
+use j2k_jpeg_metal::{MetalBackendSession, MetalBatchTextureOutput};
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 use std::collections::HashSet;
 
@@ -175,10 +167,11 @@ fn device_batch_key(input: &BenchInput) -> Option<DeviceBatchKey> {
 
 fn fast_packet_plan(bytes: &[u8]) -> Option<FastPacketPlan> {
     let decoder = CpuDecoder::new(bytes).ok()?;
+    let bytes = decoder_bytes(&decoder);
     Some(FastPacketPlan {
-        matches_fast_444: build_fast444_packet_for_decoder(&decoder).is_ok(),
-        matches_fast_422: build_fast422_packet_for_decoder(&decoder).is_ok(),
-        matches_fast_420: build_fast420_packet_for_decoder(&decoder).is_ok(),
+        matches_fast_444: build_fast444_packet(bytes).is_ok(),
+        matches_fast_422: build_fast422_packet(bytes).is_ok(),
+        matches_fast_420: build_fast420_packet(bytes).is_ok(),
     })
 }
 
@@ -403,7 +396,7 @@ fn cpu_decode_region(bytes: &[u8], side: u32) {
     let decoder = CpuDecoder::new(bytes).expect("cpu decoder");
     let roi = centered_roi(decoder.info().dimensions, side);
     let (out, _) = decoder
-        .decode_region(
+        .decode_request(DecodeRequest::region(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -411,7 +404,7 @@ fn cpu_decode_region(bytes: &[u8], side: u32) {
                 w: roi.w,
                 h: roi.h,
             },
-        )
+        ))
         .expect("cpu region decode");
     std::hint::black_box(out);
 }
@@ -420,7 +413,11 @@ fn cpu_decode_region_scaled(bytes: &[u8], side: u32, factor: Downscale) {
     let decoder = CpuDecoder::new(bytes).expect("cpu decoder");
     let roi = centered_roi(decoder.info().dimensions, side);
     let (out, _) = decoder
-        .decode_region_scaled(PixelFormat::Rgb8, to_jpeg_rect(roi), factor)
+        .decode_request(DecodeRequest::region_scaled(
+            PixelFormat::Rgb8,
+            to_jpeg_rect(roi),
+            factor,
+        ))
         .expect("cpu region scaled decode");
     std::hint::black_box(out);
 }
@@ -428,7 +425,7 @@ fn cpu_decode_region_scaled(bytes: &[u8], side: u32, factor: Downscale) {
 fn cpu_decode_scaled(bytes: &[u8], factor: Downscale) {
     let decoder = CpuDecoder::new(bytes).expect("cpu decoder");
     let (out, _) = decoder
-        .decode_scaled(PixelFormat::Rgb8, factor)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, factor))
         .expect("cpu scaled decode");
     std::hint::black_box(out);
 }
@@ -447,9 +444,11 @@ fn cpu_decode_tile_batch_scaled(bytes: &[u8], batch_size: usize, factor: Downsca
             bytes,
             &mut ctx,
             &mut pool,
-            &mut out,
-            stride,
-            PixelFormat::Rgb8,
+            j2k_jpeg::TileDecodeOutput {
+                out: &mut out,
+                stride,
+                fmt: PixelFormat::Rgb8,
+            },
             factor,
         )
         .expect("cpu scaled tile batch");
@@ -475,9 +474,11 @@ fn cpu_decode_tile_batch_region_scaled(
             bytes,
             &mut ctx,
             &mut pool,
-            &mut out,
-            stride,
-            PixelFormat::Rgb8,
+            j2k_jpeg::TileDecodeOutput {
+                out: &mut out,
+                stride,
+                fmt: PixelFormat::Rgb8,
+            },
             to_jpeg_rect(roi),
             factor,
         )
@@ -503,9 +504,11 @@ fn cpu_decode_distinct_tile_batch_region_scaled(
             &tile.bytes,
             &mut ctx,
             &mut pool,
-            &mut out,
-            stride,
-            PixelFormat::Rgb8,
+            j2k_jpeg::TileDecodeOutput {
+                out: &mut out,
+                stride,
+                fmt: PixelFormat::Rgb8,
+            },
             to_jpeg_rect(roi),
             factor,
         )
@@ -571,126 +574,10 @@ fn bench_resident_texture_batches(c: &mut Criterion, inputs: &[BenchInput], has_
 fn bench_resident_texture_batches(_c: &mut Criterion, _inputs: &[BenchInput], _has_metal: bool) {}
 
 #[cfg(target_os = "macos")]
-fn bench_resident_viewport_outputs(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
-    if !has_metal {
-        return;
-    }
-
-    {
-        let mut buffer_group = c.benchmark_group("viewer_resident_viewport_rgb_buffer_warm");
-        for input in inputs.iter().filter(|input| {
-            input.mode == DecodeMode::Rgb
-                && input.input_class == CorpusInputClass::BoundedFullFrame
-                && suggest_viewport_workload(input.dimensions).is_some()
-        }) {
-            let contiguous_workload =
-                suggest_viewport_workload(input.dimensions).expect("viewport workload");
-            bench_resident_viewport_buffer_case(
-                &mut buffer_group,
-                input,
-                "contiguous",
-                contiguous_workload.clone(),
-            );
-
-            if let Some(sparse_workload) = sparse_viewport_workload(&contiguous_workload) {
-                bench_resident_viewport_buffer_case(
-                    &mut buffer_group,
-                    input,
-                    "sparse",
-                    sparse_workload,
-                );
-            }
-        }
-        buffer_group.finish();
-    }
-
-    {
-        let mut texture_group = c.benchmark_group("viewer_resident_viewport_rgba_texture_warm");
-        for input in inputs.iter().filter(|input| {
-            input.mode == DecodeMode::Rgb
-                && input.input_class == CorpusInputClass::BoundedFullFrame
-                && suggest_viewport_workload(input.dimensions).is_some()
-        }) {
-            let contiguous_workload =
-                suggest_viewport_workload(input.dimensions).expect("viewport workload");
-            bench_resident_viewport_texture_case(
-                &mut texture_group,
-                input,
-                "contiguous",
-                contiguous_workload.clone(),
-            );
-
-            if let Some(sparse_workload) = sparse_viewport_workload(&contiguous_workload) {
-                bench_resident_viewport_texture_case(
-                    &mut texture_group,
-                    input,
-                    "sparse",
-                    sparse_workload,
-                );
-            }
-        }
-        texture_group.finish();
-    }
-}
+fn bench_resident_viewport_outputs(_c: &mut Criterion, _inputs: &[BenchInput], _has_metal: bool) {}
 
 #[cfg(not(target_os = "macos"))]
 fn bench_resident_viewport_outputs(_c: &mut Criterion, _inputs: &[BenchInput], _has_metal: bool) {}
-
-#[cfg(target_os = "macos")]
-fn bench_resident_viewport_buffer_case(
-    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    input: &BenchInput,
-    shape: &'static str,
-    workload: ViewportWorkload,
-) {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
-    let mut output =
-        MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("buffer output");
-    let bytes = input.bytes.clone();
-    group.bench_function(format!("{shape}/{}", input.name), move |b| {
-        let decoder = Decoder::new(&bytes).expect("metal decoder");
-        let mut pool = CpuScratchPool::new();
-        b.iter(|| {
-            let surface = decode_viewport_to_resizable_metal_buffer_with_decoder_session(
-                &decoder,
-                &mut pool,
-                &workload,
-                &mut output,
-                &session,
-            )
-            .expect("resident viewport buffer");
-            std::hint::black_box(surface);
-        });
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn bench_resident_viewport_texture_case(
-    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    input: &BenchInput,
-    shape: &'static str,
-    workload: ViewportWorkload,
-) {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
-    let mut output =
-        MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
-    let bytes = input.bytes.clone();
-    group.bench_function(format!("{shape}/{}", input.name), move |b| {
-        let decoder = Decoder::new(&bytes).expect("metal decoder");
-        let mut pool = CpuScratchPool::new();
-        b.iter(|| {
-            let tile = decode_viewport_to_resizable_metal_textures_with_decoder_session(
-                &decoder,
-                &mut pool,
-                &workload,
-                &mut output,
-                &session,
-            )
-            .expect("resident viewport texture");
-            std::hint::black_box(tile);
-        });
-    });
-}
 
 fn auto_decode_tile_batch(bytes: &[u8], batch_size: usize) {
     device_decode_tile_batch(bytes, batch_size, BackendRequest::Auto);
@@ -767,15 +654,17 @@ fn metal_decode_tile_batch_region_scaled(
     let mut session = MetalSession::default();
     let submissions = (0..batch_size)
         .map(|_| {
-            Codec::submit_tile_region_scaled_to_device(
+            Codec::submit_tile_request_to_device(
                 &mut ctx,
                 &mut session,
                 &mut pool,
                 bytes,
-                PixelFormat::Rgb8,
-                roi,
-                factor,
-                BackendRequest::Metal,
+                MetalDecodeRequest::region_scaled(
+                    PixelFormat::Rgb8,
+                    roi,
+                    factor,
+                    BackendRequest::Metal,
+                ),
             )
             .expect("region scaled submit")
         })
@@ -803,15 +692,17 @@ fn metal_decode_distinct_tile_batch_region_scaled(
         .iter()
         .map(|tile| {
             let roi = centered_roi(tile.dimensions, side);
-            Codec::submit_tile_region_scaled_to_device(
+            Codec::submit_tile_request_to_device(
                 &mut ctx,
                 &mut session,
                 &mut pool,
                 &tile.bytes,
-                PixelFormat::Rgb8,
-                roi,
-                factor,
-                BackendRequest::Metal,
+                MetalDecodeRequest::region_scaled(
+                    PixelFormat::Rgb8,
+                    roi,
+                    factor,
+                    BackendRequest::Metal,
+                ),
             )
             .expect("distinct region scaled submit")
         })
@@ -843,7 +734,12 @@ fn metal_decode_region_scaled(bytes: &[u8], side: u32, factor: Downscale) {
     let roi = centered_roi(cpu.info().dimensions, side);
     let mut decoder = Decoder::new(bytes).expect("metal decoder");
     let surface = decoder
-        .decode_region_scaled_to_device(PixelFormat::Rgb8, roi, factor, BackendRequest::Metal)
+        .decode_request_to_device(MetalDecodeRequest::region_scaled(
+            PixelFormat::Rgb8,
+            roi,
+            factor,
+            BackendRequest::Metal,
+        ))
         .expect("region scaled surface");
     std::hint::black_box(surface);
 }
@@ -863,83 +759,36 @@ fn metal_decode_scaled(bytes: &[u8], factor: Downscale) {
 }
 
 fn cpu_viewport_composite(bytes: &[u8], dimensions: (u32, u32)) {
-    let Some(workload) = suggest_viewport_workload(dimensions) else {
-        return;
-    };
-    let decoder = CpuDecoder::new(bytes).expect("cpu decoder");
-    let mut pool = CpuScratchPool::new();
-    let out = compose_viewport_cpu(
-        &decoder,
-        &mut pool,
-        PixelFormat::Rgb8,
-        workload.scale,
-        workload.viewport_dims,
-        &workload.tiles,
-    )
-    .expect("cpu viewport");
-    std::hint::black_box(out);
+    public_viewport_surface(bytes, dimensions, BackendRequest::Cpu);
 }
 
 fn hybrid_viewport_composite(bytes: &[u8], dimensions: (u32, u32)) {
-    let Some(workload) = suggest_viewport_workload(dimensions) else {
-        return;
-    };
-    let decoder = CpuDecoder::new(bytes).expect("cpu decoder");
-    let mut pool = CpuScratchPool::new();
-    let surface = compose_viewport_hybrid(
-        &decoder,
-        &mut pool,
-        workload.scale,
-        workload.viewport_dims,
-        &workload.tiles,
-    )
-    .expect("hybrid viewport");
-    let stride = workload.viewport_dims.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
-    let mut out = vec![0u8; stride * workload.viewport_dims.1 as usize];
-    surface
-        .download_into(&mut out, stride)
-        .expect("hybrid viewport download");
-    std::hint::black_box(out);
+    public_viewport_surface(bytes, dimensions, BackendRequest::Auto);
 }
 
 fn cpu_viewport_composite_device(bytes: &[u8], dimensions: (u32, u32)) {
-    let Some(workload) = suggest_viewport_workload(dimensions) else {
-        return;
-    };
-    let decoder = CpuDecoder::new(bytes).expect("cpu decoder");
-    let mut pool = CpuScratchPool::new();
-    let surface = compose_viewport_cpu_to_surface(
-        &decoder,
-        &mut pool,
-        workload.scale,
-        workload.viewport_dims,
-        &workload.tiles,
-    )
-    .expect("cpu viewport surface");
-    std::hint::black_box(surface);
+    public_viewport_surface(bytes, dimensions, BackendRequest::Cpu);
 }
 
 fn hybrid_viewport_composite_device(bytes: &[u8], dimensions: (u32, u32)) {
+    public_viewport_surface(bytes, dimensions, BackendRequest::Auto);
+}
+
+fn public_viewport_surface(bytes: &[u8], dimensions: (u32, u32), backend: BackendRequest) {
     let Some(workload) = suggest_viewport_workload(dimensions) else {
         return;
     };
     let decoder = CpuDecoder::new(bytes).expect("cpu decoder");
     let mut pool = CpuScratchPool::new();
-    let surface = compose_viewport_hybrid(
-        &decoder,
-        &mut pool,
-        workload.scale,
-        workload.viewport_dims,
-        &workload.tiles,
-    )
-    .expect("hybrid viewport surface");
+    let surface =
+        decode_viewport_to_surface(&decoder, &mut pool, &workload, backend).expect("viewport");
     std::hint::black_box(surface);
 }
 
 fn scheduled_viewport_surface(
     decoder: &CpuDecoder<'_>,
     pool: &mut CpuScratchPool,
-    workload: &j2k_jpeg_metal::viewport::ViewportWorkload,
+    workload: &ViewportWorkload,
     backend: BackendRequest,
 ) {
     let surface = decode_viewport_to_surface(decoder, pool, workload, backend).expect("viewport");
@@ -1240,16 +1089,14 @@ fn bench_compare(c: &mut Criterion) {
                 let decoder = CpuDecoder::new(&cpu_bytes).expect("cpu decoder");
                 let mut pool = CpuScratchPool::new();
                 b.iter(|| {
-                    let out = compose_viewport_cpu(
+                    let surface = decode_viewport_to_surface(
                         &decoder,
                         &mut pool,
-                        PixelFormat::Rgb8,
-                        workload.scale,
-                        workload.viewport_dims,
-                        &workload.tiles,
+                        &workload,
+                        BackendRequest::Cpu,
                     )
                     .expect("cpu warm viewport");
-                    std::hint::black_box(out);
+                    std::hint::black_box(surface);
                 });
             },
         );
@@ -1262,22 +1109,15 @@ fn bench_compare(c: &mut Criterion) {
                 move |b| {
                     let decoder = CpuDecoder::new(&hybrid_bytes).expect("cpu decoder");
                     let mut pool = CpuScratchPool::new();
-                    let stride =
-                        workload.viewport_dims.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
-                    let mut out = vec![0u8; stride * workload.viewport_dims.1 as usize];
                     b.iter(|| {
-                        let surface = compose_viewport_hybrid(
+                        let surface = decode_viewport_to_surface(
                             &decoder,
                             &mut pool,
-                            workload.scale,
-                            workload.viewport_dims,
-                            &workload.tiles,
+                            &workload,
+                            BackendRequest::Auto,
                         )
                         .expect("hybrid warm viewport");
-                        surface
-                            .download_into(&mut out, stride)
-                            .expect("hybrid warm download");
-                        std::hint::black_box(&out);
+                        std::hint::black_box(surface);
                     });
                 },
             );
@@ -1300,12 +1140,11 @@ fn bench_compare(c: &mut Criterion) {
                 let decoder = CpuDecoder::new(&cpu_bytes).expect("cpu decoder");
                 let mut pool = CpuScratchPool::new();
                 b.iter(|| {
-                    let surface = compose_viewport_cpu_to_surface(
+                    let surface = decode_viewport_to_surface(
                         &decoder,
                         &mut pool,
-                        workload.scale,
-                        workload.viewport_dims,
-                        &workload.tiles,
+                        &workload,
+                        BackendRequest::Cpu,
                     )
                     .expect("cpu warm viewport surface");
                     std::hint::black_box(surface);
@@ -1322,12 +1161,11 @@ fn bench_compare(c: &mut Criterion) {
                     let decoder = CpuDecoder::new(&hybrid_bytes).expect("cpu decoder");
                     let mut pool = CpuScratchPool::new();
                     b.iter(|| {
-                        let surface = compose_viewport_hybrid(
+                        let surface = decode_viewport_to_surface(
                             &decoder,
                             &mut pool,
-                            workload.scale,
-                            workload.viewport_dims,
-                            &workload.tiles,
+                            &workload,
+                            BackendRequest::Auto,
                         )
                         .expect("hybrid warm viewport surface");
                         std::hint::black_box(surface);
@@ -1350,10 +1188,10 @@ fn bench_compare(c: &mut Criterion) {
             let decoder = CpuDecoder::new(&input.bytes).expect("cpu decoder");
             let mut pool = CpuScratchPool::new();
             b.iter(|| {
-                let out =
-                    decode_viewport_region_cpu(&decoder, &mut pool, PixelFormat::Rgb8, &workload)
+                let surface =
+                    decode_viewport_to_surface(&decoder, &mut pool, &workload, BackendRequest::Cpu)
                         .expect("cpu contiguous viewport");
-                std::hint::black_box(out);
+                std::hint::black_box(surface);
             });
         });
         if has_metal {
@@ -1362,16 +1200,15 @@ fn bench_compare(c: &mut Criterion) {
                 |b| {
                     let decoder = CpuDecoder::new(&input.bytes).expect("cpu decoder");
                     let mut pool = CpuScratchPool::new();
-                    let stride =
-                        workload.viewport_dims.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
-                    let mut out = vec![0u8; stride * workload.viewport_dims.1 as usize];
                     b.iter(|| {
-                        let surface = decode_viewport_region_hybrid(&decoder, &mut pool, &workload)
-                            .expect("hybrid contiguous viewport");
-                        surface
-                            .download_into(&mut out, stride)
-                            .expect("hybrid contiguous download");
-                        std::hint::black_box(&out);
+                        let surface = decode_viewport_to_surface(
+                            &decoder,
+                            &mut pool,
+                            &workload,
+                            BackendRequest::Auto,
+                        )
+                        .expect("hybrid contiguous viewport");
+                        std::hint::black_box(surface);
                     });
                 },
             );
@@ -1393,9 +1230,13 @@ fn bench_compare(c: &mut Criterion) {
                 let decoder = CpuDecoder::new(&input.bytes).expect("cpu decoder");
                 let mut pool = CpuScratchPool::new();
                 b.iter(|| {
-                    let surface =
-                        decode_viewport_region_cpu_to_surface(&decoder, &mut pool, &workload)
-                            .expect("cpu contiguous upload");
+                    let surface = decode_viewport_to_surface(
+                        &decoder,
+                        &mut pool,
+                        &workload,
+                        BackendRequest::Cpu,
+                    )
+                    .expect("cpu contiguous upload");
                     std::hint::black_box(surface);
                 });
             },
@@ -1407,8 +1248,13 @@ fn bench_compare(c: &mut Criterion) {
                     let decoder = CpuDecoder::new(&input.bytes).expect("cpu decoder");
                     let mut pool = CpuScratchPool::new();
                     b.iter(|| {
-                        let surface = decode_viewport_region_hybrid(&decoder, &mut pool, &workload)
-                            .expect("hybrid contiguous viewport");
+                        let surface = decode_viewport_to_surface(
+                            &decoder,
+                            &mut pool,
+                            &workload,
+                            BackendRequest::Auto,
+                        )
+                        .expect("hybrid contiguous viewport");
                         std::hint::black_box(surface);
                     });
                 },

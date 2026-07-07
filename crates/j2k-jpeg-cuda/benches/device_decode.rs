@@ -8,8 +8,8 @@ use j2k_core::{
 #[cfg(feature = "cuda-runtime")]
 use j2k_core::{DecoderContext, TileBatchDecodeManyDevice};
 use j2k_jpeg::{
-    encode_jpeg_baseline, Decoder as CpuDecoder, JpegBackend, JpegEncodeOptions, JpegSamples,
-    JpegSubsampling,
+    encode_jpeg_baseline, DecodeRequest, Decoder as CpuDecoder, JpegBackend, JpegEncodeOptions,
+    JpegSamples, JpegSubsampling,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_jpeg_cuda::Codec as CudaCodec;
@@ -29,7 +29,9 @@ fn bench_device_decode(c: &mut Criterion) {
     group.bench_function("cpu_decode_rgb8", |b| {
         b.iter(|| {
             let decoder = CpuDecoder::new(&input).expect("cpu decoder");
-            decoder.decode(PixelFormat::Rgb8).expect("cpu decode")
+            decoder
+                .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+                .expect("cpu decode")
         });
     });
 
@@ -269,7 +271,9 @@ fn bench_batch_decode(c: &mut Criterion) {
             let mut total = 0usize;
             for _ in 0..batch_size {
                 let decoder = CpuDecoder::new(&input).expect("cpu decoder");
-                let decoded_rgb = decoder.decode(PixelFormat::Rgb8).expect("cpu decode");
+                let decoded_rgb = decoder
+                    .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+                    .expect("cpu decode");
                 total = total.saturating_add(decoded_rgb.0.len());
                 std::hint::black_box(decoded_rgb);
             }

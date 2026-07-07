@@ -7,7 +7,7 @@
 // Compiled only with `cuda-runtime`; asserts only on the CUDA runner.
 #![cfg(feature = "cuda-runtime")]
 
-use j2k_test_support::cuda_runtime_required;
+use j2k_test_support::cuda_runtime_gate;
 use j2k_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
 use j2k_transcode_cuda::CudaDctToWaveletStageAccelerator;
 
@@ -26,7 +26,7 @@ fn make_blocks(block_cols: usize, block_rows: usize, salt: usize) -> Vec<[[f64; 
 
 #[test]
 fn cuda_dwt97_batch_matches_per_job_and_reports_stage_timings_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -89,7 +89,7 @@ fn cuda_dwt97_batch_matches_per_job_and_reports_stage_timings_when_required() {
 
 #[test]
 fn cuda_dwt97_batch_non_uniform_geometry_falls_back_to_per_job_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 

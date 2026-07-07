@@ -22,19 +22,10 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
 
         definitions.push(ChannelDefinition {
             channel_index,
-            channel_type: ChannelType::from_raw(channel_type).ok_or(FormatError::InvalidBox)?,
+            channel_type: ChannelType::from_raw(channel_type),
             _association: ChannelAssociation::from_raw(association)
                 .ok_or(FormatError::InvalidBox)?,
         });
-    }
-
-    definitions.sort_by_key(|definition| definition.channel_index);
-
-    // Ensure channel indices increases in steps of 1, starting from 0.
-    for (idx, def) in definitions.iter().enumerate() {
-        if def.channel_index as usize != idx {
-            bail!(FormatError::InvalidBox);
-        }
     }
 
     boxes.channel_definition = Some(ChannelDefinitionBox {
@@ -62,16 +53,17 @@ pub(crate) enum ChannelType {
     Opacity,
     PremultipliedOpacity,
     Unspecified,
+    Unknown(u16),
 }
 
 impl ChannelType {
-    fn from_raw(value: u16) -> Option<Self> {
+    fn from_raw(value: u16) -> Self {
         match value {
-            0 => Some(Self::Colour),
-            1 => Some(Self::Opacity),
-            2 => Some(Self::PremultipliedOpacity),
-            u16::MAX => Some(Self::Unspecified),
-            _ => None,
+            0 => Self::Colour,
+            1 => Self::Opacity,
+            2 => Self::PremultipliedOpacity,
+            u16::MAX => Self::Unspecified,
+            value => Self::Unknown(value),
         }
     }
 }

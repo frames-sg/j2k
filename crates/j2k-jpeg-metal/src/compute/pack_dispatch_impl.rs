@@ -1,17 +1,66 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
-fn encode_jpeg_pack_to_surface_in_command_buffer(
-    runtime: &MetalRuntime,
-    command_buffer: &CommandBufferRef,
-    plane0: &Buffer,
-    plane1: Option<&Buffer>,
-    plane2: Option<&Buffer>,
+#[derive(Clone, Copy)]
+struct JpegPackSurfaceRequest<'a> {
+    plane0: &'a Buffer,
+    plane1: Option<&'a Buffer>,
+    plane2: Option<&'a Buffer>,
     dims: (u32, u32),
     mode: PlaneMode,
     fmt: PixelFormat,
+}
+
+#[cfg(target_os = "macos")]
+struct FastSubsampledScaledRegionBatchItemRequest<'a, P: FastSubsampledMetal> {
+    runtime: &'a MetalRuntime,
+    command_buffer: &'a CommandBufferRef,
+    device_buffer_cache: &'a mut BatchDeviceBufferCache,
+    request_index: usize,
+    packet: &'a P,
+    fmt: PixelFormat,
+    roi: Rect,
+    scale: j2k_core::Downscale,
+}
+
+#[cfg(target_os = "macos")]
+struct FastSubsampledOpBatchItemRequest<'a, P: FastSubsampledMetal> {
+    runtime: &'a MetalRuntime,
+    command_buffer: &'a CommandBufferRef,
+    device_buffer_cache: &'a mut BatchDeviceBufferCache,
+    request_index: usize,
+    packet: &'a P,
+    fmt: PixelFormat,
+    op: batch::BatchOp,
+}
+
+#[cfg(target_os = "macos")]
+struct Fast444ScaledRegionBatchItemRequest<'a> {
+    runtime: &'a MetalRuntime,
+    command_buffer: &'a CommandBufferRef,
+    device_buffer_cache: &'a mut BatchDeviceBufferCache,
+    request_index: usize,
+    packet: &'a JpegFast444PacketV1,
+    mode: PlaneMode,
+    fmt: PixelFormat,
+    roi: Rect,
+    scale: j2k_core::Downscale,
+}
+
+#[cfg(target_os = "macos")]
+fn encode_jpeg_pack_to_surface_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    request: JpegPackSurfaceRequest<'_>,
 ) -> Result<Surface, Error> {
+    let JpegPackSurfaceRequest {
+        plane0,
+        plane1,
+        plane2,
+        dims,
+        mode,
+        fmt,
+    } = request;
     match (mode, fmt) {
         (PlaneMode::Gray | PlaneMode::YCbCr, PixelFormat::Gray8) => {
             return Ok(Surface::from_metal_buffer(plane0.clone(), dims, fmt));
@@ -141,15 +190,17 @@ fn encode_fast_subsampled_region_batch_item<P: FastSubsampledMetal>(
     decoder_encoder.set_compute_pipeline_state(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420Params>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &cb_plane, &cr_plane],
-        &params,
-        [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &cb_plane, &cr_plane],
+            params: &params,
+            quants: [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(decoder_encoder, decode_pipeline, decode_threads);
     decoder_encoder.end_encoding();
@@ -229,15 +280,17 @@ fn encode_fast_subsampled_scaled_batch_item<P: FastSubsampledMetal>(
     decoder_encoder.set_compute_pipeline_state(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420ScaledParams>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &cb_plane, &cr_plane],
-        &params,
-        [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &cb_plane, &cr_plane],
+            params: &params,
+            quants: [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(decoder_encoder, decode_pipeline, decode_threads);
     decoder_encoder.end_encoding();
@@ -329,17 +382,19 @@ fn encode_fast_subsampled_scaled_batch_item<P: FastSubsampledMetal>(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
 fn encode_fast_subsampled_scaled_region_batch_item<P: FastSubsampledMetal>(
-    runtime: &MetalRuntime,
-    command_buffer: &CommandBufferRef,
-    device_buffer_cache: &mut BatchDeviceBufferCache,
-    request_index: usize,
-    packet: &P,
-    fmt: PixelFormat,
-    roi: Rect,
-    scale: j2k_core::Downscale,
+    request: FastSubsampledScaledRegionBatchItemRequest<'_, P>,
 ) -> Result<BatchedDecodeItem, Error> {
+    let FastSubsampledScaledRegionBatchItemRequest {
+        runtime,
+        command_buffer,
+        device_buffer_cache,
+        request_index,
+        packet,
+        fmt,
+        roi,
+        scale,
+    } = request;
     let Some(full_params) = fast_subsampled_scaled_params(packet, scale) else {
         return Err(Error::MetalKernel {
             message: format!("unsupported JPEG Metal {} scale {scale:?}", P::FAMILY_NAME),
@@ -427,15 +482,17 @@ fn encode_fast_subsampled_scaled_region_batch_item<P: FastSubsampledMetal>(
     decoder_encoder.set_compute_pipeline_state(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420ScaledParams>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &cb_plane, &cr_plane],
-        &decode_params,
-        [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &cb_plane, &cr_plane],
+            params: &decode_params,
+            quants: [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(decoder_encoder, decode_pipeline, decode_threads);
     decoder_encoder.end_encoding();
@@ -509,15 +566,17 @@ fn encode_fast_subsampled_batch_item<P: FastSubsampledMetal>(
     decoder_encoder.set_compute_pipeline_state(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420Params>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &cb_plane, &cr_plane],
-        &params,
-        [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &cb_plane, &cr_plane],
+            params: &params,
+            quants: [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(decoder_encoder, decode_pipeline, decode_threads);
     decoder_encoder.end_encoding();
@@ -569,16 +628,18 @@ fn encode_fast_subsampled_batch_item<P: FastSubsampledMetal>(
 
 /// Route one batch request to the family's encode item for its op.
 #[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
 fn encode_fast_subsampled_op_batch_item<P: FastSubsampledMetal>(
-    runtime: &MetalRuntime,
-    command_buffer: &CommandBufferRef,
-    device_buffer_cache: &mut BatchDeviceBufferCache,
-    request_index: usize,
-    packet: &P,
-    fmt: PixelFormat,
-    op: batch::BatchOp,
+    request: FastSubsampledOpBatchItemRequest<'_, P>,
 ) -> Result<BatchedDecodeItem, Error> {
+    let FastSubsampledOpBatchItemRequest {
+        runtime,
+        command_buffer,
+        device_buffer_cache,
+        request_index,
+        packet,
+        fmt,
+        op,
+    } = request;
     match op {
         batch::BatchOp::Full => {
             encode_fast_subsampled_batch_item(runtime, command_buffer, request_index, packet, fmt)
@@ -601,14 +662,16 @@ fn encode_fast_subsampled_op_batch_item<P: FastSubsampledMetal>(
         ),
         batch::BatchOp::RegionScaled { roi, scale } => {
             encode_fast_subsampled_scaled_region_batch_item(
-                runtime,
-                command_buffer,
-                device_buffer_cache,
-                request_index,
-                packet,
-                fmt,
-                roi,
-                scale,
+                FastSubsampledScaledRegionBatchItemRequest {
+                    runtime,
+                    command_buffer,
+                    device_buffer_cache,
+                    request_index,
+                    packet,
+                    fmt,
+                    roi,
+                    scale,
+                },
             )
         }
     }
@@ -671,15 +734,17 @@ fn encode_fast444_region_batch_item(
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_region_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &cb_plane, &cr_plane],
-        &params,
-        [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &cb_plane, &cr_plane],
+            params: &params,
+            quants: [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(
         decoder_encoder,
@@ -691,12 +756,14 @@ fn encode_fast444_region_batch_item(
     let surface = encode_jpeg_pack_to_surface_in_command_buffer(
         runtime,
         command_buffer,
-        &y_plane,
-        Some(&cb_plane),
-        Some(&cr_plane),
-        (roi.w, roi.h),
-        mode,
-        fmt,
+        JpegPackSurfaceRequest {
+            plane0: &y_plane,
+            plane1: Some(&cb_plane),
+            plane2: Some(&cr_plane),
+            dims: (roi.w, roi.h),
+            mode,
+            fmt,
+        },
     )?;
 
     Ok(BatchedDecodeItem {
@@ -761,15 +828,17 @@ fn encode_fast444_scaled_batch_item(
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_scaled_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444ScaledParams>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &cb_plane, &cr_plane],
-        &params,
-        [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &cb_plane, &cr_plane],
+            params: &params,
+            quants: [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(
         decoder_encoder,
@@ -781,12 +850,14 @@ fn encode_fast444_scaled_batch_item(
     let surface = encode_jpeg_pack_to_surface_in_command_buffer(
         runtime,
         command_buffer,
-        &y_plane,
-        Some(&cb_plane),
-        Some(&cr_plane),
-        (params.scaled_width, params.scaled_height),
-        mode,
-        fmt,
+        JpegPackSurfaceRequest {
+            plane0: &y_plane,
+            plane1: Some(&cb_plane),
+            plane2: Some(&cr_plane),
+            dims: (params.scaled_width, params.scaled_height),
+            mode,
+            fmt,
+        },
     )?;
 
     Ok(BatchedDecodeItem {
@@ -807,18 +878,20 @@ fn encode_fast444_scaled_batch_item(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
 fn encode_fast444_scaled_region_batch_item(
-    runtime: &MetalRuntime,
-    command_buffer: &CommandBufferRef,
-    device_buffer_cache: &mut BatchDeviceBufferCache,
-    request_index: usize,
-    packet: &JpegFast444PacketV1,
-    mode: PlaneMode,
-    fmt: PixelFormat,
-    roi: Rect,
-    scale: j2k_core::Downscale,
+    request: Fast444ScaledRegionBatchItemRequest<'_>,
 ) -> Result<BatchedDecodeItem, Error> {
+    let Fast444ScaledRegionBatchItemRequest {
+        runtime,
+        command_buffer,
+        device_buffer_cache,
+        request_index,
+        packet,
+        mode,
+        fmt,
+        roi,
+        scale,
+    } = request;
     let scaled_roi = roi.scaled_covering(scale);
     let scaled_roi = j2k_jpeg::Rect {
         x: scaled_roi.x,
@@ -881,15 +954,17 @@ fn encode_fast444_scaled_region_batch_item(
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_scaled_region_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444ScaledParams>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &cb_plane, &cr_plane],
-        &params,
-        [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &cb_plane, &cr_plane],
+            params: &params,
+            quants: [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(
         decoder_encoder,
@@ -901,12 +976,14 @@ fn encode_fast444_scaled_region_batch_item(
     let surface = encode_jpeg_pack_to_surface_in_command_buffer(
         runtime,
         command_buffer,
-        &y_plane,
-        Some(&cb_plane),
-        Some(&cr_plane),
-        (scaled_roi.w, scaled_roi.h),
-        mode,
-        fmt,
+        JpegPackSurfaceRequest {
+            plane0: &y_plane,
+            plane1: Some(&cb_plane),
+            plane2: Some(&cr_plane),
+            dims: (scaled_roi.w, scaled_roi.h),
+            mode,
+            fmt,
+        },
     )?;
 
     Ok(BatchedDecodeItem {
@@ -965,15 +1042,17 @@ fn encode_fast444_batch_item(
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &cb_plane, &cr_plane],
-        &params,
-        [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &cb_plane, &cr_plane],
+            params: &params,
+            quants: [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(
         decoder_encoder,
@@ -985,12 +1064,14 @@ fn encode_fast444_batch_item(
     let surface = encode_jpeg_pack_to_surface_in_command_buffer(
         runtime,
         command_buffer,
-        &y_plane,
-        Some(&cb_plane),
-        Some(&cr_plane),
-        packet.dimensions,
-        mode,
-        fmt,
+        JpegPackSurfaceRequest {
+            plane0: &y_plane,
+            plane1: Some(&cb_plane),
+            plane2: Some(&cr_plane),
+            dims: packet.dimensions,
+            mode,
+            fmt,
+        },
     )?;
 
     Ok(BatchedDecodeItem {
@@ -1393,21 +1474,40 @@ fn dispatch_windowed_rgba_texture_pack(
 /// Encode the split coeff-decode + IDCT-deposit passes shared by the surfaces
 /// and texture drivers' `SplitCoeffIdct` debug mode.
 #[cfg(all(target_os = "macos", test))]
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+pub(in crate::compute) struct SplitCoeffIdctPasses<'a> {
+    pub(in crate::compute) command_buffer: &'a CommandBufferRef,
+    pub(in crate::compute) pipelines: (&'a ComputePipelineState, &'a ComputePipelineState),
+    pub(in crate::compute) params: &'a JpegFast420BatchParams,
+    pub(in crate::compute) quants: [&'a [u16; 64]; 3],
+    pub(in crate::compute) dc_tables: &'a [PreparedHuffmanHost; 3],
+    pub(in crate::compute) ac_tables: &'a [PreparedHuffmanHost; 3],
+    pub(in crate::compute) entropy: (&'a Buffer, &'a Buffer, &'a Buffer, &'a Buffer),
+    pub(in crate::compute) status_buffer: &'a Buffer,
+    pub(in crate::compute) planes: [&'a Buffer; 3],
+    pub(in crate::compute) scratch: (&'a Buffer, &'a Buffer),
+    pub(in crate::compute) total_decode_threads: u32,
+    pub(in crate::compute) idct_grid: (u32, u32, u32),
+}
+
+#[cfg(all(target_os = "macos", test))]
 fn encode_split_coeff_idct_passes(
-    command_buffer: &CommandBufferRef,
-    pipelines: (&ComputePipelineState, &ComputePipelineState),
-    params: &JpegFast420BatchParams,
-    quants: [&[u16; 64]; 3],
-    dc_tables: &[PreparedHuffmanHost; 3],
-    ac_tables: &[PreparedHuffmanHost; 3],
-    entropy: (&Buffer, &Buffer, &Buffer, &Buffer),
-    status_buffer: &Buffer,
-    planes: [&Buffer; 3],
-    scratch: (&Buffer, &Buffer),
-    total_decode_threads: u32,
-    idct_grid: (u32, u32, u32),
+    request: SplitCoeffIdctPasses<'_>,
 ) {
+    let SplitCoeffIdctPasses {
+        command_buffer,
+        pipelines,
+        params,
+        quants,
+        dc_tables,
+        ac_tables,
+        entropy,
+        status_buffer,
+        planes,
+        scratch,
+        total_decode_threads,
+        idct_grid,
+    } = request;
     let (coeffs_pipeline, idct_pipeline) = pipelines;
     let (entropy_payload, entropy_offsets, entropy_lens, entropy_checkpoints) = entropy;
     let (coeff_blocks, dc_only_flags) = scratch;

@@ -15,39 +15,52 @@ mod parallelism;
 mod recode;
 mod wrap;
 
-/// Reusable JPEG 2000 decode context.
-pub mod context;
+mod context;
 pub use context::J2kContext;
 
-/// JPEG 2000 error type.
-pub mod error;
-pub use error::J2kError;
+mod error;
+pub use error::{BackendError, BackendErrorKind, J2kError};
 
-/// Caller-owned JPEG 2000 scratch pool.
-pub mod scratch;
+mod scratch;
 pub use scratch::J2kScratchPool;
 
-/// Adapter-facing planning APIs shared with GPU crates.
-///
-/// This module is public so device adapters can use the same route planning and
-/// encode-stage contracts as the facade without depending on root re-exports.
-pub mod adapter;
+/// Adapter-facing encode-stage contracts shared with GPU crates.
+mod adapter;
+pub use adapter::device_plan::{DeviceDecodePlan, DeviceDecodeRequest};
+#[doc(hidden)]
+pub use adapter::encode_stage::{
+    CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
+    IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales, J2kCodeBlockSegment,
+    J2kCodeBlockStyle, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
+    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
+    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
+    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
+    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
+    J2kPacketizationSubband, J2kQuantizeSubbandJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
+    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Image, PreencodedHtj2k97Resolution,
+    PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+};
 
-/// Borrowed view and decoder entry points.
-pub mod view;
+mod view;
 pub use view::{J2kCodec, J2kDecoder, J2kRowDecodeOptions, J2kView};
 
 pub use batch::{
     decode_tile_into_in_context, decode_tile_region_into_in_context,
     decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context,
     decode_tiles_into, decode_tiles_region_into, decode_tiles_region_scaled_into,
-    decode_tiles_scaled_into, TileBatchError, TileBatchOptions, TileDecodeJob, TileRegionDecodeJob,
-    TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    decode_tiles_scaled_into, TileBatchError, TileBatchOptions, TileDecodeJob, TileDecodeOutput,
+    TileRegionDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 
 pub use decode::{
-    J2kComponentPlane, J2kDecodedColorSpace, J2kDecodedComponents, J2kDecodedNativeComponents,
-    J2kNativeComponentPlane,
+    J2kComponentPlane, J2kDecodeWarning, J2kDecodedColorSpace, J2kDecodedComponents,
+    J2kDecodedNativeComponents, J2kNativeComponentPlane,
 };
 
 pub use parallelism::CpuDecodeParallelism;

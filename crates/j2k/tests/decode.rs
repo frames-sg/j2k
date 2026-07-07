@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{
-    encode_j2k_lossless_components, EncodeBackendPreference, J2kBlockCodingMode, J2kCodec,
-    J2kComponentPlane, J2kContext, J2kDecoder, J2kError, J2kLosslessComponentPlane,
+    encode_j2k_lossless_components, BackendErrorKind, EncodeBackendPreference, J2kBlockCodingMode,
+    J2kCodec, J2kComponentPlane, J2kContext, J2kDecoder, J2kError, J2kLosslessComponentPlane,
     J2kLosslessComponentSamples, J2kLosslessEncodeOptions, J2kRowDecodeOptions,
     ReversibleTransform,
 };
@@ -254,10 +254,10 @@ fn decoder_new_rejects_codestream_that_only_header_inspection_accepts() {
         panic!("decoder construction must validate backend");
     };
 
-    assert!(
-        matches!(err, J2kError::Backend(_)),
-        "expected backend construction error, got {err:?}"
-    );
+    let J2kError::Backend(backend) = err else {
+        panic!("expected backend construction error, got {err:?}");
+    };
+    assert_eq!(backend.kind(), BackendErrorKind::Other);
 }
 
 #[test]
@@ -1455,12 +1455,14 @@ fn tile_batch_region_scaled_decode_matches_decoder_region_scaled_decode() {
     let outcome = <J2kCodec as TileBatchDecode>::decode_tile_region_scaled(
         &mut ctx,
         &mut pool,
-        &codestream,
-        &mut out,
-        stride,
         PixelFormat::Rgb8,
-        roi,
-        scale,
+        j2k::TileRegionScaledDecodeJob {
+            input: &codestream,
+            out: &mut out,
+            stride,
+            roi,
+            scale,
+        },
     )
     .expect("tile region scaled");
     assert_eq!(outcome.decoded, scaled_roi);

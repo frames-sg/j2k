@@ -7,6 +7,8 @@
 use cuda_device::{kernel, thread};
 use cuda_host::cuda_module;
 
+include!("../../../cuda_oxide_simt_prelude.rs");
+
 const ENCODE_STATUS_OK: u32 = 0;
 const ENCODE_STATUS_FAIL: u32 = 1;
 const ENCODE_STATUS_UNSUPPORTED: u32 = 2;
@@ -172,29 +174,27 @@ fn trailing_zeros32(value: u32) -> u32 {
 
 #[inline(always)]
 fn load_i32(ptr: *const i32, index: u32) -> i32 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_u8(ptr: *const u8, index: u32) -> u8 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_u16(ptr: *const u16, index: u32) -> u16 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_job<T: Copy>(ptr: *const T, index: u32) -> T {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn store_u8(ptr: *mut u8, index: u32, value: u8) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]

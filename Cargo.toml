@@ -19,6 +19,7 @@ members = [
     "crates/j2k-transcode",
     "crates/j2k-transcode-cuda",
     "crates/j2k-transcode-metal",
+    "crates/j2k-transcode-test-support",
     "crates/j2k-types",
     "crates/j2k-cli",
     "xtask",
@@ -40,7 +41,7 @@ proptest  = { version = "1" }
 criterion = { version = "0.8", default-features = false }
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 zstd = { version = "0.13" }
-weezl = { version = "0.2" }
+weezl = { version = "0.1.12" }
 libloading = "0.9"
 metal  = "0.33"
 rayon  = "1"
@@ -48,6 +49,23 @@ cc     = "1.2"
 libc   = "0.2"
 log    = "0.4"
 memchr = { version = "2.8", default-features = false }
+image = { version = "0.25.8", default-features = false, features = ["bmp", "jpeg", "png", "pnm", "tiff"] }
+jpeg-encoder = "0.7.0"
+jpeg-decoder = { version = "0.3.2", default-features = false }
+zune-core = "0.5.1"
+zune-jpeg = "0.5.15"
+fearless_simd = "0.4"
+libm = { version = "0.2", default-features = false }
+openjpeg-sys = "1.0.12"
+serde_json = "1"
+serde_yaml_ng = "0.10"
+
+[patch.crates-io]
+# `metal 0.33.0` still depends on `block 0.1.6`. The crates.io copy declares
+# `_NSConcreteStackBlock` with an uninhabited opaque enum, which is a future
+# Rust hard error. Keep this patch minimal and remove it when `metal` publishes
+# a fixed dependency path.
+block = { path = "third_party/block-0.1.6-patched" }
 
 # Shared strict-lint policy for safe crates. Crates with genuinely different
 # needs (SIMD/FFI crates that use `unsafe`, crates with documented temporary

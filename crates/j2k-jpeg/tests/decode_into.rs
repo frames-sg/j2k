@@ -2,7 +2,7 @@
 
 //! Integration tests for `Decoder::decode_into`.
 
-use j2k_jpeg::{Decoder, Downscale, JpegError, PixelFormat, Rect, SofKind};
+use j2k_jpeg::{DecodeRequest, Decoder, Downscale, JpegError, PixelFormat, Rect, SofKind};
 
 use fixtures::{
     cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_16x8_nonleading_max_422_jpeg, cmyk_8x8_jpeg,
@@ -95,25 +95,11 @@ fn decode_owned_rgb8_matches_decode_into() {
         .decode_into(&mut expected, (w * 3) as usize, PixelFormat::Rgb8)
         .expect("baseline 4:2:0 decode must succeed");
 
-    let (owned, outcome) = dec.decode(PixelFormat::Rgb8).unwrap();
+    let (owned, outcome) = dec
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .unwrap();
     assert_eq!(owned, expected);
     assert_eq!(outcome, expected_outcome);
-}
-
-#[test]
-fn decode_into_rgba8_writes_alpha_byte() {
-    let bytes = minimal_baseline_420_jpeg();
-    let dec = Decoder::new(&bytes).unwrap();
-    let (w, h) = dec.info().dimensions;
-    let mut buf = vec![0u8; (w * h * 4) as usize];
-    dec.decode_rgba8_into_with_alpha(&mut buf, (w * 4) as usize, 200)
-        .unwrap();
-    for y in 0..h as usize {
-        for x in 0..w as usize {
-            let idx = (y * w as usize + x) * 4;
-            assert_eq!(buf[idx + 3], 200, "pixel ({x},{y}) alpha");
-        }
-    }
 }
 
 #[test]
@@ -154,10 +140,43 @@ fn decode_owned_region_scaled_matches_decode_region_into() {
         .unwrap();
 
     let (owned, outcome) = dec
-        .decode_region_scaled(PixelFormat::Rgb8, roi, Downscale::Half)
+        .decode_request(DecodeRequest::region_scaled(
+            PixelFormat::Rgb8,
+            roi,
+            Downscale::Half,
+        ))
         .unwrap();
     assert_eq!(owned, expected);
     assert_eq!(outcome, expected_outcome);
+}
+
+#[test]
+fn decode_request_region_scaled_is_repeatable() {
+    let bytes = rgb_app14_8x8_jpeg();
+    let dec = Decoder::new(&bytes).unwrap();
+    let roi = Rect {
+        x: 2,
+        y: 2,
+        w: 4,
+        h: 4,
+    };
+
+    let first = dec
+        .decode_request(DecodeRequest::region_scaled(
+            PixelFormat::Rgb8,
+            roi,
+            Downscale::Half,
+        ))
+        .unwrap();
+    let second = dec
+        .decode_request(DecodeRequest::region_scaled(
+            PixelFormat::Rgb8,
+            roi,
+            Downscale::Half,
+        ))
+        .unwrap();
+
+    assert_eq!(second, first);
 }
 
 #[test]
@@ -170,7 +189,7 @@ fn decode_owned_scaled_matches_decode_scaled_into() {
         .unwrap();
 
     let (owned, outcome) = dec
-        .decode_scaled(PixelFormat::Rgb8, Downscale::Half)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, Downscale::Half))
         .unwrap();
     assert_eq!(owned, expected);
     assert_eq!(outcome, expected_outcome);

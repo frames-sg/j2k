@@ -4,7 +4,8 @@
 
 use j2k_jpeg::bench_support::{
     bench_rgb_row_pair_from_420, bench_rgb_row_pair_from_420_reference,
-    bench_rgb_row_pair_from_420_with_stats, Bench420DispatchStats,
+    bench_rgb_row_pair_from_420_with_stats, Bench420DispatchStats, BenchRgb420ChromaRows,
+    BenchRgb420RowPair,
 };
 
 fn seeded_row(len: usize, seed: u8, step: u8) -> Vec<u8> {
@@ -16,6 +17,13 @@ fn seeded_row(len: usize, seed: u8, step: u8) -> Vec<u8> {
             (mixed ^ (mixed >> 8) ^ (mixed >> 16)) as u8
         })
         .collect()
+}
+
+fn chroma_rows<'a>(
+    cb: (&'a [u8], &'a [u8], &'a [u8]),
+    cr: (&'a [u8], &'a [u8], &'a [u8]),
+) -> BenchRgb420ChromaRows<'a> {
+    BenchRgb420ChromaRows::new(cb.0, cb.1, cb.2, cr.0, cr.1, cr.2)
 }
 
 fn assert_dual_row_pair_matches_reference(width: usize) {
@@ -31,33 +39,31 @@ fn assert_dual_row_pair_matches_reference(width: usize) {
 
     let mut expected_top = vec![0u8; width * 3];
     let mut expected_bottom = vec![0u8; width * 3];
-    bench_rgb_row_pair_from_420_reference(
+    bench_rgb_row_pair_from_420_reference(BenchRgb420RowPair::new(
         &y_top,
         Some(&y_bottom),
-        &prev_cb,
-        &curr_cb,
-        &next_cb,
-        &prev_cr,
-        &curr_cr,
-        &next_cr,
+        chroma_rows(
+            (&prev_cb, &curr_cb, &next_cb),
+            (&prev_cr, &curr_cr, &next_cr),
+        ),
         &mut expected_top,
         Some(&mut expected_bottom),
-    );
+    ));
 
     let mut actual_top = vec![0u8; width * 3];
     let mut actual_bottom = vec![0u8; width * 3];
     let mut stats = Bench420DispatchStats::default();
     bench_rgb_row_pair_from_420_with_stats(
-        &y_top,
-        Some(&y_bottom),
-        &prev_cb,
-        &curr_cb,
-        &next_cb,
-        &prev_cr,
-        &curr_cr,
-        &next_cr,
-        &mut actual_top,
-        Some(&mut actual_bottom),
+        BenchRgb420RowPair::new(
+            &y_top,
+            Some(&y_bottom),
+            chroma_rows(
+                (&prev_cb, &curr_cb, &next_cb),
+                (&prev_cr, &curr_cr, &next_cr),
+            ),
+            &mut actual_top,
+            Some(&mut actual_bottom),
+        ),
         &mut stats,
     );
 
@@ -82,32 +88,28 @@ fn assert_top_only_row_pair_matches_reference(width: usize) {
     let next_cr = seeded_row(chroma_width, 131, 37);
 
     let mut expected_top = vec![0u8; width * 3];
-    bench_rgb_row_pair_from_420_reference(
+    bench_rgb_row_pair_from_420_reference(BenchRgb420RowPair::new(
         &y_top,
         None,
-        &prev_cb,
-        &curr_cb,
-        &next_cb,
-        &prev_cr,
-        &curr_cr,
-        &next_cr,
+        chroma_rows(
+            (&prev_cb, &curr_cb, &next_cb),
+            (&prev_cr, &curr_cr, &next_cr),
+        ),
         &mut expected_top,
         None,
-    );
+    ));
 
     let mut actual_top = vec![0u8; width * 3];
-    bench_rgb_row_pair_from_420(
+    bench_rgb_row_pair_from_420(BenchRgb420RowPair::new(
         &y_top,
         None,
-        &prev_cb,
-        &curr_cb,
-        &next_cb,
-        &prev_cr,
-        &curr_cr,
-        &next_cr,
+        chroma_rows(
+            (&prev_cb, &curr_cb, &next_cb),
+            (&prev_cr, &curr_cr, &next_cr),
+        ),
         &mut actual_top,
         None,
-    );
+    ));
 
     assert_eq!(
         actual_top, expected_top,
@@ -141,16 +143,16 @@ fn neon_420_row_pair_width_255_stays_on_neon_for_tail_dispatch() {
     let mut actual_top = vec![0u8; width * 3];
     let mut actual_bottom = vec![0u8; width * 3];
     bench_rgb_row_pair_from_420_with_stats(
-        &y_top,
-        Some(&y_bottom),
-        &prev_cb,
-        &curr_cb,
-        &next_cb,
-        &prev_cr,
-        &curr_cr,
-        &next_cr,
-        &mut actual_top,
-        Some(&mut actual_bottom),
+        BenchRgb420RowPair::new(
+            &y_top,
+            Some(&y_bottom),
+            chroma_rows(
+                (&prev_cb, &curr_cb, &next_cb),
+                (&prev_cr, &curr_cr, &next_cr),
+            ),
+            &mut actual_top,
+            Some(&mut actual_bottom),
+        ),
         &mut stats,
     );
 

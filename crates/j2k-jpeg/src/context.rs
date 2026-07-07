@@ -14,8 +14,6 @@ use j2k_core::{CacheStats, CodecContext};
 const QUANT_CACHE_SLOTS: usize = 8;
 const HUFFMAN_CACHE_SLOTS: usize = 8;
 const PLAN_CACHE_SLOTS: usize = 8;
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 
 #[derive(Debug, Clone)]
 struct CachedQuantTable {
@@ -222,6 +220,7 @@ impl DecoderContext {
     }
 }
 
+#[doc(hidden)]
 impl CodecContext for DecoderContext {
     fn clear(&mut self) {
         *self = Self::new();
@@ -238,20 +237,14 @@ impl CodecContext for DecoderContext {
 }
 
 fn digest_bytes(bytes: &[u8]) -> u64 {
-    let mut hash = FNV_OFFSET;
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
+    j2k_core::__j2k_fnv1a64_bytes!(bytes)
 }
 
 fn digest_quant_table(table: &[u16; 64]) -> u64 {
-    let mut hash = FNV_OFFSET;
+    let mut hash = j2k_core::__j2k_fnv1a64_init!();
     for &entry in table {
         for byte in entry.to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
+            j2k_core::__j2k_fnv1a64_update!(hash, byte);
         }
     }
     hash
@@ -260,8 +253,7 @@ fn digest_quant_table(table: &[u16; 64]) -> u64 {
 fn digest_huffman_table(raw: &RawHuffmanTable) -> u64 {
     let mut hash = digest_bytes(&raw.bits);
     for &byte in raw.values.as_slice() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
+        j2k_core::__j2k_fnv1a64_update!(hash, byte);
     }
     hash
 }

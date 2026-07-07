@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k::adapter::encode_stage::{
-    EncodedHtJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kHtCodeBlockEncodeJob, J2kPacketizationEncodeJob,
-    J2kQuantizeSubbandJob,
-};
 use j2k::{
     encode_j2k_lossy, encode_j2k_lossy_with_accelerator, encode_j2k_lossy_with_roi_regions,
     EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLossyEncodeOptions,
     J2kLossySamples, J2kMarkerSegment, J2kProgressionOrder, J2kQualityLayer, J2kRateTarget,
     J2kRoiRegion,
+};
+use j2k::{
+    EncodedHtJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
+    J2kEncodeStageAccelerator, J2kHtCodeBlockEncodeJob, J2kPacketizationEncodeJob,
+    J2kQuantizeSubbandJob,
 };
 use j2k_core::{BackendKind, CodecError};
 use j2k_native::{DecodeSettings, Image};

@@ -29,6 +29,7 @@ impl J2kContext {
     }
 }
 
+#[doc(hidden)]
 impl CodecContext for J2kContext {
     fn clear(&mut self) {
         self.cpu_decode_parallelism = CpuDecodeParallelism::Auto;

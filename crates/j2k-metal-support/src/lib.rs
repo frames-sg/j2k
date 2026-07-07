@@ -6,6 +6,9 @@
 
 use core::fmt;
 
+#[cfg(target_os = "macos")]
+use std::sync::{Arc, OnceLock};
+
 /// Stable profile labels for a Metal backend route decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -175,7 +178,7 @@ impl fmt::Display for MetalSupportError {
 impl std::error::Error for MetalSupportError {}
 
 #[cfg(target_os = "macos")]
-use j2k_core::GpuAbi;
+use j2k_core::accelerator::GpuAbi;
 #[cfg(target_os = "macos")]
 use metal::{
     foreign_types::ForeignType,
@@ -189,6 +192,69 @@ use metal::{
 /// Return the system default Metal device, or a stable error message.
 pub fn system_default_device() -> Result<Device, MetalSupportError> {
     Device::system_default().ok_or(MetalSupportError::MetalUnavailable)
+}
+
+#[cfg(target_os = "macos")]
+/// Shared lazy Metal runtime session used by backend adapter crates.
+pub struct MetalRuntimeSession<R, E> {
+    device: Device,
+    runtime: Arc<OnceLock<Result<R, E>>>,
+}
+
+#[cfg(target_os = "macos")]
+impl<R, E> Clone for MetalRuntimeSession<R, E> {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device.clone(),
+            runtime: Arc::clone(&self.runtime),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl<R, E> MetalRuntimeSession<R, E> {
+    /// Create a session bound to an existing Metal device.
+    #[must_use]
+    pub fn new(device: Device) -> Self {
+        Self {
+            device,
+            runtime: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Create a session bound to the system default Metal device.
+    pub fn system_default() -> Result<Self, MetalSupportError> {
+        system_default_device().map(Self::new)
+    }
+
+    /// Metal device used by this session.
+    #[must_use]
+    pub fn device(&self) -> &metal::DeviceRef {
+        self.device.as_ref()
+    }
+
+    /// Metal device handle used when constructing a crate-specific runtime.
+    #[must_use]
+    pub fn device_handle(&self) -> &Device {
+        &self.device
+    }
+
+    /// Return whether the lazy runtime has been initialized.
+    #[must_use]
+    pub fn runtime_initialized(&self) -> bool {
+        self.runtime.get().is_some()
+    }
+
+    /// Return the initialized runtime result, if runtime construction has run.
+    #[must_use]
+    pub fn runtime_result(&self) -> Option<&Result<R, E>> {
+        self.runtime.get()
+    }
+
+    /// Initialize or reuse the crate-specific runtime for this Metal device.
+    pub fn get_or_init_runtime(&self, init: impl FnOnce(&Device) -> Result<R, E>) -> &Result<R, E> {
+        self.runtime.get_or_init(|| init(&self.device))
+    }
 }
 
 #[cfg(target_os = "macos")]

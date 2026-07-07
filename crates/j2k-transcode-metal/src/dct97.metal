@@ -81,13 +81,6 @@ struct Dct97WeightTap {
 #define DCT97_COLUMNS_PER_GROUP 4
 #define DCT97_THREADS_PER_GROUP 256
 
-constant float DCT97_ALPHA = -1.586134342059924f;
-constant float DCT97_BETA = -0.052980118572961f;
-constant float DCT97_GAMMA = 0.882911075530934f;
-constant float DCT97_DELTA = 0.443506852043971f;
-constant float DCT97_KAPPA = 1.230174104914001f;
-constant float DCT97_INV_KAPPA = 1.0f / DCT97_KAPPA;
-
 static inline float dct97_idct_sample(
     device const float *blocks,
     device const float *idct_basis,
@@ -129,28 +122,28 @@ static inline void dct97_forward_lift_in_threadgroup(
     for (uint i = 1u + thread_idx * 2u; i < n; i += threads_per_group * 2u) {
         const float left = data[i - 1u];
         const float right = (i + 1u < n) ? data[i + 1u] : data[last_even];
-        data[i] += DCT97_ALPHA * (left + right);
+        data[i] += CODEC_MATH_DWT97_ALPHA * (left + right);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for (uint i = thread_idx * 2u; i < n; i += threads_per_group * 2u) {
         const float left = (i > 0u) ? data[i - 1u] : data[1u];
         const float right = (i + 1u < n) ? data[i + 1u] : left;
-        data[i] += DCT97_BETA * (left + right);
+        data[i] += CODEC_MATH_DWT97_BETA * (left + right);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for (uint i = 1u + thread_idx * 2u; i < n; i += threads_per_group * 2u) {
         const float left = data[i - 1u];
         const float right = (i + 1u < n) ? data[i + 1u] : data[last_even];
-        data[i] += DCT97_GAMMA * (left + right);
+        data[i] += CODEC_MATH_DWT97_GAMMA * (left + right);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for (uint i = thread_idx * 2u; i < n; i += threads_per_group * 2u) {
         const float left = (i > 0u) ? data[i - 1u] : data[1u];
         const float right = (i + 1u < n) ? data[i + 1u] : left;
-        data[i] += DCT97_DELTA * (left + right);
+        data[i] += CODEC_MATH_DWT97_DELTA * (left + right);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 }
@@ -199,10 +192,12 @@ kernel void dct97_idct_row_lift_batch(
         const uint low_base = item_idx * params.height * params.low_width + y * params.low_width;
         const uint high_base = item_idx * params.height * params.high_width + y * params.high_width;
         for (uint low_x = thread_idx; low_x < params.low_width; low_x += DCT97_THREADS_PER_GROUP) {
-            row_low[low_base + low_x] = rows[row_offset][low_x * 2u] * DCT97_INV_KAPPA;
+            row_low[low_base + low_x] =
+                rows[row_offset][low_x * 2u] * CODEC_MATH_DWT97_INV_KAPPA;
         }
         for (uint high_x = thread_idx; high_x < params.high_width; high_x += DCT97_THREADS_PER_GROUP) {
-            row_high[high_base + high_x] = rows[row_offset][high_x * 2u + 1u] * DCT97_KAPPA;
+            row_high[high_base + high_x] =
+                rows[row_offset][high_x * 2u + 1u] * CODEC_MATH_DWT97_KAPPA;
         }
     }
 }
@@ -257,7 +252,8 @@ kernel void dct97_column_lift_batch(
             continue;
         }
         for (uint low_y = thread_idx; low_y < params.low_height; low_y += DCT97_THREADS_PER_GROUP) {
-            const float value = columns[column_offset][low_y * 2u] * DCT97_INV_KAPPA;
+            const float value =
+                columns[column_offset][low_y * 2u] * CODEC_MATH_DWT97_INV_KAPPA;
             if (horizontal_low) {
                 ll[item_idx * params.ll_stride + low_y * params.low_width + x] = value;
             } else {
@@ -265,7 +261,8 @@ kernel void dct97_column_lift_batch(
             }
         }
         for (uint high_y = thread_idx; high_y < params.high_height; high_y += DCT97_THREADS_PER_GROUP) {
-            const float value = columns[column_offset][high_y * 2u + 1u] * DCT97_KAPPA;
+            const float value =
+                columns[column_offset][high_y * 2u + 1u] * CODEC_MATH_DWT97_KAPPA;
             if (horizontal_low) {
                 lh[item_idx * params.lh_stride + high_y * params.low_width + x] = value;
             } else {

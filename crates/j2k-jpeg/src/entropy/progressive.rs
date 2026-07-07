@@ -66,6 +66,13 @@ struct ComponentImage {
     stride: usize,
 }
 
+struct ProgressiveBlockTarget<'a> {
+    component: &'a PreparedProgressiveComponentPlan,
+    scan_component: &'a PreparedProgressiveScanComponent,
+    block_x: u32,
+    block_y: u32,
+}
+
 pub(crate) fn decode_progressive<W: OutputWriter>(
     plan: &PreparedProgressivePlan,
     backend: Backend,
@@ -209,15 +216,17 @@ fn decode_progressive_mcu(
                     let block_x = mcu_x * u32::from(component.h) + bx;
                     let block_y = mcu_y * u32::from(component.v) + by;
                     decode_progressive_block_at(
-                        component,
                         scan,
-                        scan_component,
+                        ProgressiveBlockTarget {
+                            component,
+                            scan_component,
+                            block_x,
+                            block_y,
+                        },
                         br,
                         coeffs,
                         dc_predictors,
                         eob_run,
-                        block_x,
-                        block_y,
                     )?;
                 }
             }
@@ -229,42 +238,40 @@ fn decode_progressive_mcu(
         let block_x = mcu_index % coded_cols;
         let block_y = mcu_index / coded_cols;
         decode_progressive_block_at(
-            component,
             scan,
-            scan_component,
+            ProgressiveBlockTarget {
+                component,
+                scan_component,
+                block_x,
+                block_y,
+            },
             br,
             coeffs,
             dc_predictors,
             eob_run,
-            block_x,
-            block_y,
         )?;
     }
 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn decode_progressive_block_at(
-    component: &PreparedProgressiveComponentPlan,
     scan: &PreparedProgressiveScan,
-    scan_component: &PreparedProgressiveScanComponent,
+    target: ProgressiveBlockTarget<'_>,
     br: &mut BitReader<'_>,
     coeffs: &mut [Vec<[i32; 64]>],
     dc_predictors: &mut [i32],
     eob_run: &mut u32,
-    block_x: u32,
-    block_y: u32,
 ) -> Result<(), JpegError> {
-    let block_index = (block_y as usize)
-        .checked_mul(component.block_cols as usize)
-        .and_then(|base| base.checked_add(block_x as usize))
+    let block_index = (target.block_y as usize)
+        .checked_mul(target.component.block_cols as usize)
+        .and_then(|base| base.checked_add(target.block_x as usize))
         .ok_or(JpegError::HuffmanDecode {
             mcu: 0,
             reason: HuffmanFailure::InvalidSymbol,
         })?;
     let block = coeffs
-        .get_mut(scan_component.component_index)
+        .get_mut(target.scan_component.component_index)
         .and_then(|component_coeffs| component_coeffs.get_mut(block_index))
         .ok_or(JpegError::HuffmanDecode {
             mcu: 0,
@@ -274,14 +281,14 @@ fn decode_progressive_block_at(
     if scan.ah == 0 {
         decode_progressive_block_first(
             scan,
-            scan_component,
+            target.scan_component,
             br,
             block,
-            &mut dc_predictors[scan_component.component_index],
+            &mut dc_predictors[target.scan_component.component_index],
             eob_run,
         )
     } else {
-        decode_progressive_block_refine(scan, scan_component, br, block, eob_run)
+        decode_progressive_block_refine(scan, target.scan_component, br, block, eob_run)
     }
 }
 

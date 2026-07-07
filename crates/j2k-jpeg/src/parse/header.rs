@@ -220,16 +220,19 @@ pub(crate) fn parse_header(bytes: &[u8]) -> Result<ParsedHeader, JpegError> {
                         sof.as_ref().map(|sof| sof.sof_kind),
                         Some(SofKind::Progressive8 | SofKind::Progressive12)
                     ) {
-                        progressive_scans = collect_progressive_scans(
+                        let sof = sof.as_ref().ok_or(JpegError::MissingMarker {
+                            marker: MarkerKind::Sof,
+                        })?;
+                        progressive_scans = collect_progressive_scans(ProgressiveScanCollection {
                             bytes,
-                            parsed,
-                            walker.position(),
-                            &mut huffman_tables,
-                            &mut quant_tables,
-                            &mut restart_interval,
-                            sof.as_ref().expect("SOF already checked"),
-                            &mut warnings,
-                        )?;
+                            first_scan: parsed,
+                            first_entropy_offset: walker.position(),
+                            huffman_tables: &mut huffman_tables,
+                            quant_tables: &mut quant_tables,
+                            restart_interval: &mut restart_interval,
+                            sof,
+                            warnings: &mut warnings,
+                        })?;
                         scan_count = progressive_scans.len().min(u16::MAX as usize) as u16;
                     } else {
                         scan_count = count_scan_markers(bytes, walker.position());
@@ -413,17 +416,30 @@ fn validate_progressive_scan_components(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn collect_progressive_scans(
-    bytes: &[u8],
+struct ProgressiveScanCollection<'a> {
+    bytes: &'a [u8],
     first_scan: ParsedScan,
     first_entropy_offset: usize,
-    huffman_tables: &mut HuffmanTables,
-    quant_tables: &mut QuantTables,
-    restart_interval: &mut Option<u16>,
-    sof: &crate::parse::sof::ParsedSof,
-    warnings: &mut Vec<Warning>,
+    huffman_tables: &'a mut HuffmanTables,
+    quant_tables: &'a mut QuantTables,
+    restart_interval: &'a mut Option<u16>,
+    sof: &'a crate::parse::sof::ParsedSof,
+    warnings: &'a mut Vec<Warning>,
+}
+
+fn collect_progressive_scans(
+    request: ProgressiveScanCollection<'_>,
 ) -> Result<Vec<ParsedProgressiveScan>, JpegError> {
+    let ProgressiveScanCollection {
+        bytes,
+        first_scan,
+        first_entropy_offset,
+        huffman_tables,
+        quant_tables,
+        restart_interval,
+        sof,
+        warnings,
+    } = request;
     let mut scans = Vec::new();
     let mut pending = Some(ParsedProgressiveScan {
         scan: first_scan,

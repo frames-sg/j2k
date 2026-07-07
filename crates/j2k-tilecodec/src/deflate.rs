@@ -11,6 +11,7 @@ use j2k_core::TileDecompress;
 /// Decoder for zlib-wrapped or raw DEFLATE tile payloads.
 pub struct DeflateCodec;
 
+#[doc(hidden)]
 impl TileDecompress for DeflateCodec {
     type Error = TileCodecError;
     type Pool = DeflatePool;

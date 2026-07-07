@@ -7,7 +7,7 @@
 // (J2K_REQUIRE_CUDA_RUNTIME set), matching the HTJ2K encode parity gate.
 #![cfg(feature = "cuda-runtime")]
 
-use j2k_test_support::cuda_runtime_required;
+use j2k_test_support::cuda_runtime_gate;
 use j2k_transcode::accelerator::{
     DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, RayonReversibleDwt53Accelerator,
 };
@@ -27,7 +27,7 @@ fn make_blocks(block_cols: usize, block_rows: usize) -> Vec<[i16; 64]> {
 
 #[test]
 fn cuda_reversible_dwt53_matches_scalar_oracle_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 

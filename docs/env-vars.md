@@ -21,7 +21,7 @@ Stability values:
 | `J2K_GPU_ROUTE_PROFILE` | Emits facade/adapter GPU route decisions. Use `1` for rows or `summary` for aggregate rows. | Disabled | Experimental |
 | `J2K_JPEG_PROFILE_STAGES` | Emits JPEG CPU profiling rows. Use `1` for rows or `summary` where supported. | Disabled | Experimental |
 | `J2K_PROFILE_STAGES` | Emits native/CUDA J2K profiling rows. Use `1` for rows or `summary` where supported. | Disabled | Experimental |
-| `J2K_CUDA_TRACE` | Writes CUDA HTJ2K profile trace JSON to the configured path. | No trace file | Experimental |
+| `J2K_CUDA_TRACE` | Writes CUDA HTJ2K profile trace JSON to an operator-supplied path. Existing files are not overwritten, and parent directories are not created. | No trace file | Experimental |
 | `J2K_CUDA_IDWT_TRACE` | Enables CUDA IDWT trace/profile output. | Disabled | Experimental |
 | `J2K_CUDA_DISABLE_STAGE_TIMINGS` | Disables CUDA stage timing collection for benchmark runs. | Timings enabled | Experimental |
 | `J2K_CUDA_DISABLE_DWT97_FUSED_COLUMN_QUANTIZE` | Disables the fused CUDA DWT 9/7 column quantize path. | Fused path enabled when supported | Experimental |
@@ -66,6 +66,7 @@ Stability values:
 | `J2K_REQUIRE_LIBJPEG_TURBO` | Makes libjpeg-turbo comparison tests fail instead of skip when the bench feature/tooling is unavailable. | Skip unavailable comparator path | Test/CI |
 | `J2K_REQUIRE_CUDA_RUNTIME` | Makes CUDA tests and benchmarks require a usable CUDA runtime instead of skipping. | Skip runtime-only CUDA paths | Test/CI |
 | `J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE` | Requires CUDA JPEG hardware decode coverage in relevant CUDA tests/benches. | Hardware decode may skip | Test/CI |
+| `J2K_REQUIRE_METAL_RUNTIME` | Makes Metal tests and validation require a usable Metal runtime instead of skipping when no Metal device is available. | Skip runtime-only Metal paths | Test/CI |
 | `J2K_REQUIRE_CUDA_BENCH` | Makes CUDA benchmark probes fail instead of skip when CUDA is unavailable or does not dispatch. | Skip unavailable CUDA benchmark paths | Benchmark |
 | `J2K_REQUIRE_METAL_BENCH` | Makes Metal benchmark probes fail instead of skip when Metal is unavailable or does not dispatch. | Skip unavailable Metal benchmark paths | Benchmark |
 | `J2K_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS` | Allows hosted macOS CI to run J2K Metal runtime tests that are otherwise skipped there. | Hosted runtime tests skipped | Test/CI |
@@ -86,6 +87,7 @@ Stability values:
 | `J2K_NDPI_MAX_PAYLOAD_BYTES` | Maximum NDPI tile payload accepted by the passthrough test. | Test default | Test/CI |
 | `J2K_ISO_CONFORMANCE_DIR` | Path to ISO J2K conformance vectors for ignored/external tests. | Not set | Test/CI |
 | `J2K_APERIO_TILE_FIXTURE` | Path to an Aperio J2K tile fixture for the ignored lossless encode test. | Not set | Test/CI |
+| `J2K_STARTER_OPENJPEG_DATA_COMMIT` | Commit pin used by hosted GPU validation when materializing the default OpenJPEG starter corpus. | Workflow pin | Test/CI |
 | `J2K_PARITY_CORPUS_MANIFEST` | Manifest path used by `scripts/parity-corpus-fetch.sh`. | `corpus/wsi-samples/manifest.json` or first script argument | Test/CI |
 | `J2K_PARITY_CORPUS_DIR` | Output directory used by `scripts/parity-corpus-fetch.sh`. | `corpus/wsi-samples` or second script argument | Test/CI |
 | `J2K_PARITY_CORPUS_MAX_BYTES` | Maximum accepted byte size for each downloaded parity-corpus fixture. | `536870912` | Test/CI |
@@ -110,8 +112,6 @@ Stability values:
 | `J2K_BENCH_INPUT_SOURCE` | Input-source label recorded by `cargo xtask bench-report`. | Falls back to `J2K_BENCH_INPUTS`, otherwise `not recorded` | Benchmark |
 | `J2K_BENCH_COMMAND` | Command label recorded by `cargo xtask bench-report`. | `not recorded` | Benchmark |
 | `J2K_BENCH_SKIPPED_ROWS` | Semicolon-separated skipped-row reasons recorded by `cargo xtask bench-report`. | Empty | Benchmark |
-| `J2K_BENCH_JPEG_DIR` | Directory of JPEG tiles for NVIDIA baseline and transcode comparison benches. | Harness-specific fixture fallback or required by workflow | Benchmark |
-| `J2K_BENCH_SVS` | GPU workflow input SVS path used to extract benchmark JPEG tiles when `J2K_BENCH_JPEG_DIR` is unset. | Not set | Benchmark |
 | `J2K_REPORT_ITERS` | Iteration count for custom report-style JPEG benchmarks. | Harness default | Benchmark |
 | `J2K_ALLOC_REPORT` | Enables allocation report output in the CPU JPEG encode benchmark. | Disabled | Benchmark |
 | `J2K_FORCE_FULL_FRAME` | Forces benchmark classification to full-frame mode. | Auto classification | Benchmark |
@@ -129,11 +129,6 @@ Stability values:
 | `J2K_GPU_BENCH_RESTART_INTERVAL` | Restart interval for generated GPU JPEG upload benchmark fixtures. | Harness default | Benchmark |
 | `J2K_GPU_BENCH_SUBSAMPLING` | Generated GPU JPEG benchmark subsampling, accepted values depend on the harness. | Harness default | Benchmark |
 | `J2K_CUDA_BENCH_SUBSAMPLING` | CUDA-specific generated JPEG benchmark subsampling; falls back with `J2K_GPU_BENCH_SUBSAMPLING`. | Harness default | Benchmark |
-| `J2K_JPEG_COMPARE_QUALITY` | Quality for the standalone NVIDIA JPEG comparison fixture. | Harness default | Benchmark |
-| `J2K_JPEG_COMPARE_ITERS` | Iteration count for the standalone NVIDIA JPEG comparison fixture. | Harness default | Benchmark |
-| `J2K_JPEG_COMPARE_WARMUP` | Warmup iteration count for the standalone NVIDIA JPEG comparison fixture. | Harness default | Benchmark |
-| `J2K_JPEG_COMPARE_SUBSAMPLING` | Subsampling for the standalone NVIDIA JPEG comparison fixture. | Falls back to `J2K_CUDA_BENCH_SUBSAMPLING` | Benchmark |
-| `J2K_JPEG_COMPARE_PATTERN` | Generated image pattern for the standalone NVIDIA JPEG comparison fixture. | Harness default | Benchmark |
 | `J2K_COMPARE_THREADS` | Thread count for J2K comparator signoff and benchmark reports. | Comparator default or `not set` in reports | Benchmark |
 | `J2K_FIXTURE_COMPARE_REPEATS` | Repeat count for `jp2k_fixture_compare`. | Tool default | Benchmark |
 | `J2K_FIXTURE_COMPARE_MODE` | Benchmark mode for `jp2k_fixture_compare`: `portable-native` for native comparable rows, `portable-emulated` for task-equivalent rows with `decode_method` labels, or `capability` for feature coverage with explicit skips. | `portable-native` | Benchmark |
@@ -185,10 +180,6 @@ Stability values:
 | `J2K_ADOPTION_OUT_DIR` | Output directory used by the CUDA adoption workflow for generated benchmark artifacts and the rendered report. | `target/j2k-adoption-benchmark/cuda-full` | Benchmark/CI |
 | `J2K_CUDA_PROFILE_BATCH_SIZE` | Batch size for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
 | `J2K_CUDA_PROFILE_ITERATIONS` | Iteration count for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
-| `J2K_LEVEL1_CUDA_HT_MIN_MPS` | Level-1 CUDA HT throughput floor used by GPU validation workflow. | Workflow default `350` | Benchmark |
-| `J2K_LEVEL1_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA` | Level-1 CUDA HT speedup floor versus NVIDIA baseline in GPU validation workflow. | Workflow default `4.0` | Benchmark |
-| `J2K_LEVEL2_CUDA_HT_MIN_MPS` | Level-2 CUDA HT throughput floor used by GPU validation workflow. | Workflow default `60` | Benchmark |
-| `J2K_LEVEL2_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA` | Level-2 CUDA HT speedup floor versus NVIDIA baseline in GPU validation workflow. | Workflow default `1.10` | Benchmark |
 
 ## Xtask And Release Tooling
 
@@ -197,7 +188,7 @@ Stability values:
 | `J2K_FUZZ_RUNS` | Number of runs passed to each `cargo xtask fuzz-run` target. | `1000` | Test/CI |
 | `J2K_FUZZ_MAX_TOTAL_TIME_SECONDS` | Optional libFuzzer max total time for `cargo xtask fuzz-run`. | Not passed | Test/CI |
 | `J2K_FUZZ_TARGET` | Target triple passed to `cargo fuzz run --target` by `cargo xtask fuzz-run`. | Nightly host target from `rustc -vV` | Test/CI |
-| `J2K_SEMVER_TOOLCHAIN` | Rust toolchain used by `cargo xtask semver`. | `stable` | Test/CI |
+| `J2K_SEMVER_TOOLCHAIN` | Rust toolchain used by `cargo xtask semver`. | `1.96` | Test/CI |
 
 CI overrides the fuzz defaults to 512 runs / 60 seconds for pull requests and
 20,000 runs / 900 seconds for the scheduled long fuzz job.

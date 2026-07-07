@@ -3,6 +3,8 @@
 use crate::color::upsample::h2v2_fancy_sample;
 use crate::color::ycbcr::ycbcr_to_rgb;
 
+use super::{Rgb420CroppedRowPair, Rgb420RowPair};
+
 pub(crate) fn fill_rgb_row_from_gray(gray_row: &[u8], dst: &mut [u8]) {
     for (&gray, pixel) in gray_row.iter().zip(dst.chunks_exact_mut(3)) {
         pixel[0] = gray;
@@ -86,19 +88,20 @@ fn write_rgba_pixel(pixel: &mut [u8], r: u8, g: u8, b: u8, alpha: u8) {
     pixel[3] = alpha;
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn fill_rgb_row_pair_from_420(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
-) {
+pub(crate) fn fill_rgb_row_pair_from_420(request: Rgb420RowPair<'_>) {
+    let Rgb420RowPair {
+        y_top,
+        y_bottom,
+        chroma,
+        dst_top,
+        dst_bottom,
+    } = request;
+    let prev_cb = chroma.prev_cb;
+    let curr_cb = chroma.curr_cb;
+    let next_cb = chroma.next_cb;
+    let prev_cr = chroma.prev_cr;
+    let curr_cr = chroma.curr_cr;
+    let next_cr = chroma.next_cr;
     let width = y_top.len();
     debug_assert_eq!(width * 3, dst_top.len());
     debug_assert!(y_bottom.is_none_or(|row| row.len() == width));
@@ -125,21 +128,23 @@ pub(crate) fn fill_rgb_row_pair_from_420(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn fill_rgb_row_pair_from_420_cropped(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    crop_start: usize,
-    crop_width: usize,
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
-) {
+pub(crate) fn fill_rgb_row_pair_from_420_cropped(request: Rgb420CroppedRowPair<'_>) {
+    let Rgb420CroppedRowPair { rows, crop } = request;
+    let Rgb420RowPair {
+        y_top,
+        y_bottom,
+        chroma,
+        dst_top,
+        dst_bottom,
+    } = rows;
+    let prev_cb = chroma.prev_cb;
+    let curr_cb = chroma.curr_cb;
+    let next_cb = chroma.next_cb;
+    let prev_cr = chroma.prev_cr;
+    let curr_cr = chroma.curr_cr;
+    let next_cr = chroma.next_cr;
+    let crop_start = crop.start;
+    let crop_width = crop.width;
     let crop_end = crop_start + crop_width;
     debug_assert!(crop_end <= y_top.len());
     debug_assert_eq!(crop_width * 3, dst_top.len());

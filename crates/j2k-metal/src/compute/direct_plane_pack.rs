@@ -1,0 +1,486 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use super::{NativeColorSpace, Buffer, Device, NativeDecodedComponents, Rect, Error, checked_metal_surface_len, size_of, checked_metal_buffer_len_u64, MTLResourceOptions, copy_plane_samples, MetalRuntime, PixelFormat, Surface, commit_and_wait_metal, CommandBufferRef, output_shape_for, j2k_pack_scale_arrays, J2kPackParams, j2k_u32_param, label_compute_encoder, dispatch_2d_pipeline, J2kWaveletTransform, J2kMctRgb8PackParams, signed_sample_bias, hybrid_stage_signpost, SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE, J2kBatchedMctRgb8PackParams, dispatch_3d_pipeline, metal_profile_stages_enabled, record_hybrid_repeated_output_blit, Arc, PreparedDirectColorPlan};
+
+#[cfg(target_os = "macos")]
+pub(super) struct PlaneStage {
+    pub(super) dims: (u32, u32),
+    pub(super) plane_count: usize,
+    pub(super) color_space: NativeColorSpace,
+    pub(super) has_alpha: bool,
+    pub(super) bit_depths: [u32; 4],
+    pub(super) planes: [Option<Buffer>; 4],
+}
+
+#[cfg(target_os = "macos")]
+impl PlaneStage {
+    pub(super) fn from_planes(
+        device: &Device,
+        decoded: &NativeDecodedComponents<'_>,
+        roi: Option<Rect>,
+    ) -> Result<Self, Error> {
+        let full_dims = decoded.dimensions();
+        let roi = roi.unwrap_or(Rect {
+            x: 0,
+            y: 0,
+            w: full_dims.0,
+            h: full_dims.1,
+        });
+        let dims = (roi.w, roi.h);
+        let plane_count = decoded.planes().len();
+        if plane_count == 0 || plane_count > 4 {
+            return Err(Error::MetalKernel {
+                message: format!("unsupported J2K plane count {plane_count}"),
+            });
+        }
+
+        let mut bit_depths = [0u32; 4];
+        let mut planes: [Option<Buffer>; 4] = [None, None, None, None];
+        for (index, plane) in decoded.planes().iter().enumerate() {
+            bit_depths[index] = u32::from(plane.bit_depth());
+            let (_, len_bytes) = checked_metal_surface_len(
+                dims,
+                size_of::<f32>(),
+                "J2K MetalDirect plane upload size overflow",
+            )?;
+            let mut buffer = device.new_buffer(
+                checked_metal_buffer_len_u64(
+                    len_bytes,
+                    "J2K MetalDirect plane upload size exceeds u64",
+                )?,
+                MTLResourceOptions::StorageModeShared,
+            );
+            copy_plane_samples(&mut buffer, plane.samples(), full_dims.0 as usize, roi)?;
+            planes[index] = Some(buffer);
+        }
+
+        Ok(Self {
+            dims,
+            plane_count,
+            color_space: decoded.color_space().clone(),
+            has_alpha: decoded.has_alpha(),
+            bit_depths,
+            planes,
+        })
+    }
+
+    pub(super) fn from_captured_planes(
+        decoded: &NativeDecodedComponents<'_>,
+        captured_planes: Vec<Buffer>,
+    ) -> Option<Self> {
+        let plane_count = decoded.planes().len();
+        let supported_shape = matches!(
+            (decoded.color_space(), decoded.has_alpha(), plane_count),
+            (NativeColorSpace::Gray, false, 1) | (NativeColorSpace::RGB, false, 3)
+        );
+        if !supported_shape {
+            return None;
+        }
+        if captured_planes.len() != plane_count || plane_count == 0 || plane_count > 4 {
+            return None;
+        }
+
+        let mut bit_depths = [0u32; 4];
+        let mut planes: [Option<Buffer>; 4] = [None, None, None, None];
+        for (index, (plane, buffer)) in decoded.planes().iter().zip(captured_planes).enumerate() {
+            bit_depths[index] = u32::from(plane.bit_depth());
+            planes[index] = Some(buffer);
+        }
+
+        Some(Self {
+            dims: decoded.dimensions(),
+            plane_count,
+            color_space: decoded.color_space().clone(),
+            has_alpha: decoded.has_alpha(),
+            bit_depths,
+            planes,
+        })
+    }
+
+    pub(super) fn finish_with_runtime(
+        self,
+        runtime: &MetalRuntime,
+        fmt: PixelFormat,
+    ) -> Result<Surface, Error> {
+        let command_buffer = runtime.queue.new_command_buffer();
+        let surface =
+            encode_plane_stage_to_surface_in_command_buffer(runtime, command_buffer, &self, fmt)?;
+        commit_and_wait_metal(command_buffer)?;
+        Ok(surface)
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn encode_plane_stage_to_surface_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    stage: &PlaneStage,
+    fmt: PixelFormat,
+) -> Result<Surface, Error> {
+    let (pitch_bytes, surface_bytes) = checked_metal_surface_len(
+        stage.dims,
+        fmt.bytes_per_pixel(),
+        "J2K MetalDirect plane pack output size overflow",
+    )?;
+    let out_buffer = runtime.device.new_buffer(
+        checked_metal_buffer_len_u64(
+            surface_bytes,
+            "J2K MetalDirect plane pack output size exceeds u64",
+        )?,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let (output_channels, opaque_alpha, pipeline) = output_shape_for(
+        &stage.color_space,
+        stage.has_alpha,
+        stage.plane_count,
+        fmt,
+        runtime,
+    )?;
+    let (max_values, u8_scales, u16_scales) = j2k_pack_scale_arrays(stage.bit_depths);
+
+    let params = J2kPackParams {
+        width: stage.dims.0,
+        height: stage.dims.1,
+        out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
+        output_channels,
+        opaque_alpha,
+        max_values,
+        u8_scales,
+        u16_scales,
+    };
+
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid plane pack");
+    encoder.set_compute_pipeline_state(pipeline);
+    encoder.set_buffer(
+        0,
+        stage.planes[0].as_ref().map(std::convert::AsRef::as_ref),
+        0,
+    );
+    encoder.set_buffer(
+        1,
+        stage.planes[1].as_ref().map(std::convert::AsRef::as_ref),
+        0,
+    );
+    encoder.set_buffer(
+        2,
+        stage.planes[2].as_ref().map(std::convert::AsRef::as_ref),
+        0,
+    );
+    encoder.set_buffer(
+        3,
+        stage.planes[3].as_ref().map(std::convert::AsRef::as_ref),
+        0,
+    );
+    encoder.set_buffer(4, Some(&out_buffer), 0);
+    encoder.set_bytes(
+        5,
+        size_of::<J2kPackParams>() as u64,
+        (&raw const params).cast(),
+    );
+    dispatch_2d_pipeline(encoder, pipeline, stage.dims);
+    encoder.end_encoding();
+
+    Ok(Surface::from_metal_buffer(out_buffer, stage.dims, fmt))
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    planes: [&Buffer; 3],
+    dims: (u32, u32),
+    bit_depths: [u8; 3],
+    transform: J2kWaveletTransform,
+) -> Result<Surface, Error> {
+    let (pitch_bytes, surface_bytes) = checked_metal_surface_len(
+        dims,
+        PixelFormat::Rgb8.bytes_per_pixel(),
+        "J2K MetalDirect MCT RGB8 output size overflow",
+    )?;
+    let out_buffer = runtime.device.new_buffer(
+        checked_metal_buffer_len_u64(
+            surface_bytes,
+            "J2K MetalDirect MCT RGB8 output size exceeds u64",
+        )?,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let (max_values, u8_scales, _) = j2k_pack_scale_arrays([
+        u32::from(bit_depths[0]),
+        u32::from(bit_depths[1]),
+        u32::from(bit_depths[2]),
+        0,
+    ]);
+    let params = J2kMctRgb8PackParams {
+        width: dims.0,
+        height: dims.1,
+        out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
+        transform: mct_transform_code(transform),
+        addends: [
+            signed_sample_bias(bit_depths[0]),
+            signed_sample_bias(bit_depths[1]),
+            signed_sample_bias(bit_depths[2]),
+        ],
+        max_values: [max_values[0], max_values[1], max_values[2]],
+        u8_scales: [u8_scales[0], u8_scales[1], u8_scales[2]],
+    };
+
+    let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid MCT RGB8 pack");
+    encoder.set_compute_pipeline_state(&runtime.pack_mct_rgb8);
+    encoder.set_buffer(0, Some(planes[0]), 0);
+    encoder.set_buffer(1, Some(planes[1]), 0);
+    encoder.set_buffer(2, Some(planes[2]), 0);
+    encoder.set_buffer(3, Some(&out_buffer), 0);
+    encoder.set_bytes(
+        4,
+        size_of::<J2kMctRgb8PackParams>() as u64,
+        (&raw const params).cast(),
+    );
+    dispatch_2d_pipeline(encoder, &runtime.pack_mct_rgb8, dims);
+    encoder.end_encoding();
+    drop(signpost);
+
+    Ok(Surface::from_metal_buffer(
+        out_buffer,
+        dims,
+        PixelFormat::Rgb8,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    planes: [&Buffer; 3],
+    dims: (u32, u32),
+    count: usize,
+    bit_depths: [u8; 3],
+    transform: J2kWaveletTransform,
+) -> Result<Vec<Surface>, Error> {
+    let count_u32 = u32::try_from(count).map_err(|_| Error::MetalKernel {
+        message: "J2K MetalDirect color batch count exceeds u32".to_string(),
+    })?;
+    let (pitch_bytes, surface_bytes) = checked_metal_surface_len(
+        dims,
+        PixelFormat::Rgb8.bytes_per_pixel(),
+        "J2K MetalDirect color batch output size overflow",
+    )?;
+    let total_bytes = surface_bytes
+        .checked_mul(count)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K MetalDirect color batch output size overflow".to_string(),
+        })?;
+    let output_len = checked_metal_buffer_len_u64(
+        total_bytes,
+        "J2K MetalDirect color batch output size exceeds u64",
+    )?;
+    let out_buffer = runtime
+        .device
+        .new_buffer(output_len, MTLResourceOptions::StorageModeShared);
+    let plane_stride = dims
+        .0
+        .checked_mul(dims.1)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K MetalDirect color batch plane stride overflow".to_string(),
+        })?;
+    let (max_values, u8_scales, _) = j2k_pack_scale_arrays([
+        u32::from(bit_depths[0]),
+        u32::from(bit_depths[1]),
+        u32::from(bit_depths[2]),
+        0,
+    ]);
+    let params = J2kBatchedMctRgb8PackParams {
+        width: dims.0,
+        height: dims.1,
+        out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
+        transform: mct_transform_code(transform),
+        batch_count: count_u32,
+        plane_stride,
+        output_stride: u32::try_from(surface_bytes).map_err(|_| Error::MetalKernel {
+            message: "J2K MetalDirect color batch surface stride exceeds u32".to_string(),
+        })?,
+        addends: [
+            signed_sample_bias(bit_depths[0]),
+            signed_sample_bias(bit_depths[1]),
+            signed_sample_bias(bit_depths[2]),
+        ],
+        max_values: [max_values[0], max_values[1], max_values[2]],
+        u8_scales: [u8_scales[0], u8_scales[1], u8_scales[2]],
+    };
+
+    let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid batched MCT RGB8 pack");
+    encoder.set_compute_pipeline_state(&runtime.pack_mct_rgb8_batched);
+    encoder.set_buffer(0, Some(planes[0]), 0);
+    encoder.set_buffer(1, Some(planes[1]), 0);
+    encoder.set_buffer(2, Some(planes[2]), 0);
+    encoder.set_buffer(3, Some(&out_buffer), 0);
+    encoder.set_bytes(
+        4,
+        size_of::<J2kBatchedMctRgb8PackParams>() as u64,
+        (&raw const params).cast(),
+    );
+    dispatch_3d_pipeline(
+        encoder,
+        &runtime.pack_mct_rgb8_batched,
+        (dims.0, dims.1, count_u32),
+    );
+    encoder.end_encoding();
+    drop(signpost);
+
+    Ok((0..count)
+        .map(|index| {
+            Surface::from_metal_buffer_with_offset(
+                out_buffer.clone(),
+                dims,
+                PixelFormat::Rgb8,
+                index * surface_bytes,
+            )
+        })
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    planes: [&Buffer; 3],
+    dims: (u32, u32),
+    count: usize,
+    bit_depths: [u8; 3],
+    transform: J2kWaveletTransform,
+) -> Result<Vec<Surface>, Error> {
+    let (pitch_bytes, surface_bytes) = checked_metal_surface_len(
+        dims,
+        PixelFormat::Rgb8.bytes_per_pixel(),
+        "J2K MetalDirect repeated color batch output size overflow",
+    )?;
+    let total_bytes = surface_bytes
+        .checked_mul(count)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K MetalDirect repeated color batch output size overflow".to_string(),
+        })?;
+    let output_len = checked_metal_buffer_len_u64(
+        total_bytes.max(1),
+        "J2K MetalDirect repeated output buffer exceeds u64",
+    )?;
+    let out_buffer = runtime
+        .device
+        .new_buffer(output_len, MTLResourceOptions::StorageModeShared);
+    let plane_stride = dims
+        .0
+        .checked_mul(dims.1)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K MetalDirect repeated color batch plane stride overflow".to_string(),
+        })?;
+    let (max_values, u8_scales, _) = j2k_pack_scale_arrays([
+        u32::from(bit_depths[0]),
+        u32::from(bit_depths[1]),
+        u32::from(bit_depths[2]),
+        0,
+    ]);
+    let params = J2kBatchedMctRgb8PackParams {
+        width: dims.0,
+        height: dims.1,
+        out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
+        transform: mct_transform_code(transform),
+        batch_count: 1,
+        plane_stride,
+        output_stride: u32::try_from(surface_bytes).map_err(|_| Error::MetalKernel {
+            message: "J2K MetalDirect repeated color batch surface stride exceeds u32".to_string(),
+        })?,
+        addends: [
+            signed_sample_bias(bit_depths[0]),
+            signed_sample_bias(bit_depths[1]),
+            signed_sample_bias(bit_depths[2]),
+        ],
+        max_values: [max_values[0], max_values[1], max_values[2]],
+        u8_scales: [u8_scales[0], u8_scales[1], u8_scales[2]],
+    };
+
+    let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid repeated MCT RGB8 pack");
+    encoder.set_compute_pipeline_state(&runtime.pack_mct_rgb8_batched);
+    encoder.set_buffer(0, Some(planes[0]), 0);
+    encoder.set_buffer(1, Some(planes[1]), 0);
+    encoder.set_buffer(2, Some(planes[2]), 0);
+    encoder.set_buffer(3, Some(&out_buffer), 0);
+    encoder.set_bytes(
+        4,
+        size_of::<J2kBatchedMctRgb8PackParams>() as u64,
+        (&raw const params).cast(),
+    );
+    dispatch_2d_pipeline(encoder, &runtime.pack_mct_rgb8_batched, dims);
+    encoder.end_encoding();
+    drop(signpost);
+
+    if surface_bytes > 0 && count > 1 {
+        let blit = command_buffer.new_blit_command_encoder();
+        if metal_profile_stages_enabled() {
+            blit.set_label("J2K decode hybrid repeated output blit");
+        }
+        let mut copied = 1usize;
+        while copied < count {
+            let copy_count = copied.min(count - copied);
+            let dst_offset =
+                copied
+                    .checked_mul(surface_bytes)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K MetalDirect repeated output destination offset overflow"
+                            .to_string(),
+                    })?;
+            let copy_bytes =
+                copy_count
+                    .checked_mul(surface_bytes)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K MetalDirect repeated output copy size overflow".to_string(),
+                    })?;
+            blit.copy_from_buffer(
+                &out_buffer,
+                0,
+                &out_buffer,
+                u64::try_from(dst_offset).map_err(|_| Error::MetalKernel {
+                    message: "J2K MetalDirect repeated output destination offset exceeds u64"
+                        .to_string(),
+                })?,
+                u64::try_from(copy_bytes).map_err(|_| Error::MetalKernel {
+                    message: "J2K MetalDirect repeated output copy size exceeds u64".to_string(),
+                })?,
+            );
+            record_hybrid_repeated_output_blit();
+            copied += copy_count;
+        }
+        blit.end_encoding();
+    }
+
+    Ok((0..count)
+        .map(|index| {
+            Surface::from_metal_buffer_with_offset(
+                out_buffer.clone(),
+                dims,
+                PixelFormat::Rgb8,
+                index * surface_bytes,
+            )
+        })
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn repeated_shared_direct_color_plan_count(
+    plans: &[Arc<PreparedDirectColorPlan>],
+) -> Option<usize> {
+    let first = plans.first()?;
+    (plans.len() > 1 && plans.iter().all(|plan| Arc::ptr_eq(plan, first))).then_some(plans.len())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn mct_transform_code(transform: J2kWaveletTransform) -> u32 {
+    match transform {
+        J2kWaveletTransform::Reversible53 => 0,
+        J2kWaveletTransform::Irreversible97 => 1,
+    }
+}

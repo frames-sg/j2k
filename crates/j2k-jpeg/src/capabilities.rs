@@ -2,10 +2,11 @@
 
 //! Public JPEG capability introspection for backend routing.
 
-use crate::adapter::{summarize_device_batch, DeviceBatchSummary};
+use crate::adapter::summarize_device_batch;
 use crate::decoder::{Decoder, JpegView};
 use crate::error::JpegError;
 use crate::info::{ColorSpace, Info, Rect, SofKind};
+use crate::DeviceBatchSummary;
 use j2k_core::{BackendRequest, Downscale, PixelFormat};
 
 /// JPEG decode operation shape for capability routing.

@@ -1,95 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(target_os = "macos")]
-/// Field access over the sampling-family fast packets, which are
-/// field-identical; the sampling factor is carried by the packet type.
-trait FastPacketAccess {
-    /// Family name used in diagnostics ("fast420" / "fast422" / "fast444").
-    const FAMILY_NAME: &'static str;
-
-    fn dimensions(&self) -> (u32, u32);
-    fn mcus_per_row(&self) -> u32;
-    fn mcu_rows(&self) -> u32;
-    fn restart_interval_mcus(&self) -> u32;
-    fn restart_offsets(&self) -> &[u32];
-    fn entropy_checkpoints(&self) -> &[JpegEntropyCheckpointV1];
-    fn entropy_bytes(&self) -> &[u8];
-    fn y_quant(&self) -> &[u16; 64];
-    fn cb_quant(&self) -> &[u16; 64];
-    fn cr_quant(&self) -> &[u16; 64];
-    fn y_dc_table(&self) -> &PacketHuffmanTable;
-    fn y_ac_table(&self) -> &PacketHuffmanTable;
-    fn cb_dc_table(&self) -> &PacketHuffmanTable;
-    fn cb_ac_table(&self) -> &PacketHuffmanTable;
-    fn cr_dc_table(&self) -> &PacketHuffmanTable;
-    fn cr_ac_table(&self) -> &PacketHuffmanTable;
-}
-
-macro_rules! impl_fast_packet_access {
-    ($packet:ty, $name:literal) => {
-        impl FastPacketAccess for $packet {
-            const FAMILY_NAME: &'static str = $name;
-
-            fn dimensions(&self) -> (u32, u32) {
-                self.dimensions
-            }
-            fn mcus_per_row(&self) -> u32 {
-                self.mcus_per_row
-            }
-            fn mcu_rows(&self) -> u32 {
-                self.mcu_rows
-            }
-            fn restart_interval_mcus(&self) -> u32 {
-                self.restart_interval_mcus
-            }
-            fn restart_offsets(&self) -> &[u32] {
-                &self.restart_offsets
-            }
-            fn entropy_checkpoints(&self) -> &[JpegEntropyCheckpointV1] {
-                &self.entropy_checkpoints
-            }
-            fn entropy_bytes(&self) -> &[u8] {
-                &self.entropy_bytes
-            }
-            fn y_quant(&self) -> &[u16; 64] {
-                &self.y_quant
-            }
-            fn cb_quant(&self) -> &[u16; 64] {
-                &self.cb_quant
-            }
-            fn cr_quant(&self) -> &[u16; 64] {
-                &self.cr_quant
-            }
-            fn y_dc_table(&self) -> &PacketHuffmanTable {
-                &self.y_dc_table
-            }
-            fn y_ac_table(&self) -> &PacketHuffmanTable {
-                &self.y_ac_table
-            }
-            fn cb_dc_table(&self) -> &PacketHuffmanTable {
-                &self.cb_dc_table
-            }
-            fn cb_ac_table(&self) -> &PacketHuffmanTable {
-                &self.cb_ac_table
-            }
-            fn cr_dc_table(&self) -> &PacketHuffmanTable {
-                &self.cr_dc_table
-            }
-            fn cr_ac_table(&self) -> &PacketHuffmanTable {
-                &self.cr_ac_table
-            }
-        }
-    };
-}
-
-impl_fast_packet_access!(JpegFast420PacketV1, "fast420");
-impl_fast_packet_access!(JpegFast422PacketV1, "fast422");
-impl_fast_packet_access!(JpegFast444PacketV1, "fast444");
-
 /// Chroma geometry for the subsampled families that share the
 /// `JpegFast420Params` kernel ABI (4:2:0 halves chroma rows, 4:2:2 keeps
 /// them; both halve chroma columns).
-trait FastSubsampledPacket: FastPacketAccess {
+trait FastSubsampledPacket {
+    /// Family name used in backend diagnostics.
+    const FAMILY_NAME: &'static str;
     /// Luma MCU width in pixels.
     const MCU_WIDTH: u32;
     /// Luma MCU height in pixels (4:2:0 MCUs are 16 rows, 4:2:2 are 8).
@@ -103,15 +19,103 @@ trait FastSubsampledPacket: FastPacketAccess {
     const SCALED_ENTROPY_PAYLOAD_CTX: &'static str;
     /// Blocks per MCU when the full-RGB batch path needs block-count
     /// validation for the split coeff/IDCT debug mode (4:2:0 only).
+    #[cfg_attr(not(test), allow(dead_code))]
     const FULL_RGB_BATCH_BLOCKS_PER_MCU: Option<usize>;
 
+    fn dimensions(&self) -> (u32, u32);
+    fn mcus_per_row(&self) -> u32;
+    fn mcu_rows(&self) -> u32;
+    fn restart_interval_mcus(&self) -> u32;
+    fn restart_offsets(&self) -> &[u32];
+    fn entropy_checkpoints(&self) -> &[JpegEntropyCheckpointV1];
+    fn entropy_bytes(&self) -> &[u8];
+    fn y_quant(&self) -> &[u16; 64];
+    fn cb_quant(&self) -> &[u16; 64];
+    fn cr_quant(&self) -> &[u16; 64];
+    fn y_dc_table(&self) -> &JpegHuffmanTable;
+    fn y_ac_table(&self) -> &JpegHuffmanTable;
+    fn cb_dc_table(&self) -> &JpegHuffmanTable;
+    fn cb_ac_table(&self) -> &JpegHuffmanTable;
+    fn cr_dc_table(&self) -> &JpegHuffmanTable;
+    fn cr_ac_table(&self) -> &JpegHuffmanTable;
+
+    fn chroma_width(width: u32) -> u32;
     fn chroma_height(height: u32) -> u32;
     /// Vertical dispatch extent for the full-frame pack kernels: 4:2:0 packs
     /// 2x2 pixel quads per thread, 4:2:2 packs 2x1 pairs (full-height rows).
     fn packed_height_extent(height: u32) -> u32;
 }
 
+macro_rules! impl_fast_subsampled_packet_accessors {
+    () => {
+        fn dimensions(&self) -> (u32, u32) {
+            self.dimensions
+        }
+
+        fn mcus_per_row(&self) -> u32 {
+            self.mcus_per_row
+        }
+
+        fn mcu_rows(&self) -> u32 {
+            self.mcu_rows
+        }
+
+        fn restart_interval_mcus(&self) -> u32 {
+            self.restart_interval_mcus
+        }
+
+        fn restart_offsets(&self) -> &[u32] {
+            &self.restart_offsets
+        }
+
+        fn entropy_checkpoints(&self) -> &[JpegEntropyCheckpointV1] {
+            &self.entropy_checkpoints
+        }
+
+        fn entropy_bytes(&self) -> &[u8] {
+            &self.entropy_bytes
+        }
+
+        fn y_quant(&self) -> &[u16; 64] {
+            &self.y_quant
+        }
+
+        fn cb_quant(&self) -> &[u16; 64] {
+            &self.cb_quant
+        }
+
+        fn cr_quant(&self) -> &[u16; 64] {
+            &self.cr_quant
+        }
+
+        fn y_dc_table(&self) -> &JpegHuffmanTable {
+            &self.y_dc_table
+        }
+
+        fn y_ac_table(&self) -> &JpegHuffmanTable {
+            &self.y_ac_table
+        }
+
+        fn cb_dc_table(&self) -> &JpegHuffmanTable {
+            &self.cb_dc_table
+        }
+
+        fn cb_ac_table(&self) -> &JpegHuffmanTable {
+            &self.cb_ac_table
+        }
+
+        fn cr_dc_table(&self) -> &JpegHuffmanTable {
+            &self.cr_dc_table
+        }
+
+        fn cr_ac_table(&self) -> &JpegHuffmanTable {
+            &self.cr_ac_table
+        }
+    };
+}
+
 impl FastSubsampledPacket for JpegFast420PacketV1 {
+    const FAMILY_NAME: &'static str = "fast420";
     const MCU_WIDTH: u32 = 16;
     const MCU_HEIGHT: u32 = 16;
     const FULL_RGB_BATCH_SUPPORTS_RESTART: bool = true;
@@ -123,6 +127,11 @@ impl FastSubsampledPacket for JpegFast420PacketV1 {
     const SCALED_ENTROPY_PAYLOAD_CTX: &'static str = "fast420 scaled entropy payload";
     const FULL_RGB_BATCH_BLOCKS_PER_MCU: Option<usize> = Some(6);
 
+    impl_fast_subsampled_packet_accessors!();
+
+    fn chroma_width(width: u32) -> u32 {
+        width.div_ceil(2)
+    }
     fn chroma_height(height: u32) -> u32 {
         height.div_ceil(2)
     }
@@ -132,6 +141,7 @@ impl FastSubsampledPacket for JpegFast420PacketV1 {
 }
 
 impl FastSubsampledPacket for JpegFast422PacketV1 {
+    const FAMILY_NAME: &'static str = "fast422";
     const MCU_WIDTH: u32 = 16;
     const MCU_HEIGHT: u32 = 8;
     const FULL_RGB_BATCH_SUPPORTS_RESTART: bool = false;
@@ -143,6 +153,38 @@ impl FastSubsampledPacket for JpegFast422PacketV1 {
     const SCALED_ENTROPY_PAYLOAD_CTX: &'static str = "fast422 scaled entropy payload";
     const FULL_RGB_BATCH_BLOCKS_PER_MCU: Option<usize> = None;
 
+    impl_fast_subsampled_packet_accessors!();
+
+    fn chroma_width(width: u32) -> u32 {
+        width.div_ceil(2)
+    }
+    fn chroma_height(height: u32) -> u32 {
+        height
+    }
+    fn packed_height_extent(height: u32) -> u32 {
+        height
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl FastSubsampledPacket for JpegFast444PacketV1 {
+    const FAMILY_NAME: &'static str = "fast444";
+    const MCU_WIDTH: u32 = 8;
+    const MCU_HEIGHT: u32 = 8;
+    const FULL_RGB_BATCH_SUPPORTS_RESTART: bool = false;
+    const ENTROPY_PAYLOAD_CTX: &'static str = "fast444 entropy payload";
+    const REGION_SCALED_BATCH_OUT_STRIDE_CTX: &'static str =
+        "fast444 region scaled batch output stride";
+    const OUTPUT_STRIDE_CTX: &'static str = "fast444 output stride";
+    const REGION_OUTPUT_STRIDE_CTX: &'static str = "fast444 region output stride";
+    const SCALED_ENTROPY_PAYLOAD_CTX: &'static str = "fast444 scaled entropy payload";
+    const FULL_RGB_BATCH_BLOCKS_PER_MCU: Option<usize> = None;
+
+    impl_fast_subsampled_packet_accessors!();
+
+    fn chroma_width(width: u32) -> u32 {
+        width
+    }
     fn chroma_height(height: u32) -> u32 {
         height
     }
@@ -193,9 +235,18 @@ trait FastSubsampledMetal: FastSubsampledPacket {
     const TEXTURE_BOUNDARY_META_KEY: &'static str;
     const TEXTURE_BOUNDARY_SAMPLES_KEY: &'static str;
     const TEXTURE_VERTICAL_REPAIR: Option<FastVerticalRepairSpec>;
+    /// The 4:4:4 direct texture kernel has a distinct params ABI because it
+    /// carries color-space mode and has no chroma dimensions.
+    const USE_FAST444_TEXTURE_PARAMS: bool;
 
     fn from_batched<'a>(packet: &BatchedFastPacket<'a>) -> Option<&'a Self>;
     fn to_batched(&self) -> BatchedFastPacket<'_>;
+    fn to_batched_with_texture_mode(&self, _mode: PlaneMode) -> BatchedFastPacket<'_> {
+        self.to_batched()
+    }
+    fn texture_plane_mode_from_batched(packet: &BatchedFastPacket<'_>) -> Option<PlaneMode> {
+        Self::from_batched(packet).map(|_| PlaneMode::YCbCr)
+    }
     fn decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
     fn region_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
     fn scaled_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
@@ -212,7 +263,6 @@ trait FastSubsampledMetal: FastSubsampledPacket {
         fmt: PixelFormat,
     ) -> &ComputePipelineState;
     fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
-    fn pack_windowed_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
     fn pack_windowed_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
     fn full_rgb_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
     fn pack_full_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
@@ -252,6 +302,18 @@ trait FastSubsampledMetal: FastSubsampledPacket {
     /// in the texture driver.
     #[cfg(test)]
     const SPLIT_TEXTURE_SCRATCH_KEYS: (&'static str, &'static str);
+}
+
+#[cfg(target_os = "macos")]
+trait FastRegionScaledMetal: FastSubsampledPacket {
+    const REGION_SCALED_KEYS: FastScratchKeys;
+
+    fn from_region_scaled_batched<'a>(
+        packet: &BatchedFastPacket<'a>,
+    ) -> Option<(&'a Self, PlaneMode)>;
+    fn to_region_scaled_batched(&self, mode: PlaneMode) -> BatchedFastPacket<'_>;
+    fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
+    fn pack_windowed_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
 }
 
 /// Shared context handed to the family-specific texture repair hooks.
@@ -321,6 +383,7 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
         meta_key: "fast420_texture_vertical_meta",
         samples_key: "fast420_texture_vertical_samples",
     });
+    const USE_FAST444_TEXTURE_PARAMS: bool = false;
 
     fn from_batched<'a>(packet: &BatchedFastPacket<'a>) -> Option<&'a Self> {
         match packet {
@@ -357,9 +420,6 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
     }
     fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
         &runtime.fast420_scaled_region_batch_decode_pipeline
-    }
-    fn pack_windowed_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_420_windowed_rgb_batch_pipeline
     }
     fn pack_windowed_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
         &runtime.pack_420_windowed_rgba_texture_pipeline
@@ -548,6 +608,7 @@ impl FastSubsampledMetal for JpegFast422PacketV1 {
     const TEXTURE_BOUNDARY_META_KEY: &'static str = "fast422_texture_boundary_meta";
     const TEXTURE_BOUNDARY_SAMPLES_KEY: &'static str = "fast422_texture_boundary_samples";
     const TEXTURE_VERTICAL_REPAIR: Option<FastVerticalRepairSpec> = None;
+    const USE_FAST444_TEXTURE_PARAMS: bool = false;
 
     fn from_batched<'a>(packet: &BatchedFastPacket<'a>) -> Option<&'a Self> {
         match packet {
@@ -584,9 +645,6 @@ impl FastSubsampledMetal for JpegFast422PacketV1 {
     }
     fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
         &runtime.fast422_scaled_region_batch_decode_pipeline
-    }
-    fn pack_windowed_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
-        &runtime.pack_422_windowed_rgb_batch_pipeline
     }
     fn pack_windowed_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
         &runtime.pack_422_windowed_rgba_texture_pipeline
@@ -645,6 +703,238 @@ impl FastSubsampledMetal for JpegFast422PacketV1 {
     );
 }
 
+#[cfg(target_os = "macos")]
+impl FastSubsampledMetal for JpegFast444PacketV1 {
+    const REGION_SCALED_KEYS: FastScratchKeys = FastScratchKeys {
+        y: "fast444_region_scaled_y",
+        cb: "fast444_region_scaled_cb",
+        cr: "fast444_region_scaled_cr",
+        entropy: "fast444_region_scaled_entropy",
+        entropy_offsets: "fast444_region_scaled_entropy_offsets",
+        entropy_lens: "fast444_region_scaled_entropy_lens",
+        entropy_checkpoints: "fast444_region_scaled_entropy_checkpoints",
+        status: "fast444_region_scaled_status",
+    };
+    const REGION_SCALED_TEXTURE_KEYS: FastScratchKeys = FastScratchKeys {
+        y: "fast444_region_scaled_texture_y",
+        cb: "fast444_region_scaled_texture_cb",
+        cr: "fast444_region_scaled_texture_cr",
+        entropy: "fast444_region_scaled_texture_entropy",
+        entropy_offsets: "fast444_region_scaled_texture_entropy_offsets",
+        entropy_lens: "fast444_region_scaled_texture_entropy_lens",
+        entropy_checkpoints: "fast444_region_scaled_texture_entropy_checkpoints",
+        status: "fast444_region_scaled_texture_status",
+    };
+
+    const FULL_BATCH_KEYS: FastScratchKeys = FastScratchKeys {
+        y: "fast444_full_y",
+        cb: "fast444_full_cb",
+        cr: "fast444_full_cr",
+        entropy: "fast444_full_entropy",
+        entropy_offsets: "fast444_full_entropy_offsets",
+        entropy_lens: "fast444_full_entropy_lens",
+        entropy_checkpoints: "fast444_full_entropy_checkpoints",
+        status: "fast444_full_status",
+    };
+    const TEXTURE_KEYS: FastScratchKeys = FastScratchKeys {
+        y: "fast444_texture_y",
+        cb: "fast444_texture_cb",
+        cr: "fast444_texture_cr",
+        entropy: "fast444_texture_entropy",
+        entropy_offsets: "fast444_texture_entropy_offsets",
+        entropy_lens: "fast444_texture_entropy_lens",
+        entropy_checkpoints: "fast444_texture_entropy_checkpoints",
+        status: "fast444_texture_status",
+    };
+    const FULL_RGB_BATCH_TIMING_TAG: &'static str = "metal_fast444_batch";
+    const TEXTURE_BOUNDARY_META_WORDS: usize = 0;
+    const TEXTURE_BOUNDARY_SAMPLE_BYTES: usize = 0;
+    const TEXTURE_BOUNDARY_META_KEY: &'static str = "fast444_texture_boundary_meta";
+    const TEXTURE_BOUNDARY_SAMPLES_KEY: &'static str = "fast444_texture_boundary_samples";
+    const TEXTURE_VERTICAL_REPAIR: Option<FastVerticalRepairSpec> = None;
+    const USE_FAST444_TEXTURE_PARAMS: bool = true;
+
+    fn from_batched<'a>(packet: &BatchedFastPacket<'a>) -> Option<&'a Self> {
+        match packet {
+            BatchedFastPacket::Fast444(packet, _) => Some(packet),
+            _ => None,
+        }
+    }
+    fn to_batched(&self) -> BatchedFastPacket<'_> {
+        BatchedFastPacket::Fast444(self, PlaneMode::YCbCr)
+    }
+    fn to_batched_with_texture_mode(&self, mode: PlaneMode) -> BatchedFastPacket<'_> {
+        BatchedFastPacket::Fast444(self, mode)
+    }
+    fn texture_plane_mode_from_batched(packet: &BatchedFastPacket<'_>) -> Option<PlaneMode> {
+        match packet {
+            BatchedFastPacket::Fast444(_, mode) => Some(*mode),
+            _ => None,
+        }
+    }
+    fn decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast444_decode_pipeline
+    }
+    fn region_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast444_region_decode_pipeline
+    }
+    fn scaled_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast444_scaled_decode_pipeline
+    }
+    fn scaled_region_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast444_scaled_region_decode_pipeline
+    }
+    fn pack_pipeline_for_format(
+        runtime: &MetalRuntime,
+        fmt: PixelFormat,
+    ) -> Option<&ComputePipelineState> {
+        match fmt {
+            PixelFormat::Rgb8 => Some(&runtime.pack_444_rgb_batch_pipeline),
+            PixelFormat::Rgba8 => Some(&runtime.pack_444_rgba_texture_pipeline),
+            _ => None,
+        }
+    }
+    fn pack_windowed_pipeline_for_format(
+        runtime: &MetalRuntime,
+        fmt: PixelFormat,
+    ) -> &ComputePipelineState {
+        match fmt {
+            PixelFormat::Rgba8 => &runtime.pack_444_rgba_texture_pipeline,
+            _ => &runtime.pack_444_rgb_batch_pipeline,
+        }
+    }
+    fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast444_scaled_region_batch_decode_pipeline
+    }
+    fn pack_windowed_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.pack_444_rgba_texture_pipeline
+    }
+    fn full_rgb_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast444_scaled_region_batch_decode_pipeline
+    }
+    fn pack_full_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.pack_444_rgb_batch_pipeline
+    }
+    fn pack_rgba_texture_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.pack_444_rgba_texture_pipeline
+    }
+    fn rgba_texture_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast444_rgba_texture_batch_decode_pipeline
+    }
+    fn rgba_texture_boundary_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast444_rgba_texture_batch_decode_pipeline
+    }
+    fn full_rgb_batch_timing_enabled() -> bool {
+        false
+    }
+    fn texture_mcu_dispatch_threads(_total_mcus: usize) -> Result<Option<u32>, Error> {
+        Ok(None)
+    }
+    fn texture_repair_record_count(
+        _tile_count: usize,
+        _total_mcus: usize,
+        _total_decode_threads: u32,
+    ) -> Result<usize, Error> {
+        Ok(0)
+    }
+    fn horizontal_repair_threads(
+        _first: &Self,
+        _segment_count_u32: u32,
+        _mcu_threads: Option<u32>,
+    ) -> Option<u32> {
+        None
+    }
+    fn encode_extra_texture_repair_passes(
+        _runtime: &MetalRuntime,
+        _ctx: &FastTextureRepairCtx<'_>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+    #[cfg(test)]
+    fn split_coeff_idct_pipelines(
+        _runtime: &MetalRuntime,
+    ) -> Option<(&ComputePipelineState, &ComputePipelineState)> {
+        None
+    }
+    #[cfg(test)]
+    const SPLIT_TEXTURE_SCRATCH_KEYS: (&'static str, &'static str) = (
+        "fast444_texture_coeff_blocks",
+        "fast444_texture_dc_only_flags",
+    );
+}
+
+#[cfg(target_os = "macos")]
+impl FastRegionScaledMetal for JpegFast420PacketV1 {
+    const REGION_SCALED_KEYS: FastScratchKeys =
+        <Self as FastSubsampledMetal>::REGION_SCALED_KEYS;
+
+    fn from_region_scaled_batched<'a>(
+        packet: &BatchedFastPacket<'a>,
+    ) -> Option<(&'a Self, PlaneMode)> {
+        match packet {
+            BatchedFastPacket::Fast420(packet) => Some((packet, PlaneMode::YCbCr)),
+            _ => None,
+        }
+    }
+    fn to_region_scaled_batched(&self, _mode: PlaneMode) -> BatchedFastPacket<'_> {
+        BatchedFastPacket::Fast420(self)
+    }
+    fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast420_scaled_region_batch_decode_pipeline
+    }
+    fn pack_windowed_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.pack_420_windowed_rgb_batch_pipeline
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl FastRegionScaledMetal for JpegFast422PacketV1 {
+    const REGION_SCALED_KEYS: FastScratchKeys =
+        <Self as FastSubsampledMetal>::REGION_SCALED_KEYS;
+
+    fn from_region_scaled_batched<'a>(
+        packet: &BatchedFastPacket<'a>,
+    ) -> Option<(&'a Self, PlaneMode)> {
+        match packet {
+            BatchedFastPacket::Fast422(packet) => Some((packet, PlaneMode::YCbCr)),
+            _ => None,
+        }
+    }
+    fn to_region_scaled_batched(&self, _mode: PlaneMode) -> BatchedFastPacket<'_> {
+        BatchedFastPacket::Fast422(self)
+    }
+    fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast422_scaled_region_batch_decode_pipeline
+    }
+    fn pack_windowed_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.pack_422_windowed_rgb_batch_pipeline
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl FastRegionScaledMetal for JpegFast444PacketV1 {
+    const REGION_SCALED_KEYS: FastScratchKeys =
+        <Self as FastSubsampledMetal>::REGION_SCALED_KEYS;
+
+    fn from_region_scaled_batched<'a>(
+        packet: &BatchedFastPacket<'a>,
+    ) -> Option<(&'a Self, PlaneMode)> {
+        match packet {
+            BatchedFastPacket::Fast444(packet, mode) => Some((packet, *mode)),
+            _ => None,
+        }
+    }
+    fn to_region_scaled_batched(&self, mode: PlaneMode) -> BatchedFastPacket<'_> {
+        BatchedFastPacket::Fast444(self, mode)
+    }
+    fn scaled_region_batch_decode_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.fast444_scaled_region_batch_decode_pipeline
+    }
+    fn pack_windowed_rgb_batch_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.pack_444_rgb_batch_pipeline
+    }
+}
+
 fn fast_subsampled_params<P: FastSubsampledPacket>(
     packet: &P,
     fmt: PixelFormat,
@@ -659,7 +949,7 @@ fn fast_subsampled_params<P: FastSubsampledPacket>(
     Ok(JpegFast420Params {
         width: packet.dimensions().0,
         height: packet.dimensions().1,
-        chroma_width: packet.dimensions().0.div_ceil(2),
+        chroma_width: P::chroma_width(packet.dimensions().0),
         chroma_height: P::chroma_height(packet.dimensions().1),
         mcus_per_row: packet.mcus_per_row(),
         mcu_rows: packet.mcu_rows(),
@@ -694,7 +984,7 @@ fn fast_subsampled_region_params<P: FastSubsampledPacket>(
     Ok(JpegFast420Params {
         width: source_window.w,
         height: source_window.h,
-        chroma_width: source_window.w.div_ceil(2),
+        chroma_width: P::chroma_width(source_window.w),
         chroma_height: P::chroma_height(source_window.h),
         mcus_per_row: packet.mcus_per_row(),
         mcu_rows: packet.mcu_rows(),
@@ -719,6 +1009,7 @@ fn fast_subsampled_scaled_params<P: FastSubsampledPacket>(
     scale: j2k_core::Downscale,
 ) -> Option<JpegFast420ScaledParams> {
     let scale_shift = match scale {
+        j2k_core::Downscale::None => 0,
         j2k_core::Downscale::Half => 1,
         j2k_core::Downscale::Quarter => 2,
         j2k_core::Downscale::Eighth => 3,
@@ -730,7 +1021,7 @@ fn fast_subsampled_scaled_params<P: FastSubsampledPacket>(
     Some(JpegFast420ScaledParams {
         scaled_width,
         scaled_height,
-        chroma_width: scaled_width.div_ceil(2),
+        chroma_width: P::chroma_width(scaled_width),
         chroma_height: P::chroma_height(scaled_height),
         mcus_per_row: packet.mcus_per_row(),
         mcu_rows: packet.mcu_rows(),
@@ -758,7 +1049,7 @@ fn fast_subsampled_scaled_region_params<P: FastSubsampledPacket>(
     Some(JpegFast420ScaledParams {
         scaled_width: source_window.w,
         scaled_height: source_window.h,
-        chroma_width: source_window.w.div_ceil(2),
+        chroma_width: P::chroma_width(source_window.w),
         chroma_height: P::chroma_height(source_window.h),
         origin_x: source_window.x,
         origin_y: source_window.y,
@@ -841,6 +1132,7 @@ fn fast444_scaled_params(
     scale: j2k_core::Downscale,
 ) -> Option<JpegFast444ScaledParams> {
     let scale_shift = match scale {
+        j2k_core::Downscale::None => 0,
         j2k_core::Downscale::Half => 1,
         j2k_core::Downscale::Quarter => 2,
         j2k_core::Downscale::Eighth => 3,
@@ -898,7 +1190,7 @@ fn fast_subsampled_windowed_pack_params_for_dims<P: FastSubsampledPacket>(
     Ok(JpegFast420WindowedPackParams {
         src_width: dims.0,
         src_height: dims.1,
-        chroma_width: dims.0.div_ceil(2),
+        chroma_width: P::chroma_width(dims.0),
         chroma_height: P::chroma_height(dims.1),
         src_x: roi.x,
         src_y: roi.y,
@@ -1077,4 +1369,3 @@ fn entropy_decode_thread_count(
         entropy_checkpoints_len,
     )
 }
-

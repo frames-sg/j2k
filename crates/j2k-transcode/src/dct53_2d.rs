@@ -7,33 +7,13 @@
 //! reference path materializes samples to keep the oracle easy to audit.
 
 use crate::dct_grid::{high_len, idct8_basis, low_len, validate_dct_block_grid};
-pub use crate::DctGridError as Dct53GridError;
+use crate::{DctGridError, Dwt53TwoDimensional};
 
-/// One separable single-level 2D 5/3 transform result.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Dwt53TwoDimensional<T> {
-    /// Low-horizontal, low-vertical band.
-    pub ll: Vec<T>,
-    /// High-horizontal, low-vertical band.
-    pub hl: Vec<T>,
-    /// Low-horizontal, high-vertical band.
-    pub lh: Vec<T>,
-    /// High-horizontal, high-vertical band.
-    pub hh: Vec<T>,
-    /// Width of horizontally low-pass bands.
-    pub low_width: usize,
-    /// Height of vertically low-pass bands.
-    pub low_height: usize,
-    /// Width of horizontally high-pass bands.
-    pub high_width: usize,
-    /// Height of vertically high-pass bands.
-    pub high_height: usize,
-}
-
+#[cfg(test)]
 impl Dwt53TwoDimensional<f64> {
     /// Maximum absolute coefficient difference across matching bands.
     #[must_use]
-    pub fn max_abs_diff(&self, other: &Self) -> f64 {
+    pub(crate) fn max_abs_diff(&self, other: &Self) -> f64 {
         assert_eq!(self.low_width, other.low_width);
         assert_eq!(self.low_height, other.low_height);
         assert_eq!(self.high_width, other.high_width);
@@ -56,63 +36,15 @@ impl Dwt53TwoDimensional<f64> {
 /// matching geometry. The scratch caches linearized 5/3 weight rows; it does
 /// not store spatial samples.
 #[derive(Debug, Default)]
-pub struct Dct53GridScratch {
+pub(crate) struct Dct53GridScratch {
     x_weights: Dwt53WeightRows,
     y_weights: Dwt53WeightRows,
 }
 
 impl Dct53GridScratch {
-    /// Aggregate capacity of cached weight rows.
-    ///
-    /// This is intended for experimental tests and benchmark instrumentation.
-    #[must_use]
-    pub fn weight_row_capacity(&self) -> usize {
+    #[cfg(test)]
+    fn weight_row_capacity(&self) -> usize {
         self.x_weights.weight_capacity() + self.y_weights.weight_capacity()
-    }
-}
-
-/// Map one 8x8 DCT block directly into a linearized one-level 2D 5/3 result.
-#[must_use]
-pub fn dct8x8_to_dwt53_float_linear(block: [[f64; 8]; 8]) -> Dwt53TwoDimensional<f64> {
-    let width = 8;
-    let height = 8;
-    let low_width = low_len(width);
-    let low_height = low_len(height);
-    let high_width = high_len(width);
-    let high_height = high_len(height);
-
-    let mut ll = Vec::with_capacity(low_width * low_height);
-    let mut hl = Vec::with_capacity(high_width * low_height);
-    let mut lh = Vec::with_capacity(low_width * high_height);
-    let mut hh = Vec::with_capacity(high_width * high_height);
-
-    for y in 0..low_height {
-        for x in 0..low_width {
-            ll.push(project_dct_block(&block, true, y, true, x));
-        }
-        for x in 0..high_width {
-            hl.push(project_dct_block(&block, true, y, false, x));
-        }
-    }
-
-    for y in 0..high_height {
-        for x in 0..low_width {
-            lh.push(project_dct_block(&block, false, y, true, x));
-        }
-        for x in 0..high_width {
-            hh.push(project_dct_block(&block, false, y, false, x));
-        }
-    }
-
-    Dwt53TwoDimensional {
-        ll,
-        hl,
-        lh,
-        hh,
-        low_width,
-        low_height,
-        high_width,
-        high_height,
     }
 }
 
@@ -126,7 +58,7 @@ pub fn dct8x8_blocks_to_dwt53_float_linear(
     block_rows: usize,
     width: usize,
     height: usize,
-) -> Result<Dwt53TwoDimensional<f64>, Dct53GridError> {
+) -> Result<Dwt53TwoDimensional<f64>, DctGridError> {
     let mut scratch = Dct53GridScratch::default();
     dct8x8_blocks_to_dwt53_float_linear_with_scratch(
         blocks,
@@ -140,14 +72,14 @@ pub fn dct8x8_blocks_to_dwt53_float_linear(
 
 /// Map an adjacent 8x8 DCT block grid directly into a linearized one-level 2D
 /// 5/3 result using caller-owned scratch for reusable weight rows.
-pub fn dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+pub(crate) fn dct8x8_blocks_to_dwt53_float_linear_with_scratch(
     blocks: &[[[f64; 8]; 8]],
     block_cols: usize,
     block_rows: usize,
     width: usize,
     height: usize,
     scratch: &mut Dct53GridScratch,
-) -> Result<Dwt53TwoDimensional<f64>, Dct53GridError> {
+) -> Result<Dwt53TwoDimensional<f64>, DctGridError> {
     validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
 
     let low_width = low_len(width);
@@ -214,20 +146,6 @@ pub fn dct8x8_blocks_to_dwt53_float_linear_with_scratch(
     })
 }
 
-/// Reference path for the 2D experiment:
-/// DCT coefficients -> float IDCT samples -> separable linearized 5/3.
-#[must_use]
-pub fn idct8x8_then_dwt53_float(block: [[f64; 8]; 8]) -> Dwt53TwoDimensional<f64> {
-    let mut samples = Vec::with_capacity(64);
-    for y in 0..8 {
-        for x in 0..8 {
-            samples.push(idct8x8_sample(&block, x, y));
-        }
-    }
-
-    linearized_53_2d_from_plane(&samples, 8, 8)
-}
-
 /// Reference path for a DCT block grid:
 /// DCT coefficients -> float IDCT samples -> separable linearized 5/3.
 pub fn dct8x8_blocks_then_dwt53_float(
@@ -236,7 +154,7 @@ pub fn dct8x8_blocks_then_dwt53_float(
     block_rows: usize,
     width: usize,
     height: usize,
-) -> Result<Dwt53TwoDimensional<f64>, Dct53GridError> {
+) -> Result<Dwt53TwoDimensional<f64>, DctGridError> {
     validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
 
     let mut samples = Vec::with_capacity(width * height);
@@ -252,40 +170,6 @@ pub fn dct8x8_blocks_then_dwt53_float(
     }
 
     Ok(linearized_53_2d_from_plane(&samples, width, height))
-}
-
-fn project_dct_block(
-    block: &[[f64; 8]; 8],
-    vertical_low: bool,
-    output_y: usize,
-    horizontal_low: bool,
-    output_x: usize,
-) -> f64 {
-    let mut output = 0.0;
-
-    for sample_y in 0..8 {
-        let y_weight = linearized_53_sample_weight(8, vertical_low, output_y, sample_y);
-        if y_weight == 0.0 {
-            continue;
-        }
-
-        for sample_x in 0..8 {
-            let x_weight = linearized_53_sample_weight(8, horizontal_low, output_x, sample_x);
-            if x_weight == 0.0 {
-                continue;
-            }
-
-            let sample_weight = y_weight * x_weight;
-            for (freq_y, coefficient_row) in block.iter().enumerate() {
-                let y_basis = idct8_basis(sample_y, freq_y);
-                for (freq_x, coefficient) in coefficient_row.iter().copied().enumerate() {
-                    output += sample_weight * y_basis * idct8_basis(sample_x, freq_x) * coefficient;
-                }
-            }
-        }
-    }
-
-    output
 }
 
 fn project_dct_grid(
@@ -403,22 +287,6 @@ fn transpose_band(column_major: &[f64], height: usize, width: usize) -> Vec<f64>
     row_major
 }
 
-fn linearized_53_sample_weight(
-    sample_len: usize,
-    is_low: bool,
-    output_idx: usize,
-    sample_idx: usize,
-) -> f64 {
-    let mut basis = vec![0.0; sample_len];
-    basis[sample_idx] = 1.0;
-    let row = linearized_53_from_sample_slice(&basis);
-    if is_low {
-        row.low[output_idx]
-    } else {
-        row.high[output_idx]
-    }
-}
-
 fn linearized_53_from_sample_slice(samples: &[f64]) -> Dwt53OneDimensional {
     let mut high = Vec::with_capacity(high_len(samples.len()));
     for odd_idx in (1..samples.len()).step_by(2) {
@@ -451,7 +319,7 @@ fn validate_grid(
     block_rows: usize,
     width: usize,
     height: usize,
-) -> Result<(), Dct53GridError> {
+) -> Result<(), DctGridError> {
     validate_dct_block_grid(block_count, block_cols, block_rows, width, height)
 }
 
@@ -490,6 +358,7 @@ impl Dwt53WeightRows {
         self.sample_len = Some(sample_len);
     }
 
+    #[cfg(test)]
     fn weight_capacity(&self) -> usize {
         self.low
             .iter()
@@ -530,4 +399,72 @@ struct SparseWeightTap {
 struct Dwt53OneDimensional {
     low: Vec<f64>,
     high: Vec<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dct8x8_grid_scratch_reuses_weight_rows_for_same_geometry() {
+        let blocks = synthetic_grid_blocks(2, 2);
+        let mut scratch = Dct53GridScratch::default();
+
+        let direct =
+            dct8x8_blocks_to_dwt53_float_linear_with_scratch(&blocks, 2, 2, 13, 11, &mut scratch)
+                .expect("valid DCT grid");
+        let stateless =
+            dct8x8_blocks_to_dwt53_float_linear(&blocks, 2, 2, 13, 11).expect("valid DCT grid");
+        let capacity_after_first = scratch.weight_row_capacity();
+
+        let repeated =
+            dct8x8_blocks_to_dwt53_float_linear_with_scratch(&blocks, 2, 2, 13, 11, &mut scratch)
+                .expect("valid DCT grid");
+
+        assert!(capacity_after_first > 0);
+        assert_eq!(scratch.weight_row_capacity(), capacity_after_first);
+        assert!(direct.max_abs_diff(&stateless) <= 1.0e-9);
+        assert!(repeated.max_abs_diff(&stateless) <= 1.0e-9);
+    }
+
+    #[test]
+    fn dct8x8_grid_scratch_uses_sparse_weight_rows_for_wsi_tile() {
+        let dim = 224_usize;
+        let block_cols = dim / 8;
+        let block_rows = dim / 8;
+        let blocks = vec![[[0.0; 8]; 8]; block_cols * block_rows];
+        let mut scratch = Dct53GridScratch::default();
+
+        dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+            &blocks,
+            block_cols,
+            block_rows,
+            dim,
+            dim,
+            &mut scratch,
+        )
+        .expect("valid DCT grid");
+
+        assert!(
+            scratch.weight_row_capacity() <= dim * 10,
+            "5/3 grid weights should stay sparse at WSI tile sizes, got capacity {}",
+            scratch.weight_row_capacity()
+        );
+    }
+
+    fn synthetic_grid_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
+        let mut blocks = Vec::with_capacity(block_cols * block_rows);
+        for block_y in 0..block_rows {
+            for block_x in 0..block_cols {
+                let mut block = [[0.0; 8]; 8];
+                block[0][0] = 192.0 + (block_x * 17 + block_y * 23) as f64;
+                block[0][1] = -31.0 + block_x as f64;
+                block[1][0] = 27.0 - block_y as f64;
+                block[2][3] = 9.0;
+                block[7][7] = -6.0;
+                blocks.push(block);
+            }
+        }
+        blocks
+    }
 }

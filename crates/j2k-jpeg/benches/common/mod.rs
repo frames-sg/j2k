@@ -11,10 +11,10 @@ use self::classification::{classify_corpus_input, color_space_mode, CorpusInputC
 pub(crate) use self::libjpeg_turbo::TurboJpegDecoder;
 use j2k_core::tile_batch_worker_count;
 use j2k_jpeg::{
-    decode_tiles_into, decode_tiles_region_scaled_into, decode_tiles_scaled_into, Decoder,
-    DecoderContext, Downscale, JpegBatchSession, JpegError, JpegOutputBuffer, PixelFormat, Rect,
-    RowSink, ScratchPool, TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob,
-    TileScaledDecodeJob,
+    decode_tiles_into, decode_tiles_region_scaled_into, decode_tiles_scaled_into, DecodeRequest,
+    Decoder, DecoderContext, Downscale, JpegBatchSession, JpegError, JpegOutputBuffer, JpegView,
+    PixelFormat, Rect, RowSink, ScratchPool, TileBatchOptions, TileDecodeJob,
+    TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use j2k_test_support::{JPEG_BASELINE_420_16X16, JPEG_GRAYSCALE_8X8};
 use std::path::{Path, PathBuf};
@@ -142,7 +142,9 @@ pub(crate) fn j2k_decode(bytes: &[u8], mode: DecodeMode) {
         DecodeMode::Gray => PixelFormat::Gray8,
         DecodeMode::Rgb => PixelFormat::Rgb8,
     };
-    let (out, _) = dec.decode(fmt).expect("j2k decode");
+    let (out, _) = dec
+        .decode_request(DecodeRequest::full(fmt))
+        .expect("j2k decode");
     std::hint::black_box(out);
 }
 
@@ -493,7 +495,9 @@ fn j2k_decode_tile_batch_worker(bytes: &[u8], tile_count: usize) -> Result<(), J
     let mut pool = ScratchPool::new();
     let mut sink = NullSink;
     for _ in 0..tile_count {
-        Decoder::decode_tile(bytes, &mut ctx, &mut pool, &mut sink)?;
+        let view = JpegView::parse(bytes)?;
+        let decoder = Decoder::from_view_in_context(view, &mut ctx)?;
+        decoder.decode_rows_with_scratch(&mut pool, &mut sink)?;
     }
     Ok(())
 }
@@ -606,7 +610,7 @@ pub(crate) fn j2k_decode_region(bytes: &[u8], side: u32) {
     let dec = Decoder::new(bytes).expect("j2k decoder");
     let roi = centered_roi(dec.info().dimensions, side);
     let (out, _) = dec
-        .decode_region(PixelFormat::Rgb8, roi)
+        .decode_request(DecodeRequest::region(PixelFormat::Rgb8, roi))
         .expect("j2k region decode");
     std::hint::black_box(out);
 }
@@ -621,7 +625,7 @@ pub(crate) fn libjpeg_turbo_decode_region(decoder: &mut TurboJpegDecoder, bytes:
 pub(crate) fn j2k_decode_scaled(bytes: &[u8], factor: Downscale) {
     let dec = Decoder::new(bytes).expect("j2k decoder");
     let (out, _) = dec
-        .decode_scaled(PixelFormat::Rgb8, factor)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, factor))
         .expect("j2k scaled decode");
     std::hint::black_box(out);
 }
@@ -641,7 +645,7 @@ pub(crate) fn j2k_decode_region_scaled(bytes: &[u8], side: u32, factor: Downscal
     let dec = Decoder::new(bytes).expect("j2k decoder");
     let roi = centered_roi(dec.info().dimensions, side);
     let (out, _) = dec
-        .decode_region_scaled(PixelFormat::Rgb8, roi, factor)
+        .decode_request(DecodeRequest::region_scaled(PixelFormat::Rgb8, roi, factor))
         .expect("j2k scaled region decode");
     std::hint::black_box(out);
 }

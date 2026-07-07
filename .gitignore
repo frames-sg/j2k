@@ -1,5 +1,4 @@
 target/
-docs/superpowers/
 .codewhale/
 lcov.info
 **/*.rs.bk
@@ -10,3 +9,4 @@ Cargo.lock.bak
 __pycache__/
 *.py[cod]
 corpus/wsi-samples/gdc-downloads/
+.tmp-metadata.json

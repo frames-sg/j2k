@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-pub(super) const SHADER_SOURCE: &str = concat!(
-    r#"
+pub(super) fn shader_source() -> String {
+    [
+        r"
 #include <metal_stdlib>
 using namespace metal;
 
@@ -533,21 +534,31 @@ kernel void j2k_pack_u16_repeated_gray(
     const uint out_idx = out_base + gid.y * (params.out_stride / 2u) + gid.x;
     out[out_idx] = pack_to_u16(plane0[plane_idx], params.max_value, params.u16_scale);
 }
-"#,
-    "\n",
-    include_str!("../classic.metal"),
-    "\n",
-    include_str!("../encode_bitstream.metal"),
-    "\n",
-    include_str!("../idwt.metal"),
-    "\n",
-    include_str!("../fdwt.metal"),
-    "\n",
-    include_str!("../mct.metal"),
-    "\n",
-    include_str!("../quantize.metal"),
-    "\n",
-    include_str!("../store.metal"),
-    "\n",
-    include_str!("../ht_cleanup.metal"),
-);
+",
+        "\n",
+        include_str!("../classic.metal"),
+        "\n",
+        include_str!("../encode_bitstream_shared.metal"),
+        include_str!("../encode_bitstream_classic_core.metal"),
+        include_str!("../encode_bitstream_classic_tokens.metal"),
+        include_str!("../encode_bitstream_classic_symbol_plan.metal"),
+        include_str!("../encode_bitstream_classic_kernels.metal"),
+        include_str!("../encode_bitstream_ht.metal"),
+        include_str!("../encode_bitstream_packetize.metal"),
+        "\n",
+        j2k_codec_math::generated::DWT97_CONSTANTS_METAL,
+        "\n",
+        include_str!("../idwt.metal"),
+        "\n",
+        include_str!("../fdwt.metal"),
+        "\n",
+        include_str!("../mct.metal"),
+        "\n",
+        include_str!("../quantize.metal"),
+        "\n",
+        include_str!("../store.metal"),
+        "\n",
+        include_str!("../ht_cleanup.metal"),
+    ]
+    .concat()
+}

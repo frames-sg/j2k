@@ -47,14 +47,17 @@ j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtu
 [[bench]]
 name = "encode_stages"
 harness = false
+test = false
 
 [[bench]]
 name = "htj2k_decode"
 harness = false
+test = false
 
 [[bench]]
 name = "htj2k_encode"
 harness = false
+test = false
 required-features = ["cuda-runtime"]
 
 [lints.rust]

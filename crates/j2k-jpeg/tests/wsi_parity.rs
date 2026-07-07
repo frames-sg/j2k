@@ -2,7 +2,7 @@
 
 //! Bit-exact parity against libjpeg-turbo's ISLOW path.
 
-use j2k_jpeg::{Decoder, Downscale, PixelFormat, Rect};
+use j2k_jpeg::{DecodeRequest, Decoder, Downscale, PixelFormat, Rect};
 use j2k_test_support::{
     crop_interleaved_bytes, crop_interleaved_u8, restart_coded_grayscale_jpeg,
     scaled_rect_covering, PixelRect, JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB,
@@ -87,7 +87,11 @@ fn baseline_420_wsi_shaped_scaled_region_matches_full_decode_crop() {
         .expect("full scaled decode must succeed");
 
     let region = dec
-        .decode_region_scaled(PixelFormat::Rgb8, roi, Downscale::Half)
+        .decode_request(DecodeRequest::region_scaled(
+            PixelFormat::Rgb8,
+            roi,
+            Downscale::Half,
+        ))
         .expect("scaled region decode must succeed")
         .0;
 
@@ -110,7 +114,11 @@ fn restart_coded_grayscale_wsi_shaped_region_matches_full_decode_crop() {
     dec.decode_scaled_into(&mut full, 24, PixelFormat::Gray8, Downscale::None)
         .expect("full grayscale decode must succeed");
     let region = dec
-        .decode_region_scaled(PixelFormat::Gray8, roi, Downscale::None)
+        .decode_request(DecodeRequest::region_scaled(
+            PixelFormat::Gray8,
+            roi,
+            Downscale::None,
+        ))
         .expect("restart-coded region decode must succeed")
         .0;
 
@@ -118,9 +126,13 @@ fn restart_coded_grayscale_wsi_shaped_region_matches_full_decode_crop() {
 }
 
 fn decode_region_rgb(dec: &Decoder<'_>, roi: Rect) -> Vec<u8> {
-    dec.decode_region_scaled(PixelFormat::Rgb8, roi, Downscale::None)
-        .expect("region decode must succeed")
-        .0
+    dec.decode_request(DecodeRequest::region_scaled(
+        PixelFormat::Rgb8,
+        roi,
+        Downscale::None,
+    ))
+    .expect("region decode must succeed")
+    .0
 }
 
 fn decode_full_rgb(dec: &Decoder<'_>) -> Vec<u8> {

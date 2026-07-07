@@ -76,6 +76,6 @@ fn map_header_error(error: J2kCodestreamHeaderError) -> J2kError {
         J2kCodestreamHeaderError::Unsupported { what } => {
             J2kError::Unsupported(Unsupported { what })
         }
-        error => J2kError::Backend(error.to_string()),
+        error => J2kError::backend(error.to_string()),
     }
 }

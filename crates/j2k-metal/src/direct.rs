@@ -234,24 +234,37 @@ fn ht_job(owned: &HtOwnedCodeBlockBatchJob) -> HtCodeBlockDecodeJob<'_> {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn is_unsupported_direct_plan_error(message: &str) -> bool {
-    message.contains("direct grayscale plan only supports")
-        || message.contains("direct color plan only supports")
-        || message.contains("direct component plan only supports")
-        || message.contains("UnsupportedColorSpace")
-        || message.contains("Unsupported color space")
+pub(crate) fn is_unsupported_direct_plan_error(error: &j2k_native::DecodeError) -> bool {
+    matches!(
+        error,
+        j2k_native::DecodeError::Decoding(j2k_native::DecodingError::DirectPlanUnsupported(_))
+    )
 }
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
         decode_classic_sub_band, decode_ht_sub_band, execute_grayscale_plan_to_plane,
-        DirectExecutionState,
+        is_unsupported_direct_plan_error, DirectExecutionState,
     };
     use j2k_native::{
-        encode, encode_htj2k, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder,
-        Image, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kSingleDecompositionIdwtJob,
+        encode, encode_htj2k, DecodeError, DecodeSettings, DecoderContext, DecodingError,
+        DirectPlanUnsupportedReason, EncodeOptions, HtCodeBlockDecoder, Image,
+        J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kSingleDecompositionIdwtJob,
     };
+
+    #[test]
+    fn unsupported_direct_plan_classification_uses_native_error_variant() {
+        let unsupported = DecodeError::Decoding(DecodingError::DirectPlanUnsupported(
+            DirectPlanUnsupportedReason::ColorSingleTileCodestream,
+        ));
+        assert!(is_unsupported_direct_plan_error(&unsupported));
+
+        let message_only = DecodeError::Decoding(DecodingError::UnsupportedFeature(
+            "direct color plan only supports single-tile codestreams",
+        ));
+        assert!(!is_unsupported_direct_plan_error(&message_only));
+    }
 
     fn classic_plan() -> j2k_native::J2kDirectGrayscalePlan {
         let pixels: Vec<u8> = (0..16).collect();
@@ -408,14 +421,6 @@ mod tests {
     }
 
     impl HtCodeBlockDecoder for CaptureIdwtJob {
-        fn decode_code_block(
-            &mut self,
-            job: j2k_native::HtCodeBlockDecodeJob<'_>,
-            output: &mut [f32],
-        ) -> j2k_native::Result<()> {
-            j2k_native::decode_ht_code_block_scalar(job, output)
-        }
-
         fn decode_single_decomposition_idwt(
             &mut self,
             job: J2kSingleDecompositionIdwtJob<'_>,

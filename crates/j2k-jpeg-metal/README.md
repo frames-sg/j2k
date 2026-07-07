@@ -24,3 +24,9 @@ when fast-packet capabilities match. Batched and resident-output paths are the
 places to look for Metal wins, and any future Auto widening should be backed by
 the benchmark groups documented in
 [`docs/routing-benchmarks.md`](docs/routing-benchmarks.md).
+
+## Links
+
+- API docs: <https://docs.rs/j2k-jpeg-metal>
+- Repository: <https://github.com/frames-sg/j2k>
+- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

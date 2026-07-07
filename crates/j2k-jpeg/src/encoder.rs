@@ -426,7 +426,10 @@ fn clamp_u8(value: i32) -> u8 {
     value.clamp(0, 255) as u8
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "private JPEG entropy hot path keeps scalar arguments for optimized codegen"
+)]
 fn encode_entropy(
     planes: &[Vec<u8>],
     width: u32,
@@ -458,7 +461,10 @@ fn encode_entropy(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "private JPEG entropy hot path keeps scalar arguments for optimized codegen"
+)]
 fn encode_entropy_serial(
     planes: &[Vec<u8>],
     width: u32,
@@ -523,7 +529,10 @@ fn encode_entropy_serial(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "private JPEG entropy hot path keeps scalar arguments for optimized codegen"
+)]
 fn encode_entropy_restart_segments(
     planes: &[Vec<u8>],
     width: u32,
@@ -578,7 +587,10 @@ fn encode_entropy_restart_segments(
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "private JPEG entropy hot path keeps scalar arguments for optimized codegen"
+)]
 fn encode_entropy_mcu_range(
     planes: &[Vec<u8>],
     width: u32,
@@ -658,7 +670,10 @@ where
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "private JPEG sample hot path keeps scalar arguments for optimized codegen"
+)]
 fn sample_block(
     planes: &[Vec<u8>],
     width: u32,

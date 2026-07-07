@@ -6,7 +6,8 @@ use j2k_core::{
     TileBatchDecodeManyDevice,
 };
 use j2k_jpeg_metal::{
-    Codec, Decoder, Error, MetalBackendSession, MetalSession, ScratchPool, SurfaceResidency,
+    decode_viewport_to_surface, Codec, Decoder, Error, MetalBackendSession, MetalDecodeRequest,
+    MetalSession, ScratchPool, SurfaceResidency, ViewportTile, ViewportWorkload,
 };
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
@@ -211,7 +212,12 @@ fn region_scaled_metal_bytes_match_cpu_decode() {
 
     let mut metal_decoder = Decoder::new(BASELINE_420).expect("metal decoder");
     let surface = metal_decoder
-        .decode_region_scaled_to_device(PixelFormat::Rgb8, roi, scale, BackendRequest::Metal)
+        .decode_request_to_device(MetalDecodeRequest::region_scaled(
+            PixelFormat::Rgb8,
+            roi,
+            scale,
+            BackendRequest::Metal,
+        ))
         .expect("region scaled surface");
 
     let cpu_decoder = Decoder::new(BASELINE_420).expect("cpu decoder");
@@ -283,12 +289,12 @@ fn auto_region_scaled_unsupported_metal_shape_returns_cpu_surface() {
     let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
 
     let surface = decoder
-        .decode_region_scaled_to_device(
+        .decode_request_to_device(MetalDecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             roi,
             Downscale::Quarter,
             BackendRequest::Auto,
-        )
+        ))
         .expect("auto region scaled surface");
 
     assert_eq!(surface.backend_kind(), BackendKind::Cpu);
@@ -300,11 +306,11 @@ fn auto_region_scaled_unsupported_metal_shape_returns_cpu_surface() {
 fn auto_viewport_cpu_fallback_returns_cpu_surface() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut pool = ScratchPool::new();
-    let workload = j2k_jpeg_metal::viewport::ViewportWorkload {
+    let workload = ViewportWorkload {
         scale: Downscale::None,
         viewport_dims: (16, 16),
         tiles: vec![
-            j2k_jpeg_metal::viewport::ViewportTile {
+            ViewportTile {
                 source_roi: Rect {
                     x: 0,
                     y: 0,
@@ -318,7 +324,7 @@ fn auto_viewport_cpu_fallback_returns_cpu_surface() {
                     h: 8,
                 },
             },
-            j2k_jpeg_metal::viewport::ViewportTile {
+            ViewportTile {
                 source_roi: Rect {
                     x: 8,
                     y: 8,
@@ -335,13 +341,9 @@ fn auto_viewport_cpu_fallback_returns_cpu_surface() {
         ],
     };
 
-    let surface = j2k_jpeg_metal::viewport::decode_viewport_to_surface(
-        decoder.inner(),
-        &mut pool,
-        &workload,
-        BackendRequest::Auto,
-    )
-    .expect("auto viewport surface");
+    let surface =
+        decode_viewport_to_surface(decoder.inner(), &mut pool, &workload, BackendRequest::Auto)
+            .expect("auto viewport surface");
 
     assert_eq!(surface.backend_kind(), BackendKind::Cpu);
     assert!(surface.metal_buffer().is_none());

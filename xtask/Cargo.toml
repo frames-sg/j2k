@@ -5,16 +5,28 @@ edition = "2021"
 license.workspace = true
 publish = false
 
+[features]
+default = []
+adoption = [
+    "dep:image",
+    "dep:j2k",
+    "dep:j2k-compare",
+    "dep:j2k-native",
+    "dep:j2k-profile",
+    "dep:j2k-test-support",
+]
+
 [dependencies]
-image = { version = "0.25.8", default-features = false, features = ["bmp", "jpeg", "png", "tiff"] }
-j2k = { path = "../crates/j2k" }
-j2k-compare = { path = "../crates/j2k-compare" }
 j2k-codec-math = { path = "../crates/j2k-codec-math" }
-j2k-native = { path = "../crates/j2k-native" }
-j2k-profile = { path = "../crates/j2k-profile" }
-j2k-test-support = { path = "../crates/j2k-test-support" }
-serde_json = "1"
-serde_yaml_ng = "0.10"
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+
+image = { workspace = true, optional = true }
+j2k = { path = "../crates/j2k", optional = true }
+j2k-compare = { path = "../crates/j2k-compare", optional = true }
+j2k-native = { path = "../crates/j2k-native", optional = true }
+j2k-profile = { path = "../crates/j2k-profile", optional = true }
+j2k-test-support = { path = "../crates/j2k-test-support", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

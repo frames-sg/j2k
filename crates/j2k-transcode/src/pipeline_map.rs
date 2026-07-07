@@ -2,7 +2,7 @@
 
 //! Stage-level residency report for JPEG-to-HTJ2K transcode timings.
 
-use core::fmt::{self, Write as _};
+use core::fmt;
 
 use crate::{BatchTranscodeReport, TranscodeReport, TranscodeTimingReport};
 
@@ -137,40 +137,6 @@ impl TranscodePipelineMap {
             ],
             recommendation: recommend_next_resident_stage(timings),
         }
-    }
-
-    /// Render a compact, line-oriented report for benchmark/debug output.
-    #[must_use]
-    pub fn debug_report(&self) -> String {
-        let mut output = String::from("jpeg_to_htj2k_pipeline_map\n");
-        for stage in &self.stages {
-            writeln!(
-                output,
-                "stage={} processor={} cpu_us={} metal_us={} transfer_us={} transfer_count={} transfer_bytes={} resident_handoffs={} dispatches={} fallback_jobs={} note={}",
-                stage.stage,
-                stage.processor,
-                stage.cpu_us,
-                stage.metal_us,
-                stage.transfer_us,
-                stage.transfer_count,
-                stage.transfer_bytes,
-                stage.resident_handoff_count,
-                stage.dispatches,
-                stage.fallback_jobs,
-                stage.note,
-            )
-            .expect("writing a transcode pipeline debug report to a String cannot fail");
-        }
-        writeln!(
-            output,
-            "recommend_next_stage={} evidence_us={} evidence_dispatches={} reason={}",
-            self.recommendation.stage,
-            self.recommendation.evidence_us,
-            self.recommendation.evidence_dispatches,
-            self.recommendation.reason,
-        )
-        .expect("writing a transcode pipeline recommendation to a String cannot fail");
-        output
     }
 }
 

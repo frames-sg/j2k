@@ -2,10 +2,7 @@
 
 #[cfg(target_os = "macos")]
 use crate::compute;
-use j2k_native::{
-    decode_ht_code_block_scalar, HtCodeBlockDecodeJob, HtCodeBlockDecoder, J2kStoreComponentJob,
-    Result,
-};
+use j2k_native::{HtCodeBlockDecoder, J2kStoreComponentJob, Result};
 #[cfg(target_os = "macos")]
 use metal::Buffer;
 
@@ -49,14 +46,6 @@ impl HtCodeBlockDecoder for MetalStoreDecoder {
 
         Ok(false)
     }
-
-    fn decode_code_block(
-        &mut self,
-        job: HtCodeBlockDecodeJob<'_>,
-        output: &mut [f32],
-    ) -> j2k_native::Result<()> {
-        decode_ht_code_block_scalar(job, output)
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -73,8 +62,7 @@ fn supports_metal_store(job: &J2kStoreComponentJob<'_>) -> bool {
 mod tests {
     use super::MetalStoreDecoder;
     use j2k_native::{
-        encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecodeJob,
-        HtCodeBlockDecoder, Image,
+        encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder, Image,
     };
 
     fn fixture_j2k_gray8() -> Vec<u8> {
@@ -117,15 +105,7 @@ mod tests {
 
     struct CpuOnlyCodeBlockDecoder;
 
-    impl HtCodeBlockDecoder for CpuOnlyCodeBlockDecoder {
-        fn decode_code_block(
-            &mut self,
-            job: HtCodeBlockDecodeJob<'_>,
-            output: &mut [f32],
-        ) -> j2k_native::Result<()> {
-            j2k_native::decode_ht_code_block_scalar(job, output)
-        }
-    }
+    impl HtCodeBlockDecoder for CpuOnlyCodeBlockDecoder {}
 
     #[test]
     fn default_decoder_without_store_kernel_still_decodes() {

@@ -182,25 +182,37 @@ pub(crate) fn read_header<'a>(
         .map(|c| c.num_resolution_levels())
         .min()
         .ok_or(ValidationError::InvalidComponentMetadata)?;
-    let skipped_resolution_levels = if let Some((target_width, target_height)) =
-        settings.target_resolution
-    {
-        if target_width == 0 || target_height == 0 {
-            bail!(ValidationError::InvalidDimensions);
-        }
-        let width_log = skipped_levels_to_reach_target(size_data.image_width(), target_width);
-        let height_log = skipped_levels_to_reach_target(size_data.image_height(), target_height);
+    let skipped_resolution_levels =
+        if let Some((target_width, target_height)) = settings.target_resolution {
+            if target_width == 0 || target_height == 0 {
+                bail!(ValidationError::InvalidDimensions);
+            }
+            let width_log =
+                skipped_levels_to_reach_target(size_data.checked_image_width()?, target_width);
+            let height_log =
+                skipped_levels_to_reach_target(size_data.checked_image_height()?, target_height);
 
-        width_log.min(height_log)
-    } else {
-        0
-    }
-    .min(min_num_resolution_levels - 1);
+            width_log.min(height_log)
+        } else {
+            0
+        }
+        .min(min_num_resolution_levels - 1);
 
     // If the user defined a maximum resolution level that is lower than the
     // maximum available one, the final image needs to be shrunk further.
-    size_data.x_resolution_shrink_factor *= 1 << skipped_resolution_levels;
-    size_data.y_resolution_shrink_factor *= 1 << skipped_resolution_levels;
+    let resolution_shrink_factor = 1u32
+        .checked_shl(u32::from(skipped_resolution_levels))
+        .ok_or(ValidationError::InvalidDimensions)?;
+    size_data.x_resolution_shrink_factor = size_data
+        .x_resolution_shrink_factor
+        .checked_mul(resolution_shrink_factor)
+        .ok_or(ValidationError::InvalidDimensions)?;
+    size_data.y_resolution_shrink_factor = size_data
+        .y_resolution_shrink_factor
+        .checked_mul(resolution_shrink_factor)
+        .ok_or(ValidationError::InvalidDimensions)?;
+    size_data.checked_image_width()?;
+    size_data.checked_image_height()?;
 
     ppm_markers.sort_by_key(|ppm_marker| ppm_marker.sequence_idx);
     plm_markers.sort_by_key(|plm_marker| plm_marker.sequence_idx);
@@ -409,6 +421,33 @@ mod tests {
             changes[0].progression_order,
             ProgressionOrder::ComponentPositionResolutionLayer
         ));
+    }
+
+    #[test]
+    fn checked_image_dimensions_reject_shrink_factor_overflow() {
+        let size_data = SizeData {
+            reference_grid_width: 1024,
+            reference_grid_height: 1024,
+            image_area_x_offset: 0,
+            image_area_y_offset: 0,
+            tile_width: 1024,
+            tile_height: 1024,
+            tile_x_offset: 0,
+            tile_y_offset: 0,
+            component_sizes: Vec::new(),
+            x_shrink_factor: u32::MAX,
+            y_shrink_factor: 1,
+            x_resolution_shrink_factor: 2,
+            y_resolution_shrink_factor: 1,
+        };
+
+        assert!(matches!(
+            size_data.checked_image_width(),
+            Err(crate::DecodeError::Validation(
+                ValidationError::InvalidDimensions
+            ))
+        ));
+        assert_eq!(size_data.checked_image_height().expect("height"), 1024);
     }
 }
 
@@ -663,14 +702,38 @@ impl SizeData {
 
     /// Return the overall width of the image.
     pub(crate) fn image_width(&self) -> u32 {
-        (self.reference_grid_width - self.image_area_x_offset)
-            .div_ceil(self.x_shrink_factor * self.x_resolution_shrink_factor)
+        self.checked_image_width()
+            .expect("validated JPEG 2000 horizontal shrink factors")
     }
 
     /// Return the overall height of the image.
     pub(crate) fn image_height(&self) -> u32 {
-        (self.reference_grid_height - self.image_area_y_offset)
-            .div_ceil(self.y_shrink_factor * self.y_resolution_shrink_factor)
+        self.checked_image_height()
+            .expect("validated JPEG 2000 vertical shrink factors")
+    }
+
+    pub(crate) fn checked_image_width(&self) -> Result<u32> {
+        let shrink_factor = self.checked_x_shrink_factor()?;
+        Ok((self.reference_grid_width - self.image_area_x_offset).div_ceil(shrink_factor))
+    }
+
+    pub(crate) fn checked_image_height(&self) -> Result<u32> {
+        let shrink_factor = self.checked_y_shrink_factor()?;
+        Ok((self.reference_grid_height - self.image_area_y_offset).div_ceil(shrink_factor))
+    }
+
+    fn checked_x_shrink_factor(&self) -> Result<u32> {
+        self.x_shrink_factor
+            .checked_mul(self.x_resolution_shrink_factor)
+            .filter(|factor| *factor != 0)
+            .ok_or(ValidationError::InvalidDimensions.into())
+    }
+
+    fn checked_y_shrink_factor(&self) -> Result<u32> {
+        self.y_shrink_factor
+            .checked_mul(self.y_resolution_shrink_factor)
+            .filter(|factor| *factor != 0)
+            .ok_or(ValidationError::InvalidDimensions.into())
     }
 
     /// Return the reference-grid image width before component or resolution

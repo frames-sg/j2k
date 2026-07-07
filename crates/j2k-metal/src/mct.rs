@@ -2,9 +2,7 @@
 
 #[cfg(target_os = "macos")]
 use crate::compute;
-use j2k_native::{
-    decode_ht_code_block_scalar, HtCodeBlockDecodeJob, HtCodeBlockDecoder, J2kInverseMctJob, Result,
-};
+use j2k_native::{HtCodeBlockDecoder, J2kInverseMctJob, Result};
 #[cfg(target_os = "macos")]
 use metal::Buffer;
 
@@ -42,14 +40,6 @@ impl HtCodeBlockDecoder for MetalMctDecoder {
 
         Ok(false)
     }
-
-    fn decode_code_block(
-        &mut self,
-        job: HtCodeBlockDecodeJob<'_>,
-        output: &mut [f32],
-    ) -> j2k_native::Result<()> {
-        decode_ht_code_block_scalar(job, output)
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -62,8 +52,7 @@ fn supports_metal_inverse_mct(job: &J2kInverseMctJob<'_>) -> bool {
 mod tests {
     use super::MetalMctDecoder;
     use j2k_native::{
-        encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecodeJob,
-        HtCodeBlockDecoder, Image,
+        encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder, Image,
     };
 
     fn fixture_j2k_rgb8() -> Vec<u8> {
@@ -119,15 +108,7 @@ mod tests {
 
     struct CpuOnlyCodeBlockDecoder;
 
-    impl HtCodeBlockDecoder for CpuOnlyCodeBlockDecoder {
-        fn decode_code_block(
-            &mut self,
-            job: HtCodeBlockDecodeJob<'_>,
-            output: &mut [f32],
-        ) -> j2k_native::Result<()> {
-            j2k_native::decode_ht_code_block_scalar(job, output)
-        }
-    }
+    impl HtCodeBlockDecoder for CpuOnlyCodeBlockDecoder {}
 
     #[test]
     fn default_decoder_without_mct_kernel_still_decodes() {
@@ -188,13 +169,12 @@ mod tests {
             let captured = decoder.take_captured_planes();
             assert_eq!(captured.len(), components.planes().len());
             for (plane, buffer) in components.planes().iter().zip(captured.iter()) {
-                // SAFETY: SIMD lane captures operate on fixed-width stack buffers.
-                let captured = unsafe {
-                    core::slice::from_raw_parts(
-                        buffer.contents().cast::<f32>(),
-                        plane.samples().len(),
-                    )
-                };
+                let captured = crate::compute::checked_buffer_slice::<f32>(
+                    buffer,
+                    plane.samples().len(),
+                    "MCT test",
+                )
+                .expect("captured MCT plane readback");
                 assert_eq!(
                     captured,
                     plane.samples(),

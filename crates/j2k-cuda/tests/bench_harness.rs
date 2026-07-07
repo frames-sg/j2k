@@ -188,14 +188,14 @@ fn cuda_htj2k_decode_steady_state_uses_untimed_runtime_path() {
 }
 
 #[test]
-fn cuda_runtime_exposes_untimed_htj2k_decode_helpers() {
+fn cuda_runtime_exposes_steady_state_async_decode_helpers() {
     let runtime = read_cuda_runtime_sources();
 
     for expected in [
         "pub fn synchronize(&self) -> Result<(), CudaError>",
         "pub fn time_default_stream_named_us_if",
-        "pub fn decode_htj2k_codeblocks_with_resources_untimed",
-        "pub fn j2k_inverse_dwt_single_device_untimed",
+        "pub fn decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool",
+        "pub fn j2k_inverse_dwt_single_device_untimed_with_pool",
         "pinned_upload_staging",
         "take_pinned_upload_staging",
         "recycle_pinned_upload_staging",

@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
-#[cfg(target_os = "macos")]
 use j2k_jpeg::adapter::decoder_bytes;
 use j2k_jpeg::adapter::{
-    build_fast420_packet_for_decoder, build_fast422_packet_for_decoder,
-    build_fast444_packet_for_decoder, JpegFast420PacketV1, JpegFast422PacketV1,
-    JpegFast444PacketV1,
+    build_fast420_packet, build_fast422_packet, build_fast444_packet, JpegFast420PacketV1,
+    JpegFast422PacketV1, JpegFast444PacketV1,
 };
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 use j2k_jpeg::ColorSpace as JpegColorSpace;
 use j2k_jpeg::{Decoder as CpuDecoder, Rect as JpegRect, ScratchPool};
 
 use crate::{batch, routing, Error, Surface};
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 use crate::{
     Codec, MetalBackendSession, MetalBatchOutputBuffer, MetalBatchTextureOutput, MetalTextureTile,
 };
@@ -55,10 +53,10 @@ pub enum ViewportSurfaceStrategy {
     HybridContiguous,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Resident Metal output strategy selected for a reusable viewport decode.
-pub enum ViewportResidentOutputStrategy {
+pub(crate) enum ViewportResidentOutputStrategy {
     /// Decode the contiguous source bounds through the direct resident batch path.
     DirectContiguous,
     /// Decode component rows into resident planes and pack the composed viewport.
@@ -221,18 +219,20 @@ fn choose_viewport_surface_strategy_for_decoder(
 
 #[cfg(target_os = "macos")]
 fn has_direct_viewport_packet(decoder: &CpuDecoder<'_>) -> bool {
-    build_fast444_packet_for_decoder(decoder).is_ok()
-        || build_fast422_packet_for_decoder(decoder).is_ok()
-        || build_fast420_packet_for_decoder(decoder).is_ok()
+    let bytes = decoder_bytes(decoder);
+    build_fast444_packet(bytes).is_ok()
+        || build_fast422_packet(bytes).is_ok()
+        || build_fast420_packet(bytes).is_ok()
 }
 
 fn validate_explicit_metal_viewport_request(
     decoder: &CpuDecoder<'_>,
     workload: &ViewportWorkload,
 ) -> Result<(), Error> {
-    let fast444_packet = build_fast444_packet_for_decoder(decoder).ok();
-    let fast422_packet = build_fast422_packet_for_decoder(decoder).ok();
-    let fast420_packet = build_fast420_packet_for_decoder(decoder).ok();
+    let bytes = decoder_bytes(decoder);
+    let fast444_packet = build_fast444_packet(bytes).ok();
+    let fast422_packet = build_fast422_packet(bytes).ok();
+    let fast420_packet = build_fast420_packet(bytes).ok();
     validate_explicit_metal_viewport_request_with_packets(
         decoder,
         workload,
@@ -269,7 +269,7 @@ fn validate_explicit_metal_viewport_request_with_packets(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn validate_resident_viewport_composition_request(
     decoder: &CpuDecoder<'_>,
     workload: &ViewportWorkload,
@@ -309,9 +309,9 @@ fn validate_resident_viewport_composition_request(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 /// Choose the resident Metal strategy for a reusable viewport output request.
-pub fn choose_resizable_metal_viewport_strategy(
+pub(crate) fn choose_resizable_metal_viewport_strategy(
     decoder: &CpuDecoder<'_>,
     workload: &ViewportWorkload,
 ) -> Result<ViewportResidentOutputStrategy, Error> {
@@ -325,7 +325,7 @@ pub fn choose_resizable_metal_viewport_strategy(
     Ok(ViewportResidentOutputStrategy::Composite)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn choose_resizable_metal_viewport_strategy_for_decoder(
     decoder: &crate::Decoder<'_>,
     workload: &ViewportWorkload,
@@ -411,7 +411,7 @@ pub fn suggest_viewport_workload(dimensions: (u32, u32)) -> Option<ViewportWorkl
 }
 
 /// Decode each viewport tile on CPU and composite the result into host bytes.
-pub fn compose_viewport_cpu(
+pub(crate) fn compose_viewport_cpu(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     fmt: PixelFormat,
@@ -458,7 +458,7 @@ pub fn compose_viewport_cpu(
 }
 
 /// Decode the contiguous source region for a workload into host bytes.
-pub fn decode_viewport_region_cpu(
+pub(crate) fn decode_viewport_region_cpu(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     fmt: PixelFormat,
@@ -479,6 +479,7 @@ pub fn decode_viewport_region_cpu(
 }
 
 /// Decode a viewport workload into a surface using the requested backend policy.
+#[doc(hidden)]
 pub fn decode_viewport_to_surface(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
@@ -511,7 +512,7 @@ pub fn decode_viewport_to_surface(
 
 #[cfg(target_os = "macos")]
 /// Decode the contiguous source region on CPU and upload it to a surface.
-pub fn decode_viewport_region_cpu_to_surface(
+pub(crate) fn decode_viewport_region_cpu_to_surface(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     workload: &ViewportWorkload,
@@ -527,7 +528,7 @@ pub fn decode_viewport_region_cpu_to_surface(
 
 #[cfg(not(target_os = "macos"))]
 /// Decode the contiguous source region on CPU and return a host-backed surface.
-pub fn decode_viewport_region_cpu_to_surface(
+pub(crate) fn decode_viewport_region_cpu_to_surface(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     workload: &ViewportWorkload,
@@ -543,7 +544,7 @@ pub fn decode_viewport_region_cpu_to_surface(
 
 #[cfg(target_os = "macos")]
 /// Decode and composite viewport tiles on CPU, then upload to a surface.
-pub fn compose_viewport_cpu_to_surface(
+pub(crate) fn compose_viewport_cpu_to_surface(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     scale: Downscale,
@@ -568,7 +569,7 @@ pub fn compose_viewport_cpu_to_surface(
 
 #[cfg(not(target_os = "macos"))]
 /// Decode and composite viewport tiles on CPU into a host-backed surface.
-pub fn compose_viewport_cpu_to_surface(
+pub(crate) fn compose_viewport_cpu_to_surface(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     scale: Downscale,
@@ -593,7 +594,7 @@ pub fn compose_viewport_cpu_to_surface(
 
 #[cfg(target_os = "macos")]
 /// Compose a multi-tile viewport through the Metal hybrid path.
-pub fn compose_viewport_hybrid(
+pub(crate) fn compose_viewport_hybrid(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     scale: Downscale,
@@ -603,13 +604,13 @@ pub fn compose_viewport_hybrid(
     crate::compute::compose_rgb_viewport_from_regions(decoder, pool, scale, viewport_dims, tiles)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 /// Compose a viewport workload into a reusable caller-owned Metal buffer.
 ///
 /// This path supports sparse and non-contiguous workloads. It decodes component
 /// rows into reusable Metal plane buffers, resizes `output` to one RGB8 viewport
 /// slot, and packs the composed viewport directly into that caller-owned buffer.
-pub fn compose_viewport_to_resizable_metal_buffer_with_session(
+pub(crate) fn compose_viewport_to_resizable_metal_buffer_with_session(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     workload: &ViewportWorkload,
@@ -629,14 +630,14 @@ pub fn compose_viewport_to_resizable_metal_buffer_with_session(
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 /// Compose a viewport workload into a reusable caller-owned Metal texture.
 ///
 /// This path supports sparse and non-contiguous workloads. It decodes component
 /// rows into reusable Metal plane buffers, resizes `output` to one RGBA8
 /// viewport slot, and packs the composed viewport directly into that
 /// caller-owned texture.
-pub fn compose_viewport_to_resizable_metal_textures_with_session(
+pub(crate) fn compose_viewport_to_resizable_metal_textures_with_session(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     workload: &ViewportWorkload,
@@ -656,13 +657,13 @@ pub fn compose_viewport_to_resizable_metal_textures_with_session(
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 /// Decode any viewport workload into a reusable caller-owned Metal buffer.
 ///
 /// Contiguous workloads use the direct resident region-scaled batch path when
 /// eligible. Sparse or unsupported direct shapes use resident component-row
 /// composition into the same caller-owned RGB8 buffer.
-pub fn decode_viewport_to_resizable_metal_buffer_with_session(
+pub(crate) fn decode_viewport_to_resizable_metal_buffer_with_session(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     workload: &ViewportWorkload,
@@ -686,13 +687,13 @@ pub fn decode_viewport_to_resizable_metal_buffer_with_session(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 /// Decode any viewport workload into reusable caller-owned Metal textures.
 ///
 /// Contiguous workloads use the direct resident region-scaled texture batch path
 /// when eligible. Sparse or unsupported direct shapes use resident component-row
 /// composition into the same caller-owned RGBA8 texture.
-pub fn decode_viewport_to_resizable_metal_textures_with_session(
+pub(crate) fn decode_viewport_to_resizable_metal_textures_with_session(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     workload: &ViewportWorkload,
@@ -716,14 +717,14 @@ pub fn decode_viewport_to_resizable_metal_textures_with_session(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 /// Decode any viewport workload into a reusable caller-owned Metal buffer using
 /// an already parsed Metal decoder wrapper.
 ///
 /// Contiguous workloads use the wrapper's cached fast-packet state for direct
 /// resident region-scaled decode. Sparse or unsupported direct shapes use
 /// resident component-row composition through the wrapper's CPU decoder.
-pub fn decode_viewport_to_resizable_metal_buffer_with_decoder_session(
+pub(crate) fn decode_viewport_to_resizable_metal_buffer_with_decoder_session(
     decoder: &crate::Decoder<'_>,
     pool: &mut ScratchPool,
     workload: &ViewportWorkload,
@@ -748,14 +749,14 @@ pub fn decode_viewport_to_resizable_metal_buffer_with_decoder_session(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 /// Decode any viewport workload into reusable caller-owned Metal textures using
 /// an already parsed Metal decoder wrapper.
 ///
 /// Contiguous workloads use the wrapper's cached fast-packet state for direct
 /// resident region-scaled decode. Sparse or unsupported direct shapes use
 /// resident component-row composition through the wrapper's CPU decoder.
-pub fn decode_viewport_to_resizable_metal_textures_with_decoder_session(
+pub(crate) fn decode_viewport_to_resizable_metal_textures_with_decoder_session(
     decoder: &crate::Decoder<'_>,
     pool: &mut ScratchPool,
     workload: &ViewportWorkload,
@@ -780,7 +781,7 @@ pub fn decode_viewport_to_resizable_metal_textures_with_decoder_session(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn decode_viewport_region_to_resizable_metal_buffer_with_decoder_session(
     decoder: &crate::Decoder<'_>,
     workload: &ViewportWorkload,
@@ -822,7 +823,7 @@ fn decode_viewport_region_to_resizable_metal_buffer_with_decoder_session(
     surface
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn decode_viewport_region_to_resizable_metal_textures_with_decoder_session(
     decoder: &crate::Decoder<'_>,
     workload: &ViewportWorkload,
@@ -866,20 +867,21 @@ fn decode_viewport_region_to_resizable_metal_textures_with_decoder_session(
 
 #[cfg(target_os = "macos")]
 /// Decode a contiguous viewport region through the Metal hybrid path.
-pub fn decode_viewport_region_hybrid(
+pub(crate) fn decode_viewport_region_hybrid(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
     workload: &ViewportWorkload,
 ) -> Result<Surface, Error> {
     let use_direct_kernel = decoder.info().restart_interval.is_some();
+    let bytes = decoder_bytes(decoder);
     let fast444_packet = use_direct_kernel
-        .then(|| build_fast444_packet_for_decoder(decoder).ok())
+        .then(|| build_fast444_packet(bytes).ok())
         .flatten();
     let fast422_packet = use_direct_kernel
-        .then(|| build_fast422_packet_for_decoder(decoder).ok())
+        .then(|| build_fast422_packet(bytes).ok())
         .flatten();
     let fast420_packet = use_direct_kernel
-        .then(|| build_fast420_packet_for_decoder(decoder).ok())
+        .then(|| build_fast420_packet(bytes).ok())
         .flatten();
     crate::compute::decode_region_scaled_to_surface(
         decoder,
@@ -887,15 +889,17 @@ pub fn decode_viewport_region_hybrid(
         PixelFormat::Rgb8,
         to_jpeg_rect(viewport_source_bounds(workload)),
         workload.scale,
-        fast444_packet.as_ref(),
-        fast422_packet.as_ref(),
-        fast420_packet.as_ref(),
+        crate::JpegFastPackets::new(
+            fast444_packet.as_ref(),
+            fast422_packet.as_ref(),
+            fast420_packet.as_ref(),
+        ),
     )
 }
 
 #[cfg(not(target_os = "macos"))]
 /// Return `Error::MetalUnavailable` for hybrid viewport decode requests.
-pub fn decode_viewport_region_hybrid(
+pub(crate) fn decode_viewport_region_hybrid(
     _decoder: &CpuDecoder<'_>,
     _pool: &mut ScratchPool,
     _workload: &ViewportWorkload,
@@ -903,14 +907,14 @@ pub fn decode_viewport_region_hybrid(
     Err(Error::MetalUnavailable)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 /// Decode a contiguous viewport workload into a reusable caller-owned Metal buffer.
 ///
 /// This is the resident-output counterpart to `decode_viewport_region_hybrid`:
 /// it rejects non-contiguous workloads instead of compositing, resizes `output`
 /// to one RGB8 viewport slot, and returns a `MetalResidentDecode` surface
 /// backed by that caller-owned allocation.
-pub fn decode_viewport_region_to_resizable_metal_buffer_with_session(
+pub(crate) fn decode_viewport_region_to_resizable_metal_buffer_with_session(
     input: &[u8],
     workload: &ViewportWorkload,
     output: &mut MetalBatchOutputBuffer,
@@ -941,14 +945,14 @@ pub fn decode_viewport_region_to_resizable_metal_buffer_with_session(
     surface
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 /// Decode a contiguous viewport workload into reusable caller-owned Metal textures.
 ///
 /// This is the texture-output counterpart to
 /// `decode_viewport_region_to_resizable_metal_buffer_with_session`: it rejects
 /// non-contiguous workloads, resizes `output` to one RGBA8 viewport slot, and
 /// returns a tile backed by that caller-owned texture.
-pub fn decode_viewport_region_to_resizable_metal_textures_with_session(
+pub(crate) fn decode_viewport_region_to_resizable_metal_textures_with_session(
     input: &[u8],
     workload: &ViewportWorkload,
     output: &mut MetalBatchTextureOutput,
@@ -981,7 +985,7 @@ pub fn decode_viewport_region_to_resizable_metal_textures_with_session(
 
 #[cfg(not(target_os = "macos"))]
 /// Return `Error::MetalUnavailable` for hybrid viewport composition requests.
-pub fn compose_viewport_hybrid(
+pub(crate) fn compose_viewport_hybrid(
     _decoder: &CpuDecoder<'_>,
     _pool: &mut ScratchPool,
     _scale: Downscale,

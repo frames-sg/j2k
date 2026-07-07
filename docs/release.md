@@ -30,7 +30,14 @@ Publish in this order:
 18. `j2k-cli`
 
 Publish preflight must account for staged unpublished workspace dependencies.
-Use package listing and dry-run checks according to dependency availability:
+Use the repo-owned package gate from a clean worktree:
+
+```bash
+cargo xtask package
+```
+
+That gate applies package listing and dry-run checks according to dependency
+availability:
 
 ```bash
 cargo package --list
@@ -49,7 +56,8 @@ cargo xtask public-support --final
 ```
 
 The codec-math codegen gate verifies generated Rust and Metal fragments against
-the Rust source of truth. The integrity gate parses cargo metadata, manifests,
+the Rust source of truth. The integrity gate parses lockfile-strict cargo
+metadata with `cargo metadata --locked --no-deps`, manifests,
 `.github/workflows/publish.yml`, and this release document. It fails if a
 publishable workspace crate is missing from publish order, docs.rs metadata,
 semver/doc gates, or release docs, or if a workspace crate is neither
@@ -76,7 +84,14 @@ Hosted CI must pass before release staging:
 - benchmark target compilation
 - unsafe audit
 - bounded fuzz run
-- coverage via `cargo llvm-cov --fail-under-lines 80`
+- coverage via `cargo xtask coverage`
+
+Hosted CPU coverage intentionally excludes hardware-only CUDA and Metal adapter
+crates. GPU-heavy changes still need release evidence from self-hosted
+`gpu-validation` runs, including the per-backend minimum test count floors for
+critical CUDA and Metal suites. Shared CPU-runnable GPU path code remains in
+normal hosted coverage; do not move shared routing, validation, allocation, or
+error-classification logic behind hardware-only coverage exclusions.
 
 Benchmark compilation is a release build-health gate, not a performance
 regression threshold. A release may claim performance only when the relevant
@@ -92,8 +107,10 @@ bench signoff is reset until new narrow profiling benches are added.
 
 Rust currently reports a future-incompatibility warning for transitive
 `block v0.1.6` through `metal v0.33.0`. Track this as Metal dependency debt
-until upstream `metal` removes or updates the dependency; do not downgrade,
-fork, or silence it without a replacement path and release note.
+until upstream `metal` removes or updates the dependency. The July 2026 audit
+confirmed `metal v0.33.0` is still the current crates.io release; do not
+downgrade, fork, or silence the warning without a replacement path and release
+note.
 
 CUDA validation requires a self-hosted CUDA environment for runtime and NVIDIA performance evidence. CUDA paths use J2K-owned CUDA kernels, cuda-runtime integration, and CUDA device memory surfaces for supported shapes. NVIDIA performance claims require recorded self-hosted benchmark output.
 

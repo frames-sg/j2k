@@ -16,6 +16,7 @@ use super::MetalLosslessBufferEncodeOutcome;
 /// Unless a field explicitly says otherwise, timing fields are host-side
 /// `Instant` buckets for RCA and should not be read as exact GPU execution
 /// elapsed time.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MetalLosslessEncodeStageStats {
@@ -688,6 +689,7 @@ pub(super) fn add_resident_prep_wall_duration(
 }
 
 /// Resolved resident Metal lossless J2K/HTJ2K tile batch encode metrics.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MetalLosslessEncodeBatchStats {
@@ -718,6 +720,7 @@ impl MetalLosslessEncodeBatchStats {
 }
 
 /// Resident Metal lossless J2K/HTJ2K tile batch output and batch-level metrics.
+#[doc(hidden)]
 pub struct MetalLosslessBufferEncodeBatchOutcome {
     /// Per-tile buffer-backed encode outcomes.
     pub outcomes: Vec<MetalLosslessBufferEncodeOutcome>,

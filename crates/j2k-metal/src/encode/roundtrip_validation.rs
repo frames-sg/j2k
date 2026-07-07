@@ -38,7 +38,10 @@ pub fn validate_lossless_roundtrip_on_metal_with_session(
 ) -> Result<(), crate::Error> {
     let fmt = validation_pixel_format(samples)?;
     let mut decoder = crate::J2kDecoder::new(codestream)?;
-    let surface = decoder.decode_to_device_with_session(fmt, session)?;
+    let surface = decoder.decode_request_to_device_with_session(
+        crate::MetalDecodeRequest::full(fmt, j2k_core::BackendRequest::Metal),
+        session,
+    )?;
 
     if surface.dimensions() != (samples.width, samples.height) {
         return Err(crate::Error::MetalKernel {

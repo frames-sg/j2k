@@ -2,9 +2,10 @@
 
 use metal::Buffer;
 
-use crate::Error;
+use crate::{Error, MetalDirectFallbackReason};
 
 use super::{
+    direct_buffers::{checked_buffer_read, checked_buffer_slice},
     J2kClassicStatus, J2kHtStatus, J2kIdwtStatus, J2kMctStatus, J2K_CLASSIC_STATUS_FAIL,
     J2K_CLASSIC_STATUS_OK, J2K_CLASSIC_STATUS_UNSUPPORTED, J2K_HT_STATUS_FAIL, J2K_HT_STATUS_OK,
     J2K_HT_STATUS_UNSUPPORTED, J2K_IDWT_STATUS_FAIL, J2K_IDWT_STATUS_OK, J2K_MCT_STATUS_FAIL,
@@ -21,10 +22,8 @@ pub(super) enum DirectStatusCheck {
 pub(super) fn validate_direct_status(status_check: DirectStatusCheck) -> Result<(), Error> {
     match status_check {
         DirectStatusCheck::Classic { buffer, len } => {
-            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-            let statuses = unsafe {
-                core::slice::from_raw_parts(buffer.contents().cast::<J2kClassicStatus>(), len)
-            };
+            let statuses =
+                checked_buffer_slice::<J2kClassicStatus>(&buffer, len, "classic direct status")?;
             if let Some(status) = statuses
                 .iter()
                 .copied()
@@ -34,10 +33,7 @@ pub(super) fn validate_direct_status(status_check: DirectStatusCheck) -> Result<
             }
         }
         DirectStatusCheck::Ht { buffer, len } => {
-            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-            let statuses = unsafe {
-                core::slice::from_raw_parts(buffer.contents().cast::<J2kHtStatus>(), len)
-            };
+            let statuses = checked_buffer_slice::<J2kHtStatus>(&buffer, len, "HT direct status")?;
             if let Some(status) = statuses
                 .iter()
                 .copied()
@@ -47,15 +43,13 @@ pub(super) fn validate_direct_status(status_check: DirectStatusCheck) -> Result<
             }
         }
         DirectStatusCheck::Idwt(buffer) => {
-            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-            let status = unsafe { buffer.contents().cast::<J2kIdwtStatus>().read() };
+            let status = checked_buffer_read::<J2kIdwtStatus>(&buffer, "IDWT direct status")?;
             if status.code != J2K_IDWT_STATUS_OK {
                 return Err(decode_idwt_status_error(status));
             }
         }
         DirectStatusCheck::Mct(buffer) => {
-            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-            let status = unsafe { buffer.contents().cast::<J2kMctStatus>().read() };
+            let status = checked_buffer_read::<J2kMctStatus>(&buffer, "MCT direct status")?;
             if status.code != J2K_MCT_STATUS_OK {
                 return Err(decode_mct_status_error(status));
             }
@@ -66,9 +60,17 @@ pub(super) fn validate_direct_status(status_check: DirectStatusCheck) -> Result<
 }
 
 pub(super) fn decode_classic_status_error(status: J2kClassicStatus) -> Error {
+    if status.code == J2K_CLASSIC_STATUS_UNSUPPORTED {
+        return Error::MetalDirectFallback {
+            message: format!(
+                "classic J2K Metal kernel unsupported classic kernel input (detail={})",
+                status.detail
+            ),
+            reason: MetalDirectFallbackReason::UnsupportedRuntimeInput,
+        };
+    }
     let kind = match status.code {
         J2K_CLASSIC_STATUS_FAIL => "decode failure",
-        J2K_CLASSIC_STATUS_UNSUPPORTED => "unsupported classic kernel input",
         _ => "unexpected classic kernel status",
     };
     Error::MetalKernel {
@@ -100,9 +102,17 @@ pub(super) fn decode_mct_status_error(status: J2kMctStatus) -> Error {
 }
 
 pub(super) fn decode_ht_status_error(status: J2kHtStatus) -> Error {
+    if status.code == J2K_HT_STATUS_UNSUPPORTED {
+        return Error::MetalDirectFallback {
+            message: format!(
+                "HTJ2K Metal kernel unsupported HT kernel input (detail={})",
+                status.detail
+            ),
+            reason: MetalDirectFallbackReason::UnsupportedRuntimeInput,
+        };
+    }
     let kind = match status.code {
         J2K_HT_STATUS_FAIL => "decode failure",
-        J2K_HT_STATUS_UNSUPPORTED => "unsupported HT kernel input",
         _ => "unexpected HT kernel status",
     };
     Error::MetalKernel {

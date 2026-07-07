@@ -3,6 +3,8 @@
 use cuda_device::{SharedArray, kernel, thread};
 use cuda_host::cuda_module;
 
+include!("../../../cuda_oxide_simt_prelude.rs");
+
 const IDWT_COOP_SAMPLES: usize = 512;
 const IDWT_COLS4_COLUMNS: u32 = 4;
 const IDWT_COLS4_SAMPLES: usize = 256 * IDWT_COLS4_COLUMNS as usize;
@@ -80,19 +82,17 @@ impl SharedLine {
 
 #[inline(always)]
 fn load_f32(ptr: *const f32, index: u32) -> f32 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn store_f32(ptr: *mut f32, index: u32, value: f32) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn load_job<T: Copy>(ptr: *const T, index: u32) -> T {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]

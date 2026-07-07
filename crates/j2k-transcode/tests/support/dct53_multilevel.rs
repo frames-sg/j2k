@@ -10,9 +10,10 @@
 use core::fmt;
 
 use crate::dct53_2d::{
-    dct8x8_to_dwt53_float_linear, idct8x8_then_dwt53_float, linearized_53_2d_from_plane,
-    Dwt53TwoDimensional,
+    dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
+    linearized_53_2d_from_plane,
 };
+use crate::Dwt53TwoDimensional;
 
 /// Multilevel 5/3 decomposition result for one component plane.
 #[derive(Debug, Clone, PartialEq)]
@@ -90,7 +91,7 @@ pub fn dct8x8_to_dwt53_multilevel_float_linear(
 ) -> Result<Dwt53MultiLevel<f64>, Dwt53MultiLevelError> {
     validate_levels(levels, 8, 8)?;
     Ok(decompose_from_first_level(
-        dct8x8_to_dwt53_float_linear(block),
+        dct8x8_blocks_to_dwt53_float_linear(&[block], 1, 1, 8, 8).expect("valid single DCT block"),
         levels,
     ))
 }
@@ -103,7 +104,7 @@ pub fn idct8x8_then_dwt53_multilevel_float(
 ) -> Result<Dwt53MultiLevel<f64>, Dwt53MultiLevelError> {
     validate_levels(levels, 8, 8)?;
     Ok(decompose_from_first_level(
-        idct8x8_then_dwt53_float(block),
+        dct8x8_blocks_then_dwt53_float(&[block], 1, 1, 8, 8).expect("valid single DCT block"),
         levels,
     ))
 }

@@ -4,10 +4,7 @@
 use crate::compute;
 #[cfg(target_os = "macos")]
 use j2k_native::J2kWaveletTransform;
-use j2k_native::{
-    decode_ht_code_block_scalar, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
-    J2kSingleDecompositionIdwtJob, Result,
-};
+use j2k_native::{HtCodeBlockDecoder, J2kSingleDecompositionIdwtJob, Result};
 
 #[derive(Default)]
 pub(crate) struct MetalIdwtDecoder {
@@ -47,14 +44,6 @@ impl HtCodeBlockDecoder for MetalIdwtDecoder {
 
         Ok(false)
     }
-
-    fn decode_code_block(
-        &mut self,
-        job: HtCodeBlockDecodeJob<'_>,
-        output: &mut [f32],
-    ) -> Result<()> {
-        decode_ht_code_block_scalar(job, output)
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -90,8 +79,7 @@ fn supports_metal_idwt(job: &J2kSingleDecompositionIdwtJob<'_>) -> bool {
 mod tests {
     use super::MetalIdwtDecoder;
     use j2k_native::{
-        encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecodeJob,
-        HtCodeBlockDecoder, Image,
+        encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder, Image,
     };
 
     fn fixture_j2k_gray8() -> Vec<u8> {
@@ -211,15 +199,7 @@ mod tests {
 
     struct CpuOnlyCodeBlockDecoder;
 
-    impl HtCodeBlockDecoder for CpuOnlyCodeBlockDecoder {
-        fn decode_code_block(
-            &mut self,
-            job: HtCodeBlockDecodeJob<'_>,
-            output: &mut [f32],
-        ) -> j2k_native::Result<()> {
-            j2k_native::decode_ht_code_block_scalar(job, output)
-        }
-    }
+    impl HtCodeBlockDecoder for CpuOnlyCodeBlockDecoder {}
 
     #[test]
     fn default_decoder_without_idwt_kernel_still_decodes() {

@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use crate::encoder::{
     EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSubsampling,
 };
+use crate::PixelFormat;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Baseline JPEG component sampling parameters.
@@ -49,6 +50,195 @@ pub struct JpegBaselineEncodeTables {
     pub huff_ac_chroma: JpegBaselineHuffmanTable,
 }
 
+/// Backend-neutral metadata for a resident GPU baseline JPEG encode tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JpegBaselineGpuEncodeTile {
+    /// Byte offset of the first source pixel in the resident buffer.
+    pub byte_offset: usize,
+    /// Width of the valid input region in pixels.
+    pub width: u32,
+    /// Height of the valid input region in pixels.
+    pub height: u32,
+    /// Number of bytes between consecutive input rows.
+    pub pitch_bytes: usize,
+    /// Encoded frame width in pixels.
+    pub output_width: u32,
+    /// Encoded frame height in pixels.
+    pub output_height: u32,
+    /// Pixel format of the source buffer.
+    pub format: PixelFormat,
+    /// Total resident buffer length in bytes.
+    pub buffer_len: usize,
+}
+
+/// Backend-neutral baseline JPEG encode ABI parameters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JpegBaselineGpuEncodeParams {
+    /// First input byte for this tile inside a same-buffer batch.
+    pub input_offset_bytes: u32,
+    /// Width of the valid input rectangle in pixels.
+    pub input_width: u32,
+    /// Height of the valid input rectangle in pixels.
+    pub input_height: u32,
+    /// Encoded frame width in pixels.
+    pub output_width: u32,
+    /// Encoded frame height in pixels.
+    pub output_height: u32,
+    /// Number of input bytes between consecutive rows.
+    pub pitch_bytes: u32,
+    /// Number of MCUs per encoded frame row.
+    pub mcus_per_row: u32,
+    /// Number of MCU rows in the encoded frame.
+    pub mcu_rows: u32,
+    /// Optional restart interval in MCUs, or zero when disabled.
+    pub restart_interval_mcus: u32,
+    /// Stable resident-encode format ABI value.
+    pub format: u32,
+    /// Number of encoded components.
+    pub components: u32,
+    /// Maximum horizontal sampling factor.
+    pub max_h: u32,
+    /// Maximum vertical sampling factor.
+    pub max_v: u32,
+    /// Component 0 horizontal sampling factor.
+    pub h0: u32,
+    /// Component 0 vertical sampling factor.
+    pub v0: u32,
+    /// Component 1 horizontal sampling factor.
+    pub h1: u32,
+    /// Component 1 vertical sampling factor.
+    pub v1: u32,
+    /// Component 2 horizontal sampling factor.
+    pub h2: u32,
+    /// Component 2 vertical sampling factor.
+    pub v2: u32,
+    /// First entropy-output byte for this tile inside a batch output allocation.
+    pub entropy_offset_bytes: u32,
+    /// Entropy-output capacity for this tile.
+    pub entropy_capacity: u32,
+}
+
+/// Backend-neutral resident GPU baseline JPEG encode plan for one tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JpegBaselineGpuEncodeTilePlan {
+    /// GPU ABI parameters for this tile.
+    pub params: JpegBaselineGpuEncodeParams,
+    /// Entropy-output capacity for this tile.
+    pub entropy_capacity: usize,
+}
+
+/// Backend-neutral resident GPU baseline JPEG encode plan for one batch span.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JpegBaselineGpuEncodeBatchPlan {
+    /// GPU ABI parameters in input tile order.
+    pub params: Vec<JpegBaselineGpuEncodeParams>,
+    /// Combined entropy-output capacity for the batch allocation.
+    pub total_entropy_capacity: usize,
+}
+
+/// Backend hooks used by the shared resident GPU baseline JPEG encode driver.
+///
+/// First-party CUDA and Metal adapters provide only resident-buffer identity,
+/// tile metadata conversion, backend error mapping, and kernel submission. The
+/// shared driver owns table construction, planning, batch span grouping, and
+/// JPEG frame assembly.
+pub trait JpegBaselineGpuEncodeHostAdapter<T: Copy> {
+    /// Error returned by the backend adapter.
+    type Error: From<JpegEncodeError>;
+    /// Stable identity for a resident source allocation.
+    type SourceKey: PartialEq;
+
+    /// Backend represented by this adapter.
+    fn backend(&self) -> JpegBackend;
+
+    /// Return the resident source allocation key for grouping batch spans.
+    fn source_key(&self, tile: &T) -> Self::SourceKey;
+
+    /// Convert a backend tile into backend-neutral planning metadata.
+    fn gpu_tile(&self, tile: T) -> Result<JpegBaselineGpuEncodeTile, Self::Error>;
+
+    /// Map a backend-neutral planning error into the backend's public error.
+    fn map_plan_error(&self, error: JpegBaselineGpuEncodeError) -> Self::Error;
+
+    /// Submit one resident tile to the backend entropy encoder.
+    fn encode_tile_entropy(
+        &mut self,
+        tile: T,
+        tables: &JpegBaselineEncodeTables,
+        plan: JpegBaselineGpuEncodeTilePlan,
+    ) -> Result<Vec<u8>, Self::Error>;
+
+    /// Submit a contiguous same-source-buffer resident tile span.
+    fn encode_batch_entropy(
+        &mut self,
+        tiles: &[T],
+        tables: &JpegBaselineEncodeTables,
+        plan: JpegBaselineGpuEncodeBatchPlan,
+    ) -> Result<Vec<Vec<u8>>, Self::Error>;
+}
+
+/// Error returned by backend-neutral resident GPU baseline JPEG encode planning.
+#[derive(Debug)]
+pub enum JpegBaselineGpuEncodeError {
+    /// A baseline JPEG encode option was invalid.
+    Encode(JpegEncodeError),
+    /// The requested public backend does not match this adapter.
+    UnsupportedBackend {
+        /// Requested backend.
+        requested: JpegBackend,
+        /// Backend accepted by the caller.
+        expected: JpegBackend,
+    },
+    /// The valid input rectangle exceeds the encoded output dimensions.
+    InputExceedsOutputDimensions,
+    /// The source pixel format is unsupported by resident baseline encode.
+    UnsupportedPixelFormat {
+        /// Source pixel format.
+        format: PixelFormat,
+    },
+    /// The source pixel format is incompatible with the requested subsampling.
+    IncompatibleSubsampling {
+        /// Requested subsampling.
+        subsampling: JpegSubsampling,
+        /// Source sample description.
+        samples: &'static str,
+    },
+    /// Row-byte arithmetic overflowed.
+    RowByteCountOverflow,
+    /// Source pitch is shorter than one row.
+    PitchTooShort {
+        /// Required row bytes.
+        row_bytes: usize,
+        /// Provided pitch bytes.
+        pitch_bytes: usize,
+    },
+    /// Input byte-range arithmetic overflowed.
+    InputRangeOverflow,
+    /// Input byte range exceeds the resident buffer length.
+    InputRangeExceedsBuffer {
+        /// Required exclusive byte end.
+        required_end: usize,
+        /// Resident buffer length in bytes.
+        buffer_len: usize,
+    },
+    /// Pitch does not fit the GPU ABI.
+    PitchTooLarge,
+    /// Input offset does not fit the GPU ABI.
+    InputOffsetTooLarge,
+    /// Entropy offset does not fit the GPU ABI.
+    EntropyOffsetTooLarge,
+    /// Entropy capacity does not fit the GPU ABI.
+    EntropyCapacityTooLarge,
+    /// Combined batch entropy capacity overflowed host arithmetic.
+    BatchEntropyCapacityOverflow,
+}
+
+impl From<JpegEncodeError> for JpegBaselineGpuEncodeError {
+    fn from(error: JpegEncodeError) -> Self {
+        Self::Encode(error)
+    }
+}
+
 /// Build quantization, sampling, and Huffman tables for baseline encoding.
 pub fn baseline_encode_tables(
     options: JpegEncodeOptions,
@@ -66,7 +256,10 @@ pub fn baseline_encode_tables(
 }
 
 /// Validate that dimensions can be represented in baseline JPEG markers.
-pub fn validate_jpeg_baseline_dimensions(width: u32, height: u32) -> Result<(), JpegEncodeError> {
+pub(crate) fn validate_jpeg_baseline_dimensions(
+    width: u32,
+    height: u32,
+) -> Result<(), JpegEncodeError> {
     if width == 0 || height == 0 {
         return Err(JpegEncodeError::EmptyDimensions);
     }
@@ -77,7 +270,7 @@ pub fn validate_jpeg_baseline_dimensions(width: u32, height: u32) -> Result<(), 
 }
 
 /// Validate a user-provided restart interval.
-pub fn validate_jpeg_baseline_restart_interval(
+pub(crate) fn validate_jpeg_baseline_restart_interval(
     restart_interval: Option<u16>,
 ) -> Result<(), JpegEncodeError> {
     if restart_interval == Some(0) {
@@ -87,7 +280,7 @@ pub fn validate_jpeg_baseline_restart_interval(
 }
 
 /// Return JPEG component sampling factors for a public subsampling mode.
-pub fn jpeg_baseline_sampling_for(subsampling: JpegSubsampling) -> JpegBaselineSampling {
+fn jpeg_baseline_sampling_for(subsampling: JpegSubsampling) -> JpegBaselineSampling {
     match subsampling {
         JpegSubsampling::Gray => JpegBaselineSampling {
             components: 1,
@@ -121,7 +314,7 @@ pub fn jpeg_baseline_sampling_for(subsampling: JpegSubsampling) -> JpegBaselineS
 }
 
 /// Conservative upper bound for entropy bytes produced by the CPU encoder.
-pub fn jpeg_baseline_entropy_capacity_bytes(
+fn jpeg_baseline_entropy_capacity_bytes(
     width: u32,
     height: u32,
     sampling: JpegBaselineSampling,
@@ -150,6 +343,354 @@ pub fn jpeg_baseline_entropy_capacity_bytes(
         .ok_or_else(|| JpegEncodeError::Internal("JPEG entropy capacity overflow".into()))?;
     usize::try_from(capacity)
         .map_err(|_| JpegEncodeError::Internal("JPEG entropy capacity exceeds usize".into()))
+}
+
+/// Validate resident GPU baseline JPEG encode tile metadata.
+fn validate_jpeg_baseline_gpu_encode_tile(
+    tile: JpegBaselineGpuEncodeTile,
+    options: JpegEncodeOptions,
+    expected_backend: JpegBackend,
+) -> Result<(), JpegBaselineGpuEncodeError> {
+    match options.backend {
+        JpegBackend::Auto => {}
+        requested if requested == expected_backend => {}
+        requested => {
+            return Err(JpegBaselineGpuEncodeError::UnsupportedBackend {
+                requested,
+                expected: expected_backend,
+            });
+        }
+    }
+
+    validate_jpeg_baseline_restart_interval(options.restart_interval)?;
+    validate_jpeg_baseline_dimensions(tile.output_width, tile.output_height)?;
+    if tile.width == 0 || tile.height == 0 {
+        return Err(JpegEncodeError::EmptyDimensions.into());
+    }
+    if tile.width > tile.output_width || tile.height > tile.output_height {
+        return Err(JpegBaselineGpuEncodeError::InputExceedsOutputDimensions);
+    }
+
+    let bytes_per_pixel = jpeg_baseline_gpu_encode_bytes_per_pixel(tile.format, options)?;
+    let width = usize::try_from(tile.width)
+        .map_err(|_| JpegBaselineGpuEncodeError::RowByteCountOverflow)?;
+    let row_bytes = width
+        .checked_mul(bytes_per_pixel)
+        .ok_or(JpegBaselineGpuEncodeError::RowByteCountOverflow)?;
+    if tile.pitch_bytes < row_bytes {
+        return Err(JpegBaselineGpuEncodeError::PitchTooShort {
+            row_bytes,
+            pitch_bytes: tile.pitch_bytes,
+        });
+    }
+    let height =
+        usize::try_from(tile.height).map_err(|_| JpegBaselineGpuEncodeError::InputRangeOverflow)?;
+    let last_row = height
+        .checked_sub(1)
+        .and_then(|row| row.checked_mul(tile.pitch_bytes))
+        .ok_or(JpegBaselineGpuEncodeError::InputRangeOverflow)?;
+    let required_end = tile
+        .byte_offset
+        .checked_add(last_row)
+        .and_then(|offset| offset.checked_add(row_bytes))
+        .ok_or(JpegBaselineGpuEncodeError::InputRangeOverflow)?;
+    if required_end > tile.buffer_len {
+        return Err(JpegBaselineGpuEncodeError::InputRangeExceedsBuffer {
+            required_end,
+            buffer_len: tile.buffer_len,
+        });
+    }
+
+    Ok(())
+}
+
+/// Return a GPU ABI-safe entropy capacity for resident baseline encode.
+fn jpeg_baseline_gpu_entropy_capacity_bytes(
+    width: u32,
+    height: u32,
+    sampling: JpegBaselineSampling,
+    restart_interval: Option<u16>,
+) -> Result<usize, JpegBaselineGpuEncodeError> {
+    let capacity = jpeg_baseline_entropy_capacity_bytes(width, height, sampling, restart_interval)?;
+    if capacity > u32::MAX as usize {
+        return Err(JpegBaselineGpuEncodeError::EntropyCapacityTooLarge);
+    }
+    Ok(capacity)
+}
+
+/// Build backend-neutral GPU baseline JPEG encode parameters.
+fn jpeg_baseline_gpu_encode_params(
+    tile: JpegBaselineGpuEncodeTile,
+    options: JpegEncodeOptions,
+    sampling: JpegBaselineSampling,
+    entropy_capacity: usize,
+    input_offset_bytes: usize,
+    entropy_offset_bytes: usize,
+) -> Result<JpegBaselineGpuEncodeParams, JpegBaselineGpuEncodeError> {
+    let mcu_width = u32::from(sampling.max_h) * 8;
+    let mcu_height = u32::from(sampling.max_v) * 8;
+    let mcus_per_row = tile.output_width.div_ceil(mcu_width);
+    let mcu_rows = tile.output_height.div_ceil(mcu_height);
+    let pitch_bytes =
+        u32::try_from(tile.pitch_bytes).map_err(|_| JpegBaselineGpuEncodeError::PitchTooLarge)?;
+    let input_offset_bytes = u32::try_from(input_offset_bytes)
+        .map_err(|_| JpegBaselineGpuEncodeError::InputOffsetTooLarge)?;
+    let entropy_offset_bytes = u32::try_from(entropy_offset_bytes)
+        .map_err(|_| JpegBaselineGpuEncodeError::EntropyOffsetTooLarge)?;
+    let format = jpeg_baseline_gpu_encode_format_abi(tile.format)?;
+
+    Ok(JpegBaselineGpuEncodeParams {
+        input_offset_bytes,
+        input_width: tile.width,
+        input_height: tile.height,
+        output_width: tile.output_width,
+        output_height: tile.output_height,
+        pitch_bytes,
+        mcus_per_row,
+        mcu_rows,
+        restart_interval_mcus: u32::from(options.restart_interval.unwrap_or(0)),
+        format,
+        components: u32::from(sampling.components),
+        max_h: u32::from(sampling.max_h),
+        max_v: u32::from(sampling.max_v),
+        h0: u32::from(sampling.h[0]),
+        v0: u32::from(sampling.v[0]),
+        h1: u32::from(sampling.h[1]),
+        v1: u32::from(sampling.v[1]),
+        h2: u32::from(sampling.h[2]),
+        v2: u32::from(sampling.v[2]),
+        entropy_offset_bytes,
+        entropy_capacity: u32::try_from(entropy_capacity)
+            .map_err(|_| JpegBaselineGpuEncodeError::EntropyCapacityTooLarge)?,
+    })
+}
+
+/// Build a validated backend-neutral GPU baseline JPEG encode plan for one tile.
+fn jpeg_baseline_gpu_encode_tile_plan(
+    tile: JpegBaselineGpuEncodeTile,
+    options: JpegEncodeOptions,
+    expected_backend: JpegBackend,
+    sampling: JpegBaselineSampling,
+    input_offset_bytes: usize,
+    entropy_offset_bytes: usize,
+) -> Result<JpegBaselineGpuEncodeTilePlan, JpegBaselineGpuEncodeError> {
+    validate_jpeg_baseline_gpu_encode_tile(tile, options, expected_backend)?;
+    let entropy_capacity = jpeg_baseline_gpu_entropy_capacity_bytes(
+        tile.output_width,
+        tile.output_height,
+        sampling,
+        options.restart_interval,
+    )?;
+    let params = jpeg_baseline_gpu_encode_params(
+        tile,
+        options,
+        sampling,
+        entropy_capacity,
+        input_offset_bytes,
+        entropy_offset_bytes,
+    )?;
+    Ok(JpegBaselineGpuEncodeTilePlan {
+        params,
+        entropy_capacity,
+    })
+}
+
+/// Build validated backend-neutral GPU baseline JPEG encode parameters for a batch span.
+///
+/// The caller is responsible for passing only tiles that share the same backend
+/// input allocation. This helper validates each tile, computes per-tile entropy
+/// offsets, and returns the combined entropy capacity for the backend batch job.
+fn jpeg_baseline_gpu_encode_batch_plan(
+    tiles: &[JpegBaselineGpuEncodeTile],
+    options: JpegEncodeOptions,
+    expected_backend: JpegBackend,
+    sampling: JpegBaselineSampling,
+) -> Result<JpegBaselineGpuEncodeBatchPlan, JpegBaselineGpuEncodeError> {
+    let mut params = Vec::with_capacity(tiles.len());
+    let mut total_entropy_capacity = 0usize;
+    for tile in tiles {
+        let tile_plan = jpeg_baseline_gpu_encode_tile_plan(
+            *tile,
+            options,
+            expected_backend,
+            sampling,
+            tile.byte_offset,
+            total_entropy_capacity,
+        )?;
+        total_entropy_capacity = total_entropy_capacity
+            .checked_add(tile_plan.entropy_capacity)
+            .ok_or(JpegBaselineGpuEncodeError::BatchEntropyCapacityOverflow)?;
+        params.push(tile_plan.params);
+    }
+
+    Ok(JpegBaselineGpuEncodeBatchPlan {
+        params,
+        total_entropy_capacity,
+    })
+}
+
+/// Return the end index of a contiguous same-source-buffer batch span.
+fn same_source_buffer_batch_end<T, K>(
+    tiles: &[T],
+    start: usize,
+    mut source_key: impl FnMut(&T) -> K,
+) -> usize
+where
+    K: PartialEq,
+{
+    let key = source_key(&tiles[start]);
+    let mut end = start + 1;
+    while end < tiles.len() && source_key(&tiles[end]) == key {
+        end += 1;
+    }
+    end
+}
+
+/// Encode one resident GPU tile through a backend adapter.
+pub fn encode_jpeg_baseline_gpu_tile<T, A>(
+    tile: T,
+    options: JpegEncodeOptions,
+    adapter: &mut A,
+) -> Result<EncodedJpeg, A::Error>
+where
+    T: Copy,
+    A: JpegBaselineGpuEncodeHostAdapter<T>,
+{
+    let tables = baseline_encode_tables(options)?;
+    encode_jpeg_baseline_gpu_tile_with_tables(tile, options, &tables, adapter)
+}
+
+/// Encode resident GPU tiles through a backend adapter.
+///
+/// The driver groups only contiguous tiles that share the same resident source
+/// allocation, preserving input order in the returned frames.
+pub fn encode_jpeg_baseline_gpu_batch<T, A>(
+    tiles: &[T],
+    options: JpegEncodeOptions,
+    adapter: &mut A,
+) -> Result<Vec<EncodedJpeg>, A::Error>
+where
+    T: Copy,
+    A: JpegBaselineGpuEncodeHostAdapter<T>,
+{
+    if tiles.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let tables = baseline_encode_tables(options)?;
+    let mut encoded = Vec::with_capacity(tiles.len());
+    let mut start = 0usize;
+    while start < tiles.len() {
+        let end = same_source_buffer_batch_end(tiles, start, |tile| adapter.source_key(tile));
+        if end - start == 1 {
+            encoded.push(encode_jpeg_baseline_gpu_tile_with_tables(
+                tiles[start],
+                options,
+                &tables,
+                adapter,
+            )?);
+            start = end;
+            continue;
+        }
+
+        let gpu_tiles = tiles[start..end]
+            .iter()
+            .copied()
+            .map(|tile| adapter.gpu_tile(tile))
+            .collect::<Result<Vec<_>, _>>()?;
+        let plan = jpeg_baseline_gpu_encode_batch_plan(
+            &gpu_tiles,
+            options,
+            adapter.backend(),
+            tables.sampling,
+        )
+        .map_err(|error| adapter.map_plan_error(error))?;
+        let entropy_chunks = adapter.encode_batch_entropy(&tiles[start..end], &tables, plan)?;
+        if entropy_chunks.len() != gpu_tiles.len() {
+            return Err(JpegEncodeError::Internal(
+                "GPU JPEG baseline batch returned the wrong number of entropy chunks".into(),
+            )
+            .into());
+        }
+        for (gpu_tile, entropy) in gpu_tiles.iter().zip(entropy_chunks.iter()) {
+            encoded.push(assemble_jpeg_baseline_frame(
+                entropy,
+                gpu_tile.output_width,
+                gpu_tile.output_height,
+                &tables,
+                options,
+                adapter.backend(),
+            )?);
+        }
+        start = end;
+    }
+    Ok(encoded)
+}
+
+fn encode_jpeg_baseline_gpu_tile_with_tables<T, A>(
+    tile: T,
+    options: JpegEncodeOptions,
+    tables: &JpegBaselineEncodeTables,
+    adapter: &mut A,
+) -> Result<EncodedJpeg, A::Error>
+where
+    T: Copy,
+    A: JpegBaselineGpuEncodeHostAdapter<T>,
+{
+    let gpu_tile = adapter.gpu_tile(tile)?;
+    let plan = jpeg_baseline_gpu_encode_tile_plan(
+        gpu_tile,
+        options,
+        adapter.backend(),
+        tables.sampling,
+        0,
+        0,
+    )
+    .map_err(|error| adapter.map_plan_error(error))?;
+    let entropy = adapter.encode_tile_entropy(tile, tables, plan)?;
+    assemble_jpeg_baseline_frame(
+        &entropy,
+        gpu_tile.output_width,
+        gpu_tile.output_height,
+        tables,
+        options,
+        adapter.backend(),
+    )
+    .map_err(Into::into)
+}
+
+fn jpeg_baseline_gpu_encode_bytes_per_pixel(
+    format: PixelFormat,
+    options: JpegEncodeOptions,
+) -> Result<usize, JpegBaselineGpuEncodeError> {
+    match (format, options.subsampling) {
+        (PixelFormat::Gray8, JpegSubsampling::Gray) => Ok(1),
+        (
+            PixelFormat::Rgb8,
+            JpegSubsampling::Ybr444 | JpegSubsampling::Ybr422 | JpegSubsampling::Ybr420,
+        ) => Ok(3),
+        (PixelFormat::Gray8 | PixelFormat::Rgb8, _) => {
+            Err(JpegBaselineGpuEncodeError::IncompatibleSubsampling {
+                subsampling: options.subsampling,
+                samples: if format == PixelFormat::Gray8 {
+                    "Gray8"
+                } else {
+                    "Rgb8"
+                },
+            })
+        }
+        _ => Err(JpegBaselineGpuEncodeError::UnsupportedPixelFormat { format }),
+    }
+}
+
+fn jpeg_baseline_gpu_encode_format_abi(
+    format: PixelFormat,
+) -> Result<u32, JpegBaselineGpuEncodeError> {
+    match format {
+        PixelFormat::Gray8 => Ok(0),
+        PixelFormat::Rgb8 => Ok(1),
+        _ => Err(JpegBaselineGpuEncodeError::UnsupportedPixelFormat { format }),
+    }
 }
 
 /// Assemble a complete baseline JPEG codestream from entropy bytes and tables.
@@ -235,7 +776,8 @@ fn encode_huffman_table(
     let mut code = 0u16;
     let mut idx = 0usize;
     for (len_minus_1, count) in bits.iter().copied().enumerate() {
-        let len = u8::try_from(len_minus_1 + 1).expect("JPEG Huffman code length is bounded by 16");
+        let len = u8::try_from(len_minus_1 + 1)
+            .map_err(|_| JpegEncodeError::Internal("Huffman code length exceeds u8".into()))?;
         for _ in 0..count {
             let symbol = *values.get(idx).ok_or_else(|| {
                 JpegEncodeError::Internal("Huffman table count exceeds values".into())
@@ -313,21 +855,21 @@ fn write_sof0(
     height: u32,
     sampling: JpegBaselineSampling,
 ) -> Result<(), JpegEncodeError> {
+    let height =
+        u16::try_from(height).map_err(|_| JpegEncodeError::DimensionsTooLarge { width, height })?;
+    let width = u16::try_from(width).map_err(|_| JpegEncodeError::DimensionsTooLarge {
+        width,
+        height: u32::from(height),
+    })?;
     let mut payload = Vec::with_capacity(6 + sampling.components as usize * 3);
     payload.push(8);
-    payload.extend_from_slice(
-        &u16::try_from(height)
-            .expect("JPEG SOF0 height validated as u16")
-            .to_be_bytes(),
-    );
-    payload.extend_from_slice(
-        &u16::try_from(width)
-            .expect("JPEG SOF0 width validated as u16")
-            .to_be_bytes(),
-    );
+    payload.extend_from_slice(&height.to_be_bytes());
+    payload.extend_from_slice(&width.to_be_bytes());
     payload.push(sampling.components);
     for component in 0..sampling.components as usize {
-        payload.push(u8::try_from(component + 1).expect("JPEG component id fits in u8"));
+        let component_id = u8::try_from(component + 1)
+            .map_err(|_| JpegEncodeError::Internal("JPEG component id exceeds u8".into()))?;
+        payload.push(component_id);
         payload.push((sampling.h[component] << 4) | sampling.v[component]);
         payload.push(u8::from(component != 0));
     }
@@ -407,3 +949,151 @@ const STD_CHROMA_AC_VALUES: [u8; 162] = [
     0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
     0xF9, 0xFA,
 ];
+
+#[cfg(test)]
+mod gpu_encode_tests {
+    use super::*;
+
+    fn rgb_tile() -> JpegBaselineGpuEncodeTile {
+        JpegBaselineGpuEncodeTile {
+            byte_offset: 32,
+            width: 17,
+            height: 9,
+            pitch_bytes: 64,
+            output_width: 32,
+            output_height: 16,
+            format: PixelFormat::Rgb8,
+            buffer_len: 32 + 8 * 64 + 17 * 3,
+        }
+    }
+
+    #[test]
+    fn gpu_encode_params_preserve_explicit_offsets() {
+        let options = JpegEncodeOptions {
+            subsampling: JpegSubsampling::Ybr420,
+            restart_interval: Some(4),
+            backend: JpegBackend::Cuda,
+            ..JpegEncodeOptions::default()
+        };
+        let sampling = jpeg_baseline_sampling_for(options.subsampling);
+        let tile = rgb_tile();
+
+        validate_jpeg_baseline_gpu_encode_tile(tile, options, JpegBackend::Cuda)
+            .expect("valid tile");
+        let params =
+            jpeg_baseline_gpu_encode_params(tile, options, sampling, 4096, tile.byte_offset, 128)
+                .expect("gpu params");
+
+        assert_eq!(params.input_offset_bytes, 32);
+        assert_eq!(params.entropy_offset_bytes, 128);
+        assert_eq!(params.entropy_capacity, 4096);
+        assert_eq!(params.format, 1);
+        assert_eq!(params.components, 3);
+        assert_eq!(params.mcus_per_row, 2);
+        assert_eq!(params.mcu_rows, 1);
+        assert_eq!(params.restart_interval_mcus, 4);
+    }
+
+    #[test]
+    fn gpu_encode_batch_plan_accumulates_offsets_in_tile_order() {
+        let options = JpegEncodeOptions {
+            subsampling: JpegSubsampling::Ybr420,
+            restart_interval: Some(4),
+            backend: JpegBackend::Cuda,
+            ..JpegEncodeOptions::default()
+        };
+        let sampling = jpeg_baseline_sampling_for(options.subsampling);
+        let first = rgb_tile();
+        let mut second = rgb_tile();
+        second.byte_offset = 512;
+        second.buffer_len = second.byte_offset + 8 * second.pitch_bytes + 17 * 3;
+
+        let plan = jpeg_baseline_gpu_encode_batch_plan(
+            &[first, second],
+            options,
+            JpegBackend::Cuda,
+            sampling,
+        )
+        .expect("valid batch plan");
+
+        assert_eq!(plan.params.len(), 2);
+        assert_eq!(plan.params[0].input_offset_bytes, first.byte_offset as u32);
+        assert_eq!(plan.params[0].entropy_offset_bytes, 0);
+        assert_eq!(plan.params[1].input_offset_bytes, second.byte_offset as u32);
+        assert_eq!(
+            plan.params[1].entropy_offset_bytes,
+            plan.params[0].entropy_capacity
+        );
+        assert_eq!(
+            plan.total_entropy_capacity,
+            usize::try_from(plan.params[0].entropy_capacity).unwrap()
+                + usize::try_from(plan.params[1].entropy_capacity).unwrap()
+        );
+    }
+
+    #[test]
+    fn gpu_encode_validation_reports_short_pitch() {
+        let mut tile = rgb_tile();
+        tile.pitch_bytes = 50;
+        let err = validate_jpeg_baseline_gpu_encode_tile(
+            tile,
+            JpegEncodeOptions {
+                subsampling: JpegSubsampling::Ybr444,
+                backend: JpegBackend::Metal,
+                ..JpegEncodeOptions::default()
+            },
+            JpegBackend::Metal,
+        )
+        .expect_err("short pitch must fail");
+
+        match err {
+            JpegBaselineGpuEncodeError::PitchTooShort {
+                row_bytes,
+                pitch_bytes,
+            } => {
+                assert_eq!(row_bytes, 51);
+                assert_eq!(pitch_bytes, 50);
+            }
+            other => panic!("unexpected validation error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gpu_encode_batch_plan_validates_every_tile() {
+        let options = JpegEncodeOptions {
+            subsampling: JpegSubsampling::Ybr444,
+            backend: JpegBackend::Metal,
+            ..JpegEncodeOptions::default()
+        };
+        let sampling = jpeg_baseline_sampling_for(options.subsampling);
+        let mut second = rgb_tile();
+        second.pitch_bytes = 50;
+
+        let err = jpeg_baseline_gpu_encode_batch_plan(
+            &[rgb_tile(), second],
+            options,
+            JpegBackend::Metal,
+            sampling,
+        )
+        .expect_err("invalid second tile must fail");
+
+        match err {
+            JpegBaselineGpuEncodeError::PitchTooShort {
+                row_bytes,
+                pitch_bytes,
+            } => {
+                assert_eq!(row_bytes, 51);
+                assert_eq!(pitch_bytes, 50);
+            }
+            other => panic!("unexpected validation error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn same_source_buffer_batch_end_groups_contiguous_keys() {
+        let tiles = [10u64, 10, 10, 11, 10];
+
+        assert_eq!(same_source_buffer_batch_end(&tiles, 0, |value| *value), 3);
+        assert_eq!(same_source_buffer_batch_end(&tiles, 3, |value| *value), 4);
+    }
+}

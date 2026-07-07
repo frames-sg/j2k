@@ -1,5 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dwt53TwoDimensional<T> {
+    pub ll: Vec<T>,
+    pub hl: Vec<T>,
+    pub lh: Vec<T>,
+    pub hh: Vec<T>,
+    pub low_width: usize,
+    pub low_height: usize,
+    pub high_width: usize,
+    pub high_height: usize,
+}
+
 #[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
 #[path = "../src/dct53_2d.rs"]
 mod dct53_2d;

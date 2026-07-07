@@ -74,11 +74,11 @@ pub(crate) type CuLaunchKernel = unsafe extern "C" fn(
 
 pub(crate) type CuCtxSynchronize = unsafe extern "C" fn() -> CuResult;
 
+#[cfg(test)]
 pub(crate) type CuStreamCreate = unsafe extern "C" fn(*mut CuStream, c_uint) -> CuResult;
 
+#[cfg(test)]
 pub(crate) type CuStreamDestroy = unsafe extern "C" fn(CuStream) -> CuResult;
-
-pub(crate) type CuStreamSynchronize = unsafe extern "C" fn(CuStream) -> CuResult;
 
 pub(crate) type CuEventCreate = unsafe extern "C" fn(*mut CuEvent, c_uint) -> CuResult;
 
@@ -119,9 +119,10 @@ pub(crate) struct Driver {
     pub(crate) cu_module_get_function: CuModuleGetFunction,
     pub(crate) cu_launch_kernel: CuLaunchKernel,
     pub(crate) cu_ctx_synchronize: CuCtxSynchronize,
+    #[cfg(test)]
     pub(crate) cu_stream_create: CuStreamCreate,
+    #[cfg(test)]
     pub(crate) cu_stream_destroy: CuStreamDestroy,
-    pub(crate) cu_stream_synchronize: CuStreamSynchronize,
     pub(crate) cu_event_create: CuEventCreate,
     pub(crate) cu_event_destroy: CuEventDestroy,
     pub(crate) cu_event_record: CuEventRecord,
@@ -175,9 +176,10 @@ impl Driver {
             cu_module_get_function: load_symbol(&library, b"cuModuleGetFunction\0")?,
             cu_launch_kernel: load_symbol(&library, b"cuLaunchKernel\0")?,
             cu_ctx_synchronize: load_symbol(&library, b"cuCtxSynchronize\0")?,
+            #[cfg(test)]
             cu_stream_create: load_symbol(&library, b"cuStreamCreate\0")?,
+            #[cfg(test)]
             cu_stream_destroy: load_symbol(&library, b"cuStreamDestroy_v2\0")?,
-            cu_stream_synchronize: load_symbol(&library, b"cuStreamSynchronize\0")?,
             cu_event_create: load_symbol(&library, b"cuEventCreate\0")?,
             cu_event_destroy: load_symbol(&library, b"cuEventDestroy_v2\0")?,
             cu_event_record: load_symbol(&library, b"cuEventRecord\0")?,

@@ -8,6 +8,8 @@
 use cuda_device::{SharedArray, kernel, thread};
 use cuda_host::cuda_module;
 
+include!("../../../cuda_oxide_simt_prelude.rs");
+
 const J2K_FDWT97_ALPHA: f32 = j2k_codec_math::dwt::DWT97_ALPHA_F32;
 const J2K_FDWT97_BETA: f32 = j2k_codec_math::dwt::DWT97_BETA_F32;
 const J2K_FDWT97_GAMMA: f32 = j2k_codec_math::dwt::DWT97_GAMMA_F32;
@@ -128,62 +130,52 @@ struct J2kPacketHeaderResult {
 
 #[inline(always)]
 fn load_u8(ptr: *const u8, index: u64) -> u8 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_u32(ptr: *const u32, index: u64) -> u32 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_f32(ptr: *const f32, index: u32) -> f32 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_f32_u64(ptr: *const f32, index: u64) -> f32 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn store_f32(ptr: *mut f32, index: u32, value: f32) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn store_f32_u64(ptr: *mut f32, index: u64, value: f32) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn store_i32(ptr: *mut i32, index: u64, value: i32) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn store_u8(ptr: *mut u8, index: u64, value: u8) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn store_u32(ptr: *mut u32, index: u64, value: u32) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn load_job<T: Copy>(ptr: *const T, index: u32) -> T {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
@@ -442,7 +434,6 @@ fn j2k_packet_tag_tree_propagate(tree: &mut J2kPacketTagTree) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn j2k_packet_build_tag_trees(
     inclusion_tree: &mut J2kPacketTagTree,
@@ -586,7 +577,6 @@ fn j2k_packet_header_result(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn j2k_packet_build_header_serial(
     payload_len: u64,

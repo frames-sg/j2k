@@ -422,13 +422,9 @@ fn write_rgn_markers(out: &mut Vec<u8>, params: &EncodeParams) {
 }
 
 fn progression_order_byte(progression_order: EncodeProgressionOrder) -> u8 {
-    match progression_order {
-        EncodeProgressionOrder::Lrcp => 0x00,
-        EncodeProgressionOrder::Rlcp => 0x01,
-        EncodeProgressionOrder::Rpcl => 0x02,
-        EncodeProgressionOrder::Pcrl => 0x03,
-        EncodeProgressionOrder::Cprl => 0x04,
-    }
+    progression_order
+        .packetization_order()
+        .codestream_order_code()
 }
 
 /// Write TLM marker segment (A.7.1) for one tile-part.

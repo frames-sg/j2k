@@ -7,6 +7,64 @@ use alloc::vec::Vec;
 
 use super::scalar;
 
+macro_rules! rgb420_pair {
+    (
+        $y_top:expr,
+        $y_bottom:expr,
+        $prev_cb:expr,
+        $curr_cb:expr,
+        $next_cb:expr,
+        $prev_cr:expr,
+        $curr_cr:expr,
+        $next_cr:expr,
+        $dst_top:expr,
+        $dst_bottom:expr $(,)?
+    ) => {
+        super::Rgb420RowPair::new(
+            $y_top,
+            $y_bottom,
+            super::Rgb420ChromaRows::new(
+                $prev_cb, $curr_cb, $next_cb, $prev_cr, $curr_cr, $next_cr,
+            ),
+            $dst_top,
+            $dst_bottom,
+        )
+    };
+}
+
+macro_rules! rgb420_cropped_pair {
+    (
+        $y_top:expr,
+        $y_bottom:expr,
+        $prev_cb:expr,
+        $curr_cb:expr,
+        $next_cb:expr,
+        $prev_cr:expr,
+        $curr_cr:expr,
+        $next_cr:expr,
+        $crop_start:expr,
+        $crop_width:expr,
+        $dst_top:expr,
+        $dst_bottom:expr $(,)?
+    ) => {
+        super::Rgb420CroppedRowPair::new(
+            rgb420_pair!(
+                $y_top,
+                $y_bottom,
+                $prev_cb,
+                $curr_cb,
+                $next_cb,
+                $prev_cr,
+                $curr_cr,
+                $next_cr,
+                $dst_top,
+                $dst_bottom,
+            ),
+            super::Rgb420Crop::new($crop_start, $crop_width),
+        )
+    };
+}
+
 #[test]
 fn gray_rows_expand_to_equal_rgb_channels() {
     let gray = [10u8, 40, 90, 200];
@@ -49,7 +107,7 @@ fn ycbcr_420_row_pair_matches_reference() {
     let mut dst_top = vec![0u8; y_top.len() * 3];
     let mut dst_bot = vec![0u8; y_bot.len() * 3];
 
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -60,7 +118,7 @@ fn ycbcr_420_row_pair_matches_reference() {
         &next_cr,
         &mut dst_top,
         Some(&mut dst_bot),
-    );
+    ));
 
     let mut cb_top = vec![0u8; y_top.len()];
     let mut cb_bot = vec![0u8; y_top.len()];
@@ -122,7 +180,7 @@ fn backend_scalar_420_row_pair_matches_reference_for_odd_widths() {
 
     let mut expected_top = vec![0u8; y_top.len() * 3];
     let mut expected_bot = vec![0u8; y_bot.len() * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -133,11 +191,11 @@ fn backend_scalar_420_row_pair_matches_reference_for_odd_widths() {
         &next_cr,
         &mut expected_top,
         Some(&mut expected_bot),
-    );
+    ));
 
     let mut actual_top = vec![0u8; y_top.len() * 3];
     let mut actual_bot = vec![0u8; y_bot.len() * 3];
-    backend.fill_rgb_row_pair_from_420(
+    backend.fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -148,7 +206,7 @@ fn backend_scalar_420_row_pair_matches_reference_for_odd_widths() {
         &next_cr,
         &mut actual_top,
         Some(&mut actual_bot),
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
     assert_eq!(actual_bot, expected_bot);
@@ -168,7 +226,7 @@ fn backend_scalar_420_row_pair_handles_missing_bottom_row() {
     let next_cr = [150u8, 170, 190];
 
     let mut expected_top = vec![0u8; y_top.len() * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         None,
         &prev_cb,
@@ -179,10 +237,10 @@ fn backend_scalar_420_row_pair_handles_missing_bottom_row() {
         &next_cr,
         &mut expected_top,
         None,
-    );
+    ));
 
     let mut actual_top = vec![0u8; y_top.len() * 3];
-    backend.fill_rgb_row_pair_from_420(
+    backend.fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         None,
         &prev_cb,
@@ -193,7 +251,7 @@ fn backend_scalar_420_row_pair_handles_missing_bottom_row() {
         &next_cr,
         &mut actual_top,
         None,
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
 }
@@ -234,7 +292,7 @@ fn backend_scalar_420_cropped_row_pair_matches_full_width_crop() {
 
     let mut expected_top = vec![0u8; width * 3];
     let mut expected_bot = vec![0u8; width * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -245,11 +303,11 @@ fn backend_scalar_420_cropped_row_pair_matches_full_width_crop() {
         &next_cr,
         &mut expected_top,
         Some(&mut expected_bot),
-    );
+    ));
 
     let mut actual_top = vec![0u8; crop_width * 3];
     let mut actual_bot = vec![0u8; crop_width * 3];
-    backend.fill_rgb_row_pair_from_420_cropped(
+    backend.fill_rgb_row_pair_from_420_cropped(rgb420_cropped_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -262,7 +320,7 @@ fn backend_scalar_420_cropped_row_pair_matches_full_width_crop() {
         crop_width,
         &mut actual_top,
         Some(&mut actual_bot),
-    );
+    ));
 
     let crop_bytes = crop_width * 3;
     let crop_byte_start = crop_start * 3;
@@ -308,7 +366,7 @@ fn backend_scalar_420_cropped_top_only_matches_full_width_crop() {
         .collect();
 
     let mut expected_top = vec![0u8; width * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         None,
         &prev_cb,
@@ -319,10 +377,10 @@ fn backend_scalar_420_cropped_top_only_matches_full_width_crop() {
         &next_cr,
         &mut expected_top,
         None,
-    );
+    ));
 
     let mut actual_top = vec![0u8; crop_width * 3];
-    backend.fill_rgb_row_pair_from_420_cropped(
+    backend.fill_rgb_row_pair_from_420_cropped(rgb420_cropped_pair!(
         &y_top,
         None,
         &prev_cb,
@@ -335,7 +393,7 @@ fn backend_scalar_420_cropped_top_only_matches_full_width_crop() {
         crop_width,
         &mut actual_top,
         None,
-    );
+    ));
 
     let crop_bytes = crop_width * 3;
     let crop_byte_start = crop_start * 3;
@@ -471,7 +529,7 @@ fn avx2_420_row_pair_matches_scalar_reference() {
 
     let mut expected_top = vec![0u8; y_top.len() * 3];
     let mut expected_bot = vec![0u8; y_bot.len() * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -482,11 +540,11 @@ fn avx2_420_row_pair_matches_scalar_reference() {
         &next_cr,
         &mut expected_top,
         Some(&mut expected_bot),
-    );
+    ));
 
     let mut actual_top = vec![0u8; y_top.len() * 3];
     let mut actual_bot = vec![0u8; y_bot.len() * 3];
-    backend.fill_rgb_row_pair_from_420(
+    backend.fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -497,7 +555,7 @@ fn avx2_420_row_pair_matches_scalar_reference() {
         &next_cr,
         &mut actual_top,
         Some(&mut actual_bot),
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
     assert_eq!(actual_bot, expected_bot);
@@ -524,7 +582,7 @@ fn avx2_420_row_pair_matches_scalar_reference_for_odd_widths() {
 
     let mut expected_top = vec![0u8; y_top.len() * 3];
     let mut expected_bot = vec![0u8; y_bot.len() * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -535,11 +593,11 @@ fn avx2_420_row_pair_matches_scalar_reference_for_odd_widths() {
         &next_cr,
         &mut expected_top,
         Some(&mut expected_bot),
-    );
+    ));
 
     let mut actual_top = vec![0u8; y_top.len() * 3];
     let mut actual_bot = vec![0u8; y_bot.len() * 3];
-    backend.fill_rgb_row_pair_from_420(
+    backend.fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -550,7 +608,7 @@ fn avx2_420_row_pair_matches_scalar_reference_for_odd_widths() {
         &next_cr,
         &mut actual_top,
         Some(&mut actual_bot),
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
     assert_eq!(actual_bot, expected_bot);
@@ -575,7 +633,7 @@ fn avx2_420_row_pair_handles_missing_bottom_row() {
     let next_cr = [150u8, 170, 190];
 
     let mut expected_top = vec![0u8; y_top.len() * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         None,
         &prev_cb,
@@ -586,10 +644,10 @@ fn avx2_420_row_pair_handles_missing_bottom_row() {
         &next_cr,
         &mut expected_top,
         None,
-    );
+    ));
 
     let mut actual_top = vec![0u8; y_top.len() * 3];
-    backend.fill_rgb_row_pair_from_420(
+    backend.fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         None,
         &prev_cb,
@@ -600,7 +658,7 @@ fn avx2_420_row_pair_handles_missing_bottom_row() {
         &next_cr,
         &mut actual_top,
         None,
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
 }
@@ -645,7 +703,7 @@ fn avx2_420_cropped_row_pair_matches_scalar_reference() {
         .collect();
     let mut expected_top = vec![0u8; crop_width * 3];
     let mut expected_bot = vec![0u8; crop_width * 3];
-    scalar::fill_rgb_row_pair_from_420_cropped(
+    scalar::fill_rgb_row_pair_from_420_cropped(rgb420_cropped_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -658,11 +716,11 @@ fn avx2_420_cropped_row_pair_matches_scalar_reference() {
         crop_width,
         &mut expected_top,
         Some(&mut expected_bot),
-    );
+    ));
 
     let mut actual_top = vec![0u8; crop_width * 3];
     let mut actual_bot = vec![0u8; crop_width * 3];
-    backend.fill_rgb_row_pair_from_420_cropped(
+    backend.fill_rgb_row_pair_from_420_cropped(rgb420_cropped_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -675,7 +733,7 @@ fn avx2_420_cropped_row_pair_matches_scalar_reference() {
         crop_width,
         &mut actual_top,
         Some(&mut actual_bot),
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
     assert_eq!(actual_bot, expected_bot);
@@ -703,7 +761,7 @@ fn avx2_420_row_pair_uses_shortest_safe_prefix() {
     let safe_width = y_bot.len();
     let mut expected_top = vec![0xAAu8; y_top.len() * 3];
     let mut expected_bot = vec![0xAAu8; y_bot.len() * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top[..safe_width],
         Some(&y_bot),
         &prev_cb,
@@ -714,11 +772,11 @@ fn avx2_420_row_pair_uses_shortest_safe_prefix() {
         &next_cr,
         &mut expected_top[..safe_width * 3],
         Some(&mut expected_bot),
-    );
+    ));
 
     let mut actual_top = vec![0xAAu8; y_top.len() * 3];
     let mut actual_bot = vec![0xAAu8; y_bot.len() * 3];
-    backend.fill_rgb_row_pair_from_420(
+    backend.fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -729,7 +787,7 @@ fn avx2_420_row_pair_uses_shortest_safe_prefix() {
         &next_cr,
         &mut actual_top,
         Some(&mut actual_bot),
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
     assert_eq!(actual_bot, expected_bot);
@@ -848,7 +906,7 @@ fn neon_420_row_pair_matches_scalar_reference_for_tail_widths() {
 
     let mut expected_top = vec![0u8; y_top.len() * 3];
     let mut expected_bot = vec![0u8; y_bot.len() * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -859,11 +917,11 @@ fn neon_420_row_pair_matches_scalar_reference_for_tail_widths() {
         &next_cr,
         &mut expected_top,
         Some(&mut expected_bot),
-    );
+    ));
 
     let mut actual_top = vec![0u8; y_top.len() * 3];
     let mut actual_bot = vec![0u8; y_bot.len() * 3];
-    backend.fill_rgb_row_pair_from_420(
+    backend.fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -874,7 +932,7 @@ fn neon_420_row_pair_matches_scalar_reference_for_tail_widths() {
         &next_cr,
         &mut actual_top,
         Some(&mut actual_bot),
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
     assert_eq!(actual_bot, expected_bot);
@@ -915,7 +973,7 @@ fn neon_420_row_pair_matches_scalar_reference_across_multiple_chunks() {
 
     let mut expected_top = vec![0u8; len * 3];
     let mut expected_bot = vec![0u8; len * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -926,11 +984,11 @@ fn neon_420_row_pair_matches_scalar_reference_across_multiple_chunks() {
         &next_cr,
         &mut expected_top,
         Some(&mut expected_bot),
-    );
+    ));
 
     let mut actual_top = vec![0u8; len * 3];
     let mut actual_bot = vec![0u8; len * 3];
-    backend.fill_rgb_row_pair_from_420(
+    backend.fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -941,7 +999,7 @@ fn neon_420_row_pair_matches_scalar_reference_across_multiple_chunks() {
         &next_cr,
         &mut actual_top,
         Some(&mut actual_bot),
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
     assert_eq!(actual_bot, expected_bot);
@@ -965,7 +1023,7 @@ fn neon_420_row_pair_uses_shortest_safe_prefix() {
     let safe_width = y_bot.len();
     let mut expected_top = vec![0xAAu8; y_top.len() * 3];
     let mut expected_bot = vec![0xAAu8; y_bot.len() * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top[..safe_width],
         Some(&y_bot),
         &prev_cb,
@@ -976,11 +1034,11 @@ fn neon_420_row_pair_uses_shortest_safe_prefix() {
         &next_cr,
         &mut expected_top[..safe_width * 3],
         Some(&mut expected_bot),
-    );
+    ));
 
     let mut actual_top = vec![0xAAu8; y_top.len() * 3];
     let mut actual_bot = vec![0xAAu8; y_bot.len() * 3];
-    backend.fill_rgb_row_pair_from_420(
+    backend.fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -991,7 +1049,7 @@ fn neon_420_row_pair_uses_shortest_safe_prefix() {
         &next_cr,
         &mut actual_top,
         Some(&mut actual_bot),
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
     assert_eq!(actual_bot, expected_bot);
@@ -1012,7 +1070,7 @@ fn neon_420_row_pair_handles_missing_bottom_row() {
     let next_cr = [150u8, 170, 190, 210, 230, 250];
 
     let mut expected_top = vec![0u8; y_top.len() * 3];
-    scalar::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         None,
         &prev_cb,
@@ -1023,10 +1081,10 @@ fn neon_420_row_pair_handles_missing_bottom_row() {
         &next_cr,
         &mut expected_top,
         None,
-    );
+    ));
 
     let mut actual_top = vec![0u8; y_top.len() * 3];
-    backend.fill_rgb_row_pair_from_420(
+    backend.fill_rgb_row_pair_from_420(rgb420_pair!(
         &y_top,
         None,
         &prev_cb,
@@ -1037,7 +1095,7 @@ fn neon_420_row_pair_handles_missing_bottom_row() {
         &next_cr,
         &mut actual_top,
         None,
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
 }
@@ -1078,7 +1136,7 @@ fn neon_420_cropped_row_pair_matches_scalar_reference_across_chunks() {
         .collect();
     let mut expected_top = vec![0u8; crop_width * 3];
     let mut expected_bot = vec![0u8; crop_width * 3];
-    scalar::fill_rgb_row_pair_from_420_cropped(
+    scalar::fill_rgb_row_pair_from_420_cropped(rgb420_cropped_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -1091,11 +1149,11 @@ fn neon_420_cropped_row_pair_matches_scalar_reference_across_chunks() {
         crop_width,
         &mut expected_top,
         Some(&mut expected_bot),
-    );
+    ));
 
     let mut actual_top = vec![0u8; crop_width * 3];
     let mut actual_bot = vec![0u8; crop_width * 3];
-    backend.fill_rgb_row_pair_from_420_cropped(
+    backend.fill_rgb_row_pair_from_420_cropped(rgb420_cropped_pair!(
         &y_top,
         Some(&y_bot),
         &prev_cb,
@@ -1108,7 +1166,7 @@ fn neon_420_cropped_row_pair_matches_scalar_reference_across_chunks() {
         crop_width,
         &mut actual_top,
         Some(&mut actual_bot),
-    );
+    ));
 
     assert_eq!(actual_top, expected_top);
     assert_eq!(actual_bot, expected_bot);

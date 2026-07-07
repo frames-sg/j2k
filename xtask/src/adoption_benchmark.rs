@@ -11,6 +11,7 @@ use std::{
 use crate::markdown::{escape_inline_code, markdown_header, markdown_row};
 use crate::perf_guard::{discover_estimates, BenchEstimate};
 use crate::process::cargo;
+use crate::publication_gate::{collect_publication_gate_issues, PUBLICATION_GATE_KEYS};
 
 const SCRUBBED_BENCH_ENV_VARS: &[&str] = &[
     "J2K_FIXTURE_COMPARE_MODE",
@@ -1644,23 +1645,15 @@ fn enforce_publication_gate(options: &AdoptionBenchmarkOptions) -> Result<(), St
     }
     let fixture_metadata = read_tsv_metadata(
         &options.out_dir.join("cpu-fixture-compare.out"),
-        &[
-            "publication_eligible",
-            "publication_blockers",
-            "benchmark_complete",
-        ],
+        &PUBLICATION_GATE_KEYS,
     )?;
     let encode_metadata = read_tsv_metadata(
         &options.out_dir.join("cpu-encode-compare.out"),
-        &[
-            "publication_eligible",
-            "publication_blockers",
-            "benchmark_complete",
-        ],
+        &PUBLICATION_GATE_KEYS,
     )?;
     let mut issues = Vec::new();
-    collect_publication_gate_issues("cpu-fixture-compare", &fixture_metadata, &mut issues);
-    collect_publication_gate_issues("cpu-encode-compare", &encode_metadata, &mut issues);
+    collect_publication_gate_issues("cpu-fixture-compare", Some(&fixture_metadata), &mut issues);
+    collect_publication_gate_issues("cpu-encode-compare", Some(&encode_metadata), &mut issues);
     if issues.is_empty() {
         return Ok(());
     }
@@ -1669,44 +1662,6 @@ fn enforce_publication_gate(options: &AdoptionBenchmarkOptions) -> Result<(), St
         issues.join("; "),
         options.out_dir.display()
     ))
-}
-
-fn collect_publication_gate_issues(
-    label: &str,
-    metadata: &serde_json::Value,
-    issues: &mut Vec<String>,
-) {
-    if metadata
-        .get("publication_eligible")
-        .and_then(serde_json::Value::as_str)
-        != Some("true")
-    {
-        let blockers = metadata
-            .get("publication_blockers")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("not-recorded");
-        issues.push(format!(
-            "{label} publication_eligible=false blockers={blockers}"
-        ));
-    }
-    if metadata
-        .get("publication_blockers")
-        .and_then(serde_json::Value::as_str)
-        != Some("none")
-    {
-        let blockers = metadata
-            .get("publication_blockers")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("not-recorded");
-        issues.push(format!("{label} publication_blockers={blockers}"));
-    }
-    if metadata
-        .get("benchmark_complete")
-        .and_then(serde_json::Value::as_str)
-        != Some("true")
-    {
-        issues.push(format!("{label} benchmark_complete is not true"));
-    }
 }
 
 fn step_json(step: &AdoptionStep) -> serde_json::Value {

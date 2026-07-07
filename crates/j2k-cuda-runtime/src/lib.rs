@@ -70,14 +70,17 @@ mod tests;
 mod transcode;
 
 pub use build_flags::transcode_kernels_built;
+#[cfg(test)]
+pub(crate) use context::CudaKernelName;
 pub use context::{
     CudaContext, CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kCompactEncodedCodeBlocks,
-    CudaKernelModule, CudaKernelName,
 };
 pub use error::CudaError;
+#[cfg(test)]
+pub(crate) use execution::CudaEvent;
 pub use execution::{
-    CudaEvent, CudaExecutionStats, CudaKernelBatchOutput, CudaKernelContiguousBatchOutput,
-    CudaKernelOutput, CudaPooledKernelOutput, CudaQueuedExecution, CudaStream,
+    CudaExecutionStats, CudaKernelBatchOutput, CudaKernelContiguousBatchOutput, CudaKernelOutput,
+    CudaPooledKernelOutput, CudaQueuedExecution,
 };
 pub use htj2k_decode::{
     CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeOutput, CudaHtj2kDecodeResources,
@@ -108,18 +111,20 @@ pub use j2k_encode::{
     CudaResidentDwt53Output, CudaResidentDwt97Output,
 };
 pub use jpeg::{
-    CudaJpeg420Rgb8DecodePlan, CudaJpegBaselineEncodeFormat, CudaJpegBaselineEncodeHuffmanTable,
-    CudaJpegBaselineEncodeParams, CudaJpegBaselineEntropyEncodeBatchJob,
-    CudaJpegBaselineEntropyEncodeJob, CudaJpegChunkedEntropyConfig, CudaJpegChunkedEntropyPlan,
-    CudaJpegChunkedEntropyReport, CudaJpegEntropyCheckpoint, CudaJpegEntropyOverflowState,
-    CudaJpegEntropySyncState, CudaJpegHuffmanTable, CudaJpegRgb8DecodePlan, CudaJpegRgb8Sampling,
+    CudaJpegBaselineEncodeFormat, CudaJpegBaselineEncodeHuffmanTable, CudaJpegBaselineEncodeParams,
+    CudaJpegBaselineEntropyEncodeBatchJob, CudaJpegBaselineEntropyEncodeJob,
+    CudaJpegChunkedEntropyConfig, CudaJpegChunkedEntropyPlan, CudaJpegChunkedEntropyReport,
+    CudaJpegEntropyCheckpoint, CudaJpegEntropyOverflowState, CudaJpegEntropySyncState,
+    CudaJpegHuffmanTable, CudaJpegRgb8DecodePlan, CudaJpegRgb8Sampling,
 };
 pub use memory::{
     CudaBufferPool, CudaBufferPoolTakeTrace, CudaDeviceBuffer, CudaDeviceBufferRange,
-    CudaDeviceBufferView, CudaDeviceBufferViewMut, CudaPinnedHostBuffer, CudaPooledDeviceBuffer,
+    CudaDeviceBufferView, CudaDeviceBufferViewMut, CudaPooledDeviceBuffer,
 };
 pub use transcode::{
-    CudaHtj2k97CodeblockBands, CudaHtj2k97DeviceCodeblockBands, CudaHtj2k97QuantizeParams,
+    CudaDwt97BatchGeometry, CudaDwt97BatchWithPoolRequest, CudaHtj2k97CodeblockBands,
+    CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2k97DeviceCodeblockBands,
+    CudaHtj2k97I16CodeblockBatchWithPoolRequest, CudaHtj2k97QuantizeParams,
     CudaTranscodeDwt97Bands, CudaTranscodeReversible53Bands,
 };
 
@@ -137,8 +142,8 @@ pub(crate) use htj2k_decode::{
 };
 #[cfg(test)]
 pub(crate) use htj2k_encode::{
-    htj2k_encode_compact_jobs, CudaHtj2kEncodeCompactJob, CudaHtj2kEncodeKernelJob,
-    HTJ2K_ENCODE_OUTPUT_CAPACITY,
+    htj2k_encode_compact_jobs, htj2k_encode_compact_jobs_multi_input, CudaHtj2kEncodeCompactJob,
+    CudaHtj2kEncodeKernelJob, CudaHtj2kEncodeMultiInputKernelJob, HTJ2K_ENCODE_OUTPUT_CAPACITY,
 };
 #[cfg(test)]
 pub(crate) use j2k_decode::{

@@ -2,10 +2,10 @@ use j2k_core::{
     BackendKind, BackendRequest, CodecError, DecoderContext, DeviceSubmission, DeviceSurface,
     Downscale, PixelFormat, Rect, TileBatchDecodeDevice, TileBatchDecodeSubmit,
 };
-use j2k_jpeg::{Decoder as CpuDecoder, DecoderContext as JpegDecoderContext};
+use j2k_jpeg::{DecodeRequest, Decoder as CpuDecoder, DecoderContext as JpegDecoderContext};
 #[cfg(target_os = "macos")]
 use j2k_jpeg_metal::JpegTileBatch;
-use j2k_jpeg_metal::{Codec, MetalSession, ScratchPool};
+use j2k_jpeg_metal::{Codec, MetalDecodeRequest, MetalSession, ScratchPool};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 const BASELINE_420_RESTART: &[u8] =
@@ -19,7 +19,7 @@ fn tile_device_decode_matches_host_tile_decode() {
     let mut pool = ScratchPool::new();
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let surface = Codec::decode_tile_to_device(
         &mut ctx,
@@ -46,7 +46,7 @@ fn tile_scaled_device_decode_has_expected_dimensions() {
     let mut pool = ScratchPool::new();
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_scaled(PixelFormat::Rgb8, Downscale::Quarter)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, Downscale::Quarter))
         .expect("cpu scaled decode");
     let surface = Codec::decode_tile_scaled_to_device(
         &mut ctx,
@@ -75,7 +75,7 @@ fn tile_region_device_decode_has_expected_dimensions() {
     };
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -84,7 +84,7 @@ fn tile_region_device_decode_has_expected_dimensions() {
                 h: roi.h,
             },
             Downscale::None,
-        )
+        ))
         .expect("cpu region decode");
     let surface = Codec::decode_tile_region_to_device(
         &mut ctx,
@@ -108,7 +108,7 @@ fn compatible_tile_submits_flush_once() {
     let mut session = MetalSession::default();
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
     let submissions = (0..4)
@@ -139,20 +139,26 @@ fn compatible_tile_submits_flush_once() {
 fn jpeg_tile_batch_api_decodes_full_tiles_in_submission_order() {
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let mut batch = JpegTileBatch::with_capacity(2);
 
     assert!(batch.is_empty());
     assert_eq!(
         batch
-            .push_tile(BASELINE_420, PixelFormat::Rgb8, BackendRequest::Metal)
+            .push_tile_request(
+                BASELINE_420,
+                MetalDecodeRequest::full(PixelFormat::Rgb8, BackendRequest::Metal)
+            )
             .expect("first push"),
         0
     );
     assert_eq!(
         batch
-            .push_tile(BASELINE_420, PixelFormat::Rgb8, BackendRequest::Metal)
+            .push_tile_request(
+                BASELINE_420,
+                MetalDecodeRequest::full(PixelFormat::Rgb8, BackendRequest::Metal)
+            )
             .expect("second push"),
         1
     );
@@ -176,7 +182,7 @@ fn auto_small_restart_tile_batch_stays_cpu_surface() {
     let mut session = MetalSession::default();
     let (expected, _) = CpuDecoder::new(BASELINE_420_RESTART)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
     let submissions = (0..7)
@@ -210,7 +216,7 @@ fn auto_restart_wsi_tile_batch_uses_metal_at_threshold() {
     let mut session = MetalSession::default();
     let (expected, _) = CpuDecoder::new(BASELINE_420_RESTART)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
     let submissions = (0..8)
@@ -251,7 +257,7 @@ fn compatible_region_scaled_tile_submits_flush_once() {
     let scale = Downscale::Quarter;
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -260,20 +266,22 @@ fn compatible_region_scaled_tile_submits_flush_once() {
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled");
 
     let submissions = (0..4)
         .map(|_| {
-            Codec::submit_tile_region_scaled_to_device(
+            Codec::submit_tile_request_to_device(
                 &mut ctx,
                 &mut session,
                 &mut pool,
                 BASELINE_420,
-                PixelFormat::Rgb8,
-                roi,
-                scale,
-                BackendRequest::Metal,
+                MetalDecodeRequest::region_scaled(
+                    PixelFormat::Rgb8,
+                    roi,
+                    scale,
+                    BackendRequest::Metal,
+                ),
             )
             .expect("submit")
         })

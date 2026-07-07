@@ -27,6 +27,7 @@ use crate::{
 /// CUDA-side integer rectangle for JPEG 2000 direct-plan kernels.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kRect {
     /// Inclusive minimum x coordinate.
     pub x0: u32,
@@ -41,6 +42,7 @@ pub struct CudaJ2kRect {
 /// One single-decomposition inverse DWT dispatch over device coefficient bands.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kIdwtJob {
     /// Output rectangle produced by the IDWT stage.
     pub rect: CudaJ2kRect,
@@ -56,8 +58,17 @@ pub struct CudaJ2kIdwtJob {
     pub irreversible97: u32,
 }
 
+#[derive(Clone, Copy)]
+struct J2kInverseDwtSinglePoolRequest<'a> {
+    bands: [&'a CudaDeviceBuffer; 4],
+    job: CudaJ2kIdwtJob,
+    synchronize_each_launch: bool,
+    pool: &'a CudaBufferPool,
+}
+
 /// One output buffer and input band set for batched inverse DWT.
 #[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
 pub struct CudaJ2kIdwtTarget<'a> {
     /// LL input band.
     pub ll: &'a CudaDeviceBuffer,
@@ -87,6 +98,7 @@ pub(crate) struct CudaJ2kIdwtMultiKernelJob {
 /// Grayscale store dispatch from f32 component samples to tightly packed Gray8.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kStoreGray8Job {
     /// Source component buffer width in samples.
     pub input_width: u32,
@@ -115,6 +127,7 @@ pub struct CudaJ2kStoreGray8Job {
 /// Grayscale store dispatch from f32 component samples to tightly packed Gray16.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kStoreGray16Job {
     /// Source component buffer width in samples.
     pub input_width: u32,
@@ -143,6 +156,7 @@ pub struct CudaJ2kStoreGray16Job {
 /// In-place inverse MCT dispatch over three device f32 component planes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kInverseMctJob {
     /// Number of samples in each component plane.
     pub len: u32,
@@ -159,6 +173,7 @@ pub struct CudaJ2kInverseMctJob {
 /// RGB/RGBA store dispatch from three f32 component planes to packed 8-bit pixels.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kStoreRgb8Job {
     /// Source width for component 0.
     pub input_width0: u32,
@@ -209,6 +224,7 @@ pub struct CudaJ2kStoreRgb8Job {
 /// RGB/RGBA store dispatch from three f32 component planes to packed 16-bit pixels.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kStoreRgb16Job {
     /// Source width for component 0.
     pub input_width0: u32,
@@ -259,6 +275,7 @@ pub struct CudaJ2kStoreRgb16Job {
 /// Fused inverse RCT/ICT and packed RGB8/RGBA8 store dispatch.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kStoreRgb8MctJob {
     /// RGB/RGBA store geometry, addends, bit depths, and alpha mode.
     pub store: CudaJ2kStoreRgb8Job,
@@ -268,6 +285,7 @@ pub struct CudaJ2kStoreRgb8MctJob {
 
 /// One fused inverse MCT plus RGB8/RGBA8 store item for a batched dispatch.
 #[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
 pub struct CudaJ2kStoreRgb8MctTarget<'a> {
     /// Source component plane 0.
     pub plane0: &'a CudaDeviceBuffer,
@@ -292,6 +310,7 @@ pub(crate) struct CudaJ2kStoreRgb8MctBatchJob {
 /// Fused inverse RCT/ICT and packed RGB16/RGBA16 store dispatch.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kStoreRgb16MctJob {
     /// RGB/RGBA store geometry, addends, bit depths, and alpha mode.
     pub store: CudaJ2kStoreRgb16Job,
@@ -301,6 +320,7 @@ pub struct CudaJ2kStoreRgb16MctJob {
 
 impl CudaContext {
     /// Apply one inverse JPEG 2000 DWT decomposition to device coefficient bands.
+    #[doc(hidden)]
     pub fn j2k_inverse_dwt_single_device(
         &self,
         ll: &CudaDeviceBuffer,
@@ -312,20 +332,9 @@ impl CudaContext {
         self.j2k_inverse_dwt_single_device_impl(ll, hl, lh, hh, job, true)
     }
 
-    /// Apply one inverse JPEG 2000 DWT decomposition without per-kernel synchronizes.
-    pub fn j2k_inverse_dwt_single_device_untimed(
-        &self,
-        ll: &CudaDeviceBuffer,
-        hl: &CudaDeviceBuffer,
-        lh: &CudaDeviceBuffer,
-        hh: &CudaDeviceBuffer,
-        job: CudaJ2kIdwtJob,
-    ) -> Result<CudaKernelOutput, CudaError> {
-        self.j2k_inverse_dwt_single_device_impl(ll, hl, lh, hh, job, false)
-    }
-
     /// Apply one inverse JPEG 2000 DWT decomposition with caller-owned
     /// transient buffer reuse.
+    #[doc(hidden)]
     pub fn j2k_inverse_dwt_single_device_with_pool(
         &self,
         ll: &CudaDeviceBuffer,
@@ -335,11 +344,17 @@ impl CudaContext {
         job: CudaJ2kIdwtJob,
         pool: &CudaBufferPool,
     ) -> Result<CudaPooledKernelOutput, CudaError> {
-        self.j2k_inverse_dwt_single_device_with_pool_impl(ll, hl, lh, hh, job, true, pool)
+        self.j2k_inverse_dwt_single_device_with_pool_impl(J2kInverseDwtSinglePoolRequest {
+            bands: [ll, hl, lh, hh],
+            job,
+            synchronize_each_launch: true,
+            pool,
+        })
     }
 
     /// Apply one inverse JPEG 2000 DWT decomposition with caller-owned
     /// transient buffer reuse and without per-kernel synchronizes.
+    #[doc(hidden)]
     pub fn j2k_inverse_dwt_single_device_untimed_with_pool(
         &self,
         ll: &CudaDeviceBuffer,
@@ -349,11 +364,17 @@ impl CudaContext {
         job: CudaJ2kIdwtJob,
         pool: &CudaBufferPool,
     ) -> Result<CudaPooledKernelOutput, CudaError> {
-        self.j2k_inverse_dwt_single_device_with_pool_impl(ll, hl, lh, hh, job, false, pool)
+        self.j2k_inverse_dwt_single_device_with_pool_impl(J2kInverseDwtSinglePoolRequest {
+            bands: [ll, hl, lh, hh],
+            job,
+            synchronize_each_launch: false,
+            pool,
+        })
     }
 
     /// Apply inverse JPEG 2000 DWT decompositions for multiple independent
     /// targets using one dispatch per parallel stage.
+    #[doc(hidden)]
     pub fn j2k_inverse_dwt_batch_device_with_pool(
         &self,
         targets: &[CudaJ2kIdwtTarget<'_>],
@@ -362,19 +383,10 @@ impl CudaContext {
         self.j2k_inverse_dwt_batch_device_with_pool_impl(targets, pool, true)
     }
 
-    /// Apply inverse JPEG 2000 DWT decompositions for multiple independent
-    /// targets without per-stage synchronizes.
-    pub fn j2k_inverse_dwt_batch_device_untimed_with_pool(
-        &self,
-        targets: &[CudaJ2kIdwtTarget<'_>],
-        pool: &CudaBufferPool,
-    ) -> Result<CudaExecutionStats, CudaError> {
-        self.j2k_inverse_dwt_batch_device_with_pool_impl(targets, pool, false)
-    }
-
     /// Enqueue batched inverse JPEG 2000 DWT decompositions without
     /// synchronizing. The returned value must be kept live until the default
     /// stream has been synchronized by the caller.
+    #[doc(hidden)]
     pub fn j2k_inverse_dwt_batch_device_enqueue_with_pool(
         &self,
         targets: &[CudaJ2kIdwtTarget<'_>],
@@ -471,6 +483,7 @@ impl CudaContext {
     /// uploading all stage job metadata in one device buffer. The returned
     /// value must be kept live until the default stream has been synchronized
     /// by the caller.
+    #[doc(hidden)]
     #[allow(clippy::too_many_lines)]
     pub fn j2k_inverse_dwt_batch_sequence_enqueue_with_pool(
         &self,
@@ -807,17 +820,14 @@ impl CudaContext {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn j2k_inverse_dwt_single_device_with_pool_impl(
         &self,
-        ll: &CudaDeviceBuffer,
-        hl: &CudaDeviceBuffer,
-        lh: &CudaDeviceBuffer,
-        hh: &CudaDeviceBuffer,
-        job: CudaJ2kIdwtJob,
-        synchronize_each_launch: bool,
-        pool: &CudaBufferPool,
+        request: J2kInverseDwtSinglePoolRequest<'_>,
     ) -> Result<CudaPooledKernelOutput, CudaError> {
+        let [ll, hl, lh, hh] = request.bands;
+        let job = request.job;
+        let synchronize_each_launch = request.synchronize_each_launch;
+        let pool = request.pool;
         let width = job.rect.x1.saturating_sub(job.rect.x0);
         let height = job.rect.y1.saturating_sub(job.rect.y0);
         let output_words = checked_image_words(width, height, 1)?;
@@ -909,6 +919,7 @@ impl CudaContext {
     }
 
     /// Store a device f32 component plane as tightly packed Gray8 pixels.
+    #[doc(hidden)]
     pub fn j2k_store_gray8_device(
         &self,
         input: &CudaDeviceBuffer,
@@ -952,6 +963,7 @@ impl CudaContext {
     }
 
     /// Store a device f32 component plane as tightly packed Gray16 pixels.
+    #[doc(hidden)]
     pub fn j2k_store_gray16_device(
         &self,
         input: &CudaDeviceBuffer,
@@ -999,6 +1011,7 @@ impl CudaContext {
     }
 
     /// Apply inverse RCT/ICT in place on three device f32 component planes.
+    #[doc(hidden)]
     pub fn j2k_inverse_mct_device(
         &self,
         plane0: &CudaDeviceBuffer,
@@ -1027,6 +1040,7 @@ impl CudaContext {
     }
 
     /// Store three device f32 component planes as tightly packed RGB8/RGBA8.
+    #[doc(hidden)]
     pub fn j2k_store_rgb8_device(
         &self,
         plane0: &CudaDeviceBuffer,
@@ -1090,6 +1104,7 @@ impl CudaContext {
     }
 
     /// Store three device f32 component planes as tightly packed RGB16/RGBA16.
+    #[doc(hidden)]
     pub fn j2k_store_rgb16_device(
         &self,
         plane0: &CudaDeviceBuffer,
@@ -1158,6 +1173,7 @@ impl CudaContext {
     }
 
     /// Apply inverse RCT/ICT and store tightly packed RGB8/RGBA8 in one dispatch.
+    #[doc(hidden)]
     pub fn j2k_store_rgb8_mct_device(
         &self,
         plane0: &CudaDeviceBuffer,
@@ -1180,6 +1196,7 @@ impl CudaContext {
 
     /// Apply inverse RCT/ICT and store multiple tightly packed RGB8/RGBA8 images
     /// in one dispatch.
+    #[doc(hidden)]
     pub fn j2k_store_rgb8_mct_batch_device(
         &self,
         targets: &[CudaJ2kStoreRgb8MctTarget<'_>],
@@ -1268,6 +1285,7 @@ impl CudaContext {
 
     /// Apply inverse RCT/ICT and store multiple tightly packed RGB8/RGBA8 images
     /// into one contiguous device allocation in one dispatch.
+    #[doc(hidden)]
     pub fn j2k_store_rgb8_mct_batch_contiguous_device(
         &self,
         targets: &[CudaJ2kStoreRgb8MctTarget<'_>],
@@ -1371,6 +1389,7 @@ impl CudaContext {
     }
 
     /// Apply inverse RCT/ICT and store tightly packed RGB16/RGBA16 in one dispatch.
+    #[doc(hidden)]
     pub fn j2k_store_rgb16_mct_device(
         &self,
         plane0: &CudaDeviceBuffer,
@@ -1870,6 +1889,7 @@ impl CudaContext {
 
 /// Device-resident interleaved JPEG 2000 input pixels with row stride metadata.
 #[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
 pub struct CudaJ2kStridedInterleavedPixels<'a> {
     /// Backing CUDA device byte buffer.
     pub buffer: &'a CudaDeviceBuffer,

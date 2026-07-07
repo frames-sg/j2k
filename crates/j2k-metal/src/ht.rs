@@ -52,7 +52,7 @@ impl HtCodeBlockDecoder for MetalHtBlockDecoder {
                 .all(|job| supports_metal_ht_kernel(&job.code_block))
         {
             compute::decode_ht_cleanup_sub_band(job, output)
-                .map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+                .map_err(metal_ht_sub_band_decode_error)?;
             self.sub_band_batches = self.sub_band_batches.saturating_add(1);
             self.batched_kernel_dispatches = self.batched_kernel_dispatches.saturating_add(1);
             return Ok(true);
@@ -72,12 +72,24 @@ impl HtCodeBlockDecoder for MetalHtBlockDecoder {
         #[cfg(target_os = "macos")]
         if supports_metal_ht_kernel(&job) {
             compute::decode_ht_cleanup_code_block(job, output)
-                .map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+                .map_err(metal_ht_code_block_decode_error)?;
             self.kernel_dispatches = self.kernel_dispatches.saturating_add(1);
             return Ok(());
         }
         decode_ht_code_block_scalar(job, output)
     }
+}
+
+#[cfg(target_os = "macos")]
+fn metal_ht_sub_band_decode_error(_error: crate::Error) -> j2k_native::DecodeError {
+    DecodingError::CodeBlockDecodeFailureWithContext("Metal HT sub-band decode kernel failed")
+        .into()
+}
+
+#[cfg(target_os = "macos")]
+fn metal_ht_code_block_decode_error(_error: crate::Error) -> j2k_native::DecodeError {
+    DecodingError::CodeBlockDecodeFailureWithContext("Metal HT code-block decode kernel failed")
+        .into()
 }
 
 #[cfg(target_os = "macos")]

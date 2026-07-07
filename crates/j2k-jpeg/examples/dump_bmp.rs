@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use j2k_jpeg::{Decoder, PixelFormat};
+use j2k_jpeg::{DecodeRequest, Decoder, PixelFormat};
 use j2k_test_support::JPEG_BASELINE_420_16X16;
 
 const DEFAULT_OUTPUT: &str = "target/j2k-jpeg-baseline-420.bmp";
@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let decoder = Decoder::new(&bytes)?;
-    let (rgb, outcome) = decoder.decode(PixelFormat::Rgb8)?;
+    let (rgb, outcome) = decoder.decode_request(DecodeRequest::full(PixelFormat::Rgb8))?;
     let width = outcome.decoded.w as usize;
     let height = outcome.decoded.h as usize;
 

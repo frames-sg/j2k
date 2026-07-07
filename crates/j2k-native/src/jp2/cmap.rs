@@ -24,7 +24,10 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
             1 => ComponentMappingType::Palette {
                 column: palette_column,
             },
-            _ => bail!(FormatError::InvalidBox),
+            value => ComponentMappingType::Unknown {
+                value,
+                column: palette_column,
+            },
         };
 
         entries.push(ComponentMappingEntry {
@@ -53,4 +56,5 @@ pub(crate) struct ComponentMappingEntry {
 pub(crate) enum ComponentMappingType {
     Direct,
     Palette { column: u8 },
+    Unknown { value: u8, column: u8 },
 }

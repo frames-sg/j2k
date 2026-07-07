@@ -20,7 +20,7 @@ use j2k_core::{BufferError, PixelFormat, Rect};
 use j2k_jpeg::{
     adapter::{
         JpegEntropyCheckpointV1, JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1,
-        JpegHuffmanTable as PacketHuffmanTable,
+        JpegHuffmanTable,
     },
     ColorSpace as JpegColorSpace, Decoder as CpuDecoder,
 };
@@ -40,9 +40,10 @@ pub(crate) use crate::abi::*;
 
 #[cfg(target_os = "macos")]
 use crate::buffers::{
-    new_decode_plane_buffer, new_private_buffer, new_shared_buffer_with_data, MetalBatchScratch,
+    checked_buffer_read, checked_buffer_slice, new_decode_plane_buffer, new_private_buffer,
+    new_shared_buffer_with_data, MetalBatchScratch,
 };
-use crate::{batch, Error, Surface};
+use crate::{batch, Error, JpegFastPackets, Surface};
 
 mod batch_plan;
 #[cfg(target_os = "macos")]
@@ -62,9 +63,11 @@ use self::batch_plan::{
 };
 #[cfg(target_os = "macos")]
 use self::batch_support::{
-    batch_entropy_buffers, fast420_batch_timing_enabled, fast_batch_decode_mode,
-    region_scaled_batch_error_results, texture_batch_error_results, BatchEntropyBufferKeys,
-    FastBatchDecodeMode, FastBatchTiming,
+    batch_entropy_buffers, batch_entropy_host_data, fast420_batch_timing_enabled,
+    fast_batch_decode_mode, region_scaled_batch_error_results, surface_batch_error_results,
+    surface_batch_success_results, texture_batch_error_results, BatchEntropyBufferKeys,
+    BatchEntropyBuffers, BatchEntropyHostData, BatchEntropyLabels, FastBatchDecodeMode,
+    FastBatchTiming,
 };
 #[cfg(all(test, target_os = "macos"))]
 use self::batch_support::{fast420_batch_timing_value_enabled, fast420_batch_timing_value_mode};
@@ -74,14 +77,14 @@ use self::kernel_helpers::choose_1d_threadgroup_width;
 use self::kernel_helpers::{
     bind_fast_decode_entropy_inputs, bind_three_plane_pack, dispatch_1d_pipeline,
     dispatch_2d_pipeline, dispatch_3d_pipeline, fast_packet_huffman_tables, packed_pair_extent,
-    pixel_format_to_out_format, plane_mode_to_u32,
+    pixel_format_to_out_format, plane_mode_to_u32, FastDecodeEntropyInputs,
 };
 #[cfg(target_os = "macos")]
 use self::region_scaled_plan::{
-    fast444_full_rgb_batch_groups, fast444_packets_share_region_scaled_batch_shape,
-    fast444_region_scaled_batch_groups, fast_subsampled_full_rgb_batch_groups,
-    fast_subsampled_packets_share_full_rgb_batch_shape, fast_subsampled_region_scaled_batch_groups,
-    fast_subsampled_region_scaled_batch_plan, windowed_texture_pack_params,
+    fast444_packets_share_region_scaled_batch_shape, fast444_region_scaled_batch_groups,
+    fast_subsampled_full_rgb_batch_groups, fast_subsampled_packets_share_full_rgb_batch_shape,
+    fast_subsampled_region_scaled_batch_groups, fast_subsampled_region_scaled_batch_plan,
+    windowed_texture_pack_params, RegionScaledBatchPlan,
 };
 #[cfg(target_os = "macos")]
 use self::status::{
@@ -90,8 +93,10 @@ use self::status::{
 };
 use self::viewport_cache::{cached_plane_stage, CachedViewportPlanes, PlaneMode, PlaneStage};
 #[cfg(target_os = "macos")]
+pub(crate) use self::viewport_compose::compose_rgb_viewport_from_regions;
+#[cfg(all(target_os = "macos", test))]
 pub(crate) use self::viewport_compose::{
-    compose_rgb_viewport_from_regions, compose_rgb_viewport_from_regions_into_output_with_session,
+    compose_rgb_viewport_from_regions_into_output_with_session,
     compose_rgb_viewport_from_regions_into_textures_with_session,
 };
 
@@ -102,7 +107,16 @@ pub(crate) use crate::buffers::{
 };
 
 #[cfg(target_os = "macos")]
-const SHADER_SOURCE: &str = include_str!("shaders.metal");
+const SHADER_SOURCE: &str = concat!(
+    include_str!("shaders_shared.metal"),
+    include_str!("shaders_encode.metal"),
+    include_str!("shaders_decode_helpers.metal"),
+    include_str!("shaders_pack_444.metal"),
+    include_str!("shaders_decode_fast420.metal"),
+    include_str!("shaders_decode_fast422_regions.metal"),
+    include_str!("shaders_decode_fast444.metal"),
+    include_str!("shaders_pack_subsampled.metal"),
+);
 
 #[cfg(target_os = "macos")]
 const REGION_SCALED_BATCH_CHUNK: usize = 8;
@@ -389,10 +403,7 @@ fn with_runtime_for_session<R>(
     session: &crate::MetalBackendSession,
     f: impl FnOnce(&MetalRuntime) -> Result<R, Error>,
 ) -> Result<R, Error> {
-    let runtime = session
-        .runtime
-        .get_or_init(|| MetalRuntime::new_with_device(session.device.clone()));
-    match runtime {
+    match session.runtime_result() {
         Ok(runtime) => f(runtime),
         Err(error) => Err(runtime_initialization_error(error)),
     }
@@ -496,8 +507,10 @@ pub(crate) fn encode_jpeg_baseline_entropy_with_session(
         encoder.end_encoding();
         commit_and_wait_jpeg(command_buffer)?;
 
-        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-        let status = unsafe { *(status_buffer.contents().cast::<JpegBaselineEncodeStatus>()) };
+        let status = checked_buffer_read::<JpegBaselineEncodeStatus>(
+            &status_buffer,
+            "baseline encode status",
+        )?;
         if status.code != JPEG_BASELINE_ENCODE_STATUS_OK {
             return Err(jpeg_baseline_encode_status_error(status));
         }
@@ -510,10 +523,8 @@ pub(crate) fn encode_jpeg_baseline_entropy_with_session(
                     .to_string(),
             });
         }
-        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-        let entropy = unsafe {
-            core::slice::from_raw_parts(entropy_buffer.contents().cast::<u8>(), entropy_len)
-        };
+        let entropy =
+            checked_buffer_slice::<u8>(&entropy_buffer, entropy_len, "baseline encode entropy")?;
         Ok(entropy.to_vec())
     })
 }
@@ -599,20 +610,16 @@ pub(crate) fn encode_jpeg_baseline_entropy_batch_with_session(
         encoder.end_encoding();
         commit_and_wait_jpeg(command_buffer)?;
 
-        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-        let status_slice = unsafe {
-            core::slice::from_raw_parts(
-                status_buffer.contents().cast::<JpegBaselineEncodeStatus>(),
-                job.params.len(),
-            )
-        };
-        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-        let entropy_bytes = unsafe {
-            core::slice::from_raw_parts(
-                entropy_buffer.contents().cast::<u8>(),
-                job.entropy_capacity,
-            )
-        };
+        let status_slice = checked_buffer_slice::<JpegBaselineEncodeStatus>(
+            &status_buffer,
+            job.params.len(),
+            "baseline batch encode statuses",
+        )?;
+        let entropy_bytes = checked_buffer_slice::<u8>(
+            &entropy_buffer,
+            job.entropy_capacity,
+            "baseline batch encode entropy",
+        )?;
         let mut out = Vec::with_capacity(job.params.len());
         for (status, params) in status_slice.iter().copied().zip(job.params.iter()) {
             if status.code != JPEG_BASELINE_ENCODE_STATUS_OK {
@@ -657,7 +664,11 @@ include!("compute/fast_packets_impl.rs");
 
 include!("compute/pack_dispatch_impl.rs");
 
-include!("compute/batch_decode_impl.rs");
+include!("compute/batch_decode_full.rs");
+
+include!("compute/batch_decode_region.rs");
+
+include!("compute/batch_decode_entry.rs");
 
 include!("compute/single_decode_impl.rs");
 

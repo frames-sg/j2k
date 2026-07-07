@@ -6,16 +6,27 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+#[cfg(feature = "adoption")]
 mod adoption_benchmark;
+#[cfg(feature = "adoption")]
 mod adoption_corpus;
+#[cfg(feature = "adoption")]
 mod adoption_curate;
+#[cfg(not(feature = "adoption"))]
+mod adoption_disabled;
+#[cfg(feature = "adoption")]
 mod adoption_manifest;
+#[cfg(feature = "adoption")]
 mod adoption_materialize;
+#[cfg(feature = "adoption")]
 mod adoption_report;
+#[cfg(feature = "adoption")]
 mod markdown;
 mod perf_guard;
 mod process;
 mod public_support;
+#[cfg(feature = "adoption")]
+mod publication_gate;
 
 use process::cargo;
 
@@ -114,6 +125,7 @@ const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
 const STABLE_API_SNAPSHOT: &str = "docs/stable-api-1.0.public-api.txt";
 const CARGO_PUBLIC_API_VERSION: &str = "0.52.0";
 const PANIC_SURFACE_UNWRAP_USED_BASELINE: usize = 17;
+const PANIC_SURFACE_EXPECT_USED_BASELINE: usize = 106;
 const CODEC_MATH_DWT97_METAL_FRAGMENT: &str =
     "crates/j2k-codec-math/generated/dwt97_constants.metal";
 const CODEC_MATH_DWT97_RUST_FRAGMENT: &str = "crates/j2k-codec-math/generated/dwt97_constants.rs";
@@ -143,11 +155,26 @@ fn run() -> Result<(), String> {
         "typos" => typos(),
         "bench-build" => bench_build(),
         "bench-report" => bench_report(env::args().skip(2)),
+        #[cfg(feature = "adoption")]
         "adoption-benchmark" => adoption_benchmark::adoption_benchmark(env::args().skip(2)),
+        #[cfg(not(feature = "adoption"))]
+        "adoption-benchmark" => adoption_disabled::adoption_benchmark(env::args().skip(2)),
+        #[cfg(feature = "adoption")]
         "adoption-curate" => adoption_curate::adoption_curate(env::args().skip(2)),
+        #[cfg(not(feature = "adoption"))]
+        "adoption-curate" => adoption_disabled::adoption_curate(env::args().skip(2)),
+        #[cfg(feature = "adoption")]
         "adoption-manifest" => adoption_manifest::adoption_manifest(env::args().skip(2)),
+        #[cfg(not(feature = "adoption"))]
+        "adoption-manifest" => adoption_disabled::adoption_manifest(env::args().skip(2)),
+        #[cfg(feature = "adoption")]
         "adoption-materialize" => adoption_materialize::adoption_materialize(env::args().skip(2)),
+        #[cfg(not(feature = "adoption"))]
+        "adoption-materialize" => adoption_disabled::adoption_materialize(env::args().skip(2)),
+        #[cfg(feature = "adoption")]
         "adoption-report" => adoption_report::adoption_report(env::args().skip(2)),
+        #[cfg(not(feature = "adoption"))]
+        "adoption-report" => adoption_disabled::adoption_report(env::args().skip(2)),
         "public-support" => public_support::public_support(env::args().skip(2)),
         "j2k-bench-signoff" => j2k_bench_signoff(),
         "j2k-perf-guard" => perf_guard::j2k_perf_guard(env::args().skip(2)),
@@ -182,6 +209,7 @@ fn ci() -> Result<(), String> {
     fmt()?;
     codec_math_codegen(std::iter::empty::<String>())?;
     clippy()?;
+    panic_surface()?;
     test()?;
     doc()?;
     verify_unsafe_audit()
@@ -502,13 +530,37 @@ fn bench_build() -> Result<(), String> {
 }
 
 fn j2k_bench_signoff() -> Result<(), String> {
-    run_cargo_with_env(
+    run_cargo_test_with_pass_floor(
         &["test", "-p", "j2k-compare", "--test", "in_process_parity"],
         &[("J2K_REQUIRE_OPENJPEG", "1"), ("J2K_REQUIRE_GROK", "1")],
+        8,
+        "in-process OpenJPEG/Grok parity",
     )?;
-    run_cargo_with_env(
+    run_cargo_test_with_pass_floor(
         &["test", "-p", "j2k", "--test", "openjpeg_parity"],
         &[("J2K_REQUIRE_OPENJPEG", "1")],
+        7,
+        "OpenJPEG CLI parity",
+    )?;
+    run_cargo_test_with_pass_floor(
+        &["test", "-p", "j2k", "--test", "grok_parity"],
+        &[("J2K_REQUIRE_GROK", "1")],
+        12,
+        "Grok CLI parity",
+    )?;
+    run_cargo_test_with_pass_floor(
+        &[
+            "test",
+            "-p",
+            "j2k-jpeg",
+            "--features",
+            "bench-libjpeg-turbo",
+            "--test",
+            "libjpeg_turbo_compare",
+        ],
+        &[("J2K_REQUIRE_LIBJPEG_TURBO", "1")],
+        1,
+        "libjpeg-turbo JPEG parity",
     )
 }
 
@@ -624,9 +676,14 @@ fn fuzz_build() -> Result<(), String> {
 
 const FUZZ_TARGETS: &[(&str, &str)] = &[
     ("crates/j2k", "decode_fuzz"),
+    ("crates/j2k", "jp2_box_fuzz"),
+    ("crates/j2k", "jp2_metadata_fuzz"),
     ("crates/j2k", "parse_fuzz"),
+    ("crates/j2k", "region_scaled_fuzz"),
     ("crates/j2k-jpeg", "decode_fuzz"),
     ("crates/j2k-jpeg", "parse_fuzz"),
+    ("crates/j2k-jpeg", "region_scaled_fuzz"),
+    ("crates/j2k-jpeg", "row_stream_fuzz"),
     ("crates/j2k-tilecodec", "decompress_fuzz"),
     ("crates/j2k-transcode", "jpeg_to_htj2k_fuzz"),
 ];
@@ -997,7 +1054,7 @@ fn miri() -> Result<(), String> {
 }
 
 fn machete() -> Result<(), String> {
-    run_program(OsString::from("cargo-machete"), &[], &[])
+    run_program(OsString::from("cargo-machete"), &["--with-metadata"], &[])
 }
 
 fn panic_surface() -> Result<(), String> {
@@ -1013,6 +1070,8 @@ fn panic_surface() -> Result<(), String> {
             "clippy::all",
             "-W",
             "clippy::unwrap_used",
+            "-W",
+            "clippy::expect_used",
         ])
         .output()
         .map_err(|err| format!("failed to run cargo clippy panic-surface gate: {err}"))?;
@@ -1026,31 +1085,46 @@ fn panic_surface() -> Result<(), String> {
         ));
     }
 
-    let unwrap_used_count = stdout
+    let mut unwrap_used_count = 0usize;
+    let mut expect_used_count = 0usize;
+    for message in stdout
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|message| {
-            message
-                .get("reason")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|reason| reason == "compiler-message")
-                && message
-                    .get("message")
-                    .and_then(|message| message.get("code"))
-                    .and_then(|code| code.get("code"))
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|code| code == "clippy::unwrap_used")
-        })
-        .count();
+    {
+        if message
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|reason| reason != "compiler-message")
+        {
+            continue;
+        }
+        if let Some(code) = message
+            .get("message")
+            .and_then(|message| message.get("code"))
+            .and_then(|code| code.get("code"))
+            .and_then(serde_json::Value::as_str)
+        {
+            match code {
+                "clippy::unwrap_used" => unwrap_used_count += 1,
+                "clippy::expect_used" => expect_used_count += 1,
+                _ => {}
+            }
+        }
+    }
 
     if unwrap_used_count > PANIC_SURFACE_UNWRAP_USED_BASELINE {
         return Err(format!(
             "panic-surface ratchet exceeded: clippy::unwrap_used reported {unwrap_used_count}, baseline is {PANIC_SURFACE_UNWRAP_USED_BASELINE}"
         ));
     }
+    if expect_used_count > PANIC_SURFACE_EXPECT_USED_BASELINE {
+        return Err(format!(
+            "panic-surface ratchet exceeded: clippy::expect_used reported {expect_used_count}, baseline is {PANIC_SURFACE_EXPECT_USED_BASELINE}"
+        ));
+    }
 
     println!(
-        "panic-surface ratchet: clippy::unwrap_used {unwrap_used_count}/{PANIC_SURFACE_UNWRAP_USED_BASELINE}"
+        "panic-surface ratchet: clippy::unwrap_used {unwrap_used_count}/{PANIC_SURFACE_UNWRAP_USED_BASELINE}, clippy::expect_used {expect_used_count}/{PANIC_SURFACE_EXPECT_USED_BASELINE}"
     );
     Ok(())
 }
@@ -1111,12 +1185,19 @@ fn verify_unsafe_audit() -> Result<(), String> {
         );
     }
     let mut malformed_rows = Vec::new();
+    let mut documented_paths = BTreeSet::new();
     for line in audit.lines() {
         let trimmed = line.trim();
         if !trimmed.starts_with("| `crates/") {
             continue;
         }
         let cells = trimmed.split('|').map(str::trim).collect::<Vec<_>>();
+        if let Some(path) = cells.get(1).and_then(|cell| {
+            cell.strip_prefix('`')
+                .and_then(|cell| cell.strip_suffix('`'))
+        }) {
+            documented_paths.insert(path.to_string());
+        }
         if cells.len() < 6
             || cells[1].is_empty()
             || cells[2].is_empty()
@@ -1134,15 +1215,28 @@ fn verify_unsafe_audit() -> Result<(), String> {
         ));
     }
     let mut missing = Vec::new();
+    let mut current_unsafe = BTreeSet::new();
     for path in rust_sources(Path::new("crates"))? {
         let source = fs::read_to_string(&path)
             .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
         if source.contains("unsafe ") || source.contains("unsafe{") {
             let relative = path.to_string_lossy().replace('\\', "/");
-            if !audit.contains(&relative) {
-                missing.push(relative);
-            }
+            current_unsafe.insert(relative);
         }
+    }
+    for relative in &current_unsafe {
+        if !documented_paths.contains(relative) {
+            missing.push(relative.clone());
+        }
+    }
+    let stale = documented_paths
+        .difference(&current_unsafe)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !stale.is_empty() {
+        return Err(format!(
+            "docs/unsafe-audit.md has stale unsafe source entries: {stale:?}"
+        ));
     }
     if missing.is_empty() {
         Ok(())
@@ -1341,7 +1435,10 @@ fn validate_unpublished_dependencies(
 }
 
 fn cargo_metadata() -> Result<serde_json::Value, String> {
-    let data = command_output_os(cargo(), &["metadata", "--no-deps", "--format-version", "1"])?;
+    let data = command_output_os(
+        cargo(),
+        &["metadata", "--locked", "--no-deps", "--format-version", "1"],
+    )?;
     serde_json::from_str(&data).map_err(|err| format!("failed to parse cargo metadata: {err}"))
 }
 
@@ -1650,6 +1747,73 @@ fn run_cargo_with_env(args: &[&str], envs: &[(&str, &str)]) -> Result<(), String
     run_program(cargo(), args, envs)
 }
 
+fn run_cargo_test_with_pass_floor(
+    args: &[&str],
+    envs: &[(&str, &str)],
+    min_passed: usize,
+    label: &str,
+) -> Result<(), String> {
+    let mut test_args = args.to_vec();
+    test_args.extend_from_slice(&["--", "--nocapture"]);
+    let env_display = envs
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let display_prefix = if env_display.is_empty() {
+        String::new()
+    } else {
+        format!("{env_display} ")
+    };
+    eprintln!(
+        "+ {display_prefix}{} {}",
+        cargo().to_string_lossy(),
+        test_args.join(" ")
+    );
+
+    let mut command = Command::new(cargo());
+    command.args(&test_args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command
+        .output()
+        .map_err(|err| format!("failed to start `{}`: {err}", cargo().to_string_lossy()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    print!("{stdout}");
+    eprint!("{stderr}");
+    if !output.status.success() {
+        return Err(format!(
+            "`{}` exited with {} while running {label}",
+            cargo().to_string_lossy(),
+            output.status
+        ));
+    }
+
+    let passed = passed_test_count(&format!("{stdout}\n{stderr}"));
+    if passed < min_passed {
+        return Err(format!(
+            "{label} executed {passed} tests, expected at least {min_passed}; \
+             check required comparator tools and skip gates"
+        ));
+    }
+    Ok(())
+}
+
+fn passed_test_count(output: &str) -> usize {
+    output
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("test result: ok.")?;
+            if !rest.contains(" passed") {
+                return None;
+            }
+            rest.split_whitespace().next()?.parse::<usize>().ok()
+        })
+        .sum()
+}
+
 fn run_nightly_cargo(args: &[&str]) -> Result<(), String> {
     let mut rustup_args = vec!["run", "nightly", "cargo"];
     rustup_args.extend_from_slice(args);
@@ -1739,12 +1903,7 @@ fn comparator_versions() -> Vec<(String, String)> {
             "OpenJPEG".to_string(),
             comparator_command_version("J2K_OPENJPEG_DECOMPRESS_BIN", "opj_decompress", &["-h"]),
         ),
-        (
-            "Grok".to_string(),
-            env::var("J2K_GROK_ROOT")
-                .map(|root| format!("configured root: {root}"))
-                .unwrap_or_else(|_| "unavailable: J2K_GROK_ROOT not set".to_string()),
-        ),
+        ("Grok".to_string(), grok_comparator_version()),
         (
             "libjpeg-turbo".to_string(),
             command_output("pkg-config", &["--modversion", "libturbojpeg"])
@@ -1752,6 +1911,19 @@ fn comparator_versions() -> Vec<(String, String)> {
                 .unwrap_or_else(|err| format!("unavailable: {err}")),
         ),
     ]
+}
+
+fn grok_comparator_version() -> String {
+    if let Ok(version) = command_output("pkg-config", &["--modversion", "libgrokj2k"]) {
+        let lib_dir = command_output("pkg-config", &["--variable", "libdir", "libgrokj2k"])
+            .unwrap_or_else(|err| format!("libdir unavailable: {err}"));
+        return format!("pkg-config libgrokj2k {version}; libdir: {lib_dir}");
+    }
+    env::var("J2K_GROK_ROOT")
+        .map(|root| format!("configured root: {root}"))
+        .unwrap_or_else(|_| {
+            "unavailable: pkg-config libgrokj2k and J2K_GROK_ROOT not set".to_string()
+        })
 }
 
 fn comparator_command_version(env_var: &str, fallback: &str, args: &[&str]) -> String {
@@ -1873,7 +2045,7 @@ fn print_help() {
     println!(
         "usage: cargo xtask <task>\n\n\
          tasks:\n\
-           ci            fmt, clippy, test, and docs\n\
+          ci            fmt, clippy, panic-surface, test, docs, and unsafe-audit\n\
            fmt           check rustfmt\n\
            clippy        run clippy with warnings denied\n\
            clippy-strict run stricter J2K clippy gates\n\
@@ -1883,11 +2055,11 @@ fn print_help() {
            typos         run typos\n\
            bench-build   compile benchmark targets\n\
            bench-report  print or write a benchmark publication report\n\
-           adoption-benchmark run CPU comparator and optional CUDA/Metal adoption benchmark bundle\n\
-           adoption-curate stage inspectable external J2K fixtures and a pinned manifest\n\
-           adoption-manifest generate decode and encode fixture manifests for adoption benchmarks\n\
-           adoption-materialize stage source images into fixed J2K/HTJ2K fixtures and manifests\n\
-           adoption-report render a marketing-safe report from an adoption benchmark bundle\n\
+           adoption-benchmark run CPU comparator and optional CUDA/Metal adoption benchmark bundle [--features adoption]\n\
+           adoption-curate stage inspectable external J2K fixtures and a pinned manifest [--features adoption]\n\
+           adoption-manifest generate decode and encode fixture manifests for adoption benchmarks [--features adoption]\n\
+           adoption-materialize stage source images into fixed J2K/HTJ2K fixtures and manifests [--features adoption]\n\
+           adoption-report render a marketing-safe report from an adoption benchmark bundle [--features adoption]\n\
           public-support verify the public J2K/HTJ2K support matrix and publication gates [--final]\n\
           j2k-bench-signoff run required OpenJPEG/Grok parity and J2K compare bench compile gates\n\
           j2k-perf-guard compare CPU J2K Criterion medians against a baseline git ref\n\
@@ -1914,12 +2086,35 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
+    use super::passed_test_count;
     use super::perf_guard::{
         compare_estimates, discover_estimates, sync_benchmark_sources, BenchEstimate,
         RegressionOutcome,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn passed_test_count_sums_rust_test_summaries() {
+        let output = "\
+running 8 tests
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+running 1 test
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+";
+
+        assert_eq!(passed_test_count(output), 9);
+    }
+
+    #[test]
+    fn passed_test_count_ignores_failed_or_unrelated_lines() {
+        let output = "\
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+some other output: 12 passed
+";
+
+        assert_eq!(passed_test_count(output), 0);
+    }
 
     #[test]
     fn compare_estimates_flags_median_regression_above_threshold() {

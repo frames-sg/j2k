@@ -3,24 +3,24 @@
 //! Hidden helpers used by Criterion benches.
 
 use crate::backend::scalar;
-use crate::backend::Backend;
+use crate::backend::{Backend, Rgb420ChromaRows, Rgb420RowPair};
 use crate::color::upsample::upsample_h2v2_fancy_rows;
 use crate::color::ycbcr::ycbcr_to_rgb;
 use crate::context::DecoderContext;
-use crate::decoder::{Decoder, JpegView};
+use crate::decoder::{Decoder, JpegView, SinkWriter};
 use crate::entropy::huffman::HuffmanTable;
 use crate::entropy::sequential::decode_scan_fast_tile_rgb_profiled;
 use crate::error::JpegError;
 use crate::idct::downscale::idct_islow_2x2_scalar;
 use crate::idct::{idct_islow, idct_islow_dc_only};
 use crate::internal::bit_reader::BitReader;
-use crate::internal::scratch::{ScratchPool, SinkRows};
-use crate::output::{InterleavedRgbWriter, OutputWriter};
+use crate::internal::scratch::ScratchPool;
 use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::Cell;
 use core::ptr;
+use j2k_core::RowSink;
 use std::time::Instant;
 
 #[doc(hidden)]
@@ -217,70 +217,13 @@ fn with_420_dispatch_stats<R>(stats: &mut Bench420DispatchStats, f: impl FnOnce(
     })
 }
 
-struct BenchProfileSinkWriter {
-    rows: SinkRows,
-    backend: Backend,
-}
+struct BlackBoxRowSink;
 
-impl BenchProfileSinkWriter {
-    fn new(rows: SinkRows, backend: Backend) -> Self {
-        Self { rows, backend }
-    }
+impl RowSink<u8> for BlackBoxRowSink {
+    type Error = JpegError;
 
-    fn into_rows(self) -> SinkRows {
-        self.rows
-    }
-}
-
-impl InterleavedRgbWriter for BenchProfileSinkWriter {
-    fn with_rgb_rows<R, F>(&mut self, _y: u32, row_count: usize, fill: F) -> Result<R, JpegError>
-    where
-        F: FnOnce(&mut [u8], Option<&mut [u8]>) -> Result<R, JpegError>,
-    {
-        let result = match row_count {
-            1 => fill(&mut self.rows.top_row, None),
-            2 => fill(&mut self.rows.top_row, Some(&mut self.rows.bottom_row)),
-            _ => unreachable!("profile sink only supports one or two rows"),
-        }?;
-        std::hint::black_box(&self.rows.top_row);
-        if row_count == 2 {
-            std::hint::black_box(&self.rows.bottom_row);
-        }
-        Ok(result)
-    }
-}
-
-impl OutputWriter for BenchProfileSinkWriter {
-    fn write_rgb_row(
-        &mut self,
-        _y: u32,
-        r_row: &[u8],
-        g_row: &[u8],
-        b_row: &[u8],
-    ) -> Result<(), JpegError> {
-        self.backend
-            .fill_rgb_row_from_rgb(r_row, g_row, b_row, &mut self.rows.top_row);
-        std::hint::black_box(&self.rows.top_row);
-        Ok(())
-    }
-
-    fn write_ycbcr_row(
-        &mut self,
-        _y: u32,
-        y_row: &[u8],
-        cb_row: &[u8],
-        cr_row: &[u8],
-    ) -> Result<(), JpegError> {
-        self.backend
-            .fill_rgb_row_from_ycbcr(y_row, cb_row, cr_row, &mut self.rows.top_row);
-        std::hint::black_box(&self.rows.top_row);
-        Ok(())
-    }
-
-    fn write_gray_row(&mut self, _y: u32, gray_row: &[u8]) -> Result<(), JpegError> {
-        self.backend
-            .fill_rgb_row_from_gray(gray_row, &mut self.rows.top_row);
-        std::hint::black_box(&self.rows.top_row);
+    fn write_row(&mut self, _y: u32, row: &[u8]) -> Result<(), Self::Error> {
+        std::hint::black_box(row);
         Ok(())
     }
 }
@@ -308,7 +251,8 @@ pub fn bench_profile_fast420_tile_batch(
 
         let width = dec.info.dimensions.0 as usize;
         let rows = pool.take_sink_rows(width);
-        let mut writer = BenchProfileSinkWriter::new(rows, dec.backend);
+        let mut sink = BlackBoxRowSink;
+        let mut writer = SinkWriter::new(&mut sink, rows, dec.backend);
         decode_scan_fast_tile_rgb_profiled(
             &dec.plan,
             dec.backend,
@@ -454,100 +398,149 @@ impl BenchRgb420RowPairScratch {
 
     /// Run one iteration through the detected CPU backend.
     pub fn run(&mut self) {
-        bench_rgb_row_pair_from_420(
+        bench_rgb_row_pair_from_420(BenchRgb420RowPair::new(
             &self.y_top,
             Some(&self.y_bottom),
-            &self.prev_cb,
-            &self.curr_cb,
-            &self.next_cb,
-            &self.prev_cr,
-            &self.curr_cr,
-            &self.next_cr,
+            BenchRgb420ChromaRows::new(
+                &self.prev_cb,
+                &self.curr_cb,
+                &self.next_cb,
+                &self.prev_cr,
+                &self.curr_cr,
+                &self.next_cr,
+            ),
             &mut self.top,
             Some(&mut self.bottom),
-        );
+        ));
     }
 
     /// Run one iteration through the scalar reference path.
     pub fn run_reference(&mut self) {
-        bench_rgb_row_pair_from_420_reference(
+        bench_rgb_row_pair_from_420_reference(BenchRgb420RowPair::new(
             &self.y_top,
             Some(&self.y_bottom),
-            &self.prev_cb,
-            &self.curr_cb,
-            &self.next_cb,
-            &self.prev_cr,
-            &self.curr_cr,
-            &self.next_cr,
+            BenchRgb420ChromaRows::new(
+                &self.prev_cb,
+                &self.curr_cb,
+                &self.next_cb,
+                &self.prev_cr,
+                &self.curr_cr,
+                &self.next_cr,
+            ),
             &mut self.top,
             Some(&mut self.bottom),
-        );
+        ));
+    }
+}
+
+/// Borrowed chroma rows for the 4:2:0 row-pair bench helper.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct BenchRgb420ChromaRows<'a> {
+    prev_cb: &'a [u8],
+    curr_cb: &'a [u8],
+    next_cb: &'a [u8],
+    prev_cr: &'a [u8],
+    curr_cr: &'a [u8],
+    next_cr: &'a [u8],
+}
+
+impl<'a> BenchRgb420ChromaRows<'a> {
+    #[must_use]
+    pub fn new(
+        prev_cb: &'a [u8],
+        curr_cb: &'a [u8],
+        next_cb: &'a [u8],
+        prev_cr: &'a [u8],
+        curr_cr: &'a [u8],
+        next_cr: &'a [u8],
+    ) -> Self {
+        Self {
+            prev_cb,
+            curr_cb,
+            next_cb,
+            prev_cr,
+            curr_cr,
+            next_cr,
+        }
+    }
+}
+
+/// Borrowed row-pair request for the 4:2:0 row-pair bench helper.
+#[doc(hidden)]
+pub struct BenchRgb420RowPair<'a> {
+    y_top: &'a [u8],
+    y_bottom: Option<&'a [u8]>,
+    chroma: BenchRgb420ChromaRows<'a>,
+    dst_top: &'a mut [u8],
+    dst_bottom: Option<&'a mut [u8]>,
+}
+
+impl<'a> BenchRgb420RowPair<'a> {
+    #[must_use]
+    pub fn new(
+        y_top: &'a [u8],
+        y_bottom: Option<&'a [u8]>,
+        chroma: BenchRgb420ChromaRows<'a>,
+        dst_top: &'a mut [u8],
+        dst_bottom: Option<&'a mut [u8]>,
+    ) -> Self {
+        Self {
+            y_top,
+            y_bottom,
+            chroma,
+            dst_top,
+            dst_bottom,
+        }
+    }
+
+    fn into_backend(self) -> Rgb420RowPair<'a> {
+        let BenchRgb420RowPair {
+            y_top,
+            y_bottom,
+            chroma,
+            dst_top,
+            dst_bottom,
+        } = self;
+        Rgb420RowPair::new(
+            y_top,
+            y_bottom,
+            Rgb420ChromaRows::new(
+                chroma.prev_cb,
+                chroma.curr_cb,
+                chroma.next_cb,
+                chroma.prev_cr,
+                chroma.curr_cr,
+                chroma.next_cr,
+            ),
+            dst_top,
+            dst_bottom,
+        )
     }
 }
 
 /// Run the platform's normal RGB 4:2:0 row-pair backend on caller-provided
 /// inputs. On aarch64 this routes through the detected NEON path.
 #[doc(hidden)]
-#[allow(clippy::too_many_arguments)]
-pub fn bench_rgb_row_pair_from_420(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
-) {
-    Backend::detect().fill_rgb_row_pair_from_420(
-        y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top, dst_bottom,
-    );
+pub fn bench_rgb_row_pair_from_420(request: BenchRgb420RowPair<'_>) {
+    Backend::detect().fill_rgb_row_pair_from_420(request.into_backend());
 }
 
 /// Run the RGB 4:2:0 row-pair backend with dispatch stats.
 #[doc(hidden)]
-#[allow(clippy::too_many_arguments)]
 pub fn bench_rgb_row_pair_from_420_with_stats(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
+    request: BenchRgb420RowPair<'_>,
     stats: &mut Bench420DispatchStats,
 ) {
     with_420_dispatch_stats(stats, || {
-        bench_rgb_row_pair_from_420(
-            y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top,
-            dst_bottom,
-        );
+        bench_rgb_row_pair_from_420(request);
     });
 }
 
 /// Run the scalar RGB 4:2:0 row-pair reference on caller-provided inputs.
 #[doc(hidden)]
-#[allow(clippy::too_many_arguments)]
-pub fn bench_rgb_row_pair_from_420_reference(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
-) {
-    scalar::fill_rgb_row_pair_from_420(
-        y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top, dst_bottom,
-    );
+pub fn bench_rgb_row_pair_from_420_reference(request: BenchRgb420RowPair<'_>) {
+    scalar::fill_rgb_row_pair_from_420(request.into_backend());
 }
 
 /// Pre-allocated scratch for the 4:2:0 fancy-upsample microbench. Stores

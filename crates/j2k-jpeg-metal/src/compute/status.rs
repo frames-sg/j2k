@@ -3,7 +3,7 @@
 use std::mem::size_of_val;
 
 use j2k_core::PixelFormat;
-use j2k_jpeg::Decoder as CpuDecoder;
+use j2k_jpeg::{DecodeRequest, Decoder as CpuDecoder};
 use metal::{Buffer, Device};
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
         FAST420_STATUS_TRUNCATED, JPEG_BASELINE_ENCODE_STATUS_INVALID_PARAMS,
         JPEG_BASELINE_ENCODE_STATUS_MISSING_HUFFMAN, JPEG_BASELINE_ENCODE_STATUS_OVERFLOW,
     },
-    buffers::new_shared_buffer_with_data,
+    buffers::{checked_buffer_slice, new_shared_buffer_with_data},
     Error,
 };
 
@@ -38,7 +38,7 @@ pub(super) fn decode_error_from_cpu(
     fmt: PixelFormat,
     status: JpegDecodeStatus,
 ) -> Error {
-    if let Err(err) = decoder.decode(fmt) {
+    if let Err(err) = decoder.decode_request(DecodeRequest::full(fmt)) {
         Error::Decode(err)
     } else {
         let reason = match status.code {
@@ -65,16 +65,16 @@ pub(super) fn decode_status_buffer(device: &Device, count: u32) -> Buffer {
     new_shared_buffer_with_data(device, bytes)
 }
 
-pub(super) fn first_decode_error_status(buffer: &Buffer, count: u32) -> Option<JpegDecodeStatus> {
-    // SAFETY: Decode status buffers are allocated for `count` JpegDecodeStatus entries before
-    // dispatch and are read only after the producing command buffer has completed.
-    let statuses = unsafe {
-        core::slice::from_raw_parts(buffer.contents().cast::<JpegDecodeStatus>(), count as usize)
-    };
-    statuses
+pub(super) fn first_decode_error_status(
+    buffer: &Buffer,
+    count: u32,
+) -> Result<Option<JpegDecodeStatus>, Error> {
+    let statuses =
+        checked_buffer_slice::<JpegDecodeStatus>(buffer, count as usize, "decode statuses")?;
+    Ok(statuses
         .iter()
         .copied()
-        .find(|status| status.code != FAST420_STATUS_OK)
+        .find(|status| status.code != FAST420_STATUS_OK))
 }
 
 pub(super) fn fast422_status_error(status: JpegDecodeStatus) -> Error {

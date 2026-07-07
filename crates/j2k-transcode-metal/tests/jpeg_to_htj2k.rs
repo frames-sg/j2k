@@ -31,9 +31,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling
     let encoded = match transcoder.transcode_with_accelerator(&jpeg, &options, &mut accelerator) {
         Ok(encoded) => encoded,
         Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
-            eprintln!(
-                "skipping Metal transcode integration test because no Metal device is available"
-            );
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         }
         Err(error) => panic!("explicit Metal 9/7 transcode failed: {error}"),
@@ -84,9 +82,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling
     let encoded = match transcoder.transcode_with_accelerator(&jpeg, &options, &mut accelerator) {
         Ok(encoded) => encoded,
         Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
-            eprintln!(
-                "skipping Metal transcode integration test because no Metal device is available"
-            );
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         }
         Err(error) => panic!("explicit Metal 5/3 transcode failed: {error}"),
@@ -191,20 +187,15 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
-    let batch = match transcoder.transcode_batch_with_accelerator(
-        &inputs,
-        &options,
-        &mut accelerator,
-    ) {
-        Ok(batch) => batch,
-        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
-            eprintln!(
-                    "skipping Metal reversible batch transcode integration test because no Metal device is available"
-                );
-            return;
-        }
-        Err(error) => panic!("explicit Metal reversible 5/3 batch transcode failed: {error}"),
-    };
+    let batch =
+        match transcoder.transcode_batch_with_accelerator(&inputs, &options, &mut accelerator) {
+            Ok(batch) => batch,
+            Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
+                j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+                return;
+            }
+            Err(error) => panic!("explicit Metal reversible 5/3 batch transcode failed: {error}"),
+        };
 
     assert_eq!(batch.report.tile_count, inputs.len());
     assert_eq!(batch.report.successful_tiles, inputs.len());
@@ -238,18 +229,15 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
-    let batch = match transcoder.transcode_batch_with_accelerator(
-        &inputs,
-        &options,
-        &mut accelerator,
-    ) {
-        Ok(batch) => batch,
-        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
-            eprintln!("skipping Metal 9/7 batch transcode integration test because no Metal device is available");
-            return;
-        }
-        Err(error) => panic!("explicit Metal 9/7 batch transcode failed: {error}"),
-    };
+    let batch =
+        match transcoder.transcode_batch_with_accelerator(&inputs, &options, &mut accelerator) {
+            Ok(batch) => batch,
+            Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
+                j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+                return;
+            }
+            Err(error) => panic!("explicit Metal 9/7 batch transcode failed: {error}"),
+        };
 
     assert_eq!(batch.report.tile_count, inputs.len());
     assert_eq!(batch.report.successful_tiles, inputs.len());
@@ -302,18 +290,15 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
-    let batch = match transcoder.transcode_batch_with_accelerator(
-        &inputs,
-        &options,
-        &mut accelerator,
-    ) {
-        Ok(batch) => batch,
-        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
-            eprintln!("skipping Metal 9/7 code-block batch transcode integration test because no Metal device is available");
-            return;
-        }
-        Err(error) => panic!("explicit Metal 9/7 code-block batch transcode failed: {error}"),
-    };
+    let batch =
+        match transcoder.transcode_batch_with_accelerator(&inputs, &options, &mut accelerator) {
+            Ok(batch) => batch,
+            Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
+                j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+                return;
+            }
+            Err(error) => panic!("explicit Metal 9/7 code-block batch transcode failed: {error}"),
+        };
 
     assert_eq!(batch.report.tile_count, inputs.len());
     assert_eq!(batch.report.successful_tiles, inputs.len());
@@ -375,9 +360,7 @@ fn assert_explicit_metal_integer53_matches_scalar(
     let encoded = match transcoder.transcode_with_accelerator(jpeg, &options, &mut accelerator) {
         Ok(encoded) => encoded,
         Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
-            eprintln!(
-                "skipping Metal reversible transcode integration test because no Metal device is available"
-            );
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         }
         Err(error) => panic!("explicit Metal reversible 5/3 transcode failed: {error}"),

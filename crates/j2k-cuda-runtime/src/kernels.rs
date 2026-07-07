@@ -2,6 +2,7 @@ use std::os::raw::c_uint;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum CudaKernel {
+    #[cfg_attr(not(feature = "cuda-oxide-copy-u8"), allow(dead_code))]
     CopyU8,
     J2kDeinterleaveToF32,
     J2kDeinterleaveStridedToF32,
@@ -24,9 +25,11 @@ pub(crate) enum CudaKernel {
     J2kIdwtInterleaveHorizontalMulti,
     J2kIdwtInterleaveHorizontal53Multi,
     J2kIdwtInterleaveHorizontal97Multi,
+    #[cfg_attr(not(test), allow(dead_code))]
     J2kIdwtHorizontal,
     J2kIdwtHorizontal53,
     J2kIdwtHorizontal97,
+    #[cfg_attr(not(test), allow(dead_code))]
     J2kIdwtVertical,
     J2kIdwtVerticalMulti,
     J2kIdwtVertical53Multi,
@@ -34,6 +37,7 @@ pub(crate) enum CudaKernel {
     J2kIdwtVertical97MultiCols4,
     J2kIdwtVertical53,
     J2kIdwtVertical97,
+    #[cfg_attr(not(test), allow(dead_code))]
     Htj2kEncodeCodeblock,
     Htj2kEncodeCodeblocks,
     Htj2kEncodeCodeblocksMultiInput,
@@ -55,6 +59,7 @@ pub(crate) enum CudaKernel {
     JpegEncodeBaselineEntropy,
     #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
     JpegEncodeBaselineEntropyBatch,
+    #[cfg_attr(not(test), allow(dead_code))]
     J2kInverseDwtSingle,
     J2kInverseMct,
     J2kStoreGray16,
@@ -62,6 +67,7 @@ pub(crate) enum CudaKernel {
     J2kStoreRgb16,
     J2kStoreRgb16Mct,
     J2kStoreRgb8,
+    #[cfg_attr(not(test), allow(dead_code))]
     J2kStoreRgb8Mct,
     J2kStoreRgb8MctBatch,
     // Coefficient-domain JPEG->HTJ2K transcode (j2k-transcode-cuda).

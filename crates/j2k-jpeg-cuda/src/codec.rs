@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{
-    submit_ready_device, BackendRequest, Downscale, ImageCodec, PixelFormat, ReadySubmission, Rect,
-    TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
+    checked_surface_len, submit_ready_device, BackendRequest, Downscale, ImageCodec, PixelFormat,
+    ReadySubmission, Rect, TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
+    TileRegionScaledDeviceDecodeRequest, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaDeviceBuffer;
@@ -24,6 +25,17 @@ use crate::{CudaSession, Error, Surface};
 /// JPEG codec marker used by J2K's generic CUDA decode traits.
 pub struct Codec;
 
+struct RegionScaledSurfaceRequest<'a> {
+    ctx: &'a mut j2k_core::DecoderContext<CpuDecoderContext>,
+    session: &'a mut CudaSession,
+    pool: &'a mut CpuScratchPool,
+    input: &'a [u8],
+    fmt: PixelFormat,
+    roi: Rect,
+    scale: Downscale,
+    backend: BackendRequest,
+}
+
 #[cfg(feature = "cuda-runtime")]
 #[derive(Debug, Clone, Copy)]
 /// Caller-owned CUDA output target for one full-frame RGB8 JPEG decode.
@@ -36,10 +48,11 @@ pub struct CudaJpegDecodeOutputTile<'a> {
     pub pitch_bytes: usize,
 }
 
+#[doc(hidden)]
 impl ImageCodec for Codec {
     type Error = Error;
     type Warning = CpuWarning;
-    type Pool = CpuScratchPool;
+    type Pool = crate::ScratchPool;
 }
 
 fn rejected_decode_path_error(backend: BackendRequest, reason: &'static str) -> Error {
@@ -51,6 +64,7 @@ fn rejected_decode_path_error(backend: BackendRequest, reason: &'static str) -> 
 
 impl Codec {
     #[cfg(feature = "cuda-runtime")]
+    #[doc(hidden)]
     /// Run experimental chunked JPEG entropy self-sync diagnostics for a 4:2:0 RGB8 tile.
     ///
     /// This does not decode pixels and does not affect production CUDA routing.
@@ -67,6 +81,7 @@ impl Codec {
     ///
     /// This is a strict J2K-owned CUDA-kernel path and currently supports
     /// full-tile RGB8 fast 4:2:0, 4:2:2, and 4:4:4 YCbCr JPEG inputs.
+    #[doc(hidden)]
     pub fn decode_tile_rgb8_into_cuda_buffer_with_session(
         input: &[u8],
         output: &CudaDeviceBuffer,
@@ -83,6 +98,7 @@ impl Codec {
     /// This is a strict J2K-owned CUDA-kernel path and currently supports
     /// full-tile RGB8 fast 4:2:0, 4:2:2, and 4:4:4 YCbCr JPEG inputs. Returned
     /// stats preserve the input tile order.
+    #[doc(hidden)]
     pub fn decode_tiles_rgb8_into_cuda_buffers_with_session(
         tiles: &[CudaJpegDecodeOutputTile<'_>],
         session: &mut CudaSession,
@@ -157,8 +173,7 @@ impl Codec {
             return Err(rejected_decode_path_error(backend, reason));
         }
         let dims = (resolved.output_rect.w, resolved.output_rect.h);
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         decode_tile_into_in_context(input, ctx.codec_mut(), pool, &mut out, stride, fmt)?;
         wrap_surface(out, dims, fmt, backend, session)
     }
@@ -179,15 +194,16 @@ impl Codec {
             });
         }
         let dims = (roi.w, roi.h);
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         decode_tile_region_into_in_context(
             input,
             ctx.codec_mut(),
             pool,
-            &mut out,
-            stride,
-            fmt,
+            j2k_jpeg::TileDecodeOutput {
+                out: &mut out,
+                stride,
+                fmt,
+            },
             roi.into(),
         )?;
         wrap_surface(out, dims, fmt, backend, session)
@@ -213,31 +229,34 @@ impl Codec {
             source_dims.0.div_ceil(scale.denominator()),
             source_dims.1.div_ceil(scale.denominator()),
         );
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         decode_tile_scaled_into_in_context(
             input,
             ctx.codec_mut(),
             pool,
-            &mut out,
-            stride,
-            fmt,
+            j2k_jpeg::TileDecodeOutput {
+                out: &mut out,
+                stride,
+                fmt,
+            },
             scale,
         )?;
         wrap_surface(out, dims, fmt, backend, session)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn decode_tile_region_scaled_to_surface_impl(
-        ctx: &mut j2k_core::DecoderContext<CpuDecoderContext>,
-        session: &mut CudaSession,
-        pool: &mut CpuScratchPool,
-        input: &[u8],
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
+        request: RegionScaledSurfaceRequest<'_>,
     ) -> Result<Surface, Error> {
+        let RegionScaledSurfaceRequest {
+            ctx,
+            session,
+            pool,
+            input,
+            fmt,
+            roi,
+            scale,
+            backend,
+        } = request;
         validate_surface_request(backend)?;
         if backend == BackendRequest::Cuda {
             return Err(Error::UnsupportedCudaRequest {
@@ -248,15 +267,16 @@ impl Codec {
             let scaled = roi.scaled_covering(scale);
             (scaled.w, scaled.h)
         };
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         decode_tile_region_scaled_into_in_context(
             input,
             ctx.codec_mut(),
             pool,
-            &mut out,
-            stride,
-            fmt,
+            j2k_jpeg::TileDecodeOutput {
+                out: &mut out,
+                stride,
+                fmt,
+            },
             roi.into(),
             scale,
         )?;
@@ -264,6 +284,17 @@ impl Codec {
     }
 }
 
+fn allocate_cpu_surface(dims: (u32, u32), fmt: PixelFormat) -> Result<(Vec<u8>, usize), Error> {
+    let (stride, len) = checked_surface_len(
+        dims,
+        fmt.bytes_per_pixel(),
+        DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        "JPEG CUDA CPU fallback surface",
+    )?;
+    Ok((vec![0u8; len], stride))
+}
+
+#[doc(hidden)]
 impl TileBatchDecodeSubmit for Codec {
     type Context = CpuDecoderContext;
     type Session = CudaSession;
@@ -318,26 +349,38 @@ impl TileBatchDecodeSubmit for Codec {
         ctx: &mut j2k_core::DecoderContext<Self::Context>,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
-        input: &[u8],
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
+        request: TileRegionScaledDeviceDecodeRequest<'_>,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
+        let TileRegionScaledDeviceDecodeRequest {
+            input,
+            fmt,
+            roi,
+            scale,
+            backend,
+        } = request;
         validate_surface_request(backend)?;
         Ok(submit_ready_device(session, |session| {
-            Self::decode_tile_region_scaled_to_surface_impl(
-                ctx, session, pool, input, fmt, roi, scale, backend,
-            )
+            Self::decode_tile_region_scaled_to_surface_impl(RegionScaledSurfaceRequest {
+                ctx,
+                session,
+                pool,
+                input,
+                fmt,
+                roi,
+                scale,
+                backend,
+            })
         }))
     }
 }
 
+#[doc(hidden)]
 impl TileBatchDecodeDevice for Codec {
     type Context = CpuDecoderContext;
     type DeviceSurface = Surface;
 }
 
+#[doc(hidden)]
 impl TileBatchDecodeManyDevice for Codec {
     type Context = CpuDecoderContext;
     type DeviceSurface = Surface;

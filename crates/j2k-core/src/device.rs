@@ -3,6 +3,7 @@
 use crate::backend::BackendRequest;
 
 /// Validate a backend request for adapters that support CPU fallback and CUDA output.
+#[doc(hidden)]
 pub const fn validate_cuda_surface_backend_request(
     request: BackendRequest,
 ) -> Result<(), BackendRequest> {

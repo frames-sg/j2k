@@ -30,21 +30,24 @@ metal = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-jpeg-encoder = "0.7.0"
-jpeg-decoder = { version = "0.3.2", default-features = false }
+jpeg-encoder = { workspace = true }
+jpeg-decoder = { workspace = true }
 j2k-test-support = { path = "../j2k-test-support" }
 
 [[bench]]
 name = "device_upload"
 harness = false
+test = false
 
 [[bench]]
 name = "compare"
 harness = false
+test = false
 
 [[bench]]
 name = "encode_baseline"
 harness = false
+test = false
 
 [lints.rust]
 unsafe_code = "allow"

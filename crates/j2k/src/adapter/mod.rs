@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Public adapter-facing JPEG 2000 planning APIs.
+//! Public adapter-facing JPEG 2000 adapter contracts.
 
-/// Adaptive CPU/device route planning.
-pub mod adaptive_route;
+#[cfg(test)]
+mod adaptive_route;
 
 /// Device decode request normalization.
-pub mod device_plan;
+pub(crate) mod device_plan;
 
 /// Encode-stage adapter contracts.
-pub mod encode_stage;
+pub(crate) mod encode_stage;

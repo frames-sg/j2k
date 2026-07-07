@@ -7,19 +7,18 @@ use crate::{
     context::J2kContext,
     decode::{
         decode_image_into_with_native_context, decode_image_region_into_with_native_context,
-        validate_buffer, validate_region, J2kDecodeOutcome, J2kDecodedComponents,
-        J2kDecodedNativeComponents,
+        decode_warnings_for_settings, validate_buffer, validate_region, J2kDecodeOutcome,
+        J2kDecodeWarning, J2kDecodedComponents, J2kDecodedNativeComponents,
     },
     parse::{parse_image_info, parse_info},
     scratch::J2kScratchPool,
     CpuDecodeParallelism, J2kError, J2kSupportInfo,
 };
 use alloc::vec::Vec;
-use core::convert::Infallible;
 use j2k_core::{
     BufferError, CompressedPayloadKind, CompressedTransferSyntax, DecodeRowsError, DecoderContext,
     Downscale, ImageCodec, ImageDecode, ImageDecodeRows, Info, PassthroughCandidate, PixelFormat,
-    Rect, RowSink, TileBatchDecode, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+    Rect, RowSink, TileBatchDecode, TileRegionScaledDecodeJob, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
 
 /// Borrowed parse result for a JP2 or raw JPEG 2000 / HTJ2K codestream.
@@ -92,10 +91,8 @@ impl<'a> J2kView<'a> {
 pub struct J2kDecoder<'a> {
     bytes: &'a [u8],
     info: Info,
-    support_info: Option<J2kSupportInfo>,
     image: Option<Image<'a>>,
     native_context: j2k_native::DecoderContext<'a>,
-    passthrough: Option<(CompressedTransferSyntax, CompressedPayloadKind)>,
 }
 
 /// Options for bounded J2K row decoding.
@@ -198,21 +195,14 @@ impl<'a> J2kDecoder<'a> {
         Ok(Self {
             bytes: view.bytes,
             info: view.info,
-            support_info: view.support_info,
             image: view.image,
             native_context: j2k_native::DecoderContext::default(),
-            passthrough: view.passthrough,
         })
     }
 
     /// Header-derived image metadata.
     pub fn info(&self) -> &Info {
         &self.info
-    }
-
-    /// Full JPEG 2000 / HTJ2K support metadata when available from parse.
-    pub fn support_info(&self) -> Option<&J2kSupportInfo> {
-        self.support_info.as_ref()
     }
 
     /// Decode the full image into borrowed component planes.
@@ -227,14 +217,12 @@ impl<'a> J2kDecoder<'a> {
     pub fn decode_components(&mut self) -> Result<J2kDecodedComponents<'_>, J2kError> {
         self.ensure_image()?;
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
-            return Err(J2kError::Backend(
-                "internal image cache missing".to_string(),
-            ));
+            return Err(J2kError::internal_backend("internal image cache missing"));
         };
         image
             .decode_components_with_context(native_context)
             .map(|decoded| J2kDecodedComponents::from_native(&decoded))
-            .map_err(|err| J2kError::Backend(err.to_string()))
+            .map_err(J2kError::from_native_decode_error)
     }
 
     /// Decode a source-coordinate region into borrowed component planes.
@@ -249,14 +237,12 @@ impl<'a> J2kDecoder<'a> {
         validate_region(roi, self.info.dimensions)?;
         self.ensure_image()?;
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
-            return Err(J2kError::Backend(
-                "internal image cache missing".to_string(),
-            ));
+            return Err(J2kError::internal_backend("internal image cache missing"));
         };
         image
             .decode_region_components_with_context((roi.x, roi.y, roi.w, roi.h), native_context)
             .map(|decoded| J2kDecodedComponents::from_native(&decoded))
-            .map_err(|err| J2kError::Backend(err.to_string()))
+            .map_err(J2kError::from_native_decode_error)
     }
 
     /// Decode the full image into owned native-bit-depth component planes.
@@ -269,14 +255,12 @@ impl<'a> J2kDecoder<'a> {
     pub fn decode_native_components(&mut self) -> Result<J2kDecodedNativeComponents, J2kError> {
         self.ensure_image()?;
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
-            return Err(J2kError::Backend(
-                "internal image cache missing".to_string(),
-            ));
+            return Err(J2kError::internal_backend("internal image cache missing"));
         };
         image
             .decode_native_components_with_context(native_context)
             .map(|decoded| J2kDecodedNativeComponents::from_native(&decoded))
-            .map_err(|err| J2kError::Backend(err.to_string()))
+            .map_err(J2kError::from_native_decode_error)
     }
 
     /// Decode a source-coordinate region into owned native-bit-depth component
@@ -292,9 +276,7 @@ impl<'a> J2kDecoder<'a> {
         validate_region(roi, self.info.dimensions)?;
         self.ensure_image()?;
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
-            return Err(J2kError::Backend(
-                "internal image cache missing".to_string(),
-            ));
+            return Err(J2kError::internal_backend("internal image cache missing"));
         };
         image
             .decode_native_region_components_with_context(
@@ -302,7 +284,7 @@ impl<'a> J2kDecoder<'a> {
                 native_context,
             )
             .map(|decoded| J2kDecodedNativeComponents::from_native(&decoded))
-            .map_err(|err| J2kError::Backend(err.to_string()))
+            .map_err(J2kError::from_native_decode_error)
     }
 
     /// Return the CPU decode parallelism policy for this decoder.
@@ -314,19 +296,6 @@ impl<'a> J2kDecoder<'a> {
     pub fn set_cpu_decode_parallelism(&mut self, parallelism: CpuDecodeParallelism) {
         self.native_context
             .set_cpu_decode_parallelism(parallelism.to_native());
-    }
-
-    /// Original compressed bytes backing this decoder.
-    pub fn bytes(&self) -> &'a [u8] {
-        self.bytes
-    }
-
-    /// Return a byte-preserving passthrough candidate when the native parser
-    /// classified the compressed syntax and payload shape.
-    pub fn passthrough_candidate(&self) -> Option<PassthroughCandidate<'a>> {
-        self.passthrough.map(|(transfer_syntax, payload_kind)| {
-            PassthroughCandidate::new(self.bytes, transfer_syntax, payload_kind, self.info.clone())
-        })
     }
 
     /// Decode the full image into `out` using `stride` bytes per output row.
@@ -370,14 +339,12 @@ impl<'a> J2kDecoder<'a> {
         validate_buffer(self.info.dimensions, out.len(), stride, fmt)?;
         self.ensure_image()?;
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
-            return Err(J2kError::Backend(
-                "internal image cache missing".to_string(),
-            ));
+            return Err(J2kError::internal_backend("internal image cache missing"));
         };
         decode_image_into_with_native_context(image, native_context, out, stride, fmt)?;
         Ok(j2k_core::DecodeOutcome::new(
             Rect::full(self.info.dimensions),
-            Vec::new(),
+            decode_warnings_for_settings(DecodeSettings::default()),
         ))
     }
 
@@ -412,12 +379,13 @@ impl<'a> J2kDecoder<'a> {
         validate_buffer((roi.w, roi.h), out.len(), stride, fmt)?;
         self.ensure_image()?;
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
-            return Err(J2kError::Backend(
-                "internal image cache missing".to_string(),
-            ));
+            return Err(J2kError::internal_backend("internal image cache missing"));
         };
         decode_image_region_into_with_native_context(image, native_context, out, stride, fmt, roi)?;
-        Ok(j2k_core::DecodeOutcome::new(roi, Vec::new()))
+        Ok(j2k_core::DecodeOutcome::new(
+            roi,
+            decode_warnings_for_settings(DecodeSettings::default()),
+        ))
     }
 
     /// Decode the full image at a reduced resolution.
@@ -443,6 +411,7 @@ impl<'a> J2kDecoder<'a> {
             target_resolution: Some(self.scaled_target_dims(scale)),
             ..DecodeSettings::default()
         };
+        let warnings = decode_warnings_for_settings(settings);
         let image = backend_image(self.bytes, settings)?;
         let image_dims = (image.width(), image.height());
         validate_buffer(image_dims, out.len(), stride, fmt)?;
@@ -450,7 +419,7 @@ impl<'a> J2kDecoder<'a> {
         decode_image_into_with_native_context(&image, &mut native_context, out, stride, fmt)?;
         Ok(j2k_core::DecodeOutcome::new(
             Rect::full(image_dims),
-            Vec::new(),
+            warnings,
         ))
     }
 
@@ -482,6 +451,7 @@ impl<'a> J2kDecoder<'a> {
             target_resolution: Some(self.scaled_target_dims(scale)),
             ..DecodeSettings::default()
         };
+        let warnings = decode_warnings_for_settings(settings);
         let image = backend_image(self.bytes, settings)?;
         let image_dims = (image.width(), image.height());
         validate_region(scaled_roi, image_dims)?;
@@ -494,7 +464,7 @@ impl<'a> J2kDecoder<'a> {
             fmt,
             scaled_roi,
         )?;
-        Ok(j2k_core::DecodeOutcome::new(scaled_roi, Vec::new()))
+        Ok(j2k_core::DecodeOutcome::new(scaled_roi, warnings))
     }
 
     fn ensure_image(&mut self) -> Result<(), J2kError> {
@@ -510,7 +480,7 @@ impl<'a> J2kDecoder<'a> {
     fn cached_image(&self) -> Result<&Image<'a>, J2kError> {
         self.image
             .as_ref()
-            .ok_or_else(|| J2kError::Backend("internal image cache missing".to_string()))
+            .ok_or_else(|| J2kError::internal_backend("internal image cache missing"))
     }
 
     fn scaled_target_dims(&self, scale: Downscale) -> (u32, u32) {
@@ -636,12 +606,14 @@ impl<'a> J2kDecoder<'a> {
     }
 }
 
+#[doc(hidden)]
 impl ImageCodec for J2kDecoder<'_> {
     type Error = J2kError;
-    type Warning = Infallible;
+    type Warning = J2kDecodeWarning;
     type Pool = J2kScratchPool;
 }
 
+#[doc(hidden)]
 impl<'a> ImageDecode<'a> for J2kDecoder<'a> {
     type View = J2kView<'a>;
 
@@ -711,6 +683,7 @@ impl<'a> ImageDecode<'a> for J2kDecoder<'a> {
     }
 }
 
+#[doc(hidden)]
 impl<'a> ImageDecodeRows<'a, u8> for J2kDecoder<'a> {
     fn decode_rows<R: RowSink<u8>>(
         &mut self,
@@ -721,6 +694,7 @@ impl<'a> ImageDecodeRows<'a, u8> for J2kDecoder<'a> {
     }
 }
 
+#[doc(hidden)]
 impl<'a> ImageDecodeRows<'a, u16> for J2kDecoder<'a> {
     fn decode_rows<R: RowSink<u16>>(
         &mut self,
@@ -731,12 +705,14 @@ impl<'a> ImageDecodeRows<'a, u16> for J2kDecoder<'a> {
     }
 }
 
+#[doc(hidden)]
 impl ImageCodec for J2kCodec {
     type Error = J2kError;
-    type Warning = Infallible;
+    type Warning = J2kDecodeWarning;
     type Pool = J2kScratchPool;
 }
 
+#[doc(hidden)]
 impl TileBatchDecode for J2kCodec {
     type Context = J2kContext;
 
@@ -784,13 +760,16 @@ impl TileBatchDecode for J2kCodec {
     fn decode_tile_region_scaled(
         ctx: &mut DecoderContext<Self::Context>,
         pool: &mut Self::Pool,
-        input: &[u8],
-        out: &mut [u8],
-        stride: usize,
         fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
+        job: TileRegionScaledDecodeJob<'_, '_>,
     ) -> Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error> {
+        let TileRegionScaledDecodeJob {
+            input,
+            out,
+            stride,
+            roi,
+            scale,
+        } = job;
         let mut decoder = J2kDecoder::new(input)?;
         decoder.set_cpu_decode_parallelism(ctx.codec().cpu_decode_parallelism());
         decoder.decode_region_scaled_into(pool, out, stride, fmt, roi, scale)
@@ -910,10 +889,8 @@ mod tests {
                 restart_interval: None,
                 resolution_levels: 1,
             },
-            support_info: None,
             image: None,
             native_context: j2k_native::DecoderContext::default(),
-            passthrough: None,
         };
         decoder.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
 

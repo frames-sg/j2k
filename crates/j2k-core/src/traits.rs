@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use crate::{
     accelerator::{DeviceMemoryRange, ExecutionStats, SurfaceResidency},
     backend::{BackendKind, BackendRequest},
+    batch::{TileRegionScaledDecodeJob, TileRegionScaledDeviceDecodeRequest},
     context::{CodecContext, DecoderContext},
     error::CodecError,
     pixel::PixelFormat,
@@ -78,6 +79,7 @@ pub trait DeviceSubmission {
 
 /// Already-completed submission used by synchronous fallback paths.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct ReadySubmission<T, E>(Result<T, E>);
 
 impl<T, E> ReadySubmission<T, E> {
@@ -97,12 +99,14 @@ impl<T, E> DeviceSubmission for ReadySubmission<T, E> {
 }
 
 /// Mutable device session that tracks submitted backend work.
+#[doc(hidden)]
 pub trait DeviceSubmitSession {
     /// Record a submitted device operation.
     fn record_submit(&mut self);
 }
 
 /// Record a device submission and wrap an immediate result as ready.
+#[doc(hidden)]
 pub fn submit_ready_device<S, T, E>(
     session: &mut S,
     submit: impl FnOnce(&mut S) -> Result<T, E>,
@@ -173,6 +177,127 @@ pub trait ImageDecode<'a>: ImageCodec + Sized + 'a {
         roi: Rect,
         scale: Downscale,
     ) -> Result<DecodeOutcome<Self::Warning>, Self::Error>;
+}
+
+/// Adapter hook for decoders whose host-output path delegates to a CPU decoder.
+///
+/// GPU adapter crates implement this trait when their public decoder wraps a
+/// CPU decoder for host output but has backend-specific device submission
+/// methods. The blanket [`ImageDecode`] impl below keeps the CPU-host
+/// delegation in one place.
+#[doc(hidden)]
+pub trait CpuBackedImageDecode<'a>: ImageCodec + Sized + 'a {
+    /// CPU decoder that owns the host-output implementation.
+    type Cpu: ImageDecode<'a, Pool = Self::Pool>;
+    /// Borrowed parse product used by this adapter.
+    type View: 'a;
+
+    /// Inspect metadata through the CPU codec and map it to core info.
+    fn inspect_cpu(input: &'a [u8]) -> Result<Info, Self::Error>;
+    /// Parse compressed bytes through the CPU codec or adapter view.
+    fn parse_cpu(input: &'a [u8]) -> Result<Self::View, Self::Error>;
+    /// Build this adapter from a parsed CPU view.
+    fn from_cpu_view(view: Self::View) -> Result<Self, Self::Error>;
+    /// Borrow the wrapped CPU decoder mutably.
+    fn cpu_decoder_mut(&mut self) -> &mut Self::Cpu;
+    /// Convert a CPU decode outcome into this adapter's warning type.
+    fn map_cpu_outcome(
+        outcome: DecodeOutcome<<Self::Cpu as ImageCodec>::Warning>,
+    ) -> DecodeOutcome<Self::Warning>;
+}
+
+#[doc(hidden)]
+impl<'a, T> ImageDecode<'a> for T
+where
+    T: CpuBackedImageDecode<'a>,
+    <T::Cpu as ImageCodec>::Error: Into<T::Error>,
+{
+    type View = T::View;
+
+    fn inspect(input: &'a [u8]) -> Result<Info, Self::Error> {
+        T::inspect_cpu(input)
+    }
+
+    fn parse(input: &'a [u8]) -> Result<Self::View, Self::Error> {
+        T::parse_cpu(input)
+    }
+
+    fn from_view(view: Self::View) -> Result<Self, Self::Error> {
+        T::from_cpu_view(view)
+    }
+
+    fn decode_into(
+        &mut self,
+        out: &mut [u8],
+        stride: usize,
+        fmt: PixelFormat,
+    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
+        let outcome = self
+            .cpu_decoder_mut()
+            .decode_into(out, stride, fmt)
+            .map_err(Into::into)?;
+        Ok(T::map_cpu_outcome(outcome))
+    }
+
+    fn decode_into_with_scratch(
+        &mut self,
+        pool: &mut Self::Pool,
+        out: &mut [u8],
+        stride: usize,
+        fmt: PixelFormat,
+    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
+        let outcome = self
+            .cpu_decoder_mut()
+            .decode_into_with_scratch(pool, out, stride, fmt)
+            .map_err(Into::into)?;
+        Ok(T::map_cpu_outcome(outcome))
+    }
+
+    fn decode_region_into(
+        &mut self,
+        pool: &mut Self::Pool,
+        out: &mut [u8],
+        stride: usize,
+        fmt: PixelFormat,
+        roi: Rect,
+    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
+        let outcome = self
+            .cpu_decoder_mut()
+            .decode_region_into(pool, out, stride, fmt, roi)
+            .map_err(Into::into)?;
+        Ok(T::map_cpu_outcome(outcome))
+    }
+
+    fn decode_scaled_into(
+        &mut self,
+        pool: &mut Self::Pool,
+        out: &mut [u8],
+        stride: usize,
+        fmt: PixelFormat,
+        scale: Downscale,
+    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
+        let outcome = self
+            .cpu_decoder_mut()
+            .decode_scaled_into(pool, out, stride, fmt, scale)
+            .map_err(Into::into)?;
+        Ok(T::map_cpu_outcome(outcome))
+    }
+
+    fn decode_region_scaled_into(
+        &mut self,
+        pool: &mut Self::Pool,
+        out: &mut [u8],
+        stride: usize,
+        fmt: PixelFormat,
+        roi: Rect,
+        scale: Downscale,
+    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
+        let outcome = self
+            .cpu_decoder_mut()
+            .decode_region_scaled_into(pool, out, stride, fmt, roi, scale)
+            .map_err(Into::into)?;
+        Ok(T::map_cpu_outcome(outcome))
+    }
 }
 
 /// Decode API for implementations that can submit work to a device backend.
@@ -352,16 +477,11 @@ pub trait TileBatchDecode: ImageCodec {
     ) -> Result<DecodeOutcome<Self::Warning>, Self::Error>;
 
     /// Decode one tile region at reduced resolution into caller-owned output.
-    #[allow(clippy::too_many_arguments)]
-    fn decode_tile_region_scaled<'a>(
+    fn decode_tile_region_scaled(
         ctx: &mut DecoderContext<Self::Context>,
         pool: &mut Self::Pool,
-        input: &'a [u8],
-        out: &mut [u8],
-        stride: usize,
         fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
+        job: TileRegionScaledDecodeJob<'_, '_>,
     ) -> Result<DecodeOutcome<Self::Warning>, Self::Error>;
 }
 
@@ -475,11 +595,13 @@ pub trait TileBatchDecodeDevice: ImageCodec {
             ctx,
             &mut session,
             pool,
-            input,
-            fmt,
-            roi,
-            scale,
-            backend,
+            TileRegionScaledDeviceDecodeRequest {
+                input,
+                fmt,
+                roi,
+                scale,
+                backend,
+            },
         )?
         .wait()
     }
@@ -546,16 +668,11 @@ pub trait TileBatchDecodeSubmit: ImageCodec {
     ) -> Result<Self::SubmittedSurface, Self::Error>;
 
     /// Submit one tile region at reduced resolution to the requested backend.
-    #[allow(clippy::too_many_arguments)]
-    fn submit_tile_region_scaled_to_device<'a>(
+    fn submit_tile_region_scaled_to_device(
         ctx: &mut DecoderContext<Self::Context>,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
-        input: &'a [u8],
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
+        request: TileRegionScaledDeviceDecodeRequest<'_>,
     ) -> Result<Self::SubmittedSurface, Self::Error>;
 }
 

@@ -24,12 +24,28 @@ pub enum DecodeError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FormatError {
+    /// Input ended before a required fixed-size box read.
+    TooShort {
+        /// Required byte count.
+        need: usize,
+        /// Available byte count.
+        have: usize,
+    },
+    /// Input ended while reading a named box segment.
+    TruncatedAt {
+        /// Byte offset where truncation was detected.
+        offset: usize,
+        /// Name of the segment being read.
+        segment: &'static str,
+    },
     /// Invalid JP2 signature.
     InvalidSignature,
     /// Invalid JP2 file type.
     InvalidFileType,
     /// Invalid or malformed JP2 box.
     InvalidBox,
+    /// Required JP2 box is absent.
+    MissingRequiredBox(&'static str),
     /// Missing codestream data.
     MissingCodestream,
     /// Unsupported JP2 image format.
@@ -104,6 +120,10 @@ pub enum ValidationError {
 pub enum DecodingError {
     /// An error occurred while decoding a code-block.
     CodeBlockDecodeFailure,
+    /// A backend-specific code-block decode failure with user-visible context.
+    CodeBlockDecodeFailureWithContext(&'static str),
+    /// A direct-plan builder rejected an unsupported image or codestream shape.
+    DirectPlanUnsupported(DirectPlanUnsupportedReason),
     /// The codestream uses a feature that this decoder does not implement yet.
     UnsupportedFeature(&'static str),
     /// Number of bitplanes in a code-block is too large.
@@ -136,6 +156,30 @@ pub enum ColorError {
     LabConversionFailed,
 }
 
+/// Structured reasons why a direct JPEG 2000 device plan cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DirectPlanUnsupportedReason {
+    /// Grayscale direct plans require grayscale images without alpha.
+    GrayscaleImageWithoutAlpha,
+    /// Grayscale direct plans require a single-tile codestream.
+    GrayscaleSingleTileCodestream,
+    /// Grayscale direct plans require a single-component codestream.
+    GrayscaleSingleComponentCodestream,
+    /// Color direct plans require RGB images without alpha.
+    ColorRgbImageWithoutAlpha,
+    /// Color direct plans require a single-tile codestream.
+    ColorSingleTileCodestream,
+    /// Color direct plans require three RGB components.
+    ColorThreeComponentRgbCodestream,
+    /// A direct component plan index did not exist.
+    ComponentIndexOutOfRange,
+    /// Direct component plans require unit-sampled components.
+    ComponentUnitSampled,
+    /// A direct component decomposition index did not exist.
+    ComponentDecompositionIndexOutOfRange,
+}
+
 impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -152,9 +196,19 @@ impl fmt::Display for DecodeError {
 impl fmt::Display for FormatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TooShort { need, have } => {
+                write!(f, "input too short: need {need} bytes, have {have}")
+            }
+            Self::TruncatedAt { offset, segment } => {
+                write!(
+                    f,
+                    "input truncated at offset {offset} while reading {segment}"
+                )
+            }
             Self::InvalidSignature => write!(f, "invalid JP2 signature"),
             Self::InvalidFileType => write!(f, "invalid JP2 file type"),
             Self::InvalidBox => write!(f, "invalid JP2 box"),
+            Self::MissingRequiredBox(box_type) => write!(f, "missing required JP2 box {box_type}"),
             Self::MissingCodestream => write!(f, "missing codestream data"),
             Self::Unsupported => write!(f, "unsupported JP2 image"),
         }
@@ -217,6 +271,12 @@ impl fmt::Display for DecodingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CodeBlockDecodeFailure => write!(f, "failed to decode code-block"),
+            Self::CodeBlockDecodeFailureWithContext(context) => {
+                write!(f, "failed to decode code-block: {context}")
+            }
+            Self::DirectPlanUnsupported(reason) => {
+                write!(f, "unsupported decoding feature: {reason}")
+            }
             Self::UnsupportedFeature(feature) => {
                 write!(f, "unsupported decoding feature: {feature}")
             }
@@ -231,6 +291,58 @@ impl fmt::Display for DecodingError {
             }
             Self::UnexpectedEof => write!(f, "unexpected end of data"),
             Self::OutputBufferTooSmall => write!(f, "output buffer is too small"),
+        }
+    }
+}
+
+impl fmt::Display for DirectPlanUnsupportedReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GrayscaleImageWithoutAlpha => {
+                write!(
+                    f,
+                    "direct grayscale plan only supports grayscale images without alpha"
+                )
+            }
+            Self::GrayscaleSingleTileCodestream => {
+                write!(
+                    f,
+                    "direct grayscale plan only supports single-tile codestreams"
+                )
+            }
+            Self::GrayscaleSingleComponentCodestream => {
+                write!(
+                    f,
+                    "direct grayscale plan only supports single-component codestreams"
+                )
+            }
+            Self::ColorRgbImageWithoutAlpha => {
+                write!(
+                    f,
+                    "direct color plan only supports RGB images without alpha"
+                )
+            }
+            Self::ColorSingleTileCodestream => {
+                write!(f, "direct color plan only supports single-tile codestreams")
+            }
+            Self::ColorThreeComponentRgbCodestream => {
+                write!(
+                    f,
+                    "direct color plan only supports three-component RGB codestreams"
+                )
+            }
+            Self::ComponentIndexOutOfRange => {
+                write!(f, "direct component plan index is out of range")
+            }
+            Self::ComponentUnitSampled => {
+                write!(
+                    f,
+                    "direct component plan only supports unit-sampled components"
+                )
+            }
+            Self::ComponentDecompositionIndexOutOfRange => {
+                write!(f, "direct component decomposition index is out of range")
+            }
         }
     }
 }
@@ -252,6 +364,7 @@ impl core::error::Error for MarkerError {}
 impl core::error::Error for TileError {}
 impl core::error::Error for ValidationError {}
 impl core::error::Error for DecodingError {}
+impl core::error::Error for DirectPlanUnsupportedReason {}
 impl core::error::Error for ColorError {}
 
 impl From<FormatError> for DecodeError {

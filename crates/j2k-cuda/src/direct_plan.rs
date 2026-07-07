@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use j2k_core::PixelFormat;
 use j2k_native::{
-    idwt_band_index, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep,
-    J2kDirectStoreStep, J2kRect, J2kWaveletTransform,
+    idwt_required_input_windows, idwt_required_output_margin, J2kDirectGrayscalePlan,
+    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kRect,
+    J2kRequiredBandRegion as RequiredBandRegion, J2kWaveletTransform,
 };
 
 use crate::Error;
@@ -23,7 +24,7 @@ const ROI_MAXSHIFT_UNSUPPORTED: &str =
 /// CUDA-side DWT transform selector for a flat HTJ2K plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
-pub enum CudaHtj2kTransform {
+pub(crate) enum CudaHtj2kTransform {
     /// Reversible 5/3 transform.
     Reversible53,
     /// Irreversible 9/7 transform.
@@ -31,7 +32,7 @@ pub enum CudaHtj2kTransform {
 }
 
 /// Stable CUDA-side identifier for a direct-plan coefficient band.
-pub type CudaHtj2kBandId = u32;
+pub(crate) type CudaHtj2kBandId = u32;
 
 impl CudaHtj2kTransform {
     pub(crate) fn from_native(value: J2kWaveletTransform) -> Self {
@@ -45,136 +46,137 @@ impl CudaHtj2kTransform {
 /// Flat POD HTJ2K code-block metadata consumed by CUDA kernels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
-pub struct CudaHtj2kCodeBlock {
+pub(crate) struct CudaHtj2kCodeBlock {
     /// Index of the parent sub-band in [`CudaHtj2kDecodePlan::subbands`].
-    pub subband_index: u32,
+    pub(crate) subband_index: u32,
     /// Byte offset into [`CudaHtj2kDecodePlan::payload`].
-    pub payload_offset: u64,
+    pub(crate) payload_offset: u64,
     /// Total payload byte length for this code block.
-    pub payload_len: u32,
+    pub(crate) payload_len: u32,
     /// Cleanup segment length in bytes.
-    pub cleanup_length: u32,
+    pub(crate) cleanup_length: u32,
     /// Refinement segment length in bytes.
-    pub refinement_length: u32,
+    pub(crate) refinement_length: u32,
     /// X offset within the target sub-band coefficient buffer.
-    pub output_x: u32,
+    pub(crate) output_x: u32,
     /// Y offset within the target sub-band coefficient buffer.
-    pub output_y: u32,
+    pub(crate) output_y: u32,
     /// Code-block width in samples.
-    pub width: u32,
+    pub(crate) width: u32,
     /// Code-block height in samples.
-    pub height: u32,
+    pub(crate) height: u32,
     /// Output row stride, in samples.
-    pub output_stride: u32,
+    pub(crate) output_stride: u32,
     /// Missing most-significant bit planes.
-    pub missing_bit_planes: u8,
+    pub(crate) missing_bit_planes: u8,
     /// Number of coding passes present.
-    pub number_of_coding_passes: u8,
+    pub(crate) number_of_coding_passes: u8,
     /// Total coded bitplanes for the parent sub-band.
-    pub num_bitplanes: u8,
+    pub(crate) num_bitplanes: u8,
     /// Nonzero when vertically causal context was enabled.
-    pub stripe_causal: u8,
+    pub(crate) stripe_causal: u8,
     /// Dequantization step to apply to decoded coefficients.
-    pub dequantization_step: f32,
+    pub(crate) dequantization_step: f32,
 }
 
 /// Flat POD sub-band geometry consumed by CUDA kernels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
-pub struct CudaHtj2kSubband {
+pub(crate) struct CudaHtj2kSubband {
     /// Stable CUDA direct-plan band id.
-    pub band_id: CudaHtj2kBandId,
+    pub(crate) band_id: CudaHtj2kBandId,
     /// Absolute x0 coordinate in component space.
-    pub x0: u32,
+    pub(crate) x0: u32,
     /// Absolute y0 coordinate in component space.
-    pub y0: u32,
+    pub(crate) y0: u32,
     /// Absolute x1 coordinate in component space.
-    pub x1: u32,
+    pub(crate) x1: u32,
     /// Absolute y1 coordinate in component space.
-    pub y1: u32,
+    pub(crate) y1: u32,
     /// Sub-band width in samples.
-    pub width: u32,
+    pub(crate) width: u32,
     /// Sub-band height in samples.
-    pub height: u32,
+    pub(crate) height: u32,
     /// First code-block index for this sub-band.
-    pub code_block_start: u32,
+    pub(crate) code_block_start: u32,
     /// Number of code blocks for this sub-band.
-    pub code_block_count: u32,
+    pub(crate) code_block_count: u32,
 }
 
 /// Flat POD IDWT step consumed by CUDA kernels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
-pub struct CudaHtj2kIdwtStep {
+pub(crate) struct CudaHtj2kIdwtStep {
     /// Stable identifier of the output coefficient band produced by this step.
-    pub output_band_id: CudaHtj2kBandId,
+    pub(crate) output_band_id: CudaHtj2kBandId,
     /// DWT transform to apply.
-    pub transform: CudaHtj2kTransform,
+    pub(crate) transform: CudaHtj2kTransform,
     /// Output rectangle.
-    pub rect: CudaHtj2kRect,
+    pub(crate) rect: CudaHtj2kRect,
     /// LL input band id.
-    pub ll_band_id: CudaHtj2kBandId,
+    pub(crate) ll_band_id: CudaHtj2kBandId,
     /// LL input rectangle.
-    pub ll_rect: CudaHtj2kRect,
+    pub(crate) ll_rect: CudaHtj2kRect,
     /// HL input band id.
-    pub hl_band_id: CudaHtj2kBandId,
+    pub(crate) hl_band_id: CudaHtj2kBandId,
     /// HL input rectangle.
-    pub hl_rect: CudaHtj2kRect,
+    pub(crate) hl_rect: CudaHtj2kRect,
     /// LH input band id.
-    pub lh_band_id: CudaHtj2kBandId,
+    pub(crate) lh_band_id: CudaHtj2kBandId,
     /// LH input rectangle.
-    pub lh_rect: CudaHtj2kRect,
+    pub(crate) lh_rect: CudaHtj2kRect,
     /// HH input band id.
-    pub hh_band_id: CudaHtj2kBandId,
+    pub(crate) hh_band_id: CudaHtj2kBandId,
     /// HH input rectangle.
-    pub hh_rect: CudaHtj2kRect,
+    pub(crate) hh_rect: CudaHtj2kRect,
 }
 
 /// Flat POD store step consumed by CUDA kernels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
-pub struct CudaHtj2kStoreStep {
+pub(crate) struct CudaHtj2kStoreStep {
     /// Stable identifier of the input coefficient band.
-    pub input_band_id: CudaHtj2kBandId,
+    pub(crate) input_band_id: CudaHtj2kBandId,
     /// Source rectangle.
-    pub input_rect: CudaHtj2kRect,
+    pub(crate) input_rect: CudaHtj2kRect,
     /// Source x offset.
-    pub source_x: u32,
+    pub(crate) source_x: u32,
     /// Source y offset.
-    pub source_y: u32,
+    pub(crate) source_y: u32,
     /// Number of samples copied per row.
-    pub copy_width: u32,
+    pub(crate) copy_width: u32,
     /// Number of rows copied.
-    pub copy_height: u32,
+    pub(crate) copy_height: u32,
     /// Destination row width.
-    pub output_width: u32,
+    pub(crate) output_width: u32,
     /// Destination height.
-    pub output_height: u32,
+    pub(crate) output_height: u32,
     /// Destination x offset.
-    pub output_x: u32,
+    pub(crate) output_x: u32,
     /// Destination y offset.
-    pub output_y: u32,
+    pub(crate) output_y: u32,
     /// Constant level-shift addend.
-    pub addend: f32,
+    pub(crate) addend: f32,
 }
 
 /// Flat POD rectangle used inside CUDA HTJ2K plan metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
-pub struct CudaHtj2kRect {
+pub(crate) struct CudaHtj2kRect {
     /// Inclusive left coordinate.
-    pub x0: u32,
+    pub(crate) x0: u32,
     /// Inclusive top coordinate.
-    pub y0: u32,
+    pub(crate) y0: u32,
     /// Exclusive right coordinate.
-    pub x1: u32,
+    pub(crate) x1: u32,
     /// Exclusive bottom coordinate.
-    pub y1: u32,
+    pub(crate) y1: u32,
 }
 
 /// Flat CUDA HTJ2K decode plan.
 #[derive(Debug, Clone)]
-pub struct CudaHtj2kDecodePlan {
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CudaHtj2kDecodePlan {
     dimensions: (u32, u32),
     bit_depth: u8,
     output_format: PixelFormat,
@@ -187,6 +189,7 @@ pub struct CudaHtj2kDecodePlan {
     store_steps: Vec<CudaHtj2kStoreStep>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl CudaHtj2kDecodePlan {
     pub(crate) fn from_grayscale_direct_plan(
         plan: &J2kDirectGrayscalePlan,
@@ -359,32 +362,32 @@ impl CudaHtj2kDecodePlan {
     }
 
     /// Output dimensions of the decoded surface.
-    pub fn dimensions(&self) -> (u32, u32) {
+    pub(crate) fn dimensions(&self) -> (u32, u32) {
         self.dimensions
     }
 
     /// Source component bit depth.
-    pub fn bit_depth(&self) -> u8 {
+    pub(crate) fn bit_depth(&self) -> u8 {
         self.bit_depth
     }
 
     /// Output pixel format requested by the caller.
-    pub fn output_format(&self) -> PixelFormat {
+    pub(crate) fn output_format(&self) -> PixelFormat {
         self.output_format
     }
 
     /// Destination origin in the caller-visible output surface.
-    pub fn output_origin(&self) -> (u32, u32) {
+    pub(crate) fn output_origin(&self) -> (u32, u32) {
         self.output_origin
     }
 
     /// DWT transform used by IDWT kernels.
-    pub fn transform(&self) -> CudaHtj2kTransform {
+    pub(crate) fn transform(&self) -> CudaHtj2kTransform {
         self.transform
     }
 
     /// Contiguous cleanup/refinement payload bytes.
-    pub fn payload(&self) -> &[u8] {
+    pub(crate) fn payload(&self) -> &[u8] {
         &self.payload
     }
 
@@ -430,27 +433,27 @@ impl CudaHtj2kDecodePlan {
     }
 
     /// Flat code-block metadata.
-    pub fn code_blocks(&self) -> &[CudaHtj2kCodeBlock] {
+    pub(crate) fn code_blocks(&self) -> &[CudaHtj2kCodeBlock] {
         &self.code_blocks
     }
 
     /// Flat sub-band metadata.
-    pub fn subbands(&self) -> &[CudaHtj2kSubband] {
+    pub(crate) fn subbands(&self) -> &[CudaHtj2kSubband] {
         &self.subbands
     }
 
     /// Flat IDWT step metadata.
-    pub fn idwt_steps(&self) -> &[CudaHtj2kIdwtStep] {
+    pub(crate) fn idwt_steps(&self) -> &[CudaHtj2kIdwtStep] {
         &self.idwt_steps
     }
 
     /// Flat store step metadata.
-    pub fn store_steps(&self) -> &[CudaHtj2kStoreStep] {
+    pub(crate) fn store_steps(&self) -> &[CudaHtj2kStoreStep] {
         &self.store_steps
     }
 
     /// Number of per-code-block decode dispatches implied by the plan.
-    pub fn dispatch_count_hint(&self) -> usize {
+    pub(crate) fn dispatch_count_hint(&self) -> usize {
         self.code_blocks.len()
     }
 }
@@ -511,60 +514,6 @@ fn convert_idwt_step(step: J2kDirectIdwtStep) -> CudaHtj2kIdwtStep {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct RequiredBandRegion {
-    x0: u32,
-    y0: u32,
-    x1: u32,
-    y1: u32,
-}
-
-impl RequiredBandRegion {
-    fn new(x0: u32, y0: u32, x1: u32, y1: u32) -> Option<Self> {
-        (x0 < x1 && y0 < y1).then_some(Self { x0, y0, x1, y1 })
-    }
-
-    fn expanded(self, margin: u32, width: u32, height: u32) -> Self {
-        Self {
-            x0: self.x0.saturating_sub(margin),
-            y0: self.y0.saturating_sub(margin),
-            x1: self.x1.saturating_add(margin).min(width),
-            y1: self.y1.saturating_add(margin).min(height),
-        }
-    }
-
-    const fn union(self, other: Self) -> Self {
-        Self {
-            x0: if self.x0 < other.x0 {
-                self.x0
-            } else {
-                other.x0
-            },
-            y0: if self.y0 < other.y0 {
-                self.y0
-            } else {
-                other.y0
-            },
-            x1: if self.x1 > other.x1 {
-                self.x1
-            } else {
-                other.x1
-            },
-            y1: if self.y1 > other.y1 {
-                self.y1
-            } else {
-                other.y1
-            },
-        }
-    }
-
-    fn intersects(self, x0: u32, y0: u32, width: u32, height: u32) -> bool {
-        let x1 = x0.saturating_add(width);
-        let y1 = y0.saturating_add(height);
-        self.x0 < x1 && x0 < self.x1 && self.y0 < y1 && y0 < self.y1
-    }
-}
-
 fn required_regions_for_direct_plan(
     plan: &J2kDirectGrayscalePlan,
 ) -> Result<HashMap<CudaHtj2kBandId, RequiredBandRegion>, Error> {
@@ -601,7 +550,7 @@ fn required_regions_for_direct_plan(
         let Some(output_region) = required.get(&idwt.output_band_id).copied() else {
             continue;
         };
-        let expanded = output_region.expanded(
+        let expanded = output_region.expanded_within_band(
             idwt_required_output_margin(idwt.transform),
             idwt.rect.width(),
             idwt.rect.height(),
@@ -622,92 +571,16 @@ fn add_required_region(
         .or_insert(region);
 }
 
-const fn idwt_required_output_margin(transform: J2kWaveletTransform) -> u32 {
-    match transform {
-        J2kWaveletTransform::Reversible53 => 16,
-        J2kWaveletTransform::Irreversible97 => 40,
-    }
-}
-
 fn add_idwt_input_required_regions(
     required: &mut HashMap<CudaHtj2kBandId, RequiredBandRegion>,
     idwt: &J2kDirectIdwtStep,
     output_region: RequiredBandRegion,
 ) {
-    add_required_region(
-        required,
-        idwt.ll_band_id,
-        idwt_input_required_region(
-            output_region,
-            idwt.rect.x0,
-            idwt.rect.y0,
-            true,
-            true,
-            idwt.ll.width(),
-            idwt.ll.height(),
-        ),
-    );
-    add_required_region(
-        required,
-        idwt.hl_band_id,
-        idwt_input_required_region(
-            output_region,
-            idwt.rect.x0,
-            idwt.rect.y0,
-            false,
-            true,
-            idwt.hl.width(),
-            idwt.hl.height(),
-        ),
-    );
-    add_required_region(
-        required,
-        idwt.lh_band_id,
-        idwt_input_required_region(
-            output_region,
-            idwt.rect.x0,
-            idwt.rect.y0,
-            true,
-            false,
-            idwt.lh.width(),
-            idwt.lh.height(),
-        ),
-    );
-    add_required_region(
-        required,
-        idwt.hh_band_id,
-        idwt_input_required_region(
-            output_region,
-            idwt.rect.x0,
-            idwt.rect.y0,
-            false,
-            false,
-            idwt.hh.width(),
-            idwt.hh.height(),
-        ),
-    );
-}
-
-#[allow(clippy::fn_params_excessive_bools)]
-fn idwt_input_required_region(
-    output_region: RequiredBandRegion,
-    output_origin_x: u32,
-    output_origin_y: u32,
-    low_x: bool,
-    low_y: bool,
-    band_width: u32,
-    band_height: u32,
-) -> RequiredBandRegion {
-    let x0 = idwt_band_index(output_origin_x, output_region.x0, low_x);
-    let x1 = idwt_band_index(output_origin_x, output_region.x1 - 1, low_x).saturating_add(1);
-    let y0 = idwt_band_index(output_origin_y, output_region.y0, low_y);
-    let y1 = idwt_band_index(output_origin_y, output_region.y1 - 1, low_y).saturating_add(1);
-    RequiredBandRegion {
-        x0: x0.min(band_width),
-        y0: y0.min(band_height),
-        x1: x1.min(band_width),
-        y1: y1.min(band_height),
-    }
+    let windows = idwt_required_input_windows(idwt, output_region);
+    add_required_region(required, idwt.ll_band_id, windows.ll);
+    add_required_region(required, idwt.hl_band_id, windows.hl);
+    add_required_region(required, idwt.lh_band_id, windows.lh);
+    add_required_region(required, idwt.hh_band_id, windows.hh);
 }
 
 fn convert_store_step(

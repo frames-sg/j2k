@@ -3,8 +3,8 @@
 //! Integration tests for the parsed-view API and row-streaming decode surface.
 
 use j2k_jpeg::{
-    ComponentRowWriter, Decoder, Downscale, JpegError, JpegView, PixelFormat, Rect, RowSink,
-    ScratchPool,
+    ComponentRowWriter, DecodeRequest, Decoder, Downscale, JpegError, JpegView, PixelFormat, Rect,
+    RowSink, ScratchPool,
 };
 use j2k_test_support::restart_coded_grayscale_jpeg;
 
@@ -420,7 +420,11 @@ fn region_component_rows_scaled_matches_gray_region_decode_for_restart_fixture()
         .expect("scaled region component rows must decode");
 
     let expected = dec
-        .decode_region_scaled(PixelFormat::Gray8, roi, Downscale::Half)
+        .decode_request(DecodeRequest::region_scaled(
+            PixelFormat::Gray8,
+            roi,
+            Downscale::Half,
+        ))
         .expect("scaled region decode must succeed")
         .0;
 
@@ -450,7 +454,11 @@ fn region_component_rows_scaled_match_cmyk_ycck_region_decode() {
             .expect("CMYK/YCCK scaled region component rows must decode");
 
         let expected = dec
-            .decode_region_scaled(PixelFormat::Rgb8, roi, Downscale::Half)
+            .decode_request(DecodeRequest::region_scaled(
+                PixelFormat::Rgb8,
+                roi,
+                Downscale::Half,
+            ))
             .expect("CMYK/YCCK scaled region decode must succeed")
             .0;
 

@@ -9,16 +9,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use j2k::adapter::encode_stage::{
-    J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
-    J2kForwardDwt53Job, J2kForwardDwt97Job, J2kForwardIctJob, J2kForwardRctJob,
-    J2kQuantizeSubbandJob,
-};
 use j2k::{
     encode_j2k_lossless, encode_j2k_lossless_with_accelerator, encode_j2k_lossy,
     encode_j2k_lossy_with_accelerator, EncodeBackendPreference, EncodedJ2k, EncodedLossyJ2k,
     J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
     J2kLossyEncodeOptions, J2kLossySamples, J2kRateTarget,
+};
+use j2k::{
+    J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    J2kForwardDwt53Job, J2kForwardDwt97Job, J2kForwardIctJob, J2kForwardRctJob,
+    J2kQuantizeSubbandJob,
 };
 use j2k_core::BackendKind;
 #[cfg(target_os = "macos")]
@@ -32,8 +32,8 @@ use j2k_metal::{
     MetalLosslessEncodeOutcome, MetalLosslessEncodeTile,
 };
 use j2k_native::{
-    deinterleave_reference, forward_dwt53_reference, forward_dwt97_reference,
-    forward_ict_reference, forward_rct_reference, quantize_subband_reference,
+    forward_dwt53_reference, forward_dwt97_reference, forward_ict_reference, forward_rct_reference,
+    quantize_subband_reference, try_deinterleave_reference,
 };
 use j2k_test_support::{
     canonicalize_manifest_row_path, fnv1a64_hex, manifest_column, manifest_field,
@@ -50,7 +50,6 @@ const RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES_ENV: &str =
 const DEFAULT_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ITERS: usize = 5;
 const AUTO_STAGE_MIN_PIXELS: u64 = 512 * 512;
-const AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS: u64 = 512 * 512;
 const METAL_ENCODE_MANIFEST_LABEL: &str = "Metal encode manifest";
 
 #[test]
@@ -961,13 +960,14 @@ fn run_deinterleave_stage_benchmark(dim: u32) {
     let pixels = Components::Rgb8.pixels(dim, dim);
     let num_pixels = usize::try_from(u64::from(dim) * u64::from(dim)).expect("dim fits usize");
     let cpu = measure(|| {
-        let planes = deinterleave_reference(
+        let planes = try_deinterleave_reference(
             std::hint::black_box(pixels.as_slice()),
             num_pixels,
             3,
             8,
             false,
-        );
+        )
+        .expect("valid native deinterleave reference input");
         plane_len(&planes)
     });
     let metal = probe_deinterleave_stage(&pixels, num_pixels).map(|dispatch| {
@@ -1233,7 +1233,7 @@ fn plane_len(planes: &[Vec<f32>]) -> usize {
     planes.iter().map(Vec::len).sum()
 }
 
-fn dwt53_len(output: &j2k::adapter::encode_stage::J2kForwardDwt53Output) -> usize {
+fn dwt53_len(output: &j2k::J2kForwardDwt53Output) -> usize {
     output.ll.len()
         + output
             .levels
@@ -1242,7 +1242,7 @@ fn dwt53_len(output: &j2k::adapter::encode_stage::J2kForwardDwt53Output) -> usiz
             .sum::<usize>()
 }
 
-fn dwt97_len(output: &j2k::adapter::encode_stage::J2kForwardDwt97Output) -> usize {
+fn dwt97_len(output: &j2k::J2kForwardDwt97Output) -> usize {
     output.ll.len()
         + output
             .levels
@@ -1253,16 +1253,12 @@ fn dwt97_len(output: &j2k::adapter::encode_stage::J2kForwardDwt97Output) -> usiz
 
 fn expected_lossless_auto_dispatch(
     codec: Codec,
-    components: Components,
+    _components: Components,
     width: u32,
     height: u32,
 ) -> bool {
     let pixels = u64::from(width).saturating_mul(u64::from(height));
-    let resident_htj2k_host_input = matches!(codec, Codec::Htj2k)
-        && matches!(components, Components::Gray8 | Components::Rgb8)
-        && pixels >= AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS;
-    let stage_gated_classic = matches!(codec, Codec::Classic) && pixels >= AUTO_STAGE_MIN_PIXELS;
-    resident_htj2k_host_input || stage_gated_classic
+    matches!(codec, Codec::Classic) && pixels >= AUTO_STAGE_MIN_PIXELS
 }
 
 fn probe_deinterleave_stage(

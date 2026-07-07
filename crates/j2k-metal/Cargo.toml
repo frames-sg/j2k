@@ -15,11 +15,16 @@ readme = "README.md"
 all-features = true
 targets = []
 
+[package.metadata.cargo-machete]
+# Used from build.rs for the optional Metal signpost Objective-C bridge.
+ignored = ["cc"]
+
 [lib]
 name = "j2k_metal"
 path = "src/lib.rs"
 
 [dependencies]
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.6.2" }
 j2k-core = { path = "../j2k-core", version = "=0.6.2" }
 j2k = { path = "../j2k", version = "=0.6.2" }
 j2k-native = { path = "../j2k-native", version = "=0.6.2" }

@@ -9,8 +9,22 @@ use crate::{
     memory::{checked_image_words, CudaDeviceBuffer},
 };
 
+#[derive(Clone, Copy)]
+struct J2kStridedDeinterleaveLaunch<'a> {
+    pixels: &'a CudaDeviceBuffer,
+    output: &'a CudaDeviceBuffer,
+    width: u32,
+    height: u32,
+    byte_offset: usize,
+    pitch_bytes: usize,
+    num_components: u8,
+    bit_depth: u8,
+    signed: bool,
+}
+
 impl CudaContext {
     /// Deinterleave interleaved pixel bytes into f32 component planes.
+    #[doc(hidden)]
     pub fn j2k_deinterleave_to_f32(
         &self,
         pixels: &[u8],
@@ -35,6 +49,7 @@ impl CudaContext {
     }
 
     /// Deinterleave interleaved pixel bytes into resident f32 component planes.
+    #[doc(hidden)]
     pub fn j2k_deinterleave_to_f32_resident(
         &self,
         pixels: &[u8],
@@ -105,6 +120,7 @@ impl CudaContext {
     }
 
     /// Deinterleave strided device-resident pixel bytes into resident f32 component planes.
+    #[doc(hidden)]
     pub fn j2k_deinterleave_strided_to_f32_resident(
         &self,
         image: CudaJ2kStridedInterleavedPixels<'_>,
@@ -184,9 +200,9 @@ impl CudaContext {
             .checked_mul(std::mem::size_of::<f32>())
             .ok_or(CudaError::LengthTooLarge { len: sample_count })?;
         let output = self.allocate(output_bytes)?;
-        self.launch_j2k_deinterleave_strided_to_f32(
+        self.launch_j2k_deinterleave_strided_to_f32(J2kStridedDeinterleaveLaunch {
             pixels,
-            &output,
+            output: &output,
             width,
             height,
             byte_offset,
@@ -194,7 +210,7 @@ impl CudaContext {
             num_components,
             bit_depth,
             signed,
-        )?;
+        })?;
 
         Ok(CudaJ2kResidentComponents {
             buffer: output,
@@ -215,6 +231,7 @@ impl CudaContext {
     /// Any additional plane (e.g. a 4th alpha/auxiliary component) is left
     /// untouched, matching the native reference which applies RCT to the first
     /// three of `&mut [Vec<f32>]` and passes the remainder through unchanged.
+    #[doc(hidden)]
     pub fn j2k_forward_rct_resident(
         &self,
         components: &mut CudaJ2kResidentComponents,
@@ -249,6 +266,7 @@ impl CudaContext {
     /// Any additional plane is left untouched, matching the native reference
     /// which applies ICT to the first three of `&mut [Vec<f32>]` and passes the
     /// remainder through unchanged.
+    #[doc(hidden)]
     pub fn j2k_forward_ict_resident(
         &self,
         components: &mut CudaJ2kResidentComponents,
@@ -278,6 +296,7 @@ impl CudaContext {
     }
 
     /// Run the reversible color transform stage on three component planes.
+    #[doc(hidden)]
     pub fn j2k_forward_rct(
         &self,
         plane0: &mut [f32],
@@ -313,6 +332,7 @@ impl CudaContext {
     }
 
     /// Run the irreversible color transform stage on three component planes.
+    #[doc(hidden)]
     pub fn j2k_forward_ict(
         &self,
         plane0: &mut [f32],
@@ -348,6 +368,7 @@ impl CudaContext {
     }
 
     /// Run the reversible 5/3 forward DWT stage on one component plane.
+    #[doc(hidden)]
     pub fn j2k_forward_dwt53(
         &self,
         samples: &[f32],
@@ -401,6 +422,7 @@ impl CudaContext {
     }
 
     /// Run the reversible 5/3 forward DWT on one resident component plane.
+    #[doc(hidden)]
     pub fn j2k_forward_dwt53_resident_component(
         &self,
         components: &CudaJ2kResidentComponents,
@@ -515,6 +537,7 @@ impl CudaContext {
     }
 
     /// Run the irreversible 9/7 forward DWT stage on one component plane.
+    #[doc(hidden)]
     pub fn j2k_forward_dwt97(
         &self,
         samples: &[f32],
@@ -568,6 +591,7 @@ impl CudaContext {
     }
 
     /// Run the irreversible 9/7 forward DWT on one resident component plane.
+    #[doc(hidden)]
     pub fn j2k_forward_dwt97_resident_component(
         &self,
         components: &CudaJ2kResidentComponents,
@@ -682,6 +706,7 @@ impl CudaContext {
     }
 
     /// Quantize one JPEG 2000 sub-band on the device.
+    #[doc(hidden)]
     pub fn j2k_quantize_subband(
         &self,
         samples: &[f32],
@@ -697,6 +722,7 @@ impl CudaContext {
     }
 
     /// Quantize a resident contiguous JPEG 2000 sub-band into resident `i32` coefficients.
+    #[doc(hidden)]
     pub fn j2k_quantize_subband_resident(
         &self,
         samples: &CudaDeviceBuffer,
@@ -742,6 +768,7 @@ impl CudaContext {
     }
 
     /// Quantize a resident strided DWT sub-band rectangle into resident `i32` coefficients.
+    #[doc(hidden)]
     pub fn j2k_quantize_subband_region_resident(
         &self,
         samples: &CudaDeviceBuffer,
@@ -965,31 +992,26 @@ impl CudaContext {
         self.launch_kernel(function, geometry, &mut params)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn launch_j2k_deinterleave_strided_to_f32(
         &self,
-        pixels: &CudaDeviceBuffer,
-        output: &CudaDeviceBuffer,
-        width: u32,
-        height: u32,
-        byte_offset: usize,
-        pitch_bytes: usize,
-        num_components: u8,
-        bit_depth: u8,
-        signed: bool,
+        request: J2kStridedDeinterleaveLaunch<'_>,
     ) -> Result<(), CudaError> {
         let function = self.j2k_encode_kernel_function(CudaKernel::J2kDeinterleaveStridedToF32)?;
-        let mut pixels_ptr = pixels.device_ptr();
-        let mut output_ptr = output.device_ptr();
-        let mut width_u64 = u64::from(width);
-        let mut height_u64 = u64::from(height);
-        let mut byte_offset_u64 = u64::try_from(byte_offset)
-            .map_err(|_| CudaError::LengthTooLarge { len: byte_offset })?;
-        let mut pitch_bytes_u64 = u64::try_from(pitch_bytes)
-            .map_err(|_| CudaError::LengthTooLarge { len: pitch_bytes })?;
-        let mut num_components_u32 = u32::from(num_components);
-        let mut bit_depth_u32 = u32::from(bit_depth);
-        let mut signed_u32 = u32::from(signed);
+        let mut pixels_ptr = request.pixels.device_ptr();
+        let mut output_ptr = request.output.device_ptr();
+        let mut width_u64 = u64::from(request.width);
+        let mut height_u64 = u64::from(request.height);
+        let mut byte_offset_u64 =
+            u64::try_from(request.byte_offset).map_err(|_| CudaError::LengthTooLarge {
+                len: request.byte_offset,
+            })?;
+        let mut pitch_bytes_u64 =
+            u64::try_from(request.pitch_bytes).map_err(|_| CudaError::LengthTooLarge {
+                len: request.pitch_bytes,
+            })?;
+        let mut num_components_u32 = u32::from(request.num_components);
+        let mut bit_depth_u32 = u32::from(request.bit_depth);
+        let mut signed_u32 = u32::from(request.signed);
         let mut params = cuda_kernel_params!(
             pixels_ptr,
             output_ptr,
@@ -1001,14 +1023,13 @@ impl CudaContext {
             bit_depth_u32,
             signed_u32
         );
-        let num_pixels =
-            (width as usize)
-                .checked_mul(height as usize)
-                .ok_or(CudaError::ImageTooLarge {
-                    width,
-                    height,
-                    channels: usize::from(num_components),
-                })?;
+        let num_pixels = (request.width as usize)
+            .checked_mul(request.height as usize)
+            .ok_or(CudaError::ImageTooLarge {
+                width: request.width,
+                height: request.height,
+                channels: usize::from(request.num_components),
+            })?;
         let geometry = j2k_forward_rct_launch_geometry(num_pixels)
             .ok_or(CudaError::LengthTooLarge { len: num_pixels })?;
 
@@ -1155,6 +1176,7 @@ impl CudaContext {
 
 /// Resident f32 component planes produced by CUDA JPEG 2000 encode preparation.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct CudaJ2kResidentComponents {
     pub(crate) buffer: CudaDeviceBuffer,
     pub(crate) num_pixels: usize,
@@ -1240,6 +1262,7 @@ impl CudaJ2kResidentComponents {
 
 /// Host-visible component planes produced by CUDA pixel deinterleave.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct CudaJ2kDeinterleavedComponents {
     pub(crate) components: Vec<Vec<f32>>,
     pub(crate) execution: CudaExecutionStats,
@@ -1264,6 +1287,7 @@ impl CudaJ2kDeinterleavedComponents {
 
 /// Forward 5/3 DWT output and level metadata.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct CudaDwt53Output {
     pub(crate) transformed: Vec<f32>,
     pub(crate) levels: Vec<CudaDwt53LevelShape>,
@@ -1296,6 +1320,7 @@ impl CudaDwt53Output {
 
 /// Resident forward 5/3 DWT output and level metadata.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct CudaResidentDwt53Output {
     pub(crate) buffer: CudaDeviceBuffer,
     pub(crate) sample_count: usize,
@@ -1342,6 +1367,7 @@ impl CudaResidentDwt53Output {
 
 /// Forward 9/7 DWT output and level metadata.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct CudaDwt97Output {
     pub(crate) transformed: Vec<f32>,
     pub(crate) levels: Vec<CudaDwt53LevelShape>,
@@ -1374,6 +1400,7 @@ impl CudaDwt97Output {
 
 /// Resident forward 9/7 DWT output and level metadata.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct CudaResidentDwt97Output {
     pub(crate) buffer: CudaDeviceBuffer,
     pub(crate) sample_count: usize,
@@ -1420,6 +1447,7 @@ impl CudaResidentDwt97Output {
 
 /// JPEG 2000 sub-band quantization parameters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kQuantizeJob {
     /// Quantization step-size exponent.
     pub step_exponent: u16,
@@ -1433,6 +1461,7 @@ pub struct CudaJ2kQuantizeJob {
 
 /// Resident strided sub-band rectangle and quantization parameters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
 pub struct CudaJ2kQuantizeSubbandRegionJob {
     /// X offset, in f32 samples, of the sub-band rectangle inside the resident plane.
     pub x0: u32,
@@ -1450,6 +1479,7 @@ pub struct CudaJ2kQuantizeSubbandRegionJob {
 
 /// Quantized JPEG 2000 sub-band coefficients and execution metadata.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct CudaJ2kQuantizedSubband {
     pub(crate) coefficients: Vec<i32>,
     pub(crate) execution: CudaExecutionStats,
@@ -1469,6 +1499,7 @@ impl CudaJ2kQuantizedSubband {
 
 /// Device-resident quantized JPEG 2000 sub-band coefficients and execution metadata.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct CudaJ2kResidentQuantizedSubband {
     pub(crate) coefficients: CudaDeviceBuffer,
     pub(crate) coefficient_count: usize,
@@ -1502,6 +1533,7 @@ impl CudaJ2kResidentQuantizedSubband {
 
 /// Shape metadata for one forward 5/3 DWT level.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
 pub struct CudaDwt53LevelShape {
     /// Input level width.
     pub width: u32,
@@ -1538,6 +1570,7 @@ pub(crate) struct CudaDwt53LevelPass {
 /// `j2k-cuda-runtime` does not depend on `j2k-transcode`. The dispatch
 /// layer maps this onto the transcode type.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
 pub struct CudaDwt97BatchStageTimings {
     /// Buffer allocation plus host-to-device block upload time, microseconds.
     pub pack_upload_us: u128,

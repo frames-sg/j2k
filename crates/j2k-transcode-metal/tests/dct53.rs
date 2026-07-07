@@ -7,9 +7,7 @@ use j2k_transcode::accelerator::{
 #[cfg(target_os = "macos")]
 use j2k_transcode::accelerator::{RayonReversibleDwt53Accelerator, ReversibleDwt53FirstLevel};
 #[cfg(target_os = "macos")]
-use j2k_transcode::dct53_2d::{
-    dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch, Dwt53TwoDimensional,
-};
+use j2k_transcode::{dct8x8_blocks_to_dwt53_float_linear, Dwt53TwoDimensional};
 use j2k_transcode_metal::weights::{Dwt53WeightRows, SparseDwt53WeightRows};
 use j2k_transcode_metal::MetalDctToWaveletStageAccelerator;
 
@@ -121,7 +119,6 @@ fn auto_metal_reversible_53_batch_declines_tiny_jobs() {
 #[test]
 fn explicit_metal_dct53_matches_scalar_for_structured_cases() {
     let blocks = structured_blocks(2, 2);
-    let mut scalar_scratch = Dct53GridScratch::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
     for (width, height) in [(8, 8), (13, 11), (16, 16)] {
@@ -135,22 +132,13 @@ fn explicit_metal_dct53_matches_scalar_for_structured_cases() {
             Ok(Some(output)) => output,
             Ok(None) => panic!("explicit Metal accelerator must not silently fall back"),
             Err(TranscodeStageError::DeviceUnavailable) => {
-                eprintln!(
-                    "skipping Metal 5/3 coefficient test because no Metal device is available"
-                );
+                j2k_test_support::metal_device_unavailable_is_skip(module_path!());
                 return;
             }
             Err(message) => panic!("explicit Metal 5/3 accelerator failed: {message}"),
         };
-        let expected = dct8x8_blocks_to_dwt53_float_linear_with_scratch(
-            &blocks,
-            2,
-            2,
-            width,
-            height,
-            &mut scalar_scratch,
-        )
-        .expect("scalar 5/3 projection accepts covered grid");
+        let expected = dct8x8_blocks_to_dwt53_float_linear(&blocks, 2, 2, width, height)
+            .expect("scalar 5/3 projection accepts covered grid");
 
         let max_diff = max_abs_diff(&actual, &expected);
         assert!(
@@ -181,9 +169,7 @@ fn explicit_metal_reversible_dct53_matches_rayon_for_structured_cases() {
             Ok(Some(output)) => output,
             Ok(None) => panic!("explicit Metal accelerator must not silently fall back"),
             Err(TranscodeStageError::DeviceUnavailable) => {
-                eprintln!(
-                    "skipping Metal reversible 5/3 test because no Metal device is available"
-                );
+                j2k_test_support::metal_device_unavailable_is_skip(module_path!());
                 return;
             }
             Err(message) => panic!("explicit Metal reversible 5/3 accelerator failed: {message}"),
@@ -225,9 +211,7 @@ fn explicit_metal_reversible_dct53_batch_matches_rayon_for_structured_cases() {
             Ok(Some(output)) => output,
             Ok(None) => panic!("explicit Metal batch accelerator must not silently fall back"),
             Err(TranscodeStageError::DeviceUnavailable) => {
-                eprintln!(
-                    "skipping Metal reversible 5/3 batch test because no Metal device is available"
-                );
+                j2k_test_support::metal_device_unavailable_is_skip(module_path!());
                 return;
             }
             Err(message) => {

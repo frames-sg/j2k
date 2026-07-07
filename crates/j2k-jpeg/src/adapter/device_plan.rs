@@ -9,6 +9,7 @@ use alloc::borrow::Cow;
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
 /// Component metadata needed by device-side JPEG decoders.
 pub struct DeviceComponentPlan {
     /// Horizontal sampling factor.
@@ -20,6 +21,7 @@ pub struct DeviceComponentPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
 /// Validated decode plan and entropy payload for device-side decoders.
 pub struct DeviceDecodePlan<'a> {
     /// Image dimensions as `(width, height)` in pixels.
@@ -60,6 +62,7 @@ pub struct DeviceBatchSummary {
 }
 
 /// Build a full device decode plan for an inspected decoder.
+#[doc(hidden)]
 pub fn build_device_plan<'a>(
     decoder: &'a Decoder<'a>,
     cadence_mcus: u32,
@@ -105,6 +108,7 @@ pub fn build_device_plan<'a>(
 }
 
 /// Summarize device planning properties without copying entropy data.
+#[doc(hidden)]
 pub fn summarize_device_batch(decoder: &Decoder<'_>, cadence_mcus: u32) -> DeviceBatchSummary {
     if !matches!(
         decoder.info().sof_kind,

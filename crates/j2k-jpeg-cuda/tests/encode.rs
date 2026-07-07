@@ -1,11 +1,90 @@
+use j2k_core::CodecError;
 #[cfg(feature = "cuda-runtime")]
-use j2k_core::{CodecError, PixelFormat};
+use j2k_core::PixelFormat;
 #[cfg(feature = "cuda-runtime")]
 use j2k_jpeg::Decoder;
 use j2k_jpeg::{
-    encode_jpeg_baseline, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSamples,
-    JpegSubsampling,
+    encode_jpeg_baseline, DecodeRequest, JpegBackend, JpegEncodeError, JpegEncodeOptions,
+    JpegSamples, JpegSubsampling,
 };
+
+struct EncodeClassificationCase {
+    error: JpegEncodeError,
+    unsupported: bool,
+    buffer_error: bool,
+}
+
+fn encode_classification_cases() -> Vec<EncodeClassificationCase> {
+    vec![
+        EncodeClassificationCase {
+            error: JpegEncodeError::EmptyDimensions,
+            unsupported: false,
+            buffer_error: true,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::DimensionsTooLarge {
+                width: 70_000,
+                height: 8,
+            },
+            unsupported: false,
+            buffer_error: true,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::SampleLength {
+                expected: 12,
+                actual: 8,
+            },
+            unsupported: false,
+            buffer_error: true,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::IncompatibleSubsampling {
+                subsampling: JpegSubsampling::Ybr420,
+                samples: "Gray8",
+            },
+            unsupported: true,
+            buffer_error: false,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::InvalidRestartInterval,
+            unsupported: false,
+            buffer_error: false,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::UnsupportedBackend {
+                backend: JpegBackend::Cpu,
+            },
+            unsupported: true,
+            buffer_error: false,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::SegmentTooLarge { name: "APP0" },
+            unsupported: false,
+            buffer_error: false,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::MissingHuffmanCode { symbol: 17 },
+            unsupported: false,
+            buffer_error: false,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::Internal("entropy overflow".to_string()),
+            unsupported: false,
+            buffer_error: false,
+        },
+    ]
+}
+
+#[test]
+fn cuda_encode_errors_match_adapter_classification_contract() {
+    for case in encode_classification_cases() {
+        let err = j2k_jpeg_cuda::Error::from(case.error);
+        assert_eq!(err.is_unsupported(), case.unsupported, "{err:?}");
+        assert_eq!(err.is_buffer_error(), case.buffer_error, "{err:?}");
+        assert!(!err.is_truncated(), "{err:?}");
+        assert!(!err.is_not_implemented(), "{err:?}");
+    }
+}
 
 #[test]
 fn cpu_jpeg_encoder_rejects_cuda_backend() {
@@ -35,7 +114,7 @@ fn cpu_jpeg_encoder_rejects_cuda_backend() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_resident_rgb8_encode_round_trips_when_required() {
-    if !j2k_test_support::cuda_runtime_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -70,7 +149,7 @@ fn cuda_resident_rgb8_encode_round_trips_when_required() {
     assert!(encoded.data.len() > 64);
     let (decoded, outcome) = Decoder::new(&encoded.data)
         .expect("decode CUDA JPEG")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("decode CUDA JPEG RGB8");
     assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
     assert_rgb_close(&decoded, &pixels, 40);
@@ -79,7 +158,7 @@ fn cuda_resident_rgb8_encode_round_trips_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_resident_batch_encode_preserves_order_when_required() {
-    if !j2k_test_support::cuda_runtime_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -131,11 +210,11 @@ fn cuda_resident_batch_encode_preserves_order_when_required() {
     }
     let (decoded_first, _) = Decoder::new(&encoded[0].data)
         .expect("decode first")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("decode first RGB8");
     let (decoded_second, _) = Decoder::new(&encoded[1].data)
         .expect("decode second")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("decode second RGB8");
     assert_rgb_close(&decoded_first, &first, 40);
     assert_rgb_close(&decoded_second, &second, 40);

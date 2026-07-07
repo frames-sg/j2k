@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define GROK_OUTPUT_CAP_BYTES ((size_t)512 * 1024 * 1024)
+
 static void j2k_grok_init_once(void) {
   static int initialized = 0;
   if (!initialized) {
@@ -20,6 +22,86 @@ static uint8_t j2k_clamp_u8(int32_t value) {
     return 255;
   }
   return (uint8_t)value;
+}
+
+static int j2k_grok_checked_mul_size(size_t lhs, size_t rhs, size_t *out) {
+  if (!out) {
+    return 0;
+  }
+  if (lhs != 0 && rhs > SIZE_MAX / lhs) {
+    return 0;
+  }
+  *out = lhs * rhs;
+  return 1;
+}
+
+static int j2k_grok_checked_add_size(size_t lhs, size_t rhs, size_t *out) {
+  if (!out) {
+    return 0;
+  }
+  if (rhs > SIZE_MAX - lhs) {
+    return 0;
+  }
+  *out = lhs + rhs;
+  return 1;
+}
+
+static int j2k_grok_checked_output_len(uint32_t width, uint32_t height,
+                                       uint32_t channels, size_t *out) {
+  size_t pixels = 0;
+  size_t total = 0;
+  if (channels != 1 && channels != 3) {
+    return 0;
+  }
+  if (width == 0 || height == 0) {
+    return 0;
+  }
+  if (!j2k_grok_checked_mul_size((size_t)width, (size_t)height, &pixels)) {
+    return 0;
+  }
+  if (!j2k_grok_checked_mul_size(pixels, (size_t)channels, &total)) {
+    return 0;
+  }
+  if (total > GROK_OUTPUT_CAP_BYTES) {
+    return 0;
+  }
+  *out = total;
+  return 1;
+}
+
+static int j2k_grok_validate_component_count(uint32_t numcomps,
+                                             uint32_t channels) {
+  if (numcomps == 0) {
+    return 0;
+  }
+  if (channels == 1) {
+    return 1;
+  }
+  if (channels == 3 && (numcomps == 1 || numcomps >= 3)) {
+    return 1;
+  }
+  return 0;
+}
+
+static int j2k_grok_component_index(const grk_image_comp *component,
+                                    uint32_t row, uint32_t col,
+                                    size_t *index) {
+  size_t row_offset = 0;
+  if (!component || !component->data || !index) {
+    return 0;
+  }
+  if (component->w == 0 || component->h == 0 || component->stride == 0) {
+    return 0;
+  }
+  if (row >= component->h || col >= component->w ||
+      component->stride < component->w) {
+    return 0;
+  }
+  if (!j2k_grok_checked_mul_size((size_t)row, (size_t)component->stride,
+                                 &row_offset)) {
+    return 0;
+  }
+  return j2k_grok_checked_add_size(row_offset, (size_t)col, index);
 }
 
 static int32_t j2k_grok_component_sample(const grk_image_comp *component,
@@ -116,7 +198,26 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint32_t reduce,
 
   uint32_t width = image->decompress_width ? image->decompress_width : image->comps[0].w;
   uint32_t height = image->decompress_height ? image->decompress_height : image->comps[0].h;
-  size_t total = (size_t)width * (size_t)height * (size_t)channels;
+  size_t total = 0;
+  size_t last_index = 0;
+  if (!j2k_grok_validate_component_count(image->numcomps, channels) ||
+      !j2k_grok_checked_output_len(width, height, channels, &total)) {
+    grk_object_unref(codec);
+    return 0;
+  }
+  if (!j2k_grok_component_index(&image->comps[0], height - 1, width - 1,
+                                &last_index)) {
+    grk_object_unref(codec);
+    return 0;
+  }
+  if (channels == 3 && image->numcomps >= 3 &&
+      (!j2k_grok_component_index(&image->comps[1], height - 1, width - 1,
+                                 &last_index) ||
+       !j2k_grok_component_index(&image->comps[2], height - 1, width - 1,
+                                 &last_index))) {
+    grk_object_unref(codec);
+    return 0;
+  }
   packed = (uint8_t *)malloc(total);
   if (!packed) {
     grk_object_unref(codec);
@@ -127,7 +228,12 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint32_t reduce,
     for (uint32_t col = 0; col < width; ++col) {
       size_t dst = ((size_t)row * width + col) * channels;
       grk_image_comp *c0 = &image->comps[0];
-      size_t c0_index = (size_t)row * c0->stride + col;
+      size_t c0_index = 0;
+      if (!j2k_grok_component_index(c0, row, col, &c0_index)) {
+        free(packed);
+        grk_object_unref(codec);
+        return 0;
+      }
       int32_t v0 = j2k_grok_component_sample(c0, c0_index);
       if (channels == 1) {
         packed[dst] = j2k_clamp_u8(v0);
@@ -142,8 +248,14 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint32_t reduce,
       }
       grk_image_comp *c1 = &image->comps[1];
       grk_image_comp *c2 = &image->comps[2];
-      size_t c1_index = (size_t)row * c1->stride + col;
-      size_t c2_index = (size_t)row * c2->stride + col;
+      size_t c1_index = 0;
+      size_t c2_index = 0;
+      if (!j2k_grok_component_index(c1, row, col, &c1_index) ||
+          !j2k_grok_component_index(c2, row, col, &c2_index)) {
+        free(packed);
+        grk_object_unref(codec);
+        return 0;
+      }
       int32_t v1 = j2k_grok_component_sample(c1, c1_index);
       int32_t v2 = j2k_grok_component_sample(c2, c2_index);
       packed[dst] = j2k_clamp_u8(v0);

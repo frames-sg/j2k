@@ -8,13 +8,17 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[package.metadata.cargo-machete]
+# Used from build.rs when a local Grok C shim is compiled.
+ignored = ["cc"]
+
 [dependencies]
 j2k-core = { path = "../j2k-core", version = "=0.6.2" }
 j2k-native = { path = "../j2k-native", version = "=0.6.2" }
 j2k = { path = "../j2k", version = "=0.6.2" }
 j2k-test-support = { path = "../j2k-test-support", version = "=0.6.2" }
-image = { version = "0.25.8", default-features = false, features = ["bmp", "jpeg", "png", "pnm", "tiff"] }
-openjpeg-sys = "1.0.12"
+image = { workspace = true }
+openjpeg-sys = { workspace = true }
 
 [build-dependencies]
 cc = { workspace = true }

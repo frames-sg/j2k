@@ -12,12 +12,13 @@ use j2k_transcode::accelerator::{
     DctGridToHtj2k97CodeBlockJob, DctToWaveletStageAccelerator, Htj2k97CodeBlockOptions,
     IrreversibleQuantizationSubbandScales, PrequantizedHtj2k97Component,
 };
-use j2k_transcode::dct97_2d::dct8x8_blocks_then_dwt97_float;
-use j2k_transcode::htj2k97_codeblock_oracle::prequantized_component_from_dwt97;
-use j2k_transcode::{JpegTileBatchInput, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
+use j2k_transcode::{
+    dct8x8_blocks_then_dwt97_float, JpegTileBatchInput, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
+};
 use j2k_transcode_cuda::CudaDctToWaveletStageAccelerator;
+use j2k_transcode_test_support::prequantized_component_from_dwt97;
 
-use j2k_test_support::{cuda_runtime_required, jpeg_baseline_420_16x16};
+use j2k_test_support::{cuda_runtime_gate, jpeg_baseline_420_16x16};
 
 /// Deterministic small f64 DCT coefficients, varied per job by `salt`.
 fn make_blocks(block_cols: usize, block_rows: usize, salt: usize) -> Vec<[[f64; 8]; 8]> {
@@ -99,7 +100,7 @@ fn assert_coefficients_close(
 
 #[test]
 fn cuda_htj2k97_codeblock_batch_matches_oracle_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -180,7 +181,7 @@ fn cuda_htj2k97_codeblock_batch_matches_oracle_when_required() {
 
 #[test]
 fn cuda_htj2k97_codeblock_batch_rejects_non_uniform_geometry_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -231,7 +232,7 @@ fn cuda_htj2k97_codeblock_batch_rejects_non_uniform_geometry_when_required() {
 
 #[test]
 fn cuda_resident_htj2k97_batch_matches_host_bounce_codestream_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 

@@ -2,19 +2,19 @@
 
 #[cfg(all(test, feature = "cuda-runtime"))]
 use core::cell::Cell;
-use core::convert::Infallible;
 #[cfg(feature = "cuda-runtime")]
 use std::sync::Arc;
 
 use j2k::{
-    adapter::device_plan::{DeviceDecodePlan, DeviceDecodeRequest},
-    J2kDecoder as CpuDecoder, J2kError, J2kScratchPool as CpuJ2kScratchPool, J2kView,
+    DeviceDecodePlan, DeviceDecodeRequest, J2kDecodeWarning, J2kDecoder as CpuDecoder,
+    J2kScratchPool as CpuJ2kScratchPool, J2kView,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_core::BackendKind;
 use j2k_core::{
-    submit_ready_device, BackendRequest, DecodeOutcome, Downscale, ImageCodec, ImageDecode,
-    ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, ReadySubmission, Rect,
+    checked_surface_len, submit_ready_device, BackendRequest, CpuBackedImageDecode, DecodeOutcome,
+    Downscale, ImageCodec, ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, ReadySubmission,
+    Rect, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::{
@@ -27,6 +27,7 @@ use j2k_cuda_runtime::{
 };
 use j2k_native::{DecodeSettings, DecoderContext as NativeDecoderContext, Image as NativeImage};
 
+use crate::error::native_decode_error;
 #[cfg(feature = "cuda-runtime")]
 use crate::runtime::cuda_error;
 use crate::runtime::{validate_surface_request, wrap_cpu_staged_cuda_surface, wrap_surface};
@@ -150,6 +151,7 @@ fn elapsed_host_us(start: Option<std::time::Instant>) -> u128 {
 
 /// CUDA-facing JPEG 2000 decoder wrapper.
 pub struct J2kDecoder<'a> {
+    bytes: &'a [u8],
     inner: CpuDecoder<'a>,
     pool: CpuJ2kScratchPool,
 }
@@ -158,6 +160,7 @@ impl<'a> J2kDecoder<'a> {
     /// Create a CUDA-facing decoder from compressed bytes.
     pub fn new(input: &'a [u8]) -> Result<Self, Error> {
         Ok(Self {
+            bytes: input,
             inner: CpuDecoder::new(input)?,
             pool: CpuJ2kScratchPool::new(),
         })
@@ -174,8 +177,7 @@ impl<'a> J2kDecoder<'a> {
             return self.decode_to_cuda_resident_surface_impl(session, fmt);
         }
         let dims = self.inner.info().dimensions;
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         j2k_profile::emit_gpu_route_surface_profile(
             ("j2k", "cuda"),
             (
@@ -244,8 +246,7 @@ impl<'a> J2kDecoder<'a> {
             DeviceDecodeRequest::Region { roi },
         )?;
         let dims = plan.output_dims();
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         self.inner
             .decode_region_into(&mut self.pool, &mut out, stride, fmt, plan.source_rect())?;
         wrap_surface(out, dims, fmt, backend, session)
@@ -267,8 +268,7 @@ impl<'a> J2kDecoder<'a> {
             DeviceDecodeRequest::Scaled { scale },
         )?
         .output_dims();
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         self.inner
             .decode_scaled_into(&mut self.pool, &mut out, stride, fmt, scale)?;
         wrap_surface(out, dims, fmt, backend, session)
@@ -292,8 +292,7 @@ impl<'a> J2kDecoder<'a> {
             DeviceDecodeRequest::RegionScaled { roi, scale },
         )?;
         let dims = plan.output_dims();
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         self.inner.decode_region_scaled_into(
             &mut self.pool,
             &mut out,
@@ -317,6 +316,7 @@ impl<'a> J2kDecoder<'a> {
 
     /// Strictly decode a full HTJ2K image into a CUDA-backed surface and return
     /// a structured profile report for CPU planning and CUDA stages.
+    #[doc(hidden)]
     pub fn decode_to_device_with_session_and_profile(
         &mut self,
         fmt: PixelFormat,
@@ -338,6 +338,7 @@ impl<'a> J2kDecoder<'a> {
 
     /// Strictly decode a batch of full HTJ2K images into CUDA-backed surfaces
     /// and return one aggregate profile report for the shared batch.
+    #[doc(hidden)]
     pub fn decode_batch_to_device_with_session_and_profile(
         inputs: &[&[u8]],
         fmt: PixelFormat,
@@ -387,22 +388,22 @@ impl<'a> J2kDecoder<'a> {
     }
 
     /// Build a flat CUDA HTJ2K grayscale decode plan and return stage timings.
-    pub fn build_cuda_htj2k_grayscale_plan_with_profile(
+    pub(crate) fn build_cuda_htj2k_grayscale_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
     ) -> Result<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport), Error> {
         let total_start = profile::profile_now(true);
 
         let parse_start = profile::profile_now(true);
-        let image = NativeImage::new(self.inner.bytes(), &DecodeSettings::default())
-            .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+        let image = NativeImage::new(self.bytes, &DecodeSettings::default())
+            .map_err(native_decode_error)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
         let mut native_context = NativeDecoderContext::default();
         let native_plan = image
             .build_direct_grayscale_plan_with_context(&mut native_context)
-            .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+            .map_err(native_decode_error)?;
         let plan_us = profile::elapsed_us(plan_start);
 
         let flatten_start = profile::profile_now(true);
@@ -426,7 +427,7 @@ impl<'a> J2kDecoder<'a> {
     }
 
     /// Build a flat CUDA HTJ2K grayscale region decode plan and return stage timings.
-    pub fn build_cuda_htj2k_grayscale_region_plan_with_profile(
+    pub(crate) fn build_cuda_htj2k_grayscale_region_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
         roi: Rect,
@@ -434,8 +435,8 @@ impl<'a> J2kDecoder<'a> {
         let total_start = profile::profile_now(true);
 
         let parse_start = profile::profile_now(true);
-        let image = NativeImage::new(self.inner.bytes(), &DecodeSettings::default())
-            .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+        let image = NativeImage::new(self.bytes, &DecodeSettings::default())
+            .map_err(native_decode_error)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
@@ -445,7 +446,7 @@ impl<'a> J2kDecoder<'a> {
                 &mut native_context,
                 (roi.x, roi.y, roi.w, roi.h),
             )
-            .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+            .map_err(native_decode_error)?;
         let plan_us = profile::elapsed_us(plan_start);
 
         let flatten_start = profile::profile_now(true);
@@ -475,7 +476,7 @@ impl<'a> J2kDecoder<'a> {
 
     /// Build a flat reduced-resolution CUDA HTJ2K grayscale decode plan and
     /// return stage timings.
-    pub fn build_cuda_htj2k_grayscale_scaled_plan_with_profile(
+    pub(crate) fn build_cuda_htj2k_grayscale_scaled_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
         output_dimensions: (u32, u32),
@@ -484,20 +485,20 @@ impl<'a> J2kDecoder<'a> {
 
         let parse_start = profile::profile_now(true);
         let image = NativeImage::new(
-            self.inner.bytes(),
+            self.bytes,
             &DecodeSettings {
                 target_resolution: Some(output_dimensions),
                 ..DecodeSettings::default()
             },
         )
-        .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+        .map_err(native_decode_error)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
         let mut native_context = NativeDecoderContext::default();
         let native_plan = image
             .build_direct_grayscale_plan_with_context(&mut native_context)
-            .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+            .map_err(native_decode_error)?;
         let plan_us = profile::elapsed_us(plan_start);
 
         let flatten_start = profile::profile_now(true);
@@ -522,7 +523,7 @@ impl<'a> J2kDecoder<'a> {
 
     /// Build a flat reduced-resolution CUDA HTJ2K grayscale region decode
     /// plan and return stage timings.
-    pub fn build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(
+    pub(crate) fn build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
         scaled_roi: Rect,
@@ -532,13 +533,13 @@ impl<'a> J2kDecoder<'a> {
 
         let parse_start = profile::profile_now(true);
         let image = NativeImage::new(
-            self.inner.bytes(),
+            self.bytes,
             &DecodeSettings {
                 target_resolution: Some(output_dimensions),
                 ..DecodeSettings::default()
             },
         )
-        .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+        .map_err(native_decode_error)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
@@ -548,7 +549,7 @@ impl<'a> J2kDecoder<'a> {
                 &mut native_context,
                 (scaled_roi.x, scaled_roi.y, scaled_roi.w, scaled_roi.h),
             )
-            .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+            .map_err(native_decode_error)?;
         let plan_us = profile::elapsed_us(plan_start);
 
         let flatten_start = profile::profile_now(true);
@@ -583,11 +584,7 @@ impl<'a> J2kDecoder<'a> {
         fmt: PixelFormat,
     ) -> Result<CudaHtj2kColorDecodePlans, Error> {
         let mut native_context = NativeDecoderContext::default();
-        build_cuda_htj2k_color_plans_from_bytes_with_profile(
-            self.inner.bytes(),
-            fmt,
-            &mut native_context,
-        )
+        build_cuda_htj2k_color_plans_from_bytes_with_profile(self.bytes, fmt, &mut native_context)
     }
 
     #[cfg(feature = "cuda-runtime")]
@@ -600,20 +597,20 @@ impl<'a> J2kDecoder<'a> {
 
         let parse_start = profile::profile_now(true);
         let image = NativeImage::new(
-            self.inner.bytes(),
+            self.bytes,
             &DecodeSettings {
                 target_resolution: Some(output_dimensions),
                 ..DecodeSettings::default()
             },
         )
-        .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+        .map_err(native_decode_error)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
         let mut native_context = NativeDecoderContext::default();
         let native_plan = image
             .build_direct_color_plan_with_context(&mut native_context)
-            .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+            .map_err(native_decode_error)?;
         let plan_us = profile::elapsed_us(plan_start);
 
         let flatten_start = profile::profile_now(true);
@@ -666,15 +663,15 @@ impl<'a> J2kDecoder<'a> {
         let total_start = profile::profile_now(true);
 
         let parse_start = profile::profile_now(true);
-        let image = NativeImage::new(self.inner.bytes(), &DecodeSettings::default())
-            .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+        let image = NativeImage::new(self.bytes, &DecodeSettings::default())
+            .map_err(native_decode_error)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
         let mut native_context = NativeDecoderContext::default();
         let native_plan = image
             .build_direct_color_plan_with_context(&mut native_context)
-            .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+            .map_err(native_decode_error)?;
         let plan_us = profile::elapsed_us(plan_start);
 
         let flatten_start = profile::profile_now(true);
@@ -733,20 +730,20 @@ impl<'a> J2kDecoder<'a> {
 
         let parse_start = profile::profile_now(true);
         let image = NativeImage::new(
-            self.inner.bytes(),
+            self.bytes,
             &DecodeSettings {
                 target_resolution: Some(output_dimensions),
                 ..DecodeSettings::default()
             },
         )
-        .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+        .map_err(native_decode_error)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
         let mut native_context = NativeDecoderContext::default();
         let native_plan = image
             .build_direct_color_plan_with_context(&mut native_context)
-            .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+            .map_err(native_decode_error)?;
         let plan_us = profile::elapsed_us(plan_start);
 
         let flatten_start = profile::profile_now(true);
@@ -802,8 +799,7 @@ impl<'a> J2kDecoder<'a> {
         session: &mut CudaSession,
     ) -> Result<Surface, Error> {
         let dims = self.inner.info().dimensions;
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         self.inner
             .decode_into_with_scratch(&mut self.pool, &mut out, stride, fmt)?;
         wrap_cpu_staged_cuda_surface(&out, dims, fmt, session)
@@ -822,8 +818,7 @@ impl<'a> J2kDecoder<'a> {
             DeviceDecodeRequest::Region { roi },
         )?;
         let dims = plan.output_dims();
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         self.inner
             .decode_region_into(&mut self.pool, &mut out, stride, fmt, plan.source_rect())?;
         wrap_cpu_staged_cuda_surface(&out, dims, fmt, session)
@@ -842,8 +837,7 @@ impl<'a> J2kDecoder<'a> {
             DeviceDecodeRequest::Scaled { scale },
         )?
         .output_dims();
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         self.inner
             .decode_scaled_into(&mut self.pool, &mut out, stride, fmt, scale)?;
         wrap_cpu_staged_cuda_surface(&out, dims, fmt, session)
@@ -863,8 +857,7 @@ impl<'a> J2kDecoder<'a> {
             DeviceDecodeRequest::RegionScaled { roi, scale },
         )?;
         let dims = plan.output_dims();
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         self.inner.decode_region_scaled_into(
             &mut self.pool,
             &mut out,
@@ -966,6 +959,16 @@ impl CudaDecodeStageTimings {
             .idwt_dispatch_count
             .saturating_add(self.idwt_dispatch_count);
     }
+}
+
+fn allocate_cpu_surface(dims: (u32, u32), fmt: PixelFormat) -> Result<(Vec<u8>, usize), Error> {
+    let (stride, len) = checked_surface_len(
+        dims,
+        fmt.bytes_per_pixel(),
+        DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        "j2k CUDA CPU-staged surface",
+    )?;
+    Ok((vec![0u8; len], stride))
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1499,17 +1502,17 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         &pool,
         collect_stage_timings,
     )?;
-    finish_color_cuda_resident_surface_with_component_work(
-        &context,
-        &pool,
+    finish_color_cuda_resident_surface_with_component_work(FinishColorCudaResidentSurfaceRequest {
+        context: &context,
+        pool: &pool,
         fmt,
         color,
         component_work,
         wall_started,
         collect_stage_timings,
-        true,
-        true,
-    )
+        run_idwt: true,
+        emit_report: true,
+    })
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1613,15 +1616,17 @@ fn decode_color_cuda_resident_batch_surfaces_with_profile(
                 });
             }
             let (surface, report) = finish_color_cuda_resident_surface_with_component_work(
-                &context,
-                &pool,
-                fmt,
-                color,
-                component_work,
-                None,
-                collect_stage_timings,
-                !idwt_batched,
-                false,
+                FinishColorCudaResidentSurfaceRequest {
+                    context: &context,
+                    pool: &pool,
+                    fmt,
+                    color,
+                    component_work,
+                    wall_started: None,
+                    collect_stage_timings,
+                    run_idwt: !idwt_batched,
+                    emit_report: false,
+                },
             )?;
             surfaces.push(surface);
             reports.push(report);
@@ -1650,14 +1655,13 @@ fn build_cuda_htj2k_color_plans_from_bytes_with_profile<'a>(
     let total_start = profile::profile_now(true);
 
     let parse_start = profile::profile_now(true);
-    let image = NativeImage::new(input, &DecodeSettings::default())
-        .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+    let image = NativeImage::new(input, &DecodeSettings::default()).map_err(native_decode_error)?;
     let parse_us = profile::elapsed_us(parse_start);
 
     let plan_start = profile::profile_now(true);
     let native_plan = image
         .build_direct_color_plan_with_context(native_context)
-        .map_err(|error| Error::Decode(J2kError::Backend(error.to_string())))?;
+        .map_err(native_decode_error)?;
     let plan_us = profile::elapsed_us(plan_start);
 
     let flatten_start = profile::profile_now(true);
@@ -1984,18 +1988,33 @@ fn color_store_input_width(store: &CudaHtj2kStoreStep) -> u32 {
 }
 
 #[cfg(feature = "cuda-runtime")]
-#[allow(clippy::too_many_arguments)]
-fn finish_color_cuda_resident_surface_with_component_work(
-    context: &j2k_cuda_runtime::CudaContext,
-    pool: &CudaBufferPool,
+struct FinishColorCudaResidentSurfaceRequest<'a> {
+    context: &'a j2k_cuda_runtime::CudaContext,
+    pool: &'a CudaBufferPool,
     fmt: PixelFormat,
-    mut color: CudaHtj2kColorDecodePlans,
-    mut component_work: Vec<CudaComponentDecodeWork>,
+    color: CudaHtj2kColorDecodePlans,
+    component_work: Vec<CudaComponentDecodeWork>,
     wall_started: Option<profile::ProfileInstant>,
     collect_stage_timings: bool,
     run_idwt: bool,
     emit_report: bool,
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn finish_color_cuda_resident_surface_with_component_work(
+    request: FinishColorCudaResidentSurfaceRequest<'_>,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
+    let FinishColorCudaResidentSurfaceRequest {
+        context,
+        pool,
+        fmt,
+        mut color,
+        mut component_work,
+        wall_started,
+        collect_stage_timings,
+        run_idwt,
+        emit_report,
+    } = request;
     let pending_idwt_batch = if run_idwt {
         let batch_components = color.components.iter().collect::<Vec<_>>();
         if can_batch_color_idwt(&batch_components) {
@@ -3304,7 +3323,7 @@ mod tests {
         let (surfaces, report) = match batch {
             Ok(result) => result,
             Err(crate::Error::CudaUnavailable | crate::Error::CudaRuntime { .. })
-                if !cuda_runtime_required() =>
+                if !cuda_runtime_gate() =>
             {
                 return;
             }
@@ -3355,7 +3374,7 @@ mod tests {
         let surfaces = match result {
             Ok(surfaces) => surfaces,
             Err(crate::Error::CudaUnavailable | crate::Error::CudaRuntime { .. })
-                if !cuda_runtime_required() =>
+                if !cuda_runtime_gate() =>
             {
                 return;
             }
@@ -3397,8 +3416,8 @@ mod tests {
         assert_eq!(report.detail.status_d2h_us, 5);
     }
 
-    fn cuda_runtime_required() -> bool {
-        std::env::var_os("J2K_REQUIRE_CUDA_RUNTIME").is_some()
+    fn cuda_runtime_gate() -> bool {
+        j2k_test_support::cuda_runtime_gate(module_path!())
     }
 
     fn rgb8_htj2k_fixture(width: u32, height: u32, levels: u8, seed: u16) -> Vec<u8> {
@@ -3536,94 +3555,51 @@ mod tests {
     }
 }
 
+#[doc(hidden)]
 impl ImageCodec for J2kDecoder<'_> {
     type Error = Error;
-    type Warning = Infallible;
-    type Pool = CpuJ2kScratchPool;
+    type Warning = J2kDecodeWarning;
+    type Pool = crate::J2kScratchPool;
 }
 
-impl<'a> ImageDecode<'a> for J2kDecoder<'a> {
+impl<'a> CpuBackedImageDecode<'a> for J2kDecoder<'a> {
+    type Cpu = CpuDecoder<'a>;
     type View = J2kView<'a>;
 
-    fn inspect(input: &'a [u8]) -> Result<j2k_core::Info, Self::Error> {
+    fn inspect_cpu(input: &'a [u8]) -> Result<j2k_core::Info, Self::Error> {
         Ok(CpuDecoder::inspect(input)?)
     }
 
-    fn parse(input: &'a [u8]) -> Result<Self::View, Self::Error> {
+    fn parse_cpu(input: &'a [u8]) -> Result<Self::View, Self::Error> {
         Ok(J2kView::parse(input)?)
     }
 
-    fn from_view(view: Self::View) -> Result<Self, Self::Error> {
+    fn from_cpu_view(view: Self::View) -> Result<Self, Self::Error> {
+        let bytes = view.bytes();
         Ok(Self {
+            bytes,
             inner: CpuDecoder::from_view(view)?,
             pool: CpuJ2kScratchPool::new(),
         })
     }
 
-    fn decode_into(
-        &mut self,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(self.inner.decode_into(out, stride, fmt)?)
+    fn cpu_decoder_mut(&mut self) -> &mut Self::Cpu {
+        &mut self.inner
     }
 
-    fn decode_into_with_scratch(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(self
-            .inner
-            .decode_into_with_scratch(pool, out, stride, fmt)?)
-    }
-
-    fn decode_region_into(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        roi: Rect,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(self.inner.decode_region_into(pool, out, stride, fmt, roi)?)
-    }
-
-    fn decode_scaled_into(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        scale: Downscale,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(self
-            .inner
-            .decode_scaled_into(pool, out, stride, fmt, scale)?)
-    }
-
-    fn decode_region_scaled_into(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(self
-            .inner
-            .decode_region_scaled_into(pool, out, stride, fmt, roi, scale)?)
+    fn map_cpu_outcome(
+        outcome: DecodeOutcome<<Self::Cpu as ImageCodec>::Warning>,
+    ) -> DecodeOutcome<Self::Warning> {
+        outcome
     }
 }
 
+#[doc(hidden)]
 impl<'a> ImageDecodeDevice<'a> for J2kDecoder<'a> {
     type DeviceSurface = Surface;
 }
 
+#[doc(hidden)]
 impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
     type Session = CudaSession;
     type DeviceSurface = Surface;
@@ -3681,6 +3657,10 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "htj2k_plan_tests.rs"]
+mod htj2k_plan_tests;
 
 #[cfg(test)]
 mod dispatch_tests {

@@ -39,6 +39,30 @@ const INVALID_CHUNKED_ENTROPY_DIAGNOSTIC_ARGUMENT: &str =
     "J2K CUDA JPEG chunked entropy diagnostic config or input is invalid";
 
 #[cfg(feature = "cuda-runtime")]
+macro_rules! cuda_decode_plan {
+    ($sampling:expr, $packet:expr, $dimensions:expr, $checkpoints:expr $(,)?) => {{
+        let packet = $packet;
+        Ok::<CudaJpegRgb8DecodePlan<'_>, Error>(CudaJpegRgb8DecodePlan {
+            sampling: $sampling,
+            dimensions: $dimensions,
+            mcus_per_row: packet.mcus_per_row,
+            mcu_rows: packet.mcu_rows,
+            entropy_bytes: &packet.entropy_bytes,
+            entropy_checkpoints: $checkpoints,
+            y_quant: packet.y_quant,
+            cb_quant: packet.cb_quant,
+            cr_quant: packet.cr_quant,
+            y_dc_table: cuda_huffman_table(&packet.y_dc_table)?,
+            y_ac_table: cuda_huffman_table(&packet.y_ac_table)?,
+            cb_dc_table: cuda_huffman_table(&packet.cb_dc_table)?,
+            cb_ac_table: cuda_huffman_table(&packet.cb_ac_table)?,
+            cr_dc_table: cuda_huffman_table(&packet.cr_dc_table)?,
+            cr_ac_table: cuda_huffman_table(&packet.cr_ac_table)?,
+        })
+    }};
+}
+
+#[cfg(feature = "cuda-runtime")]
 pub(crate) fn decode_owned_cuda_rgb8(
     bytes: &[u8],
     dimensions: (u32, u32),
@@ -53,19 +77,19 @@ pub(crate) fn decode_owned_cuda_rgb8(
 
     let checkpoints = cuda_entropy_checkpoints(packet.entropy_checkpoints());
     let plan = match &packet {
-        OwnedFastRgb8Packet::Fast420(packet) => cuda_decode_plan(
+        OwnedFastRgb8Packet::Fast420(packet) => cuda_decode_plan!(
             CudaJpegRgb8Sampling::Fast420,
             packet.as_ref(),
             dimensions,
             &checkpoints,
         )?,
-        OwnedFastRgb8Packet::Fast422(packet) => cuda_decode_plan(
+        OwnedFastRgb8Packet::Fast422(packet) => cuda_decode_plan!(
             CudaJpegRgb8Sampling::Fast422,
             packet.as_ref(),
             dimensions,
             &checkpoints,
         )?,
-        OwnedFastRgb8Packet::Fast444(packet) => cuda_decode_plan(
+        OwnedFastRgb8Packet::Fast444(packet) => cuda_decode_plan!(
             CudaJpegRgb8Sampling::Fast444,
             packet.as_ref(),
             dimensions,
@@ -109,19 +133,19 @@ pub(crate) fn decode_owned_cuda_rgb8_into(
     }
     let checkpoints = cuda_entropy_checkpoints(packet.entropy_checkpoints());
     let plan = match &packet {
-        OwnedFastRgb8Packet::Fast420(packet) => cuda_decode_plan(
+        OwnedFastRgb8Packet::Fast420(packet) => cuda_decode_plan!(
             CudaJpegRgb8Sampling::Fast420,
             packet.as_ref(),
             dimensions,
             &checkpoints,
         )?,
-        OwnedFastRgb8Packet::Fast422(packet) => cuda_decode_plan(
+        OwnedFastRgb8Packet::Fast422(packet) => cuda_decode_plan!(
             CudaJpegRgb8Sampling::Fast422,
             packet.as_ref(),
             dimensions,
             &checkpoints,
         )?,
-        OwnedFastRgb8Packet::Fast444(packet) => cuda_decode_plan(
+        OwnedFastRgb8Packet::Fast444(packet) => cuda_decode_plan!(
             CudaJpegRgb8Sampling::Fast444,
             packet.as_ref(),
             dimensions,
@@ -204,84 +228,6 @@ impl OwnedFastRgb8Packet {
 }
 
 #[cfg(feature = "cuda-runtime")]
-trait FastRgb8Packet {
-    fn mcus_per_row(&self) -> u32;
-    fn mcu_rows(&self) -> u32;
-    fn entropy_bytes(&self) -> &[u8];
-    fn y_quant(&self) -> [u16; 64];
-    fn cb_quant(&self) -> [u16; 64];
-    fn cr_quant(&self) -> [u16; 64];
-    fn y_dc_table(&self) -> &JpegHuffmanTable;
-    fn y_ac_table(&self) -> &JpegHuffmanTable;
-    fn cb_dc_table(&self) -> &JpegHuffmanTable;
-    fn cb_ac_table(&self) -> &JpegHuffmanTable;
-    fn cr_dc_table(&self) -> &JpegHuffmanTable;
-    fn cr_ac_table(&self) -> &JpegHuffmanTable;
-}
-
-#[cfg(feature = "cuda-runtime")]
-macro_rules! impl_fast_rgb8_packet {
-    ($packet:ty) => {
-        impl FastRgb8Packet for $packet {
-            fn mcus_per_row(&self) -> u32 {
-                self.mcus_per_row
-            }
-
-            fn mcu_rows(&self) -> u32 {
-                self.mcu_rows
-            }
-
-            fn entropy_bytes(&self) -> &[u8] {
-                &self.entropy_bytes
-            }
-
-            fn y_quant(&self) -> [u16; 64] {
-                self.y_quant
-            }
-
-            fn cb_quant(&self) -> [u16; 64] {
-                self.cb_quant
-            }
-
-            fn cr_quant(&self) -> [u16; 64] {
-                self.cr_quant
-            }
-
-            fn y_dc_table(&self) -> &JpegHuffmanTable {
-                &self.y_dc_table
-            }
-
-            fn y_ac_table(&self) -> &JpegHuffmanTable {
-                &self.y_ac_table
-            }
-
-            fn cb_dc_table(&self) -> &JpegHuffmanTable {
-                &self.cb_dc_table
-            }
-
-            fn cb_ac_table(&self) -> &JpegHuffmanTable {
-                &self.cb_ac_table
-            }
-
-            fn cr_dc_table(&self) -> &JpegHuffmanTable {
-                &self.cr_dc_table
-            }
-
-            fn cr_ac_table(&self) -> &JpegHuffmanTable {
-                &self.cr_ac_table
-            }
-        }
-    };
-}
-
-#[cfg(feature = "cuda-runtime")]
-impl_fast_rgb8_packet!(JpegFast420PacketV1);
-#[cfg(feature = "cuda-runtime")]
-impl_fast_rgb8_packet!(JpegFast422PacketV1);
-#[cfg(feature = "cuda-runtime")]
-impl_fast_rgb8_packet!(JpegFast444PacketV1);
-
-#[cfg(feature = "cuda-runtime")]
 fn resolve_owned_rgb8_packet(
     bytes: &[u8],
     session: &mut CudaSession,
@@ -334,32 +280,6 @@ fn validate_chunked_entropy_diagnostic_input(bytes: &[u8]) -> Result<(), Error> 
     }
     Err(Error::UnsupportedCudaRequest {
         reason: UNSUPPORTED_CHUNKED_ENTROPY_DIAGNOSTIC_INPUT,
-    })
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_decode_plan<'a>(
-    sampling: CudaJpegRgb8Sampling,
-    packet: &'a impl FastRgb8Packet,
-    dimensions: (u32, u32),
-    checkpoints: &'a [CudaJpegEntropyCheckpoint],
-) -> Result<CudaJpegRgb8DecodePlan<'a>, Error> {
-    Ok(CudaJpegRgb8DecodePlan {
-        sampling,
-        dimensions,
-        mcus_per_row: packet.mcus_per_row(),
-        mcu_rows: packet.mcu_rows(),
-        entropy_bytes: packet.entropy_bytes(),
-        entropy_checkpoints: checkpoints,
-        y_quant: packet.y_quant(),
-        cb_quant: packet.cb_quant(),
-        cr_quant: packet.cr_quant(),
-        y_dc_table: cuda_huffman_table(packet.y_dc_table())?,
-        y_ac_table: cuda_huffman_table(packet.y_ac_table())?,
-        cb_dc_table: cuda_huffman_table(packet.cb_dc_table())?,
-        cb_ac_table: cuda_huffman_table(packet.cb_ac_table())?,
-        cr_dc_table: cuda_huffman_table(packet.cr_dc_table())?,
-        cr_ac_table: cuda_huffman_table(packet.cr_ac_table())?,
     })
 }
 

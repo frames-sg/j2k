@@ -10,7 +10,7 @@ use std::{
 };
 
 use j2k_core::{BackendKind, BackendRequest, DeviceSurface, Downscale, PixelFormat, Rect};
-use j2k_metal::{DecodeOperation, J2kDecoder, SurfaceResidency};
+use j2k_metal::{DecodeOperation, J2kDecoder, MetalDecodeRequest, SurfaceResidency};
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
 use j2k_test_support::{
     fnv1a64_hex, manifest_column, manifest_field, manifest_optional_value,
@@ -223,17 +223,17 @@ fn decode_surface_once(
     let mut decoder = J2kDecoder::new(&case.bytes).map_err(|error| error.to_string())?;
     let decoded = match operation {
         DecodeOperation::Full => decoder
-            .decode_to_device_with_report(case.fmt, backend)
+            .decode_request_to_device_with_report(MetalDecodeRequest::full(case.fmt, backend))
             .map_err(|error| error.to_string())?,
         DecodeOperation::RegionScaled => {
             let dims = decoder.inner().info().dimensions;
             decoder
-                .decode_region_scaled_to_device_with_report(
+                .decode_request_to_device_with_report(MetalDecodeRequest::region_scaled(
                     case.fmt,
                     benchmark_roi(dims),
                     Downscale::Half,
                     backend,
-                )
+                ))
                 .map_err(|error| error.to_string())?
         }
         DecodeOperation::Region | DecodeOperation::Scaled => {

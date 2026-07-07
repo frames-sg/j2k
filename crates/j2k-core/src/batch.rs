@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::num::NonZeroUsize;
 
-use crate::{scale::Downscale, types::Rect};
+use crate::{backend::BackendRequest, pixel::PixelFormat, scale::Downscale, types::Rect};
 
 /// Worker configuration for CPU tile batches.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -20,6 +20,7 @@ impl TileBatchOptions {
 }
 
 /// Indexed result produced by one tile-batch worker.
+#[doc(hidden)]
 pub type IndexedBatchResult<T, E> = (usize, Result<T, E>);
 
 /// One full-tile decode request.
@@ -70,6 +71,20 @@ pub struct TileRegionScaledDecodeJob<'i, 'o> {
     pub scale: Downscale,
 }
 
+/// One region+scaled tile device decode request.
+pub struct TileRegionScaledDeviceDecodeRequest<'i> {
+    /// Compressed tile bytes.
+    pub input: &'i [u8],
+    /// Pixel format requested for the decoded surface.
+    pub fmt: PixelFormat,
+    /// Region of interest in source-image coordinates.
+    pub roi: Rect,
+    /// Downscale factor applied to the region decode.
+    pub scale: Downscale,
+    /// Backend requested for the returned surface.
+    pub backend: BackendRequest,
+}
+
 /// Error returned by tile batches, annotated with the failing input index.
 #[derive(Debug)]
 pub struct TileBatchError<E> {
@@ -95,6 +110,7 @@ impl<E: core::error::Error + 'static> core::error::Error for TileBatchError<E> {
 ///
 /// `available_workers` should be the host's available parallelism. Passing
 /// `0` is accepted and treated as one available worker.
+#[doc(hidden)]
 pub fn tile_batch_worker_count(
     batch_size: usize,
     options: TileBatchOptions,
@@ -116,6 +132,7 @@ pub fn tile_batch_worker_count(
 ///
 /// Panics if a successful batch is missing an index or if a result index is
 /// outside `0..job_count`.
+#[doc(hidden)]
 pub fn collect_indexed_batch_results<T, E, B, F>(
     job_count: usize,
     results: Vec<IndexedBatchResult<T, E>>,

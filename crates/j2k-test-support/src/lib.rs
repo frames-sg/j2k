@@ -11,14 +11,18 @@ use std::{
 mod corpus;
 mod cuda;
 mod fixtures;
+mod gpu_gate;
 mod jpeg_fixtures;
 mod manifest;
+mod metal;
 mod metal_shader;
 mod pixels;
 
 pub use corpus::{collect_jpeg_paths, is_jpeg_path, paths_from_env};
 pub use cuda::{
-    cuda_jpeg_hardware_decode_required, cuda_runtime_required, cuda_strict_oxide_required,
+    cuda_device_unavailable_is_skip, cuda_jpeg_hardware_decode_gate,
+    cuda_jpeg_hardware_decode_required, cuda_runtime_and_strict_oxide_gate, cuda_runtime_gate,
+    cuda_runtime_required, cuda_strict_oxide_gate, cuda_strict_oxide_required,
 };
 pub use fixtures::{
     baseline_grayscale_jpeg, jpeg_baseline_420_16x16, jpeg_baseline_420_restart_32x16,
@@ -39,11 +43,13 @@ pub use fixtures::{
     htj2k_gray8_large_fixture, htj2k_rgb8_97_fixture, htj2k_rgb8_fixture,
     htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture,
 };
+pub use gpu_gate::{gpu_device_unavailable_is_skip, gpu_test_gate, GPU_TEST_SKIP_MARKER};
 pub use jpeg_fixtures::*;
 pub use manifest::{
     canonicalize_manifest_row_path, manifest_column, manifest_field, manifest_optional_value,
     optional_manifest_column,
 };
+pub use metal::{metal_device_unavailable_is_skip, metal_runtime_gate, metal_runtime_required};
 pub use metal_shader::{host_compiles_metal_pipeline, metal_kernel_names, unwired_metal_kernels};
 pub use pixels::{
     crop_interleaved_bytes, crop_interleaved_u16, crop_interleaved_u8,

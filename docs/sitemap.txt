@@ -1,6 +1,0 @@
-https://frames-sg.github.io/j2k/
-https://frames-sg.github.io/j2k/rust-jpeg2000-codec/
-https://frames-sg.github.io/j2k/gpu-jpeg2000-rust/
-https://frames-sg.github.io/j2k/cuda-jpeg2000-rust/
-https://frames-sg.github.io/j2k/metal-jpeg2000-rust/
-https://frames-sg.github.io/j2k/htj2k-rust/

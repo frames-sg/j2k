@@ -162,8 +162,7 @@ pub(crate) fn decision_error(decision: RouteDecision) -> Option<Error> {
 mod tests {
     use super::*;
     use j2k_jpeg::adapter::{
-        build_fast420_packet_for_decoder, build_fast422_packet_for_decoder,
-        build_fast444_packet_for_decoder,
+        build_fast420_packet, build_fast422_packet, build_fast444_packet, decoder_bytes,
     };
 
     const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
@@ -173,9 +172,10 @@ mod tests {
 
     fn capabilities_for(bytes: &[u8], fmt: PixelFormat) -> JpegMetalCapabilities {
         let decoder = CpuDecoder::new(bytes).expect("decoder");
-        let fast444_packet = build_fast444_packet_for_decoder(&decoder).ok();
-        let fast422_packet = build_fast422_packet_for_decoder(&decoder).ok();
-        let fast420_packet = build_fast420_packet_for_decoder(&decoder).ok();
+        let decoder_bytes = decoder_bytes(&decoder);
+        let fast444_packet = build_fast444_packet(decoder_bytes).ok();
+        let fast422_packet = build_fast422_packet(decoder_bytes).ok();
+        let fast420_packet = build_fast420_packet(decoder_bytes).ok();
 
         JpegMetalCapabilities::for_request(
             &decoder,

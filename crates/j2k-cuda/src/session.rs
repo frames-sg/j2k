@@ -104,6 +104,7 @@ impl j2k_core::DeviceSubmitSession for CudaSession {
     }
 }
 
+#[doc(hidden)]
 impl j2k_core::AcceleratorSession for CudaSession {
     fn backend_kind(&self) -> j2k_core::BackendKind {
         j2k_core::BackendKind::Cuda

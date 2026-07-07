@@ -20,21 +20,24 @@ mod cuda;
 
 use core::fmt;
 
-use j2k_transcode::accelerator::{
+use j2k_transcode::{
     DctGridI16ToHtj2k97CodeBlockBatch, DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt53Job,
     DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job,
-    DctToWaveletStageAccelerator, Dwt97BatchStageTimings, Htj2k97CodeBlockOptions,
-    PreencodedHtj2k97CompactBatch, PreencodedHtj2k97CompactBatchGroups, PreencodedHtj2k97Component,
-    PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel, TranscodeStageError,
+    DctToWaveletStageAccelerator, DctToWaveletStageCounterEvent as CounterEvent,
+    DctToWaveletStageCounters, Dwt53TwoDimensional, Dwt97BatchStageTimings, Dwt97TwoDimensional,
+    Htj2k97CodeBlockOptions, PreencodedHtj2k97CompactBatch, PreencodedHtj2k97CompactBatchGroups,
+    PreencodedHtj2k97Component, PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel,
+    TranscodeStageDispatchMode, TranscodeStageError,
 };
-use j2k_transcode::dct53_2d::Dwt53TwoDimensional;
-use j2k_transcode::dct97_2d::Dwt97TwoDimensional;
 
 /// Stable message returned when the CUDA runtime is unavailable (feature not
 /// compiled, no device, or the transcode kernels were not built).
 pub const CUDA_UNAVAILABLE: &str = "CUDA is unavailable on this host";
 
-/// Default minimum component sample count before Auto mode offers a job to CUDA.
+/// Default minimum component sample count before Auto mode offers a single
+/// transform job to CUDA. Batch thresholds below intentionally match Metal's
+/// same-geometry batch gates so WSI tile-component queues are offered
+/// consistently across GPU adapters.
 const DEFAULT_AUTO_MIN_SAMPLES: usize = 224 * 224;
 const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS: usize = 32;
 const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
@@ -83,36 +86,16 @@ impl From<CudaTranscodeError> for TranscodeStageError {
 
 impl std::error::Error for CudaTranscodeError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CudaDispatchMode {
-    /// Treat an unavailable/unsupported CUDA dispatch as an error.
-    Explicit,
-    /// Fall back to the scalar oracle (`Ok(None)`) for small or unsupported
-    /// jobs.
-    Auto,
-}
-
 /// Optional CUDA accelerator for `j2k-transcode` transform stages.
 #[derive(Debug, Clone)]
 pub struct CudaDctToWaveletStageAccelerator {
-    mode: CudaDispatchMode,
+    mode: TranscodeStageDispatchMode,
     min_auto_samples: usize,
     min_auto_reversible_batch_jobs: usize,
     min_auto_reversible_batch_samples: usize,
     min_auto_dwt97_batch_jobs: usize,
     min_auto_dwt97_batch_samples: usize,
-    reversible_dwt53_attempts: usize,
-    reversible_dwt53_dispatches: usize,
-    reversible_dwt53_batch_attempts: usize,
-    reversible_dwt53_batch_dispatches: usize,
-    dwt53_attempts: usize,
-    dwt53_dispatches: usize,
-    dwt97_attempts: usize,
-    dwt97_dispatches: usize,
-    dwt97_batch_attempts: usize,
-    dwt97_batch_dispatches: usize,
-    htj2k97_codeblock_batch_attempts: usize,
-    htj2k97_codeblock_batch_dispatches: usize,
+    counters: DctToWaveletStageCounters,
     last_dwt97_batch_stage_timings: Option<Dwt97BatchStageTimings>,
     resident_ht_encode: bool,
     #[cfg(feature = "cuda-runtime")]
@@ -124,7 +107,7 @@ impl CudaDctToWaveletStageAccelerator {
     /// as an error (no silent scalar fallback).
     #[must_use]
     pub const fn new_explicit() -> Self {
-        Self::with_mode(CudaDispatchMode::Explicit, 0)
+        Self::with_mode(TranscodeStageDispatchMode::Explicit, 0)
     }
 
     /// Create an explicit accelerator that keeps 9/7 code-block coefficients
@@ -132,7 +115,7 @@ impl CudaDctToWaveletStageAccelerator {
     /// packetization.
     #[must_use]
     pub const fn new_explicit_resident_ht_encode() -> Self {
-        let mut accelerator = Self::with_mode(CudaDispatchMode::Explicit, 0);
+        let mut accelerator = Self::with_mode(TranscodeStageDispatchMode::Explicit, 0);
         accelerator.resident_ht_encode = true;
         accelerator
     }
@@ -141,7 +124,8 @@ impl CudaDctToWaveletStageAccelerator {
     /// unsupported jobs.
     #[must_use]
     pub const fn for_auto() -> Self {
-        let mut accelerator = Self::with_mode(CudaDispatchMode::Auto, DEFAULT_AUTO_MIN_SAMPLES);
+        let mut accelerator =
+            Self::with_mode(TranscodeStageDispatchMode::Auto, DEFAULT_AUTO_MIN_SAMPLES);
         accelerator.min_auto_reversible_batch_jobs = DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS;
         accelerator.min_auto_reversible_batch_samples = DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES;
         accelerator.min_auto_dwt97_batch_jobs = DEFAULT_AUTO_DWT97_BATCH_MIN_JOBS;
@@ -149,7 +133,7 @@ impl CudaDctToWaveletStageAccelerator {
         accelerator
     }
 
-    const fn with_mode(mode: CudaDispatchMode, min_auto_samples: usize) -> Self {
+    const fn with_mode(mode: TranscodeStageDispatchMode, min_auto_samples: usize) -> Self {
         Self {
             mode,
             min_auto_samples,
@@ -157,18 +141,7 @@ impl CudaDctToWaveletStageAccelerator {
             min_auto_reversible_batch_samples: 0,
             min_auto_dwt97_batch_jobs: 0,
             min_auto_dwt97_batch_samples: 0,
-            reversible_dwt53_attempts: 0,
-            reversible_dwt53_dispatches: 0,
-            reversible_dwt53_batch_attempts: 0,
-            reversible_dwt53_batch_dispatches: 0,
-            dwt53_attempts: 0,
-            dwt53_dispatches: 0,
-            dwt97_attempts: 0,
-            dwt97_dispatches: 0,
-            dwt97_batch_attempts: 0,
-            dwt97_batch_dispatches: 0,
-            htj2k97_codeblock_batch_attempts: 0,
-            htj2k97_codeblock_batch_dispatches: 0,
+            counters: DctToWaveletStageCounters::new(),
             last_dwt97_batch_stage_timings: None,
             resident_ht_encode: false,
             #[cfg(feature = "cuda-runtime")]
@@ -211,82 +184,73 @@ impl CudaDctToWaveletStageAccelerator {
     /// Number of reversible 5/3 jobs offered to this accelerator.
     #[must_use]
     pub const fn reversible_dwt53_attempts(&self) -> usize {
-        self.reversible_dwt53_attempts
+        self.counters.reversible_dwt53_attempts()
     }
 
     /// Number of reversible 5/3 jobs handled on the GPU.
     #[must_use]
     pub const fn reversible_dwt53_dispatches(&self) -> usize {
-        self.reversible_dwt53_dispatches
+        self.counters.reversible_dwt53_dispatches()
     }
 
     /// Number of reversible 5/3 batches offered to this accelerator.
     #[must_use]
     pub const fn reversible_dwt53_batch_attempts(&self) -> usize {
-        self.reversible_dwt53_batch_attempts
+        self.counters.reversible_dwt53_batch_attempts()
     }
 
     /// Number of reversible 5/3 batches handled on the GPU.
     #[must_use]
     pub const fn reversible_dwt53_batch_dispatches(&self) -> usize {
-        self.reversible_dwt53_batch_dispatches
+        self.counters.reversible_dwt53_batch_dispatches()
     }
 
     /// Number of float 5/3 jobs offered to this accelerator.
     #[must_use]
     pub const fn dwt53_attempts(&self) -> usize {
-        self.dwt53_attempts
+        self.counters.dwt53_attempts()
     }
 
     /// Number of float 5/3 jobs handled on the GPU.
     #[must_use]
     pub const fn dwt53_dispatches(&self) -> usize {
-        self.dwt53_dispatches
+        self.counters.dwt53_dispatches()
     }
 
     /// Number of 9/7 jobs offered to this accelerator.
     #[must_use]
     pub const fn dwt97_attempts(&self) -> usize {
-        self.dwt97_attempts
+        self.counters.dwt97_attempts()
     }
 
     /// Number of 9/7 jobs handled on the GPU.
     #[must_use]
     pub const fn dwt97_dispatches(&self) -> usize {
-        self.dwt97_dispatches
+        self.counters.dwt97_dispatches()
     }
 
     /// Number of 9/7 batches offered to this accelerator.
     #[must_use]
     pub const fn dwt97_batch_attempts(&self) -> usize {
-        self.dwt97_batch_attempts
+        self.counters.dwt97_batch_attempts()
     }
 
     /// Number of 9/7 batches handled on the GPU.
     #[must_use]
     pub const fn dwt97_batch_dispatches(&self) -> usize {
-        self.dwt97_batch_dispatches
+        self.counters.dwt97_batch_dispatches()
     }
 
     /// Number of prequantized 9/7 HTJ2K code-block batches offered.
     #[must_use]
     pub const fn htj2k97_codeblock_batch_attempts(&self) -> usize {
-        self.htj2k97_codeblock_batch_attempts
+        self.counters.htj2k97_codeblock_batch_attempts()
     }
 
     /// Number of prequantized 9/7 HTJ2K code-block batches handled on the GPU.
     #[must_use]
     pub const fn htj2k97_codeblock_batch_dispatches(&self) -> usize {
-        self.htj2k97_codeblock_batch_dispatches
-    }
-
-    /// Outcome for a job that CUDA cannot serve, resolved by dispatch mode.
-    #[cfg(not(feature = "cuda-runtime"))]
-    fn unavailable<T>(&self) -> Result<Option<T>, TranscodeStageError> {
-        match self.mode {
-            CudaDispatchMode::Explicit => Err(TranscodeStageError::DeviceUnavailable),
-            CudaDispatchMode::Auto => Ok(None),
-        }
+        self.counters.htj2k97_codeblock_batch_dispatches()
     }
 
     /// Map a CUDA dispatch error to the trait outcome for the current mode:
@@ -294,11 +258,7 @@ impl CudaDctToWaveletStageAccelerator {
     /// kernel failures propagate as `Err`.
     #[cfg(feature = "cuda-runtime")]
     fn recover<T>(&self, error: CudaTranscodeError) -> Result<Option<T>, TranscodeStageError> {
-        if self.mode == CudaDispatchMode::Auto && error.is_recoverable() {
-            Ok(None)
-        } else {
-            Err(error.into())
-        }
+        self.mode.recover(error, |error| error.is_recoverable())
     }
 }
 
@@ -342,6 +302,7 @@ impl Default for CudaDctToWaveletStageAccelerator {
     }
 }
 
+#[doc(hidden)]
 impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
     fn supports_dwt97_batch(&self) -> bool {
         true
@@ -366,26 +327,25 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         job: DctGridToReversibleDwt53Job<'_>,
     ) -> Result<Option<ReversibleDwt53FirstLevel>, TranscodeStageError> {
-        self.reversible_dwt53_attempts = self.reversible_dwt53_attempts.saturating_add(1);
+        self.counters
+            .record(CounterEvent::ReversibleDwt53Attempt, 1);
 
-        if self.mode == CudaDispatchMode::Auto
-            && job.width.saturating_mul(job.height) < self.min_auto_samples
-        {
+        if self.mode.is_auto() && job.width.saturating_mul(job.height) < self.min_auto_samples {
             return Ok(None);
         }
 
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = job;
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_reversible_dwt53(self.cuda_session(), job) {
                 Ok(output) => {
-                    self.reversible_dwt53_dispatches =
-                        self.reversible_dwt53_dispatches.saturating_add(1);
+                    self.counters
+                        .record(CounterEvent::ReversibleDwt53Dispatch, 1);
                     Ok(Some(output))
                 }
                 Err(error) => self.recover(error),
@@ -397,13 +357,13 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         jobs: &[DctGridToReversibleDwt53Job<'_>],
     ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, TranscodeStageError> {
-        self.reversible_dwt53_batch_attempts =
-            self.reversible_dwt53_batch_attempts.saturating_add(1);
+        self.counters
+            .record(CounterEvent::ReversibleDwt53BatchAttempt, 1);
 
         if jobs.is_empty() {
             return Ok(Some(Vec::new()));
         }
-        if self.mode == CudaDispatchMode::Auto
+        if self.mode.is_auto()
             && (jobs.len() < self.min_auto_reversible_batch_jobs
                 || reversible_batch_total_samples(jobs) < self.min_auto_reversible_batch_samples)
         {
@@ -413,15 +373,15 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = jobs;
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_reversible_dwt53_batch(self.cuda_session(), jobs) {
                 Ok(output) => {
-                    self.reversible_dwt53_batch_dispatches =
-                        self.reversible_dwt53_batch_dispatches.saturating_add(1);
+                    self.counters
+                        .record(CounterEvent::ReversibleDwt53BatchDispatch, 1);
                     Ok(Some(output))
                 }
                 Err(error) => self.recover(error),
@@ -433,25 +393,23 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         job: DctGridToDwt53Job<'_>,
     ) -> Result<Option<Dwt53TwoDimensional<f64>>, TranscodeStageError> {
-        self.dwt53_attempts = self.dwt53_attempts.saturating_add(1);
+        self.counters.record(CounterEvent::Dwt53Attempt, 1);
 
-        if self.mode == CudaDispatchMode::Auto
-            && job.width.saturating_mul(job.height) < self.min_auto_samples
-        {
+        if self.mode.is_auto() && job.width.saturating_mul(job.height) < self.min_auto_samples {
             return Ok(None);
         }
 
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = job;
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_dwt53(job) {
                 Ok(output) => {
-                    self.dwt53_dispatches = self.dwt53_dispatches.saturating_add(1);
+                    self.counters.record(CounterEvent::Dwt53Dispatch, 1);
                     Ok(Some(output))
                 }
                 Err(error) => self.recover(error),
@@ -463,25 +421,23 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         job: DctGridToDwt97Job<'_>,
     ) -> Result<Option<Dwt97TwoDimensional<f64>>, TranscodeStageError> {
-        self.dwt97_attempts = self.dwt97_attempts.saturating_add(1);
+        self.counters.record(CounterEvent::Dwt97Attempt, 1);
 
-        if self.mode == CudaDispatchMode::Auto
-            && job.width.saturating_mul(job.height) < self.min_auto_samples
-        {
+        if self.mode.is_auto() && job.width.saturating_mul(job.height) < self.min_auto_samples {
             return Ok(None);
         }
 
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = job;
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_dwt97(self.cuda_session(), job) {
                 Ok(output) => {
-                    self.dwt97_dispatches = self.dwt97_dispatches.saturating_add(1);
+                    self.counters.record(CounterEvent::Dwt97Dispatch, 1);
                     Ok(Some(output))
                 }
                 Err(error) => self.recover(error),
@@ -493,13 +449,13 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         jobs: &[DctGridToDwt97Job<'_>],
     ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, TranscodeStageError> {
-        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
+        self.counters.record(CounterEvent::Dwt97BatchAttempt, 1);
         self.last_dwt97_batch_stage_timings = None;
 
         if jobs.is_empty() {
             return Ok(Some(Vec::new()));
         }
-        if self.mode == CudaDispatchMode::Auto
+        if self.mode.is_auto()
             && (jobs.len() < self.min_auto_dwt97_batch_jobs
                 || dwt97_batch_total_samples(jobs) < self.min_auto_dwt97_batch_samples)
         {
@@ -509,14 +465,14 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = jobs;
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_dwt97_batch(self.cuda_session(), jobs) {
                 Ok((output, timings)) => {
-                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
+                    self.counters.record(CounterEvent::Dwt97BatchDispatch, 1);
                     self.last_dwt97_batch_stage_timings = Some(timings);
                     Ok(Some(output))
                 }
@@ -532,15 +488,15 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
     ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, TranscodeStageError> {
         // The code-block path is a staged 9/7 batch plus quantization, so it
         // counts as both a 9/7 batch and a code-block batch (matching Metal).
-        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
-        self.htj2k97_codeblock_batch_attempts =
-            self.htj2k97_codeblock_batch_attempts.saturating_add(1);
+        self.counters.record(CounterEvent::Dwt97BatchAttempt, 1);
+        self.counters
+            .record(CounterEvent::Htj2k97CodeblockBatchAttempt, 1);
         self.last_dwt97_batch_stage_timings = None;
 
         if jobs.is_empty() {
             return Ok(Some(Vec::new()));
         }
-        if self.mode == CudaDispatchMode::Auto
+        if self.mode.is_auto()
             && (jobs.len() < self.min_auto_dwt97_batch_jobs
                 || htj2k97_codeblock_batch_total_samples(jobs) < self.min_auto_dwt97_batch_samples)
         {
@@ -550,16 +506,16 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = (jobs, options);
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_htj2k97_codeblock_batch(self.cuda_session(), jobs, options) {
                 Ok((output, timings)) => {
-                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
-                    self.htj2k97_codeblock_batch_dispatches =
-                        self.htj2k97_codeblock_batch_dispatches.saturating_add(1);
+                    self.counters.record(CounterEvent::Dwt97BatchDispatch, 1);
+                    self.counters
+                        .record(CounterEvent::Htj2k97CodeblockBatchDispatch, 1);
                     self.last_dwt97_batch_stage_timings = Some(timings);
                     Ok(Some(output))
                 }
@@ -577,15 +533,15 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
             return Ok(None);
         }
 
-        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
-        self.htj2k97_codeblock_batch_attempts =
-            self.htj2k97_codeblock_batch_attempts.saturating_add(1);
+        self.counters.record(CounterEvent::Dwt97BatchAttempt, 1);
+        self.counters
+            .record(CounterEvent::Htj2k97CodeblockBatchAttempt, 1);
         self.last_dwt97_batch_stage_timings = None;
 
         if jobs.is_empty() {
             return Ok(Some(Vec::new()));
         }
-        if self.mode == CudaDispatchMode::Auto
+        if self.mode.is_auto()
             && (jobs.len() < self.min_auto_dwt97_batch_jobs
                 || htj2k97_codeblock_batch_total_samples(jobs) < self.min_auto_dwt97_batch_samples)
         {
@@ -595,16 +551,16 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = (jobs, options);
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_htj2k97_preencoded_batch(self.cuda_session(), jobs, options) {
                 Ok((output, timings)) => {
-                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
-                    self.htj2k97_codeblock_batch_dispatches =
-                        self.htj2k97_codeblock_batch_dispatches.saturating_add(1);
+                    self.counters.record(CounterEvent::Dwt97BatchDispatch, 1);
+                    self.counters
+                        .record(CounterEvent::Htj2k97CodeblockBatchDispatch, 1);
                     self.last_dwt97_batch_stage_timings = Some(timings);
                     Ok(Some(output))
                 }
@@ -622,15 +578,15 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
             return Ok(None);
         }
 
-        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
-        self.htj2k97_codeblock_batch_attempts =
-            self.htj2k97_codeblock_batch_attempts.saturating_add(1);
+        self.counters.record(CounterEvent::Dwt97BatchAttempt, 1);
+        self.counters
+            .record(CounterEvent::Htj2k97CodeblockBatchAttempt, 1);
         self.last_dwt97_batch_stage_timings = None;
 
         if jobs.is_empty() {
             return Ok(Some(Vec::new()));
         }
-        if self.mode == CudaDispatchMode::Auto
+        if self.mode.is_auto()
             && (jobs.len() < self.min_auto_dwt97_batch_jobs
                 || htj2k97_i16_codeblock_batch_total_samples(jobs)
                     < self.min_auto_dwt97_batch_samples)
@@ -641,16 +597,16 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = (jobs, options);
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_htj2k97_preencoded_i16_batch(self.cuda_session(), jobs, options) {
                 Ok((output, timings)) => {
-                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
-                    self.htj2k97_codeblock_batch_dispatches =
-                        self.htj2k97_codeblock_batch_dispatches.saturating_add(1);
+                    self.counters.record(CounterEvent::Dwt97BatchDispatch, 1);
+                    self.counters
+                        .record(CounterEvent::Htj2k97CodeblockBatchDispatch, 1);
                     self.last_dwt97_batch_stage_timings = Some(timings);
                     Ok(Some(output))
                 }
@@ -668,9 +624,9 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
             return Ok(None);
         }
 
-        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
-        self.htj2k97_codeblock_batch_attempts =
-            self.htj2k97_codeblock_batch_attempts.saturating_add(1);
+        self.counters.record(CounterEvent::Dwt97BatchAttempt, 1);
+        self.counters
+            .record(CounterEvent::Htj2k97CodeblockBatchAttempt, 1);
         self.last_dwt97_batch_stage_timings = None;
 
         if jobs.is_empty() {
@@ -679,7 +635,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
                 components: Vec::new(),
             }));
         }
-        if self.mode == CudaDispatchMode::Auto
+        if self.mode.is_auto()
             && (jobs.len() < self.min_auto_dwt97_batch_jobs
                 || htj2k97_i16_codeblock_batch_total_samples(jobs)
                     < self.min_auto_dwt97_batch_samples)
@@ -690,7 +646,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = (jobs, options);
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
@@ -701,9 +657,9 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
                 options,
             ) {
                 Ok((output, timings)) => {
-                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
-                    self.htj2k97_codeblock_batch_dispatches =
-                        self.htj2k97_codeblock_batch_dispatches.saturating_add(1);
+                    self.counters.record(CounterEvent::Dwt97BatchDispatch, 1);
+                    self.counters
+                        .record(CounterEvent::Htj2k97CodeblockBatchDispatch, 1);
                     self.last_dwt97_batch_stage_timings = Some(timings);
                     Ok(Some(output))
                 }
@@ -721,17 +677,17 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
             return Ok(None);
         }
 
-        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(groups.len());
-        self.htj2k97_codeblock_batch_attempts = self
-            .htj2k97_codeblock_batch_attempts
-            .saturating_add(groups.len());
+        self.counters
+            .record(CounterEvent::Dwt97BatchAttempt, groups.len());
+        self.counters
+            .record(CounterEvent::Htj2k97CodeblockBatchAttempt, groups.len());
         self.last_dwt97_batch_stage_timings = None;
 
         if groups.is_empty() {
             return Ok(Some(Vec::new()));
         }
         let total_jobs = groups.iter().map(|group| group.jobs.len()).sum::<usize>();
-        if self.mode == CudaDispatchMode::Auto
+        if self.mode.is_auto()
             && (total_jobs < self.min_auto_dwt97_batch_jobs
                 || htj2k97_i16_codeblock_batch_group_total_samples(groups)
                     < self.min_auto_dwt97_batch_samples)
@@ -742,7 +698,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = (groups, options);
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
@@ -753,11 +709,12 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
                 options,
             ) {
                 Ok((output, timings)) => {
-                    self.dwt97_batch_dispatches =
-                        self.dwt97_batch_dispatches.saturating_add(groups.len());
-                    self.htj2k97_codeblock_batch_dispatches = self
-                        .htj2k97_codeblock_batch_dispatches
-                        .saturating_add(timings.ht_codeblock_dispatches);
+                    self.counters
+                        .record(CounterEvent::Dwt97BatchDispatch, groups.len());
+                    self.counters.record(
+                        CounterEvent::Htj2k97CodeblockBatchDispatch,
+                        timings.ht_codeblock_dispatches,
+                    );
                     self.last_dwt97_batch_stage_timings = Some(timings);
                     Ok(Some(output))
                 }
@@ -775,10 +732,10 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
             return Ok(None);
         }
 
-        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(groups.len());
-        self.htj2k97_codeblock_batch_attempts = self
-            .htj2k97_codeblock_batch_attempts
-            .saturating_add(groups.len());
+        self.counters
+            .record(CounterEvent::Dwt97BatchAttempt, groups.len());
+        self.counters
+            .record(CounterEvent::Htj2k97CodeblockBatchAttempt, groups.len());
         self.last_dwt97_batch_stage_timings = None;
 
         if groups.is_empty() {
@@ -788,7 +745,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
             }));
         }
         let total_jobs = groups.iter().map(|group| group.jobs.len()).sum::<usize>();
-        if self.mode == CudaDispatchMode::Auto
+        if self.mode.is_auto()
             && (total_jobs < self.min_auto_dwt97_batch_jobs
                 || htj2k97_i16_codeblock_batch_group_total_samples(groups)
                     < self.min_auto_dwt97_batch_samples)
@@ -799,7 +756,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(not(feature = "cuda-runtime"))]
         {
             let _ = (groups, options);
-            self.unavailable()
+            self.mode.unavailable()
         }
 
         #[cfg(feature = "cuda-runtime")]
@@ -810,11 +767,12 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
                 options,
             ) {
                 Ok((output, timings)) => {
-                    self.dwt97_batch_dispatches =
-                        self.dwt97_batch_dispatches.saturating_add(groups.len());
-                    self.htj2k97_codeblock_batch_dispatches = self
-                        .htj2k97_codeblock_batch_dispatches
-                        .saturating_add(timings.ht_codeblock_dispatches);
+                    self.counters
+                        .record(CounterEvent::Dwt97BatchDispatch, groups.len());
+                    self.counters.record(
+                        CounterEvent::Htj2k97CodeblockBatchDispatch,
+                        timings.ht_codeblock_dispatches,
+                    );
                     self.last_dwt97_batch_stage_timings = Some(timings);
                     Ok(Some(output))
                 }
@@ -843,7 +801,7 @@ mod tests {
             code_block_height_exp: 4,
             irreversible_quantization_scale: 1.0,
             irreversible_quantization_subband_scales:
-                j2k_transcode::accelerator::IrreversibleQuantizationSubbandScales::default(),
+                j2k_transcode::IrreversibleQuantizationSubbandScales::default(),
         }
     }
 

@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::decoder::Decoder;
-use crate::error::{JpegError, MarkerKind};
+use crate::entropy::huffman::{derive_canonical_huffman, CanonicalHuffmanDerivation};
+use crate::error::{HuffmanFailure, JpegError, MarkerKind};
 use crate::info::{ColorSpace, SamplingFactors, SofKind};
 use crate::internal::checkpoint::{build_checkpoint_plan, DeviceCheckpoint};
 use crate::parse::header::parse_header;
 use crate::parse::scan::ScanComponent;
-use crate::parse::tables::RawHuffmanTable;
+use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
 use alloc::vec::Vec;
 
 const MAX_NONRESTART_ENTROPY_CHECKPOINTS: u32 = 2048;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
 /// Error while building a backend fast-path JPEG packet.
 pub enum FastPacketError {
     /// Header or entropy decode failed.
@@ -48,6 +50,7 @@ pub enum FastPacketError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
 /// Huffman table class used by fast-path packet builders.
 pub enum TableKind {
     /// DC Huffman table.
@@ -64,6 +67,7 @@ impl From<JpegError> for FastPacketError {
 
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
 /// Huffman table payload copied into backend-compatible packet structs.
 pub struct JpegHuffmanTable {
     /// JPEG BITS counts for code lengths 1 through 16.
@@ -74,8 +78,27 @@ pub struct JpegHuffmanTable {
     pub values: [u8; 256],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
+/// Canonical Annex C Huffman table derivation for backend packet tables.
+pub struct JpegCanonicalHuffmanTable {
+    /// Smallest canonical code for each code length 1 through 16.
+    pub min_code: [i32; 17],
+    /// Largest canonical code for each code length 1 through 16.
+    pub max_code: [i32; 17],
+    /// Symbol-value offset for each code length 1 through 16.
+    pub val_offset: [i32; 17],
+    /// Canonical Huffman code for each populated symbol index.
+    pub huffcode: [u16; 256],
+    /// Canonical Huffman code length for each populated symbol index.
+    pub huffsize: [u8; 256],
+    /// Number of populated canonical entries.
+    pub huffsize_len: usize,
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
 /// Entropy decoder resume point for fast-path packet decoding.
 pub struct JpegEntropyCheckpointV1 {
     /// MCU index for this checkpoint.
@@ -107,10 +130,44 @@ impl JpegHuffmanTable {
             values,
         }
     }
+
+    /// Derive the JPEG Annex C canonical code tables for this packet table.
+    #[doc(hidden)]
+    pub fn derive_canonical(&self) -> Result<JpegCanonicalHuffmanTable, JpegError> {
+        let values_len = usize::from(self.values_len);
+        if values_len > self.values.len() {
+            return Err(JpegError::HuffmanDecode {
+                mcu: 0,
+                reason: HuffmanFailure::CodeOverflow,
+            });
+        }
+        let raw = RawHuffmanTable {
+            bits: self.bits,
+            values: HuffmanValues::from_slice(&self.values[..values_len]),
+        };
+        let derivation = derive_canonical_huffman(&raw)?;
+        Ok(JpegCanonicalHuffmanTable::from_canonical_derivation(
+            &derivation,
+        ))
+    }
+}
+
+impl JpegCanonicalHuffmanTable {
+    fn from_canonical_derivation(value: &CanonicalHuffmanDerivation) -> Self {
+        Self {
+            min_code: value.min_code,
+            max_code: value.max_code,
+            val_offset: value.val_offset,
+            huffcode: value.huffcode,
+            huffsize: value.huffsize,
+            huffsize_len: value.huffsize_len,
+        }
+    }
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
 /// Backend fast-path packet for 8-bit 4:2:0 JPEG tiles.
 pub struct JpegFast420PacketV1 {
     /// Image dimensions as `(width, height)` in pixels.
@@ -149,6 +206,7 @@ pub struct JpegFast420PacketV1 {
 
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
 /// Backend fast-path packet for 8-bit 4:2:2 JPEG tiles.
 pub struct JpegFast422PacketV1 {
     /// Image dimensions as `(width, height)` in pixels.
@@ -187,6 +245,7 @@ pub struct JpegFast422PacketV1 {
 
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
 /// Backend fast-path packet for 8-bit 4:4:4 JPEG tiles.
 pub struct JpegFast444PacketV1 {
     /// Image dimensions as `(width, height)` in pixels.
@@ -225,6 +284,7 @@ pub struct JpegFast444PacketV1 {
 
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
 /// Backend fast-path packet for 8-bit grayscale JPEG tiles.
 pub struct JpegGrayPacketV1 {
     /// Image dimensions as `(width, height)` in pixels.
@@ -334,16 +394,19 @@ struct EntropySegments {
 }
 
 /// Build a 4:2:0 fast-path packet from JPEG bytes.
+#[doc(hidden)]
 pub fn build_fast420_packet(bytes: &[u8]) -> Result<JpegFast420PacketV1, FastPacketError> {
     build_color_fast_packet(bytes, FAST420_LAYOUT).map(Into::into)
 }
 
 /// Build a 4:4:4 fast-path packet from JPEG bytes.
+#[doc(hidden)]
 pub fn build_fast444_packet(bytes: &[u8]) -> Result<JpegFast444PacketV1, FastPacketError> {
     build_color_fast_packet(bytes, FAST444_LAYOUT).map(Into::into)
 }
 
 /// Build a 4:2:2 fast-path packet from JPEG bytes.
+#[doc(hidden)]
 pub fn build_fast422_packet(bytes: &[u8]) -> Result<JpegFast422PacketV1, FastPacketError> {
     build_color_fast_packet(bytes, FAST422_LAYOUT).map(Into::into)
 }
@@ -421,6 +484,7 @@ fn build_color_fast_packet(
 }
 
 /// Build a grayscale fast-path packet from JPEG bytes.
+#[doc(hidden)]
 pub fn build_gray_packet(bytes: &[u8]) -> Result<JpegGrayPacketV1, FastPacketError> {
     let header = parse_header(bytes)?;
     if !matches!(header.sof_kind, SofKind::Baseline8 | SofKind::Extended8) {
@@ -477,34 +541,6 @@ pub fn build_gray_packet(bytes: &[u8]) -> Result<JpegGrayPacketV1, FastPacketErr
         y_ac_table,
         entropy_bytes,
     })
-}
-
-/// Build a 4:2:0 fast-path packet from an inspected decoder.
-pub fn build_fast420_packet_for_decoder(
-    decoder: &crate::decoder::Decoder<'_>,
-) -> Result<JpegFast420PacketV1, FastPacketError> {
-    build_fast420_packet(decoder.bytes)
-}
-
-/// Build a 4:4:4 fast-path packet from an inspected decoder.
-pub fn build_fast444_packet_for_decoder(
-    decoder: &crate::decoder::Decoder<'_>,
-) -> Result<JpegFast444PacketV1, FastPacketError> {
-    build_fast444_packet(decoder.bytes)
-}
-
-/// Build a 4:2:2 fast-path packet from an inspected decoder.
-pub fn build_fast422_packet_for_decoder(
-    decoder: &crate::decoder::Decoder<'_>,
-) -> Result<JpegFast422PacketV1, FastPacketError> {
-    build_fast422_packet(decoder.bytes)
-}
-
-/// Build a grayscale fast-path packet from an inspected decoder.
-pub fn build_gray_packet_for_decoder(
-    decoder: &crate::decoder::Decoder<'_>,
-) -> Result<JpegGrayPacketV1, FastPacketError> {
-    build_gray_packet(decoder.bytes)
 }
 
 fn quant_for_component(

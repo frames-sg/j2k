@@ -2,9 +2,15 @@
 
 #[cfg(target_os = "macos")]
 use crate::compute;
-use j2k::adapter::encode_stage;
 #[cfg(target_os = "macos")]
 use j2k::{EncodeBackendPreference, J2kLosslessEncodeOptions};
+use j2k::{
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
+    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardDwt97Job,
+    J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
+    J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
+    J2kTier1CodeBlockEncodeJob,
+};
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
 
@@ -170,93 +176,111 @@ impl MetalEncodeStageAccelerator {
         }
     }
 
-    /// Number of deinterleave stage attempts.
-    pub fn deinterleave_attempts(&self) -> usize {
+    /// Number of deinterleave stage attempts observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn deinterleave_attempts(&self) -> usize {
         self.deinterleave_attempts
     }
 
-    /// Number of forward RCT stage attempts.
-    pub fn forward_rct_attempts(&self) -> usize {
+    /// Number of forward RCT stage attempts observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn forward_rct_attempts(&self) -> usize {
         self.forward_rct_attempts
     }
 
-    /// Number of forward ICT stage attempts.
-    pub fn forward_ict_attempts(&self) -> usize {
+    /// Number of forward ICT stage attempts observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn forward_ict_attempts(&self) -> usize {
         self.forward_ict_attempts
     }
 
-    /// Number of forward 5/3 DWT stage attempts.
-    pub fn forward_dwt53_attempts(&self) -> usize {
+    /// Number of forward 5/3 DWT stage attempts observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn forward_dwt53_attempts(&self) -> usize {
         self.forward_dwt53_attempts
     }
 
-    /// Number of forward 9/7 DWT stage attempts.
-    pub fn forward_dwt97_attempts(&self) -> usize {
+    /// Number of forward 9/7 DWT stage attempts observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn forward_dwt97_attempts(&self) -> usize {
         self.forward_dwt97_attempts
     }
 
-    /// Number of sub-band quantization stage attempts.
-    pub fn quantize_subband_attempts(&self) -> usize {
+    /// Number of sub-band quantization stage attempts observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn quantize_subband_attempts(&self) -> usize {
         self.quantize_subband_attempts
     }
 
-    /// Number of classic Tier-1 code-block encode attempts.
-    pub fn tier1_code_block_attempts(&self) -> usize {
+    /// Number of classic Tier-1 code-block encode attempts observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn tier1_code_block_attempts(&self) -> usize {
         self.tier1_code_block_attempts
     }
 
-    /// Number of HT code-block encode attempts.
-    pub fn ht_code_block_attempts(&self) -> usize {
+    /// Number of HT code-block encode attempts observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn ht_code_block_attempts(&self) -> usize {
         self.ht_code_block_attempts
     }
 
-    /// Number of packetization stage attempts.
-    pub fn packetization_attempts(&self) -> usize {
+    /// Number of packetization stage attempts observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn packetization_attempts(&self) -> usize {
         self.packetization_attempts
     }
 
-    /// Number of deinterleave Metal dispatches.
-    pub fn deinterleave_dispatches(&self) -> usize {
+    /// Number of deinterleave Metal dispatches observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn deinterleave_dispatches(&self) -> usize {
         self.deinterleave_dispatches
     }
 
-    /// Number of forward RCT Metal dispatches.
-    pub fn forward_rct_dispatches(&self) -> usize {
+    /// Number of forward RCT Metal dispatches observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn forward_rct_dispatches(&self) -> usize {
         self.forward_rct_dispatches
     }
 
-    /// Number of forward ICT Metal dispatches.
-    pub fn forward_ict_dispatches(&self) -> usize {
+    /// Number of forward ICT Metal dispatches observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn forward_ict_dispatches(&self) -> usize {
         self.forward_ict_dispatches
     }
 
-    /// Number of forward 5/3 DWT Metal dispatches.
-    pub fn forward_dwt53_dispatches(&self) -> usize {
+    /// Number of forward 5/3 DWT Metal dispatches observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn forward_dwt53_dispatches(&self) -> usize {
         self.forward_dwt53_dispatches
     }
 
-    /// Number of forward 9/7 DWT Metal dispatches.
-    pub fn forward_dwt97_dispatches(&self) -> usize {
+    /// Number of forward 9/7 DWT Metal dispatches observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn forward_dwt97_dispatches(&self) -> usize {
         self.forward_dwt97_dispatches
     }
 
-    /// Number of sub-band quantization Metal dispatches.
-    pub fn quantize_subband_dispatches(&self) -> usize {
+    /// Number of sub-band quantization Metal dispatches observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn quantize_subband_dispatches(&self) -> usize {
         self.quantize_subband_dispatches
     }
 
-    /// Number of classic Tier-1 Metal dispatches.
-    pub fn tier1_code_block_dispatches(&self) -> usize {
+    /// Number of classic Tier-1 Metal dispatches observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn tier1_code_block_dispatches(&self) -> usize {
         self.tier1_code_block_dispatches
     }
 
-    /// Number of HT code-block Metal dispatches.
-    pub fn ht_code_block_dispatches(&self) -> usize {
+    /// Number of HT code-block Metal dispatches observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn ht_code_block_dispatches(&self) -> usize {
         self.ht_code_block_dispatches
     }
 
-    /// Number of packetization Metal dispatches.
-    pub fn packetization_dispatches(&self) -> usize {
+    /// Number of packetization Metal dispatches observed by crate-local diagnostics.
+    #[cfg(test)]
+    pub(crate) fn packetization_dispatches(&self) -> usize {
         self.packetization_dispatches
     }
 
@@ -290,9 +314,10 @@ pub(super) fn metal_dispatch_option<T>(
     }
 }
 
-impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
-    fn dispatch_report(&self) -> encode_stage::J2kEncodeDispatchReport {
-        encode_stage::J2kEncodeDispatchReport {
+#[doc(hidden)]
+impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
+    fn dispatch_report(&self) -> J2kEncodeDispatchReport {
+        J2kEncodeDispatchReport {
             deinterleave: self.deinterleave_dispatches,
             forward_rct: self.forward_rct_dispatches,
             forward_ict: self.forward_ict_dispatches,
@@ -311,7 +336,7 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_deinterleave(
         &mut self,
-        job: encode_stage::J2kDeinterleaveToF32Job<'_>,
+        job: J2kDeinterleaveToF32Job<'_>,
     ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
         self.deinterleave_attempts = self.deinterleave_attempts.saturating_add(1);
         if !self
@@ -346,7 +371,7 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_forward_rct(
         &mut self,
-        job: encode_stage::J2kForwardRctJob<'_>,
+        job: J2kForwardRctJob<'_>,
     ) -> core::result::Result<bool, &'static str> {
         self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
         if !self
@@ -377,7 +402,7 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_forward_ict(
         &mut self,
-        job: encode_stage::J2kForwardIctJob<'_>,
+        job: J2kForwardIctJob<'_>,
     ) -> core::result::Result<bool, &'static str> {
         self.forward_ict_attempts = self.forward_ict_attempts.saturating_add(1);
         if !self
@@ -412,8 +437,8 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_forward_dwt53(
         &mut self,
-        job: encode_stage::J2kForwardDwt53Job<'_>,
-    ) -> core::result::Result<Option<encode_stage::J2kForwardDwt53Output>, &'static str> {
+        job: J2kForwardDwt53Job<'_>,
+    ) -> core::result::Result<Option<J2kForwardDwt53Output>, &'static str> {
         self.forward_dwt53_attempts = self.forward_dwt53_attempts.saturating_add(1);
         if job.num_levels == 0 {
             return Ok(None);
@@ -454,8 +479,8 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_forward_dwt97(
         &mut self,
-        job: encode_stage::J2kForwardDwt97Job<'_>,
-    ) -> core::result::Result<Option<encode_stage::J2kForwardDwt97Output>, &'static str> {
+        job: J2kForwardDwt97Job<'_>,
+    ) -> core::result::Result<Option<J2kForwardDwt97Output>, &'static str> {
         self.forward_dwt97_attempts = self.forward_dwt97_attempts.saturating_add(1);
         if job.num_levels == 0 || (job.width < 2 && job.height < 2) {
             return Ok(None);
@@ -496,7 +521,7 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_quantize_subband(
         &mut self,
-        job: encode_stage::J2kQuantizeSubbandJob<'_>,
+        job: J2kQuantizeSubbandJob<'_>,
     ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
         self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
         if !self
@@ -534,8 +559,8 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_tier1_code_block(
         &mut self,
-        job: encode_stage::J2kTier1CodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<encode_stage::EncodedJ2kCodeBlock>, &'static str> {
+        job: J2kTier1CodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -565,8 +590,8 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_tier1_code_blocks(
         &mut self,
-        jobs: &[encode_stage::J2kTier1CodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<encode_stage::EncodedJ2kCodeBlock>>, &'static str> {
+        jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<EncodedJ2kCodeBlock>>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(jobs.len());
         if !self
             .dispatch_stages
@@ -596,8 +621,8 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_ht_code_block(
         &mut self,
-        job: encode_stage::J2kHtCodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<encode_stage::EncodedHtJ2kCodeBlock>, &'static str> {
+        job: J2kHtCodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -627,8 +652,8 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_ht_code_blocks(
         &mut self,
-        jobs: &[encode_stage::J2kHtCodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<encode_stage::EncodedHtJ2kCodeBlock>>, &'static str> {
+        jobs: &[J2kHtCodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(jobs.len());
         if !self
             .dispatch_stages
@@ -658,7 +683,7 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_htj2k_tile(
         &mut self,
-        job: encode_stage::J2kHtj2kTileEncodeJob<'_>,
+        job: J2kHtj2kTileEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         #[cfg(target_os = "macos")]
         {
@@ -745,7 +770,7 @@ impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_packetization(
         &mut self,
-        job: encode_stage::J2kPacketizationEncodeJob<'_>,
+        job: J2kPacketizationEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         self.packetization_attempts = self.packetization_attempts.saturating_add(1);
         self.auto_host_output_force_cpu_fallback = false;

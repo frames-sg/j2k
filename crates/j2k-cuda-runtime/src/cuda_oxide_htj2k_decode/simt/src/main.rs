@@ -1,6 +1,8 @@
 use cuda_device::{kernel, thread};
 use cuda_host::cuda_module;
 
+include!("../../../cuda_oxide_simt_prelude.rs");
+
 const HT_STATUS_OK: u32 = 0;
 const HT_STATUS_FAIL: u32 = 1;
 const HT_STATUS_UNSUPPORTED: u32 = 2;
@@ -124,17 +126,17 @@ fn min_u32(a: u32, b: u32) -> u32 {
 
 #[inline(always)]
 fn load_u8(ptr: *const u8, index: u32) -> u8 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_u16(ptr: *const u16, index: u32) -> u16 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_job<T: Copy>(ptr: *const T, index: u32) -> T {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
@@ -221,15 +223,17 @@ fn store_decoded_sample(
     params: J2kHtCleanupParams,
     dequantize: bool,
 ) {
-    unsafe {
-        *decoded_data.add(index as usize) = decoded_cleanup_sample_bits(value, params, dequantize);
-    }
+    simt_store(
+        decoded_data,
+        index as usize,
+        decoded_cleanup_sample_bits(value, params, dequantize),
+    );
 }
 
 #[inline(always)]
 fn xor_decoded_sample(decoded_data: *mut u32, index: u32, value: u32) {
     unsafe {
-        let ptr = decoded_data.add(index as usize);
+        let ptr = simt_mut_ptr_at(decoded_data, index as usize);
         *ptr ^= value;
     }
 }

@@ -41,7 +41,8 @@ cargo xtask stable-api
 cargo xtask public-support
 ```
 
-Final release evidence also requires:
+Final support-matrix evidence also requires these support/publication gates.
+Full release gating remains in [`docs/release.md`](release.md):
 
 ```bash
 cargo xtask public-support --final

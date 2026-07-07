@@ -7,8 +7,18 @@ use crate::{
     J2kPaletteMetadata,
 };
 use j2k_core::{Colorspace, CompressedPayloadKind, InputError};
+use j2k_native::{
+    extract_jp2_codestream_payload as native_extract_jp2_codestream_payload, inspect_jp2_container,
+    DecodeError as NativeDecodeError, FormatError as NativeFormatError,
+    Jp2ChannelAssociation as NativeChannelAssociation,
+    Jp2ChannelDefinition as NativeChannelDefinition, Jp2ChannelType as NativeChannelType,
+    Jp2ColorSpec as NativeColorSpec, Jp2ComponentMapping as NativeComponentMapping,
+    Jp2ComponentMappingType as NativeComponentMappingType,
+    Jp2ComponentMetadata as NativeComponentMetadata, Jp2FileKind, Jp2FileMetadata,
+    Jp2ImageHeaderMetadata, Jp2PaletteColumn as NativePaletteColumn,
+    Jp2PaletteMetadata as NativePaletteMetadata,
+};
 
-const JP2_SIGNATURE: [u8; 12] = [0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A];
 const JP2_SIGNATURE_PREFIX: [u8; 8] = [0, 0, 0, 12, b'j', b'P', b' ', b' '];
 
 pub(crate) fn looks_like_jp2(input: &[u8]) -> bool {
@@ -18,110 +28,24 @@ pub(crate) fn looks_like_jp2(input: &[u8]) -> bool {
 pub(crate) fn extract_jp2_codestream_payload(
     input: &[u8],
 ) -> Result<(CompressedPayloadKind, usize, &[u8]), J2kError> {
-    let mut saw_signature = false;
-    let mut payload_kind = CompressedPayloadKind::Jp2File;
-    let mut codestream = None;
-
-    walk_top_level_boxes(input, |top_level_box| {
-        match &top_level_box.header.box_type {
-            b"jP  " => {
-                validate_signature_box(top_level_box.offset, saw_signature, top_level_box.payload)?;
-                saw_signature = true;
-            }
-            b"ftyp" => {
-                payload_kind = classify_file_type_box(top_level_box.payload, top_level_box.offset)?;
-            }
-            b"jp2c" => {
-                codestream = Some((
-                    payload_kind,
-                    top_level_box.header.payload_start,
-                    top_level_box.payload,
-                ));
-                return Ok(BoxWalk::Stop);
-            }
-            _ => {}
-        }
-        Ok(BoxWalk::Continue)
-    })?;
-
-    if !saw_signature {
-        return Err(J2kError::MissingRequiredBox { box_type: "jP  " });
-    }
-    codestream.ok_or(J2kError::MissingRequiredBox { box_type: "jp2c" })
+    let (file_kind, codestream_offset, codestream) =
+        native_extract_jp2_codestream_payload(input).map_err(map_native_jp2_error)?;
+    Ok((
+        payload_kind_from_native(file_kind),
+        codestream_offset,
+        codestream,
+    ))
 }
 
 pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
-    let mut saw_signature = false;
-    let mut saw_ftyp = false;
-    let mut saw_jp2h = false;
-    let mut saw_ihdr = false;
-    let mut image_header = None;
-    let mut file_metadata = None;
-    let mut codestream = None;
-    let mut payload_kind = CompressedPayloadKind::Jp2File;
+    let container = inspect_jp2_container(input).map_err(map_native_jp2_error)?;
+    let payload_kind = payload_kind_from_native(container.file_kind);
+    let image_header = image_header_from_native(container.image_header);
+    let file_metadata = file_metadata_from_native(&container.metadata);
+    let parsed = parse_codestream(container.codestream)?;
 
-    walk_top_level_boxes(input, |top_level_box| {
-        match &top_level_box.header.box_type {
-            b"jP  " => {
-                validate_signature_box(top_level_box.offset, saw_signature, top_level_box.payload)?;
-                saw_signature = true;
-            }
-            b"ftyp" => {
-                if !saw_signature || saw_ftyp || saw_jp2h || codestream.is_some() {
-                    return Err(J2kError::InvalidBox {
-                        offset: top_level_box.offset,
-                        what: "file type box must appear exactly once before jp2h and jp2c",
-                    });
-                }
-                payload_kind = classify_file_type_box(top_level_box.payload, top_level_box.offset)?;
-                saw_ftyp = true;
-            }
-            b"jp2h" => {
-                if !saw_ftyp || saw_jp2h || codestream.is_some() {
-                    return Err(J2kError::InvalidBox {
-                        offset: top_level_box.offset,
-                        what: "jp2h must appear exactly once after ftyp and before jp2c",
-                    });
-                }
-                let (ihdr, metadata) =
-                    parse_jp2h(top_level_box.payload, top_level_box.header.payload_start)?;
-                saw_jp2h = true;
-                saw_ihdr = ihdr.is_some();
-                image_header = ihdr;
-                file_metadata = Some(metadata);
-            }
-            b"jp2c" => {
-                if !saw_jp2h || codestream.is_some() {
-                    return Err(J2kError::InvalidBox {
-                        offset: top_level_box.offset,
-                        what: "jp2c must appear exactly once after jp2h",
-                    });
-                }
-                codestream = Some(top_level_box.payload);
-            }
-            _ => {}
-        }
-        Ok(BoxWalk::Continue)
-    })?;
-
-    if !saw_signature {
-        return Err(J2kError::MissingRequiredBox { box_type: "jP  " });
-    }
-    if !saw_ftyp {
-        return Err(J2kError::MissingRequiredBox { box_type: "ftyp" });
-    }
-    if !saw_jp2h {
-        return Err(J2kError::MissingRequiredBox { box_type: "jp2h" });
-    }
-    if !saw_ihdr {
-        return Err(J2kError::MissingRequiredBox { box_type: "ihdr" });
-    }
-    let codestream = codestream.ok_or(J2kError::MissingRequiredBox { box_type: "jp2c" })?;
-    let parsed = parse_codestream(codestream)?;
-    if let Some(ihdr) = image_header {
-        validate_ihdr_matches_codestream(ihdr, &parsed.siz)?;
-        validate_component_metadata(ihdr, file_metadata.as_ref(), &parsed.siz)?;
-    }
+    validate_ihdr_matches_codestream(image_header, &parsed.siz)?;
+    validate_component_metadata(image_header, &file_metadata, &parsed.siz)?;
     if payload_kind == CompressedPayloadKind::JphFile && !parsed.cod.high_throughput {
         return Err(J2kError::InvalidBox {
             offset: 0,
@@ -134,9 +58,8 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
             what: "JP2 file type must not wrap an HTJ2K codestream; use JPH",
         });
     }
-    let colorspace = file_metadata
-        .as_ref()
-        .and_then(primary_colorspace_from_file_metadata);
+
+    let colorspace = primary_colorspace_from_file_metadata(&file_metadata);
     let info = parsed.clone().into_info(colorspace);
     let components = parsed.siz.component_info.clone();
     Ok(ParsedImageInfo {
@@ -144,103 +67,8 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
         transfer_syntax: parsed.transfer_syntax(),
         payload_kind,
         components,
-        file_metadata,
+        file_metadata: Some(file_metadata),
     })
-}
-
-#[derive(Clone, Copy)]
-struct TopLevelBox<'a> {
-    offset: usize,
-    header: BoxHeader,
-    payload: &'a [u8],
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BoxWalk {
-    Continue,
-    Stop,
-}
-
-fn walk_top_level_boxes<'a>(
-    input: &'a [u8],
-    mut visit: impl FnMut(TopLevelBox<'a>) -> Result<BoxWalk, J2kError>,
-) -> Result<(), J2kError> {
-    if input.len() < JP2_SIGNATURE.len() {
-        return Err(InputError::TooShort {
-            need: JP2_SIGNATURE.len(),
-            have: input.len(),
-        }
-        .into());
-    }
-
-    let mut offset = 0usize;
-    while offset < input.len() {
-        let header = read_box_header(input, offset)?;
-        if header.end > input.len() {
-            return Err(InputError::TruncatedAt {
-                offset,
-                segment: "box payload",
-            }
-            .into());
-        }
-        let payload = &input[header.payload_start..header.end];
-        if visit(TopLevelBox {
-            offset,
-            header,
-            payload,
-        })? == BoxWalk::Stop
-        {
-            break;
-        }
-        offset = header.end;
-    }
-    Ok(())
-}
-
-fn validate_signature_box(
-    offset: usize,
-    saw_signature: bool,
-    payload: &[u8],
-) -> Result<(), J2kError> {
-    if saw_signature || offset != 0 {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "signature box must appear exactly once at the start of the file",
-        });
-    }
-    if payload != &JP2_SIGNATURE[8..] {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "invalid JP2 signature payload",
-        });
-    }
-    Ok(())
-}
-
-fn classify_file_type_box(
-    payload: &[u8],
-    offset: usize,
-) -> Result<CompressedPayloadKind, J2kError> {
-    if payload.len() < 8 {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "ftyp payload shorter than 8 bytes",
-        });
-    }
-    Ok(classify_file_type(payload))
-}
-
-fn classify_file_type(payload: &[u8]) -> CompressedPayloadKind {
-    if payload.len() >= 4 && &payload[..4] == b"jph " {
-        return CompressedPayloadKind::JphFile;
-    }
-    if payload[8..]
-        .chunks_exact(4)
-        .any(|compatible_brand| compatible_brand == b"jph ")
-    {
-        return CompressedPayloadKind::JphFile;
-    }
-    CompressedPayloadKind::Jp2File
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -252,97 +80,139 @@ struct Jp2ImageHeader {
     bits_per_component: Option<J2kComponentInfo>,
 }
 
-fn parse_jp2h(
-    payload: &[u8],
-    base_offset: usize,
-) -> Result<(Option<Jp2ImageHeader>, J2kFileMetadata), J2kError> {
-    let mut offset = 0usize;
-    let mut image_header = None;
-    let mut metadata = J2kFileMetadata {
-        bits_per_component: Vec::new(),
-        color_specs: Vec::new(),
-        palette: None,
-        component_mappings: Vec::new(),
-        channel_definitions: Vec::new(),
-        has_palette: false,
-        has_component_mapping: false,
-        has_channel_definition: false,
-    };
-
-    while offset < payload.len() {
-        let header = read_box_header(payload, offset)?;
-        if header.end > payload.len() {
-            return Err(InputError::TruncatedAt {
-                offset: base_offset + offset,
-                segment: "box payload",
-            }
-            .into());
-        }
-        let inner = &payload[header.payload_start..header.end];
-        match &header.box_type {
-            b"ihdr" => {
-                if image_header.is_some() {
-                    return Err(J2kError::InvalidBox {
-                        offset: base_offset + offset,
-                        what: "ihdr must appear exactly once",
-                    });
-                }
-                image_header = Some(parse_ihdr(inner, base_offset + offset)?);
-            }
-            b"colr" => {
-                metadata.color_specs.push(parse_colr(inner));
-            }
-            b"bpcc" => {
-                metadata.bits_per_component = parse_bpcc(inner, base_offset + offset)?;
-            }
-            b"pclr" => {
-                metadata.has_palette = true;
-                metadata.palette = Some(parse_pclr(inner, base_offset + offset)?);
-            }
-            b"cmap" => {
-                metadata.has_component_mapping = true;
-                metadata.component_mappings = parse_cmap(inner, base_offset + offset)?;
-            }
-            b"cdef" => {
-                metadata.has_channel_definition = true;
-                metadata.channel_definitions = parse_cdef(inner, base_offset + offset)?;
-            }
-            _ => {}
-        }
-        offset = header.end;
+fn payload_kind_from_native(file_kind: Jp2FileKind) -> CompressedPayloadKind {
+    match file_kind {
+        Jp2FileKind::Jp2 => CompressedPayloadKind::Jp2File,
+        Jp2FileKind::Jph => CompressedPayloadKind::JphFile,
     }
-
-    if metadata.color_specs.is_empty() {
-        return Err(J2kError::MissingRequiredBox { box_type: "colr" });
-    }
-
-    Ok((image_header, metadata))
 }
 
-fn parse_ihdr(payload: &[u8], offset: usize) -> Result<Jp2ImageHeader, J2kError> {
-    if payload.len() < 14 {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "ihdr payload shorter than 14 bytes",
-        });
+fn image_header_from_native(header: Jp2ImageHeaderMetadata) -> Jp2ImageHeader {
+    Jp2ImageHeader {
+        offset: 0,
+        width: header.width,
+        height: header.height,
+        components: header.components,
+        bits_per_component: header.bits_per_component.map(component_from_native),
     }
-    if payload[11] != 7 {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "ihdr compression type must be JPEG 2000",
-        });
+}
+
+fn file_metadata_from_native(metadata: &Jp2FileMetadata) -> J2kFileMetadata {
+    J2kFileMetadata {
+        bits_per_component: metadata
+            .bits_per_component
+            .iter()
+            .copied()
+            .map(component_from_native)
+            .collect(),
+        color_specs: metadata
+            .color_specs
+            .iter()
+            .map(color_spec_from_native)
+            .collect(),
+        palette: metadata.palette.as_ref().map(palette_from_native),
+        component_mappings: metadata
+            .component_mappings
+            .iter()
+            .copied()
+            .map(component_mapping_from_native)
+            .collect(),
+        channel_definitions: metadata
+            .channel_definitions
+            .iter()
+            .copied()
+            .map(channel_definition_from_native)
+            .collect(),
+        has_palette: metadata.has_palette,
+        has_component_mapping: metadata.has_component_mapping,
+        has_channel_definition: metadata.has_channel_definition,
     }
-    Ok(Jp2ImageHeader {
-        offset,
-        height: u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]),
-        width: u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]),
-        components: u16::from_be_bytes([payload[8], payload[9]]),
-        bits_per_component: if payload[10] == 0xff {
-            None
-        } else {
-            Some(parse_component_descriptor(payload[10], offset, "ihdr bpc")?)
+}
+
+fn component_from_native(component: NativeComponentMetadata) -> J2kComponentInfo {
+    J2kComponentInfo {
+        bit_depth: component.bit_depth,
+        signed: component.signed,
+        x_rsiz: 1,
+        y_rsiz: 1,
+    }
+}
+
+fn color_spec_from_native(color_spec: &NativeColorSpec) -> J2kColorSpec {
+    match color_spec {
+        NativeColorSpec::Enumerated { value } => J2kColorSpec::Enumerated { value: *value },
+        NativeColorSpec::IccProfile { profile } => J2kColorSpec::IccProfile {
+            profile: profile.clone(),
         },
-    })
+        NativeColorSpec::Unknown { method } => J2kColorSpec::Unknown { method: *method },
+    }
+}
+
+fn palette_from_native(palette: &NativePaletteMetadata) -> J2kPaletteMetadata {
+    J2kPaletteMetadata {
+        columns: palette
+            .columns
+            .iter()
+            .copied()
+            .map(palette_column_from_native)
+            .collect(),
+        entries: palette.entries.clone(),
+    }
+}
+
+fn palette_column_from_native(column: NativePaletteColumn) -> J2kPaletteColumn {
+    J2kPaletteColumn {
+        bit_depth: column.bit_depth,
+        signed: column.signed,
+    }
+}
+
+fn component_mapping_from_native(mapping: NativeComponentMapping) -> J2kComponentMapping {
+    J2kComponentMapping {
+        component_index: mapping.component_index,
+        mapping_type: match mapping.mapping_type {
+            NativeComponentMappingType::Direct => J2kComponentMappingType::Direct,
+            NativeComponentMappingType::Palette { column } => {
+                J2kComponentMappingType::Palette { column }
+            }
+            NativeComponentMappingType::Unknown { value, column } => {
+                J2kComponentMappingType::Unknown { value, column }
+            }
+        },
+    }
+}
+
+fn channel_definition_from_native(definition: NativeChannelDefinition) -> J2kChannelDefinition {
+    J2kChannelDefinition {
+        channel_index: definition.channel_index,
+        channel_type: match definition.channel_type {
+            NativeChannelType::Color => J2kChannelType::Color,
+            NativeChannelType::Opacity => J2kChannelType::Opacity,
+            NativeChannelType::PremultipliedOpacity => J2kChannelType::PremultipliedOpacity,
+            NativeChannelType::Unspecified => J2kChannelType::Unspecified,
+            NativeChannelType::Unknown { value } => J2kChannelType::Unknown { value },
+        },
+        association: match definition.association {
+            NativeChannelAssociation::WholeImage => J2kChannelAssociation::WholeImage,
+            NativeChannelAssociation::Color { index } => J2kChannelAssociation::Color { index },
+            NativeChannelAssociation::Unspecified => J2kChannelAssociation::Unspecified,
+        },
+    }
+}
+
+fn primary_colorspace_from_file_metadata(metadata: &J2kFileMetadata) -> Option<Colorspace> {
+    metadata
+        .color_specs
+        .first()
+        .map(|color_spec| match color_spec {
+            J2kColorSpec::Enumerated { value: 16 } => Colorspace::SRgb,
+            J2kColorSpec::Enumerated { value: 17 } => Colorspace::SGray,
+            J2kColorSpec::Enumerated { value: 18 } => Colorspace::YCbCr,
+            J2kColorSpec::Enumerated { .. } | J2kColorSpec::IccProfile { .. } => {
+                Colorspace::IccTagged
+            }
+            J2kColorSpec::Unknown { .. } => Colorspace::IccTagged,
+        })
 }
 
 fn validate_ihdr_matches_codestream(
@@ -360,10 +230,10 @@ fn validate_ihdr_matches_codestream(
 
 fn validate_component_metadata(
     ihdr: Jp2ImageHeader,
-    metadata: Option<&J2kFileMetadata>,
+    metadata: &J2kFileMetadata,
     siz: &super::ParsedSiz,
 ) -> Result<(), J2kError> {
-    let resolved = metadata.and_then(|metadata| resolved_image_component_metadata(metadata, siz));
+    let resolved = resolved_image_component_metadata(metadata, siz);
     let resolved = resolved.as_deref().unwrap_or(&siz.component_info);
     if resolved.len() != ihdr.components as usize {
         return Err(J2kError::InvalidBox {
@@ -373,7 +243,7 @@ fn validate_component_metadata(
     }
 
     if let Some(descriptor) = ihdr.bits_per_component {
-        if metadata.is_some_and(|metadata| !metadata.bits_per_component.is_empty()) {
+        if !metadata.bits_per_component.is_empty() {
             return Err(J2kError::InvalidBox {
                 offset: ihdr.offset,
                 what: "bpcc must not be present when ihdr bpc is explicit",
@@ -389,12 +259,6 @@ fn validate_component_metadata(
             });
         }
     } else {
-        let Some(metadata) = metadata else {
-            return Err(J2kError::InvalidBox {
-                offset: ihdr.offset,
-                what: "ihdr bpc=255 requires bpcc",
-            });
-        };
         if metadata.bits_per_component.len() != ihdr.components as usize {
             return Err(J2kError::InvalidBox {
                 offset: ihdr.offset,
@@ -464,293 +328,39 @@ fn same_component_precision(left: J2kComponentInfo, right: J2kComponentInfo) -> 
     left.bit_depth == right.bit_depth && left.signed == right.signed
 }
 
-fn parse_colr(payload: &[u8]) -> J2kColorSpec {
-    if payload.len() < 3 {
-        return J2kColorSpec::Unknown { method: 0 };
-    }
-    match payload[0] {
-        1 if payload.len() >= 7 => J2kColorSpec::Enumerated {
-            value: u32::from_be_bytes([payload[3], payload[4], payload[5], payload[6]]),
+fn map_native_jp2_error(error: NativeDecodeError) -> J2kError {
+    match error {
+        NativeDecodeError::Format(NativeFormatError::InvalidSignature) => J2kError::InvalidBox {
+            offset: 0,
+            what: "invalid JP2 signature box",
         },
-        2 => J2kColorSpec::IccProfile {
-            profile: payload[3..].to_vec(),
+        NativeDecodeError::Format(NativeFormatError::InvalidFileType) => J2kError::InvalidBox {
+            offset: 0,
+            what: "invalid JP2/JPH file type box",
         },
-        method => J2kColorSpec::Unknown { method },
-    }
-}
-
-fn primary_colorspace_from_file_metadata(metadata: &J2kFileMetadata) -> Option<Colorspace> {
-    metadata
-        .color_specs
-        .first()
-        .map(|color_spec| match color_spec {
-            J2kColorSpec::Enumerated { value: 16 } => Colorspace::SRgb,
-            J2kColorSpec::Enumerated { value: 17 } => Colorspace::SGray,
-            J2kColorSpec::Enumerated { value: 18 } => Colorspace::YCbCr,
-            J2kColorSpec::Enumerated { .. } | J2kColorSpec::IccProfile { .. } => {
-                Colorspace::IccTagged
-            }
-            J2kColorSpec::Unknown { .. } => Colorspace::IccTagged,
-        })
-}
-
-fn parse_bpcc(payload: &[u8], offset: usize) -> Result<Vec<J2kComponentInfo>, J2kError> {
-    if payload.is_empty() {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "bpcc payload must not be empty",
-        });
-    }
-    payload
-        .iter()
-        .map(|descriptor| parse_component_descriptor(*descriptor, offset, "bpcc component bpc"))
-        .collect()
-}
-
-fn parse_component_descriptor(
-    descriptor: u8,
-    offset: usize,
-    what: &'static str,
-) -> Result<J2kComponentInfo, J2kError> {
-    let bit_depth = (descriptor & 0x7f) + 1;
-    if bit_depth > 38 {
-        return Err(J2kError::InvalidBox { offset, what });
-    }
-    Ok(J2kComponentInfo {
-        bit_depth,
-        signed: (descriptor & 0x80) != 0,
-        x_rsiz: 1,
-        y_rsiz: 1,
-    })
-}
-
-fn parse_pclr(payload: &[u8], offset: usize) -> Result<J2kPaletteMetadata, J2kError> {
-    if payload.len() < 3 {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "pclr payload shorter than header",
-        });
-    }
-    let entry_count = u16::from_be_bytes([payload[0], payload[1]]) as usize;
-    let column_count = usize::from(payload[2]);
-    if entry_count == 0 || column_count == 0 {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "pclr entry and column counts must be non-zero",
-        });
-    }
-    let descriptors_end = 3usize
-        .checked_add(column_count)
-        .ok_or(J2kError::InvalidBox {
-            offset,
-            what: "pclr column descriptor length overflow",
-        })?;
-    if descriptors_end > payload.len() {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "pclr column descriptors are truncated",
-        });
-    }
-
-    let columns = payload[3..descriptors_end]
-        .iter()
-        .map(|descriptor| J2kPaletteColumn {
-            bit_depth: (descriptor & 0x7f) + 1,
-            signed: (descriptor & 0x80) != 0,
-        })
-        .collect::<Vec<_>>();
-
-    let mut cursor = descriptors_end;
-    let mut entries = Vec::with_capacity(entry_count);
-    for _ in 0..entry_count {
-        let mut row = Vec::with_capacity(column_count);
-        for column in &columns {
-            let byte_count = usize::from(column.bit_depth).div_ceil(8).max(1);
-            let end = cursor.checked_add(byte_count).ok_or(J2kError::InvalidBox {
-                offset,
-                what: "pclr entry length overflow",
-            })?;
-            let bytes = payload.get(cursor..end).ok_or(J2kError::InvalidBox {
-                offset,
-                what: "pclr entries are truncated",
-            })?;
-            let mut raw = 0u64;
-            for &byte in bytes {
-                raw = (raw << 8) | u64::from(byte);
-            }
-            row.push(raw);
-            cursor = end;
+        NativeDecodeError::Format(NativeFormatError::TooShort { need, have }) => {
+            InputError::TooShort { need, have }.into()
         }
-        entries.push(row);
-    }
-
-    Ok(J2kPaletteMetadata { columns, entries })
-}
-
-fn parse_cmap(payload: &[u8], offset: usize) -> Result<Vec<J2kComponentMapping>, J2kError> {
-    if payload.is_empty() || !payload.len().is_multiple_of(4) {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "cmap payload length must be a non-zero multiple of 4",
-        });
-    }
-    Ok(payload
-        .chunks_exact(4)
-        .map(|entry| {
-            let component_index = u16::from_be_bytes([entry[0], entry[1]]);
-            let mapping_type = match entry[2] {
-                0 => J2kComponentMappingType::Direct,
-                1 => J2kComponentMappingType::Palette { column: entry[3] },
-                value => J2kComponentMappingType::Unknown {
-                    value,
-                    column: entry[3],
-                },
-            };
-            J2kComponentMapping {
-                component_index,
-                mapping_type,
-            }
-        })
-        .collect())
-}
-
-fn parse_cdef(payload: &[u8], offset: usize) -> Result<Vec<J2kChannelDefinition>, J2kError> {
-    if payload.len() < 2 {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "cdef payload shorter than entry count",
-        });
-    }
-    let entry_count = u16::from_be_bytes([payload[0], payload[1]]) as usize;
-    if entry_count == 0 {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "cdef entry count must be non-zero",
-        });
-    }
-    let required_len = 2usize
-        .checked_add(entry_count.checked_mul(6).ok_or(J2kError::InvalidBox {
-            offset,
-            what: "cdef entry length overflow",
-        })?)
-        .ok_or(J2kError::InvalidBox {
-            offset,
-            what: "cdef payload length overflow",
-        })?;
-    if required_len > payload.len() {
-        return Err(J2kError::InvalidBox {
-            offset,
-            what: "cdef entries are truncated",
-        });
-    }
-
-    Ok(payload[2..required_len]
-        .chunks_exact(6)
-        .map(|entry| {
-            let channel_index = u16::from_be_bytes([entry[0], entry[1]]);
-            let raw_type = u16::from_be_bytes([entry[2], entry[3]]);
-            let raw_association = u16::from_be_bytes([entry[4], entry[5]]);
-            J2kChannelDefinition {
-                channel_index,
-                channel_type: match raw_type {
-                    0 => J2kChannelType::Color,
-                    1 => J2kChannelType::Opacity,
-                    2 => J2kChannelType::PremultipliedOpacity,
-                    u16::MAX => J2kChannelType::Unspecified,
-                    value => J2kChannelType::Unknown { value },
-                },
-                association: match raw_association {
-                    0 => J2kChannelAssociation::WholeImage,
-                    u16::MAX => J2kChannelAssociation::Unspecified,
-                    index => J2kChannelAssociation::Color { index },
-                },
-            }
-        })
-        .collect())
-}
-
-#[derive(Debug, Clone, Copy)]
-struct BoxHeader {
-    box_type: [u8; 4],
-    payload_start: usize,
-    end: usize,
-}
-
-fn read_box_header(input: &[u8], offset: usize) -> Result<BoxHeader, J2kError> {
-    if offset + 8 > input.len() {
-        return Err(InputError::TruncatedAt {
-            offset,
-            segment: "box header",
+        NativeDecodeError::Format(NativeFormatError::TruncatedAt { offset, segment }) => {
+            InputError::TruncatedAt { offset, segment }.into()
         }
-        .into());
+        NativeDecodeError::Format(NativeFormatError::MissingRequiredBox(box_type)) => {
+            J2kError::MissingRequiredBox { box_type }
+        }
+        NativeDecodeError::Format(NativeFormatError::MissingCodestream) => {
+            J2kError::MissingRequiredBox { box_type: "jp2c" }
+        }
+        NativeDecodeError::Format(NativeFormatError::InvalidBox) => J2kError::InvalidBox {
+            offset: 0,
+            what: "invalid JP2/JPH box",
+        },
+        NativeDecodeError::Format(NativeFormatError::Unsupported) => J2kError::InvalidBox {
+            offset: 0,
+            what: "unsupported JP2/JPH box metadata",
+        },
+        _ => J2kError::InvalidBox {
+            offset: 0,
+            what: "invalid JP2/JPH container",
+        },
     }
-    let lbox = u32::from_be_bytes([
-        input[offset],
-        input[offset + 1],
-        input[offset + 2],
-        input[offset + 3],
-    ]);
-    let box_type = [
-        input[offset + 4],
-        input[offset + 5],
-        input[offset + 6],
-        input[offset + 7],
-    ];
-
-    let (payload_start, end) = match lbox {
-        0 => (offset + 8, input.len()),
-        1 => {
-            if offset + 16 > input.len() {
-                return Err(InputError::TruncatedAt {
-                    offset,
-                    segment: "extended box header",
-                }
-                .into());
-            }
-            let xlbox = u64::from_be_bytes([
-                input[offset + 8],
-                input[offset + 9],
-                input[offset + 10],
-                input[offset + 11],
-                input[offset + 12],
-                input[offset + 13],
-                input[offset + 14],
-                input[offset + 15],
-            ]);
-            if xlbox < 16 {
-                return Err(J2kError::InvalidBox {
-                    offset,
-                    what: "extended box length smaller than header",
-                });
-            }
-            let end = offset
-                .checked_add(xlbox as usize)
-                .ok_or(J2kError::InvalidBox {
-                    offset,
-                    what: "extended box length overflow",
-                })?;
-            (offset + 16, end)
-        }
-        length if length < 8 => {
-            return Err(J2kError::InvalidBox {
-                offset,
-                what: "box length smaller than header",
-            })
-        }
-        length => {
-            let end = offset
-                .checked_add(length as usize)
-                .ok_or(J2kError::InvalidBox {
-                    offset,
-                    what: "box length overflow",
-                })?;
-            (offset + 8, end)
-        }
-    };
-
-    Ok(BoxHeader {
-        box_type,
-        payload_start,
-        end,
-    })
 }

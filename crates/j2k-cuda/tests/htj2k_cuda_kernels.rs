@@ -1,42 +1,20 @@
 #[cfg(feature = "cuda-runtime")]
-use j2k_core::PixelFormat;
-#[cfg(feature = "cuda-runtime")]
-use j2k_cuda::J2kDecoder;
-#[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::{
-    CudaContext, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables, CudaHtj2kEncodeCodeBlockJob,
-    CudaHtj2kEncodeTables, CudaHtj2kPacketizationBlock, CudaHtj2kPacketizationPacket,
-    CudaHtj2kPacketizationSubband, CudaHtj2kPacketizationSubbandTagState,
-    CudaHtj2kPacketizationTagNodeState, CudaJ2kInverseMctJob, CudaJ2kStoreGray16Job,
-    CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb8Job,
+    CudaContext, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeTables, CudaHtj2kPacketizationBlock,
+    CudaHtj2kPacketizationPacket, CudaHtj2kPacketizationSubband,
+    CudaHtj2kPacketizationSubbandTagState, CudaHtj2kPacketizationTagNodeState,
+    CudaJ2kInverseMctJob, CudaJ2kStoreGray16Job, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb8Job,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{
-    decode_ht_code_block_scalar, encode_ht_code_block_scalar, encode_htj2k,
-    ht_uvlc_encode_table_bytes, ht_uvlc_table0, ht_uvlc_table1, ht_vlc_encode_table0,
-    ht_vlc_encode_table1, ht_vlc_table0, ht_vlc_table1, EncodeOptions, HtCodeBlockDecodeJob,
+    decode_ht_code_block_scalar, encode_ht_code_block_scalar, ht_uvlc_encode_table_bytes,
+    ht_vlc_encode_table0, ht_vlc_encode_table1, HtCodeBlockDecodeJob,
     J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
     J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
     J2kPacketizationSubband,
 };
 #[cfg(feature = "cuda-runtime")]
-use j2k_test_support::cuda_runtime_required;
-
-#[cfg(feature = "cuda-runtime")]
-fn ht_gray8_fixture() -> Vec<u8> {
-    let pixels: Vec<u8> = (0..64).collect();
-    let options = EncodeOptions {
-        reversible: true,
-        num_decomposition_levels: 1,
-        ..EncodeOptions::default()
-    };
-    encode_htj2k(&pixels, 8, 8, 1, 8, false, &options).expect("encode ht gray8")
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn openhtj2k_refinement_fixture() -> &'static [u8] {
-    include_bytes!("fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k")
-}
+use j2k_test_support::cuda_runtime_gate;
 
 #[cfg(feature = "cuda-runtime")]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -63,185 +41,8 @@ fn push_u16_ne(out: &mut Vec<u8>, value: u16) {
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
-fn cuda_htj2k_entropy_kernel_matches_native_scalar_codeblock_when_required() {
-    if !cuda_runtime_required() {
-        return;
-    }
-
-    let bytes = ht_gray8_fixture();
-    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
-    let (cuda_plan, _) = decoder
-        .build_cuda_htj2k_grayscale_plan_with_profile(PixelFormat::Gray8)
-        .expect("CUDA flat plan");
-    let block = cuda_plan
-        .code_blocks()
-        .first()
-        .copied()
-        .expect("at least one HT block");
-    let payload_start = usize::try_from(block.payload_offset).expect("payload offset");
-    let payload_end = payload_start + block.payload_len as usize;
-    let block_payload = &cuda_plan.payload()[payload_start..payload_end];
-
-    let mut expected = vec![0.0f32; block.width as usize * block.height as usize];
-    decode_ht_code_block_scalar(
-        HtCodeBlockDecodeJob {
-            data: block_payload,
-            cleanup_length: block.cleanup_length,
-            refinement_length: block.refinement_length,
-            width: block.width,
-            height: block.height,
-            output_stride: block.width as usize,
-            missing_bit_planes: block.missing_bit_planes,
-            number_of_coding_passes: block.number_of_coding_passes,
-            num_bitplanes: block.num_bitplanes,
-            roi_shift: 0,
-            stripe_causal: block.stripe_causal != 0,
-            strict: true,
-            dequantization_step: block.dequantization_step,
-        },
-        &mut expected,
-    )
-    .expect("native scalar HT decode");
-
-    let context = CudaContext::system_default().expect("CUDA context");
-    let output = context
-        .decode_htj2k_codeblocks(
-            block_payload,
-            &[CudaHtj2kCodeBlockJob {
-                payload_offset: 0,
-                width: block.width,
-                height: block.height,
-                payload_len: block.payload_len,
-                cleanup_length: block.cleanup_length,
-                refinement_length: block.refinement_length,
-                missing_bit_planes: block.missing_bit_planes,
-                num_bitplanes: block.num_bitplanes,
-                number_of_coding_passes: block.number_of_coding_passes,
-                output_stride: block.width,
-                output_offset: 0,
-                dequantization_step: block.dequantization_step,
-                stripe_causal: block.stripe_causal != 0,
-            }],
-            CudaHtj2kDecodeTables {
-                vlc_table0: ht_vlc_table0(),
-                vlc_table1: ht_vlc_table1(),
-                uvlc_table0: ht_uvlc_table0(),
-                uvlc_table1: ht_uvlc_table1(),
-            },
-            expected.len(),
-        )
-        .expect("CUDA HT decode");
-
-    assert_eq!(output.execution().decode_kernel_dispatches(), 2);
-    assert!(output.stage_timings().ht_cleanup_us > 0);
-    assert!(output.stage_timings().dequant_us > 0);
-    assert!(output.statuses().iter().all(|status| status.is_ok()));
-
-    let mut actual_bytes = vec![0u8; expected.len() * std::mem::size_of::<f32>()];
-    output
-        .coefficients()
-        .copy_to_host(&mut actual_bytes)
-        .expect("download coefficients");
-    let actual = actual_bytes
-        .chunks_exact(std::mem::size_of::<f32>())
-        .map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("f32 bytes")))
-        .collect::<Vec<_>>();
-    assert_eq!(actual, expected);
-}
-
-#[cfg(feature = "cuda-runtime")]
-#[test]
-fn cuda_htj2k_refinement_kernel_matches_native_scalar_codeblock_when_required() {
-    if !cuda_runtime_required() {
-        return;
-    }
-
-    let mut decoder = J2kDecoder::new(openhtj2k_refinement_fixture()).expect("decoder");
-    let (cuda_plan, _) = decoder
-        .build_cuda_htj2k_grayscale_plan_with_profile(PixelFormat::Gray8)
-        .expect("CUDA flat plan");
-    let block = cuda_plan
-        .code_blocks()
-        .iter()
-        .copied()
-        .find(|block| block.refinement_length > 0)
-        .expect("fixture must contain a refinement block");
-    let payload_start = usize::try_from(block.payload_offset).expect("payload offset");
-    let payload_end = payload_start + block.payload_len as usize;
-    let block_payload = &cuda_plan.payload()[payload_start..payload_end];
-
-    let mut expected = vec![0.0f32; block.width as usize * block.height as usize];
-    decode_ht_code_block_scalar(
-        HtCodeBlockDecodeJob {
-            data: block_payload,
-            cleanup_length: block.cleanup_length,
-            refinement_length: block.refinement_length,
-            width: block.width,
-            height: block.height,
-            output_stride: block.width as usize,
-            missing_bit_planes: block.missing_bit_planes,
-            number_of_coding_passes: block.number_of_coding_passes,
-            num_bitplanes: block.num_bitplanes,
-            roi_shift: 0,
-            stripe_causal: block.stripe_causal != 0,
-            strict: true,
-            dequantization_step: block.dequantization_step,
-        },
-        &mut expected,
-    )
-    .expect("native scalar HT refinement decode");
-
-    let context = CudaContext::system_default().expect("CUDA context");
-    let output = context
-        .decode_htj2k_codeblocks(
-            block_payload,
-            &[CudaHtj2kCodeBlockJob {
-                payload_offset: 0,
-                width: block.width,
-                height: block.height,
-                payload_len: block.payload_len,
-                cleanup_length: block.cleanup_length,
-                refinement_length: block.refinement_length,
-                missing_bit_planes: block.missing_bit_planes,
-                num_bitplanes: block.num_bitplanes,
-                number_of_coding_passes: block.number_of_coding_passes,
-                output_stride: block.width,
-                output_offset: 0,
-                dequantization_step: block.dequantization_step,
-                stripe_causal: block.stripe_causal != 0,
-            }],
-            CudaHtj2kDecodeTables {
-                vlc_table0: ht_vlc_table0(),
-                vlc_table1: ht_vlc_table1(),
-                uvlc_table0: ht_uvlc_table0(),
-                uvlc_table1: ht_uvlc_table1(),
-            },
-            expected.len(),
-        )
-        .expect("CUDA HT refinement decode");
-
-    assert_eq!(output.execution().decode_kernel_dispatches(), 2);
-    assert!(output.stage_timings().ht_cleanup_us > 0);
-    assert!(output.stage_timings().ht_refine_us > 0);
-    assert!(output.stage_timings().dequant_us > 0);
-    assert!(output.statuses().iter().all(|status| status.is_ok()));
-
-    let mut actual_bytes = vec![0u8; expected.len() * std::mem::size_of::<f32>()];
-    output
-        .coefficients()
-        .copy_to_host(&mut actual_bytes)
-        .expect("download coefficients");
-    let actual = actual_bytes
-        .chunks_exact(std::mem::size_of::<f32>())
-        .map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("f32 bytes")))
-        .collect::<Vec<_>>();
-    assert_eq!(actual, expected);
-}
-
-#[cfg(feature = "cuda-runtime")]
-#[test]
 fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -255,12 +56,16 @@ fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
 
     let context = CudaContext::system_default().expect("CUDA context");
     let uvlc_table = ht_uvlc_encode_table_bytes();
-    let encoded = context
-        .encode_htj2k_codeblock(
+    let encoded_blocks = context
+        .encode_htj2k_codeblocks(
             &coefficients,
-            8,
-            8,
-            8,
+            &[CudaHtj2kEncodeCodeBlockJob {
+                coefficient_offset: 0,
+                width: 8,
+                height: 8,
+                total_bitplanes: 8,
+                target_coding_passes: 1,
+            }],
             CudaHtj2kEncodeTables {
                 vlc_table0: ht_vlc_encode_table0(),
                 vlc_table1: ht_vlc_encode_table1(),
@@ -268,8 +73,12 @@ fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
             },
         )
         .expect("CUDA HT encode");
+    let encoded = encoded_blocks
+        .code_blocks()
+        .first()
+        .expect("one encoded code block");
 
-    assert_eq!(encoded.execution().kernel_dispatches(), 1);
+    assert_eq!(encoded_blocks.execution().kernel_dispatches(), 1);
     assert_eq!(encoded.data(), expected.data);
     assert_eq!(encoded.cleanup_length(), expected.cleanup_length);
     assert_eq!(encoded.refinement_length(), expected.refinement_length);
@@ -280,7 +89,7 @@ fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_encode_target_two_passes_round_trips_with_sigprop_segment_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -351,7 +160,7 @@ fn cuda_htj2k_encode_target_two_passes_round_trips_with_sigprop_segment_when_req
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_encode_target_three_passes_round_trips_with_magref_segment_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -422,7 +231,7 @@ fn cuda_htj2k_encode_target_three_passes_round_trips_with_magref_segment_when_re
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_encode_target_three_passes_stuffs_magref_all_one_bytes_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -493,7 +302,7 @@ fn cuda_htj2k_encode_target_three_passes_stuffs_magref_all_one_bytes_when_requir
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_encode_target_three_passes_round_trips_nonzero_sigprop_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -564,7 +373,7 @@ fn cuda_htj2k_encode_target_three_passes_round_trips_nonzero_sigprop_when_requir
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -655,7 +464,7 @@ fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_forward_ict_kernel_matches_cpu_transform_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -690,7 +499,7 @@ fn cuda_forward_ict_kernel_matches_cpu_transform_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_cleanup_packet_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -735,7 +544,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_cleanup_packet_when_req
     let context = CudaContext::system_default().expect("CUDA context");
     let payload_len = u32::try_from(payload.len()).expect("test payload length fits in u32");
     let packetized = context
-        .packetize_htj2k_cleanup_packets(
+        .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[CudaHtj2kPacketizationPacket {
                 block_start: 0,
@@ -762,6 +571,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_cleanup_packet_when_req
                 previously_included: 0,
                 inclusion_layer: 0,
             }],
+            &[],
+            &[],
         )
         .expect("CUDA packetization");
 
@@ -774,7 +585,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_cleanup_packet_when_req
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -874,7 +685,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
     ];
     let context = CudaContext::system_default().expect("CUDA context");
     let packetized = context
-        .packetize_htj2k_cleanup_packets(
+        .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[CudaHtj2kPacketizationPacket {
                 block_start: 0,
@@ -891,6 +702,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
                 num_cbs_y: 2,
             }],
             &blocks,
+            &[],
+            &[],
         )
         .expect("CUDA multi-block packetization");
 
@@ -903,7 +716,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_refinement_pass_packet_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -947,7 +760,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_refinement_pass_packet_
 
     let context = CudaContext::system_default().expect("CUDA context");
     let packetized = context
-        .packetize_htj2k_cleanup_packets(
+        .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[CudaHtj2kPacketizationPacket {
                 block_start: 0,
@@ -974,6 +787,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_refinement_pass_packet_
                 previously_included: 0,
                 inclusion_layer: 0,
             }],
+            &[],
+            &[],
         )
         .expect("CUDA refinement packetization");
 
@@ -986,7 +801,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_refinement_pass_packet_
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_layer_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -1060,7 +875,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_lay
     let payload = [first_payload.as_slice(), second_payload.as_slice()].concat();
     let context = CudaContext::system_default().expect("CUDA context");
     let packetized = context
-        .packetize_htj2k_cleanup_packets(
+        .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[
                 CudaHtj2kPacketizationPacket {
@@ -1121,6 +936,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_lay
                     inclusion_layer: 0,
                 },
             ],
+            &[],
+            &[],
         )
         .expect("CUDA stateful packetization");
 
@@ -1133,7 +950,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_lay
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusion_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -1205,7 +1022,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
 
     let context = CudaContext::system_default().expect("CUDA context");
     let packetized = context
-        .packetize_htj2k_cleanup_packets(
+        .packetize_htj2k_cleanup_packets_with_tag_state(
             &payload,
             &[
                 CudaHtj2kPacketizationPacket {
@@ -1264,6 +1081,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                     inclusion_layer: 1,
                 },
             ],
+            &[],
+            &[],
         )
         .expect("CUDA deferred inclusion packetization");
 
@@ -1277,7 +1096,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusion_after_non_empty_packet_when_required(
 ) {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -1532,7 +1351,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_mct_and_rgb_store_kernels_match_reversible_cpu_transform_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -1616,7 +1435,7 @@ fn cuda_mct_and_rgb_store_kernels_match_reversible_cpu_transform_when_required()
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_gray16_and_rgb16_store_kernels_match_cpu_scaling_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 

@@ -18,7 +18,9 @@ use super::roi::RoiPlan;
 use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
 use super::{bitplane, build, idwt, mct, segment, tile, ComponentData};
-use crate::error::{bail, ColorError, DecodingError, Result, TileError};
+use crate::error::{
+    bail, ColorError, DecodingError, DirectPlanUnsupportedReason, Result, TileError,
+};
 use crate::j2c::segment::MAX_BITPLANE_COUNT;
 use crate::math::SimdBuffer;
 use crate::profile;
@@ -109,15 +111,15 @@ pub(crate) fn build_direct_grayscale_plan<'a>(
     let tiles = tile::parse(&mut reader, header)?;
 
     if tiles.len() != 1 {
-        bail!(DecodingError::UnsupportedFeature(
-            "direct grayscale plan only supports single-tile codestreams"
+        bail!(DecodingError::DirectPlanUnsupported(
+            DirectPlanUnsupportedReason::GrayscaleSingleTileCodestream
         ));
     }
 
     let tile = &tiles[0];
     if tile.component_infos.len() != 1 {
-        bail!(DecodingError::UnsupportedFeature(
-            "direct grayscale plan only supports single-component codestreams"
+        bail!(DecodingError::DirectPlanUnsupported(
+            DirectPlanUnsupportedReason::GrayscaleSingleComponentCodestream
         ));
     }
     ctx.tile_decode_context.channel_data.clear();
@@ -149,15 +151,15 @@ pub(crate) fn build_direct_color_plan<'a>(
     let tiles = tile::parse(&mut reader, header)?;
 
     if tiles.len() != 1 {
-        bail!(DecodingError::UnsupportedFeature(
-            "direct color plan only supports single-tile codestreams"
+        bail!(DecodingError::DirectPlanUnsupported(
+            DirectPlanUnsupportedReason::ColorSingleTileCodestream
         ));
     }
 
     let tile = &tiles[0];
     if tile.component_infos.len() != 3 {
-        bail!(DecodingError::UnsupportedFeature(
-            "direct color plan only supports three-component RGB codestreams"
+        bail!(DecodingError::DirectPlanUnsupported(
+            DirectPlanUnsupportedReason::ColorThreeComponentRgbCodestream
         ));
     }
     let transform = tile.component_infos[0].wavelet_transform();
@@ -219,24 +221,22 @@ fn build_component_plan_from_storage(
     let component_info =
         tile.component_infos
             .get(component_idx)
-            .ok_or(DecodingError::UnsupportedFeature(
-                "direct component plan index is out of range",
+            .ok_or(DecodingError::DirectPlanUnsupported(
+                DirectPlanUnsupportedReason::ComponentIndexOutOfRange,
             ))?;
     if component_info.size_info.horizontal_resolution != 1
         || component_info.size_info.vertical_resolution != 1
     {
-        bail!(DecodingError::UnsupportedFeature(
-            "direct component plan only supports unit-sampled components"
+        bail!(DecodingError::DirectPlanUnsupported(
+            DirectPlanUnsupportedReason::ComponentUnitSampled
         ));
     }
 
-    let tile_decompositions =
-        storage
-            .tile_decompositions
-            .get(component_idx)
-            .ok_or(DecodingError::UnsupportedFeature(
-                "direct component decomposition index is out of range",
-            ))?;
+    let tile_decompositions = storage.tile_decompositions.get(component_idx).ok_or(
+        DecodingError::DirectPlanUnsupported(
+            DirectPlanUnsupportedReason::ComponentDecompositionIndexOutOfRange,
+        ),
+    )?;
     let decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
     let active_decomposition_count = decompositions
         .len()
@@ -1505,6 +1505,61 @@ struct DecodedHtBlock {
     coefficients: Vec<f32>,
 }
 
+#[cfg(feature = "parallel")]
+trait DecodedSubBandBlock {
+    fn output_x(&self) -> u32;
+    fn output_y(&self) -> u32;
+    fn width(&self) -> u32;
+    fn height(&self) -> u32;
+    fn coefficients(&self) -> &[f32];
+}
+
+#[cfg(feature = "parallel")]
+impl DecodedSubBandBlock for DecodedClassicBlock {
+    fn output_x(&self) -> u32 {
+        self.output_x
+    }
+
+    fn output_y(&self) -> u32 {
+        self.output_y
+    }
+
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn coefficients(&self) -> &[f32] {
+        &self.coefficients
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl DecodedSubBandBlock for DecodedHtBlock {
+    fn output_x(&self) -> u32 {
+        self.output_x
+    }
+
+    fn output_y(&self) -> u32 {
+        self.output_y
+    }
+
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn coefficients(&self) -> &[f32] {
+        &self.coefficients
+    }
+}
+
 fn count_classic_code_blocks(
     sub_band_idx: usize,
     sub_band: &SubBand,
@@ -1731,25 +1786,36 @@ fn copy_decoded_classic_blocks_to_sub_band(
     sub_band: &SubBand,
     storage: &mut DecompositionStorage<'_>,
 ) -> Result<()> {
+    copy_decoded_blocks_to_sub_band(decoded_blocks, sub_band, storage)
+}
+
+#[cfg(feature = "parallel")]
+fn copy_decoded_blocks_to_sub_band<B: DecodedSubBandBlock>(
+    decoded_blocks: &[B],
+    sub_band: &SubBand,
+    storage: &mut DecompositionStorage<'_>,
+) -> Result<()> {
     let sub_band_width = sub_band.rect.width() as usize;
     let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
     for block in decoded_blocks {
-        if block
-            .output_x
-            .checked_add(block.width)
+        let output_x = block.output_x();
+        let output_y = block.output_y();
+        let width = block.width();
+        let height = block.height();
+        if output_x
+            .checked_add(width)
             .is_none_or(|x1| x1 > sub_band.rect.width())
-            || block
-                .output_y
-                .checked_add(block.height)
+            || output_y
+                .checked_add(height)
                 .is_none_or(|y1| y1 > sub_band.rect.height())
         {
             bail!(DecodingError::CodeBlockDecodeFailure);
         }
-        let block_width = block.width as usize;
-        for row in 0..block.height as usize {
-            let dst_start = (block.output_y as usize + row)
+        let block_width = width as usize;
+        for row in 0..height as usize {
+            let dst_start = (output_y as usize + row)
                 .checked_mul(sub_band_width)
-                .and_then(|offset| offset.checked_add(block.output_x as usize))
+                .and_then(|offset| offset.checked_add(output_x as usize))
                 .ok_or(DecodingError::CodeBlockDecodeFailure)?;
             let dst_end = dst_start
                 .checked_add(block_width)
@@ -1760,7 +1826,8 @@ fn copy_decoded_classic_blocks_to_sub_band(
             let src_end = src_start
                 .checked_add(block_width)
                 .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            base_store[dst_start..dst_end].copy_from_slice(&block.coefficients[src_start..src_end]);
+            base_store[dst_start..dst_end]
+                .copy_from_slice(&block.coefficients()[src_start..src_end]);
         }
     }
     Ok(())
@@ -1824,39 +1891,7 @@ fn copy_decoded_ht_blocks_to_sub_band(
     sub_band: &SubBand,
     storage: &mut DecompositionStorage<'_>,
 ) -> Result<()> {
-    let sub_band_width = sub_band.rect.width() as usize;
-    let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
-    for block in decoded_blocks {
-        if block
-            .output_x
-            .checked_add(block.width)
-            .is_none_or(|x1| x1 > sub_band.rect.width())
-            || block
-                .output_y
-                .checked_add(block.height)
-                .is_none_or(|y1| y1 > sub_band.rect.height())
-        {
-            bail!(DecodingError::CodeBlockDecodeFailure);
-        }
-        let block_width = block.width as usize;
-        for row in 0..block.height as usize {
-            let dst_start = (block.output_y as usize + row)
-                .checked_mul(sub_band_width)
-                .and_then(|offset| offset.checked_add(block.output_x as usize))
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            let dst_end = dst_start
-                .checked_add(block_width)
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            let src_start = row
-                .checked_mul(block_width)
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            let src_end = src_start
-                .checked_add(block_width)
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            base_store[dst_start..dst_end].copy_from_slice(&block.coefficients[src_start..src_end]);
-        }
-    }
-    Ok(())
+    copy_decoded_blocks_to_sub_band(decoded_blocks, sub_band, storage)
 }
 
 fn decode_sub_band_ht_blocks_i64(
@@ -2643,6 +2678,8 @@ fn store_region<'a>(
 mod tests {
     use super::{collect_classic_code_block_data, CodeBlock, DecompositionStorage, Layer, Segment};
     use crate::error::DecodingError;
+    #[cfg(feature = "parallel")]
+    use crate::j2c::build::{SubBand, SubBandType};
     use crate::j2c::codestream::CodeBlockStyle;
     use crate::j2c::rect::IntRect;
     use alloc::vec;
@@ -2745,6 +2782,86 @@ mod tests {
             &storage,
         )
         .expect_err("non-contiguous segment indices must fail");
+
+        assert_eq!(error, DecodingError::CodeBlockDecodeFailure.into());
+    }
+
+    #[cfg(feature = "parallel")]
+    fn copyback_test_sub_band(width: u32, height: u32) -> (SubBand, DecompositionStorage<'static>) {
+        let len = (width * height) as usize;
+        let storage = DecompositionStorage {
+            coefficients: vec![-1.0; len],
+            ..DecompositionStorage::default()
+        };
+        let sub_band = SubBand {
+            sub_band_type: SubBandType::LowLow,
+            rect: IntRect::from_xywh(0, 0, width, height),
+            precincts: 0..0,
+            coefficients: 0..len,
+        };
+        (sub_band, storage)
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn decoded_classic_block_copyback_covers_full_block() {
+        let (sub_band, mut storage) = copyback_test_sub_band(4, 3);
+        let block = super::DecodedClassicBlock {
+            output_x: 0,
+            output_y: 0,
+            width: 4,
+            height: 3,
+            coefficients: (0..12).map(|value| value as f32).collect(),
+        };
+
+        super::copy_decoded_classic_blocks_to_sub_band(&[block], &sub_band, &mut storage)
+            .expect("full classic block copyback");
+
+        assert_eq!(
+            storage.coefficients,
+            (0..12).map(|value| value as f32).collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn decoded_ht_block_copyback_covers_partial_edge_block() {
+        let (sub_band, mut storage) = copyback_test_sub_band(5, 3);
+        let block = super::DecodedHtBlock {
+            output_x: 3,
+            output_y: 1,
+            width: 2,
+            height: 2,
+            coefficients: vec![1.0, 2.0, 3.0, 4.0],
+        };
+
+        super::copy_decoded_ht_blocks_to_sub_band(&[block], &sub_band, &mut storage)
+            .expect("partial HT block copyback");
+
+        assert_eq!(
+            storage.coefficients,
+            vec![
+                -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 2.0, -1.0, -1.0, -1.0, 3.0,
+                4.0,
+            ]
+        );
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn decoded_block_copyback_rejects_out_of_bounds_blocks() {
+        let (sub_band, mut storage) = copyback_test_sub_band(5, 3);
+        let block = super::DecodedClassicBlock {
+            output_x: 4,
+            output_y: 1,
+            width: 2,
+            height: 1,
+            coefficients: vec![1.0, 2.0],
+        };
+
+        let error =
+            super::copy_decoded_classic_blocks_to_sub_band(&[block], &sub_band, &mut storage)
+                .expect_err("out-of-bounds block must fail");
 
         assert_eq!(error, DecodingError::CodeBlockDecodeFailure.into());
     }

@@ -7,17 +7,6 @@ use crate::jp2::ImageBoxes;
 use crate::reader::BitReader;
 
 pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
-    if boxes.color_specification.is_some() {
-        // "A JP2 file may contain multiple Colour Specification boxes, but
-        // must contain at least one, specifying different methods
-        // for achieving "equivalent" results. A conforming JP2 reader shall
-        // ignore all Colour Specification boxes after the first.
-        // However, readers conforming to other standards may use those boxes as
-        // defined in those other standards."
-
-        return Ok(());
-    }
-
     let mut reader = BitReader::new(data);
 
     let meth = reader.read_byte().ok_or(FormatError::InvalidBox)?;
@@ -25,9 +14,11 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
     let _prec = reader.read_byte().ok_or(FormatError::InvalidBox)?;
     let _approx = reader.read_byte().ok_or(FormatError::InvalidBox)?;
 
+    let mut enumerated_value = None;
     let method = match meth {
         1 => {
             let enumerated = reader.read_u32().ok_or(FormatError::InvalidBox)?;
+            enumerated_value = Some(enumerated);
             ColorSpace::Enumerated(
                 EnumeratedColorspace::from_raw(enumerated, &mut reader)
                     .ok_or(FormatError::InvalidBox)?,
@@ -40,15 +31,27 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
         _ => ColorSpace::Unknown,
     };
 
-    boxes.color_specification = Some(ColorSpecificationBox {
+    let parsed = ColorSpecificationBox {
+        method: meth,
+        enumerated_value,
         color_space: method,
-    });
+    };
+    if boxes.color_specification.is_none() {
+        // "A JP2 file may contain multiple Colour Specification boxes, but
+        // must contain at least one, specifying different methods
+        // for achieving "equivalent" results. A conforming JP2 reader shall
+        // ignore all Colour Specification boxes after the first.
+        boxes.color_specification = Some(parsed.clone());
+    }
+    boxes.color_specifications.push(parsed);
 
     Ok(())
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ColorSpecificationBox {
+    pub(crate) method: u8,
+    pub(crate) enumerated_value: Option<u32>,
     pub(crate) color_space: ColorSpace,
 }
 

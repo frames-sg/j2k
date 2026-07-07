@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Optional acceleration hooks for coefficient-domain transform stages.
-//!
-//! These hooks are intentionally narrow: accelerated backends may replace the
-//! direct DCT-grid to one-level wavelet projection, while the scalar path
-//! remains the default oracle and fallback.
+// Optional acceleration hooks for coefficient-domain transform stages.
+//
+// These hooks are intentionally narrow: accelerated backends may replace the
+// direct DCT-grid to one-level wavelet projection, while the scalar path
+// remains the default oracle and fallback.
 
 use core::fmt;
 
-use crate::dct53_2d::Dwt53TwoDimensional;
-use crate::dct97_2d::Dwt97TwoDimensional;
 use crate::dct_grid::validate_dct_block_grid;
 use crate::reversible53::{
     reversible_lift_53_high_at, reversible_lift_53_i32, reversible_lift_53_low_at,
 };
-pub use j2k::adapter::encode_stage::{
+pub use j2k::{
     EncodedHtJ2kCodeBlock, IrreversibleQuantizationSubbandScales, J2kSubBandType,
     PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
     PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
@@ -227,6 +225,194 @@ pub struct Dwt97BatchStageTimings {
     pub readback_bytes: u64,
 }
 
+/// Counter row recorded by DCT-to-wavelet stage accelerators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DctToWaveletStageCounterEvent {
+    /// One reversible integer 5/3 job was offered to the accelerator.
+    ReversibleDwt53Attempt,
+    /// One reversible integer 5/3 job was handled by the accelerator.
+    ReversibleDwt53Dispatch,
+    /// One reversible integer 5/3 batch was offered to the accelerator.
+    ReversibleDwt53BatchAttempt,
+    /// One reversible integer 5/3 batch was handled by the accelerator.
+    ReversibleDwt53BatchDispatch,
+    /// One 5/3 projection job was offered to the accelerator.
+    Dwt53Attempt,
+    /// One 5/3 projection job was handled by the accelerator.
+    Dwt53Dispatch,
+    /// One 9/7 transform job was offered to the accelerator.
+    Dwt97Attempt,
+    /// One 9/7 transform job was handled by the accelerator.
+    Dwt97Dispatch,
+    /// One same-geometry 9/7 transform batch was offered to the accelerator.
+    Dwt97BatchAttempt,
+    /// One same-geometry 9/7 transform batch was handled by the accelerator.
+    Dwt97BatchDispatch,
+    /// One 9/7 code-block-ready batch was offered to the accelerator.
+    Htj2k97CodeblockBatchAttempt,
+    /// One 9/7 code-block-ready batch was handled by the accelerator.
+    Htj2k97CodeblockBatchDispatch,
+}
+
+/// Shared offered/handled counters for DCT-to-wavelet stage accelerators.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DctToWaveletStageCounters {
+    reversible_dwt53_attempts: usize,
+    reversible_dwt53_dispatches: usize,
+    reversible_dwt53_batch_attempts: usize,
+    reversible_dwt53_batch_dispatches: usize,
+    dwt53_attempts: usize,
+    dwt53_dispatches: usize,
+    dwt97_attempts: usize,
+    dwt97_dispatches: usize,
+    dwt97_batch_attempts: usize,
+    dwt97_batch_dispatches: usize,
+    htj2k97_codeblock_batch_attempts: usize,
+    htj2k97_codeblock_batch_dispatches: usize,
+}
+
+impl DctToWaveletStageCounters {
+    /// Create an empty counter set.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            reversible_dwt53_attempts: 0,
+            reversible_dwt53_dispatches: 0,
+            reversible_dwt53_batch_attempts: 0,
+            reversible_dwt53_batch_dispatches: 0,
+            dwt53_attempts: 0,
+            dwt53_dispatches: 0,
+            dwt97_attempts: 0,
+            dwt97_dispatches: 0,
+            dwt97_batch_attempts: 0,
+            dwt97_batch_dispatches: 0,
+            htj2k97_codeblock_batch_attempts: 0,
+            htj2k97_codeblock_batch_dispatches: 0,
+        }
+    }
+
+    /// Number of reversible integer 5/3 jobs offered to this accelerator.
+    #[must_use]
+    pub const fn reversible_dwt53_attempts(&self) -> usize {
+        self.reversible_dwt53_attempts
+    }
+
+    /// Number of reversible integer 5/3 jobs handled by this accelerator.
+    #[must_use]
+    pub const fn reversible_dwt53_dispatches(&self) -> usize {
+        self.reversible_dwt53_dispatches
+    }
+
+    /// Number of reversible integer 5/3 batches offered to this accelerator.
+    #[must_use]
+    pub const fn reversible_dwt53_batch_attempts(&self) -> usize {
+        self.reversible_dwt53_batch_attempts
+    }
+
+    /// Number of reversible integer 5/3 batches handled by this accelerator.
+    #[must_use]
+    pub const fn reversible_dwt53_batch_dispatches(&self) -> usize {
+        self.reversible_dwt53_batch_dispatches
+    }
+
+    /// Number of 5/3 projection jobs offered to this accelerator.
+    #[must_use]
+    pub const fn dwt53_attempts(&self) -> usize {
+        self.dwt53_attempts
+    }
+
+    /// Number of 5/3 projection jobs handled by this accelerator.
+    #[must_use]
+    pub const fn dwt53_dispatches(&self) -> usize {
+        self.dwt53_dispatches
+    }
+
+    /// Number of 9/7 transform jobs offered to this accelerator.
+    #[must_use]
+    pub const fn dwt97_attempts(&self) -> usize {
+        self.dwt97_attempts
+    }
+
+    /// Number of 9/7 transform jobs handled by this accelerator.
+    #[must_use]
+    pub const fn dwt97_dispatches(&self) -> usize {
+        self.dwt97_dispatches
+    }
+
+    /// Number of 9/7 transform batches offered to this accelerator.
+    #[must_use]
+    pub const fn dwt97_batch_attempts(&self) -> usize {
+        self.dwt97_batch_attempts
+    }
+
+    /// Number of 9/7 transform batches handled by this accelerator.
+    #[must_use]
+    pub const fn dwt97_batch_dispatches(&self) -> usize {
+        self.dwt97_batch_dispatches
+    }
+
+    /// Number of 9/7 code-block-ready batches offered to this accelerator.
+    #[must_use]
+    pub const fn htj2k97_codeblock_batch_attempts(&self) -> usize {
+        self.htj2k97_codeblock_batch_attempts
+    }
+
+    /// Number of 9/7 code-block-ready batches handled by this accelerator.
+    #[must_use]
+    pub const fn htj2k97_codeblock_batch_dispatches(&self) -> usize {
+        self.htj2k97_codeblock_batch_dispatches
+    }
+
+    /// Record one or more accelerator counter events.
+    pub fn record(&mut self, event: DctToWaveletStageCounterEvent, count: usize) {
+        match event {
+            DctToWaveletStageCounterEvent::ReversibleDwt53Attempt => {
+                self.reversible_dwt53_attempts =
+                    self.reversible_dwt53_attempts.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::ReversibleDwt53Dispatch => {
+                self.reversible_dwt53_dispatches =
+                    self.reversible_dwt53_dispatches.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::ReversibleDwt53BatchAttempt => {
+                self.reversible_dwt53_batch_attempts =
+                    self.reversible_dwt53_batch_attempts.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::ReversibleDwt53BatchDispatch => {
+                self.reversible_dwt53_batch_dispatches =
+                    self.reversible_dwt53_batch_dispatches.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::Dwt53Attempt => {
+                self.dwt53_attempts = self.dwt53_attempts.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::Dwt53Dispatch => {
+                self.dwt53_dispatches = self.dwt53_dispatches.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::Dwt97Attempt => {
+                self.dwt97_attempts = self.dwt97_attempts.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::Dwt97Dispatch => {
+                self.dwt97_dispatches = self.dwt97_dispatches.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::Dwt97BatchAttempt => {
+                self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::Dwt97BatchDispatch => {
+                self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::Htj2k97CodeblockBatchAttempt => {
+                self.htj2k97_codeblock_batch_attempts =
+                    self.htj2k97_codeblock_batch_attempts.saturating_add(count);
+            }
+            DctToWaveletStageCounterEvent::Htj2k97CodeblockBatchDispatch => {
+                self.htj2k97_codeblock_batch_dispatches = self
+                    .htj2k97_codeblock_batch_dispatches
+                    .saturating_add(count);
+            }
+        }
+    }
+}
+
 /// Error returned by accelerated transcode stage backends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TranscodeStageError {
@@ -254,6 +440,56 @@ impl std::error::Error for TranscodeStageError {}
 impl From<&'static str> for TranscodeStageError {
     fn from(reason: &'static str) -> Self {
         Self::Unsupported(reason)
+    }
+}
+
+/// Dispatch policy for optional transcode-stage accelerators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscodeStageDispatchMode {
+    /// Treat unavailable or unsupported backend dispatch as an error.
+    Explicit,
+    /// Decline unavailable or unsupported backend dispatch with `Ok(None)` so
+    /// callers can use the scalar fallback.
+    Auto,
+}
+
+impl TranscodeStageDispatchMode {
+    /// Whether this mode allows scalar fallback for recoverable backend
+    /// declines.
+    #[must_use]
+    pub const fn is_auto(self) -> bool {
+        matches!(self, Self::Auto)
+    }
+
+    /// Outcome for a job that the backend cannot serve because it is
+    /// unavailable on the current host.
+    #[doc(hidden)]
+    pub const fn unavailable<T>(self) -> Result<Option<T>, TranscodeStageError> {
+        match self {
+            Self::Explicit => Err(TranscodeStageError::DeviceUnavailable),
+            Self::Auto => Ok(None),
+        }
+    }
+
+    /// Convert a backend dispatch error into the trait outcome for this mode.
+    ///
+    /// Auto mode recovers from backend-declared recoverable errors with
+    /// `Ok(None)`; Explicit mode and hard errors propagate as
+    /// [`TranscodeStageError`].
+    #[doc(hidden)]
+    pub fn recover<T, E>(
+        self,
+        error: E,
+        is_recoverable: impl FnOnce(&E) -> bool,
+    ) -> Result<Option<T>, TranscodeStageError>
+    where
+        E: Into<TranscodeStageError>,
+    {
+        if self.is_auto() && is_recoverable(&error) {
+            Ok(None)
+        } else {
+            Err(error.into())
+        }
     }
 }
 
@@ -438,6 +674,7 @@ pub trait DctToWaveletStageAccelerator {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CpuOnlyDctToWaveletStageAccelerator;
 
+#[doc(hidden)]
 impl DctToWaveletStageAccelerator for CpuOnlyDctToWaveletStageAccelerator {}
 
 /// CPU/Rayon accelerator for the exact reversible integer 5/3 first level.
@@ -479,6 +716,7 @@ impl RayonReversibleDwt53Accelerator {
     }
 }
 
+#[doc(hidden)]
 impl DctToWaveletStageAccelerator for RayonReversibleDwt53Accelerator {
     fn dct_grid_to_reversible_dwt53(
         &mut self,
@@ -507,8 +745,9 @@ impl DctToWaveletStageAccelerator for RayonReversibleDwt53Accelerator {
 /// Decode the job's dequantized DCT blocks into j2k's signed integer
 /// component sample blocks.
 ///
-/// This is public so hybrid GPU backends can keep JPEG parsing and exact IDCT
-/// on CPU while offloading the reversible 5/3 projection.
+/// This is source-visible so hybrid GPU backends can keep JPEG parsing and
+/// exact IDCT on CPU while offloading the reversible 5/3 projection.
+#[doc(hidden)]
 pub fn idct_blocks_to_signed_samples_rayon(blocks: &[[i16; 64]]) -> Vec<[i32; 64]> {
     blocks
         .par_iter()
@@ -521,7 +760,7 @@ pub fn idct_blocks_to_signed_samples_rayon(blocks: &[[i16; 64]]) -> Vec<[i32; 64
 
 /// Compute one exact reversible integer 5/3 level from already decoded
 /// block-local signed samples.
-pub fn reversible_dwt53_first_level_from_block_samples(
+pub(crate) fn reversible_dwt53_first_level_from_block_samples(
     block_samples: &[[i32; 64]],
     block_cols: usize,
     block_rows: usize,

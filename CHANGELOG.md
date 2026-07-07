@@ -29,7 +29,7 @@ Breaking public API cleanup; the next release from this line must bump to
   GPU-ABI byte-view wrappers, and collapses repeated classic Tier-1
   profiling-label chains in `j2k-metal`.
 
-## [0.6.2]
+## [0.6.2] - 2026-06-28
 
 - Defines the public codec claim as JPEG 2000 Part 1 codestream support, JP2
   still-image wrapping, HTJ2K Part 15 support, and JPH wrapping, with
@@ -58,7 +58,13 @@ Breaking public API cleanup; the next release from this line must bump to
 - Refreshes adoption-facing docs with a shorter quickstart, support matrix, and
   current `0.6.x` security/environment-variable line.
 
-## [0.6.0]
+## [0.6.1] - 2026-06-22
+
+- Refreshes public package metadata, docs.rs landing text, and README search
+  signals for the `j2k` rename, Rust programming language discovery, and
+  CUDA/Metal GPU JPEG 2000 / HTJ2K queries.
+
+## [0.6.0] - 2026-06-20
 
 - Stages the `j2k` facade release.
 - Keeps CPU decode as the portable correctness baseline.

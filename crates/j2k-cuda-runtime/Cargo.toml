@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-include = ["Cargo.toml", "README.md", "build.rs", "docs/**", "src/**"]
+include = ["Cargo.toml", "README.md", "build.rs", "src/**"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -44,9 +44,13 @@ cuda-oxide-jpeg-decode = []
 cuda-oxide-jpeg-encode = []
 
 [dependencies]
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.6.2" }
 j2k-core = { path = "../j2k-core", version = "=0.6.2" }
 libloading = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+j2k-test-support = { path = "../j2k-test-support" }
 
 [lints.rust]
 unsafe_code = "allow"

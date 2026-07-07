@@ -55,6 +55,7 @@ pub struct MetalLosslessEncodeResidency {
 /// API note: this diagnostic report is constructed by this crate. It is not
 /// `#[non_exhaustive]`, but adapter releases may add diagnostic fields as the
 /// resident encode path gains more profiling detail.
+#[doc(hidden)]
 pub struct MetalLosslessEncodeOutcome {
     /// Encoded J2K codestream.
     pub encoded: EncodedJ2k,
@@ -75,6 +76,7 @@ pub struct MetalLosslessEncodeOutcome {
 }
 
 /// Metal lossless encode report for buffer-backed codestream output.
+#[doc(hidden)]
 pub struct MetalLosslessBufferEncodeOutcome {
     /// Encoded codestream stored in a Metal buffer.
     pub encoded: MetalEncodedJ2k,

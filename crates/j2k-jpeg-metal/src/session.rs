@@ -3,25 +3,112 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use j2k_core::BackendRequest;
+use j2k_core::{BackendKind, BackendRequest};
 use j2k_jpeg::adapter::{
     build_fast420_packet, build_fast422_packet, build_fast444_packet, JpegFast420PacketV1,
     JpegFast422PacketV1, JpegFast444PacketV1,
 };
+#[cfg(target_os = "macos")]
+use j2k_metal_support::{MetalRuntimeSession, MetalSupportError};
+#[cfg(target_os = "macos")]
+use metal::Device;
 
+#[cfg(target_os = "macos")]
+use crate::compute;
 use crate::{batch, Error};
 
 const BATCH_SHAPE_CACHE_SLOTS: usize = 8;
 const FAST_PACKET_CACHE_SLOTS: usize = 8;
 const INPUT_ALIAS_CACHE_SLOTS: usize = 8;
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 
 pub(crate) type SharedFastPackets = (
     Option<Arc<JpegFast444PacketV1>>,
     Option<Arc<JpegFast422PacketV1>>,
     Option<Arc<JpegFast420PacketV1>>,
 );
+
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+/// Reusable Metal device session for decode and encode submissions.
+pub struct MetalBackendSession {
+    runtime_session: MetalRuntimeSession<compute::MetalRuntime, MetalSupportError>,
+}
+
+#[cfg(target_os = "macos")]
+impl MetalBackendSession {
+    /// Create a session bound to an existing Metal device.
+    pub fn new(device: Device) -> Self {
+        Self {
+            runtime_session: MetalRuntimeSession::new(device),
+        }
+    }
+
+    /// Create a session from the system default Metal device.
+    pub fn system_default() -> Result<Self, Error> {
+        MetalRuntimeSession::system_default()
+            .map(|runtime_session| Self { runtime_session })
+            .map_err(|error| compute::runtime_initialization_error(&error))
+    }
+
+    /// Metal device used by this session.
+    pub fn device(&self) -> &metal::DeviceRef {
+        self.runtime_session.device()
+    }
+
+    pub(crate) fn runtime_result(&self) -> &Result<compute::MetalRuntime, MetalSupportError> {
+        self.runtime_session
+            .get_or_init_runtime(|device| compute::MetalRuntime::new_with_device(device.clone()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_initialized_for_test(&self) -> bool {
+        self.runtime_session.runtime_initialized()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_ptr_for_test(&self) -> Option<*const compute::MetalRuntime> {
+        self.runtime_session
+            .runtime_result()
+            .and_then(|runtime| runtime.as_ref().ok())
+            .map(std::ptr::from_ref::<compute::MetalRuntime>)
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+impl j2k_core::AcceleratorSession for MetalBackendSession {
+    fn backend_kind(&self) -> BackendKind {
+        BackendKind::Metal
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl core::fmt::Debug for MetalBackendSession {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MetalBackendSession")
+            .field("device", &self.runtime_session.device_handle().name())
+            .field(
+                "runtime_initialized",
+                &self.runtime_session.runtime_initialized(),
+            )
+            .finish()
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[derive(Clone, Copy, Debug, Default)]
+/// Placeholder Metal session for non-macOS builds.
+pub struct MetalBackendSession {
+    _private: (),
+}
+
+#[cfg(not(target_os = "macos"))]
+impl MetalBackendSession {
+    /// Return `Error::MetalUnavailable` on hosts without Metal support.
+    pub fn system_default() -> Result<Self, Error> {
+        Err(Error::MetalUnavailable)
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct CachedBatchShape {
@@ -53,7 +140,7 @@ pub(crate) struct SessionState {
     pub(crate) queued: Vec<crate::batch::QueuedRequest>,
     pub(crate) completed: Vec<Option<Result<crate::Surface, crate::Error>>>,
     #[cfg(target_os = "macos")]
-    pub(crate) backend_session: Option<crate::MetalBackendSession>,
+    pub(crate) backend_session: Option<MetalBackendSession>,
     batch_shapes: VecDeque<CachedBatchShape>,
     fast_packets: VecDeque<CachedFastPackets>,
     input_aliases: VecDeque<CachedInputAlias>,
@@ -61,7 +148,7 @@ pub(crate) struct SessionState {
 
 impl SessionState {
     #[cfg(target_os = "macos")]
-    pub(crate) fn with_backend_session(backend_session: crate::MetalBackendSession) -> Self {
+    pub(crate) fn with_backend_session(backend_session: MetalBackendSession) -> Self {
         Self {
             backend_session: Some(backend_session),
             ..Self::default()
@@ -233,9 +320,9 @@ impl SessionState {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn backend_session(&mut self) -> Result<&crate::MetalBackendSession, Error> {
+    pub(crate) fn backend_session(&mut self) -> Result<&MetalBackendSession, Error> {
         if self.backend_session.is_none() {
-            self.backend_session = Some(crate::MetalBackendSession::system_default()?);
+            self.backend_session = Some(MetalBackendSession::system_default()?);
         }
         Ok(self
             .backend_session
@@ -255,13 +342,39 @@ impl SharedSession {
     }
 }
 
-fn digest_bytes(bytes: &[u8]) -> u64 {
-    let mut hash = FNV_OFFSET;
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
+#[derive(Default)]
+/// Shared batching session used by `JpegTileBatch` and submit APIs.
+pub struct MetalSession {
+    pub(crate) shared: SharedSession,
+}
+
+impl MetalSession {
+    /// Create a tile batching session that reuses an existing Metal backend session.
+    #[cfg(target_os = "macos")]
+    pub fn with_backend_session(backend_session: MetalBackendSession) -> Self {
+        Self {
+            shared: SharedSession(Arc::new(Mutex::new(SessionState::with_backend_session(
+                backend_session,
+            )))),
+        }
     }
-    hash
+
+    /// Number of Metal or emulated submissions flushed through this session.
+    pub fn submissions(&self) -> Result<u64, Error> {
+        Ok(self.shared.lock()?.submissions)
+    }
+}
+
+impl core::fmt::Debug for MetalSession {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MetalSession")
+            .field("submissions", &self.submissions())
+            .finish()
+    }
+}
+
+fn digest_bytes(bytes: &[u8]) -> u64 {
+    j2k_core::__j2k_fnv1a64_bytes!(bytes)
 }
 
 #[cfg(test)]

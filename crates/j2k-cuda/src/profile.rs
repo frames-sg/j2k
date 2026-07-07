@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use core::fmt::Write as _;
-use std::cell::RefCell;
+use std::{cell::RefCell, fs::OpenOptions, io::Write as _, path::PathBuf};
 
 use j2k_core::BackendKind;
 use j2k_profile::{ProfileStageMode, StageModeCache};
@@ -19,6 +19,7 @@ thread_local! {
 /// Detailed route-overhead timings for strict CUDA HTJ2K decode.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
+#[doc(hidden)]
 pub struct CudaHtj2kDecodeProfileDetail {
     /// End-to-end profiled decode wall time.
     pub wall_total_us: u128,
@@ -61,6 +62,7 @@ impl CudaHtj2kDecodeProfileDetail {
 /// Structured stage timings for a strict CUDA HTJ2K operation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
+#[doc(hidden)]
 pub struct CudaHtj2kProfileReport {
     /// CPU marker/box parse time.
     pub parse_us: u128,
@@ -106,7 +108,7 @@ impl CudaHtj2kProfileReport {
     }
 
     /// Emit the report using `J2K_PROFILE_STAGES`, when enabled.
-    pub fn emit(&self, path: &str) {
+    pub(crate) fn emit(&self, path: &str) {
         emit_htj2k_profile_row(path, self);
         export_trace_if_requested(path, self);
     }
@@ -115,6 +117,7 @@ impl CudaHtj2kProfileReport {
 /// Structured stage timings for a strict CUDA HTJ2K encode operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[doc(hidden)]
 pub struct CudaHtj2kEncodeProfileReport {
     /// Pixel deinterleave and level-shift CUDA stage time.
     pub deinterleave_us: u128,
@@ -169,7 +172,7 @@ impl CudaHtj2kEncodeProfileReport {
     }
 
     /// Emit the report using `J2K_PROFILE_STAGES`, when enabled.
-    pub fn emit(&self, path: &str) {
+    pub(crate) fn emit(&self, path: &str) {
         emit_htj2k_encode_profile_row(path, self);
         export_encode_trace_if_requested(path, self);
     }
@@ -324,16 +327,34 @@ fn export_trace_if_requested(path: &str, report: &CudaHtj2kProfileReport) {
     let Some(trace_path) = std::env::var_os(CUDA_TRACE_ENV_VAR) else {
         return;
     };
+    let trace_path = PathBuf::from(trace_path);
     let trace = chrome_trace_json(path, report);
-    if let Err(error) = std::fs::write(&trace_path, trace) {
-        let error = error.to_string();
-        j2k_profile::emit_profile_row_now(
-            "j2k",
-            "cuda_htj2k_trace",
-            "cuda",
-            &[("error", error.as_str())],
-        );
+    if let Err(error) = write_trace_file(&trace_path, &trace) {
+        emit_trace_write_failure("cuda_htj2k_trace", &trace_path, &error);
     }
+}
+
+fn write_trace_file(path: &std::path::Path, trace: &str) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(trace.as_bytes())
+}
+
+fn emit_trace_write_failure(
+    op: &'static str,
+    trace_path: &std::path::Path,
+    error: &std::io::Error,
+) {
+    let trace_path = trace_path.to_string_lossy();
+    let error = error.to_string();
+    j2k_profile::emit_profile_row_now(
+        "j2k",
+        op,
+        "cuda",
+        &[
+            ("trace_path", trace_path.as_ref()),
+            ("error", error.as_str()),
+        ],
+    );
 }
 
 fn chrome_trace_json(path: &str, report: &CudaHtj2kProfileReport) -> String {
@@ -377,15 +398,10 @@ fn export_encode_trace_if_requested(path: &str, report: &CudaHtj2kEncodeProfileR
     let Some(trace_path) = std::env::var_os(CUDA_TRACE_ENV_VAR) else {
         return;
     };
+    let trace_path = PathBuf::from(trace_path);
     let trace = chrome_encode_trace_json(path, report);
-    if let Err(error) = std::fs::write(&trace_path, trace) {
-        let error = error.to_string();
-        j2k_profile::emit_profile_row_now(
-            "j2k",
-            "cuda_htj2k_encode_trace",
-            "cuda",
-            &[("error", error.as_str())],
-        );
+    if let Err(error) = write_trace_file(&trace_path, &trace) {
+        emit_trace_write_failure("cuda_htj2k_encode_trace", &trace_path, &error);
     }
 }
 
@@ -419,10 +435,17 @@ fn chrome_encode_trace_json(path: &str, report: &CudaHtj2kEncodeProfileReport) -
 mod tests {
     use super::{
         add_payload_resource_upload_us, chrome_encode_trace_json, chrome_trace_json,
-        finalize_decode_total_us, CudaHtj2kDecodeProfileDetail, CudaHtj2kEncodeProfileReport,
-        CudaHtj2kProfileReport,
+        finalize_decode_total_us, write_trace_file, CudaHtj2kDecodeProfileDetail,
+        CudaHtj2kEncodeProfileReport, CudaHtj2kProfileReport,
     };
     use j2k_core::BackendKind;
+    use std::{
+        fs,
+        io::ErrorKind,
+        path::PathBuf,
+        process,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use crate::SurfaceResidency;
 
@@ -584,5 +607,39 @@ mod tests {
         assert!(trace.contains("\"ts\":0,\"dur\":11"));
         assert!(trace.contains("\"ts\":65,\"dur\":16"));
         assert!(trace.ends_with("]}"));
+    }
+
+    #[test]
+    fn trace_file_write_creates_new_file() {
+        let path = unique_trace_path("create");
+        let trace = "{\"traceEvents\":[]}";
+
+        write_trace_file(&path, trace).expect("write new CUDA trace");
+
+        assert_eq!(fs::read_to_string(&path).expect("read trace"), trace);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn trace_file_write_refuses_to_overwrite_existing_file() {
+        let path = unique_trace_path("existing");
+        fs::write(&path, "keep").expect("seed existing trace path");
+
+        let error = write_trace_file(&path, "replace").expect_err("existing trace is rejected");
+
+        assert_eq!(error.kind(), ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&path).expect("read trace"), "keep");
+        let _ = fs::remove_file(path);
+    }
+
+    fn unique_trace_path(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before UNIX_EPOCH")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "j2k-cuda-profile-{label}-{}-{nanos}.json",
+            process::id()
+        ))
     }
 }

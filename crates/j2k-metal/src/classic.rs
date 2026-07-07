@@ -5,8 +5,8 @@ use crate::compute;
 #[cfg(target_os = "macos")]
 use j2k_native::DecodingError;
 use j2k_native::{
-    decode_ht_code_block_scalar, decode_j2k_code_block_scalar, decode_j2k_sub_band_scalar,
-    HtCodeBlockDecodeJob, HtCodeBlockDecoder, J2kCodeBlockDecodeJob, J2kSubBandDecodeJob, Result,
+    decode_j2k_code_block_scalar, decode_j2k_sub_band_scalar, HtCodeBlockDecoder,
+    J2kCodeBlockDecodeJob, J2kSubBandDecodeJob, Result,
 };
 
 #[derive(Default)]
@@ -59,7 +59,7 @@ impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
             .all(|batch_job| supports_metal_classic_kernel(&batch_job.code_block))
         {
             compute::decode_classic_cleanup_sub_band(job, output)
-                .map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+                .map_err(metal_classic_sub_band_decode_error)?;
             self.batched_kernel_dispatches = self.batched_kernel_dispatches.saturating_add(1);
             return Ok(true);
         }
@@ -77,7 +77,7 @@ impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
         #[cfg(target_os = "macos")]
         if supports_metal_classic_kernel(&job) {
             compute::decode_classic_cleanup_code_block(job, output)
-                .map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+                .map_err(metal_classic_code_block_decode_error)?;
             self.kernel_dispatches = self.kernel_dispatches.saturating_add(1);
             return Ok(true);
         }
@@ -85,14 +85,20 @@ impl HtCodeBlockDecoder for MetalClassicBlockDecoder {
         decode_j2k_code_block_scalar(job, output)?;
         Ok(true)
     }
+}
 
-    fn decode_code_block(
-        &mut self,
-        job: HtCodeBlockDecodeJob<'_>,
-        output: &mut [f32],
-    ) -> Result<()> {
-        decode_ht_code_block_scalar(job, output)
-    }
+#[cfg(target_os = "macos")]
+fn metal_classic_sub_band_decode_error(_error: crate::Error) -> j2k_native::DecodeError {
+    DecodingError::CodeBlockDecodeFailureWithContext("Metal classic sub-band decode kernel failed")
+        .into()
+}
+
+#[cfg(target_os = "macos")]
+fn metal_classic_code_block_decode_error(_error: crate::Error) -> j2k_native::DecodeError {
+    DecodingError::CodeBlockDecodeFailureWithContext(
+        "Metal classic code-block decode kernel failed",
+    )
+    .into()
 }
 
 #[cfg(target_os = "macos")]
@@ -181,6 +187,23 @@ fn supports_metal_classic_kernel(job: &J2kCodeBlockDecodeJob<'_>) -> bool {
     expected_start == job.number_of_coding_passes && expected_offset == job.data.len()
 }
 
+#[cfg(all(test, target_os = "macos"))]
+mod error_context_tests {
+    #[test]
+    fn metal_classic_decode_error_includes_kernel_context() {
+        let error = super::metal_classic_code_block_decode_error(crate::Error::MetalKernel {
+            message: "detail=4".to_string(),
+        });
+
+        assert!(
+            error
+                .to_string()
+                .contains("Metal classic code-block decode kernel failed"),
+            "Metal decode collapse must preserve kernel context, got: {error}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -190,8 +213,7 @@ mod tests {
     use crate::compute;
     use j2k_native::{
         decode_j2k_code_block_scalar, encode, ColorSpace, DecodeSettings, DecoderContext,
-        EncodeOptions, HtCodeBlockDecodeJob, HtCodeBlockDecoder, Image, J2kCodeBlockDecodeJob,
-        J2kCodeBlockSegment,
+        EncodeOptions, HtCodeBlockDecoder, Image, J2kCodeBlockDecodeJob, J2kCodeBlockSegment,
     };
 
     #[derive(Clone)]
@@ -304,14 +326,6 @@ mod tests {
             }
             decode_j2k_code_block_scalar(job, output)?;
             Ok(true)
-        }
-
-        fn decode_code_block(
-            &mut self,
-            job: HtCodeBlockDecodeJob<'_>,
-            output: &mut [f32],
-        ) -> j2k_native::Result<()> {
-            j2k_native::decode_ht_code_block_scalar(job, output)
         }
     }
 

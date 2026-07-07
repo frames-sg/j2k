@@ -74,8 +74,8 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     };
 
     let round1 = _mm_set1_epi32(1 << (PASS1_SHIFT - 1));
-    let cw_lo = idct_1d_x4::<PASS1_SHIFT>(r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l, round1);
-    let cw_hi = idct_1d_x4::<PASS1_SHIFT>(r0h, r1h, r2h, r3h, r4h, r5h, r6h, r7h, round1);
+    let cw_lo = idct_1d_x4::<PASS1_SHIFT>([r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l], round1);
+    let cw_hi = idct_1d_x4::<PASS1_SHIFT>([r0h, r1h, r2h, r3h, r4h, r5h, r6h, r7h], round1);
 
     let [q0l, q1l, q2l, q3l] = transpose_4x4_i32(cw_lo[0], cw_lo[1], cw_lo[2], cw_lo[3]);
     let [q4l, q5l, q6l, q7l] = transpose_4x4_i32(cw_hi[0], cw_hi[1], cw_hi[2], cw_hi[3]);
@@ -83,8 +83,8 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     let [q4h, q5h, q6h, q7h] = transpose_4x4_i32(cw_hi[4], cw_hi[5], cw_hi[6], cw_hi[7]);
 
     let round2 = _mm_set1_epi32(1 << (PASS2_SHIFT - 1));
-    let rw_lo = idct_1d_x4::<PASS2_SHIFT>(q0l, q1l, q2l, q3l, q4l, q5l, q6l, q7l, round2);
-    let rw_hi = idct_1d_x4::<PASS2_SHIFT>(q0h, q1h, q2h, q3h, q4h, q5h, q6h, q7h, round2);
+    let rw_lo = idct_1d_x4::<PASS2_SHIFT>([q0l, q1l, q2l, q3l, q4l, q5l, q6l, q7l], round2);
+    let rw_hi = idct_1d_x4::<PASS2_SHIFT>([q0h, q1h, q2h, q3h, q4h, q5h, q6h, q7h], round2);
 
     let bias = _mm_set1_epi32(128);
     let [fll0, fll1, fll2, fll3] = transpose_4x4_i32(
@@ -158,16 +158,8 @@ unsafe fn store_row(dst: *mut u8, lo: __m128i, hi: __m128i) {
 
 /// 1D IDCT pass over 4 i32 lanes. Mirrors `idct::neon::idct_1d_x4`.
 #[target_feature(enable = "avx2")]
-#[allow(clippy::too_many_arguments)]
 fn idct_1d_x4<const SHIFT: i32>(
-    p0: __m128i,
-    p1: __m128i,
-    p2: __m128i,
-    p3: __m128i,
-    p4: __m128i,
-    p5: __m128i,
-    p6: __m128i,
-    p7: __m128i,
+    [p0, p1, p2, p3, p4, p5, p6, p7]: [__m128i; 8],
     rounding: __m128i,
 ) -> [__m128i; 8] {
     let mul = |v, c: i32| _mm_mullo_epi32(v, _mm_set1_epi32(c));

@@ -5,7 +5,7 @@
 //! Run with:
 //! `cargo run -p j2k-jpeg --example decode_region`
 
-use j2k_jpeg::{Decoder, PixelFormat, Rect};
+use j2k_jpeg::{DecodeRequest, Decoder, PixelFormat, Rect};
 use j2k_test_support::JPEG_BASELINE_420_16X16;
 
 const TILE: &[u8] = JPEG_BASELINE_420_16X16;
@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         w: 8,
         h: 8,
     };
-    let (rgb, outcome) = decoder.decode_region(PixelFormat::Rgb8, roi)?;
+    let (rgb, outcome) = decoder.decode_request(DecodeRequest::region(PixelFormat::Rgb8, roi))?;
 
     println!(
         "decoded {}x{} ROI into {} RGB bytes",

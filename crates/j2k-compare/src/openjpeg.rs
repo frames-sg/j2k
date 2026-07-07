@@ -16,6 +16,9 @@ use std::{
 
 use crate::ExternalDecodeRequest;
 
+const MAX_EXTERNAL_OUTPUT_BYTES: usize = 512 * 1024 * 1024;
+const MAX_COMPONENT_SAMPLES: usize = MAX_EXTERNAL_OUTPUT_BYTES / std::mem::size_of::<i32>();
+
 pub fn is_available() -> bool {
     true
 }
@@ -183,11 +186,13 @@ fn pack_image(image: *mut opj_image_t, channels: usize) -> Result<Vec<u8>, Strin
     if image_ref.numcomps == 0 || image_ref.comps.is_null() {
         return Err("openjpeg: image has no components".to_string());
     }
+    validate_component_count(image_ref.numcomps as usize, channels)?;
     // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let comp0 = unsafe { &*image_ref.comps };
     let width = comp0.w as usize;
     let height = comp0.h as usize;
-    let mut out = vec![0_u8; width * height * channels];
+    let output_len = checked_output_len(width, height, channels)?;
+    let mut out = vec![0_u8; output_len];
     for row in 0..height {
         for col in 0..width {
             let dst = (row * width + col) * channels;
@@ -218,6 +223,9 @@ fn read_component(
     full_width: usize,
     full_height: usize,
 ) -> Result<u8, String> {
+    if index >= image.numcomps as usize {
+        return Err(format!("openjpeg: component {index} missing"));
+    }
     // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let comp = unsafe {
         image
@@ -234,12 +242,61 @@ fn read_component(
     if stride == 0 || height == 0 {
         return Err("openjpeg: component has zero-sized output".to_string());
     }
+    let sample_len = checked_component_sample_len(stride, height)?;
     // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
-    let data = unsafe { slice::from_raw_parts(comp.data, stride * height) };
+    let data = unsafe { slice::from_raw_parts(comp.data, sample_len) };
     let comp_col = col.saturating_mul(stride) / full_width.max(1);
     let comp_row = row.saturating_mul(height) / full_height.max(1);
     let value = data[comp_row.min(height - 1) * stride + comp_col.min(stride - 1)];
     Ok(scale_to_u8(value, comp.prec, comp.sgnd != 0))
+}
+
+fn validate_component_count(numcomps: usize, channels: usize) -> Result<(), String> {
+    match channels {
+        1 => Ok(()),
+        3 if numcomps == 1 || numcomps >= 3 => Ok(()),
+        3 => Err(format!(
+            "openjpeg: RGB output requires 1 or at least 3 components, got {numcomps}"
+        )),
+        _ => Err(format!(
+            "openjpeg: unsupported channel count {channels}, expected 1 or 3"
+        )),
+    }
+}
+
+fn checked_output_len(width: usize, height: usize, channels: usize) -> Result<usize, String> {
+    if !matches!(channels, 1 | 3) {
+        return Err(format!(
+            "openjpeg: unsupported channel count {channels}, expected 1 or 3"
+        ));
+    }
+    if width == 0 || height == 0 {
+        return Err("openjpeg: image has zero-sized output".to_string());
+    }
+    let pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| "openjpeg: output pixel count overflow".to_string())?;
+    let len = pixels
+        .checked_mul(channels)
+        .ok_or_else(|| "openjpeg: output byte count overflow".to_string())?;
+    if len > MAX_EXTERNAL_OUTPUT_BYTES {
+        return Err(format!(
+            "openjpeg: output exceeds {MAX_EXTERNAL_OUTPUT_BYTES} byte cap"
+        ));
+    }
+    Ok(len)
+}
+
+fn checked_component_sample_len(stride: usize, height: usize) -> Result<usize, String> {
+    let len = stride
+        .checked_mul(height)
+        .ok_or_else(|| "openjpeg: component sample count overflow".to_string())?;
+    if len > MAX_COMPONENT_SAMPLES {
+        return Err(format!(
+            "openjpeg: component sample count exceeds {MAX_COMPONENT_SAMPLES} sample cap"
+        ));
+    }
+    Ok(len)
 }
 
 fn scale_to_u8(value: i32, precision: u32, signed: bool) -> u8 {
@@ -338,4 +395,42 @@ const fn bool_false() -> OPJ_BOOL {
 
 const fn bool_true() -> OPJ_BOOL {
     OPJ_TRUE as OPJ_BOOL
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        checked_component_sample_len, checked_output_len, validate_component_count,
+        MAX_EXTERNAL_OUTPUT_BYTES,
+    };
+
+    #[test]
+    fn output_len_rejects_invalid_channels_and_zero_dimensions() {
+        assert!(checked_output_len(1, 1, 2).is_err());
+        assert!(checked_output_len(0, 1, 1).is_err());
+        assert!(checked_output_len(1, 0, 3).is_err());
+    }
+
+    #[test]
+    fn output_len_rejects_overflow_and_cap_excess() {
+        assert!(checked_output_len(usize::MAX, 2, 3).is_err());
+        assert!(checked_output_len(MAX_EXTERNAL_OUTPUT_BYTES + 1, 1, 1).is_err());
+    }
+
+    #[test]
+    fn component_count_rejects_two_component_rgb_output() {
+        assert!(validate_component_count(2, 3).is_err());
+        assert!(validate_component_count(1, 3).is_ok());
+        assert!(validate_component_count(3, 3).is_ok());
+    }
+
+    #[test]
+    fn component_sample_len_rejects_overflow_and_cap_excess() {
+        assert!(checked_component_sample_len(usize::MAX, 2).is_err());
+        assert!(checked_component_sample_len(
+            MAX_EXTERNAL_OUTPUT_BYTES / std::mem::size_of::<i32>() + 1,
+            1
+        )
+        .is_err());
+    }
 }

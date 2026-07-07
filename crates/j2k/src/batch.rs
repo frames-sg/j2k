@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use core::convert::Infallible;
 use std::num::NonZeroUsize;
 
 pub use j2k_core::TileBatchOptions;
@@ -16,7 +15,9 @@ use j2k_native::{
 };
 
 use crate::backend::{self, DecodeSettings};
-use crate::decode::{validate_buffer, validate_region};
+use crate::decode::{
+    decode_warnings_for_settings, validate_buffer, validate_region, J2kDecodeWarning,
+};
 use crate::parse::parse_image_info;
 use crate::{CpuDecodeParallelism, J2kCodec, J2kContext, J2kError, J2kScratchPool};
 
@@ -32,73 +33,91 @@ pub type TileScaledDecodeJob<'i, 'o> = j2k_core::TileScaledDecodeJob<'i, 'o>;
 /// One ROI+scaled tile decode request for [`decode_tiles_region_scaled_into`].
 pub type TileRegionScaledDecodeJob<'i, 'o> = j2k_core::TileRegionScaledDecodeJob<'i, 'o>;
 
+/// Caller-owned output target for one context-reused J2K/HTJ2K tile decode helper.
+pub struct TileDecodeOutput<'o> {
+    /// Caller-owned output buffer.
+    pub out: &'o mut [u8],
+    /// Distance in bytes between output rows.
+    pub stride: usize,
+    /// Requested output pixel format.
+    pub fmt: PixelFormat,
+}
+
 /// Error returned by J2K CPU tile batches, annotated with the first failing
 /// tile index from the caller's input order.
 pub type TileBatchError = j2k_core::TileBatchError<J2kError>;
 
-type BatchOutcome = DecodeOutcome<Infallible>;
+type BatchOutcome = DecodeOutcome<J2kDecodeWarning>;
 type J2kIndexedBatchResult = IndexedBatchResult<BatchOutcome, J2kError>;
 
 /// One-shot parse-plus-decode of an independent J2K/HTJ2K tile into the
 /// caller's buffer, reusing both caller-owned [`DecoderContext`] and
 /// caller-owned [`J2kScratchPool`].
+#[doc(hidden)]
 pub fn decode_tile_into_in_context(
     bytes: &[u8],
     ctx: &mut DecoderContext<J2kContext>,
     pool: &mut J2kScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
+    output: TileDecodeOutput<'_>,
 ) -> Result<BatchOutcome, J2kError> {
+    let TileDecodeOutput { out, stride, fmt } = output;
     <J2kCodec as TileBatchDecode>::decode_tile(ctx, pool, bytes, out, stride, fmt)
 }
 
 /// One-shot parse-plus-ROI-decode of an independent J2K/HTJ2K tile into the
 /// caller's buffer, reusing both caller-owned [`DecoderContext`] and
 /// caller-owned [`J2kScratchPool`].
+#[doc(hidden)]
 pub fn decode_tile_region_into_in_context(
     bytes: &[u8],
     ctx: &mut DecoderContext<J2kContext>,
     pool: &mut J2kScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
+    output: TileDecodeOutput<'_>,
     roi: Rect,
 ) -> Result<BatchOutcome, J2kError> {
+    let TileDecodeOutput { out, stride, fmt } = output;
     <J2kCodec as TileBatchDecode>::decode_tile_region(ctx, pool, bytes, out, stride, fmt, roi)
 }
 
 /// One-shot parse-plus-scaled-decode of an independent J2K/HTJ2K tile into the
 /// caller's buffer, reusing both caller-owned [`DecoderContext`] and
 /// caller-owned [`J2kScratchPool`].
+#[doc(hidden)]
 pub fn decode_tile_scaled_into_in_context(
     bytes: &[u8],
     ctx: &mut DecoderContext<J2kContext>,
     pool: &mut J2kScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
+    output: TileDecodeOutput<'_>,
     scale: Downscale,
 ) -> Result<BatchOutcome, J2kError> {
+    let TileDecodeOutput { out, stride, fmt } = output;
     <J2kCodec as TileBatchDecode>::decode_tile_scaled(ctx, pool, bytes, out, stride, fmt, scale)
 }
 
 /// One-shot parse-plus-ROI-scaled-decode of an independent J2K/HTJ2K tile
 /// into the caller's buffer, reusing both caller-owned [`DecoderContext`] and
 /// caller-owned [`J2kScratchPool`].
-#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
 pub fn decode_tile_region_scaled_into_in_context(
     bytes: &[u8],
     ctx: &mut DecoderContext<J2kContext>,
     pool: &mut J2kScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
+    output: TileDecodeOutput<'_>,
     roi: Rect,
     scale: Downscale,
 ) -> Result<BatchOutcome, J2kError> {
+    let TileDecodeOutput { out, stride, fmt } = output;
     <J2kCodec as TileBatchDecode>::decode_tile_region_scaled(
-        ctx, pool, bytes, out, stride, fmt, roi, scale,
+        ctx,
+        pool,
+        fmt,
+        TileRegionScaledDecodeJob {
+            input: bytes,
+            out,
+            stride,
+            roi,
+            scale,
+        },
     )
 }
 
@@ -251,8 +270,16 @@ fn decode_tile_job_chunk(
     let mut pool = J2kScratchPool::new();
     let mut results = Vec::with_capacity(jobs.len());
     for (local_index, job) in jobs.iter_mut().enumerate() {
-        let outcome =
-            decode_tile_into_in_context(job.input, &mut ctx, &mut pool, job.out, job.stride, fmt);
+        let outcome = decode_tile_into_in_context(
+            job.input,
+            &mut ctx,
+            &mut pool,
+            TileDecodeOutput {
+                out: job.out,
+                stride: job.stride,
+                fmt,
+            },
+        );
         results.push((start_index + local_index, outcome));
     }
     results
@@ -271,7 +298,15 @@ fn decode_tile_region_job_chunk(
     let mut results = Vec::with_capacity(jobs.len());
     for (local_index, job) in jobs.iter_mut().enumerate() {
         let outcome = decode_tile_region_into_in_context(
-            job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, job.roi,
+            job.input,
+            &mut ctx,
+            &mut pool,
+            TileDecodeOutput {
+                out: job.out,
+                stride: job.stride,
+                fmt,
+            },
+            job.roi,
         );
         results.push((start_index + local_index, outcome));
     }
@@ -291,7 +326,15 @@ fn decode_tile_scaled_job_chunk(
     let mut results = Vec::with_capacity(jobs.len());
     for (local_index, job) in jobs.iter_mut().enumerate() {
         let outcome = decode_tile_scaled_into_in_context(
-            job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, job.scale,
+            job.input,
+            &mut ctx,
+            &mut pool,
+            TileDecodeOutput {
+                out: job.out,
+                stride: job.stride,
+                fmt,
+            },
+            job.scale,
         );
         results.push((start_index + local_index, outcome));
     }
@@ -335,7 +378,16 @@ fn decode_tile_region_scaled_job_chunk(
         }) {
             Ok(Some(outcome)) => Ok(outcome),
             Ok(None) => decode_tile_region_scaled_into_in_context(
-                job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, job.roi, job.scale,
+                job.input,
+                &mut ctx,
+                &mut pool,
+                TileDecodeOutput {
+                    out: job.out,
+                    stride: job.stride,
+                    fmt,
+                },
+                job.roi,
+                job.scale,
             ),
             Err(error) => Err(error),
         };
@@ -427,7 +479,10 @@ fn decode_tile_region_scaled_shared_direct_color_u8_in_context(
         job.stride,
         fmt,
     )?;
-    Ok(Some(DecodeOutcome::new(decoded, Vec::new())))
+    Ok(Some(DecodeOutcome::new(
+        decoded,
+        decode_warnings_for_settings(DecodeSettings::default()),
+    )))
 }
 
 fn decode_tile_region_scaled_direct_color_u8_in_context(
@@ -467,7 +522,7 @@ fn decode_tile_region_scaled_direct_color_u8_in_context(
 
     let cache = cache
         .as_ref()
-        .ok_or_else(|| J2kError::Backend("internal direct color plan cache missing".to_string()))?;
+        .ok_or_else(|| J2kError::internal_backend("internal direct color plan cache missing"))?;
     execute_direct_color_plan_u8_into(
         &cache.plan,
         cache.output_region,
@@ -476,7 +531,10 @@ fn decode_tile_region_scaled_direct_color_u8_in_context(
         job.stride,
         fmt,
     )?;
-    Ok(Some(DecodeOutcome::new(decoded, Vec::new())))
+    Ok(Some(DecodeOutcome::new(
+        decoded,
+        decode_warnings_for_settings(DecodeSettings::default()),
+    )))
 }
 
 #[derive(Clone, Copy)]
@@ -517,7 +575,7 @@ fn execute_direct_color_plan_u8_into(
         }
         _ => unreachable!("validated direct color output format"),
     }
-    .map_err(|error| J2kError::Backend(error.to_string()))
+    .map_err(J2kError::from_native_decode_error)
 }
 
 fn build_direct_color_region_plan(
@@ -575,7 +633,7 @@ fn build_direct_color_region_plan(
         ))),
         Ok(_) => Ok(None),
         Err(error) if is_unsupported_direct_color_plan_error(error) => Ok(None),
-        Err(error) => Err(J2kError::Backend(error.to_string())),
+        Err(error) => Err(J2kError::from_native_decode_error(error)),
     }
 }
 

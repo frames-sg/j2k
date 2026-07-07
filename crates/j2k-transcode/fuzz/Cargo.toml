@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+j2k = { path = "../../j2k" }
 j2k-transcode = { path = ".." }
 
 [[bin]]

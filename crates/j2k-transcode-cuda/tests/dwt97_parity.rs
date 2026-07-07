@@ -7,9 +7,9 @@
 // Compiled only with `cuda-runtime`; asserts only on the CUDA runner.
 #![cfg(feature = "cuda-runtime")]
 
-use j2k_test_support::cuda_runtime_required;
+use j2k_test_support::cuda_runtime_gate;
 use j2k_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
-use j2k_transcode::dct97_2d::{dct8x8_blocks_then_dwt97_float, Dwt97TwoDimensional};
+use j2k_transcode::{dct8x8_blocks_then_dwt97_float, Dwt97TwoDimensional};
 use j2k_transcode_cuda::CudaDctToWaveletStageAccelerator;
 
 const TOLERANCE: f64 = 2.0e-2;
@@ -44,7 +44,7 @@ fn max_abs_diff(actual: &Dwt97TwoDimensional<f64>, expected: &Dwt97TwoDimensiona
 
 #[test]
 fn cuda_dwt97_matches_scalar_oracle_within_tolerance_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 

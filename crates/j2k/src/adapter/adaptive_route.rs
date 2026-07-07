@@ -2,6 +2,11 @@
 
 //! Adaptive JPEG 2000 / HTJ2K CPU-device route planning.
 
+#![allow(dead_code, unreachable_pub)]
+
+// This policy model is retained only for the moved unit-test matrix. Its
+// public-shaped items are deliberately kept out of the stable adapter API.
+
 use alloc::vec::Vec;
 
 use crate::{J2kBlockCodingMode, J2kError, J2kLosslessEncodeOptions, J2kLosslessSamples};
@@ -1094,3 +1099,7 @@ impl J2kAdaptiveRoutePlanner {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "adaptive_route_tests.rs"]
+mod tests;

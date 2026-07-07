@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::Storage;
+use j2k_jpeg::adapter::JpegHuffmanTable as PacketHuffmanTable;
+use j2k_jpeg::DecodeRequest;
 use std::sync::Arc;
 
 const BASELINE_420: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_420_16x16.jpg");
@@ -359,7 +361,7 @@ fn fast420_packet_scaled_decode_matches_cpu_scaled_bytes() {
     let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
     for scale in [j2k_core::Downscale::Half, j2k_core::Downscale::Quarter] {
         let (expected, _) = decoder
-            .decode_scaled(PixelFormat::Rgb8, scale)
+            .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
             .expect("cpu scaled");
 
         let surface = with_runtime(|runtime| {
@@ -390,7 +392,7 @@ fn fast420_packet_region_decode_matches_cpu_region_bytes() {
         h: 10,
     };
     let (expected, _) = decoder
-        .decode_region(PixelFormat::Rgb8, roi)
+        .decode_request(DecodeRequest::region(PixelFormat::Rgb8, roi))
         .expect("cpu region");
 
     let surface = with_runtime(|runtime| {
@@ -443,7 +445,7 @@ fn fast420_region_batch_decode_matches_cpu_region_bytes() {
     ];
     let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
     let (expected, _) = decoder
-        .decode_region(
+        .decode_request(DecodeRequest::region(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -451,7 +453,7 @@ fn fast420_region_batch_decode_matches_cpu_region_bytes() {
                 w: roi.w,
                 h: roi.h,
             },
-        )
+        ))
         .expect("cpu region");
 
     let results = decode_full_batch_to_surfaces(&requests)
@@ -492,7 +494,9 @@ fn fast420_full_batch_decode_uses_shared_surface_offsets() {
         ),
     ];
     let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
-    let (expected, _) = decoder.decode(PixelFormat::Rgb8).expect("cpu full decode");
+    let (expected, _) = decoder
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("cpu full decode");
 
     let results = decode_full_batch_to_surfaces(&requests)
         .expect("batch result")
@@ -540,7 +544,9 @@ fn fast420_split_full_batch_decode_matches_cpu_bytes() {
         .expect("packet lookup")
         .expect("packets");
     let decoder = CpuDecoder::new(input.as_ref()).expect("decoder");
-    let (expected, _) = decoder.decode(PixelFormat::Rgb8).expect("cpu full decode");
+    let (expected, _) = decoder
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("cpu full decode");
 
     let results = with_runtime(|runtime| {
         try_decode_fast_subsampled_full_rgb_batch_to_surfaces_with_mode_and_output::<
@@ -590,7 +596,9 @@ fn fast420_batch_clears_high_ac_before_dc_only_blocks() {
         ),
     ];
     let decoder = CpuDecoder::new(input.as_ref()).expect("decoder");
-    let (expected, _) = decoder.decode(PixelFormat::Rgb8).expect("cpu full decode");
+    let (expected, _) = decoder
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("cpu full decode");
 
     let results = decode_full_batch_to_surfaces(&requests)
         .expect("batch result")
@@ -630,7 +638,9 @@ fn fast420_batch_matches_cpu_for_high_ac_overflow_coefficients() {
         ),
     ];
     let decoder = CpuDecoder::new(input.as_ref()).expect("decoder");
-    let (expected, _) = decoder.decode(PixelFormat::Rgb8).expect("cpu full decode");
+    let (expected, _) = decoder
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("cpu full decode");
 
     let results = decode_full_batch_to_surfaces(&requests)
         .expect("batch result")
@@ -657,7 +667,7 @@ fn fast420_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
     };
     let scale = j2k_core::Downscale::Quarter;
     let (expected, _) = decoder
-        .decode_region_scaled(PixelFormat::Rgb8, roi, scale)
+        .decode_request(DecodeRequest::region_scaled(PixelFormat::Rgb8, roi, scale))
         .expect("cpu region scaled");
     let scaled_roi = j2k_jpeg::Rect {
         x: roi.x / 4,
@@ -718,7 +728,7 @@ fn fast420_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
     ];
     let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
     let (expected, _) = decoder
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -727,7 +737,7 @@ fn fast420_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled");
     let scaled = roi.scaled_covering(scale);
 
@@ -771,7 +781,7 @@ fn fast420_scaled_batch_decode_matches_cpu_scaled_bytes() {
     ];
     let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
     let (expected, _) = decoder
-        .decode_scaled(PixelFormat::Rgb8, scale)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled");
 
     let results = decode_full_batch_to_surfaces(&requests)
@@ -791,7 +801,9 @@ fn fast420_scaled_batch_decode_matches_cpu_scaled_bytes() {
 fn fast422_packet_full_decode_matches_cpu_bytes() {
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
-    let (expected, _) = decoder.decode(PixelFormat::Rgb8).expect("cpu full decode");
+    let (expected, _) = decoder
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("cpu full decode");
 
     let surface = with_runtime(|runtime| {
         let surface = try_decode_fast422_to_surface(runtime, Some(&packet), PixelFormat::Rgb8)?
@@ -828,7 +840,9 @@ fn fast422_full_batch_decode_matches_cpu_bytes() {
         ),
     ];
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
-    let (expected, _) = decoder.decode(PixelFormat::Rgb8).expect("cpu full decode");
+    let (expected, _) = decoder
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("cpu full decode");
 
     let results = decode_full_batch_to_surfaces(&requests)
         .expect("batch result")
@@ -858,7 +872,7 @@ fn fast422_packet_region_decode_matches_cpu_region_bytes() {
         h: 5,
     };
     let (expected, _) = decoder
-        .decode_region(PixelFormat::Rgb8, roi)
+        .decode_request(DecodeRequest::region(PixelFormat::Rgb8, roi))
         .expect("cpu region");
 
     let surface = with_runtime(|runtime| {
@@ -906,7 +920,7 @@ fn fast422_region_batch_decode_matches_cpu_region_bytes() {
     ];
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
     let (expected, _) = decoder
-        .decode_region(
+        .decode_request(DecodeRequest::region(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -914,7 +928,7 @@ fn fast422_region_batch_decode_matches_cpu_region_bytes() {
                 w: roi.w,
                 h: roi.h,
             },
-        )
+        ))
         .expect("cpu region");
 
     let results = decode_full_batch_to_surfaces(&requests)
@@ -939,7 +953,7 @@ fn fast422_packet_scaled_decode_matches_cpu_scaled_bytes() {
         (j2k_core::Downscale::Quarter, (4, 2)),
     ] {
         let (expected, _) = decoder
-            .decode_scaled(PixelFormat::Rgb8, scale)
+            .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
             .expect("cpu scaled");
 
         let surface = with_runtime(|runtime| {
@@ -987,7 +1001,7 @@ fn fast422_scaled_batch_decode_matches_cpu_scaled_bytes() {
     ];
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
     let (expected, _) = decoder
-        .decode_scaled(PixelFormat::Rgb8, scale)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled");
 
     let results = decode_full_batch_to_surfaces(&requests)
@@ -1015,7 +1029,7 @@ fn fast422_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
     };
     let scale = j2k_core::Downscale::Half;
     let (expected, _) = decoder
-        .decode_region_scaled(PixelFormat::Rgb8, roi, scale)
+        .decode_request(DecodeRequest::region_scaled(PixelFormat::Rgb8, roi, scale))
         .expect("cpu region scaled");
     let scaled_roi = j2k_jpeg::Rect {
         x: roi.x / 2,
@@ -1075,7 +1089,7 @@ fn fast422_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
     ];
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
     let (expected, _) = decoder
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -1084,7 +1098,7 @@ fn fast422_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled");
     let scaled = roi.scaled_covering(scale);
 
@@ -1105,7 +1119,9 @@ fn fast422_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
 fn fast444_packet_full_decode_matches_cpu_bytes() {
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
-    let (expected, _) = decoder.decode(PixelFormat::Rgb8).expect("cpu full decode");
+    let (expected, _) = decoder
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("cpu full decode");
 
     let surface = with_runtime(|runtime| {
         let surface =
@@ -1128,7 +1144,7 @@ fn fast444_packet_scaled_decode_matches_cpu_scaled_bytes() {
     let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
     for scale in [j2k_core::Downscale::Half, j2k_core::Downscale::Quarter] {
         let (expected, _) = decoder
-            .decode_scaled(PixelFormat::Rgb8, scale)
+            .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
             .expect("cpu scaled");
 
         let surface = with_runtime(|runtime| {
@@ -1163,7 +1179,7 @@ fn fast444_packet_region_decode_matches_cpu_region_bytes() {
         h: 4,
     };
     let (expected, _) = decoder
-        .decode_region(PixelFormat::Rgb8, roi)
+        .decode_request(DecodeRequest::region(PixelFormat::Rgb8, roi))
         .expect("cpu region");
 
     let surface = with_runtime(|runtime| {
@@ -1220,7 +1236,7 @@ fn fast444_region_batch_decode_matches_cpu_region_bytes() {
     ];
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
     let (expected, _) = decoder
-        .decode_region(
+        .decode_request(DecodeRequest::region(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -1228,7 +1244,7 @@ fn fast444_region_batch_decode_matches_cpu_region_bytes() {
                 w: roi.w,
                 h: roi.h,
             },
-        )
+        ))
         .expect("cpu region");
 
     let results = decode_full_batch_to_surfaces(&requests)
@@ -1260,7 +1276,7 @@ fn fast444_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
     };
     let scale = j2k_core::Downscale::Quarter;
     let (expected, _) = decoder
-        .decode_region_scaled(PixelFormat::Rgb8, roi, scale)
+        .decode_request(DecodeRequest::region_scaled(PixelFormat::Rgb8, roi, scale))
         .expect("cpu region scaled");
     let scaled_roi = j2k_jpeg::Rect {
         x: roi.x / 4,
@@ -1325,7 +1341,7 @@ fn fast444_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
     ];
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
     let (expected, _) = decoder
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -1334,7 +1350,7 @@ fn fast444_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled");
     let scaled = roi.scaled_covering(scale);
 
@@ -1382,7 +1398,7 @@ fn fast444_scaled_batch_decode_matches_cpu_scaled_bytes() {
     ];
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
     let (expected, _) = decoder
-        .decode_scaled(PixelFormat::Rgb8, scale)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled");
 
     let results = decode_full_batch_to_surfaces(&requests)

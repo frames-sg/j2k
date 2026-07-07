@@ -6,7 +6,7 @@ use crate::{
     },
     htj2k_encode::{
         CudaHtj2kEncodeCompactJob, CudaHtj2kEncodeKernelJob, CudaHtj2kEncodeMultiInputKernelJob,
-        CudaHtj2kEncodeParams, CudaHtj2kEncodeStatus,
+        CudaHtj2kEncodeStatus,
     },
     htj2k_packetize::{
         CudaHtj2kPacketizationBlock, CudaHtj2kPacketizationKernelPacket,
@@ -24,7 +24,7 @@ use crate::{
         CudaJpegEntropyOverflowState, CudaJpegEntropySyncState, CudaJpegHuffmanTable,
     },
 };
-use j2k_core::GpuAbi;
+use j2k_core::accelerator::GpuAbi;
 
 macro_rules! impl_cuda_gpu_abi {
     ($($ty:ty),+ $(,)?) => {
@@ -46,7 +46,6 @@ impl_cuda_gpu_abi! {
     CudaJpegBaselineEncodeParams,
     CudaJpegBaselineEncodeHuffmanTable,
     CudaJpegBaselineEncodeStatus,
-    CudaHtj2kEncodeParams,
     CudaHtj2kEncodeStatus,
     CudaHtj2kEncodeKernelJob,
     CudaHtj2kEncodeMultiInputKernelJob,
@@ -116,8 +115,6 @@ gpu_ref_bytes! {
     store_rgb8_job_as_bytes: CudaJ2kStoreRgb8Job;
     store_rgb16_job_as_bytes: CudaJ2kStoreRgb16Job;
     store_rgb16_mct_job_as_bytes: CudaJ2kStoreRgb16MctJob;
-    htj2k_encode_params_as_bytes: CudaHtj2kEncodeParams;
-    htj2k_encode_status_as_bytes: CudaHtj2kEncodeStatus;
     idwt_job_as_bytes: CudaJ2kIdwtJob;
 }
 
@@ -168,10 +165,6 @@ gpu_slice_bytes_mut! {
     htj2k_encode_statuses_as_bytes_mut: CudaHtj2kEncodeStatus;
     htj2k_packetization_statuses_as_bytes_mut: CudaHtj2kPacketizationStatus;
     htj2k_statuses_as_bytes_mut: CudaHtj2kStatus;
-}
-
-pub(crate) fn htj2k_encode_status_as_bytes_mut(status: &mut CudaHtj2kEncodeStatus) -> &mut [u8] {
-    <CudaHtj2kEncodeStatus as GpuAbi>::slice_as_bytes_mut(std::slice::from_mut(status))
 }
 
 pub(crate) fn htj2k_encode_statuses_byte_len(count: usize) -> Result<usize, CudaError> {

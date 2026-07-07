@@ -31,6 +31,7 @@ criterion = { workspace = true }
 [[bench]]
 name = "compare"
 harness = false
+test = false
 
 [lints]
 workspace = true

@@ -52,20 +52,28 @@ jobs:
           pr_number = os.environ["PR_NUMBER"]
           head_sha = os.environ["HEAD_SHA"]
 
-          gpu_prefixes = (
+          cuda_prefixes = (
               "crates/j2k-cuda-runtime/",
-              "crates/j2k-profile/",
               "crates/j2k-jpeg-cuda/",
               "crates/j2k-cuda/",
               "crates/j2k-transcode-cuda/",
+          )
+          metal_prefixes = (
               "crates/j2k-metal-support/",
               "crates/j2k-jpeg-metal/",
               "crates/j2k-metal/",
               "crates/j2k-transcode-metal/",
           )
-          gpu_exact_paths = {
+          shared_gpu_prefixes = (
+              "crates/j2k-profile/",
+          )
+          shared_gpu_exact_paths = {
               ".github/CODEOWNERS",
               ".github/workflows/gpu-validation.yml",
+          }
+          required_job_by_backend = {
+              "cuda": "CUDA API compatibility on x86_64",
+              "metal": "Metal validation on Apple Silicon",
           }
 
           def get_json(path):
@@ -89,32 +97,74 @@ jobs:
                   break
               page += 1
 
-          gpu_changes = [
+          cuda_changes = [
               path
               for path in changed_files
-              if path in gpu_exact_paths or path.startswith(gpu_prefixes)
+              if path.startswith(cuda_prefixes)
+          ]
+          metal_changes = [
+              path
+              for path in changed_files
+              if path.startswith(metal_prefixes)
+          ]
+          shared_gpu_changes = [
+              path
+              for path in changed_files
+              if path in shared_gpu_exact_paths or path.startswith(shared_gpu_prefixes)
+          ]
+          gpu_changes = [
+              *cuda_changes,
+              *metal_changes,
+              *shared_gpu_changes,
           ]
           if not gpu_changes:
               print("No GPU path changes detected.")
               sys.exit(0)
 
+          requires_cuda = bool(cuda_changes or shared_gpu_changes)
+          requires_metal = bool(metal_changes or shared_gpu_changes)
+          required_jobs = set()
+          if requires_cuda:
+              required_jobs.add(required_job_by_backend["cuda"])
+          if requires_metal:
+              required_jobs.add(required_job_by_backend["metal"])
+
           encoded_sha = urllib.parse.quote(head_sha, safe="")
           runs = get_json(
               f"/actions/workflows/gpu-validation.yml/runs?head_sha={encoded_sha}&per_page=50"
           ).get("workflow_runs", [])
+          successful_jobs = set()
           for run in runs:
-              if run.get("head_sha") == head_sha and run.get("conclusion") == "success":
-                  print(
-                      "GPU path changes detected and gpu-validation.yml succeeded "
-                      f"for head SHA {head_sha}."
-                  )
-                  sys.exit(0)
+              if run.get("head_sha") != head_sha:
+                  continue
+              jobs = get_json(f"/actions/runs/{run.get('id')}/jobs?per_page=100").get("jobs", [])
+              for job in jobs:
+                  if job.get("conclusion") == "success":
+                      successful_jobs.add(job.get("name", ""))
 
-          print("GPU path changes require a successful gpu-validation.yml run.")
+          missing_jobs = sorted(required_jobs - successful_jobs)
+          if not missing_jobs:
+              print(
+                  "GPU path changes detected and required gpu-validation.yml jobs "
+                  f"succeeded for head SHA {head_sha}."
+              )
+              sys.exit(0)
+
+          print("GPU path changes require successful gpu-validation.yml jobs.")
           print(f"Head SHA: {head_sha}")
           print("Changed GPU paths:")
-          for path in gpu_changes:
+          for path in sorted(set(gpu_changes)):
               print(f"  - {path}")
+          print("Required successful GPU validation jobs:")
+          for job in sorted(required_jobs):
+              print(f"  - {job}")
+          print("Missing successful GPU validation jobs:")
+          for job in missing_jobs:
+              print(f"  - {job}")
+          if successful_jobs:
+              print("Observed successful GPU validation jobs:")
+              for job in sorted(successful_jobs):
+                  print(f"  - {job}")
           sys.exit(1)
           PY
 
@@ -137,6 +187,51 @@ jobs:
           toolchain: stable
           components: clippy
       - run: cargo xtask clippy
+
+  panic-surface:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+          components: clippy
+      - run: cargo xtask panic-surface
+
+  comparator-parity:
+    runs-on: ubuntu-latest
+    env:
+      J2K_OPENJPEG_BIN: /usr/bin/opj_decompress
+      J2K_OPENJPEG_DECOMPRESS_BIN: /usr/bin/opj_decompress
+      J2K_OPENJPEG_COMPRESS_BIN: /usr/bin/opj_compress
+      J2K_GROK_BIN: /usr/bin/grk_decompress
+      J2K_GROK_COMPRESS_BIN: /usr/bin/grk_compress
+      J2K_REQUIRE_OPENJPEG: "1"
+      J2K_REQUIRE_GROK: "1"
+      J2K_REQUIRE_LIBJPEG_TURBO: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - name: Install comparator tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            grokj2k-tools \
+            libgrokj2k1-dev \
+            libopenjp2-tools \
+            libturbojpeg0-dev \
+            pkg-config
+      - name: Verify comparator tools
+        run: |
+          command -v opj_compress
+          command -v opj_decompress
+          command -v grk_compress
+          command -v grk_decompress
+          pkg-config --modversion libgrokj2k
+          pkg-config --modversion libturbojpeg
+      - run: cargo xtask j2k-bench-signoff
 
   semver:
     # Published Metal baselines include macOS-gated public API and must be

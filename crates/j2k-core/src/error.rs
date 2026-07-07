@@ -111,3 +111,58 @@ pub trait CodecError: core::error::Error + Send + Sync + 'static {
     /// True when the error indicates caller buffer sizing or layout problems.
     fn is_buffer_error(&self) -> bool;
 }
+
+/// Backend-adapter-local error classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AdapterErrorKind {
+    /// Error is not a shared adapter classification.
+    Other,
+    /// Error is a caller buffer sizing or layout problem.
+    Buffer,
+    /// Error is an unsupported backend, request, input, or host capability.
+    Unsupported,
+}
+
+/// Variant mapping supplied by GPU adapter error enums.
+pub trait AdapterErrorParts {
+    /// Return the wrapped codec/fallback error, when this adapter error has one.
+    fn source_codec_error(&self) -> Option<&dyn CodecError>;
+
+    /// Return the adapter-local classification for non-codec variants.
+    fn adapter_error_kind(&self) -> AdapterErrorKind;
+}
+
+/// Shared truncated-input classification for adapter errors.
+#[doc(hidden)]
+pub fn adapter_error_is_truncated(error: &impl AdapterErrorParts) -> bool {
+    error
+        .source_codec_error()
+        .is_some_and(CodecError::is_truncated)
+}
+
+/// Shared not-implemented classification for adapter errors.
+#[doc(hidden)]
+pub fn adapter_error_is_not_implemented(error: &impl AdapterErrorParts) -> bool {
+    error
+        .source_codec_error()
+        .is_some_and(CodecError::is_not_implemented)
+}
+
+/// Shared unsupported classification for adapter errors.
+#[doc(hidden)]
+pub fn adapter_error_is_unsupported(error: &impl AdapterErrorParts) -> bool {
+    error.adapter_error_kind() == AdapterErrorKind::Unsupported
+        || error
+            .source_codec_error()
+            .is_some_and(CodecError::is_unsupported)
+}
+
+/// Shared buffer classification for adapter errors.
+#[doc(hidden)]
+pub fn adapter_error_is_buffer_error(error: &impl AdapterErrorParts) -> bool {
+    error.adapter_error_kind() == AdapterErrorKind::Buffer
+        || error
+            .source_codec_error()
+            .is_some_and(CodecError::is_buffer_error)
+}

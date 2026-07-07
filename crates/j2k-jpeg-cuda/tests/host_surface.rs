@@ -3,8 +3,9 @@ use j2k_core::{
     ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeDevice,
     TileBatchDecodeManyDevice,
 };
+use j2k_jpeg::DecodeRequest;
 use j2k_jpeg_cuda::{Codec, CudaSession, Decoder, Error};
-use j2k_test_support::{cuda_jpeg_hardware_decode_required, cuda_runtime_required};
+use j2k_test_support::{cuda_jpeg_hardware_decode_gate, cuda_runtime_gate};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
@@ -62,7 +63,7 @@ fn explicit_cuda_gray8_request_fails_without_cpu_upload() {
 
 #[test]
 fn explicit_cuda_request_returns_cuda_surface_when_cuda_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -82,7 +83,7 @@ fn explicit_cuda_request_returns_cuda_surface_when_cuda_runtime_required() {
 
     let (expected, _) = j2k_jpeg::Decoder::new(BASELINE_420)
         .expect("host decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("host decode");
     assert_surface_bytes_match_or_are_close(&surface, &downloaded, &expected);
 }
@@ -136,7 +137,7 @@ fn explicit_cuda_scaled_surface_fails_without_owned_cuda_path() {
 
 #[test]
 fn explicit_cuda_download_respects_padded_stride_when_cuda_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -154,7 +155,7 @@ fn explicit_cuda_download_respects_padded_stride_when_cuda_runtime_required() {
 
     let (expected, _) = j2k_jpeg::Decoder::new(BASELINE_420)
         .expect("host decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("host decode");
     for (row, expected_row) in expected.chunks(row_bytes).enumerate() {
         let start = row * stride;
@@ -169,7 +170,7 @@ fn explicit_cuda_download_respects_padded_stride_when_cuda_runtime_required() {
 
 #[test]
 fn explicit_cuda_full_frame_uses_owned_decode_when_required() {
-    if !cuda_jpeg_hardware_decode_required() {
+    if !cuda_jpeg_hardware_decode_gate(module_path!()) {
         return;
     }
 
@@ -265,7 +266,7 @@ fn assert_surface_bytes_match_or_are_close(
 }
 
 fn assert_full_frame_owned_cuda_decode_when_required(input: &[u8], dimensions: (u32, u32)) {
-    if !cuda_jpeg_hardware_decode_required() {
+    if !cuda_jpeg_hardware_decode_gate(module_path!()) {
         return;
     }
 
@@ -288,7 +289,7 @@ fn assert_full_frame_owned_cuda_decode_when_required(input: &[u8], dimensions: (
         .expect("download cuda surface");
     let (expected, _) = j2k_jpeg::Decoder::new(input)
         .expect("host decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("host decode");
     assert_surface_bytes_match_or_are_close(&surface, &downloaded, &expected);
 }
@@ -333,7 +334,7 @@ fn submit_to_device_auto_does_not_initialize_cuda_runtime() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn explicit_cuda_submissions_reuse_session_runtime_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -430,7 +431,7 @@ fn tile_batch_region_scaled_auto_surface_matches_host_decode() {
 
     let (expected, _) = j2k_jpeg::Decoder::new(BASELINE_420)
         .expect("host decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -439,7 +440,7 @@ fn tile_batch_region_scaled_auto_surface_matches_host_decode() {
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("host decode");
     assert_eq!(surface.as_host_bytes(), Some(expected.as_slice()));
 }
@@ -530,7 +531,7 @@ fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes() {
     assert_eq!(surfaces.len(), inputs.len());
     let (expected, _) = j2k_jpeg::Decoder::new(BASELINE_420)
         .expect("host decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("host decode");
     for surface in surfaces {
         assert_eq!(surface.dimensions(), (16, 16));
@@ -566,7 +567,7 @@ fn decode_tiles_to_device_with_session_auto_preserves_order_and_matches_host_byt
     assert_eq!(surfaces.len(), inputs.len());
     let (expected, _) = j2k_jpeg::Decoder::new(BASELINE_420)
         .expect("host decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("host decode");
     for surface in surfaces {
         assert_eq!(surface.dimensions(), (16, 16));
@@ -631,7 +632,7 @@ fn decode_tiles_to_device_explicit_cuda_gray8_fails_without_cpu_upload() {
 
 #[test]
 fn decode_tiles_to_device_explicit_cuda_uses_owned_decode_when_required() {
-    if !cuda_jpeg_hardware_decode_required() {
+    if !cuda_jpeg_hardware_decode_gate(module_path!()) {
         return;
     }
 
@@ -670,7 +671,7 @@ fn decode_tiles_to_device_explicit_cuda_uses_owned_decode_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn generated_420_chunked_entropy_diagnostic_runs_when_cuda_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 
@@ -746,7 +747,7 @@ fn generated_420_chunked_entropy_diagnostic_rejects_invalid_config_before_runtim
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn explicit_cuda_session_batch_records_owned_packet_cache_when_required() {
-    if !cuda_jpeg_hardware_decode_required() {
+    if !cuda_jpeg_hardware_decode_gate(module_path!()) {
         return;
     }
 
@@ -771,7 +772,7 @@ fn explicit_cuda_session_batch_records_owned_packet_cache_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn explicit_cuda_decodes_into_caller_owned_buffer_when_required() {
-    if !cuda_jpeg_hardware_decode_required() {
+    if !cuda_jpeg_hardware_decode_gate(module_path!()) {
         return;
     }
 
@@ -799,7 +800,7 @@ fn explicit_cuda_decodes_into_caller_owned_buffer_when_required() {
         .expect("download buffer");
     let (expected, _) = j2k_jpeg::Decoder::new(BASELINE_420)
         .expect("host decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("host decode");
     let max_delta = downloaded
         .iter()
@@ -816,7 +817,7 @@ fn explicit_cuda_decodes_into_caller_owned_buffer_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn explicit_cuda_decodes_422_and_444_into_caller_owned_buffers_when_required() {
-    if !cuda_jpeg_hardware_decode_required() {
+    if !cuda_jpeg_hardware_decode_gate(module_path!()) {
         return;
     }
 
@@ -848,7 +849,7 @@ fn explicit_cuda_decodes_422_and_444_into_caller_owned_buffers_when_required() {
             .expect("download buffer");
         let (expected, _) = j2k_jpeg::Decoder::new(input)
             .expect("host decoder")
-            .decode(PixelFormat::Rgb8)
+            .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
             .expect("host decode");
         let max_delta = downloaded
             .iter()
@@ -866,7 +867,7 @@ fn explicit_cuda_decodes_422_and_444_into_caller_owned_buffers_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn explicit_cuda_decodes_batch_into_caller_owned_buffers_when_required() {
-    if !cuda_jpeg_hardware_decode_required() {
+    if !cuda_jpeg_hardware_decode_gate(module_path!()) {
         return;
     }
 
@@ -910,7 +911,7 @@ fn explicit_cuda_decodes_batch_into_caller_owned_buffers_when_required() {
             .expect("download buffer");
         let (expected, _) = j2k_jpeg::Decoder::new(input)
             .expect("host decoder")
-            .decode(PixelFormat::Rgb8)
+            .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
             .expect("host decode");
         let max_delta = downloaded
             .iter()

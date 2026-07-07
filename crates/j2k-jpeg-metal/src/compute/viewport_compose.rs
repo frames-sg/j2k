@@ -7,7 +7,9 @@ use crate::viewport::ViewportTile;
 use crate::{Error, Surface};
 
 use super::viewport_cache::{cached_plane_stage, ViewportPlaneWriter};
-use super::{with_runtime, with_runtime_for_session};
+use super::with_runtime;
+#[cfg(test)]
+use super::with_runtime_for_session;
 
 pub(crate) fn compose_rgb_viewport_from_regions(
     decoder: &CpuDecoder<'_>,
@@ -49,6 +51,7 @@ pub(crate) fn compose_rgb_viewport_from_regions(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn compose_rgb_viewport_from_regions_into_output_with_session(
     decoder: &CpuDecoder<'_>,
     pool: &mut j2k_jpeg::ScratchPool,
@@ -91,6 +94,7 @@ pub(crate) fn compose_rgb_viewport_from_regions_into_output_with_session(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn compose_rgb_viewport_from_regions_into_textures_with_session(
     decoder: &CpuDecoder<'_>,
     pool: &mut j2k_jpeg::ScratchPool,

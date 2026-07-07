@@ -1,4 +1,4 @@
-use j2k::adapter::device_plan::{DeviceDecodePlan, DeviceDecodeRequest};
+use j2k::{DeviceDecodePlan, DeviceDecodeRequest};
 use j2k_core::{Downscale, Rect};
 
 #[test]

@@ -2,38 +2,36 @@
 
 use crate::backend::{ColorSpace, DecodedComponents as NativeDecodedComponents, Image, RawBitmap};
 use crate::J2kError;
-use alloc::string::ToString;
 use alloc::vec::Vec;
-use core::convert::Infallible;
+use core::fmt;
 use j2k_core::{validate_strided_output_buffer, DecodeOutcome, PixelFormat, Rect, Unsupported};
-pub(crate) type J2kDecodeOutcome = DecodeOutcome<Infallible>;
+use j2k_native::DecodeSettings;
 
-macro_rules! impl_component_plane_metadata_accessors {
-    () => {
-        /// Width and height of this decoded plane in output samples.
-        #[must_use]
-        pub fn dimensions(&self) -> (u32, u32) {
-            self.dimensions
-        }
+/// Non-fatal JPEG 2000 decode warning surfaced through decode outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum J2kDecodeWarning {
+    /// Decode used lenient settings, so recoverable malformed optional metadata
+    /// may be tolerated instead of rejected as it would be in strict mode.
+    LenientDecodeMode,
+}
 
-        /// Horizontal and vertical SIZ sampling factors (`XRsiz`, `YRsiz`).
-        #[must_use]
-        pub fn sampling(&self) -> (u8, u8) {
-            self.sampling
+impl fmt::Display for J2kDecodeWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LenientDecodeMode => f.write_str("lenient decode mode enabled"),
         }
+    }
+}
 
-        /// Bit depth of this component plane.
-        #[must_use]
-        pub fn bit_depth(&self) -> u8 {
-            self.bit_depth
-        }
+pub(crate) type J2kDecodeOutcome = DecodeOutcome<J2kDecodeWarning>;
 
-        /// Whether this component plane stores signed sample values.
-        #[must_use]
-        pub fn signed(&self) -> bool {
-            self.signed
-        }
-    };
+pub(crate) fn decode_warnings_for_settings(settings: DecodeSettings) -> Vec<J2kDecodeWarning> {
+    if settings.lenient_tolerance_enabled() {
+        Vec::from([J2kDecodeWarning::LenientDecodeMode])
+    } else {
+        Vec::new()
+    }
 }
 
 macro_rules! impl_decoded_components_metadata_accessors {
@@ -129,7 +127,7 @@ impl<'a> J2kComponentPlane<'a> {
         self.samples
     }
 
-    impl_component_plane_metadata_accessors!();
+    j2k_native::__j2k_component_plane_metadata_accessors!();
 }
 
 /// Borrowed decoded component planes for an image.
@@ -193,7 +191,7 @@ impl J2kNativeComponentPlane {
         &self.data
     }
 
-    impl_component_plane_metadata_accessors!();
+    j2k_native::__j2k_component_plane_metadata_accessors!();
 
     /// Bytes used for each packed little-endian sample in [`Self::data`].
     #[must_use]
@@ -247,12 +245,12 @@ pub(crate) fn decode_image_into_with_native_context<'a>(
             if can_decode_u8_directly(image.color_space(), image.has_alpha(), dims, stride, fmt) {
                 image
                     .decode_into(out, native_context)
-                    .map_err(|err| J2kError::Backend(err.to_string()))?;
+                    .map_err(J2kError::from_native_decode_error)?;
                 return Ok(());
             }
             let decoded = image
                 .decode_with_context(native_context)
-                .map_err(|err| J2kError::Backend(err.to_string()))?;
+                .map_err(J2kError::from_native_decode_error)?;
             write_u8_output(
                 image.color_space(),
                 image.has_alpha(),
@@ -266,7 +264,7 @@ pub(crate) fn decode_image_into_with_native_context<'a>(
         PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
             let raw = image
                 .decode_native_with_context(native_context)
-                .map_err(|err| J2kError::Backend(err.to_string()))?;
+                .map_err(J2kError::from_native_decode_error)?;
             write_u16_output(
                 image.color_space(),
                 image.has_alpha(),
@@ -311,13 +309,13 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {
             let components = image
                 .decode_region_components_with_context((roi.x, roi.y, roi.w, roi.h), native_context)
-                .map_err(|err| J2kError::Backend(err.to_string()))?;
+                .map_err(J2kError::from_native_decode_error)?;
             write_components_u8_output(&components, out, stride, fmt)
         }
         PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
             let raw = image
                 .decode_native_region_with_context((roi.x, roi.y, roi.w, roi.h), native_context)
-                .map_err(|err| J2kError::Backend(err.to_string()))?;
+                .map_err(J2kError::from_native_decode_error)?;
             write_u16_output(
                 image.color_space(),
                 image.has_alpha(),
@@ -395,7 +393,7 @@ fn validate_component_planes(
     for (index, plane) in planes.iter().enumerate() {
         let samples = plane.samples().len();
         if samples < expected_samples {
-            return Err(J2kError::Backend(format!(
+            return Err(J2kError::backend(format!(
                 "backend component plane {index} has {samples} samples, expected at least {expected_samples}"
             )));
         }
@@ -799,7 +797,11 @@ fn convert_or_copy_u16(
 mod tests {
     #[cfg(target_pointer_width = "32")]
     use super::J2kError;
-    use super::{can_decode_u8_directly, component_sample_count, ColorSpace, PixelFormat};
+    use super::{
+        can_decode_u8_directly, component_sample_count, decode_warnings_for_settings, ColorSpace,
+        J2kDecodeWarning, PixelFormat,
+    };
+    use j2k_native::DecodeSettings;
 
     #[test]
     fn direct_u8_decode_accepts_exact_rgb_and_gray_layouts() {
@@ -847,6 +849,15 @@ mod tests {
     #[test]
     fn component_sample_count_matches_image_dimensions() {
         assert_eq!(component_sample_count((16, 8)).expect("sample count"), 128);
+    }
+
+    #[test]
+    fn decode_warnings_report_lenient_decode_mode() {
+        assert_eq!(
+            decode_warnings_for_settings(DecodeSettings::default()),
+            vec![J2kDecodeWarning::LenientDecodeMode]
+        );
+        assert!(decode_warnings_for_settings(DecodeSettings::strict()).is_empty());
     }
 
     #[cfg(target_pointer_width = "32")]

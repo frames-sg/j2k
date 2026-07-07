@@ -380,6 +380,19 @@ pub enum J2kPacketizationProgressionOrder {
     Cprl,
 }
 
+impl J2kPacketizationProgressionOrder {
+    /// Return the JPEG 2000 COD progression-order byte for this order.
+    pub const fn codestream_order_code(self) -> u8 {
+        match self {
+            Self::Lrcp => 0x00,
+            Self::Rlcp => 0x01,
+            Self::Rpcl => 0x02,
+            Self::Pcrl => 0x03,
+            Self::Cprl => 0x04,
+        }
+    }
+}
+
 /// Adapter LRCP packetization subband precinct for backend experimentation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct J2kPacketizationSubband<'a> {
@@ -415,6 +428,55 @@ pub struct J2kPacketizationPacketDescriptor {
     pub precinct: u64,
 }
 
+/// Sort explicit packet descriptors according to a JPEG 2000 progression order.
+pub fn sort_packet_descriptors_for_progression(
+    descriptors: &mut [J2kPacketizationPacketDescriptor],
+    progression_order: J2kPacketizationProgressionOrder,
+) {
+    match progression_order {
+        J2kPacketizationProgressionOrder::Lrcp => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.layer,
+                descriptor.resolution,
+                descriptor.component,
+                descriptor.precinct,
+            )
+        }),
+        J2kPacketizationProgressionOrder::Rlcp => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.resolution,
+                descriptor.layer,
+                descriptor.component,
+                descriptor.precinct,
+            )
+        }),
+        J2kPacketizationProgressionOrder::Rpcl => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.resolution,
+                descriptor.precinct,
+                descriptor.component,
+                descriptor.layer,
+            )
+        }),
+        J2kPacketizationProgressionOrder::Pcrl => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.precinct,
+                descriptor.component,
+                descriptor.resolution,
+                descriptor.layer,
+            )
+        }),
+        J2kPacketizationProgressionOrder::Cprl => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.component,
+                descriptor.precinct,
+                descriptor.resolution,
+                descriptor.layer,
+            )
+        }),
+    }
+}
+
 /// Adapter LRCP packetization job for backend experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct J2kPacketizationEncodeJob<'a> {
@@ -432,6 +494,78 @@ pub struct J2kPacketizationEncodeJob<'a> {
     pub packet_descriptors: &'a [J2kPacketizationPacketDescriptor],
     /// Packet payload prepared by Tier-1, in LRCP packet order.
     pub resolutions: &'a [J2kPacketizationResolution<'a>],
+}
+
+#[cfg(test)]
+mod packet_order_tests {
+    use super::{
+        sort_packet_descriptors_for_progression, J2kPacketizationPacketDescriptor,
+        J2kPacketizationProgressionOrder,
+    };
+
+    fn descriptors() -> [J2kPacketizationPacketDescriptor; 3] {
+        [
+            J2kPacketizationPacketDescriptor {
+                packet_index: 0,
+                state_index: 0,
+                layer: 1,
+                resolution: 0,
+                component: 2,
+                precinct: 1,
+            },
+            J2kPacketizationPacketDescriptor {
+                packet_index: 1,
+                state_index: 1,
+                layer: 0,
+                resolution: 1,
+                component: 1,
+                precinct: 0,
+            },
+            J2kPacketizationPacketDescriptor {
+                packet_index: 2,
+                state_index: 2,
+                layer: 0,
+                resolution: 0,
+                component: 0,
+                precinct: 2,
+            },
+        ]
+    }
+
+    #[test]
+    fn progression_order_codes_match_codestream_values() {
+        assert_eq!(
+            J2kPacketizationProgressionOrder::Lrcp.codestream_order_code(),
+            0
+        );
+        assert_eq!(
+            J2kPacketizationProgressionOrder::Rlcp.codestream_order_code(),
+            1
+        );
+        assert_eq!(
+            J2kPacketizationProgressionOrder::Rpcl.codestream_order_code(),
+            2
+        );
+        assert_eq!(
+            J2kPacketizationProgressionOrder::Pcrl.codestream_order_code(),
+            3
+        );
+        assert_eq!(
+            J2kPacketizationProgressionOrder::Cprl.codestream_order_code(),
+            4
+        );
+    }
+
+    #[test]
+    fn packet_descriptor_sort_uses_requested_progression_order() {
+        let mut lrcp = descriptors();
+        sort_packet_descriptors_for_progression(&mut lrcp, J2kPacketizationProgressionOrder::Lrcp);
+        assert_eq!(lrcp.map(|descriptor| descriptor.packet_index), [2, 1, 0]);
+
+        let mut pcrl = descriptors();
+        sort_packet_descriptors_for_progression(&mut pcrl, J2kPacketizationProgressionOrder::Pcrl);
+        assert_eq!(pcrl.map(|descriptor| descriptor.packet_index), [1, 0, 2]);
+    }
 }
 
 /// Adapter encode-stage dispatch counters for backend experimentation.
@@ -502,6 +636,187 @@ impl J2kEncodeDispatchReport {
 /// Adapter CPU-only encode accelerator that always falls back to native stages.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CpuOnlyJ2kEncodeStageAccelerator;
+
+/// Adapter JPEG 2000 encode-stage accelerator for backend experimentation.
+pub trait J2kEncodeStageAccelerator {
+    /// Report cumulative backend dispatches completed by this accelerator.
+    fn dispatch_report(&self) -> J2kEncodeDispatchReport {
+        J2kEncodeDispatchReport::default()
+    }
+
+    /// Optionally deinterleave interleaved pixel bytes into f32 component planes.
+    ///
+    /// Return `Ok(Some(components))` with one plane per component. Return
+    /// `Ok(None)` to use the CPU fallback.
+    fn encode_deinterleave(
+        &mut self,
+        _job: J2kDeinterleaveToF32Job<'_>,
+    ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally apply forward RCT in place.
+    ///
+    /// Return `Ok(true)` after writing transformed planes. Return `Ok(false)`
+    /// to use the CPU fallback.
+    fn encode_forward_rct(
+        &mut self,
+        _job: J2kForwardRctJob<'_>,
+    ) -> core::result::Result<bool, &'static str> {
+        Ok(false)
+    }
+
+    /// Optionally apply forward ICT in place.
+    ///
+    /// Return `Ok(true)` after writing transformed planes. Return `Ok(false)`
+    /// to use the CPU fallback.
+    fn encode_forward_ict(
+        &mut self,
+        _job: J2kForwardIctJob<'_>,
+    ) -> core::result::Result<bool, &'static str> {
+        Ok(false)
+    }
+
+    /// Optionally run a forward reversible 5/3 DWT.
+    ///
+    /// Return `Ok(Some(output))` with all subbands populated. Return
+    /// `Ok(None)` to use the CPU fallback.
+    fn encode_forward_dwt53(
+        &mut self,
+        _job: J2kForwardDwt53Job<'_>,
+    ) -> core::result::Result<Option<J2kForwardDwt53Output>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally run a forward irreversible 9/7 DWT.
+    ///
+    /// Return `Ok(Some(output))` with all subbands populated. Return
+    /// `Ok(None)` to use the CPU fallback.
+    fn encode_forward_dwt97(
+        &mut self,
+        _job: J2kForwardDwt97Job<'_>,
+    ) -> core::result::Result<Option<J2kForwardDwt97Output>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally quantize one sub-band.
+    ///
+    /// Return `Ok(Some(coefficients))` with one quantized coefficient for each
+    /// input coefficient. Return `Ok(None)` to use the CPU fallback.
+    fn encode_quantize_subband(
+        &mut self,
+        _job: J2kQuantizeSubbandJob<'_>,
+    ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally encode one classic Tier-1 code-block.
+    ///
+    /// Return `Ok(Some(output))` with encoded bytes and pass metadata. Return
+    /// `Ok(None)` to use the CPU fallback.
+    fn encode_tier1_code_block(
+        &mut self,
+        _job: J2kTier1CodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally encode multiple classic Tier-1 code-blocks in one backend dispatch.
+    ///
+    /// Return `Ok(Some(outputs))` with one encoded output per input job. Return
+    /// `Ok(None)` to use the per-block hook or CPU fallback.
+    fn encode_tier1_code_blocks(
+        &mut self,
+        _jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<EncodedJ2kCodeBlock>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally encode one HTJ2K code-block.
+    ///
+    /// Return `Ok(Some(output))` with encoded bytes and pass metadata. Return
+    /// `Ok(None)` to use the CPU fallback.
+    fn encode_ht_code_block(
+        &mut self,
+        _job: J2kHtCodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally encode multiple HTJ2K code-blocks in one backend dispatch.
+    ///
+    /// Return `Ok(Some(outputs))` with one encoded output per input job. Return
+    /// `Ok(None)` to use the per-block hook or CPU fallback.
+    fn encode_ht_code_blocks(
+        &mut self,
+        _jobs: &[J2kHtCodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally quantize and encode one HTJ2K cleanup/refinement sub-band.
+    ///
+    /// Return `Ok(Some(outputs))` with one encoded output per code block in
+    /// raster code-block order. Return `Ok(None)` to use the separate
+    /// quantization and code-block hooks or CPU fallback.
+    fn encode_ht_subband(
+        &mut self,
+        _job: J2kHtSubbandEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally encode the complete HTJ2K tile packet body.
+    ///
+    /// Return `Ok(Some(bytes))` with the complete tile bitstream body. CPU
+    /// marker/header writing remains outside this hook. Return `Ok(None)` to
+    /// use the normal staged encode pipeline.
+    fn encode_htj2k_tile(
+        &mut self,
+        _job: J2kHtj2kTileEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Return whether native CPU code-block fallback should use internal rayon parallelism.
+    ///
+    /// External accelerators keep serial per-block fallback so their hooks still
+    /// observe every fallback block after a declined batch hook.
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        false
+    }
+
+    /// Return whether whole-tile CPU-only batch encode may be parallelized by callers.
+    ///
+    /// This is narrower than [`Self::prefer_parallel_cpu_code_block_fallback`]:
+    /// callers must only bypass the supplied accelerator when it is known to
+    /// have no observable hooks.
+    fn prefer_parallel_cpu_tile_encode(&self) -> bool {
+        false
+    }
+
+    /// Optionally packetize prepared packet contributions.
+    ///
+    /// Return `Ok(Some(bytes))` with the complete tile bitstream. Return
+    /// `Ok(None)` to use the CPU fallback.
+    fn encode_packetization(
+        &mut self,
+        _job: J2kPacketizationEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        Ok(None)
+    }
+}
+
+#[doc(hidden)]
+impl J2kEncodeStageAccelerator for CpuOnlyJ2kEncodeStageAccelerator {
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        true
+    }
+
+    fn prefer_parallel_cpu_tile_encode(&self) -> bool {
+        true
+    }
+}
 
 /// Multipliers applied to irreversible 9/7 quantization step sizes by subband.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -10,6 +10,11 @@
 
 /// JPEG 2000 DWT constants.
 pub mod dwt;
+/// Generated backend source fragments derived from codec constants.
+pub mod generated {
+    /// Metal source fragment defining JPEG 2000 DWT 9/7 constants.
+    pub const DWT97_CONSTANTS_METAL: &str = include_str!("../generated/dwt97_constants.metal");
+}
 /// Baseline JPEG constants.
 pub mod jpeg;
 /// JPEG 2000 multi-component transform constants.

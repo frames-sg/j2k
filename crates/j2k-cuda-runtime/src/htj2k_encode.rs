@@ -1,9 +1,8 @@
 use crate::{
     bytes::{
         htj2k_encode_compact_jobs_as_bytes, htj2k_encode_jobs_as_bytes,
-        htj2k_encode_multi_input_jobs_as_bytes, htj2k_encode_params_as_bytes,
-        htj2k_encode_status_as_bytes, htj2k_encode_status_as_bytes_mut,
-        htj2k_encode_statuses_as_bytes_mut, htj2k_encode_statuses_byte_len, u16_slice_as_bytes,
+        htj2k_encode_multi_input_jobs_as_bytes, htj2k_encode_statuses_as_bytes_mut,
+        htj2k_encode_statuses_byte_len, u16_slice_as_bytes,
     },
     context::{
         CudaContext, CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kCompactEncodedCodeBlocks,
@@ -12,7 +11,7 @@ use crate::{
     driver::CuFunction,
     error::CudaError,
     execution::{cuda_kernel_param, CudaExecutionStats},
-    htj2k_decode::{HTJ2K_STATUS_OK, HTJ2K_STATUS_UNSUPPORTED},
+    htj2k_decode::HTJ2K_STATUS_OK,
     kernels::{
         htj2k_codeblock_sample_launch_geometry, htj2k_encode_codeblock_launch_geometry, CudaKernel,
     },
@@ -22,6 +21,7 @@ use crate::{
     },
 };
 
+#[doc(hidden)]
 /// Static HTJ2K cleanup encoder lookup tables uploaded for CUDA code-block encode.
 #[derive(Clone, Copy, Debug)]
 pub struct CudaHtj2kEncodeTables<'a> {
@@ -34,6 +34,7 @@ pub struct CudaHtj2kEncodeTables<'a> {
 }
 
 /// Device-resident HTJ2K cleanup encode lookup tables reused across sub-band dispatches.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaHtj2kEncodeResources {
     pub(crate) vlc_table0: CudaDeviceBuffer,
@@ -41,21 +42,45 @@ pub struct CudaHtj2kEncodeResources {
     pub(crate) uvlc_table: CudaDeviceBuffer,
 }
 
+impl CudaHtj2kEncodeResources {
+    fn launch_tables(&self) -> CudaHtj2kEncodeLaunchTables<'_> {
+        CudaHtj2kEncodeLaunchTables {
+            vlc_table0: &self.vlc_table0,
+            vlc_table1: &self.vlc_table1,
+            uvlc_table: &self.uvlc_table,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CudaHtj2kEncodeLaunchTables<'a> {
+    vlc_table0: &'a CudaDeviceBuffer,
+    vlc_table1: &'a CudaDeviceBuffer,
+    uvlc_table: &'a CudaDeviceBuffer,
+}
+
+struct CudaHtj2kEncodeCodeblocksLaunch<'a> {
+    coefficients: &'a CudaDeviceBuffer,
+    output: &'a CudaDeviceBuffer,
+    jobs: &'a CudaDeviceBuffer,
+    tables: CudaHtj2kEncodeLaunchTables<'a>,
+    statuses: &'a CudaDeviceBuffer,
+    job_count: usize,
+}
+
+struct CudaHtj2kEncodeMultiInputLaunch<'a> {
+    output: &'a CudaDeviceBuffer,
+    jobs: &'a CudaDeviceBuffer,
+    tables: CudaHtj2kEncodeLaunchTables<'a>,
+    statuses: &'a CudaDeviceBuffer,
+    job_count: usize,
+}
+
 pub(crate) const HTJ2K_ENCODE_MAX_CODEBLOCK_WIDTH: u32 = 1024;
 
 pub(crate) const HTJ2K_ENCODE_MAX_CODEBLOCK_SAMPLES: usize = 4096;
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct CudaHtj2kEncodeParams {
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) coefficient_stride: u32,
-    pub(crate) total_bitplanes: u32,
-    pub(crate) output_capacity: u32,
-    pub(crate) target_coding_passes: u32,
-}
-
+#[doc(hidden)]
 /// One HTJ2K code-block encode job consumed by the CUDA batch encoder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeCodeBlockJob {
@@ -74,6 +99,7 @@ pub struct CudaHtj2kEncodeCodeBlockJob {
     pub target_coding_passes: u8,
 }
 
+#[doc(hidden)]
 /// One HTJ2K code-block region consumed from a strided resident coefficient buffer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeCodeBlockRegionJob {
@@ -95,6 +121,7 @@ pub struct CudaHtj2kEncodeCodeBlockRegionJob {
 }
 
 /// Resident coefficient buffer and jobs for a multi-input HTJ2K encode batch.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct CudaHtj2kEncodeResidentTarget<'a> {
     /// Device buffer containing quantized i32 coefficients.
@@ -141,7 +168,37 @@ pub(crate) struct CudaHtj2kEncodeCompactJob {
     pub(crate) reserved: u32,
 }
 
+trait Htj2kCompactPlanJob {
+    fn output_offset(&self) -> u32;
+    fn output_capacity(&self) -> u32;
+}
+
+impl Htj2kCompactPlanJob for CudaHtj2kEncodeKernelJob {
+    #[inline]
+    fn output_offset(&self) -> u32 {
+        self.output_offset
+    }
+
+    #[inline]
+    fn output_capacity(&self) -> u32 {
+        self.output_capacity
+    }
+}
+
+impl Htj2kCompactPlanJob for CudaHtj2kEncodeMultiInputKernelJob {
+    #[inline]
+    fn output_offset(&self) -> u32 {
+        self.output_offset
+    }
+
+    #[inline]
+    fn output_capacity(&self) -> u32 {
+        self.output_capacity
+    }
+}
+
 /// Status written by the CUDA HTJ2K code-block cleanup-pass encoder.
+#[doc(hidden)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeStatus {
@@ -171,6 +228,7 @@ impl CudaHtj2kEncodeStatus {
 }
 
 /// CUDA event timings for HTJ2K cleanup-pass encode stages.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeStageTimings {
     /// Total HT cleanup-pass encode, compaction, and required result readback time, in microseconds.
@@ -206,6 +264,7 @@ impl CudaHtj2kEncodeStageTimings {
 }
 
 /// Host-visible HTJ2K cleanup-pass encode result produced by a CUDA kernel.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaHtj2kEncodedCodeBlock {
     pub(crate) data: Vec<u8>,
@@ -287,6 +346,7 @@ fn validate_resident_coefficient_capacity(
 }
 
 /// Host-visible HTJ2K cleanup-pass encode batch produced by one CUDA kernel dispatch.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaHtj2kEncodedCodeBlocks {
     pub(crate) code_blocks: Vec<CudaHtj2kEncodedCodeBlock>,
@@ -320,6 +380,7 @@ pub(crate) const HTJ2K_ENCODE_OUTPUT_CAPACITY: usize = 24 * 1024;
 
 impl CudaContext {
     /// Upload static HTJ2K cleanup encoder lookup tables once for reuse.
+    #[doc(hidden)]
     pub fn upload_htj2k_encode_resources(
         &self,
         tables: CudaHtj2kEncodeTables<'_>,
@@ -337,125 +398,8 @@ impl CudaContext {
         })
     }
 
-    /// Encode one HTJ2K cleanup-pass code block with CUDA.
-    pub fn encode_htj2k_codeblock(
-        &self,
-        coefficients: &[i32],
-        width: u32,
-        height: u32,
-        total_bitplanes: u8,
-        tables: CudaHtj2kEncodeTables<'_>,
-    ) -> Result<CudaHtj2kEncodedCodeBlock, CudaError> {
-        let resources = self.upload_htj2k_encode_resources(tables)?;
-        self.encode_htj2k_codeblock_with_resources(
-            coefficients,
-            width,
-            height,
-            total_bitplanes,
-            &resources,
-        )
-    }
-
-    /// Encode one HTJ2K cleanup-pass code block with pre-uploaded lookup tables.
-    pub fn encode_htj2k_codeblock_with_resources(
-        &self,
-        coefficients: &[i32],
-        width: u32,
-        height: u32,
-        total_bitplanes: u8,
-        resources: &CudaHtj2kEncodeResources,
-    ) -> Result<CudaHtj2kEncodedCodeBlock, CudaError> {
-        let expected_len = checked_image_words(width, height, 1)?;
-        if coefficients.len() != expected_len {
-            return Err(CudaError::LengthTooLarge {
-                len: coefficients.len(),
-            });
-        }
-
-        self.inner.set_current()?;
-        let coefficient_buffer = self.upload_i32_pinned(coefficients)?;
-        let output_buffer = self.allocate(HTJ2K_ENCODE_OUTPUT_CAPACITY)?;
-        let params = CudaHtj2kEncodeParams {
-            width,
-            height,
-            coefficient_stride: width,
-            total_bitplanes: u32::from(total_bitplanes),
-            output_capacity: u32::try_from(HTJ2K_ENCODE_OUTPUT_CAPACITY).map_err(|_| {
-                CudaError::LengthTooLarge {
-                    len: HTJ2K_ENCODE_OUTPUT_CAPACITY,
-                }
-            })?,
-            target_coding_passes: 1,
-        };
-        let params_buffer = self.upload(htj2k_encode_params_as_bytes(&params))?;
-        let initial_status = CudaHtj2kEncodeStatus {
-            code: HTJ2K_STATUS_UNSUPPORTED,
-            ..CudaHtj2kEncodeStatus::default()
-        };
-        let status_buffer = self.upload(htj2k_encode_status_as_bytes(&initial_status))?;
-
-        let ((), ht_encode_us) =
-            self.time_default_stream_named_us("j2k.htj2k.encode.codeblock", || {
-                self.launch_htj2k_encode_codeblock(
-                    &coefficient_buffer,
-                    &output_buffer,
-                    &params_buffer,
-                    &resources.vlc_table0,
-                    &resources.vlc_table1,
-                    &resources.uvlc_table,
-                    &status_buffer,
-                )
-            })?;
-        let (status, status_readback_us) = self.time_default_stream_named_us(
-            "j2k.htj2k.encode.codeblock.status_readback",
-            || {
-                let mut status = CudaHtj2kEncodeStatus::default();
-                status_buffer.copy_to_host(htj2k_encode_status_as_bytes_mut(&mut status))?;
-                if !status.is_ok() {
-                    return Err(CudaError::KernelStatus {
-                        kernel: "j2k_htj2k_encode_codeblock",
-                        code: status.code,
-                        detail: status.detail,
-                    });
-                }
-                Ok(status)
-            },
-        )?;
-        let data_len = usize::try_from(status.data_len)
-            .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
-        if data_len > HTJ2K_ENCODE_OUTPUT_CAPACITY {
-            return Err(CudaError::LengthTooLarge { len: data_len });
-        }
-        let (data, output_readback_us) = if data_len == 0 {
-            (Vec::new(), 0)
-        } else {
-            self.time_default_stream_named_us("j2k.htj2k.encode.codeblock.output_readback", || {
-                let mut data = vec![0u8; data_len];
-                output_buffer.copy_range_to_host(0, &mut data)?;
-                Ok(data)
-            })?
-        };
-        let stage_timings = CudaHtj2kEncodeStageTimings::from_parts(
-            ht_encode_us,
-            status_readback_us,
-            0,
-            output_readback_us,
-        );
-
-        Ok(CudaHtj2kEncodedCodeBlock {
-            data,
-            status,
-            execution: CudaExecutionStats {
-                kernel_dispatches: 1,
-                copy_kernel_dispatches: 0,
-                decode_kernel_dispatches: 0,
-                hardware_decode: false,
-            },
-            stage_timings,
-        })
-    }
-
     /// Encode multiple HTJ2K cleanup-pass code blocks with one CUDA dispatch.
+    #[doc(hidden)]
     pub fn encode_htj2k_codeblocks(
         &self,
         coefficients: &[i32],
@@ -467,6 +411,7 @@ impl CudaContext {
     }
 
     /// Encode multiple HTJ2K cleanup-pass code blocks with pre-uploaded lookup tables.
+    #[doc(hidden)]
     pub fn encode_htj2k_codeblocks_with_resources(
         &self,
         coefficients: &[i32],
@@ -492,6 +437,7 @@ impl CudaContext {
     }
 
     /// Encode multiple HTJ2K cleanup-pass code blocks from resident quantized coefficients.
+    #[doc(hidden)]
     pub fn encode_htj2k_codeblocks_resident(
         &self,
         coefficients: &CudaDeviceBuffer,
@@ -500,34 +446,19 @@ impl CudaContext {
         tables: CudaHtj2kEncodeTables<'_>,
     ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
         let resources = self.upload_htj2k_encode_resources(tables)?;
-        self.encode_htj2k_codeblocks_resident_with_resources(
-            coefficients,
-            coefficient_count,
-            jobs,
-            &resources,
-        )
-    }
-
-    /// Encode multiple cleanup-pass code blocks from resident coefficients with lookup table reuse.
-    pub fn encode_htj2k_codeblocks_resident_with_resources(
-        &self,
-        coefficients: &CudaDeviceBuffer,
-        coefficient_count: usize,
-        jobs: &[CudaHtj2kEncodeCodeBlockJob],
-        resources: &CudaHtj2kEncodeResources,
-    ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
         let pool = self.buffer_pool();
         self.encode_htj2k_codeblocks_resident_with_resources_and_pool(
             coefficients,
             coefficient_count,
             jobs,
-            resources,
+            &resources,
             &pool,
         )
     }
 
     /// Encode multiple cleanup-pass code blocks from resident coefficients with
     /// lookup table reuse and caller-owned transient buffer reuse.
+    #[doc(hidden)]
     pub fn encode_htj2k_codeblocks_resident_with_resources_and_pool(
         &self,
         coefficients: &CudaDeviceBuffer,
@@ -552,6 +483,7 @@ impl CudaContext {
 
     /// Encode multiple cleanup-pass code-block batches from independent
     /// resident coefficient buffers with one CUDA dispatch.
+    #[doc(hidden)]
     pub fn encode_htj2k_codeblocks_multi_resident_with_resources_and_pool(
         &self,
         targets: &[CudaHtj2kEncodeResidentTarget<'_>],
@@ -567,6 +499,7 @@ impl CudaContext {
     /// Encode multiple cleanup-pass code-block batches from independent resident
     /// coefficient buffers with one CUDA dispatch, returning one compact payload
     /// plus per-block ranges.
+    #[doc(hidden)]
     pub fn encode_htj2k_codeblocks_multi_resident_compact_with_resources_and_pool(
         &self,
         targets: &[CudaHtj2kEncodeResidentTarget<'_>],
@@ -591,6 +524,7 @@ impl CudaContext {
     }
 
     /// Encode cleanup-pass code blocks from strided resident coefficient regions.
+    #[doc(hidden)]
     pub fn encode_htj2k_codeblock_regions_resident(
         &self,
         coefficients: &CudaDeviceBuffer,
@@ -599,34 +533,19 @@ impl CudaContext {
         tables: CudaHtj2kEncodeTables<'_>,
     ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
         let resources = self.upload_htj2k_encode_resources(tables)?;
-        self.encode_htj2k_codeblock_regions_resident_with_resources(
-            coefficients,
-            coefficient_count,
-            jobs,
-            &resources,
-        )
-    }
-
-    /// Encode strided resident code-block regions with pre-uploaded lookup tables.
-    pub fn encode_htj2k_codeblock_regions_resident_with_resources(
-        &self,
-        coefficients: &CudaDeviceBuffer,
-        coefficient_count: usize,
-        jobs: &[CudaHtj2kEncodeCodeBlockRegionJob],
-        resources: &CudaHtj2kEncodeResources,
-    ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
         let pool = self.buffer_pool();
         self.encode_htj2k_codeblock_regions_resident_with_resources_and_pool(
             coefficients,
             coefficient_count,
             jobs,
-            resources,
+            &resources,
             &pool,
         )
     }
 
     /// Encode strided resident code-block regions with pre-uploaded lookup
     /// tables and caller-owned transient buffer reuse.
+    #[doc(hidden)]
     pub fn encode_htj2k_codeblock_regions_resident_with_resources_and_pool(
         &self,
         coefficients: &CudaDeviceBuffer,
@@ -704,16 +623,14 @@ impl CudaContext {
 
         let ((), ht_encode_us) =
             self.time_default_stream_named_us("j2k.htj2k.encode.codeblocks", || {
-                self.launch_htj2k_encode_codeblocks(
-                    coefficient_buffer,
-                    pooled_device_buffer(&output_buffer)?,
-                    pooled_device_buffer(&jobs_buffer)?,
-                    &resources.vlc_table0,
-                    &resources.vlc_table1,
-                    &resources.uvlc_table,
-                    pooled_device_buffer(&status_buffer)?,
-                    kernel_jobs.len(),
-                )
+                self.launch_htj2k_encode_codeblocks(&CudaHtj2kEncodeCodeblocksLaunch {
+                    coefficients: coefficient_buffer,
+                    output: pooled_device_buffer(&output_buffer)?,
+                    jobs: pooled_device_buffer(&jobs_buffer)?,
+                    tables: resources.launch_tables(),
+                    statuses: pooled_device_buffer(&status_buffer)?,
+                    job_count: kernel_jobs.len(),
+                })
             })?;
         let (statuses, status_readback_us) = self.time_default_stream_named_us(
             "j2k.htj2k.encode.codeblocks.status_readback",
@@ -852,33 +769,33 @@ impl CudaContext {
             self.time_default_stream_named_us("j2k.htj2k.encode.codeblocks.multi_input", || {
                 if cleanup_only_64 {
                     self.launch_htj2k_encode_codeblocks_multi_input_cleanup_64(
-                        pooled_device_buffer(&output_buffer)?,
-                        pooled_device_buffer(&jobs_buffer)?,
-                        &resources.vlc_table0,
-                        &resources.vlc_table1,
-                        &resources.uvlc_table,
-                        pooled_device_buffer(&status_buffer)?,
-                        kernel_jobs.len(),
+                        &CudaHtj2kEncodeMultiInputLaunch {
+                            output: pooled_device_buffer(&output_buffer)?,
+                            jobs: pooled_device_buffer(&jobs_buffer)?,
+                            tables: resources.launch_tables(),
+                            statuses: pooled_device_buffer(&status_buffer)?,
+                            job_count: kernel_jobs.len(),
+                        },
                     )
                 } else if cleanup_only {
                     self.launch_htj2k_encode_codeblocks_multi_input_cleanup(
-                        pooled_device_buffer(&output_buffer)?,
-                        pooled_device_buffer(&jobs_buffer)?,
-                        &resources.vlc_table0,
-                        &resources.vlc_table1,
-                        &resources.uvlc_table,
-                        pooled_device_buffer(&status_buffer)?,
-                        kernel_jobs.len(),
+                        &CudaHtj2kEncodeMultiInputLaunch {
+                            output: pooled_device_buffer(&output_buffer)?,
+                            jobs: pooled_device_buffer(&jobs_buffer)?,
+                            tables: resources.launch_tables(),
+                            statuses: pooled_device_buffer(&status_buffer)?,
+                            job_count: kernel_jobs.len(),
+                        },
                     )
                 } else {
                     self.launch_htj2k_encode_codeblocks_multi_input(
-                        pooled_device_buffer(&output_buffer)?,
-                        pooled_device_buffer(&jobs_buffer)?,
-                        &resources.vlc_table0,
-                        &resources.vlc_table1,
-                        &resources.uvlc_table,
-                        pooled_device_buffer(&status_buffer)?,
-                        kernel_jobs.len(),
+                        &CudaHtj2kEncodeMultiInputLaunch {
+                            output: pooled_device_buffer(&output_buffer)?,
+                            jobs: pooled_device_buffer(&jobs_buffer)?,
+                            tables: resources.launch_tables(),
+                            statuses: pooled_device_buffer(&status_buffer)?,
+                            job_count: kernel_jobs.len(),
+                        },
                     )
                 }
             })?;
@@ -983,61 +900,22 @@ impl CudaContext {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn launch_htj2k_encode_codeblock(
-        &self,
-        coefficients: &CudaDeviceBuffer,
-        output: &CudaDeviceBuffer,
-        params_buffer: &CudaDeviceBuffer,
-        vlc_table0: &CudaDeviceBuffer,
-        vlc_table1: &CudaDeviceBuffer,
-        uvlc_table: &CudaDeviceBuffer,
-        status: &CudaDeviceBuffer,
-    ) -> Result<(), CudaError> {
-        let function = self.htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblock)?;
-        let mut coefficients_ptr = coefficients.device_ptr();
-        let mut output_ptr = output.device_ptr();
-        let mut params_ptr = params_buffer.device_ptr();
-        let mut vlc_table0_ptr = vlc_table0.device_ptr();
-        let mut vlc_table1_ptr = vlc_table1.device_ptr();
-        let mut uvlc_table_ptr = uvlc_table.device_ptr();
-        let mut status_ptr = status.device_ptr();
-        let mut params = cuda_kernel_params!(
-            coefficients_ptr,
-            output_ptr,
-            params_ptr,
-            vlc_table0_ptr,
-            vlc_table1_ptr,
-            uvlc_table_ptr,
-            status_ptr
-        );
-        let geometry = htj2k_encode_codeblock_launch_geometry(1)
-            .ok_or(CudaError::LengthTooLarge { len: 1 })?;
-        self.launch_kernel_async(function, geometry, &mut params)
-    }
-
-    #[allow(clippy::too_many_arguments)]
     fn launch_htj2k_encode_codeblocks(
         &self,
-        coefficients: &CudaDeviceBuffer,
-        output: &CudaDeviceBuffer,
-        jobs: &CudaDeviceBuffer,
-        vlc_table0: &CudaDeviceBuffer,
-        vlc_table1: &CudaDeviceBuffer,
-        uvlc_table: &CudaDeviceBuffer,
-        statuses: &CudaDeviceBuffer,
-        job_count: usize,
+        request: &CudaHtj2kEncodeCodeblocksLaunch<'_>,
     ) -> Result<(), CudaError> {
         let function = self.htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocks)?;
-        let mut coefficients_ptr = coefficients.device_ptr();
-        let mut output_ptr = output.device_ptr();
-        let mut jobs_ptr = jobs.device_ptr();
-        let mut vlc_table0_ptr = vlc_table0.device_ptr();
-        let mut vlc_table1_ptr = vlc_table1.device_ptr();
-        let mut uvlc_table_ptr = uvlc_table.device_ptr();
-        let mut statuses_ptr = statuses.device_ptr();
+        let mut coefficients_ptr = request.coefficients.device_ptr();
+        let mut output_ptr = request.output.device_ptr();
+        let mut jobs_ptr = request.jobs.device_ptr();
+        let mut vlc_table0_ptr = request.tables.vlc_table0.device_ptr();
+        let mut vlc_table1_ptr = request.tables.vlc_table1.device_ptr();
+        let mut uvlc_table_ptr = request.tables.uvlc_table.device_ptr();
+        let mut statuses_ptr = request.statuses.device_ptr();
         let mut job_count_u64 =
-            u64::try_from(job_count).map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
+            u64::try_from(request.job_count).map_err(|_| CudaError::LengthTooLarge {
+                len: request.job_count,
+            })?;
         let mut params = cuda_kernel_params!(
             coefficients_ptr,
             output_ptr,
@@ -1048,32 +926,30 @@ impl CudaContext {
             statuses_ptr,
             job_count_u64
         );
-        let geometry = htj2k_encode_codeblock_launch_geometry(job_count)
-            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        let geometry = htj2k_encode_codeblock_launch_geometry(request.job_count).ok_or(
+            CudaError::LengthTooLarge {
+                len: request.job_count,
+            },
+        )?;
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn launch_htj2k_encode_codeblocks_multi_input(
         &self,
-        output: &CudaDeviceBuffer,
-        jobs: &CudaDeviceBuffer,
-        vlc_table0: &CudaDeviceBuffer,
-        vlc_table1: &CudaDeviceBuffer,
-        uvlc_table: &CudaDeviceBuffer,
-        statuses: &CudaDeviceBuffer,
-        job_count: usize,
+        request: &CudaHtj2kEncodeMultiInputLaunch<'_>,
     ) -> Result<(), CudaError> {
         let function =
             self.htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInput)?;
-        let mut output_ptr = output.device_ptr();
-        let mut jobs_ptr = jobs.device_ptr();
-        let mut vlc_table0_ptr = vlc_table0.device_ptr();
-        let mut vlc_table1_ptr = vlc_table1.device_ptr();
-        let mut uvlc_table_ptr = uvlc_table.device_ptr();
-        let mut statuses_ptr = statuses.device_ptr();
+        let mut output_ptr = request.output.device_ptr();
+        let mut jobs_ptr = request.jobs.device_ptr();
+        let mut vlc_table0_ptr = request.tables.vlc_table0.device_ptr();
+        let mut vlc_table1_ptr = request.tables.vlc_table1.device_ptr();
+        let mut uvlc_table_ptr = request.tables.uvlc_table.device_ptr();
+        let mut statuses_ptr = request.statuses.device_ptr();
         let mut job_count_u64 =
-            u64::try_from(job_count).map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
+            u64::try_from(request.job_count).map_err(|_| CudaError::LengthTooLarge {
+                len: request.job_count,
+            })?;
         let mut params = cuda_kernel_params!(
             output_ptr,
             jobs_ptr,
@@ -1083,32 +959,30 @@ impl CudaContext {
             statuses_ptr,
             job_count_u64
         );
-        let geometry = htj2k_encode_codeblock_launch_geometry(job_count)
-            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        let geometry = htj2k_encode_codeblock_launch_geometry(request.job_count).ok_or(
+            CudaError::LengthTooLarge {
+                len: request.job_count,
+            },
+        )?;
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn launch_htj2k_encode_codeblocks_multi_input_cleanup(
         &self,
-        output: &CudaDeviceBuffer,
-        jobs: &CudaDeviceBuffer,
-        vlc_table0: &CudaDeviceBuffer,
-        vlc_table1: &CudaDeviceBuffer,
-        uvlc_table: &CudaDeviceBuffer,
-        statuses: &CudaDeviceBuffer,
-        job_count: usize,
+        request: &CudaHtj2kEncodeMultiInputLaunch<'_>,
     ) -> Result<(), CudaError> {
         let function =
             self.htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup)?;
-        let mut output_ptr = output.device_ptr();
-        let mut jobs_ptr = jobs.device_ptr();
-        let mut vlc_table0_ptr = vlc_table0.device_ptr();
-        let mut vlc_table1_ptr = vlc_table1.device_ptr();
-        let mut uvlc_table_ptr = uvlc_table.device_ptr();
-        let mut statuses_ptr = statuses.device_ptr();
+        let mut output_ptr = request.output.device_ptr();
+        let mut jobs_ptr = request.jobs.device_ptr();
+        let mut vlc_table0_ptr = request.tables.vlc_table0.device_ptr();
+        let mut vlc_table1_ptr = request.tables.vlc_table1.device_ptr();
+        let mut uvlc_table_ptr = request.tables.uvlc_table.device_ptr();
+        let mut statuses_ptr = request.statuses.device_ptr();
         let mut job_count_u64 =
-            u64::try_from(job_count).map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
+            u64::try_from(request.job_count).map_err(|_| CudaError::LengthTooLarge {
+                len: request.job_count,
+            })?;
         let mut params = cuda_kernel_params!(
             output_ptr,
             jobs_ptr,
@@ -1118,32 +992,30 @@ impl CudaContext {
             statuses_ptr,
             job_count_u64
         );
-        let geometry = htj2k_encode_codeblock_launch_geometry(job_count)
-            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        let geometry = htj2k_encode_codeblock_launch_geometry(request.job_count).ok_or(
+            CudaError::LengthTooLarge {
+                len: request.job_count,
+            },
+        )?;
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn launch_htj2k_encode_codeblocks_multi_input_cleanup_64(
         &self,
-        output: &CudaDeviceBuffer,
-        jobs: &CudaDeviceBuffer,
-        vlc_table0: &CudaDeviceBuffer,
-        vlc_table1: &CudaDeviceBuffer,
-        uvlc_table: &CudaDeviceBuffer,
-        statuses: &CudaDeviceBuffer,
-        job_count: usize,
+        request: &CudaHtj2kEncodeMultiInputLaunch<'_>,
     ) -> Result<(), CudaError> {
         let function = self
             .htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup64)?;
-        let mut output_ptr = output.device_ptr();
-        let mut jobs_ptr = jobs.device_ptr();
-        let mut vlc_table0_ptr = vlc_table0.device_ptr();
-        let mut vlc_table1_ptr = vlc_table1.device_ptr();
-        let mut uvlc_table_ptr = uvlc_table.device_ptr();
-        let mut statuses_ptr = statuses.device_ptr();
+        let mut output_ptr = request.output.device_ptr();
+        let mut jobs_ptr = request.jobs.device_ptr();
+        let mut vlc_table0_ptr = request.tables.vlc_table0.device_ptr();
+        let mut vlc_table1_ptr = request.tables.vlc_table1.device_ptr();
+        let mut uvlc_table_ptr = request.tables.uvlc_table.device_ptr();
+        let mut statuses_ptr = request.statuses.device_ptr();
         let mut job_count_u64 =
-            u64::try_from(job_count).map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
+            u64::try_from(request.job_count).map_err(|_| CudaError::LengthTooLarge {
+                len: request.job_count,
+            })?;
         let mut params = cuda_kernel_params!(
             output_ptr,
             jobs_ptr,
@@ -1153,8 +1025,11 @@ impl CudaContext {
             statuses_ptr,
             job_count_u64
         );
-        let geometry = htj2k_encode_codeblock_launch_geometry(job_count)
-            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        let geometry = htj2k_encode_codeblock_launch_geometry(request.job_count).ok_or(
+            CudaError::LengthTooLarge {
+                len: request.job_count,
+            },
+        )?;
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
@@ -1362,55 +1237,19 @@ pub(crate) fn htj2k_encode_compact_jobs(
     statuses: &[CudaHtj2kEncodeStatus],
     kernel_jobs: &[CudaHtj2kEncodeKernelJob],
 ) -> Result<(Vec<CudaHtj2kEncodeCompactJob>, usize), CudaError> {
-    if statuses.len() != kernel_jobs.len() {
-        return Err(CudaError::InvalidArgument {
-            message: "HTJ2K encode status count does not match job count".to_string(),
-        });
-    }
-
-    let mut compact_offset = 0usize;
-    let mut compact_jobs = Vec::with_capacity(kernel_jobs.len());
-    for (status, job) in statuses.iter().zip(kernel_jobs) {
-        let data_len = usize::try_from(status.data_len)
-            .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
-        if data_len > job.output_capacity as usize {
-            return Err(CudaError::LengthTooLarge { len: data_len });
-        }
-        let source_end = (job.output_offset as usize)
-            .checked_add(data_len)
-            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-        let job_output_end = (job.output_offset as usize)
-            .checked_add(job.output_capacity as usize)
-            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-        if source_end > job_output_end {
-            return Err(CudaError::LengthTooLarge { len: source_end });
-        }
-        compact_jobs.push(CudaHtj2kEncodeCompactJob {
-            source_offset: job.output_offset,
-            compact_offset: u32::try_from(compact_offset).map_err(|_| {
-                CudaError::LengthTooLarge {
-                    len: compact_offset,
-                }
-            })?,
-            data_len: status.data_len,
-            reserved: status.reserved2,
-        });
-        compact_offset = compact_offset
-            .checked_add(data_len)
-            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-        if compact_offset > u32::MAX as usize {
-            return Err(CudaError::LengthTooLarge {
-                len: compact_offset,
-            });
-        }
-    }
-
-    Ok((compact_jobs, compact_offset))
+    htj2k_encode_compact_jobs_impl(statuses, kernel_jobs)
 }
 
 pub(crate) fn htj2k_encode_compact_jobs_multi_input(
     statuses: &[CudaHtj2kEncodeStatus],
     kernel_jobs: &[CudaHtj2kEncodeMultiInputKernelJob],
+) -> Result<(Vec<CudaHtj2kEncodeCompactJob>, usize), CudaError> {
+    htj2k_encode_compact_jobs_impl(statuses, kernel_jobs)
+}
+
+fn htj2k_encode_compact_jobs_impl<J: Htj2kCompactPlanJob>(
+    statuses: &[CudaHtj2kEncodeStatus],
+    kernel_jobs: &[J],
 ) -> Result<(Vec<CudaHtj2kEncodeCompactJob>, usize), CudaError> {
     if statuses.len() != kernel_jobs.len() {
         return Err(CudaError::InvalidArgument {
@@ -1423,20 +1262,22 @@ pub(crate) fn htj2k_encode_compact_jobs_multi_input(
     for (status, job) in statuses.iter().zip(kernel_jobs) {
         let data_len = usize::try_from(status.data_len)
             .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
-        if data_len > job.output_capacity as usize {
+        let output_offset = job.output_offset();
+        let output_capacity = job.output_capacity();
+        if data_len > output_capacity as usize {
             return Err(CudaError::LengthTooLarge { len: data_len });
         }
-        let source_end = (job.output_offset as usize)
+        let source_end = (output_offset as usize)
             .checked_add(data_len)
             .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-        let job_output_end = (job.output_offset as usize)
-            .checked_add(job.output_capacity as usize)
+        let job_output_end = (output_offset as usize)
+            .checked_add(output_capacity as usize)
             .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
         if source_end > job_output_end {
             return Err(CudaError::LengthTooLarge { len: source_end });
         }
         compact_jobs.push(CudaHtj2kEncodeCompactJob {
-            source_offset: job.output_offset,
+            source_offset: output_offset,
             compact_offset: u32::try_from(compact_offset).map_err(|_| {
                 CudaError::LengthTooLarge {
                     len: compact_offset,

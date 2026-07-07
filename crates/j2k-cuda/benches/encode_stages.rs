@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use j2k::adapter::encode_stage::{
-    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardRctJob, J2kQuantizeSubbandJob,
-};
+use j2k::{J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardRctJob, J2kQuantizeSubbandJob};
 use j2k_cuda::CudaEncodeStageAccelerator;
 
 const BENCH_DIMS: &[u32] = &[512, 1024, 2048];

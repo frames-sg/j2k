@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{
-    submit_ready_device, BackendRequest, DecodeOutcome, Downscale, ImageCodec, ImageDecode,
-    ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, ReadySubmission, Rect,
+    submit_ready_device, BackendRequest, CpuBackedImageDecode, DecodeOutcome, Downscale,
+    ImageCodec, ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, ReadySubmission, Rect,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_jpeg::adapter::decoder_bytes;
-use j2k_jpeg::{
-    Decoder as CpuDecoder, JpegView, ScratchPool as CpuScratchPool, Warning as CpuWarning,
-};
+use j2k_jpeg::{DecodeRequest, Decoder as CpuDecoder, JpegView, Warning as CpuWarning};
 
 #[cfg(feature = "cuda-runtime")]
 use crate::owned_decode::decode_owned_cuda_rgb8;
@@ -53,7 +51,7 @@ impl<'a> Decoder<'a> {
             }
             return Err(unsupported_owned_cuda_output_format());
         }
-        let (bytes, _outcome) = self.inner.decode(fmt)?;
+        let (bytes, _outcome) = self.inner.decode_request(DecodeRequest::full(fmt))?;
         j2k_profile::emit_gpu_route_decision_profile(
             ("jpeg", "cuda"),
             (
@@ -107,7 +105,9 @@ impl<'a> Decoder<'a> {
                 reason: "J2K CUDA JPEG owned decode does not support region output",
             });
         }
-        let (bytes, outcome) = self.inner.decode_region(fmt, roi.into())?;
+        let (bytes, outcome) = self
+            .inner
+            .decode_request(DecodeRequest::region(fmt, roi.into()))?;
         wrap_surface(
             bytes,
             (outcome.decoded.w, outcome.decoded.h),
@@ -130,7 +130,9 @@ impl<'a> Decoder<'a> {
                 reason: "J2K CUDA JPEG owned decode does not support scaled output",
             });
         }
-        let (bytes, outcome) = self.inner.decode_scaled(fmt, scale)?;
+        let (bytes, outcome) = self
+            .inner
+            .decode_request(DecodeRequest::scaled(fmt, scale))?;
         wrap_surface(
             bytes,
             (outcome.decoded.w, outcome.decoded.h),
@@ -154,7 +156,9 @@ impl<'a> Decoder<'a> {
                 reason: "J2K CUDA JPEG owned decode does not support scaled region output",
             });
         }
-        let (bytes, outcome) = self.inner.decode_region_scaled(fmt, roi.into(), scale)?;
+        let (bytes, outcome) =
+            self.inner
+                .decode_request(DecodeRequest::region_scaled(fmt, roi.into(), scale))?;
         wrap_surface(
             bytes,
             (outcome.decoded.w, outcome.decoded.h),
@@ -165,99 +169,48 @@ impl<'a> Decoder<'a> {
     }
 }
 
+#[doc(hidden)]
 impl ImageCodec for Decoder<'_> {
     type Error = Error;
     type Warning = CpuWarning;
-    type Pool = CpuScratchPool;
+    type Pool = crate::ScratchPool;
 }
 
-impl<'a> ImageDecode<'a> for Decoder<'a> {
+impl<'a> CpuBackedImageDecode<'a> for Decoder<'a> {
+    type Cpu = CpuDecoder<'a>;
     type View = JpegView<'a>;
 
-    fn inspect(input: &'a [u8]) -> Result<j2k_core::Info, Self::Error> {
+    fn inspect_cpu(input: &'a [u8]) -> Result<j2k_core::Info, Self::Error> {
         Ok(CpuDecoder::inspect(input)?.to_core_info())
     }
 
-    fn parse(input: &'a [u8]) -> Result<Self::View, Self::Error> {
+    fn parse_cpu(input: &'a [u8]) -> Result<Self::View, Self::Error> {
         Ok(JpegView::parse(input)?)
     }
 
-    fn from_view(view: Self::View) -> Result<Self, Self::Error> {
+    fn from_cpu_view(view: Self::View) -> Result<Self, Self::Error> {
         Ok(Self {
             inner: CpuDecoder::from_view(view)?,
         })
     }
 
-    fn decode_into(
-        &mut self,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(self.inner.decode_into(out, stride, fmt)?.into())
+    fn cpu_decoder_mut(&mut self) -> &mut Self::Cpu {
+        &mut self.inner
     }
 
-    fn decode_into_with_scratch(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(self
-            .inner
-            .decode_into_with_scratch(pool, out, stride, fmt)?
-            .into())
-    }
-
-    fn decode_region_into(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        roi: Rect,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(self
-            .inner
-            .decode_region_into_with_scratch(pool, out, stride, fmt, roi.into())?
-            .into())
-    }
-
-    fn decode_scaled_into(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        scale: Downscale,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(self
-            .inner
-            .decode_scaled_into_with_scratch(pool, out, stride, fmt, scale)?
-            .into())
-    }
-
-    fn decode_region_scaled_into(
-        &mut self,
-        pool: &mut Self::Pool,
-        out: &mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-    ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(self
-            .inner
-            .decode_region_scaled_into_with_scratch(pool, out, stride, fmt, roi.into(), scale)?
-            .into())
+    fn map_cpu_outcome(
+        outcome: DecodeOutcome<<Self::Cpu as ImageCodec>::Warning>,
+    ) -> DecodeOutcome<Self::Warning> {
+        outcome
     }
 }
 
+#[doc(hidden)]
 impl<'a> ImageDecodeDevice<'a> for Decoder<'a> {
     type DeviceSurface = Surface;
 }
 
+#[doc(hidden)]
 impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
     type Session = CudaSession;
     type DeviceSurface = Surface;

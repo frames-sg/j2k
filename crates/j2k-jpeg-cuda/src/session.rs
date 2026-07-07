@@ -20,10 +20,6 @@ use crate::Error;
 
 #[cfg(feature = "cuda-runtime")]
 const OWNED_PACKET_CACHE_SLOTS: usize = 8;
-#[cfg(feature = "cuda-runtime")]
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-#[cfg(feature = "cuda-runtime")]
-const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 
 #[cfg(feature = "cuda-runtime")]
 #[derive(Clone)]
@@ -56,6 +52,7 @@ impl CudaSession {
     }
 
     /// Number of cached J2K-owned CUDA fast JPEG packets.
+    #[doc(hidden)]
     pub fn owned_cuda_packet_cache_len(&self) -> usize {
         #[cfg(feature = "cuda-runtime")]
         {
@@ -84,6 +81,7 @@ impl CudaSession {
     /// # Errors
     /// Returns a CUDA adapter error if the runtime is unavailable or the pool
     /// lock is poisoned.
+    #[doc(hidden)]
     pub fn take_owned_cuda_output_buffer(
         &mut self,
         byte_len: usize,
@@ -100,6 +98,7 @@ impl CudaSession {
     ///
     /// # Errors
     /// Returns a CUDA adapter error if the pool lock is poisoned.
+    #[doc(hidden)]
     pub fn recycle_owned_cuda_output_buffer(
         &mut self,
         buffer: CudaDeviceBuffer,
@@ -111,6 +110,7 @@ impl CudaSession {
 
     #[cfg(feature = "cuda-runtime")]
     /// Number of reusable owned CUDA output buffers retained by this session.
+    #[doc(hidden)]
     pub fn retained_owned_cuda_output_buffers(&self) -> Result<usize, Error> {
         self.owned_output_pool
             .as_ref()
@@ -166,6 +166,7 @@ impl j2k_core::DeviceSubmitSession for CudaSession {
     }
 }
 
+#[doc(hidden)]
 impl j2k_core::AcceleratorSession for CudaSession {
     fn backend_kind(&self) -> j2k_core::BackendKind {
         j2k_core::BackendKind::Cuda
@@ -238,10 +239,5 @@ fn resolve_owned_packet<T>(
 
 #[cfg(feature = "cuda-runtime")]
 fn digest_bytes(bytes: &[u8]) -> u64 {
-    let mut hash = FNV_OFFSET;
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
+    j2k_core::__j2k_fnv1a64_bytes!(bytes)
 }

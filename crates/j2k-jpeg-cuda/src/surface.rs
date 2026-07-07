@@ -2,7 +2,7 @@
 
 use j2k_core::{
     copy_tight_pixels_to_strided_output, BackendKind, DeviceMemoryRange, DeviceSurface,
-    ExecutionStats, PixelFormat,
+    ExecutionStats, PixelFormat, SurfaceMetadata, SurfaceResidency,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaDeviceBuffer;
@@ -20,6 +20,7 @@ pub(crate) enum Storage {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 /// CUDA JPEG decode path used to produce a surface.
+#[doc(hidden)]
 pub enum CudaJpegDecodePath {
     /// Surface did not use a CUDA JPEG decode kernel or library path.
     #[default]
@@ -30,6 +31,7 @@ pub enum CudaJpegDecodePath {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 /// Dispatch counters and residency metadata for a CUDA JPEG surface.
+#[doc(hidden)]
 pub struct CudaSurfaceStats {
     pub(crate) kernel_dispatches: usize,
     pub(crate) copy_kernel_dispatches: usize,
@@ -38,6 +40,7 @@ pub struct CudaSurfaceStats {
     pub(crate) decode_path: CudaJpegDecodePath,
 }
 
+#[doc(hidden)]
 impl CudaSurfaceStats {
     /// Total CUDA kernel or library dispatches used to produce the surface.
     pub fn kernel_dispatches(self) -> usize {
@@ -94,6 +97,7 @@ impl CudaSurface<'_> {
     }
 
     /// Return dispatch statistics for the surface.
+    #[doc(hidden)]
     pub fn stats(&self) -> CudaSurfaceStats {
         self.stats
     }
@@ -111,6 +115,21 @@ pub struct Surface {
 }
 
 impl Surface {
+    fn metadata(&self) -> SurfaceMetadata {
+        let residency = match &self.storage {
+            Storage::Host(_) => SurfaceResidency::Host,
+            #[cfg(feature = "cuda-runtime")]
+            Storage::Cuda(_) => SurfaceResidency::CudaResidentDecode,
+        };
+        SurfaceMetadata::new(
+            self.backend,
+            residency,
+            self.dimensions,
+            self.fmt,
+            self.pitch_bytes,
+        )
+    }
+
     /// Number of bytes between consecutive rows.
     pub fn pitch_bytes(&self) -> usize {
         self.pitch_bytes
@@ -160,29 +179,26 @@ impl Surface {
     }
 }
 
+#[doc(hidden)]
 impl DeviceSurface for Surface {
     fn backend_kind(&self) -> BackendKind {
-        self.backend
+        self.metadata().backend
     }
 
     fn residency(&self) -> j2k_core::SurfaceResidency {
-        match &self.storage {
-            Storage::Host(_) => j2k_core::SurfaceResidency::Host,
-            #[cfg(feature = "cuda-runtime")]
-            Storage::Cuda(_) => j2k_core::SurfaceResidency::CudaResidentDecode,
-        }
+        self.metadata().residency
     }
 
     fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
+        self.metadata().dimensions
     }
 
     fn pixel_format(&self) -> PixelFormat {
-        self.fmt
+        self.metadata().pixel_format
     }
 
     fn byte_len(&self) -> usize {
-        self.pitch_bytes * self.dimensions.1 as usize
+        self.metadata().byte_len()
     }
 
     fn execution_stats(&self) -> ExecutionStats {

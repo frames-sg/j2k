@@ -1,7 +1,11 @@
+#[cfg(test)]
+use crate::context::{CudaKernelModule, CudaKernelName};
+#[cfg(test)]
+use crate::driver::CuStream;
 use crate::{
     build_flags::cuda_stage_timings_disabled,
-    context::{CudaContext, CudaKernelModule, CudaKernelName},
-    driver::{CuDevicePtr, CuEvent, CuFunction, CuStream, CudaNvtxRange},
+    context::CudaContext,
+    driver::{CuDevicePtr, CuEvent, CuFunction, CudaNvtxRange},
     error::CudaError,
     kernels::{self, copy_u8_launch_geometry},
     memory::{CudaDeviceBuffer, CudaDeviceBufferRange, CudaPooledDeviceBuffer},
@@ -49,6 +53,7 @@ where
 }
 
 impl CudaContext {
+    #[doc(hidden)]
     /// Copy host bytes through a CUDA copy kernel and return device output.
     pub fn copy_with_kernel(&self, bytes: &[u8]) -> Result<CudaKernelOutput, CudaError> {
         let staging = self.upload(bytes)?;
@@ -65,9 +70,11 @@ impl CudaContext {
         })
     }
 
-    /// Copy host bytes through the opt-in cuda-oxide `CopyU8` kernel.
-    #[cfg(feature = "cuda-oxide-copy-u8")]
-    pub fn copy_with_cuda_oxide_kernel(&self, bytes: &[u8]) -> Result<CudaKernelOutput, CudaError> {
+    #[cfg(all(test, feature = "cuda-oxide-copy-u8", j2k_cuda_oxide_copy_u8_built))]
+    pub(crate) fn copy_with_cuda_oxide_kernel(
+        &self,
+        bytes: &[u8],
+    ) -> Result<CudaKernelOutput, CudaError> {
         let staging = self.upload(bytes)?;
         let output = self.copy_device_to_device_with_cuda_oxide_kernel(&staging)?;
         let copy_dispatches = usize::from(!bytes.is_empty());
@@ -121,15 +128,14 @@ impl CudaContext {
         self.inner.driver.check("cuLaunchKernel", launch_status)
     }
 
-    /// Copy one device buffer to another through a CUDA kernel.
-    pub fn copy_device_to_device_with_kernel(
+    pub(crate) fn copy_device_to_device_with_kernel(
         &self,
         src: &CudaDeviceBuffer,
     ) -> Result<CudaDeviceBuffer, CudaError> {
         self.copy_device_ptr_to_device_with_kernel(src.device_ptr(), src.byte_len())
     }
 
-    #[cfg(feature = "cuda-oxide-copy-u8")]
+    #[cfg(all(test, feature = "cuda-oxide-copy-u8", j2k_cuda_oxide_copy_u8_built))]
     pub(crate) fn copy_device_to_device_with_cuda_oxide_kernel(
         &self,
         src: &CudaDeviceBuffer,
@@ -147,7 +153,7 @@ impl CudaContext {
         })
     }
 
-    #[cfg(feature = "cuda-oxide-copy-u8")]
+    #[cfg(all(test, feature = "cuda-oxide-copy-u8", j2k_cuda_oxide_copy_u8_built))]
     pub(crate) fn copy_device_ptr_to_device_with_cuda_oxide_kernel(
         &self,
         src_ptr: CuDevicePtr,
@@ -211,7 +217,8 @@ impl CudaContext {
     }
 
     /// Create a CUDA stream owned by this context.
-    pub fn create_stream(&self) -> Result<CudaStream, CudaError> {
+    #[cfg(test)]
+    pub(crate) fn create_stream(&self) -> Result<CudaStream, CudaError> {
         self.inner.set_current()?;
         let mut stream = std::ptr::null_mut();
         // SAFETY: CUDA writes a new stream handle, destroyed by CudaStream.
@@ -225,7 +232,7 @@ impl CudaContext {
     }
 
     /// Create a CUDA timing event owned by this context.
-    pub fn create_event(&self) -> Result<CudaEvent, CudaError> {
+    pub(crate) fn create_event(&self) -> Result<CudaEvent, CudaError> {
         self.inner.set_current()?;
         let mut event = std::ptr::null_mut();
         // SAFETY: CUDA writes a new event handle, destroyed by CudaEvent.
@@ -239,7 +246,7 @@ impl CudaContext {
     }
 
     /// Time work submitted to the default CUDA stream and return elapsed microseconds.
-    pub fn time_default_stream_us<T>(
+    pub(crate) fn time_default_stream_us<T>(
         &self,
         work: impl FnOnce() -> Result<T, CudaError>,
     ) -> Result<(T, u128), CudaError> {
@@ -265,6 +272,7 @@ impl CudaContext {
         Ok((output, elapsed_event_us_ceil(&start, &end)?))
     }
 
+    #[doc(hidden)]
     /// Run work inside an optional NVTX profiling range.
     ///
     /// The range is a no-op unless the crate is built with `cuda-profiling`
@@ -278,6 +286,7 @@ impl CudaContext {
         work()
     }
 
+    #[doc(hidden)]
     /// Time work submitted to the default CUDA stream inside an optional NVTX range.
     ///
     /// The NVTX range is a no-op unless the crate is built with
@@ -290,6 +299,7 @@ impl CudaContext {
         self.with_nvtx_range(name, || self.time_default_stream_us(work))
     }
 
+    #[doc(hidden)]
     /// Optionally time work submitted to the default CUDA stream inside an NVTX range.
     pub fn time_default_stream_named_us_if<T>(
         &self,
@@ -313,39 +323,30 @@ impl CudaContext {
     }
 
     /// Preload a bundled CUDA kernel module and return its metadata handle.
-    pub fn preload_kernel_module(
+    #[cfg(test)]
+    pub(crate) fn preload_kernel_module(
         &self,
         kernel: CudaKernelName,
     ) -> Result<CudaKernelModule, CudaError> {
         let _ = self.inner.cuda_oxide_kernel_function(kernel.kernel())?;
         Ok(CudaKernelModule {
-            kernel,
             entrypoint: kernel.entrypoint(),
         })
     }
 }
 
 /// CUDA stream RAII handle.
+#[cfg(test)]
 #[derive(Debug)]
-pub struct CudaStream {
+pub(crate) struct CudaStream {
     pub(crate) context: CudaContext,
     pub(crate) stream: CuStream,
 }
 
-impl CudaStream {
-    /// Synchronize all work submitted to this stream.
-    pub fn synchronize(&self) -> Result<(), CudaError> {
-        self.context.inner.set_current()?;
-        // SAFETY: stream is a live CUDA stream owned by this handle.
-        self.context
-            .inner
-            .driver
-            .check("cuStreamSynchronize", unsafe {
-                (self.context.inner.driver.cu_stream_synchronize)(self.stream)
-            })
-    }
-}
+#[cfg(test)]
+impl CudaStream {}
 
+#[cfg(test)]
 impl Drop for CudaStream {
     fn drop(&mut self) {
         if !self.stream.is_null() {
@@ -359,18 +360,20 @@ impl Drop for CudaStream {
 
 // SAFETY: CUDA stream handles are driver-owned resources. The Rust handle owns
 // destruction and does not expose mutable aliasing of Rust memory.
+#[cfg(test)]
 unsafe impl Send for CudaStream {}
 
 /// CUDA event RAII handle for timing and synchronization.
 #[derive(Debug)]
-pub struct CudaEvent {
+pub(crate) struct CudaEvent {
     pub(crate) context: CudaContext,
     pub(crate) event: CuEvent,
 }
 
 impl CudaEvent {
     /// Record this event on a CUDA stream.
-    pub fn record(&self, stream: &CudaStream) -> Result<(), CudaError> {
+    #[cfg(test)]
+    pub(crate) fn record(&self, stream: &CudaStream) -> Result<(), CudaError> {
         self.context.inner.set_current()?;
         // SAFETY: event and stream are live CUDA handles.
         self.context.inner.driver.check("cuEventRecord", unsafe {
@@ -387,7 +390,7 @@ impl CudaEvent {
     }
 
     /// Wait for this event to complete.
-    pub fn synchronize(&self) -> Result<(), CudaError> {
+    pub(crate) fn synchronize(&self) -> Result<(), CudaError> {
         self.context.inner.set_current()?;
         // SAFETY: event is a live CUDA event owned by this handle.
         self.context
@@ -399,7 +402,7 @@ impl CudaEvent {
     }
 
     /// Elapsed time in microseconds from `start` to `end`.
-    pub fn elapsed_time_us(start: &Self, end: &Self) -> Result<f32, CudaError> {
+    pub(crate) fn elapsed_time_us(start: &Self, end: &Self) -> Result<f32, CudaError> {
         end.context.inner.set_current()?;
         let mut millis = 0.0f32;
         // SAFETY: start and end are live CUDA events that have been recorded.
@@ -442,6 +445,7 @@ impl Drop for CudaEvent {
 // destruction and does not expose mutable aliasing of Rust memory.
 unsafe impl Send for CudaEvent {}
 
+#[doc(hidden)]
 /// Device buffer plus execution metadata.
 #[derive(Debug)]
 pub struct CudaKernelOutput {
@@ -449,6 +453,7 @@ pub struct CudaKernelOutput {
     pub(crate) execution: CudaExecutionStats,
 }
 
+#[doc(hidden)]
 /// Multiple device buffers plus shared execution metadata from one batched kernel.
 #[derive(Debug)]
 pub struct CudaKernelBatchOutput {
@@ -456,6 +461,7 @@ pub struct CudaKernelBatchOutput {
     pub(crate) execution: CudaExecutionStats,
 }
 
+#[doc(hidden)]
 /// One contiguous device buffer plus per-item ranges from one batched kernel.
 #[derive(Debug)]
 pub struct CudaKernelContiguousBatchOutput {
@@ -464,6 +470,7 @@ pub struct CudaKernelContiguousBatchOutput {
     pub(crate) execution: CudaExecutionStats,
 }
 
+#[doc(hidden)]
 /// Pooled device buffer plus execution metadata.
 #[derive(Debug)]
 pub struct CudaPooledKernelOutput {
@@ -473,6 +480,7 @@ pub struct CudaPooledKernelOutput {
 
 /// Enqueued CUDA work plus pooled resources that must stay live until the
 /// default stream is synchronized.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaQueuedExecution {
     pub(crate) resources: Vec<CudaPooledDeviceBuffer>,

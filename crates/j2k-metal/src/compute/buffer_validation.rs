@@ -8,8 +8,10 @@ use metal::{Buffer, MTLResourceOptions};
 use crate::{profile_env::label_command_buffer, Error};
 
 use super::{
-    commit_and_wait_metal, with_runtime_for_session, J2kCopyInterleavedParams,
-    J2kValidateBytesParams, J2kValidateBytesStatus,
+    commit_and_wait_metal,
+    direct_buffers::{checked_buffer_read, zeroed_shared_buffer},
+    with_runtime_for_session, J2kCopyInterleavedParams, J2kValidateBytesParams,
+    J2kValidateBytesStatus,
 };
 
 pub(crate) fn validate_metal_buffer_matches_bytes(
@@ -34,12 +36,8 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
             expected.len() as u64,
             MTLResourceOptions::StorageModeShared,
         );
-        let status = J2kValidateBytesStatus::default();
-        let status_buffer = runtime.device.new_buffer_with_data(
-            (&raw const status).cast(),
-            size_of::<J2kValidateBytesStatus>() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let status_buffer =
+            zeroed_shared_buffer(&runtime.device, size_of::<J2kValidateBytesStatus>());
         let params = J2kValidateBytesParams { byte_len };
 
         let command_buffer = runtime.queue.new_command_buffer();
@@ -58,13 +56,10 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
         encoder.end_encoding();
         commit_and_wait_metal(command_buffer)?;
 
-        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-        let status = unsafe {
-            status_buffer
-                .contents()
-                .cast::<J2kValidateBytesStatus>()
-                .read()
-        };
+        let status = checked_buffer_read::<J2kValidateBytesStatus>(
+            &status_buffer,
+            "byte validation status",
+        )?;
         if status.code == 0 {
             return Ok(());
         }
@@ -100,12 +95,8 @@ pub(crate) fn validate_metal_buffers_match(
     })?;
 
     with_runtime_for_session(session, |runtime| {
-        let status = J2kValidateBytesStatus::default();
-        let status_buffer = runtime.device.new_buffer_with_data(
-            (&raw const status).cast(),
-            size_of::<J2kValidateBytesStatus>() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let status_buffer =
+            zeroed_shared_buffer(&runtime.device, size_of::<J2kValidateBytesStatus>());
         let params = J2kValidateBytesParams {
             byte_len: byte_len_u32,
         };
@@ -126,13 +117,10 @@ pub(crate) fn validate_metal_buffers_match(
         encoder.end_encoding();
         commit_and_wait_metal(command_buffer)?;
 
-        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-        let status = unsafe {
-            status_buffer
-                .contents()
-                .cast::<J2kValidateBytesStatus>()
-                .read()
-        };
+        let status = checked_buffer_read::<J2kValidateBytesStatus>(
+            &status_buffer,
+            "byte validation status",
+        )?;
         if status.code == 0 {
             return Ok(());
         }
@@ -146,28 +134,32 @@ pub(crate) fn validate_metal_buffers_match(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+pub(crate) struct PaddedInterleavedCopy<'a> {
+    pub(crate) src_buffer: &'a Buffer,
+    pub(crate) src_byte_offset: usize,
+    pub(crate) src_width: u32,
+    pub(crate) src_height: u32,
+    pub(crate) src_pitch_bytes: usize,
+    pub(crate) dst_width: u32,
+    pub(crate) dst_height: u32,
+    pub(crate) bytes_per_pixel: usize,
+    pub(crate) session: &'a crate::MetalBackendSession,
+}
+
 pub(crate) fn copy_interleaved_padded_to_shared_buffer(
-    src_buffer: &Buffer,
-    src_byte_offset: usize,
-    src_width: u32,
-    src_height: u32,
-    src_pitch_bytes: usize,
-    dst_width: u32,
-    dst_height: u32,
-    bytes_per_pixel: usize,
-    session: &crate::MetalBackendSession,
+    copy: PaddedInterleavedCopy<'_>,
 ) -> Result<Buffer, Error> {
-    if src_width > dst_width || src_height > dst_height {
+    if copy.src_width > copy.dst_width || copy.src_height > copy.dst_height {
         return Err(Error::MetalKernel {
             message: "J2K Metal input tile cannot be larger than encoded tile".to_string(),
         });
     }
-    let src_stride = u32::try_from(src_pitch_bytes).map_err(|_| Error::MetalKernel {
+    let src_stride = u32::try_from(copy.src_pitch_bytes).map_err(|_| Error::MetalKernel {
         message: "J2K Metal input tile pitch exceeds u32".to_string(),
     })?;
-    let dst_stride_usize = (dst_width as usize)
-        .checked_mul(bytes_per_pixel)
+    let dst_stride_usize = (copy.dst_width as usize)
+        .checked_mul(copy.bytes_per_pixel)
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal padded tile stride overflow".to_string(),
         })?;
@@ -175,34 +167,34 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
         message: "J2K Metal padded tile stride exceeds u32".to_string(),
     })?;
     let dst_len = dst_stride_usize
-        .checked_mul(dst_height as usize)
+        .checked_mul(copy.dst_height as usize)
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal padded tile byte length overflow".to_string(),
         })?;
-    let bytes_per_pixel = u32::try_from(bytes_per_pixel).map_err(|_| Error::MetalKernel {
+    let bytes_per_pixel = u32::try_from(copy.bytes_per_pixel).map_err(|_| Error::MetalKernel {
         message: "J2K Metal bytes-per-pixel exceeds u32".to_string(),
     })?;
-    let src_offset = u64::try_from(src_byte_offset).map_err(|_| Error::MetalKernel {
+    let src_offset = u64::try_from(copy.src_byte_offset).map_err(|_| Error::MetalKernel {
         message: "J2K Metal input tile offset exceeds u64".to_string(),
     })?;
 
-    with_runtime_for_session(session, |runtime| {
+    with_runtime_for_session(copy.session, |runtime| {
         let dst_buffer = runtime
             .device
             .new_buffer(dst_len as u64, MTLResourceOptions::StorageModeShared);
         let params = J2kCopyInterleavedParams {
-            src_width,
-            src_height,
+            src_width: copy.src_width,
+            src_height: copy.src_height,
             src_stride,
-            dst_width,
-            dst_height,
+            dst_width: copy.dst_width,
+            dst_height: copy.dst_height,
             dst_stride,
             bytes_per_pixel,
         };
         let command_buffer = runtime.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&runtime.copy_interleaved_padded);
-        encoder.set_buffer(0, Some(src_buffer), src_offset);
+        encoder.set_buffer(0, Some(copy.src_buffer), src_offset);
         encoder.set_buffer(1, Some(&dst_buffer), 0);
         encoder.set_bytes(
             2,
@@ -212,7 +204,7 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
         dispatch_2d_pipeline(
             encoder,
             &runtime.copy_interleaved_padded,
-            (dst_width, dst_height),
+            (copy.dst_width, copy.dst_height),
         );
         encoder.end_encoding();
         commit_and_wait_metal(command_buffer)?;

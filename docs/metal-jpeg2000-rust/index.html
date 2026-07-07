@@ -82,7 +82,7 @@
         <h2>Supported shape policy</h2>
         <p>Metal support is selective. Explicit Metal requests are strict and return unsupported-request errors for shapes outside the adapter's supported path.</p>
         <p>Metal adapters sit under the same codec support boundary as the public crate: JPEG 2000 Part 1, JP2 still-image files, HTJ2K Part 15, and JPH still-image files. CPU remains the portable correctness baseline for unsupported or unbenchmarked shapes.</p>
-        <p class="note">Metal performance claims should cite hardware, commands, supported shape, skipped rows, and publication eligibility from the benchmark/adoption tooling.</p>
+        <p class="note">Current public benchmark evidence is in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>. Metal performance claims should cite hardware, commands, supported shape, skipped rows, and <code>publication_eligible=true</code> from the benchmark/adoption tooling.</p>
       </div>
     </section>
   </main>

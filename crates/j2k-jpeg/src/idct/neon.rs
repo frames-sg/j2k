@@ -88,8 +88,8 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     // samples. Output `cw_*[k]` has lane `c` holding pass-1 result at
     // (row k, col c).
     let round1 = vdupq_n_s32(1 << (PASS1_SHIFT - 1));
-    let cw_lo = idct_1d_x4::<PASS1_SHIFT>(r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l, round1);
-    let cw_hi = idct_1d_x4::<PASS1_SHIFT>(r0h, r1h, r2h, r3h, r4h, r5h, r6h, r7h, round1);
+    let cw_lo = idct_1d_x4::<PASS1_SHIFT>([r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l], round1);
+    let cw_hi = idct_1d_x4::<PASS1_SHIFT>([r0h, r1h, r2h, r3h, r4h, r5h, r6h, r7h], round1);
 
     // Transpose to pass-2 input. We need `q_c[l] = (row l, col c)`, meaning
     // 8 int32x4_t pairs where lane = row. Split into four independent 4×4
@@ -106,8 +106,8 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     // Pass 2: row IDCT.
     let round2 = vdupq_n_s32(1 << (PASS2_SHIFT - 1));
 
-    let rw_lo = idct_1d_x4::<PASS2_SHIFT>(q0l, q1l, q2l, q3l, q4l, q5l, q6l, q7l, round2);
-    let rw_hi = idct_1d_x4::<PASS2_SHIFT>(q0h, q1h, q2h, q3h, q4h, q5h, q6h, q7h, round2);
+    let rw_lo = idct_1d_x4::<PASS2_SHIFT>([q0l, q1l, q2l, q3l, q4l, q5l, q6l, q7l], round2);
+    let rw_hi = idct_1d_x4::<PASS2_SHIFT>([q0h, q1h, q2h, q3h, q4h, q5h, q6h, q7h], round2);
 
     // `rw_lo[k]` lane `l` = (row l, col k) for rows 0..3; `rw_hi[k]` for
     // rows 4..7. Transpose back to row-major, applying the +128 level
@@ -199,8 +199,8 @@ unsafe fn idct_islow_bottom_half_zero_rows(
     let [q4h, q5h, q6h, q7h] = transpose_4x4_i32(cw_hi[4], cw_hi[5], cw_hi[6], cw_hi[7]);
 
     let round2 = vdupq_n_s32(1 << (PASS2_SHIFT - 1));
-    let rw_lo = idct_1d_x4::<PASS2_SHIFT>(q0l, q1l, q2l, q3l, q4l, q5l, q6l, q7l, round2);
-    let rw_hi = idct_1d_x4::<PASS2_SHIFT>(q0h, q1h, q2h, q3h, q4h, q5h, q6h, q7h, round2);
+    let rw_lo = idct_1d_x4::<PASS2_SHIFT>([q0l, q1l, q2l, q3l, q4l, q5l, q6l, q7l], round2);
+    let rw_hi = idct_1d_x4::<PASS2_SHIFT>([q0h, q1h, q2h, q3h, q4h, q5h, q6h, q7h], round2);
 
     let bias = vdupq_n_s32(128);
     let [fll0, fll1, fll2, fll3] = transpose_4x4_i32(
@@ -291,16 +291,8 @@ unsafe fn store_row(dst: *mut u8, lo: int32x4_t, hi: int32x4_t) {
 /// values (pass 1) or 4 row values (pass 2) — output order matches the
 /// scalar descale positions.
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 fn idct_1d_x4<const SHIFT: i32>(
-    p0: int32x4_t,
-    p1: int32x4_t,
-    p2: int32x4_t,
-    p3: int32x4_t,
-    p4: int32x4_t,
-    p5: int32x4_t,
-    p6: int32x4_t,
-    p7: int32x4_t,
+    [p0, p1, p2, p3, p4, p5, p6, p7]: [int32x4_t; 8],
     rounding: int32x4_t,
 ) -> [int32x4_t; 8] {
     // Even half.

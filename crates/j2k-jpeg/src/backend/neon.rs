@@ -7,7 +7,7 @@ use core::arch::aarch64::{
     vshrq_n_s32, vshrq_n_u16, vst1q_u8, vst3_u8, vsubq_s32, vzip_u8, vzipq_u16,
 };
 
-use super::scalar;
+use super::{scalar, Rgb420ChromaRows, Rgb420Crop, Rgb420CroppedRowPair, Rgb420RowPair};
 use crate::color::upsample::h2v2_fancy_sample_for_width;
 use crate::color::ycbcr::{
     ycbcr_to_rgb, FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200, ROUND,
@@ -95,6 +95,32 @@ unsafe fn fill_rgb_row_from_rgb_neon(r_row: &[u8], g_row: &[u8], b_row: &[u8], d
 const LANES: usize = 8;
 const UPSAMPLED_LANES: usize = LANES * 2;
 
+#[derive(Clone, Copy)]
+struct Neon420PartialChunk {
+    aligned_x: usize,
+    src_skip: usize,
+    copy_width: usize,
+}
+
+#[derive(Clone, Copy)]
+struct Neon420TailChunk {
+    sample_offset: usize,
+    x: usize,
+    chunk_width: usize,
+    row_width: usize,
+}
+
+fn top_only_chroma(chroma: Rgb420ChromaRows<'_>) -> Rgb420ChromaRows<'_> {
+    Rgb420ChromaRows::new(
+        chroma.prev_cb,
+        chroma.curr_cb,
+        chroma.curr_cb,
+        chroma.prev_cr,
+        chroma.curr_cr,
+        chroma.curr_cr,
+    )
+}
+
 pub(crate) fn fill_rgb_row_from_ycbcr(y_row: &[u8], cb_row: &[u8], cr_row: &[u8], dst: &mut [u8]) {
     let width = y_row
         .len()
@@ -126,26 +152,15 @@ pub(super) fn fill_rgb_row_from_ycbcr_for_test(
     fill_rgb_row_from_ycbcr(y_row, cb_row, cr_row, dst);
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn fill_rgb_row_pair_from_420(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
-) {
-    let chroma_width = prev_cb
-        .len()
-        .min(curr_cb.len())
-        .min(next_cb.len())
-        .min(prev_cr.len())
-        .min(curr_cr.len())
-        .min(next_cr.len());
+pub(crate) fn fill_rgb_row_pair_from_420(request: Rgb420RowPair<'_>) {
+    let Rgb420RowPair {
+        y_top,
+        y_bottom,
+        chroma,
+        dst_top,
+        dst_bottom,
+    } = request;
+    let chroma_width = chroma.min_width();
     let bottom_width = match (y_bottom.as_ref(), dst_bottom.as_ref()) {
         (Some(row), Some(dst)) => row.len().min(dst.len() / 3),
         _ => usize::MAX,
@@ -160,12 +175,12 @@ pub(crate) fn fill_rgb_row_pair_from_420(
     }
     let y_top = &y_top[..width];
     let y_bottom = y_bottom.and_then(|row| row.get(..width));
-    let prev_cb = &prev_cb[..chroma_width];
-    let curr_cb = &curr_cb[..chroma_width];
-    let next_cb = &next_cb[..chroma_width];
-    let prev_cr = &prev_cr[..chroma_width];
-    let curr_cr = &curr_cr[..chroma_width];
-    let next_cr = &next_cr[..chroma_width];
+    let prev_cb = &chroma.prev_cb[..chroma_width];
+    let curr_cb = &chroma.curr_cb[..chroma_width];
+    let next_cb = &chroma.next_cb[..chroma_width];
+    let prev_cr = &chroma.prev_cr[..chroma_width];
+    let curr_cr = &chroma.curr_cr[..chroma_width];
+    let next_cr = &chroma.next_cr[..chroma_width];
     let dst_top = &mut dst_top[..width * 3];
     let dst_bottom = dst_bottom.and_then(|row| row.get_mut(..width * 3));
     debug_assert_eq!(dst_top.len(), y_top.len() * 3);
@@ -182,35 +197,28 @@ pub(crate) fn fill_rgb_row_pair_from_420(
     // and RGB writes stay within the passed rows.
     // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
-        fill_rgb_row_pair_from_420_neon(
-            y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top,
+        fill_rgb_row_pair_from_420_neon(Rgb420RowPair::new(
+            y_top,
+            y_bottom,
+            Rgb420ChromaRows::new(prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr),
+            dst_top,
             dst_bottom,
-        );
+        ));
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn fill_rgb_row_pair_from_420_cropped(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    crop_start: usize,
-    crop_width: usize,
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
-) {
-    let chroma_width = prev_cb
-        .len()
-        .min(curr_cb.len())
-        .min(next_cb.len())
-        .min(prev_cr.len())
-        .min(curr_cr.len())
-        .min(next_cr.len());
+pub(crate) fn fill_rgb_row_pair_from_420_cropped(request: Rgb420CroppedRowPair<'_>) {
+    let Rgb420CroppedRowPair { rows, crop } = request;
+    let Rgb420RowPair {
+        y_top,
+        y_bottom,
+        chroma,
+        dst_top,
+        dst_bottom,
+    } = rows;
+    let crop_start = crop.start;
+    let crop_width = crop.width;
+    let chroma_width = chroma.min_width();
     let available_chroma = chroma_width.saturating_mul(2).saturating_sub(crop_start);
     let available_top = y_top.len().saturating_sub(crop_start);
     let bottom_available = match (y_bottom.as_ref(), dst_bottom.as_ref()) {
@@ -232,12 +240,12 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(
         return;
     }
     let y_bottom = y_bottom.and_then(|row| row.get(..));
-    let prev_cb = &prev_cb[..chroma_width];
-    let curr_cb = &curr_cb[..chroma_width];
-    let next_cb = &next_cb[..chroma_width];
-    let prev_cr = &prev_cr[..chroma_width];
-    let curr_cr = &curr_cr[..chroma_width];
-    let next_cr = &next_cr[..chroma_width];
+    let prev_cb = &chroma.prev_cb[..chroma_width];
+    let curr_cb = &chroma.curr_cb[..chroma_width];
+    let next_cb = &chroma.next_cb[..chroma_width];
+    let prev_cr = &chroma.prev_cr[..chroma_width];
+    let curr_cr = &chroma.curr_cr[..chroma_width];
+    let next_cr = &chroma.next_cr[..chroma_width];
     let dst_top = &mut dst_top[..width * 3];
     let dst_bottom = dst_bottom.and_then(|row| row.get_mut(..width * 3));
     debug_assert!(crop_end <= y_top.len());
@@ -252,104 +260,85 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(
     // The crop range and output rows are clamped to validated luma/chroma spans.
     // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
-        fill_rgb_row_pair_from_420_cropped_neon(
-            y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, crop_start,
-            crop_width, dst_top, dst_bottom,
-        );
+        fill_rgb_row_pair_from_420_cropped_neon(Rgb420CroppedRowPair::new(
+            Rgb420RowPair::new(
+                y_top,
+                y_bottom,
+                Rgb420ChromaRows::new(prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr),
+                dst_top,
+                dst_bottom,
+            ),
+            Rgb420Crop::new(crop_start, crop_width),
+        ));
     }
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
-unsafe fn fill_rgb_row_pair_from_420_neon(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
-) {
-    let width = y_top.len();
-    let chroma_width = curr_cb.len();
+unsafe fn fill_rgb_row_pair_from_420_neon(request: Rgb420RowPair<'_>) {
+    let Rgb420RowPair {
+        y_top,
+        y_bottom,
+        chroma,
+        dst_top,
+        dst_bottom,
+    } = request;
     if let (Some(y_bottom), Some(dst_bottom)) = (y_bottom, dst_bottom) {
         // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
-            fill_rgb_row_pair_from_420_neon_dual(
-                y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top,
-                dst_bottom,
-            );
+            fill_rgb_row_pair_from_420_neon_dual(y_top, y_bottom, chroma, dst_top, dst_bottom);
         }
     } else {
         // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
-            fill_rgb_row_pair_from_420_neon_top_only(
-                y_top,
-                prev_cb,
-                curr_cb,
-                prev_cr,
-                curr_cr,
-                dst_top,
-                chroma_width,
-                width,
-            );
+            fill_rgb_row_pair_from_420_neon_top_only(y_top, chroma, dst_top);
         }
     }
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
-unsafe fn fill_rgb_row_pair_from_420_cropped_neon(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    crop_start: usize,
-    crop_width: usize,
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
-) {
+unsafe fn fill_rgb_row_pair_from_420_cropped_neon(request: Rgb420CroppedRowPair<'_>) {
+    let Rgb420CroppedRowPair { rows, crop } = request;
+    let Rgb420RowPair {
+        y_top,
+        y_bottom,
+        chroma,
+        dst_top,
+        dst_bottom,
+    } = rows;
     if let (Some(y_bottom), Some(dst_bottom)) = (y_bottom, dst_bottom) {
         // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_rgb_row_pair_from_420_cropped_neon_dual(
-                y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, crop_start,
-                crop_width, dst_top, dst_bottom,
+                y_top, y_bottom, chroma, crop, dst_top, dst_bottom,
             );
         }
     } else {
         // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
-            fill_rgb_row_pair_from_420_cropped_neon_top_only(
-                y_top, prev_cb, curr_cb, prev_cr, curr_cr, crop_start, crop_width, dst_top,
-            );
+            fill_rgb_row_pair_from_420_cropped_neon_top_only(y_top, chroma, crop, dst_top);
         }
     }
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_cropped_neon_dual(
     y_top: &[u8],
     y_bottom: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    crop_start: usize,
-    crop_width: usize,
+    chroma: Rgb420ChromaRows<'_>,
+    crop: Rgb420Crop,
     dst_top: &mut [u8],
     dst_bottom: &mut [u8],
 ) {
+    let Rgb420ChromaRows {
+        prev_cb,
+        curr_cb,
+        next_cb,
+        prev_cr,
+        curr_cr,
+        next_cr,
+    } = chroma;
+    let crop_start = crop.start;
+    let crop_width = crop.width;
     let mut out_x = 0usize;
     if crop_width == 0 {
         return;
@@ -357,20 +346,16 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_dual(
 
     if crop_start == 0 {
         let prefix = crop_width.min(2);
-        scalar::fill_rgb_row_pair_from_420_cropped(
-            y_top,
-            Some(y_bottom),
-            prev_cb,
-            curr_cb,
-            next_cb,
-            prev_cr,
-            curr_cr,
-            next_cr,
-            crop_start,
-            prefix,
-            &mut dst_top[..prefix * 3],
-            Some(&mut dst_bottom[..prefix * 3]),
-        );
+        scalar::fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(
+            Rgb420RowPair::new(
+                y_top,
+                Some(y_bottom),
+                Rgb420ChromaRows::new(prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr),
+                &mut dst_top[..prefix * 3],
+                Some(&mut dst_bottom[..prefix * 3]),
+            ),
+            Rgb420Crop::new(crop_start, prefix),
+        ));
         out_x = prefix;
     } else if !crop_start.is_multiple_of(2) {
         let aligned_x = crop_start - 1;
@@ -383,35 +368,28 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_dual(
                 fill_rgb_row_pair_from_420_cropped_partial_chunk16_dual(
                     y_top,
                     y_bottom,
-                    prev_cb,
-                    curr_cb,
-                    next_cb,
-                    prev_cr,
-                    curr_cr,
-                    next_cr,
-                    aligned_x,
-                    1,
-                    copy_width,
+                    chroma,
+                    Neon420PartialChunk {
+                        aligned_x,
+                        src_skip: 1,
+                        copy_width,
+                    },
                     &mut dst_top[..copy_width * 3],
                     &mut dst_bottom[..copy_width * 3],
                 );
             }
             out_x = copy_width;
         } else {
-            scalar::fill_rgb_row_pair_from_420_cropped(
-                y_top,
-                Some(y_bottom),
-                prev_cb,
-                curr_cb,
-                next_cb,
-                prev_cr,
-                curr_cr,
-                next_cr,
-                crop_start,
-                1,
-                &mut dst_top[..3],
-                Some(&mut dst_bottom[..3]),
-            );
+            scalar::fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(
+                Rgb420RowPair::new(
+                    y_top,
+                    Some(y_bottom),
+                    Rgb420ChromaRows::new(prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr),
+                    &mut dst_top[..3],
+                    Some(&mut dst_bottom[..3]),
+                ),
+                Rgb420Crop::new(crop_start, 1),
+            ));
             out_x = 1;
         }
     }
@@ -427,12 +405,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_dual(
             fill_rgb_row_pair_from_420_chunk16_interior_neon(
                 &y_top[x..x + UPSAMPLED_LANES],
                 &y_bottom[x..x + UPSAMPLED_LANES],
-                prev_cb,
-                curr_cb,
-                next_cb,
-                prev_cr,
-                curr_cr,
-                next_cr,
+                chroma,
                 x / 2,
                 &mut dst_top[out_x * 3..(out_x + UPSAMPLED_LANES) * 3],
                 &mut dst_bottom[out_x * 3..(out_x + UPSAMPLED_LANES) * 3],
@@ -450,15 +423,12 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_dual(
                 fill_rgb_row_pair_from_420_cropped_partial_chunk16_dual(
                     y_top,
                     y_bottom,
-                    prev_cb,
-                    curr_cb,
-                    next_cb,
-                    prev_cr,
-                    curr_cr,
-                    next_cr,
-                    x,
-                    0,
-                    remaining,
+                    chroma,
+                    Neon420PartialChunk {
+                        aligned_x: x,
+                        src_skip: 0,
+                        copy_width: remaining,
+                    },
                     &mut dst_top[out_x * 3..],
                     &mut dst_bottom[out_x * 3..],
                 );
@@ -468,35 +438,36 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_dual(
     }
 
     if out_x < crop_width {
-        scalar::fill_rgb_row_pair_from_420_cropped(
-            y_top,
-            Some(y_bottom),
-            prev_cb,
-            curr_cb,
-            next_cb,
-            prev_cr,
-            curr_cr,
-            next_cr,
-            crop_start + out_x,
-            crop_width - out_x,
-            &mut dst_top[out_x * 3..],
-            Some(&mut dst_bottom[out_x * 3..]),
-        );
+        scalar::fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(
+            Rgb420RowPair::new(
+                y_top,
+                Some(y_bottom),
+                Rgb420ChromaRows::new(prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr),
+                &mut dst_top[out_x * 3..],
+                Some(&mut dst_bottom[out_x * 3..]),
+            ),
+            Rgb420Crop::new(crop_start + out_x, crop_width - out_x),
+        ));
     }
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_cropped_neon_top_only(
     y_top: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    crop_start: usize,
-    crop_width: usize,
+    chroma: Rgb420ChromaRows<'_>,
+    crop: Rgb420Crop,
     dst_top: &mut [u8],
 ) {
+    let Rgb420ChromaRows {
+        prev_cb,
+        curr_cb,
+        prev_cr,
+        curr_cr,
+        ..
+    } = chroma;
+    let crop_start = crop.start;
+    let crop_width = crop.width;
+    let scalar_chroma = top_only_chroma(chroma);
     let mut out_x = 0usize;
     if crop_width == 0 {
         return;
@@ -504,20 +475,10 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_top_only(
 
     if crop_start == 0 {
         let prefix = crop_width.min(2);
-        scalar::fill_rgb_row_pair_from_420_cropped(
-            y_top,
-            None,
-            prev_cb,
-            curr_cb,
-            curr_cb,
-            prev_cr,
-            curr_cr,
-            curr_cr,
-            crop_start,
-            prefix,
-            &mut dst_top[..prefix * 3],
-            None,
-        );
+        scalar::fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(
+            Rgb420RowPair::new(y_top, None, scalar_chroma, &mut dst_top[..prefix * 3], None),
+            Rgb420Crop::new(crop_start, prefix),
+        ));
         out_x = prefix;
     } else if !crop_start.is_multiple_of(2) {
         let aligned_x = crop_start - 1;
@@ -529,32 +490,21 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_top_only(
             unsafe {
                 fill_rgb_row_pair_from_420_cropped_partial_chunk16_top_only(
                     y_top,
-                    prev_cb,
-                    curr_cb,
-                    prev_cr,
-                    curr_cr,
-                    aligned_x,
-                    1,
-                    copy_width,
+                    chroma,
+                    Neon420PartialChunk {
+                        aligned_x,
+                        src_skip: 1,
+                        copy_width,
+                    },
                     &mut dst_top[..copy_width * 3],
                 );
             }
             out_x = copy_width;
         } else {
-            scalar::fill_rgb_row_pair_from_420_cropped(
-                y_top,
-                None,
-                prev_cb,
-                curr_cb,
-                curr_cb,
-                prev_cr,
-                curr_cr,
-                curr_cr,
-                crop_start,
-                1,
-                &mut dst_top[..3],
-                None,
-            );
+            scalar::fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(
+                Rgb420RowPair::new(y_top, None, scalar_chroma, &mut dst_top[..3], None),
+                Rgb420Crop::new(crop_start, 1),
+            ));
             out_x = 1;
         }
     }
@@ -588,13 +538,12 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_top_only(
             unsafe {
                 fill_rgb_row_pair_from_420_cropped_partial_chunk16_top_only(
                     y_top,
-                    prev_cb,
-                    curr_cb,
-                    prev_cr,
-                    curr_cr,
-                    x,
-                    0,
-                    remaining,
+                    chroma,
+                    Neon420PartialChunk {
+                        aligned_x: x,
+                        src_skip: 0,
+                        copy_width: remaining,
+                    },
                     &mut dst_top[out_x * 3..],
                 );
             }
@@ -603,20 +552,10 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_top_only(
     }
 
     if out_x < crop_width {
-        scalar::fill_rgb_row_pair_from_420_cropped(
-            y_top,
-            None,
-            prev_cb,
-            curr_cb,
-            curr_cb,
-            prev_cr,
-            curr_cr,
-            curr_cr,
-            crop_start + out_x,
-            crop_width - out_x,
-            &mut dst_top[out_x * 3..],
-            None,
-        );
+        scalar::fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(
+            Rgb420RowPair::new(y_top, None, scalar_chroma, &mut dst_top[out_x * 3..], None),
+            Rgb420Crop::new(crop_start + out_x, crop_width - out_x),
+        ));
     }
 }
 
@@ -627,22 +566,19 @@ fn can_vectorize_cropped_420_chunk(row_width: usize, chroma_width: usize, x: usi
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_cropped_partial_chunk16_dual(
     y_top: &[u8],
     y_bottom: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    aligned_x: usize,
-    src_skip: usize,
-    copy_width: usize,
+    chroma: Rgb420ChromaRows<'_>,
+    chunk: Neon420PartialChunk,
     dst_top: &mut [u8],
     dst_bottom: &mut [u8],
 ) {
+    let Neon420PartialChunk {
+        aligned_x,
+        src_skip,
+        copy_width,
+    } = chunk;
     debug_assert!(src_skip + copy_width <= UPSAMPLED_LANES);
     debug_assert!(copy_width <= UPSAMPLED_LANES);
     let mut tmp_top = [0u8; UPSAMPLED_LANES * 3];
@@ -652,12 +588,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_partial_chunk16_dual(
         fill_rgb_row_pair_from_420_chunk16_interior_neon(
             &y_top[aligned_x..aligned_x + UPSAMPLED_LANES],
             &y_bottom[aligned_x..aligned_x + UPSAMPLED_LANES],
-            prev_cb,
-            curr_cb,
-            next_cb,
-            prev_cr,
-            curr_cr,
-            next_cr,
+            chroma,
             aligned_x / 2,
             &mut tmp_top,
             &mut tmp_bottom,
@@ -670,18 +601,17 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_partial_chunk16_dual(
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_cropped_partial_chunk16_top_only(
     y_top: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    aligned_x: usize,
-    src_skip: usize,
-    copy_width: usize,
+    chroma: Rgb420ChromaRows<'_>,
+    chunk: Neon420PartialChunk,
     dst_top: &mut [u8],
 ) {
+    let Neon420PartialChunk {
+        aligned_x,
+        src_skip,
+        copy_width,
+    } = chunk;
     debug_assert!(src_skip + copy_width <= UPSAMPLED_LANES);
     debug_assert!(copy_width <= UPSAMPLED_LANES);
     let mut tmp_top = [0u8; UPSAMPLED_LANES * 3];
@@ -689,10 +619,10 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_partial_chunk16_top_only(
     unsafe {
         fill_rgb_row_from_420_chunk16_interior_neon(
             &y_top[aligned_x..aligned_x + UPSAMPLED_LANES],
-            prev_cb,
-            curr_cb,
-            prev_cr,
-            curr_cr,
+            chroma.prev_cb,
+            chroma.curr_cb,
+            chroma.prev_cr,
+            chroma.curr_cr,
             aligned_x / 2,
             &mut tmp_top,
         );
@@ -703,20 +633,22 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_partial_chunk16_top_only(
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_neon_dual(
     y_top: &[u8],
     y_bottom: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
+    chroma: Rgb420ChromaRows<'_>,
     dst_top: &mut [u8],
     dst_bottom: &mut [u8],
 ) {
     let width = y_top.len();
+    let Rgb420ChromaRows {
+        prev_cb,
+        curr_cb,
+        next_cb,
+        prev_cr,
+        curr_cr,
+        next_cr,
+    } = chroma;
     let chroma_width = curr_cb.len();
     let mut sample = 0usize;
 
@@ -734,12 +666,7 @@ unsafe fn fill_rgb_row_pair_from_420_neon_dual(
                 fill_rgb_row_pair_from_420_chunk16_interior_neon(
                     &y_top[x..x + UPSAMPLED_LANES],
                     &y_bottom[x..x + UPSAMPLED_LANES],
-                    prev_cb,
-                    curr_cb,
-                    next_cb,
-                    prev_cr,
-                    curr_cr,
-                    next_cr,
+                    chroma,
                     sample,
                     &mut dst_top[x * 3..(x + UPSAMPLED_LANES) * 3],
                     &mut dst_bottom[x * 3..(x + UPSAMPLED_LANES) * 3],
@@ -755,14 +682,8 @@ unsafe fn fill_rgb_row_pair_from_420_neon_dual(
                 fill_rgb_row_pair_from_420_edge_neon_dual(
                     y_top,
                     y_bottom,
-                    prev_cb,
-                    curr_cb,
-                    next_cb,
-                    prev_cr,
-                    curr_cr,
-                    next_cr,
+                    chroma,
                     chunk_width,
-                    width,
                     dst_top,
                     dst_bottom,
                 );
@@ -774,16 +695,13 @@ unsafe fn fill_rgb_row_pair_from_420_neon_dual(
                 fill_rgb_row_pair_from_420_tail_neon_dual(
                     y_top,
                     y_bottom,
-                    prev_cb,
-                    curr_cb,
-                    next_cb,
-                    prev_cr,
-                    curr_cr,
-                    next_cr,
-                    sample,
-                    x,
-                    chunk_width,
-                    width,
+                    chroma,
+                    Neon420TailChunk {
+                        sample_offset: sample,
+                        x,
+                        chunk_width,
+                        row_width: width,
+                    },
                     dst_top,
                     dst_bottom,
                 );
@@ -845,17 +763,20 @@ unsafe fn fill_rgb_row_pair_from_420_neon_dual(
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_neon_top_only(
     y_top: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
+    chroma: Rgb420ChromaRows<'_>,
     dst_top: &mut [u8],
-    chroma_width: usize,
-    width: usize,
 ) {
+    let Rgb420ChromaRows {
+        prev_cb,
+        curr_cb,
+        prev_cr,
+        curr_cr,
+        ..
+    } = chroma;
+    let width = y_top.len();
+    let chroma_width = curr_cb.len();
     let mut sample = 0usize;
 
     while sample < chroma_width {
@@ -886,16 +807,7 @@ unsafe fn fill_rgb_row_pair_from_420_neon_top_only(
         if sample == 0 {
             // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
-                fill_rgb_row_pair_from_420_edge_neon_top_only(
-                    y_top,
-                    prev_cb,
-                    curr_cb,
-                    prev_cr,
-                    curr_cr,
-                    chunk_width,
-                    width,
-                    dst_top,
-                );
+                fill_rgb_row_pair_from_420_edge_neon_top_only(y_top, chroma, chunk_width, dst_top);
             }
         } else if can_use_tail_420_chunk(chroma_width, sample, chunk_width) {
             record_420_dispatch_neon_tail_chunk();
@@ -903,14 +815,13 @@ unsafe fn fill_rgb_row_pair_from_420_neon_top_only(
             unsafe {
                 fill_rgb_row_pair_from_420_tail_neon_top_only(
                     y_top,
-                    prev_cb,
-                    curr_cb,
-                    prev_cr,
-                    curr_cr,
-                    sample,
-                    x,
-                    chunk_width,
-                    width,
+                    chroma,
+                    Neon420TailChunk {
+                        sample_offset: sample,
+                        x,
+                        chunk_width,
+                        row_width: width,
+                    },
                     dst_top,
                 );
             }
@@ -948,21 +859,22 @@ unsafe fn fill_rgb_row_pair_from_420_neon_top_only(
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_edge_neon_dual(
     y_top: &[u8],
     y_bottom: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
+    chroma: Rgb420ChromaRows<'_>,
     chunk_width: usize,
-    _width: usize,
     dst_top: &mut [u8],
     dst_bottom: &mut [u8],
 ) {
+    let Rgb420ChromaRows {
+        prev_cb,
+        curr_cb,
+        next_cb,
+        prev_cr,
+        curr_cr,
+        next_cr,
+    } = chroma;
     let y_top_tail = load_tail_window(y_top, 0, chunk_width);
     let y_bottom_tail = load_tail_window(y_bottom, 0, chunk_width);
     let prev_cb_head = load_head_window(prev_cb, TAIL_WINDOW);
@@ -1049,17 +961,19 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_dual(
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_edge_neon_top_only(
     y_top: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
+    chroma: Rgb420ChromaRows<'_>,
     chunk_width: usize,
-    _width: usize,
     dst_top: &mut [u8],
 ) {
+    let Rgb420ChromaRows {
+        prev_cb,
+        curr_cb,
+        prev_cr,
+        curr_cr,
+        ..
+    } = chroma;
     let y_top_tail = load_tail_window(y_top, 0, chunk_width);
     let prev_cb_head = load_head_window(prev_cb, TAIL_WINDOW);
     let curr_cb_head = load_head_window(curr_cb, TAIL_WINDOW);
@@ -1104,23 +1018,28 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_top_only(
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_tail_neon_dual(
     y_top: &[u8],
     y_bottom: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    sample_offset: usize,
-    x: usize,
-    chunk_width: usize,
-    width: usize,
+    chroma: Rgb420ChromaRows<'_>,
+    chunk: Neon420TailChunk,
     dst_top: &mut [u8],
     dst_bottom: &mut [u8],
 ) {
+    let Rgb420ChromaRows {
+        prev_cb,
+        curr_cb,
+        next_cb,
+        prev_cr,
+        curr_cr,
+        next_cr,
+    } = chroma;
+    let Neon420TailChunk {
+        sample_offset,
+        x,
+        chunk_width,
+        row_width: width,
+    } = chunk;
     let y_top_tail = load_tail_window(y_top, x, chunk_width);
     let y_bottom_tail = load_tail_window(y_bottom, x, chunk_width);
     let prev_cb_tail = load_tail_window(prev_cb, sample_offset - 1, TAIL_WINDOW);
@@ -1238,19 +1157,25 @@ unsafe fn fill_rgb_row_pair_from_420_tail_neon_dual(
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_tail_neon_top_only(
     y_top: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    sample_offset: usize,
-    x: usize,
-    chunk_width: usize,
-    width: usize,
+    chroma: Rgb420ChromaRows<'_>,
+    chunk: Neon420TailChunk,
     dst_top: &mut [u8],
 ) {
+    let Rgb420ChromaRows {
+        prev_cb,
+        curr_cb,
+        prev_cr,
+        curr_cr,
+        ..
+    } = chroma;
+    let Neon420TailChunk {
+        sample_offset,
+        x,
+        chunk_width,
+        row_width: width,
+    } = chunk;
     let y_top_tail = load_tail_window(y_top, x, chunk_width);
     let prev_cb_tail = load_tail_window(prev_cb, sample_offset - 1, TAIL_WINDOW);
     let curr_cb_tail = load_tail_window(curr_cb, sample_offset - 1, TAIL_WINDOW);
@@ -1402,20 +1327,22 @@ unsafe fn fill_rgb_row_from_420_chunk16_interior_neon(
 }
 
 #[target_feature(enable = "neon")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_chunk16_interior_neon(
     y_top: &[u8],
     y_bottom: &[u8],
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
+    chroma: Rgb420ChromaRows<'_>,
     sample_offset: usize,
     dst_top: &mut [u8],
     dst_bottom: &mut [u8],
 ) {
+    let Rgb420ChromaRows {
+        prev_cb,
+        curr_cb,
+        next_cb,
+        prev_cr,
+        curr_cr,
+        next_cr,
+    } = chroma;
     debug_assert_eq!(y_top.len(), UPSAMPLED_LANES);
     debug_assert_eq!(y_bottom.len(), UPSAMPLED_LANES);
     debug_assert_eq!(dst_top.len(), UPSAMPLED_LANES * 3);

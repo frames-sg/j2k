@@ -52,6 +52,17 @@ unsafe boundaries for FFI/GPU work, no active runtime dependency on NVIDIA's
 JPEG 2000 runtime, strict errors for unsupported device routes, and dual
 MIT/Apache-2.0 licensing.
 
+## Memory Safety Posture
+
+J2K is advertised first as a Rust JPEG 2000 / HTJ2K codec for memory-safe
+integration with untrusted image inputs. The public codec API is safe Rust.
+Unsafe code is limited to FFI, GPU adapter, and explicitly audited buffer-view
+boundaries, where inputs are validated and unsupported shapes fail with errors.
+
+This is a memory-safety claim, not a claim that every malformed codestream is
+accepted or that every device path is faster than CPU. CPU remains the portable
+correctness baseline; GPU acceleration is promoted only for measured paths.
+
 ## Quickstart
 
 Use the public Rust API for application integration:
@@ -90,15 +101,15 @@ Runnable repository examples:
 
 Runtime backend selection defaults to `Auto`: CPU remains the portable baseline,
 and Metal or CUDA paths are selected only for supported shapes with validation
-and benchmark evidence. Explicit device requests are strict. Unsupported device
-shapes return errors instead of silently changing the requested backend.
-`Auto` is an optimization policy, not a promise to use a device whenever one is
-available.
+and benchmark evidence. Single-frame HTJ2K host-output encode stays CPU by
+default; resident Metal encode performance claims are batch claims. Explicit
+device requests are strict. Unsupported device shapes return errors instead of
+silently changing the requested backend. `Auto` is an optimization policy, not a
+promise to use a device whenever one is available.
 
-CUDA paths use J2K-owned kernels through `cuda-runtime` and are migrating to a
-CUDA Oxide-only device-kernel backend. NVIDIA performance claims require
-self-hosted benchmark evidence; hosted CI is not treated as NVIDIA performance
-evidence.
+CUDA paths use J2K-owned CUDA Oxide device kernels through `cuda-runtime`.
+NVIDIA performance claims require self-hosted benchmark evidence; hosted CI is
+not treated as NVIDIA performance evidence.
 
 ## Which crate should I use?
 
@@ -111,6 +122,7 @@ Use lower-level crates only when you need a specific integration point:
 | --- | --- |
 | JPEG 2000 / HTJ2K inspect, decode, encode, and recode | `j2k` |
 | Shared traits and backend types | `j2k-core` |
+| Shared encode-stage contracts | `j2k-types` |
 | Shared codec constants and pure math tables | `j2k-codec-math` |
 | JPEG inspect/decode and fixture/fallback encode | `j2k-jpeg` |
 | Native JPEG 2000 and HTJ2K codec engine | `j2k-native` |
@@ -201,6 +213,8 @@ Reference files:
   dependency graph
 - [docs/benchmark-evidence.md](docs/benchmark-evidence.md) - reproducible
   benchmark commands and current CUDA/Metal evidence
+- [docs/benchmark-corpora.md](docs/benchmark-corpora.md) - external corpus and
+  adoption-benchmark manifest policy
 - [docs/env-vars.md](docs/env-vars.md) - supported `J2K_*`
   environment variables
 - [docs/public-support.md](docs/public-support.md) - exact J2K Part 1,
@@ -211,169 +225,14 @@ Reference files:
 
 ## Benchmark and parity policy
 
-A published benchmark must identify:
-
-- host hardware and OS
-- exact command
-- input source
-- whether input is j2k-generated or external
-- benchmark mode, per-row decode method, and publication blockers
-- comparator availability
-- comparator version
-- comparator gate status and skipped comparator list
-- git revision, dirty state including untracked files, build profile, and host hardware
-- skipped paths and skip reason
-- thread count and internal decoder threading policy, including
-  `J2K_COMPARE_THREADS` or `J2K_FIXTURE_COMPARE_THREADS` when applicable
-- batch input policy and sample order policy
-- separate decode fixture and encode source-image manifests when making both
-  decoder and encoder claims
-
-Use `cargo xtask adoption-materialize` for source-image corpora that need fixed
-classic J2K/HTJ2K decode fixtures plus staged PGM/PPM encode inputs. It writes
-raw codestream variants, JP2 wrappers for classic J2K, JPH wrappers for HTJ2K,
-`staged-pnm/`, `fixtures.tsv`, and
-`encode-fixtures.tsv` from the same source bytes. Materialized decode rows carry
-`source_fnv1a64` so raw plus boxed variants do not inflate the unique-source
-publication gate. Use `cargo xtask adoption-manifest` for existing native
-J2K/JP2/JPH corpora such as conformance, OpenJPEG, OpenJPH, or parser test
-data, or `cargo xtask adoption-curate` when a corpus mixes valid, invalid, and
-non-comparable files. `adoption-curate` copies only supported 8-bit gray/RGB
-files that pass full decode plus OpenJPEG/Grok full-image preflight, and records
-rejected files in `skipped.tsv`. Pass the resulting manifests to
-`cargo xtask adoption-benchmark --manifest ... --encode-manifest ...`.
-
-Public OpenJPEG and Grok comparison claims require explicit comparator gates and
-cannot silently skip:
-
-```bash
-J2K_REQUIRE_OPENJPEG=1
-J2K_REQUIRE_GROK=1
-```
-
-Optional OpenJPH rows can be added for HTJ2K/JPH-compatible fixture context with
-`J2K_INCLUDE_OPENJPH=1` or `cargo xtask adoption-benchmark --openjph`. Use
-`J2K_REQUIRE_OPENJPH=1` or `--require-openjph` only when `ojph_expand`
-availability is part of the claim. Set `J2K_OPENJPH_EXPAND_BIN=/path/to/ojph_expand`
-for non-standard installs. These rows are labeled
-`decode_method=openjph-cli-process-output-pnm` because they go through the
-OpenJPH CLI and PGM/PPM file output, so report them separately from the default
-in-process J2K/OpenJPEG/Grok matrix.
-
-Optional Kakadu rows can be added as proprietary CLI/file-output context with
-`J2K_INCLUDE_KAKADU=1` or `cargo xtask adoption-benchmark --kakadu`. Use
-`J2K_REQUIRE_KAKADU=1` or `--require-kakadu` only when Kakadu availability is
-part of the claim. Set `J2K_KDU_EXPAND_BIN=/path/to/kdu_expand` and
-`J2K_KDU_COMPRESS_BIN=/path/to/kdu_compress` for non-standard installs. Kakadu
-decode rows are labeled `decode_method=kakadu-cli-process-output-pnm`; encode
-rows are CLI/process JP2 rows validated against the same classic lossless profile.
-Report them separately from the default in-process/publication matrix.
-
-J2K-generated J2K/HTJ2K codestreams require native decoder round trips.
-OpenJPEG and Grok comparisons are used where those tools support the feature.
-Missing comparators cannot convert a parity signoff into a pass.
-
-The fixture comparator has three modes, controlled by
-`J2K_FIXTURE_COMPARE_MODE`:
-
-- `portable-native` is the default and the only mode intended for publishable
-  head-to-head decoder speed tables. It excludes native operations that cannot
-  be measured comparably across J2K, OpenJPEG, and Grok.
-- `portable-emulated` keeps the same tasks but labels emulated comparator work,
-  for example OpenJPEG HTJ2K JP2 ROI+scaled as
-  `decode_method=emulated-full-scaled-crop`.
-- `capability` keeps feature-coverage rows and emits explicit skips such as
-  `skip_reason=openjpeg-htj2k-roi-scaled-noncomparable`.
-
-Do not report skipped rows or emulated rows as native OpenJPEG speed numbers.
-
-For local smoke/development decode comparisons, use the shared generated
-fixture matrix so every supported decoder receives the same named input bytes.
-Generated-only output is not adoption-facing benchmark evidence. By default the
-fixture comparator measures every per-fixture detail row at batch `1` and mixed
-external throughput rows at `1,16,256,1024`; setting
-`J2K_FIXTURE_COMPARE_BATCH_SIZES` preserves the old behavior of applying one
-batch list to both row types:
-
-```bash
-J2K_REQUIRE_OPENJPEG=1 J2K_REQUIRE_GROK=1 \
-  cargo run -p j2k-compare --release --bin jp2k_fixture_compare
-```
-
-Set `J2K_FIXTURE_COMPARE_INPUT_DIRS=/path/to/iso:/path/to/openjpeg-data:/path/to/domain`
-to add external J2K/JP2/JPH fixtures recursively. Adoption-facing reports
-require external corpora, strict comparator gates, `correctness_preflight`,
-`benchmark_mode=portable-native`, `publication_blockers=none`,
-`benchmark_complete`, mixed external batch rows, and
-`publication_eligible=true`, plus a corpus mix documented in
-[docs/benchmark-corpora.md](docs/benchmark-corpora.md). The publication gate
-counts distinct external input digests separately from derived operation cases,
-so a file that contributes both full and ROI-scaled rows does not count twice
-for corpus diversity. Repo-materialized natural-image codestreams are workload
-diagnostic rows; publishable decode claims also require independently sourced
-native compressed J2K and HTJ2K fixtures.
-
-For external-only publication runs, set
-`J2K_FIXTURE_COMPARE_INCLUDE_GENERATED=0` and provide
-`J2K_FIXTURE_COMPARE_MANIFEST=/path/to/fixtures.tsv` so corpus category,
-source/license status, encode command, expected hash, codec, and container are
-explicit instead of inferred from paths. The harness builds rotating owned input
-copies outside the timed loop and interleaves decoder sample order. External
-runs also emit `external_mixed_*` rows that cycle through the same distinct
-fixture sequence for every decoder in a compatible format/operation group; use
-those mixed rows for huge-batch throughput claims and the per-fixture rows for
-fixture-level diagnosis. Publication gates require mixed-batch coverage for
-gray/RGB full-image decode groups and for ROI-scaled groups that remain in the
-selected comparable mode; the report records `mixed_external_group_distinct_inputs`
-so a single dominant group cannot hide a missing batch surface.
-
-For CPU encoder comparisons against OpenJPEG and Grok, use
-`jp2k_encode_compare` or `cargo xtask adoption-benchmark --encode-fixtures`.
-That harness accepts common 8-bit gray/RGB source image formats, stages them as
-canonical PGM/PPM outside the timed loop, feeds the same staged PNM bytes to all
-encoders via CLI processes, rotates encoder measurement order, forces
-OpenJPEG/Grok single-thread encode options where supported, records an explicit
-classic lossless JP2 encode profile, validates produced codestreams against that
-profile, reports input MiB/s for mixed batches, and has its own
-manifest gate: `J2K_ENCODE_COMPARE_MANIFEST` records corpus, license, source
-command, and decoded-pixel hash. Publication gates require separate gray/RGB
-mixed encode rows when making large-batch source-matrix claims. Do not use
-public API Criterion encode rows as OpenJPEG/Grok encoder comparison evidence.
-
-For CUDA HTJ2K encode hardware claims, pass `--cuda --require-cuda` plus the
-same `--encode-fixtures` and `--encode-manifest` used for CPU encode claims.
-The adoption runner forwards those staged PGM/PPM sources to the CUDA encode
-bench through `J2K_CUDA_ENCODE_INPUT_DIRS` and `J2K_CUDA_ENCODE_MANIFEST`.
-Those rows compare J2K CPU HTJ2K encode with J2K CUDA HTJ2K encode on the same
-manifest-pinned pixels; they are not OpenJPEG/Grok encoder comparison rows.
-When `--require-cuda` is set, `cargo xtask adoption-report` requires CUDA decode
-and encode steps to have run, requires manifest-backed external cases, requires
-generated CUDA host inputs to be disabled, and requires Criterion estimates.
-For large CUDA decode batch claims, pass an explicit batch list such as
-`--cuda-decode-batch-sizes 1,16,256,1024`; the value is recorded in
-`j2k_cuda_decode_batch_sizes` in the CUDA decode output and `summary.json`.
-The self-hosted CUDA workflow exposes the same path via the
-`run-adoption-benchmark` dispatch input. For the full pinned corpus, configure repository variables
-`J2K_ADOPTION_FIXTURES`, `J2K_ADOPTION_MANIFEST`,
-`J2K_ADOPTION_ENCODE_FIXTURES`, and `J2K_ADOPTION_ENCODE_MANIFEST` to the
-pinned fixture locations on the runner; the workflow runs
-`cargo xtask adoption-benchmark --cuda --require-cuda` and uploads the bundle.
-If those variables are absent, the workflow builds a default public starter
-corpus from Kodak plus curated OpenJPEG data under `target/j2k-public-corpora`.
-Hybrid outputs also emit `j2k_cuda_decode_io_policy`,
-`j2k_cuda_encode_io_policy`, or `j2k_metal_encode_io_policy` so reports state
-that staged inputs are preloaded and filesystem I/O is outside timed loops.
-For Metal auto-routing claims, use `--metal --require-metal` with the same
-encode fixture arguments; the runner forwards them through
-`J2K_METAL_ENCODE_INPUT_DIRS` and `J2K_METAL_ENCODE_MANIFEST` and the Metal
-benchmark emits external rows as `mode=lossless_external`. When
-`--require-metal` is set, the report requires the Metal step to have run,
-requires manifest-backed external rows, requires generated Metal host inputs to
-be disabled, and rejects skipped auto-routing rows or probe errors.
-After a full run, render the guarded publication report with
-`cargo xtask adoption-report --run-dir target/j2k-adoption-benchmark/full`.
-The report command refuses nonpublishable bundles unless
-`--allow-nonpublishable` is passed for diagnostics.
+Benchmark publication requirements are maintained in
+[docs/benchmark-corpora.md](docs/benchmark-corpora.md), with current run
+evidence in [docs/benchmark-evidence.md](docs/benchmark-evidence.md).
+Use `cargo xtask adoption-benchmark` for publication bundles and
+`cargo xtask adoption-report --run-dir <run-dir>` for the guarded report.
+OpenJPEG/Grok/CUDA/Metal/Kakadu/OpenJPH claims must use the required comparator
+or hardware gates described in the benchmark docs; skipped rows and emulated
+rows are diagnostic evidence only.
 
 ## Security
 

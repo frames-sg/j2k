@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use j2k_core::{
     copy_tight_pixels_to_strided_output, BackendKind, BufferError, DeviceMemoryRange,
-    DeviceSurface, ExecutionStats, PixelFormat,
+    DeviceSurface, ExecutionStats, PixelFormat, SurfaceMetadata,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaDeviceBuffer;
@@ -13,6 +13,8 @@ use j2k_cuda_runtime::CudaDeviceBuffer;
 #[cfg(feature = "cuda-runtime")]
 use crate::runtime::cuda_error;
 use crate::Error;
+
+pub use j2k_core::SurfaceResidency;
 
 #[derive(Debug)]
 pub(crate) enum Storage {
@@ -29,12 +31,14 @@ pub(crate) enum Storage {
 
 /// CUDA surface execution counters.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[doc(hidden)]
 pub struct CudaSurfaceStats {
     pub(crate) total: usize,
     pub(crate) copy: usize,
     pub(crate) decode: usize,
 }
 
+#[doc(hidden)]
 impl CudaSurfaceStats {
     /// Total CUDA kernel dispatches associated with the surface.
     pub fn kernel_dispatches(self) -> usize {
@@ -78,22 +82,10 @@ impl CudaSurface<'_> {
     }
 
     /// Execution counters for this surface.
+    #[doc(hidden)]
     pub fn stats(&self) -> CudaSurfaceStats {
         self.stats
     }
-}
-
-/// Residency of a decoded J2K CUDA adapter surface.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SurfaceResidency {
-    /// Pixels are stored in host memory.
-    #[default]
-    Host,
-    /// Pixels were produced directly by a CUDA codestream decode path.
-    CudaResidentDecode,
-    /// Pixels were decoded on CPU and uploaded into a CUDA buffer.
-    CpuStagedCudaUpload,
 }
 
 /// Host- or CUDA-backed decoded surface.
@@ -109,6 +101,16 @@ pub struct Surface {
 }
 
 impl Surface {
+    fn metadata(&self) -> SurfaceMetadata {
+        SurfaceMetadata::new(
+            self.backend,
+            self.residency,
+            self.dimensions,
+            self.fmt,
+            self.pitch_bytes,
+        )
+    }
+
     /// Return where the surface's pixels currently reside.
     pub fn residency(&self) -> SurfaceResidency {
         self.residency
@@ -171,13 +173,6 @@ impl Surface {
                     .map_err(Error::from)
             }
         }
-    }
-
-    /// Download the surface and return elapsed host copy time in microseconds.
-    pub fn download_into_profiled(&self, out: &mut [u8], stride: usize) -> Result<u128, Error> {
-        let started = std::time::Instant::now();
-        self.download_into(out, stride)?;
-        Ok(started.elapsed().as_micros())
     }
 
     /// Borrow CUDA metadata when the surface is CUDA-backed.
@@ -332,31 +327,26 @@ fn tight_cuda_download_len(
     (stride == pitch_bytes && out_len >= byte_len).then_some(byte_len)
 }
 
+#[doc(hidden)]
 impl DeviceSurface for Surface {
     fn backend_kind(&self) -> BackendKind {
-        self.backend
+        self.metadata().backend
     }
 
     fn residency(&self) -> j2k_core::SurfaceResidency {
-        match self.residency {
-            SurfaceResidency::Host => j2k_core::SurfaceResidency::Host,
-            SurfaceResidency::CudaResidentDecode => j2k_core::SurfaceResidency::CudaResidentDecode,
-            SurfaceResidency::CpuStagedCudaUpload => {
-                j2k_core::SurfaceResidency::CpuStagedCudaUpload
-            }
-        }
+        self.metadata().residency
     }
 
     fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
+        self.metadata().dimensions
     }
 
     fn pixel_format(&self) -> PixelFormat {
-        self.fmt
+        self.metadata().pixel_format
     }
 
     fn byte_len(&self) -> usize {
-        self.pitch_bytes * self.dimensions.1 as usize
+        self.metadata().byte_len()
     }
 
     fn execution_stats(&self) -> ExecutionStats {

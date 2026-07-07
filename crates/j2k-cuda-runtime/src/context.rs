@@ -322,6 +322,7 @@ impl ContextInner {
 
     #[cfg(not(feature = "cuda-oxide-jpeg-decode"))]
     #[allow(clippy::unused_self)]
+    #[allow(dead_code)]
     pub(crate) fn cuda_oxide_jpeg_decode_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -351,6 +352,7 @@ impl ContextInner {
 
     #[cfg(not(feature = "cuda-oxide-jpeg-encode"))]
     #[allow(clippy::unused_self)]
+    #[allow(dead_code)]
     pub(crate) fn cuda_oxide_jpeg_encode_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -362,6 +364,7 @@ impl ContextInner {
         ))
     }
 
+    #[cfg(test)]
     pub(crate) fn cuda_oxide_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -505,6 +508,7 @@ pub struct CudaContext {
 }
 
 /// Host-visible compact HTJ2K cleanup-pass encode metadata for one code block.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaHtj2kCompactEncodedCodeBlock {
     pub(crate) payload_range: std::ops::Range<usize>,
@@ -535,6 +539,7 @@ impl CudaHtj2kCompactEncodedCodeBlock {
 
 /// Host-visible compact HTJ2K cleanup-pass encode batch produced by one CUDA
 /// kernel dispatch.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaHtj2kCompactEncodedCodeBlocks {
     pub(crate) payload: Vec<u8>,
@@ -652,6 +657,7 @@ impl CudaContext {
 
     /// Dequantize HTJ2K cleanup outputs using the metadata buffer already held
     /// live by a queued cleanup launch.
+    #[doc(hidden)]
     pub fn j2k_dequantize_queued_htj2k_cleanup_with_pool(
         &self,
         cleanup: &CudaQueuedHtj2kCleanup,
@@ -706,111 +712,51 @@ impl std::fmt::Debug for CudaContext {
     }
 }
 
-/// Bundled CUDA kernel identifiers that can be preloaded by adapters.
+/// Bundled CUDA kernel identifiers that can be preloaded by runtime internals.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub enum CudaKernelName {
-    /// Byte-wise device copy kernel.
+pub(crate) enum CudaKernelName {
     CopyU8,
-    /// JPEG 2000 pixel deinterleave/level-shift kernel.
-    J2kDeinterleaveToF32,
-    /// JPEG 2000 forward reversible color transform kernel.
-    J2kForwardRct,
-    /// JPEG 2000 forward irreversible color transform kernel.
-    J2kForwardIct,
-    /// JPEG 2000 forward 5/3 horizontal DWT kernel.
-    J2kForwardDwt53Horizontal,
-    /// JPEG 2000 forward 5/3 vertical DWT kernel.
-    J2kForwardDwt53Vertical,
-    /// JPEG 2000 forward 9/7 horizontal DWT kernel.
-    J2kForwardDwt97Horizontal,
-    /// JPEG 2000 forward 9/7 vertical DWT kernel.
-    J2kForwardDwt97Vertical,
-    /// JPEG 2000 sub-band quantization kernel.
-    J2kQuantizeSubband,
-    /// JPEG 2000 strided sub-band quantization kernel.
-    J2kQuantizeSubbandStrided,
-    /// HTJ2K entropy code-block decode kernel.
     Htj2kDecodeCodeblocks,
-    /// HTJ2K cleanup-only decode plus dequantization kernel.
     Htj2kDecodeCodeblocksMultiCleanupDequantize,
-    /// JPEG 2000 HTJ2K coefficient dequantization kernel.
     J2kDequantizeHtj2kCodeblocks,
-    /// JPEG 2000 HTJ2K multi-buffer coefficient dequantization kernel.
     J2kDequantizeHtj2kCodeblocksMulti,
-    /// JPEG 2000 HTJ2K multi-buffer dequantization from cleanup metadata.
     J2kDequantizeHtj2kCleanupJobsMulti,
-    /// JPEG 2000 inverse DWT band interleave kernel.
     J2kIdwtInterleave,
-    /// JPEG 2000 fused band interleave and reversible 5/3 horizontal lifting kernel.
     J2kIdwtInterleaveHorizontal53Multi,
-    /// JPEG 2000 fused band interleave and irreversible 9/7 horizontal lifting kernel.
     J2kIdwtInterleaveHorizontal97Multi,
-    /// JPEG 2000 inverse DWT horizontal lifting kernel.
     J2kIdwtHorizontal,
-    /// JPEG 2000 inverse 5/3 DWT horizontal lifting kernel.
     J2kIdwtHorizontal53,
-    /// JPEG 2000 inverse 9/7 DWT horizontal lifting kernel.
     J2kIdwtHorizontal97,
-    /// JPEG 2000 inverse DWT vertical lifting kernel.
     J2kIdwtVertical,
-    /// JPEG 2000 reversible 5/3 vertical lifting multi-target kernel.
     J2kIdwtVertical53Multi,
-    /// JPEG 2000 irreversible 9/7 vertical lifting multi-target kernel.
     J2kIdwtVertical97Multi,
-    /// JPEG 2000 irreversible 9/7 vertical lifting multi-target 4-column kernel.
     J2kIdwtVertical97MultiCols4,
-    /// JPEG 2000 inverse 5/3 DWT vertical lifting kernel.
     J2kIdwtVertical53,
-    /// JPEG 2000 inverse 9/7 DWT vertical lifting kernel.
     J2kIdwtVertical97,
-    /// JPEG 2000 inverse DWT single-decomposition kernel.
     J2kInverseDwtSingle,
-    /// JPEG 2000 inverse RCT/ICT color transform kernel.
     J2kInverseMct,
-    /// JPEG 2000 grayscale f32-to-Gray8 store kernel.
     J2kStoreGray8,
-    /// JPEG 2000 grayscale f32-to-Gray16 store kernel.
     J2kStoreGray16,
-    /// JPEG 2000 RGB/RGBA 8-bit store kernel.
     J2kStoreRgb8,
-    /// JPEG 2000 fused inverse MCT and RGB/RGBA 8-bit store kernel.
     J2kStoreRgb8Mct,
-    /// JPEG 2000 batched fused inverse MCT and RGB/RGBA 8-bit store kernel.
     J2kStoreRgb8MctBatch,
-    /// JPEG 2000 RGB/RGBA 16-bit store kernel.
     J2kStoreRgb16,
-    /// JPEG 2000 fused inverse MCT and RGB/RGBA 16-bit store kernel.
     J2kStoreRgb16Mct,
-    /// HTJ2K single code-block encode kernel.
     Htj2kEncodeCodeblock,
-    /// HTJ2K batched code-block encode kernel.
     Htj2kEncodeCodeblocks,
-    /// HTJ2K batched multi-input code-block encode kernel.
     Htj2kEncodeCodeblocksMultiInput,
-    /// HTJ2K cleanup-only batched multi-input code-block encode kernel.
     Htj2kEncodeCodeblocksMultiInputCleanup,
-    /// HTJ2K cleanup-only batched multi-input 64x64 code-block encode kernel.
     Htj2kEncodeCodeblocksMultiInputCleanup64,
-    /// HTJ2K batched code-block output compaction kernel.
     Htj2kCompactCodeblocks,
-    /// HTJ2K packet header/body assembly kernel.
     Htj2kPacketizeCleanup,
 }
 
+#[cfg(test)]
 impl CudaKernelName {
     pub(crate) fn kernel(self) -> CudaKernel {
         match self {
             Self::CopyU8 => CudaKernel::CopyU8,
-            Self::J2kDeinterleaveToF32 => CudaKernel::J2kDeinterleaveToF32,
-            Self::J2kForwardRct => CudaKernel::J2kForwardRct,
-            Self::J2kForwardIct => CudaKernel::J2kForwardIct,
-            Self::J2kForwardDwt53Horizontal => CudaKernel::J2kForwardDwt53Horizontal,
-            Self::J2kForwardDwt53Vertical => CudaKernel::J2kForwardDwt53Vertical,
-            Self::J2kForwardDwt97Horizontal => CudaKernel::J2kForwardDwt97Horizontal,
-            Self::J2kForwardDwt97Vertical => CudaKernel::J2kForwardDwt97Vertical,
-            Self::J2kQuantizeSubband => CudaKernel::J2kQuantizeSubband,
-            Self::J2kQuantizeSubbandStrided => CudaKernel::J2kQuantizeSubbandStrided,
             Self::Htj2kDecodeCodeblocks => CudaKernel::Htj2kDecodeCodeblocks,
             Self::Htj2kDecodeCodeblocksMultiCleanupDequantize => {
                 CudaKernel::Htj2kDecodeCodeblocksMultiCleanupDequantize
@@ -864,15 +810,6 @@ impl CudaKernelName {
     pub(crate) fn entrypoint(self) -> &'static str {
         match self {
             Self::CopyU8 => "j2k_copy_u8",
-            Self::J2kDeinterleaveToF32 => "j2k_deinterleave_to_f32",
-            Self::J2kForwardRct => "j2k_forward_rct",
-            Self::J2kForwardIct => "j2k_forward_ict",
-            Self::J2kForwardDwt53Horizontal => "j2k_forward_dwt53_horizontal",
-            Self::J2kForwardDwt53Vertical => "j2k_forward_dwt53_vertical",
-            Self::J2kForwardDwt97Horizontal => "j2k_forward_dwt97_horizontal",
-            Self::J2kForwardDwt97Vertical => "j2k_forward_dwt97_vertical",
-            Self::J2kQuantizeSubband => "j2k_quantize_subband",
-            Self::J2kQuantizeSubbandStrided => "j2k_quantize_subband_strided",
             Self::Htj2kDecodeCodeblocks => "j2k_htj2k_decode_codeblocks",
             Self::Htj2kDecodeCodeblocksMultiCleanupDequantize => {
                 "j2k_htj2k_decode_codeblocks_multi_cleanup_dequantize"
@@ -917,20 +854,15 @@ impl CudaKernelName {
 }
 
 /// Metadata for a preloaded CUDA kernel module entry point.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CudaKernelModule {
-    pub(crate) kernel: CudaKernelName,
+pub(crate) struct CudaKernelModule {
     pub(crate) entrypoint: &'static str,
 }
 
+#[cfg(test)]
 impl CudaKernelModule {
-    /// Bundled kernel identifier.
-    pub fn kernel(&self) -> CudaKernelName {
-        self.kernel
-    }
-
-    /// Kernel entry point name.
-    pub fn entrypoint(&self) -> &'static str {
+    pub(crate) fn entrypoint(&self) -> &'static str {
         self.entrypoint
     }
 }

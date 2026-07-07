@@ -13,7 +13,7 @@ use crate::color::upsample::{
 };
 use crate::color::ycbcr::{FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200, ROUND};
 
-use super::scalar;
+use super::{scalar, Rgb420ChromaRows, Rgb420CroppedRowPair, Rgb420RowPair};
 
 const LANES: usize = 8;
 const RGB_UNROLL: usize = 8;
@@ -121,26 +121,15 @@ pub(crate) fn fill_rgb_row_from_ycbcr(y_row: &[u8], cb_row: &[u8], cr_row: &[u8]
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn fill_rgb_row_pair_from_420(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
-) {
-    let chroma_width = prev_cb
-        .len()
-        .min(curr_cb.len())
-        .min(next_cb.len())
-        .min(prev_cr.len())
-        .min(curr_cr.len())
-        .min(next_cr.len());
+pub(crate) fn fill_rgb_row_pair_from_420(request: Rgb420RowPair<'_>) {
+    let Rgb420RowPair {
+        y_top,
+        y_bottom,
+        chroma,
+        dst_top,
+        dst_bottom,
+    } = request;
+    let chroma_width = chroma.min_width();
     let bottom_width = match (y_bottom.as_ref(), dst_bottom.as_ref()) {
         (Some(row), Some(dst)) => row.len().min(dst.len() / 3),
         _ => usize::MAX,
@@ -155,12 +144,12 @@ pub(crate) fn fill_rgb_row_pair_from_420(
     }
     let y_top = &y_top[..width];
     let y_bottom = y_bottom.and_then(|row| row.get(..width));
-    let prev_cb = &prev_cb[..chroma_width];
-    let curr_cb = &curr_cb[..chroma_width];
-    let next_cb = &next_cb[..chroma_width];
-    let prev_cr = &prev_cr[..chroma_width];
-    let curr_cr = &curr_cr[..chroma_width];
-    let next_cr = &next_cr[..chroma_width];
+    let prev_cb = &chroma.prev_cb[..chroma_width];
+    let curr_cb = &chroma.curr_cb[..chroma_width];
+    let next_cb = &chroma.next_cb[..chroma_width];
+    let prev_cr = &chroma.prev_cr[..chroma_width];
+    let curr_cr = &chroma.curr_cr[..chroma_width];
+    let next_cr = &chroma.next_cr[..chroma_width];
     let dst_top = &mut dst_top[..width * 3];
     let dst_bottom = dst_bottom.and_then(|row| row.get_mut(..width * 3));
     debug_assert_eq!(dst_top.len(), y_top.len() * 3);
@@ -181,44 +170,31 @@ pub(crate) fn fill_rgb_row_pair_from_420(
         // all upsampled reads and RGB writes fit the passed slices.
         unsafe {
             fill_rgb_row_pair_from_420_avx2(
-                y_top,
-                y_bottom,
-                prev_cb,
-                curr_cb,
-                next_cb,
-                prev_cr,
-                curr_cr,
-                next_cr,
-                dst_top,
-                dst_bottom,
+                Rgb420RowPair::new(
+                    y_top,
+                    y_bottom,
+                    Rgb420ChromaRows::new(prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr),
+                    dst_top,
+                    dst_bottom,
+                ),
                 &mut scratch,
             );
         }
     });
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn fill_rgb_row_pair_from_420_cropped(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    crop_start: usize,
-    crop_width: usize,
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
-) {
-    let chroma_width = prev_cb
-        .len()
-        .min(curr_cb.len())
-        .min(next_cb.len())
-        .min(prev_cr.len())
-        .min(curr_cr.len())
-        .min(next_cr.len());
+pub(crate) fn fill_rgb_row_pair_from_420_cropped(request: Rgb420CroppedRowPair<'_>) {
+    let Rgb420CroppedRowPair { rows, crop } = request;
+    let Rgb420RowPair {
+        y_top,
+        y_bottom,
+        chroma,
+        dst_top,
+        dst_bottom,
+    } = rows;
+    let crop_start = crop.start;
+    let crop_width = crop.width;
+    let chroma_width = chroma.min_width();
     let available_chroma = chroma_width.saturating_mul(2).saturating_sub(crop_start);
     let available_top = y_top.len().saturating_sub(crop_start);
     let bottom_available = match (y_bottom.as_ref(), dst_bottom.as_ref()) {
@@ -240,12 +216,12 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(
         return;
     };
     let y_bottom = y_bottom.and_then(|row| row.get(crop_start..crop_end));
-    let prev_cb = &prev_cb[..chroma_width];
-    let curr_cb = &curr_cb[..chroma_width];
-    let next_cb = &next_cb[..chroma_width];
-    let prev_cr = &prev_cr[..chroma_width];
-    let curr_cr = &curr_cr[..chroma_width];
-    let next_cr = &next_cr[..chroma_width];
+    let prev_cb = &chroma.prev_cb[..chroma_width];
+    let curr_cb = &chroma.curr_cb[..chroma_width];
+    let next_cb = &chroma.next_cb[..chroma_width];
+    let prev_cr = &chroma.prev_cr[..chroma_width];
+    let curr_cr = &chroma.curr_cr[..chroma_width];
+    let next_cr = &chroma.next_cr[..chroma_width];
     let dst_top = &mut dst_top[..width * 3];
     let dst_bottom = dst_bottom.and_then(|row| row.get_mut(..width * 3));
     debug_assert_eq!(dst_top.len(), width * 3);
@@ -298,20 +274,25 @@ fn fill_cropped_h2v2_row(near: &[u8], curr: &[u8], crop_start: usize, out: &mut 
 }
 
 #[target_feature(enable = "avx2")]
-#[allow(clippy::too_many_arguments)]
 unsafe fn fill_rgb_row_pair_from_420_avx2(
-    y_top: &[u8],
-    y_bottom: Option<&[u8]>,
-    prev_cb: &[u8],
-    curr_cb: &[u8],
-    next_cb: &[u8],
-    prev_cr: &[u8],
-    curr_cr: &[u8],
-    next_cr: &[u8],
-    dst_top: &mut [u8],
-    dst_bottom: Option<&mut [u8]>,
+    request: Rgb420RowPair<'_>,
     scratch: &mut RowPairScratch,
 ) {
+    let Rgb420RowPair {
+        y_top,
+        y_bottom,
+        chroma,
+        dst_top,
+        dst_bottom,
+    } = request;
+    let Rgb420ChromaRows {
+        prev_cb,
+        curr_cb,
+        next_cb,
+        prev_cr,
+        curr_cr,
+        next_cr,
+    } = chroma;
     let width = y_top.len();
     let RowPairScratch {
         cb_top,

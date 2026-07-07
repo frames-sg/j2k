@@ -5,7 +5,7 @@ use j2k_core::{
     BackendRequest, DecoderContext, DeviceSubmission, ImageDecodeDevice, PixelFormat,
     TileBatchDecodeSubmit,
 };
-use j2k_jpeg::{Decoder as CpuDecoder, DecoderContext as JpegDecoderContext};
+use j2k_jpeg::{DecodeRequest, Decoder as CpuDecoder, DecoderContext as JpegDecoderContext};
 use j2k_jpeg_metal::{Codec, Decoder as MetalDecoder, MetalSession, ScratchPool};
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 
@@ -20,7 +20,11 @@ fn bench_device_upload(c: &mut Criterion) {
 
     group.bench_function("cpu_decode_rgb8", |b| {
         let decoder = CpuDecoder::new(&input).expect("cpu decoder");
-        b.iter(|| decoder.decode(PixelFormat::Rgb8).expect("cpu decode"));
+        b.iter(|| {
+            decoder
+                .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+                .expect("cpu decode")
+        });
     });
 
     if metal_decode_available() {
@@ -151,7 +155,9 @@ fn bench_batch_decode(c: &mut Criterion) {
             let mut total = 0usize;
             for _ in 0..batch_size {
                 let decoder = CpuDecoder::new(&input).expect("cpu decoder");
-                let decoded_rgb = decoder.decode(PixelFormat::Rgb8).expect("cpu decode");
+                let decoded_rgb = decoder
+                    .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+                    .expect("cpu decode");
                 total = total.saturating_add(decoded_rgb.0.len());
                 std::hint::black_box(decoded_rgb);
             }

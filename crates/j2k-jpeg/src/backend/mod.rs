@@ -31,6 +31,95 @@ pub(crate) struct Backend {
     kind: BackendKind,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Rgb420ChromaRows<'a> {
+    pub(crate) prev_cb: &'a [u8],
+    pub(crate) curr_cb: &'a [u8],
+    pub(crate) next_cb: &'a [u8],
+    pub(crate) prev_cr: &'a [u8],
+    pub(crate) curr_cr: &'a [u8],
+    pub(crate) next_cr: &'a [u8],
+}
+
+impl<'a> Rgb420ChromaRows<'a> {
+    pub(crate) fn new(
+        prev_cb: &'a [u8],
+        curr_cb: &'a [u8],
+        next_cb: &'a [u8],
+        prev_cr: &'a [u8],
+        curr_cr: &'a [u8],
+        next_cr: &'a [u8],
+    ) -> Self {
+        Self {
+            prev_cb,
+            curr_cb,
+            next_cb,
+            prev_cr,
+            curr_cr,
+            next_cr,
+        }
+    }
+
+    pub(crate) fn min_width(self) -> usize {
+        self.prev_cb
+            .len()
+            .min(self.curr_cb.len())
+            .min(self.next_cb.len())
+            .min(self.prev_cr.len())
+            .min(self.curr_cr.len())
+            .min(self.next_cr.len())
+    }
+}
+
+pub(crate) struct Rgb420RowPair<'a> {
+    pub(crate) y_top: &'a [u8],
+    pub(crate) y_bottom: Option<&'a [u8]>,
+    pub(crate) chroma: Rgb420ChromaRows<'a>,
+    pub(crate) dst_top: &'a mut [u8],
+    pub(crate) dst_bottom: Option<&'a mut [u8]>,
+}
+
+impl<'a> Rgb420RowPair<'a> {
+    pub(crate) fn new(
+        y_top: &'a [u8],
+        y_bottom: Option<&'a [u8]>,
+        chroma: Rgb420ChromaRows<'a>,
+        dst_top: &'a mut [u8],
+        dst_bottom: Option<&'a mut [u8]>,
+    ) -> Self {
+        Self {
+            y_top,
+            y_bottom,
+            chroma,
+            dst_top,
+            dst_bottom,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Rgb420Crop {
+    pub(crate) start: usize,
+    pub(crate) width: usize,
+}
+
+impl Rgb420Crop {
+    pub(crate) fn new(start: usize, width: usize) -> Self {
+        Self { start, width }
+    }
+}
+
+pub(crate) struct Rgb420CroppedRowPair<'a> {
+    pub(crate) rows: Rgb420RowPair<'a>,
+    pub(crate) crop: Rgb420Crop,
+}
+
+impl<'a> Rgb420CroppedRowPair<'a> {
+    pub(crate) fn new(rows: Rgb420RowPair<'a>, crop: Rgb420Crop) -> Self {
+        Self { rows, crop }
+    }
+}
+
 impl Backend {
     pub(crate) fn detect() -> Self {
         let cpu = CpuFeatures::detect();
@@ -150,69 +239,23 @@ impl Backend {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn fill_rgb_row_pair_from_420(
-        self,
-        y_top: &[u8],
-        y_bottom: Option<&[u8]>,
-        prev_cb: &[u8],
-        curr_cb: &[u8],
-        next_cb: &[u8],
-        prev_cr: &[u8],
-        curr_cr: &[u8],
-        next_cr: &[u8],
-        dst_top: &mut [u8],
-        dst_bottom: Option<&mut [u8]>,
-    ) {
+    pub(crate) fn fill_rgb_row_pair_from_420(self, request: Rgb420RowPair<'_>) {
         match self.kind {
-            BackendKind::Scalar => scalar::fill_rgb_row_pair_from_420(
-                y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top,
-                dst_bottom,
-            ),
+            BackendKind::Scalar => scalar::fill_rgb_row_pair_from_420(request),
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => x86::fill_rgb_row_pair_from_420(
-                y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top,
-                dst_bottom,
-            ),
+            BackendKind::Avx2 => x86::fill_rgb_row_pair_from_420(request),
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => neon::fill_rgb_row_pair_from_420(
-                y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top,
-                dst_bottom,
-            ),
+            BackendKind::Neon => neon::fill_rgb_row_pair_from_420(request),
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn fill_rgb_row_pair_from_420_cropped(
-        self,
-        y_top: &[u8],
-        y_bottom: Option<&[u8]>,
-        prev_cb: &[u8],
-        curr_cb: &[u8],
-        next_cb: &[u8],
-        prev_cr: &[u8],
-        curr_cr: &[u8],
-        next_cr: &[u8],
-        crop_start: usize,
-        crop_width: usize,
-        dst_top: &mut [u8],
-        dst_bottom: Option<&mut [u8]>,
-    ) {
+    pub(crate) fn fill_rgb_row_pair_from_420_cropped(self, request: Rgb420CroppedRowPair<'_>) {
         match self.kind {
-            BackendKind::Scalar => scalar::fill_rgb_row_pair_from_420_cropped(
-                y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, crop_start,
-                crop_width, dst_top, dst_bottom,
-            ),
+            BackendKind::Scalar => scalar::fill_rgb_row_pair_from_420_cropped(request),
             #[cfg(target_arch = "x86_64")]
-            BackendKind::Avx2 => x86::fill_rgb_row_pair_from_420_cropped(
-                y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, crop_start,
-                crop_width, dst_top, dst_bottom,
-            ),
+            BackendKind::Avx2 => x86::fill_rgb_row_pair_from_420_cropped(request),
             #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon => neon::fill_rgb_row_pair_from_420_cropped(
-                y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, crop_start,
-                crop_width, dst_top, dst_bottom,
-            ),
+            BackendKind::Neon => neon::fill_rgb_row_pair_from_420_cropped(request),
         }
     }
 

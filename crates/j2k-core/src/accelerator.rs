@@ -3,13 +3,14 @@
 use core::mem::{size_of, size_of_val};
 use core::slice;
 
-use crate::backend::BackendKind;
+use crate::{backend::BackendKind, pixel::PixelFormat};
 
 /// Residency of an accelerator-visible surface or buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SurfaceResidency {
     /// Host memory owned by CPU code.
+    #[default]
     Host,
     /// Pixels were produced directly by a CUDA decode path.
     CudaResidentDecode,
@@ -104,6 +105,56 @@ impl DeviceMemoryRange {
     }
 }
 
+/// Backend-neutral metadata for a decoded accelerator surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SurfaceMetadata {
+    /// Backend that owns or produced the surface.
+    pub backend: BackendKind,
+    /// Memory residency of the surface bytes.
+    pub residency: SurfaceResidency,
+    /// Surface dimensions in pixels.
+    pub dimensions: (u32, u32),
+    /// Pixel format stored by the surface.
+    pub pixel_format: PixelFormat,
+    /// Number of bytes between consecutive rows.
+    pub pitch_bytes: usize,
+    /// Byte offset into the backend allocation.
+    pub byte_offset: usize,
+}
+
+impl SurfaceMetadata {
+    /// Construct tight or explicitly pitched surface metadata with no byte offset.
+    pub const fn new(
+        backend: BackendKind,
+        residency: SurfaceResidency,
+        dimensions: (u32, u32),
+        pixel_format: PixelFormat,
+        pitch_bytes: usize,
+    ) -> Self {
+        Self {
+            backend,
+            residency,
+            dimensions,
+            pixel_format,
+            pitch_bytes,
+            byte_offset: 0,
+        }
+    }
+
+    /// Return metadata adjusted to start at `byte_offset` inside an allocation.
+    #[must_use]
+    pub const fn with_byte_offset(mut self, byte_offset: usize) -> Self {
+        self.byte_offset = byte_offset;
+        self
+    }
+
+    /// Number of bytes represented by the surface.
+    #[must_use]
+    pub const fn byte_len(self) -> usize {
+        self.pitch_bytes.saturating_mul(self.dimensions.1 as usize)
+    }
+}
+
 /// Shared session contract for caller-owned accelerator runtime state.
 pub trait AcceleratorSession {
     /// Backend owned by this session.
@@ -150,6 +201,7 @@ macro_rules! impl_gpu_abi_primitive {
         $(
             // SAFETY: Primitive numeric types are plain data with stable Rust layouts
             // accepted by the shader ABI helpers as scalar values.
+            #[doc(hidden)]
             unsafe impl GpuAbi for $ty {
                 const NAME: &'static str = stringify!($ty);
             }
@@ -161,9 +213,32 @@ impl_gpu_abi_primitive!(u8, i8, u16, i16, u32, i32, u64, i64, f32, f64);
 
 // SAFETY: Arrays preserve element order and contain no extra non-element state;
 // the element type supplies the GPU ABI layout contract.
+#[doc(hidden)]
 unsafe impl<T, const N: usize> GpuAbi for [T; N]
 where
     T: GpuAbi,
 {
     const NAME: &'static str = "array";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn surface_metadata_reports_byte_len_and_offset() {
+        let metadata = SurfaceMetadata::new(
+            BackendKind::Metal,
+            SurfaceResidency::MetalResidentDecode,
+            (17, 11),
+            PixelFormat::Rgb8,
+            64,
+        )
+        .with_byte_offset(128);
+
+        assert_eq!(metadata.backend, BackendKind::Metal);
+        assert_eq!(metadata.residency, SurfaceResidency::MetalResidentDecode);
+        assert_eq!(metadata.byte_offset, 128);
+        assert_eq!(metadata.byte_len(), 704);
+    }
 }

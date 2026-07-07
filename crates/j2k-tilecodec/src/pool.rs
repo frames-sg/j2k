@@ -18,6 +18,7 @@ macro_rules! vec_scratch_pool {
             }
         }
 
+        #[doc(hidden)]
         impl ScratchPool for $name {
             fn bytes_allocated(&self) -> usize {
                 self.scratch.capacity()
@@ -52,6 +53,7 @@ vec_scratch_pool!(
 /// Zero-sized scratch pool for codecs that do not allocate.
 pub struct NoPool;
 
+#[doc(hidden)]
 impl ScratchPool for NoPool {
     fn bytes_allocated(&self) -> usize {
         0

@@ -3,7 +3,7 @@
 #[path = "../benches/common/libjpeg_turbo.rs"]
 mod libjpeg_turbo;
 
-use j2k_jpeg::{Decoder, Downscale, PixelFormat, Rect};
+use j2k_jpeg::{DecodeRequest, Decoder, Downscale, PixelFormat, Rect};
 use j2k_test_support::JPEG_BASELINE_420_16X16;
 
 #[test]
@@ -25,12 +25,14 @@ fn turbojpeg_rgb_and_region_match_j2k_fixture() {
     let info = turbo.inspect(bytes).expect("turbojpeg inspect");
     assert_eq!((info.width, info.height), (16, 16));
 
-    let (rgb, _) = dec.decode(PixelFormat::Rgb8).expect("j2k rgb");
+    let (rgb, _) = dec
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("j2k rgb");
     let turbo_rgb = turbo.decode_rgb(bytes).expect("turbojpeg rgb");
     assert_eq!(turbo_rgb, rgb);
 
     let (scaled, _) = dec
-        .decode_scaled(PixelFormat::Rgb8, Downscale::Quarter)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, Downscale::Quarter))
         .expect("j2k scaled");
     let turbo_scaled = turbo
         .decode_scaled_rgb(bytes, Downscale::Quarter)

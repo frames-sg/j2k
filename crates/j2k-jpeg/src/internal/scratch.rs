@@ -141,6 +141,7 @@ impl ScratchPool {
     }
 }
 
+#[doc(hidden)]
 impl CoreScratchPool for ScratchPool {
     fn bytes_allocated(&self) -> usize {
         fn vec_bytes<T>(vec: &Vec<T>) -> usize {

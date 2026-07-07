@@ -10,13 +10,59 @@ use j2k_transcode::accelerator::{
     DctGridToDwt53Job, DctGridToDwt97Job, DctGridToReversibleDwt53Job,
     DctToWaveletStageAccelerator, RayonReversibleDwt53Accelerator,
 };
-use j2k_transcode::dct53_2d::{dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch};
-use j2k_transcode::dct97_2d::{dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch};
 use j2k_transcode::{
     EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions,
-    JpegToHtj2kTranscoder, TranscodeBatchProfileRequest,
+    JpegToHtj2kTranscoder, TranscodeBatchProfileRequest, TranscodePipelineMap,
 };
 use j2k_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILABLE};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dwt53TwoDimensional<T> {
+    pub ll: Vec<T>,
+    pub hl: Vec<T>,
+    pub lh: Vec<T>,
+    pub hh: Vec<T>,
+    pub low_width: usize,
+    pub low_height: usize,
+    pub high_width: usize,
+    pub high_height: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dwt97TwoDimensional<T> {
+    pub ll: Vec<T>,
+    pub hl: Vec<T>,
+    pub lh: Vec<T>,
+    pub hh: Vec<T>,
+    pub low_width: usize,
+    pub low_height: usize,
+    pub high_width: usize,
+    pub high_height: usize,
+}
+
+#[allow(
+    clippy::large_types_passed_by_value,
+    dead_code,
+    unreachable_pub,
+    unused_imports
+)]
+#[path = "../../j2k-transcode/src/dct53_2d.rs"]
+mod dct53_2d;
+#[allow(
+    clippy::large_types_passed_by_value,
+    dead_code,
+    unreachable_pub,
+    unused_imports
+)]
+#[path = "../../j2k-transcode/src/dct97_2d.rs"]
+mod dct97_2d;
+#[allow(dead_code, unreachable_pub, unused_imports)]
+#[path = "../../j2k-transcode/src/dct_grid.rs"]
+mod dct_grid;
+
+use dct53_2d::{dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch};
+use dct97_2d::{dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch};
+pub use dct_grid::DctGridError;
 
 const WSI_DIMS: [usize; 4] = [224, 512, 1024, 2048];
 const REVERSIBLE_BATCH_SIZES: [usize; 5] = [1, 8, 32, 128, 512];
@@ -834,7 +880,7 @@ fn emit_transcode_batch_profile(
                 "j2k_profile{}",
                 j2k_profile::format_profile_key_value_fields(row.fields())
             ));
-            eprint!("{}", report.pipeline_map().debug_report());
+            emit_pipeline_map(&report.pipeline_map());
         }
         j2k_profile::ProfileStageMode::Summary => {
             TRANSCODE_BATCH_PROFILE_SUMMARY.with(|summary| {
@@ -844,6 +890,33 @@ fn emit_transcode_batch_profile(
             });
         }
     }
+}
+
+fn emit_pipeline_map(map: &TranscodePipelineMap) {
+    eprintln!("jpeg_to_htj2k_pipeline_map");
+    for stage in &map.stages {
+        eprintln!(
+            "stage={} processor={} cpu_us={} metal_us={} transfer_us={} transfer_count={} transfer_bytes={} resident_handoffs={} dispatches={} fallback_jobs={} note={}",
+            stage.stage,
+            stage.processor,
+            stage.cpu_us,
+            stage.metal_us,
+            stage.transfer_us,
+            stage.transfer_count,
+            stage.transfer_bytes,
+            stage.resident_handoff_count,
+            stage.dispatches,
+            stage.fallback_jobs,
+            stage.note,
+        );
+    }
+    eprintln!(
+        "recommend_next_stage={} evidence_us={} evidence_dispatches={} reason={}",
+        map.recommendation.stage,
+        map.recommendation.evidence_us,
+        map.recommendation.evidence_dispatches,
+        map.recommendation.reason,
+    );
 }
 
 fn metal_available() -> bool {

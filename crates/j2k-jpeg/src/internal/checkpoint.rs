@@ -11,6 +11,7 @@ pub(crate) struct CpuCheckpointCache {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
 /// Entropy decoder resume point for device-side JPEG decode.
 pub struct DeviceCheckpoint {
     /// MCU index where decoding can resume.

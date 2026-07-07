@@ -1,6 +1,8 @@
 use cuda_device::{kernel, thread};
 use cuda_host::cuda_module;
 
+include!("../../../cuda_oxide_simt_prelude.rs");
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct CudaJ2kStoreGray8Job {
@@ -123,33 +125,27 @@ struct CudaJ2kStoreRgb16MctJob {
 
 #[inline(always)]
 fn load_f32(ptr: *const f32, index: u32) -> f32 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_job<T: Copy>(ptr: *const T) -> T {
-    unsafe { *ptr }
+    simt_load(ptr, 0)
 }
 
 #[inline(always)]
 fn store_f32(ptr: *mut f32, index: u32, value: f32) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn store_u8(ptr: *mut u8, index: u32, value: u8) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn store_u16(ptr: *mut u16, index: u32, value: u16) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]

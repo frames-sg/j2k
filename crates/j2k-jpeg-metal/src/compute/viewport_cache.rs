@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(test)]
 use std::mem::size_of;
 
 use j2k_core::{PixelFormat, Rect};
-use j2k_jpeg::{ColorSpace as JpegColorSpace, ComponentRowWriter};
+use j2k_jpeg::{ColorSpace as JpegColorSpace, ComponentRowWriter, JpegError};
 use j2k_metal_support::dispatch_2d_pipeline;
 use metal::{Buffer, Device, MTLResourceOptions};
 
-use crate::buffers::new_private_buffer;
+use crate::buffers::{checked_copy_bytes_to_buffer_at, checked_fill_buffer_u8, new_private_buffer};
 use crate::{Error, Surface};
 
+#[cfg(test)]
 use super::{
-    batch_output_buffer_or_new, bind_three_plane_pack, commit_and_wait_jpeg,
-    validate_rgba_texture_batch_output, JpegPackParams, JpegRgb8ToRgbaTextureParams, MetalRuntime,
-    MODE_GRAY, MODE_RGB, MODE_YCBCR, OUT_GRAY, OUT_RGB, OUT_RGBA,
+    batch_output_buffer_or_new, validate_rgba_texture_batch_output, JpegRgb8ToRgbaTextureParams,
+};
+use super::{
+    bind_three_plane_pack, commit_and_wait_jpeg, JpegPackParams, MetalRuntime, MODE_GRAY, MODE_RGB,
+    MODE_YCBCR, OUT_GRAY, OUT_RGB, OUT_RGBA,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,6 +47,16 @@ enum PlaneStageResidency {
 pub(super) struct ViewportPlaneWriter<'a> {
     pub(super) stage: &'a mut PlaneStage,
     pub(super) dest: Rect,
+}
+
+#[cfg(target_os = "macos")]
+struct PlaneRowTarget<'a> {
+    plane0: &'a Buffer,
+    plane1: Option<&'a Buffer>,
+    plane2: Option<&'a Buffer>,
+    full_width: usize,
+    origin_x: u32,
+    origin_y: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -190,6 +204,7 @@ impl PlaneStage {
         ))
     }
 
+    #[cfg(test)]
     pub(super) fn finish_rgb8_into_output_with_runtime(
         self,
         runtime: &MetalRuntime,
@@ -235,6 +250,7 @@ impl PlaneStage {
         ))
     }
 
+    #[cfg(test)]
     pub(super) fn finish_rgba8_into_texture_output_with_runtime(
         self,
         runtime: &MetalRuntime,
@@ -389,9 +405,9 @@ fn surface_from_plane_buffer(
 #[cfg(target_os = "macos")]
 impl ComponentRowWriter for PlaneStage {
     fn write_gray_row(&mut self, y: u32, gray_row: &[u8]) -> Result<(), j2k_jpeg::JpegError> {
-        let width = self.dims.0 as usize;
-        write_row_u8(&self.plane0, y, width, gray_row);
-        Ok(())
+        self.row_target()
+            .write_gray_row(y, gray_row)
+            .map_err(jpeg_plane_write_error)
     }
 
     fn write_ycbcr_row(
@@ -401,21 +417,9 @@ impl ComponentRowWriter for PlaneStage {
         chroma_blue_row: &[u8],
         chroma_red_row: &[u8],
     ) -> Result<(), j2k_jpeg::JpegError> {
-        let width = self.dims.0 as usize;
-        write_row_u8(&self.plane0, y, width, y_row);
-        write_row_u8(
-            self.plane1.as_ref().expect("Cb plane"),
-            y,
-            width,
-            chroma_blue_row,
-        );
-        write_row_u8(
-            self.plane2.as_ref().expect("Cr plane"),
-            y,
-            width,
-            chroma_red_row,
-        );
-        Ok(())
+        self.row_target()
+            .write_ycbcr_row(y, y_row, chroma_blue_row, chroma_red_row)
+            .map_err(jpeg_plane_write_error)
     }
 
     fn write_rgb_row(
@@ -425,36 +429,97 @@ impl ComponentRowWriter for PlaneStage {
         g_row: &[u8],
         b_row: &[u8],
     ) -> Result<(), j2k_jpeg::JpegError> {
-        let width = self.dims.0 as usize;
-        write_row_u8(&self.plane0, y, width, r_row);
-        write_row_u8(self.plane1.as_ref().expect("G plane"), y, width, g_row);
-        write_row_u8(self.plane2.as_ref().expect("B plane"), y, width, b_row);
-        Ok(())
+        self.row_target()
+            .write_rgb_row(y, r_row, g_row, b_row)
+            .map_err(jpeg_plane_write_error)
     }
 }
 
 #[cfg(target_os = "macos")]
-fn write_row_u8(buffer: &Buffer, y: u32, width: usize, src: &[u8]) {
-    let row_start = y as usize * width;
-    let row_end = row_start + width;
-    let len = width * (y as usize + 1);
-    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-    let dst = unsafe {
-        core::slice::from_raw_parts_mut(buffer.contents().cast::<u8>(), len.max(row_end))
-    };
-    dst[row_start..row_end].copy_from_slice(&src[..width]);
+impl PlaneStage {
+    fn row_target(&self) -> PlaneRowTarget<'_> {
+        PlaneRowTarget {
+            plane0: &self.plane0,
+            plane1: self.plane1.as_ref(),
+            plane2: self.plane2.as_ref(),
+            full_width: self.dims.0 as usize,
+            origin_x: 0,
+            origin_y: 0,
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn write_row_u8_at(buffer: &Buffer, y: u32, x: u32, full_width: usize, src: &[u8]) {
-    let row_start = y as usize * full_width + x as usize;
-    let row_end = row_start + src.len();
-    let len = full_width * (y as usize + 1);
-    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-    let dst = unsafe {
-        core::slice::from_raw_parts_mut(buffer.contents().cast::<u8>(), len.max(row_end))
-    };
-    dst[row_start..row_end].copy_from_slice(src);
+impl ViewportPlaneWriter<'_> {
+    fn row_target(&self) -> PlaneRowTarget<'_> {
+        PlaneRowTarget {
+            plane0: &self.stage.plane0,
+            plane1: self.stage.plane1.as_ref(),
+            plane2: self.stage.plane2.as_ref(),
+            full_width: self.stage.dims.0 as usize,
+            origin_x: self.dest.x,
+            origin_y: self.dest.y,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl PlaneRowTarget<'_> {
+    fn write_gray_row(&self, y: u32, gray_row: &[u8]) -> Result<(), Error> {
+        self.write_plane_row(self.plane0, y, gray_row)
+    }
+
+    fn write_ycbcr_row(
+        &self,
+        y: u32,
+        y_row: &[u8],
+        chroma_blue_row: &[u8],
+        chroma_red_row: &[u8],
+    ) -> Result<(), Error> {
+        self.write_plane_row(self.plane0, y, y_row)?;
+        self.write_plane_row(self.plane1.expect("Cb plane"), y, chroma_blue_row)?;
+        self.write_plane_row(self.plane2.expect("Cr plane"), y, chroma_red_row)
+    }
+
+    fn write_rgb_row(&self, y: u32, r_row: &[u8], g_row: &[u8], b_row: &[u8]) -> Result<(), Error> {
+        self.write_plane_row(self.plane0, y, r_row)?;
+        self.write_plane_row(self.plane1.expect("G plane"), y, g_row)?;
+        self.write_plane_row(self.plane2.expect("B plane"), y, b_row)
+    }
+
+    fn write_plane_row(&self, buffer: &Buffer, y: u32, src: &[u8]) -> Result<(), Error> {
+        let target_y = self
+            .origin_y
+            .checked_add(y)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal viewport plane row y offset overflow".to_string(),
+            })?;
+        checked_write_row_u8_at(buffer, target_y, self.origin_x, self.full_width, src)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn checked_write_row_u8_at(
+    buffer: &Buffer,
+    y: u32,
+    x: u32,
+    full_width: usize,
+    src: &[u8],
+) -> Result<(), Error> {
+    let row_start = (y as usize)
+        .checked_mul(full_width)
+        .and_then(|offset| offset.checked_add(x as usize))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "JPEG Metal viewport plane row offset overflow".to_string(),
+        })?;
+    checked_copy_bytes_to_buffer_at(buffer, row_start, src, "viewport plane row write")
+}
+
+#[cfg(target_os = "macos")]
+fn jpeg_plane_write_error(_: Error) -> JpegError {
+    JpegError::InternalInvariant {
+        reason: "JPEG Metal viewport plane buffer write failed",
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -470,16 +535,13 @@ fn plane_mode_for_color_space(color_space: JpegColorSpace) -> Result<PlaneMode, 
 }
 
 #[cfg(target_os = "macos")]
-fn clear_buffer(buffer: &Buffer, len: usize) {
-    fill_buffer(buffer, len, 0);
+fn clear_buffer(buffer: &Buffer, len: usize) -> Result<(), Error> {
+    fill_buffer(buffer, len, 0)
 }
 
 #[cfg(target_os = "macos")]
-fn fill_buffer(buffer: &Buffer, len: usize, value: u8) {
-    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-    unsafe {
-        core::ptr::write_bytes(buffer.contents().cast::<u8>(), value, len);
-    }
+fn fill_buffer(buffer: &Buffer, len: usize, value: u8) -> Result<(), Error> {
+    checked_fill_buffer_u8(buffer, len, value, "viewport plane fill")
 }
 
 #[cfg(target_os = "macos")]
@@ -532,23 +594,23 @@ pub(super) fn cached_plane_stage(
     };
     drop(slot);
 
-    clear_buffer(&stage.plane0, len);
+    clear_buffer(&stage.plane0, len)?;
     match stage.mode {
         PlaneMode::Gray => {}
         PlaneMode::YCbCr => {
             if let Some(plane1) = &stage.plane1 {
-                fill_buffer(plane1, len, 128);
+                fill_buffer(plane1, len, 128)?;
             }
             if let Some(plane2) = &stage.plane2 {
-                fill_buffer(plane2, len, 128);
+                fill_buffer(plane2, len, 128)?;
             }
         }
         PlaneMode::Rgb => {
             if let Some(plane1) = &stage.plane1 {
-                clear_buffer(plane1, len);
+                clear_buffer(plane1, len)?;
             }
             if let Some(plane2) = &stage.plane2 {
-                clear_buffer(plane2, len);
+                clear_buffer(plane2, len)?;
             }
         }
     }
@@ -558,14 +620,9 @@ pub(super) fn cached_plane_stage(
 #[cfg(target_os = "macos")]
 impl ComponentRowWriter for ViewportPlaneWriter<'_> {
     fn write_gray_row(&mut self, y: u32, gray_row: &[u8]) -> Result<(), j2k_jpeg::JpegError> {
-        write_row_u8_at(
-            &self.stage.plane0,
-            self.dest.y + y,
-            self.dest.x,
-            self.stage.dims.0 as usize,
-            gray_row,
-        );
-        Ok(())
+        self.row_target()
+            .write_gray_row(y, gray_row)
+            .map_err(jpeg_plane_write_error)
     }
 
     fn write_ycbcr_row(
@@ -575,29 +632,9 @@ impl ComponentRowWriter for ViewportPlaneWriter<'_> {
         chroma_blue_row: &[u8],
         chroma_red_row: &[u8],
     ) -> Result<(), j2k_jpeg::JpegError> {
-        let width = self.stage.dims.0 as usize;
-        write_row_u8_at(
-            &self.stage.plane0,
-            self.dest.y + y,
-            self.dest.x,
-            width,
-            y_row,
-        );
-        write_row_u8_at(
-            self.stage.plane1.as_ref().expect("Cb plane"),
-            self.dest.y + y,
-            self.dest.x,
-            width,
-            chroma_blue_row,
-        );
-        write_row_u8_at(
-            self.stage.plane2.as_ref().expect("Cr plane"),
-            self.dest.y + y,
-            self.dest.x,
-            width,
-            chroma_red_row,
-        );
-        Ok(())
+        self.row_target()
+            .write_ycbcr_row(y, y_row, chroma_blue_row, chroma_red_row)
+            .map_err(jpeg_plane_write_error)
     }
 
     fn write_rgb_row(
@@ -607,28 +644,8 @@ impl ComponentRowWriter for ViewportPlaneWriter<'_> {
         g_row: &[u8],
         b_row: &[u8],
     ) -> Result<(), j2k_jpeg::JpegError> {
-        let width = self.stage.dims.0 as usize;
-        write_row_u8_at(
-            &self.stage.plane0,
-            self.dest.y + y,
-            self.dest.x,
-            width,
-            r_row,
-        );
-        write_row_u8_at(
-            self.stage.plane1.as_ref().expect("G plane"),
-            self.dest.y + y,
-            self.dest.x,
-            width,
-            g_row,
-        );
-        write_row_u8_at(
-            self.stage.plane2.as_ref().expect("B plane"),
-            self.dest.y + y,
-            self.dest.x,
-            width,
-            b_row,
-        );
-        Ok(())
+        self.row_target()
+            .write_rgb_row(y, r_row, g_row, b_row)
+            .map_err(jpeg_plane_write_error)
     }
 }

@@ -14,7 +14,7 @@ compile_error!("j2k-jpeg currently supports only x86_64 and aarch64 targets");
 
 extern crate alloc;
 
-pub mod info;
+mod info;
 pub use info::{
     ColorSpace, ColorTransform, DecodeOptions, Info, McuGeometry, Rect, RestartIndex,
     RestartSegment, SamplingFactors, SamplingFactorsError, SofKind,
@@ -26,31 +26,33 @@ pub use j2k_core::{
     SampleType, TileBatchDecode, TileDecompress,
 };
 
-pub mod context;
+mod context;
 pub use context::DecoderContext;
 
-pub mod batch_session;
+mod batch_session;
 pub use batch_session::JpegBatchSession;
 
-pub mod capabilities;
+mod capabilities;
 pub use capabilities::{
     JpegBackendEligibility, JpegCapabilityReport, JpegCapabilityRequest, JpegDecodeOp,
     JpegDecodeRequest, JpegResolvedDecode, JpegResolvedDecodePath,
 };
 
-pub mod output_buffer;
+mod output_buffer;
 pub use output_buffer::JpegOutputBuffer;
 
-pub mod segment;
+mod segment;
 pub use segment::{
     find_scan_ranges, is_sof_marker, iter_segments, parse_dri, parse_sof_info,
     prepare_tiff_jpeg_tile, rewrite_sof_dimensions, DuplicateTablePolicy, JpegScanRanges,
     JpegSegment, JpegSegmentIter, JpegSofInfo, JpegTilePrepareOptions, PreparedJpeg,
 };
 
+#[doc(hidden)]
 pub mod adapter;
+pub use adapter::DeviceBatchSummary;
 
-pub mod error;
+mod error;
 pub use error::{
     BuilderConflictReason, HuffmanFailure, JpegError, MarkerKind, TableKind, UnsupportedReason,
     Warning,
@@ -75,15 +77,16 @@ pub(crate) mod output;
 pub(crate) mod profile;
 
 /// Baseline JPEG encoder API.
-pub mod encoder;
+mod encoder;
 pub use encoder::{
     encode_jpeg_baseline, EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions,
     JpegSamples, JpegSubsampling,
 };
 
+#[doc(hidden)]
 pub mod transcode;
 
-pub mod decoder;
+mod decoder;
 pub use decoder::{
     decode_prepared_jpeg_tiles_rgb8, decode_tile_into, decode_tile_into_in_context,
     decode_tile_into_in_context_with_options, decode_tile_region_into_in_context,
@@ -92,9 +95,9 @@ pub use decoder::{
     decode_tile_scaled_into_in_context_with_options, decode_tiles_into,
     decode_tiles_into_with_options, decode_tiles_region_scaled_into,
     decode_tiles_region_scaled_into_with_options, decode_tiles_scaled_into,
-    decode_tiles_scaled_into_with_options, ComponentRowWriter, DecodeOutcome, DecodedTile, Decoder,
-    JpegView, PreparedJpegTileJob, TileBatchError, TileBatchOptions, TileDecodeJob,
-    TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    decode_tiles_scaled_into_with_options, ComponentRowWriter, DecodeOutcome, DecodeRequest,
+    DecodedTile, Decoder, JpegView, PreparedJpegTileJob, TileBatchError, TileBatchOptions,
+    TileDecodeJob, TileDecodeOutput, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 
 pub use internal::scratch::ScratchPool;

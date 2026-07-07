@@ -163,6 +163,7 @@ pub fn submit_lossless_batch_to_metal(
 
 #[cfg(target_os = "macos")]
 /// Encode a lossless tile batch and return host-byte timing reports.
+#[doc(hidden)]
 pub fn encode_lossless_batch_with_report(
     request: MetalLosslessEncodeBatchRequest<'_, '_>,
     options: &J2kLosslessEncodeOptions,
@@ -526,7 +527,8 @@ fn should_try_auto_resident_lossless_host_format(
                 && should_use_resident_htj2k_host_shape_for_auto(output_width, output_height)
         }
         PixelFormat::Rgb8 => {
-            reversible_transform == ReversibleTransform::Rct53
+            batch_size > 1
+                && reversible_transform == ReversibleTransform::Rct53
                 && pixels >= AUTO_HIGH_THROUGHPUT_RESIDENT_HOST_OUTPUT_RGB8_MIN_PIXELS
         }
         _ => false,
@@ -614,7 +616,7 @@ fn encode_resident_ht_tile_body_with_cpu_packetization(
             input_pitch_bytes: tile.pitch_bytes,
             output_width: tile.output_width,
             output_height: tile.output_height,
-            components,
+            component_count: components,
             bytes_per_sample,
             bit_depth,
             num_decomposition_levels: plan.num_decomposition_levels,
@@ -1094,7 +1096,7 @@ fn prepare_planned_resident_lossless_tiles_batch(
                 input_pitch_bytes: tile.pitch_bytes,
                 output_width: tile.output_width,
                 output_height: tile.output_height,
-                components: metadata.components,
+                component_count: metadata.components,
                 bytes_per_sample: plan_info.bytes_per_sample,
                 bit_depth: metadata.bit_depth,
                 num_decomposition_levels: metadata.plan.num_decomposition_levels,
@@ -1247,7 +1249,7 @@ fn submit_planned_resident_lossless_tiles_chunked(
                     }
                 })?,
                 num_layers: 1,
-                num_components: metadata.plan.components,
+                component_count: metadata.plan.components,
                 code_block_count: u32::try_from(metadata.plan.code_blocks.len()).map_err(|_| {
                     crate::Error::MetalKernel {
                         message: "J2K Metal resident encode code-block count exceeds u32"
@@ -1318,7 +1320,10 @@ fn validate_lossless_roundtrip_on_metal_tile_with_session(
     session: &crate::MetalBackendSession,
 ) -> Result<(), crate::Error> {
     let mut decoder = crate::J2kDecoder::new(codestream)?;
-    let surface = decoder.decode_to_device_with_session(tile.format, session)?;
+    let surface = decoder.decode_request_to_device_with_session(
+        crate::MetalDecodeRequest::full(tile.format, j2k_core::BackendRequest::Metal),
+        session,
+    )?;
     if surface.dimensions() != (tile.output_width, tile.output_height) {
         return Err(crate::Error::MetalKernel {
             message: format!(
@@ -1368,7 +1373,6 @@ fn validate_lossless_roundtrip_on_metal_tile_with_session(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
 fn validate_lossless_roundtrip_on_metal_region_with_session(
     source: MetalLosslessEncodeTile<'_>,
     output_width: u32,
@@ -1377,17 +1381,18 @@ fn validate_lossless_roundtrip_on_metal_region_with_session(
     codestream: &[u8],
     session: &crate::MetalBackendSession,
 ) -> Result<(), crate::Error> {
-    let staged_buffer = compute::copy_interleaved_padded_to_shared_buffer(
-        source.buffer,
-        source.byte_offset,
-        source.width,
-        source.height,
-        source.pitch_bytes,
-        output_width,
-        output_height,
-        bytes_per_pixel,
-        session,
-    )?;
+    let staged_buffer =
+        compute::copy_interleaved_padded_to_shared_buffer(compute::PaddedInterleavedCopy {
+            src_buffer: source.buffer,
+            src_byte_offset: source.byte_offset,
+            src_width: source.width,
+            src_height: source.height,
+            src_pitch_bytes: source.pitch_bytes,
+            dst_width: output_width,
+            dst_height: output_height,
+            bytes_per_pixel,
+            session,
+        })?;
     let staged_tile = MetalLosslessEncodeTile {
         buffer: &staged_buffer,
         byte_offset: 0,
@@ -1475,7 +1480,7 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
             input_pitch_bytes: tile.pitch_bytes,
             output_width: tile.output_width,
             output_height: tile.output_height,
-            components,
+            component_count: components,
             bytes_per_sample,
             bit_depth,
             num_decomposition_levels: plan.num_decomposition_levels,
@@ -1497,7 +1502,7 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
             }
         })?,
         num_layers: 1,
-        num_components: plan.components,
+        component_count: plan.components,
         code_block_count: u32::try_from(plan.code_blocks.len()).map_err(|_| {
             crate::Error::MetalKernel {
                 message: "J2K Metal resident encode code-block count exceeds u32".to_string(),
@@ -1509,7 +1514,7 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
     let assembly_job = compute::J2kLosslessCodestreamAssemblyJob {
         width: tile.output_width,
         height: tile.output_height,
-        num_components: plan.components,
+        component_count: plan.components,
         bit_depth: plan.bit_depth,
         signed: false,
         num_decomposition_levels: plan.num_decomposition_levels,
@@ -1663,18 +1668,20 @@ fn encode_lossless_tile_with_report(
     let mut source_byte_offset = tile.byte_offset;
     if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous) {
         validate_padded_contiguous_metal_encode_tile(tile, bytes_per_pixel)?;
-        if tile.buffer.contents().is_null() {
+        if !compute::buffer_is_cpu_visible(tile.buffer) {
             let copy_started = Instant::now();
             staged_buffer = Some(compute::copy_interleaved_padded_to_shared_buffer(
-                tile.buffer,
-                tile.byte_offset,
-                tile.width,
-                tile.height,
-                tile.pitch_bytes,
-                tile.output_width,
-                tile.output_height,
-                bytes_per_pixel,
-                session,
+                compute::PaddedInterleavedCopy {
+                    src_buffer: tile.buffer,
+                    src_byte_offset: tile.byte_offset,
+                    src_width: tile.width,
+                    src_height: tile.height,
+                    src_pitch_bytes: tile.pitch_bytes,
+                    dst_width: tile.output_width,
+                    dst_height: tile.output_height,
+                    bytes_per_pixel,
+                    session,
+                },
             )?);
             input_copy_duration = copy_started.elapsed();
             input_copy_used = true;
@@ -1683,30 +1690,46 @@ fn encode_lossless_tile_with_report(
     } else {
         let copy_started = Instant::now();
         staged_buffer = Some(compute::copy_interleaved_padded_to_shared_buffer(
-            tile.buffer,
-            tile.byte_offset,
-            tile.width,
-            tile.height,
-            tile.pitch_bytes,
-            tile.output_width,
-            tile.output_height,
-            bytes_per_pixel,
-            session,
+            compute::PaddedInterleavedCopy {
+                src_buffer: tile.buffer,
+                src_byte_offset: tile.byte_offset,
+                src_width: tile.width,
+                src_height: tile.height,
+                src_pitch_bytes: tile.pitch_bytes,
+                dst_width: tile.output_width,
+                dst_height: tile.output_height,
+                bytes_per_pixel,
+                session,
+            },
         )?);
         input_copy_duration = copy_started.elapsed();
         input_copy_used = true;
         source_byte_offset = 0;
     }
     let buffer = staged_buffer.as_ref().unwrap_or(tile.buffer);
-    let len = tile.output_width as usize * tile.output_height as usize * bytes_per_pixel;
-    let ptr = buffer.contents().cast::<u8>();
-    if ptr.is_null() {
-        return Err(crate::Error::UnsupportedMetalRequest {
-            reason: "J2K Metal encode input buffer is not host-visible",
-        });
-    }
-    // SAFETY: Encoded Metal buffer views are bounds-checked before slice construction.
-    let data = unsafe { core::slice::from_raw_parts(ptr.add(source_byte_offset), len) };
+    let len = (tile.output_width as usize)
+        .checked_mul(tile.output_height as usize)
+        .and_then(|samples| samples.checked_mul(bytes_per_pixel))
+        .ok_or_else(|| crate::Error::MetalKernel {
+            message: "J2K Metal encode input byte length overflow".to_string(),
+        })?;
+    let data = match j2k_metal_support::checked_buffer_contents_slice::<u8>(
+        buffer,
+        source_byte_offset,
+        len,
+    ) {
+        Ok(data) => data,
+        Err(j2k_metal_support::MetalSupportError::BufferContentsUnavailable) => {
+            return Err(crate::Error::UnsupportedMetalRequest {
+                reason: "J2K Metal encode input buffer is not host-visible",
+            });
+        }
+        Err(error) => {
+            return Err(crate::Error::MetalKernel {
+                message: format!("J2K Metal encode input buffer view invalid: {error}"),
+            });
+        }
+    };
     let samples = J2kLosslessSamples::new(
         data,
         tile.output_width,
@@ -1774,6 +1797,7 @@ pub fn submit_lossless_batch_to_metal(
 
 #[cfg(not(target_os = "macos"))]
 /// Return `Error::MetalUnavailable` for reported batch encode on non-macOS.
+#[doc(hidden)]
 pub fn encode_lossless_batch_with_report(
     request: MetalLosslessEncodeBatchRequest<'_, '_>,
     options: &J2kLosslessEncodeOptions,

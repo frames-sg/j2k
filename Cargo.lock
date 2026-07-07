@@ -74,8 +74,6 @@ checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 [[package]]
 name = "block"
 version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
 
 [[package]]
 name = "bytemuck"
@@ -246,9 +244,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -520,7 +518,6 @@ dependencies = [
 name = "j2k-core"
 version = "0.6.2"
 dependencies = [
- "serde_json",
  "thiserror",
 ]
 
@@ -542,7 +539,9 @@ dependencies = [
 name = "j2k-cuda-runtime"
 version = "0.6.2"
 dependencies = [
+ "j2k-codec-math",
  "j2k-core",
+ "j2k-test-support",
  "libloading",
  "thiserror",
 ]
@@ -600,6 +599,7 @@ version = "0.6.2"
 dependencies = [
  "cc",
  "j2k",
+ "j2k-codec-math",
  "j2k-core",
  "j2k-metal-support",
  "j2k-native",
@@ -652,7 +652,7 @@ dependencies = [
  "flate2",
  "j2k-core",
  "thiserror",
- "weezl 0.2.1",
+ "weezl",
  "zstd",
 ]
 
@@ -662,6 +662,7 @@ version = "0.6.2"
 dependencies = [
  "criterion",
  "j2k",
+ "j2k-codec-math",
  "j2k-core",
  "j2k-jpeg",
  "j2k-native",
@@ -675,10 +676,10 @@ name = "j2k-transcode-cuda"
 version = "0.6.2"
 dependencies = [
  "j2k-cuda-runtime",
- "j2k-jpeg",
  "j2k-native",
  "j2k-test-support",
  "j2k-transcode",
+ "j2k-transcode-test-support",
 ]
 
 [[package]]
@@ -695,8 +696,18 @@ dependencies = [
  "j2k-profile",
  "j2k-test-support",
  "j2k-transcode",
+ "j2k-transcode-test-support",
  "metal",
  "rayon",
+]
+
+[[package]]
+name = "j2k-transcode-test-support"
+version = "0.6.2"
+dependencies = [
+ "j2k-native",
+ "j2k-transcode",
+ "j2k-types",
 ]
 
 [[package]]
@@ -1242,7 +1253,7 @@ dependencies = [
  "flate2",
  "half",
  "quick-error 2.0.1",
- "weezl 0.1.12",
+ "weezl",
  "zune-jpeg",
 ]
 
@@ -1362,12 +1373,6 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
-
-[[package]]
-name = "weezl"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4ca08e5ef825b65b056d9efbd95c8750683f0a6d0466d02e96dc2e4e360f3d2"
 
 [[package]]
 name = "winapi"

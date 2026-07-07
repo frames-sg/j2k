@@ -39,7 +39,7 @@ impl JpegOutputBuffer {
     /// # Errors
     /// Returns [`BufferError`] if the requested shape overflows byte counts or
     /// exceeds `max_bytes`.
-    pub fn new_with_max_bytes(
+    fn new_with_max_bytes(
         dimensions: (u32, u32),
         fmt: PixelFormat,
         max_bytes: usize,
@@ -68,7 +68,7 @@ impl JpegOutputBuffer {
     /// # Errors
     /// Returns [`BufferError`] if the stride is too small, sizes overflow, or the
     /// allocation exceeds `max_bytes`.
-    pub fn with_stride_with_max_bytes(
+    fn with_stride_with_max_bytes(
         dimensions: (u32, u32),
         stride: usize,
         fmt: PixelFormat,
@@ -101,7 +101,7 @@ impl JpegOutputBuffer {
     /// # Errors
     /// Returns [`BufferError`] if the requested shape overflows byte counts or
     /// exceeds `max_bytes`.
-    pub fn resize_with_max_bytes(
+    fn resize_with_max_bytes(
         &mut self,
         dimensions: (u32, u32),
         fmt: PixelFormat,
@@ -137,7 +137,7 @@ impl JpegOutputBuffer {
     /// # Errors
     /// Returns [`BufferError`] if the stride is too small, sizes overflow, or the
     /// allocation exceeds `max_bytes`.
-    pub fn resize_with_stride_with_max_bytes(
+    fn resize_with_stride_with_max_bytes(
         &mut self,
         dimensions: (u32, u32),
         stride: usize,
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_max_bytes_allows_callers_to_choose_smaller_caps() {
+    fn explicit_max_bytes_helpers_enforce_smaller_caps() {
         let err = JpegOutputBuffer::new_with_max_bytes((2, 2), PixelFormat::Rgba8, 15)
             .expect_err("caller cap should be enforced");
         assert!(matches!(

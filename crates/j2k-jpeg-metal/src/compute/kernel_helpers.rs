@@ -6,38 +6,53 @@ use j2k_core::PixelFormat;
 use metal::{Buffer, ComputePipelineState, MTLSize};
 
 use super::{
-    FastPacketAccess, PlaneMode, PreparedHuffmanHost, MODE_GRAY, MODE_RGB, MODE_YCBCR, OUT_GRAY,
-    OUT_RGB, OUT_RGBA,
+    FastSubsampledPacket, PlaneMode, PreparedHuffmanHost, MODE_GRAY, MODE_RGB, MODE_YCBCR,
+    OUT_GRAY, OUT_RGB, OUT_RGBA,
 };
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+pub(super) struct FastDecodeEntropyInputs<'a, P> {
+    pub(super) entropy_buffer: &'a Buffer,
+    pub(super) planes: [&'a Buffer; 3],
+    pub(super) params: &'a P,
+    pub(super) quants: [&'a [u16; 64]; 3],
+    pub(super) dc_tables: &'a [PreparedHuffmanHost; 3],
+    pub(super) ac_tables: &'a [PreparedHuffmanHost; 3],
+    /// Buffer bound at Metal slot 14. Single-decode kernels use restart
+    /// offsets; batch kernels use entropy offsets.
+    pub(super) slot14_buffer: &'a Buffer,
+    /// Buffer bound at Metal slot 15. Single-decode kernels use decode status;
+    /// batch kernels use entropy lengths.
+    pub(super) slot15_buffer: &'a Buffer,
+    /// Buffer bound at Metal slot 16. Single-decode kernels use entropy
+    /// checkpoints; batch kernels use decode status.
+    pub(super) slot16_buffer: &'a Buffer,
+}
+
 #[cfg(target_os = "macos")]
 /// Bind the shared fast-decode entropy kernel inputs at slots 0-16: entropy
 /// bytes, the three component planes, the family params struct, the three
-/// quantization tables, the per-component DC/AC Huffman table pairs, restart
-/// offsets, decode status, and entropy checkpoints.
-#[allow(clippy::too_many_arguments)]
+/// quantization tables, the per-component DC/AC Huffman table pairs, and the
+/// three layout-specific auxiliary buffers for slots 14-16.
 pub(super) fn bind_fast_decode_entropy_inputs<P>(
     encoder: &metal::ComputeCommandEncoderRef,
-    entropy_buffer: &Buffer,
-    planes: [&Buffer; 3],
-    params: &P,
-    quants: [&[u16; 64]; 3],
-    dc_tables: &[PreparedHuffmanHost; 3],
-    ac_tables: &[PreparedHuffmanHost; 3],
-    restart_offsets_buffer: &Buffer,
-    status_buffer: &Buffer,
-    entropy_checkpoints_buffer: &Buffer,
+    inputs: &FastDecodeEntropyInputs<'_, P>,
 ) {
-    encoder.set_buffer(0, Some(entropy_buffer), 0);
-    encoder.set_buffer(1, Some(planes[0]), 0);
-    encoder.set_buffer(2, Some(planes[1]), 0);
-    encoder.set_buffer(3, Some(planes[2]), 0);
-    encoder.set_bytes(4, size_of::<P>() as u64, (&raw const *params).cast());
-    for (slot, quant) in (5u64..).zip(quants) {
+    encoder.set_buffer(0, Some(inputs.entropy_buffer), 0);
+    encoder.set_buffer(1, Some(inputs.planes[0]), 0);
+    encoder.set_buffer(2, Some(inputs.planes[1]), 0);
+    encoder.set_buffer(3, Some(inputs.planes[2]), 0);
+    encoder.set_bytes(4, size_of::<P>() as u64, (&raw const *inputs.params).cast());
+    for (slot, quant) in (5u64..).zip(inputs.quants) {
         encoder.set_bytes(slot, size_of::<[u16; 64]>() as u64, quant.as_ptr().cast());
     }
-    for (index, (dc, ac)) in dc_tables.iter().zip(ac_tables.iter()).enumerate() {
+    for (index, (dc, ac)) in inputs
+        .dc_tables
+        .iter()
+        .zip(inputs.ac_tables.iter())
+        .enumerate()
+    {
         let slot = 8 + 2 * index as u64;
         encoder.set_bytes(
             slot,
@@ -50,12 +65,12 @@ pub(super) fn bind_fast_decode_entropy_inputs<P>(
             (&raw const *ac).cast(),
         );
     }
-    encoder.set_buffer(14, Some(restart_offsets_buffer), 0);
-    encoder.set_buffer(15, Some(status_buffer), 0);
-    encoder.set_buffer(16, Some(entropy_checkpoints_buffer), 0);
+    encoder.set_buffer(14, Some(inputs.slot14_buffer), 0);
+    encoder.set_buffer(15, Some(inputs.slot15_buffer), 0);
+    encoder.set_buffer(16, Some(inputs.slot16_buffer), 0);
 }
 
-pub(super) fn fast_packet_huffman_tables<P: FastPacketAccess>(
+pub(super) fn fast_packet_huffman_tables<P: FastSubsampledPacket>(
     packet: &P,
 ) -> ([PreparedHuffmanHost; 3], [PreparedHuffmanHost; 3]) {
     (

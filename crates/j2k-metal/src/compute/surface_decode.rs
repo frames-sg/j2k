@@ -11,6 +11,7 @@ use metal::Device;
 use super::{
     with_runtime, with_runtime_for_device, MetalCodeBlockDecoder, MetalRuntime, PlaneStage,
 };
+use crate::error::native_decode_error;
 use crate::{Error, Surface};
 
 #[cfg(target_os = "macos")]
@@ -23,7 +24,7 @@ pub(crate) fn decode_image_to_surface<'a>(
         let mut code_block_decoder = MetalCodeBlockDecoder::default();
         let decoded = image
             .decode_components_with_ht_decoder(context, &mut code_block_decoder)
-            .map_err(|error| Error::Decode(j2k::J2kError::Backend(error.to_string())))?;
+            .map_err(native_decode_error)?;
         let stage = select_plane_stage(runtime, image, &decoded, &mut code_block_decoder)?;
         stage.finish_with_runtime(runtime, fmt)
     })
@@ -54,7 +55,7 @@ pub(crate) fn decode_image_region_to_surface<'a>(
                 (roi.x, roi.y, roi.w, roi.h),
                 &mut code_block_decoder,
             )
-            .map_err(|error| Error::Decode(j2k::J2kError::Backend(error.to_string())))?;
+            .map_err(native_decode_error)?;
         let stage = select_plane_stage(runtime, image, &decoded, &mut code_block_decoder)?;
         stage.finish_with_runtime(runtime, fmt)
     })
@@ -123,8 +124,7 @@ pub(crate) fn decode_scaled_to_surface(
         target_resolution: Some(target_dims),
         ..NativeDecodeSettings::default()
     };
-    let image = NativeImage::new(bytes, &settings)
-        .map_err(|error| Error::Decode(j2k::J2kError::Backend(error.to_string())))?;
+    let image = NativeImage::new(bytes, &settings).map_err(native_decode_error)?;
     let mut context = NativeDecoderContext::default();
     decode_image_to_surface(&image, &mut context, fmt)
 }
@@ -145,8 +145,7 @@ pub(crate) fn decode_region_scaled_to_surface(
         target_resolution: Some(target_dims),
         ..NativeDecodeSettings::default()
     };
-    let image = NativeImage::new(bytes, &settings)
-        .map_err(|error| Error::Decode(j2k::J2kError::Backend(error.to_string())))?;
+    let image = NativeImage::new(bytes, &settings).map_err(native_decode_error)?;
     let mut context = NativeDecoderContext::default();
     decode_image_region_to_surface(&image, &mut context, fmt, roi.scaled_covering(scale))
 }

@@ -99,7 +99,10 @@ fn dct97_benchmark_emits_transcode_batch_profile_rows() {
         "TranscodeBatchProfileRequest::MetalExplicit",
         "benchmark_name.as_str()",
         "pipeline_map",
-        "debug_report",
+        "emit_pipeline_map",
+        "stage.resident_handoff_count",
+        "recommend_next_stage",
+        "map.recommendation.evidence_dispatches",
     ] {
         assert!(
             DCT97_BENCH.contains(expected),

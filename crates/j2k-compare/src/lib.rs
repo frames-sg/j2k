@@ -167,6 +167,9 @@ macro_rules! external_decode_wrappers {
 
 pub(crate) use external_decode_wrappers;
 
+pub mod common;
+pub mod encode_compare;
+pub mod fixture_compare;
 pub mod grok;
 pub mod openjpeg;
 

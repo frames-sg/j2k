@@ -17,14 +17,25 @@ cargo xtask stable-api
 cargo xtask stable-api --write
 ```
 
+This task must run on macOS with `cargo-public-api` `0.52.0` installed
+(`cargo install cargo-public-api --version 0.52.0 --locked`) so target-gated
+Metal APIs are included.
+
 The snapshot records public items and exit-code contract expectations for the
 stable public line. Manual prose in this file must not duplicate that inventory.
 
 ## Stability tiers
 
-- Stable: `j2k`, `j2k-core`, `j2k-jpeg`,
-  `j2k-native`, `j2k-profile`, and `j2k-tilecodec`.
-- Experimental: CUDA adapters, Metal adapters, and transcode crates.
+- Primary stable user-facing codec APIs: `j2k`, `j2k-core`, `j2k-jpeg`,
+  and `j2k-tilecodec`.
+- Semver-gated published libraries: `j2k`, `j2k-core`, `j2k-codec-math`,
+  `j2k-jpeg`, `j2k-tilecodec`, `j2k-jpeg-metal`, `j2k-metal`,
+  `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode`, `j2k-transcode-cuda`,
+  `j2k-metal-support`, `j2k-transcode-metal`, `j2k-native`, `j2k-types`,
+  `j2k-cuda-runtime`, and `j2k-profile`.
+- Adapter and transcode crates are semver-gated published libraries, but their
+  supported runtime shapes remain limited by feature gates, hardware
+  availability, and `docs/public-support.md`.
 - Unpublished tooling: test support, comparators, and xtask automation helpers.
 
 Breaking changes to stable crates require explicit semver review.

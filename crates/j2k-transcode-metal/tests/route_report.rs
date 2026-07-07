@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{BackendKind, BackendRequest};
-use j2k_test_support::JPEG_GRAYSCALE_8X8;
+use j2k_test_support::{metal_device_unavailable_is_skip, JPEG_GRAYSCALE_8X8};
 use j2k_transcode::accelerator::TranscodeStageError;
 use j2k_transcode::{JpegTileBatchInput, JpegToHtj2kError, JpegToHtj2kOptions};
 use j2k_transcode_metal::{
@@ -13,6 +13,7 @@ use j2k_transcode_metal::{
 #[test]
 fn metal_encoded_codestream_exports_resident_handoff_descriptor() {
     let Some(device) = metal::Device::system_default() else {
+        metal_device_unavailable_is_skip(module_path!());
         return;
     };
     let codestream_buffer = device.new_buffer(512, metal::MTLResourceOptions::StorageModeShared);
@@ -74,14 +75,14 @@ fn auto_transcode_route_reports_structured_cpu_fallback() {
         routed.route.fallback_reason,
         Some(MetalTranscodeFallbackReason::AutoAllTransformJobsFellBackToCpu)
     );
-    assert!(
-        routed
-            .route
-            .pipeline_map
-            .debug_report()
-            .contains("transfer_count="),
-        "route report should expose transfer count fields"
-    );
+    let transfer_count: usize = routed
+        .route
+        .pipeline_map
+        .stages
+        .iter()
+        .map(|stage| stage.transfer_count)
+        .sum();
+    assert_eq!(transfer_count, 0);
 }
 
 #[test]

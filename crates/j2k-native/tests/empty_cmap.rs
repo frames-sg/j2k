@@ -56,7 +56,10 @@ fn missing_ihdr_returns_invalid_box() {
         Err(err) => err,
     };
 
-    assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
+    assert!(matches!(
+        err,
+        DecodeError::Format(FormatError::MissingRequiredBox("ihdr"))
+    ));
 }
 
 #[test]
@@ -112,7 +115,10 @@ fn missing_colr_returns_invalid_box() {
         Err(err) => err,
     };
 
-    assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
+    assert!(matches!(
+        err,
+        DecodeError::Format(FormatError::MissingRequiredBox("colr"))
+    ));
 }
 
 #[test]

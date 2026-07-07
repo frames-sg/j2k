@@ -11,3 +11,9 @@ still-image files, raw HTJ2K codestreams, and JPH still-image files. JPX /
 JPEG 2000 Part 2 extension support is outside this engine's current claim.
 
 Most application code should use `j2k` instead.
+
+## Links
+
+- API docs: <https://docs.rs/j2k-native>
+- Repository: <https://github.com/frames-sg/j2k>
+- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

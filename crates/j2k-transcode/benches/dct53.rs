@@ -10,15 +10,52 @@ use j2k_test_support::{
     JPEG_BASELINE_444_8X8, JPEG_GRAYSCALE_8X8,
 };
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dwt53TwoDimensional<T> {
+    pub ll: Vec<T>,
+    pub hl: Vec<T>,
+    pub lh: Vec<T>,
+    pub hh: Vec<T>,
+    pub low_width: usize,
+    pub low_height: usize,
+    pub high_width: usize,
+    pub high_height: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dwt97TwoDimensional<T> {
+    pub ll: Vec<T>,
+    pub hl: Vec<T>,
+    pub lh: Vec<T>,
+    pub hh: Vec<T>,
+    pub low_width: usize,
+    pub low_height: usize,
+    pub high_width: usize,
+    pub high_height: usize,
+}
+
 #[allow(dead_code, unreachable_pub)]
 #[path = "../tests/support/dct53_1d.rs"]
 mod dct53_1d;
-#[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
+#[allow(
+    clippy::large_types_passed_by_value,
+    dead_code,
+    unreachable_pub,
+    unused_imports
+)]
 #[path = "../src/dct53_2d.rs"]
 mod dct53_2d;
 #[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
 #[path = "../tests/support/dct53_multilevel.rs"]
 mod dct53_multilevel;
+#[allow(
+    clippy::large_types_passed_by_value,
+    dead_code,
+    unreachable_pub,
+    unused_imports
+)]
+#[path = "../src/dct97_2d.rs"]
+mod dct97_2d;
 #[allow(dead_code, unreachable_pub, unused_imports)]
 #[path = "../src/dct_grid.rs"]
 mod dct_grid;
@@ -34,13 +71,12 @@ use dct53_1d::{
 };
 use dct53_2d::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
-    dct8x8_blocks_to_dwt53_float_linear_with_scratch, dct8x8_to_dwt53_float_linear,
-    idct8x8_then_dwt53_float, Dct53GridScratch,
+    dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch,
 };
 use dct53_multilevel::{
     dct8x8_to_dwt53_multilevel_float_linear, idct8x8_then_dwt53_multilevel_float,
 };
-use j2k_transcode::dct97_2d::{
+use dct97_2d::{
     dct8x8_blocks_then_dwt97_float, dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch,
 };
 use j2k_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
@@ -70,13 +106,32 @@ fn bench_dct53_math(c: &mut Criterion) {
     multi_block.finish();
 
     let block_2d = synthetic_8x8_block();
+    let single_block_grid = [block_2d];
 
     let mut two_dimensional = c.benchmark_group("dct53_2d_single_level_scalar");
     two_dimensional.bench_function("direct_linear", |b| {
-        b.iter(|| dct8x8_to_dwt53_float_linear(black_box(block_2d)));
+        b.iter(|| {
+            dct8x8_blocks_to_dwt53_float_linear(
+                black_box(&single_block_grid),
+                black_box(1),
+                black_box(1),
+                black_box(8),
+                black_box(8),
+            )
+            .expect("valid single DCT block");
+        });
     });
     two_dimensional.bench_function("idct_then_dwt_reference", |b| {
-        b.iter(|| idct8x8_then_dwt53_float(black_box(block_2d)));
+        b.iter(|| {
+            dct8x8_blocks_then_dwt53_float(
+                black_box(&single_block_grid),
+                black_box(1),
+                black_box(1),
+                black_box(8),
+                black_box(8),
+            )
+            .expect("valid single DCT block");
+        });
     });
     two_dimensional.finish();
 

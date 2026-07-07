@@ -120,7 +120,7 @@ pub(super) fn resident_codestream_assembly_job_for_metadata(
     compute::J2kLosslessCodestreamAssemblyJob {
         width: metadata.tile.output_width,
         height: metadata.tile.output_height,
-        num_components: metadata.plan.components,
+        component_count: metadata.plan.components,
         bit_depth: metadata.plan.bit_depth,
         signed: false,
         num_decomposition_levels: metadata.plan.num_decomposition_levels,
@@ -142,33 +142,9 @@ pub(super) fn resident_codestream_assembly_job_for_metadata(
 pub(super) fn resident_classic_batch_encode_should_retry_conservative(
     error: &crate::Error,
 ) -> bool {
-    let crate::Error::MetalKernel { message } = error else {
-        return false;
-    };
-
-    message.contains("classic Tier-1 Metal encode kernel failure (detail=4)")
-        || message.contains("classic Tier-1 Metal encode kernel failure (detail=5)")
-        || message.contains("packetization Metal encode kernel failure (detail=3)")
-        || message.contains("packetization Metal encode kernel failure (detail=4)")
-        || message.contains("packetization Metal encode kernel failure (detail=5)")
-        || message.contains("packetization Metal encode kernel failure (detail=7, tier1_detail=4)")
-        || message.contains("packetization Metal encode kernel failure (detail=7, tier1_detail=5)")
-        || message
-            .contains("J2K batched codestream assembly Metal encode kernel failure (detail=2)")
-        || message
-            .contains("J2K batched codestream assembly Metal encode kernel failure (detail=3)")
+    error.is_conservative_retry_candidate(crate::MetalKernelRetryClass::ResidentClassicBatch)
 }
 
 pub(super) fn resident_ht_batch_encode_should_retry_conservative(error: &crate::Error) -> bool {
-    let crate::Error::MetalKernel { message } = error else {
-        return false;
-    };
-
-    message.contains("packetization Metal encode kernel failure (detail=3)")
-        || message.contains("packetization Metal encode kernel failure (detail=4)")
-        || message.contains("packetization Metal encode kernel failure (detail=5)")
-        || message
-            .contains("HTJ2K batched codestream assembly Metal encode kernel failure (detail=2)")
-        || message
-            .contains("HTJ2K batched codestream assembly Metal encode kernel failure (detail=3)")
+    error.is_conservative_retry_candidate(crate::MetalKernelRetryClass::ResidentHtBatch)
 }

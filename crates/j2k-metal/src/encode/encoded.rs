@@ -57,29 +57,21 @@ impl MetalEncodedJ2k {
 
     /// Borrow the finished codestream bytes from the backing Metal buffer.
     pub fn codestream_bytes(&self) -> Result<&[u8], crate::Error> {
-        let end = self.byte_offset.checked_add(self.byte_len).ok_or_else(|| {
-            crate::Error::MetalKernel {
-                message: "J2K Metal codestream byte range overflow".to_string(),
+        match j2k_metal_support::checked_buffer_contents_slice::<u8>(
+            &self.codestream_buffer,
+            self.byte_offset,
+            self.byte_len,
+        ) {
+            Ok(bytes) => Ok(bytes),
+            Err(j2k_metal_support::MetalSupportError::BufferContentsUnavailable) => {
+                Err(crate::Error::MetalKernel {
+                    message: "J2K Metal codestream buffer is not CPU-readable".to_string(),
+                })
             }
-        })?;
-        let buffer_len = usize::try_from(self.codestream_buffer.length()).map_err(|_| {
-            crate::Error::MetalKernel {
-                message: "J2K Metal codestream buffer length exceeds usize".to_string(),
-            }
-        })?;
-        if end > buffer_len {
-            return Err(crate::Error::MetalKernel {
-                message: "J2K Metal codestream byte range exceeds buffer length".to_string(),
-            });
+            Err(error) => Err(crate::Error::MetalKernel {
+                message: format!("J2K Metal codestream byte range invalid: {error}"),
+            }),
         }
-        let ptr = self.codestream_buffer.contents().cast::<u8>();
-        if ptr.is_null() {
-            return Err(crate::Error::MetalKernel {
-                message: "J2K Metal codestream buffer is not CPU-readable".to_string(),
-            });
-        }
-        // SAFETY: Encoded Metal buffer views are bounds-checked before slice construction.
-        Ok(unsafe { core::slice::from_raw_parts(ptr.add(self.byte_offset), self.byte_len) })
     }
 
     /// Materialize the buffer-backed codestream into the compatibility `Vec` API shape.
@@ -98,7 +90,7 @@ impl MetalEncodedJ2k {
             EncodedJ2k {
                 codestream,
                 backend: BackendKind::Metal,
-                dispatch_report: j2k::adapter::encode_stage::J2kEncodeDispatchReport::default(),
+                dispatch_report: j2k::J2kEncodeDispatchReport::default(),
                 width: self.width,
                 height: self.height,
                 components: u16::from(self.components),

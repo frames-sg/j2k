@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k::adapter::encode_stage::{
-    J2kEncodeStageAccelerator, J2kPacketizationEncodeJob, J2kPacketizationProgressionOrder,
-};
+use j2k::{J2kEncodeStageAccelerator, J2kPacketizationEncodeJob, J2kPacketizationProgressionOrder};
 use j2k_cuda::{CudaEncodeStageAccelerator, CudaEncodeStageTimings};
 
 #[cfg(feature = "cuda-runtime")]
@@ -54,8 +52,7 @@ fn cuda_encode_stage_can_prefer_cpu_packetization() {
     };
 
     assert!(accelerator.encode_packetization(job).unwrap().is_none());
-    assert_eq!(accelerator.packetization_attempts(), 1);
-    assert_eq!(accelerator.packetization_dispatches(), 0);
+    assert_eq!(accelerator.dispatch_report().packetization, 0);
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -169,7 +166,7 @@ fn cuda_lossless_device_buffer_empty_batch_fails_clearly() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_lossless_device_buffer_encode_matches_host_htj2k_when_required() {
-    if std::env::var_os("J2K_REQUIRE_CUDA_RUNTIME").is_none() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
         return;
     }
 

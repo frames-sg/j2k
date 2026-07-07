@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::J2kError;
-use alloc::string::ToString;
 use j2k_core::{Colorspace, Info};
 
 pub(crate) use j2k_native::{ColorSpace, DecodeSettings, DecodedComponents, Image, RawBitmap};
 
 pub(crate) fn image(bytes: &[u8], settings: DecodeSettings) -> Result<Image<'_>, J2kError> {
-    Image::new(bytes, &settings).map_err(|err| J2kError::Backend(err.to_string()))
+    Image::new(bytes, &settings).map_err(J2kError::from_native_decode_error)
 }
 
 pub(crate) fn inspect_info(bytes: &[u8]) -> Result<Info, J2kError> {

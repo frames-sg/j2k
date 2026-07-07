@@ -2,7 +2,7 @@ use j2k_codec_math::dwt;
 
 #[test]
 fn metal_dwt97_fragment_matches_rust_constants() {
-    let expected = vec![
+    let expected = [
         "// Generated from crates/j2k-codec-math/src/dwt.rs.".to_string(),
         format!(
             "constant float CODEC_MATH_DWT97_ALPHA = {}f;",
@@ -50,7 +50,7 @@ fn metal_dwt97_fragment_matches_rust_constants() {
 
 #[test]
 fn rust_dwt97_fragment_matches_rust_constants() {
-    let expected = vec![
+    let expected = [
         "// Generated from crates/j2k-codec-math/src/dwt.rs.".to_string(),
         format!(
             "pub const CODEC_MATH_DWT97_ALPHA: f32 = {};",

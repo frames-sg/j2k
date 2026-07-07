@@ -38,32 +38,37 @@ rayon = { workspace = true }
 proptest = { workspace = true }
 criterion = { workspace = true }
 j2k-test-support = { path = "../j2k-test-support" }
-jpeg-decoder = { version = "0.3.2", default-features = false }
-zune-core = "0.5.1"
-zune-jpeg = "0.5.15"
+jpeg-decoder = { workspace = true }
+zune-core = { workspace = true }
+zune-jpeg = { workspace = true }
 
 [[bench]]
 name = "compare"
 harness = false
+test = false
 required-features = ["bench-libjpeg-turbo"]
 
 [[bench]]
 name = "micro"
 harness = false
+test = false
 required-features = ["bench-internals"]
 
 [[bench]]
 name = "fast420_breakdown"
 harness = false
+test = false
 required-features = ["bench-libjpeg-turbo", "bench-internals"]
 
 [[bench]]
 name = "corpus_report"
 harness = false
+test = false
 
 [[bench]]
 name = "encode_cpu"
 harness = false
+test = false
 
 [[test]]
 name = "fast420_profile"

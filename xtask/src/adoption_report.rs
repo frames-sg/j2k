@@ -8,6 +8,7 @@ use std::{
 use serde_json::Value;
 
 use crate::markdown::{escape_inline_code as escape_inline, markdown_header, markdown_row};
+use crate::publication_gate::collect_publication_gate_issues;
 
 const DEFAULT_REPORT_NAME: &str = "adoption-report.md";
 
@@ -114,16 +115,14 @@ fn help_text() -> String {
 
 fn publication_issues(summary: &Value) -> Vec<String> {
     let mut issues = Vec::new();
-    collect_gate_issue(
-        summary,
-        "cpu_fixture_compare",
+    collect_publication_gate_issues(
         "cpu-fixture-compare",
+        summary.get("cpu_fixture_compare"),
         &mut issues,
     );
-    collect_gate_issue(
-        summary,
-        "cpu_encode_compare",
+    collect_publication_gate_issues(
         "cpu-encode-compare",
+        summary.get("cpu_encode_compare"),
         &mut issues,
     );
     if summary
@@ -155,26 +154,6 @@ fn publication_issues(summary: &Value) -> Vec<String> {
         collect_required_metal_issues(summary, &mut issues);
     }
     issues
-}
-
-fn collect_gate_issue(summary: &Value, key: &str, label: &str, issues: &mut Vec<String>) {
-    let Some(metadata) = summary.get(key) else {
-        issues.push(format!("{label} metadata missing"));
-        return;
-    };
-    if metadata.get("publication_eligible").and_then(Value::as_str) != Some("true") {
-        issues.push(format!("{label} publication_eligible is not true"));
-    }
-    if metadata.get("publication_blockers").and_then(Value::as_str) != Some("none") {
-        let blockers = metadata
-            .get("publication_blockers")
-            .and_then(Value::as_str)
-            .unwrap_or("not-recorded");
-        issues.push(format!("{label} blockers={blockers}"));
-    }
-    if metadata.get("benchmark_complete").and_then(Value::as_str) != Some("true") {
-        issues.push(format!("{label} benchmark_complete is not true"));
-    }
 }
 
 fn collect_required_cuda_issues(summary: &Value, issues: &mut Vec<String>) {
@@ -1790,6 +1769,7 @@ fn scalar_label(value: &Value, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{adoption_report, publication_issues, read_tsv_table};
+    use crate::publication_gate::collect_publication_gate_issues;
     use serde_json::json;
     use std::path::Path;
 
@@ -1821,6 +1801,40 @@ mod tests {
         assert!(issues
             .iter()
             .any(|issue| issue.contains("generated fixtures included")));
+    }
+
+    #[test]
+    fn publication_issues_use_shared_gate_for_writer_metadata() {
+        let failed_metadata = json!({
+            "publication_eligible": "false",
+            "publication_blockers": "generated-fixtures-included",
+            "benchmark_complete": "false"
+        });
+        let clean_metadata = json!({
+            "publication_eligible": "true",
+            "publication_blockers": "none",
+            "benchmark_complete": "true"
+        });
+        let summary = json!({
+            "mode": "full",
+            "include_generated": false,
+            "cpu_fixture_compare": failed_metadata,
+            "cpu_encode_compare": clean_metadata
+        });
+        let mut expected = Vec::new();
+        collect_publication_gate_issues(
+            "cpu-fixture-compare",
+            summary.get("cpu_fixture_compare"),
+            &mut expected,
+        );
+
+        let issues = publication_issues(&summary);
+        let cpu_fixture_issues = issues
+            .into_iter()
+            .filter(|issue| issue.contains("cpu-fixture-compare"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(cpu_fixture_issues, expected);
     }
 
     #[test]

@@ -13,7 +13,7 @@ use j2k_native::{
 };
 use rayon::prelude::*;
 
-use crate::Error;
+use crate::{error::native_decode_error, Error};
 
 use super::{
     checked_coefficient_len, hybrid_stage_signpost, packed_cpu_decode_coefficients,
@@ -439,10 +439,6 @@ fn checked_u8(value: u32, label: &str) -> Result<u8, Error> {
     u8::try_from(value).map_err(|_| Error::MetalKernel {
         message: format!("J2K MetalDirect hybrid {label} exceeds u8"),
     })
-}
-
-fn native_decode_error(error: j2k_native::DecodeError) -> Error {
-    Error::Decode(j2k::J2kError::Backend(error.to_string()))
 }
 
 pub(super) struct ClassicCpuDecodeInput<'a> {

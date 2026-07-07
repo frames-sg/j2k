@@ -34,7 +34,7 @@ pub(crate) struct J2kResidentBatchEncodeItem {
     pub(crate) prepared: J2kPreparedLosslessDeviceCodeBlocks,
     pub(crate) resolution_count: u32,
     pub(crate) num_layers: u8,
-    pub(crate) num_components: u8,
+    pub(crate) component_count: u8,
     pub(crate) code_block_count: u32,
     pub(crate) packet_descriptors: Vec<J2kPacketizationPacketDescriptor>,
     pub(crate) resolutions: Vec<J2kResidentPacketizationResolution>,

@@ -1,11 +1,8 @@
 use j2k_test_support as fixtures;
 
 use j2k_jpeg::adapter::{
-    build_device_plan,
-    fast_packet::{
-        build_fast420_packet, build_fast422_packet, build_fast444_packet, build_gray_packet,
-        FastPacketError, JpegEntropyCheckpointV1,
-    },
+    build_device_plan, build_fast420_packet, build_fast422_packet, build_fast444_packet,
+    build_gray_packet, FastPacketError, JpegEntropyCheckpointV1,
 };
 use j2k_jpeg::Decoder;
 

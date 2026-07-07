@@ -210,7 +210,7 @@ pub fn recode_j2k_to_htj2k_lossless(
         &encode_options,
         coefficients.use_mct,
     )
-    .map_err(|err| J2kError::Backend(format!("HTJ2K coefficient recode failed: {err}")))?;
+    .map_err(|err| J2kError::backend(format!("HTJ2K coefficient recode failed: {err}")))?;
 
     let output = finalize_recode_output(codestream, options.output_payload_kind, &parsed, true)?;
 
@@ -622,7 +622,7 @@ fn validate_recode_roundtrip(
             || source.num_components != encoded.num_components
             || source.data != encoded.data
         {
-            return Err(J2kError::Backend(format!(
+            return Err(J2kError::backend(format!(
                 "{context} failed pixel validation"
             )));
         }
@@ -638,7 +638,7 @@ fn validate_recode_roundtrip(
     if source.dimensions() != encoded.dimensions()
         || source.planes().len() != encoded.planes().len()
     {
-        return Err(J2kError::Backend(format!(
+        return Err(J2kError::backend(format!(
             "{context} failed component validation"
         )));
     }
@@ -649,7 +649,7 @@ fn validate_recode_roundtrip(
             || source_plane.signed() != encoded_plane.signed()
             || source_plane.data() != encoded_plane.data()
         {
-            return Err(J2kError::Backend(format!(
+            return Err(J2kError::backend(format!(
                 "{context} failed component validation"
             )));
         }
@@ -662,7 +662,7 @@ fn map_native_decode_error(err: j2k_native::DecodeError, context: &'static str) 
         j2k_native::DecodeError::Decoding(j2k_native::DecodingError::UnsupportedFeature(what)) => {
             J2kError::Unsupported(Unsupported { what })
         }
-        _ => J2kError::Backend(format!("{context}: {err}")),
+        _ => J2kError::from_native_decode_error_with_context(err, context),
     }
 }
 

@@ -3,49 +3,59 @@
   "generated_on": "2026-04-17T04:12:11Z",
   "fixtures": [
     {
-      "input":     "baseline_420_16x16.jpg",
+      "input": "baseline_420_16x16.jpg",
+      "input_sha256": "f2ba3b7999773d904e7004122c4593d5ad9d1005ed0cc66b09693a1cfb693ddf",
       "reference": "baseline_420_16x16.rgb",
-      "format":    "Rgb8",
-      "width":     16,
-      "height":    16,
+      "reference_sha256": "951f69e8c442f3d5af331503a968a1f44b035d827e18f99d304df458ce725c58",
+      "format": "Rgb8",
+      "width": 16,
+      "height": 16,
       "tolerance": "bit_exact",
-      "sampling":  "4:2:0"
+      "sampling": "4:2:0"
     },
     {
-      "input":     "baseline_420_restart_32x16.jpg",
+      "input": "baseline_420_restart_32x16.jpg",
+      "input_sha256": "4ad864df2c3ed3de80d04d8f2406ddd8f075c485663a241d6c69bde18cc47cd6",
       "reference": "baseline_420_restart_32x16.rgb",
-      "format":    "Rgb8",
-      "width":     32,
-      "height":    16,
+      "reference_sha256": "721b1f3415743005dea43a01adf24349557054d2742cb29a2e72177d995beb78",
+      "format": "Rgb8",
+      "width": 32,
+      "height": 16,
       "tolerance": "bit_exact",
-      "sampling":  "4:2:0 restart-coded"
+      "sampling": "4:2:0 restart-coded"
     },
     {
-      "input":     "baseline_422_16x8.jpg",
+      "input": "baseline_422_16x8.jpg",
+      "input_sha256": "eb9bad4e5df64c9324b913ed2ad2061667c37903d7ae3a7b671df65c4d42fb8b",
       "reference": "baseline_422_16x8.rgb",
-      "format":    "Rgb8",
-      "width":     16,
-      "height":    8,
+      "reference_sha256": "4c8a9a97587b2eaa6190690658f732aae42af7aac40c9a15769589838c26cc20",
+      "format": "Rgb8",
+      "width": 16,
+      "height": 8,
       "tolerance": "bit_exact",
-      "sampling":  "4:2:2"
+      "sampling": "4:2:2"
     },
     {
-      "input":     "baseline_444_8x8.jpg",
+      "input": "baseline_444_8x8.jpg",
+      "input_sha256": "502872ae94045e2f47d63333745020003a83ed5c8258c3369ef687da019654c0",
       "reference": "baseline_444_8x8.rgb",
-      "format":    "Rgb8",
-      "width":     8,
-      "height":    8,
+      "reference_sha256": "59dffe4f979882351c4dd31b5c9d19104c9444284be9771660f37db74bc4000c",
+      "format": "Rgb8",
+      "width": 8,
+      "height": 8,
       "tolerance": "bit_exact",
-      "sampling":  "4:4:4"
+      "sampling": "4:4:4"
     },
     {
-      "input":     "grayscale_8x8.jpg",
+      "input": "grayscale_8x8.jpg",
+      "input_sha256": "53e5cebc7a612c68d6fa9a6ca623703fc6c001056b96e09d07d72125713b36b7",
       "reference": "grayscale_8x8.gray",
-      "format":    "Gray8",
-      "width":     8,
-      "height":    8,
+      "reference_sha256": "e19b9939d85b1a739e718fa41ffe3975c80fd7e762800057fcb3ceeb13fcef81",
+      "format": "Gray8",
+      "width": 8,
+      "height": 8,
       "tolerance": "bit_exact",
-      "sampling":  "grayscale"
+      "sampling": "grayscale"
     }
   ]
 }

@@ -140,6 +140,7 @@ pub struct MetalSubmission {
     pub(crate) slot: usize,
 }
 
+#[doc(hidden)]
 impl DeviceSubmission for MetalSubmission {
     type Output = Surface;
     type Error = Error;

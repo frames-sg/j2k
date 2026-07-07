@@ -453,12 +453,12 @@ kernel void j2k_idwt_irreversible97_single_decomposition(
         return;
     }
 
-    const float NEG_ALPHA = 1.5861343f;
-    const float NEG_BETA = 0.052980117f;
-    const float NEG_GAMMA = -0.8829111f;
-    const float NEG_DELTA = -0.44350687f;
-    const float KAPPA = 1.2301741f;
-    const float INV_KAPPA = 1.0f / KAPPA;
+    const float NEG_ALPHA = CODEC_MATH_IDWT97_NEG_ALPHA;
+    const float NEG_BETA = CODEC_MATH_IDWT97_NEG_BETA;
+    const float NEG_GAMMA = CODEC_MATH_IDWT97_NEG_GAMMA;
+    const float NEG_DELTA = CODEC_MATH_IDWT97_NEG_DELTA;
+    const float KAPPA = CODEC_MATH_DWT97_KAPPA;
+    const float INV_KAPPA = CODEC_MATH_DWT97_INV_KAPPA;
 
     const uint low_x_parity = params.x0 & 1u;
     const uint low_y_parity = params.y0 & 1u;

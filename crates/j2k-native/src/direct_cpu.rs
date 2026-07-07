@@ -284,17 +284,17 @@ fn execute_classic_sub_band(
         prepare_sub_band_output(bands, plan.band_id, plan.rect, plan.width, plan.height)?;
 
     for job in &plan.jobs {
-        let output_range = checked_sub_band_job_output_range(
-            job.output_x,
-            job.output_y,
-            job.output_stride,
-            job.width,
-            job.height,
+        let output_range = checked_sub_band_job_output_range(SubBandJobOutputRange {
+            output_x: job.output_x,
+            output_y: job.output_y,
+            output_stride: job.output_stride,
+            width: job.width,
+            height: job.height,
             sub_band_width,
-            plan.width,
-            plan.height,
-            output.len(),
-        )?;
+            plan_width: plan.width,
+            plan_height: plan.height,
+            output_len: output.len(),
+        })?;
 
         let code_block = J2kCodeBlockDecodeJob {
             data: &job.data,
@@ -324,17 +324,17 @@ fn execute_ht_sub_band(
         prepare_sub_band_output(bands, plan.band_id, plan.rect, plan.width, plan.height)?;
 
     for job in &plan.jobs {
-        let output_range = checked_sub_band_job_output_range(
-            job.output_x,
-            job.output_y,
-            job.output_stride,
-            job.width,
-            job.height,
+        let output_range = checked_sub_band_job_output_range(SubBandJobOutputRange {
+            output_x: job.output_x,
+            output_y: job.output_y,
+            output_stride: job.output_stride,
+            width: job.width,
+            height: job.height,
             sub_band_width,
-            plan.width,
-            plan.height,
-            output.len(),
-        )?;
+            plan_width: plan.width,
+            plan_height: plan.height,
+            output_len: output.len(),
+        })?;
 
         let code_block = HtCodeBlockDecodeJob {
             data: &job.data,
@@ -617,8 +617,7 @@ fn checked_block_base(output_x: u32, output_y: u32, stride: usize) -> Result<usi
         .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn checked_sub_band_job_output_range(
+struct SubBandJobOutputRange {
     output_x: u32,
     output_y: u32,
     output_stride: usize,
@@ -628,15 +627,23 @@ fn checked_sub_band_job_output_range(
     plan_width: u32,
     plan_height: u32,
     output_len: usize,
-) -> Result<Range<usize>> {
-    let base_idx = checked_block_base(output_x, output_y, sub_band_width)?;
-    let block_len = checked_block_output_len(output_stride, width, height)?;
+}
+
+fn checked_sub_band_job_output_range(bounds: SubBandJobOutputRange) -> Result<Range<usize>> {
+    let base_idx = checked_block_base(bounds.output_x, bounds.output_y, bounds.sub_band_width)?;
+    let block_len = checked_block_output_len(bounds.output_stride, bounds.width, bounds.height)?;
     let end_idx = base_idx
         .checked_add(block_len)
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-    if end_idx > output_len
-        || output_x.checked_add(width).is_none_or(|x| x > plan_width)
-        || output_y.checked_add(height).is_none_or(|y| y > plan_height)
+    if end_idx > bounds.output_len
+        || bounds
+            .output_x
+            .checked_add(bounds.width)
+            .is_none_or(|x| x > bounds.plan_width)
+        || bounds
+            .output_y
+            .checked_add(bounds.height)
+            .is_none_or(|y| y > bounds.plan_height)
     {
         bail!(DecodingError::CodeBlockDecodeFailure);
     }

@@ -33,6 +33,7 @@ j2k-test-support = { path = "../j2k-test-support" }
 [[bench]]
 name = "public_api"
 harness = false
+test = false
 
 [lints.rust]
 unsafe_code     = "forbid"

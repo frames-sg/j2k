@@ -52,6 +52,7 @@ std::thread_local! {
     static RESIDENT_GPU_TIMESTAMP_QUERIES: Cell<usize> = const { Cell::new(0) };
     static RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS: Cell<usize> = const { Cell::new(0) };
     static DIRECT_TIER1_INPUT_BUFFER_PREPARES: Cell<usize> = const { Cell::new(0) };
+    static HYBRID_CPU_DECODE_INPUTS_FOR_THREAD: Cell<usize> = const { Cell::new(0) };
     static LOSSLESS_DEINTERLEAVE_RCT_FUSED_DISPATCHES: Cell<usize> = const { Cell::new(0) };
     static CLASSIC_GPU_TOKEN_PACK_DISPATCHES: Cell<usize> = const { Cell::new(0) };
     static CLASSIC_SPLIT_MQ_BYTE_GPU_TOKEN_PACK_DISPATCHES: Cell<usize> = const { Cell::new(0) };
@@ -91,6 +92,14 @@ pub(crate) fn direct_tier1_input_buffer_prepares_for_test() -> usize {
 
 pub(crate) fn record_direct_tier1_input_buffer_prepare() {
     DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(|counter| counter.set(counter.get() + 1));
+}
+
+pub(crate) fn reset_thread_hybrid_cpu_decode_inputs_for_test() {
+    HYBRID_CPU_DECODE_INPUTS_FOR_THREAD.with(|counter| counter.set(0));
+}
+
+pub(crate) fn thread_hybrid_cpu_decode_inputs_for_test() -> usize {
+    HYBRID_CPU_DECODE_INPUTS_FOR_THREAD.with(Cell::get)
 }
 
 pub(crate) fn reset_lossless_deinterleave_rct_fused_dispatches_for_test() {
@@ -150,6 +159,8 @@ pub(crate) fn record_hybrid_cpu_decode_worker_init() {
 
 pub(crate) fn record_hybrid_cpu_decode_inputs(count: usize) {
     HYBRID_CPU_DECODE_INPUTS.fetch_add(count, Ordering::Relaxed);
+    HYBRID_CPU_DECODE_INPUTS_FOR_THREAD
+        .with(|counter| counter.set(counter.get().saturating_add(count)));
 }
 
 pub(crate) fn record_flattened_hybrid_cpu_decode_batch() {

@@ -6,6 +6,7 @@ use j2k_core::{BufferError, TileDecompress};
 /// Pass-through codec for uncompressed tile payloads.
 pub struct UncompressedCodec;
 
+#[doc(hidden)]
 impl TileDecompress for UncompressedCodec {
     type Error = TileCodecError;
     type Pool = NoPool;

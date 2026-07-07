@@ -12,7 +12,9 @@ use j2k_jpeg::{
     CompressedPayloadKind, CompressedTransferSyntax, PassthroughDecision, PassthroughRequirements,
 };
 
-use fixtures::progressive_8x8_jpeg;
+use fixtures::{
+    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg,
+};
 use j2k_test_support as fixtures;
 use j2k_test_support::{
     minimal_baseline_jpeg, minimal_baseline_jpeg_with_restart_interval,
@@ -399,24 +401,24 @@ fn decode_options_color_transform_setter_round_trips() {
 }
 
 #[test]
-fn inspect_with_options_forces_three_component_color_space() {
+fn jpeg_view_parse_with_options_forces_three_component_color_space() {
     let bytes = minimal_baseline_jpeg();
     let auto = Decoder::inspect(&bytes).unwrap();
     assert_eq!(auto.color_space, ColorSpace::YCbCr);
 
-    let force_rgb = Decoder::inspect_with_options(
+    let force_rgb = JpegView::parse_with_options(
         &bytes,
         DecodeOptions::default().with_color_transform(ColorTransform::ForceRgb),
     )
     .unwrap();
-    assert_eq!(force_rgb.color_space, ColorSpace::Rgb);
+    assert_eq!(force_rgb.info().color_space, ColorSpace::Rgb);
 
-    let force_ycbcr = Decoder::inspect_with_options(
+    let force_ycbcr = JpegView::parse_with_options(
         &bytes,
         DecodeOptions::default().with_color_transform(ColorTransform::ForceYCbCr),
     )
     .unwrap();
-    assert_eq!(force_ycbcr.color_space, ColorSpace::YCbCr);
+    assert_eq!(force_ycbcr.info().color_space, ColorSpace::YCbCr);
 }
 
 #[test]
@@ -464,6 +466,22 @@ fn inspect_reports_all_progressive_scans() {
     let info = Decoder::inspect(&progressive_8x8_jpeg()).unwrap();
     assert_eq!(info.sof_kind, SofKind::Progressive8);
     assert_eq!(info.scan_count, 10);
+}
+
+#[test]
+fn inspect_and_decoder_info_agree_for_progressive_fixtures() {
+    for (label, bytes) in [
+        ("8-bit RGB", progressive_8x8_jpeg()),
+        ("12-bit grayscale", progressive_12bit_grayscale_8x8_jpeg()),
+        ("12-bit APP14 RGB", progressive_12bit_rgb_8x8_jpeg()),
+    ] {
+        let inspected = Decoder::inspect(&bytes)
+            .unwrap_or_else(|err| panic!("{label} inspect should succeed: {err}"));
+        let decoder = Decoder::new(&bytes)
+            .unwrap_or_else(|err| panic!("{label} decoder construction should succeed: {err}"));
+
+        assert_eq!(decoder.info(), &inspected, "{label}");
+    }
 }
 
 #[test]
@@ -527,11 +545,7 @@ fn jpeg_view_restart_index_reports_original_byte_offsets() {
         ]
     );
 
-    let decoder_index = Decoder::new(&bytes)
-        .expect("decoder")
-        .restart_index()
-        .expect("decoder restart index");
-    assert_eq!(decoder_index, Some(index));
+    assert_eq!(view.info().restart_interval, Some(1));
 }
 
 #[test]

@@ -1255,6 +1255,23 @@ mod tests {
         );
         let cb_width = 1u32 << (options.code_block_width_exp + 2);
         let cb_height = 1u32 << (options.code_block_height_exp + 2);
+        let subband = |coefficients,
+                       width,
+                       height,
+                       sub_band_type,
+                       step_size: &QuantStepSize| {
+            prequantized_subband_for_test(PrequantizedSubbandForTest {
+                coefficients,
+                width,
+                height,
+                sub_band_type,
+                step_size,
+                bit_depth: image.bit_depth,
+                guard_bits,
+                cb_width,
+                cb_height,
+            })
+        };
 
         let components = image
             .components
@@ -1262,16 +1279,12 @@ mod tests {
             .map(|component| {
                 let mut resolutions = Vec::with_capacity(component.dwt.levels.len() + 1);
                 resolutions.push(PrequantizedHtj2k97Resolution {
-                    subbands: vec![prequantized_subband_for_test(
+                    subbands: vec![subband(
                         &component.dwt.ll,
                         component.dwt.ll_width,
                         component.dwt.ll_height,
                         SubBandType::LowLow,
                         &step_sizes[0],
-                        image.bit_depth,
-                        guard_bits,
-                        cb_width,
-                        cb_height,
                     )?],
                 });
 
@@ -1279,38 +1292,26 @@ mod tests {
                     let step_base = 1 + level_index * 3;
                     resolutions.push(PrequantizedHtj2k97Resolution {
                         subbands: vec![
-                            prequantized_subband_for_test(
+                            subband(
                                 &level.hl,
                                 level.high_width,
                                 level.low_height,
                                 SubBandType::HighLow,
                                 &step_sizes[step_base],
-                                image.bit_depth,
-                                guard_bits,
-                                cb_width,
-                                cb_height,
                             )?,
-                            prequantized_subband_for_test(
+                            subband(
                                 &level.lh,
                                 level.low_width,
                                 level.high_height,
                                 SubBandType::LowHigh,
                                 &step_sizes[step_base + 1],
-                                image.bit_depth,
-                                guard_bits,
-                                cb_width,
-                                cb_height,
                             )?,
-                            prequantized_subband_for_test(
+                            subband(
                                 &level.hh,
                                 level.high_width,
                                 level.high_height,
                                 SubBandType::HighHigh,
                                 &step_sizes[step_base + 2],
-                                image.bit_depth,
-                                guard_bits,
-                                cb_width,
-                                cb_height,
                             )?,
                         ],
                     });
@@ -1333,18 +1334,32 @@ mod tests {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn prequantized_subband_for_test(
-        coefficients: &[f32],
+    struct PrequantizedSubbandForTest<'a> {
+        coefficients: &'a [f32],
         width: u32,
         height: u32,
         sub_band_type: SubBandType,
-        step_size: &QuantStepSize,
+        step_size: &'a QuantStepSize,
         bit_depth: u8,
         guard_bits: u8,
         cb_width: u32,
         cb_height: u32,
+    }
+
+    fn prequantized_subband_for_test(
+        request: PrequantizedSubbandForTest<'_>,
     ) -> Result<PrequantizedHtj2k97Subband, &'static str> {
+        let PrequantizedSubbandForTest {
+            coefficients,
+            width,
+            height,
+            sub_band_type,
+            step_size,
+            bit_depth,
+            guard_bits,
+            cb_width,
+            cb_height,
+        } = request;
         let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
         let prepared = prepare_subband(
             coefficients,

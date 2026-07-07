@@ -24,8 +24,8 @@ name = "j2k_native"
 path = "src/lib.rs"
 
 [dependencies]
-fearless_simd = { version = "0.4", optional = true }
-libm = { version = "0.2", default-features = false }
+fearless_simd = { workspace = true, optional = true }
+libm = { workspace = true }
 log = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 j2k-profile = { path = "../j2k-profile", version = "=0.6.2", default-features = false }
@@ -38,14 +38,17 @@ criterion = { workspace = true }
 [[bench]]
 name = "tier1_bitplane"
 harness = false
+test = false
 
 [[bench]]
 name = "htj2k_sigprop_phase"
 harness = false
+test = false
 
 [[bench]]
 name = "direct_cpu"
 harness = false
+test = false
 
 [lints.rust]
 unsafe_code = "forbid"

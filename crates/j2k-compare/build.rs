@@ -128,7 +128,7 @@ struct GrokConfig {
 
 fn grok_config() -> Option<GrokConfig> {
     let source_root = std::env::var_os("J2K_GROK_SOURCE")
-        .map_or_else(|| PathBuf::from("/tmp/grok- j2k"), PathBuf::from);
+        .map_or_else(|| PathBuf::from("/tmp/grok-j2k"), PathBuf::from);
     let lib_dir = std::env::var_os("J2K_GROK_ROOT")
         .map_or_else(|| source_root.join("build/bin"), PathBuf::from);
     let source_include = source_root.join("src/lib/core");

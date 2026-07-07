@@ -9,7 +9,6 @@ use std::{
     time::Instant,
 };
 
-use j2k::J2kError;
 use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::{
     DecodeSettings as NativeDecodeSettings, DecoderContext as NativeDecoderContext,
@@ -18,6 +17,7 @@ use j2k_native::{
 use metal::Device;
 use rayon::prelude::*;
 
+use crate::error::{adapter_backend_error, native_decode_j2k_error};
 use crate::profile_env::{decode_profile_label, elapsed_since_us};
 use crate::{direct, Error, J2kDecoder, Surface};
 
@@ -74,6 +74,37 @@ enum PreparedRegionScaledDirectPlan {
     Color(crate::compute::PreparedDirectColorPlan),
 }
 
+#[derive(Clone, Copy)]
+enum RegionScaledColorPlanCache<'a> {
+    Uncached,
+    Global,
+    Session(&'a crate::MetalBackendSession),
+}
+
+impl RegionScaledColorPlanCache<'_> {
+    fn get(self, key: u64) -> Option<Arc<crate::compute::PreparedDirectColorPlan>> {
+        match self {
+            Self::Uncached => None,
+            Self::Global => cached_region_scaled_direct_color_plan(key),
+            Self::Session(session) => {
+                cached_region_scaled_direct_color_plan_with_session(session, key)
+            }
+        }
+    }
+
+    fn store(self, key: u64, plan: Arc<crate::compute::PreparedDirectColorPlan>) {
+        match self {
+            Self::Uncached => {
+                let _ = (key, plan);
+            }
+            Self::Global => store_region_scaled_direct_color_plan(key, plan),
+            Self::Session(session) => {
+                store_region_scaled_direct_color_plan_with_session(session, key, plan);
+            }
+        }
+    }
+}
+
 pub(crate) fn decode_region_scaled_direct_to_surface(
     input: &[u8],
     fmt: PixelFormat,
@@ -97,7 +128,7 @@ pub(crate) fn decode_region_scaled_direct_to_surface_with_session(
     else {
         return Ok(None);
     };
-    execute_region_scaled_direct_plan_with_device(prepared, fmt, &session.device)
+    execute_region_scaled_direct_plan_with_device(prepared, fmt, session.device_handle())
 }
 
 fn build_region_scaled_direct_plan(
@@ -106,21 +137,13 @@ fn build_region_scaled_direct_plan(
     roi: Rect,
     scale: Downscale,
 ) -> Result<Option<PreparedRegionScaledDirectPlan>, Error> {
-    match fmt {
-        PixelFormat::Gray8 | PixelFormat::Gray16 => {
-            match build_region_scaled_direct_gray_plan(input, roi, scale) {
-                Ok(plan) => Ok(Some(PreparedRegionScaledDirectPlan::Gray(plan))),
-                Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => Ok(None),
-                Err(error) => Err(error),
-            }
-        }
-        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 => {
-            Ok(Some(PreparedRegionScaledDirectPlan::Color(
-                build_region_scaled_direct_color_plan(input, roi, scale)?,
-            )))
-        }
-        _ => Ok(None),
-    }
+    build_region_scaled_direct_plan_with_cache(
+        input,
+        fmt,
+        roi,
+        scale,
+        RegionScaledColorPlanCache::Uncached,
+    )
 }
 
 fn build_region_scaled_direct_plan_with_session(
@@ -130,6 +153,22 @@ fn build_region_scaled_direct_plan_with_session(
     scale: Downscale,
     session: &crate::MetalBackendSession,
 ) -> Result<Option<PreparedRegionScaledDirectPlan>, Error> {
+    build_region_scaled_direct_plan_with_cache(
+        input,
+        fmt,
+        roi,
+        scale,
+        RegionScaledColorPlanCache::Session(session),
+    )
+}
+
+fn build_region_scaled_direct_plan_with_cache(
+    input: &[u8],
+    fmt: PixelFormat,
+    roi: Rect,
+    scale: Downscale,
+    cache: RegionScaledColorPlanCache<'_>,
+) -> Result<Option<PreparedRegionScaledDirectPlan>, Error> {
     match fmt {
         PixelFormat::Gray8 | PixelFormat::Gray16 => {
             match build_region_scaled_direct_gray_plan(input, roi, scale) {
@@ -140,8 +179,8 @@ fn build_region_scaled_direct_plan_with_session(
         }
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 => {
             Ok(Some(PreparedRegionScaledDirectPlan::Color(
-                (*build_region_scaled_direct_color_plan_cached_with_session(
-                    input, roi, scale, session,
+                (*build_region_scaled_direct_color_plan_cached_with_cache(
+                    input, roi, scale, cache,
                 )?)
                 .clone(),
             )))
@@ -336,15 +375,16 @@ fn build_region_scaled_direct_gray_plan(
         ),
     ) {
         Ok(plan) => plan,
-        Err(error) if direct::is_unsupported_direct_plan_error(&error.to_string()) => {
-            return Err(Error::MetalKernel {
+        Err(error) if direct::is_unsupported_direct_plan_error(&error) => {
+            return Err(Error::MetalDirectFallback {
                 message: format!(
                     "explicit J2K MetalDirect region-scaled batch currently supports grayscale direct plans only: {error}"
                 ),
+                reason: crate::MetalDirectFallbackReason::UnsupportedPlan,
             });
         }
         Err(error) => {
-            return Err(Error::Decode(J2kError::Backend(format!(
+            return Err(Error::Decode(adapter_backend_error(format!(
                 "failed to build J2K MetalDirect region-scaled grayscale plan: {error}"
             ))));
         }
@@ -385,13 +425,13 @@ fn build_region_scaled_direct_color_plan(
         ),
     ) {
         Ok(plan) => plan,
-        Err(error) if direct::is_unsupported_direct_plan_error(&error.to_string()) => {
+        Err(error) if direct::is_unsupported_direct_plan_error(&error) => {
             return Err(Error::UnsupportedMetalRequest {
                 reason: RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
             });
         }
         Err(error) => {
-            return Err(Error::Decode(J2kError::Backend(format!(
+            return Err(Error::Decode(adapter_backend_error(format!(
                 "failed to build J2K MetalDirect region-scaled color plan: {error}"
             ))));
         }
@@ -422,29 +462,27 @@ fn build_region_scaled_direct_color_plan_cached(
     roi: Rect,
     scale: Downscale,
 ) -> Result<Arc<crate::compute::PreparedDirectColorPlan>, Error> {
-    let cache_key = region_scaled_color_plan_cache_key(input, roi, scale);
-    if let Some(plan) = cached_region_scaled_direct_color_plan(cache_key) {
-        return Ok(plan);
-    }
-
-    let plan = Arc::new(build_region_scaled_direct_color_plan(input, roi, scale)?);
-    store_region_scaled_direct_color_plan(cache_key, plan.clone());
-    Ok(plan)
+    build_region_scaled_direct_color_plan_cached_with_cache(
+        input,
+        roi,
+        scale,
+        RegionScaledColorPlanCache::Global,
+    )
 }
 
-fn build_region_scaled_direct_color_plan_cached_with_session(
+fn build_region_scaled_direct_color_plan_cached_with_cache(
     input: &[u8],
     roi: Rect,
     scale: Downscale,
-    session: &crate::MetalBackendSession,
+    cache: RegionScaledColorPlanCache<'_>,
 ) -> Result<Arc<crate::compute::PreparedDirectColorPlan>, Error> {
     let cache_key = region_scaled_color_plan_cache_key(input, roi, scale);
-    if let Some(plan) = cached_region_scaled_direct_color_plan_with_session(session, cache_key) {
+    if let Some(plan) = cache.get(cache_key) {
         return Ok(plan);
     }
 
     let plan = Arc::new(build_region_scaled_direct_color_plan(input, roi, scale)?);
-    store_region_scaled_direct_color_plan_with_session(session, cache_key, plan.clone());
+    cache.store(cache_key, plan.clone());
     Ok(plan)
 }
 
@@ -590,13 +628,12 @@ fn build_region_scaled_native_image(
         target_resolution: Some(target_dims),
         ..NativeDecodeSettings::default()
     };
-    let image =
-        NativeImage::new(input, &settings).map_err(|error| J2kError::Backend(error.to_string()))?;
+    let image = NativeImage::new(input, &settings).map_err(native_decode_j2k_error)?;
     Ok(image)
 }
 
 fn is_direct_region_scaled_runtime_fallback_error(error: &Error) -> bool {
-    crate::is_direct_runtime_fallback_error(error)
+    crate::decoder::is_direct_runtime_fallback_error(error)
 }
 
 #[cfg(test)]
@@ -678,7 +715,7 @@ mod tests {
     #[test]
     fn known_repeated_region_scaled_color_batch_reuses_cached_plan_across_calls() {
         if Device::system_default().is_none() {
-            eprintln!("skipping repeated color plan cache test: no Metal device");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         }
 
@@ -711,7 +748,7 @@ mod tests {
     #[test]
     fn known_distinct_region_scaled_color_batch_reuses_cached_plans_across_calls() {
         if Device::system_default().is_none() {
-            eprintln!("skipping distinct color plan cache test: no Metal device");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         }
 

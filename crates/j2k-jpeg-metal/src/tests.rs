@@ -1,4 +1,5 @@
 use super::*;
+use j2k_core::{CodecError, DeviceSurface, ImageDecode, ImageDecodeDevice};
 
 // Shims over the collapsed batch API so every legacy entry shape
 // (source x op x target) keeps device coverage.
@@ -333,10 +334,13 @@ fn assert_reusable_rgba_texture_tiles(
 
 #[cfg(target_os = "macos")]
 use j2k_jpeg::adapter::build_fast422_packet;
-use j2k_jpeg::adapter::{build_fast420_packet, build_fast444_packet};
+use j2k_jpeg::adapter::{
+    build_fast420_packet, build_fast444_packet, build_gray_packet, JpegHuffmanTable,
+};
 #[cfg(target_os = "macos")]
 use j2k_jpeg::{
-    encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
+    encode_jpeg_baseline, DecodeRequest, JpegBackend, JpegEncodeOptions, JpegSamples,
+    JpegSubsampling,
 };
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
@@ -345,7 +349,6 @@ const BASELINE_420_RESTART: &[u8] =
 #[cfg(target_os = "macos")]
 const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
 const BASELINE_444: &[u8] = include_bytes!("../fixtures/jpeg/baseline_444_8x8.jpg");
-#[cfg(not(target_os = "macos"))]
 const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
 
 #[test]
@@ -365,6 +368,14 @@ fn metal_runtime_failures_are_not_unsupported_errors() {
     }
 }
 
+fn test_fast_packets<'a>(
+    fast444: Option<&'a JpegFast444PacketV1>,
+    fast422: Option<&'a JpegFast422PacketV1>,
+    fast420: Option<&'a JpegFast420PacketV1>,
+) -> JpegFastPackets<'a> {
+    JpegFastPackets::new(fast444, fast422, fast420)
+}
+
 #[test]
 fn auto_route_prefers_cpu_host_for_nonrestart_packets() {
     let decoder_420 = CpuDecoder::new(BASELINE_420).expect("420 decoder");
@@ -375,9 +386,7 @@ fn auto_route_prefers_cpu_host_for_nonrestart_packets() {
             BackendRequest::Auto,
             PixelFormat::Rgb8,
             batch::BatchOp::Full,
-            None,
-            None,
-            Some(&packet_420),
+            test_fast_packets(None, None, Some(&packet_420)),
         ),
         routing::RouteDecision::CpuHost
     );
@@ -390,9 +399,7 @@ fn auto_route_prefers_cpu_host_for_nonrestart_packets() {
             BackendRequest::Auto,
             PixelFormat::Rgb8,
             batch::BatchOp::Scaled(Downscale::Quarter),
-            Some(&packet_444),
-            None,
-            None,
+            test_fast_packets(Some(&packet_444), None, None),
         ),
         routing::RouteDecision::CpuHost
     );
@@ -409,9 +416,7 @@ fn auto_route_keeps_small_single_restart_packets_on_cpu_host() {
             BackendRequest::Auto,
             PixelFormat::Rgb8,
             batch::BatchOp::Full,
-            None,
-            None,
-            Some(&packet)
+            test_fast_packets(None, None, Some(&packet))
         ),
         routing::RouteDecision::CpuHost
     );
@@ -426,9 +431,7 @@ fn auto_route_keeps_small_single_restart_packets_on_cpu_host() {
                 w: 16,
                 h: 16,
             }),
-            None,
-            None,
-            Some(&packet),
+            test_fast_packets(None, None, Some(&packet)),
         ),
         routing::RouteDecision::CpuHost
     );
@@ -436,9 +439,118 @@ fn auto_route_keeps_small_single_restart_packets_on_cpu_host() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn prepared_huffman_host_matches_shared_canonical_derivation_for_fixture_packets() {
+    let packet_420 = build_fast420_packet(BASELINE_420).expect("420 packet");
+    assert_color_packet_huffman_matches_shared(
+        "420",
+        [
+            ("y dc", &packet_420.y_dc_table),
+            ("y ac", &packet_420.y_ac_table),
+            ("cb dc", &packet_420.cb_dc_table),
+            ("cb ac", &packet_420.cb_ac_table),
+            ("cr dc", &packet_420.cr_dc_table),
+            ("cr ac", &packet_420.cr_ac_table),
+        ],
+    );
+
+    let packet_420_restart =
+        build_fast420_packet(BASELINE_420_RESTART).expect("420 restart packet");
+    assert_color_packet_huffman_matches_shared(
+        "420 restart",
+        [
+            ("y dc", &packet_420_restart.y_dc_table),
+            ("y ac", &packet_420_restart.y_ac_table),
+            ("cb dc", &packet_420_restart.cb_dc_table),
+            ("cb ac", &packet_420_restart.cb_ac_table),
+            ("cr dc", &packet_420_restart.cr_dc_table),
+            ("cr ac", &packet_420_restart.cr_ac_table),
+        ],
+    );
+
+    let packet_422 = build_fast422_packet(BASELINE_422).expect("422 packet");
+    assert_color_packet_huffman_matches_shared(
+        "422",
+        [
+            ("y dc", &packet_422.y_dc_table),
+            ("y ac", &packet_422.y_ac_table),
+            ("cb dc", &packet_422.cb_dc_table),
+            ("cb ac", &packet_422.cb_ac_table),
+            ("cr dc", &packet_422.cr_dc_table),
+            ("cr ac", &packet_422.cr_ac_table),
+        ],
+    );
+
+    let packet_444 = build_fast444_packet(BASELINE_444).expect("444 packet");
+    assert_color_packet_huffman_matches_shared(
+        "444",
+        [
+            ("y dc", &packet_444.y_dc_table),
+            ("y ac", &packet_444.y_ac_table),
+            ("cb dc", &packet_444.cb_dc_table),
+            ("cb ac", &packet_444.cb_ac_table),
+            ("cr dc", &packet_444.cr_dc_table),
+            ("cr ac", &packet_444.cr_ac_table),
+        ],
+    );
+
+    let packet_gray = build_gray_packet(GRAYSCALE).expect("gray packet");
+    assert_prepared_huffman_matches_shared("gray y dc", &packet_gray.y_dc_table);
+    assert_prepared_huffman_matches_shared("gray y ac", &packet_gray.y_ac_table);
+}
+
+#[cfg(target_os = "macos")]
+fn assert_color_packet_huffman_matches_shared(label: &str, tables: [(&str, &JpegHuffmanTable); 6]) {
+    for (table_label, table) in tables {
+        assert_prepared_huffman_matches_shared(&format!("{label} {table_label}"), table);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn assert_prepared_huffman_matches_shared(label: &str, table: &JpegHuffmanTable) {
+    let canonical = table
+        .derive_canonical()
+        .unwrap_or_else(|error| panic!("{label}: shared canonical derivation failed: {error}"));
+    let prepared = crate::abi::PreparedHuffmanHost::from(table);
+    let values_len = usize::from(table.values_len);
+
+    assert_eq!(prepared.min_code, canonical.min_code, "{label} min_code");
+    assert_eq!(prepared.max_code, canonical.max_code, "{label} max_code");
+    assert_eq!(
+        prepared.val_offset, canonical.val_offset,
+        "{label} val_offset"
+    );
+    assert_eq!(prepared.values_len, table.values_len, "{label} values_len");
+    assert_eq!(
+        &prepared.values[..values_len],
+        &table.values[..values_len],
+        "{label} values"
+    );
+
+    let mut fast_symbol = [0u8; 512];
+    let mut fast_len = [0u8; 512];
+    for idx in 0..canonical.huffsize_len {
+        let len = usize::from(canonical.huffsize[idx]);
+        if len == 0 || len > 9 {
+            continue;
+        }
+        let code = usize::from(canonical.huffcode[idx]);
+        let prefix = code << (9 - len);
+        let fill = 1usize << (9 - len);
+        for suffix in 0..fill {
+            fast_symbol[prefix | suffix] = table.values[idx];
+            fast_len[prefix | suffix] = canonical.huffsize[idx];
+        }
+    }
+
+    assert_eq!(prepared.fast_symbol, fast_symbol, "{label} fast_symbol");
+    assert_eq!(prepared.fast_len, fast_len, "{label} fast_len");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn metal_backend_session_reuses_compiled_runtime() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
-    assert!(session.runtime.get().is_none());
+    assert!(!session.runtime_initialized_for_test());
 
     let mut first = Decoder::new(BASELINE_420).expect("first decoder");
     let first_surface = first
@@ -449,10 +561,7 @@ fn metal_backend_session_reuses_compiled_runtime() {
         SurfaceResidency::MetalResidentDecode
     );
     let first_runtime = session
-        .runtime
-        .get()
-        .and_then(|runtime| runtime.as_ref().ok())
-        .map(std::ptr::from_ref::<compute::MetalRuntime>)
+        .runtime_ptr_for_test()
         .expect("session runtime after first decode");
 
     let mut second = Decoder::new(BASELINE_420).expect("second decoder");
@@ -460,10 +569,7 @@ fn metal_backend_session_reuses_compiled_runtime() {
         .decode_to_device_with_session(PixelFormat::Rgb8, &session)
         .expect("second session decode");
     let second_runtime = session
-        .runtime
-        .get()
-        .and_then(|runtime| runtime.as_ref().ok())
-        .map(std::ptr::from_ref::<compute::MetalRuntime>)
+        .runtime_ptr_for_test()
         .expect("session runtime after second decode");
 
     assert_eq!(first_runtime, second_runtime);
@@ -473,7 +579,7 @@ fn metal_backend_session_reuses_compiled_runtime() {
 #[test]
 fn jpeg_rgb8_batch_decode_uses_backend_session_runtime() {
     let session = MetalBackendSession::system_default().expect("Metal backend session");
-    assert!(session.runtime.get().is_none());
+    assert!(!session.runtime_initialized_for_test());
 
     let inputs = [BASELINE_420, BASELINE_420];
     let results = decode_rgb8_batch_to_device_with_session(&inputs, &session)
@@ -481,7 +587,7 @@ fn jpeg_rgb8_batch_decode_uses_backend_session_runtime() {
         .expect("baseline JPEG batch should use Metal batch path");
 
     assert_eq!(results.len(), 2);
-    assert!(session.runtime.get().is_some());
+    assert!(session.runtime_initialized_for_test());
     for result in results {
         let surface = result.expect("surface");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
@@ -497,7 +603,7 @@ fn queued_jpeg_batch_decode_uses_metal_session_runtime() {
     use j2k_core::DeviceSubmission as _;
 
     let backend_session = MetalBackendSession::system_default().expect("Metal backend session");
-    assert!(backend_session.runtime.get().is_none());
+    assert!(!backend_session.runtime_initialized_for_test());
     let mut session = MetalSession::with_backend_session(backend_session.clone());
     let mut ctx = j2k_core::DecoderContext::<j2k_jpeg::DecoderContext>::new();
     let mut pool = ScratchPool::new();
@@ -525,7 +631,7 @@ fn queued_jpeg_batch_decode_uses_metal_session_runtime() {
 
     assert_eq!(session.submissions().expect("session submissions"), 1);
     assert!(
-        backend_session.runtime.get().is_some(),
+        backend_session.runtime_initialized_for_test(),
         "queued MetalSession batch decode should reuse its backend runtime"
     );
 }
@@ -572,8 +678,7 @@ fn default_queued_jpeg_batch_decode_lazily_initializes_backend_session() {
         .expect("metal session")
         .backend_session
         .as_ref()
-        .and_then(|backend| backend.runtime.get())
-        .is_some();
+        .is_some_and(MetalBackendSession::runtime_initialized_for_test);
     assert!(runtime_initialized);
 }
 
@@ -586,7 +691,7 @@ fn rgb8_batch_decode_can_write_into_reusable_metal_output_buffer() {
     let inputs = [BASELINE_420, BASELINE_420];
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
     let surfaces = decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
@@ -621,7 +726,7 @@ fn rgb8_decoder_batch_resizes_reusable_metal_output_buffer() {
     let decoders = [&first, &second];
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
     let surfaces = decode_rgb8_decoder_batch_into_resizable_metal_buffer_with_session(
@@ -657,7 +762,7 @@ fn rgb8_decoder_batch_can_write_into_fixed_metal_output_buffer() {
     let decoders = [&first, &second];
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
     let surfaces =
@@ -941,7 +1046,7 @@ fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_output_buffer() {
     let inputs = [BASELINE_444, BASELINE_444];
     let (expected, _) = CpuDecoder::new(BASELINE_444)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
 
     let surfaces = decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
@@ -1083,7 +1188,7 @@ fn assert_table_mixed_full_buffer_groups_resident(
         .map(|input| {
             CpuDecoder::new(input)
                 .expect("cpu decoder")
-                .decode(PixelFormat::Rgb8)
+                .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
                 .expect("cpu decode")
                 .0
         })
@@ -1136,7 +1241,7 @@ fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_output_buffer() {
     let inputs = [BASELINE_420, BASELINE_420];
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_scaled(PixelFormat::Rgb8, scale)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled decode");
 
     let surfaces =
@@ -1168,7 +1273,7 @@ fn rgb8_decoder_scaled_batch_resizes_reusable_metal_output_buffer() {
     let decoders = [&first, &second];
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_scaled(PixelFormat::Rgb8, scale)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled decode");
 
     let surfaces = decode_rgb8_decoder_scaled_batch_into_resizable_metal_buffer_with_session(
@@ -1206,7 +1311,7 @@ fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_output_buffer() {
     let decoders = [&first, &second];
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_scaled(PixelFormat::Rgb8, scale)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled decode");
 
     let surfaces = decode_rgb8_decoder_scaled_batch_into_metal_buffer_with_session(
@@ -1246,7 +1351,7 @@ fn rgb8_region_scaled_batch_decode_can_write_into_reusable_metal_output_buffer()
     let inputs = [BASELINE_444, BASELINE_444];
     let (expected, _) = CpuDecoder::new(BASELINE_444)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -1255,7 +1360,7 @@ fn rgb8_region_scaled_batch_decode_can_write_into_reusable_metal_output_buffer()
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled decode");
 
     let surfaces = decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
@@ -1293,7 +1398,7 @@ fn rgb8_region_scaled_batch_decode_resizes_reusable_metal_output_buffer() {
     let inputs = [BASELINE_444, BASELINE_444];
     let (expected, _) = CpuDecoder::new(BASELINE_444)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -1302,7 +1407,7 @@ fn rgb8_region_scaled_batch_decode_resizes_reusable_metal_output_buffer() {
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled decode");
 
     let surfaces = Codec::decode_rgb8_region_scaled_batch_into_resizable_metal_buffer_with_session(
@@ -1348,7 +1453,7 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_output_buffer() {
     let decoders = [&first, &second];
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -1357,7 +1462,7 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_output_buffer() {
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled decode");
 
     let surfaces =
@@ -1404,7 +1509,7 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_output_buffer() {
     let decoders = [&first, &second];
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -1413,7 +1518,7 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_output_buffer() {
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled decode");
 
     let surfaces = decode_rgb8_decoder_region_scaled_batch_into_metal_buffer_with_session(
@@ -1473,7 +1578,7 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_output_
     let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
     let (expected, _) = CpuDecoder::new(&jpeg.data)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -1482,7 +1587,7 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_output_
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region-scaled decode");
 
     let surfaces = decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
@@ -1551,7 +1656,7 @@ fn assert_restart_region_scaled_buffer_batch_writes_reusable_metal_output(
     let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
     let (expected, _) = CpuDecoder::new(&jpeg.data)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -1560,7 +1665,7 @@ fn assert_restart_region_scaled_buffer_batch_writes_reusable_metal_output(
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region-scaled decode");
 
     let surfaces = decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
@@ -1730,7 +1835,7 @@ fn assert_table_mixed_region_scaled_buffer_groups_resident(
         .map(|input| {
             CpuDecoder::new(input)
                 .expect("cpu decoder")
-                .decode_region_scaled(
+                .decode_request(DecodeRequest::region_scaled(
                     PixelFormat::Rgb8,
                     j2k_jpeg::Rect {
                         x: roi.x,
@@ -1739,7 +1844,7 @@ fn assert_table_mixed_region_scaled_buffer_groups_resident(
                         h: roi.h,
                     },
                     scale,
-                )
+                ))
                 .expect("cpu region-scaled decode")
                 .0
         })
@@ -1816,7 +1921,7 @@ fn rgb8_fast444_region_scaled_batch_decode_can_write_into_reusable_metal_texture
     let inputs = [BASELINE_444, BASELINE_444];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_444)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -1825,7 +1930,7 @@ fn rgb8_fast444_region_scaled_batch_decode_can_write_into_reusable_metal_texture
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2142,8 +2247,9 @@ fn download_rgba8_texture(
     blit.end_encoding();
     j2k_metal_support::commit_and_wait(command_buffer).expect("texture readback blit");
 
-    // SAFETY: Metal surface byte views are bounded by validated dimensions and formats.
-    unsafe { core::slice::from_raw_parts(buffer.contents().cast::<u8>(), byte_len).to_vec() }
+    crate::buffers::checked_buffer_slice::<u8>(&buffer, byte_len, "texture test readback")
+        .expect("texture readback buffer must be CPU-visible and bounded")
+        .to_vec()
 }
 
 #[cfg(target_os = "macos")]
@@ -2155,7 +2261,7 @@ fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_textures() {
     let inputs = [BASELINE_444, BASELINE_444];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_444)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2192,7 +2298,7 @@ fn rgb8_decoder_batch_resizes_reusable_metal_textures() {
     let decoders = [&first, &second];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2220,7 +2326,7 @@ fn rgb8_decoder_batch_can_write_into_fixed_metal_textures() {
     let decoders = [&first, &second];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2335,7 +2441,7 @@ fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_textures() {
     let inputs = [BASELINE_420, BASELINE_420];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_scaled(PixelFormat::Rgb8, scale)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2373,7 +2479,7 @@ fn rgb8_scaled_batch_decode_resizes_reusable_metal_textures() {
     let inputs = [BASELINE_420, BASELINE_420];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_scaled(PixelFormat::Rgb8, scale)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2415,7 +2521,7 @@ fn rgb8_decoder_scaled_batch_resizes_reusable_metal_textures() {
     let decoders = [&first, &second];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_scaled(PixelFormat::Rgb8, scale)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2457,7 +2563,7 @@ fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_textures() {
     let decoders = [&first, &second];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_scaled(PixelFormat::Rgb8, scale)
+        .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
         .expect("cpu scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2501,7 +2607,7 @@ fn rgb8_fast422_region_scaled_batch_decode_can_write_into_reusable_metal_texture
     let inputs = [BASELINE_422, BASELINE_422];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_422)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -2510,7 +2616,7 @@ fn rgb8_fast422_region_scaled_batch_decode_can_write_into_reusable_metal_texture
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2634,7 +2740,7 @@ fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatch
     ];
     let (expected_rgb_a, _) = CpuDecoder::new(&jpeg_a.data)
         .expect("first cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -2643,11 +2749,11 @@ fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatch
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("first cpu region scaled decode");
     let (expected_rgb_b, _) = CpuDecoder::new(&jpeg_b.data)
         .expect("second cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -2656,11 +2762,11 @@ fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatch
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("second cpu region scaled decode");
     let (expected_rgb_c, _) = CpuDecoder::new(&jpeg_c.data)
         .expect("third cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -2669,7 +2775,7 @@ fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatch
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("third cpu region scaled decode");
     let expected_tiles = [
         rgb_to_rgba_opaque(&expected_rgb_a),
@@ -2797,7 +2903,7 @@ fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatch
     ];
     let (expected_rgb_a, _) = CpuDecoder::new(&jpeg_a.data)
         .expect("first cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -2806,11 +2912,11 @@ fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatch
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("first cpu region scaled decode");
     let (expected_rgb_b, _) = CpuDecoder::new(&jpeg_b.data)
         .expect("second cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -2819,11 +2925,11 @@ fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatch
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("second cpu region scaled decode");
     let (expected_rgb_c, _) = CpuDecoder::new(&jpeg_c.data)
         .expect("third cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -2832,7 +2938,7 @@ fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatch
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("third cpu region scaled decode");
     let expected_tiles = [
         rgb_to_rgba_opaque(&expected_rgb_a),
@@ -2879,7 +2985,7 @@ fn rgb8_fast420_region_scaled_batch_decode_can_write_into_reusable_metal_texture
     let inputs = [BASELINE_420, BASELINE_420];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -2888,7 +2994,7 @@ fn rgb8_fast420_region_scaled_batch_decode_can_write_into_reusable_metal_texture
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2935,7 +3041,7 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_textures() {
     let decoders = [&first, &second];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -2944,7 +3050,7 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_textures() {
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -2994,7 +3100,7 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_textures() {
     let decoders = [&first, &second];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -3003,7 +3109,7 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_textures() {
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3067,7 +3173,7 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_texture
     let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
     let (expected_rgb, _) = CpuDecoder::new(&jpeg.data)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -3076,7 +3182,7 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_texture
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region-scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3149,7 +3255,7 @@ fn assert_restart_region_scaled_texture_batch_writes_reusable_metal_output(
     let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
     let (expected_rgb, _) = CpuDecoder::new(&jpeg.data)
         .expect("cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -3158,7 +3264,7 @@ fn assert_restart_region_scaled_texture_batch_writes_reusable_metal_output(
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("cpu region-scaled decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3299,7 +3405,7 @@ fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatch
     ];
     let (expected_rgb_a, _) = CpuDecoder::new(&jpeg_a.data)
         .expect("first cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -3308,11 +3414,11 @@ fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatch
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("first cpu region scaled decode");
     let (expected_rgb_b, _) = CpuDecoder::new(&jpeg_b.data)
         .expect("second cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -3321,11 +3427,11 @@ fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatch
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("second cpu region scaled decode");
     let (expected_rgb_c, _) = CpuDecoder::new(&jpeg_c.data)
         .expect("third cpu decoder")
-        .decode_region_scaled(
+        .decode_request(DecodeRequest::region_scaled(
             PixelFormat::Rgb8,
             j2k_jpeg::Rect {
                 x: roi.x,
@@ -3334,7 +3440,7 @@ fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatch
                 h: roi.h,
             },
             scale,
-        )
+        ))
         .expect("third cpu region scaled decode");
     let expected_tiles = [
         rgb_to_rgba_opaque(&expected_rgb_a),
@@ -3373,7 +3479,7 @@ fn rgb8_fast420_batch_decode_can_write_into_reusable_metal_textures() {
     let inputs = [BASELINE_420, BASELINE_420];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3408,7 +3514,7 @@ fn rgb8_fast422_batch_decode_can_write_into_reusable_metal_textures() {
     let inputs = [BASELINE_422, BASELINE_422];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_422)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3477,7 +3583,7 @@ fn rgb8_fast444_texture_batch_decode_fuses_directly_into_reusable_metal_textures
     let inputs = [BASELINE_444, BASELINE_444];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_444)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3582,15 +3688,15 @@ fn rgb8_table_mixed_fast444_texture_batch_groups_resident_dispatches() {
     ];
     let (expected_rgb_a, _) = CpuDecoder::new(&jpeg_a.data)
         .expect("first cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("first cpu decode");
     let (expected_rgb_b, _) = CpuDecoder::new(&jpeg_b.data)
         .expect("second cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("second cpu decode");
     let (expected_rgb_c, _) = CpuDecoder::new(&jpeg_c.data)
         .expect("third cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("third cpu decode");
     let expected_tiles = [
         rgb_to_rgba_opaque(&expected_rgb_a),
@@ -3633,7 +3739,7 @@ fn rgb8_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_textures
     let inputs = [BASELINE_422, BASELINE_422];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_422)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3675,7 +3781,7 @@ fn rgb8_wide_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_tex
     let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
     let (expected_rgb, _) = CpuDecoder::new(&jpeg.data)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3782,15 +3888,15 @@ fn rgb8_table_mixed_fast422_texture_batch_groups_resident_dispatches() {
     ];
     let (expected_rgb_a, _) = CpuDecoder::new(&jpeg_a.data)
         .expect("first cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("first cpu decode");
     let (expected_rgb_b, _) = CpuDecoder::new(&jpeg_b.data)
         .expect("second cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("second cpu decode");
     let (expected_rgb_c, _) = CpuDecoder::new(&jpeg_c.data)
         .expect("third cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("third cpu decode");
     let expected_tiles = [
         rgb_to_rgba_opaque(&expected_rgb_a),
@@ -3833,7 +3939,7 @@ fn rgb8_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures
     let inputs = [BASELINE_420, BASELINE_420];
     let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3887,7 +3993,7 @@ fn rgb8_wide_row_fast420_texture_batch_decode_fuses_directly_into_reusable_metal
     let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
     let (expected_rgb, _) = CpuDecoder::new(&jpeg.data)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3929,7 +4035,7 @@ fn rgb8_multi_row_fast420_texture_batch_decode_fuses_directly_into_reusable_meta
     let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
     let (expected_rgb, _) = CpuDecoder::new(&jpeg.data)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -3971,7 +4077,7 @@ fn rgb8_multi_axis_fast420_texture_batch_decode_fuses_directly_into_reusable_met
         let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
         let (expected_rgb, _) = CpuDecoder::new(&jpeg.data)
             .expect("cpu decoder")
-            .decode(PixelFormat::Rgb8)
+            .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
             .expect("cpu decode");
         let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -4015,7 +4121,7 @@ fn rgb8_chunked_multi_axis_fast420_texture_batch_decode_fuses_directly_into_reus
     let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
     let (expected_rgb, _) = CpuDecoder::new(&jpeg.data)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -4057,7 +4163,7 @@ fn rgb8_restart_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_
     let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
     let (expected_rgb, _) = CpuDecoder::new(&jpeg.data)
         .expect("cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu decode");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -4127,11 +4233,11 @@ fn rgb8_distinct_restart_fast420_texture_batch_decode_fuses_directly_into_reusab
     let inputs = [jpeg_a.data.as_slice(), jpeg_b.data.as_slice()];
     let (expected_rgb_a, _) = CpuDecoder::new(&jpeg_a.data)
         .expect("first cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("first cpu decode");
     let (expected_rgb_b, _) = CpuDecoder::new(&jpeg_b.data)
         .expect("second cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("second cpu decode");
     let expected_tiles = [
         rgb_to_rgba_opaque(&expected_rgb_a),
@@ -4250,15 +4356,15 @@ fn rgb8_table_mixed_restart_fast420_texture_batch_groups_resident_dispatches() {
     ];
     let (expected_rgb_a, _) = CpuDecoder::new(&jpeg_a.data)
         .expect("first cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("first cpu decode");
     let (expected_rgb_b, _) = CpuDecoder::new(&jpeg_b.data)
         .expect("second cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("second cpu decode");
     let (expected_rgb_c, _) = CpuDecoder::new(&jpeg_c.data)
         .expect("third cpu decoder")
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("third cpu decode");
     let expected_tiles = [
         rgb_to_rgba_opaque(&expected_rgb_a),
@@ -4395,9 +4501,7 @@ fn auto_route_prefers_cpu_host_for_region_scaled_even_with_restart_packets() {
                 },
                 scale: Downscale::Quarter,
             },
-            None,
-            None,
-            Some(&packet),
+            test_fast_packets(None, None, Some(&packet)),
         ),
         routing::RouteDecision::CpuHost
     );

@@ -28,7 +28,16 @@ fn roi_batch_compare_binary_exposes_grok_wsi_surfaces() {
 
 #[test]
 fn fixture_compare_binary_exposes_fair_fixture_matrix() {
-    let source = include_str!("../src/bin/jp2k_fixture_compare.rs");
+    let source = [
+        include_str!("../src/bin/jp2k_fixture_compare.rs"),
+        include_str!("../src/fixture_compare.rs"),
+        include_str!("../src/fixture_compare/comparators.rs"),
+        include_str!("../src/fixture_compare/gates.rs"),
+        include_str!("../src/fixture_compare/manifest.rs"),
+        include_str!("../src/fixture_compare/rows.rs"),
+        include_str!("../src/fixture_compare/types.rs"),
+    ]
+    .concat();
 
     for expected in [
         "J2K_FIXTURE_COMPARE_REPEATS",
@@ -140,7 +149,11 @@ fn fixture_compare_binary_exposes_fair_fixture_matrix() {
 
 #[test]
 fn encode_compare_binary_exposes_fair_encoder_matrix() {
-    let source = include_str!("../src/bin/jp2k_encode_compare.rs");
+    let source = [
+        include_str!("../src/bin/jp2k_encode_compare.rs"),
+        include_str!("../src/encode_compare.rs"),
+    ]
+    .concat();
 
     for expected in [
         "J2K_ENCODE_COMPARE_REPEATS",

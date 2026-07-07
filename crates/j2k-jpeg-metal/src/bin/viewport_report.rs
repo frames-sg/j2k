@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use j2k_core::BackendRequest;
 use j2k_jpeg::{Decoder as CpuDecoder, ScratchPool};
-use j2k_jpeg_metal::viewport::{decode_viewport_to_surface, suggest_viewport_workload};
+use j2k_jpeg_metal::{decode_viewport_to_surface, suggest_viewport_workload};
 
 #[path = "../../benches/support/bench_inputs.rs"]
 mod bench_inputs;

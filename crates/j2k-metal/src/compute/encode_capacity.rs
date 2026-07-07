@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_native::EncodeProgressionOrder;
+use j2k_native::{EncodeProgressionOrder, J2kPacketizationProgressionOrder};
 
 use super::{
     J2kLosslessCodestreamAssemblyJob, J2kLosslessCodestreamBlockCodingMode, HT_PACKET_CAPACITY_ENV,
@@ -10,6 +10,20 @@ use super::{
     J2K_HT_ENCODE_MS_SIZE, J2K_HT_ENCODE_VLC_SIZE,
 };
 use crate::Error;
+
+const JP2K_SOC_MARKER_BYTES: usize = 2;
+// ISO/IEC 15444-1 SIZ: marker + Lsiz through YTOsiz plus one Ssiz/XRsiz/YRsiz tuple per component.
+const JP2K_SIZ_FIXED_BYTES: usize = 40;
+const JP2K_SIZ_BYTES_PER_COMPONENT: usize = 3;
+// ISO/IEC 15444-1 COD/QCD/TLM/SOT/SOD plus HTJ2K CAP marker segment byte counts used by the writer.
+const JP2K_CAP_MARKER_SEGMENT_BYTES: usize = 10;
+const JP2K_COD_MARKER_SEGMENT_BYTES: usize = 14;
+const JP2K_QCD_FIXED_BYTES: usize = 5;
+const JP2K_QCD_BYTES_PER_DECOMPOSITION_LEVEL: usize = 3;
+const JP2K_TLM_MARKER_SEGMENT_BYTES: usize = 12;
+const JP2K_SOT_MARKER_SEGMENT_BYTES: usize = 12;
+const JP2K_SOD_MARKER_BYTES: usize = 2;
+const JP2K_EOC_MARKER_BYTES: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum J2kClassicEncodeOutputCapacityMode {
@@ -178,11 +192,11 @@ pub(super) fn packet_tree_node_count(width: u32, height: u32) -> Result<usize, E
 pub(super) fn lossless_codestream_payload_offset(
     job: J2kLosslessCodestreamAssemblyJob,
 ) -> Result<usize, Error> {
-    let component_count = usize::from(job.num_components);
+    let component_count = usize::from(job.component_count);
     let qcd_steps = 1usize
         .checked_add(
             usize::from(job.num_decomposition_levels)
-                .checked_mul(3)
+                .checked_mul(JP2K_QCD_BYTES_PER_DECOMPOSITION_LEVEL)
                 .ok_or_else(|| Error::MetalKernel {
                     message: "J2K Metal codestream assembly QCD step count overflow".to_string(),
                 })?,
@@ -190,10 +204,10 @@ pub(super) fn lossless_codestream_payload_offset(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal codestream assembly QCD step count overflow".to_string(),
         })?;
-    let siz_total = 40usize
+    let siz_total = JP2K_SIZ_FIXED_BYTES
         .checked_add(
             component_count
-                .checked_mul(3)
+                .checked_mul(JP2K_SIZ_BYTES_PER_COMPONENT)
                 .ok_or_else(|| Error::MetalKernel {
                     message: "J2K Metal codestream assembly SIZ size overflow".to_string(),
                 })?,
@@ -201,27 +215,34 @@ pub(super) fn lossless_codestream_payload_offset(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal codestream assembly SIZ size overflow".to_string(),
         })?;
-    let qcd_total = 5usize
-        .checked_add(qcd_steps)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "J2K Metal codestream assembly QCD size overflow".to_string(),
-        })?;
-    2usize
+    let qcd_total =
+        JP2K_QCD_FIXED_BYTES
+            .checked_add(qcd_steps)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal codestream assembly QCD size overflow".to_string(),
+            })?;
+    JP2K_SOC_MARKER_BYTES
         .checked_add(siz_total)
         .and_then(|len| {
             len.checked_add(
                 if job.block_coding_mode == J2kLosslessCodestreamBlockCodingMode::HighThroughput {
-                    10
+                    JP2K_CAP_MARKER_SEGMENT_BYTES
                 } else {
                     0
                 },
             )
         })
-        .and_then(|len| len.checked_add(14))
+        .and_then(|len| len.checked_add(JP2K_COD_MARKER_SEGMENT_BYTES))
         .and_then(|len| len.checked_add(qcd_total))
-        .and_then(|len| len.checked_add(if job.write_tlm { 12 } else { 0 }))
-        .and_then(|len| len.checked_add(12))
-        .and_then(|len| len.checked_add(2))
+        .and_then(|len| {
+            len.checked_add(if job.write_tlm {
+                JP2K_TLM_MARKER_SEGMENT_BYTES
+            } else {
+                0
+            })
+        })
+        .and_then(|len| len.checked_add(JP2K_SOT_MARKER_SEGMENT_BYTES))
+        .and_then(|len| len.checked_add(JP2K_SOD_MARKER_BYTES))
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal codestream payload offset overflow".to_string(),
         })
@@ -233,7 +254,7 @@ pub(super) fn lossless_codestream_assembly_capacity(
 ) -> Result<usize, Error> {
     lossless_codestream_payload_offset(job)?
         .checked_add(tile_capacity)
-        .and_then(|len| len.checked_add(2))
+        .and_then(|len| len.checked_add(JP2K_EOC_MARKER_BYTES))
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal codestream assembly capacity overflow".to_string(),
         })
@@ -253,7 +274,7 @@ fn lossless_raw_sample_bytes(
         .ok_or_else(|| Error::MetalKernel {
             message: overflow_message.to_string(),
         })?;
-    let component_count = usize::from(job.num_components);
+    let component_count = usize::from(job.component_count);
     let bytes_per_sample = usize::from(job.bit_depth).div_ceil(8).max(1);
     pixels
         .checked_mul(component_count)
@@ -337,11 +358,12 @@ pub(super) fn ht_packet_output_capacity_for_mode(
 }
 
 pub(super) fn codestream_progression_order_code(order: EncodeProgressionOrder) -> u32 {
-    match order {
-        EncodeProgressionOrder::Lrcp => 0x00,
-        EncodeProgressionOrder::Rlcp => 0x01,
-        EncodeProgressionOrder::Rpcl => 0x02,
-        EncodeProgressionOrder::Pcrl => 0x03,
-        EncodeProgressionOrder::Cprl => 0x04,
-    }
+    let packetization_order = match order {
+        EncodeProgressionOrder::Lrcp => J2kPacketizationProgressionOrder::Lrcp,
+        EncodeProgressionOrder::Rlcp => J2kPacketizationProgressionOrder::Rlcp,
+        EncodeProgressionOrder::Rpcl => J2kPacketizationProgressionOrder::Rpcl,
+        EncodeProgressionOrder::Pcrl => J2kPacketizationProgressionOrder::Pcrl,
+        EncodeProgressionOrder::Cprl => J2kPacketizationProgressionOrder::Cprl,
+    };
+    u32::from(packetization_order.codestream_order_code())
 }

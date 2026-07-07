@@ -2,59 +2,67 @@
 
 use cuda_device::{SharedArray, kernel, thread};
 use cuda_host::cuda_module;
+use j2k_codec_math::jpeg::idct;
 
-const CONST_BITS: i32 = 13;
-const PASS1_BITS: i32 = 2;
-const FIX_0_298631336: i32 = 2446;
-const FIX_0_390180644: i32 = 3196;
-const FIX_0_541196100: i32 = 4433;
-const FIX_0_765366865: i32 = 6270;
-const FIX_0_899976223: i32 = 7373;
-const FIX_1_175875602: i32 = 9633;
-const FIX_1_501321110: i32 = 12299;
-const FIX_1_847759065: i32 = 15137;
-const FIX_1_961570560: i32 = 16069;
-const FIX_2_053119869: i32 = 16819;
-const FIX_2_562915447: i32 = 20995;
-const FIX_3_072711026: i32 = 25172;
+include!("../../../cuda_oxide_simt_prelude.rs");
+
+const CONST_BITS: i32 = idct::CONST_BITS as i32;
+const PASS1_BITS: i32 = idct::PASS1_BITS as i32;
+const FIX_0_298631336: i32 = idct::FIX_0_298631336;
+const FIX_0_390180644: i32 = idct::FIX_0_390180644;
+const FIX_0_541196100: i32 = idct::FIX_0_541196100;
+const FIX_0_765366865: i32 = idct::FIX_0_765366865;
+const FIX_0_899976223: i32 = idct::FIX_0_899976223;
+const FIX_1_175875602: i32 = idct::FIX_1_175875602;
+const FIX_1_501321110: i32 = idct::FIX_1_501321110;
+const FIX_1_847759065: i32 = idct::FIX_1_847759065;
+const FIX_1_961570560: i32 = idct::FIX_1_961570560;
+const FIX_2_053119869: i32 = idct::FIX_2_053119869;
+const FIX_2_562915447: i32 = idct::FIX_2_562915447;
+const FIX_3_072711026: i32 = idct::FIX_3_072711026;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Dwt97ColumnLiftQuantizeCodeblocksParams {
+    cb_width: i32,
+    cb_height: i32,
+    inv_delta_low: f32,
+    inv_delta_high: f32,
+}
 
 #[inline(always)]
 fn load_i16(ptr: *const i16, index: u64) -> i16 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_i32(ptr: *const i32, index: u64) -> i32 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn load_f32(ptr: *const f32, index: u64) -> f32 {
-    unsafe { *ptr.add(index as usize) }
+    simt_load(ptr, index as usize)
 }
 
 #[inline(always)]
 fn store_i32(ptr: *mut i32, index: u64, value: i32) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn store_f32(ptr: *mut f32, index: u64, value: f32) {
-    unsafe {
-        *ptr.add(index as usize) = value;
-    }
+    simt_store(ptr, index as usize, value);
 }
 
 #[inline(always)]
 fn offset_i32_mut(ptr: *mut i32, index: u64) -> *mut i32 {
-    unsafe { ptr.add(index as usize) }
+    simt_mut_ptr_at(ptr, index as usize)
 }
 
 #[inline(always)]
 fn offset_f32_mut(ptr: *mut f32, index: u64) -> *mut f32 {
-    unsafe { ptr.add(index as usize) }
+    simt_mut_ptr_at(ptr, index as usize)
 }
 
 #[inline(always)]
@@ -1438,7 +1446,6 @@ mod kernels {
     }
 
     #[kernel]
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn transcode_dwt97_column_lift_quantize_codeblocks_batch(
         rows: *mut f32,
         band_width: i32,
@@ -1447,10 +1454,7 @@ mod kernels {
         high_height: i32,
         low_out: *mut i32,
         high_out: *mut i32,
-        cb_width: i32,
-        cb_height: i32,
-        inv_delta_low: f32,
-        inv_delta_high: f32,
+        params: Dwt97ColumnLiftQuantizeCodeblocksParams,
     ) {
         let x = thread::blockIdx_x() as i32 * thread::blockDim_x() as i32
             + thread::threadIdx_x() as i32;
@@ -1468,12 +1472,18 @@ mod kernels {
             let value = load_f32(item_rows.cast_const(), (i * band_width + x) as u64);
             if i & 1 == 0 {
                 let y = i / 2;
-                let offset =
-                    dwt97_codeblock_major_offset(x, y, band_width, low_height, cb_width, cb_height);
+                let offset = dwt97_codeblock_major_offset(
+                    x,
+                    y,
+                    band_width,
+                    low_height,
+                    params.cb_width,
+                    params.cb_height,
+                );
                 store_i32(
                     item_low,
                     offset,
-                    quantize_dwt97_deadzone(value, inv_delta_low),
+                    quantize_dwt97_deadzone(value, params.inv_delta_low),
                 );
             } else {
                 let y = i / 2;
@@ -1482,13 +1492,13 @@ mod kernels {
                     y,
                     band_width,
                     high_height,
-                    cb_width,
-                    cb_height,
+                    params.cb_width,
+                    params.cb_height,
                 );
                 store_i32(
                     item_high,
                     offset,
-                    quantize_dwt97_deadzone(value, inv_delta_high),
+                    quantize_dwt97_deadzone(value, params.inv_delta_high),
                 );
             }
             i += 1;

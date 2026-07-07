@@ -16,8 +16,9 @@ use super::{
     record_hybrid_cpu_decode_inputs, record_hybrid_cpu_decode_worker_init,
     upload_cpu_decoded_coefficients, ClassicCpuDecodeScratch, CpuTier1DecodeSubstageCounters,
     DirectHybridStageTimings, J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob,
-    MetalRuntime, PreparedDirectColorPlan, PreparedDirectGrayscaleStep,
-    HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK, SIGNPOST_DECODE_HYBRID_CPU_TIER1,
+    MetalRuntime, PreparedDirectColorPlan, PreparedDirectGrayscalePlan,
+    PreparedDirectGrayscaleStep, HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK,
+    SIGNPOST_DECODE_HYBRID_CPU_TIER1,
 };
 
 #[cfg(target_os = "macos")]
@@ -45,6 +46,7 @@ enum FlattenedCpuTier1Source<'a> {
 struct FlattenedCpuTier1BucketSpec<'a> {
     key: FlattenedCpuTier1Key,
     output_len: usize,
+    cache_plan: Option<&'a PreparedDirectGrayscalePlan>,
     inputs: Vec<FlattenedCpuTier1Source<'a>>,
 }
 
@@ -225,6 +227,7 @@ fn collect_flattened_cpu_tier1_bucket_specs(
                         step_idx,
                     },
                     output_len: group.total_coefficients,
+                    cache_plan: (inputs.len() == 1).then_some(first_component),
                     inputs,
                 });
                 step_idx = group.end_step;
@@ -258,6 +261,7 @@ fn collect_flattened_cpu_tier1_bucket_specs(
                         step_idx,
                     },
                     output_len: group.total_coefficients,
+                    cache_plan: (inputs.len() == 1).then_some(first_component),
                     inputs,
                 });
                 step_idx = group.end_step;
@@ -299,6 +303,7 @@ fn collect_flattened_cpu_tier1_bucket_specs(
                             step_idx,
                         },
                         output_len,
+                        cache_plan: (inputs.len() == 1).then_some(first_component),
                         inputs,
                     });
                 }
@@ -334,6 +339,7 @@ fn collect_flattened_cpu_tier1_bucket_specs(
                             step_idx,
                         },
                         output_len,
+                        cache_plan: (inputs.len() == 1).then_some(first_component),
                         inputs,
                     });
                 }
@@ -352,12 +358,31 @@ fn decode_flattened_cpu_tier1_buckets(
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<Vec<Vec<f32>>, Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
-    let mut buckets = specs
-        .iter()
-        .map(|spec| packed_cpu_decode_coefficients(spec.inputs.len(), spec.output_len))
-        .collect::<Result<Vec<_>, Error>>()?;
+    let mut buckets = Vec::with_capacity(specs.len());
+    let mut cache_targets = Vec::with_capacity(specs.len());
+    for spec in specs {
+        if let Some(cache_plan) = spec.cache_plan {
+            if let Some(coefficients) =
+                cache_plan.cached_cpu_tier1_coefficients(spec.key.step_idx, spec.output_len)?
+            {
+                buckets.push(coefficients);
+                cache_targets.push(None);
+                continue;
+            }
+            cache_targets.push(Some((cache_plan, spec.key.step_idx, spec.output_len)));
+        } else {
+            cache_targets.push(None);
+        }
+        buckets.push(packed_cpu_decode_coefficients(
+            spec.inputs.len(),
+            spec.output_len,
+        )?);
+    }
     let mut work_items = Vec::new();
     for (bucket_idx, spec) in specs.iter().enumerate() {
+        if cache_targets[bucket_idx].is_none() && spec.cache_plan.is_some() {
+            continue;
+        }
         for (input_idx, source) in spec.inputs.iter().copied().enumerate() {
             let start =
                 input_idx
@@ -388,10 +413,20 @@ fn decode_flattened_cpu_tier1_buckets(
         }
     }
 
-    record_flattened_hybrid_cpu_decode_batch();
-    record_hybrid_cpu_decode_inputs(work_items.len());
+    if !work_items.is_empty() {
+        record_flattened_hybrid_cpu_decode_batch();
+        record_hybrid_cpu_decode_inputs(work_items.len());
 
-    decode_flattened_cpu_tier1_work_items_chunked(&work_items, profile_counters)?;
+        decode_flattened_cpu_tier1_work_items_chunked(&work_items, profile_counters)?;
+
+        for (bucket, cache_target) in buckets.iter_mut().zip(cache_targets) {
+            if let Some((cache_plan, step_idx, output_len)) = cache_target {
+                let coefficients = std::mem::take(bucket);
+                *bucket =
+                    cache_plan.store_cpu_tier1_coefficients(step_idx, output_len, coefficients)?;
+            }
+        }
+    }
 
     Ok(buckets)
 }

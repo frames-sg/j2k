@@ -15,6 +15,7 @@ use crate::{
 };
 
 /// One HTJ2K packet prepared for CUDA Tier-2 packetization.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaHtj2kPacketizationPacket {
     /// First block metadata row for this packet.
@@ -44,6 +45,7 @@ pub(crate) struct CudaHtj2kPacketizationKernelPacket {
 }
 
 /// One HTJ2K packet subband layout for CUDA packetization.
+#[doc(hidden)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaHtj2kPacketizationSubband {
@@ -58,6 +60,7 @@ pub struct CudaHtj2kPacketizationSubband {
 }
 
 /// Initial tag-tree state for one HTJ2K packet subband.
+#[doc(hidden)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kPacketizationSubbandTagState {
@@ -72,6 +75,7 @@ pub struct CudaHtj2kPacketizationSubbandTagState {
 }
 
 /// Current/known state for one HTJ2K packet tag-tree node.
+#[doc(hidden)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kPacketizationTagNodeState {
@@ -82,6 +86,7 @@ pub struct CudaHtj2kPacketizationTagNodeState {
 }
 
 /// One HTJ2K code-block contribution for CUDA packetization.
+#[doc(hidden)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaHtj2kPacketizationBlock {
@@ -106,6 +111,7 @@ pub struct CudaHtj2kPacketizationBlock {
 }
 
 /// Status written by the CUDA HTJ2K packetizer for one packet.
+#[doc(hidden)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kPacketizationStatus {
@@ -127,6 +133,7 @@ impl CudaHtj2kPacketizationStatus {
 }
 
 /// CUDA event timings for HTJ2K Tier-2 packetization stages.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kPacketizationStageTimings {
     /// Cleanup packetization dispatch time, in microseconds.
@@ -134,6 +141,7 @@ pub struct CudaHtj2kPacketizationStageTimings {
 }
 
 /// Host-visible HTJ2K packet payload produced by the CUDA Tier-2 packetizer.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaHtj2kPacketizedTile {
     pub(crate) data: Vec<u8>,
@@ -164,26 +172,25 @@ impl CudaHtj2kPacketizedTile {
     }
 }
 
-impl CudaContext {
-    /// Packetize HTJ2K code-block payloads with CUDA.
-    pub fn packetize_htj2k_cleanup_packets(
-        &self,
-        payload: &[u8],
-        packets: &[CudaHtj2kPacketizationPacket],
-        subbands: &[CudaHtj2kPacketizationSubband],
-        blocks: &[CudaHtj2kPacketizationBlock],
-    ) -> Result<CudaHtj2kPacketizedTile, CudaError> {
-        self.packetize_htj2k_cleanup_packets_with_tag_state(
-            payload,
-            packets,
-            subbands,
-            blocks,
-            &[],
-            &[],
-        )
-    }
+#[derive(Clone, Copy)]
+struct Htj2kPacketizeCleanupLaunch<'a> {
+    payload: &'a CudaDeviceBuffer,
+    payload_len: usize,
+    packets: &'a CudaDeviceBuffer,
+    subbands: &'a CudaDeviceBuffer,
+    blocks: &'a CudaDeviceBuffer,
+    subband_tag_states: &'a CudaDeviceBuffer,
+    tag_nodes: &'a CudaDeviceBuffer,
+    subband_tag_state_count: usize,
+    tag_node_count: usize,
+    output: &'a CudaDeviceBuffer,
+    statuses: &'a CudaDeviceBuffer,
+    packet_count: usize,
+}
 
+impl CudaContext {
     /// Packetize HTJ2K code-block payloads with CUDA using caller-provided tag-tree state.
+    #[doc(hidden)]
     pub fn packetize_htj2k_cleanup_packets_with_tag_state(
         &self,
         payload: &[u8],
@@ -234,20 +241,20 @@ impl CudaContext {
 
         let ((), packetize_us) =
             self.time_default_stream_named_us("j2k.htj2k.encode.packetize", || {
-                self.launch_htj2k_packetize_cleanup(
-                    &payload_buffer,
-                    payload.len(),
-                    &packet_buffer,
-                    &subband_buffer,
-                    &block_buffer,
-                    &subband_tag_state_buffer,
-                    &tag_node_buffer,
-                    subband_tag_states.len(),
-                    tag_nodes.len(),
-                    &output_buffer,
-                    &status_buffer,
-                    packets.len(),
-                )
+                self.launch_htj2k_packetize_cleanup(Htj2kPacketizeCleanupLaunch {
+                    payload: &payload_buffer,
+                    payload_len: payload.len(),
+                    packets: &packet_buffer,
+                    subbands: &subband_buffer,
+                    blocks: &block_buffer,
+                    subband_tag_states: &subband_tag_state_buffer,
+                    tag_nodes: &tag_node_buffer,
+                    subband_tag_state_count: subband_tag_states.len(),
+                    tag_node_count: tag_nodes.len(),
+                    output: &output_buffer,
+                    statuses: &status_buffer,
+                    packet_count: packets.len(),
+                })
             })?;
         let stage_timings = CudaHtj2kPacketizationStageTimings { packetize_us };
 
@@ -293,43 +300,35 @@ impl CudaContext {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn launch_htj2k_packetize_cleanup(
         &self,
-        payload: &CudaDeviceBuffer,
-        payload_len: usize,
-        packets: &CudaDeviceBuffer,
-        subbands: &CudaDeviceBuffer,
-        blocks: &CudaDeviceBuffer,
-        subband_tag_states: &CudaDeviceBuffer,
-        tag_nodes: &CudaDeviceBuffer,
-        subband_tag_state_count: usize,
-        tag_node_count: usize,
-        output: &CudaDeviceBuffer,
-        statuses: &CudaDeviceBuffer,
-        packet_count: usize,
+        request: Htj2kPacketizeCleanupLaunch<'_>,
     ) -> Result<(), CudaError> {
         let function = self.htj2k_packetize_kernel_function(CudaKernel::Htj2kPacketizeCleanup)?;
-        let mut payload_ptr = payload.device_ptr();
-        let mut payload_len_u64 = u64::try_from(payload_len)
-            .map_err(|_| CudaError::LengthTooLarge { len: payload_len })?;
-        let mut packets_ptr = packets.device_ptr();
-        let mut subbands_ptr = subbands.device_ptr();
-        let mut blocks_ptr = blocks.device_ptr();
-        let mut subband_tag_states_ptr = subband_tag_states.device_ptr();
-        let mut tag_nodes_ptr = tag_nodes.device_ptr();
-        let mut subband_tag_state_count_u64 =
-            u64::try_from(subband_tag_state_count).map_err(|_| CudaError::LengthTooLarge {
-                len: subband_tag_state_count,
+        let mut payload_ptr = request.payload.device_ptr();
+        let mut payload_len_u64 =
+            u64::try_from(request.payload_len).map_err(|_| CudaError::LengthTooLarge {
+                len: request.payload_len,
+            })?;
+        let mut packets_ptr = request.packets.device_ptr();
+        let mut subbands_ptr = request.subbands.device_ptr();
+        let mut blocks_ptr = request.blocks.device_ptr();
+        let mut subband_tag_states_ptr = request.subband_tag_states.device_ptr();
+        let mut tag_nodes_ptr = request.tag_nodes.device_ptr();
+        let mut subband_tag_state_count_u64 = u64::try_from(request.subband_tag_state_count)
+            .map_err(|_| CudaError::LengthTooLarge {
+                len: request.subband_tag_state_count,
             })?;
         let mut tag_node_count_u64 =
-            u64::try_from(tag_node_count).map_err(|_| CudaError::LengthTooLarge {
-                len: tag_node_count,
+            u64::try_from(request.tag_node_count).map_err(|_| CudaError::LengthTooLarge {
+                len: request.tag_node_count,
             })?;
-        let mut output_ptr = output.device_ptr();
-        let mut statuses_ptr = statuses.device_ptr();
-        let mut packet_count_u64 = u64::try_from(packet_count)
-            .map_err(|_| CudaError::LengthTooLarge { len: packet_count })?;
+        let mut output_ptr = request.output.device_ptr();
+        let mut statuses_ptr = request.statuses.device_ptr();
+        let mut packet_count_u64 =
+            u64::try_from(request.packet_count).map_err(|_| CudaError::LengthTooLarge {
+                len: request.packet_count,
+            })?;
         let mut params = cuda_kernel_params!(
             payload_ptr,
             payload_len_u64,
@@ -344,8 +343,11 @@ impl CudaContext {
             statuses_ptr,
             packet_count_u64
         );
-        let geometry = htj2k_packetize_launch_geometry(packet_count)
-            .ok_or(CudaError::LengthTooLarge { len: packet_count })?;
+        let geometry = htj2k_packetize_launch_geometry(request.packet_count).ok_or(
+            CudaError::LengthTooLarge {
+                len: request.packet_count,
+            },
+        )?;
         self.launch_kernel(function, geometry, &mut params)
     }
 

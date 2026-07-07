@@ -12,7 +12,7 @@
 #![cfg(feature = "cuda-runtime")]
 
 use j2k_native::{DecodeSettings, Image};
-use j2k_test_support::{cuda_runtime_required, jpeg_baseline_420_16x16};
+use j2k_test_support::{cuda_runtime_gate, jpeg_baseline_420_16x16};
 use j2k_transcode::{
     JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
 };
@@ -20,7 +20,7 @@ use j2k_transcode_cuda::CudaDctToWaveletStageAccelerator;
 
 #[test]
 fn ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate(module_path!()) {
         return;
     }
 

@@ -126,7 +126,7 @@ impl CudaContext {
     }
 
     /// Upload host `i32` samples through a temporary page-locked staging buffer.
-    pub fn upload_i32_pinned(&self, samples: &[i32]) -> Result<CudaDeviceBuffer, CudaError> {
+    pub(crate) fn upload_i32_pinned(&self, samples: &[i32]) -> Result<CudaDeviceBuffer, CudaError> {
         self.upload_pinned(i32_slice_as_bytes(samples))
     }
 
@@ -148,7 +148,8 @@ impl CudaContext {
     }
 
     /// Allocate page-locked host memory for host-to-device staging.
-    pub fn pinned_host_buffer(&self, len: usize) -> Result<CudaPinnedHostBuffer, CudaError> {
+    #[cfg(test)]
+    pub(crate) fn pinned_host_buffer(&self, len: usize) -> Result<CudaPinnedHostBuffer, CudaError> {
         self.inner.set_current()?;
         let mut ptr = std::ptr::null_mut();
         if len != 0 {
@@ -178,26 +179,18 @@ impl CudaContext {
 }
 
 /// Page-locked host staging buffer.
+#[cfg(test)]
 #[derive(Debug)]
-pub struct CudaPinnedHostBuffer {
+pub(crate) struct CudaPinnedHostBuffer {
     pub(crate) context: CudaContext,
     pub(crate) ptr: *mut u8,
     pub(crate) len: usize,
 }
 
+#[cfg(test)]
 impl CudaPinnedHostBuffer {
-    /// Length in bytes.
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Whether this buffer has zero length.
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
     /// Immutable byte view of the pinned allocation.
-    pub fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         if self.len == 0 {
             &[]
         } else {
@@ -207,7 +200,7 @@ impl CudaPinnedHostBuffer {
     }
 
     /// Mutable byte view of the pinned allocation.
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
         if self.len == 0 {
             &mut []
         } else {
@@ -218,6 +211,7 @@ impl CudaPinnedHostBuffer {
     }
 }
 
+#[cfg(test)]
 impl Drop for CudaPinnedHostBuffer {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
@@ -230,6 +224,7 @@ impl Drop for CudaPinnedHostBuffer {
 
 // SAFETY: The pinned allocation is owned by this value and CUDA frees it on
 // drop. Mutable access still requires &mut self.
+#[cfg(test)]
 unsafe impl Send for CudaPinnedHostBuffer {}
 
 /// Owned CUDA device buffer.
@@ -240,6 +235,7 @@ pub struct CudaDeviceBuffer {
     pub(crate) len: usize,
 }
 
+#[doc(hidden)]
 /// Typed immutable device buffer view.
 #[derive(Clone, Copy, Debug)]
 pub struct CudaDeviceBufferView<'a, T> {
@@ -265,6 +261,7 @@ impl<T> CudaDeviceBufferView<'_, T> {
     }
 }
 
+#[doc(hidden)]
 /// Typed mutable device buffer view.
 #[derive(Debug)]
 pub struct CudaDeviceBufferViewMut<'a, T> {
@@ -323,6 +320,7 @@ impl CudaBufferPoolInner {
     }
 }
 
+#[doc(hidden)]
 /// Diagnostics for one traced [`CudaBufferPool`] acquisition.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaBufferPoolTakeTrace {
@@ -386,6 +384,7 @@ impl CudaBufferPool {
         self.inner.recycle_buffer(buffer)
     }
 
+    #[doc(hidden)]
     /// Acquire a device buffer with diagnostics for profiling pool behavior.
     pub fn take_with_trace(
         &self,
@@ -491,11 +490,13 @@ impl CudaBufferPool {
         self.upload_pinned(f32_slice_as_bytes(samples))
     }
 
+    #[doc(hidden)]
     /// Upload host `i16` samples into a pooled device buffer.
     pub fn upload_i16(&self, samples: &[i16]) -> Result<CudaPooledDeviceBuffer, CudaError> {
         self.upload(i16_slice_as_bytes(samples))
     }
 
+    #[doc(hidden)]
     /// Upload host `i16` samples through pinned staging into a pooled device buffer.
     pub fn upload_i16_pinned(&self, samples: &[i16]) -> Result<CudaPooledDeviceBuffer, CudaError> {
         self.upload_pinned(i16_slice_as_bytes(samples))
@@ -666,6 +667,7 @@ impl Drop for CudaPooledDeviceBuffer {
     }
 }
 
+#[doc(hidden)]
 /// One byte range inside a contiguous CUDA batch output allocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaDeviceBufferRange {
@@ -715,6 +717,7 @@ impl CudaDeviceBuffer {
         self.len
     }
 
+    #[doc(hidden)]
     /// Borrow this allocation as a typed immutable device view.
     pub fn typed_view<T>(&self) -> Result<CudaDeviceBufferView<'_, T>, CudaError> {
         let element_size = std::mem::size_of::<T>();
@@ -731,6 +734,7 @@ impl CudaDeviceBuffer {
         })
     }
 
+    #[doc(hidden)]
     /// Borrow this allocation as a typed mutable device view.
     pub fn typed_view_mut<T>(&mut self) -> Result<CudaDeviceBufferViewMut<'_, T>, CudaError> {
         let element_size = std::mem::size_of::<T>();

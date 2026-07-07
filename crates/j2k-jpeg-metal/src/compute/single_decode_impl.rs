@@ -94,15 +94,17 @@ fn decode_fast_subsampled_to_rgb_buffer<P: FastSubsampledMetal>(
     decoder_encoder.set_compute_pipeline_state(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420Params>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &cb_plane, &cr_plane],
-        &params,
-        [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &cb_plane, &cr_plane],
+            params: &params,
+            quants: [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(decoder_encoder, decode_pipeline, decode_threads);
     decoder_encoder.end_encoding();
@@ -129,7 +131,7 @@ fn decode_fast_subsampled_to_rgb_buffer<P: FastSubsampledMetal>(
     commit_and_wait_jpeg(command_buffer)?;
     let command_buffer = command_buffer.to_owned();
 
-    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
+    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads)? {
         return Err(map_status(status));
     }
 
@@ -172,7 +174,7 @@ fn try_decode_fast_subsampled_region_to_surface<P: FastSubsampledMetal>(
     )?;
     commit_and_wait_jpeg(command_buffer)?;
 
-    if let Some(status) = first_decode_error_status(&item.status_buffer, item.decode_threads) {
+    if let Some(status) = first_decode_error_status(&item.status_buffer, item.decode_threads)? {
         return Err(map_status(status));
     }
 
@@ -202,7 +204,7 @@ fn try_decode_fast_subsampled_scaled_to_surface<P: FastSubsampledMetal>(
         encode_fast_subsampled_scaled_batch_item(runtime, command_buffer, 0, packet, fmt, scale)?;
     commit_and_wait_jpeg(command_buffer)?;
 
-    if let Some(status) = first_decode_error_status(&item.status_buffer, item.decode_threads) {
+    if let Some(status) = first_decode_error_status(&item.status_buffer, item.decode_threads)? {
         return Err(map_status(status));
     }
 
@@ -343,15 +345,17 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
     decoder_encoder.set_compute_pipeline_state(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420ScaledParams>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &cb_plane, &cr_plane],
-        &decode_params,
-        [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &cb_plane, &cr_plane],
+            params: &decode_params,
+            quants: [packet.y_quant(), packet.cb_quant(), packet.cr_quant()],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(decoder_encoder, decode_pipeline, decode_threads);
     decoder_encoder.end_encoding();
@@ -370,7 +374,7 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
 
     commit_and_wait_jpeg(command_buffer)?;
 
-    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
+    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads)? {
         return Err(map_status(status));
     }
 
@@ -505,15 +509,17 @@ fn try_decode_fast444_to_surface(
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &chroma_blue_plane, &chroma_red_plane],
-        &params,
-        [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &chroma_blue_plane, &chroma_red_plane],
+            params: &params,
+            quants: [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(
         decoder_encoder,
@@ -523,7 +529,7 @@ fn try_decode_fast444_to_surface(
     decoder_encoder.end_encoding();
     commit_and_wait_jpeg(command_buffer)?;
 
-    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
+    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads)? {
         return Err(decode_error_from_cpu(decoder, fmt, status));
     }
 
@@ -576,15 +582,17 @@ fn try_decode_fast444_to_private_rgb8_tile(
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &chroma_blue_plane, &chroma_red_plane],
-        &params,
-        [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &chroma_blue_plane, &chroma_red_plane],
+            params: &params,
+            quants: [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(
         decoder_encoder,
@@ -594,7 +602,7 @@ fn try_decode_fast444_to_private_rgb8_tile(
     decoder_encoder.end_encoding();
     commit_and_wait_jpeg(command_buffer)?;
 
-    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
+    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads)? {
         return Err(decode_error_from_cpu(decoder, PixelFormat::Rgb8, status));
     }
 
@@ -672,15 +680,17 @@ fn try_decode_fast444_region_to_surface(
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_region_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &chroma_blue_plane, &chroma_red_plane],
-        &params,
-        [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &chroma_blue_plane, &chroma_red_plane],
+            params: &params,
+            quants: [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(
         decoder_encoder,
@@ -690,7 +700,7 @@ fn try_decode_fast444_region_to_surface(
     decoder_encoder.end_encoding();
     commit_and_wait_jpeg(command_buffer)?;
 
-    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
+    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads)? {
         return Err(decode_error_from_cpu(decoder, fmt, status));
     }
 
@@ -754,15 +764,17 @@ fn try_decode_fast444_scaled_to_surface(
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_scaled_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444ScaledParams>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &chroma_blue_plane, &chroma_red_plane],
-        &params,
-        [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &chroma_blue_plane, &chroma_red_plane],
+            params: &params,
+            quants: [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(
         decoder_encoder,
@@ -772,7 +784,7 @@ fn try_decode_fast444_scaled_to_surface(
     decoder_encoder.end_encoding();
     commit_and_wait_jpeg(command_buffer)?;
 
-    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
+    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads)? {
         return Err(decode_error_from_cpu(decoder, fmt, status));
     }
 
@@ -859,15 +871,17 @@ fn try_decode_fast444_scaled_region_to_surface(
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_scaled_region_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444ScaledParams>(
         decoder_encoder,
-        &entropy_buffer,
-        [&y_plane, &chroma_blue_plane, &chroma_red_plane],
-        &params,
-        [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
-        &dc_tables,
-        &ac_tables,
-        &restart_offsets_buffer,
-        &status_buffer,
-        &entropy_checkpoints_buffer,
+        &FastDecodeEntropyInputs {
+            entropy_buffer: &entropy_buffer,
+            planes: [&y_plane, &chroma_blue_plane, &chroma_red_plane],
+            params: &params,
+            quants: [&packet.y_quant, &packet.cb_quant, &packet.cr_quant],
+            dc_tables: &dc_tables,
+            ac_tables: &ac_tables,
+            slot14_buffer: &restart_offsets_buffer,
+            slot15_buffer: &status_buffer,
+            slot16_buffer: &entropy_checkpoints_buffer,
+        },
     );
     dispatch_1d_pipeline(
         decoder_encoder,
@@ -877,7 +891,7 @@ fn try_decode_fast444_scaled_region_to_surface(
     decoder_encoder.end_encoding();
     commit_and_wait_jpeg(command_buffer)?;
 
-    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads) {
+    if let Some(status) = first_decode_error_status(&status_buffer, decode_threads)? {
         return Err(decode_error_from_cpu(decoder, fmt, status));
     }
 
@@ -1089,16 +1103,13 @@ pub(crate) fn decode_scaled_to_surface(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_region_scaled_to_surface(
     decoder: &CpuDecoder<'_>,
     pool: &mut j2k_jpeg::ScratchPool,
     fmt: PixelFormat,
     roi: j2k_jpeg::Rect,
     scale: j2k_core::Downscale,
-    fast444_packet: Option<&JpegFast444PacketV1>,
-    fast422_packet: Option<&JpegFast422PacketV1>,
-    fast420_packet: Option<&JpegFast420PacketV1>,
+    packets: JpegFastPackets<'_>,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
         let scaled_roi = (Rect {
@@ -1111,7 +1122,7 @@ pub(crate) fn decode_region_scaled_to_surface(
         if let Some(surface) = try_decode_fast444_scaled_region_to_surface(
             runtime,
             decoder,
-            fast444_packet,
+            packets.fast444,
             fmt,
             j2k_jpeg::Rect {
                 x: scaled_roi.x,
@@ -1125,7 +1136,7 @@ pub(crate) fn decode_region_scaled_to_surface(
         }
         if let Some(surface) = try_decode_fast422_scaled_region_to_surface(
             runtime,
-            fast422_packet,
+            packets.fast422,
             fmt,
             j2k_jpeg::Rect {
                 x: scaled_roi.x,
@@ -1140,7 +1151,7 @@ pub(crate) fn decode_region_scaled_to_surface(
         if let Some(surface) = try_decode_fast420_scaled_region_to_surface(
             runtime,
             decoder,
-            fast420_packet,
+            packets.fast420,
             fmt,
             j2k_jpeg::Rect {
                 x: scaled_roi.x,

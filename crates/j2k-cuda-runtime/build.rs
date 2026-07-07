@@ -29,6 +29,7 @@ fn emit_build_script_metadata() {
     println!("cargo:rerun-if-changed=../j2k-codec-math/src/dwt.rs");
     println!("cargo:rerun-if-changed=../j2k-codec-math/src/jpeg.rs");
     println!("cargo:rerun-if-changed=../j2k-codec-math/src/mct.rs");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_simt_prelude.rs");
     println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/rust-toolchain.toml");
     println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/src/main.rs");
@@ -102,6 +103,7 @@ fn emit_build_script_metadata() {
 
 fn compile_cuda_oxide_feature_projects(out_dir: &Path) {
     let require_all_cuda_oxide = env::var_os(REQUIRE_CUDA_OXIDE_BUILD_ENV).is_some();
+    stage_cuda_oxide_shared_prelude(out_dir);
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_COPY_U8").is_some()
         && compile_cuda_oxide_copy_u8(out_dir, require_all_cuda_oxide)
     {
@@ -410,6 +412,18 @@ fn copy_cuda_oxide_project(source_dir: &Path, project_dir: &Path) {
         Path::new("simt/Cargo.toml"),
     );
     copy_cuda_oxide_file(source_dir, project_dir, Path::new("simt/src/main.rs"));
+}
+
+fn stage_cuda_oxide_shared_prelude(out_dir: &Path) {
+    let source = Path::new("src/cuda_oxide_simt_prelude.rs");
+    let dest = out_dir.join("cuda_oxide_simt_prelude.rs");
+    fs::copy(source, &dest).unwrap_or_else(|error| {
+        panic!(
+            "failed to stage CUDA Oxide SIMT prelude {} to {}: {error}",
+            source.display(),
+            dest.display()
+        )
+    });
 }
 
 fn copy_cuda_oxide_file(source_dir: &Path, project_dir: &Path, relative: &Path) {

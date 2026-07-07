@@ -88,9 +88,38 @@ for n in $(seq -w 1 24); do
     "https://r0k.us/graphics/kodak/kodak/kodim${n}.png" \
     -o "target/j2k-public-corpora/kodak/kodim${n}.png"
 done
+(
+  cd target/j2k-public-corpora/kodak
+  sha256sum -c - <<'SHA256'
+a56e27cbf5f843c048b6af1d6e090760e9c92fadba88b7dee0205918a37523bd  kodim01.png
+4f4b74a79237e311d72cad958237b5f7088d8bce1c82305ebefe1a70e3022dfd  kodim02.png
+e25ca1ff2f0c0cb5fdfd5f9b0a0bb21ac4c3de3c84a67f35b09a85d3306249db  kodim03.png
+e3b946107c5d3441c022f678d0c3caf1e224d81b1604ba840a4f88e562de61aa  kodim04.png
+10349e963c5c813d327852f82c1795fa4148d69fedffc4c589bee458e3ac3d53  kodim05.png
+363510303b715d4cbc384e1ce227e466b613a09e1b71ae985882bf8e7fbd9b18  kodim06.png
+b77d3f006f42414bb242222e0482e750c0fb9e5ee8d4bed2f6f11c5605fe54a4  kodim07.png
+ba23983c76b4832ee0e8af0592664756841a16779acd69f792e268fb6d13d6e7  kodim08.png
+6a4361c2fc194feb4edaa9f9a4a0620fb9943e460ac7fdf037fb0f6dd6607a7d  kodim09.png
+9dfb70f5867c29ff9ed6313683f19b3d867849e40fbc0c4c54a4a89df341cf23  kodim10.png
+7936814b58b5387fce2e4e2488b4ec830dadd95fa9520f358ddb30990b50f2b6  kodim11.png
+d78c37c2f04f23761ed2367dd77e2db584ddd4c3950833fecf89f199a8126980  kodim12.png
+bc34a3ce58dea09dce1704c997171602de90cb34d0c8503a988b77f473d39b08  kodim13.png
+55a94550ff18f3246c4074fd32b77b0c74447c26b6ad274d564d999c0450ba6e  kodim14.png
+7538cbb80cb9103606c48b806eae57d56c885c7f90b9b3be70a41160f9cbb683  kodim15.png
+a89c7268ccd4718ba424a99fc4643c572cf692ca6eae887185ceb4e9f11d2e54  kodim16.png
+37afcc89fbdcb76d9518e04b2fc011027e2f4cd14b3b2f83cefd721641a47c5b  kodim17.png
+1a9258c365988961d87a0598725b609139c303ad48a5aad6c503c3b1a87849aa  kodim18.png
+b7450b264b1b0a411390d8931b112c27905a992520fc90569dc4b920aa32bbdc  kodim19.png
+3b46c71e3b92a563820ba32936be8330c586c41f938efd94be938386aae4328a  kodim20.png
+ac958597c82073f6bb65129c68f72b651db5b9efd82e11547d07350214bc268b  kodim21.png
+1cee58eb1f2d9c7ebb254d208a03c783ce6cf2c4d8c2cf45e235dd23b4ce1b29  kodim22.png
+e3111a2fd4da24af15d6459ef9eacfe54106b38e27b4a21821b75c3f5d2d5baf  kodim23.png
+1071c68372cc5a01435c2c225a5cf7d4bb803846ec08bb6b3d6721b156d7cb96  kodim24.png
+SHA256
+)
 cargo xtask adoption-materialize \
   --encode-fixtures target/j2k-public-corpora/kodak \
-  --source-command "downloaded-from-r0k-us-kodak-lossless-true-color" \
+  --source-command "downloaded-from-r0k-us-kodak-lossless-true-color-sha256-pinned" \
   --license-status redistributable \
   --corpus-name kodak \
   --corpus-category natural-image \
@@ -121,18 +150,25 @@ cargo xtask adoption-materialize \
 OpenJPEG and jpylyzer are better treated as native fixture/robustness corpora:
 
 ```bash
-git clone --depth 1 https://github.com/uclouvain/openjpeg-data \
-  target/j2k-public-corpora/openjpeg-data
+OPENJPEG_DATA_COMMIT=39524bd3a601d90ed8e0177559400d23945f96a9
+mkdir -p target/j2k-public-corpora/openjpeg-data
+git -C target/j2k-public-corpora/openjpeg-data init
+git -C target/j2k-public-corpora/openjpeg-data remote add origin \
+  https://github.com/uclouvain/openjpeg-data
+git -C target/j2k-public-corpora/openjpeg-data fetch --depth 1 origin \
+  "${OPENJPEG_DATA_COMMIT}"
+git -C target/j2k-public-corpora/openjpeg-data checkout --detach \
+  "${OPENJPEG_DATA_COMMIT}"
 cargo xtask adoption-curate \
   --fixtures target/j2k-public-corpora/openjpeg-data/input/conformance \
-  --encode-command "source-native-openjpeg-data-conformance-dir" \
+  --encode-command "source-native-openjpeg-data-conformance-dir@39524bd3a601d90ed8e0177559400d23945f96a9" \
   --license-status permissive-test-fixture \
   --corpus-name openjpeg-data-conformance \
   --corpus-category conformance \
   --out-dir target/j2k-public-corpora/openjpeg-conformance-curated
 cargo xtask adoption-curate \
   --fixtures target/j2k-public-corpora/openjpeg-data/input/nonregression \
-  --encode-command "source-native-openjpeg-data-nonregression-dir" \
+  --encode-command "source-native-openjpeg-data-nonregression-dir@39524bd3a601d90ed8e0177559400d23945f96a9" \
   --license-status permissive-test-fixture \
   --corpus-name openjpeg-data \
   --corpus-category interop \
@@ -182,6 +218,12 @@ Run it per corpus when license status or source commands differ materially, or
 edit the generated TSVs before publication. Unknown directory names are labeled
 `external-unspecified`, which remains useful for local runs but should be
 replaced by a real corpus category before adoption-facing reporting.
+
+Before publishing a bundle or rendered report, scrub or relativize `path`,
+`input_source`, and manifest path fields to corpus labels or repo-relative
+artifact paths. Do not publish operator home directories, runner mount points,
+private share names, or partner dataset paths; keep raw absolute-path manifests
+only in private run artifacts.
 
 ## Fixture Materialization
 
@@ -285,9 +327,14 @@ On the self-hosted CUDA GitHub runner, dispatch `GPU validation` with
 `J2K_ADOPTION_ENCODE_FIXTURES`, and `J2K_ADOPTION_ENCODE_MANIFEST` to the
 pinned corpus paths available on that runner. If those variables are absent,
 the workflow builds a default public starter corpus from Kodak plus curated
-OpenJPEG data under `target/j2k-public-corpora`. It then runs the same
+OpenJPEG data under `target/j2k-public-corpora`. The fallback verifies the
+Kodak SHA-256 list above and checks out OpenJPEG-data commit
+`39524bd3a601d90ed8e0177559400d23945f96a9`. It then runs the same
 `adoption-benchmark --cuda --require-cuda` command and uploads the bundle as
 the `cuda-adoption-benchmark` artifact.
+
+The fallback is pinned, not floating: it uses SHA-256-checked Kodak PNGs and a
+fixed OpenJPEG-data commit before any adoption benchmark rows are generated.
 
 Use `--quick --include-generated` only for local smoke checks. A smoke bundle is
 not publication evidence. Full external `adoption-benchmark` runs fail after
@@ -522,6 +569,30 @@ Do not publish those rows as native OpenJPEG numbers. `portable-native` reports
 excluded cases in metadata but does not treat those intentionally excluded rows
 as a publication blocker.
 
+## Comparator Signoff Versions
+
+Comparator parity is required before publishing J2K or JPEG comparator benchmark
+claims. CI installs OpenJPEG, Grok, and libjpeg-turbo from the active Ubuntu
+runner packages and runs:
+
+```bash
+J2K_REQUIRE_OPENJPEG=1 J2K_REQUIRE_GROK=1 J2K_REQUIRE_LIBJPEG_TURBO=1 \
+  cargo xtask j2k-bench-signoff
+```
+
+Accepted evidence must record:
+
+- OpenJPEG CLI versions from `opj_compress` and `opj_decompress`, plus the
+  in-process OpenJPEG library version reported by `j2k-compare`.
+- Grok CLI versions from `grk_compress` and `grk_decompress`, plus the
+  in-process Grok version and library path from `pkg-config libgrokj2k` or
+  `J2K_GROK_ROOT`.
+- libjpeg-turbo from `pkg-config --modversion libturbojpeg`.
+
+The signoff command is fail-closed: required comparator tests must execute at
+least the expected parity-test count for each comparator, so missing tools or
+all-skipped test binaries cannot produce green benchmark evidence.
+
 External fixtures that inspect successfully but are outside the benchmark
 surface, for example unsupported component counts or bit depths, fail the run
 instead of being silently omitted. Curate separate directories for supported
@@ -533,7 +604,9 @@ A report must include:
 
 - exact command and environment variables
 - host hardware, OS, architecture, and thread count
-- comparator availability and versions
+- comparator availability and versions, including a comparator version value
+  for every required comparator
+- input source labels, including `j2k-generated` for generated fixtures
 - `benchmark_mode` and per-row `decode_method`
   or encode method, depending on comparator
 - `required_comparators`, `matched_comparators`, `skipped_comparators`, and

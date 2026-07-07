@@ -2,12 +2,6 @@
 
 use std::path::PathBuf;
 
-use j2k::adapter::encode_stage::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kCodeBlockSegment, J2kCodeBlockStyle,
-    J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
-    J2kHtCodeBlockEncodeJob, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob, J2kSubBandType,
-    J2kTier1CodeBlockEncodeJob,
-};
 use j2k::{
     encode_j2k_lossless, encode_j2k_lossless_components, encode_j2k_lossless_typed_components,
     encode_j2k_lossless_with_accelerator, encode_j2k_lossless_with_roi_regions,
@@ -17,6 +11,12 @@ use j2k::{
     J2kLosslessEncodeOptions, J2kLosslessSamples, J2kLosslessTypedComponentPlane,
     J2kLosslessTypedComponentSamples, J2kMarkerSegment, J2kProgressionOrder, J2kRoiRegion,
     ReversibleTransform,
+};
+use j2k::{
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kCodeBlockSegment, J2kCodeBlockStyle,
+    J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    J2kHtCodeBlockEncodeJob, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob, J2kSubBandType,
+    J2kTier1CodeBlockEncodeJob,
 };
 use j2k_core::{BackendKind, CodecError};
 use j2k_native::{inspect_j2k_codestream_header, DecodeSettings, DecoderContext, Image};

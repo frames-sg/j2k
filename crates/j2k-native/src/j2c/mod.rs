@@ -15,6 +15,7 @@ pub(crate) mod ht_encode_tables;
 pub(crate) mod ht_tables;
 pub(crate) mod idwt;
 mod mct;
+mod mq;
 pub(crate) mod packet_encode;
 mod progression;
 pub(crate) mod quantize;
@@ -66,13 +67,22 @@ pub(crate) fn parse<'a>(stream: &'a [u8], settings: &DecodeSettings) -> Result<I
     // conventional grayscale/RGB assumptions for 1- and 3-component images,
     // but preserve two-component data as independent channels instead of
     // forcing it through grayscale validation.
-    let cs = match header.component_infos.len() {
-        1 => ColorSpace::Enumerated(EnumeratedColorspace::Greyscale),
-        2 => ColorSpace::Unknown,
-        _ => ColorSpace::Enumerated(EnumeratedColorspace::Srgb),
+    let (cs, enumerated_value) = match header.component_infos.len() {
+        1 => (
+            ColorSpace::Enumerated(EnumeratedColorspace::Greyscale),
+            Some(17),
+        ),
+        2 => (ColorSpace::Unknown, None),
+        _ => (ColorSpace::Enumerated(EnumeratedColorspace::Srgb), Some(16)),
     };
 
-    boxes.color_specification = Some(ColorSpecificationBox { color_space: cs });
+    let color_specification = ColorSpecificationBox {
+        method: if enumerated_value.is_some() { 1 } else { 0 },
+        enumerated_value,
+        color_space: cs,
+    };
+    boxes.color_specifications.push(color_specification.clone());
+    boxes.color_specification = Some(color_specification);
 
     let (color_space, has_alpha) =
         resolve_alpha_and_color_space(&boxes, &parsed_codestream.header, settings)?;

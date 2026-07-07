@@ -2,7 +2,8 @@ use super::{
     checked_f32_words_byte_len, f32_slice_as_bytes_mut, format_idwt_batch_trace_row,
     idwt_batch_kernel_mode, idwt_batch_trace_row, idwt_batch_uses_cooperative_53,
     jpeg_entropy_overflow_count, pool_fit_buffer_index_by_len, validate_dct_block_grid,
-    CudaContext, CudaError, CudaExecutionStats, CudaHtj2kCleanupMultiKernelJob,
+    CudaContext, CudaDwt97BatchGeometry, CudaError, CudaExecutionStats,
+    CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2kCleanupMultiKernelJob,
     CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables,
     CudaHtj2kDequantizeTarget, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
     CudaHtj2kEncodeResidentTarget, CudaHtj2kEncodeTables, CudaJ2kIdwtBatchKernelMode,
@@ -12,8 +13,24 @@ use super::{
     CudaJpegEntropySyncState, CudaJpegHuffmanTable, CudaKernelName, CudaQueuedHtj2kCleanup,
 };
 
-fn cuda_runtime_required() -> bool {
-    std::env::var_os("J2K_REQUIRE_CUDA_RUNTIME").is_some()
+fn cuda_runtime_gate() -> bool {
+    j2k_test_support::cuda_runtime_gate(module_path!())
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+fn cuda_transcode_kernel_gate() -> bool {
+    if super::transcode_kernels_built() {
+        return true;
+    }
+    if j2k_test_support::cuda_strict_oxide_required() {
+        panic!("J2K_REQUIRE_CUDA_OXIDE_BUILD is set but transcode kernels were not built");
+    }
+    eprintln!(
+        "{} gate=J2K_REQUIRE_CUDA_OXIDE_BUILD context={} reason=transcode-kernels-not-built",
+        j2k_test_support::GPU_TEST_SKIP_MARKER,
+        module_path!()
+    );
+    false
 }
 
 #[test]
@@ -65,7 +82,7 @@ fn validate_dct_block_grid_checks_shape_and_coefficient_count() {
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
 #[test]
 fn cuda_oxide_reversible53_transcode_matches_scalar_fixture_when_required() {
-    if !cuda_runtime_required() || !super::transcode_kernels_built() {
+    if !cuda_runtime_gate() || !cuda_transcode_kernel_gate() {
         return;
     }
 
@@ -119,7 +136,7 @@ fn cuda_oxide_reversible53_transcode_matches_scalar_fixture_when_required() {
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
 #[test]
 fn cuda_oxide_dwt97_transcode_matches_scalar_fixture_when_required() {
-    if !cuda_runtime_required() || !super::transcode_kernels_built() {
+    if !cuda_runtime_gate() || !cuda_transcode_kernel_gate() {
         return;
     }
 
@@ -194,7 +211,7 @@ fn cuda_oxide_dwt97_transcode_matches_scalar_fixture_when_required() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
-    if !cuda_runtime_required() || !super::transcode_kernels_built() {
+    if !cuda_runtime_gate() || !cuda_transcode_kernel_gate() {
         return;
     }
 
@@ -213,7 +230,17 @@ fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
         .j2k_transcode_dwt97(&second, 1, 1, 8, 8)
         .expect("single second DWT97");
     let (batch, _) = context
-        .j2k_transcode_dwt97_batch_with_pool(&blocks, 2, 1, 1, 8, 8, &pool)
+        .j2k_transcode_dwt97_batch_with_pool(super::CudaDwt97BatchWithPoolRequest {
+            blocks: &blocks,
+            geometry: CudaDwt97BatchGeometry {
+                item_count: 2,
+                block_cols: 1,
+                block_rows: 1,
+                width: 8,
+                height: 8,
+            },
+            pool: &pool,
+        })
         .expect("cuda-oxide DWT97 batch");
     assert_eq!(batch.len(), 2);
     assert_dwt97_bands_close(&batch[0], &expected_first, 0.02);
@@ -234,15 +261,17 @@ fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
         .j2k_transcode_dwt97(&wide_blocks, wide_block_cols, 1, wide_width, wide_height)
         .expect("single wide DWT97");
     let (wide_batch, _) = context
-        .j2k_transcode_dwt97_batch_with_pool(
-            &wide_blocks,
-            1,
-            wide_block_cols,
-            1,
-            wide_width,
-            wide_height,
-            &pool,
-        )
+        .j2k_transcode_dwt97_batch_with_pool(super::CudaDwt97BatchWithPoolRequest {
+            blocks: &wide_blocks,
+            geometry: CudaDwt97BatchGeometry {
+                item_count: 1,
+                block_cols: wide_block_cols,
+                block_rows: 1,
+                width: wide_width,
+                height: wide_height,
+            },
+            pool: &pool,
+        })
         .expect("wide cuda-oxide DWT97 batch");
     assert_eq!(wide_batch.len(), 1);
     assert_dwt97_bands_close(&wide_batch[0], &wide_expected, 0.02);
@@ -257,7 +286,18 @@ fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
     };
     let expected_codeblocks = expected_dwt97_codeblocks(&batch, params);
     let (quantized, _) = context
-        .j2k_transcode_htj2k97_codeblock_batch_with_pool(&blocks, 2, 1, 1, 8, 8, params, &pool)
+        .j2k_transcode_htj2k97_codeblock_batch_with_pool(CudaHtj2k97CodeblockBatchWithPoolRequest {
+            blocks: &blocks,
+            geometry: CudaDwt97BatchGeometry {
+                item_count: 2,
+                block_cols: 1,
+                block_rows: 1,
+                width: 8,
+                height: 8,
+            },
+            params,
+            pool: &pool,
+        })
         .expect("cuda-oxide staged DWT97 quantize batch");
     assert_eq!(quantized, expected_codeblocks);
 
@@ -268,14 +308,18 @@ fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
     i16_blocks.extend_from_slice(&second_i16);
     let (fused, _) = context
         .j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
-            &i16_blocks,
-            2,
-            1,
-            1,
-            8,
-            8,
-            params,
-            &pool,
+            super::CudaHtj2k97I16CodeblockBatchWithPoolRequest {
+                blocks: &i16_blocks,
+                geometry: CudaDwt97BatchGeometry {
+                    item_count: 2,
+                    block_cols: 1,
+                    block_rows: 1,
+                    width: 8,
+                    height: 8,
+                },
+                params,
+                pool: &pool,
+            },
         )
         .expect("cuda-oxide fused i16 DWT97 quantize batch");
     assert_eq!(download_device_codeblock_bands(&fused), expected_codeblocks);
@@ -537,7 +581,7 @@ fn jpeg_chunked_entropy_report_summarizes_sync_quality() {
 
 #[test]
 fn jpeg_entropy_self_sync_returns_empty_report_for_empty_entropy_when_runtime_required() {
-    if std::env::var_os("J2K_REQUIRE_CUDA_RUNTIME").is_none() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -608,7 +652,7 @@ fn cuda_oxide_htj2k_encode_missing_build_error_mentions_strict_gate() {
 #[cfg(all(feature = "cuda-oxide-jpeg-decode", j2k_cuda_oxide_jpeg_decode_built))]
 #[test]
 fn cuda_oxide_jpeg_entropy_self_sync_decodes_zero_stream_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -647,7 +691,7 @@ fn cuda_oxide_jpeg_entropy_self_sync_decodes_zero_stream_when_required() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn runtime_raii_primitives_smoke_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -819,7 +863,7 @@ fn pooled_buffer_selection_uses_smallest_sufficient_fit() {
 
 #[test]
 fn pooled_take_with_trace_reports_allocation_and_reuse_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -847,7 +891,7 @@ fn pooled_take_with_trace_reports_allocation_and_reuse_when_runtime_required() {
 
 #[test]
 fn pooled_buffer_can_detach_and_recycle_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -888,6 +932,57 @@ fn htj2k_encoded_codeblock_reports_segment_lengths_from_status() {
 
     assert_eq!(encoded.cleanup_length(), 7);
     assert_eq!(encoded.refinement_length(), 3);
+}
+
+fn htj2k_multi_input_compact_job(
+    job: super::CudaHtj2kEncodeKernelJob,
+) -> super::CudaHtj2kEncodeMultiInputKernelJob {
+    super::CudaHtj2kEncodeMultiInputKernelJob {
+        coefficient_ptr: 0x1000,
+        coefficient_offset: job.coefficient_offset,
+        coefficient_stride: job.coefficient_stride,
+        width: job.width,
+        height: job.height,
+        total_bitplanes: job.total_bitplanes,
+        output_offset: job.output_offset,
+        output_capacity: job.output_capacity,
+        target_coding_passes: job.target_coding_passes,
+    }
+}
+
+fn assert_compact_jobs_match_for_single_and_multi_input(
+    statuses: &[super::CudaHtj2kEncodeStatus],
+    kernel_jobs: &[super::CudaHtj2kEncodeKernelJob],
+) -> Result<(Vec<super::CudaHtj2kEncodeCompactJob>, usize), CudaError> {
+    let multi_input_jobs = kernel_jobs
+        .iter()
+        .copied()
+        .map(htj2k_multi_input_compact_job)
+        .collect::<Vec<_>>();
+    let single = super::htj2k_encode_compact_jobs(statuses, kernel_jobs);
+    let multi = super::htj2k_encode_compact_jobs_multi_input(statuses, &multi_input_jobs);
+    match (single, multi) {
+        (Ok(single), Ok(multi)) => {
+            assert_eq!(single, multi);
+            Ok(single)
+        }
+        (Err(single), Err(multi)) => {
+            assert_eq!(format!("{single:?}"), format!("{multi:?}"));
+            Err(single)
+        }
+        (single, multi) => panic!(
+            "single and multi-input compact planners diverged: single={single:?} multi={multi:?}"
+        ),
+    }
+}
+
+#[test]
+fn htj2k_encode_compact_jobs_accept_empty_batches() {
+    let (compact_jobs, compact_len) =
+        assert_compact_jobs_match_for_single_and_multi_input(&[], &[]).expect("empty compact plan");
+
+    assert!(compact_jobs.is_empty());
+    assert_eq!(compact_len, 0);
 }
 
 #[test]
@@ -949,7 +1044,8 @@ fn htj2k_encode_compact_jobs_pack_actual_payloads() {
     ];
 
     let (compact_jobs, compact_len) =
-        super::htj2k_encode_compact_jobs(&statuses, &kernel_jobs).expect("valid compact jobs");
+        assert_compact_jobs_match_for_single_and_multi_input(&statuses, &kernel_jobs)
+            .expect("valid compact jobs");
 
     assert_eq!(compact_len, 19);
     assert_eq!(
@@ -977,10 +1073,69 @@ fn htj2k_encode_compact_jobs_pack_actual_payloads() {
     );
 }
 
+#[test]
+fn htj2k_encode_compact_jobs_accept_exact_capacity_payloads() {
+    let kernel_jobs = [super::CudaHtj2kEncodeKernelJob {
+        coefficient_offset: 0,
+        coefficient_stride: 64,
+        width: 64,
+        height: 64,
+        total_bitplanes: 8,
+        output_offset: 11,
+        output_capacity: 5,
+        target_coding_passes: 1,
+    }];
+    let statuses = [super::CudaHtj2kEncodeStatus {
+        code: super::HTJ2K_STATUS_OK,
+        data_len: 5,
+        reserved2: 9,
+        ..super::CudaHtj2kEncodeStatus::default()
+    }];
+
+    let (compact_jobs, compact_len) =
+        assert_compact_jobs_match_for_single_and_multi_input(&statuses, &kernel_jobs)
+            .expect("exact-capacity compact job");
+
+    assert_eq!(compact_len, 5);
+    assert_eq!(
+        compact_jobs,
+        vec![super::CudaHtj2kEncodeCompactJob {
+            source_offset: 11,
+            compact_offset: 0,
+            data_len: 5,
+            reserved: 9,
+        }]
+    );
+}
+
+#[test]
+fn htj2k_encode_compact_jobs_reject_payloads_larger_than_capacity() {
+    let kernel_jobs = [super::CudaHtj2kEncodeKernelJob {
+        coefficient_offset: 0,
+        coefficient_stride: 64,
+        width: 64,
+        height: 64,
+        total_bitplanes: 8,
+        output_offset: 0,
+        output_capacity: 5,
+        target_coding_passes: 1,
+    }];
+    let statuses = [super::CudaHtj2kEncodeStatus {
+        code: super::HTJ2K_STATUS_OK,
+        data_len: 6,
+        ..super::CudaHtj2kEncodeStatus::default()
+    }];
+
+    assert!(matches!(
+        assert_compact_jobs_match_for_single_and_multi_input(&statuses, &kernel_jobs),
+        Err(CudaError::LengthTooLarge { len }) if len == 6
+    ));
+}
+
 #[cfg(all(feature = "cuda-oxide-j2k-encode", j2k_cuda_oxide_j2k_encode_built))]
 #[test]
 fn cuda_oxide_htj2k_compact_codeblocks_assembles_payload_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1035,8 +1190,8 @@ fn cuda_oxide_htj2k_compact_codeblocks_assembles_payload_when_required() {
 }
 
 #[test]
-fn htj2k_encode_resources_feed_resident_region_encode_when_required() {
-    if !cuda_runtime_required() {
+fn htj2k_encode_tables_feed_resident_region_encode_when_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1044,13 +1199,6 @@ fn htj2k_encode_resources_feed_resident_region_encode_when_required() {
     let vlc_table0 = [0u16; 2048];
     let vlc_table1 = [0u16; 2048];
     let uvlc_table = vec![0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES];
-    let resources = context
-        .upload_htj2k_encode_resources(CudaHtj2kEncodeTables {
-            vlc_table0: &vlc_table0,
-            vlc_table1: &vlc_table1,
-            uvlc_table: &uvlc_table,
-        })
-        .expect("encode resources");
     let coefficients = context
         .upload_i32_pinned(&[0, 0, 0, 0])
         .expect("resident coefficients");
@@ -1064,7 +1212,16 @@ fn htj2k_encode_resources_feed_resident_region_encode_when_required() {
     }];
 
     let encoded = context
-        .encode_htj2k_codeblock_regions_resident_with_resources(&coefficients, 4, &jobs, &resources)
+        .encode_htj2k_codeblock_regions_resident(
+            &coefficients,
+            4,
+            &jobs,
+            CudaHtj2kEncodeTables {
+                vlc_table0: &vlc_table0,
+                vlc_table1: &vlc_table1,
+                uvlc_table: &uvlc_table,
+            },
+        )
         .expect("resource-backed resident HTJ2K encode");
 
     assert_eq!(encoded.execution().kernel_dispatches(), 1);
@@ -1073,7 +1230,7 @@ fn htj2k_encode_resources_feed_resident_region_encode_when_required() {
 
 #[test]
 fn htj2k_encode_resident_region_reuses_pool_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1118,7 +1275,7 @@ fn htj2k_encode_resident_region_reuses_pool_when_required() {
 
 #[test]
 fn htj2k_encode_codeblocks_resident_reuses_pool_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1162,7 +1319,7 @@ fn htj2k_encode_codeblocks_resident_reuses_pool_when_required() {
 
 #[test]
 fn htj2k_encode_multi_resident_inputs_match_separate_batches_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1262,7 +1419,7 @@ fn htj2k_encode_multi_resident_inputs_match_separate_batches_when_required() {
 
 #[test]
 fn htj2k97_resident_batch_returns_pooled_quantized_bands_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1280,7 +1437,18 @@ fn htj2k97_resident_batch_returns_pooled_quantized_bands_when_required() {
 
     let (bands, _) = context
         .j2k_transcode_htj2k97_codeblock_batch_resident_with_pool(
-            &blocks, 1, 1, 1, 8, 8, params, &pool,
+            CudaHtj2k97CodeblockBatchWithPoolRequest {
+                blocks: &blocks,
+                geometry: CudaDwt97BatchGeometry {
+                    item_count: 1,
+                    block_cols: 1,
+                    block_rows: 1,
+                    width: 8,
+                    height: 8,
+                },
+                params,
+                pool: &pool,
+            },
         )
         .expect("resident HTJ2K 9/7 codeblock batch");
 
@@ -1297,7 +1465,7 @@ fn htj2k97_resident_batch_returns_pooled_quantized_bands_when_required() {
 
 #[test]
 fn htj2k_encode_rejects_unsupported_refinement_pass_count_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1339,7 +1507,7 @@ fn htj2k_encode_rejects_unsupported_refinement_pass_count_when_required() {
 
 #[test]
 fn htj2k_encode_rejects_lossy_zero_sigprop_request_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1381,7 +1549,7 @@ fn htj2k_encode_rejects_lossy_zero_sigprop_request_when_required() {
 
 #[test]
 fn htj2k_encode_rejects_unreachable_target_three_sigprop_coefficients_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1422,8 +1590,8 @@ fn htj2k_encode_rejects_unreachable_target_three_sigprop_coefficients_when_requi
 }
 
 #[test]
-fn htj2k_encode_resources_feed_single_codeblock_encode_when_required() {
-    if !cuda_runtime_required() {
+fn htj2k_encode_resources_feed_one_job_batch_encode_when_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1440,21 +1608,35 @@ fn htj2k_encode_resources_feed_single_codeblock_encode_when_required() {
         .expect("encode resources");
 
     let encoded = context
-        .encode_htj2k_codeblock_with_resources(&[0, 0, 0, 0], 2, 2, 1, &resources)
-        .expect("resource-backed single HTJ2K encode");
+        .encode_htj2k_codeblocks_with_resources(
+            &[0, 0, 0, 0],
+            &[CudaHtj2kEncodeCodeBlockJob {
+                coefficient_offset: 0,
+                width: 2,
+                height: 2,
+                total_bitplanes: 1,
+                target_coding_passes: 1,
+            }],
+            &resources,
+        )
+        .expect("resource-backed one-job HTJ2K encode");
+    let block = encoded
+        .code_blocks()
+        .first()
+        .expect("one encoded code block");
 
     assert_eq!(encoded.execution().kernel_dispatches(), 1);
     // An all-zero codeblock has no significant bitplanes, so the encoder emits zero
     // coding passes (matching native ht_block_encode::encode_code_block).
-    assert_eq!(encoded.num_coding_passes(), 0);
-    assert_eq!(encoded.cleanup_length(), 0);
-    assert_eq!(encoded.data().len(), 0);
-    assert_eq!(encoded.refinement_length(), 0);
+    assert_eq!(block.num_coding_passes(), 0);
+    assert_eq!(block.cleanup_length(), 0);
+    assert_eq!(block.data().len(), 0);
+    assert_eq!(block.refinement_length(), 0);
 }
 
 #[test]
 fn default_stream_timer_reports_elapsed_time_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1471,7 +1653,7 @@ fn default_stream_timer_reports_elapsed_time_when_runtime_required() {
 #[cfg(all(feature = "cuda-oxide-copy-u8", j2k_cuda_oxide_copy_u8_built))]
 #[test]
 fn cuda_oxide_copy_u8_matches_builtin_copy_and_cpu_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1507,7 +1689,7 @@ fn cuda_oxide_copy_u8_matches_builtin_copy_and_cpu_when_required() {
 
 #[test]
 fn named_default_stream_timer_is_available_for_profiling_ranges_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1523,7 +1705,7 @@ fn named_default_stream_timer_is_available_for_profiling_ranges_when_required() 
 
 #[test]
 fn typed_device_view_reports_element_count_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1663,7 +1845,7 @@ fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
 #[test]
 #[allow(clippy::similar_names)]
 fn htj2k_empty_codeblock_decode_zero_fills_coefficients_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1697,13 +1879,12 @@ fn htj2k_empty_codeblock_decode_zero_fills_coefficients_when_required() {
 
 #[test]
 #[allow(clippy::similar_names)]
-fn htj2k_empty_codeblock_decode_reuses_pool_when_required() {
-    if !cuda_runtime_required() {
+fn htj2k_empty_codeblock_decode_with_resources_zero_fills_when_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
     let context = CudaContext::system_default().expect("CUDA context");
-    let pool = context.buffer_pool();
     let first_vlc = [0u16; 1024];
     let later_vlc = [0u16; 1024];
     let first_uvlc = [0u16; 320];
@@ -1721,28 +1902,22 @@ fn htj2k_empty_codeblock_decode_reuses_pool_when_required() {
         .expect("decode resources");
 
     let output = context
-        .decode_htj2k_codeblocks_with_resources_and_pool(&resources, &[], 8, &pool)
-        .expect("pooled empty HTJ2K decode");
+        .decode_htj2k_codeblocks_with_resources(&resources, &[], 8)
+        .expect("resource-backed empty HTJ2K decode");
     let mut actual = vec![f32::NAN; 8];
     output
         .coefficients()
-        .expect("pooled coefficients")
         .copy_to_host(super::f32_slice_as_bytes_mut(&mut actual))
         .expect("download coefficients");
 
     assert_eq!(actual, vec![0.0; 8]);
     assert_eq!(output.execution().kernel_dispatches(), 0);
-    let cached_while_live = pool.cached_count().expect("cached while live");
-
-    drop(output);
-
-    assert!(pool.cached_count().expect("cached after drop") > cached_while_live);
 }
 
 #[test]
 #[allow(clippy::similar_names)]
 fn htj2k_decode_table_resources_feed_multiple_payload_uploads_when_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1777,7 +1952,7 @@ fn htj2k_decode_table_resources_feed_multiple_payload_uploads_when_required() {
 
 #[test]
 fn j2k_inverse_dwt_single_dispatches_parallel_stages_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -1848,7 +2023,7 @@ fn j2k_inverse_dwt_single_dispatches_parallel_stages_when_runtime_required() {
 
 #[test]
 fn j2k_inverse_dwt_single_reuses_pool_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -2102,7 +2277,7 @@ fn idwt_batch_trace_row_reports_stage_shape_and_mode() {
 
 #[test]
 fn j2k_inverse_dwt_batch_empty_uses_no_dispatch_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -2118,7 +2293,7 @@ fn j2k_inverse_dwt_batch_empty_uses_no_dispatch_when_runtime_required() {
 
 #[test]
 fn j2k_inverse_dwt_batch_matches_expected_outputs_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -2219,7 +2394,7 @@ fn j2k_inverse_dwt_batch_matches_expected_outputs_when_runtime_required() {
 
 #[test]
 fn j2k_inverse_dwt_batch_odd_origin_matches_single_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -2311,7 +2486,7 @@ fn j2k_inverse_dwt_batch_odd_origin_matches_single_when_runtime_required() {
 #[test]
 #[allow(clippy::cast_precision_loss, clippy::similar_names)]
 fn j2k_inverse_dwt_batch_large_reversible_matches_single_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -2407,7 +2582,7 @@ fn j2k_inverse_dwt_batch_large_reversible_matches_single_when_runtime_required()
 #[test]
 #[allow(clippy::cast_precision_loss, clippy::similar_names)]
 fn j2k_inverse_dwt_batch_large_irreversible_matches_single_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -2511,7 +2686,7 @@ fn j2k_inverse_dwt_batch_large_irreversible_matches_single_when_runtime_required
 #[test]
 #[allow(clippy::cast_precision_loss, clippy::similar_names)]
 fn j2k_inverse_dwt_batch_512_reversible_matches_single_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -2606,7 +2781,7 @@ fn j2k_inverse_dwt_batch_512_reversible_matches_single_when_runtime_required() {
 
 #[test]
 fn j2k_inverse_dwt_batch_enqueue_matches_expected_outputs_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -2688,7 +2863,7 @@ fn j2k_inverse_dwt_batch_enqueue_matches_expected_outputs_when_runtime_required(
 #[test]
 #[allow(clippy::similar_names, clippy::too_many_lines)]
 fn j2k_inverse_dwt_batch_sequence_enqueue_matches_two_stage_path_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -2875,7 +3050,7 @@ fn j2k_inverse_dwt_batch_sequence_enqueue_matches_two_stage_path_when_runtime_re
 
 #[test]
 fn j2k_store_rgb8_mct_matches_inverse_mct_plus_store_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -2980,7 +3155,7 @@ fn j2k_store_rgb8_mct_matches_inverse_mct_plus_store_when_runtime_required() {
 #[test]
 #[allow(clippy::similar_names, clippy::too_many_lines)]
 fn j2k_store_rgb8_mct_batch_matches_separate_stores_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3107,7 +3282,7 @@ fn j2k_store_rgb8_mct_batch_matches_separate_stores_when_runtime_required() {
 
 #[test]
 fn j2k_store_rgb8_mct_single_matches_one_item_batch_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3190,7 +3365,7 @@ fn j2k_store_rgb8_mct_single_matches_one_item_batch_when_runtime_required() {
 
 #[test]
 fn j2k_store_rgb16_mct_matches_inverse_mct_plus_store_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3293,7 +3468,7 @@ fn j2k_store_rgb16_mct_matches_inverse_mct_plus_store_when_runtime_required() {
 
 #[test]
 fn j2k_dequantize_htj2k_codeblocks_multi_uses_one_dispatch_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3335,19 +3510,23 @@ fn j2k_dequantize_htj2k_codeblocks_multi_uses_one_dispatch_when_runtime_required
         stripe_causal: false,
     }];
 
+    let pool = context.buffer_pool();
     let execution = context
-        .j2k_dequantize_htj2k_codeblocks_multi_device(&[
-            CudaHtj2kDequantizeTarget {
-                coefficients: &first,
-                jobs: &first_jobs,
-                output_words: 4,
-            },
-            CudaHtj2kDequantizeTarget {
-                coefficients: &second,
-                jobs: &second_jobs,
-                output_words: 2,
-            },
-        ])
+        .j2k_dequantize_htj2k_codeblocks_multi_device_with_pool(
+            &[
+                CudaHtj2kDequantizeTarget {
+                    coefficients: &first,
+                    jobs: &first_jobs,
+                    output_words: 4,
+                },
+                CudaHtj2kDequantizeTarget {
+                    coefficients: &second,
+                    jobs: &second_jobs,
+                    output_words: 2,
+                },
+            ],
+            &pool,
+        )
         .expect("multi-buffer HTJ2K dequant");
     assert_eq!(execution.kernel_dispatches(), 1);
 
@@ -3365,7 +3544,7 @@ fn j2k_dequantize_htj2k_codeblocks_multi_uses_one_dispatch_when_runtime_required
 
 #[test]
 fn queued_cleanup_metadata_dequantizes_without_second_job_upload_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3524,7 +3703,7 @@ fn htj2k_decode_multi_cleanup_dequant_kernel_rejects_refinement_jobs() {
 #[test]
 #[allow(clippy::similar_names)]
 fn htj2k_cleanup_multi_empty_targets_use_no_dispatch_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3546,22 +3725,24 @@ fn htj2k_cleanup_multi_empty_targets_use_no_dispatch_when_runtime_required() {
         .upload_htj2k_decode_resources_with_tables(&[], &tables)
         .expect("decode resources");
 
-    let execution = context
-        .decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool(
+    let (execution, timings) = context
+        .decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool_timed(
             &resources,
             &[] as &[CudaHtj2kCleanupTarget<'_>],
             &pool,
+            false,
         )
         .expect("empty cleanup batch");
 
     assert_eq!(execution.kernel_dispatches(), 0);
     assert_eq!(execution.decode_kernel_dispatches(), 0);
+    assert_eq!(timings.status_d2h_us, 0);
 }
 
 #[test]
 #[allow(clippy::similar_names)]
 fn htj2k_cleanup_multi_enqueue_empty_targets_finish_with_no_dispatch_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3601,7 +3782,7 @@ fn htj2k_cleanup_multi_enqueue_empty_targets_finish_with_no_dispatch_when_runtim
 
 #[test]
 fn j2k_forward_rct_matches_cpu_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3637,7 +3818,7 @@ fn j2k_forward_rct_matches_cpu_when_runtime_required() {
 
 #[test]
 fn j2k_deinterleave_to_f32_matches_cpu_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3656,7 +3837,7 @@ fn j2k_deinterleave_to_f32_matches_cpu_when_runtime_required() {
 
 #[test]
 fn j2k_deinterleave_then_rct_can_stay_resident_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3685,7 +3866,7 @@ fn j2k_deinterleave_then_rct_can_stay_resident_when_runtime_required() {
 
 #[test]
 fn j2k_deinterleave_then_ict_can_stay_resident_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3719,7 +3900,7 @@ fn j2k_deinterleave_then_ict_can_stay_resident_when_runtime_required() {
 
 #[test]
 fn j2k_resident_deinterleave_can_feed_resident_dwt53_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3753,7 +3934,7 @@ fn j2k_resident_deinterleave_can_feed_resident_dwt53_when_runtime_required() {
 
 #[test]
 fn j2k_resident_deinterleave_can_feed_resident_dwt97_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3787,7 +3968,7 @@ fn j2k_resident_deinterleave_can_feed_resident_dwt97_when_runtime_required() {
 
 #[test]
 fn j2k_forward_ict_matches_cpu_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3829,7 +4010,7 @@ fn j2k_forward_ict_matches_cpu_when_runtime_required() {
 
 #[test]
 fn j2k_forward_dwt53_matches_cpu_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3860,7 +4041,7 @@ fn j2k_forward_dwt53_matches_cpu_when_runtime_required() {
 
 #[test]
 fn j2k_forward_dwt97_matches_cpu_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3893,7 +4074,7 @@ fn j2k_forward_dwt97_matches_cpu_when_runtime_required() {
 
 #[test]
 fn j2k_quantize_subband_matches_cpu_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 
@@ -3932,7 +4113,7 @@ fn j2k_quantize_subband_matches_cpu_when_runtime_required() {
 
 #[test]
 fn j2k_quantize_strided_resident_subband_matches_contiguous_when_runtime_required() {
-    if !cuda_runtime_required() {
+    if !cuda_runtime_gate() {
         return;
     }
 

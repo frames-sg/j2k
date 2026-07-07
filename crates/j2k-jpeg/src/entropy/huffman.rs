@@ -53,6 +53,19 @@ pub(crate) struct HuffmanTable {
     fast_ac: Box<[u32; FAST_ENTRIES]>,
 }
 
+pub(crate) type CanonicalHuffmanDerivation = j2k_codec_math::jpeg::CanonicalHuffmanDerivation;
+
+pub(crate) fn derive_canonical_huffman(
+    raw: &RawHuffmanTable,
+) -> Result<CanonicalHuffmanDerivation, JpegError> {
+    j2k_codec_math::jpeg::derive_canonical_huffman(&raw.bits, raw.values.len()).map_err(|_| {
+        JpegError::HuffmanDecode {
+            mcu: 0,
+            reason: HuffmanFailure::CodeOverflow,
+        }
+    })
+}
+
 impl HuffmanTable {
     /// Build the decode table from a raw `(bits, values)` pair parsed out of
     /// a DHT segment. Per T.81 §C.2 and Annex C.
@@ -62,70 +75,17 @@ impl HuffmanTable {
     ///   inequality violated — the table claims more codes of some length than
     ///   there is remaining code space).
     pub(crate) fn from_raw(raw: &RawHuffmanTable) -> Result<Self, JpegError> {
+        let canonical = derive_canonical_huffman(raw)?;
         let mut fast = [(0u8, 0u8); FAST_ENTRIES];
-        let mut min_code = [i32::MAX; 17];
-        let mut max_code = [-1i32; 17];
-        let mut val_offset = [0i32; 17];
         let mut fast_dc = Box::new([0u32; FAST_ENTRIES]);
         let mut fast_ac = Box::new([0u32; FAST_ENTRIES]);
 
-        let total_values: usize = raw.bits.iter().map(|&b| b as usize).sum();
-        if total_values != raw.values.len() {
-            return Err(JpegError::HuffmanDecode {
-                mcu: 0,
-                reason: HuffmanFailure::CodeOverflow,
-            });
-        }
-        let mut huffsize = [0u8; 256];
-        let mut huffsize_len = 0usize;
-        for (len_minus_1, &count) in raw.bits.iter().enumerate() {
-            let len = (len_minus_1 + 1) as u8;
-            for _ in 0..count {
-                huffsize[huffsize_len] = len;
-                huffsize_len += 1;
-            }
-        }
-
-        let mut huffcode = [0u16; 256];
-        let mut code: u32 = 0;
-        let mut si = huffsize.first().copied().unwrap_or(0);
-        for (k, &s) in huffsize[..huffsize_len].iter().enumerate() {
-            while s != si {
-                code <<= 1;
-                si += 1;
-            }
-            huffcode[k] = code as u16;
-            code = code.checked_add(1).ok_or(JpegError::HuffmanDecode {
-                mcu: 0,
-                reason: HuffmanFailure::CodeOverflow,
-            })?;
-        }
-        if si > 0 && (code - 1) >= (1u32 << si) {
-            return Err(JpegError::HuffmanDecode {
-                mcu: 0,
-                reason: HuffmanFailure::CodeOverflow,
-            });
-        }
-
-        let mut k = 0usize;
-        for len_minus_1 in 0..16 {
-            let len = len_minus_1 + 1;
-            let count = raw.bits[len_minus_1] as usize;
-            if count == 0 {
-                continue;
-            }
-            min_code[len] = i32::from(huffcode[k]);
-            max_code[len] = i32::from(huffcode[k + count - 1]);
-            val_offset[len] = k as i32 - min_code[len];
-            k += count;
-        }
-
-        k = 0;
+        let mut k = 0;
         for len_minus_1 in 0..FAST_BITS as usize {
             let len = (len_minus_1 + 1) as u8;
             let count = raw.bits[len_minus_1] as usize;
             for _ in 0..count {
-                let c = huffcode[k];
+                let c = canonical.huffcode[k];
                 let fast_index_base = (c as usize) << (FAST_BITS - len);
                 let fast_count = 1 << (FAST_BITS - len);
                 for j in 0..fast_count {
@@ -183,9 +143,9 @@ impl HuffmanTable {
 
         Ok(Self {
             fast,
-            min_code,
-            max_code,
-            val_offset,
+            min_code: canonical.min_code,
+            max_code: canonical.max_code,
+            val_offset: canonical.val_offset,
             values: raw.values.clone(),
             fast_dc,
             fast_ac,
@@ -216,13 +176,10 @@ impl HuffmanTable {
             if c <= self.max_code[len] {
                 br.consume_bits(l);
                 let idx = (c + self.val_offset[len]) as usize;
-                if idx >= self.values.len() {
-                    return Err(JpegError::HuffmanDecode {
-                        mcu: 0,
-                        reason: HuffmanFailure::InvalidSymbol,
-                    });
-                }
-                return Ok(self.values.get(idx).expect("validated huffman index"));
+                return self.values.get(idx).ok_or(JpegError::HuffmanDecode {
+                    mcu: 0,
+                    reason: HuffmanFailure::InvalidSymbol,
+                });
             }
         }
         Err(JpegError::HuffmanDecode {

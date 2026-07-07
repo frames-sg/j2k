@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use core::convert::Infallible;
-
 use j2k::{
-    adapter::device_plan::{DeviceDecodePlan, DeviceDecodeRequest},
-    J2kCodec as CpuCodec, J2kContext as CpuJ2kContext, J2kDecoder as CpuDecoder,
-    J2kScratchPool as CpuJ2kScratchPool,
+    DeviceDecodePlan, DeviceDecodeRequest, J2kCodec as CpuCodec, J2kContext as CpuJ2kContext,
+    J2kDecodeWarning, J2kDecoder as CpuDecoder, J2kScratchPool as CpuJ2kScratchPool,
 };
 use j2k_core::{
-    submit_ready_device, BackendRequest, Downscale, ImageCodec, PixelFormat, ReadySubmission, Rect,
-    TileBatchDecode, TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
+    checked_surface_len, submit_ready_device, BackendRequest, Downscale, ImageCodec, PixelFormat,
+    ReadySubmission, Rect, TileBatchDecode, TileBatchDecodeDevice, TileBatchDecodeManyDevice,
+    TileBatchDecodeSubmit, TileRegionScaledDecodeJob, TileRegionScaledDeviceDecodeRequest,
+    DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
 
 use crate::runtime::{validate_surface_request, wrap_surface};
@@ -19,10 +18,22 @@ use crate::{CudaSession, Error, J2kDecoder, Surface};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Codec;
 
+struct RegionScaledSurfaceRequest<'a> {
+    ctx: &'a mut j2k_core::DecoderContext<CpuJ2kContext>,
+    session: &'a mut CudaSession,
+    pool: &'a mut CpuJ2kScratchPool,
+    input: &'a [u8],
+    fmt: PixelFormat,
+    roi: Rect,
+    scale: Downscale,
+    backend: BackendRequest,
+}
+
+#[doc(hidden)]
 impl ImageCodec for Codec {
     type Error = Error;
-    type Warning = Infallible;
-    type Pool = CpuJ2kScratchPool;
+    type Warning = J2kDecodeWarning;
+    type Pool = crate::J2kScratchPool;
 }
 
 impl Codec {
@@ -65,8 +76,7 @@ impl Codec {
             return decoder.decode_to_device_with_session(fmt, session);
         }
         let dims = CpuDecoder::inspect(input)?.dimensions;
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         CpuCodec::decode_tile(ctx, pool, input, &mut out, stride, fmt)?;
         wrap_surface(out, dims, fmt, backend, session)
     }
@@ -90,8 +100,7 @@ impl Codec {
             DeviceDecodeRequest::Region { roi },
         )?
         .output_dims();
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         CpuCodec::decode_tile_region(ctx, pool, input, &mut out, stride, fmt, roi)?;
         wrap_surface(out, dims, fmt, backend, session)
     }
@@ -115,23 +124,24 @@ impl Codec {
             DeviceDecodeRequest::Scaled { scale },
         )?
         .output_dims();
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         CpuCodec::decode_tile_scaled(ctx, pool, input, &mut out, stride, fmt, scale)?;
         wrap_surface(out, dims, fmt, backend, session)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn decode_tile_region_scaled_to_surface_impl(
-        ctx: &mut j2k_core::DecoderContext<CpuJ2kContext>,
-        session: &mut CudaSession,
-        pool: &mut CpuJ2kScratchPool,
-        input: &[u8],
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
+        request: RegionScaledSurfaceRequest<'_>,
     ) -> Result<Surface, Error> {
+        let RegionScaledSurfaceRequest {
+            ctx,
+            session,
+            pool,
+            input,
+            fmt,
+            roi,
+            scale,
+            backend,
+        } = request;
         validate_surface_request(backend)?;
         if matches!(backend, BackendRequest::Cuda) {
             let mut decoder = J2kDecoder::new(input)?;
@@ -142,13 +152,34 @@ impl Codec {
             DeviceDecodeRequest::RegionScaled { roi, scale },
         )?
         .output_dims();
-        let stride = dims.0 as usize * fmt.bytes_per_pixel();
-        let mut out = vec![0u8; stride * dims.1 as usize];
-        CpuCodec::decode_tile_region_scaled(ctx, pool, input, &mut out, stride, fmt, roi, scale)?;
+        let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
+        CpuCodec::decode_tile_region_scaled(
+            ctx,
+            pool,
+            fmt,
+            TileRegionScaledDecodeJob {
+                input,
+                out: &mut out,
+                stride,
+                roi,
+                scale,
+            },
+        )?;
         wrap_surface(out, dims, fmt, backend, session)
     }
 }
 
+fn allocate_cpu_surface(dims: (u32, u32), fmt: PixelFormat) -> Result<(Vec<u8>, usize), Error> {
+    let (stride, len) = checked_surface_len(
+        dims,
+        fmt.bytes_per_pixel(),
+        DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        "j2k CUDA CPU fallback surface",
+    )?;
+    Ok((vec![0u8; len], stride))
+}
+
+#[doc(hidden)]
 impl TileBatchDecodeSubmit for Codec {
     type Context = CpuJ2kContext;
     type Session = CudaSession;
@@ -203,26 +234,38 @@ impl TileBatchDecodeSubmit for Codec {
         ctx: &mut j2k_core::DecoderContext<Self::Context>,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
-        input: &[u8],
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
+        request: TileRegionScaledDeviceDecodeRequest<'_>,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
+        let TileRegionScaledDeviceDecodeRequest {
+            input,
+            fmt,
+            roi,
+            scale,
+            backend,
+        } = request;
         validate_surface_request(backend)?;
         Ok(submit_ready_device(session, |session| {
-            Self::decode_tile_region_scaled_to_surface_impl(
-                ctx, session, pool, input, fmt, roi, scale, backend,
-            )
+            Self::decode_tile_region_scaled_to_surface_impl(RegionScaledSurfaceRequest {
+                ctx,
+                session,
+                pool,
+                input,
+                fmt,
+                roi,
+                scale,
+                backend,
+            })
         }))
     }
 }
 
+#[doc(hidden)]
 impl TileBatchDecodeDevice for Codec {
     type Context = CpuJ2kContext;
     type DeviceSurface = Surface;
 }
 
+#[doc(hidden)]
 impl TileBatchDecodeManyDevice for Codec {
     type Context = CpuJ2kContext;
     type DeviceSurface = Surface;

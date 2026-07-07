@@ -1,5 +1,5 @@
 use j2k_jpeg::{
-    encode_jpeg_baseline, DecodeOptions, Decoder, EncodedJpeg, JpegBackend, JpegEncodeOptions,
+    encode_jpeg_baseline, DecodeRequest, Decoder, EncodedJpeg, JpegBackend, JpegEncodeOptions,
     JpegSamples, JpegSubsampling, PixelFormat,
 };
 use j2k_test_support::{patterned_gray8, patterned_rgb8};
@@ -63,9 +63,10 @@ fn cpu_encoder_round_trips_rgb_444_422_420() {
         assert!(encoded.data.starts_with(&[0xFF, 0xD8]));
         assert!(encoded.data.ends_with(&[0xFF, 0xD9]));
 
-        let decoder = Decoder::new_with_options(&encoded.data, DecodeOptions::default())
-            .expect("parse encoded JPEG");
-        let (decoded, outcome) = decoder.decode(PixelFormat::Rgb8).expect("decode RGB JPEG");
+        let decoder = Decoder::new(&encoded.data).expect("parse encoded JPEG");
+        let (decoded, outcome) = decoder
+            .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+            .expect("decode RGB JPEG");
 
         assert_eq!((outcome.decoded.w, outcome.decoded.h), (19, 17));
         assert_eq!(decoded.len(), 19 * 17 * 3);
@@ -115,10 +116,9 @@ fn cpu_encoder_round_trips_gray_and_writes_required_markers() {
         "entropy/header should not contain unstuffed fill-marker pairs"
     );
 
-    let decoder = Decoder::new_with_options(&encoded.data, DecodeOptions::default())
-        .expect("parse encoded gray JPEG");
+    let decoder = Decoder::new(&encoded.data).expect("parse encoded gray JPEG");
     let (decoded, outcome) = decoder
-        .decode(PixelFormat::Gray8)
+        .decode_request(DecodeRequest::full(PixelFormat::Gray8))
         .expect("decode gray JPEG");
 
     assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));

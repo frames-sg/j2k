@@ -25,6 +25,20 @@ test             = false
 doc              = false
 bench            = false
 
+[[bin]]
+name             = "region_scaled_fuzz"
+path             = "fuzz_targets/region_scaled_fuzz.rs"
+test             = false
+doc              = false
+bench            = false
+
+[[bin]]
+name             = "row_stream_fuzz"
+path             = "fuzz_targets/row_stream_fuzz.rs"
+test             = false
+doc              = false
+bench            = false
+
 [profile.release]
 debug = 1
 

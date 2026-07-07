@@ -31,9 +31,6 @@ struct J2kForwardDwt97Params {
     uint _reserved;
 };
 
-constant float J2K_FDWT97_KAPPA = 1.2301741f;
-constant float J2K_FDWT97_INV_KAPPA = 1.0f / 1.2301741f;
-
 inline float j2k_fdwt53_predict_row(
     device const float *src,
     uint row_base,
@@ -362,12 +359,12 @@ kernel void j2k_forward_dwt97_deinterleave_horizontal(
 
     const uint row_base = gid.y * params.full_width;
     if (gid.x < params.low_width) {
-        dst[row_base + gid.x] = src[row_base + gid.x * 2u] * J2K_FDWT97_INV_KAPPA;
+        dst[row_base + gid.x] = src[row_base + gid.x * 2u] * CODEC_MATH_DWT97_INV_KAPPA;
         return;
     }
 
     const uint high_index = gid.x - params.low_width;
-    dst[row_base + gid.x] = src[row_base + high_index * 2u + 1u] * J2K_FDWT97_KAPPA;
+    dst[row_base + gid.x] = src[row_base + high_index * 2u + 1u] * CODEC_MATH_DWT97_KAPPA;
 }
 
 kernel void j2k_forward_dwt97_deinterleave_vertical(
@@ -382,11 +379,11 @@ kernel void j2k_forward_dwt97_deinterleave_vertical(
 
     if (gid.y < params.low_height) {
         dst[gid.y * params.full_width + gid.x] =
-            src[(gid.y * 2u) * params.full_width + gid.x] * J2K_FDWT97_INV_KAPPA;
+            src[(gid.y * 2u) * params.full_width + gid.x] * CODEC_MATH_DWT97_INV_KAPPA;
         return;
     }
 
     const uint high_index = gid.y - params.low_height;
     dst[gid.y * params.full_width + gid.x] =
-        src[(high_index * 2u + 1u) * params.full_width + gid.x] * J2K_FDWT97_KAPPA;
+        src[(high_index * 2u + 1u) * params.full_width + gid.x] * CODEC_MATH_DWT97_KAPPA;
 }

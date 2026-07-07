@@ -443,6 +443,14 @@ pub enum JpegError {
         sof: SofKind,
     },
 
+    #[error("internal JPEG invariant failed: {reason}")]
+    /// Decoder state violated an invariant that should have been enforced
+    /// before reaching the current path.
+    InternalInvariant {
+        /// Static diagnostic reason.
+        reason: &'static str,
+    },
+
     #[error("row sink aborted decode")]
     /// Row sink returned an error and aborted row-based decoding.
     RowSinkAborted,
@@ -506,6 +514,7 @@ impl JpegError {
     }
 }
 
+#[doc(hidden)]
 impl CodecError for JpegError {
     fn is_truncated(&self) -> bool {
         Self::is_truncated(self)

@@ -111,7 +111,7 @@ mod tests {
         let bytes = baseline_jpeg_with_dimensions(65_500, 65_500);
         let dec = Decoder::new(&bytes).expect("huge baseline header should parse");
 
-        let err = dec.decode(PixelFormat::Rgb8).unwrap_err();
+        let err = dec.decode_request(DecodeRequest::full(PixelFormat::Rgb8)).unwrap_err();
 
         assert!(
             matches!(err, JpegError::MemoryCapExceeded { .. }),
@@ -125,7 +125,7 @@ mod tests {
         let dec = Decoder::new(&bytes).expect("huge baseline header should parse");
 
         let err = dec
-            .decode_region(PixelFormat::Rgb8, Rect::full(dec.info().dimensions))
+            .decode_request(DecodeRequest::region(PixelFormat::Rgb8, Rect::full(dec.info().dimensions)))
             .unwrap_err();
 
         assert!(
@@ -315,6 +315,60 @@ mod tests {
             .decode_into(&mut buf, 10, PixelFormat::Rgb8)
             .unwrap_err();
         assert!(matches!(err, JpegError::InvalidStride { .. }));
+    }
+
+    #[test]
+    fn decode_into_output_format_writes_custom_rgba_alpha() {
+        let bytes = dc_only_420_jpeg(16, 16);
+        let dec = Decoder::new(&bytes).unwrap();
+        let (w, h) = dec.info().dimensions;
+        let mut pool = ScratchPool::new();
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+
+        dec.decode_into_output_format_with_scratch(
+            &mut pool,
+            &mut buf,
+            (w * 4) as usize,
+            OutputFormat::Rgba8 { alpha: 200 },
+        )
+        .unwrap();
+
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let idx = (y * w as usize + x) * 4;
+                assert_eq!(buf[idx + 3], 200, "pixel ({x},{y}) alpha");
+            }
+        }
+    }
+
+    #[test]
+    fn decode_region_output_format_writes_custom_rgba_alpha() {
+        let bytes = dc_only_420_jpeg(16, 16);
+        let dec = Decoder::new(&bytes).unwrap();
+        let roi = Rect {
+            x: 0,
+            y: 0,
+            w: 8,
+            h: 8,
+        };
+        let mut pool = ScratchPool::new();
+        let mut buf = vec![0u8; (roi.w * roi.h * 4) as usize];
+
+        dec.decode_region_into_output_format_with_scratch(
+            &mut pool,
+            &mut buf,
+            (roi.w * 4) as usize,
+            OutputFormat::Rgba8 { alpha: 123 },
+            roi,
+        )
+        .unwrap();
+
+        for y in 0..roi.h as usize {
+            for x in 0..roi.w as usize {
+                let idx = (y * roi.w as usize + x) * 4;
+                assert_eq!(buf[idx + 3], 123, "pixel ({x},{y}) alpha");
+            }
+        }
     }
 
     #[test]

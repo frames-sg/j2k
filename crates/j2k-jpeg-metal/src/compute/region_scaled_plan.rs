@@ -8,10 +8,9 @@ use crate::{batch, Error};
 use super::{
     checked_u32, fast444_scaled_region_params, fast_subsampled_full_mcu_scaled_window,
     fast_subsampled_scaled_params, fast_subsampled_scaled_region_params,
-    fast_subsampled_windowed_pack_params_for_dims, FastPacketAccess, FastSubsampledMetal,
+    fast_subsampled_windowed_pack_params_for_dims, plane_mode_to_u32, FastRegionScaledMetal,
     FastSubsampledPacket, JpegFast444ScaledParams, JpegFastRegionScaledBatchParams,
-    JpegWindowedPackBatchParams, JpegWindowedTexturePackBatchParams, PlaneMode, MODE_YCBCR,
-    OUT_RGB,
+    JpegWindowedPackBatchParams, JpegWindowedTexturePackBatchParams, PlaneMode, OUT_RGB,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,7 +40,7 @@ pub(super) fn windowed_texture_pack_params(
     }
 }
 
-fn fast_packets_share_batch_shape<P: FastPacketAccess>(
+fn fast_packets_share_batch_shape<P: FastSubsampledPacket>(
     first: &P,
     packet: &P,
     segment_count: usize,
@@ -81,7 +80,7 @@ fn fast_full_rgb_batch_groups<P, K>(
     restart_packets_supported: bool,
 ) -> Option<Vec<Vec<usize>>>
 where
-    P: FastPacketAccess,
+    P: FastSubsampledPacket,
     K: Copy + Eq,
 {
     let mut groups = Vec::<Vec<usize>>::new();
@@ -122,6 +121,7 @@ pub(super) fn fast_subsampled_region_scaled_batch_plan<P: FastSubsampledPacket>(
     scale: j2k_core::Downscale,
     tile_count: u32,
     segment_count: u32,
+    mode: PlaneMode,
 ) -> Option<RegionScaledBatchPlan> {
     let full_params = fast_subsampled_scaled_params(packet, scale)?;
     let scaled_roi = roi.scaled_covering(scale);
@@ -176,11 +176,11 @@ pub(super) fn fast_subsampled_region_scaled_batch_plan<P: FastSubsampledPacket>(
             tile_count,
             out_stride: checked_u32(out_stride, P::REGION_SCALED_BATCH_OUT_STRIDE_CTX).ok()?,
             alpha: u32::from(u8::MAX),
-            mode: MODE_YCBCR,
+            mode: plane_mode_to_u32(mode),
             out_format: OUT_RGB,
         },
         y_len: source_window.w as usize * source_window.h as usize,
-        chroma_len: source_window.w.div_ceil(2) as usize
+        chroma_len: P::chroma_width(source_window.w) as usize
             * P::chroma_height(source_window.h) as usize,
         out_tile_len: out_stride * scaled_roi.h as usize,
         out_dims: (scaled_roi.w, scaled_roi.h),
@@ -193,12 +193,12 @@ struct FastRegionScaledGroup {
     plan: RegionScaledBatchPlan,
 }
 
-pub(super) fn fast_subsampled_region_scaled_batch_groups<P: FastSubsampledMetal>(
+pub(super) fn fast_subsampled_region_scaled_batch_groups<P: FastRegionScaledMetal>(
     requests: &[batch::QueuedRequest],
-    packets: &[&P],
+    packets: &[(&P, PlaneMode)],
 ) -> Result<Option<Vec<Vec<usize>>>, Error> {
     let mut groups = Vec::<FastRegionScaledGroup>::new();
-    'packet: for (index, (request, packet)) in
+    'packet: for (index, (request, (packet, mode))) in
         requests.iter().zip(packets.iter().copied()).enumerate()
     {
         if packet.restart_interval_mcus() != 0
@@ -218,16 +218,22 @@ pub(super) fn fast_subsampled_region_scaled_batch_groups<P: FastSubsampledMetal>
                 P::FAMILY_NAME
             ),
         )?;
-        let Some(plan) =
-            fast_subsampled_region_scaled_batch_plan(packet, roi, scale, 1, segment_count_u32)
-        else {
+        let Some(plan) = fast_subsampled_region_scaled_batch_plan(
+            packet,
+            roi,
+            scale,
+            1,
+            segment_count_u32,
+            mode,
+        ) else {
             return Ok(None);
         };
 
         for group in &mut groups {
-            let first = packets[group.indices[0]];
+            let (first, first_mode) = packets[group.indices[0]];
             let first_segment_count = first.entropy_checkpoints().len();
-            if scale == group.scale
+            if mode == first_mode
+                && scale == group.scale
                 && plan == group.plan
                 && fast_subsampled_packets_share_full_rgb_batch_shape(
                     first,
@@ -256,12 +262,6 @@ pub(super) fn fast444_packets_share_region_scaled_batch_shape(
     segment_count: usize,
 ) -> bool {
     fast_packets_share_batch_shape(first, packet, segment_count, false)
-}
-
-pub(super) fn fast444_full_rgb_batch_groups(
-    packets: &[(&JpegFast444PacketV1, PlaneMode)],
-) -> Option<Vec<Vec<usize>>> {
-    fast_full_rgb_batch_groups(packets, false)
 }
 
 struct Fast444RegionScaledGroup {

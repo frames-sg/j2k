@@ -6,7 +6,7 @@ use j2k_core::{
     ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PassthroughCandidate, PassthroughDecision,
     PassthroughRejectReason, PassthroughRequirements, PixelFormat, PixelLayout, ReadySubmission,
     Rect, SampleType, ScratchPool, TileBatchDecodeDevice, TileBatchDecodeManyDevice,
-    TileBatchDecodeSubmit, TileBatchOptions,
+    TileBatchDecodeSubmit, TileBatchOptions, TileRegionScaledDeviceDecodeRequest,
 };
 use j2k_core::{
     CodedUnitLayout, Colorspace, CompressedPayloadKind, CompressedTransferSyntax, Info, TileLayout,
@@ -398,7 +398,7 @@ fn execution_stats_and_gpu_abi_helpers_are_stable() {
     assert_eq!(combined.kernel_dispatches, 3);
 
     let values = [1_u32, 2_u32];
-    let bytes = <u32 as j2k_core::GpuAbi>::slice_as_bytes(&values);
+    let bytes = <u32 as j2k_core::accelerator::GpuAbi>::slice_as_bytes(&values);
     assert_eq!(bytes.len(), 8);
     assert_eq!(
         j2k_core::DeviceMemoryRange::new(j2k_core::BackendKind::Cuda, 7, 8, 9).len,
@@ -732,12 +732,15 @@ impl TileBatchDecodeSubmit for DummyCodec {
         _ctx: &mut DecoderContext<Self::Context>,
         session: &mut Self::Session,
         _pool: &mut Self::Pool,
-        _input: &[u8],
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
+        request: TileRegionScaledDeviceDecodeRequest<'_>,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
+        let TileRegionScaledDeviceDecodeRequest {
+            fmt,
+            roi,
+            scale,
+            backend,
+            ..
+        } = request;
         *session += 1;
         let scaled = roi.scaled_covering(scale);
         Ok(ReadySubmission::from_result(Ok(DummySurface {

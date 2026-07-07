@@ -8,7 +8,7 @@
 
 use j2k::{BackendRequest, Downscale, PixelFormat, Rect};
 use j2k_core::DeviceSurface;
-use j2k_metal::J2kDecoder;
+use j2k_metal::{J2kDecoder, MetalDecodeRequest};
 use j2k_native::{encode_htj2k, EncodeOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,11 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scale = Downscale::Half;
 
     let mut auto_decoder = J2kDecoder::new(&codestream)?;
-    let auto = auto_decoder.decode_region_scaled_to_device_with_report(
-        PixelFormat::Gray8,
-        roi,
-        scale,
-        BackendRequest::Auto,
+    let auto = auto_decoder.decode_request_to_device_with_report(
+        MetalDecodeRequest::region_scaled(PixelFormat::Gray8, roi, scale, BackendRequest::Auto),
     )?;
     println!("auto_selected_backend={:?}", auto.report.selected_backend);
     println!("auto_residency={:?}", auto.report.surface_residency);
@@ -50,12 +47,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("auto_output_bytes={}", auto.surface.byte_len());
 
     let mut strict_decoder = J2kDecoder::new(&codestream)?;
-    match strict_decoder.decode_region_scaled_to_device_with_report(
+    match strict_decoder.decode_request_to_device_with_report(MetalDecodeRequest::region_scaled(
         PixelFormat::Gray8,
         roi,
         scale,
         BackendRequest::Metal,
-    ) {
+    )) {
         Ok(strict) => {
             println!(
                 "strict_metal_selected_backend={:?}",

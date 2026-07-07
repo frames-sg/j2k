@@ -1,5 +1,86 @@
 #![allow(clippy::similar_names)]
 
+use j2k_core::CodecError;
+use j2k_jpeg::{DecodeRequest, JpegBackend, JpegEncodeError, JpegSubsampling};
+
+struct EncodeClassificationCase {
+    error: JpegEncodeError,
+    unsupported: bool,
+    buffer_error: bool,
+}
+
+fn encode_classification_cases() -> Vec<EncodeClassificationCase> {
+    vec![
+        EncodeClassificationCase {
+            error: JpegEncodeError::EmptyDimensions,
+            unsupported: false,
+            buffer_error: true,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::DimensionsTooLarge {
+                width: 70_000,
+                height: 8,
+            },
+            unsupported: false,
+            buffer_error: true,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::SampleLength {
+                expected: 12,
+                actual: 8,
+            },
+            unsupported: false,
+            buffer_error: true,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::IncompatibleSubsampling {
+                subsampling: JpegSubsampling::Ybr420,
+                samples: "Gray8",
+            },
+            unsupported: true,
+            buffer_error: false,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::InvalidRestartInterval,
+            unsupported: false,
+            buffer_error: false,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::UnsupportedBackend {
+                backend: JpegBackend::Cpu,
+            },
+            unsupported: true,
+            buffer_error: false,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::SegmentTooLarge { name: "APP0" },
+            unsupported: false,
+            buffer_error: false,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::MissingHuffmanCode { symbol: 17 },
+            unsupported: false,
+            buffer_error: false,
+        },
+        EncodeClassificationCase {
+            error: JpegEncodeError::Internal("entropy overflow".to_string()),
+            unsupported: false,
+            buffer_error: false,
+        },
+    ]
+}
+
+#[test]
+fn metal_encode_errors_match_cuda_classification_contract() {
+    for case in encode_classification_cases() {
+        let err = j2k_jpeg_metal::Error::from(case.error);
+        assert_eq!(err.is_unsupported(), case.unsupported, "{err:?}");
+        assert_eq!(err.is_buffer_error(), case.buffer_error, "{err:?}");
+        assert!(!err.is_truncated(), "{err:?}");
+        assert!(!err.is_not_implemented(), "{err:?}");
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn assert_independent_decoder_accepts(
     encoded: &[u8],
@@ -31,7 +112,7 @@ fn assert_independent_decoder_accepts(
 #[test]
 fn metal_baseline_encoder_round_trips_rgb_422() {
     use j2k_core::PixelFormat;
-    use j2k_jpeg::{DecodeOptions, Decoder, JpegBackend, JpegEncodeOptions, JpegSubsampling};
+    use j2k_jpeg::{Decoder, JpegBackend, JpegEncodeOptions, JpegSubsampling};
     use j2k_jpeg_metal::{
         encode_jpeg_baseline_from_metal_buffer, JpegBaselineMetalEncodeTile, MetalBackendSession,
     };
@@ -72,10 +153,9 @@ fn metal_baseline_encoder_round_trips_rgb_422() {
     assert!(encoded.data.starts_with(&[0xff, 0xd8]));
     assert!(encoded.data.ends_with(&[0xff, 0xd9]));
 
-    let decoder = Decoder::new_with_options(&encoded.data, DecodeOptions::default())
-        .expect("parse Metal-encoded JPEG");
+    let decoder = Decoder::new(&encoded.data).expect("parse Metal-encoded JPEG");
     let (decoded, outcome) = decoder
-        .decode(PixelFormat::Rgb8)
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("decode Metal-encoded JPEG");
 
     assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
@@ -92,7 +172,7 @@ fn metal_baseline_encoder_round_trips_rgb_422() {
 #[test]
 fn metal_baseline_encoder_round_trips_all_rgb_subsampling_modes() {
     use j2k_core::PixelFormat;
-    use j2k_jpeg::{DecodeOptions, Decoder, JpegBackend, JpegEncodeOptions, JpegSubsampling};
+    use j2k_jpeg::{Decoder, JpegBackend, JpegEncodeOptions, JpegSubsampling};
     use j2k_jpeg_metal::{
         encode_jpeg_baseline_from_metal_buffer, JpegBaselineMetalEncodeTile, MetalBackendSession,
     };
@@ -142,10 +222,9 @@ fn metal_baseline_encoder_round_trips_all_rgb_subsampling_modes() {
         .expect("Metal JPEG baseline encode");
 
         assert_eq!(encoded.backend, JpegBackend::Metal);
-        let decoder = Decoder::new_with_options(&encoded.data, DecodeOptions::default())
-            .expect("parse Metal-encoded JPEG");
+        let decoder = Decoder::new(&encoded.data).expect("parse Metal-encoded JPEG");
         let (decoded, outcome) = decoder
-            .decode(PixelFormat::Rgb8)
+            .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
             .expect("decode Metal-encoded JPEG");
 
         assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
@@ -163,7 +242,7 @@ fn metal_baseline_encoder_round_trips_all_rgb_subsampling_modes() {
 #[test]
 fn metal_baseline_encoder_round_trips_gray_with_padded_output() {
     use j2k_core::PixelFormat;
-    use j2k_jpeg::{DecodeOptions, Decoder, JpegBackend, JpegEncodeOptions, JpegSubsampling};
+    use j2k_jpeg::{Decoder, JpegBackend, JpegEncodeOptions, JpegSubsampling};
     use j2k_jpeg_metal::{
         encode_jpeg_baseline_from_metal_buffer, JpegBaselineMetalEncodeTile, MetalBackendSession,
     };
@@ -203,10 +282,9 @@ fn metal_baseline_encoder_round_trips_gray_with_padded_output() {
     .expect("Metal JPEG baseline encode");
 
     assert_eq!(encoded.backend, JpegBackend::Metal);
-    let decoder = Decoder::new_with_options(&encoded.data, DecodeOptions::default())
-        .expect("parse Metal-encoded gray JPEG");
+    let decoder = Decoder::new(&encoded.data).expect("parse Metal-encoded gray JPEG");
     let (decoded, outcome) = decoder
-        .decode(PixelFormat::Gray8)
+        .decode_request(DecodeRequest::full(PixelFormat::Gray8))
         .expect("decode Metal-encoded gray JPEG");
 
     assert_eq!(
@@ -229,7 +307,7 @@ fn metal_baseline_encoder_round_trips_gray_with_padded_output() {
 #[test]
 fn metal_baseline_batch_encoder_round_trips_multiple_rgb_tiles() {
     use j2k_core::PixelFormat;
-    use j2k_jpeg::{DecodeOptions, Decoder, JpegBackend, JpegEncodeOptions, JpegSubsampling};
+    use j2k_jpeg::{Decoder, JpegBackend, JpegEncodeOptions, JpegSubsampling};
     use j2k_jpeg_metal::{
         encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile,
         MetalBackendSession,
@@ -285,10 +363,9 @@ fn metal_baseline_batch_encoder_round_trips_multiple_rgb_tiles() {
     assert_eq!(encoded.len(), tile_count);
     for frame in encoded {
         assert_eq!(frame.backend, JpegBackend::Metal);
-        let decoder = Decoder::new_with_options(&frame.data, DecodeOptions::default())
-            .expect("parse Metal batch JPEG");
+        let decoder = Decoder::new(&frame.data).expect("parse Metal batch JPEG");
         let (decoded, outcome) = decoder
-            .decode(PixelFormat::Rgb8)
+            .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
             .expect("decode Metal batch JPEG");
         assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
         assert_eq!(decoded.len(), tile_bytes);

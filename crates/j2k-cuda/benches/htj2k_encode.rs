@@ -271,13 +271,15 @@ fn bench_codeblock_microkernels(
                 let resources = context
                     .upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table))
                     .expect("CUDA HTJ2K encode resources");
+                let pool = context.buffer_pool();
                 b.iter(|| {
                     let encoded = context
-                        .encode_htj2k_codeblocks_resident_with_resources(
+                        .encode_htj2k_codeblocks_resident_with_resources_and_pool(
                             &resident_coefficients,
                             coefficients.len(),
                             std::hint::black_box(jobs),
                             &resources,
+                            &pool,
                         )
                         .expect("CUDA resident HTJ2K code-block encode");
                     std::hint::black_box(assert_cuda_batch(&encoded))
@@ -334,13 +336,15 @@ fn bench_device_input_regions(
                 let resources = context
                     .upload_htj2k_encode_resources(cuda_encode_tables(&uvlc_table))
                     .expect("CUDA HTJ2K encode resources");
+                let pool = context.buffer_pool();
                 b.iter(|| {
                     let encoded = context
-                        .encode_htj2k_codeblock_regions_resident_with_resources(
+                        .encode_htj2k_codeblock_regions_resident_with_resources_and_pool(
                             &resident_coefficients,
                             coefficients.len(),
                             std::hint::black_box(jobs),
                             &resources,
+                            &pool,
                         )
                         .expect("CUDA resident strided HTJ2K encode");
                     std::hint::black_box(assert_cuda_batch(&encoded))

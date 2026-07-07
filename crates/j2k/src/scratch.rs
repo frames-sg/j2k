@@ -41,6 +41,7 @@ impl J2kScratchPool {
     }
 }
 
+#[doc(hidden)]
 impl ScratchPool for J2kScratchPool {
     fn bytes_allocated(&self) -> usize {
         self.packed_bytes.capacity() + self.row_u16.capacity() * core::mem::size_of::<u16>()

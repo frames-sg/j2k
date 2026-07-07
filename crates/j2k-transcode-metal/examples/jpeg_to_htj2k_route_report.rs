@@ -7,7 +7,7 @@
 
 use j2k_core::BackendRequest;
 use j2k_test_support::JPEG_GRAYSCALE_8X8;
-use j2k_transcode::JpegToHtj2kOptions;
+use j2k_transcode::{JpegToHtj2kOptions, TranscodePipelineMap};
 use j2k_transcode_metal::jpeg_to_htj2k_with_metal_route;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,6 +38,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         routed.encoded.codestream.len(),
         transfer_bytes
     );
-    print!("{}", routed.route.pipeline_map.debug_report());
+    print_pipeline_map(&routed.route.pipeline_map);
     Ok(())
+}
+
+fn print_pipeline_map(map: &TranscodePipelineMap) {
+    println!("jpeg_to_htj2k_pipeline_map");
+    for stage in &map.stages {
+        println!(
+            "stage={} processor={} cpu_us={} metal_us={} transfer_us={} transfer_count={} transfer_bytes={} resident_handoffs={} dispatches={} fallback_jobs={} note={}",
+            stage.stage,
+            stage.processor,
+            stage.cpu_us,
+            stage.metal_us,
+            stage.transfer_us,
+            stage.transfer_count,
+            stage.transfer_bytes,
+            stage.resident_handoff_count,
+            stage.dispatches,
+            stage.fallback_jobs,
+            stage.note,
+        );
+    }
+    println!(
+        "recommend_next_stage={} evidence_us={} evidence_dispatches={} reason={}",
+        map.recommendation.stage,
+        map.recommendation.evidence_us,
+        map.recommendation.evidence_dispatches,
+        map.recommendation.reason,
+    );
 }

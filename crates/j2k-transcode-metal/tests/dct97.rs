@@ -8,13 +8,11 @@ use j2k_transcode::accelerator::{
     PrequantizedHtj2k97Component,
 };
 #[cfg(target_os = "macos")]
-use j2k_transcode::dct97_2d::{
-    dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
-};
-#[cfg(target_os = "macos")]
-use j2k_transcode::htj2k97_codeblock_oracle::prequantized_component_from_dwt97;
+use j2k_transcode::{dct8x8_blocks_then_dwt97_float, Dwt97TwoDimensional};
 use j2k_transcode_metal::weights::{Dwt97WeightRows, SparseDwt97WeightRows};
 use j2k_transcode_metal::MetalDctToWaveletStageAccelerator;
+#[cfg(target_os = "macos")]
+use j2k_transcode_test_support::prequantized_component_from_dwt97;
 
 #[test]
 fn explicit_metal_reports_unavailable_on_non_macos() {
@@ -70,7 +68,10 @@ fn auto_metal_uses_cpu_for_97_jobs_by_default() {
         width: 512,
         height: 512,
     }) {
-        Ok(None) | Err(TranscodeStageError::DeviceUnavailable) => {}
+        Ok(None) => {}
+        Err(TranscodeStageError::DeviceUnavailable) => {
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+        }
         Ok(Some(_)) => panic!("auto Metal should leave 9/7 jobs on the optimized CPU path"),
         Err(message) => panic!("auto Metal 9/7 accelerator failed: {message}"),
     }
@@ -83,7 +84,6 @@ fn auto_metal_uses_cpu_for_97_jobs_by_default() {
 #[test]
 fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
     let blocks = structured_blocks(2, 2);
-    let mut scalar_scratch = Dct97GridScratch::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
     for (width, height) in [(8, 8), (13, 11), (16, 16)] {
@@ -97,20 +97,13 @@ fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
             Ok(Some(output)) => output,
             Ok(None) => panic!("explicit Metal accelerator must not silently fall back"),
             Err(TranscodeStageError::DeviceUnavailable) => {
-                eprintln!("skipping Metal coefficient test because no Metal device is available");
+                j2k_test_support::metal_device_unavailable_is_skip(module_path!());
                 return;
             }
             Err(message) => panic!("explicit Metal accelerator failed: {message}"),
         };
-        let expected = dct8x8_blocks_then_dwt97_float_with_scratch(
-            &blocks,
-            2,
-            2,
-            width,
-            height,
-            &mut scalar_scratch,
-        )
-        .expect("scalar 9/7 IDCT path accepts covered grid");
+        let expected = dct8x8_blocks_then_dwt97_float(&blocks, 2, 2, width, height)
+            .expect("scalar 9/7 IDCT path accepts covered grid");
 
         let max_diff = max_abs_diff(&actual, &expected);
         assert!(
@@ -143,14 +136,13 @@ fn explicit_metal_dct97_batch_matches_scalar_for_structured_cases() {
             height: 11,
         },
     ];
-    let mut scalar_scratch = Dct97GridScratch::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
     let actual = match accelerator.dct_grid_to_dwt97_batch(&jobs) {
         Ok(Some(output)) => output,
         Ok(None) => panic!("explicit Metal batch accelerator must not silently fall back"),
         Err(TranscodeStageError::DeviceUnavailable) => {
-            eprintln!("skipping Metal batch coefficient test because no Metal device is available");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         }
         Err(message) => panic!("explicit Metal batch accelerator failed: {message}"),
@@ -158,13 +150,12 @@ fn explicit_metal_dct97_batch_matches_scalar_for_structured_cases() {
 
     assert_eq!(actual.len(), jobs.len());
     for (actual, job) in actual.iter().zip(jobs.iter()) {
-        let expected = dct8x8_blocks_then_dwt97_float_with_scratch(
+        let expected = dct8x8_blocks_then_dwt97_float(
             job.blocks,
             job.block_cols,
             job.block_rows,
             job.width,
             job.height,
-            &mut scalar_scratch,
         )
         .expect("scalar 9/7 IDCT path accepts covered grid");
 
@@ -201,7 +192,7 @@ fn explicit_metal_dct97_batch_reports_idct_row_and_column_stage_timings() {
         Ok(Some(_)) => {}
         Ok(None) => panic!("explicit Metal batch accelerator must not silently fall back"),
         Err(TranscodeStageError::DeviceUnavailable) => {
-            eprintln!("skipping Metal batch timing test because no Metal device is available");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         }
         Err(message) => panic!("explicit Metal batch accelerator failed: {message}"),
@@ -257,22 +248,20 @@ fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
             panic!("explicit Metal code-block batch accelerator must not silently fall back")
         }
         Err(TranscodeStageError::DeviceUnavailable) => {
-            eprintln!("skipping Metal code-block batch test because no Metal device is available");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         }
         Err(message) => panic!("explicit Metal code-block batch accelerator failed: {message}"),
     };
 
     assert_eq!(actual.len(), jobs.len());
-    let mut scalar_scratch = Dct97GridScratch::default();
     for (actual, job) in actual.iter().zip(jobs.iter()) {
-        let dwt = dct8x8_blocks_then_dwt97_float_with_scratch(
+        let dwt = dct8x8_blocks_then_dwt97_float(
             job.blocks,
             job.block_cols,
             job.block_rows,
             job.width,
             job.height,
-            &mut scalar_scratch,
         )
         .expect("scalar 9/7 IDCT path accepts covered grid");
         let expected = prequantized_component_from_dwt97(&dwt, options, job.x_rsiz, job.y_rsiz);
@@ -332,22 +321,20 @@ fn explicit_metal_dct97_codeblock_batch_accepts_zero_guard_bits_and_matches_scal
             panic!("explicit Metal code-block batch accelerator must not silently fall back")
         }
         Err(TranscodeStageError::DeviceUnavailable) => {
-            eprintln!("skipping Metal zero-guard-bits test because no Metal device is available");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         }
         Err(message) => panic!("explicit Metal rejected guard_bits == 0: {message}"),
     };
 
     assert_eq!(actual.len(), jobs.len());
-    let mut scalar_scratch = Dct97GridScratch::default();
     let job = &jobs[0];
-    let dwt = dct8x8_blocks_then_dwt97_float_with_scratch(
+    let dwt = dct8x8_blocks_then_dwt97_float(
         job.blocks,
         job.block_cols,
         job.block_rows,
         job.width,
         job.height,
-        &mut scalar_scratch,
     )
     .expect("scalar 9/7 IDCT path accepts covered grid");
     let expected = prequantized_component_from_dwt97(&dwt, options, job.x_rsiz, job.y_rsiz);
