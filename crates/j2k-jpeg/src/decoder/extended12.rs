@@ -2,10 +2,11 @@
 
 use super::lossless_helpers::{upsample_h2v1_u16_at, Extended12RestartTracker};
 use super::{
-    checked_scratch_len, decode_block_with_activity, finish_scan, BitReader, BlockActivity,
-    CoefficientBlock, ColorSpace, DownscaleFactor, Info, JpegError, LosslessColorSampling,
-    PreparedComponentPlan, PreparedDecodePlan, PreparedProgressivePlan, Rect, SofKind, Vec,
-    Warning, ZIGZAG,
+    allocate_output_buffer, checked_scratch_len, copy_rgb16_to_rgba16, decode_block_with_activity,
+    decode_progressive_dct_blocks, finish_scan, merged_warnings, scaled_rect_covering, BitReader,
+    BlockActivity, CoefficientBlock, ColorSpace, DecodeOutcome, Decoder, DownscaleFactor, Info,
+    JpegError, LosslessColorSampling, PreparedComponentPlan, PreparedDecodePlan,
+    PreparedProgressivePlan, Rect, SofKind, Vec, Warning, ZIGZAG,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -1067,5 +1068,820 @@ pub(super) fn write_extended12_block_region(
                 }
             }
         }
+    }
+}
+
+impl Decoder<'_> {
+    pub(super) fn decode_12bit_rgba16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        alpha: u16,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let rgb_stride = output_rect.w as usize * 6;
+        let mut rgb =
+            allocate_output_buffer(checked_scratch_len(&[rgb_stride, output_rect.h as usize])?);
+        let outcome = if self.info.sof_kind == SofKind::Progressive12 {
+            self.decode_progressive12_rgb16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)
+        } else {
+            self.decode_extended12_rgb16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)
+        }?;
+        copy_rgb16_to_rgba16(
+            &rgb,
+            rgb_stride,
+            output_rect.w,
+            output_rect.h,
+            out,
+            stride,
+            alpha,
+        );
+        Ok(outcome)
+    }
+
+    pub(super) fn decode_progressive12_gray16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_progressive12_region_into(out, stride, roi, downscale, Extended12Output::Gray16)
+    }
+
+    pub(super) fn decode_progressive12_rgb16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_progressive12_region_into(out, stride, roi, downscale, Extended12Output::Rgb16)
+    }
+
+    fn decode_progressive12_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        output: Extended12Output,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .progressive_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if self.info.sof_kind != SofKind::Progressive12
+            || !matches!(
+                self.info.color_space,
+                ColorSpace::Grayscale
+                    | ColorSpace::YCbCr
+                    | ColorSpace::Rgb
+                    | ColorSpace::Cmyk
+                    | ColorSpace::Ycck
+            )
+        {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+        if !roi.is_within(self.info.dimensions) {
+            return Err(JpegError::RectOutOfBounds {
+                rect: roi,
+                width: self.info.dimensions.0,
+                height: self.info.dimensions.1,
+            });
+        }
+        if matches!(output, Extended12Output::Rgb16) {
+            match self.info.color_space {
+                ColorSpace::Rgb => {
+                    let sampling = progressive_color_sampling(plan, self.info.sof_kind)?;
+                    return match sampling {
+                        Extended12ColorSampling::S444 => self
+                            .decode_progressive12_color444_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                Extended12RgbProjection::Identity,
+                            ),
+                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                            .decode_progressive12_color_subsampled_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                sampling,
+                                Extended12RgbProjection::Identity,
+                            ),
+                    };
+                }
+                ColorSpace::YCbCr => {
+                    let sampling = progressive_color_sampling(plan, self.info.sof_kind)?;
+                    return match sampling {
+                        Extended12ColorSampling::S444 => self
+                            .decode_progressive12_color444_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                Extended12RgbProjection::YCbCr,
+                            ),
+                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                            .decode_progressive12_color_subsampled_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                sampling,
+                                Extended12RgbProjection::YCbCr,
+                            ),
+                    };
+                }
+                ColorSpace::Cmyk | ColorSpace::Ycck => {
+                    let sampling = progressive_four_component_sampling(plan, self.info.sof_kind)?;
+                    return self.decode_progressive12_four_component_region_into(
+                        out, stride, roi, downscale, sampling,
+                    );
+                }
+                ColorSpace::Grayscale => {}
+            }
+        }
+        if self.info.color_space != ColorSpace::Grayscale || plan.components.len() != 1 {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
+        let component = &plan.components[0];
+        let component_coeffs = &dct_blocks.quantized[0];
+        let (width, height) = self.info.dimensions;
+        let mut dequant = [0i16; 64];
+        let mut pixels = [0u16; 64];
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: (width, height),
+            downscale,
+            output,
+        };
+
+        for block_y in 0..component.block_rows as usize {
+            for block_x in 0..component.block_cols as usize {
+                let block_index = block_y * component.block_cols as usize + block_x;
+                dequantize_progressive12_block(
+                    &component_coeffs[block_index],
+                    &component.quant,
+                    &mut dequant,
+                );
+                if dequant[1..].iter().all(|&coeff| coeff == 0) {
+                    pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(dequant[0]));
+                } else {
+                    crate::idct::idct_islow_12bit(&dequant, &mut pixels);
+                }
+                write_extended12_block_region(
+                    out,
+                    stride,
+                    write_region,
+                    ((block_x as u32) * 8, (block_y as u32) * 8),
+                    &pixels,
+                );
+            }
+        }
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: self.warnings.to_vec(),
+        })
+    }
+
+    fn decode_progressive12_color444_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        projection: Extended12RgbProjection,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .progressive_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if plan.components.len() != 3
+            || plan.sampling.max_h != 1
+            || plan.sampling.max_v != 1
+            || plan
+                .components
+                .iter()
+                .any(|component| component.h != 1 || component.v != 1 || component.output_index > 2)
+        {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
+        let (width, height) = self.info.dimensions;
+        let component_indices = progressive_color_component_indices(plan)?;
+        let block_cols = plan.components[component_indices[0]].block_cols as usize;
+        let block_rows = plan.components[component_indices[0]].block_rows as usize;
+        let mut dequant = [[0i16; 64]; 3];
+        let mut pixels = [[0u16; 64]; 3];
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: (width, height),
+            downscale,
+            output: Extended12Output::Rgb16,
+        };
+
+        for block_y in 0..block_rows {
+            for block_x in 0..block_cols {
+                for output_index in 0..3 {
+                    let component_index = component_indices[output_index];
+                    let component = &plan.components[component_index];
+                    let component_coeffs = &dct_blocks.quantized[component_index];
+                    let block_index = block_y * component.block_cols as usize + block_x;
+                    dequantize_progressive12_block(
+                        &component_coeffs[block_index],
+                        &component.quant,
+                        &mut dequant[output_index],
+                    );
+                    if dequant[output_index][1..].iter().all(|&coeff| coeff == 0) {
+                        pixels[output_index].fill(crate::idct::idct_islow_12bit_dc_only_sample(
+                            dequant[output_index][0],
+                        ));
+                    } else {
+                        crate::idct::idct_islow_12bit(
+                            &dequant[output_index],
+                            &mut pixels[output_index],
+                        );
+                    }
+                }
+                write_extended12_rgb_block_region(
+                    out,
+                    stride,
+                    write_region,
+                    projection,
+                    ((block_x as u32) * 8, (block_y as u32) * 8),
+                    &pixels,
+                );
+            }
+        }
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: self.warnings.to_vec(),
+        })
+    }
+
+    fn decode_progressive12_color_subsampled_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        sampling: Extended12ColorSampling,
+        projection: Extended12RgbProjection,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .progressive_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        debug_assert!(matches!(
+            sampling,
+            Extended12ColorSampling::S422 | Extended12ColorSampling::S420
+        ));
+        if progressive_color_sampling(plan, self.info.sof_kind)? != sampling {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
+        let planes = render_progressive12_color_planes(plan, &dct_blocks.quantized)?;
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: self.info.dimensions,
+            downscale,
+            output: Extended12Output::Rgb16,
+        };
+        match sampling {
+            Extended12ColorSampling::S444 => unreachable!("4:4:4 path is handled directly"),
+            Extended12ColorSampling::S422 => write_extended12_color422_planes_region(
+                out,
+                stride,
+                write_region,
+                projection,
+                &planes,
+            ),
+            Extended12ColorSampling::S420 => write_extended12_color420_planes_region(
+                out,
+                stride,
+                write_region,
+                projection,
+                &planes,
+            ),
+        }
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: self.warnings.to_vec(),
+        })
+    }
+
+    fn decode_progressive12_four_component_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        sampling: Extended12ColorSampling,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .progressive_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if progressive_four_component_sampling(plan, self.info.sof_kind)? != sampling {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
+        let planes = render_progressive12_four_component_planes(plan, &dct_blocks.quantized)?;
+        write_extended12_four_component_planes_region(
+            out,
+            stride,
+            Extended12WriteRegion {
+                output_rect,
+                dimensions: self.info.dimensions,
+                downscale,
+                output: Extended12Output::Rgb16,
+            },
+            self.info.color_space,
+            sampling,
+            &planes,
+        );
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: self.warnings.to_vec(),
+        })
+    }
+
+    pub(super) fn decode_extended12_gray16_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(
+            out,
+            stride,
+            Rect::full(self.info.dimensions),
+            DownscaleFactor::Full,
+            Extended12Output::Gray16,
+        )
+    }
+
+    pub(super) fn decode_extended12_gray16_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(
+            out,
+            stride,
+            roi,
+            DownscaleFactor::Full,
+            Extended12Output::Gray16,
+        )
+    }
+
+    pub(super) fn decode_extended12_gray16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(out, stride, roi, downscale, Extended12Output::Gray16)
+    }
+
+    pub(super) fn decode_extended12_rgb16_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(
+            out,
+            stride,
+            Rect::full(self.info.dimensions),
+            DownscaleFactor::Full,
+            Extended12Output::Rgb16,
+        )
+    }
+
+    pub(super) fn decode_extended12_rgb16_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(
+            out,
+            stride,
+            roi,
+            DownscaleFactor::Full,
+            Extended12Output::Rgb16,
+        )
+    }
+
+    pub(super) fn decode_extended12_rgb16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(out, stride, roi, downscale, Extended12Output::Rgb16)
+    }
+
+    fn decode_extended12_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        output: Extended12Output,
+    ) -> Result<DecodeOutcome, JpegError> {
+        if self.info.sof_kind != SofKind::Extended12 {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+        if !roi.is_within(self.info.dimensions) {
+            return Err(JpegError::RectOutOfBounds {
+                rect: roi,
+                width: self.info.dimensions.0,
+                height: self.info.dimensions.1,
+            });
+        }
+        if matches!(output, Extended12Output::Rgb16) {
+            match self.info.color_space {
+                ColorSpace::Rgb => {
+                    let sampling = extended12_color_sampling(&self.plan, self.info.sof_kind)?;
+                    return match sampling {
+                        Extended12ColorSampling::S444 => self
+                            .decode_extended12_color444_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                Extended12RgbProjection::Identity,
+                            ),
+                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                            .decode_extended12_color_subsampled_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                sampling,
+                                Extended12RgbProjection::Identity,
+                            ),
+                    };
+                }
+                ColorSpace::YCbCr => {
+                    let sampling = extended12_color_sampling(&self.plan, self.info.sof_kind)?;
+                    return match sampling {
+                        Extended12ColorSampling::S444 => self
+                            .decode_extended12_color444_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                Extended12RgbProjection::YCbCr,
+                            ),
+                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                            .decode_extended12_color_subsampled_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                sampling,
+                                Extended12RgbProjection::YCbCr,
+                            ),
+                    };
+                }
+                ColorSpace::Cmyk | ColorSpace::Ycck => {
+                    let sampling =
+                        extended12_four_component_sampling(&self.plan, self.info.sof_kind)?;
+                    return match sampling {
+                        Extended12ColorSampling::S444 => self
+                            .decode_extended12_four_component444_region_into(
+                                out, stride, roi, downscale,
+                            ),
+                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                            .decode_extended12_four_component_subsampled_region_into(
+                                out, stride, roi, downscale, sampling,
+                            ),
+                    };
+                }
+                ColorSpace::Grayscale => {}
+            }
+        }
+        if self.info.color_space != ColorSpace::Grayscale || self.plan.components.len() != 1 {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let scan_bytes = &self.bytes[self.plan.scan_offset..];
+        let component = &self.plan.components[0];
+        let (width, height) = self.info.dimensions;
+        let mcu_cols = width.div_ceil(8);
+        let mcu_rows = height.div_ceil(8);
+        let mut br = BitReader::new(scan_bytes);
+        let mut prev_dc = 0i32;
+        let mut coeff = CoefficientBlock::default();
+        let mut pixels = [0u16; 64];
+        let total_mcus = mcu_cols * mcu_rows;
+        let mut restart_tracker =
+            Extended12RestartTracker::new(self.plan.restart_interval, total_mcus);
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: (width, height),
+            downscale,
+            output,
+        };
+
+        for mcu_y in 0..mcu_rows {
+            for mcu_x in 0..mcu_cols {
+                let current_mcu = mcu_y * mcu_cols + mcu_x;
+                if restart_tracker.begin_mcu(&mut br, current_mcu)? {
+                    prev_dc = 0;
+                }
+                decode_extended12_block_pixels(
+                    &mut br,
+                    component,
+                    &mut prev_dc,
+                    &mut coeff,
+                    &mut pixels,
+                )?;
+                write_extended12_block_region(
+                    out,
+                    stride,
+                    write_region,
+                    (mcu_x * 8, mcu_y * 8),
+                    &pixels,
+                );
+                restart_tracker.finish_mcu();
+            }
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
+    fn decode_extended12_color444_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        projection: Extended12RgbProjection,
+    ) -> Result<DecodeOutcome, JpegError> {
+        validate_extended12_color444_plan(&self.plan, self.info.sof_kind)?;
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let scan_bytes = &self.bytes[self.plan.scan_offset..];
+        let (width, height) = self.info.dimensions;
+        let mcu_cols = width.div_ceil(8);
+        let mcu_rows = height.div_ceil(8);
+        let mut br = BitReader::new(scan_bytes);
+        let mut prev_dc = [0i32; 3];
+        let mut coeffs: [CoefficientBlock; 3] =
+            core::array::from_fn(|_| CoefficientBlock::default());
+        let mut pixels = [[0u16; 64]; 3];
+        let total_mcus = mcu_cols * mcu_rows;
+        let mut restart_tracker =
+            Extended12RestartTracker::new(self.plan.restart_interval, total_mcus);
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: (width, height),
+            downscale,
+            output: Extended12Output::Rgb16,
+        };
+
+        for mcu_y in 0..mcu_rows {
+            for mcu_x in 0..mcu_cols {
+                let current_mcu = mcu_y * mcu_cols + mcu_x;
+                if restart_tracker.begin_mcu(&mut br, current_mcu)? {
+                    prev_dc.fill(0);
+                }
+                for component in &self.plan.components {
+                    let output_index = component.output_index;
+                    decode_extended12_block_pixels(
+                        &mut br,
+                        component,
+                        &mut prev_dc[output_index],
+                        &mut coeffs[output_index],
+                        &mut pixels[output_index],
+                    )?;
+                }
+                write_extended12_rgb_block_region(
+                    out,
+                    stride,
+                    write_region,
+                    projection,
+                    (mcu_x * 8, mcu_y * 8),
+                    &pixels,
+                );
+                restart_tracker.finish_mcu();
+            }
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
+    fn decode_extended12_color_subsampled_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        sampling: Extended12ColorSampling,
+        projection: Extended12RgbProjection,
+    ) -> Result<DecodeOutcome, JpegError> {
+        debug_assert!(matches!(
+            sampling,
+            Extended12ColorSampling::S422 | Extended12ColorSampling::S420
+        ));
+        if extended12_color_sampling(&self.plan, self.info.sof_kind)? != sampling {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let scan_bytes = &self.bytes[self.plan.scan_offset..];
+        let (planes, scan_warnings) =
+            decode_extended12_color_planes(&self.plan, scan_bytes, self.info.sof_kind)?;
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: self.info.dimensions,
+            downscale,
+            output: Extended12Output::Rgb16,
+        };
+        match sampling {
+            Extended12ColorSampling::S444 => unreachable!("4:4:4 path is handled directly"),
+            Extended12ColorSampling::S422 => write_extended12_color422_planes_region(
+                out,
+                stride,
+                write_region,
+                projection,
+                &planes,
+            ),
+            Extended12ColorSampling::S420 => write_extended12_color420_planes_region(
+                out,
+                stride,
+                write_region,
+                projection,
+                &planes,
+            ),
+        }
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
+    fn decode_extended12_four_component444_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        validate_extended12_four_component444_plan(&self.plan, self.info.sof_kind)?;
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let scan_bytes = &self.bytes[self.plan.scan_offset..];
+        let (width, height) = self.info.dimensions;
+        let mcu_cols = width.div_ceil(8);
+        let mcu_rows = height.div_ceil(8);
+        let mut br = BitReader::new(scan_bytes);
+        let mut prev_dc = [0i32; 4];
+        let mut coeffs: [CoefficientBlock; 4] =
+            core::array::from_fn(|_| CoefficientBlock::default());
+        let mut pixels = [[0u16; 64]; 4];
+        let total_mcus = mcu_cols * mcu_rows;
+        let mut restart_tracker =
+            Extended12RestartTracker::new(self.plan.restart_interval, total_mcus);
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: (width, height),
+            downscale,
+            output: Extended12Output::Rgb16,
+        };
+
+        for mcu_y in 0..mcu_rows {
+            for mcu_x in 0..mcu_cols {
+                let current_mcu = mcu_y * mcu_cols + mcu_x;
+                if restart_tracker.begin_mcu(&mut br, current_mcu)? {
+                    prev_dc.fill(0);
+                }
+                for component in &self.plan.components {
+                    let output_index = component.output_index;
+                    decode_extended12_block_pixels(
+                        &mut br,
+                        component,
+                        &mut prev_dc[output_index],
+                        &mut coeffs[output_index],
+                        &mut pixels[output_index],
+                    )?;
+                }
+                write_extended12_four_component_block_region(
+                    out,
+                    stride,
+                    write_region,
+                    self.info.color_space,
+                    (mcu_x * 8, mcu_y * 8),
+                    &pixels,
+                );
+                restart_tracker.finish_mcu();
+            }
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
+    fn decode_extended12_four_component_subsampled_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        sampling: Extended12ColorSampling,
+    ) -> Result<DecodeOutcome, JpegError> {
+        debug_assert!(matches!(
+            sampling,
+            Extended12ColorSampling::S422 | Extended12ColorSampling::S420
+        ));
+        if extended12_four_component_sampling(&self.plan, self.info.sof_kind)? != sampling {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let scan_bytes = &self.bytes[self.plan.scan_offset..];
+        let (planes, scan_warnings) =
+            decode_extended12_four_component_planes(&self.plan, scan_bytes, self.info.sof_kind)?;
+        write_extended12_four_component_planes_region(
+            out,
+            stride,
+            Extended12WriteRegion {
+                output_rect,
+                dimensions: self.info.dimensions,
+                downscale,
+                output: Extended12Output::Rgb16,
+            },
+            self.info.color_space,
+            sampling,
+            &planes,
+        );
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
     }
 }

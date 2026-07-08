@@ -106,28 +106,27 @@ Sections 1-8 remain the audit record for what was found at audit time.
   shared in `j2k-transcode`, and CUDA/Metal now use the shared
   `TranscodeStageDispatchMode` for Auto/Explicit unavailable and recoverable
   error policy; repo lint pins both.
-- **Phase 2 structural split work is mostly complete; residual shader
-  texture/region scaffolding and parameter/API debt remain.**
-  `crates/j2k-jpeg/src/decoder.rs` now has scratch/memory-cap math in
-  `decoder/scratch.rs`, routes full-image and region-scaled lossless
-  output-format dispatch through one helper, has the `SinkWriter` row-sink
-  adapter in `decoder/sink_writer.rs`, reuses that adapter from bench profiling
-  through a black-box `RowSink`, routes `ComponentRowWriter` through a blanket
-  `OutputWriter for &mut W` implementation instead of a forwarding adapter,
-  shares 8/16-bit lossless RGB/YCbCr sampling dispatch by bit depth, routes
-  lossless RGB/YCbCr region fallback selection and RGBA scratch-copy through
-  `decoder/lossless_region.rs`, and validates lossless color component,
-  sampled, and row-stream paths through `decoder/lossless_helpers.rs`, including
-  shared restart marker cadence through `LosslessRestartTracker` and
-  `Extended12RestartTracker`. It is ratcheted below 3,985 lines. The Metal
-  JPEG viewport-cache row writers now share `PlaneRowTarget`, with repo-lint
+- **Phase 2 structural split work is mostly complete after the large-file
+  sweep; residual shader texture/region scaffolding and parameter/API debt
+  remain.** `crates/j2k-jpeg/src/entropy/sequential.rs` now keeps fast 4:2:0
+  decode orchestration at 2,209 lines, with profiling, layout, restart/skip,
+  deposit, emit, and regression-test helpers split into focused
+  `entropy/sequential/*` modules and ratcheted below 2,500 lines.
+  `crates/j2k-cuda/src/decoder.rs` is now a 536-line shell over focused API,
+  plan, resident, color-batch, and profile modules, with the shell ratcheted
+  below 1,500 lines and each child module below 1,800.
+  `crates/j2k-jpeg/src/decoder.rs` now has scratch/memory-cap math,
+  lossless-region helpers, sink-writer plumbing, and extended-12 renderers in
+  focused modules; it is 2,929 lines and ratcheted below 3,050. The Metal JPEG
+  viewport-cache row writers now share `PlaneRowTarget`, with repo-lint
   coverage preventing a duplicate full-row writer from returning.
   `crates/j2k-native/src/j2c/encode.rs` now has raw sample width/sign-extension
   helpers in `encode/samples.rs`, public API conversion/deinterleave helpers in
   `encode/api_helpers.rs`, high-bit exact single-tile i64 encode helpers in
-  `encode/single_tile.rs`, and i64 packetization helpers in
-  `encode/i64_packetize.rs`; the active ratchet is tightened below 3,900
-  lines. The
+  `encode/single_tile.rs`, i64 packetization helpers in
+  `encode/i64_packetize.rs`, ROI planning in `encode/roi_plan.rs`, and subband
+  preparation in `encode/subband.rs`; the active ratchet is tightened below
+  3,250 lines. The
   `crates/j2k-compare/src/fixture_compare.rs` compare driver now has TSV row
   construction in `fixture_compare/rows.rs`, domain model enums in
   `fixture_compare/types.rs`, batch input ownership in
@@ -149,13 +148,12 @@ Sections 1-8 remain the audit record for what was found at audit time.
   test module split to `jpeg_to_htj2k/tests.rs` and is ratcheted below 1,770
   lines.
   `xtask/tests/repo_lint.rs` is now a 3-line shim over the
-  `repo_lint_support` module tree. The six former god files are split and
-  tight-ratcheted with single-digit headroom where practical:
-  `decoder.rs` is 3,974 lines against `<3,985`, `encode.rs` is 3,893 lines
-  against `<3,900`, `resident_codestream.rs` is 2,778 lines against `<2,785`,
-  `compute.rs` is below 390, `jpeg_to_htj2k.rs` is 1,760 lines against
-  `<1,770`, and
-  `repo_lint.rs` is a module shell.
+  `repo_lint_support` module tree. The repo-lint policy tree is split by
+  domain, with `docs_and_workflows_policy.rs` at 2,366 lines and the GPU
+  adapter rules in `gpu_adapter_policy.rs` at 1,632 lines. Large support tests
+  are also split by axis: Metal encode tests, JPEG Metal texture tests, CUDA
+  runtime pipeline tests, and JPEG `decode_into` tests now have focused child
+  modules and line-count ratchets.
   The MQ-coder QE table now lives once in `crates/j2k-native/src/j2c/mq.rs`,
   with encoder/decoder reuse protected by repo lint.
   The DCT-to-DWT 9/7 transcode path now imports f64 DWT constants from
@@ -3180,71 +3178,35 @@ ad-hoc merging.
 
 ## 6. God files and structure
 
-The prior split work relocated code but left seams uncut. The current policy is
-to tighten each ratchet immediately after a split; the tightest ratchets were
-lowered in this sweep (`decoder.rs` <3,985, `j2c/encode.rs` <3,900,
-`fixture_compare.rs` <2,295, `j2k-jpeg-metal/src/lib.rs` <930,
-`j2k-native/src/lib.rs` <2,260, `j2k-metal/src/compute.rs` <390,
-`j2k-transcode/src/jpeg_to_htj2k.rs` <1,770, and
-`resident_codestream.rs` <2,785).
-Current remaining offenders and seams:
+The current policy is to tighten each ratchet immediately after a split. The
+latest large-file sweep lowered the active ratchets for
+`entropy/sequential.rs` (<2,500), `j2k-cuda/src/decoder.rs` (<1,500),
+`j2c/encode.rs` (<3,250), `j2k-jpeg/src/decoder.rs` (<3,050),
+`docs_and_workflows_policy.rs` (<2,750), and `gpu_adapter_policy.rs` (<1,800),
+while earlier focused ratchets for compare, Metal compute, transcode, and crate
+shells remain in force.
 
-1. `crates/j2k-jpeg/src/decoder.rs` (3,972 lines, ratcheted below 3,985) — public decode API, private
-   codec-family renderers, tile free-function API, and routing.
-   Scratch/memory-cap math now lives in `decoder/scratch.rs` (156 lines), but
-   the full-image and region-scaled lossless output-format dispatch now share
-   one helper, and the row-sink adapter now lives in
-   `decoder/sink_writer.rs` (84 lines) with bench-profile reuse through a
-   black-box `RowSink`; component row output now uses the blanket
-   `OutputWriter for &mut W` bridge in `decoder/core_traits.rs`; shared
-   lossless color validation, shared full-output/row-stream per-pixel color
-   decode, sampled MCU decode, shared restart-marker cadence, and the shared
-   sampled output renderer now live in `decoder/lossless_helpers.rs` (741 lines). Lossless RGB/YCbCr region
-   fallback routing, full-frame decode reuse,
-   scaled copy, and temporary RGBA scratch-copy handling now live in
-   `decoder/lossless_region.rs` (157 lines). The deeper remaining duplication
-   is broader decoder-family routing.
-2. `crates/j2k-native/src/j2c/encode.rs` (3,893 lines, ratcheted below 3,900)
-   — encode orchestration
-   still mixes typed-component preparation, multi-tile assembly, ROI planning,
-   DWT adapter conversion, subband preparation, and Tier-1 dispatch. The
-   single-tile implementation and high-bit exact single-tile i64 encode helper
-   live in `encode/single_tile.rs`; raw sample width/sign-extension helpers now
-   live in `encode/samples.rs` (59 lines), i64 packetization request objects
-   and helpers now live in `encode/i64_packetize.rs` (111 lines), and public API
-   conversion/deinterleave helpers now live in
-   `encode/api_helpers.rs` (100 lines).
-3. `crates/j2k-compare/src/fixture_compare.rs` (2,276 lines) — still an entire
-   compare product in one file. Manifest parsing is split to
-   `fixture_compare/manifest.rs`; TSV report row construction is split to
-   `fixture_compare/rows.rs` (286 lines); domain model enums are split to
-   `fixture_compare/types.rs` (174 lines), which also owns `BatchInputs`;
-   OpenJPH/Kakadu comparator CLI plumbing is split to
-   `fixture_compare/comparators.rs` (284 lines);
-   publication-gate logic is split to `fixture_compare/gates.rs` (326 lines).
-   Remaining seams are corpus / measure.
-4. `crates/j2k-jpeg-metal/src/lib.rs` (915 lines) — still large after sibling
-   crate splits. The public `Error` type now lives in `error.rs` (105 lines),
-   and public session wrappers now live in `session.rs` (484 lines) with crate
-   root re-exports. Surface and reusable Metal output types now live in
-   `surface.rs` (557 lines), and `JpegTileBatch` now lives in `tile_batch.rs`
-   (240 lines). The public `Decoder` wrapper now lives in `decoder.rs` (271
-   lines), `Codec` batch implementation and RGB8 batch request types now live
-   in `codec_batch.rs` (701 lines), and single-decode request types now live in
-   `decode_request.rs` (88 lines), while private root route helpers now share a
-   `JpegFastPackets` request bundle, all with crate-root re-exports or
-   root-stable public paths. Continue mirroring the sibling's split: routing.
-5. `crates/j2k-metal/src/compute/resident_codestream.rs` (2,778 lines) —
-   cohesive by name but still built from large batch submitters that run
-   validation, table packing, allocation, dispatch, and harvest inline. HT
-   cleanup dispatch lives in `resident_codestream/ht_cleanup.rs`, and classic
-   profiling labels live in `resident_codestream/classic_labels.rs` (32 lines);
-   remaining stages should split similarly.
-6. `crates/j2k-native/src/lib.rs` (2,253 lines, ratcheted below 2,260) — much
-   smaller after tests, helpers, and HT table/SigProp adapter helpers moved
-   out to `ht_adapter.rs` (95 lines), but the crate root still mixes public
-   image APIs with reference DSP/block-codec exports. Continue extracting
-   focused modules as review pressure requires.
+Current remaining 3k+ files and seams:
+
+1. `crates/j2k-test-support/src/jpeg_fixtures/builders.rs` (3,466 lines) -
+   fixture-builder tables and reference fixture construction remain in one
+   support module. Split only along coherent fixture-family or table ownership
+   boundaries so fixture coverage stays intact.
+2. `crates/j2k-metal/src/encode/tests.rs` (3,211 lines, ratcheted below 3,400)
+   - still the largest test surface after moving batch and kernel groups into
+   child modules. Continue mechanical test-module splits; do not delete passing
+   coverage.
+3. `crates/j2k-native/src/j2c/encode.rs` (3,166 lines, ratcheted below 3,250)
+   - encode orchestration still mixes typed-component preparation, multi-tile
+   assembly, DWT adapter conversion, and Tier-1 dispatch. ROI planning and
+   subband preparation now live in `encode/roi_plan.rs` and
+   `encode/subband.rs`; remaining splits should preserve the existing public
+   encode surface.
+
+Former current offenders are now below their active ratchets:
+`crates/j2k-jpeg/src/entropy/sequential.rs` is 2,209 lines,
+`crates/j2k-cuda/src/decoder.rs` is 536 lines, and
+`crates/j2k-jpeg/src/decoder.rs` is 2,929 lines.
 
 Parameter-struct debt: 9 `allow` attributes containing
 `clippy::too_many_arguments`, now enforced by a repo-lint ratchet that counts
@@ -3261,16 +3223,17 @@ new size — never leave hundreds of lines of headroom.
 ## 7. Self-enforcement tooling debt
 
 `xtask/tests/repo_lint.rs` (3 lines),
-`xtask/tests/repo_lint_support/mod.rs` (840 lines),
-`xtask/tests/repo_lint_support/architecture_policy.rs` (597 lines),
+`xtask/tests/repo_lint_support/mod.rs` (841 lines),
+`xtask/tests/repo_lint_support/architecture_policy.rs` (1,070 lines),
 `xtask/tests/repo_lint_support/corpus_policy.rs` (157 lines),
 `xtask/tests/repo_lint_support/dependency_policy.rs` (81 lines),
-`xtask/tests/repo_lint_support/docs_and_workflows_policy.rs` (3,735 lines),
+`xtask/tests/repo_lint_support/docs_and_workflows_policy.rs` (2,366 lines),
+`xtask/tests/repo_lint_support/gpu_adapter_policy.rs` (1,632 lines),
 `xtask/tests/repo_lint_support/public_docs_policy.rs` (797 lines),
 `xtask/tests/repo_lint_support/release_policy.rs` (187 lines),
-`xtask/tests/repo_lint_support/shader_policy.rs` (362 lines), and
+`xtask/tests/repo_lint_support/shader_policy.rs` (391 lines),
 `xtask/tests/repo_lint_support/source_policy.rs` (235 lines), and
-`xtask/tests/repo_lint_support/workflow_policy.rs` (364 lines; 131 lints total)
+`xtask/tests/repo_lint_support/workflow_policy.rs` (383 lines; 134 lints total)
 are still mostly exact-substring matching. They reliably fail closed on
 deleted/moved files, but:
 
@@ -3552,12 +3515,13 @@ Run the narrowest affected tests plus repo guardrails per PR.
 
 **Phase 2 — finish structural work (incremental):**
 
-1. Done for the current sweep: the six tracked god-file/module-shell targets
-   are split, including `encode_impl`-adjacent helpers and the repo-lint module
-   tree.
+1. Done for the current sweep: targeted production and support large-file
+   targets are split, including JPEG entropy sequential helpers, CUDA decoder
+   runtime paths, native encode ROI/subband helpers, JPEG extended-12 renderers,
+   repo-lint GPU adapter policy, and large test support modules.
 2. Done for the current split set: active size ratchets are tight, including
-   `decoder.rs <3,985`, `encode.rs <3,900`, and
-   `resident_codestream.rs <2,785`.
+   `entropy/sequential.rs <2,500`, `j2k-cuda/src/decoder.rs <1,500`,
+   `j2c/encode.rs <3,250`, and `j2k-jpeg/src/decoder.rs <3,050`.
 3. Done for the current sweep: `too_many_arguments` suppression attributes are
    down from the audited baseline of 157 to a corrected current ratchet of 4.
    The ratchet now counts multiline and crate-level allow attributes instead of

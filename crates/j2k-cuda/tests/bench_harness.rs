@@ -168,8 +168,19 @@ fn cuda_htj2k_decode_profile_example_uses_batch_entrypoint() {
 
 #[test]
 fn cuda_htj2k_decode_steady_state_uses_untimed_runtime_path() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/decoder.rs");
-    let decoder = std::fs::read_to_string(path).expect("read CUDA HTJ2K decoder");
+    let decoder = [
+        "/src/decoder.rs",
+        "/src/decoder/api.rs",
+        "/src/decoder/color_batch.rs",
+        "/src/decoder/resident.rs",
+    ]
+    .into_iter()
+    .map(|relative| {
+        let path = format!("{}{}", env!("CARGO_MANIFEST_DIR"), relative);
+        std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"))
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
 
     for expected in [
         "decode_to_cuda_resident_surface_with_profile_control(decoder, session, fmt, false)",

@@ -52,7 +52,7 @@ fn flat_htj2k_plan_contains_payload_offsets_not_pointers() {
         cuda_plan.code_blocks().len()
     );
 
-    let block_payload_len = cuda_plan
+    let block_payload_len: usize = cuda_plan
         .code_blocks()
         .iter()
         .map(|block| block.payload_len as usize)

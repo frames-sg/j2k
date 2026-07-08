@@ -87,14 +87,17 @@ impl CodecError for Error {
     }
 }
 
+#[cfg_attr(not(any(test, feature = "cuda-runtime")), allow(dead_code))]
 pub(crate) fn native_decode_error(error: NativeDecodeError) -> Error {
     Error::Decode(native_decode_j2k_error(error))
 }
 
+#[cfg_attr(not(any(test, feature = "cuda-runtime")), allow(dead_code))]
 fn adapter_backend_error(message: impl Into<String>) -> J2kError {
     J2kError::Backend(BackendError::new(BackendErrorKind::Other, message))
 }
 
+#[cfg_attr(not(any(test, feature = "cuda-runtime")), allow(dead_code))]
 fn native_decode_j2k_error(error: NativeDecodeError) -> J2kError {
     match error {
         NativeDecodeError::Format(NativeFormatError::TooShort { need, have }) => {
@@ -131,6 +134,7 @@ fn native_decode_j2k_error(error: NativeDecodeError) -> J2kError {
     }
 }
 
+#[cfg_attr(not(any(test, feature = "cuda-runtime")), allow(dead_code))]
 fn native_direct_plan_unsupported_what(reason: NativeDirectPlanUnsupportedReason) -> &'static str {
     match reason {
         NativeDirectPlanUnsupportedReason::GrayscaleImageWithoutAlpha => {
