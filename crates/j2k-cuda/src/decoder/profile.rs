@@ -5,7 +5,7 @@ use super::{
     CudaBufferPoolTakeTrace, CudaHtj2kProfileReport, SurfaceResidency, CUDA_IDWT_TRACE_ENV_VAR,
 };
 
-#[cfg(any(test, feature = "cuda-runtime"))]
+#[cfg(feature = "cuda-runtime")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CudaIdwtBatchHostTraceRow {
     pub(super) component_count: usize,
@@ -21,7 +21,7 @@ pub(super) struct CudaIdwtBatchHostTraceRow {
     pub(super) output_requested_bytes: usize,
 }
 
-#[cfg(any(test, feature = "cuda-runtime"))]
+#[cfg(feature = "cuda-runtime")]
 pub(super) fn format_cuda_idwt_batch_host_trace_row(row: CudaIdwtBatchHostTraceRow) -> String {
     format!(
         "j2k_profile codec=j2k op=cuda_idwt_batch_host path=decode \

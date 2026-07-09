@@ -74,7 +74,7 @@ pub(crate) use self::color_batch::{
 };
 #[cfg(feature = "cuda-runtime")]
 use self::decode_profile::CudaDecodeStageTimings;
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda-runtime"))]
 use self::decode_profile::{format_cuda_idwt_batch_host_trace_row, CudaIdwtBatchHostTraceRow};
 #[cfg(all(test, feature = "cuda-runtime"))]
 use self::plan::build_cuda_htj2k_color_plans_from_bytes_with_profile;
@@ -486,11 +486,11 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda-runtime"))]
 #[path = "htj2k_plan_tests.rs"]
 mod htj2k_plan_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda-runtime"))]
 mod dispatch_tests {
     use super::{
         format_cuda_idwt_batch_host_trace_row, htj2k_batched_dequant_dispatches,
