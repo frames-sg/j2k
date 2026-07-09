@@ -25,12 +25,12 @@ fuzz_target!(|data: &[u8]| {
         offset += 1;
         let ty = BOX_TYPES[usize::from(selector) % BOX_TYPES.len()];
         let extended = selector & 0x80 != 0;
-        let payload_len = data
-            .get(offset)
-            .copied()
-            .map_or(0, |len| usize::from(len).min(data.len().saturating_sub(offset + 1)));
+        let Some(payload_len_byte) = data.get(offset).copied() else {
+            break;
+        };
         offset = offset.saturating_add(1);
-        let payload_end = offset.saturating_add(payload_len).min(data.len());
+        let payload_len = usize::from(payload_len_byte).min(data.len().saturating_sub(offset));
+        let payload_end = offset + payload_len;
         push_box(&mut wrapped, ty, &data[offset..payload_end], extended);
         offset = payload_end;
     }
