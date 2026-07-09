@@ -10,9 +10,9 @@ use core::mem::{size_of, size_of_val};
 
 use j2k_core::{BackendKind, DeviceMemoryRange};
 use j2k_metal_support::{
-    checked_buffer_contents_slice, checked_buffer_contents_slice_mut, checked_command_queue,
-    commit_and_wait, private_buffer, shared_buffer_for_len, shared_buffer_with_slice,
-    system_default_device, MetalPipelineLoader,
+    checked_buffer_read_vec, checked_buffer_write, checked_command_queue, commit_and_wait,
+    private_buffer, shared_buffer_for_len, shared_buffer_with_slice, system_default_device,
+    MetalPipelineLoader,
 };
 use j2k_transcode::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes, idct_blocks_to_signed_samples_rayon,
@@ -1987,7 +1987,7 @@ fn read_prequantized_97_codeblock_outputs(
             resolutions: vec![
                 PrequantizedHtj2k97Resolution {
                     subbands: vec![prequantized_subband_from_codeblock_buffer(
-                        codeblock_item_slice(ll, idx, shape.ll_len, unsupported_grid)?,
+                        codeblock_item_slice(&ll, idx, shape.ll_len, unsupported_grid)?,
                         shape.low_width,
                         shape.low_height,
                         J2kSubBandType::LowLow,
@@ -1998,7 +1998,7 @@ fn read_prequantized_97_codeblock_outputs(
                 PrequantizedHtj2k97Resolution {
                     subbands: vec![
                         prequantized_subband_from_codeblock_buffer(
-                            codeblock_item_slice(hl, idx, shape.hl_len, unsupported_grid)?,
+                            codeblock_item_slice(&hl, idx, shape.hl_len, unsupported_grid)?,
                             shape.high_width,
                             shape.low_height,
                             J2kSubBandType::HighLow,
@@ -2006,7 +2006,7 @@ fn read_prequantized_97_codeblock_outputs(
                             options,
                         )?,
                         prequantized_subband_from_codeblock_buffer(
-                            codeblock_item_slice(lh, idx, shape.lh_len, unsupported_grid)?,
+                            codeblock_item_slice(&lh, idx, shape.lh_len, unsupported_grid)?,
                             shape.low_width,
                             shape.high_height,
                             J2kSubBandType::LowHigh,
@@ -2014,7 +2014,7 @@ fn read_prequantized_97_codeblock_outputs(
                             options,
                         )?,
                         prequantized_subband_from_codeblock_buffer(
-                            codeblock_item_slice(hh, idx, shape.hh_len, unsupported_grid)?,
+                            codeblock_item_slice(&hh, idx, shape.hh_len, unsupported_grid)?,
                             shape.high_width,
                             shape.high_height,
                             J2kSubBandType::HighHigh,
@@ -2563,18 +2563,19 @@ fn write_dwt97_blocks_to_buffer_at(
             .ok_or(MetalTranscodeError::UnsupportedJob(
                 METAL_DCT97_UNSUPPORTED_GRID,
             ))?;
-    let values = checked_buffer_contents_slice_mut::<f32>(buffer, byte_offset, value_count)
-        .map_err(|_| MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID))?;
-    let mut offset = 0usize;
+    let mut values = Vec::with_capacity(value_count);
     for block in blocks {
         for row in block {
             for &coefficient in row {
-                values[offset] = coefficient as f32;
-                offset += 1;
+                values.push(coefficient as f32);
             }
         }
     }
-    Ok(offset)
+    // SAFETY: DWT input buffers are populated before they are submitted to a
+    // Metal command buffer, and this function has exclusive staging access.
+    unsafe { checked_buffer_write::<f32>(buffer, byte_offset, &values) }
+        .map_err(|_| MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID))?;
+    Ok(values.len())
 }
 
 fn buffer_f32_capacity(buffer: &Buffer) -> usize {
@@ -2595,26 +2596,24 @@ fn output_i32_buffer(device: &Device, value_count: usize) -> Buffer {
 }
 
 fn read_f32_buffer(buffer: &Buffer, value_count: usize) -> Result<Vec<f64>, MetalTranscodeError> {
-    shared_f32_slice(buffer, value_count).map(f32_slice_to_f64)
+    shared_f32_slice(buffer, value_count).map(|values| f32_slice_to_f64(&values))
 }
 
 fn read_i32_buffer(buffer: &Buffer, value_count: usize) -> Result<Vec<i32>, MetalTranscodeError> {
-    shared_i32_slice(buffer, value_count).map(<[i32]>::to_vec)
+    shared_i32_slice(buffer, value_count)
 }
 
-fn shared_f32_slice(buffer: &Buffer, value_count: usize) -> Result<&[f32], MetalTranscodeError> {
-    if value_count == 0 {
-        return Ok(&[]);
-    }
-    checked_buffer_contents_slice(buffer, 0, value_count)
+fn shared_f32_slice(buffer: &Buffer, value_count: usize) -> Result<Vec<f32>, MetalTranscodeError> {
+    // SAFETY: Every caller waits for the producing command buffer before
+    // materializing these owned values.
+    unsafe { checked_buffer_read_vec(buffer, 0, value_count) }
         .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))
 }
 
-fn shared_i32_slice(buffer: &Buffer, value_count: usize) -> Result<&[i32], MetalTranscodeError> {
-    if value_count == 0 {
-        return Ok(&[]);
-    }
-    checked_buffer_contents_slice(buffer, 0, value_count)
+fn shared_i32_slice(buffer: &Buffer, value_count: usize) -> Result<Vec<i32>, MetalTranscodeError> {
+    // SAFETY: Every caller waits for the producing command buffer before
+    // materializing these owned values.
+    unsafe { checked_buffer_read_vec(buffer, 0, value_count) }
         .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))
 }
 

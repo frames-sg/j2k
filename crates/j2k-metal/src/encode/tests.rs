@@ -63,6 +63,11 @@ fn assert_decoded_bytes_match(actual: &[u8], expected: &[u8]) {
 }
 
 #[cfg(target_os = "macos")]
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
+#[cfg(target_os = "macos")]
 #[test]
 fn metal_encode_deinterleave_public_layouts_match_native_reference() {
     #[derive(Clone, Copy)]
@@ -87,6 +92,10 @@ fn metal_encode_deinterleave_public_layouts_match_native_reference() {
             pixels.extend_from_slice(&sample.to_le_bytes());
         }
         pixels
+    }
+
+    if !should_run_metal_runtime() {
+        return;
     }
 
     let cases = [
@@ -253,6 +262,10 @@ fn metal_quantize_subband_kernel_matches_cpu_reference() {
         reversible: bool,
     }
 
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let coefficients = (0_u16..257)
         .map(|idx| {
             let centered = f32::from(idx) - 128.0;
@@ -313,6 +326,10 @@ fn metal_quantize_subband_kernel_matches_cpu_reference() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_quantize_subband_stage_reports_dispatch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let coefficients = [-4.5, -1.25, -0.5, 0.0, 0.5, 1.25, 4.5];
     let expected = quantize_reference(&coefficients, 8, 0, 8, true);
     let mut accelerator = MetalEncodeStageAccelerator::default();
@@ -1194,6 +1211,11 @@ fn metal_dispatch_option_preserves_kernel_errors() {
 
 #[test]
 fn metal_encode_stage_accelerator_preserves_cpu_codestream_validity() {
+    #[cfg(target_os = "macos")]
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| (i & 0xFF) as u8).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 3, 8, false).expect("valid RGB samples");
     let options = J2kLosslessEncodeOptions::default()
@@ -1274,6 +1296,10 @@ fn metal_forward_ict_dispatch_matches_cpu_reference() {
         }
     }
 
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut plane0 = vec![0.0, 64.0, 128.0, 255.0, -12.5, 42.25];
     let mut plane1 = vec![3.0, 67.0, 131.0, 252.0, 19.75, -8.5];
     let mut plane2 = vec![7.0, 71.0, 135.0, 248.0, 33.5, 128.0];
@@ -1343,6 +1369,10 @@ fn metal_forward_ict_compute_rejects_invalid_shape_structured() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_forward_rct_dispatch_round_trips_rgb8_lossless_tile() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 17) & 0xFF) as u8).collect();
     let samples = J2kLosslessSamples::new(&pixels, 7, 5, 3, 8, false).expect("valid RGB samples");
     let options = J2kLosslessEncodeOptions::default()
@@ -1373,6 +1403,10 @@ fn metal_forward_rct_dispatch_round_trips_rgb8_lossless_tile() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut pixels = Vec::with_capacity(8 * 8 * 2);
     for idx in 0..8 * 8 {
         let sample = ((idx * 1021 + 0x2345) & 0xffff) as u16;
@@ -1406,6 +1440,10 @@ fn metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_validation_decodes_and_compares_lossless_codestream_on_device() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..16 * 16 * 3).map(|i| ((i * 29) & 0xFF) as u8).collect();
     let samples = J2kLosslessSamples::new(&pixels, 16, 16, 3, 8, false).unwrap();
     let encoded = j2k::encode_j2k_lossless(
@@ -1423,6 +1461,10 @@ fn metal_validation_decodes_and_compares_lossless_codestream_on_device() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_buffer_lossless_encode_pads_edge_tile_on_device() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 19) & 0xFF) as u8).collect();
     let device = metal::Device::system_default().expect("Metal device");
     let session = crate::MetalBackendSession::new(device);
@@ -1473,6 +1515,10 @@ fn metal_buffer_lossless_encode_pads_edge_tile_on_device() {
 #[cfg(target_os = "macos")]
 #[test]
 fn submitted_metal_buffer_lossless_encode_wait_round_trips() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 19) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let buffer = session.device().new_buffer_with_data(
@@ -1523,6 +1569,10 @@ fn submitted_metal_buffer_lossless_encode_wait_round_trips() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_buffer_lossless_encode_accepts_padded_contiguous_input_without_copy() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 31) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let buffer = session.device().new_buffer_with_data(
@@ -1564,6 +1614,10 @@ fn metal_buffer_lossless_encode_accepts_padded_contiguous_input_without_copy() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_rgb8_encode_uses_resident_coefficient_prep() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 31) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
@@ -1642,6 +1696,10 @@ fn auto_classic_host_output_stays_cpu_without_metal_dispatches() {
 #[cfg(target_os = "macos")]
 #[test]
 fn auto_classic_large_host_output_dispatches_benchmark_gated_prep_stages_only() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let width = 1024u32;
     let height = 1024u32;
     let pixels: Vec<u8> = (0..width * height)
@@ -1730,6 +1788,10 @@ fn auto_lossy_packet_marker_shape_stays_cpu_without_packetization_dispatch() {
 #[cfg(target_os = "macos")]
 #[test]
 fn strict_metal_lossy_packet_marker_shape_requires_packetization_dispatch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..64 * 64)
         .map(|idx| ((idx * 37 + idx / 9) & 0xff) as u8)
         .collect();
@@ -1926,6 +1988,10 @@ fn auto_htj2k_gray_host_output_stays_cpu_for_single_frame() {
 #[cfg(target_os = "macos")]
 #[test]
 fn auto_htj2k_padded_rgb8_stays_cpu_below_resident_gate() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut pixels = Vec::with_capacity(64 * 64 * 3);
     for y in 0..64u32 {
         for x in 0..64u32 {
@@ -1972,6 +2038,10 @@ fn auto_htj2k_padded_rgb8_stays_cpu_below_resident_gate() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_rgb8_auto_host_encode_routes_away_from_resident_prep() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 43) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
@@ -2018,6 +2088,13 @@ fn auto_resident_host_output_policy_requires_batched_work() {
         PixelFormat::Rgb8,
         ReversibleTransform::Rct53,
         1,
+        64,
+        64,
+    ));
+    assert!(!super::should_try_auto_resident_lossless_host_format(
+        PixelFormat::Rgb8,
+        ReversibleTransform::Rct53,
+        1,
         512,
         512,
     ));
@@ -2047,13 +2124,32 @@ fn auto_resident_host_output_policy_requires_batched_work() {
         ReversibleTransform::None53,
         1,
         512,
+        512,
+    ));
+    assert!(!super::should_try_auto_resident_lossless_host_format(
+        PixelFormat::Rgb8,
+        ReversibleTransform::Rct53,
+        1,
+        768,
+        512,
+    ));
+    assert!(!super::should_try_auto_resident_lossless_host_format(
+        PixelFormat::Rgb8,
+        ReversibleTransform::Rct53,
+        2,
+        768,
         512,
     ));
 }
 
 #[cfg(target_os = "macos")]
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn auto_htj2k_padded_private_rgb8_single_host_output_stays_cpu() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let width = 512u32;
     let height = 512u32;
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
@@ -2106,7 +2202,12 @@ fn auto_htj2k_padded_private_rgb8_single_host_output_stays_cpu() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn auto_htj2k_padded_private_gray8_single_host_output_stays_cpu() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let width = 512u32;
     let height = 512u32;
     let pixels: Vec<u8> = (0..width * height)
@@ -2154,6 +2255,10 @@ fn auto_htj2k_padded_private_gray8_single_host_output_stays_cpu() {
 #[cfg(target_os = "macos")]
 #[test]
 fn auto_htj2k_padded_private_gray8_batch_host_output_uses_full_resident_path() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let width = 512u32;
     let height = 512u32;
     let first: Vec<u8> = (0..width * height)
@@ -2219,6 +2324,10 @@ fn auto_htj2k_padded_private_gray8_batch_host_output_uses_full_resident_path() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_rgb8_encode_to_metal_buffer_exposes_finished_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 37) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
@@ -2257,7 +2366,7 @@ fn metal_padded_private_rgb8_encode_to_metal_buffer_exposes_finished_bytes() {
         .codestream_bytes()
         .expect("Metal codestream bytes are CPU-readable");
     assert!(codestream.starts_with(&[0xFF, 0x4F]));
-    let decoded = Image::new(codestream, &DecodeSettings::default())
+    let decoded = Image::new(&codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
         .expect("codestream decodes");
@@ -2267,6 +2376,10 @@ fn metal_padded_private_rgb8_encode_to_metal_buffer_exposes_finished_bytes() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_edge_private_rgb8_encode_to_metal_buffer_pads_and_stays_resident() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 41) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
@@ -2299,7 +2412,7 @@ fn metal_edge_private_rgb8_encode_to_metal_buffer_pads_and_stays_resident() {
         .codestream_bytes()
         .expect("Metal codestream bytes are CPU-readable");
     assert!(codestream.starts_with(&[0xFF, 0x4F]));
-    let decoded = Image::new(codestream, &DecodeSettings::default())
+    let decoded = Image::new(&codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
         .expect("codestream decodes");
@@ -2321,6 +2434,10 @@ fn metal_edge_private_rgb8_encode_to_metal_buffer_pads_and_stays_resident() {
 #[cfg(target_os = "macos")]
 #[test]
 fn submitted_private_padded_rgb8_encode_snapshots_before_wait() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 31) & 0xFF) as u8).collect();
     let replacement = vec![0u8; pixels.len()];
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
@@ -2358,6 +2475,10 @@ fn submitted_private_padded_rgb8_encode_snapshots_before_wait() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_gray8_dwt_encode_uses_resident_coefficient_prep() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut pixels = Vec::with_capacity(128 * 128);
     for y in 0..128u32 {
         for x in 0..128u32 {
@@ -2401,6 +2522,10 @@ fn metal_padded_private_gray8_dwt_encode_uses_resident_coefficient_prep() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_rgb8_dwt_encode_uses_resident_coefficient_prep() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut pixels = Vec::with_capacity(128 * 128 * 3);
     for y in 0..128u32 {
         for x in 0..128u32 {
@@ -2445,6 +2570,10 @@ fn metal_padded_private_rgb8_dwt_encode_uses_resident_coefficient_prep() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_gray8_dwt_resident_codestream_decodes_natively() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut pixels = Vec::with_capacity(128 * 128);
     for y in 0..128u32 {
         for x in 0..128u32 {
@@ -2484,6 +2613,10 @@ fn metal_padded_private_gray8_dwt_resident_codestream_decodes_natively() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_rgb8_dwt_resident_codestream_decodes_natively() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut pixels = Vec::with_capacity(128 * 128 * 3);
     for y in 0..128u32 {
         for x in 0..128u32 {
@@ -2525,6 +2658,10 @@ fn metal_padded_private_rgb8_dwt_resident_codestream_decodes_natively() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_gray8_rpcl_encode_uses_resident_coefficient_prep() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut pixels = Vec::with_capacity(128 * 128);
     for y in 0..128u32 {
         for x in 0..128u32 {
@@ -2568,6 +2705,10 @@ fn metal_padded_private_gray8_rpcl_encode_uses_resident_coefficient_prep() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_gray16_encode_uses_resident_coefficient_prep() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut pixels = Vec::with_capacity(8 * 8 * 2);
     for idx in 0..64u16 {
         let value = idx.wrapping_mul(997).wrapping_add(123);
@@ -2610,6 +2751,10 @@ fn metal_padded_private_gray16_encode_uses_resident_coefficient_prep() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_ht_encode_to_metal_buffer_stays_resident() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..8 * 8).map(|i| ((i * 31) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
@@ -2648,7 +2793,7 @@ fn metal_padded_private_ht_encode_to_metal_buffer_stays_resident() {
         .position(|window| window == [0xFF, 0x52])
         .expect("COD marker");
     assert_eq!(codestream[cod_marker + 12], 0x40);
-    let decoded = Image::new(codestream, &DecodeSettings::default())
+    let decoded = Image::new(&codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
         .expect("codestream decodes");
@@ -2658,6 +2803,10 @@ fn metal_padded_private_ht_encode_to_metal_buffer_stays_resident() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_rgb8_ht_rpcl_512_encode_preserves_three_dwt_levels_and_stays_resident() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..512 * 512 * 3)
         .map(|idx| ((idx * 47 + idx / 17) & 0xFF) as u8)
         .collect();
@@ -2700,7 +2849,7 @@ fn metal_padded_private_rgb8_ht_rpcl_512_encode_preserves_three_dwt_levels_and_s
     assert_eq!(codestream[cod_marker + 5], 0x02);
     assert_eq!(codestream[cod_marker + 9], 3);
     assert_eq!(codestream[cod_marker + 12], 0x40);
-    let decoded = Image::new(codestream, &DecodeSettings::default())
+    let decoded = Image::new(&codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()
         .expect("codestream decodes");
@@ -2712,6 +2861,11 @@ fn metal_padded_private_rgb8_ht_rpcl_512_encode_preserves_three_dwt_levels_and_s
 fn metal_rgb8_ht_batch_uses_fused_deinterleave_rct_kernel() {
     const WIDTH: usize = 32;
     const HEIGHT: usize = 32;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first: Vec<u8> = (0..WIDTH * HEIGHT * 3)
         .map(|idx| ((idx * 29 + idx / 7) & 0xFF) as u8)
         .collect();
@@ -2767,7 +2921,7 @@ fn metal_rgb8_ht_batch_uses_fused_deinterleave_rct_kernel() {
             .encoded
             .codestream_bytes()
             .expect("Metal codestream bytes are CPU-readable");
-        let decoded = Image::new(codestream, &DecodeSettings::default())
+        let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -2778,6 +2932,10 @@ fn metal_rgb8_ht_batch_uses_fused_deinterleave_rct_kernel() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_buffer_lossless_batch_encodes_padded_contiguous_inputs() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 7) & 0xFF) as u8).collect();
     let second: Vec<u8> = (0..8 * 8 * 3)
         .map(|i| ((i * 13 + 5) & 0xFF) as u8)
@@ -2840,6 +2998,10 @@ fn metal_buffer_lossless_batch_encodes_padded_contiguous_inputs() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_batch_encode_to_metal_buffers_exposes_per_frame_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 17) & 0xFF) as u8).collect();
     let second: Vec<u8> = (0..8 * 8 * 3)
         .map(|i| 255u8.wrapping_sub(((i * 23) & 0xFF) as u8))
@@ -2901,7 +3063,7 @@ fn metal_padded_private_batch_encode_to_metal_buffers_exposes_per_frame_bytes() 
             .encoded
             .codestream_bytes()
             .expect("Metal codestream bytes are CPU-readable");
-        let decoded = Image::new(codestream, &DecodeSettings::default())
+        let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -2912,6 +3074,10 @@ fn metal_padded_private_batch_encode_to_metal_buffers_exposes_per_frame_bytes() 
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_padded_private_batch_dwt_encode_to_metal_buffers_round_trips() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first: Vec<u8> = (0..128 * 128 * 3)
         .map(|i| ((i * 17 + i / 3) & 0xFF) as u8)
         .collect();
@@ -2966,7 +3132,7 @@ fn metal_padded_private_batch_dwt_encode_to_metal_buffers_round_trips() {
             .encoded
             .codestream_bytes()
             .expect("Metal codestream bytes are CPU-readable");
-        let decoded = Image::new(codestream, &DecodeSettings::default())
+        let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -2977,6 +3143,10 @@ fn metal_padded_private_batch_dwt_encode_to_metal_buffers_round_trips() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_edge_private_batch_encode_to_metal_buffers_stays_resident() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 17) & 0xFF) as u8).collect();
     let second: Vec<u8> = (0..6 * 8 * 3)
         .map(|i| 255u8.wrapping_sub(((i * 19) & 0xFF) as u8))
@@ -3035,7 +3205,7 @@ fn metal_edge_private_batch_encode_to_metal_buffers_stays_resident() {
             .encoded
             .codestream_bytes()
             .expect("Metal codestream bytes are CPU-readable");
-        let decoded = Image::new(codestream, &DecodeSettings::default())
+        let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -3056,6 +3226,10 @@ fn metal_edge_private_batch_encode_to_metal_buffers_stays_resident() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_ht_private_batch_encode_to_metal_buffers_stays_resident() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first: Vec<u8> = (0..8 * 8).map(|i| ((i * 11) & 0xFF) as u8).collect();
     let second: Vec<u8> = (0..8 * 8)
         .map(|i| 255u8.wrapping_sub(((i * 13) & 0xFF) as u8))
@@ -3130,7 +3304,7 @@ fn metal_ht_private_batch_encode_to_metal_buffers_stays_resident() {
             .codestream_bytes()
             .expect("Metal codestream bytes are CPU-readable");
         assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
-        let decoded = Image::new(codestream, &DecodeSettings::default())
+        let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -3143,6 +3317,11 @@ fn metal_ht_private_batch_encode_to_metal_buffers_stays_resident() {
 fn metal_ht_private_batch_encode_reuses_private_arenas_between_batches() {
     const WIDTH: usize = 37;
     const HEIGHT: usize = 41;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first: Vec<u8> = (0..WIDTH * HEIGHT)
         .map(|i| ((i * 7 + 3) & 0xFF) as u8)
         .collect();

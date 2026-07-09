@@ -11,20 +11,21 @@ use super::{
     hybrid_cpu_decode_worker_inits_for_test, hybrid_repeated_output_blits_for_test,
     hybrid_stacked_component_batches_for_test, j2k_pack_kernel_name_for, j2k_pack_scale_arrays,
     output_shape_for, prepare_direct_color_plan, prepare_direct_color_plan_for_cpu_upload,
-    prepare_direct_grayscale_plan, prepared_direct_color_tier1_input_count,
-    prepared_direct_grayscale_plan_compute_encoder_count, prepared_idwt_output_len,
-    prepared_repeated_direct_ht_cleanup_dispatch_count,
+    prepare_direct_grayscale_plan, prepare_sub_band_groups,
+    prepared_direct_color_tier1_input_count, prepared_direct_grayscale_plan_compute_encoder_count,
+    prepared_idwt_output_len, prepared_repeated_direct_ht_cleanup_dispatch_count,
     repeated_gray_store_is_contiguous_full_surface,
     reset_direct_tier1_input_buffer_prepares_for_test,
     reset_flattened_hybrid_cpu_decode_batches_for_test, reset_hybrid_cpu_decode_inputs_for_test,
     reset_hybrid_cpu_decode_worker_inits_for_test, reset_hybrid_repeated_output_blits_for_test,
     reset_hybrid_stacked_component_batches_for_test, reset_shared_buffer_pool_misses_for_test,
-    reset_thread_hybrid_cpu_decode_inputs_for_test, runtime_initialization_error,
-    shared_buffer_pool_misses_for_test, should_flatten_hybrid_cpu_tier1_color_batch,
-    supports_stacked_direct_component_plane_batch, thread_hybrid_cpu_decode_inputs_for_test,
-    with_runtime_for_device, J2kClassicCleanupBatchJob, J2kClassicSegment,
-    J2kRepeatedGrayStoreParams, MetalRuntime, MetalSupportError, PreparedClassicSubBand,
-    PreparedDirectColorPlan, PreparedDirectGrayscaleStep,
+    reset_thread_hybrid_cpu_decode_inputs_for_test, retain_ht_jobs_for_required_region,
+    runtime_initialization_error, shared_buffer_pool_misses_for_test,
+    should_flatten_hybrid_cpu_tier1_color_batch, supports_stacked_direct_component_plane_batch,
+    thread_hybrid_cpu_decode_inputs_for_test, with_runtime_for_device, DirectTier1Mode,
+    J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob, J2kRepeatedGrayStoreParams,
+    MetalRuntime, MetalSupportError, PreparedClassicSubBand, PreparedDirectColorPlan,
+    PreparedDirectGrayscaleStep, PreparedHtSubBand,
 };
 use j2k_core::PixelFormat;
 use j2k_native::{
@@ -39,8 +40,16 @@ use std::sync::{Arc, Mutex};
 
 static HYBRID_COUNTER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
 #[test]
 fn rgb16_with_alpha_is_rejected() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let runtime = MetalRuntime::new().expect("Metal runtime");
     let result = output_shape_for(
         &NativeColorSpace::RGB,
@@ -299,6 +308,10 @@ fn classic_encode_pipeline_kind_prefers_bypass_u16_32_for_low_bitplane_resident_
 
 #[test]
 fn with_runtime_for_device_scopes_runtime_to_requested_device() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let Some(device) = Device::system_default() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
@@ -313,6 +326,10 @@ fn with_runtime_for_device_scopes_runtime_to_requested_device() {
 
 #[test]
 fn runtime_reuses_recycled_shared_buffers() -> Result<(), crate::Error> {
+    if !should_run_metal_runtime() {
+        return Ok(());
+    }
+
     let Some(device) = Device::system_default() else {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return Ok(());
@@ -390,6 +407,10 @@ fn assert_f32_near(actual: f32, expected: f32) {
 
 #[test]
 fn scaled_htj2k_decode_runs_through_metal_compute_path() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..16).collect();
     let options = EncodeOptions {
         reversible: true,
@@ -418,7 +439,118 @@ fn scaled_htj2k_decode_runs_through_metal_compute_path() {
     assert_eq!(surface.as_bytes(), host.as_slice());
 }
 
+fn test_ht_job(output_x: u32, output_y: u32, width: u32, height: u32) -> J2kHtCleanupBatchJob {
+    J2kHtCleanupBatchJob {
+        coded_offset: output_y
+            .checked_mul(32)
+            .and_then(|base| base.checked_add(output_x))
+            .expect("test coded offset"),
+        width,
+        height,
+        coded_len: 1,
+        cleanup_length: 1,
+        refinement_length: 0,
+        missing_msbs: 0,
+        num_bitplanes: 8,
+        roi_shift: 0,
+        number_of_coding_passes: 1,
+        output_stride: 8,
+        output_offset: output_y
+            .checked_mul(8)
+            .and_then(|base| base.checked_add(output_x))
+            .expect("test output offset"),
+        dequantization_step: 1.0,
+        stripe_causal: 0,
+    }
+}
+
+fn test_ht_sub_band(band_id: u32) -> PreparedHtSubBand {
+    PreparedHtSubBand {
+        band_id,
+        width: 8,
+        height: 8,
+        coded_data: vec![band_id as u8],
+        coded_buffer: None,
+        jobs: vec![test_ht_job(0, 0, 2, 2)],
+        jobs_buffer: None,
+    }
+}
+
+fn separator_store_step() -> PreparedDirectGrayscaleStep {
+    PreparedDirectGrayscaleStep::Store(j2k_native::J2kDirectStoreStep {
+        input_band_id: 99,
+        input_rect: j2k_native::J2kRect {
+            x0: 0,
+            y0: 0,
+            x1: 1,
+            y1: 1,
+        },
+        source_x: 0,
+        source_y: 0,
+        copy_width: 1,
+        copy_height: 1,
+        output_width: 1,
+        output_height: 1,
+        output_x: 0,
+        output_y: 0,
+        addend: 0.0,
+    })
+}
+
 #[test]
+fn direct_sub_band_grouping_groups_adjacent_ht_runs_without_runtime() {
+    let steps = vec![
+        PreparedDirectGrayscaleStep::HtSubBand(test_ht_sub_band(1)),
+        PreparedDirectGrayscaleStep::HtSubBand(test_ht_sub_band(2)),
+        separator_store_step(),
+        PreparedDirectGrayscaleStep::HtSubBand(test_ht_sub_band(3)),
+        PreparedDirectGrayscaleStep::HtSubBand(test_ht_sub_band(4)),
+    ];
+
+    let groups = prepare_sub_band_groups(
+        &steps,
+        DirectTier1Mode::CpuUpload,
+        |step| match step {
+            PreparedDirectGrayscaleStep::HtSubBand(sub_band) => Some(sub_band),
+            _ => None,
+        },
+        |start, end, sub_bands, _| {
+            Ok((
+                start,
+                end,
+                sub_bands
+                    .iter()
+                    .map(|sub_band| sub_band.band_id)
+                    .collect::<Vec<_>>(),
+            ))
+        },
+    )
+    .expect("group adjacent HT sub-bands");
+
+    assert_eq!(groups, vec![(0, 2, vec![1, 2]), (3, 5, vec![3, 4])]);
+}
+
+#[test]
+fn direct_roi_prunes_ht_jobs_without_runtime() {
+    let mut jobs = vec![
+        test_ht_job(0, 0, 2, 2),
+        test_ht_job(6, 0, 2, 2),
+        test_ht_job(2, 2, 3, 3),
+    ];
+    let required =
+        j2k_native::J2kRequiredBandRegion::new(0, 0, 4, 4).expect("required test region");
+
+    retain_ht_jobs_for_required_region(&mut jobs, Some(required));
+
+    let retained_offsets = jobs.iter().map(|job| job.output_offset).collect::<Vec<_>>();
+    assert_eq!(retained_offsets, vec![0, 18]);
+
+    retain_ht_jobs_for_required_region(&mut jobs, None);
+    assert!(jobs.is_empty());
+}
+
+#[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt() {
     let pixels: Vec<u8> = (0..64).collect();
     let options = EncodeOptions {
@@ -456,6 +588,7 @@ fn prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt() {
 }
 
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn grouped_ht_direct_plan_uses_one_group_coded_arena() {
     let pixels: Vec<u8> = (0..64).collect();
     let options = EncodeOptions {
@@ -495,6 +628,7 @@ fn grouped_ht_direct_plan_uses_one_group_coded_arena() {
 }
 
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn prepared_classic_sub_band_decodes_on_cpu_for_hybrid_upload() {
     let pixels: Vec<u8> = (0..64).collect();
     let options = EncodeOptions {
@@ -521,6 +655,10 @@ fn prepared_classic_sub_band_decodes_on_cpu_for_hybrid_upload() {
 
 #[test]
 fn cpu_upload_color_prepare_skips_tier1_metal_input_buffers() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     if Device::system_default().is_none() {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
@@ -685,6 +823,7 @@ fn native_classic_job(job: &J2kOwnedCodeBlockBatchJob) -> J2kCodeBlockDecodeJob<
 }
 
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn prepared_ht_direct_plan_encodes_full_decode_in_one_compute_encoder() {
     let pixels: Vec<u8> = (0..64).collect();
     let options = EncodeOptions {
@@ -708,6 +847,7 @@ fn prepared_ht_direct_plan_encodes_full_decode_in_one_compute_encoder() {
 }
 
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn repeated_prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt() {
     let pixels: Vec<u8> = (0..64).collect();
     let options = EncodeOptions {
@@ -740,6 +880,7 @@ fn repeated_prepared_ht_direct_plan_groups_cleanup_subbands_before_idwt() {
 }
 
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn distinct_prepared_ht_direct_plans_support_stacked_component_batch() {
     let options = EncodeOptions {
         reversible: true,
@@ -779,6 +920,10 @@ fn distinct_prepared_ht_direct_plans_support_stacked_component_batch() {
 
 #[test]
 fn hybrid_rgb8_batch_uses_stacked_component_graph() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels = j2k_test_support::gradient_u8(32, 32, 3);
     let options = EncodeOptions {
         reversible: true,
@@ -817,6 +962,10 @@ fn hybrid_rgb8_batch_uses_stacked_component_graph() {
 
 #[test]
 fn hybrid_rgb8_repeated_batch_decodes_shared_tier1_inputs_once() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels = j2k_test_support::gradient_u8(32, 32, 3);
     let options = EncodeOptions {
         reversible: true,
@@ -856,6 +1005,10 @@ fn hybrid_rgb8_repeated_batch_decodes_shared_tier1_inputs_once() {
 
 #[test]
 fn hybrid_rgb8_reused_plan_caches_cpu_tier1_inputs_across_calls() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels = j2k_test_support::gradient_u8(32, 32, 3);
     let options = EncodeOptions {
         reversible: true,
@@ -917,6 +1070,10 @@ fn hybrid_rgb8_reused_plan_caches_cpu_tier1_inputs_across_calls() {
 
 #[test]
 fn hybrid_rgb8_repeated_batch_decodes_once_and_blits_distinct_outputs() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels = j2k_test_support::gradient_u8(32, 32, 3);
     let options = EncodeOptions {
         reversible: true,
@@ -975,6 +1132,10 @@ fn hybrid_rgb8_repeated_batch_decodes_once_and_blits_distinct_outputs() {
 
 #[test]
 fn hybrid_rgb8_distinct_batch_keeps_tier1_inputs_separate() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 2,
@@ -1040,6 +1201,10 @@ fn hybrid_rgb8_distinct_batch_keeps_tier1_inputs_separate() {
 
 #[test]
 fn hybrid_rgb8_flattened_cpu_tier1_batch_uses_one_decode_queue() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels_a = j2k_test_support::gradient_variant_u8(32, 32, 3, 0);
     let pixels_b = j2k_test_support::gradient_variant_u8(32, 32, 3, 11);
     let options = EncodeOptions {
@@ -1137,6 +1302,7 @@ fn hybrid_cpu_decode_worker_count_allows_two_way_small_batch_parallelism() {
 }
 
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn cropped_region_scaled_ht_direct_plan_prunes_codeblocks_outside_output_roi() {
     let mut pixels = Vec::with_capacity(256 * 256);
     for y in 0..256u32 {
@@ -1190,6 +1356,7 @@ fn cropped_region_scaled_ht_direct_plan_prunes_codeblocks_outside_output_roi() {
 }
 
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn cropped_region_scaled_ht_direct_plan_compacts_coded_payloads() {
     let mut pixels = Vec::with_capacity(256 * 256);
     for y in 0..256u32 {
@@ -1240,6 +1407,7 @@ fn cropped_region_scaled_ht_direct_plan_compacts_coded_payloads() {
 }
 
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn cropped_region_scaled_ht_direct_plan_reduces_idwt_output_work() {
     let mut pixels = Vec::with_capacity(128 * 128);
     for y in 0..128u32 {
@@ -1289,6 +1457,7 @@ fn cropped_region_scaled_ht_direct_plan_reduces_idwt_output_work() {
 }
 
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn cropped_region_ht_direct_plan_keeps_idwt_windows_bounded() {
     let mut pixels = Vec::with_capacity(256 * 256);
     for y in 0..256u32 {
@@ -1393,6 +1562,7 @@ fn prepared_direct_grayscale_idwt_full_and_prepared_lens(
 }
 
 #[test]
+#[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
 fn prepared_classic_direct_plan_groups_cleanup_subbands_before_idwt() {
     let pixels: Vec<u8> = (0..64).collect();
     let options = EncodeOptions {

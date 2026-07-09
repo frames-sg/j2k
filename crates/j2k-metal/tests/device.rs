@@ -35,6 +35,10 @@ macro_rules! submit_tile_region_scaled_to_device {
     };
 }
 
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
 fn assert_unsupported_rgba16_report(result: Result<j2k_metal::DecodeSurfaceWithReport, Error>) {
     match result {
         Err(Error::UnsupportedMetalRequest { reason }) => {
@@ -258,6 +262,10 @@ fn fixture_direct_rgb8_variant(seed: u8) -> Vec<u8> {
 
 #[test]
 fn full_classic_grayscale_decode_to_metal_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
     let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
@@ -276,6 +284,10 @@ fn full_classic_grayscale_decode_to_metal_matches_host_decode() {
 
 #[test]
 fn full_htj2k_decode_to_metal_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_ht_gray8();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
     let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
@@ -294,6 +306,10 @@ fn full_htj2k_decode_to_metal_matches_host_decode() {
 
 #[test]
 fn htj2k_direct_decode_clears_reused_classic_scratch_buffers() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let classic_bytes = fixture_gray8();
     let mut classic_decoder = J2kDecoder::new(&classic_bytes).expect("classic decoder");
     let classic_surface = classic_decoder
@@ -319,6 +335,10 @@ fn htj2k_direct_decode_clears_reused_classic_scratch_buffers() {
 
 #[test]
 fn full_irreversible_j2k_decode_to_metal_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8_irreversible();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
     let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
@@ -370,6 +390,10 @@ fn auto_repeated_grayscale_keeps_short_512_batch_on_cpu() {
 
 #[test]
 fn auto_repeated_grayscale_uses_metal_for_512_batch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8_sized(512, 512);
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
     let surfaces = decoder
@@ -383,6 +407,10 @@ fn auto_repeated_grayscale_uses_metal_for_512_batch() {
 
 #[test]
 fn tile_full_grayscale_device_path_uses_metal_direct() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
     let mut pool = J2kScratchPool::new();
@@ -400,6 +428,10 @@ fn tile_full_grayscale_device_path_uses_metal_direct() {
 
 #[test]
 fn metal_surface_exposes_buffer_for_on_device_consumers() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let mut metal_decoder = J2kDecoder::new(&bytes).expect("metal decoder");
     let metal_surface = metal_decoder
@@ -422,6 +454,10 @@ fn metal_surface_exposes_buffer_for_on_device_consumers() {
 fn decode_to_device_with_session_uses_session_device() {
     use metal::foreign_types::ForeignTypeRef;
 
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut decoder = J2kDecoder::new(&bytes).expect("metal decoder");
@@ -443,6 +479,10 @@ fn decode_to_device_with_session_uses_session_device() {
 #[test]
 fn decode_scaled_to_device_with_session_supports_rgb8_resident_surface() {
     use metal::foreign_types::ForeignTypeRef;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
 
     let bytes = fixture_rgb8_sized(8, 8);
     let scale = Downscale::Half;
@@ -484,6 +524,10 @@ fn decode_scaled_to_device_with_session_supports_rgb8_resident_surface() {
 fn explicit_cpu_staged_metal_api_uses_session_device_and_marks_residency() {
     use metal::foreign_types::ForeignTypeRef;
 
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_rgb8();
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
@@ -511,6 +555,10 @@ fn explicit_cpu_staged_metal_api_uses_session_device_and_marks_residency() {
 #[cfg(target_os = "macos")]
 #[test]
 fn decode_to_device_with_session_unsupported_rgba16_is_rejected() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_rgb12();
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut decoder = J2kDecoder::new(&bytes).expect("metal decoder");
@@ -534,6 +582,10 @@ fn decode_to_device_with_session_unsupported_rgba16_is_rejected() {
 
 #[test]
 fn submitted_full_grayscale_tiles_flush_as_one_device_batch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
     let mut session = MetalSession::default();
@@ -580,6 +632,10 @@ fn submitted_full_grayscale_tiles_flush_as_one_device_batch() {
 
 #[test]
 fn submitted_auto_512_grayscale_tiles_flush_as_one_metal_batch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8_sized(512, 512);
     let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
     let mut session = MetalSession::default();
@@ -619,6 +675,10 @@ fn submitted_auto_512_grayscale_tiles_flush_as_one_metal_batch() {
 
 #[test]
 fn submitted_distinct_full_grayscale_tiles_flush_as_one_device_batch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let classic_bytes = fixture_gray8();
     let reversed_bytes = fixture_gray8_reversed();
     let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
@@ -678,6 +738,10 @@ fn submitted_distinct_full_grayscale_tiles_flush_as_one_device_batch() {
 
 #[test]
 fn submitted_full_rgb_tiles_flush_as_one_device_batch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_direct_rgb8();
     let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
     let mut session = MetalSession::default();
@@ -723,6 +787,10 @@ fn submitted_full_rgb_tiles_flush_as_one_device_batch() {
 
 #[test]
 fn submitted_distinct_full_rgb_tiles_stay_resident_when_batch_route_falls_back() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let rgb_tiles = [
         fixture_direct_rgb8_variant(0),
         fixture_direct_rgb8_variant(5),
@@ -788,6 +856,10 @@ fn submitted_distinct_full_rgb_tiles_stay_resident_when_batch_route_falls_back()
 
 #[test]
 fn metal_tile_batch_decodes_submitted_tiles_in_order() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let classic_bytes = fixture_gray8();
     let reversed_bytes = fixture_gray8_reversed();
     let mut batch = MetalTileBatch::new();
@@ -838,6 +910,10 @@ fn metal_tile_batch_decodes_submitted_tiles_in_order() {
 
 #[test]
 fn tile_batch_decode_many_device_preserves_full_tile_order() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let classic_bytes = fixture_gray8();
     let reversed_bytes = fixture_gray8_reversed();
     let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
@@ -875,6 +951,10 @@ fn tile_batch_decode_many_device_preserves_full_tile_order() {
 
 #[test]
 fn metal_tile_batch_supports_region_and_scaled_requests() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let roi = Rect {
         x: 0,
@@ -917,6 +997,10 @@ fn metal_tile_batch_supports_region_and_scaled_requests() {
 
 #[test]
 fn metal_tile_batch_supports_region_scaled_requests() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let roi = Rect {
         x: 1,
@@ -951,6 +1035,10 @@ fn metal_tile_batch_supports_region_scaled_requests() {
 
 #[test]
 fn submitted_distinct_region_scaled_htj2k_grayscale_tiles_flush_as_one_device_batch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let ht_bytes = fixture_ht_gray8();
     let reversed_bytes = fixture_ht_gray8_reversed();
     assert_ne!(ht_bytes, reversed_bytes, "HTJ2K batch fixtures must differ");
@@ -1034,6 +1122,10 @@ fn submitted_distinct_region_scaled_htj2k_grayscale_tiles_flush_as_one_device_ba
 
 #[test]
 fn submitted_distinct_region_scaled_htj2k_gray16_tiles_flush_as_one_device_batch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first_bytes = fixture_ht_gray12_offset(0);
     let second_bytes = fixture_ht_gray12_offset(37);
     assert_ne!(
@@ -1207,6 +1299,10 @@ fn submitted_auto_region_scaled_rgb_tiles_flush_as_one_cpu_batch() {
 
 #[test]
 fn submitted_auto_region_scaled_grayscale_batch64_uses_one_metal_batch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8_sized(512, 512);
     let roi = Rect {
         x: 128,
@@ -1264,6 +1360,10 @@ fn submitted_auto_region_scaled_grayscale_batch64_uses_one_metal_batch() {
 
 #[test]
 fn submitted_auto_region_scaled_ht_grayscale_1024_batch16_uses_one_metal_batch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_ht_gray8_sized(1024, 1024);
     let roi = Rect {
         x: 128,
@@ -1321,6 +1421,10 @@ fn submitted_auto_region_scaled_ht_grayscale_1024_batch16_uses_one_metal_batch()
 
 #[test]
 fn submitted_auto_region_scaled_rgb_1024_batch16_uses_hybrid_metal() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_rgb8_sized(1024, 1024);
     let roi = Rect {
         x: 128,
@@ -1379,6 +1483,10 @@ fn submitted_auto_region_scaled_rgb_1024_batch16_uses_hybrid_metal() {
 
 #[test]
 fn submitted_auto_region_scaled_ht_grayscale_batch16_is_not_order_dependent() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let small_bytes = fixture_ht_gray8_sized(64, 64);
     let large_bytes = fixture_ht_gray8_sized(1024, 1024);
     let small_roi = Rect {
@@ -1463,6 +1571,10 @@ fn submitted_auto_region_scaled_ht_grayscale_batch16_is_not_order_dependent() {
 
 #[test]
 fn repeated_classic_grayscale_direct_decode_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
     let surfaces = decoder
@@ -1484,6 +1596,10 @@ fn repeated_classic_grayscale_direct_decode_matches_host_decode() {
 
 #[test]
 fn repeated_ht_grayscale_direct_decode_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_ht_gray8();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
     let surfaces = decoder
@@ -1505,6 +1621,10 @@ fn repeated_ht_grayscale_direct_decode_matches_host_decode() {
 
 #[test]
 fn metal_gray16_matches_host_decode_for_12bit_source() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray12();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
     let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
@@ -1522,6 +1642,10 @@ fn metal_gray16_matches_host_decode_for_12bit_source() {
 
 #[test]
 fn explicit_metal_rgb_full_tile_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let rgb8 = fixture_rgb8();
     {
         let mut decoder = J2kDecoder::new(&rgb8).expect("rgb8 decoder");
@@ -1632,6 +1756,10 @@ fn auto_decode_report_explains_cpu_fallback_and_residency() {
 
 #[test]
 fn explicit_metal_decode_report_records_resident_surface() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
 
@@ -1691,6 +1819,10 @@ fn explicit_metal_unsupported_rgba16_report_variants_are_rejected() {
 
 #[test]
 fn explicit_metal_region_and_scaled_grayscale_match_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let roi = Rect {
         x: 0,
@@ -1742,6 +1874,10 @@ fn explicit_metal_region_and_scaled_grayscale_match_host_decode() {
 
 #[test]
 fn explicit_metal_scaled_rgb8_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_rgb8_sized(8, 8);
     let scale = Downscale::Half;
     let scaled = Rect {
@@ -1777,6 +1913,10 @@ fn explicit_metal_scaled_rgb8_matches_host_decode() {
 
 #[test]
 fn explicit_metal_region_and_scaled_htj2k_grayscale_match_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_ht_gray8();
     let roi = Rect {
         x: 0,
@@ -1828,6 +1968,10 @@ fn explicit_metal_region_and_scaled_htj2k_grayscale_match_host_decode() {
 
 #[test]
 fn explicit_metal_region_scaled_grayscale_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8();
     let roi = Rect {
         x: 1,
@@ -1862,6 +2006,10 @@ fn explicit_metal_region_scaled_grayscale_matches_host_decode() {
 
 #[test]
 fn explicit_metal_region_scaled_grayscale_large_cropped_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_gray8_sized(1024, 1024);
     let roi = Rect {
         x: 128,
@@ -1909,6 +2057,10 @@ fn explicit_metal_region_scaled_grayscale_large_cropped_matches_host_decode() {
 
 #[test]
 fn explicit_metal_region_scaled_htj2k_grayscale_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_ht_gray8();
     let roi = Rect {
         x: 1,
@@ -1943,6 +2095,10 @@ fn explicit_metal_region_scaled_htj2k_grayscale_matches_host_decode() {
 
 #[test]
 fn explicit_metal_region_scaled_htj2k_falls_back_when_direct_width_is_unsupported() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_ht_gray8_unsupported_direct_width();
     let roi = Rect {
         x: 48,
@@ -1977,6 +2133,10 @@ fn explicit_metal_region_scaled_htj2k_falls_back_when_direct_width_is_unsupporte
 
 #[test]
 fn explicit_metal_region_scaled_rgb_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_direct_rgb8_variant(3);
     let roi = Rect {
         x: 1,
@@ -2068,6 +2228,10 @@ fn explicit_metal_region_scaled_rgb_matches_host_decode() {
 
 #[test]
 fn explicit_metal_region_scaled_rgb_large_cropped_matches_host_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let bytes = fixture_rgb8_sized(1024, 1024);
     let roi = Rect {
         x: 128,

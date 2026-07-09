@@ -105,7 +105,7 @@ pub(crate) fn encode_forward_dwt53(
         let active_buffer = if active_is_a { &buffer_a } else { &buffer_b };
         let transformed = checked_buffer_slice::<f32>(active_buffer, samples.len(), "DWT 5/3")?;
         let output = extract_forward_dwt53_output(
-            transformed,
+            &transformed,
             width,
             current_width,
             current_height,
@@ -267,7 +267,7 @@ pub(crate) fn encode_forward_dwt97(
 
         let active_buffer = if active_is_a { &buffer_a } else { &buffer_b };
         let transformed = checked_buffer_slice::<f32>(active_buffer, samples.len(), "DWT 9/7")?;
-        extract_forward_dwt97_output(transformed, width, current_width, current_height, shapes)
+        extract_forward_dwt97_output(&transformed, width, current_width, current_height, shapes)
     })
 }
 
@@ -361,7 +361,6 @@ pub(crate) fn encode_deinterleave_to_f32(
             .take(usize::from(job.num_components))
             .map(|buffer| {
                 checked_buffer_slice::<f32>(buffer, job.num_pixels, "deinterleaved plane")
-                    .map(<[f32]>::to_vec)
             })
             .collect::<Result<Vec<_>, Error>>()?;
         debug_assert_eq!(

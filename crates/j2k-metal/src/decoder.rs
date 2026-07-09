@@ -1566,6 +1566,11 @@ mod tests {
     use j2k_core::{CodecError, DeviceSurface};
 
     #[cfg(target_os = "macos")]
+    fn should_run_metal_runtime() -> bool {
+        j2k_test_support::metal_runtime_gate(module_path!())
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn direct_runtime_fallback_classification_uses_structured_variant() {
         let fallback = Error::MetalDirectFallback {
@@ -1689,6 +1694,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_backend_sessions_own_distinct_direct_plan_caches() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let Some(device) = metal::Device::system_default() else {
             j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
@@ -1706,6 +1715,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn explicit_metal_request_does_not_stage_cpu_pixels() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         if Device::system_default().is_none() {
             j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
@@ -1730,6 +1743,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn repeated_region_scaled_color_batch_reuses_prepared_plan() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         if Device::system_default().is_none() {
             j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;

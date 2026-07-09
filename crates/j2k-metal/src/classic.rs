@@ -216,6 +216,11 @@ mod tests {
         EncodeOptions, HtCodeBlockDecoder, Image, J2kCodeBlockDecodeJob, J2kCodeBlockSegment,
     };
 
+    #[cfg(target_os = "macos")]
+    fn should_run_metal_runtime() -> bool {
+        j2k_test_support::metal_runtime_gate(module_path!())
+    }
+
     #[derive(Clone)]
     struct OwnedClassicJob {
         data: Vec<u8>,
@@ -408,6 +413,11 @@ mod tests {
 
     #[test]
     fn metal_classic_decoder_matches_native_decode() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
 
@@ -445,6 +455,11 @@ mod tests {
 
     #[test]
     fn metal_classic_decoder_batches_multi_block_subbands() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray1_cleanup_only_multi_block();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
 
@@ -476,6 +491,11 @@ mod tests {
 
     #[test]
     fn metal_classic_decoder_matches_native_decode_for_cleanup_only_fixture() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray1_cleanup_only();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
 
@@ -502,6 +522,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_classic_kernel_matches_scalar_for_captured_cleanup_job() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray1_cleanup_only();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();
@@ -525,6 +549,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_classic_kernel_matches_scalar_for_cleanup_job_with_segmentation_symbols() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray1_cleanup_only();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();
@@ -570,6 +598,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_classic_kernel_matches_scalar_for_captured_multi_pass_job() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();
@@ -593,6 +625,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_classic_kernel_matches_scalar_for_multi_pass_job_with_reset_contexts() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();
@@ -638,6 +674,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_classic_kernel_matches_scalar_for_tall_job_with_vertically_causal_context() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray8_tall();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();
@@ -683,6 +723,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_classic_kernel_matches_scalar_for_multi_pass_job_with_termination_on_each_pass() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();
@@ -732,6 +776,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_classic_kernel_matches_scalar_for_bypass_job() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray16_bypass();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();
@@ -784,6 +832,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_classic_kernel_accepts_zero_length_prefix_segment() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();
@@ -818,6 +870,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_classic_kernel_matches_scalar_for_valid_two_segment_job() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_gray8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();

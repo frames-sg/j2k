@@ -2,9 +2,16 @@
 
 use super::*;
 
+fn metal_session() -> Option<MetalBackendSession> {
+    should_run_metal_runtime()
+        .then(|| MetalBackendSession::system_default().expect("Metal backend session"))
+}
+
 #[test]
 fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (8, 8), 2).expect("texture output");
     let inputs = [BASELINE_444, BASELINE_444];
@@ -39,7 +46,9 @@ fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_batch_resizes_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
     let first = Decoder::new(BASELINE_420).expect("first decoder");
@@ -67,7 +76,9 @@ fn rgb8_decoder_batch_resizes_reusable_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_batch_can_write_into_fixed_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 16), 2).expect("texture output");
     let first = Decoder::new(BASELINE_420).expect("first decoder");
@@ -104,7 +115,9 @@ fn rgb8_decoder_batch_can_write_into_fixed_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_batch_rejects_mixed_output_dimensions_without_resizing_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
     let first = Decoder::new(BASELINE_420).expect("first decoder");
@@ -127,7 +140,9 @@ fn rgb8_decoder_batch_rejects_mixed_output_dimensions_without_resizing_textures(
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_batch_rejects_mixed_sampling_without_resizing_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
     let rgb = j2k_test_support::patterned_rgb8(16, 16);
@@ -183,7 +198,9 @@ fn rgb8_decoder_batch_rejects_mixed_sampling_without_resizing_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let scale = Downscale::Quarter;
     let output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (4, 4), 2).expect("texture output");
@@ -221,7 +238,9 @@ fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_scaled_batch_decode_resizes_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let scale = Downscale::Quarter;
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
@@ -261,7 +280,9 @@ fn rgb8_scaled_batch_decode_resizes_reusable_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_scaled_batch_resizes_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let scale = Downscale::Quarter;
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
@@ -303,7 +324,9 @@ fn rgb8_decoder_scaled_batch_resizes_reusable_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let scale = Downscale::Quarter;
     let output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (4, 4), 2).expect("texture output");
@@ -342,7 +365,9 @@ fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_fast422_region_scaled_batch_decode_can_write_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let roi = Rect {
         x: 1,
         y: 1,
@@ -396,7 +421,9 @@ fn rgb8_fast422_region_scaled_batch_decode_can_write_into_reusable_metal_texture
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatches() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (128, 96);
     let roi = Rect {
         x: 0,
@@ -557,7 +584,9 @@ fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatch
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatches() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (96, 96);
     let roi = Rect {
         x: 0,
@@ -720,7 +749,9 @@ fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatch
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_fast420_region_scaled_batch_decode_can_write_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let roi = Rect {
         x: 1,
         y: 2,
@@ -774,7 +805,9 @@ fn rgb8_fast420_region_scaled_batch_decode_can_write_into_reusable_metal_texture
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let roi = Rect {
         x: 1,
         y: 2,
@@ -833,7 +866,9 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let roi = Rect {
         x: 1,
         y: 2,
@@ -888,7 +923,9 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (128, 128);
     let roi = Rect {
         x: 9,
@@ -961,7 +998,9 @@ fn assert_restart_region_scaled_texture_batch_writes_reusable_metal_output(
     subsampling: JpegSubsampling,
     dimensions: (u32, u32),
 ) {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let roi = Rect {
         x: 0,
         y: 0,
@@ -1059,7 +1098,9 @@ fn rgb8_restart_fast444_region_scaled_batch_decode_writes_reusable_metal_texture
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatches() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (128, 128);
     let roi = Rect {
         x: 9,
@@ -1222,7 +1263,9 @@ fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatch
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_fast420_batch_decode_can_write_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 16), 2).expect("texture output");
     let inputs = [BASELINE_420, BASELINE_420];
@@ -1257,7 +1300,9 @@ fn rgb8_fast420_batch_decode_can_write_into_reusable_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_fast422_batch_decode_can_write_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 8), 2).expect("texture output");
     let inputs = [BASELINE_422, BASELINE_422];
@@ -1292,6 +1337,10 @@ fn rgb8_fast422_batch_decode_can_write_into_reusable_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_texture_batch_decode_avoids_private_rgba_staging_buffers() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let cases = [
         (BASELINE_420, (16, 16), 0),
         (BASELINE_422, (16, 8), 0),
@@ -1326,7 +1375,9 @@ fn rgb8_texture_batch_decode_avoids_private_rgba_staging_buffers() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_fast444_texture_batch_decode_fuses_directly_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (8, 8), 2).expect("texture output");
     let inputs = [BASELINE_444, BASELINE_444];
@@ -1352,7 +1403,9 @@ fn rgb8_fast444_texture_batch_decode_fuses_directly_into_reusable_metal_textures
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_table_mixed_fast444_texture_batch_groups_resident_dispatches() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (64, 64);
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
@@ -1482,7 +1535,9 @@ fn rgb8_table_mixed_fast444_texture_batch_groups_resident_dispatches() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 8), 2).expect("texture output");
     let inputs = [BASELINE_422, BASELINE_422];
@@ -1508,7 +1563,9 @@ fn rgb8_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_textures
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_wide_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (48, 16);
     let rgb = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let jpeg = encode_jpeg_baseline(
@@ -1550,7 +1607,9 @@ fn rgb8_wide_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_tex
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_table_mixed_fast422_texture_batch_groups_resident_dispatches() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (96, 48);
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
@@ -1682,7 +1741,9 @@ fn rgb8_table_mixed_fast422_texture_batch_groups_resident_dispatches() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 16), 2).expect("texture output");
     let inputs = [BASELINE_420, BASELINE_420];
@@ -1720,7 +1781,9 @@ fn rgb8_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_wide_row_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (32, 16);
     let rgb = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let jpeg = encode_jpeg_baseline(
@@ -1762,7 +1825,9 @@ fn rgb8_wide_row_fast420_texture_batch_decode_fuses_directly_into_reusable_metal
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_multi_row_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (16, 32);
     let rgb = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let jpeg = encode_jpeg_baseline(
@@ -1804,7 +1869,9 @@ fn rgb8_multi_row_fast420_texture_batch_decode_fuses_directly_into_reusable_meta
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_multi_axis_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     for dimensions in [(32, 32), (48, 48)] {
         let rgb = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
         let jpeg = encode_jpeg_baseline(
@@ -1848,7 +1915,9 @@ fn rgb8_multi_axis_fast420_texture_batch_decode_fuses_directly_into_reusable_met
 #[test]
 fn rgb8_chunked_multi_axis_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures(
 ) {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (736, 720);
     let rgb = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let jpeg = encode_jpeg_baseline(
@@ -1890,7 +1959,9 @@ fn rgb8_chunked_multi_axis_fast420_texture_batch_decode_fuses_directly_into_reus
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_restart_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (48, 48);
     let rgb = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let jpeg = encode_jpeg_baseline(
@@ -1933,7 +2004,9 @@ fn rgb8_restart_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_
 #[test]
 fn rgb8_distinct_restart_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures()
 {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (128, 128);
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
@@ -2020,7 +2093,9 @@ fn rgb8_distinct_restart_fast420_texture_batch_decode_fuses_directly_into_reusab
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_table_mixed_restart_fast420_texture_batch_groups_resident_dispatches() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let dimensions = (128, 128);
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
@@ -2150,7 +2225,9 @@ fn rgb8_table_mixed_restart_fast420_texture_batch_groups_resident_dispatches() {
 #[cfg(target_os = "macos")]
 #[test]
 fn jpeg_device_decode_uses_private_internal_planes() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
 
     compute::reset_jpeg_private_buffer_allocations_for_test();
@@ -2168,7 +2245,9 @@ fn jpeg_device_decode_uses_private_internal_planes() {
 #[cfg(target_os = "macos")]
 #[test]
 fn jpeg_private_rgb8_tile_uses_private_output_buffer() {
-    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let Some(session) = metal_session() else {
+        return;
+    };
     let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
 
     let tile = decoder
@@ -2186,6 +2265,10 @@ fn jpeg_private_rgb8_tile_uses_private_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn jpeg_gray_region_decode_uses_private_internal_planes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let roi = Rect {
         x: 4,
         y: 4,
@@ -2220,6 +2303,10 @@ fn jpeg_gray_region_decode_uses_private_internal_planes() {
 #[cfg(target_os = "macos")]
 #[test]
 fn uploaded_metal_surface_is_marked_cpu_staged() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let surface = upload_surface(
         vec![1, 2, 3],
         (1, 1),

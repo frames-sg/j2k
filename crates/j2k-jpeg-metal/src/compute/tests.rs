@@ -12,6 +12,10 @@ const BASELINE_420_RESTART: &[u8] =
 const BASELINE_422: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_422_16x8.jpg");
 const BASELINE_444: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_444_8x8.jpg");
 
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
 #[test]
 fn mcu_range_for_rect_covers_only_touched_rows_and_columns() {
     let roi = j2k_jpeg::Rect {
@@ -98,6 +102,10 @@ fn fast444_params_accepts_minimal_packet() {
 
 #[test]
 fn viewport_plane_cache_is_runtime_local() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let runtime_a = MetalRuntime::new().expect("Metal runtime");
     let runtime_b = MetalRuntime::new_with_device(runtime_a.device.clone()).expect("Metal runtime");
 
@@ -357,6 +365,10 @@ fn generated_rgb_jpeg(dim: u16) -> Vec<u8> {
 
 #[test]
 fn fast420_packet_scaled_decode_matches_cpu_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
     for scale in [j2k_core::Downscale::Half, j2k_core::Downscale::Quarter] {
@@ -383,6 +395,10 @@ fn fast420_packet_scaled_decode_matches_cpu_scaled_bytes() {
 
 #[test]
 fn fast420_packet_region_decode_matches_cpu_region_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
     let roi = j2k_jpeg::Rect {
@@ -415,6 +431,10 @@ fn fast420_packet_region_decode_matches_cpu_region_bytes() {
 
 #[test]
 fn fast420_region_batch_decode_matches_cpu_region_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_420);
     let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
     let roi = Rect {
@@ -471,6 +491,10 @@ fn fast420_region_batch_decode_matches_cpu_region_bytes() {
 
 #[test]
 fn fast420_full_batch_decode_uses_shared_surface_offsets() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_420);
     let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
     let requests = vec![
@@ -517,6 +541,10 @@ fn fast420_full_batch_decode_uses_shared_surface_offsets() {
 
 #[test]
 fn fast420_split_full_batch_decode_matches_cpu_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let jpeg = generated_rgb_jpeg(32);
     let input = Arc::<[u8]>::from(jpeg.into_boxed_slice());
     let packet = j2k_jpeg::adapter::build_fast420_packet(input.as_ref()).expect("packet");
@@ -573,6 +601,10 @@ fn fast420_split_full_batch_decode_matches_cpu_bytes() {
 
 #[test]
 fn fast420_batch_clears_high_ac_before_dc_only_blocks() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(fast420_high_ac_then_dc_only_jpeg(1));
     let packet = j2k_jpeg::adapter::build_fast420_packet(input.as_ref()).expect("packet");
     let requests = vec![
@@ -615,6 +647,10 @@ fn fast420_batch_clears_high_ac_before_dc_only_blocks() {
 
 #[test]
 fn fast420_batch_matches_cpu_for_high_ac_overflow_coefficients() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(fast420_high_ac_then_dc_only_jpeg(u8::MAX));
     let packet = j2k_jpeg::adapter::build_fast420_packet(input.as_ref()).expect("packet");
     let requests = vec![
@@ -657,6 +693,10 @@ fn fast420_batch_matches_cpu_for_high_ac_overflow_coefficients() {
 
 #[test]
 fn fast420_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
     let roi = j2k_jpeg::Rect {
@@ -697,6 +737,10 @@ fn fast420_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
 
 #[test]
 fn fast420_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_420);
     let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
     let roi = Rect {
@@ -756,6 +800,10 @@ fn fast420_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
 
 #[test]
 fn fast420_scaled_batch_decode_matches_cpu_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_420);
     let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
     let scale = j2k_core::Downscale::Quarter;
@@ -799,6 +847,10 @@ fn fast420_scaled_batch_decode_matches_cpu_scaled_bytes() {
 
 #[test]
 fn fast422_packet_full_decode_matches_cpu_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
     let (expected, _) = decoder
@@ -817,6 +869,10 @@ fn fast422_packet_full_decode_matches_cpu_bytes() {
 
 #[test]
 fn fast422_full_batch_decode_matches_cpu_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_422);
     let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
     let requests = vec![
@@ -863,6 +919,10 @@ fn fast422_full_batch_decode_matches_cpu_bytes() {
 
 #[test]
 fn fast422_packet_region_decode_matches_cpu_region_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
     let roi = j2k_jpeg::Rect {
@@ -890,6 +950,10 @@ fn fast422_packet_region_decode_matches_cpu_region_bytes() {
 
 #[test]
 fn fast422_region_batch_decode_matches_cpu_region_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_422);
     let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
     let roi = Rect {
@@ -946,6 +1010,10 @@ fn fast422_region_batch_decode_matches_cpu_region_bytes() {
 
 #[test]
 fn fast422_packet_scaled_decode_matches_cpu_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
     for (scale, dims) in [
@@ -976,6 +1044,10 @@ fn fast422_packet_scaled_decode_matches_cpu_scaled_bytes() {
 
 #[test]
 fn fast422_scaled_batch_decode_matches_cpu_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_422);
     let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
     let scale = j2k_core::Downscale::Quarter;
@@ -1019,6 +1091,10 @@ fn fast422_scaled_batch_decode_matches_cpu_scaled_bytes() {
 
 #[test]
 fn fast422_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
     let roi = j2k_jpeg::Rect {
@@ -1058,6 +1134,10 @@ fn fast422_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
 
 #[test]
 fn fast422_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_422);
     let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
     let roi = Rect {
@@ -1117,6 +1197,10 @@ fn fast422_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
 
 #[test]
 fn fast444_packet_full_decode_matches_cpu_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
     let (expected, _) = decoder
@@ -1140,6 +1224,10 @@ fn fast444_packet_full_decode_matches_cpu_bytes() {
 
 #[test]
 fn fast444_packet_scaled_decode_matches_cpu_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
     for scale in [j2k_core::Downscale::Half, j2k_core::Downscale::Quarter] {
@@ -1170,6 +1258,10 @@ fn fast444_packet_scaled_decode_matches_cpu_scaled_bytes() {
 
 #[test]
 fn fast444_packet_region_decode_matches_cpu_region_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
     let roi = j2k_jpeg::Rect {
@@ -1206,6 +1298,10 @@ fn fast444_packet_region_decode_matches_cpu_region_bytes() {
 
 #[test]
 fn fast444_region_batch_decode_matches_cpu_region_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_444);
     let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
     let roi = Rect {
@@ -1266,6 +1362,10 @@ fn fast444_region_batch_decode_matches_cpu_region_bytes() {
 
 #[test]
 fn fast444_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
     let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
     let roi = j2k_jpeg::Rect {
@@ -1310,6 +1410,10 @@ fn fast444_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
 
 #[test]
 fn fast444_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_444);
     let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
     let roi = Rect {
@@ -1373,6 +1477,10 @@ fn fast444_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
 
 #[test]
 fn fast444_scaled_batch_decode_matches_cpu_scaled_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let input = Arc::<[u8]>::from(BASELINE_444);
     let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
     let scale = j2k_core::Downscale::Quarter;

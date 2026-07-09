@@ -48,7 +48,11 @@ fn download_rgba8_texture(
 
     crate::buffers::checked_buffer_slice::<u8>(&buffer, byte_len, "texture test readback")
         .expect("texture readback buffer must be CPU-visible and bounded")
-        .to_vec()
+}
+
+#[cfg(target_os = "macos")]
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
 }
 
 #[cfg(target_os = "macos")]
@@ -602,6 +606,10 @@ fn assert_prepared_huffman_matches_shared(label: &str, table: &JpegHuffmanTable)
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_backend_session_reuses_compiled_runtime() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     assert!(!session.runtime_initialized_for_test());
 
@@ -631,6 +639,10 @@ fn metal_backend_session_reuses_compiled_runtime() {
 #[cfg(target_os = "macos")]
 #[test]
 fn jpeg_rgb8_batch_decode_uses_backend_session_runtime() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     assert!(!session.runtime_initialized_for_test());
 
@@ -654,6 +666,10 @@ fn jpeg_rgb8_batch_decode_uses_backend_session_runtime() {
 #[test]
 fn queued_jpeg_batch_decode_uses_metal_session_runtime() {
     use j2k_core::DeviceSubmission as _;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
 
     let backend_session = MetalBackendSession::system_default().expect("Metal backend session");
     assert!(!backend_session.runtime_initialized_for_test());
@@ -693,6 +709,10 @@ fn queued_jpeg_batch_decode_uses_metal_session_runtime() {
 #[test]
 fn default_queued_jpeg_batch_decode_lazily_initializes_backend_session() {
     use j2k_core::DeviceSubmission as _;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
 
     let mut session = MetalSession::default();
     assert!(session
@@ -738,6 +758,10 @@ fn default_queued_jpeg_batch_decode_lazily_initializes_backend_session() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_batch_decode_can_write_into_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (16, 16), 2).expect("output buffer");
@@ -771,6 +795,10 @@ fn rgb8_batch_decode_can_write_into_reusable_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_batch_resizes_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
@@ -807,6 +835,10 @@ fn rgb8_decoder_batch_resizes_reusable_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_batch_can_write_into_fixed_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (16, 16), 2).expect("output buffer");
@@ -840,6 +872,10 @@ fn rgb8_decoder_batch_can_write_into_fixed_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_batch_rejects_mixed_output_dimensions_without_resizing_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
@@ -863,6 +899,10 @@ fn rgb8_decoder_batch_rejects_mixed_output_dimensions_without_resizing_buffer() 
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_batch_rejects_mixed_sampling_without_resizing_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
@@ -1093,6 +1133,10 @@ fn rgb8_decoder_batch_metal_report_rejects_restart_fast422_full_tiles() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (8, 8), 2).expect("output buffer");
@@ -1125,6 +1169,10 @@ fn assert_table_mixed_full_buffer_groups_resident(
     first_quality: u8,
     second_quality: u8,
 ) {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let rgb_a = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
     let mut rgb_b = j2k_test_support::patterned_rgb8(dimensions.0, dimensions.1);
@@ -1287,6 +1335,10 @@ fn rgb8_table_mixed_fast444_buffer_batch_groups_resident_dispatches() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let scale = Downscale::Quarter;
     let output =
@@ -1317,6 +1369,10 @@ fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_scaled_batch_resizes_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let scale = Downscale::Quarter;
     let mut output =
@@ -1355,6 +1411,10 @@ fn rgb8_decoder_scaled_batch_resizes_reusable_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let scale = Downscale::Quarter;
     let output =
@@ -1390,6 +1450,10 @@ fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_region_scaled_batch_decode_can_write_into_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let roi = Rect {
         x: 1,
@@ -1437,6 +1501,10 @@ fn rgb8_region_scaled_batch_decode_can_write_into_reusable_metal_output_buffer()
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_region_scaled_batch_decode_resizes_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let roi = Rect {
         x: 1,
@@ -1490,6 +1558,10 @@ fn rgb8_region_scaled_batch_decode_resizes_reusable_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let roi = Rect {
         x: 1,
@@ -1546,6 +1618,10 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let roi = Rect {
         x: 1,
@@ -1597,6 +1673,10 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let dimensions = (128, 128);
     let roi = Rect {
@@ -1666,6 +1746,10 @@ fn assert_restart_region_scaled_buffer_batch_writes_reusable_metal_output(
     subsampling: JpegSubsampling,
     dimensions: (u32, u32),
 ) {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let roi = Rect {
         x: 0,
@@ -1764,6 +1848,10 @@ fn assert_table_mixed_region_scaled_buffer_groups_resident(
     first_quality: u8,
     second_quality: u8,
 ) {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let roi = Rect {
         x: 0,
@@ -1960,6 +2048,10 @@ fn rgb8_table_mixed_fast444_region_scaled_buffer_batch_groups_resident_dispatche
 #[cfg(target_os = "macos")]
 #[test]
 fn rgb8_fast444_region_scaled_batch_decode_can_write_into_reusable_metal_textures() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let roi = Rect {
         x: 1,
@@ -2016,6 +2108,10 @@ fn rgb8_fast444_region_scaled_batch_decode_can_write_into_reusable_metal_texture
 fn metal_batch_output_buffer_ensure_reuses_matching_allocation_and_grows_capacity() {
     use metal::foreign_types::ForeignTypeRef;
 
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (16, 16), 2).expect("output buffer");
@@ -2044,6 +2140,10 @@ fn metal_batch_output_buffer_ensure_reuses_matching_allocation_and_grows_capacit
 #[test]
 fn metal_batch_texture_output_ensure_reuses_matching_textures_and_grows_capacity() {
     use metal::foreign_types::ForeignTypeRef;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
 
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
@@ -2075,6 +2175,10 @@ fn metal_batch_texture_output_ensure_reuses_matching_textures_and_grows_capacity
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_batch_output_buffer_ensure_region_scaled_tiles_uses_scaled_roi_shape() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let roi = Rect {
         x: 4,
@@ -2101,6 +2205,10 @@ fn metal_batch_output_buffer_ensure_region_scaled_tiles_uses_scaled_roi_shape() 
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_batch_texture_output_ensure_scaled_tiles_uses_scaled_full_shape() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut output =
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
@@ -2117,6 +2225,10 @@ fn metal_batch_texture_output_ensure_scaled_tiles_uses_scaled_full_shape() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_batch_outputs_can_ensure_from_resident_batch_report() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let first = Decoder::new(BASELINE_420).expect("first decoder");
     let second = Decoder::new(BASELINE_420).expect("second decoder");
@@ -2153,6 +2265,10 @@ fn metal_batch_outputs_can_ensure_from_resident_batch_report() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_batch_outputs_reject_ineligible_report_without_resizing() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let first = Decoder::new(BASELINE_420).expect("first decoder");
     let second = Decoder::new(BASELINE_444).expect("second decoder");
@@ -2192,6 +2308,10 @@ fn metal_batch_outputs_reject_ineligible_report_without_resizing() {
 #[cfg(target_os = "macos")]
 #[test]
 fn warm_session_reuses_private_intermediate_buffers_for_reusable_output_batches() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (16, 16), 2).expect("output buffer");
@@ -2231,6 +2351,10 @@ fn warm_session_reuses_private_intermediate_buffers_for_reusable_output_batches(
 #[cfg(target_os = "macos")]
 #[test]
 fn warm_session_reuses_shared_upload_buffers_for_reusable_output_batches() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let output =
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (16, 16), 2).expect("output buffer");

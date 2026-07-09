@@ -24,6 +24,9 @@ j2k-core = { path = "../j2k-core", version = "=0.7.0" }
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = { workspace = true }
 
+[dev-dependencies]
+j2k-test-support = { path = "../j2k-test-support" }
+
 [lints.rust]
 unsafe_code = "allow"
 unsafe_op_in_unsafe_fn = "deny"

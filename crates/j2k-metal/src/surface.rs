@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use j2k_core::{
     copy_tight_pixels_to_strided_output, BackendKind, DeviceMemoryRange, DeviceSurface,
@@ -73,20 +73,25 @@ impl Surface {
         Ok(self.byte_offset..end)
     }
 
-    fn storage_bytes(&self) -> Result<&[u8], Error> {
+    fn storage_bytes(&self) -> Result<Cow<'_, [u8]>, Error> {
         match &self.storage {
             Storage::Host(bytes) => {
                 let range = self.checked_storage_range(bytes.len())?;
-                Ok(&bytes[range])
+                Ok(Cow::Borrowed(&bytes[range]))
             }
             #[cfg(target_os = "macos")]
             Storage::Metal(buffer) => {
-                match j2k_metal_support::checked_buffer_contents_slice::<u8>(
-                    buffer,
-                    self.byte_offset,
-                    self.byte_len(),
-                ) {
-                    Ok(bytes) => Ok(bytes),
+                // SAFETY: A returned `Surface` represents a completed decode.
+                // Owned readback prevents the caller from retaining a Rust
+                // slice that aliases later access through `metal_buffer()`.
+                match unsafe {
+                    j2k_metal_support::checked_buffer_read_vec::<u8>(
+                        buffer,
+                        self.byte_offset,
+                        self.byte_len(),
+                    )
+                } {
+                    Ok(bytes) => Ok(Cow::Owned(bytes)),
                     Err(j2k_metal_support::MetalSupportError::BufferContentsUnavailable) => {
                         Err(Error::MetalKernel {
                             message: "J2K Metal surface buffer is not host-addressable".to_string(),
@@ -102,18 +107,21 @@ impl Surface {
 
     /// Return the tightly packed surface bytes.
     ///
-    /// Metal-backed surfaces are expected to use host-addressable buffers. This
-    /// method panics only if the surface metadata is internally inconsistent;
-    /// fallible operations such as [`Self::download_into`] return those errors.
-    pub fn as_bytes(&self) -> &[u8] {
+    /// Host-backed surfaces are borrowed without copying. Metal-backed surfaces
+    /// are copied into owned storage so the returned bytes cannot alias later
+    /// GPU access through [`Self::metal_buffer`]. This method panics only if the
+    /// surface metadata is internally inconsistent; fallible operations such
+    /// as [`Self::download_into`] return those errors.
+    pub fn as_bytes(&self) -> Cow<'_, [u8]> {
         self.storage_bytes()
             .expect("validated J2K Metal surface byte range")
     }
 
     /// Copy the tightly packed surface into a caller-provided strided buffer.
     pub fn download_into(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
+        let storage = self.storage_bytes()?;
         copy_tight_pixels_to_strided_output(
-            self.storage_bytes()?,
+            storage.as_ref(),
             self.dimensions,
             self.fmt,
             out,

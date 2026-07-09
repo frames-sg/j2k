@@ -5,6 +5,10 @@ use super::*;
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_forward_dwt53_dispatch_round_trips_gray8_lossless_tile() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..64 * 64).map(|i| ((i * 5) & 0xFF) as u8).collect();
     let samples =
         J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
@@ -33,6 +37,10 @@ fn metal_forward_dwt53_dispatch_round_trips_gray8_lossless_tile() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_lossless_facade_dispatches_rct_and_dwt_for_wsi_sized_rgb_tile() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut pixels = Vec::with_capacity(128 * 128 * 3);
     for y in 0..128u32 {
         for x in 0..128u32 {
@@ -67,6 +75,10 @@ fn metal_lossless_facade_dispatches_rct_and_dwt_for_wsi_sized_rgb_tile() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_classic_tier1_uses_one_batched_dispatch_for_multiple_code_blocks() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..256 * 256)
         .map(|idx| ((idx * 17 + 3) & 0xFF) as u8)
         .collect();
@@ -97,6 +109,10 @@ fn metal_classic_tier1_uses_one_batched_dispatch_for_multiple_code_blocks() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_classic_resident_uses_mq_byte_split_gpu_token_pack_by_default() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let _profile_guard = compute::force_metal_profile_stages_for_test(true);
     compute::reset_classic_gpu_token_pack_dispatches_for_test();
     compute::reset_classic_split_mq_byte_gpu_token_pack_dispatches_for_test();
@@ -191,6 +207,10 @@ fn metal_classic_resident_uses_mq_byte_split_gpu_token_pack_by_default() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_classic_resident_gpu_token_pack_route_round_trips() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let _guard = compute::force_classic_gpu_token_pack_route_for_test(true);
     let _profile_guard = compute::force_metal_profile_stages_for_test(true);
     compute::reset_classic_gpu_token_pack_dispatches_for_test();
@@ -293,6 +313,10 @@ fn metal_classic_resident_gpu_token_pack_route_round_trips() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_htj2k_uses_one_batched_dispatch_for_multiple_code_blocks() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..256 * 256)
         .map(|idx| ((idx * 23 + 9) & 0xFF) as u8)
         .collect();
@@ -319,6 +343,10 @@ fn metal_htj2k_uses_one_batched_dispatch_for_multiple_code_blocks() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_htj2k_lossless_facade_dispatches_ht_code_blocks_and_packetization() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..64).map(|value| ((value * 13) & 0xFF) as u8).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).expect("valid gray samples");
     let mut accelerator = MetalEncodeStageAccelerator::default();
@@ -350,6 +378,10 @@ fn metal_htj2k_lossless_facade_dispatches_ht_code_blocks_and_packetization() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_htj2k_lossy_facade_require_device_dispatches_supported_stages() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let pixels: Vec<u8> = (0..16 * 16)
         .map(|idx| ((idx * 17 + idx / 3) & 0xFF) as u8)
         .collect();
@@ -384,6 +416,10 @@ fn metal_htj2k_lossy_facade_require_device_dispatches_supported_stages() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_htj2k_lossy_rgb_facade_reports_forward_ict_dispatch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let width = 16;
     let height = 16;
     let pixels: Vec<u8> = (0..width * height * 3)
@@ -422,6 +458,10 @@ fn metal_htj2k_lossy_rgb_facade_reports_forward_ict_dispatch() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_htj2k_lossy_facade_reports_forward_dwt97_dispatch() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let width = 64;
     let height = 64;
     let pixels: Vec<u8> = (0..width * height)
@@ -455,6 +495,10 @@ fn metal_htj2k_lossy_facade_reports_forward_dwt97_dispatch() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_classic_tier1_kernel_matches_scalar_oracle() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let coeffs: Vec<i32> = (0..64)
         .map(|idx| {
             let value = ((idx * 37 + 11) & 0x1ff) - 255;
@@ -508,6 +552,10 @@ fn metal_classic_tier1_kernel_matches_scalar_oracle() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_classic_tier1_kernel_matches_scalar_for_terminated_passes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let coeffs: Vec<i32> = (0..64)
         .map(|idx| {
             let value = ((idx * 43 + 5) & 0x3ff) - 511;
@@ -562,6 +610,10 @@ fn metal_classic_tier1_kernel_matches_scalar_for_terminated_passes() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_classic_tier1_kernel_matches_scalar_for_selective_bypass() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let coeffs: Vec<i32> = (0..64)
         .map(|idx| {
             let value = ((idx * 61 + 29) & 0x7ff) - 1023;
@@ -615,6 +667,10 @@ fn metal_classic_tier1_kernel_matches_scalar_for_selective_bypass() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_classic_tier1_batched_bypass_u16_32_matches_scalar() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let coeffs: Vec<i32> = (0..32 * 32)
         .map(|idx| {
             let value = ((idx * 97 + idx / 3 + 19) & 0x7ff) - 1023;
@@ -671,6 +727,10 @@ fn metal_classic_tier1_batched_bypass_u16_32_matches_scalar() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_classic_tier1_token_routes_match_scalar_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first_coeffs: Vec<i32> = (0..32 * 32)
         .map(|idx| {
             let value = ((idx * 37 + idx / 5 + 31) & 0xff) - 127;
@@ -816,6 +876,10 @@ fn metal_classic_tier1_token_routes_match_scalar_bytes() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_htj2k_cleanup_kernel_matches_scalar_oracle() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let coeffs: Vec<i32> = (0..64)
         .map(|idx| {
             let value = ((idx * 19 + 7) & 0xff) - 127;
@@ -845,6 +909,10 @@ fn metal_htj2k_cleanup_kernel_matches_scalar_oracle() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_tier2_packetization_kernel_matches_scalar_oracle() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let block0 = [0x12, 0x34, 0x56, 0x78];
     let block1 = [0x9a, 0xbc];
     let code_blocks = vec![
@@ -905,6 +973,10 @@ fn metal_tier2_packetization_kernel_matches_scalar_oracle() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_tier2_packetization_reuses_descriptor_state_across_layers() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let block0 = vec![0x11];
     let block1 = vec![0x22];
     let first = j2k_native::J2kPacketizationResolution {
@@ -977,6 +1049,10 @@ fn metal_tier2_packetization_reuses_descriptor_state_across_layers() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_tier2_packetization_honors_explicit_descriptor_order() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let block0 = vec![0xA0];
     let block1 = vec![0xB0];
     let first = j2k_native::J2kPacketizationResolution {
@@ -1049,6 +1125,10 @@ fn metal_tier2_packetization_honors_explicit_descriptor_order() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_forward_dwt53_handles_single_sample_edge_dimensions() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     for (width, height) in [(1, 8), (8, 1)] {
         let samples: Vec<f32> = (0..width * height)
             .map(|i| {
@@ -1089,6 +1169,10 @@ fn metal_forward_dwt53_matches_reference_for_fractional_stage_samples() {
                 "{label}[{index}] mismatch: actual={actual}, expected={expected}"
             );
         }
+    }
+
+    if !should_run_metal_runtime() {
+        return;
     }
 
     let width = 8;
@@ -1185,6 +1269,10 @@ fn assert_metal_dwt97_matches_native_encode(
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_forward_dwt97_single_level_matches_native_encode_output() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let width = 17;
     let height = 15;
     let pixels = (0..width * height)
@@ -1197,6 +1285,10 @@ fn metal_forward_dwt97_single_level_matches_native_encode_output() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_forward_dwt97_multi_level_matches_native_encode_output() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let width = 32;
     let height = 16;
     let pixels = (0..width * height)

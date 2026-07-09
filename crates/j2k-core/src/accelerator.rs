@@ -173,6 +173,9 @@ pub trait AcceleratorSession {
 /// every backend that consumes it. In practice this means using `#[repr(C)]` or
 /// an equivalent explicit layout, avoiding padding-sensitive interpretation
 /// unless tests cover the exact byte layout, and keeping all fields plain data.
+/// Every possible bit pattern must be a valid value of the implementing type;
+/// types with validity invariants such as `bool`, references, and enums with a
+/// restricted discriminant set must not implement this trait.
 pub unsafe trait GpuAbi: Copy + 'static {
     /// Human-readable ABI name used in layout-test failures.
     const NAME: &'static str;

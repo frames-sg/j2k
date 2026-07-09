@@ -2626,14 +2626,12 @@ pub(super) fn finish_completed_resident_lossless_codestream_batch(
         &pending.status_buffer,
         pending.capacities.len(),
         "resident codestream assembly statuses",
-    )?
-    .to_vec();
+    )?;
     let packet_statuses = checked_buffer_slice::<J2kPacketEncodeStatus>(
         &pending.packet_status_buffer,
         pending.capacities.len(),
         "resident packet encode statuses",
-    )?
-    .to_vec();
+    )?;
     if let Some(started) = status_copy_started {
         stage_stats.result_status_copy_duration = started.elapsed();
     }

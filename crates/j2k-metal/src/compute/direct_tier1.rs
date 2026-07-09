@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use j2k_core::accelerator::GpuAbi;
 use metal::Buffer;
 
 use super::{borrow_slice_buffer, MetalRuntime, PreparedDirectColorPlan};
@@ -26,7 +27,7 @@ fn record_direct_tier1_input_buffer_prepare() {
 #[cfg(not(test))]
 fn record_direct_tier1_input_buffer_prepare() {}
 
-pub(super) fn prepare_direct_tier1_input_buffer<T>(
+pub(super) fn prepare_direct_tier1_input_buffer<T: GpuAbi>(
     runtime: &MetalRuntime,
     data: &[T],
     mode: DirectTier1Mode,

@@ -134,7 +134,7 @@ pub(super) fn read_classic_encoded_code_block(
         });
     }
     let raw_segments = if segment_count == 0 {
-        &[][..]
+        Vec::new()
     } else {
         checked_buffer_slice_at::<J2kClassicSegment>(
             segment_buffer,
@@ -168,7 +168,6 @@ pub(super) fn read_classic_encoded_code_block(
                     message: "classic J2K Metal encode payload offset overflow".to_string(),
                 })?;
         checked_buffer_slice_at::<u8>(output, payload_offset, data_len, "classic encode payload")?
-            .to_vec()
     };
     let segments = raw_segments
         .iter()
@@ -1689,7 +1688,6 @@ pub(crate) fn encode_classic_tier1_code_block(
                 data_len,
                 "classic Tier-1 payload",
             )?
-            .to_vec()
         };
         let number_of_coding_passes =
             u8::try_from(status.number_of_coding_passes).map_err(|_| Error::MetalKernel {
@@ -1713,7 +1711,7 @@ pub(crate) fn encode_classic_tier1_code_block(
             });
         }
         let raw_segments = if segment_count == 0 {
-            &[][..]
+            Vec::new()
         } else {
             checked_buffer_slice::<J2kClassicSegment>(
                 &segment_buffer,
@@ -1779,7 +1777,6 @@ pub(super) fn read_ht_encoded_code_block(
         Vec::new()
     } else {
         checked_buffer_slice_at::<u8>(output, output_offset, data_len, "HTJ2K encode payload")?
-            .to_vec()
     };
     Ok(EncodedHtJ2kCodeBlock {
         data,
@@ -2083,7 +2080,7 @@ pub(crate) fn encode_ht_cleanup_code_block(
         let data = if data_len == 0 {
             Vec::new()
         } else {
-            checked_buffer_slice::<u8>(&output, data_len, "HT encode payload")?.to_vec()
+            checked_buffer_slice::<u8>(&output, data_len, "HT encode payload")?
         };
         Ok(EncodedHtJ2kCodeBlock {
             data,

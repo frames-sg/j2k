@@ -55,6 +55,11 @@ mod tests {
         encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder, Image,
     };
 
+    #[cfg(target_os = "macos")]
+    fn should_run_metal_runtime() -> bool {
+        j2k_test_support::metal_runtime_gate(module_path!())
+    }
+
     fn fixture_j2k_rgb8() -> Vec<u8> {
         let pixels = [10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
         let options = EncodeOptions {
@@ -77,6 +82,11 @@ mod tests {
 
     #[test]
     fn metal_mct_decoder_matches_native_decode() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_rgb8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut expected_context = DecoderContext::default();
@@ -124,6 +134,11 @@ mod tests {
 
     #[test]
     fn metal_mct_decoder_matches_native_decode_for_irreversible_rgb() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_rgb8_irreversible();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut expected_context = DecoderContext::default();
@@ -154,6 +169,11 @@ mod tests {
 
     #[test]
     fn metal_mct_decoder_captures_final_rgb_planes_matching_host_output() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_j2k_rgb8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
         let mut context = DecoderContext::default();

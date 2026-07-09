@@ -640,6 +640,11 @@ fn is_direct_region_scaled_runtime_fallback_error(error: &Error) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    fn should_run_metal_runtime() -> bool {
+        j2k_test_support::metal_runtime_gate(module_path!())
+    }
+
     fn encoded_rgb8_tile_for_region_scaled_plan_cache(seed: u8) -> Arc<[u8]> {
         let mut pixels = j2k_test_support::gradient_u8(64, 64, 3);
         for pixel in pixels.chunks_exact_mut(3) {
@@ -714,6 +719,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn known_repeated_region_scaled_color_batch_reuses_cached_plan_across_calls() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         if Device::system_default().is_none() {
             j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
@@ -747,6 +756,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn known_distinct_region_scaled_color_batch_reuses_cached_plans_across_calls() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         if Device::system_default().is_none() {
             j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;

@@ -1116,21 +1116,22 @@ pub(crate) fn encode_forward_rct(
     plane1: &mut [f32],
     plane2: &mut [f32],
 ) -> Result<(), Error> {
-    with_runtime(|runtime| {
-        let len = plane0.len();
-        if len == 0 {
-            return Ok(());
-        }
-        if plane1.len() != len || plane2.len() != len {
-            return Err(Error::MetalKernel {
-                message: "J2K Metal forward RCT plane lengths must match".to_string(),
-            });
-        }
+    let len = plane0.len();
+    if len == 0 {
+        return Ok(());
+    }
+    if plane1.len() != len || plane2.len() != len {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal forward RCT plane lengths must match".to_string(),
+        });
+    }
+    let len_u32 = u32::try_from(len).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal forward RCT plane length exceeds u32".to_string(),
+    })?;
 
+    with_runtime(|runtime| {
         let params = J2kForwardRctParams {
-            _len: u32::try_from(len).map_err(|_| Error::MetalKernel {
-                message: "J2K Metal forward RCT plane length exceeds u32".to_string(),
-            })?,
+            _len: len_u32,
             _reserved0: 0,
             _reserved1: 0,
             _reserved2: 0,
@@ -1187,21 +1188,22 @@ pub(crate) fn encode_forward_ict(
     plane1: &mut [f32],
     plane2: &mut [f32],
 ) -> Result<(), Error> {
-    with_runtime(|runtime| {
-        let len = plane0.len();
-        if len == 0 {
-            return Ok(());
-        }
-        if plane1.len() != len || plane2.len() != len {
-            return Err(Error::UnsupportedMetalRequest {
-                reason: "J2K Metal forward ICT plane lengths must match",
-            });
-        }
+    let len = plane0.len();
+    if len == 0 {
+        return Ok(());
+    }
+    if plane1.len() != len || plane2.len() != len {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "J2K Metal forward ICT plane lengths must match",
+        });
+    }
+    let len_u32 = u32::try_from(len).map_err(|_| Error::UnsupportedMetalRequest {
+        reason: "J2K Metal forward ICT plane length exceeds u32",
+    })?;
 
+    with_runtime(|runtime| {
         let params = J2kForwardIctParams {
-            _len: u32::try_from(len).map_err(|_| Error::UnsupportedMetalRequest {
-                reason: "J2K Metal forward ICT plane length exceeds u32",
-            })?,
+            _len: len_u32,
             _reserved0: 0,
             _reserved1: 0,
             _reserved2: 0,
@@ -1322,7 +1324,6 @@ pub(crate) fn encode_quantize_subband(job: J2kQuantizeSubbandJob<'_>) -> Result<
         encoder.end_encoding();
         commit_and_wait_metal(command_buffer)?;
 
-        let coefficients = checked_buffer_slice::<i32>(&output_buffer, len, "quantized subband")?;
-        Ok(coefficients.to_vec())
+        checked_buffer_slice::<i32>(&output_buffer, len, "quantized subband")
     })
 }

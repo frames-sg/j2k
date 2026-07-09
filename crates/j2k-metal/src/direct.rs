@@ -442,6 +442,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
     fn classic_direct_plan_sub_band_decode_produces_nonzero_coefficients() {
         let plan = classic_plan();
         let sub_band = plan
@@ -461,6 +462,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
     fn ht_direct_plan_sub_band_decode_produces_nonzero_coefficients() {
         let plan = ht_plan();
         let sub_band = plan
@@ -480,6 +482,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
     fn classic_direct_plan_store_plane_matches_native_decode() {
         let plan = classic_plan();
         let executed = execute_grayscale_plan_to_plane(&plan).expect("execute direct plan");
@@ -506,6 +509,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
     fn classic_direct_plan_pre_store_band_is_not_all_zero() {
         let plan = classic_plan();
         let band = execute_to_pre_store_band(&plan);
@@ -516,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires Metal runtime; exercised by the fail-closed Metal release lane"]
     fn classic_direct_plan_idwt_inputs_match_native_backend_job() {
         let plan = classic_plan();
         let (idwt, ll, hl, lh, hh) = execute_to_first_idwt_inputs(&plan);

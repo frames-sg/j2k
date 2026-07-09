@@ -191,6 +191,11 @@ mod tests {
         EncodeOptions, HtCodeBlockDecodeJob, HtCodeBlockDecoder, Image,
     };
 
+    #[cfg(target_os = "macos")]
+    fn should_run_metal_runtime() -> bool {
+        j2k_test_support::metal_runtime_gate(module_path!())
+    }
+
     #[derive(Clone)]
     struct OwnedHtJob {
         data: Vec<u8>,
@@ -339,6 +344,11 @@ mod tests {
 
     #[test]
     fn metal_ht_decoder_matches_native_decode() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_ht_gray8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
 
@@ -379,6 +389,11 @@ mod tests {
 
     #[test]
     fn metal_ht_decoder_batches_multi_block_subbands() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_ht_gray8_multi_block();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
 
@@ -413,6 +428,11 @@ mod tests {
 
     #[test]
     fn metal_ht_decoder_handles_wide_code_blocks() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_ht_gray8_wide_code_block();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
 
@@ -441,6 +461,11 @@ mod tests {
 
     #[test]
     fn metal_ht_decoder_handles_very_wide_code_blocks() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let bytes = fixture_ht_gray8_very_wide_code_block();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
 
@@ -470,6 +495,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_ht_kernel_matches_scalar_for_synthetic_refinement_job() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
         let job = synthetic_refinement_job(3);
         assert!(
             super::supports_metal_ht_kernel(&job.as_job()),

@@ -11,8 +11,18 @@ use j2k_transcode::{dct8x8_blocks_to_dwt53_float_linear, Dwt53TwoDimensional};
 use j2k_transcode_metal::weights::{Dwt53WeightRows, SparseDwt53WeightRows};
 use j2k_transcode_metal::MetalDctToWaveletStageAccelerator;
 
+#[cfg(target_os = "macos")]
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
 #[test]
 fn explicit_metal_53_reports_unavailable_on_non_macos() {
+    #[cfg(target_os = "macos")]
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
     let blocks = vec![[[0.0; 8]; 8]];
     let result = accelerator.dct_grid_to_dwt53(DctGridToDwt53Job {
@@ -35,6 +45,11 @@ fn explicit_metal_53_reports_unavailable_on_non_macos() {
 
 #[test]
 fn explicit_metal_reversible_53_reports_unavailable_on_non_macos() {
+    #[cfg(target_os = "macos")]
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
     let blocks = vec![[0i16; 64]];
     let result = accelerator.dct_grid_to_reversible_dwt53(DctGridToReversibleDwt53Job {
@@ -118,6 +133,10 @@ fn auto_metal_reversible_53_batch_declines_tiny_jobs() {
 #[cfg(target_os = "macos")]
 #[test]
 fn explicit_metal_dct53_matches_scalar_for_structured_cases() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let blocks = structured_blocks(2, 2);
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
@@ -153,6 +172,10 @@ fn explicit_metal_dct53_matches_scalar_for_structured_cases() {
 #[cfg(target_os = "macos")]
 #[test]
 fn explicit_metal_reversible_dct53_matches_rayon_for_structured_cases() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let blocks = structured_i16_blocks(2, 2);
     let mut expected_accelerator = RayonReversibleDwt53Accelerator::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
@@ -188,6 +211,10 @@ fn explicit_metal_reversible_dct53_matches_rayon_for_structured_cases() {
 #[cfg(target_os = "macos")]
 #[test]
 fn explicit_metal_reversible_dct53_batch_matches_rayon_for_structured_cases() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let batch_blocks = [
         structured_i16_blocks_with_offset(2, 2, 0),
         structured_i16_blocks_with_offset(2, 2, 31),

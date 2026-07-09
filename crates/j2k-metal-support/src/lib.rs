@@ -111,6 +111,18 @@ pub enum MetalSupportError {
         /// Required alignment in bytes.
         align: usize,
     },
+    /// A zero-sized Rust type cannot describe a Metal buffer element ABI.
+    BufferZeroSizedType {
+        /// Human-readable ABI name supplied by [`j2k_core::accelerator::GpuAbi`].
+        abi_name: &'static str,
+    },
+    /// Host allocation for an owned buffer readback failed.
+    BufferReadbackAllocation {
+        /// Human-readable ABI name supplied by [`j2k_core::accelerator::GpuAbi`].
+        abi_name: &'static str,
+        /// Number of elements requested by the caller.
+        element_count: usize,
+    },
     /// The Metal buffer is not CPU-visible through `contents()`.
     BufferContentsUnavailable,
 }
@@ -167,6 +179,16 @@ impl fmt::Display for MetalSupportError {
             } => write!(
                 f,
                 "Metal buffer range offset {offset_bytes} is not aligned to {align} bytes"
+            ),
+            Self::BufferZeroSizedType { abi_name } => {
+                write!(f, "Metal buffer ABI type `{abi_name}` is zero-sized")
+            }
+            Self::BufferReadbackAllocation {
+                abi_name,
+                element_count,
+            } => write!(
+                f,
+                "Metal buffer readback allocation failed for {element_count} `{abi_name}` values"
             ),
             Self::BufferContentsUnavailable => {
                 f.write_str("Metal buffer contents are not CPU-visible")
@@ -378,19 +400,22 @@ pub fn shared_buffer_for_len<T: GpuAbi>(device: &Device, len: usize) -> Buffer {
 }
 
 #[cfg(target_os = "macos")]
-fn checked_buffer_contents_ptr<T: GpuAbi>(
-    buffer: &Buffer,
+fn checked_buffer_typed_range<T: GpuAbi>(
+    buffer_len: usize,
     offset_bytes: usize,
     len: usize,
-) -> Result<*mut T, MetalSupportError> {
-    let buffer_len = usize::try_from(buffer.length()).unwrap_or(usize::MAX);
-    let byte_len =
-        len.checked_mul(core::mem::size_of::<T>())
-            .ok_or(MetalSupportError::BufferBounds {
-                offset_bytes,
-                byte_len: usize::MAX,
-                buffer_len,
-            })?;
+) -> Result<usize, MetalSupportError> {
+    let element_size = core::mem::size_of::<T>();
+    if element_size == 0 {
+        return Err(MetalSupportError::BufferZeroSizedType { abi_name: T::NAME });
+    }
+    let byte_len = len
+        .checked_mul(element_size)
+        .ok_or(MetalSupportError::BufferBounds {
+            offset_bytes,
+            byte_len: usize::MAX,
+            buffer_len,
+        })?;
     let end = offset_bytes
         .checked_add(byte_len)
         .ok_or(MetalSupportError::BufferBounds {
@@ -405,6 +430,26 @@ fn checked_buffer_contents_ptr<T: GpuAbi>(
             buffer_len,
         });
     }
+
+    let align = core::mem::align_of::<T>();
+    if align > 1 && !offset_bytes.is_multiple_of(align) {
+        return Err(MetalSupportError::BufferAlignment {
+            offset_bytes,
+            align,
+        });
+    }
+
+    Ok(byte_len)
+}
+
+#[cfg(target_os = "macos")]
+fn checked_buffer_contents_ptr<T: GpuAbi>(
+    buffer: &Buffer,
+    offset_bytes: usize,
+    len: usize,
+) -> Result<*mut T, MetalSupportError> {
+    let buffer_len = usize::try_from(buffer.length()).unwrap_or(usize::MAX);
+    let byte_len = checked_buffer_typed_range::<T>(buffer_len, offset_bytes, len)?;
 
     let base = buffer.contents().cast::<u8>();
     if base.is_null() {
@@ -431,38 +476,123 @@ fn checked_buffer_contents_ptr<T: GpuAbi>(
 }
 
 #[cfg(target_os = "macos")]
-/// Checked typed borrow from a CPU-visible shared Metal buffer.
+/// Copy one GPU ABI value out of a CPU-visible Metal buffer.
 ///
-/// Validates offset arithmetic, typed alignment, requested byte length, and the
-/// Metal buffer length before constructing the returned slice.
-pub fn checked_buffer_contents_slice<T: GpuAbi>(
+/// The returned value is owned and therefore cannot alias later Metal writes.
+/// Bounds, offset arithmetic, alignment, CPU visibility, and the [`GpuAbi`]
+/// element contract are validated before the copy.
+///
+/// # Safety
+///
+/// The caller must ensure that all Metal commands which can write this range
+/// have completed and that neither the CPU nor GPU mutates it during the copy.
+pub unsafe fn checked_buffer_read<T: GpuAbi>(
     buffer: &Buffer,
     offset_bytes: usize,
-    len: usize,
-) -> Result<&[T], MetalSupportError> {
-    let ptr = checked_buffer_contents_ptr::<T>(buffer, offset_bytes, len)?;
-    // SAFETY: `checked_buffer_contents_ptr` validated the byte range and typed
-    // alignment for `len` elements in this CPU-visible buffer.
-    // SAFETY: Objective-C/Metal pointers are null-checked or range-validated before wrapping.
-    Ok(unsafe { core::slice::from_raw_parts(ptr.cast_const(), len) })
+) -> Result<T, MetalSupportError> {
+    let ptr = checked_buffer_contents_ptr::<T>(buffer, offset_bytes, 1)?;
+    // SAFETY: The pointer is aligned and in bounds for one `T`. The caller
+    // guarantees that the GPU cannot mutate the range during this copy.
+    Ok(unsafe { ptr.cast_const().read() })
 }
 
 #[cfg(target_os = "macos")]
-/// Checked mutable typed borrow from a CPU-visible shared Metal buffer.
+/// Copy GPU ABI values out of a CPU-visible Metal buffer.
 ///
-/// Validates offset arithmetic, typed alignment, requested byte length, and the
-/// Metal buffer length before constructing the returned slice.
-pub fn checked_buffer_contents_slice_mut<T: GpuAbi>(
-    buffer: &mut Buffer,
+/// The returned vector is owned and therefore cannot alias later Metal writes.
+/// A zero-element request succeeds without dereferencing `contents()`.
+///
+/// # Safety
+///
+/// The caller must ensure that all Metal commands which can write this range
+/// have completed and that neither the CPU nor GPU mutates it during the copy.
+pub unsafe fn checked_buffer_read_vec<T: GpuAbi>(
+    buffer: &Buffer,
     offset_bytes: usize,
     len: usize,
-) -> Result<&mut [T], MetalSupportError> {
+) -> Result<Vec<T>, MetalSupportError> {
+    let buffer_len = usize::try_from(buffer.length()).unwrap_or(usize::MAX);
+    checked_buffer_typed_range::<T>(buffer_len, offset_bytes, len)?;
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+
     let ptr = checked_buffer_contents_ptr::<T>(buffer, offset_bytes, len)?;
-    // SAFETY: `checked_buffer_contents_ptr` validated the byte range and typed
-    // alignment for `len` elements in this CPU-visible buffer. The mutable
-    // borrow of `buffer` prevents another safe mutable slice from this helper.
-    // SAFETY: Objective-C/Metal pointers are null-checked or range-validated before wrapping.
-    Ok(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|_| MetalSupportError::BufferReadbackAllocation {
+            abi_name: T::NAME,
+            element_count: len,
+        })?;
+    // SAFETY: `values` has capacity for `len` values, and `ptr` is aligned and
+    // in bounds for `len` values. `GpuAbi` guarantees every copied bit pattern
+    // is a valid `T`; the caller guarantees synchronization with Metal.
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr.cast_const(), values.as_mut_ptr(), len);
+        values.set_len(len);
+    }
+    Ok(values)
+}
+
+#[cfg(target_os = "macos")]
+/// Copy GPU ABI values into a CPU-visible Metal buffer.
+///
+/// A zero-element write succeeds without dereferencing `contents()`.
+///
+/// # Safety
+///
+/// The caller must ensure that no Metal command or other CPU access reads or
+/// writes this range during the copy. In normal use, initialize the range
+/// before submitting a command buffer or after all prior uses have completed.
+pub unsafe fn checked_buffer_write<T: GpuAbi>(
+    buffer: &Buffer,
+    offset_bytes: usize,
+    values: &[T],
+) -> Result<(), MetalSupportError> {
+    let buffer_len = usize::try_from(buffer.length()).unwrap_or(usize::MAX);
+    checked_buffer_typed_range::<T>(buffer_len, offset_bytes, values.len())?;
+    if values.is_empty() {
+        return Ok(());
+    }
+
+    let ptr = checked_buffer_contents_ptr::<T>(buffer, offset_bytes, values.len())?;
+    // SAFETY: The destination is aligned and in bounds for `values`; the
+    // caller guarantees exclusive CPU/GPU access for the duration of the copy.
+    unsafe {
+        core::ptr::copy_nonoverlapping(values.as_ptr(), ptr, values.len());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+/// Fill a checked byte range in a CPU-visible Metal buffer.
+///
+/// A zero-byte fill succeeds without dereferencing `contents()`.
+///
+/// # Safety
+///
+/// The caller must ensure that no Metal command or other CPU access reads or
+/// writes this range during the fill.
+pub unsafe fn checked_buffer_fill_bytes(
+    buffer: &Buffer,
+    offset_bytes: usize,
+    len: usize,
+    value: u8,
+) -> Result<(), MetalSupportError> {
+    let buffer_len = usize::try_from(buffer.length()).unwrap_or(usize::MAX);
+    checked_buffer_typed_range::<u8>(buffer_len, offset_bytes, len)?;
+    if len == 0 {
+        return Ok(());
+    }
+
+    let ptr = checked_buffer_contents_ptr::<u8>(buffer, offset_bytes, len)?;
+    // SAFETY: The destination is in bounds for `len` bytes; the caller
+    // guarantees exclusive CPU/GPU access for the duration of the fill.
+    unsafe {
+        core::ptr::write_bytes(ptr, value, len);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -579,10 +709,20 @@ impl MetalPipelineLoader {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
-        checked_buffer_contents_slice, checked_buffer_contents_slice_mut, checked_command_queue,
-        commit_and_wait, one_d_threads_per_group, shared_buffer_for_len, shared_buffer_with_slice,
-        system_default_device, two_d_threads_per_group, MetalSupportError,
+        checked_buffer_fill_bytes, checked_buffer_read_vec, checked_buffer_typed_range,
+        checked_buffer_write, checked_command_queue, commit_and_wait, one_d_threads_per_group,
+        private_buffer, shared_buffer_for_len, shared_buffer_with_slice, system_default_device,
+        two_d_threads_per_group, MetalSupportError,
     };
+
+    #[derive(Clone, Copy)]
+    struct ZeroSizedAbi;
+
+    // SAFETY: This intentionally invalid zero-sized ABI implementation exists
+    // only to prove that the Metal range validator rejects zero-sized types.
+    unsafe impl j2k_core::accelerator::GpuAbi for ZeroSizedAbi {
+        const NAME: &'static str = "ZeroSizedAbi";
+    }
 
     #[test]
     fn two_d_threads_per_group_clamps_empty_pipeline_limits() {
@@ -607,8 +747,11 @@ mod tests {
 
     #[test]
     fn commit_and_wait_accepts_unlabeled_command_buffer() {
+        if !j2k_test_support::metal_runtime_gate(module_path!()) {
+            return;
+        }
         let Ok(device) = system_default_device() else {
-            eprintln!("skipping command buffer completion test: no Metal device");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         };
         let queue = checked_command_queue(&device).expect("Metal command queue");
@@ -618,43 +761,63 @@ mod tests {
     }
 
     #[test]
-    fn buffer_contents_slice_reads_typed_shared_buffer_values() {
+    fn buffer_readback_copies_typed_shared_buffer_values() {
+        if !j2k_test_support::metal_runtime_gate(module_path!()) {
+            return;
+        }
         let Ok(device) = system_default_device() else {
-            eprintln!("skipping shared buffer slice test: no Metal device");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         };
         let buffer = shared_buffer_with_slice(&device, &[3_u32, 5, 8, 13]);
 
-        let values = checked_buffer_contents_slice::<u32>(&buffer, 0, 4).expect("checked slice");
+        // SAFETY: The buffer was initialized by the CPU and has not been
+        // submitted to Metal, so no GPU access can race this readback.
+        let values =
+            unsafe { checked_buffer_read_vec::<u32>(&buffer, 0, 4) }.expect("checked readback");
 
-        assert_eq!(values, &[3, 5, 8, 13]);
+        assert_eq!(values, [3, 5, 8, 13]);
     }
 
     #[test]
-    fn buffer_contents_slice_mut_writes_typed_shared_buffer_values() {
+    fn buffer_write_and_fill_copy_into_shared_buffer() {
+        if !j2k_test_support::metal_runtime_gate(module_path!()) {
+            return;
+        }
         let Ok(device) = system_default_device() else {
-            eprintln!("skipping mutable shared buffer slice test: no Metal device");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         };
-        let mut buffer = shared_buffer_for_len::<u32>(&device, 3);
+        let buffer = shared_buffer_for_len::<u32>(&device, 3);
 
+        // SAFETY: The buffer has not been submitted to Metal, and these CPU
+        // accesses are sequential and non-overlapping in time.
+        unsafe {
+            checked_buffer_fill_bytes(&buffer, 0, 12, 0).expect("checked fill");
+            checked_buffer_write::<u32>(&buffer, 0, &[21, 34, 55]).expect("checked write");
+        }
+        // SAFETY: The preceding CPU write is complete and no GPU command can
+        // access this never-submitted buffer.
         let values =
-            checked_buffer_contents_slice_mut::<u32>(&mut buffer, 0, 3).expect("checked slice");
-        values.copy_from_slice(&[21, 34, 55]);
-        let values = checked_buffer_contents_slice::<u32>(&buffer, 0, 3).expect("checked slice");
+            unsafe { checked_buffer_read_vec::<u32>(&buffer, 0, 3) }.expect("checked readback");
 
-        assert_eq!(values, &[21, 34, 55]);
+        assert_eq!(values, [21, 34, 55]);
     }
 
     #[test]
-    fn checked_buffer_contents_slice_rejects_out_of_bounds_range() {
+    fn checked_buffer_readback_rejects_out_of_bounds_range() {
+        if !j2k_test_support::metal_runtime_gate(module_path!()) {
+            return;
+        }
         let Ok(device) = system_default_device() else {
-            eprintln!("skipping shared buffer bounds test: no Metal device");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         };
         let buffer = shared_buffer_with_slice(&device, &[1_u32]);
 
-        let err = checked_buffer_contents_slice::<u32>(&buffer, 0, 2).expect_err("bounds error");
+        // SAFETY: No bytes are copied because validation rejects the range.
+        let err =
+            unsafe { checked_buffer_read_vec::<u32>(&buffer, 0, 2) }.expect_err("bounds error");
 
         assert!(matches!(
             err,
@@ -667,14 +830,19 @@ mod tests {
     }
 
     #[test]
-    fn checked_buffer_contents_slice_rejects_unaligned_range() {
+    fn checked_buffer_readback_rejects_unaligned_range() {
+        if !j2k_test_support::metal_runtime_gate(module_path!()) {
+            return;
+        }
         let Ok(device) = system_default_device() else {
-            eprintln!("skipping shared buffer alignment test: no Metal device");
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
             return;
         };
         let buffer = shared_buffer_with_slice(&device, &[1_u32, 2]);
 
-        let err = checked_buffer_contents_slice::<u32>(&buffer, 1, 1).expect_err("alignment error");
+        // SAFETY: No bytes are copied because validation rejects the range.
+        let err =
+            unsafe { checked_buffer_read_vec::<u32>(&buffer, 1, 1) }.expect_err("alignment error");
 
         assert!(matches!(
             err,
@@ -683,5 +851,55 @@ mod tests {
                 align: 4,
             }
         ));
+    }
+
+    #[test]
+    fn typed_range_rejects_overflow_and_zero_sized_abi() {
+        let overflow = checked_buffer_typed_range::<u32>(usize::MAX, 0, usize::MAX)
+            .expect_err("element byte length overflow");
+        assert!(matches!(
+            overflow,
+            MetalSupportError::BufferBounds {
+                offset_bytes: 0,
+                byte_len: usize::MAX,
+                buffer_len: usize::MAX,
+            }
+        ));
+
+        let range_overflow = checked_buffer_typed_range::<u8>(usize::MAX, usize::MAX, 1)
+            .expect_err("range end overflow");
+        assert!(matches!(
+            range_overflow,
+            MetalSupportError::BufferBounds {
+                offset_bytes: usize::MAX,
+                byte_len: 1,
+                buffer_len: usize::MAX,
+            }
+        ));
+
+        assert!(matches!(
+            checked_buffer_typed_range::<ZeroSizedAbi>(8, 0, 1),
+            Err(MetalSupportError::BufferZeroSizedType {
+                abi_name: "ZeroSizedAbi"
+            })
+        ));
+    }
+
+    #[test]
+    fn zero_length_readback_does_not_require_cpu_visible_contents() {
+        if !j2k_test_support::metal_runtime_gate(module_path!()) {
+            return;
+        }
+        let Ok(device) = system_default_device() else {
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+            return;
+        };
+        let buffer = private_buffer(&device, 4);
+
+        // SAFETY: A zero-element request performs no memory access.
+        let values =
+            unsafe { checked_buffer_read_vec::<u32>(&buffer, 4, 0) }.expect("empty readback");
+
+        assert!(values.is_empty());
     }
 }

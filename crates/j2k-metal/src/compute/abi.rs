@@ -903,3 +903,133 @@ pub(crate) struct J2kCodestreamAssemblyStatus {
     pub(crate) data_len: u32,
     pub(crate) reserved0: u32,
 }
+
+#[cfg(target_os = "macos")]
+macro_rules! impl_gpu_readback_abi {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            // SAFETY: Each listed type is `#[repr(C)]`, `Copy`, and contains
+            // only numeric scalar/array fields mirrored by the Metal shader
+            // declarations. Every bit pattern is therefore a valid value; the
+            // readback layouts have exact assertions below.
+            unsafe impl j2k_core::accelerator::GpuAbi for $ty {
+                const NAME: &'static str = stringify!($ty);
+            }
+        )+
+    };
+}
+
+#[cfg(target_os = "macos")]
+impl_gpu_readback_abi!(
+    J2kValidateBytesParams,
+    J2kValidateBytesStatus,
+    J2kCopyInterleavedParams,
+    J2kLosslessDeinterleaveParams,
+    J2kLosslessCoefficientJob,
+    J2kPackParams,
+    J2kMctRgb8PackParams,
+    J2kBatchedMctRgb8PackParams,
+    J2kRepeatedGrayPackParams,
+    J2kClassicCleanupBatchJob,
+    J2kClassicSegment,
+    J2kClassicStatus,
+    J2kIdwtSingleDecompositionParams,
+    J2kRepeatedIdwtSingleDecompositionParams,
+    J2kIdwtStatus,
+    J2kInverseMctParams,
+    J2kForwardRctParams,
+    J2kForwardIctParams,
+    J2kQuantizeSubbandParams,
+    J2kForwardDwt53Params,
+    J2kForwardDwt53BatchedParams,
+    J2kMctStatus,
+    J2kStoreParams,
+    J2kRepeatedStoreParams,
+    J2kRepeatedGrayStoreParams,
+    J2kGrayStoreParams,
+    J2kHtCleanupParams,
+    J2kHtCleanupBatchJob,
+    J2kHtRepeatedBatchParams,
+    J2kClassicRepeatedBatchParams,
+    J2kHtStatus,
+    J2kClassicEncodeParams,
+    J2kClassicEncodeBatchJob,
+    J2kClassicEncodeStatus,
+    J2kClassicTier1DensityCounters,
+    J2kClassicTier1SymbolPlanCounters,
+    J2kClassicTier1PassPlanCounters,
+    J2kClassicTier1TokenSegment,
+    J2kHtEncodeParams,
+    J2kHtEncodeBatchJob,
+    J2kHtEncodeStatus,
+    J2kPacketEncodeParams,
+    J2kBatchedPacketEncodeJob,
+    J2kPacketPayloadCopyJob,
+    J2kPacketPayloadCopyParams,
+    J2kPacketDescriptor,
+    J2kPacketResolution,
+    J2kPacketSubband,
+    J2kPacketBlock,
+    J2kResidentPacketBlock,
+    J2kResidentPacketBlockParams,
+    J2kPacketStateBlock,
+    J2kPacketEncodeStatus,
+    J2kLosslessCodestreamAssemblyParams,
+    J2kBatchedCodestreamAssemblyJob,
+    J2kCodestreamAssemblyStatus,
+);
+
+#[cfg(all(test, target_os = "macos"))]
+mod gpu_readback_abi_tests {
+    use core::mem::{align_of, offset_of, size_of};
+
+    use super::*;
+
+    macro_rules! assert_u32_abi {
+        ($ty:ty, $size:expr) => {{
+            assert_eq!(size_of::<$ty>(), $size, "{} size", stringify!($ty));
+            assert_eq!(align_of::<$ty>(), 4, "{} alignment", stringify!($ty));
+        }};
+    }
+
+    #[test]
+    fn readback_layouts_match_metal_shader_abi() {
+        assert_u32_abi!(J2kValidateBytesStatus, 16);
+        assert_u32_abi!(J2kClassicSegment, 20);
+        assert_u32_abi!(J2kClassicStatus, 16);
+        assert_u32_abi!(J2kIdwtStatus, 16);
+        assert_u32_abi!(J2kMctStatus, 16);
+        assert_u32_abi!(J2kHtStatus, 16);
+        assert_u32_abi!(J2kClassicEncodeStatus, 32);
+        assert_u32_abi!(J2kClassicTier1DensityCounters, 60);
+        assert_u32_abi!(J2kClassicTier1SymbolPlanCounters, 64);
+        assert_u32_abi!(J2kClassicTier1PassPlanCounters, 448);
+        assert_u32_abi!(J2kClassicTier1TokenSegment, 16);
+        assert_u32_abi!(J2kHtEncodeStatus, 32);
+        assert_u32_abi!(J2kPacketEncodeStatus, 32);
+        assert_u32_abi!(J2kCodestreamAssemblyStatus, 16);
+
+        assert_eq!(offset_of!(J2kValidateBytesStatus, actual), 12);
+        assert_eq!(offset_of!(J2kClassicSegment, use_arithmetic), 16);
+        assert_eq!(offset_of!(J2kClassicEncodeStatus, reserved1), 28);
+        assert_eq!(offset_of!(J2kClassicTier1DensityCounters, reserved1), 56);
+        assert_eq!(
+            offset_of!(J2kClassicTier1SymbolPlanCounters, raw_bit_hash),
+            60
+        );
+        assert_eq!(
+            offset_of!(J2kClassicTier1PassPlanCounters, mq_symbols_by_pass),
+            64
+        );
+        assert_eq!(
+            offset_of!(J2kClassicTier1PassPlanCounters, raw_bits_by_pass),
+            256
+        );
+        assert_eq!(offset_of!(J2kHtEncodeStatus, reserved2), 28);
+        assert_eq!(
+            offset_of!(J2kPacketEncodeStatus, payload_copy_large_jobs),
+            28
+        );
+        assert_eq!(offset_of!(J2kCodestreamAssemblyStatus, reserved0), 12);
+    }
+}

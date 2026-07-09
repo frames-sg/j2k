@@ -70,6 +70,11 @@ fn encode_classification_cases() -> Vec<EncodeClassificationCase> {
     ]
 }
 
+#[cfg(target_os = "macos")]
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
 #[test]
 fn metal_encode_errors_match_cuda_classification_contract() {
     for case in encode_classification_cases() {
@@ -116,6 +121,10 @@ fn metal_baseline_encoder_round_trips_rgb_422() {
     use j2k_jpeg_metal::{
         encode_jpeg_baseline_from_metal_buffer, JpegBaselineMetalEncodeTile, MetalBackendSession,
     };
+
+    if !should_run_metal_runtime() {
+        return;
+    }
 
     let width = 19u32;
     let height = 17u32;
@@ -176,6 +185,10 @@ fn metal_baseline_encoder_round_trips_all_rgb_subsampling_modes() {
     use j2k_jpeg_metal::{
         encode_jpeg_baseline_from_metal_buffer, JpegBaselineMetalEncodeTile, MetalBackendSession,
     };
+
+    if !should_run_metal_runtime() {
+        return;
+    }
 
     let width = 23u32;
     let height = 19u32;
@@ -247,6 +260,10 @@ fn metal_baseline_encoder_round_trips_gray_with_padded_output() {
         encode_jpeg_baseline_from_metal_buffer, JpegBaselineMetalEncodeTile, MetalBackendSession,
     };
 
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let width = 7u32;
     let height = 5u32;
     let output_width = 13u32;
@@ -312,6 +329,10 @@ fn metal_baseline_batch_encoder_round_trips_multiple_rgb_tiles() {
         encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile,
         MetalBackendSession,
     };
+
+    if !should_run_metal_runtime() {
+        return;
+    }
 
     let width = 32u32;
     let height = 24u32;

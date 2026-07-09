@@ -14,9 +14,9 @@ use std::time::Instant;
 #[cfg(target_os = "macos")]
 /// JPEG 2000 codestream bytes owned by a Metal buffer.
 ///
-/// The buffer is CPU-readable for the current padded resident encode API, so
-/// callers can stream `codestream_bytes()` into file or network writers without
-/// first materializing an owned `Vec<u8>`.
+/// The buffer is CPU-readable for the current padded resident encode API.
+/// `codestream_bytes()` returns an owned snapshot so safe Rust never exposes a
+/// slice that aliases the publicly accessible Metal buffer.
 pub struct MetalEncodedJ2k {
     /// Metal buffer containing the codestream bytes.
     pub codestream_buffer: Buffer,
@@ -55,13 +55,18 @@ impl MetalEncodedJ2k {
         usize::try_from(self.codestream_buffer.length()).ok()
     }
 
-    /// Borrow the finished codestream bytes from the backing Metal buffer.
-    pub fn codestream_bytes(&self) -> Result<&[u8], crate::Error> {
-        match j2k_metal_support::checked_buffer_contents_slice::<u8>(
-            &self.codestream_buffer,
-            self.byte_offset,
-            self.byte_len,
-        ) {
+    /// Materialize the finished codestream bytes from the backing Metal buffer.
+    pub fn codestream_bytes(&self) -> Result<Vec<u8>, crate::Error> {
+        // SAFETY: Resident encode construction waits for the producing command
+        // buffer before returning this value. Owned readback avoids aliasing
+        // later access through the public `codestream_buffer` handle.
+        match unsafe {
+            j2k_metal_support::checked_buffer_read_vec::<u8>(
+                &self.codestream_buffer,
+                self.byte_offset,
+                self.byte_len,
+            )
+        } {
             Ok(bytes) => Ok(bytes),
             Err(j2k_metal_support::MetalSupportError::BufferContentsUnavailable) => {
                 Err(crate::Error::MetalKernel {
@@ -84,7 +89,7 @@ impl MetalEncodedJ2k {
         &self,
     ) -> Result<(EncodedJ2k, Duration), crate::Error> {
         let readback_started = Instant::now();
-        let codestream = self.codestream_bytes()?.to_vec();
+        let codestream = self.codestream_bytes()?;
         let host_readback_duration = readback_started.elapsed();
         Ok((
             EncodedJ2k {

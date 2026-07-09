@@ -2,9 +2,14 @@
 
 #[cfg(test)]
 use std::cell::Cell;
-use std::mem::{align_of, size_of, size_of_val};
+use std::mem::size_of_val;
 
-use j2k_metal_support::{private_buffer, shared_buffer, shared_buffer_with_bytes};
+use j2k_core::accelerator::GpuAbi;
+use j2k_metal_support::{
+    checked_buffer_fill_bytes, checked_buffer_read as support_checked_buffer_read,
+    checked_buffer_read_vec, checked_buffer_write, private_buffer, shared_buffer,
+    shared_buffer_with_bytes, MetalSupportError,
+};
 use metal::{Buffer, Device};
 
 use crate::Error;
@@ -53,95 +58,37 @@ pub(crate) fn new_private_buffer(device: &Device, bytes: usize) -> Buffer {
     private_buffer(device, bytes)
 }
 
-fn checked_buffer_required_bytes<T>(len: usize, context: &str) -> Result<usize, Error> {
-    let element_size = size_of::<T>();
-    if element_size == 0 {
-        return Err(Error::MetalKernel {
-            message: format!("JPEG Metal {context} readback uses zero-sized element"),
-        });
+fn buffer_access_error(context: &str, error: &MetalSupportError) -> Error {
+    Error::MetalKernel {
+        message: format!("JPEG Metal {context} buffer access invalid: {error}"),
     }
-    element_size
-        .checked_mul(len)
-        .ok_or_else(|| Error::MetalKernel {
-            message: format!("JPEG Metal {context} readback size overflow"),
-        })
 }
 
-fn checked_buffer_required_range<T>(
-    byte_offset: usize,
+pub(crate) fn checked_buffer_read<T: GpuAbi>(buffer: &Buffer, context: &str) -> Result<T, Error> {
+    // SAFETY: JPEG readback helpers are called only for CPU-initialized buffers
+    // or after `commit_and_wait_jpeg` has completed the producing commands.
+    unsafe { support_checked_buffer_read::<T>(buffer, 0) }
+        .map_err(|error| buffer_access_error(context, &error))
+}
+
+pub(crate) fn checked_buffer_slice<T: GpuAbi>(
+    buffer: &Buffer,
     len: usize,
     context: &str,
-) -> Result<usize, Error> {
-    let required_bytes = checked_buffer_required_bytes::<T>(len, context)?;
-    let required_end =
-        byte_offset
-            .checked_add(required_bytes)
-            .ok_or_else(|| Error::MetalKernel {
-                message: format!("JPEG Metal {context} readback range overflow"),
-            })?;
-    if !byte_offset.is_multiple_of(align_of::<T>()) {
-        return Err(Error::MetalKernel {
-            message: format!("JPEG Metal {context} readback offset is not element-aligned"),
-        });
-    }
-    Ok(required_end)
+) -> Result<Vec<T>, Error> {
+    checked_buffer_slice_at(buffer, 0, len, context)
 }
 
-fn checked_buffer_contents<T>(
+pub(crate) fn checked_buffer_slice_at<T: GpuAbi>(
     buffer: &Buffer,
     byte_offset: usize,
     len: usize,
     context: &str,
-) -> Result<*const T, Error> {
-    let required_end = checked_buffer_required_range::<T>(byte_offset, len, context)?;
-    let available_bytes = usize::try_from(buffer.length()).map_err(|_| Error::MetalKernel {
-        message: format!("JPEG Metal {context} readback buffer length exceeds usize"),
-    })?;
-    if required_end > available_bytes {
-        return Err(Error::MetalKernel {
-            message: format!(
-                "JPEG Metal {context} readback exceeds buffer length: need {required_end}, buffer has {available_bytes}"
-            ),
-        });
-    }
-    let contents = buffer.contents();
-    if contents.is_null() {
-        return Err(Error::MetalKernel {
-            message: format!("JPEG Metal {context} readback buffer is not CPU-visible"),
-        });
-    }
-    // SAFETY: The range and alignment checks above keep the pointer arithmetic
-    // in bounds for a CPU-visible Metal buffer.
-    Ok(unsafe { contents.cast::<u8>().add(byte_offset).cast::<T>() })
-}
-
-pub(crate) fn checked_buffer_read<T: Copy>(buffer: &Buffer, context: &str) -> Result<T, Error> {
-    let contents = checked_buffer_contents::<T>(buffer, 0, 1, context)?;
-    // SAFETY: `checked_buffer_contents` verified CPU visibility and that the
-    // Metal buffer has enough bytes for one `T`; callers invoke this only after
-    // the producing command buffer has completed.
-    Ok(unsafe { contents.read() })
-}
-
-pub(crate) fn checked_buffer_slice<'a, T>(
-    buffer: &'a Buffer,
-    len: usize,
-    context: &str,
-) -> Result<&'a [T], Error> {
-    checked_buffer_slice_at(buffer, 0, len, context)
-}
-
-pub(crate) fn checked_buffer_slice_at<'a, T>(
-    buffer: &'a Buffer,
-    byte_offset: usize,
-    len: usize,
-    context: &str,
-) -> Result<&'a [T], Error> {
-    let contents = checked_buffer_contents::<T>(buffer, byte_offset, len, context)?;
-    // SAFETY: `checked_buffer_contents` verified CPU visibility and byte
-    // length for `len` elements; callers invoke this only after the producing
-    // command buffer has completed.
-    Ok(unsafe { core::slice::from_raw_parts(contents, len) })
+) -> Result<Vec<T>, Error> {
+    // SAFETY: JPEG readback helpers are called only for CPU-initialized buffers
+    // or after `commit_and_wait_jpeg` has completed the producing commands.
+    unsafe { checked_buffer_read_vec::<T>(buffer, byte_offset, len) }
+        .map_err(|error| buffer_access_error(context, &error))
 }
 
 pub(crate) fn checked_copy_bytes_to_buffer_at(
@@ -150,16 +97,10 @@ pub(crate) fn checked_copy_bytes_to_buffer_at(
     bytes: &[u8],
     context: &str,
 ) -> Result<(), Error> {
-    if bytes.is_empty() {
-        return Ok(());
-    }
-    let contents = checked_buffer_contents::<u8>(buffer, byte_offset, bytes.len(), context)?;
-    // SAFETY: `checked_buffer_contents` verified CPU visibility and byte
-    // length for the destination range.
-    unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), contents.cast_mut(), bytes.len());
-    }
-    Ok(())
+    // SAFETY: Viewport-cache writes occur during CPU staging while the cached
+    // buffer is not submitted to a Metal command buffer.
+    unsafe { checked_buffer_write::<u8>(buffer, byte_offset, bytes) }
+        .map_err(|error| buffer_access_error(context, &error))
 }
 
 pub(crate) fn checked_fill_buffer_u8(
@@ -168,16 +109,10 @@ pub(crate) fn checked_fill_buffer_u8(
     value: u8,
     context: &str,
 ) -> Result<(), Error> {
-    if len == 0 {
-        return Ok(());
-    }
-    let contents = checked_buffer_contents::<u8>(buffer, 0, len, context)?;
-    // SAFETY: `checked_buffer_contents` verified CPU visibility and byte
-    // length for the destination range.
-    unsafe {
-        core::ptr::write_bytes(contents.cast_mut(), value, len);
-    }
-    Ok(())
+    // SAFETY: Viewport-cache fills occur during CPU staging while the cached
+    // buffer is not submitted to a Metal command buffer.
+    unsafe { checked_buffer_fill_bytes(buffer, 0, len, value) }
+        .map_err(|error| buffer_access_error(context, &error))
 }
 
 pub(crate) fn new_decode_plane_buffer(
@@ -197,33 +132,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn checked_buffer_required_range_rejects_overflow_and_alignment_errors() {
-        assert_eq!(
-            checked_buffer_required_bytes::<u32>(2, "status").expect("u32 byte count"),
-            8
+    fn buffer_access_errors_keep_jpeg_context() {
+        let error = buffer_access_error(
+            "status readback",
+            &MetalSupportError::BufferAlignment {
+                offset_bytes: 1,
+                align: 4,
+            },
         );
-        assert_eq!(
-            checked_buffer_required_range::<u16>(4, 3, "status").expect("u16 byte range"),
-            10
-        );
-
-        let size_overflow =
-            checked_buffer_required_bytes::<u16>(usize::MAX, "status").expect_err("overflow");
-        assert!(
-            matches!(size_overflow, Error::MetalKernel { message } if message.contains("size overflow"))
-        );
-
-        let range_overflow =
-            checked_buffer_required_range::<u8>(usize::MAX, 1, "status").expect_err("range");
-        assert!(
-            matches!(range_overflow, Error::MetalKernel { message } if message.contains("range overflow"))
-        );
-
-        let misaligned =
-            checked_buffer_required_range::<u16>(1, 1, "status").expect_err("alignment");
-        assert!(
-            matches!(misaligned, Error::MetalKernel { message } if message.contains("element-aligned"))
-        );
+        assert!(matches!(
+            error,
+            Error::MetalKernel { message }
+                if message.contains("JPEG Metal status readback")
+                    && message.contains("not aligned")
+        ));
     }
 }
 

@@ -18,8 +18,17 @@ use j2k_transcode::{
 use j2k_transcode_metal::MetalDctToWaveletStageAccelerator;
 
 #[cfg(target_os = "macos")]
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
+#[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let jpeg = jpeg_baseline_420_16x16();
     let options = JpegToHtj2kOptions {
         validate_against_float_reference: true,
@@ -70,6 +79,10 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let jpeg = jpeg_baseline_420_16x16();
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
@@ -169,6 +182,10 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let jpeg = jpeg_baseline_420_16x16();
     let inputs = vec![
         JpegTileBatchInput {
@@ -215,6 +232,10 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let jpeg = jpeg_baseline_420_16x16();
     let inputs = vec![
         JpegTileBatchInput {
@@ -279,6 +300,10 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let jpeg = jpeg_baseline_420_16x16();
     let inputs = vec![
         JpegTileBatchInput {
@@ -346,6 +371,10 @@ fn assert_explicit_metal_integer53_matches_scalar(
     expected_codestream_sampling: &[(u8, u8)],
     expected_batch_dispatches: usize,
 ) {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let options = JpegToHtj2kOptions {
         validate_against_integer_reference: true,
         ..JpegToHtj2kOptions::lossless_53()

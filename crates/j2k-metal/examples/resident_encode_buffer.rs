@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut total_codestream_bytes = 0usize;
     for (index, (encoded, pixels)) in batch.outcomes.iter().zip(frames.iter()).enumerate() {
         let codestream = encoded.encoded.codestream_bytes()?;
-        let decoded = Image::new(codestream, &DecodeSettings::default())?.decode_native()?;
+        let decoded = Image::new(&codestream, &DecodeSettings::default())?.decode_native()?;
         assert_eq!(decoded.data, *pixels);
         total_codestream_bytes = total_codestream_bytes
             .checked_add(codestream.len())

@@ -975,7 +975,7 @@ fn validate_finished_resident_lossless_buffer_encode(
         {
             validate_lossless_roundtrip_on_metal_tile_with_session(
                 tile,
-                encoded.codestream_bytes()?,
+                &encoded.codestream_bytes()?,
                 session,
             )?;
         } else {
@@ -984,7 +984,7 @@ fn validate_finished_resident_lossless_buffer_encode(
                 tile.output_width,
                 tile.output_height,
                 metadata.bytes_per_pixel,
-                encoded.codestream_bytes()?,
+                &encoded.codestream_bytes()?,
                 session,
             )?;
         }
@@ -1574,7 +1574,7 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
         if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous) {
             validate_lossless_roundtrip_on_metal_tile_with_session(
                 tile,
-                encoded.codestream_bytes()?,
+                &encoded.codestream_bytes()?,
                 session,
             )?;
         } else {
@@ -1583,7 +1583,7 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
                 tile.output_width,
                 tile.output_height,
                 bytes_per_pixel,
-                encoded.codestream_bytes()?,
+                &encoded.codestream_bytes()?,
                 session,
             )?;
         }
@@ -1713,11 +1713,11 @@ fn encode_lossless_tile_with_report(
         .ok_or_else(|| crate::Error::MetalKernel {
             message: "J2K Metal encode input byte length overflow".to_string(),
         })?;
-    let data = match j2k_metal_support::checked_buffer_contents_slice::<u8>(
-        buffer,
-        source_byte_offset,
-        len,
-    ) {
+    // SAFETY: Any staging copy has completed before this host readback, and
+    // this route does not submit another Metal writer for the selected range.
+    let data = match unsafe {
+        j2k_metal_support::checked_buffer_read_vec::<u8>(buffer, source_byte_offset, len)
+    } {
         Ok(data) => data,
         Err(j2k_metal_support::MetalSupportError::BufferContentsUnavailable) => {
             return Err(crate::Error::UnsupportedMetalRequest {
@@ -1731,7 +1731,7 @@ fn encode_lossless_tile_with_report(
         }
     };
     let samples = J2kLosslessSamples::new(
-        data,
+        &data,
         tile.output_width,
         tile.output_height,
         u16::from(components),

@@ -167,6 +167,10 @@ fn gpu_encode_inflight_resolution_rejects_zero_overrides() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let inputs = [
         (0..8 * 8)
             .map(|i| ((i * 11 + 3) & 0xFF) as u8)
@@ -296,7 +300,7 @@ fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
         assert_eq!(parallel_bytes, serial_bytes);
         assert_eq!(repeated_bytes, serial_bytes);
 
-        let decoded = Image::new(parallel_bytes, &DecodeSettings::default())
+        let decoded = Image::new(&parallel_bytes, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -306,6 +310,10 @@ fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_parallel_batch_returns_indexed_injected_failure() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first: Vec<u8> = (0..8 * 8).map(|i| ((i * 3) & 0xFF) as u8).collect();
     let second: Vec<u8> = (0..8 * 8).map(|i| ((i * 5) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");

@@ -378,7 +378,7 @@ pub(crate) fn encode_tier2_packetization(
         Ok(if data_len == 0 {
             Vec::new()
         } else {
-            checked_buffer_slice::<u8>(&output_buffer, data_len, "Tier-2 packet payload")?.to_vec()
+            checked_buffer_slice::<u8>(&output_buffer, data_len, "Tier-2 packet payload")?
         })
     })
 }

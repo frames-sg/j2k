@@ -10,8 +10,17 @@ use j2k_transcode_metal::{
 };
 
 #[cfg(target_os = "macos")]
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
+#[cfg(target_os = "macos")]
 #[test]
 fn metal_encoded_codestream_exports_resident_handoff_descriptor() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let Some(device) = metal::Device::system_default() else {
         metal_device_unavailable_is_skip(module_path!());
         return;
@@ -114,6 +123,11 @@ fn batch_auto_transcode_route_reports_aggregate_fallback() {
 
 #[test]
 fn strict_metal_transcode_never_silently_returns_cpu_route() {
+    #[cfg(target_os = "macos")]
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let result = jpeg_to_htj2k_with_metal_route(
         JPEG_GRAYSCALE_8X8,
         &JpegToHtj2kOptions::lossless_53(),
@@ -126,10 +140,14 @@ fn strict_metal_transcode_never_silently_returns_cpu_route() {
             assert_eq!(routed.route.selected_transform_backend, BackendKind::Metal);
             assert_eq!(routed.route.fallback_reason, None);
         }
-        Err(JpegToHtj2kError::Accelerator(
-            TranscodeStageError::DeviceUnavailable
-            | TranscodeStageError::Unsupported("strict Metal transcode produced no Metal dispatch"),
-        )) => {}
+        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
+            metal_device_unavailable_is_skip(module_path!());
+        }
+        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::Unsupported(
+            "strict Metal transcode produced no Metal dispatch",
+        ))) => {
+            panic!("strict Metal route produced no Metal dispatch");
+        }
         Err(error) => panic!("strict Metal route returned unexpected error: {error}"),
     }
 }

@@ -14,8 +14,18 @@ use j2k_transcode_metal::MetalDctToWaveletStageAccelerator;
 #[cfg(target_os = "macos")]
 use j2k_transcode_test_support::prequantized_component_from_dwt97;
 
+#[cfg(target_os = "macos")]
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
 #[test]
 fn explicit_metal_reports_unavailable_on_non_macos() {
+    #[cfg(target_os = "macos")]
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
     let blocks = vec![[[0.0; 8]; 8]];
     let result = accelerator.dct_grid_to_dwt97(DctGridToDwt97Job {
@@ -83,6 +93,10 @@ fn auto_metal_uses_cpu_for_97_jobs_by_default() {
 #[cfg(target_os = "macos")]
 #[test]
 fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let blocks = structured_blocks(2, 2);
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
@@ -118,6 +132,10 @@ fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
 #[cfg(target_os = "macos")]
 #[test]
 fn explicit_metal_dct97_batch_matches_scalar_for_structured_cases() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let first = structured_blocks(2, 2);
     let second = structured_blocks_with_offset(2, 2, 97.0);
     let jobs = [
@@ -172,6 +190,10 @@ fn explicit_metal_dct97_batch_matches_scalar_for_structured_cases() {
 #[cfg(target_os = "macos")]
 #[test]
 fn explicit_metal_dct97_batch_reports_idct_row_and_column_stage_timings() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let batch_blocks = [
         structured_blocks_with_offset(4, 4, 0.0),
         structured_blocks_with_offset(4, 4, 3.0),
@@ -211,6 +233,10 @@ fn explicit_metal_dct97_batch_reports_idct_row_and_column_stage_timings() {
 #[cfg(target_os = "macos")]
 #[test]
 fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let batch_blocks = [
         structured_blocks_with_offset(4, 4, 0.0),
         structured_blocks_with_offset(4, 4, 37.0),
@@ -286,6 +312,10 @@ fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
 #[cfg(target_os = "macos")]
 #[test]
 fn explicit_metal_dct97_codeblock_batch_accepts_zero_guard_bits_and_matches_scalar() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     // The old Metal-only validator rejected guard_bits == 0; the shared
     // validator accepts it (CUDA and the native encoder always did). This
     // pins the Metal kernel against the CPU oracle for the newly reachable

@@ -616,6 +616,7 @@ name = "j2k-metal-support"
 version = "0.7.0"
 dependencies = [
  "j2k-core",
+ "j2k-test-support",
  "metal",
 ]
 

@@ -525,7 +525,7 @@ pub(crate) fn encode_jpeg_baseline_entropy_with_session(
         }
         let entropy =
             checked_buffer_slice::<u8>(&entropy_buffer, entropy_len, "baseline encode entropy")?;
-        Ok(entropy.to_vec())
+        Ok(entropy)
     })
 }
 

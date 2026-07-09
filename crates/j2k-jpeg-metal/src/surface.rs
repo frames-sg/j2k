@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::borrow::Cow;
+
 use j2k_core::{
     copy_tight_pixels_to_strided_output, BackendKind, BufferError, DeviceMemoryRange,
     DeviceSurface, Downscale, PixelFormat, Rect, SurfaceMetadata, SurfaceResidency,
@@ -63,22 +65,33 @@ impl Surface {
     }
 
     /// Return the tightly packed surface bytes.
-    pub fn as_bytes(&self) -> &[u8] {
+    ///
+    /// Host storage is borrowed. Metal storage is copied into an owned snapshot
+    /// so safe Rust never exposes a slice that aliases later GPU access.
+    pub fn as_bytes(&self) -> Cow<'_, [u8]> {
         match &self.storage {
-            Storage::Host(bytes) => bytes,
+            Storage::Host(bytes) => Cow::Borrowed(bytes),
             #[cfg(target_os = "macos")]
             Storage::Metal { buffer, offset } => {
                 let len = self.byte_len();
-                checked_buffer_slice_at::<u8>(buffer, *offset, len, "surface bytes")
-                    .expect("Metal surface storage must be CPU-visible and bounded")
+                Cow::Owned(
+                    checked_buffer_slice_at::<u8>(buffer, *offset, len, "surface bytes")
+                        .expect("Metal surface storage must be CPU-visible and bounded"),
+                )
             }
         }
     }
 
     /// Copy the tightly packed surface into a caller-provided strided buffer.
     pub fn download_into(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
-        copy_tight_pixels_to_strided_output(self.as_bytes(), self.dimensions, self.fmt, out, stride)
-            .map_err(Error::from)
+        copy_tight_pixels_to_strided_output(
+            self.as_bytes().as_ref(),
+            self.dimensions,
+            self.fmt,
+            out,
+            stride,
+        )
+        .map_err(Error::from)
     }
 
     #[cfg(target_os = "macos")]

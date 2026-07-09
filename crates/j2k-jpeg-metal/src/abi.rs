@@ -446,3 +446,43 @@ impl From<JpegEntropyCheckpointV1> for JpegEntropyCheckpointHost {
         }
     }
 }
+
+#[cfg(target_os = "macos")]
+macro_rules! impl_gpu_readback_abi {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            // SAFETY: Each listed type is `#[repr(C)]`, `Copy`, contains only
+            // integer scalar fields, and has an exact shader-layout test below.
+            unsafe impl j2k_core::accelerator::GpuAbi for $ty {
+                const NAME: &'static str = stringify!($ty);
+            }
+        )+
+    };
+}
+
+#[cfg(target_os = "macos")]
+impl_gpu_readback_abi!(JpegBaselineEncodeStatus, JpegDecodeStatus);
+
+#[cfg(all(test, target_os = "macos"))]
+mod gpu_readback_abi_tests {
+    use core::mem::{align_of, offset_of, size_of};
+
+    use super::{JpegBaselineEncodeStatus, JpegDecodeStatus};
+
+    #[test]
+    fn status_layouts_match_metal_shader_abi() {
+        assert_eq!(size_of::<JpegBaselineEncodeStatus>(), 16);
+        assert_eq!(align_of::<JpegBaselineEncodeStatus>(), 4);
+        assert_eq!(offset_of!(JpegBaselineEncodeStatus, code), 0);
+        assert_eq!(offset_of!(JpegBaselineEncodeStatus, entropy_len), 4);
+        assert_eq!(offset_of!(JpegBaselineEncodeStatus, detail), 8);
+        assert_eq!(offset_of!(JpegBaselineEncodeStatus, reserved), 12);
+
+        assert_eq!(size_of::<JpegDecodeStatus>(), 16);
+        assert_eq!(align_of::<JpegDecodeStatus>(), 4);
+        assert_eq!(offset_of!(JpegDecodeStatus, code), 0);
+        assert_eq!(offset_of!(JpegDecodeStatus, detail), 4);
+        assert_eq!(offset_of!(JpegDecodeStatus, position), 8);
+        assert_eq!(offset_of!(JpegDecodeStatus, reserved), 12);
+    }
+}

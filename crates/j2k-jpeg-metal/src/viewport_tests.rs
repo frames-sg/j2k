@@ -134,7 +134,11 @@ fn download_rgba8_texture(
 
     crate::buffers::checked_buffer_slice::<u8>(&buffer, byte_len, "viewport texture readback")
         .expect("viewport texture readback buffer")
-        .to_vec()
+}
+
+#[cfg(target_os = "macos")]
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
 }
 
 #[test]
@@ -401,6 +405,10 @@ fn reusable_metal_viewport_strategy_reports_sparse_composition_workload() {
 #[cfg(target_os = "macos")]
 #[test]
 fn hybrid_viewport_quadrants_match_cpu_viewport() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
     let mut hybrid_pool = ScratchPool::new();
@@ -429,6 +437,10 @@ fn hybrid_viewport_quadrants_match_cpu_viewport() {
 #[cfg(target_os = "macos")]
 #[test]
 fn hybrid_viewport_misaligned_scaled_tile_matches_cpu_viewport() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
     let mut hybrid_pool = ScratchPool::new();
@@ -466,6 +478,10 @@ fn hybrid_viewport_misaligned_scaled_tile_matches_cpu_viewport() {
 #[cfg(target_os = "macos")]
 #[test]
 fn sparse_viewport_composition_resizes_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
     let mut metal_pool = ScratchPool::new();
@@ -540,6 +556,10 @@ fn sparse_viewport_composition_resizes_reusable_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn reusable_metal_viewport_buffer_helper_routes_sparse_workload() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
     let mut metal_pool = ScratchPool::new();
@@ -614,6 +634,10 @@ fn reusable_metal_viewport_buffer_helper_routes_sparse_workload() {
 #[cfg(target_os = "macos")]
 #[test]
 fn hybrid_contiguous_viewport_region_matches_cpu_region() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
     let mut hybrid_pool = ScratchPool::new();
@@ -635,6 +659,10 @@ fn hybrid_contiguous_viewport_region_matches_cpu_region() {
 #[cfg(target_os = "macos")]
 #[test]
 fn contiguous_viewport_region_resizes_reusable_metal_output_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
     let session = MetalBackendSession::system_default().expect("Metal backend session");
@@ -686,6 +714,10 @@ fn contiguous_viewport_region_resizes_reusable_metal_output_buffer() {
 #[cfg(target_os = "macos")]
 #[test]
 fn contiguous_viewport_region_resizes_reusable_metal_textures() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
     let session = MetalBackendSession::system_default().expect("Metal backend session");
@@ -741,6 +773,10 @@ fn contiguous_viewport_region_resizes_reusable_metal_textures() {
 #[cfg(target_os = "macos")]
 #[test]
 fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_buffer() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let metal_decoder = MetalDecoder::new(BASELINE_420).expect("metal decoder");
     let mut cpu_pool = ScratchPool::new();
@@ -796,6 +832,10 @@ fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_buffer()
 #[cfg(target_os = "macos")]
 #[test]
 fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_textures() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let metal_decoder = MetalDecoder::new(BASELINE_420).expect("metal decoder");
     let mut cpu_pool = ScratchPool::new();
@@ -855,6 +895,10 @@ fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_textures
 #[cfg(target_os = "macos")]
 #[test]
 fn reusable_metal_viewport_texture_helper_routes_contiguous_workload() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
     let mut metal_pool = ScratchPool::new();
@@ -913,6 +957,10 @@ fn reusable_metal_viewport_texture_helper_routes_contiguous_workload() {
 #[cfg(target_os = "macos")]
 #[test]
 fn sparse_viewport_composition_resizes_reusable_metal_texture_output() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
     let mut metal_pool = ScratchPool::new();

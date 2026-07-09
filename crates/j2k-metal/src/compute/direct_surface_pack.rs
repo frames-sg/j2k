@@ -14,10 +14,7 @@ pub(super) fn copy_plane_samples(
     let dst_len = row_width.checked_mul(row_count).ok_or_else(|| Error::MetalKernel {
         message: "J2K MetalDirect plane upload sample count overflow".to_string(),
     })?;
-    let dst = j2k_metal_support::checked_buffer_contents_slice_mut::<f32>(buffer, 0, dst_len)
-        .map_err(|error| Error::MetalKernel {
-            message: format!("J2K MetalDirect plane upload buffer view invalid: {error}"),
-        })?;
+    let mut staged = Vec::with_capacity(dst_len);
 
     for row in 0..row_count {
         let src_y = roi.y as usize + row;
@@ -37,9 +34,16 @@ pub(super) fn copy_plane_samples(
                 message: "J2K MetalDirect plane upload source range exceeds plane".to_string(),
             });
         }
-        let dst_start = row * row_width;
-        dst[dst_start..dst_start + row_width].copy_from_slice(&samples[src_start..src_end]);
+        staged.extend_from_slice(&samples[src_start..src_end]);
     }
+
+    // SAFETY: `buffer` is populated during CPU-side plan preparation before
+    // it is bound to or submitted in any Metal command buffer.
+    unsafe { j2k_metal_support::checked_buffer_write::<f32>(buffer, 0, &staged) }.map_err(
+        |error| Error::MetalKernel {
+            message: format!("J2K MetalDirect plane upload buffer write invalid: {error}"),
+        },
+    )?;
 
     Ok(())
 }

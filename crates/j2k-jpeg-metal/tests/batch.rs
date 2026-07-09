@@ -13,8 +13,17 @@ const BASELINE_420_RESTART: &[u8] =
 const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
 
 #[cfg(target_os = "macos")]
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
+#[cfg(target_os = "macos")]
 #[test]
 fn tile_device_decode_matches_host_tile_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut ctx = DecoderContext::<JpegDecoderContext>::new();
     let mut pool = ScratchPool::new();
     let (expected, _) = CpuDecoder::new(BASELINE_420)
@@ -35,13 +44,17 @@ fn tile_device_decode_matches_host_tile_decode() {
     surface
         .download_into(&mut downloaded, surface.pitch_bytes())
         .expect("download");
-    assert_eq!(downloaded, surface.as_bytes());
+    assert_eq!(downloaded, surface.as_bytes().as_ref());
     assert_eq!(downloaded, expected);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn tile_scaled_device_decode_has_expected_dimensions() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut ctx = DecoderContext::<JpegDecoderContext>::new();
     let mut pool = ScratchPool::new();
     let (expected, _) = CpuDecoder::new(BASELINE_420)
@@ -65,6 +78,10 @@ fn tile_scaled_device_decode_has_expected_dimensions() {
 #[cfg(target_os = "macos")]
 #[test]
 fn tile_region_device_decode_has_expected_dimensions() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut ctx = DecoderContext::<JpegDecoderContext>::new();
     let mut pool = ScratchPool::new();
     let roi = Rect {
@@ -103,6 +120,10 @@ fn tile_region_device_decode_has_expected_dimensions() {
 #[cfg(target_os = "macos")]
 #[test]
 fn compatible_tile_submits_flush_once() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut ctx = DecoderContext::<JpegDecoderContext>::new();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
@@ -137,6 +158,10 @@ fn compatible_tile_submits_flush_once() {
 #[cfg(target_os = "macos")]
 #[test]
 fn jpeg_tile_batch_api_decodes_full_tiles_in_submission_order() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let (expected, _) = CpuDecoder::new(BASELINE_420)
         .expect("cpu decoder")
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
@@ -211,6 +236,10 @@ fn auto_small_restart_tile_batch_stays_cpu_surface() {
 #[cfg(target_os = "macos")]
 #[test]
 fn auto_restart_wsi_tile_batch_uses_metal_at_threshold() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut ctx = DecoderContext::<JpegDecoderContext>::new();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
@@ -245,6 +274,10 @@ fn auto_restart_wsi_tile_batch_uses_metal_at_threshold() {
 #[cfg(target_os = "macos")]
 #[test]
 fn compatible_region_scaled_tile_submits_flush_once() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut ctx = DecoderContext::<JpegDecoderContext>::new();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();
@@ -419,6 +452,10 @@ fn non_macos_explicit_metal_tile_decode_is_unavailable() {
 #[cfg(target_os = "macos")]
 #[test]
 fn incompatible_shapes_split_batches() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut ctx = DecoderContext::<JpegDecoderContext>::new();
     let mut pool = ScratchPool::new();
     let mut session = MetalSession::default();

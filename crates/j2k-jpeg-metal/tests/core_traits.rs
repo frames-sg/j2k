@@ -14,8 +14,16 @@ const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.
 const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
 const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
 
+fn should_run_metal_runtime() -> bool {
+    j2k_test_support::metal_runtime_gate(module_path!())
+}
+
 #[test]
 fn decode_to_metal_matches_cpu_decode_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut expected = <Decoder<'_> as ImageDecode<'_>>::from_view(
         <Decoder<'_> as ImageDecode<'_>>::parse(BASELINE_420).expect("view"),
@@ -50,6 +58,10 @@ fn cpu_device_request_stays_host_backed() {
 
 #[test]
 fn metal_surface_exposes_buffer_for_on_device_consumers() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut metal_decoder = Decoder::new(BASELINE_420).expect("metal decoder");
     let metal_surface = metal_decoder
         .decode_to_device(PixelFormat::Rgb8, BackendRequest::Metal)
@@ -71,6 +83,10 @@ fn metal_surface_exposes_buffer_for_on_device_consumers() {
 fn decode_to_device_with_session_uses_session_device() {
     use metal::foreign_types::ForeignTypeRef;
 
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut decoder = Decoder::new(BASELINE_420).expect("metal decoder");
 
@@ -87,6 +103,10 @@ fn decode_to_device_with_session_uses_session_device() {
 #[cfg(target_os = "macos")]
 #[test]
 fn decode_to_device_with_session_rejects_unsupported_grayscale_shape() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let mut decoder = Decoder::new(GRAYSCALE).expect("decoder");
 
@@ -106,6 +126,10 @@ fn decode_to_device_with_session_rejects_unsupported_grayscale_shape() {
 
 #[test]
 fn fast422_decode_to_metal_matches_cpu_decode_bytes() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut decoder = Decoder::new(BASELINE_422).expect("decoder");
     let mut expected = <Decoder<'_> as ImageDecode<'_>>::from_view(
         <Decoder<'_> as ImageDecode<'_>>::parse(BASELINE_422).expect("view"),
@@ -130,6 +154,10 @@ fn fast422_decode_to_metal_matches_cpu_decode_bytes() {
 
 #[test]
 fn codec_many_device_decode_batches_full_tiles_to_metal_surfaces() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut ctx = j2k_core::DecoderContext::new();
     let mut pool = ScratchPool::new();
     let inputs = [BASELINE_420, BASELINE_422];
@@ -155,6 +183,10 @@ fn codec_many_device_decode_batches_full_tiles_to_metal_surfaces() {
 
 #[test]
 fn region_and_scaled_metal_bytes_match_cpu_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let roi = j2k_core::Rect {
         x: 4,
         y: 4,
@@ -202,6 +234,10 @@ fn region_and_scaled_metal_bytes_match_cpu_decode() {
 
 #[test]
 fn region_scaled_metal_bytes_match_cpu_decode() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let roi = Rect {
         x: 4,
         y: 4,
@@ -251,6 +287,10 @@ fn region_scaled_metal_bytes_match_cpu_decode() {
 
 #[test]
 fn region_scaled_submit_trait_returns_metal_surface() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let roi = Rect {
         x: 4,
         y: 4,
@@ -423,6 +463,10 @@ fn cuda_request_remains_unsupported_backend() {
 
 #[test]
 fn submit_to_device_returns_surface_and_updates_session() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut session = MetalSession::default();
     let submission = <Decoder<'_> as ImageDecodeSubmit<'_>>::submit_to_device(
@@ -439,6 +483,10 @@ fn submit_to_device_returns_surface_and_updates_session() {
 
 #[test]
 fn multiple_submits_share_one_session_flush() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
     let mut session = MetalSession::default();
     let mut a = Decoder::new(BASELINE_420).expect("decoder a");
     let mut b = Decoder::new(BASELINE_420).expect("decoder b");
