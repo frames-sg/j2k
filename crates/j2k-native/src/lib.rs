@@ -213,8 +213,8 @@ pub(crate) use roi::{
 };
 
 pub use error::{
-    ColorError, DecodeError, DecodingError, DirectPlanUnsupportedReason, FormatError, MarkerError,
-    Result, TileError, ValidationError,
+    ColorError, DecodeError, DecodeErrorClass, DecodingError, DirectPlanUnsupportedReason,
+    FormatError, MarkerError, Result, TileError, ValidationError,
 };
 pub use j2c::encode::{
     encode, encode_component_planes_53, encode_htj2k, encode_precomputed_htj2k_53,

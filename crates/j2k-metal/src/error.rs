@@ -6,11 +6,7 @@ use j2k_core::{
     adapter_error_is_unsupported, AdapterErrorKind, AdapterErrorParts, BackendRequest, BufferError,
     CodecError, InputError, Unsupported,
 };
-use j2k_native::{
-    DecodeError as NativeDecodeError, DecodingError as NativeDecodingError,
-    DirectPlanUnsupportedReason as NativeDirectPlanUnsupportedReason,
-    FormatError as NativeFormatError, MarkerError as NativeMarkerError,
-};
+use j2k_native::{DecodeError as NativeDecodeError, DecodeErrorClass as NativeDecodeErrorClass};
 
 #[derive(Debug, thiserror::Error)]
 /// Errors returned by the Metal J2K backend.
@@ -173,71 +169,15 @@ pub(crate) fn adapter_backend_error(message: impl Into<String>) -> J2kError {
 }
 
 pub(crate) fn native_decode_j2k_error(error: NativeDecodeError) -> J2kError {
-    match error {
-        NativeDecodeError::Format(NativeFormatError::TooShort { need, have }) => {
+    match error.classify() {
+        NativeDecodeErrorClass::InputTooShort { need, have } => {
             J2kError::Input(InputError::TooShort { need, have })
         }
-        NativeDecodeError::Format(NativeFormatError::TruncatedAt { offset, segment }) => {
+        NativeDecodeErrorClass::InputTruncatedAt { offset, segment } => {
             J2kError::Input(InputError::TruncatedAt { offset, segment })
         }
-        NativeDecodeError::Format(NativeFormatError::Unsupported) => {
-            J2kError::Unsupported(Unsupported {
-                what: "JP2 image format",
-            })
-        }
-        NativeDecodeError::Marker(NativeMarkerError::Unsupported) => {
-            J2kError::Unsupported(Unsupported {
-                what: "JPEG 2000 marker",
-            })
-        }
-        NativeDecodeError::Decoding(NativeDecodingError::DirectPlanUnsupported(reason)) => {
-            J2kError::Unsupported(Unsupported {
-                what: native_direct_plan_unsupported_what(reason),
-            })
-        }
-        NativeDecodeError::Decoding(NativeDecodingError::UnsupportedFeature(what)) => {
-            J2kError::Unsupported(Unsupported { what })
-        }
-        NativeDecodeError::Decoding(NativeDecodingError::UnexpectedEof) => {
-            J2kError::Input(InputError::TruncatedAt {
-                offset: 0,
-                segment: "JPEG 2000 entropy data",
-            })
-        }
-        error => adapter_backend_error(error.to_string()),
-    }
-}
-
-fn native_direct_plan_unsupported_what(reason: NativeDirectPlanUnsupportedReason) -> &'static str {
-    match reason {
-        NativeDirectPlanUnsupportedReason::GrayscaleImageWithoutAlpha => {
-            "direct grayscale plan only supports grayscale images without alpha"
-        }
-        NativeDirectPlanUnsupportedReason::GrayscaleSingleTileCodestream => {
-            "direct grayscale plan only supports single-tile codestreams"
-        }
-        NativeDirectPlanUnsupportedReason::GrayscaleSingleComponentCodestream => {
-            "direct grayscale plan only supports single-component codestreams"
-        }
-        NativeDirectPlanUnsupportedReason::ColorRgbImageWithoutAlpha => {
-            "direct color plan only supports RGB images without alpha"
-        }
-        NativeDirectPlanUnsupportedReason::ColorSingleTileCodestream => {
-            "direct color plan only supports single-tile codestreams"
-        }
-        NativeDirectPlanUnsupportedReason::ColorThreeComponentRgbCodestream => {
-            "direct color plan only supports three-component RGB codestreams"
-        }
-        NativeDirectPlanUnsupportedReason::ComponentIndexOutOfRange => {
-            "direct component plan index is out of range"
-        }
-        NativeDirectPlanUnsupportedReason::ComponentUnitSampled => {
-            "direct component plan only supports unit-sampled components"
-        }
-        NativeDirectPlanUnsupportedReason::ComponentDecompositionIndexOutOfRange => {
-            "direct component decomposition index is out of range"
-        }
-        _ => "direct JPEG 2000 plan is unsupported",
+        NativeDecodeErrorClass::Unsupported { what } => J2kError::Unsupported(Unsupported { what }),
+        _ => adapter_backend_error(error.to_string()),
     }
 }
 

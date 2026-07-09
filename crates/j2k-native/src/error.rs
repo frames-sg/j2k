@@ -20,6 +20,71 @@ pub enum DecodeError {
     Color(ColorError),
 }
 
+/// Backend-neutral classification used by codec adapters.
+///
+/// This preserves the small amount of structured information that adapters
+/// need without requiring each adapter to match the complete native error
+/// hierarchy independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DecodeErrorClass {
+    /// Input ended before a required fixed-size read.
+    InputTooShort {
+        /// Required byte count.
+        need: usize,
+        /// Available byte count.
+        have: usize,
+    },
+    /// Input ended while reading a named segment.
+    InputTruncatedAt {
+        /// Byte offset where truncation was detected.
+        offset: usize,
+        /// Stable segment label.
+        segment: &'static str,
+    },
+    /// The codestream or container uses an unsupported feature.
+    Unsupported {
+        /// Stable user-facing feature label.
+        what: &'static str,
+    },
+    /// All other native decoder failures.
+    Backend,
+}
+
+impl DecodeError {
+    /// Classify this error for a facade or accelerator adapter.
+    #[must_use]
+    pub const fn classify(&self) -> DecodeErrorClass {
+        match *self {
+            Self::Format(FormatError::TooShort { need, have }) => {
+                DecodeErrorClass::InputTooShort { need, have }
+            }
+            Self::Format(FormatError::TruncatedAt { offset, segment }) => {
+                DecodeErrorClass::InputTruncatedAt { offset, segment }
+            }
+            Self::Format(FormatError::Unsupported) => DecodeErrorClass::Unsupported {
+                what: "JP2 image format",
+            },
+            Self::Marker(MarkerError::Unsupported) => DecodeErrorClass::Unsupported {
+                what: "JPEG 2000 marker",
+            },
+            Self::Decoding(DecodingError::DirectPlanUnsupported(reason)) => {
+                DecodeErrorClass::Unsupported {
+                    what: direct_plan_unsupported_what(reason),
+                }
+            }
+            Self::Decoding(DecodingError::UnsupportedFeature(what)) => {
+                DecodeErrorClass::Unsupported { what }
+            }
+            Self::Decoding(DecodingError::UnexpectedEof) => DecodeErrorClass::InputTruncatedAt {
+                offset: 0,
+                segment: "JPEG 2000 entropy data",
+            },
+            _ => DecodeErrorClass::Backend,
+        }
+    }
+}
+
 /// Errors related to JP2 file format and box parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -297,52 +362,38 @@ impl fmt::Display for DecodingError {
 
 impl fmt::Display for DirectPlanUnsupportedReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::GrayscaleImageWithoutAlpha => {
-                write!(
-                    f,
-                    "direct grayscale plan only supports grayscale images without alpha"
-                )
-            }
-            Self::GrayscaleSingleTileCodestream => {
-                write!(
-                    f,
-                    "direct grayscale plan only supports single-tile codestreams"
-                )
-            }
-            Self::GrayscaleSingleComponentCodestream => {
-                write!(
-                    f,
-                    "direct grayscale plan only supports single-component codestreams"
-                )
-            }
-            Self::ColorRgbImageWithoutAlpha => {
-                write!(
-                    f,
-                    "direct color plan only supports RGB images without alpha"
-                )
-            }
-            Self::ColorSingleTileCodestream => {
-                write!(f, "direct color plan only supports single-tile codestreams")
-            }
-            Self::ColorThreeComponentRgbCodestream => {
-                write!(
-                    f,
-                    "direct color plan only supports three-component RGB codestreams"
-                )
-            }
-            Self::ComponentIndexOutOfRange => {
-                write!(f, "direct component plan index is out of range")
-            }
-            Self::ComponentUnitSampled => {
-                write!(
-                    f,
-                    "direct component plan only supports unit-sampled components"
-                )
-            }
-            Self::ComponentDecompositionIndexOutOfRange => {
-                write!(f, "direct component decomposition index is out of range")
-            }
+        f.write_str(direct_plan_unsupported_what(*self))
+    }
+}
+
+const fn direct_plan_unsupported_what(reason: DirectPlanUnsupportedReason) -> &'static str {
+    match reason {
+        DirectPlanUnsupportedReason::GrayscaleImageWithoutAlpha => {
+            "direct grayscale plan only supports grayscale images without alpha"
+        }
+        DirectPlanUnsupportedReason::GrayscaleSingleTileCodestream => {
+            "direct grayscale plan only supports single-tile codestreams"
+        }
+        DirectPlanUnsupportedReason::GrayscaleSingleComponentCodestream => {
+            "direct grayscale plan only supports single-component codestreams"
+        }
+        DirectPlanUnsupportedReason::ColorRgbImageWithoutAlpha => {
+            "direct color plan only supports RGB images without alpha"
+        }
+        DirectPlanUnsupportedReason::ColorSingleTileCodestream => {
+            "direct color plan only supports single-tile codestreams"
+        }
+        DirectPlanUnsupportedReason::ColorThreeComponentRgbCodestream => {
+            "direct color plan only supports three-component RGB codestreams"
+        }
+        DirectPlanUnsupportedReason::ComponentIndexOutOfRange => {
+            "direct component plan index is out of range"
+        }
+        DirectPlanUnsupportedReason::ComponentUnitSampled => {
+            "direct component plan only supports unit-sampled components"
+        }
+        DirectPlanUnsupportedReason::ComponentDecompositionIndexOutOfRange => {
+            "direct component decomposition index is out of range"
         }
     }
 }
@@ -405,6 +456,78 @@ impl From<ColorError> for DecodeError {
 
 /// Result type for JPEG 2000 decoding operations.
 pub type Result<T> = core::result::Result<T, DecodeError>;
+
+#[cfg(test)]
+mod classification_tests {
+    use super::{
+        DecodeError, DecodeErrorClass, DecodingError, DirectPlanUnsupportedReason, FormatError,
+        MarkerError, ValidationError,
+    };
+
+    #[test]
+    fn facade_classification_preserves_structured_input_and_support_details() {
+        let cases = [
+            (
+                DecodeError::Format(FormatError::TooShort { need: 9, have: 3 }),
+                DecodeErrorClass::InputTooShort { need: 9, have: 3 },
+            ),
+            (
+                DecodeError::Format(FormatError::TruncatedAt {
+                    offset: 17,
+                    segment: "SIZ",
+                }),
+                DecodeErrorClass::InputTruncatedAt {
+                    offset: 17,
+                    segment: "SIZ",
+                },
+            ),
+            (
+                DecodeError::Format(FormatError::Unsupported),
+                DecodeErrorClass::Unsupported {
+                    what: "JP2 image format",
+                },
+            ),
+            (
+                DecodeError::Marker(MarkerError::Unsupported),
+                DecodeErrorClass::Unsupported {
+                    what: "JPEG 2000 marker",
+                },
+            ),
+            (
+                DecodeError::Decoding(DecodingError::UnsupportedFeature("packet marker")),
+                DecodeErrorClass::Unsupported {
+                    what: "packet marker",
+                },
+            ),
+            (
+                DecodeError::Decoding(DecodingError::UnexpectedEof),
+                DecodeErrorClass::InputTruncatedAt {
+                    offset: 0,
+                    segment: "JPEG 2000 entropy data",
+                },
+            ),
+            (
+                DecodeError::Validation(ValidationError::InvalidDimensions),
+                DecodeErrorClass::Backend,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.classify(), expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn direct_plan_classification_and_display_share_the_same_label() {
+        let reason = DirectPlanUnsupportedReason::ColorThreeComponentRgbCodestream;
+        let error = DecodeError::Decoding(DecodingError::DirectPlanUnsupported(reason));
+        let DecodeErrorClass::Unsupported { what } = error.classify() else {
+            panic!("direct-plan errors must classify as unsupported");
+        };
+
+        assert_eq!(what, reason.to_string());
+    }
+}
 
 macro_rules! bail {
     ($err:expr) => {

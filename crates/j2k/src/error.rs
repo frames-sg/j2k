@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{BufferError, CodecError, InputError, NotImplemented, Unsupported};
-use j2k_native::{
-    DecodeError as NativeDecodeError, DecodingError as NativeDecodingError,
-    DirectPlanUnsupportedReason as NativeDirectPlanUnsupportedReason,
-    FormatError as NativeFormatError, MarkerError as NativeMarkerError,
-};
+use j2k_native::{DecodeError as NativeDecodeError, DecodeErrorClass as NativeDecodeErrorClass};
 
 /// Machine-readable class for backend failures surfaced by the facade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,72 +249,16 @@ impl J2kError {
         error: NativeDecodeError,
         context: &'static str,
     ) -> Self {
-        match error {
-            NativeDecodeError::Format(NativeFormatError::TooShort { need, have }) => {
+        match error.classify() {
+            NativeDecodeErrorClass::InputTooShort { need, have } => {
                 Self::Input(InputError::TooShort { need, have })
             }
-            NativeDecodeError::Format(NativeFormatError::TruncatedAt { offset, segment }) => {
+            NativeDecodeErrorClass::InputTruncatedAt { offset, segment } => {
                 Self::Input(InputError::TruncatedAt { offset, segment })
             }
-            NativeDecodeError::Format(NativeFormatError::Unsupported) => {
-                Self::Unsupported(Unsupported {
-                    what: "JP2 image format",
-                })
-            }
-            NativeDecodeError::Marker(NativeMarkerError::Unsupported) => {
-                Self::Unsupported(Unsupported {
-                    what: "JPEG 2000 marker",
-                })
-            }
-            NativeDecodeError::Decoding(NativeDecodingError::DirectPlanUnsupported(reason)) => {
-                Self::Unsupported(Unsupported {
-                    what: native_direct_plan_unsupported_what(reason),
-                })
-            }
-            NativeDecodeError::Decoding(NativeDecodingError::UnsupportedFeature(what)) => {
-                Self::Unsupported(Unsupported { what })
-            }
-            NativeDecodeError::Decoding(NativeDecodingError::UnexpectedEof) => {
-                Self::Input(InputError::TruncatedAt {
-                    offset: 0,
-                    segment: "JPEG 2000 entropy data",
-                })
-            }
-            error => Self::Backend(BackendError::native(format!("{context}: {error}"))),
+            NativeDecodeErrorClass::Unsupported { what } => Self::Unsupported(Unsupported { what }),
+            _ => Self::Backend(BackendError::native(format!("{context}: {error}"))),
         }
-    }
-}
-
-fn native_direct_plan_unsupported_what(reason: NativeDirectPlanUnsupportedReason) -> &'static str {
-    match reason {
-        NativeDirectPlanUnsupportedReason::GrayscaleImageWithoutAlpha => {
-            "direct grayscale plan only supports grayscale images without alpha"
-        }
-        NativeDirectPlanUnsupportedReason::GrayscaleSingleTileCodestream => {
-            "direct grayscale plan only supports single-tile codestreams"
-        }
-        NativeDirectPlanUnsupportedReason::GrayscaleSingleComponentCodestream => {
-            "direct grayscale plan only supports single-component codestreams"
-        }
-        NativeDirectPlanUnsupportedReason::ColorRgbImageWithoutAlpha => {
-            "direct color plan only supports RGB images without alpha"
-        }
-        NativeDirectPlanUnsupportedReason::ColorSingleTileCodestream => {
-            "direct color plan only supports single-tile codestreams"
-        }
-        NativeDirectPlanUnsupportedReason::ColorThreeComponentRgbCodestream => {
-            "direct color plan only supports three-component RGB codestreams"
-        }
-        NativeDirectPlanUnsupportedReason::ComponentIndexOutOfRange => {
-            "direct component plan index is out of range"
-        }
-        NativeDirectPlanUnsupportedReason::ComponentUnitSampled => {
-            "direct component plan only supports unit-sampled components"
-        }
-        NativeDirectPlanUnsupportedReason::ComponentDecompositionIndexOutOfRange => {
-            "direct component decomposition index is out of range"
-        }
-        _ => "direct JPEG 2000 plan is unsupported",
     }
 }
 
