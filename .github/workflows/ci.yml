@@ -157,6 +157,50 @@ jobs:
       - run: cargo public-api --version || cargo install cargo-public-api --version 0.52.0 --locked
       - run: cargo xtask stable-api
 
+  codec-math-codegen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: cargo xtask codec-math-codegen
+
+  public-support-final:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: cargo xtask public-support --final
+
+  machete:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
+        with:
+          tool: cargo-machete@0.9.2
+      - run: cargo xtask machete
+
+  repo-lint:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
+        with:
+          tool: cargo-public-api@0.52.0
+      - run: cargo public-api --version || cargo install cargo-public-api --version 0.52.0 --locked
+      - name: Run normal and strict repository policy
+        run: cargo xtask repo-lint --strict
+
   release-integrity:
     runs-on: ubuntu-latest
     steps:
@@ -349,6 +393,10 @@ jobs:
       - semver
       - docs
       - stable-api
+      - codec-math-codegen
+      - public-support-final
+      - machete
+      - repo-lint
       - release-integrity
       - unsafe-audit
       - typos

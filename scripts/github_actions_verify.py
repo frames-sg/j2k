@@ -460,6 +460,32 @@ def verify_release_evidence(
         raise VerificationError(
             f"release tag {tag} peels to {peeled_sha}, not candidate {expected_sha}"
         )
+    return verify_candidate_evidence(
+        api,
+        candidate_sha=expected_sha,
+        ci_workflow=ci_workflow,
+        aggregate_job=aggregate_job,
+        gpu_workflow=gpu_workflow,
+        cuda_job=cuda_job,
+        metal_job=metal_job,
+        ci_branch=ci_branch,
+    )
+
+
+def verify_candidate_evidence(
+    api: GitHubApi,
+    *,
+    candidate_sha: str,
+    ci_workflow: str,
+    aggregate_job: str,
+    gpu_workflow: str,
+    cuda_job: str,
+    metal_job: str,
+    ci_branch: str,
+) -> tuple[int, int]:
+    """Verify all post-freeze release evidence for one exact commit SHA."""
+
+    expected_sha = normalize_sha(candidate_sha, "candidate SHA")
     ci_run = verify_workflow_run(
         api,
         ci_workflow,
@@ -520,6 +546,19 @@ def build_parser() -> argparse.ArgumentParser:
     release_parser.add_argument("--cuda-job", default=CUDA_JOB)
     release_parser.add_argument("--metal-job", default=METAL_JOB)
     release_parser.add_argument("--ci-branch", default="main")
+
+    candidate_parser = subparsers.add_parser(
+        "verify-candidate",
+        help="verify exact-SHA CI aggregate and GPU evidence without requiring a tag",
+    )
+    _add_api_arguments(candidate_parser)
+    candidate_parser.add_argument("--candidate-sha", required=True)
+    candidate_parser.add_argument("--ci-workflow", default="ci.yml")
+    candidate_parser.add_argument("--aggregate-job", default=RELEASE_CANDIDATE_JOB)
+    candidate_parser.add_argument("--gpu-workflow", default="gpu-validation.yml")
+    candidate_parser.add_argument("--cuda-job", default=CUDA_JOB)
+    candidate_parser.add_argument("--metal-job", default=METAL_JOB)
+    candidate_parser.add_argument("--ci-branch", default="main")
     return parser
 
 
@@ -578,6 +617,22 @@ def run_command(args: argparse.Namespace) -> None:
         )
         print(
             f"verified annotated tag {args.tag} and exact-SHA evidence "
+            f"(CI run {ci_run}, GPU run {gpu_run})"
+        )
+        return
+    if args.command == "verify-candidate":
+        ci_run, gpu_run = verify_candidate_evidence(
+            api,
+            candidate_sha=args.candidate_sha,
+            ci_workflow=args.ci_workflow,
+            aggregate_job=args.aggregate_job,
+            gpu_workflow=args.gpu_workflow,
+            cuda_job=args.cuda_job,
+            metal_job=args.metal_job,
+            ci_branch=args.ci_branch,
+        )
+        print(
+            f"verified exact-SHA release candidate {args.candidate_sha.lower()} "
             f"(CI run {ci_run}, GPU run {gpu_run})"
         )
         return

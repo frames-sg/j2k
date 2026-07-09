@@ -140,6 +140,23 @@ class PullRequestPolicyTests(unittest.TestCase):
         self.assertEqual(decision.changed_gpu_paths, ())
 
 
+class ParserTests(unittest.TestCase):
+    def test_verify_candidate_parser_smoke(self) -> None:
+        args = verifier.build_parser().parse_args(
+            [
+                "verify-candidate",
+                "--repository",
+                "frames-sg/j2k",
+                "--candidate-sha",
+                SHA,
+            ]
+        )
+        self.assertEqual(args.command, "verify-candidate")
+        self.assertEqual(args.aggregate_job, verifier.RELEASE_CANDIDATE_JOB)
+        self.assertEqual(args.cuda_job, verifier.CUDA_JOB)
+        self.assertEqual(args.metal_job, verifier.METAL_JOB)
+
+
 class WorkflowVerificationTests(unittest.TestCase):
     def test_runs_and_jobs_are_paginated_and_one_run_contains_every_job(self) -> None:
         api = FakeApi()
@@ -318,6 +335,50 @@ class WorkflowVerificationTests(unittest.TestCase):
 
 
 class ReleaseVerificationTests(unittest.TestCase):
+    def test_post_freeze_candidate_verifies_ci_and_gpu_without_a_tag(self) -> None:
+        api = FakeApi()
+        workflow_metadata(api, "ci.yml", 88)
+        api.add(
+            "/actions/workflows/88/runs",
+            {
+                "workflow_runs": [
+                    workflow_run(
+                        10,
+                        workflow_id=88,
+                        path=".github/workflows/ci.yml",
+                        event="push",
+                    )
+                ]
+            },
+            {"head_sha": SHA, "per_page": 100, "page": 1},
+        )
+        add_jobs(api, 10, [workflow_job(verifier.RELEASE_CANDIDATE_JOB)])
+        workflow_metadata(api, "gpu-validation.yml", 77)
+        add_runs(api, 77, [workflow_run(20)])
+        add_jobs(
+            api,
+            20,
+            [workflow_job(verifier.CUDA_JOB), workflow_job(verifier.METAL_JOB)],
+        )
+
+        self.assertEqual(
+            verifier.verify_candidate_evidence(
+                api,  # type: ignore[arg-type]
+                candidate_sha=SHA,
+                ci_workflow="ci.yml",
+                aggregate_job=verifier.RELEASE_CANDIDATE_JOB,
+                gpu_workflow="gpu-validation.yml",
+                cuda_job=verifier.CUDA_JOB,
+                metal_job=verifier.METAL_JOB,
+                ci_branch="main",
+            ),
+            (10, 20),
+        )
+        self.assertFalse(
+            any(path.startswith("/git/") for path, _params in api.calls),
+            "post-freeze candidate status must not require a release tag",
+        )
+
     def test_annotated_tag_is_peeled_and_ci_and_gpu_runs_are_exact(self) -> None:
         api = FakeApi()
         api.add(
@@ -411,6 +472,12 @@ class ReleaseVerificationTests(unittest.TestCase):
 
 
 class ApiFailureTests(unittest.TestCase):
+    def test_missing_token_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            verifier.VerificationError, "GitHub API token is not configured"
+        ):
+            verifier.GitHubApi("https://api.github.invalid", "owner/repo", "")
+
     def test_http_failure_does_not_expose_token(self) -> None:
         token = "secret-token-that-must-not-appear"
 

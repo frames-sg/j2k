@@ -133,6 +133,7 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
             "def classify_gpu_paths(",
             "def verify_workflow_run(",
             "def peel_annotated_tag(",
+            "def verify_candidate_evidence(",
             "def verify_release_evidence(",
             "CUDA API compatibility on x86_64",
             "Metal validation on Apple Silicon",
@@ -165,7 +166,14 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
     let publish = fs::read_to_string(root.join(".github/workflows/publish.yml"))
         .expect("read publish workflow");
     let aggregate = workflow_job(&ci, "release-candidate");
+    let codec_math_codegen = workflow_job(&ci, "codec-math-codegen");
+    let public_support_final = workflow_job(&ci, "public-support-final");
+    let machete = workflow_job(&ci, "machete");
+    let repo_lint = workflow_job(&ci, "repo-lint");
     let preflight = workflow_job(&publish, "preflight");
+    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask main");
+    let release_status = fs::read_to_string(root.join("xtask/src/release_status.rs"))
+        .expect("read release-status task");
     let verifier_tests =
         fs::read_to_string(root.join("scripts/tests/test_github_actions_verify.py"))
             .expect("read GitHub Actions verifier tests");
@@ -183,6 +191,10 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "semver",
             "docs",
             "stable-api",
+            "codec-math-codegen",
+            "public-support-final",
+            "machete",
+            "repo-lint",
             "release-integrity",
             "unsafe-audit",
             "typos",
@@ -199,6 +211,45 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "deny",
             "REQUIRED_RESULTS: ${{ toJSON(needs) }}",
         ]),
+        PatternCheck::new("CI codec-math freshness gate", codec_math_codegen).required(&[
+            "runs-on: ubuntu-latest",
+            "cargo xtask codec-math-codegen",
+        ]),
+        PatternCheck::new("CI final public-support gate", public_support_final).required(&[
+            "runs-on: ubuntu-latest",
+            "cargo xtask public-support --final",
+        ]),
+        PatternCheck::new("CI unused-dependency gate", machete).required(&[
+            "cargo-machete@0.9.2",
+            "cargo xtask machete",
+        ]),
+        PatternCheck::new("CI normal and strict repository policy gate", repo_lint).required(&[
+            "runs-on: macos-latest",
+            "toolchain: nightly",
+            "cargo-public-api@0.52.0",
+            "cargo install cargo-public-api --version 0.52.0 --locked",
+            "Run normal and strict repository policy",
+            "cargo xtask repo-lint --strict",
+        ]),
+        PatternCheck::new("xtask release-status dispatch", &xtask).required(&[
+            "mod release_status;",
+            "\"release-status\" => release_status::release_status(env::args().skip(2))",
+            "release-status verify one frozen SHA's CI aggregate and both GPU jobs",
+        ]),
+        PatternCheck::new("read-only exact-SHA release-status handoff", &release_status)
+            .required(&[
+                "verify-candidate",
+                "--candidate-sha",
+                "--repository",
+                "GITHUB_REPOSITORY",
+                "remote.origin.url",
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "Release candidate aggregate",
+                "CUDA API compatibility on x86_64",
+                "Metal validation on Apple Silicon",
+            ])
+            .forbidden(&["verify-release", "--tag"]),
         PatternCheck::new("publish workflow exact-SHA policy", &publish)
             .required(&[
                 "actions: read",
@@ -226,6 +277,9 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "test_successes_from_different_runs_cannot_be_combined",
             "test_incomplete_skipped_missing_and_stale_evidence_is_rejected",
             "test_annotated_tag_is_peeled",
+            "test_post_freeze_candidate_verifies_ci_and_gpu_without_a_tag",
+            "test_verify_candidate_parser_smoke",
+            "test_missing_token_fails_closed",
             "test_http_failure_does_not_expose_token",
         ]),
     ]);

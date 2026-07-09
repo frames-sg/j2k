@@ -29,6 +29,7 @@ mod process;
 mod public_support;
 #[cfg(feature = "adoption")]
 mod publication_gate;
+mod release_status;
 mod semver;
 
 use process::cargo;
@@ -199,6 +200,7 @@ fn run() -> Result<(), String> {
         "downstream-smoke" => downstream_smoke(),
         "repo-lint" => repo_lint(env::args().skip(2)),
         "release-integrity" => release_integrity(),
+        "release-status" => release_status::release_status(env::args().skip(2)),
         "release-cpu" => release_cpu(),
         "metal-compile" => metal::metal_compile(),
         "release-metal" => metal::release_metal(),
@@ -1991,6 +1993,7 @@ fn print_help() {
            downstream-smoke run facade and transcode examples used by integration docs\n\
            repo-lint     run repository policy checks owned by xtask [--strict]\n\
            release-integrity validate publish membership, docs.rs metadata, workflow order, and release docs\n\
+           release-status verify one frozen SHA's CI aggregate and both GPU jobs [--sha SHA] [--repository owner/name]\n\
            release-cpu   run release-mode CPU codec tests\n\
            metal-compile compile all Metal targets and run default/pure tests on hosted macOS\n\
            release-metal run fail-closed release-mode Metal hardware validation on macOS\n\
