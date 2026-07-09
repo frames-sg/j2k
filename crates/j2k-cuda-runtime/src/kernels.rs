@@ -25,20 +25,14 @@ pub(crate) enum CudaKernel {
     J2kIdwtInterleaveHorizontalMulti,
     J2kIdwtInterleaveHorizontal53Multi,
     J2kIdwtInterleaveHorizontal97Multi,
-    #[cfg_attr(not(test), allow(dead_code))]
-    J2kIdwtHorizontal,
     J2kIdwtHorizontal53,
     J2kIdwtHorizontal97,
-    #[cfg_attr(not(test), allow(dead_code))]
-    J2kIdwtVertical,
     J2kIdwtVerticalMulti,
     J2kIdwtVertical53Multi,
     J2kIdwtVertical97Multi,
     J2kIdwtVertical97MultiCols4,
     J2kIdwtVertical53,
     J2kIdwtVertical97,
-    #[cfg_attr(not(test), allow(dead_code))]
-    Htj2kEncodeCodeblock,
     Htj2kEncodeCodeblocks,
     Htj2kEncodeCodeblocksMultiInput,
     Htj2kEncodeCodeblocksMultiInputCleanup,
@@ -59,16 +53,12 @@ pub(crate) enum CudaKernel {
     JpegEncodeBaselineEntropy,
     #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
     JpegEncodeBaselineEntropyBatch,
-    #[cfg_attr(not(test), allow(dead_code))]
-    J2kInverseDwtSingle,
     J2kInverseMct,
     J2kStoreGray16,
     J2kStoreGray8,
     J2kStoreRgb16,
     J2kStoreRgb16Mct,
     J2kStoreRgb8,
-    #[cfg_attr(not(test), allow(dead_code))]
-    J2kStoreRgb8Mct,
     J2kStoreRgb8MctBatch,
     // Coefficient-domain JPEG->HTJ2K transcode (j2k-transcode-cuda).
     TranscodeReversible53Idct,
@@ -131,7 +121,6 @@ impl CudaKernel {
                 | Self::J2kStoreRgb16
                 | Self::J2kStoreRgb16Mct
                 | Self::J2kStoreRgb8
-                | Self::J2kStoreRgb8Mct
                 | Self::J2kStoreRgb8MctBatch
         )
     }
@@ -161,8 +150,7 @@ impl CudaKernel {
     pub(crate) fn is_htj2k_encode_codeblock_stage(self) -> bool {
         matches!(
             self,
-            Self::Htj2kEncodeCodeblock
-                | Self::Htj2kEncodeCodeblocks
+            Self::Htj2kEncodeCodeblocks
                 | Self::Htj2kEncodeCodeblocksMultiInput
                 | Self::Htj2kEncodeCodeblocksMultiInputCleanup
                 | Self::Htj2kEncodeCodeblocksMultiInputCleanup64
@@ -173,15 +161,12 @@ impl CudaKernel {
     pub(crate) fn is_j2k_idwt_stage(self) -> bool {
         matches!(
             self,
-            Self::J2kInverseDwtSingle
-                | Self::J2kIdwtInterleave
+            Self::J2kIdwtInterleave
                 | Self::J2kIdwtInterleaveHorizontalMulti
                 | Self::J2kIdwtInterleaveHorizontal53Multi
                 | Self::J2kIdwtInterleaveHorizontal97Multi
-                | Self::J2kIdwtHorizontal
                 | Self::J2kIdwtHorizontal53
                 | Self::J2kIdwtHorizontal97
-                | Self::J2kIdwtVertical
                 | Self::J2kIdwtVerticalMulti
                 | Self::J2kIdwtVertical53Multi
                 | Self::J2kIdwtVertical97Multi
@@ -294,17 +279,14 @@ impl CudaKernel {
             Self::J2kIdwtInterleaveHorizontal97Multi => {
                 b"j2k_idwt_interleave_horizontal_97_multi\0"
             }
-            Self::J2kIdwtHorizontal => b"j2k_idwt_horizontal\0",
             Self::J2kIdwtHorizontal53 => b"j2k_idwt_horizontal_53\0",
             Self::J2kIdwtHorizontal97 => b"j2k_idwt_horizontal_97\0",
-            Self::J2kIdwtVertical => b"j2k_idwt_vertical\0",
             Self::J2kIdwtVerticalMulti => b"j2k_idwt_vertical_multi\0",
             Self::J2kIdwtVertical53Multi => b"j2k_idwt_vertical_53_multi\0",
             Self::J2kIdwtVertical97Multi => b"j2k_idwt_vertical_97_multi\0",
             Self::J2kIdwtVertical97MultiCols4 => b"j2k_idwt_vertical_97_multi_cols4\0",
             Self::J2kIdwtVertical53 => b"j2k_idwt_vertical_53\0",
             Self::J2kIdwtVertical97 => b"j2k_idwt_vertical_97\0",
-            Self::Htj2kEncodeCodeblock => b"j2k_htj2k_encode_codeblock\0",
             Self::Htj2kEncodeCodeblocks => b"j2k_htj2k_encode_codeblocks\0",
             Self::Htj2kEncodeCodeblocksMultiInput => b"j2k_htj2k_encode_codeblocks_multi_input\0",
             Self::Htj2kEncodeCodeblocksMultiInputCleanup => {
@@ -322,14 +304,12 @@ impl CudaKernel {
             Self::JpegEntropyOverflow420 => b"j2k_jpeg_entropy_overflow420\0",
             Self::JpegEncodeBaselineEntropy => b"j2k_jpeg_encode_baseline_entropy\0",
             Self::JpegEncodeBaselineEntropyBatch => b"j2k_jpeg_encode_baseline_entropy_batch\0",
-            Self::J2kInverseDwtSingle => b"j2k_inverse_dwt_single\0",
             Self::J2kInverseMct => b"j2k_inverse_mct\0",
             Self::J2kStoreGray16 => b"j2k_store_gray16\0",
             Self::J2kStoreGray8 => b"j2k_store_gray8\0",
             Self::J2kStoreRgb16 => b"j2k_store_rgb16\0",
             Self::J2kStoreRgb16Mct => b"j2k_store_rgb16_mct\0",
             Self::J2kStoreRgb8 => b"j2k_store_rgb8\0",
-            Self::J2kStoreRgb8Mct => b"j2k_store_rgb8_mct\0",
             Self::J2kStoreRgb8MctBatch => b"j2k_store_rgb8_mct_batch\0",
             Self::TranscodeReversible53Idct => b"transcode_reversible53_idct\0",
             Self::TranscodeReversible53VerticalLow => b"transcode_reversible53_vertical_low\0",
@@ -605,6 +585,65 @@ pub(crate) fn cuda_oxide_jpeg_encode_ptx() -> &'static [u8] {
 mod tests {
     use super::*;
 
+    #[test]
+    fn kernel_inventory_forbids_test_only_orphan_entrypoints() {
+        let kernel_source = include_str!("kernels.rs");
+        let production_kernel_source = kernel_source
+            .split("\n#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production kernel source");
+        assert!(
+            !production_kernel_source.contains("#[cfg_attr(not(test), allow(dead_code))]"),
+            "production CUDA kernels must not use test-only dead-code exemptions"
+        );
+
+        let context_source = include_str!("context.rs");
+        for variant in [
+            "J2kIdwtHorizontal",
+            "J2kIdwtVertical",
+            "Htj2kEncodeCodeblock",
+            "J2kInverseDwtSingle",
+            "J2kStoreRgb8Mct",
+        ] {
+            assert!(
+                !production_kernel_source.contains(&format!("{variant},")),
+                "orphan CUDA kernel variant returned: {variant}"
+            );
+            assert!(
+                !context_source.contains(&format!("{variant},")),
+                "test kernel inventory must not retain orphan variant: {variant}"
+            );
+        }
+
+        for (source, entrypoint) in [
+            (
+                include_str!("cuda_oxide_j2k_idwt/simt/src/main.rs"),
+                "j2k_idwt_horizontal",
+            ),
+            (
+                include_str!("cuda_oxide_j2k_idwt/simt/src/main.rs"),
+                "j2k_idwt_vertical",
+            ),
+            (
+                include_str!("cuda_oxide_j2k_idwt/simt/src/main.rs"),
+                "j2k_inverse_dwt_single",
+            ),
+            (
+                include_str!("cuda_oxide_htj2k_encode/simt/src/main.rs"),
+                "j2k_htj2k_encode_codeblock",
+            ),
+            (
+                include_str!("cuda_oxide_j2k_decode_store/simt/src/main.rs"),
+                "j2k_store_rgb8_mct",
+            ),
+        ] {
+            assert!(
+                !source.contains(&format!("fn {entrypoint}(")),
+                "orphan CUDA device entrypoint returned: {entrypoint}"
+            );
+        }
+    }
+
     #[cfg(all(feature = "cuda-oxide-copy-u8", j2k_cuda_oxide_copy_u8_built))]
     #[test]
     fn cuda_oxide_copy_u8_kernel_metadata_matches_generated_ptx() {
@@ -799,7 +838,6 @@ mod tests {
             CudaKernel::J2kStoreGray8,
             CudaKernel::J2kStoreGray16,
             CudaKernel::J2kStoreRgb8,
-            CudaKernel::J2kStoreRgb8Mct,
             CudaKernel::J2kStoreRgb8MctBatch,
             CudaKernel::J2kStoreRgb16,
             CudaKernel::J2kStoreRgb16Mct,
@@ -849,15 +887,12 @@ mod tests {
         assert_eq!(ptx.last(), Some(&0));
         let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
         let kernels = [
-            CudaKernel::J2kInverseDwtSingle,
             CudaKernel::J2kIdwtInterleave,
             CudaKernel::J2kIdwtInterleaveHorizontalMulti,
             CudaKernel::J2kIdwtInterleaveHorizontal53Multi,
             CudaKernel::J2kIdwtInterleaveHorizontal97Multi,
-            CudaKernel::J2kIdwtHorizontal,
             CudaKernel::J2kIdwtHorizontal53,
             CudaKernel::J2kIdwtHorizontal97,
-            CudaKernel::J2kIdwtVertical,
             CudaKernel::J2kIdwtVerticalMulti,
             CudaKernel::J2kIdwtVertical53Multi,
             CudaKernel::J2kIdwtVertical97Multi,
@@ -943,7 +978,6 @@ mod tests {
         assert_eq!(ptx.last(), Some(&0));
         let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
         let kernels = [
-            CudaKernel::Htj2kEncodeCodeblock,
             CudaKernel::Htj2kEncodeCodeblocks,
             CudaKernel::Htj2kEncodeCodeblocksMultiInput,
             CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup,

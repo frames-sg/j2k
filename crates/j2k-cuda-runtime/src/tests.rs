@@ -1770,7 +1770,6 @@ fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
             CudaKernelName::J2kIdwtInterleaveHorizontal97Multi,
             "j2k_idwt_interleave_horizontal_97_multi",
         ),
-        (CudaKernelName::J2kIdwtHorizontal, "j2k_idwt_horizontal"),
         (
             CudaKernelName::J2kIdwtHorizontal53,
             "j2k_idwt_horizontal_53",
@@ -1779,7 +1778,6 @@ fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
             CudaKernelName::J2kIdwtHorizontal97,
             "j2k_idwt_horizontal_97",
         ),
-        (CudaKernelName::J2kIdwtVertical, "j2k_idwt_vertical"),
         (
             CudaKernelName::J2kIdwtVertical53Multi,
             "j2k_idwt_vertical_53_multi",
@@ -1794,25 +1792,16 @@ fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
         ),
         (CudaKernelName::J2kIdwtVertical53, "j2k_idwt_vertical_53"),
         (CudaKernelName::J2kIdwtVertical97, "j2k_idwt_vertical_97"),
-        (
-            CudaKernelName::J2kInverseDwtSingle,
-            "j2k_inverse_dwt_single",
-        ),
         (CudaKernelName::J2kInverseMct, "j2k_inverse_mct"),
         (CudaKernelName::J2kStoreGray8, "j2k_store_gray8"),
         (CudaKernelName::J2kStoreGray16, "j2k_store_gray16"),
         (CudaKernelName::J2kStoreRgb8, "j2k_store_rgb8"),
-        (CudaKernelName::J2kStoreRgb8Mct, "j2k_store_rgb8_mct"),
         (
             CudaKernelName::J2kStoreRgb8MctBatch,
             "j2k_store_rgb8_mct_batch",
         ),
         (CudaKernelName::J2kStoreRgb16, "j2k_store_rgb16"),
         (CudaKernelName::J2kStoreRgb16Mct, "j2k_store_rgb16_mct"),
-        (
-            CudaKernelName::Htj2kEncodeCodeblock,
-            "j2k_htj2k_encode_codeblock",
-        ),
         (
             CudaKernelName::Htj2kEncodeCodeblocks,
             "j2k_htj2k_encode_codeblocks",

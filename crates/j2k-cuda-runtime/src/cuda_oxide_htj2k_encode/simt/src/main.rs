@@ -1802,41 +1802,6 @@ mod kernels {
     use super::*;
 
     #[kernel]
-    pub unsafe fn j2k_htj2k_encode_codeblock(
-        coefficients: *const i32,
-        out: *mut u8,
-        params: *const J2kHtEncodeParams,
-        vlc_table0: *const u16,
-        vlc_table1: *const u16,
-        uvlc_table: *const u8,
-        status: *mut J2kHtEncodeStatus,
-    ) {
-        if thread::blockIdx_x() != 0 || thread::threadIdx_x() != 0 {
-            return;
-        }
-        let params_value = load_job(params, 0);
-        let max_magnitude = max_magnitude_serial(
-            coefficients,
-            params_value.width,
-            params_value.height,
-            params_value.coefficient_stride,
-        );
-        encode_ht_code_block_impl_with_max_and_assembly(
-            coefficients,
-            out,
-            params_value,
-            vlc_table0,
-            vlc_table1,
-            uvlc_table,
-            status,
-            max_magnitude,
-            false,
-            true,
-            false,
-        );
-    }
-
-    #[kernel]
     pub unsafe fn j2k_htj2k_encode_codeblocks(
         coefficients: *const i32,
         out: *mut u8,

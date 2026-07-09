@@ -290,22 +290,6 @@ fn filter_horizontal_scanline(scanline: *mut f32, width: u32, rect_x0: u32, irre
 }
 
 #[inline(always)]
-fn filter_horizontal(output: *mut f32, rect: CudaJ2kRect, irreversible97: bool) {
-    let width = rect_width(rect);
-    let height = rect_height(rect);
-    let mut y = 0;
-    while y < height {
-        filter_horizontal_scanline(
-            unsafe { output.add((y * width) as usize) },
-            width,
-            rect.x0,
-            irreversible97,
-        );
-        y += 1;
-    }
-}
-
-#[inline(always)]
 fn filter_step_vertical_53_column(
     output: *mut f32,
     width: u32,
@@ -401,17 +385,6 @@ fn filter_vertical_column(
         filter_step_vertical_97_column(output, width, height, col, first_odd, IDWT_NEG_GAMMA);
         filter_step_vertical_97_column(output, width, height, col, first_even, IDWT_NEG_BETA);
         filter_step_vertical_97_column(output, width, height, col, first_odd, IDWT_NEG_ALPHA);
-    }
-}
-
-#[inline(always)]
-fn filter_vertical(output: *mut f32, rect: CudaJ2kRect, irreversible97: bool) {
-    let width = rect_width(rect);
-    let height = rect_height(rect);
-    let mut col = 0;
-    while col < width {
-        filter_vertical_column(output, width, height, rect.y0, col, irreversible97);
-        col += 1;
     }
 }
 
@@ -597,43 +570,6 @@ mod kernels {
     use super::*;
 
     #[kernel]
-    pub unsafe fn j2k_inverse_dwt_single(
-        ll: *const f32,
-        hl: *const f32,
-        lh: *const f32,
-        hh: *const f32,
-        output: *mut f32,
-        job_buffer: *const CudaJ2kIdwtJob,
-    ) {
-        if thread::blockIdx_x() != 0 || thread::threadIdx_x() != 0 {
-            return;
-        }
-
-        let job = load_job(job_buffer, 0);
-        let width = rect_width(job.rect);
-        let height = rect_height(job.rect);
-        let mut local_y = 0;
-        while local_y < height {
-            let mut local_x = 0;
-            while local_x < width {
-                store_f32(
-                    output,
-                    local_y * width + local_x,
-                    idwt_interleave_sample(ll, hl, lh, hh, job, local_x, local_y),
-                );
-                local_x += 1;
-            }
-            local_y += 1;
-        }
-
-        if width > 0 && height > 0 {
-            let irreversible97 = job.irreversible97 != 0;
-            filter_horizontal(output, job.rect, irreversible97);
-            filter_vertical(output, job.rect, irreversible97);
-        }
-    }
-
-    #[kernel]
     pub unsafe fn j2k_idwt_interleave(
         ll: *const f32,
         hl: *const f32,
@@ -794,23 +730,6 @@ mod kernels {
     }
 
     #[kernel]
-    pub unsafe fn j2k_idwt_horizontal(output: *mut f32, job_buffer: *const CudaJ2kIdwtJob) {
-        let job = load_job(job_buffer, 0);
-        let width = rect_width(job.rect);
-        let height = rect_height(job.rect);
-        let row = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
-        if row >= height {
-            return;
-        }
-        filter_horizontal_scanline(
-            unsafe { output.add((row * width) as usize) },
-            width,
-            job.rect.x0,
-            job.irreversible97 != 0,
-        );
-    }
-
-    #[kernel]
     pub unsafe fn j2k_idwt_horizontal_53(output: *mut f32, job_buffer: *const CudaJ2kIdwtJob) {
         let job = load_job(job_buffer, 0);
         let width = rect_width(job.rect);
@@ -841,25 +760,6 @@ mod kernels {
             width,
             job.rect.x0,
             true,
-        );
-    }
-
-    #[kernel]
-    pub unsafe fn j2k_idwt_vertical(output: *mut f32, job_buffer: *const CudaJ2kIdwtJob) {
-        let job = load_job(job_buffer, 0);
-        let width = rect_width(job.rect);
-        let height = rect_height(job.rect);
-        let col = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
-        if col >= width {
-            return;
-        }
-        filter_vertical_column(
-            output,
-            width,
-            height,
-            job.rect.y0,
-            col,
-            job.irreversible97 != 0,
         );
     }
 

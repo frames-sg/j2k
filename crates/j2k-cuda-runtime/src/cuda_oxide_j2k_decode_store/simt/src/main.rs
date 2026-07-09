@@ -512,24 +512,6 @@ mod kernels {
     }
 
     #[kernel]
-    pub unsafe fn j2k_store_rgb8_mct(
-        plane0: *const f32,
-        plane1: *const f32,
-        plane2: *const f32,
-        output: *mut u8,
-        job_buffer: *const CudaJ2kStoreRgb8MctJob,
-    ) {
-        let mct_job = load_job(job_buffer);
-        let pixels = mct_job.store.copy_width * mct_job.store.copy_height;
-        let gid = thread::index_1d().get() as u32;
-        if gid >= pixels {
-            return;
-        }
-
-        store_rgb8_mct_sample(plane0, plane1, plane2, output, mct_job, gid);
-    }
-
-    #[kernel]
     pub unsafe fn j2k_store_rgb8_mct_batch(jobs: *const CudaJ2kStoreRgb8MctBatchJob) {
         let item = load_job(unsafe { jobs.add(thread::index_2d_row() as usize) });
         let plane0 = item.plane0_ptr as usize as *const f32;
