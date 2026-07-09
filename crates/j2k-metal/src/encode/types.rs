@@ -13,22 +13,94 @@ use super::MetalEncodedJ2k;
 #[derive(Debug, Clone, Copy)]
 /// Metal buffer and layout metadata for one lossless J2K encode tile.
 pub struct MetalLosslessEncodeTile<'a> {
-    /// Source Metal buffer containing Gray or RGB pixels.
-    pub buffer: &'a Buffer,
-    /// Byte offset of the first source pixel in `buffer`.
-    pub byte_offset: usize,
-    /// Width of the valid input region in pixels.
-    pub width: u32,
-    /// Height of the valid input region in pixels.
-    pub height: u32,
-    /// Number of bytes between consecutive input rows.
-    pub pitch_bytes: usize,
-    /// Encoded image width in pixels.
-    pub output_width: u32,
-    /// Encoded image height in pixels.
-    pub output_height: u32,
-    /// Pixel format of the source buffer.
-    pub format: PixelFormat,
+    pub(super) buffer: &'a Buffer,
+    pub(super) byte_offset: usize,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) pitch_bytes: usize,
+    pub(super) output_width: u32,
+    pub(super) output_height: u32,
+    pub(super) format: PixelFormat,
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> MetalLosslessEncodeTile<'a> {
+    /// Describe an immutable Metal-buffer region to the lossless encoder.
+    ///
+    /// Geometry and allocation bounds are validated by the encode operation.
+    ///
+    /// # Safety
+    ///
+    /// All CPU and Metal commands that can write the described source region
+    /// must have completed before this call. The caller must prevent CPU and GPU
+    /// mutation of that region from this call until every encode submission
+    /// derived from the tile has actually completed, including deferred
+    /// submissions that outlive the tile value. Dropping a submitted operation
+    /// without waiting does not end this obligation unless completion is
+    /// established independently. The obligation includes handles cloned before
+    /// this call and outlives copies of the tile.
+    pub unsafe fn from_buffer(
+        buffer: &'a Buffer,
+        byte_offset: usize,
+        dimensions: (u32, u32),
+        pitch_bytes: usize,
+        output_dimensions: (u32, u32),
+        format: PixelFormat,
+    ) -> Self {
+        Self::from_trusted_buffer(
+            buffer,
+            byte_offset,
+            dimensions,
+            pitch_bytes,
+            output_dimensions,
+            format,
+        )
+    }
+
+    pub(crate) fn from_trusted_buffer(
+        buffer: &'a Buffer,
+        byte_offset: usize,
+        dimensions: (u32, u32),
+        pitch_bytes: usize,
+        output_dimensions: (u32, u32),
+        format: PixelFormat,
+    ) -> Self {
+        Self {
+            buffer,
+            byte_offset,
+            width: dimensions.0,
+            height: dimensions.1,
+            pitch_bytes,
+            output_width: output_dimensions.0,
+            output_height: output_dimensions.1,
+            format,
+        }
+    }
+
+    /// Byte offset of the first source pixel.
+    pub fn byte_offset(self) -> usize {
+        self.byte_offset
+    }
+
+    /// Dimensions of the valid source region.
+    pub fn dimensions(self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Number of bytes between consecutive source rows.
+    pub fn pitch_bytes(self) -> usize {
+        self.pitch_bytes
+    }
+
+    /// Encoded output dimensions.
+    pub fn output_dimensions(self) -> (u32, u32) {
+        (self.output_width, self.output_height)
+    }
+
+    /// Pixel format of the source region.
+    pub fn pixel_format(self) -> PixelFormat {
+        self.format
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

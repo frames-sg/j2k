@@ -1107,7 +1107,12 @@ fn hybrid_rgb8_repeated_batch_decodes_once_and_blits_distinct_outputs() {
     let surface_bytes = surfaces[0].as_bytes().len();
     let offsets = surfaces
         .iter()
-        .map(|surface| surface.metal_buffer().expect("resident Metal surface").1)
+        .map(|surface| {
+            surface
+                .metal_buffer_trusted()
+                .expect("resident Metal surface")
+                .1
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         offsets,

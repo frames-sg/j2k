@@ -82,8 +82,8 @@ impl Surface {
             #[cfg(target_os = "macos")]
             Storage::Metal(buffer) => {
                 // SAFETY: A returned `Surface` represents a completed decode.
-                // Owned readback prevents the caller from retaining a Rust
-                // slice that aliases later access through `metal_buffer()`.
+                // External access to the handle is unsafe and requires callers
+                // to exclude overlapping mutation during this owned readback.
                 match unsafe {
                     j2k_metal_support::checked_buffer_read_vec::<u8>(
                         buffer,
@@ -108,10 +108,9 @@ impl Surface {
     /// Return the tightly packed surface bytes.
     ///
     /// Host-backed surfaces are borrowed without copying. Metal-backed surfaces
-    /// are copied into owned storage so the returned bytes cannot alias later
-    /// GPU access through [`Self::metal_buffer`]. This method panics only if the
-    /// surface metadata is internally inconsistent; fallible operations such
-    /// as [`Self::download_into`] return those errors.
+    /// are copied into owned storage. This method panics only if the surface
+    /// metadata is internally inconsistent; fallible operations such as
+    /// [`Self::download_into`] return those errors.
     pub fn as_bytes(&self) -> Cow<'_, [u8]> {
         self.storage_bytes()
             .expect("validated J2K Metal surface byte range")
@@ -132,7 +131,19 @@ impl Surface {
 
     #[cfg(target_os = "macos")]
     /// Return the Metal buffer and byte offset when the surface is Metal-backed.
-    pub fn metal_buffer(&self) -> Option<(&Buffer, usize)> {
+    ///
+    /// # Safety
+    ///
+    /// All prior writers must have completed before this call. The caller must
+    /// ensure that no CPU or GPU access through the returned handle (or a clone
+    /// of it) mutates the surface range while this surface or any clone sharing
+    /// the allocation remains alive.
+    pub unsafe fn metal_buffer(&self) -> Option<(&Buffer, usize)> {
+        self.metal_buffer_trusted()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn metal_buffer_trusted(&self) -> Option<(&Buffer, usize)> {
         match &self.storage {
             Storage::Metal(buffer) => Some((buffer, self.byte_offset)),
             Storage::Host(_) => None,

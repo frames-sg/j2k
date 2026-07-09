@@ -1664,7 +1664,7 @@ mod tests {
         assert_eq!(surface.backend_kind(), BackendKind::Cpu);
         assert_eq!(surface.residency(), SurfaceResidency::Host);
         #[cfg(target_os = "macos")]
-        assert!(surface.metal_buffer().is_none());
+        assert!(surface.metal_buffer_trusted().is_none());
     }
 
     #[test]

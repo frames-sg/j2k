@@ -10,7 +10,7 @@ use j2k_core::{
 };
 use j2k_metal::{
     Codec, DecodeOperation, Error, J2kDecoder, J2kScratchPool, MetalBackendSession,
-    MetalDecodeRequest, MetalSession, MetalTileBatch, SurfaceResidency,
+    MetalDecodeRequest, MetalSession, MetalTileBatch, Surface, SurfaceResidency,
 };
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
 
@@ -37,6 +37,12 @@ macro_rules! submit_tile_region_scaled_to_device {
 
 fn should_run_metal_runtime() -> bool {
     j2k_test_support::metal_runtime_gate(module_path!())
+}
+
+fn completed_surface_metal_buffer(surface: &Surface) -> Option<(&metal::Buffer, usize)> {
+    // SAFETY: Every surface passed by these tests has completed its decode, and
+    // the tests never submit a writer or mutate a returned handle.
+    unsafe { surface.metal_buffer() }
 }
 
 fn assert_unsupported_rgba16_report(result: Result<j2k_metal::DecodeSurfaceWithReport, Error>) {
@@ -437,7 +443,8 @@ fn metal_surface_exposes_buffer_for_on_device_consumers() {
     let metal_surface = metal_decoder
         .decode_to_device(PixelFormat::Gray8, BackendRequest::Metal)
         .expect("metal surface");
-    let (buffer, byte_offset) = metal_surface.metal_buffer().expect("metal buffer");
+    let (buffer, byte_offset) =
+        completed_surface_metal_buffer(&metal_surface).expect("metal buffer");
     assert_eq!(byte_offset, 0);
     let buffer_len = usize::try_from(buffer.length()).expect("metal buffer length fits usize");
     assert!(buffer_len >= metal_surface.byte_len());
@@ -446,7 +453,51 @@ fn metal_surface_exposes_buffer_for_on_device_consumers() {
     let cpu_surface = cpu_decoder
         .decode_to_device(PixelFormat::Gray8, BackendRequest::Cpu)
         .expect("cpu surface");
-    assert!(cpu_surface.metal_buffer().is_none());
+    assert!(completed_surface_metal_buffer(&cpu_surface).is_none());
+}
+
+#[test]
+fn metal_encoded_raw_parts_validate_ranges_and_support_consuming_handoff() {
+    use metal::foreign_types::ForeignType;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let Some(device) = metal::Device::system_default() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+        return;
+    };
+    let invalid_buffer = device.new_buffer(64, metal::MTLResourceOptions::StorageModeShared);
+    // SAFETY: This fresh allocation has no prior or concurrent writers and is
+    // retained only for this constructor call.
+    let invalid = unsafe {
+        j2k_metal::MetalEncodedJ2k::from_raw_parts(invalid_buffer, 16..32, 64, (4, 4), 1, 8, false)
+    };
+    assert!(matches!(
+        invalid,
+        Err(Error::MetalKernel { message }) if message.contains("exceeds allocation length")
+    ));
+
+    let buffer = device.new_buffer(64, metal::MTLResourceOptions::StorageModeShared);
+    let expected_ptr = buffer.as_ptr();
+    // SAFETY: This fresh allocation has no writers and stays immutable until
+    // the encoded object is consumed below.
+    let encoded = unsafe {
+        j2k_metal::MetalEncodedJ2k::from_raw_parts(buffer, 8..24, 32, (4, 4), 1, 8, false)
+    }
+    .expect("valid raw Metal codestream parts");
+    assert_eq!(encoded.byte_offset(), 8);
+    assert_eq!(encoded.byte_len(), 16);
+    assert_eq!(encoded.capacity(), 32);
+    assert_eq!(encoded.dimensions(), (4, 4));
+    assert_eq!(encoded.components(), 1);
+    assert_eq!(encoded.bit_depth(), 8);
+    assert!(!encoded.is_signed());
+    // SAFETY: This encoded descriptor is the allocation's only owner and no
+    // sibling descriptor or cloned handle exists.
+    let handed_off = unsafe { encoded.into_codestream_buffer() };
+    assert_eq!(handed_off.as_ptr(), expected_ptr);
 }
 
 #[cfg(target_os = "macos")]
@@ -471,7 +522,7 @@ fn decode_to_device_with_session_uses_session_device() {
 
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
-    let (buffer, _) = surface.metal_buffer().expect("metal buffer");
+    let (buffer, _) = completed_surface_metal_buffer(&surface).expect("metal buffer");
     assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
 }
 
@@ -515,7 +566,7 @@ fn decode_scaled_to_device_with_session_supports_rgb8_resident_surface() {
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
     assert_eq!(surface.as_bytes(), host.as_slice());
-    let (buffer, _) = surface.metal_buffer().expect("metal buffer");
+    let (buffer, _) = completed_surface_metal_buffer(&surface).expect("metal buffer");
     assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
 }
 
@@ -547,7 +598,7 @@ fn explicit_cpu_staged_metal_api_uses_session_device_and_marks_residency() {
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::CpuStagedMetalUpload);
     assert_eq!(surface.as_bytes(), host.as_slice());
-    let (buffer, byte_offset) = surface.metal_buffer().expect("Metal buffer");
+    let (buffer, byte_offset) = completed_surface_metal_buffer(&surface).expect("Metal buffer");
     assert_eq!(byte_offset, 0);
     assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
 }
@@ -849,7 +900,7 @@ fn submitted_distinct_full_rgb_tiles_stay_resident_when_batch_route_falls_back()
         "queued RGB tiles should submit at least one resident Metal decode"
     );
     for surface in surfaces {
-        assert!(surface.metal_buffer().is_some());
+        assert!(completed_surface_metal_buffer(&surface).is_some());
         assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     }
 }
@@ -1742,7 +1793,7 @@ fn auto_decode_report_explains_cpu_fallback_and_residency() {
 
     assert_eq!(reported.surface.backend_kind(), BackendKind::Cpu);
     assert_eq!(reported.surface.residency(), SurfaceResidency::Host);
-    assert!(reported.surface.metal_buffer().is_none());
+    assert!(completed_surface_metal_buffer(&reported.surface).is_none());
     assert_eq!(reported.report.operation, DecodeOperation::Full);
     assert_eq!(reported.report.requested_backend, BackendRequest::Auto);
     assert_eq!(reported.report.selected_backend, BackendKind::Cpu);
@@ -2296,7 +2347,7 @@ fn auto_region_and_scaled_fallback_to_cpu_surface_and_match_host_decode() {
         .decode_region_to_device(PixelFormat::Rgb8, roi, BackendRequest::Auto)
         .expect("region surface");
     assert_eq!(region_surface.backend_kind(), BackendKind::Cpu);
-    assert!(region_surface.metal_buffer().is_none());
+    assert!(completed_surface_metal_buffer(&region_surface).is_none());
 
     let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
     let mut region_host = [0u8; 3];
@@ -2315,7 +2366,7 @@ fn auto_region_and_scaled_fallback_to_cpu_surface_and_match_host_decode() {
         .decode_scaled_to_device(PixelFormat::Rgb8, Downscale::Half, BackendRequest::Auto)
         .expect("scaled surface");
     assert_eq!(scaled_surface.backend_kind(), BackendKind::Cpu);
-    assert!(scaled_surface.metal_buffer().is_none());
+    assert!(completed_surface_metal_buffer(&scaled_surface).is_none());
 
     let mut scaled_host = [0u8; 3];
     host_decoder

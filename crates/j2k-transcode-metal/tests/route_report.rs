@@ -26,17 +26,20 @@ fn metal_encoded_codestream_exports_resident_handoff_descriptor() {
         return;
     };
     let codestream_buffer = device.new_buffer(512, metal::MTLResourceOptions::StorageModeShared);
-    let encoded = j2k_metal::MetalEncodedJ2k {
-        codestream_buffer,
-        byte_offset: 16,
-        byte_len: 128,
-        capacity: 256,
-        width: 64,
-        height: 64,
-        components: 1,
-        bit_depth: 8,
-        signed: false,
-    };
+    // SAFETY: This fresh shared allocation has no pending writers and remains
+    // immutable for the lifetime of the encoded descriptor.
+    let encoded = unsafe {
+        j2k_metal::MetalEncodedJ2k::from_raw_parts(
+            codestream_buffer,
+            16..144,
+            256,
+            (64, 64),
+            1,
+            8,
+            false,
+        )
+    }
+    .expect("valid encoded Metal buffer metadata");
 
     let descriptor =
         j2k_transcode_metal::resident_codestream_buffer_from_metal_encoded_j2k(&encoded)

@@ -35,15 +35,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Vec<_>>();
     let tiles = buffers
         .iter()
-        .map(|buffer| MetalLosslessEncodeTile {
-            buffer,
-            byte_offset: 0,
-            width,
-            height,
-            pitch_bytes: width as usize,
-            output_width: width,
-            output_height: height,
-            format: PixelFormat::Gray8,
+        .map(|buffer| {
+            // SAFETY: These freshly initialized buffers are not mutated and
+            // remain alive until the submitted batch has completed.
+            unsafe {
+                MetalLosslessEncodeTile::from_buffer(
+                    buffer,
+                    0,
+                    (width, height),
+                    width as usize,
+                    (width, height),
+                    PixelFormat::Gray8,
+                )
+            }
         })
         .collect::<Vec<_>>();
     let options = J2kLosslessEncodeOptions::default()

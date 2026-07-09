@@ -176,7 +176,7 @@ pub fn resident_codestream_buffer_from_metal_encoded_j2k(
         .codestream_allocation_len()
         .ok_or(ResidentHandoffError::RangeExceedsAllocation)?;
     let buffer = ResidentBufferRef::with_allocation_len(memory, allocation_len)?;
-    ResidentCodestreamBuffer::new(buffer, encoded.byte_len, encoded.capacity)?
+    ResidentCodestreamBuffer::new(buffer, encoded.byte_len(), encoded.capacity())?
         .require_backend(BackendKind::Metal)
 }
 

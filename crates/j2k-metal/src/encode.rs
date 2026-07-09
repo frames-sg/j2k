@@ -867,7 +867,7 @@ fn wait_submitted_resident_lossless_buffer_encode_batch_once(
                             metadata,
                             codestream,
                             prepare_duration.saturating_add(batch_duration),
-                        );
+                        )?;
                         outcomes.push(validate_finished_resident_lossless_buffer_encode(
                             finished,
                             submitted.options,
@@ -909,7 +909,7 @@ fn wait_submitted_resident_lossless_buffer_encode_batch_once(
                             metadata,
                             codestream,
                             prepare_duration.saturating_add(batch_duration),
-                        );
+                        )?;
                         outcomes.push(validate_finished_resident_lossless_buffer_encode(
                             finished,
                             submitted.options,
@@ -932,25 +932,29 @@ fn finished_resident_lossless_buffer_encode(
     metadata: ResidentLosslessBufferEncodeMetadata,
     codestream: compute::J2kResidentLosslessCodestream,
     encode_duration: Duration,
-) -> FinishedResidentLosslessBufferEncode {
-    let encoded = MetalEncodedJ2k {
-        codestream_buffer: codestream.buffer,
-        byte_offset: codestream.byte_offset,
-        byte_len: codestream.byte_len,
-        capacity: codestream.capacity,
-        width: metadata.tile.output_width,
-        height: metadata.tile.output_height,
-        components: metadata.components,
-        bit_depth: metadata.bit_depth,
-        signed: false,
-    };
+) -> Result<FinishedResidentLosslessBufferEncode, crate::Error> {
+    let codestream_end = codestream
+        .byte_offset
+        .checked_add(codestream.byte_len)
+        .ok_or_else(|| crate::Error::MetalKernel {
+            message: "J2K Metal codestream byte range overflows usize".to_string(),
+        })?;
+    let encoded = MetalEncodedJ2k::from_completed_buffer(
+        codestream.buffer,
+        codestream.byte_offset..codestream_end,
+        codestream.capacity,
+        (metadata.tile.output_width, metadata.tile.output_height),
+        metadata.components,
+        metadata.bit_depth,
+        false,
+    )?;
 
-    FinishedResidentLosslessBufferEncode {
+    Ok(FinishedResidentLosslessBufferEncode {
         metadata,
         encoded,
         encode_duration,
         gpu_duration: codestream.gpu_duration,
-    }
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1358,7 +1362,7 @@ fn validate_lossless_roundtrip_on_metal_tile_with_session(
         })?;
     let (decoded_buffer, decoded_offset) =
         surface
-            .metal_buffer()
+            .metal_buffer_trusted()
             .ok_or(crate::Error::UnsupportedMetalRequest {
                 reason: "J2K Metal resident validation decode did not return a Metal buffer",
             })?;
@@ -1557,17 +1561,21 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
     };
     let encode_duration = encode_started.elapsed();
 
-    let encoded = MetalEncodedJ2k {
-        codestream_buffer: codestream.buffer,
-        byte_offset: codestream.byte_offset,
-        byte_len: codestream.byte_len,
-        capacity: codestream.capacity,
-        width: tile.output_width,
-        height: tile.output_height,
+    let codestream_end = codestream
+        .byte_offset
+        .checked_add(codestream.byte_len)
+        .ok_or_else(|| crate::Error::MetalKernel {
+            message: "J2K Metal codestream byte range overflows usize".to_string(),
+        })?;
+    let encoded = MetalEncodedJ2k::from_completed_buffer(
+        codestream.buffer,
+        codestream.byte_offset..codestream_end,
+        codestream.capacity,
+        (tile.output_width, tile.output_height),
         components,
         bit_depth,
-        signed: false,
-    };
+        false,
+    )?;
 
     let validation_duration = if options.validation == J2kEncodeValidation::CpuRoundTrip {
         let validation_started = Instant::now();

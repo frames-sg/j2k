@@ -84,7 +84,7 @@ pub fn validate_lossless_roundtrip_on_metal_with_session(
 
     let (buffer, byte_offset) =
         surface
-            .metal_buffer()
+            .metal_buffer_trusted()
             .ok_or(crate::Error::UnsupportedMetalRequest {
                 reason: "J2K Metal validation decode did not return a Metal buffer",
             })?;

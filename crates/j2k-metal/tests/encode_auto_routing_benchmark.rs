@@ -539,15 +539,18 @@ fn resident_batch_tiles<'a>(
         .map(|index| {
             let case_index = index % group.cases.len();
             let case = group.cases[case_index];
-            MetalLosslessEncodeTile {
-                buffer: &buffers[case_index],
-                byte_offset: 0,
-                width: case.width,
-                height: case.height,
-                pitch_bytes: case.width as usize * case.components.count() as usize,
-                output_width: case.width,
-                output_height: case.height,
-                format: case.components.pixel_format(),
+            // SAFETY: Benchmark buffers were fully initialized before tile
+            // construction and are not mutated while either measured batch is
+            // submitted or awaited.
+            unsafe {
+                MetalLosslessEncodeTile::from_buffer(
+                    &buffers[case_index],
+                    0,
+                    (case.width, case.height),
+                    case.width as usize * case.components.count() as usize,
+                    (case.width, case.height),
+                    case.components.pixel_format(),
+                )
             }
         })
         .collect()
@@ -606,7 +609,7 @@ fn run_resident_buffer_batch(
         .iter()
         .try_fold(0usize, |total, outcome| {
             total
-                .checked_add(outcome.encoded.byte_len)
+                .checked_add(outcome.encoded.byte_len())
                 .ok_or("resident buffer encoded byte count overflow")
         })
         .map_err(str::to_string)?;
