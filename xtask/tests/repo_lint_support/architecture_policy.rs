@@ -4,8 +4,8 @@ use std::fs;
 
 use super::{
     architecture_doc_dependency_edges, assert_file_pattern_checks, cargo_metadata_workspace_edges,
-    cargo_public_api, const_array_block, format_edge, repo_root, rust_sources,
-    stable_api_snapshot_section, FilePatternCheck,
+    cargo_public_api_required, const_array_block, format_edge, repo_root, rust_sources,
+    FilePatternCheck,
 };
 
 #[test]
@@ -134,7 +134,7 @@ fn public_crates_do_not_reexport_j2k_native() {
 
     for crate_dir in [
         "crates/j2k/src",
-        "crates/j2k/src",
+        "crates/j2k-jpeg/src",
         "crates/j2k-transcode/src",
         "crates/j2k-metal/src",
         "crates/j2k-cuda/src",
@@ -168,10 +168,52 @@ fn public_crates_do_not_reexport_j2k_native() {
 }
 
 #[test]
+fn native_decode_error_mappers_use_the_shared_classification() {
+    let forbidden_native_matches = [
+        "NativeDecodeError::Format",
+        "NativeDecodeError::Marker",
+        "NativeDecodeError::Decoding",
+        "native_direct_plan_unsupported_what",
+    ];
+
+    let root = repo_root();
+    assert_file_pattern_checks(
+        root,
+        &[FilePatternCheck::new("crates/j2k-native/src/error.rs")
+            .named("native decode error classification")
+            .required(&[
+                "pub enum DecodeErrorClass",
+                "pub const fn classify(&self)",
+                "direct_plan_unsupported_what(reason)",
+            ])],
+    );
+
+    for path in [
+        "crates/j2k/src/error.rs",
+        "crates/j2k-cuda/src/error.rs",
+        "crates/j2k-metal/src/error.rs",
+    ] {
+        let source =
+            fs::read_to_string(root.join(path)).unwrap_or_else(|err| panic!("read {path}: {err}"));
+        let production = source.split("\n#[cfg(test)]").next().unwrap_or(&source);
+        assert!(
+            production.contains("NativeDecodeErrorClass")
+                && production.contains("error.classify()"),
+            "{path} must consume j2k_native::DecodeErrorClass"
+        );
+        for forbidden in forbidden_native_matches {
+            assert!(
+                !production.contains(forbidden),
+                "{path} must not match native error internals directly: {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "strict repo-lint: shells out to cargo-public-api for all public API packages"]
 fn rendered_public_api_does_not_expose_j2k_native() {
     let root = repo_root();
-    let stable_api_snapshot = fs::read_to_string(root.join("docs/stable-api-1.0.public-api.txt"))
-        .expect("read stable API snapshot");
 
     for package in [
         "j2k",
@@ -182,8 +224,7 @@ fn rendered_public_api_does_not_expose_j2k_native() {
         "j2k-transcode-metal",
         "j2k-transcode-cuda",
     ] {
-        let api = cargo_public_api(root, package)
-            .unwrap_or_else(|| stable_api_snapshot_section(&stable_api_snapshot, package));
+        let api = cargo_public_api_required(root, package);
         assert!(
             !api.contains("j2k_native"),
             "public API for package {package} exposes j2k_native:\n{api}"

@@ -6,6 +6,7 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
     process::Command,
+    sync::OnceLock,
 };
 
 pub(crate) mod architecture_policy;
@@ -426,7 +427,17 @@ pub(crate) fn const_array_block<'a>(source: &'a str, name: &str) -> &'a str {
     &rest[..end]
 }
 
+const CARGO_PUBLIC_API_VERSION: &str = "0.52.0";
+
+static CARGO_METADATA_WORKSPACE_EDGES: OnceLock<BTreeSet<(String, String)>> = OnceLock::new();
+
 pub(crate) fn cargo_metadata_workspace_edges(root: &Path) -> BTreeSet<(String, String)> {
+    CARGO_METADATA_WORKSPACE_EDGES
+        .get_or_init(|| load_cargo_metadata_workspace_edges(root))
+        .clone()
+}
+
+fn load_cargo_metadata_workspace_edges(root: &Path) -> BTreeSet<(String, String)> {
     let output = Command::new("cargo")
         .args(["metadata", "--no-deps", "--format-version=1"])
         .current_dir(root)
@@ -520,48 +531,40 @@ pub(crate) fn format_edge(edge: &(String, String)) -> String {
     format!("{} -> {}", edge.0, edge.1)
 }
 
-pub(crate) fn cargo_public_api(root: &Path, package: &str) -> Option<String> {
+pub(crate) fn cargo_public_api_required(root: &Path, package: &str) -> String {
+    let version = Command::new("cargo")
+        .args(["public-api", "--version"])
+        .current_dir(root)
+        .output()
+        .unwrap_or_else(|err| {
+            panic!(
+                "run cargo public-api --version: {err}; install cargo-public-api {CARGO_PUBLIC_API_VERSION}"
+            )
+        });
+    let stdout = String::from_utf8_lossy(&version.stdout);
+    let stderr = String::from_utf8_lossy(&version.stderr);
+    let version_text = format!("{stdout}{stderr}");
+    assert!(
+        version.status.success(),
+        "cargo public-api --version failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        version_text.contains(CARGO_PUBLIC_API_VERSION),
+        "cargo-public-api version must be {CARGO_PUBLIC_API_VERSION}; found `{version_text}`"
+    );
+
     let output = Command::new("cargo")
         .args(["public-api", "-p", package, "--all-features"])
         .current_dir(root)
-        .output();
-
-    let output = match output {
-        Ok(output) => output,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("skipping cargo-public-api check for {package}: cargo not found");
-            return None;
-        }
-        Err(err) => panic!("run cargo public-api for {package}: {err}"),
-    };
+        .output()
+        .unwrap_or_else(|err| panic!("run cargo public-api for {package}: {err}"));
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}{stderr}");
-
-    if !output.status.success()
-        && combined.contains("no such command")
-        && combined.contains("public-api")
-    {
-        eprintln!("skipping cargo-public-api check for {package}: cargo-public-api not installed");
-        return None;
-    }
-
     assert!(
         output.status.success(),
         "cargo public-api failed for package {package}\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-
-    Some(combined)
-}
-
-pub(crate) fn stable_api_snapshot_section(snapshot: &str, package: &str) -> String {
-    let heading = format!("## `{package}`");
-    let start = snapshot
-        .find(&heading)
-        .unwrap_or_else(|| panic!("stable API snapshot is missing section {heading}"));
-    let after_heading = &snapshot[start + heading.len()..];
-    let end = after_heading.find("\n## `").unwrap_or(after_heading.len());
-    after_heading[..end].to_owned()
+    format!("{stdout}{stderr}")
 }
 
 pub(crate) fn rust_sources(dir: &Path) -> Vec<PathBuf> {
