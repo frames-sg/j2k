@@ -5,29 +5,49 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
-    inputs:
-      dry-run-only:
-        description: "Run cargo publish in dry-run mode"
-        type: boolean
-        required: false
-        default: true
 
 permissions:
+  actions: read
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  CRATES_IO_ALLOW_PUBLISHED_RERUN: ${{ vars.CRATES_IO_ALLOW_PUBLISHED_RERUN || 'false' }}
   CRATES_IO_INDEX_SETTLE_SECONDS: "130"
-  DRY_RUN_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run-only }}
+  DRY_RUN_ONLY: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
   preflight:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
+      - name: Enforce dry-run-only manual publishing
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: test "${DRY_RUN_ONLY}" = "true"
+      - name: Verify annotated tag and exact-SHA release evidence
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          candidate_sha="$(git rev-parse HEAD)"
+          python3 scripts/github_actions_verify.py verify-release \
+            --repository "${REPOSITORY}" \
+            --tag "${RELEASE_TAG}" \
+            --candidate-sha "${candidate_sha}" \
+            --ci-workflow ci.yml \
+            --ci-branch main \
+            --aggregate-job "Release candidate aggregate" \
+            --gpu-workflow gpu-validation.yml \
+            --cuda-job "CUDA API compatibility on x86_64" \
+            --metal-job "Metal validation on Apple Silicon"
       - run: cargo xtask release-integrity
 
   publish-j2k-core:

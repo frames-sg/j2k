@@ -27,6 +27,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Non-PR events do not require GPU path policy
         if: ${{ github.event_name != 'pull_request' }}
         run: echo "GPU path policy only applies to pull requests."
@@ -39,134 +40,18 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
         run: |
-          python3 <<'PY'
-          import json
-          import os
-          import sys
-          import urllib.parse
-          import urllib.request
+          python3 scripts/github_actions_verify.py pr-gpu-policy \
+            --repository "${REPOSITORY}" \
+            --pr-number "${PR_NUMBER}" \
+            --head-sha "${HEAD_SHA}" \
+            --workflow gpu-validation.yml
 
-          api_url = os.environ["GITHUB_API_URL"].rstrip("/")
-          repo = os.environ["REPOSITORY"]
-          token = os.environ["GH_TOKEN"]
-          pr_number = os.environ["PR_NUMBER"]
-          head_sha = os.environ["HEAD_SHA"]
-
-          cuda_prefixes = (
-              "crates/j2k-cuda-runtime/",
-              "crates/j2k-jpeg-cuda/",
-              "crates/j2k-cuda/",
-              "crates/j2k-transcode-cuda/",
-          )
-          metal_prefixes = (
-              "crates/j2k-metal-support/",
-              "crates/j2k-jpeg-metal/",
-              "crates/j2k-metal/",
-              "crates/j2k-transcode-metal/",
-          )
-          shared_gpu_prefixes = (
-              "crates/j2k-profile/",
-          )
-          shared_gpu_exact_paths = {
-              ".github/CODEOWNERS",
-              ".github/workflows/gpu-validation.yml",
-          }
-          required_job_by_backend = {
-              "cuda": "CUDA API compatibility on x86_64",
-              "metal": "Metal validation on Apple Silicon",
-          }
-
-          def get_json(path):
-              request = urllib.request.Request(
-                  f"{api_url}/repos/{repo}{path}",
-                  headers={
-                      "Accept": "application/vnd.github+json",
-                      "Authorization": f"Bearer {token}",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                  },
-              )
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  return json.load(response)
-
-          changed_files = []
-          page = 1
-          while True:
-              files = get_json(f"/pulls/{pr_number}/files?per_page=100&page={page}")
-              changed_files.extend(item["filename"] for item in files)
-              if len(files) < 100:
-                  break
-              page += 1
-
-          cuda_changes = [
-              path
-              for path in changed_files
-              if path.startswith(cuda_prefixes)
-          ]
-          metal_changes = [
-              path
-              for path in changed_files
-              if path.startswith(metal_prefixes)
-          ]
-          shared_gpu_changes = [
-              path
-              for path in changed_files
-              if path in shared_gpu_exact_paths or path.startswith(shared_gpu_prefixes)
-          ]
-          gpu_changes = [
-              *cuda_changes,
-              *metal_changes,
-              *shared_gpu_changes,
-          ]
-          if not gpu_changes:
-              print("No GPU path changes detected.")
-              sys.exit(0)
-
-          requires_cuda = bool(cuda_changes or shared_gpu_changes)
-          requires_metal = bool(metal_changes or shared_gpu_changes)
-          required_jobs = set()
-          if requires_cuda:
-              required_jobs.add(required_job_by_backend["cuda"])
-          if requires_metal:
-              required_jobs.add(required_job_by_backend["metal"])
-
-          encoded_sha = urllib.parse.quote(head_sha, safe="")
-          runs = get_json(
-              f"/actions/workflows/gpu-validation.yml/runs?head_sha={encoded_sha}&per_page=50"
-          ).get("workflow_runs", [])
-          successful_jobs = set()
-          for run in runs:
-              if run.get("head_sha") != head_sha:
-                  continue
-              jobs = get_json(f"/actions/runs/{run.get('id')}/jobs?per_page=100").get("jobs", [])
-              for job in jobs:
-                  if job.get("conclusion") == "success":
-                      successful_jobs.add(job.get("name", ""))
-
-          missing_jobs = sorted(required_jobs - successful_jobs)
-          if not missing_jobs:
-              print(
-                  "GPU path changes detected and required gpu-validation.yml jobs "
-                  f"succeeded for head SHA {head_sha}."
-              )
-              sys.exit(0)
-
-          print("GPU path changes require successful gpu-validation.yml jobs.")
-          print(f"Head SHA: {head_sha}")
-          print("Changed GPU paths:")
-          for path in sorted(set(gpu_changes)):
-              print(f"  - {path}")
-          print("Required successful GPU validation jobs:")
-          for job in sorted(required_jobs):
-              print(f"  - {job}")
-          print("Missing successful GPU validation jobs:")
-          for job in missing_jobs:
-              print(f"  - {job}")
-          if successful_jobs:
-              print("Observed successful GPU validation jobs:")
-              for job in sorted(successful_jobs):
-                  print(f"  - {job}")
-          sys.exit(1)
-          PY
+  github-actions-verifier:
+    name: GitHub Actions verifier tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
   fmt:
     runs-on: ubuntu-latest
@@ -444,3 +329,54 @@ jobs:
           toolchain: stable
       - uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87
         with: { command: check licenses advisories bans sources }
+
+  release-candidate:
+    name: Release candidate aggregate
+    if: ${{ always() }}
+    needs:
+      - gpu-path-policy
+      - github-actions-verifier
+      - fmt
+      - clippy
+      - panic-surface
+      - comparator-parity
+      - semver
+      - docs
+      - stable-api
+      - release-integrity
+      - unsafe-audit
+      - typos
+      - test
+      - release-cpu
+      - metal-compile
+      - no-std
+      - miri
+      - bench-build
+      - fuzz-build
+      - fuzz-run
+      - package
+      - coverage
+      - deny
+    runs-on: ubuntu-latest
+    env:
+      REQUIRED_RESULTS: ${{ toJSON(needs) }}
+    steps:
+      - name: Require every core and API gate
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          needs = json.loads(os.environ["REQUIRED_RESULTS"])
+          failed = {}
+          for name, details in needs.items():
+              result = details.get("result", "missing") if isinstance(details, dict) else "malformed"
+              if result != "success":
+                  failed[name] = result
+          if failed:
+              for name, result in sorted(failed.items()):
+                  print(f"required gate {name}: {result}", file=sys.stderr)
+              raise SystemExit(1)
+          print(f"all {len(needs)} required release-candidate gates succeeded")
+          PY

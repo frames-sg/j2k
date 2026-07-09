@@ -109,36 +109,43 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
     let workflow =
         fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
     let gpu_policy = workflow_job(&workflow, "gpu-path-policy");
+    let verifier = fs::read_to_string(root.join("scripts/github_actions_verify.py"))
+        .expect("read GitHub Actions verifier");
     let codeowners = fs::read_to_string(root.join(".github/CODEOWNERS")).expect("read CODEOWNERS");
 
     assert_pattern_checks(&[
         PatternCheck::new("CI workflow default permissions", &workflow)
             .normalized_required(&["permissions:\n  contents: read"]),
-        PatternCheck::new("CI GPU path policy job", gpu_policy).required(&[
-            "pull-requests: read",
-            "actions: read",
-            "cuda_prefixes = (",
-            "metal_prefixes = (",
-            "shared_gpu_exact_paths = {",
-            "requires_cuda = bool(cuda_changes or shared_gpu_changes)",
-            "requires_metal = bool(metal_changes or shared_gpu_changes)",
-            "crates/j2k-cuda-runtime/",
-            "crates/j2k-jpeg-cuda/",
-            "crates/j2k-cuda/",
-            "crates/j2k-transcode-cuda/",
-            "crates/j2k-metal-support/",
-            "crates/j2k-jpeg-metal/",
-            "crates/j2k-metal/",
-            "crates/j2k-transcode-metal/",
-            "gpu-validation.yml/runs?head_sha=",
-            "/actions/runs/{run.get('id')}/jobs?per_page=100",
+        PatternCheck::new("CI GPU path policy job", gpu_policy)
+            .required(&[
+                "pull-requests: read",
+                "actions: read",
+                "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+                "scripts/github_actions_verify.py pr-gpu-policy",
+                "--repository \"${REPOSITORY}\"",
+                "--pr-number \"${PR_NUMBER}\"",
+                "--head-sha \"${HEAD_SHA}\"",
+                "--workflow gpu-validation.yml",
+            ])
+            .forbidden(&["urllib.request", "python3 <<'PY'"]),
+        PatternCheck::new("repository-owned GitHub Actions verifier", &verifier).required(&[
+            "def fetch_pull_request_paths(",
+            "def classify_gpu_paths(",
+            "def verify_workflow_run(",
+            "def peel_annotated_tag(",
+            "def verify_release_evidence(",
             "CUDA API compatibility on x86_64",
             "Metal validation on Apple Silicon",
-            "required_jobs - successful_jobs",
-            "No GPU path changes detected.",
+            "Release candidate aggregate",
+            "workflow run pagination exceeded",
+            "workflow job pagination exceeded",
+            "must be annotated",
         ]),
         PatternCheck::new("CODEOWNERS GPU path coverage", &codeowners).required(&[
+            ".github/workflows/ci.yml",
             ".github/workflows/gpu-validation.yml",
+            ".github/workflows/publish.yml",
+            "scripts/github_actions_verify.py",
             "crates/j2k-cuda-runtime/",
             "crates/j2k-jpeg-cuda/",
             "crates/j2k-cuda/",
@@ -147,6 +154,79 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
             "crates/j2k-jpeg-metal/",
             "crates/j2k-metal/",
             "crates/j2k-transcode-metal/",
+        ]),
+    ]);
+}
+
+#[test]
+fn release_candidate_and_publish_evidence_are_fail_closed() {
+    let root = repo_root();
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let publish = fs::read_to_string(root.join(".github/workflows/publish.yml"))
+        .expect("read publish workflow");
+    let aggregate = workflow_job(&ci, "release-candidate");
+    let preflight = workflow_job(&publish, "preflight");
+    let verifier_tests =
+        fs::read_to_string(root.join("scripts/tests/test_github_actions_verify.py"))
+            .expect("read GitHub Actions verifier tests");
+
+    assert_pattern_checks(&[
+        PatternCheck::new("release candidate aggregate", aggregate).required(&[
+            "name: Release candidate aggregate",
+            "if: ${{ always() }}",
+            "github-actions-verifier",
+            "gpu-path-policy",
+            "fmt",
+            "clippy",
+            "panic-surface",
+            "comparator-parity",
+            "semver",
+            "docs",
+            "stable-api",
+            "release-integrity",
+            "unsafe-audit",
+            "typos",
+            "test",
+            "release-cpu",
+            "metal-compile",
+            "no-std",
+            "miri",
+            "bench-build",
+            "fuzz-build",
+            "fuzz-run",
+            "package",
+            "coverage",
+            "deny",
+            "REQUIRED_RESULTS: ${{ toJSON(needs) }}",
+        ]),
+        PatternCheck::new("publish workflow exact-SHA policy", &publish)
+            .required(&[
+                "actions: read",
+                "CRATES_IO_ALLOW_PUBLISHED_RERUN: ${{ vars.CRATES_IO_ALLOW_PUBLISHED_RERUN || 'false' }}",
+                "DRY_RUN_ONLY: ${{ github.event_name == 'workflow_dispatch' }}",
+                "Verify annotated tag and exact-SHA release evidence",
+                "scripts/github_actions_verify.py verify-release",
+                "--ci-branch main",
+                "--aggregate-job \"Release candidate aggregate\"",
+                "--cuda-job \"CUDA API compatibility on x86_64\"",
+                "--metal-job \"Metal validation on Apple Silicon\"",
+            ])
+            .forbidden(&["inputs.dry-run-only"]),
+        PatternCheck::new("publish preflight exact-SHA policy", preflight).required(&[
+            "fetch-depth: 0",
+            "Enforce dry-run-only manual publishing",
+            "if: ${{ github.event_name == 'workflow_dispatch' }}",
+            "if: ${{ github.event_name == 'push' }}",
+            "candidate_sha=\"$(git rev-parse HEAD)\"",
+            "cargo xtask release-integrity",
+        ]),
+        PatternCheck::new("GitHub Actions verifier mocked tests", &verifier_tests).required(&[
+            "test_pull_request_files_are_paginated",
+            "test_runs_and_jobs_are_paginated",
+            "test_successes_from_different_runs_cannot_be_combined",
+            "test_incomplete_skipped_missing_and_stale_evidence_is_rejected",
+            "test_annotated_tag_is_peeled",
+            "test_http_failure_does_not_expose_token",
         ]),
     ]);
 }

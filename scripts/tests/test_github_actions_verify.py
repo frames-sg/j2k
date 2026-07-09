@@ -1,0 +1,430 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+from __future__ import annotations
+
+import urllib.error
+import unittest
+from typing import Any, Mapping
+
+from scripts import github_actions_verify as verifier
+
+
+SHA = "a" * 40
+STALE_SHA = "b" * 40
+TAG_SHA = "c" * 40
+
+
+class FakeApi:
+    def __init__(self) -> None:
+        self.responses: dict[tuple[str, tuple[tuple[str, str], ...]], Any] = {}
+        self.calls: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+
+    @staticmethod
+    def key(
+        path: str, params: Mapping[str, str | int] | None = None
+    ) -> tuple[str, tuple[tuple[str, str], ...]]:
+        return path, tuple(sorted((key, str(value)) for key, value in (params or {}).items()))
+
+    def add(
+        self,
+        path: str,
+        payload: Any,
+        params: Mapping[str, str | int] | None = None,
+    ) -> None:
+        self.responses[self.key(path, params)] = payload
+
+    def get_json(
+        self, path: str, params: Mapping[str, str | int] | None = None
+    ) -> Any:
+        key = self.key(path, params)
+        self.calls.append(key)
+        if key not in self.responses:
+            raise AssertionError(f"unexpected fake API request: {key}")
+        response = self.responses[key]
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def workflow_metadata(api: FakeApi, filename: str, workflow_id: int) -> None:
+    api.add(
+        f"/actions/workflows/{filename}",
+        {"id": workflow_id, "path": f".github/workflows/{filename}"},
+    )
+
+
+def workflow_run(
+    run_id: int,
+    *,
+    sha: str = SHA,
+    workflow_id: int = 77,
+    path: str = ".github/workflows/gpu-validation.yml",
+    status: str = "completed",
+    conclusion: str | None = "success",
+    event: str = "workflow_dispatch",
+    head_branch: str | None = "main",
+) -> dict[str, Any]:
+    return {
+        "id": run_id,
+        "head_sha": sha,
+        "workflow_id": workflow_id,
+        "path": path,
+        "status": status,
+        "conclusion": conclusion,
+        "event": event,
+        "head_branch": head_branch,
+    }
+
+
+def workflow_job(
+    name: str, status: str = "completed", conclusion: str | None = "success"
+) -> dict[str, Any]:
+    return {"name": name, "status": status, "conclusion": conclusion}
+
+
+def add_runs(api: FakeApi, workflow_id: int, runs: list[dict[str, Any]]) -> None:
+    api.add(
+        f"/actions/workflows/{workflow_id}/runs",
+        {"workflow_runs": runs},
+        {"head_sha": SHA, "per_page": 100, "page": 1},
+    )
+
+
+def add_jobs(api: FakeApi, run_id: int, jobs: list[dict[str, Any]]) -> None:
+    api.add(
+        f"/actions/runs/{run_id}/jobs",
+        {"jobs": jobs},
+        {"per_page": 100, "page": 1},
+    )
+
+
+class PullRequestPolicyTests(unittest.TestCase):
+    def test_pull_request_files_are_paginated_and_renames_use_both_paths(self) -> None:
+        api = FakeApi()
+        first_page = [{"filename": f"docs/generated-{index}.md"} for index in range(100)]
+        api.add(
+            "/pulls/42/files",
+            first_page,
+            {"per_page": 100, "page": 1},
+        )
+        api.add(
+            "/pulls/42/files",
+            [
+                {
+                    "filename": "archive/old.rs",
+                    "previous_filename": "crates/j2k-cuda/src/old.rs",
+                },
+                {"filename": "scripts/github_actions_verify.py"},
+            ],
+            {"per_page": 100, "page": 2},
+        )
+
+        paths = verifier.fetch_pull_request_paths(api, 42)  # type: ignore[arg-type]
+        decision = verifier.classify_gpu_paths(paths)
+
+        self.assertEqual(
+            decision.required_jobs, (verifier.CUDA_JOB, verifier.METAL_JOB)
+        )
+        self.assertEqual(
+            decision.changed_gpu_paths,
+            (
+                "crates/j2k-cuda/src/old.rs",
+                "scripts/github_actions_verify.py",
+            ),
+        )
+        self.assertEqual(len(api.calls), 2)
+
+    def test_non_gpu_paths_require_no_hardware_jobs(self) -> None:
+        decision = verifier.classify_gpu_paths(["README.md", "crates/j2k/src/lib.rs"])
+        self.assertEqual(decision.required_jobs, ())
+        self.assertEqual(decision.changed_gpu_paths, ())
+
+
+class WorkflowVerificationTests(unittest.TestCase):
+    def test_runs_and_jobs_are_paginated_and_one_run_contains_every_job(self) -> None:
+        api = FakeApi()
+        workflow_metadata(api, "gpu-validation.yml", 77)
+        stale_runs = [workflow_run(index + 1, sha=STALE_SHA) for index in range(100)]
+        api.add(
+            "/actions/workflows/77/runs",
+            {"workflow_runs": stale_runs},
+            {"head_sha": SHA, "per_page": 100, "page": 1},
+        )
+        api.add(
+            "/actions/workflows/77/runs",
+            {"workflow_runs": [workflow_run(500)]},
+            {"head_sha": SHA, "per_page": 100, "page": 2},
+        )
+        filler_jobs = [workflow_job(f"filler {index}") for index in range(100)]
+        api.add(
+            "/actions/runs/500/jobs",
+            {"jobs": filler_jobs},
+            {"per_page": 100, "page": 1},
+        )
+        api.add(
+            "/actions/runs/500/jobs",
+            {"jobs": [workflow_job(verifier.CUDA_JOB), workflow_job(verifier.METAL_JOB)]},
+            {"per_page": 100, "page": 2},
+        )
+
+        run_id = verifier.verify_workflow_run(
+            api,  # type: ignore[arg-type]
+            "gpu-validation.yml",
+            SHA,
+            [verifier.CUDA_JOB, verifier.METAL_JOB],
+        )
+
+        self.assertEqual(run_id, 500)
+        self.assertIn(
+            FakeApi.key(
+                "/actions/workflows/77/runs",
+                {"head_sha": SHA, "per_page": 100, "page": 2},
+            ),
+            api.calls,
+        )
+        self.assertIn(
+            FakeApi.key(
+                "/actions/runs/500/jobs", {"per_page": 100, "page": 2}
+            ),
+            api.calls,
+        )
+
+    def test_successes_from_different_runs_cannot_be_combined(self) -> None:
+        api = FakeApi()
+        workflow_metadata(api, "gpu-validation.yml", 77)
+        add_runs(api, 77, [workflow_run(1), workflow_run(2)])
+        add_jobs(api, 1, [workflow_job(verifier.CUDA_JOB)])
+        add_jobs(api, 2, [workflow_job(verifier.METAL_JOB)])
+
+        with self.assertRaisesRegex(verifier.VerificationError, "no acceptable single run"):
+            verifier.verify_workflow_run(
+                api,  # type: ignore[arg-type]
+                "gpu-validation.yml",
+                SHA,
+                [verifier.CUDA_JOB, verifier.METAL_JOB],
+            )
+
+    def test_incomplete_skipped_missing_and_stale_evidence_is_rejected(self) -> None:
+        cases = (
+            (
+                "in progress",
+                workflow_run(1, status="in_progress", conclusion=None),
+                [workflow_job(verifier.CUDA_JOB)],
+            ),
+            (
+                "cancelled",
+                workflow_run(1, conclusion="cancelled"),
+                [workflow_job(verifier.CUDA_JOB)],
+            ),
+            (
+                "skipped",
+                workflow_run(1),
+                [workflow_job(verifier.CUDA_JOB, conclusion="skipped")],
+            ),
+            (
+                "failed",
+                workflow_run(1),
+                [workflow_job(verifier.CUDA_JOB, conclusion="failure")],
+            ),
+            ("missing", workflow_run(1), [workflow_job("not the required job")]),
+            (
+                "stale",
+                workflow_run(1, sha=STALE_SHA),
+                [workflow_job(verifier.CUDA_JOB)],
+            ),
+        )
+        for label, run, jobs in cases:
+            with self.subTest(label=label):
+                api = FakeApi()
+                workflow_metadata(api, "gpu-validation.yml", 77)
+                add_runs(api, 77, [run])
+                if run["head_sha"] == SHA and run["status"] == "completed":
+                    add_jobs(api, 1, jobs)
+                with self.assertRaises(verifier.VerificationError):
+                    verifier.verify_workflow_run(
+                        api,  # type: ignore[arg-type]
+                        "gpu-validation.yml",
+                        SHA,
+                        [verifier.CUDA_JOB],
+                    )
+
+    def test_duplicate_required_job_names_are_rejected(self) -> None:
+        api = FakeApi()
+        workflow_metadata(api, "gpu-validation.yml", 77)
+        add_runs(api, 77, [workflow_run(1)])
+        add_jobs(
+            api,
+            1,
+            [workflow_job(verifier.CUDA_JOB), workflow_job(verifier.CUDA_JOB)],
+        )
+        with self.assertRaisesRegex(verifier.VerificationError, "duplicate required jobs"):
+            verifier.verify_workflow_run(
+                api,  # type: ignore[arg-type]
+                "gpu-validation.yml",
+                SHA,
+                [verifier.CUDA_JOB],
+            )
+
+    def test_required_event_and_branch_are_exact(self) -> None:
+        api = FakeApi()
+        workflow_metadata(api, "gpu-validation.yml", 77)
+        add_runs(api, 77, [workflow_run(1, event="push", head_branch="feature")])
+        with self.assertRaisesRegex(verifier.VerificationError, "expected workflow_dispatch"):
+            verifier.verify_workflow_run(
+                api,  # type: ignore[arg-type]
+                "gpu-validation.yml",
+                SHA,
+                [verifier.CUDA_JOB],
+                required_event="workflow_dispatch",
+                required_head_branch="main",
+            )
+
+    def test_malformed_runs_payload_fails_closed(self) -> None:
+        api = FakeApi()
+        workflow_metadata(api, "gpu-validation.yml", 77)
+        api.add(
+            "/actions/workflows/77/runs",
+            {"workflow_runs": "not-an-array"},
+            {"head_sha": SHA, "per_page": 100, "page": 1},
+        )
+        with self.assertRaisesRegex(verifier.VerificationError, "must be an array"):
+            verifier.verify_workflow_run(
+                api,  # type: ignore[arg-type]
+                "gpu-validation.yml",
+                SHA,
+                [verifier.CUDA_JOB],
+            )
+
+    def test_exact_workflow_path_is_required(self) -> None:
+        api = FakeApi()
+        api.add(
+            "/actions/workflows/gpu-validation.yml",
+            {"id": 77, "path": ".github/workflows/not-gpu-validation.yml"},
+        )
+        with self.assertRaisesRegex(verifier.VerificationError, "workflow path mismatch"):
+            verifier.fetch_workflow_identity(  # type: ignore[arg-type]
+                api, "gpu-validation.yml"
+            )
+
+    def test_exact_numeric_workflow_id_is_supported(self) -> None:
+        api = FakeApi()
+        api.add(
+            "/actions/workflows/77",
+            {"id": 77, "path": ".github/workflows/gpu-validation.yml"},
+        )
+        identity = verifier.fetch_workflow_identity(api, "77")  # type: ignore[arg-type]
+        self.assertEqual(identity.workflow_id, 77)
+        self.assertEqual(identity.path, ".github/workflows/gpu-validation.yml")
+
+
+class ReleaseVerificationTests(unittest.TestCase):
+    def test_annotated_tag_is_peeled_and_ci_and_gpu_runs_are_exact(self) -> None:
+        api = FakeApi()
+        api.add(
+            "/git/ref/tags/v0.7.0",
+            {
+                "ref": "refs/tags/v0.7.0",
+                "object": {"type": "tag", "sha": TAG_SHA},
+            },
+        )
+        api.add(
+            f"/git/tags/{TAG_SHA}",
+            {"sha": TAG_SHA, "object": {"type": "commit", "sha": SHA}},
+        )
+        workflow_metadata(api, "ci.yml", 88)
+        api.add(
+            "/actions/workflows/88/runs",
+            {
+                "workflow_runs": [
+                    workflow_run(
+                        10,
+                        workflow_id=88,
+                        path=".github/workflows/ci.yml",
+                        event="push",
+                    )
+                ]
+            },
+            {"head_sha": SHA, "per_page": 100, "page": 1},
+        )
+        add_jobs(api, 10, [workflow_job(verifier.RELEASE_CANDIDATE_JOB)])
+        workflow_metadata(api, "gpu-validation.yml", 77)
+        add_runs(api, 77, [workflow_run(20)])
+        add_jobs(
+            api,
+            20,
+            [workflow_job(verifier.CUDA_JOB), workflow_job(verifier.METAL_JOB)],
+        )
+
+        self.assertEqual(
+            verifier.verify_release_evidence(
+                api,  # type: ignore[arg-type]
+                tag="v0.7.0",
+                candidate_sha=SHA,
+                ci_workflow="ci.yml",
+                aggregate_job=verifier.RELEASE_CANDIDATE_JOB,
+                gpu_workflow="gpu-validation.yml",
+                cuda_job=verifier.CUDA_JOB,
+                metal_job=verifier.METAL_JOB,
+                ci_branch="main",
+            ),
+            (10, 20),
+        )
+
+    def test_lightweight_tag_and_candidate_mismatch_are_rejected(self) -> None:
+        lightweight = FakeApi()
+        lightweight.add(
+            "/git/ref/tags/v0.7.0",
+            {
+                "ref": "refs/tags/v0.7.0",
+                "object": {"type": "commit", "sha": SHA},
+            },
+        )
+        with self.assertRaisesRegex(verifier.VerificationError, "must be annotated"):
+            verifier.peel_annotated_tag(  # type: ignore[arg-type]
+                lightweight, "v0.7.0"
+            )
+
+        annotated = FakeApi()
+        annotated.add(
+            "/git/ref/tags/v0.7.0",
+            {
+                "ref": "refs/tags/v0.7.0",
+                "object": {"type": "tag", "sha": TAG_SHA},
+            },
+        )
+        annotated.add(
+            f"/git/tags/{TAG_SHA}",
+            {"sha": TAG_SHA, "object": {"type": "commit", "sha": STALE_SHA}},
+        )
+        with self.assertRaisesRegex(verifier.VerificationError, "not candidate"):
+            verifier.verify_release_evidence(
+                annotated,  # type: ignore[arg-type]
+                tag="v0.7.0",
+                candidate_sha=SHA,
+                ci_workflow="ci.yml",
+                aggregate_job=verifier.RELEASE_CANDIDATE_JOB,
+                gpu_workflow="gpu-validation.yml",
+                cuda_job=verifier.CUDA_JOB,
+                metal_job=verifier.METAL_JOB,
+                ci_branch="main",
+            )
+
+
+class ApiFailureTests(unittest.TestCase):
+    def test_http_failure_does_not_expose_token(self) -> None:
+        token = "secret-token-that-must-not-appear"
+
+        def reject(request: Any, timeout: int) -> Any:
+            del timeout
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+
+        api = verifier.GitHubApi(
+            "https://api.github.invalid", "owner/repo", token, opener=reject
+        )
+        with self.assertRaises(verifier.VerificationError) as captured:
+            api.get_json("/actions/workflows/ci.yml")
+        self.assertNotIn(token, str(captured.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()
