@@ -697,27 +697,7 @@ fn external_source_label(path: &Path) -> Result<String, String> {
 }
 
 fn external_corpus_category(path: &Path) -> String {
-    let lower = path.to_string_lossy().to_ascii_lowercase();
-    for (needle, category) in [
-        ("kodak", "natural-image"),
-        ("tecnick", "natural-image"),
-        ("clic", "natural-image"),
-        ("div2k", "natural-image"),
-        ("flickr2k", "natural-image"),
-        ("sipi", "natural-image"),
-        ("wsi", "medical-domain"),
-        ("dicom", "medical-domain"),
-        ("tcia", "medical-domain"),
-        ("idc", "medical-domain"),
-        ("sentinel", "remote-sensing"),
-        ("landsat", "remote-sensing"),
-        ("nitf", "remote-sensing"),
-    ] {
-        if lower.contains(needle) {
-            return category.to_string();
-        }
-    }
-    "external-unspecified".to_string()
+    common::infer_corpus_category(path).to_string()
 }
 
 fn source_format_label(path: &Path) -> String {

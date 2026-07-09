@@ -5,6 +5,51 @@ use std::{path::Path, process::Command};
 use crate::{parse_positive_usize, usize_to_f64};
 pub use j2k_test_support::canonicalize_manifest_row_path;
 
+const CORPUS_CATEGORY_RULES: &[(&str, &str)] = &[
+    ("iso", "conformance"),
+    ("conformance", "conformance"),
+    ("openjpeg", "interop"),
+    ("openjph", "interop"),
+    ("jpylyzer", "parser-robustness"),
+    ("kodak", "natural-image"),
+    ("tecnick", "natural-image"),
+    ("testimages", "natural-image"),
+    ("clic", "natural-image"),
+    ("div2k", "natural-image"),
+    ("flickr2k", "natural-image"),
+    ("sipi", "natural-image"),
+    ("curiosity", "natural-image"),
+    ("phoronix", "natural-image"),
+    ("dicom", "medical-domain"),
+    ("wsi", "medical-domain"),
+    ("tcia", "medical-domain"),
+    ("idc", "medical-domain"),
+    ("camelyon", "medical-domain"),
+    ("panda", "medical-domain"),
+    ("tcga", "medical-domain"),
+    ("openslide", "medical-domain"),
+    ("space", "remote-sensing"),
+    ("sentinel", "remote-sensing"),
+    ("landsat", "remote-sensing"),
+    ("nitf", "remote-sensing"),
+    ("gdal", "remote-sensing"),
+    ("spot", "remote-sensing"),
+    ("pleiades", "remote-sensing"),
+];
+
+/// Infers the benchmark corpus category from a path.
+///
+/// Rules are case-insensitive and intentionally ordered: when a path contains
+/// more than one known corpus marker, the first rule wins.
+#[must_use]
+pub fn infer_corpus_category(path: &Path) -> &'static str {
+    let lower = path.to_string_lossy().to_ascii_lowercase();
+    CORPUS_CATEGORY_RULES
+        .iter()
+        .find_map(|(needle, category)| lower.contains(needle).then_some(*category))
+        .unwrap_or("external-unspecified")
+}
+
 pub fn env_truthy(name: &str) -> bool {
     std::env::var(name)
         .ok()
@@ -381,4 +426,81 @@ pub fn mib_per_second(bytes: usize, elapsed_us: f64) -> f64 {
         return 0.0;
     }
     (usize_to_f64(bytes) / (1024.0 * 1024.0)) / (elapsed_us / 1_000_000.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::infer_corpus_category;
+
+    #[test]
+    fn corpus_category_rules_cover_every_supported_needle() {
+        for (needle, expected) in [
+            ("iso", "conformance"),
+            ("conformance", "conformance"),
+            ("openjpeg", "interop"),
+            ("openjph", "interop"),
+            ("jpylyzer", "parser-robustness"),
+            ("kodak", "natural-image"),
+            ("tecnick", "natural-image"),
+            ("testimages", "natural-image"),
+            ("clic", "natural-image"),
+            ("div2k", "natural-image"),
+            ("flickr2k", "natural-image"),
+            ("sipi", "natural-image"),
+            ("curiosity", "natural-image"),
+            ("phoronix", "natural-image"),
+            ("dicom", "medical-domain"),
+            ("wsi", "medical-domain"),
+            ("tcia", "medical-domain"),
+            ("idc", "medical-domain"),
+            ("camelyon", "medical-domain"),
+            ("panda", "medical-domain"),
+            ("tcga", "medical-domain"),
+            ("openslide", "medical-domain"),
+            ("space", "remote-sensing"),
+            ("sentinel", "remote-sensing"),
+            ("landsat", "remote-sensing"),
+            ("nitf", "remote-sensing"),
+            ("gdal", "remote-sensing"),
+            ("spot", "remote-sensing"),
+            ("pleiades", "remote-sensing"),
+        ] {
+            let path = format!("corpora/{needle}/sample.jp2");
+            assert_eq!(
+                infer_corpus_category(Path::new(&path)),
+                expected,
+                "{needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn corpus_category_precedence_is_stable() {
+        for (path, expected) in [
+            (
+                "iso/openjpeg/jpylyzer/kodak/wsi/sentinel.jp2",
+                "conformance",
+            ),
+            ("openjpeg/jpylyzer/kodak/wsi/sentinel.jp2", "interop"),
+            ("jpylyzer/kodak/wsi/sentinel.jp2", "parser-robustness"),
+            ("kodak/wsi/sentinel.jp2", "natural-image"),
+            ("wsi/sentinel.jp2", "medical-domain"),
+        ] {
+            assert_eq!(infer_corpus_category(Path::new(path)), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn corpus_category_is_case_insensitive_and_has_a_fallback() {
+        assert_eq!(
+            infer_corpus_category(Path::new("CORPORA/OPENJPH/IMAGE.JPH")),
+            "interop"
+        );
+        assert_eq!(
+            infer_corpus_category(Path::new("corpora/unknown/image.jp2")),
+            "external-unspecified"
+        );
+    }
 }

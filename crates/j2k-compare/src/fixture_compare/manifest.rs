@@ -256,37 +256,5 @@ pub(super) fn parse_manifest_container(
     }
 }
 pub(super) fn external_corpus_category(path: &Path) -> String {
-    let lower = path.to_string_lossy().to_ascii_lowercase();
-    for (needle, category) in [
-        ("iso", "conformance"),
-        ("conformance", "conformance"),
-        ("openjpeg", "interop"),
-        ("openjph", "interop"),
-        ("jpylyzer", "parser-robustness"),
-        ("kodak", "natural-image"),
-        ("tecnick", "natural-image"),
-        ("testimages", "natural-image"),
-        ("clic", "natural-image"),
-        ("div2k", "natural-image"),
-        ("flickr2k", "natural-image"),
-        ("sipi", "natural-image"),
-        ("dicom", "medical-domain"),
-        ("wsi", "medical-domain"),
-        ("tcia", "medical-domain"),
-        ("idc", "medical-domain"),
-        ("camelyon", "medical-domain"),
-        ("panda", "medical-domain"),
-        ("tcga", "medical-domain"),
-        ("openslide", "medical-domain"),
-        ("space", "remote-sensing"),
-        ("sentinel", "remote-sensing"),
-        ("landsat", "remote-sensing"),
-        ("nitf", "remote-sensing"),
-        ("gdal", "remote-sensing"),
-    ] {
-        if lower.contains(needle) {
-            return category.to_string();
-        }
-    }
-    "external-unspecified".to_string()
+    crate::common::infer_corpus_category(path).to_string()
 }

@@ -209,7 +209,6 @@ fn help_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::{adoption_manifest, AdoptionManifestOptions};
-    use crate::adoption_corpus::infer_corpus_category;
 
     #[test]
     fn requires_license_status() {
@@ -231,7 +230,9 @@ mod tests {
     #[test]
     fn jpylyzer_paths_are_parser_robustness_not_interop() {
         assert_eq!(
-            infer_corpus_category(std::path::Path::new("vendor/jpylyzer/invalid.jp2")),
+            j2k_compare::common::infer_corpus_category(std::path::Path::new(
+                "vendor/jpylyzer/invalid.jp2",
+            )),
             "parser-robustness"
         );
     }

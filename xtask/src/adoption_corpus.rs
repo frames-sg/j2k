@@ -53,7 +53,7 @@ pub(crate) fn validate_tsv_field(value: &str) -> Result<(), String> {
 pub(crate) fn corpus_category(path: &Path, override_value: Option<&str>) -> String {
     override_value
         .map(ToString::to_string)
-        .unwrap_or_else(|| infer_corpus_category(path))
+        .unwrap_or_else(|| j2k_compare::common::infer_corpus_category(path).to_string())
 }
 
 pub(crate) fn corpus_name(root: &Path, override_value: Option<&str>) -> String {
@@ -64,41 +64,6 @@ pub(crate) fn corpus_name(root: &Path, override_value: Option<&str>) -> String {
             .unwrap_or("external-corpus")
             .to_string()
     })
-}
-
-pub(crate) fn infer_corpus_category(path: &Path) -> String {
-    let lower = path.to_string_lossy().to_ascii_lowercase();
-    for (needle, category) in [
-        ("iso", "conformance"),
-        ("conformance", "conformance"),
-        ("openjpeg", "interop"),
-        ("openjph", "interop"),
-        ("jpylyzer", "parser-robustness"),
-        ("kodak", "natural-image"),
-        ("tecnick", "natural-image"),
-        ("testimages", "natural-image"),
-        ("clic", "natural-image"),
-        ("div2k", "natural-image"),
-        ("flickr2k", "natural-image"),
-        ("sipi", "natural-image"),
-        ("curiosity", "natural-image"),
-        ("phoronix", "natural-image"),
-        ("wsi", "medical-domain"),
-        ("dicom", "medical-domain"),
-        ("tcia", "medical-domain"),
-        ("idc", "medical-domain"),
-        ("openslide", "medical-domain"),
-        ("sentinel", "remote-sensing"),
-        ("landsat", "remote-sensing"),
-        ("nitf", "remote-sensing"),
-        ("spot", "remote-sensing"),
-        ("pleiades", "remote-sensing"),
-    ] {
-        if lower.contains(needle) {
-            return category.to_string();
-        }
-    }
-    "external-unspecified".to_string()
 }
 
 pub(crate) fn codec_from_bytes(bytes: &[u8]) -> &'static str {

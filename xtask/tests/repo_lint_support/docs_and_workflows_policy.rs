@@ -797,11 +797,15 @@ fn jpeg_fast_packet_accessors_stay_out_of_public_api() {
                 .forbidden(&["JpegColorFastPacket"]),
             FilePatternCheck::new("crates/j2k-jpeg-cuda/src/owned_decode.rs")
                 .named("CUDA owned decode")
-                .required(&["macro_rules! cuda_decode_plan"])
+                .required(&[
+                    "macro_rules! fast_rgb8_packet_parts",
+                    "fn build_cuda_rgb8_plan_data",
+                ])
                 .forbidden(&[
                     "JpegColorFastPacket",
                     "trait JpegColorFastPacket",
                     "macro_rules! impl_color_fast_packet_access",
+                    "macro_rules! cuda_decode_plan",
                 ]),
             FilePatternCheck::new("crates/j2k-jpeg-metal/src/compute/fast_packets_impl.rs")
                 .named("Metal fast packets")
