@@ -102,10 +102,11 @@ fn ci_workflow_runs_semver_checks_for_stable_library_crates() {
     let workflow =
         fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
     let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let semver_impl =
+        fs::read_to_string(root.join("xtask/src/semver.rs")).expect("read semver xtask");
     let stable_api_doc =
         fs::read_to_string(root.join("docs/stable-api-1.0.md")).expect("read stable API policy");
     let semver_job = workflow_job(&workflow, "semver");
-    let semver_packages = const_array_block(&xtask, "STABLE_SEMVER_PACKAGES");
 
     assert_pattern_checks(&[
         PatternCheck::new("CI semver job", semver_job)
@@ -116,35 +117,53 @@ fn ci_workflow_runs_semver_checks_for_stable_library_crates() {
                 "toolchain: \"1.96\"",
             ])
             .forbidden(&["release-type: minor"]),
-        PatternCheck::new("xtask semver toolchain default", &xtask)
-            .required(&["unwrap_or_else(|_| \"1.96\".to_string())"]),
+        PatternCheck::new("xtask semver policy", &semver_impl)
+            .required(&[
+                "CARGO_SEMVER_CHECKS_VERSION: &str = \"0.48.0\"",
+                "SEMVER_BASELINE_VERSION: &str = \"0.6.2\"",
+                "SEMVER_BASELINE_TAG: &str = \"v0.6.2\"",
+                "const SEMVER_NEW_PACKAGES: &[&str] = &[\"j2k-codec-math\"]",
+                "computed_release_type",
+                "release_type.as_str()",
+                "--baseline-version",
+                "--write-report",
+                "API_DIFF_REPORT",
+                "API_REVIEW_CONFIG",
+                "validate_reviews",
+                "is stale",
+                "unwrap_or_else(|_| \"1.96\".to_string())",
+            ])
+            .forbidden(&[
+                "skipping semver baseline for unpublished package",
+                "crates_io_package_exists",
+            ]),
     ]);
 
-    for package in [
-        "j2k",
-        "j2k-core",
-        "j2k-jpeg",
-        "j2k",
-        "j2k-tilecodec",
-        "j2k-jpeg-metal",
-        "j2k-metal",
-        "j2k-jpeg-cuda",
-        "j2k-cuda",
-        "j2k-transcode",
-        "j2k-transcode-cuda",
-        "j2k-metal-support",
-        "j2k-transcode-metal",
-        "j2k-native",
-        "j2k-cuda-runtime",
-        "j2k-profile",
-    ] {
-        assert!(
-            semver_packages.contains(&format!("\"{package}\"")),
-            "repo semver policy must cover stable library crate `{package}`"
-        );
-    }
+    let stable = const_array_values(&xtask, "STABLE_SEMVER_PACKAGES")
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let baseline = const_array_values(&semver_impl, "SEMVER_BASELINE_PACKAGES")
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let new = ["j2k-codec-math".to_string()]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    assert!(
+        baseline.is_disjoint(&new),
+        "semver baseline/new package lists overlap"
+    );
+    assert_eq!(
+        baseline.union(&new).cloned().collect::<BTreeSet<_>>(),
+        stable,
+        "semver baseline/new package lists must partition STABLE_SEMVER_PACKAGES"
+    );
+    assert_eq!(
+        new,
+        ["j2k-codec-math".to_string()].into_iter().collect(),
+        "new 0.7 library packages must be listed explicitly"
+    );
 
-    for package in const_array_values(&xtask, "STABLE_SEMVER_PACKAGES") {
+    for package in stable {
         assert!(
             stable_api_doc.contains(&format!("`{package}`")),
             "docs/stable-api-1.0.md must list semver-gated package `{package}`"
@@ -162,6 +181,113 @@ fn ci_workflow_runs_semver_checks_for_stable_library_crates() {
         semver_job,
     )
     .forbidden(&[package])]);
+}
+
+#[test]
+fn reviewed_api_diff_artifacts_are_consistent() {
+    let root = repo_root();
+    let report = fs::read_to_string(root.join("engineering/reviewed-public-api-diff-0.7.0.md"))
+        .expect("read reviewed API diff report");
+    let config_source = fs::read_to_string(root.join("engineering/public-api-review-0.7.0.yml"))
+        .expect("read public API review config");
+    let config: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&config_source).expect("parse public API review config");
+    let config = config.as_mapping().expect("review config root mapping");
+    assert_eq!(
+        config
+            .get("candidate_version")
+            .and_then(serde_yaml_ng::Value::as_str),
+        Some("0.7.0"),
+        "review config candidate version must match the 0.7 report"
+    );
+    let reviews = config
+        .get("reviews")
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .expect("review config reviews mapping");
+
+    let mut summary = std::collections::BTreeMap::new();
+    for line in report.lines().filter(|line| line.starts_with("| `")) {
+        let cells = line.split('|').map(str::trim).collect::<Vec<_>>();
+        assert_eq!(cells.len(), 10, "malformed API diff summary row: {line}");
+        let package = cells[1].trim_matches('`').to_string();
+        let removed = cells[6]
+            .parse::<usize>()
+            .unwrap_or_else(|error| panic!("invalid removed count for {package}: {error}"));
+        let removed_fingerprint = cells[7].trim_matches('`').to_string();
+        let added_fingerprint = cells[8].trim_matches('`').to_string();
+        assert!(
+            summary
+                .insert(package, (removed, removed_fingerprint, added_fingerprint))
+                .is_none(),
+            "duplicate package in API diff summary"
+        );
+    }
+    assert_eq!(summary.len(), 17, "API diff must list every stable library");
+
+    for (package, (removed, removed_fingerprint, _)) in &summary {
+        if *removed == 0 {
+            continue;
+        }
+        let review = reviews
+            .get(package.as_str())
+            .and_then(serde_yaml_ng::Value::as_mapping)
+            .unwrap_or_else(|| panic!("{package} removals lack a review entry"));
+        assert_eq!(
+            review
+                .get("removed_fingerprint")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some(removed_fingerprint.as_str()),
+            "{package} removed fingerprint review is stale"
+        );
+        let rationale = review
+            .get("rationale")
+            .and_then(serde_yaml_ng::Value::as_str)
+            .unwrap_or_else(|| panic!("{package} review lacks a rationale"));
+        assert!(
+            rationale.trim().len() >= 20,
+            "{package} review rationale is too short"
+        );
+    }
+    for (package, review) in reviews {
+        let package = package.as_str().expect("review package name");
+        let (_, removed_fingerprint, added_fingerprint) = summary
+            .get(package)
+            .unwrap_or_else(|| panic!("review config contains unknown package {package}"));
+        let review = review.as_mapping().expect("package review mapping");
+        if let Some(reviewed) = review
+            .get("removed_fingerprint")
+            .and_then(serde_yaml_ng::Value::as_str)
+        {
+            assert_eq!(reviewed, removed_fingerprint, "{package} removal review");
+        }
+        if let Some(reviewed) = review
+            .get("added_fingerprint")
+            .and_then(serde_yaml_ng::Value::as_str)
+        {
+            assert_eq!(reviewed, added_fingerprint, "{package} addition review");
+        }
+    }
+
+    assert_pattern_checks(&[
+        PatternCheck::new("reviewed API diff SAFE changes", &report).required(&[
+            "j2k_jpeg_metal::Surface::as_bytes(&self) -> alloc::borrow::Cow<'_, [u8]>",
+            "j2k_metal::MetalEncodedJ2k::codestream_bytes(&self) -> core::result::Result<alloc::vec::Vec<u8>",
+            "j2k_metal::Surface::as_bytes(&self) -> alloc::borrow::Cow<'_, [u8]>",
+            "j2k_metal_support::checked_buffer_contents_slice",
+            "j2k_metal_support::checked_buffer_contents_slice_mut",
+            "j2k_metal_support::checked_buffer_fill_bytes",
+            "j2k_metal_support::checked_buffer_read_vec",
+            "j2k_metal_support::checked_buffer_write",
+            "j2k_metal_support::MetalSupportError::BufferZeroSizedType",
+            "j2k_metal_support::MetalSupportError::BufferReadbackAllocation",
+            "j2k_native::DecodeErrorClass",
+            "j2k_native::DecodeError::classify",
+        ]),
+        PatternCheck::new("reviewed API diff new-package classification", &report).required(&[
+            "## New packages without a 0.6.2 registry baseline",
+            "`j2k-codec-math` `0.7.0`: 72 public API items",
+        ]),
+    ]);
 }
 
 #[test]

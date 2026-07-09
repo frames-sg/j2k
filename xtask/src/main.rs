@@ -28,6 +28,7 @@ mod process;
 mod public_support;
 #[cfg(feature = "adoption")]
 mod publication_gate;
+mod semver;
 
 use process::cargo;
 
@@ -183,7 +184,11 @@ fn run() -> Result<(), String> {
         "fuzz-build" => fuzz_build(),
         "fuzz-run" => fuzz_run(),
         "stable-api" => stable_api(env::args().skip(2)),
-        "semver" => semver(),
+        "semver" => semver::semver(
+            env::args().skip(2),
+            STABLE_SEMVER_PACKAGES,
+            CARGO_PUBLIC_API_VERSION,
+        ),
         "deny" => deny(),
         "miri" => miri(),
         "machete" => machete(),
@@ -995,57 +1000,6 @@ fn render_stable_api_snapshot() -> Result<String, String> {
     .unwrap();
 
     Ok(out)
-}
-
-fn semver() -> Result<(), String> {
-    let toolchain = env::var("J2K_SEMVER_TOOLCHAIN").unwrap_or_else(|_| "1.96".to_string());
-    let toolchain_arg = format!("+{toolchain}");
-    for package in STABLE_SEMVER_PACKAGES {
-        if !crates_io_package_exists(package)? {
-            eprintln!("skipping semver baseline for unpublished package `{package}`");
-            continue;
-        }
-        run_program(
-            OsString::from("cargo"),
-            &[
-                toolchain_arg.as_str(),
-                "semver-checks",
-                "check-release",
-                "--package",
-                package,
-                "--release-type",
-                "major",
-            ],
-            &[],
-        )?;
-    }
-    Ok(())
-}
-
-fn crates_io_package_exists(package: &str) -> Result<bool, String> {
-    let cargo = cargo();
-    let display = cargo.to_string_lossy().into_owned();
-    let output = process::command_output(
-        cargo,
-        &["info", package, "--registry", "crates-io"],
-        process::CommandContext::new(),
-    )?;
-    if output.status.success() {
-        return Ok(true);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}\n{stderr}");
-    if combined.contains("could not find") || combined.contains("not found in registry") {
-        Ok(false)
-    } else {
-        Err(format!(
-            "`{display} info {package} --registry crates-io` exited with {}:\n{}",
-            output.status,
-            combined.trim()
-        ))
-    }
 }
 
 fn deny() -> Result<(), String> {
@@ -2044,7 +1998,7 @@ fn print_help() {
            fuzz-build    compile fuzz harnesses\n\
            fuzz-run      run scheduled fuzz targets with J2K_FUZZ_RUNS\n\
            stable-api    check the generated 1.0 public API inventory snapshot\n\
-           semver        check stable library crates across the 1.0 major-release boundary\n\
+           semver        verify computed release types and reviewed API diff [--write-report]\n\
            deny          run cargo-deny\n\
            miri          run selected CPU/no_std crates under Miri\n\
            machete       run cargo-machete unused-dependency scan\n\

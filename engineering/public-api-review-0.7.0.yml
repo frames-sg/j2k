@@ -1,0 +1,51 @@
+version: 1
+baseline_tag: v0.6.2
+baseline_version: 0.6.2
+candidate_version: 0.7.0
+reviews:
+  j2k:
+    removed_fingerprint: "fnv1a64:6636444baca7f77c"
+    rationale: "Reviewed 0.7 facade contraction removes experimental adaptive-routing and internal view/context surfaces; every removed line is enumerated in the companion report."
+  j2k-core:
+    removed_fingerprint: "fnv1a64:a7a9272d6679bd14"
+    rationale: "Reviewed 0.7 consolidation of accelerator, batch, context, passthrough, pixel, and shared type contracts into the supported core surface."
+  j2k-jpeg:
+    removed_fingerprint: "fnv1a64:ec8ede821b479692"
+    rationale: "Reviewed 0.7 JPEG contract cleanup removes parser, entropy, decoder, and implementation-detail surfaces while retaining the supported codec APIs."
+  j2k-tilecodec:
+    removed_fingerprint: "fnv1a64:eb677842559d9b0e"
+    rationale: "Reviewed 0.7 removal of low-level tilecodec helper surface; supported tile behavior remains covered through the facade and integration contracts."
+  j2k-jpeg-metal:
+    removed_fingerprint: "fnv1a64:730dc32366a0e086"
+    added_fingerprint: "fnv1a64:8f6c4560d008082d"
+    rationale: "Reviewed 0.7 Metal JPEG adapter contraction, including the intentional Surface::as_bytes transition to Cow for safe owned readback."
+  j2k-metal:
+    removed_fingerprint: "fnv1a64:99cf053e98537f14"
+    added_fingerprint: "fnv1a64:81aad43a914b08b9"
+    rationale: "Reviewed 0.7 Metal J2K adapter contraction, including Cow surface readback and owned Vec codestream bytes after synchronized GPU completion."
+  j2k-jpeg-cuda:
+    removed_fingerprint: "fnv1a64:e96e880127d29481"
+    rationale: "Reviewed 0.7 CUDA JPEG adapter contraction removes backend implementation details from the supported public adapter contract."
+  j2k-cuda:
+    removed_fingerprint: "fnv1a64:8fd0a68098deb99e"
+    rationale: "Reviewed 0.7 CUDA J2K adapter contraction removes internal kernel and planning surfaces while preserving supported facade integration."
+  j2k-transcode:
+    removed_fingerprint: "fnv1a64:59c18a5d5c568d82"
+    rationale: "Reviewed 0.7 transcode contract redesign; removed DCT, route, and planning items and their supported replacements are enumerated in the report."
+  j2k-transcode-cuda:
+    removed_fingerprint: "fnv1a64:bc3b3cb7278c3546"
+    rationale: "Reviewed 0.7 CUDA transcode adapter alignment with the revised transcode and accelerator contracts."
+  j2k-metal-support:
+    removed_fingerprint: "fnv1a64:12cb21a8c19d67ae"
+    added_fingerprint: "fnv1a64:c9be716422c96b2f"
+    rationale: "Reviewed SAFE-001 change removes safe borrowed Metal buffer slices and adds explicit unsafe checked read, read_vec, write, fill, zero-size, and allocation-error APIs."
+  j2k-transcode-metal:
+    removed_fingerprint: "fnv1a64:65f8addf4146cb76"
+    rationale: "Reviewed 0.7 Metal transcode adapter alignment with revised staged DCT and resident handoff contracts."
+  j2k-native:
+    removed_fingerprint: "fnv1a64:b69188c400dc10a3"
+    added_fingerprint: "fnv1a64:87240e7b7701d98e"
+    rationale: "Reviewed 0.7 native-engine contraction plus the additive neutral DecodeErrorClass and DecodeError::classify interface used by facade adapters."
+  j2k-cuda-runtime:
+    removed_fingerprint: "fnv1a64:de98d6fa72f8a1f1"
+    rationale: "Reviewed 0.7 contraction of CUDA runtime kernel inventory and ABI structs to the supported loader and dispatch contract; removed lines are fully enumerated in the report."
