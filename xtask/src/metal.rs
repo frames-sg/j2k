@@ -7,6 +7,7 @@ use std::{collections::BTreeSet, env};
 use crate::process::{self, cargo, CommandContext};
 
 const GPU_TEST_SKIP_MARKER: &str = "J2K_GPU_TEST_SKIPPED";
+const METAL_COMPILE_ENV: &[(&str, &str)] = &[("RUST_TEST_THREADS", "1")];
 const METAL_RUNTIME_ENV: &[(&str, &str)] = &[
     ("J2K_REQUIRE_METAL_RUNTIME", "1"),
     ("RUST_TEST_THREADS", "1"),
@@ -99,9 +100,24 @@ pub(crate) fn metal_compile() -> Result<(), String> {
     clippy_args.extend_from_slice(&["--", "-D", "warnings"]);
     process::run_command(cargo(), &clippy_args, CommandContext::new())?;
 
-    let mut test_args = vec!["test", "--release", "--all-targets", "--all-features"];
+    let mut test_args = vec![
+        "test",
+        "--release",
+        "--all-features",
+        "--lib",
+        "--bins",
+        "--tests",
+    ];
     append_packages(&mut test_args);
-    process::run_command(cargo(), &test_args, CommandContext::new())
+    process::run_command(
+        cargo(),
+        &test_args,
+        CommandContext::new().envs(METAL_COMPILE_ENV),
+    )?;
+
+    let mut doc_args = vec!["test", "--release", "--all-features", "--doc"];
+    append_packages(&mut doc_args);
+    process::run_command(cargo(), &doc_args, CommandContext::new())
 }
 
 /// Runs every required Metal runtime suite and rejects all evidence of skipping.
