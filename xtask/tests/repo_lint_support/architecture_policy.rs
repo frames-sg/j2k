@@ -233,14 +233,48 @@ fn rendered_public_api_does_not_expose_j2k_native() {
 }
 
 #[test]
-fn adaptive_route_policy_model_stays_out_of_public_api() {
+fn obsolete_adaptive_route_policy_model_cannot_return() {
+    let root = repo_root();
+
+    for relative in [
+        "crates/j2k/src/adapter/adaptive_route.rs",
+        "crates/j2k/src/adapter/adaptive_route_tests.rs",
+    ] {
+        assert!(
+            !root.join(relative).exists(),
+            "obsolete test-only adaptive route policy must not return: {relative}"
+        );
+    }
+
+    let mut model_offenders = Vec::new();
+    for path in rust_sources(&root.join("crates/j2k/src")) {
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        for symbol in [
+            "J2kAdaptiveBenchmarkEvidence",
+            "J2kAdaptiveRcaFinding",
+            "J2kAdaptiveRoutePlanner",
+        ] {
+            if source.contains(symbol) {
+                model_offenders.push(format!(
+                    "{}: {symbol}",
+                    path.strip_prefix(root).unwrap_or(&path).display()
+                ));
+            }
+        }
+    }
+    assert!(
+        model_offenders.is_empty(),
+        "obsolete synthetic adaptive route model must not return:\n{}",
+        model_offenders.join("\n")
+    );
+
     assert_file_pattern_checks(
-        repo_root(),
+        root,
         &[
             FilePatternCheck::new("crates/j2k/src/adapter/mod.rs")
                 .named("j2k adapter module")
-                .normalized_required(&["#[cfg(test)]\nmod adaptive_route;"])
-                .forbidden(&["pub mod adaptive_route;"]),
+                .forbidden(&["mod adaptive_route;", "pub mod adaptive_route;"]),
             FilePatternCheck::new("docs/stable-api-1.0.public-api.txt")
                 .named("stable API snapshot")
                 .forbidden(&["j2k::adapter::adaptive_route"]),

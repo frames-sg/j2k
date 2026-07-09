@@ -9,8 +9,8 @@ use j2k::{
     j2k_lossless_decomposition_levels_for_progression, EncodeBackendPreference, J2kBlockCodingMode,
     J2kEncodeValidation, J2kLosslessComponentPlane, J2kLosslessComponentSamples,
     J2kLosslessEncodeOptions, J2kLosslessSamples, J2kLosslessTypedComponentPlane,
-    J2kLosslessTypedComponentSamples, J2kMarkerSegment, J2kProgressionOrder, J2kRoiRegion,
-    ReversibleTransform,
+    J2kLosslessTypedComponentSamples, J2kLossyEncodeOptions, J2kMarkerSegment, J2kProgressionOrder,
+    J2kRoiRegion, ReversibleTransform,
 };
 use j2k::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kCodeBlockSegment, J2kCodeBlockStyle,
@@ -51,6 +51,34 @@ fn auto_options() -> J2kLosslessEncodeOptions {
 
 fn require_device_options() -> J2kLosslessEncodeOptions {
     J2kLosslessEncodeOptions::default().with_backend(EncodeBackendPreference::RequireDevice)
+}
+
+#[test]
+fn backend_preference_helpers_select_clear_routes() {
+    assert_eq!(
+        J2kLosslessEncodeOptions::default()
+            .with_accelerated_backend()
+            .backend,
+        EncodeBackendPreference::Auto
+    );
+    assert_eq!(
+        J2kLosslessEncodeOptions::default()
+            .with_cpu_only_backend()
+            .backend,
+        EncodeBackendPreference::CpuOnly
+    );
+    assert_eq!(
+        J2kLosslessEncodeOptions::default()
+            .with_strict_device_backend()
+            .backend,
+        EncodeBackendPreference::RequireDevice
+    );
+    assert_eq!(
+        J2kLossyEncodeOptions::default()
+            .with_accelerated_backend()
+            .backend,
+        EncodeBackendPreference::Auto
+    );
 }
 
 #[test]
@@ -2124,6 +2152,7 @@ fn accelerator_facade_auto_falls_back_when_no_stage_dispatches() {
     .expect("prefer-device encode should fall back to CPU without dispatch");
 
     assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert_eq!(encoded.dispatch_report, J2kEncodeDispatchReport::default());
     assert_eq!(decode_native(&encoded.codestream).data, pixels);
 }
 
@@ -2151,7 +2180,7 @@ fn accelerator_facade_require_device_errors_when_no_stage_dispatches() {
 }
 
 #[test]
-fn accelerator_facade_require_device_errors_when_any_required_stage_is_missing() {
+fn accelerator_facade_reports_partial_auto_dispatch_and_strictly_rejects_it() {
     #[derive(Default)]
     struct PacketizationDispatchAccelerator {
         deinterleave: usize,
@@ -2201,13 +2230,30 @@ fn accelerator_facade_require_device_errors_when_any_required_stage_is_missing()
 
     let pixels: Vec<u8> = (0..64).map(|value| (value * 7) as u8).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).unwrap();
-    let mut accelerator = PacketizationDispatchAccelerator::default();
+    let mut auto_accelerator = PacketizationDispatchAccelerator::default();
+
+    let encoded = encode_j2k_lossless_with_accelerator(
+        samples,
+        &auto_options(),
+        BackendKind::Metal,
+        &mut auto_accelerator,
+    )
+    .expect("Auto should preserve partial dispatch evidence while falling back");
+
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert_eq!(encoded.dispatch_report, auto_accelerator.dispatch_report());
+    assert!(encoded.dispatch_report.deinterleave > 0);
+    assert!(encoded.dispatch_report.quantize_subband > 0);
+    assert!(encoded.dispatch_report.packetization > 0);
+    assert_eq!(encoded.dispatch_report.tier1_code_block, 0);
+
+    let mut strict_accelerator = PacketizationDispatchAccelerator::default();
 
     let err = encode_j2k_lossless_with_accelerator(
         samples,
         &require_device_options(),
         BackendKind::Metal,
-        &mut accelerator,
+        &mut strict_accelerator,
     )
     .unwrap_err();
 
@@ -2296,6 +2342,11 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
     .expect("all required device stages should produce encoded codestream");
 
     assert_eq!(encoded.backend, BackendKind::Metal);
+    assert_eq!(encoded.dispatch_report, accelerator.dispatch_report());
+    assert!(encoded.dispatch_report.deinterleave > 0);
+    assert!(encoded.dispatch_report.quantize_subband > 0);
+    assert!(encoded.dispatch_report.tier1_code_block > 0);
+    assert!(encoded.dispatch_report.packetization > 0);
     assert_eq!(decode_native(&encoded.codestream).data, pixels);
 }
 
