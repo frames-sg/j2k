@@ -910,8 +910,10 @@ macro_rules! impl_gpu_readback_abi {
         $(
             // SAFETY: Each listed type is `#[repr(C)]`, `Copy`, and contains
             // only numeric scalar/array fields mirrored by the Metal shader
-            // declarations. Every bit pattern is therefore a valid value; the
-            // readback layouts have exact assertions below.
+            // declarations, so every bit pattern is a valid value. The tests
+            // below assert the host-read status layouts; Metal compilation and
+            // route-specific runtime parity provide additional coverage for
+            // parameter and job layouts.
             unsafe impl j2k_core::accelerator::GpuAbi for $ty {
                 const NAME: &'static str = stringify!($ty);
             }
