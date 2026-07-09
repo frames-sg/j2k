@@ -457,6 +457,21 @@ impl From<ColorError> for DecodeError {
 /// Result type for JPEG 2000 decoding operations.
 pub type Result<T> = core::result::Result<T, DecodeError>;
 
+macro_rules! bail {
+    ($err:expr) => {
+        return Err($err.into())
+    };
+}
+
+macro_rules! err {
+    ($err:expr) => {
+        Err($err.into())
+    };
+}
+
+pub(crate) use bail;
+pub(crate) use err;
+
 #[cfg(test)]
 mod classification_tests {
     use super::{
@@ -528,18 +543,3 @@ mod classification_tests {
         assert_eq!(what, reason.to_string());
     }
 }
-
-macro_rules! bail {
-    ($err:expr) => {
-        return Err($err.into())
-    };
-}
-
-macro_rules! err {
-    ($err:expr) => {
-        Err($err.into())
-    };
-}
-
-pub(crate) use bail;
-pub(crate) use err;
