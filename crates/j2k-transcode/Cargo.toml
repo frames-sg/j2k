@@ -18,11 +18,11 @@ path = "src/lib.rs"
 
 [dependencies]
 rayon = { workspace = true }
-j2k-core = { path = "../j2k-core", version = "=0.6.2" }
-j2k-codec-math = { path = "../j2k-codec-math", version = "=0.6.2" }
-j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.2" }
-j2k = { path = "../j2k", version = "=0.6.2" }
-j2k-native = { path = "../j2k-native", version = "=0.6.2" }
+j2k-core = { path = "../j2k-core", version = "=0.7.0" }
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.0" }
+j2k-jpeg = { path = "../j2k-jpeg", version = "=0.7.0" }
+j2k = { path = "../j2k", version = "=0.7.0" }
+j2k-native = { path = "../j2k-native", version = "=0.7.0" }
 
 [dev-dependencies]
 criterion = { workspace = true }

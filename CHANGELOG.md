@@ -5,8 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
-Breaking public API cleanup; the next release from this line must bump to
-0.7.0.
+No unreleased changes yet.
+
+## [0.7.0] - 2026-07-08
 
 - Removes unused public API: `j2k-core` `DecodeRequest` (with the four
   `*_request` trait default methods), `BackendFailureKind`, and `WarningKind`;
