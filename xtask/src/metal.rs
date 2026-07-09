@@ -12,6 +12,7 @@ const METAL_RUNTIME_ENV: &[(&str, &str)] = &[
     ("J2K_REQUIRE_METAL_RUNTIME", "1"),
     ("RUST_TEST_THREADS", "1"),
 ];
+const METAL_RUNTIME_TEST_TARGETS: &[&str] = &["--lib", "--bins", "--tests", "--examples"];
 
 const METAL_COMPILE_PACKAGES: &[&str] = &[
     "j2k-metal-support",
@@ -126,16 +127,7 @@ pub(crate) fn release_metal() -> Result<(), String> {
     validate_required_ignored_inventory()?;
 
     for suite in METAL_TEST_SUITES {
-        let args = [
-            "test",
-            "--release",
-            "--all-targets",
-            "--all-features",
-            "-p",
-            suite.package,
-            "--",
-            "--show-output",
-        ];
+        let args = runtime_suite_args(suite.package);
         let output = run_cargo_captured(&args, METAL_RUNTIME_ENV, suite.label)?;
         validate_test_run(
             &output,
@@ -161,6 +153,13 @@ pub(crate) fn release_metal() -> Result<(), String> {
         "required ignored J2K Metal runtime inventory",
     )?;
     validate_exact_ignored_run(&output)
+}
+
+fn runtime_suite_args(package: &str) -> Vec<&str> {
+    let mut args = vec!["test", "--release", "--all-features"];
+    args.extend_from_slice(METAL_RUNTIME_TEST_TARGETS);
+    args.extend_from_slice(&["-p", package, "--", "--show-output"]);
+    args
 }
 
 fn require_macos(task: &str) -> Result<(), String> {
@@ -340,8 +339,8 @@ fn passed_rust_tests(output: &str) -> BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        listed_rust_tests, passed_rust_tests, reject_skip_markers, validate_exact_ignored_run,
-        J2K_METAL_REQUIRED_IGNORED_TESTS,
+        listed_rust_tests, passed_rust_tests, reject_skip_markers, runtime_suite_args,
+        validate_exact_ignored_run, J2K_METAL_REQUIRED_IGNORED_TESTS,
     };
 
     #[test]
@@ -386,5 +385,16 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(unique.len(), 18);
         assert_eq!(unique.len(), J2K_METAL_REQUIRED_IGNORED_TESTS.len());
+    }
+
+    #[test]
+    fn runtime_gate_excludes_benchmark_targets() {
+        let args = runtime_suite_args("j2k-metal");
+        assert!(args.contains(&"--lib"));
+        assert!(args.contains(&"--bins"));
+        assert!(args.contains(&"--tests"));
+        assert!(args.contains(&"--examples"));
+        assert!(!args.contains(&"--all-targets"));
+        assert!(!args.contains(&"--benches"));
     }
 }
