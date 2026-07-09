@@ -1,0 +1,36 @@
+{
+  "cpu_encode_compare": {
+    "headers": [
+      "encoder",
+      "case"
+    ],
+    "rows": [
+      {
+        "case": "fixture-a",
+        "encoder": "grok"
+      }
+    ]
+  },
+  "cpu_fixture_compare": {
+    "headers": [
+      "decoder",
+      "case"
+    ],
+    "rows": [
+      {
+        "case": "fixture-a",
+        "decoder": "j2k"
+      }
+    ]
+  },
+  "publication_issues": [
+    "diagnostic-only"
+  ],
+  "run_dir": "fixture/run",
+  "summary": {
+    "mode": "full",
+    "nested": {
+      "preserved": true
+    }
+  }
+}
