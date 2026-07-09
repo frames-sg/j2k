@@ -74,35 +74,14 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, metal]
     env:
       J2K_REQUIRE_METAL_RUNTIME: "1"
+      RUST_TEST_THREADS: "1"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - name: Assert Metal runtime gate is set
-        run: |
-          test -n "${J2K_REQUIRE_METAL_RUNTIME:-}" || { echo "J2K_REQUIRE_METAL_RUNTIME not set — Metal tests would silently skip"; exit 1; }
-      - name: Run JPEG Metal tests with executed-count floor
-        run: |
-          out=$(cargo test -p j2k-jpeg-metal --all-targets -- --nocapture 2>&1)
-          echo "$out"
-          passed=$(echo "$out" | sed -n 's/^test result: ok\. \([0-9]\+\) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')
-          echo "JPEG Metal tests passed: ${passed:-0}"
-          test "${passed:-0}" -ge 100 || { echo "Expected at least 100 executed JPEG Metal tests, got ${passed:-0} — tests may have silently skipped"; exit 1; }
-      - name: Run J2K Metal tests with executed-count floor
-        run: |
-          out=$(cargo test -p j2k-metal --all-targets -- --nocapture 2>&1)
-          echo "$out"
-          passed=$(echo "$out" | sed -n 's/^test result: ok\. \([0-9]\+\) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')
-          echo "J2K Metal tests passed: ${passed:-0}"
-          test "${passed:-0}" -ge 150 || { echo "Expected at least 150 executed J2K Metal tests, got ${passed:-0} — tests may have silently skipped"; exit 1; }
-      - name: Run transcode Metal tests with executed-count floor
-        run: |
-          out=$(cargo test -p j2k-transcode-metal --all-targets -- --nocapture 2>&1)
-          echo "$out"
-          passed=$(echo "$out" | sed -n 's/^test result: ok\. \([0-9]\+\) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')
-          echo "transcode Metal tests passed: ${passed:-0}"
-          test "${passed:-0}" -ge 20 || { echo "Expected at least 20 executed transcode Metal tests, got ${passed:-0} — tests may have silently skipped"; exit 1; }
+      - name: Run fail-closed Metal release validation
+        run: cargo xtask release-metal
       - run: cargo bench -p j2k-jpeg-metal --no-run
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
@@ -329,31 +308,31 @@ jobs:
             (
               cd target/j2k-public-corpora/kodak
               sha256sum -c - <<'SHA256'
-a56e27cbf5f843c048b6af1d6e090760e9c92fadba88b7dee0205918a37523bd  kodim01.png
-4f4b74a79237e311d72cad958237b5f7088d8bce1c82305ebefe1a70e3022dfd  kodim02.png
-e25ca1ff2f0c0cb5fdfd5f9b0a0bb21ac4c3de3c84a67f35b09a85d3306249db  kodim03.png
-e3b946107c5d3441c022f678d0c3caf1e224d81b1604ba840a4f88e562de61aa  kodim04.png
-10349e963c5c813d327852f82c1795fa4148d69fedffc4c589bee458e3ac3d53  kodim05.png
-363510303b715d4cbc384e1ce227e466b613a09e1b71ae985882bf8e7fbd9b18  kodim06.png
-b77d3f006f42414bb242222e0482e750c0fb9e5ee8d4bed2f6f11c5605fe54a4  kodim07.png
-ba23983c76b4832ee0e8af0592664756841a16779acd69f792e268fb6d13d6e7  kodim08.png
-6a4361c2fc194feb4edaa9f9a4a0620fb9943e460ac7fdf037fb0f6dd6607a7d  kodim09.png
-9dfb70f5867c29ff9ed6313683f19b3d867849e40fbc0c4c54a4a89df341cf23  kodim10.png
-7936814b58b5387fce2e4e2488b4ec830dadd95fa9520f358ddb30990b50f2b6  kodim11.png
-d78c37c2f04f23761ed2367dd77e2db584ddd4c3950833fecf89f199a8126980  kodim12.png
-bc34a3ce58dea09dce1704c997171602de90cb34d0c8503a988b77f473d39b08  kodim13.png
-55a94550ff18f3246c4074fd32b77b0c74447c26b6ad274d564d999c0450ba6e  kodim14.png
-7538cbb80cb9103606c48b806eae57d56c885c7f90b9b3be70a41160f9cbb683  kodim15.png
-a89c7268ccd4718ba424a99fc4643c572cf692ca6eae887185ceb4e9f11d2e54  kodim16.png
-37afcc89fbdcb76d9518e04b2fc011027e2f4cd14b3b2f83cefd721641a47c5b  kodim17.png
-1a9258c365988961d87a0598725b609139c303ad48a5aad6c503c3b1a87849aa  kodim18.png
-b7450b264b1b0a411390d8931b112c27905a992520fc90569dc4b920aa32bbdc  kodim19.png
-3b46c71e3b92a563820ba32936be8330c586c41f938efd94be938386aae4328a  kodim20.png
-ac958597c82073f6bb65129c68f72b651db5b9efd82e11547d07350214bc268b  kodim21.png
-1cee58eb1f2d9c7ebb254d208a03c783ce6cf2c4d8c2cf45e235dd23b4ce1b29  kodim22.png
-e3111a2fd4da24af15d6459ef9eacfe54106b38e27b4a21821b75c3f5d2d5baf  kodim23.png
-1071c68372cc5a01435c2c225a5cf7d4bb803846ec08bb6b3d6721b156d7cb96  kodim24.png
-SHA256
+          a56e27cbf5f843c048b6af1d6e090760e9c92fadba88b7dee0205918a37523bd  kodim01.png
+          4f4b74a79237e311d72cad958237b5f7088d8bce1c82305ebefe1a70e3022dfd  kodim02.png
+          e25ca1ff2f0c0cb5fdfd5f9b0a0bb21ac4c3de3c84a67f35b09a85d3306249db  kodim03.png
+          e3b946107c5d3441c022f678d0c3caf1e224d81b1604ba840a4f88e562de61aa  kodim04.png
+          10349e963c5c813d327852f82c1795fa4148d69fedffc4c589bee458e3ac3d53  kodim05.png
+          363510303b715d4cbc384e1ce227e466b613a09e1b71ae985882bf8e7fbd9b18  kodim06.png
+          b77d3f006f42414bb242222e0482e750c0fb9e5ee8d4bed2f6f11c5605fe54a4  kodim07.png
+          ba23983c76b4832ee0e8af0592664756841a16779acd69f792e268fb6d13d6e7  kodim08.png
+          6a4361c2fc194feb4edaa9f9a4a0620fb9943e460ac7fdf037fb0f6dd6607a7d  kodim09.png
+          9dfb70f5867c29ff9ed6313683f19b3d867849e40fbc0c4c54a4a89df341cf23  kodim10.png
+          7936814b58b5387fce2e4e2488b4ec830dadd95fa9520f358ddb30990b50f2b6  kodim11.png
+          d78c37c2f04f23761ed2367dd77e2db584ddd4c3950833fecf89f199a8126980  kodim12.png
+          bc34a3ce58dea09dce1704c997171602de90cb34d0c8503a988b77f473d39b08  kodim13.png
+          55a94550ff18f3246c4074fd32b77b0c74447c26b6ad274d564d999c0450ba6e  kodim14.png
+          7538cbb80cb9103606c48b806eae57d56c885c7f90b9b3be70a41160f9cbb683  kodim15.png
+          a89c7268ccd4718ba424a99fc4643c572cf692ca6eae887185ceb4e9f11d2e54  kodim16.png
+          37afcc89fbdcb76d9518e04b2fc011027e2f4cd14b3b2f83cefd721641a47c5b  kodim17.png
+          1a9258c365988961d87a0598725b609139c303ad48a5aad6c503c3b1a87849aa  kodim18.png
+          b7450b264b1b0a411390d8931b112c27905a992520fc90569dc4b920aa32bbdc  kodim19.png
+          3b46c71e3b92a563820ba32936be8330c586c41f938efd94be938386aae4328a  kodim20.png
+          ac958597c82073f6bb65129c68f72b651db5b9efd82e11547d07350214bc268b  kodim21.png
+          1cee58eb1f2d9c7ebb254d208a03c783ce6cf2c4d8c2cf45e235dd23b4ce1b29  kodim22.png
+          e3111a2fd4da24af15d6459ef9eacfe54106b38e27b4a21821b75c3f5d2d5baf  kodim23.png
+          1071c68372cc5a01435c2c225a5cf7d4bb803846ec08bb6b3d6721b156d7cb96  kodim24.png
+          SHA256
             )
             cargo xtask adoption-materialize \
               --encode-fixtures target/j2k-public-corpora/kodak \

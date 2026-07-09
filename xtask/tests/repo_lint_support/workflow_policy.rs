@@ -14,6 +14,32 @@ const CUDA_OXIDE_STRICT_BUILD_DOC_PATTERNS: &[&str] = &[
 ];
 
 #[test]
+fn github_workflows_parse_as_yaml() {
+    let root = repo_root();
+    let workflow_dir = root.join(".github/workflows");
+    let mut workflow_paths = fs::read_dir(&workflow_dir)
+        .expect("read .github/workflows")
+        .map(|entry| entry.expect("read workflow directory entry").path())
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("yml" | "yaml")
+            )
+        })
+        .collect::<Vec<_>>();
+    workflow_paths.sort();
+    assert!(!workflow_paths.is_empty(), "no GitHub workflow YAML found");
+
+    for path in workflow_paths {
+        let relative_path = path.strip_prefix(root).unwrap_or(&path);
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", relative_path.display()));
+        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&source)
+            .unwrap_or_else(|err| panic!("parse {} as YAML: {err}", relative_path.display()));
+    }
+}
+
+#[test]
 fn ci_miri_job_is_a_required_gate() {
     let workflow =
         fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
@@ -141,11 +167,7 @@ fn gpu_validation_workflow_is_self_hosted_and_explicit() {
                     "cuda",
                     "J2K_REQUIRE_CUDA_OXIDE_BUILD",
                     "J2K_REQUIRE_METAL_RUNTIME",
-                    "Assert Metal runtime gate is set",
-                    "cargo test -p j2k-transcode-metal --all-targets",
-                    "executed-count floor",
-                    "cargo test -p j2k-jpeg-metal",
-                    "cargo test -p j2k-metal",
+                    "cargo xtask release-metal",
                     "cargo test -p j2k-jpeg-cuda",
                     "cargo test -p j2k-cuda",
                 ]),
@@ -161,6 +183,9 @@ fn gpu_validation_workflow_is_self_hosted_and_explicit() {
                     "successful manual `gpu-validation.yml` dispatch for the PR head SHA before merge",
                     "The normal CI `gpu-path-policy` job checks the PR diff",
                     "queries `gpu-validation.yml` runs by head SHA",
+                    "Hosted macOS CI runs `cargo xtask metal-compile`",
+                    "The self-hosted Metal job runs `cargo xtask release-metal`",
+                    "fails on skipped runtime tests or a missing Metal device",
                     "Do not add `pull_request` or `push` triggers to `gpu-validation.yml` without an explicit policy decision.",
                 ]),
         ],
@@ -205,6 +230,27 @@ fn cuda_gpu_validation_job_stays_cuda_focused() {
 }
 
 #[test]
+fn ci_hosted_metal_job_is_compile_only() {
+    let root = repo_root();
+    let workflow =
+        fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let metal_job = workflow_job(&workflow, "metal-compile");
+
+    assert_pattern_checks(&[PatternCheck::new("hosted Metal compile job", metal_job)
+        .required(&[
+            "name: Metal compile and pure tests",
+            "runs-on: macos-latest",
+            "components: clippy",
+            "cargo xtask metal-compile",
+        ])
+        .forbidden(&[
+            "cargo xtask release-metal",
+            "J2K_REQUIRE_METAL_RUNTIME",
+            "self-hosted",
+        ])]);
+}
+
+#[test]
 fn metal_gpu_validation_job_fails_closed_and_stays_metal_focused() {
     let root = repo_root();
     let workflow_path = root.join(".github/workflows/gpu-validation.yml");
@@ -215,14 +261,9 @@ fn metal_gpu_validation_job_fails_closed_and_stays_metal_focused() {
         .required(&[
             "runs-on: [self-hosted, macOS, ARM64, metal]",
             "J2K_REQUIRE_METAL_RUNTIME: \"1\"",
-            "Assert Metal runtime gate is set",
-            "J2K_REQUIRE_METAL_RUNTIME not set",
-            "cargo test -p j2k-jpeg-metal --all-targets -- --nocapture",
-            "cargo test -p j2k-metal --all-targets -- --nocapture",
-            "cargo test -p j2k-transcode-metal --all-targets -- --nocapture",
-            "Expected at least 100 executed JPEG Metal tests",
-            "Expected at least 150 executed J2K Metal tests",
-            "Expected at least 20 executed transcode Metal tests",
+            "RUST_TEST_THREADS: \"1\"",
+            "Run fail-closed Metal release validation",
+            "cargo xtask release-metal",
             "cargo bench -p j2k-jpeg-metal --no-run",
         ])
         .forbidden(&[
@@ -231,7 +272,42 @@ fn metal_gpu_validation_job_fails_closed_and_stays_metal_focused() {
             "cargo test -p j2k-jpeg-cuda",
             "cargo test -p j2k-cuda",
             "J2K_REQUIRE_CUDA_RUNTIME",
+            "executed-count floor",
+            "passed=$(echo",
+            "cargo test -p j2k-jpeg-metal",
+            "cargo test -p j2k-metal",
+            "cargo test -p j2k-transcode-metal",
         ])]);
+}
+
+#[test]
+fn metal_xtask_owns_complete_compile_and_runtime_policy() {
+    assert_file_pattern_checks(
+        repo_root(),
+        &[FilePatternCheck::new("xtask/src/metal.rs")
+            .named("Metal xtask policy")
+            .required(&[
+                "METAL_COMPILE_PACKAGES",
+                "j2k-metal-support",
+                "j2k-jpeg-metal",
+                "j2k-metal",
+                "j2k-transcode-metal",
+                "J2K public facade",
+                "J2K_REQUIRE_METAL_RUNTIME",
+                "RUST_TEST_THREADS",
+                "J2K_GPU_TEST_SKIPPED",
+                "J2K_METAL_REQUIRED_IGNORED_TESTS",
+                "validate_required_ignored_inventory",
+                "validate_exact_ignored_run",
+                "passed != J2K_METAL_REQUIRED_IGNORED_TESTS.len()",
+                "metal-compile requires J2K_REQUIRE_METAL_RUNTIME to be unset",
+                "refusing to report Metal success without the required platform",
+            ])
+            .forbidden(&[
+                "skipping Metal release tests",
+                "J2K_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS",
+            ])],
+    );
 }
 
 #[test]

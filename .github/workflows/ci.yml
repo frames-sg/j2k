@@ -329,14 +329,16 @@ jobs:
           toolchain: stable
       - run: cargo xtask release-cpu
 
-  release-metal:
+  metal-compile:
+    name: Metal compile and pure tests
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - run: cargo xtask release-metal
+          components: clippy
+      - run: cargo xtask metal-compile
 
   no-std:
     runs-on: ubuntu-latest

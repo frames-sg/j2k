@@ -22,6 +22,7 @@ mod adoption_materialize;
 mod adoption_report;
 #[cfg(feature = "adoption")]
 mod markdown;
+mod metal;
 mod perf_guard;
 mod process;
 mod public_support;
@@ -190,10 +191,11 @@ fn run() -> Result<(), String> {
         "no-std" => no_std(),
         "unsafe-audit" => verify_unsafe_audit(),
         "downstream-smoke" => downstream_smoke(),
-        "repo-lint" => repo_lint(),
+        "repo-lint" => repo_lint(env::args().skip(2)),
         "release-integrity" => release_integrity(),
         "release-cpu" => release_cpu(),
-        "release-metal" => release_metal(),
+        "metal-compile" => metal::metal_compile(),
+        "release-metal" => metal::release_metal(),
         "coverage" => coverage(),
         "package" => package(),
         "ci" => ci(),
@@ -215,7 +217,15 @@ fn ci() -> Result<(), String> {
     verify_unsafe_audit()
 }
 
-fn repo_lint() -> Result<(), String> {
+fn repo_lint(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut strict = false;
+    for arg in args {
+        match arg.as_str() {
+            "--strict" => strict = true,
+            other => return Err(format!("unknown repo-lint argument `{other}`")),
+        }
+    }
+
     run_cargo(&[
         "test",
         "-p",
@@ -224,7 +234,22 @@ fn repo_lint() -> Result<(), String> {
         "repo_lint",
         "--",
         "--nocapture",
-    ])
+    ])?;
+
+    if strict {
+        run_cargo(&[
+            "test",
+            "-p",
+            "xtask",
+            "--test",
+            "repo_lint",
+            "--",
+            "--nocapture",
+            "--ignored",
+        ])?;
+    }
+
+    Ok(())
 }
 
 fn fmt() -> Result<(), String> {
@@ -324,14 +349,7 @@ fn test() -> Result<(), String> {
     }
 
     test_workspace_without_benches(&["--exclude", "j2k-metal"])?;
-    if skip_j2k_metal_runtime_on_hosted_github_macos() {
-        eprintln!(
-            "skipping j2k-metal runtime tests on GitHub-hosted macOS; \
-             self-hosted gpu-validation runs the Metal runtime suite"
-        );
-        return test_package_without_benches("j2k-metal", true);
-    }
-    test_package_without_benches("j2k-metal", false)
+    test_j2k_metal_without_benches()
 }
 
 fn test_workspace_without_benches(extra_args: &[&str]) -> Result<(), String> {
@@ -363,26 +381,20 @@ fn test_facade_cuda_stub() -> Result<(), String> {
     ])
 }
 
-fn test_package_without_benches(package: &str, no_run: bool) -> Result<(), String> {
-    let mut test_args = vec![
-        "test",
-        "-p",
-        package,
-        "--all-features",
-        "--lib",
-        "--bins",
-        "--tests",
-    ];
-    if no_run {
-        test_args.push("--no-run");
-    }
-
-    if no_run {
-        return run_cargo(&test_args);
-    }
-
-    run_cargo_with_env(&test_args, &[("RUST_TEST_THREADS", "1")])?;
-    run_cargo(&["test", "-p", package, "--all-features", "--doc"])
+fn test_j2k_metal_without_benches() -> Result<(), String> {
+    run_cargo_with_env(
+        &[
+            "test",
+            "-p",
+            "j2k-metal",
+            "--all-features",
+            "--lib",
+            "--bins",
+            "--tests",
+        ],
+        &[("RUST_TEST_THREADS", "1")],
+    )?;
+    run_cargo(&["test", "-p", "j2k-metal", "--all-features", "--doc"])
 }
 
 fn nextest() -> Result<(), String> {
@@ -1659,41 +1671,6 @@ fn release_cpu() -> Result<(), String> {
     run_cargo(&args)
 }
 
-fn release_metal() -> Result<(), String> {
-    if env::consts::OS != "macos" {
-        eprintln!("skipping Metal release tests on {}", env::consts::OS);
-        return Ok(());
-    }
-    if skip_j2k_metal_runtime_on_hosted_github_macos() {
-        eprintln!(
-            "skipping j2k-metal release runtime tests on GitHub-hosted macOS; \
-             self-hosted gpu-validation runs the Metal runtime suite"
-        );
-        run_cargo_with_env(
-            &["test", "--release", "-p", "j2k-jpeg-metal"],
-            &[("RUST_TEST_THREADS", "1")],
-        )?;
-        return run_cargo(&["test", "--release", "-p", "j2k-metal", "--no-run"]);
-    }
-    run_cargo_with_env(
-        &[
-            "test",
-            "--release",
-            "-p",
-            "j2k-jpeg-metal",
-            "-p",
-            "j2k-metal",
-        ],
-        &[("RUST_TEST_THREADS", "1")],
-    )
-}
-
-fn skip_j2k_metal_runtime_on_hosted_github_macos() -> bool {
-    env::consts::OS == "macos"
-        && env::var_os("GITHUB_ACTIONS").is_some()
-        && env::var_os("J2K_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS").is_none()
-}
-
 fn coverage() -> Result<(), String> {
     run_cargo(&[
         "llvm-cov",
@@ -2075,10 +2052,11 @@ fn print_help() {
            no-std        check no_std-compatible codec crates\n\
            unsafe-audit  verify docs/unsafe-audit.md lists unsafe Rust sources\n\
            downstream-smoke run facade and transcode examples used by integration docs\n\
-           repo-lint     run repository policy checks owned by xtask\n\
+           repo-lint     run repository policy checks owned by xtask [--strict]\n\
            release-integrity validate publish membership, docs.rs metadata, workflow order, and release docs\n\
            release-cpu   run release-mode CPU codec tests\n\
-           release-metal run release-mode Metal tests on macOS\n\
+           metal-compile compile all Metal targets and run default/pure tests on hosted macOS\n\
+           release-metal run fail-closed release-mode Metal hardware validation on macOS\n\
            coverage      generate lcov.info with cargo-llvm-cov and fail below 80% line coverage\n\
            package       preflight publishable package contents from a clean worktree; strict for registry-independent crates and list-only for staged dependencies"
     );
