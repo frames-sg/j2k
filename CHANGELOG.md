@@ -5,10 +5,6 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
-No unreleased changes yet.
-
-## [0.7.0] - 2026-07-08
-
 - Removes unused public API: `j2k-core` `DecodeRequest` (with the four
   `*_request` trait default methods), `BackendFailureKind`, and `WarningKind`;
   `j2k-profile` `MetricUnit` (with the `unit` parameter of
