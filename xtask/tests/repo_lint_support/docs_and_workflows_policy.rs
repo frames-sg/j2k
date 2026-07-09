@@ -477,36 +477,91 @@ fn ci_coverage_job_is_a_required_gate() {
         .required(&[
             install_action.as_str(),
             "tool: cargo-llvm-cov",
-            "cargo xtask coverage",
+            "fetch-depth: 0",
+            "J2K_COVERAGE_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || 'HEAD^' }}",
+            "cargo xtask coverage host",
+            "name: j2k-host-coverage",
+            "lcov-host.info",
+            "coverage-host-summary.json",
+            "if-no-files-found: error",
         ])
         .forbidden(&["taiki-e/install-action@cargo-llvm-cov", "continue-on-error"])]);
 }
 
 #[test]
-fn coverage_excludes_hardware_only_gpu_adapter_crates() {
+fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() {
     assert_file_pattern_checks(
         repo_root(),
         &[
             FilePatternCheck::new("xtask/src/main.rs")
-                .named("coverage exclusion regex")
+                .named("coverage command delegation")
+                .required(&["coverage::coverage(env::args().skip(2))"])
+                .forbidden(&["GPU_COVERAGE_EXCLUSION_REGEX", "--ignore-filename-regex"]),
+            FilePatternCheck::new("xtask/src/coverage.rs")
+                .named("changed accelerator coverage policy")
                 .required(&[
-                    "crates/j2k-cuda-runtime/",
-                    "crates/j2k-cuda/",
-                    "crates/j2k-.*-cuda/",
-                    "crates/j2k-metal/",
-                    "crates/j2k-.*-metal/",
-                    "crates/j2k-metal-support/",
-                ]),
-            FilePatternCheck::new("docs/release.md")
-                .named("GPU coverage substitute release evidence")
-                .required(&[
-                    "GPU-heavy changes",
-                    "`gpu-validation` runs",
-                    "per-backend minimum test count floors",
-                    "Shared CPU-runnable GPU path code",
-                ]),
+                    "CHANGED_LINE_THRESHOLD_PERCENT: u64 = 80",
+                    "Self::Host => is_production_rust(path)",
+                    "accelerator host lines",
+                    "cuda-simt-device-rust",
+                    "cuda-generated-host-scaffold",
+                    "cuda-driver-ffi-declarations",
+                    "metal-embedded-shader-body",
+                    "cuda_facade_byte_matches_native_across_matrix_when_required",
+                    "runtime_raii_primitives_smoke_when_required",
+                    "metal_kernels_are_wired_to_host_pipelines",
+                    "full_classic_grayscale_decode_to_metal_matches_host_decode",
+                    "lcov-host.info",
+                    "lcov-metal.info",
+                    "lcov-cuda.info",
+                ])
+                .forbidden(&["GPU_COVERAGE_EXCLUSION_REGEX"]),
+            FilePatternCheck::new(".gitignore")
+                .named("generated coverage evidence")
+                .required(&["lcov-*.info", "coverage-*-summary.json"]),
         ],
     );
+}
+
+#[test]
+fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/gpu-validation.yml"))
+        .expect("read GPU validation workflow");
+    let metal_job = workflow_job(&workflow, "metal-apple-silicon");
+    let cuda_job = workflow_job(&workflow, "cuda-x86_64-compatibility");
+
+    assert_pattern_checks(&[
+        PatternCheck::new("GPU coverage baseline", &workflow).required(&[
+            "coverage-base-ref:",
+            "default: \"v0.6.2\"",
+            "J2K_COVERAGE_BASE: ${{ inputs.coverage-base-ref }}",
+        ]),
+    ]);
+
+    assert_pattern_checks(&[
+        PatternCheck::new("Metal hardware coverage", metal_job)
+            .required(&[
+                "fetch-depth: 0",
+                "tool: cargo-llvm-cov",
+                "cargo xtask coverage metal",
+                "name: j2k-metal-coverage",
+                "lcov-metal.info",
+                "coverage-metal-summary.json",
+                "if-no-files-found: error",
+            ])
+            .forbidden(&["continue-on-error"]),
+        PatternCheck::new("CUDA hardware coverage", cuda_job)
+            .required(&[
+                "fetch-depth: 0",
+                "tool: cargo-llvm-cov",
+                "cargo xtask coverage cuda",
+                "name: j2k-cuda-coverage",
+                "lcov-cuda.info",
+                "coverage-cuda-summary.json",
+                "if-no-files-found: error",
+            ])
+            .forbidden(&["continue-on-error"]),
+    ]);
 }
 
 #[test]

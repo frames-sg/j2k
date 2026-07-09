@@ -304,21 +304,27 @@ jobs:
 
   coverage:
     runs-on: ubuntu-latest
+    env:
+      J2K_COVERAGE_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || 'HEAD^' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
       - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
         with:
           tool: cargo-llvm-cov
-      - run: cargo xtask coverage
+      - run: cargo xtask coverage host
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: j2k-lcov
-          path: lcov.info
-          if-no-files-found: ignore
+          name: j2k-host-coverage
+          path: |
+            lcov-host.info
+            coverage-host-summary.json
+          if-no-files-found: error
 
   deny:
     runs-on: ubuntu-latest

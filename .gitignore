@@ -1,6 +1,8 @@
 target/
 .codewhale/
 lcov.info
+lcov-*.info
+coverage-*-summary.json
 **/*.rs.bk
 Cargo.lock.bak
 .vscode/

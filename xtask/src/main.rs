@@ -20,6 +20,7 @@ mod adoption_manifest;
 mod adoption_materialize;
 #[cfg(feature = "adoption")]
 mod adoption_report;
+mod coverage;
 #[cfg(feature = "adoption")]
 mod markdown;
 mod metal;
@@ -201,7 +202,7 @@ fn run() -> Result<(), String> {
         "release-cpu" => release_cpu(),
         "metal-compile" => metal::metal_compile(),
         "release-metal" => metal::release_metal(),
-        "coverage" => coverage(),
+        "coverage" => coverage::coverage(env::args().skip(2)),
         "package" => package(),
         "ci" => ci(),
         "help" | "-h" | "--help" => {
@@ -1625,24 +1626,6 @@ fn release_cpu() -> Result<(), String> {
     run_cargo(&args)
 }
 
-fn coverage() -> Result<(), String> {
-    run_cargo(&[
-        "llvm-cov",
-        "--workspace",
-        "--all-features",
-        "--ignore-filename-regex",
-        GPU_COVERAGE_EXCLUSION_REGEX,
-        "--lcov",
-        "--output-path",
-        "lcov.info",
-        "--fail-under-lines",
-        "80",
-    ])
-}
-
-const GPU_COVERAGE_EXCLUSION_REGEX: &str =
-    "crates/j2k-cuda-runtime/|crates/j2k-cuda/|crates/j2k-.*-cuda/|crates/j2k-metal/|crates/j2k-.*-metal/|crates/j2k-metal-support/";
-
 fn package() -> Result<(), String> {
     ensure_clean_worktree()?;
     for package in PUBLISHABLE_PACKAGES {
@@ -2011,7 +1994,7 @@ fn print_help() {
            release-cpu   run release-mode CPU codec tests\n\
            metal-compile compile all Metal targets and run default/pure tests on hosted macOS\n\
            release-metal run fail-closed release-mode Metal hardware validation on macOS\n\
-           coverage      generate lcov.info with cargo-llvm-cov and fail below 80% line coverage\n\
+           coverage      enforce >=80% changed executable Rust coverage [host|metal|cuda] [--base REV]\n\
            package       preflight publishable package contents from a clean worktree; strict for registry-independent crates and list-only for staged dependencies"
     );
 }

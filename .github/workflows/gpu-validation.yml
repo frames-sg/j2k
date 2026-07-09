@@ -31,12 +31,18 @@ on:
         type: boolean
         required: false
         default: false
+      coverage-base-ref:
+        description: "Git revision used as the changed-line coverage base"
+        type: string
+        required: false
+        default: "v0.6.2"
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  J2K_COVERAGE_BASE: ${{ inputs.coverage-base-ref }}
   RUSTFLAGS: "-D warnings"
 
 jobs:
@@ -46,6 +52,8 @@ jobs:
     runs-on: [self-hosted, Linux, X64, cuda]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -63,10 +71,12 @@ jobs:
         run: |
           cargo install typos-cli --version 1.42.3 --locked
           cargo install cargo-deny --locked
-          cargo install cargo-llvm-cov --locked
+      - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
+        with:
+          tool: cargo-llvm-cov
       - run: cargo xtask typos
       - run: cargo xtask deny
-      - run: cargo xtask coverage
+      - run: cargo xtask coverage host
 
   metal-apple-silicon:
     if: ${{ inputs.run-metal-validation }}
@@ -77,11 +87,27 @@ jobs:
       RUST_TEST_THREADS: "1"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
+      - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
+        with:
+          tool: cargo-llvm-cov
       - name: Run fail-closed Metal release validation
         run: cargo xtask release-metal
+      - name: Collect changed-line Metal host coverage
+        run: cargo xtask coverage metal
+      - name: Upload Metal coverage evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: j2k-metal-coverage
+          path: |
+            lcov-metal.info
+            coverage-metal-summary.json
+          if-no-files-found: error
       - run: cargo bench -p j2k-jpeg-metal --no-run
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
@@ -107,9 +133,14 @@ jobs:
       RUST_TEST_THREADS: "1"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
+      - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
+        with:
+          tool: cargo-llvm-cov
       - name: Assert CUDA runtime gate is set
         run: |
           test -n "${J2K_REQUIRE_CUDA_RUNTIME:-}" || { echo "J2K_REQUIRE_CUDA_RUNTIME not set — parity tests would silently skip"; exit 1; }
@@ -182,6 +213,17 @@ jobs:
       - run: cargo clippy -p j2k-cuda --all-targets --features cuda-runtime -- -D warnings
       - run: cargo clippy -p j2k-transcode-cuda --all-targets --features cuda-runtime -- -D warnings
       - run: cargo clippy -p j2k-cuda --all-targets --features cuda-profiling -- -D warnings
+      - name: Collect changed-line CUDA host coverage
+        run: cargo xtask coverage cuda
+      - name: Upload CUDA coverage evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: j2k-cuda-coverage
+          path: |
+            lcov-cuda.info
+            coverage-cuda-summary.json
+          if-no-files-found: error
       - run: cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime --no-run
       - run: cargo bench -p j2k-cuda --bench encode_stages --features cuda-runtime --no-run
       - run: cargo bench -p j2k-cuda --bench htj2k_decode --features cuda-runtime --no-run

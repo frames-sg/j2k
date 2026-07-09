@@ -185,6 +185,7 @@ Stability values:
 
 | Variable | Effect | Default | Stability |
 | --- | --- | --- | --- |
+| `J2K_COVERAGE_BASE` | Git revision used by `cargo xtask coverage` to compute changed executable Rust lines. CI pins this to the pull-request base SHA, the pre-push SHA, or the v0.6.2 release baseline for accelerator release evidence. | `HEAD^` only for local or scheduled fallback runs | Test/CI |
 | `J2K_FUZZ_RUNS` | Number of runs passed to each `cargo xtask fuzz-run` target. | `1000` | Test/CI |
 | `J2K_FUZZ_MAX_TOTAL_TIME_SECONDS` | Optional libFuzzer max total time for `cargo xtask fuzz-run`. | Not passed | Test/CI |
 | `J2K_FUZZ_TARGET` | Target triple passed to `cargo fuzz run --target` by `cargo xtask fuzz-run`. | Nightly host target from `rustc -vV` | Test/CI |
