@@ -304,7 +304,12 @@ fn gpu_validation_workflow_is_self_hosted_and_explicit() {
                     "cargo xtask release-metal",
                     "cargo test -p j2k-jpeg-cuda",
                     "cargo test -p j2k-cuda",
-                ]),
+                    "cargo run -p xtask --features adoption -- adoption-materialize",
+                    "cargo run -p xtask --features adoption -- adoption-curate",
+                    "cargo run -p xtask --features adoption -- adoption-benchmark",
+                    "cargo run -p xtask --features adoption -- adoption-report",
+                ])
+                .forbidden(&["cargo xtask adoption-"]),
             FilePatternCheck::new("CONTRIBUTING.md")
                 .named("contributor GPU validation policy")
                 .required(&[

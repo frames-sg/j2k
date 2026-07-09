@@ -376,7 +376,7 @@ jobs:
           1071c68372cc5a01435c2c225a5cf7d4bb803846ec08bb6b3d6721b156d7cb96  kodim24.png
           SHA256
             )
-            cargo xtask adoption-materialize \
+            cargo run -p xtask --features adoption -- adoption-materialize \
               --encode-fixtures target/j2k-public-corpora/kodak \
               --source-command "downloaded-from-r0k-us-kodak-lossless-true-color-sha256-pinned" \
               --license-status redistributable \
@@ -394,14 +394,14 @@ jobs:
             git -C target/j2k-public-corpora/openjpeg-data fetch --depth 1 origin "${J2K_STARTER_OPENJPEG_DATA_COMMIT}"
             git -C target/j2k-public-corpora/openjpeg-data checkout --detach "${J2K_STARTER_OPENJPEG_DATA_COMMIT}"
             test "$(git -C target/j2k-public-corpora/openjpeg-data rev-parse HEAD)" = "${J2K_STARTER_OPENJPEG_DATA_COMMIT}"
-            cargo xtask adoption-curate \
+            cargo run -p xtask --features adoption -- adoption-curate \
               --fixtures target/j2k-public-corpora/openjpeg-data/input/conformance \
               --encode-command "source-native-openjpeg-data-conformance-dir@39524bd3a601d90ed8e0177559400d23945f96a9" \
               --license-status permissive-test-fixture \
               --corpus-name openjpeg-data-conformance \
               --corpus-category conformance \
               --out-dir target/j2k-public-corpora/openjpeg-conformance-curated
-            cargo xtask adoption-curate \
+            cargo run -p xtask --features adoption -- adoption-curate \
               --fixtures target/j2k-public-corpora/openjpeg-data/input/nonregression \
               --encode-command "source-native-openjpeg-data-nonregression-dir@39524bd3a601d90ed8e0177559400d23945f96a9" \
               --license-status permissive-test-fixture \
@@ -422,7 +422,7 @@ jobs:
             J2K_ADOPTION_ENCODE_FIXTURES="target/j2k-public-corpora/materialized-kodak/staged-pnm"
             J2K_ADOPTION_ENCODE_MANIFEST="target/j2k-public-corpora/combined-adoption/encode-fixtures.tsv"
           fi
-          cargo xtask adoption-benchmark \
+          cargo run -p xtask --features adoption -- adoption-benchmark \
             --fixtures "${J2K_ADOPTION_FIXTURES}" \
             --manifest "${J2K_ADOPTION_MANIFEST}" \
             --encode-fixtures "${J2K_ADOPTION_ENCODE_FIXTURES}" \
@@ -431,7 +431,7 @@ jobs:
             --require-cuda \
             --cuda-decode-batch-sizes 1,16,256,1024 \
             --out-dir "${J2K_ADOPTION_OUT_DIR}"
-          cargo xtask adoption-report \
+          cargo run -p xtask --features adoption -- adoption-report \
             --run-dir "${J2K_ADOPTION_OUT_DIR}" \
             --out "${J2K_ADOPTION_OUT_DIR}/adoption-report.md"
       - name: Upload CUDA adoption benchmark artifacts
