@@ -2344,7 +2344,11 @@ fn pnm_extension(components: u8) -> Result<&'static str, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize_manifest_row_path, DEFAULT_CASE_BATCH_SIZES, DEFAULT_MIXED_BATCH_SIZES,
+        canonicalize_manifest_row_path, external_manifest_covered_case_count,
+        external_manifest_missing_case_count, measurement_row,
+        mixed_external_group_distinct_inputs_label, publication_blockers, EncoderKind, EncoderTool,
+        ImageCase, Measurement, MetadataInput, MixedImageBatch, DEFAULT_CASE_BATCH_SIZES,
+        DEFAULT_MIXED_BATCH_SIZES,
     };
     use crate::common;
     use std::path::Path;
@@ -2412,5 +2416,94 @@ mod tests {
         .expect("remap stale absolute path");
 
         assert_eq!(resolved, fixture.canonicalize().expect("canonical fixture"));
+    }
+
+    #[test]
+    fn encode_manifest_mixed_publication_and_row_width_have_direct_owners() {
+        let gray = image_case("gray", "external:gray", 1, "covered", 64, 64);
+        let mut rgb = image_case("rgb", "external:rgb", 3, "missing", 128, 64);
+        rgb.source_format = "ppm".to_string();
+        let cases = vec![gray.clone(), rgb.clone()];
+        assert_eq!(external_manifest_covered_case_count(&cases), 1);
+        assert_eq!(external_manifest_missing_case_count(&cases), 1);
+
+        let mixed = MixedImageBatch {
+            name: "external_mixed_rgb8_encode".to_string(),
+            cases: vec![gray.clone(), rgb.clone()],
+            components: 3,
+        };
+        assert_eq!(
+            mixed_external_group_distinct_inputs_label(&[mixed]),
+            "external_mixed_rgb8_encode:2"
+        );
+
+        let selected_tools = vec![tool(EncoderKind::J2k, true)];
+        let all_tools = vec![
+            tool(EncoderKind::J2k, true),
+            tool(EncoderKind::OpenJpeg, false),
+            tool(EncoderKind::Grok, false),
+        ];
+        let input = MetadataInput {
+            args: &["jp2k_encode_compare".to_string()],
+            repeats: 1,
+            batch_sizes: &[1],
+            case_batch_sizes: &[1],
+            mixed_batch_sizes: &[1],
+            cases: &cases,
+            mixed_batches: &[],
+            selected_tools: &selected_tools,
+            all_tools: &all_tools,
+            filters_empty: false,
+        };
+        let blockers = publication_blockers(&input);
+        assert!(blockers.contains(&"case-filters-present".to_string()));
+        assert!(blockers.contains(&"openjpeg-not-selected".to_string()));
+        assert!(blockers.contains(&"external-manifest-coverage-missing".to_string()));
+        assert!(blockers.contains(&"mixed-external-batches-missing".to_string()));
+
+        let measurement = Measurement {
+            batch_size: 1,
+            repeats: 1,
+            median_us: 10.0,
+            mean_us: 11.0,
+            images_per_second_median: 100.0,
+            encoded_bytes_per_repeat: 32,
+            samples_us: vec![10.0],
+        };
+        let row = measurement_row(EncoderKind::J2k, &gray, &measurement, "jp2k_encode_compare");
+        assert_eq!(row.split('\t').count(), 26);
+    }
+
+    fn image_case(
+        name: &str,
+        input_source: &str,
+        components: u8,
+        manifest_status: &str,
+        width: u32,
+        height: u32,
+    ) -> ImageCase {
+        ImageCase {
+            name: name.to_string(),
+            input_source: input_source.to_string(),
+            corpus_category: "natural-image".to_string(),
+            corpus_name: "unit-corpus".to_string(),
+            license_status: "cc0".to_string(),
+            source_command: "unit-source".to_string(),
+            manifest_status: manifest_status.to_string(),
+            source_format: if components == 1 { "pgm" } else { "ppm" }.to_string(),
+            width,
+            height,
+            components,
+            pixels: vec![components; width as usize * height as usize * components as usize],
+            pnm_path: Path::new("unit.pnm").to_path_buf(),
+        }
+    }
+
+    fn tool(kind: EncoderKind, available: bool) -> EncoderTool {
+        EncoderTool {
+            kind,
+            program: Path::new(kind.label()).to_path_buf(),
+            available,
+        }
     }
 }
