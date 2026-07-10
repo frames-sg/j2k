@@ -9,7 +9,9 @@
 //!
 //! The "fancy" name is libjpeg-turbo's; the filter weights are `(3, 1)` for
 //! the two nearest chroma samples. At image edges the far sample is clamped
-//! to the nearest (replicate) so the filter always has valid taps.
+//! to the nearest (replicate) so the filter always has valid taps. The 4:2:2
+//! path alternates `+1`/`+2` quarter-sample rounding biases, matching
+//! libjpeg-turbo's ordered-dither rule instead of biasing every half-tie up.
 
 /// Identity upsample: one output row is the input row unchanged. Output width
 /// equals input width. Used for 4:4:4 where no upsample is needed.
@@ -58,7 +60,7 @@ pub(crate) fn upsample_h2v1_fancy_row(
             _ if x.is_multiple_of(2) => {
                 let prev = input_row[sample - 1] as u32;
                 let curr = input_row[sample] as u32;
-                ((3 * curr + prev + 2) / 4) as u8
+                ((3 * curr + prev + 1) / 4) as u8
             }
             _ => {
                 let curr = input_row[sample] as u32;
@@ -222,12 +224,49 @@ mod tests {
         upsample_h2v1_fancy(&input, &mut output);
         assert_eq!(output[0], 10);
         assert_eq!(output[1], 13);
-        assert_eq!(output[2], 18);
+        assert_eq!(output[2], 17);
         assert_eq!(output[3], 23);
-        assert_eq!(output[4], 28);
+        assert_eq!(output[4], 27);
         assert_eq!(output[5], 33);
-        assert_eq!(output[6], 38);
+        assert_eq!(output[6], 37);
         assert_eq!(output[7], 40);
+    }
+
+    #[test]
+    fn h2v1_fancy_matches_libjpeg_ordered_rounding_at_edges_and_odd_widths() {
+        let inputs = [
+            vec![0u8, 1, 2],
+            vec![255u8, 254, 253],
+            vec![0u8, 255, 0, 255],
+            vec![17u8, 64, 129, 192, 240],
+        ];
+
+        for input in inputs {
+            for output_width in 1..=input.len() * 2 {
+                let mut actual = vec![0u8; output_width];
+                upsample_h2v1_fancy_row(&input, output_width, &mut actual);
+
+                let expected = (0..output_width)
+                    .map(|x| {
+                        let sample = x / 2;
+                        match x {
+                            0 => input[0],
+                            _ if x == input.len() * 2 - 1 => input[input.len() - 1],
+                            _ if x.is_multiple_of(2) => {
+                                ((3 * u32::from(input[sample]) + u32::from(input[sample - 1]) + 1)
+                                    >> 2) as u8
+                            }
+                            _ => {
+                                ((3 * u32::from(input[sample]) + u32::from(input[sample + 1]) + 2)
+                                    >> 2) as u8
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                assert_eq!(actual, expected, "input={input:?}, width={output_width}");
+            }
+        }
     }
 
     #[test]

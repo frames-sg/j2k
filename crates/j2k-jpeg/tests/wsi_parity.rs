@@ -73,45 +73,54 @@ fn baseline_fast444_and_restart_routes_match_stored_rgb_fixtures() {
 }
 
 #[test]
-fn generic_422_current_output_regression_baseline() {
+fn baseline_422_16x8_matches_libjpeg_turbo_bit_exact() {
     let decoder = Decoder::new(JPEG_BASELINE_422_16X8).expect("4:2:2 fixture must parse");
-    let mut actual_422 = vec![0u8; JPEG_BASELINE_422_16X8_RGB.len()];
+    let mut actual = vec![0u8; JPEG_BASELINE_422_16X8_RGB.len()];
     decoder
-        .decode_scaled_into(&mut actual_422, 16 * 3, PixelFormat::Rgb8, Downscale::None)
+        .decode_scaled_into(&mut actual, 16 * 3, PixelFormat::Rgb8, Downscale::None)
         .expect("generic 4:2:2 route must decode");
+    assert_eq!(actual, JPEG_BASELINE_422_16X8_RGB);
+}
 
-    // Preserve the existing j2k output while the separately tracked libjpeg-turbo
-    // 4:2:2 interpolation-parity gap is investigated.
-    let output_hash = actual_422
-        .iter()
-        .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        });
-    assert_eq!(
-        output_hash, 0x4a9b_e9f5_ec1f_80df,
-        "generic 4:2:2 output changed"
-    );
+#[test]
+fn baseline_422_roi_and_scaled_roi_match_full_route_projections() {
+    let decoder = Decoder::new(JPEG_BASELINE_422_16X8).expect("4:2:2 fixture must parse");
+    let roi = Rect {
+        x: 3,
+        y: 1,
+        w: 9,
+        h: 5,
+    };
 
-    let mut differing_bytes = 0usize;
-    let mut max_delta = 0u8;
-    let mut differing_by_channel = [0usize; 3];
-    for (index, (&actual, &reference)) in actual_422
-        .iter()
-        .zip(JPEG_BASELINE_422_16X8_RGB)
-        .enumerate()
-    {
-        let delta = actual.abs_diff(reference);
-        if delta != 0 {
-            differing_bytes += 1;
-            max_delta = max_delta.max(delta);
-            differing_by_channel[index % 3] += 1;
-        }
+    let region = decode_region_rgb(&decoder, roi);
+    assert_eq!(region, crop_rgb8(JPEG_BASELINE_422_16X8_RGB, 16, roi));
+
+    for (factor, denominator) in [
+        (Downscale::Half, 2u32),
+        (Downscale::Quarter, 4),
+        (Downscale::Eighth, 8),
+    ] {
+        let (scaled, _) = decoder
+            .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, factor))
+            .expect("scaled 4:2:2 route must decode");
+        let (scaled_region, outcome) = decoder
+            .decode_request(DecodeRequest::region_scaled(PixelFormat::Rgb8, roi, factor))
+            .expect("scaled 4:2:2 ROI route must decode");
+        let projected = scaled_rect_covering(pixel_rect(roi), denominator);
+        let projected_rect = Rect {
+            x: projected.x,
+            y: projected.y,
+            w: projected.w,
+            h: projected.h,
+        };
+        let scaled_width = 16u32.div_ceil(denominator) as usize;
+        assert_eq!(
+            scaled_region,
+            crop_rgb8(&scaled, scaled_width, projected_rect),
+            "scaled 4:2:2 ROI mismatch at denominator {denominator}"
+        );
+        assert_eq!(outcome.decoded, roi);
     }
-    assert_eq!(
-        (differing_bytes, max_delta, differing_by_channel),
-        (16, 2, [0, 4, 12]),
-        "update only after resolving the tracked 4:2:2 interpolation gap"
-    );
 }
 
 #[test]
