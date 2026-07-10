@@ -1,0 +1,150 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
+
+use super::evaluation::coverage_violations;
+use super::exclusion_policy::{
+    matching_exclusion, validate_exclusion_policy, ExclusionMatcher, COVERAGE_EXCLUSIONS,
+};
+use super::model::{parse_options, ChangedCoverageResult, CoverageCounts, CoverageLane};
+use super::parsing::{parse_changed_lines, parse_lcov};
+
+fn synthetic_result(measurable: usize, covered: usize) -> ChangedCoverageResult {
+    ChangedCoverageResult {
+        overall: CoverageCounts {
+            measurable,
+            covered,
+        },
+        accelerator: CoverageCounts {
+            measurable,
+            covered,
+        },
+        changed_files: BTreeSet::new(),
+        uncovered: Vec::new(),
+        unmeasured: Vec::new(),
+        exclusions: BTreeMap::new(),
+        absent_instrumentable_files: Vec::new(),
+    }
+}
+
+#[test]
+fn parses_added_diff_hunks_without_counting_deletions() {
+    let diff = "\
+diff --git a/crates/a/src/lib.rs b/crates/a/src/lib.rs
+--- a/crates/a/src/lib.rs
++++ b/crates/a/src/lib.rs
+@@ -2,0 +3,2 @@
++first
++second
+@@ -8 +10 @@
+-old
++new
+";
+
+    let changed = parse_changed_lines(diff).unwrap();
+
+    assert_eq!(changed["crates/a/src/lib.rs"], BTreeSet::from([3, 4, 10]));
+}
+
+#[test]
+fn lcov_parser_merges_duplicate_line_records_by_max_count() {
+    let root = Path::new("/repo");
+    let lcov = "\
+SF:/repo/crates/a/src/lib.rs
+DA:3,0
+DA:4,2
+end_of_record
+SF:/repo/crates/a/src/lib.rs
+DA:3,1
+end_of_record
+";
+
+    let report = parse_lcov(lcov, root).unwrap();
+
+    assert_eq!(report.lines["crates/a/src/lib.rs"][&3], 1);
+    assert_eq!(report.lines["crates/a/src/lib.rs"][&4], 2);
+}
+
+#[test]
+fn eighty_percent_changed_line_coverage_passes_exactly() {
+    let result = synthetic_result(5, 4);
+    assert!(coverage_violations(CoverageLane::Cuda, &result).is_empty());
+}
+
+#[test]
+fn accelerator_threshold_cannot_be_masked_by_cpu_coverage() {
+    let mut result = synthetic_result(100, 99);
+    result.accelerator = CoverageCounts {
+        measurable: 5,
+        covered: 3,
+    };
+
+    let violations = coverage_violations(CoverageLane::Host, &result);
+
+    assert_eq!(violations.len(), 1);
+    assert!(violations[0].contains("accelerator host lines"));
+}
+
+#[test]
+fn hosted_changed_line_gate_includes_all_production_rust() {
+    assert!(CoverageLane::Host.includes_path("crates/j2k-cuda/src/error.rs"));
+    assert!(CoverageLane::Host.includes_path("crates/j2k-metal/src/error.rs"));
+    assert!(CoverageLane::Host.includes_path("crates/j2k/src/error.rs"));
+    assert!(CoverageLane::Host.includes_path("xtask/src/coverage.rs"));
+    assert!(!CoverageLane::Host.includes_path("crates/j2k/tests/decode.rs"));
+}
+
+#[test]
+fn metal_raw_shader_span_is_narrower_than_the_host_source_file() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let path = "crates/j2k-metal/src/compute/shader_source.rs";
+    let source = fs::read_to_string(root.join(path)).unwrap();
+    let lines = source.lines().collect::<Vec<_>>();
+
+    assert_eq!(
+        matching_exclusion(path, 7, &lines)
+            .unwrap()
+            .map(|rule| rule.id),
+        Some("metal-embedded-shader-body")
+    );
+    assert!(matching_exclusion(path, 563, &lines).unwrap().is_none());
+}
+
+#[test]
+fn exclusion_policy_maps_every_narrow_rule_to_existing_tests() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    validate_exclusion_policy(&root).unwrap();
+    assert!(COVERAGE_EXCLUSIONS
+        .iter()
+        .all(|rule| !rule.evidence.is_empty()));
+    assert!(!COVERAGE_EXCLUSIONS.iter().any(|rule| {
+        matches!(
+            rule.matcher,
+            ExclusionMatcher::WholeFile {
+                path: "crates/j2k-cuda/" | "crates/j2k-metal/"
+            }
+        )
+    }));
+}
+
+#[test]
+fn coverage_cli_defaults_to_host_and_accepts_explicit_lanes() {
+    let default = parse_options(std::iter::empty()).unwrap();
+    let metal = parse_options(
+        [
+            "metal".to_string(),
+            "--base".to_string(),
+            "HEAD^".to_string(),
+        ]
+        .into_iter(),
+    )
+    .unwrap();
+    let cuda = parse_options(["cuda".to_string()].into_iter()).unwrap();
+
+    assert_eq!(default.lane, CoverageLane::Host);
+    assert_eq!(metal.lane, CoverageLane::Metal);
+    assert_eq!(metal.base.as_deref(), Some("HEAD^"));
+    assert_eq!(cuda.lane, CoverageLane::Cuda);
+}
