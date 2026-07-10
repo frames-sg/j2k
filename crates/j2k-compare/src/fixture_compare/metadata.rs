@@ -14,6 +14,10 @@ use super::{
     MIN_PUBLICATION_EXTERNAL_INPUTS,
 };
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark metadata is one ordered, externally consumed TSV schema"
+)]
 pub(super) fn emit_metadata(context: MetadataContext<'_>) {
     let MetadataContext {
         args,

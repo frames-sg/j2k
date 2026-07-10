@@ -27,6 +27,10 @@ fn roi_batch_compare_binary_exposes_grok_wsi_surfaces() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this source-surface regression test intentionally keeps one declarative compatibility inventory"
+)]
 fn fixture_compare_binary_exposes_fair_fixture_matrix() {
     let source = [
         include_str!("../src/bin/jp2k_fixture_compare.rs"),

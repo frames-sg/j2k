@@ -40,17 +40,13 @@ name = "jp2k_encode_compare"
 path = "src/bin/jp2k_encode_compare.rs"
 
 [lints.rust]
-unsafe_code = "allow"
+unsafe_code = "warn"
 unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "warn"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 undocumented_unsafe_blocks = "warn"
-module_name_repetitions = "allow"
+# Public API annotation/documentation policy remains a separate release review.
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
-cast_possible_truncation = "allow"
-cast_sign_loss = "allow"
-cast_possible_wrap = "allow"
-too_many_lines = "allow"

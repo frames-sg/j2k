@@ -58,6 +58,10 @@ pub(super) fn mixed_external_batches(cases: &[FixtureCase]) -> Vec<MixedFixtureB
         .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "generated fixture catalog keeps names, wrappers, and operations in one reviewable inventory"
+)]
 pub(super) fn fixture_cases() -> Result<Vec<FixtureCase>, String> {
     let roi64 = Rect {
         x: 32,

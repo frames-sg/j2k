@@ -12,6 +12,10 @@ use super::{
     MIN_PUBLICATION_MIXED_DISTINCT_INPUTS,
 };
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark metadata is one ordered, externally consumed TSV schema"
+)]
 pub(super) fn emit_metadata(input: MetadataInput<'_>) {
     let blockers = publication_blockers(&input);
     let MetadataInput {
@@ -139,6 +143,13 @@ pub(super) fn emit_metadata(input: MetadataInput<'_>) {
 
 pub(super) fn publication_blockers(input: &MetadataInput<'_>) -> Vec<String> {
     let mut blockers = Vec::new();
+    append_encode_run_blockers(&mut blockers, input);
+    append_encode_tool_blockers(&mut blockers, input);
+    append_encode_corpus_blockers(&mut blockers, input);
+    blockers
+}
+
+fn append_encode_run_blockers(blockers: &mut Vec<String>, input: &MetadataInput<'_>) {
     if cfg!(debug_assertions) {
         blockers.push("debug-build".to_string());
     }
@@ -180,6 +191,9 @@ pub(super) fn publication_blockers(input: &MetadataInput<'_>) -> Vec<String> {
             join_usizes(DEFAULT_MIXED_BATCH_SIZES)
         ));
     }
+}
+
+fn append_encode_tool_blockers(blockers: &mut Vec<String>, input: &MetadataInput<'_>) {
     if !env_truthy("J2K_REQUIRE_OPENJPEG") {
         blockers.push("openjpeg-gate-not-required".to_string());
     }
@@ -201,6 +215,9 @@ pub(super) fn publication_blockers(input: &MetadataInput<'_>) -> Vec<String> {
     if env_truthy("J2K_REQUIRE_KAKADU") && !tool_available(input.all_tools, EncoderKind::Kakadu) {
         blockers.push("kakadu-compress-unavailable".to_string());
     }
+}
+
+fn append_encode_corpus_blockers(blockers: &mut Vec<String>, input: &MetadataInput<'_>) {
     let external_unique = external_unique_input_count(input.cases);
     if generated_case_count(input.cases) > 0 {
         blockers.push("generated-fixtures-included".to_string());
@@ -219,7 +236,7 @@ pub(super) fn publication_blockers(input: &MetadataInput<'_>) -> Vec<String> {
         ));
     }
     for components in [1, 3] {
-        require_mixed_encode_group(&mut blockers, input.cases, input.mixed_batches, components);
+        require_mixed_encode_group(blockers, input.cases, input.mixed_batches, components);
     }
     let component_groups = external_component_groups(input.cases);
     if !component_groups.contains(&1) {
@@ -291,7 +308,6 @@ pub(super) fn publication_blockers(input: &MetadataInput<'_>) -> Vec<String> {
     {
         blockers.push("external-workload-corpus-missing".to_string());
     }
-    blockers
 }
 
 pub(super) fn require_mixed_encode_group(

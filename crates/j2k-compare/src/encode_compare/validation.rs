@@ -34,6 +34,17 @@ pub(super) fn validate_encoded_profile(
     let codestream = payload.codestream();
     let header = j2k_native::inspect_j2k_codestream_header(codestream)
         .map_err(|error| format!("inspect {} profile: {error}", path.display()))?;
+    validate_header_profile(&header, case, encoder)?;
+
+    let cod = cod_profile(codestream)?;
+    validate_cod_profile(&cod, case, encoder)
+}
+
+fn validate_header_profile(
+    header: &j2k_native::J2kCodestreamHeaderMetadata,
+    case: &ImageCase,
+    encoder: EncoderKind,
+) -> Result<(), String> {
     if header.dimensions != (case.width, case.height) {
         return Err(format!(
             "{} {} profile dimensions {:?} != expected {:?}",
@@ -96,8 +107,14 @@ pub(super) fn validate_encoded_profile(
             case.name
         ));
     }
+    Ok(())
+}
 
-    let cod = cod_profile(codestream)?;
+fn validate_cod_profile(
+    cod: &CodProfile,
+    case: &ImageCase,
+    encoder: EncoderKind,
+) -> Result<(), String> {
     if cod.progression_order != 0 {
         return Err(format!(
             "{} {} profile progression order {} != LRCP",

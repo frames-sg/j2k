@@ -61,6 +61,35 @@ pub(super) fn publication_blockers(
     mixed_batches: &[MixedFixtureBatch],
 ) -> Vec<String> {
     let mut blockers = Vec::new();
+    append_fixture_run_blockers(
+        &mut blockers,
+        benchmark_mode,
+        repeats,
+        case_batch_sizes,
+        mixed_batch_sizes,
+        filters_empty,
+        cases,
+    );
+    let external_cases = cases
+        .iter()
+        .filter(|case| case.input_source.starts_with("external:"))
+        .collect::<Vec<_>>();
+    append_fixture_inventory_blockers(&mut blockers, cases, mixed_batches, &external_cases);
+    append_fixture_metadata_blockers(&mut blockers, &external_cases);
+    let native_external_cases = external_native_cases(cases);
+    append_fixture_coverage_blockers(&mut blockers, &external_cases, &native_external_cases);
+    blockers
+}
+
+fn append_fixture_run_blockers(
+    blockers: &mut Vec<String>,
+    benchmark_mode: BenchmarkMode,
+    repeats: usize,
+    case_batch_sizes: &[usize],
+    mixed_batch_sizes: &[usize],
+    filters_empty: bool,
+    cases: &[FixtureCase],
+) {
     if cfg!(debug_assertions) {
         blockers.push("debug-build".to_string());
     }
@@ -114,11 +143,14 @@ pub(super) fn publication_blockers(
     if publication_gate_skipped_comparators_label(benchmark_mode, cases) != "none" {
         blockers.push("skipped-comparators-present".to_string());
     }
+}
 
-    let external_cases = cases
-        .iter()
-        .filter(|case| case.input_source.starts_with("external:"))
-        .collect::<Vec<_>>();
+fn append_fixture_inventory_blockers(
+    blockers: &mut Vec<String>,
+    cases: &[FixtureCase],
+    mixed_batches: &[MixedFixtureBatch],
+    external_cases: &[&FixtureCase],
+) {
     if generated_case_count(cases) > 0 {
         blockers.push("generated-fixtures-included".to_string());
     }
@@ -143,15 +175,12 @@ pub(super) fn publication_blockers(
     }
     for format in [PixelFormat::Gray8, PixelFormat::Rgb8] {
         for operation_class in [OperationClass::Full, OperationClass::RegionScaled] {
-            require_mixed_fixture_group(
-                &mut blockers,
-                cases,
-                mixed_batches,
-                format,
-                operation_class,
-            );
+            require_mixed_fixture_group(blockers, cases, mixed_batches, format, operation_class);
         }
     }
+}
+
+fn append_fixture_metadata_blockers(blockers: &mut Vec<String>, external_cases: &[&FixtureCase]) {
     if external_cases
         .iter()
         .any(|case| case.manifest_status != "covered")
@@ -188,13 +217,19 @@ pub(super) fn publication_blockers(
     {
         blockers.push("external-unknown-codec-present".to_string());
     }
-    let native_external_cases = external_native_cases(cases);
+}
+
+fn append_fixture_coverage_blockers(
+    blockers: &mut Vec<String>,
+    external_cases: &[&FixtureCase],
+    native_external_cases: &[FixtureCase],
+) {
     if native_external_cases.len() < MIN_PUBLICATION_EXTERNAL_INPUTS {
         blockers.push(format!(
             "external-native-case-count-below-{MIN_PUBLICATION_EXTERNAL_INPUTS}"
         ));
     }
-    let native_unique_inputs = unique_input_count(&native_external_cases);
+    let native_unique_inputs = unique_input_count(native_external_cases);
     if native_unique_inputs < MIN_PUBLICATION_EXTERNAL_INPUTS {
         blockers.push(format!(
             "external-native-unique-input-count-below-{MIN_PUBLICATION_EXTERNAL_INPUTS}"
@@ -265,7 +300,6 @@ pub(super) fn publication_blockers(
     }) {
         blockers.push("external-workload-corpus-missing".to_string());
     }
-    blockers
 }
 
 fn require_mixed_fixture_group(

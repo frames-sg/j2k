@@ -186,9 +186,9 @@ pub(super) fn measure_case_encoder_once(
     let mut encoded_bytes = 0_usize;
     for index in 0..batch_size {
         let output = run_encoder_once(case, tool, work_dir, &format!("{suffix}_b{index}"))?;
-        encoded_bytes += fs::metadata(&output)
-            .map_err(|error| format!("metadata {}: {error}", output.display()))?
-            .len() as usize;
+        encoded_bytes = encoded_bytes
+            .checked_add(encoded_file_len(&output)?)
+            .ok_or_else(|| "encoded byte count overflow".to_string())?;
         std::hint::black_box(&output);
     }
     Ok((started.elapsed().as_secs_f64() * 1_000_000.0, encoded_bytes))
@@ -206,12 +206,20 @@ pub(super) fn measure_mixed_encoder_once(
     for index in 0..batch_size {
         let case = mixed_case_at(mixed_batch, index);
         let output = run_encoder_once(case, tool, work_dir, &format!("{suffix}_b{index}"))?;
-        encoded_bytes += fs::metadata(&output)
-            .map_err(|error| format!("metadata {}: {error}", output.display()))?
-            .len() as usize;
+        encoded_bytes = encoded_bytes
+            .checked_add(encoded_file_len(&output)?)
+            .ok_or_else(|| "encoded byte count overflow".to_string())?;
         std::hint::black_box(&output);
     }
     Ok((started.elapsed().as_secs_f64() * 1_000_000.0, encoded_bytes))
+}
+
+fn encoded_file_len(path: &Path) -> Result<usize, String> {
+    let len = fs::metadata(path)
+        .map_err(|error| format!("metadata {}: {error}", path.display()))?
+        .len();
+    usize::try_from(len)
+        .map_err(|_| format!("encoded file {} exceeds platform usize", path.display()))
 }
 
 pub(super) fn record_encoded_bytes(
