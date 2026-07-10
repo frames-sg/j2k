@@ -19,19 +19,19 @@ struct EncodeQuadSink<'a> {
 impl QuadSink for EncodeQuadSink<'_> {
     type Error = &'static str;
 
-    #[allow(clippy::inline_always)] // per-quad hot path: keep sink dispatch erased
+    #[expect(clippy::inline_always, reason = "erase encoder sink dispatch")]
     #[inline(always)]
     fn quad_initial(&mut self, row: InitialQuadRow<'_>) -> Result<i32, Self::Error> {
         encode_quad_initial_row(row, self.mel, self.vlc, self.ms)
     }
 
-    #[allow(clippy::inline_always)] // per-quad hot path: keep sink dispatch erased
+    #[expect(clippy::inline_always, reason = "erase encoder sink dispatch")]
     #[inline(always)]
     fn quad_non_initial(&mut self, row: NonInitialQuadRow<'_>) -> Result<i32, Self::Error> {
         encode_quad_non_initial_row(row, self.mel, self.vlc, self.ms)
     }
 
-    #[allow(clippy::inline_always)] // per-quad hot path: keep sink dispatch erased
+    #[expect(clippy::inline_always, reason = "erase encoder sink dispatch")]
     #[inline(always)]
     fn initial_uvlc_pair(&mut self, u_q0: i32, u_q1: i32) -> Result<(), Self::Error> {
         if u_q0 > 0 && u_q1 > 0 {
@@ -40,20 +40,20 @@ impl QuadSink for EncodeQuadSink<'_> {
         encode_uvlc(u_q0, u_q1, self.vlc)
     }
 
-    #[allow(clippy::inline_always)] // per-quad hot path: keep sink dispatch erased
+    #[expect(clippy::inline_always, reason = "erase encoder sink dispatch")]
     #[inline(always)]
     fn initial_uvlc_lone(&mut self, u_q0: i32) -> Result<(), Self::Error> {
         encode_uvlc(u_q0, 0, self.vlc)
     }
 
-    #[allow(clippy::inline_always)] // per-quad hot path: keep sink dispatch erased
+    #[expect(clippy::inline_always, reason = "erase encoder sink dispatch")]
     #[inline(always)]
     fn non_initial_uvlc(&mut self, u_q0: i32, u_q1: i32) -> Result<(), Self::Error> {
         encode_uvlc_non_initial(u_q0, u_q1, self.vlc)
     }
 }
 
-#[allow(clippy::inline_always)] // thin hot-path wrapper over monomorphized quad walker
+#[expect(clippy::inline_always, reason = "fuse the encoder quad walker")]
 #[inline(always)]
 pub(super) fn encode_first_quad_pair<C: CleanupCoefficientSource + ?Sized>(
     request: FirstQuadPairRequest<'_, C>,
@@ -64,7 +64,7 @@ pub(super) fn encode_first_quad_pair<C: CleanupCoefficientSource + ?Sized>(
     first_quad_pair(request, &mut EncodeQuadSink { mel, vlc, ms })
 }
 
-#[allow(clippy::inline_always)] // thin hot-path wrapper over monomorphized quad walker
+#[expect(clippy::inline_always, reason = "fuse the encoder quad walker")]
 #[inline(always)]
 pub(super) fn encode_non_initial_quad_pair<C: CleanupCoefficientSource + ?Sized>(
     request: NonInitialQuadPairRequest<'_, C>,
@@ -75,7 +75,12 @@ pub(super) fn encode_non_initial_quad_pair<C: CleanupCoefficientSource + ?Sized>
     non_initial_quad_pair(request, &mut EncodeQuadSink { mel, vlc, ms })
 }
 
-#[allow(clippy::inline_always)] // per-quad HT cleanup hot path
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    reason = "packed quad fields are bounded by HT tables and this byte-emitting row is a hot path"
+)]
 #[inline(always)]
 fn encode_quad_initial_row(
     row: InitialQuadRow<'_>,
@@ -99,10 +104,10 @@ fn encode_quad_initial_row(
     let mut eps = 0u16;
 
     if u_q > 0 {
-        eps |= u16::from((e_q[offset] == e_qmax) as u8);
-        eps |= u16::from((e_q[offset + 1] == e_qmax) as u8) << 1;
-        eps |= u16::from((e_q[offset + 2] == e_qmax) as u8) << 2;
-        eps |= u16::from((e_q[offset + 3] == e_qmax) as u8) << 3;
+        eps |= u16::from(u8::from(e_q[offset] == e_qmax));
+        eps |= u16::from(u8::from(e_q[offset + 1] == e_qmax)) << 1;
+        eps |= u16::from(u8::from(e_q[offset + 2] == e_qmax)) << 2;
+        eps |= u16::from(u8::from(e_q[offset + 3] == e_qmax)) << 3;
     }
 
     e_val[lep] = e_val[lep].max(e_q[offset + 1] as u8);
@@ -121,7 +126,12 @@ fn encode_quad_initial_row(
     Ok(u_q)
 }
 
-#[allow(clippy::inline_always)] // per-quad HT cleanup hot path
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    clippy::needless_pass_by_value,
+    reason = "the by-value row matches the sink contract and its bounded packed fields index HT tables"
+)]
 #[inline(always)]
 fn encode_quad_non_initial_row(
     row: NonInitialQuadRow<'_>,
@@ -147,10 +157,10 @@ fn encode_quad_non_initial_row(
     let mut eps = 0u16;
 
     if u_q > 0 {
-        eps |= u16::from((e_q[offset] == e_qmax) as u8);
-        eps |= u16::from((e_q[offset + 1] == e_qmax) as u8) << 1;
-        eps |= u16::from((e_q[offset + 2] == e_qmax) as u8) << 2;
-        eps |= u16::from((e_q[offset + 3] == e_qmax) as u8) << 3;
+        eps |= u16::from(u8::from(e_q[offset] == e_qmax));
+        eps |= u16::from(u8::from(e_q[offset + 1] == e_qmax)) << 1;
+        eps |= u16::from(u8::from(e_q[offset + 2] == e_qmax)) << 2;
+        eps |= u16::from(u8::from(e_q[offset + 3] == e_qmax)) << 3;
     }
 
     let tuple = HT_VLC_ENCODE_TABLE1[(c_q << 8) | ((rho as usize) << 4) | eps as usize];
@@ -164,6 +174,12 @@ fn encode_quad_non_initial_row(
     Ok(u_q)
 }
 
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    reason = "HT table exponents and Uq values are nonnegative bounded bit counts in this per-sample hot path"
+)]
 #[inline(always)]
 fn encode_mag_signs(
     rho: i32,
@@ -198,6 +214,10 @@ fn encode_mag_signs(
     Ok(())
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "branch guards and max operations make every UVLC table index and suffix nonnegative"
+)]
 fn encode_uvlc(u_q0: i32, u_q1: i32, vlc: &mut VlcEncoder) -> Result<(), &'static str> {
     if u_q0 > 2 && u_q1 > 2 {
         let first = HT_UVLC_ENCODE_TABLE[(u_q0 - 2) as usize];
@@ -215,6 +235,10 @@ fn encode_uvlc(u_q0: i32, u_q1: i32, vlc: &mut VlcEncoder) -> Result<(), &'stati
     }
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "max with zero makes both non-initial UVLC table indices nonnegative"
+)]
 fn encode_uvlc_non_initial(u_q0: i32, u_q1: i32, vlc: &mut VlcEncoder) -> Result<(), &'static str> {
     let first = HT_UVLC_ENCODE_TABLE[u_q0.max(0) as usize];
     let second = HT_UVLC_ENCODE_TABLE[u_q1.max(0) as usize];

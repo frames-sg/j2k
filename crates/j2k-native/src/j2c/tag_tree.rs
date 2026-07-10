@@ -212,7 +212,8 @@ impl TagTree {
             height.next_power_of_two().ilog2(),
         );
 
-        let node = TagNode::build(width, height, level as u16, nodes);
+        let level = u16::try_from(level).expect("a u32 tag-tree level fits in u16");
+        let node = TagNode::build(width, height, level, nodes);
         let idx = nodes.len();
         nodes.push(node);
 

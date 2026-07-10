@@ -105,6 +105,10 @@ fn apply_inverse_i64(
     Ok(())
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the codec float domain intentionally receives bounded integer samples or metadata at this rounding boundary"
+)]
 fn unsigned_level_shift(component_info: &ComponentInfo) -> f32 {
     if component_info.size_info.signed {
         0.0
@@ -113,6 +117,10 @@ fn unsigned_level_shift(component_info: &ComponentInfo) -> f32 {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "this scalar primitive is intentionally inlined into the reversible color-transform hot loop"
+)]
 #[inline(always)]
 fn floor_div_i64(numerator: i64, denominator: i64) -> i64 {
     debug_assert!(denominator > 0);
@@ -129,6 +137,10 @@ fn apply_inner(transform: WaveletTransform, s0: &mut [f32], s1: &mut [f32], s2: 
     dispatch!(Level::new(), simd => apply_inner_impl(simd, transform, s0, s1, s2));
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "the SIMD implementation is intentionally specialized and inlined at the architecture dispatch boundary"
+)]
 #[inline(always)]
 fn apply_inner_impl<S: Simd>(
     simd: S,

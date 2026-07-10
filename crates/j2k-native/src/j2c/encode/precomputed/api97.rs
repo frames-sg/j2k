@@ -121,6 +121,10 @@ pub fn encode_prequantized_htj2k_97(
 /// Encode prequantized irreversible 9/7 code-block coefficients into an HTJ2K
 /// codestream using optional block encode and packetization hooks.
 #[doc(hidden)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub fn encode_prequantized_htj2k_97_with_accelerator(
     image: &PrequantizedHtj2k97Image,
     options: &EncodeOptions,
@@ -274,6 +278,10 @@ pub fn encode_preencoded_htj2k_97(
 /// Encode preencoded irreversible 9/7 HTJ2K code-block payloads into a
 /// codestream using optional packetization hooks.
 #[doc(hidden)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub fn encode_preencoded_htj2k_97_with_accelerator(
     image: &PreencodedHtj2k97Image,
     options: &EncodeOptions,
@@ -416,6 +424,10 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
 /// codestream, consuming the image so code-block payloads can move into packet
 /// preparation without cloning.
 #[doc(hidden)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub fn encode_preencoded_htj2k_97_owned_with_accelerator(
     image: PreencodedHtj2k97Image,
     options: &EncodeOptions,
@@ -561,6 +573,10 @@ pub fn encode_preencoded_htj2k_97_owned_with_accelerator(
 /// codestream, borrowing code-block ranges from one image-level payload buffer
 /// during packetization.
 #[doc(hidden)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
     image: PreencodedHtj2k97CompactImage,
     options: &EncodeOptions,
@@ -654,7 +670,8 @@ pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
     let packetization_resolutions =
         public_packetization_resolutions_from_compact(&prepared_resolution_packets);
     let packetization_job = J2kPacketizationEncodeJob {
-        resolution_count: packetization_resolutions.len() as u32,
+        resolution_count: u32::try_from(packetization_resolutions.len())
+            .map_err(|_| "packetization resolution count exceeds u32")?,
         num_layers: 1,
         num_components,
         code_block_count: count_compact_code_blocks(&prepared_resolution_packets)?,

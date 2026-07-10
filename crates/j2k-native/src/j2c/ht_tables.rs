@@ -1,4 +1,4 @@
-//! HTJ2K lookup tables generated from OpenJPH source tables.
+//! HTJ2K lookup tables generated from `OpenJPH` source tables.
 
 pub(crate) const VLC_TABLE0: [u16; 1024] = [
     0x0023, 0x00A5, 0x0043, 0x0066, 0x0083, 0xA8EE, 0x0014, 0xD8DF, 0x0023, 0x10BE, 0x0043, 0xF5FF,

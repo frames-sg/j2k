@@ -77,7 +77,7 @@ pub(crate) fn parse<'a>(stream: &'a [u8], settings: &DecodeSettings) -> Result<I
     };
 
     let color_specification = ColorSpecificationBox {
-        method: if enumerated_value.is_some() { 1 } else { 0 },
+        method: u8::from(enumerated_value.is_some()),
         enumerated_value,
         color_space: cs,
     };

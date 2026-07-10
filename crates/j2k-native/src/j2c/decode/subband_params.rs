@@ -27,22 +27,23 @@ pub(super) fn sub_band_decode_parameters(
             SubBandType::LowHigh | SubBandType::HighLow => 1,
             SubBandType::HighHigh => 2,
         };
-        let range_bits = component_info.size_info.precision as u16 + log_gain;
-        crate::math::pow2i(range_bits as i32 - exponent as i32) * (1.0 + (mantissa as f32) / 2048.0)
+        let range_bits = u16::from(component_info.size_info.precision) + log_gain;
+        crate::math::pow2i(i32::from(range_bits) - i32::from(exponent))
+            * (1.0 + f32::from(mantissa) / 2048.0)
     };
 
     let (exponent, _) = component_info.exponent_mantissa(sub_band.sub_band_type, resolution)?;
-    let num_bitplanes = (component_info.quantization_info.guard_bits as u16)
+    let num_bitplanes = u16::from(component_info.quantization_info.guard_bits)
         .checked_add(exponent)
         .and_then(|value| value.checked_sub(1))
         .ok_or(DecodingError::InvalidBitplaneCount)?;
-    if num_bitplanes > MAX_BITPLANE_COUNT as u16 {
+    if num_bitplanes > u16::from(MAX_BITPLANE_COUNT) {
         bail!(DecodingError::TooManyBitplanes);
     }
 
     Ok(SubBandDecodeParameters {
         dequantization_step,
-        num_bitplanes: num_bitplanes as u8,
+        num_bitplanes: u8::try_from(num_bitplanes).map_err(|_| DecodingError::TooManyBitplanes)?,
     })
 }
 

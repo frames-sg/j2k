@@ -159,22 +159,22 @@ fn bench_full_decode(c: &mut Criterion) {
 fn bench_direct_color_plan(c: &mut Criterion) {
     let codestream = htj2k_rgb_codestream(TILE_SIDE, TILE_SIDE);
     let (plan, output_region) = direct_roi_plan(&codestream);
-    let rgb_stride = output_region.width() as usize * 3;
-    let rgba_stride = output_region.width() as usize * 4;
-    let rgb_len = rgb_stride * output_region.height() as usize;
-    let rgba_len = rgba_stride * output_region.height() as usize;
+    let three_channel_stride = output_region.width() as usize * 3;
+    let four_channel_stride = output_region.width() as usize * 4;
+    let three_channel_output_len = three_channel_stride * output_region.height() as usize;
+    let four_channel_output_len = four_channel_stride * output_region.height() as usize;
 
     let mut group = c.benchmark_group("j2k_native_direct_cpu_color_plan");
     group.bench_function("htj2k_rgb8_roi256_q4_fresh_scratch", |b| {
         b.iter(|| {
             let mut scratch = J2kDirectCpuScratch::new();
-            let mut out = vec![0_u8; rgb_len];
+            let mut out = vec![0_u8; three_channel_output_len];
             execute_direct_color_plan_rgb8_into(
                 std::hint::black_box(&plan),
                 output_region,
                 &mut scratch,
                 &mut out,
-                rgb_stride,
+                three_channel_stride,
             )
             .expect("execute RGB direct plan");
             std::hint::black_box(out);
@@ -182,14 +182,14 @@ fn bench_direct_color_plan(c: &mut Criterion) {
     });
     group.bench_function("htj2k_rgb8_roi256_q4_reuse_scratch", |b| {
         let mut scratch = J2kDirectCpuScratch::new();
-        let mut out = vec![0_u8; rgb_len];
+        let mut out = vec![0_u8; three_channel_output_len];
         b.iter(|| {
             execute_direct_color_plan_rgb8_into(
                 std::hint::black_box(&plan),
                 output_region,
                 &mut scratch,
                 &mut out,
-                rgb_stride,
+                three_channel_stride,
             )
             .expect("execute RGB direct plan");
             std::hint::black_box(&out);
@@ -197,14 +197,14 @@ fn bench_direct_color_plan(c: &mut Criterion) {
     });
     group.bench_function("htj2k_rgba8_roi256_q4_reuse_scratch", |b| {
         let mut scratch = J2kDirectCpuScratch::new();
-        let mut out = vec![0_u8; rgba_len];
+        let mut out = vec![0_u8; four_channel_output_len];
         b.iter(|| {
             execute_direct_color_plan_rgba8_into(
                 std::hint::black_box(&plan),
                 output_region,
                 &mut scratch,
                 &mut out,
-                rgba_stride,
+                four_channel_stride,
             )
             .expect("execute RGBA direct plan");
             std::hint::black_box(&out);

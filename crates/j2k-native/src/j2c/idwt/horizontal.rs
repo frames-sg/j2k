@@ -176,6 +176,10 @@ pub(crate) fn test_irreversible_filter_97i(scanline: &mut [f32], width: usize, x
     irreversible_filter_97i(scanline, width, x0);
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "the horizontal lifting primitive is intentionally inlined with its filter operation specialized"
+)]
 #[inline(always)]
 fn filter_step_horizontal(
     scanline: &mut [f32],

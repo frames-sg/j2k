@@ -273,6 +273,14 @@ pub(super) fn encode_typed_component_planes_53_i64(
     )
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 fn encode_typed_component_planes_53_i64_multitile(
     planes: &[EncodeTypedComponentPlane<'_>],
     width: u32,
@@ -444,6 +452,10 @@ fn encode_typed_component_planes_53_i64_multitile(
     ))
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
 fn min_sampled_tile_component_decomposition_levels(
     planes: &[EncodeTypedComponentPlane<'_>],
     width: u32,
@@ -492,6 +504,7 @@ fn sampled_tile_component_axis(
     Ok((start, end.saturating_sub(start)))
 }
 
+#[derive(Clone, Copy)]
 struct I64ComponentPlanePacketRequest<'a> {
     component_dimensions: &'a [(u32, u32)],
     component_step_sizes: &'a [Vec<QuantStepSize>],
@@ -499,6 +512,10 @@ struct I64ComponentPlanePacketRequest<'a> {
     subband_settings: I64SubbandEncodeSettings<'a>,
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
 fn prepare_typed_component_planes_i64_packets(
     planes: &[EncodeTypedComponentPlane<'_>],
     request: I64ComponentPlanePacketRequest<'_>,

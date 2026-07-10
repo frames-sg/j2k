@@ -81,6 +81,10 @@ const ZERO_CTX_HH_LOOKUP: [u8; 256] = [
 ];
 
 /// Based on Table D.2.
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
+)]
 #[inline(always)]
 pub(super) fn context_label_sign_coding_index(
     idx: usize,
@@ -115,6 +119,10 @@ pub(super) fn context_label_sign_coding_index(
     SIGN_CONTEXT_LOOKUP[merged_significances as usize]
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
+)]
 #[inline(always)]
 pub(super) fn context_label_sign_coding_index_with_neighbors<const NORMAL_NEIGHBORS: bool>(
     idx: usize,
@@ -128,6 +136,10 @@ pub(super) fn context_label_sign_coding_index_with_neighbors<const NORMAL_NEIGHB
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
+)]
 #[inline(always)]
 pub(super) fn context_label_sign_coding_index_normal(
     idx: usize,
@@ -150,6 +162,10 @@ pub(super) fn context_label_sign_coding_index_normal(
 }
 
 /// Return the context label for zero coding (Section D.3.1).
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
+)]
 #[inline(always)]
 pub(super) fn context_label_zero_coding_from_neighbors(
     neighbors: u8,
@@ -166,11 +182,19 @@ pub(super) fn context_label_zero_coding_from_neighbors(
 }
 
 /// Return the context label for magnitude refinement coding (Table D.4).
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
+)]
 #[inline(always)]
 pub(super) fn context_label_magnitude_refinement_coding_from_state(state: u8, neighbors: u8) -> u8 {
     context_label_magnitude_refinement_coding_from_state_lazy(state, || neighbors)
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
+)]
 #[inline(always)]
 pub(super) fn context_label_magnitude_refinement_coding_from_state_lazy(
     state: u8,

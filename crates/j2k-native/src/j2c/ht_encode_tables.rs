@@ -1,4 +1,4 @@
-//! HTJ2K encoder lookup tables generated from OpenJPH source rows.
+//! HTJ2K encoder lookup tables generated from `OpenJPH` source rows.
 
 #[repr(C)]
 /// Adapter HTJ2K UVLC encoder table row for backend experimentation.

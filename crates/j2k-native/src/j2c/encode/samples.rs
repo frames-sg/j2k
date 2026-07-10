@@ -20,7 +20,7 @@ pub(super) fn read_le_sample_value(bytes: &[u8], bit_depth: u8) -> u64 {
 
 pub(super) fn sign_extend_sample(raw: u64, bit_depth: u8) -> i64 {
     let shift = 64 - u32::from(bit_depth);
-    ((raw << shift) as i64) >> shift
+    i64::from_ne_bytes((raw << shift).to_ne_bytes()) >> shift
 }
 
 pub(super) fn native_samples_equal(
@@ -54,6 +54,6 @@ fn decode_native_sample(bytes: &[u8], sample_index: usize, bit_depth: u8, signed
     if signed {
         sign_extend_sample(raw, bit_depth)
     } else {
-        raw as i64
+        i64::try_from(raw).expect("supported unsigned sample values fit in i64")
     }
 }

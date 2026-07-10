@@ -35,7 +35,7 @@ fn direct_job<'a>(
     }
 }
 
-fn band<'a>(rect: J2kRect, coefficients: &'a [f32]) -> J2kIdwtBand<'a> {
+fn band(rect: J2kRect, coefficients: &[f32]) -> J2kIdwtBand<'_> {
     J2kIdwtBand { rect, coefficients }
 }
 
@@ -100,7 +100,12 @@ fn reversible_53_even_direct_job_is_bit_exact() {
 }
 
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "LL, HL, LH, and HH test-band names follow JPEG 2000 specification notation"
+)]
 fn irreversible_97_odd_direct_job_is_bit_exact() {
+    #[cfg(feature = "simd")]
     const EXPECTED: [u32; 15] = [
         3_243_516_307,
         1_088_535_889,
@@ -117,6 +122,24 @@ fn irreversible_97_odd_direct_job_is_bit_exact() {
         1_072_530_023,
         3_238_711_343,
         1_091_758_981,
+    ];
+    #[cfg(not(feature = "simd"))]
+    const EXPECTED: [u32; 15] = [
+        3_243_516_307,
+        1_088_535_889,
+        1_086_781_832,
+        3_237_068_116,
+        1_072_899_987,
+        1_090_811_480,
+        3_205_449_568,
+        3_240_528_041,
+        1_057_965_920,
+        1_095_801_596,
+        3_240_069_383,
+        1_090_703_406,
+        1_072_530_022,
+        3_238_711_342,
+        1_091_758_982,
     ];
     let rect = J2kRect {
         x0: 0,
@@ -294,6 +317,7 @@ fn reversible_i64_filters_preserve_even_and_odd_goldens() {
 
 #[test]
 fn irreversible_97_nonzero_origin_roi_window_is_bit_exact() {
+    #[cfg(feature = "simd")]
     const EXPECTED: [u32; 12] = [
         1_098_644_013,
         1_084_670_383,
@@ -307,6 +331,21 @@ fn irreversible_97_nonzero_origin_roi_window_is_bit_exact() {
         1_066_907_503,
         3_239_826_101,
         1_091_758_981,
+    ];
+    #[cfg(not(feature = "simd"))]
+    const EXPECTED: [u32; 12] = [
+        1_098_644_014,
+        1_084_670_382,
+        3_239_209_924,
+        1_072_899_987,
+        3_241_441_280,
+        3_239_628_158,
+        1_073_078_272,
+        1_095_801_596,
+        1_094_877_886,
+        1_066_907_502,
+        3_239_826_100,
+        1_091_758_982,
     ];
     let ll = [0.5, -1.25, 2.0, 3.5, -4.25, 5.75];
     let hl = [6.5, -7.0, 8.25, -9.5];

@@ -8,6 +8,14 @@ use super::filter_common::{
 use crate::math::{self, dispatch, f32x8, Level, Simd, SIMD_WIDTH};
 use j2k_codec_math::dwt;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the vertical lifting kernel keeps scanline geometry and scalar/SIMD operations explicit for specialization"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "the vertical lifting primitive is intentionally inlined with scalar and SIMD operations specialized"
+)]
 #[inline(always)]
 fn filter_step_vertical<S: Simd>(
     simd: S,
@@ -109,6 +117,10 @@ fn filter_step_vertical_i64(
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "the SIMD IDWT implementation is intentionally specialized at the architecture dispatch boundary"
+)]
 #[inline(always)]
 fn filter_vertical_impl<S: Simd>(
     simd: S,
@@ -130,7 +142,10 @@ fn filter_vertical_impl<S: Simd>(
             }
 
             // Scalar remainder.
-            #[allow(clippy::needless_range_loop)]
+            #[expect(
+                clippy::needless_range_loop,
+                reason = "the scalar tail starts at the SIMD boundary and updates the matching indexed scanline"
+            )]
             for col in simd_width..width {
                 scanline[col] *= 0.5;
             }
@@ -149,6 +164,10 @@ fn filter_vertical_impl<S: Simd>(
 }
 
 /// The 1D FILTER 5-3R procedure from F.3.8.1.
+#[expect(
+    clippy::inline_always,
+    reason = "the reversible SIMD lifting kernel is intentionally inlined into the dispatched vertical transform"
+)]
 #[inline(always)]
 fn reversible_filter_53r_simd<S: Simd>(
     simd: S,

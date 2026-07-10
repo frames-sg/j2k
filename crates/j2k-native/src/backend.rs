@@ -165,11 +165,13 @@ pub struct J2kRect {
 
 impl J2kRect {
     /// Rectangle width in samples.
+    #[must_use]
     pub fn width(self) -> u32 {
         self.x1.saturating_sub(self.x0)
     }
 
     /// Rectangle height in samples.
+    #[must_use]
     pub fn height(self) -> u32 {
         self.y1.saturating_sub(self.y0)
     }
@@ -263,6 +265,10 @@ pub trait HtCodeBlockDecoder {
     /// Implementations should return `Ok(true)` if they handled the request and
     /// wrote the decoded coefficients into `output`. Returning `Ok(false)`
     /// falls back to per-code-block decode via `decode_j2k_code_block`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the decode request.
     fn decode_j2k_sub_band(
         &mut self,
         _job: J2kSubBandDecodeJob<'_>,
@@ -276,6 +282,10 @@ pub trait HtCodeBlockDecoder {
     /// Implementations should return `Ok(true)` if they handled the request
     /// and wrote the decoded coefficients into `output`. Returning `Ok(false)`
     /// falls back to the scalar bitplane decoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the decode request.
     fn decode_j2k_code_block(
         &mut self,
         _job: J2kCodeBlockDecodeJob<'_>,
@@ -289,6 +299,10 @@ pub trait HtCodeBlockDecoder {
     /// Implementations should return `Ok(true)` if they handled the request and
     /// wrote the decoded coefficients into `output`. Returning `Ok(false)`
     /// falls back to per-code-block decode via `decode_code_block`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the decode request.
     fn decode_sub_band(
         &mut self,
         _job: HtSubBandDecodeJob<'_>,
@@ -302,6 +316,10 @@ pub trait HtCodeBlockDecoder {
     /// Implementations should return `Ok(true)` if they handled the request
     /// and wrote the transformed coefficients into `output`. Returning
     /// `Ok(false)` falls back to the scalar/SIMD CPU IDWT path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the transform request.
     fn decode_single_decomposition_idwt(
         &mut self,
         _job: J2kSingleDecompositionIdwtJob<'_>,
@@ -315,6 +333,10 @@ pub trait HtCodeBlockDecoder {
     /// Implementations should return `Ok(true)` if they handled the request
     /// and updated the component planes in place. Returning `Ok(false)` falls
     /// back to the scalar/SIMD CPU MCT path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the transform request.
     fn decode_inverse_mct(&mut self, _job: J2kInverseMctJob<'_>) -> Result<bool> {
         Ok(false)
     }
@@ -324,11 +346,19 @@ pub trait HtCodeBlockDecoder {
     /// Implementations should return `Ok(true)` if they handled the request
     /// and updated the destination plane in place. Returning `Ok(false)` falls
     /// back to the CPU store path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot complete the store request.
     fn decode_store_component(&mut self, _job: J2kStoreComponentJob<'_>) -> Result<bool> {
         Ok(false)
     }
 
     /// Decode one HTJ2K code block into `output`, writing `job.width` samples per row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the code block is malformed or decoding fails.
     fn decode_code_block(
         &mut self,
         job: HtCodeBlockDecodeJob<'_>,

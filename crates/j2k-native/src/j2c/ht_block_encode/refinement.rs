@@ -132,6 +132,10 @@ pub(super) fn encode_refinement_segment(
     Ok(refinement)
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the cleanup significance threshold is constructed as a positive bitplane magnitude"
+)]
 fn build_sigma_from_coefficients(
     coefficients: &[i32],
     width: usize,
@@ -177,6 +181,12 @@ fn build_sigma_from_coefficients(
     Ok(())
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "validated block coordinates are bounded and packed significance stores the low 16-bit half"
+)]
 fn write_sigprop_refinement_bits(
     sigma: &[u16],
     coefficients: &[i32],

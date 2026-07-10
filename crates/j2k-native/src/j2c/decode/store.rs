@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    bail, ComponentInfo, ComponentTile, DecodingError, DerefMut, Header, HtCodeBlockDecoder,
+    bail, ComponentInfo, ComponentTile, DecodingError, Header, HtCodeBlockDecoder,
     J2kStoreComponentJob, OutputRegion, ResolutionTile, Result, Tile, TileDecodeContext,
 };
 
@@ -19,13 +19,17 @@ pub(super) fn apply_sign_shift(
             }
         } else {
             let addend = component_unsigned_level_shift(component_info);
-            for sample in channel_data.container.deref_mut() {
+            for sample in &mut *channel_data.container {
                 *sample += addend;
             }
         }
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub(super) fn store<'a>(
     tile: &'a Tile<'a>,
     header: &Header<'_>,
@@ -130,7 +134,7 @@ pub(super) fn store<'a>(
         let skip_y = image_y_offset.saturating_sub(idwt_output.rect.y0);
 
         if sign_shift != 0.0 {
-            for sample in idwt_output.coefficients.iter_mut() {
+            for sample in &mut idwt_output.coefficients {
                 *sample += sign_shift;
             }
         }
@@ -156,7 +160,7 @@ pub(super) fn store<'a>(
         }
     } else {
         if sign_shift != 0.0 {
-            for sample in idwt_output.coefficients.iter_mut() {
+            for sample in &mut idwt_output.coefficients {
                 *sample += sign_shift;
             }
         }
@@ -178,20 +182,26 @@ pub(super) fn store<'a>(
         // Otherwise, copy sample by sample.
         for y in resolution_tile.rect.y0..resolution_tile.rect.y1 {
             let relative_y = (y - component_tile.rect.y0) as usize;
-            let reference_grid_y = (scale_y as u32 * y) / y_shrink_factor;
+            let reference_grid_y = (u32::from(scale_y) * y) / y_shrink_factor;
 
             for x in resolution_tile.rect.x0..resolution_tile.rect.x1 {
                 let relative_x = (x - component_tile.rect.x0) as usize;
-                let reference_grid_x = (scale_x as u32 * x) / x_shrink_factor;
+                let reference_grid_x = (u32::from(scale_x) * x) / x_shrink_factor;
 
                 let sample = idwt_output.coefficients
                     [relative_y * idwt_output.rect.width() as usize + relative_x];
 
                 for x_position in u32::max(reference_grid_x, x_offset)
-                    ..u32::min(reference_grid_x + scale_x as u32, image_width + x_offset)
+                    ..u32::min(
+                        reference_grid_x + u32::from(scale_x),
+                        image_width + x_offset,
+                    )
                 {
                     for y_position in u32::max(reference_grid_y, y_offset)
-                        ..u32::min(reference_grid_y + scale_y as u32, image_height + y_offset)
+                        ..u32::min(
+                            reference_grid_y + u32::from(scale_y),
+                            image_height + y_offset,
+                        )
                     {
                         let pos = (y_position - y_offset) as usize * image_width as usize
                             + (x_position - x_offset) as usize;
@@ -206,6 +216,10 @@ pub(super) fn store<'a>(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 fn store_i64<'a>(
     tile: &'a Tile<'a>,
     header: &Header<'_>,
@@ -302,21 +316,27 @@ fn store_i64<'a>(
 
         for y in resolution_tile.rect.y0..resolution_tile.rect.y1 {
             let relative_y = (y - component_tile.rect.y0) as usize;
-            let reference_grid_y = (scale_y as u32 * y) / y_shrink_factor;
+            let reference_grid_y = (u32::from(scale_y) * y) / y_shrink_factor;
 
             for x in resolution_tile.rect.x0..resolution_tile.rect.x1 {
                 let relative_x = (x - component_tile.rect.x0) as usize;
-                let reference_grid_x = (scale_x as u32 * x) / x_shrink_factor;
+                let reference_grid_x = (u32::from(scale_x) * x) / x_shrink_factor;
 
                 let sample = idwt_output.coefficients_i64
                     [relative_y * idwt_output.rect.width() as usize + relative_x]
                     + sign_shift;
 
                 for x_position in u32::max(reference_grid_x, x_offset)
-                    ..u32::min(reference_grid_x + scale_x as u32, image_width + x_offset)
+                    ..u32::min(
+                        reference_grid_x + u32::from(scale_x),
+                        image_width + x_offset,
+                    )
                 {
                     for y_position in u32::max(reference_grid_y, y_offset)
-                        ..u32::min(reference_grid_y + scale_y as u32, image_height + y_offset)
+                        ..u32::min(
+                            reference_grid_y + u32::from(scale_y),
+                            image_height + y_offset,
+                        )
                     {
                         let pos = (y_position - y_offset) as usize * image_width as usize
                             + (x_position - x_offset) as usize;
@@ -331,6 +351,10 @@ fn store_i64<'a>(
     Ok(())
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the codec float domain intentionally receives bounded integer samples or metadata at this rounding boundary"
+)]
 pub(super) fn component_unsigned_level_shift(component_info: &ComponentInfo) -> f32 {
     if component_info.size_info.signed {
         0.0
@@ -347,6 +371,18 @@ fn component_unsigned_level_shift_i64(component_info: &ComponentInfo) -> i64 {
     }
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 fn store_region<'a>(
     tile: &'a Tile<'a>,
     header: &Header<'_>,
@@ -437,7 +473,7 @@ fn store_region<'a>(
         }
 
         if sign_shift != 0.0 {
-            for sample in idwt_output.coefficients.iter_mut() {
+            for sample in &mut idwt_output.coefficients {
                 *sample += sign_shift;
             }
         }
@@ -459,24 +495,27 @@ fn store_region<'a>(
     }
 
     if sign_shift != 0.0 {
-        for sample in idwt_output.coefficients.iter_mut() {
+        for sample in &mut idwt_output.coefficients {
             *sample += sign_shift;
         }
     }
 
     for y in resolution_tile.rect.y0..resolution_tile.rect.y1 {
         let relative_y = (y - component_tile.rect.y0) as usize;
-        let reference_grid_y = (scale_y as u32 * y) / y_shrink_factor;
+        let reference_grid_y = (u32::from(scale_y) * y) / y_shrink_factor;
 
         for x in resolution_tile.rect.x0..resolution_tile.rect.x1 {
             let relative_x = (x - component_tile.rect.x0) as usize;
-            let reference_grid_x = (scale_x as u32 * x) / x_shrink_factor;
+            let reference_grid_x = (u32::from(scale_x) * x) / x_shrink_factor;
 
             let sample = idwt_output.coefficients
                 [relative_y * idwt_output.rect.width() as usize + relative_x];
 
             for x_position in u32::max(reference_grid_x, x_offset)
-                ..u32::min(reference_grid_x + scale_x as u32, image_width + x_offset)
+                ..u32::min(
+                    reference_grid_x + u32::from(scale_x),
+                    image_width + x_offset,
+                )
             {
                 let image_x = x_position - x_offset;
                 if image_x < output_region.x || image_x >= region_x1 {
@@ -484,7 +523,10 @@ fn store_region<'a>(
                 }
 
                 for y_position in u32::max(reference_grid_y, y_offset)
-                    ..u32::min(reference_grid_y + scale_y as u32, image_height + y_offset)
+                    ..u32::min(
+                        reference_grid_y + u32::from(scale_y),
+                        image_height + y_offset,
+                    )
                 {
                     let image_y = y_position - y_offset;
                     if image_y < output_region.y || image_y >= region_y1 {

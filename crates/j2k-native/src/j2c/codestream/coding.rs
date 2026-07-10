@@ -12,6 +12,10 @@ const MAX_LAYER_COUNT: u8 = 32;
 const MAX_RESOLUTION_COUNT: u8 = 32;
 const MAX_PRECINCT_EXPONENT: u8 = 31;
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+)]
 fn coding_style_parameters(
     reader: &mut BitReader<'_>,
     coding_style: &CodingStyleFlags,
@@ -72,7 +76,7 @@ pub(crate) fn cod_marker(reader: &mut BitReader<'_>) -> Option<CodingStyleDefaul
     let num_layers = reader.read_u16()?;
 
     // We don't support more than 32-bit (and thus 32 layers).
-    if num_layers == 0 || num_layers > MAX_LAYER_COUNT as u16 {
+    if num_layers == 0 || num_layers > u16::from(MAX_LAYER_COUNT) {
         return None;
     }
 
@@ -82,7 +86,7 @@ pub(crate) fn cod_marker(reader: &mut BitReader<'_>) -> Option<CodingStyleDefaul
 
     Some(CodingStyleDefault {
         progression_order,
-        num_layers: num_layers as u8,
+        num_layers: u8::try_from(num_layers).ok()?,
         mct,
         component_parameters: CodingStyleComponent {
             flags: coding_style_flags,
@@ -100,7 +104,7 @@ pub(crate) fn coc_marker(
     let _ = reader.read_u16()?;
 
     let component_index = if csiz < 257 {
-        reader.read_byte()? as u16
+        u16::from(reader.read_byte()?)
     } else {
         reader.read_u16()?
     };

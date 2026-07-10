@@ -64,13 +64,13 @@ const ZERO_CTX_HH: [u8; 256] = [
 ///
 /// The index is built by combining significance and sign of the 4 cardinal
 /// neighbors into a merged byte:
-///   1. significances = neighbor_byte & 0b01010101 (keep T(6), L(4), R(2), B(0))
-///   2. signs = (top_sign << 6) | (left_sign << 4) | (right_sign << 2) | bottom_sign
-///   3. negative_sigs = significances & signs
-///   4. positive_sigs = significances & !signs
-///   5. merged = (negative_sigs << 1) | positive_sigs
+///   1. `significances = neighbor_byte & 0b01010101` (keep T(6), L(4), R(2), B(0))
+///   2. `signs = (top_sign << 6) | (left_sign << 4) | (right_sign << 2) | bottom_sign`
+///   3. `negative_sigs = significances & signs`
+///   4. `positive_sigs = significances & !signs`
+///   5. `merged = (negative_sigs << 1) | positive_sigs`
 ///
-/// Each entry is (context_label, xor_bit). (0,0) represents impossible combinations.
+/// Each entry is (`context_label`, `xor_bit`). (0,0) represents impossible combinations.
 #[rustfmt::skip]
 const SIGN_CONTEXT_LOOKUP: [(u8, u8); 256] = [
     (9,0), (10,0), (10,1), (0,0), (12,0), (13,0), (11,0), (0,0), (12,1), (11,1),
@@ -141,6 +141,8 @@ pub(super) fn clear_coded_in_current_pass(states: &mut [u8], coded_indices: &mut
 }
 
 /// Significance Propagation Pass (D.3.1)
+#[expect(clippy::too_many_arguments, reason = "stable pass boundary")]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "shared style borrow")]
 pub(super) fn significance_propagation_pass(
     magnitudes: &[u64],
     states: &mut [u8],
@@ -186,6 +188,7 @@ pub(super) fn significance_propagation_pass(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "explicit hot scan state")]
 fn significance_propagation_pass_impl<const VERTICAL_CAUSAL: bool>(
     magnitudes: &[u64],
     states: &mut [u8],
@@ -210,7 +213,7 @@ fn significance_propagation_pass_impl<const VERTICAL_CAUSAL: bool>(
 
                 if !is_significant && has_sig_neighbors {
                     let ctx_label = zero_coding_ctx(neighbor_sig, sub_band_type);
-                    let bit = (magnitudes[idx] & bit_mask != 0) as u32;
+                    let bit = u32::from(magnitudes[idx] & bit_mask != 0);
                     encoder.encode(bit, &mut contexts[ctx_label as usize]);
                     mark_coded_in_current_pass(idx, states, coded_indices);
 
@@ -226,6 +229,8 @@ fn significance_propagation_pass_impl<const VERTICAL_CAUSAL: bool>(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "stable raw pass boundary")]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "shared style borrow")]
 pub(super) fn significance_propagation_pass_raw(
     magnitudes: &[u64],
     states: &mut [u8],
@@ -265,6 +270,7 @@ pub(super) fn significance_propagation_pass_raw(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "explicit hot scan state")]
 fn significance_propagation_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
     magnitudes: &[u64],
     states: &mut [u8],
@@ -284,7 +290,7 @@ fn significance_propagation_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
                 let is_significant = states[idx] & SIGNIFICANT != 0;
                 let neighbor_sig = effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h);
                 if !is_significant && neighbor_sig != 0 {
-                    let bit = (magnitudes[idx] & bit_mask != 0) as u32;
+                    let bit = u32::from(magnitudes[idx] & bit_mask != 0);
                     writer.write_bit(bit);
                     mark_coded_in_current_pass(idx, states, coded_indices);
                     if bit == 1 {
@@ -298,6 +304,8 @@ fn significance_propagation_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
 }
 
 /// Magnitude Refinement Pass (D.3.3)
+#[expect(clippy::too_many_arguments, reason = "stable pass boundary")]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "shared style borrow")]
 pub(super) fn magnitude_refinement_pass(
     magnitudes: &[u64],
     states: &mut [u8],
@@ -321,6 +329,7 @@ pub(super) fn magnitude_refinement_pass(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "explicit hot scan state")]
 fn magnitude_refinement_pass_impl<const VERTICAL_CAUSAL: bool>(
     magnitudes: &[u64],
     states: &mut [u8],
@@ -345,7 +354,7 @@ fn magnitude_refinement_pass_impl<const VERTICAL_CAUSAL: bool>(
                         states[idx],
                         effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h),
                     );
-                    let bit = (magnitudes[idx] & bit_mask != 0) as u32;
+                    let bit = u32::from(magnitudes[idx] & bit_mask != 0);
                     encoder.encode(bit, &mut contexts[ctx_label as usize]);
                     states[idx] |= MAGNITUDE_REFINED;
                 }
@@ -354,6 +363,8 @@ fn magnitude_refinement_pass_impl<const VERTICAL_CAUSAL: bool>(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "stable raw pass boundary")]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "shared style borrow")]
 pub(super) fn magnitude_refinement_pass_raw(
     magnitudes: &[u64],
     states: &mut [u8],
@@ -376,6 +387,7 @@ pub(super) fn magnitude_refinement_pass_raw(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "explicit hot scan state")]
 fn magnitude_refinement_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
     magnitudes: &[u64],
     states: &mut [u8],
@@ -395,7 +407,7 @@ fn magnitude_refinement_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
                 let coded_this_pass = states[idx] & CODED_IN_CURRENT_PASS != 0;
                 let _neighbor_sig = effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h);
                 if is_significant && !coded_this_pass {
-                    let bit = (magnitudes[idx] & bit_mask != 0) as u32;
+                    let bit = u32::from(magnitudes[idx] & bit_mask != 0);
                     writer.write_bit(bit);
                     states[idx] |= MAGNITUDE_REFINED;
                 }
@@ -405,6 +417,8 @@ fn magnitude_refinement_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
 }
 
 /// Cleanup Pass (D.3.4)
+#[expect(clippy::too_many_arguments, reason = "stable cleanup boundary")]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "shared style borrow")]
 pub(super) fn cleanup_pass(
     magnitudes: &[u64],
     states: &mut [u8],
@@ -447,6 +461,8 @@ pub(super) fn cleanup_pass(
     }
 }
 
+#[expect(clippy::cast_possible_truncation, reason = "four-row run position")]
+#[expect(clippy::too_many_arguments, reason = "explicit hot scan state")]
 fn cleanup_pass_impl<const VERTICAL_CAUSAL: bool>(
     magnitudes: &[u64],
     states: &mut [u8],
@@ -510,7 +526,7 @@ fn cleanup_pass_impl<const VERTICAL_CAUSAL: bool>(
                                     effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h),
                                     sub_band_type,
                                 );
-                                let bit = (magnitudes[idx] & bit_mask != 0) as u32;
+                                let bit = u32::from(magnitudes[idx] & bit_mask != 0);
                                 encoder.encode(bit, &mut contexts[ctx_label as usize]);
                                 if bit == 1 {
                                     encode_sign::<VERTICAL_CAUSAL>(
@@ -521,11 +537,11 @@ fn cleanup_pass_impl<const VERTICAL_CAUSAL: bool>(
                             }
                         }
                         continue;
-                    } else {
-                        // All zero: encode RLC=0
-                        encoder.encode(0, &mut contexts[17]);
-                        continue;
                     }
+
+                    // All zero: encode RLC=0
+                    encoder.encode(0, &mut contexts[17]);
+                    continue;
                 }
             }
 
@@ -537,7 +553,7 @@ fn cleanup_pass_impl<const VERTICAL_CAUSAL: bool>(
                         effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h),
                         sub_band_type,
                     );
-                    let bit = (magnitudes[idx] & bit_mask != 0) as u32;
+                    let bit = u32::from(magnitudes[idx] & bit_mask != 0);
                     encoder.encode(bit, &mut contexts[ctx_label as usize]);
                     if bit == 1 {
                         encode_sign::<VERTICAL_CAUSAL>(
@@ -555,7 +571,8 @@ fn cleanup_pass_impl<const VERTICAL_CAUSAL: bool>(
 ///
 /// The sign context is computed exactly as the decoder does it:
 /// combine significance and sign of the 4 cardinal neighbors into a
-/// merged byte and look up SIGN_CONTEXT_LOOKUP.
+/// merged byte and look up `SIGN_CONTEXT_LOOKUP`.
+#[expect(clippy::too_many_arguments, reason = "explicit hot sign state")]
 fn encode_sign<const VERTICAL_CAUSAL: bool>(
     idx: usize,
     neighbors: &[u8],
@@ -573,24 +590,24 @@ fn encode_sign<const VERTICAL_CAUSAL: bool>(
     // Get sign of each cardinal neighbor (0=positive, 1=negative).
     // Only meaningful for significant neighbors; insignificant neighbors get 0.
     let top_sign = if states[idx - pw] & SIGNIFICANT != 0 {
-        ((states[idx - pw] & NEGATIVE) != 0) as u8
+        u8::from((states[idx - pw] & NEGATIVE) != 0)
     } else {
         0
     };
     let left_sign = if states[idx - 1] & SIGNIFICANT != 0 {
-        ((states[idx - 1] & NEGATIVE) != 0) as u8
+        u8::from((states[idx - 1] & NEGATIVE) != 0)
     } else {
         0
     };
     let right_sign = if states[idx + 1] & SIGNIFICANT != 0 {
-        ((states[idx + 1] & NEGATIVE) != 0) as u8
+        u8::from((states[idx + 1] & NEGATIVE) != 0)
     } else {
         0
     };
     let bottom_sign = if VERTICAL_CAUSAL && neighbor_in_next_stripe(y, h) {
         0
     } else if states[idx + pw] & SIGNIFICANT != 0 {
-        ((states[idx + pw] & NEGATIVE) != 0) as u8
+        u8::from((states[idx + pw] & NEGATIVE) != 0)
     } else {
         0
     };
@@ -605,14 +622,17 @@ fn encode_sign<const VERTICAL_CAUSAL: bool>(
     let merged = (negative_sigs << 1) | positive_sigs;
 
     let (ctx_label, xor_bit) = SIGN_CONTEXT_LOOKUP[merged as usize];
-    let sign_bit = ((states[idx] & NEGATIVE) != 0) as u32;
-    encoder.encode(sign_bit ^ xor_bit as u32, &mut contexts[ctx_label as usize]);
+    let sign_bit = u32::from((states[idx] & NEGATIVE) != 0);
+    encoder.encode(
+        sign_bit ^ u32::from(xor_bit),
+        &mut contexts[ctx_label as usize],
+    );
 }
 
 fn encode_sign_raw(idx: usize, states: &[u8], writer: &mut BitWriter) {
     let is_significant = states[idx] & SIGNIFICANT != 0;
     debug_assert!(!is_significant);
-    writer.write_bit(((states[idx] & NEGATIVE) != 0) as u32);
+    writer.write_bit(u32::from((states[idx] & NEGATIVE) != 0));
 }
 
 #[inline]
@@ -620,6 +640,7 @@ fn neighbor_in_next_stripe(y: usize, height: usize) -> bool {
     y + 1 < height && ((y + 1) >> 2) > (y >> 2)
 }
 
+#[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
 #[inline(always)]
 fn effective_neighbor_sig<const VERTICAL_CAUSAL: bool>(
     neighbor_sig: u8,

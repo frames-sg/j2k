@@ -56,13 +56,21 @@ fn subband_scale_for_subband(
 
 impl QuantStepSize {
     /// Compute the JPEG 2000 irreversible step size:
-    /// Δ = 2^(R_b - exponent) × (1 + mantissa/2048).
+    /// `Δ = 2^(R_b - exponent) × (1 + mantissa / 2048)`.
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+    )]
     fn delta(&self, range_bits: u8) -> f32 {
-        let rb = range_bits as i32 - self.exponent as i32;
+        let rb = i32::from(range_bits) - i32::from(self.exponent);
         let base = pow2i(rb);
-        base * (1.0 + self.mantissa as f32 / 2048.0)
+        base * (1.0 + f32::from(self.mantissa) / 2048.0)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "finite quantization values are explicitly rounded and clamped immediately after conversion"
+    )]
     fn from_delta(range_bits: u8, delta: f32) -> Self {
         debug_assert!(delta.is_finite() && delta > 0.0);
 
@@ -99,7 +107,7 @@ pub fn irreversible_quantization_step_for_subband(
     subband: J2kSubBandType,
 ) -> IrreversibleQuantizationStep {
     let base_step = QuantStepSize {
-        exponent: bit_depth as u16 + guard_bits as u16,
+        exponent: u16::from(bit_depth) + u16::from(guard_bits),
         mantissa: 0,
     };
     let scale =
@@ -188,21 +196,21 @@ pub(crate) fn compute_step_sizes_with_irreversible_profile(
         //   HH => bit_depth + 2
         // This gain depends on subband orientation, not decomposition level.
         step_sizes.push(QuantStepSize {
-            exponent: bit_depth as u16,
+            exponent: u16::from(bit_depth),
             mantissa: 0,
         });
 
         for _ in 0..num_decompositions {
             step_sizes.push(QuantStepSize {
-                exponent: bit_depth as u16 + 1,
+                exponent: u16::from(bit_depth) + 1,
                 mantissa: 0,
             });
             step_sizes.push(QuantStepSize {
-                exponent: bit_depth as u16 + 1,
+                exponent: u16::from(bit_depth) + 1,
                 mantissa: 0,
             });
             step_sizes.push(QuantStepSize {
-                exponent: bit_depth as u16 + 2,
+                exponent: u16::from(bit_depth) + 2,
                 mantissa: 0,
             });
         }
@@ -211,7 +219,7 @@ pub(crate) fn compute_step_sizes_with_irreversible_profile(
         // subbands and let R_b = bit_depth + log_gain make LL finest and HH
         // coarsest under the decoder's QCD formula.
         let base_step = QuantStepSize {
-            exponent: bit_depth as u16 + guard_bits as u16,
+            exponent: u16::from(bit_depth) + u16::from(guard_bits),
             mantissa: 0,
         };
         let scale = if irreversible_quantization_scale.is_finite()
@@ -246,6 +254,14 @@ pub(crate) fn compute_step_sizes_with_irreversible_profile(
 /// For lossy: applies scalar deadzone quantization.
 ///
 /// Returns (magnitude, sign) pairs packed as i32 values.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary"
+)]
 pub(crate) fn quantize_subband(
     coefficients: &[f32],
     step_size: &QuantStepSize,
@@ -414,7 +430,7 @@ mod tests {
 
         for (&range_bits, step) in range_bits.iter().zip(&steps) {
             let quantized = quantize_subband(&[-128.0, 127.0], step, range_bits, false);
-            let total_bitplanes = guard_bits as u16 + step.exponent - 1;
+            let total_bitplanes = u16::from(guard_bits) + step.exponent - 1;
             let max_abs = quantized
                 .iter()
                 .map(|coefficient| coefficient.unsigned_abs())

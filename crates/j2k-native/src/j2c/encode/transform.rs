@@ -164,6 +164,10 @@ pub(super) fn validate_deinterleaved_components(
     Ok(components)
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the codec float domain intentionally receives bounded integer samples or metadata at this rounding boundary"
+)]
 pub(super) fn component_plane_to_f32(
     data: &[u8],
     width: u32,

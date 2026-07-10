@@ -39,6 +39,7 @@ criterion = { workspace = true }
 name = "tier1_bitplane"
 harness = false
 test = false
+required-features = ["parallel"]
 
 [[bench]]
 name = "htj2k_sigprop_phase"
@@ -56,4 +57,4 @@ unreachable_pub = "warn"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
-pedantic = "allow"
+pedantic = { level = "warn", priority = -1 }

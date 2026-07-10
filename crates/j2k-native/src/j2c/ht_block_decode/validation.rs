@@ -11,6 +11,11 @@ use super::state::{
 };
 use crate::error::{bail, DecodingError, Result};
 
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "this monomorphized adapter preserves the validated decode phase inputs and observer choice"
+)]
 #[inline(always)]
 fn decode_segments_with_scratch_for_phase<const PHASE_LIMIT: u8>(
     segments: &HtCodeBlockSegments<'_>,
@@ -34,8 +39,8 @@ fn decode_segments_with_scratch_for_phase<const PHASE_LIMIT: u8>(
             segments.cleanup,
             segments.refinement,
             decoded_data,
-            missing_bit_planes as u32,
-            number_of_coding_passes as u32,
+            u32::from(missing_bit_planes),
+            u32::from(number_of_coding_passes),
             width,
             height,
             stride,
@@ -49,8 +54,8 @@ fn decode_segments_with_scratch_for_phase<const PHASE_LIMIT: u8>(
             segments.cleanup,
             segments.refinement,
             decoded_data,
-            missing_bit_planes as u32,
-            number_of_coding_passes as u32,
+            u32::from(missing_bit_planes),
+            u32::from(number_of_coding_passes),
             width,
             height,
             stride,
@@ -63,6 +68,7 @@ fn decode_segments_with_scratch_for_phase<const PHASE_LIMIT: u8>(
     decoded.ok_or(DecodingError::CodeBlockDecodeFailure.into())
 }
 
+#[cfg_attr(test, expect(clippy::too_many_arguments, reason = "HT test helper"))]
 #[cfg(test)]
 pub(crate) fn decode_segments_validated(
     segments: &HtCodeBlockSegments<'_>,
@@ -90,6 +96,11 @@ pub(crate) fn decode_segments_validated(
     )
 }
 
+#[cfg_attr(test, expect(clippy::too_many_arguments, reason = "HT test helper"))]
+#[cfg_attr(
+    test,
+    expect(clippy::inline_always, reason = "const phase specialization")
+)]
 #[inline(always)]
 #[cfg(test)]
 pub(crate) fn decode_segments_validated_for_phase<const PHASE_LIMIT: u8>(
@@ -129,6 +140,7 @@ pub(crate) fn decode_segments_validated_for_phase<const PHASE_LIMIT: u8>(
     )
 }
 
+#[cfg_attr(test, expect(clippy::too_many_arguments, reason = "HT test helper"))]
 #[cfg(test)]
 pub(super) fn decode_segments_validated_with_scratch(
     segments: &HtCodeBlockSegments<'_>,
@@ -160,6 +172,11 @@ pub(super) fn decode_segments_validated_with_scratch(
     )
 }
 
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "this stable validated facade keeps decode geometry, scratch, statistics, and profiling explicit"
+)]
 #[inline(always)]
 pub(crate) fn decode_segments_validated_with_scratch_for_phase<const PHASE_LIMIT: u8>(
     segments: &HtCodeBlockSegments<'_>,
@@ -235,6 +252,7 @@ pub(super) fn validate_combined_decode(
     Ok(number_of_coding_passes != 0 && actual_bitplanes != 0)
 }
 
+#[cfg_attr(test, expect(clippy::too_many_arguments, reason = "HT test helper"))]
 #[cfg(test)]
 pub(crate) fn decode_combined_validated(
     combined: &CombinedCodeBlockData,
@@ -263,6 +281,7 @@ pub(crate) fn decode_combined_validated(
     )
 }
 
+#[cfg_attr(test, expect(clippy::too_many_arguments, reason = "HT test helper"))]
 #[cfg(test)]
 pub(super) fn decode_combined_validated_with_scratch(
     combined: &CombinedCodeBlockData,

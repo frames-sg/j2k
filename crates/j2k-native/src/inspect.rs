@@ -140,6 +140,10 @@ impl fmt::Display for J2kCodestreamHeaderError {
 /// This helper reads SIZ/COD metadata and stops at SOT/SOD/EOC. It intentionally
 /// does not require full decode headers such as QCD, so callers can inspect the
 /// same lightweight codestreams that later decode construction may reject.
+///
+/// # Errors
+///
+/// Returns an error when required markers are missing, truncated, or inconsistent.
 pub fn inspect_j2k_codestream_header(
     input: &[u8],
 ) -> Result<J2kCodestreamHeaderMetadata, J2kCodestreamHeaderError> {
@@ -292,92 +296,50 @@ fn read_segment_payload<'a>(
     Ok(&input[start..end])
 }
 
-#[allow(clippy::similar_names)]
+struct SizGeometry {
+    x_size: u32,
+    y_size: u32,
+    x_origin: u32,
+    y_origin: u32,
+    tile_width: u32,
+    tile_height: u32,
+    tile_x_origin: u32,
+    tile_y_origin: u32,
+}
+
+type SizDimensionsAndTileCount = ((u32, u32), (u32, u32));
+
 fn parse_siz(payload: &[u8]) -> Result<ParsedSiz, J2kCodestreamHeaderError> {
     if payload.len() < 36 {
         return Err(J2kCodestreamHeaderError::InvalidSiz {
             what: "payload shorter than fixed SIZ header",
         });
     }
-    let x_size = read_u32(payload, 2);
-    let y_size = read_u32(payload, 6);
-    let x_origin = read_u32(payload, 10);
-    let y_origin = read_u32(payload, 14);
-    let tile_width = read_u32(payload, 18);
-    let tile_height = read_u32(payload, 22);
-    let tile_x_origin = read_u32(payload, 26);
-    let tile_y_origin = read_u32(payload, 30);
+    let geometry = SizGeometry {
+        x_size: read_u32(payload, 2),
+        y_size: read_u32(payload, 6),
+        x_origin: read_u32(payload, 10),
+        y_origin: read_u32(payload, 14),
+        tile_width: read_u32(payload, 18),
+        tile_height: read_u32(payload, 22),
+        tile_x_origin: read_u32(payload, 26),
+        tile_y_origin: read_u32(payload, 30),
+    };
     let component_count = read_u16(payload, 34);
 
-    let component_bytes = usize::from(component_count) * 3;
-    if payload.len() < 36 + component_bytes {
+    let required_len = usize::from(component_count)
+        .checked_mul(3)
+        .and_then(|component_bytes| 36usize.checked_add(component_bytes))
+        .ok_or(J2kCodestreamHeaderError::InvalidSiz {
+            what: "component descriptor length overflows",
+        })?;
+    if payload.len() < required_len {
         return Err(J2kCodestreamHeaderError::InvalidSiz {
             what: "component descriptors truncated",
         });
     }
-    if component_count == 0 {
-        return Err(J2kCodestreamHeaderError::InvalidSiz {
-            what: "component count must be non-zero",
-        });
-    }
-    if component_count > MAX_J2K_SPEC_COMPONENTS {
-        return Err(J2kCodestreamHeaderError::InvalidSiz {
-            what: "component count exceeds JPEG 2000 limit",
-        });
-    }
-    if x_size <= x_origin || y_size <= y_origin {
-        return Err(J2kCodestreamHeaderError::InvalidSiz {
-            what: "image origin must be smaller than image size",
-        });
-    }
-    if tile_width == 0 || tile_height == 0 {
-        return Err(J2kCodestreamHeaderError::InvalidSiz {
-            what: "tile size must be non-zero",
-        });
-    }
-    if tile_x_origin >= x_size || tile_y_origin >= y_size {
-        return Err(J2kCodestreamHeaderError::InvalidSiz {
-            what: "tile origin must be within image bounds",
-        });
-    }
-    if tile_x_origin > x_origin || tile_y_origin > y_origin {
-        return Err(J2kCodestreamHeaderError::InvalidSiz {
-            what: "tile origin must not exceed image origin",
-        });
-    }
-    if tile_x_origin
-        .checked_add(tile_width)
-        .ok_or(J2kCodestreamHeaderError::InvalidSiz {
-            what: "tile extent overflows",
-        })?
-        <= x_origin
-        || tile_y_origin
-            .checked_add(tile_height)
-            .ok_or(J2kCodestreamHeaderError::InvalidSiz {
-                what: "tile extent overflows",
-            })?
-            <= y_origin
-    {
-        return Err(J2kCodestreamHeaderError::InvalidSiz {
-            what: "first tile must overlap image area",
-        });
-    }
+    let ((width, height), (tiles_x, tiles_y)) = validate_siz_geometry(&geometry, component_count)?;
 
-    let width = x_size - x_origin;
-    let height = y_size - y_origin;
-    if width > MAX_J2K_IMAGE_DIMENSION || height > MAX_J2K_IMAGE_DIMENSION {
-        return Err(J2kCodestreamHeaderError::InvalidSiz {
-            what: "image dimensions exceed JPEG 2000 inspect limit",
-        });
-    }
-    let tiles_x = (x_size - tile_x_origin).div_ceil(tile_width);
-    let tiles_y = (y_size - tile_y_origin).div_ceil(tile_height);
-    let tile_count = u64::from(tiles_x) * u64::from(tiles_y);
-    if tile_count > MAX_J2K_TILE_COUNT {
-        return Err(J2kCodestreamHeaderError::InvalidSiz {
-            what: "image has too many tiles",
-        });
-    }
     let mut bit_depth = 0u8;
     let mut component_info = Vec::with_capacity(usize::from(component_count));
     for idx in 0..usize::from(component_count) {
@@ -403,10 +365,82 @@ fn parse_siz(payload: &[u8]) -> Result<ParsedSiz, J2kCodestreamHeaderError> {
         dimensions: (width, height),
         components: component_count,
         bit_depth,
-        tile_size: (tile_width, tile_height),
+        tile_size: (geometry.tile_width, geometry.tile_height),
         tile_count: (tiles_x, tiles_y),
         component_info,
     })
+}
+
+fn validate_siz_geometry(
+    geometry: &SizGeometry,
+    component_count: u16,
+) -> Result<SizDimensionsAndTileCount, J2kCodestreamHeaderError> {
+    if component_count == 0 {
+        return Err(J2kCodestreamHeaderError::InvalidSiz {
+            what: "component count must be non-zero",
+        });
+    }
+    if component_count > MAX_J2K_SPEC_COMPONENTS {
+        return Err(J2kCodestreamHeaderError::InvalidSiz {
+            what: "component count exceeds JPEG 2000 limit",
+        });
+    }
+    if geometry.x_size <= geometry.x_origin || geometry.y_size <= geometry.y_origin {
+        return Err(J2kCodestreamHeaderError::InvalidSiz {
+            what: "image origin must be smaller than image size",
+        });
+    }
+    if geometry.tile_width == 0 || geometry.tile_height == 0 {
+        return Err(J2kCodestreamHeaderError::InvalidSiz {
+            what: "tile size must be non-zero",
+        });
+    }
+    if geometry.tile_x_origin >= geometry.x_size || geometry.tile_y_origin >= geometry.y_size {
+        return Err(J2kCodestreamHeaderError::InvalidSiz {
+            what: "tile origin must be within image bounds",
+        });
+    }
+    if geometry.tile_x_origin > geometry.x_origin || geometry.tile_y_origin > geometry.y_origin {
+        return Err(J2kCodestreamHeaderError::InvalidSiz {
+            what: "tile origin must not exceed image origin",
+        });
+    }
+    if geometry
+        .tile_x_origin
+        .checked_add(geometry.tile_width)
+        .ok_or(J2kCodestreamHeaderError::InvalidSiz {
+            what: "tile extent overflows",
+        })?
+        <= geometry.x_origin
+        || geometry
+            .tile_y_origin
+            .checked_add(geometry.tile_height)
+            .ok_or(J2kCodestreamHeaderError::InvalidSiz {
+                what: "tile extent overflows",
+            })?
+            <= geometry.y_origin
+    {
+        return Err(J2kCodestreamHeaderError::InvalidSiz {
+            what: "first tile must overlap image area",
+        });
+    }
+
+    let width = geometry.x_size - geometry.x_origin;
+    let height = geometry.y_size - geometry.y_origin;
+    if width > MAX_J2K_IMAGE_DIMENSION || height > MAX_J2K_IMAGE_DIMENSION {
+        return Err(J2kCodestreamHeaderError::InvalidSiz {
+            what: "image dimensions exceed JPEG 2000 inspect limit",
+        });
+    }
+    let tiles_x = (geometry.x_size - geometry.tile_x_origin).div_ceil(geometry.tile_width);
+    let tiles_y = (geometry.y_size - geometry.tile_y_origin).div_ceil(geometry.tile_height);
+    let tile_count = u64::from(tiles_x) * u64::from(tiles_y);
+    if tile_count > MAX_J2K_TILE_COUNT {
+        return Err(J2kCodestreamHeaderError::InvalidSiz {
+            what: "image has too many tiles",
+        });
+    }
+    Ok(((width, height), (tiles_x, tiles_y)))
 }
 
 fn parse_cod(payload: &[u8]) -> Result<ParsedCod, J2kCodestreamHeaderError> {
@@ -513,8 +547,8 @@ mod tests {
     #[test]
     fn inspect_accepts_legal_38_bit_component_metadata() {
         let mut bytes = minimal_codestream();
-        rewrite_component_descriptor(&mut bytes, 0, 37);
-        rewrite_component_descriptor(&mut bytes, 1, 0x80 | 37);
+        rewrite_component_descriptor(&mut bytes, 0, 0x25);
+        rewrite_component_descriptor(&mut bytes, 1, 0x80 | 0x25);
 
         let header = inspect_j2k_codestream_header(&bytes).expect("legal 38-bit SIZ inspect");
 
@@ -542,12 +576,18 @@ mod tests {
             siz.extend_from_slice(&[0x07, 0x01, 0x01]);
         }
         bytes.extend_from_slice(&[0xFF, 0x51]);
-        push_u16(&mut bytes, (siz.len() + 2) as u16);
+        push_u16(
+            &mut bytes,
+            u16::try_from(siz.len() + 2).expect("test SIZ segment length fits u16"),
+        );
         bytes.extend_from_slice(&siz);
 
         let cod = [0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x04, 0x04, 0x00, 0x01];
         bytes.extend_from_slice(&[0xFF, 0x52]);
-        push_u16(&mut bytes, (cod.len() + 2) as u16);
+        push_u16(
+            &mut bytes,
+            u16::try_from(cod.len() + 2).expect("test COD segment length fits u16"),
+        );
         bytes.extend_from_slice(&cod);
         bytes.extend_from_slice(&[0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         bytes
@@ -580,11 +620,11 @@ mod tests {
         bytes[component_offset + 2] = y_rsiz;
     }
 
-    fn rewrite_component_descriptor(bytes: &mut [u8], component: usize, ssiz: u8) {
+    fn rewrite_component_descriptor(bytes: &mut [u8], component: usize, descriptor: u8) {
         let siz = bytes
             .windows(2)
             .position(|marker| marker == [0xFF, 0x51])
             .expect("SIZ marker");
-        bytes[siz + 40 + component * 3] = ssiz;
+        bytes[siz + 40 + component * 3] = descriptor;
     }
 }

@@ -21,6 +21,14 @@ use reversible_i64::{
 };
 use tile_encode::encode_tile_packets;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub(super) fn encode_impl(
     pixels: &[u8],
     width: u32,
@@ -157,8 +165,8 @@ pub(super) fn encode_impl(
     finalize_staged_codestream(
         options,
         &plan,
-        prepared,
-        encoded,
+        &prepared,
+        &encoded,
         profile_enabled,
         total_start,
     )

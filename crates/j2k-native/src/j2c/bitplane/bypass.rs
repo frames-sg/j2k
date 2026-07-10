@@ -28,14 +28,14 @@ impl<'a> BypassDecoder<'a> {
 impl BitDecoder for BypassDecoder<'_> {
     fn read_bit(&mut self, _: &mut ArithmeticDecoderContext) -> Option<u32> {
         self.0.read_bits_with_stuffing(1).or({
-            if !self.1 {
+            if self.1 {
+                // We have too little data, return `None`.
+                None
+            } else {
                 // If not in strict mode, just pad with ones. Not sure if
                 // zeroes would be better here, but since the arithmetic decoder
                 // is also padded with 0xFF maybe 1 is the better choice?
                 Some(1)
-            } else {
-                // We have too little data, return `None`.
-                None
             }
         })
     }
@@ -189,6 +189,10 @@ impl SafeScalarTier1 {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
+)]
 #[inline(always)]
 fn cleanup_coefficient_bypass(
     ctx: &mut BitPlaneDecodeContext,
@@ -213,6 +217,10 @@ fn cleanup_coefficient_bypass(
 }
 
 /// Decode a raw bypass sign bit (Section D.3.2).
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
+)]
 #[inline(always)]
 fn decode_sign_bit_bypass(
     idx: usize,
@@ -224,7 +232,7 @@ fn decode_sign_bit_bypass(
     let ad_ctx = ctx.arithmetic_decoder_context(ctx_label);
     let _ = xor_bit;
     let sign_bit = decoder.read_bit(ad_ctx)?;
-    ctx.set_sign_index(idx, sign_bit as u8);
+    ctx.set_sign_index(idx, u8::from(sign_bit != 0));
 
     Some(())
 }

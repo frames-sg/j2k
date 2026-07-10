@@ -47,6 +47,10 @@ pub(super) trait CleanupCoefficientSource {
 }
 
 impl CleanupCoefficientSource for [u32] {
+    #[expect(
+        clippy::inline_always,
+        reason = "coefficient loads are fused into the per-sample cleanup hot path"
+    )]
     #[inline(always)]
     fn aligned_value(&self, index: usize) -> u32 {
         self[index]
@@ -59,12 +63,20 @@ pub(super) struct I32CleanupCoefficients<'a> {
 }
 
 impl CleanupCoefficientSource for I32CleanupCoefficients<'_> {
+    #[expect(
+        clippy::inline_always,
+        reason = "coefficient conversion is fused into the per-sample cleanup hot path"
+    )]
     #[inline(always)]
     fn aligned_value(&self, index: usize) -> u32 {
         aligned_sign_magnitude(self.coefficients[index], self.shift)
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "sign-magnitude conversion runs once per sample in the cleanup hot path"
+)]
 #[inline(always)]
 fn aligned_sign_magnitude(coefficient: i32, shift: u32) -> u32 {
     let magnitude = coefficient.unsigned_abs();
@@ -100,6 +112,11 @@ pub(super) fn encode_cleanup_segment(
     encode_cleanup_segment_from_source(coefficients, missing_msbs, width, height)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::too_many_lines,
+    reason = "locator fields are normatively bounded to 12 bits and this function preserves cleanup pass order"
+)]
 fn encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
     coefficients: &S,
     missing_msbs: u8,

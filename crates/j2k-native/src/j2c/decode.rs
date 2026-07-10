@@ -38,7 +38,7 @@ use crate::{
 #[cfg(feature = "parallel")]
 use crate::{decode_ht_code_block_scalar_with_workspace, HtCodeBlockDecodeWorkspace};
 use core::mem::size_of;
-use core::ops::{DerefMut, Range};
+use core::ops::Range;
 
 mod direct_plan;
 mod store;
@@ -196,6 +196,7 @@ impl DecoderContext<'_> {
     }
 
     /// Return the native CPU decode parallelism policy.
+    #[must_use]
     pub fn cpu_decode_parallelism(&self) -> CpuDecodeParallelism {
         self.cpu_decode_parallelism
     }
@@ -206,6 +207,10 @@ impl DecoderContext<'_> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 fn decode_tile<'a, 'b>(
     tile: &'b Tile<'a>,
     header: &Header<'_>,
@@ -322,6 +327,10 @@ fn validate_exact_integer_decode_tile(tile: &Tile<'_>) -> Result<()> {
 }
 
 #[derive(Default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the repeated _us suffix makes every profiling unit explicit"
+)]
 struct DecodeProfileTimings {
     parse_tiles_us: u128,
     build_us: u128,
@@ -519,11 +528,13 @@ impl TileDecodeContext {
         self.channel_data.clear();
         self.debug_counters = DecodeDebugCounters::default();
 
-        let (output_width, output_height) =
-            self.output_region.map(OutputRegion::dimensions).unwrap_or((
+        let (output_width, output_height) = self.output_region.map_or(
+            (
                 header.size_data.image_width(),
                 header.size_data.image_height(),
-            ));
+            ),
+            OutputRegion::dimensions,
+        );
 
         let sample_count = checked_decode_sample_count(output_width, output_height)?;
         checked_decode_byte_len3(
@@ -694,7 +705,9 @@ mod tests {
             output_y: 0,
             width: 4,
             height: 3,
-            coefficients: (0..12).map(|value| value as f32).collect(),
+            coefficients: (0..12)
+                .map(|value| f32::from(u8::try_from(value).expect("test value fits u8")))
+                .collect(),
         };
 
         super::copy_decoded_classic_blocks_to_sub_band(&[block], &sub_band, &mut storage)
@@ -702,7 +715,9 @@ mod tests {
 
         assert_eq!(
             storage.coefficients,
-            (0..12).map(|value| value as f32).collect::<Vec<_>>()
+            (0..12)
+                .map(|value| f32::from(u8::try_from(value).expect("test value fits u8")))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -749,6 +764,7 @@ mod tests {
         assert_eq!(error, DecodingError::CodeBlockDecodeFailure.into());
     }
 
+    #[cfg(feature = "parallel")]
     #[test]
     fn auto_cpu_parallelism_enables_ht_sub_band_parallel_branch() {
         assert!(super::should_decode_ht_sub_band_in_parallel(

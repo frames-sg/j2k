@@ -91,6 +91,10 @@ pub(super) fn checked_code_block_output_layout(
     Ok(CodeBlockOutputLayout { stride, len })
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the public scalar adapter intentionally emits f32 coefficients"
+)]
 fn write_j2k_code_block_output(
     decode_context: &j2c::bitplane::BitPlaneDecodeContext,
     job: J2kCodeBlockDecodeJob<'_>,

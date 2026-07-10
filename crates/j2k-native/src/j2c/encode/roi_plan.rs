@@ -40,6 +40,14 @@ pub(super) fn component_sampling_for_options(
     }
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub(super) fn roi_encode_plans_for_options(
     options: &EncodeOptions,
     roi_regions: &[EncodeRoiRegion],
@@ -195,7 +203,7 @@ fn max_total_bitplanes(step_sizes: &[QuantStepSize], guard_bits: u8) -> Result<u
     step_sizes
         .iter()
         .map(|step_size| {
-            debug_assert!(step_size.exponent <= u16::from(u8::MAX));
+            debug_assert!(u8::try_from(step_size.exponent).is_ok());
             guard_bits
                 .checked_add(
                     u8::try_from(step_size.exponent)

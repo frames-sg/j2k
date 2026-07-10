@@ -17,6 +17,18 @@ pub(super) struct EncodedTilePackets {
     pub(super) packetize_us: u128,
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub(super) fn encode_tile_packets(
     width: u32,
     height: u32,

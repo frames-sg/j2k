@@ -9,6 +9,10 @@ use super::tile::{ComponentTile, ResolutionTile, Tile};
 use crate::{idwt_required_input_window_for_rects, J2kRequiredBandRegion};
 
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the repeated _windows suffix distinguishes the three ROI planning stages"
+)]
 pub(crate) struct RoiPlan {
     sub_band_windows: Vec<Option<IntRect>>,
     idwt_windows: Vec<Option<IntRect>>,
@@ -16,6 +20,10 @@ pub(crate) struct RoiPlan {
 }
 
 impl RoiPlan {
+    #[expect(
+        clippy::similar_names,
+        reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+    )]
     pub(crate) fn build(
         tile: &Tile<'_>,
         header: &Header<'_>,

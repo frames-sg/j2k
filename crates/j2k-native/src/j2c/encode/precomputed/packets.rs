@@ -28,7 +28,7 @@ pub(in crate::j2c::encode) fn prepared_resolution_packets_from_prequantized_comp
                     .subbands
                     .iter()
                     .map(prepared_subband_from_prequantized)
-                    .collect::<Result<Vec<_>, &'static str>>()?,
+                    .collect(),
             })
         })
         .collect()
@@ -36,8 +36,8 @@ pub(in crate::j2c::encode) fn prepared_resolution_packets_from_prequantized_comp
 
 pub(in crate::j2c::encode) fn prepared_subband_from_prequantized(
     subband: &PrequantizedHtj2k97Subband,
-) -> Result<PreparedEncodeSubband, &'static str> {
-    Ok(PreparedEncodeSubband {
+) -> PreparedEncodeSubband {
+    PreparedEncodeSubband {
         code_blocks: subband
             .code_blocks
             .iter()
@@ -75,7 +75,7 @@ pub(in crate::j2c::encode) fn prepared_subband_from_prequantized(
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: BlockCodingMode::HighThroughput,
         ht_target_coding_passes: 1,
-    })
+    }
 }
 
 pub(in crate::j2c::encode) fn precomputed_subband_width(
@@ -123,7 +123,7 @@ pub(in crate::j2c::encode) fn prepared_resolution_packets_from_preencoded_compon
                     .subbands
                     .iter()
                     .map(prepared_subband_from_preencoded)
-                    .collect::<Result<Vec<_>, &'static str>>()?,
+                    .collect(),
             })
         })
         .collect()
@@ -148,7 +148,7 @@ pub(in crate::j2c::encode) fn prepared_resolution_packets_from_preencoded_compon
                     .subbands
                     .into_iter()
                     .map(prepared_subband_from_preencoded_owned)
-                    .collect::<Result<Vec<_>, &'static str>>()?,
+                    .collect(),
             })
         })
         .collect()
@@ -182,8 +182,8 @@ pub(in crate::j2c::encode) fn prepared_resolution_packets_from_preencoded_compac
 
 pub(in crate::j2c::encode) fn prepared_subband_from_preencoded(
     subband: &PreencodedHtj2k97Subband,
-) -> Result<PreparedEncodeSubband, &'static str> {
-    Ok(PreparedEncodeSubband {
+) -> PreparedEncodeSubband {
+    PreparedEncodeSubband {
         code_blocks: subband
             .code_blocks
             .iter()
@@ -227,12 +227,12 @@ pub(in crate::j2c::encode) fn prepared_subband_from_preencoded(
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: BlockCodingMode::HighThroughput,
         ht_target_coding_passes: 1,
-    })
+    }
 }
 
 pub(in crate::j2c::encode) fn prepared_subband_from_preencoded_owned(
     subband: PreencodedHtj2k97Subband,
-) -> Result<PreparedEncodeSubband, &'static str> {
+) -> PreparedEncodeSubband {
     let code_block_width = subband
         .code_blocks
         .iter()
@@ -276,7 +276,7 @@ pub(in crate::j2c::encode) fn prepared_subband_from_preencoded_owned(
     let (code_blocks, preencoded_ht_code_blocks): (Vec<_>, Vec<_>) =
         code_blocks.into_iter().unzip();
 
-    Ok(PreparedEncodeSubband {
+    PreparedEncodeSubband {
         code_blocks,
         preencoded_ht_code_blocks: Some(preencoded_ht_code_blocks),
         num_cbs_x: subband.num_cbs_x,
@@ -289,7 +289,7 @@ pub(in crate::j2c::encode) fn prepared_subband_from_preencoded_owned(
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: BlockCodingMode::HighThroughput,
         ht_target_coding_passes: 1,
-    })
+    }
 }
 
 pub(in crate::j2c::encode) fn prepared_subband_from_preencoded_compact<'a>(

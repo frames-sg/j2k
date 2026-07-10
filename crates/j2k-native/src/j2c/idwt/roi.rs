@@ -74,7 +74,7 @@ pub(super) fn apply_roi(
             transform,
             storage,
             &mut tile_ctx.debug_counters.idwt_output_samples,
-        )?;
+        );
         current_coefficients = next;
         current_rect = output_window;
         have_current = true;
@@ -113,7 +113,7 @@ fn apply_level_roi(
     transform: WaveletTransform,
     storage: &DecompositionStorage<'_>,
     idwt_output_samples: &mut usize,
-) -> Result<()> {
+) {
     let hl =
         CoefficientSource::from_sub_band(&storage.sub_bands[decomposition.sub_bands[0]], storage);
     let lh =
@@ -131,7 +131,6 @@ fn apply_level_roi(
         filter_horizontal(target, output_window, transform);
         filter_vertical(target, output_window, transform);
     }
-    Ok(())
 }
 
 pub(super) fn interleave_samples_roi(

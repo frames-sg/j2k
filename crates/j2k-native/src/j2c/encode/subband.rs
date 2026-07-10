@@ -140,6 +140,18 @@ fn roi_region_subband_window(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+)]
 pub(super) fn prepare_subband(
     coefficients: &[f32],
     width: u32,
@@ -176,10 +188,9 @@ pub(super) fn prepare_subband(
     }
 
     let range_bits = subband_range_bits(bit_depth, sub_band_type);
-    debug_assert!(step_size.exponent <= u16::from(u8::MAX));
-    let base_total_bitplanes = guard_bits
-        .saturating_add(step_size.exponent as u8)
-        .saturating_sub(1);
+    let exponent = u8::try_from(step_size.exponent)
+        .map_err(|_| "quantization exponent exceeds supported range")?;
+    let base_total_bitplanes = guard_bits.saturating_add(exponent).saturating_sub(1);
     let total_bitplanes = base_total_bitplanes
         .checked_add(roi_shift)
         .ok_or("ROI maxshift exceeds supported coded bitplane count")?;
@@ -308,6 +319,10 @@ pub(super) struct I64SubbandEncodeSettings<'a> {
     pub(super) ht_target_coding_passes: u8,
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+)]
 pub(super) fn prepare_subband_i64(
     coefficients: &[i64],
     width: u32,
@@ -343,10 +358,9 @@ pub(super) fn prepare_subband_i64(
         });
     }
 
-    debug_assert!(step_size.exponent <= u16::from(u8::MAX));
-    let base_total_bitplanes = guard_bits
-        .saturating_add(step_size.exponent as u8)
-        .saturating_sub(1);
+    let exponent = u8::try_from(step_size.exponent)
+        .map_err(|_| "quantization exponent exceeds supported range")?;
+    let base_total_bitplanes = guard_bits.saturating_add(exponent).saturating_sub(1);
     let total_bitplanes = base_total_bitplanes
         .checked_add(roi_shift)
         .ok_or("ROI maxshift exceeds supported coded bitplane count")?;
@@ -405,6 +419,14 @@ pub(super) fn prepare_subband_i64(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+)]
 pub(super) fn prepare_subband_cpu_quantized(
     coefficients: &[f32],
     width: u32,
@@ -436,10 +458,9 @@ pub(super) fn prepare_subband_cpu_quantized(
     }
 
     let range_bits = subband_range_bits(bit_depth, sub_band_type);
-    debug_assert!(step_size.exponent <= u16::from(u8::MAX));
-    let total_bitplanes = guard_bits
-        .saturating_add(step_size.exponent as u8)
-        .saturating_sub(1);
+    let exponent = u8::try_from(step_size.exponent)
+        .map_err(|_| "quantization exponent exceeds supported range")?;
+    let total_bitplanes = guard_bits.saturating_add(exponent).saturating_sub(1);
     let num_cbs_x = width.div_ceil(cb_width);
     let num_cbs_y = height.div_ceil(cb_height);
     let quantized = quantize::quantize_subband(coefficients, step_size, range_bits, reversible);

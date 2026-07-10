@@ -172,7 +172,6 @@ pub fn idwt_required_input_windows(
 
 /// Compute one absolute sub-band window for native ROI planning.
 #[must_use]
-#[allow(clippy::fn_params_excessive_bools)]
 pub fn idwt_required_input_window_for_rects(
     output_window: J2kRequiredBandRegion,
     output_rect: J2kRect,
@@ -225,7 +224,6 @@ pub fn idwt_required_input_window_for_rects(
     }
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
 fn idwt_input_required_region(
     output_region: J2kRequiredBandRegion,
     output_origin_x: u32,

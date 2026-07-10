@@ -19,7 +19,8 @@ fn generated_coefficients(width: u32, height: u32, seed: u32) -> Vec<i32> {
     let mut state = seed ^ 0x9e37_79b9;
     for idx in 0..width * height {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let value = ((state >> 16) & 0x01ff) as i32 - 255;
+        let value =
+            i32::try_from((state >> 16) & 0x01ff).expect("masked coefficient fits i32") - 255;
         coefficients.push(if (idx + seed).is_multiple_of(11) {
             0
         } else {
@@ -98,6 +99,10 @@ struct ExpectedStyleGolden {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the complete style matrix and byte-exact golden expectations stay together for review"
+)]
 fn classic_style_pass_and_segment_goldens_are_bit_exact() {
     let width = 13u32;
     let height = 9u32;

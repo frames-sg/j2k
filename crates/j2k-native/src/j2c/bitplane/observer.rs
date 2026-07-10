@@ -3,6 +3,7 @@
 use crate::profile;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(clippy::struct_field_names, reason = "fields expose microsecond units")]
 pub(crate) struct J2kBlockDecodeStats {
     pub(crate) sigprop_us: u128,
     pub(crate) magref_us: u128,
@@ -11,6 +12,7 @@ pub(crate) struct J2kBlockDecodeStats {
 }
 
 pub(super) trait J2kDecodeObserver {
+    #[expect(clippy::inline_always, reason = "hot observer hook")]
     #[inline(always)]
     fn phase_start(&self) -> Option<profile::ProfileInstant> {
         None
@@ -39,6 +41,7 @@ pub(super) struct RecordingJ2kDecodeStats<'a> {
 }
 
 impl J2kDecodeObserver for RecordingJ2kDecodeStats<'_> {
+    #[expect(clippy::inline_always, reason = "hot observer hook")]
     #[inline(always)]
     fn phase_start(&self) -> Option<profile::ProfileInstant> {
         if self.profile_enabled {
@@ -48,6 +51,7 @@ impl J2kDecodeObserver for RecordingJ2kDecodeStats<'_> {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "hot observer hook")]
     #[inline(always)]
     fn add_sigprop_us(&mut self, start: Option<profile::ProfileInstant>) {
         if self.profile_enabled {
@@ -55,6 +59,7 @@ impl J2kDecodeObserver for RecordingJ2kDecodeStats<'_> {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "hot observer hook")]
     #[inline(always)]
     fn add_magref_us(&mut self, start: Option<profile::ProfileInstant>) {
         if self.profile_enabled {
@@ -62,6 +67,7 @@ impl J2kDecodeObserver for RecordingJ2kDecodeStats<'_> {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "hot observer hook")]
     #[inline(always)]
     fn add_cleanup_us(&mut self, start: Option<profile::ProfileInstant>) {
         if self.profile_enabled {
@@ -69,6 +75,7 @@ impl J2kDecodeObserver for RecordingJ2kDecodeStats<'_> {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "hot observer hook")]
     #[inline(always)]
     fn add_bypass_us(&mut self, start: Option<profile::ProfileInstant>) {
         if self.profile_enabled {

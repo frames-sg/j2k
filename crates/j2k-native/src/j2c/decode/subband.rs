@@ -56,6 +56,18 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
     Ok(())
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the codec float domain intentionally receives bounded integer samples or metadata at this rounding boundary"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 fn decode_sub_band_bitplanes(
     sub_band_idx: usize,
     resolution: u8,

@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use super::{collect_encode_distribution, encode_code_block_with_passes};
 use crate::HtCleanupEncodeDistribution;
 
+#[derive(Clone, Copy)]
 struct ExpectedBlock<'a> {
     data: &'a [u8],
     coding_passes: u8,

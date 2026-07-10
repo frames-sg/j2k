@@ -8,8 +8,8 @@ use crate::reader::BitReader;
 
 pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
     let mut reader = BitReader::new(data);
-    let num_entries = reader.read_u16().ok_or(FormatError::InvalidBox)? as usize;
-    let num_components = reader.read_byte().ok_or(FormatError::InvalidBox)? as usize;
+    let num_entries = usize::from(reader.read_u16().ok_or(FormatError::InvalidBox)?);
+    let num_components = usize::from(reader.read_byte().ok_or(FormatError::InvalidBox)?);
 
     if num_entries == 0 || num_components == 0 {
         bail!(FormatError::InvalidBox);
@@ -32,13 +32,13 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
         let mut row = Vec::with_capacity(num_components);
 
         for column in &columns {
-            let num_bytes = (column.bit_depth as usize).div_ceil(8).max(1);
+            let num_bytes = usize::from(column.bit_depth).div_ceil(8).max(1);
             let raw_bytes = reader
                 .read_bytes(num_bytes)
                 .ok_or(FormatError::InvalidBox)?;
             let mut raw_value = 0_u64;
             for &byte in raw_bytes {
-                raw_value = (raw_value << 8) | byte as u64;
+                raw_value = (raw_value << 8) | u64::from(byte);
             }
 
             row.push(raw_value);
@@ -59,7 +59,7 @@ pub(crate) struct PaletteBox {
 }
 
 impl PaletteBox {
-    #[inline(always)]
+    #[inline]
     pub(crate) fn map(&self, entry: usize, column: usize) -> Option<u64> {
         self.entries
             .get(entry)

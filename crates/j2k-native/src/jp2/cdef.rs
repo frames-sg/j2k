@@ -8,7 +8,7 @@ use crate::reader::BitReader;
 
 pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
     let mut reader = BitReader::new(data);
-    let count = reader.read_u16().ok_or(FormatError::InvalidBox)? as usize;
+    let count = usize::from(reader.read_u16().ok_or(FormatError::InvalidBox)?);
     let mut definitions = Vec::with_capacity(count);
 
     if count == 0 {
@@ -23,8 +23,7 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
         definitions.push(ChannelDefinition {
             channel_index,
             channel_type: ChannelType::from_raw(channel_type),
-            _association: ChannelAssociation::from_raw(association)
-                .ok_or(FormatError::InvalidBox)?,
+            association: ChannelAssociation::from_raw(association),
         });
     }
 
@@ -44,7 +43,7 @@ pub(crate) struct ChannelDefinitionBox {
 pub(crate) struct ChannelDefinition {
     pub(crate) channel_index: u16,
     pub(crate) channel_type: ChannelType,
-    pub(crate) _association: ChannelAssociation,
+    pub(crate) association: ChannelAssociation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,11 +75,11 @@ pub(crate) enum ChannelAssociation {
 }
 
 impl ChannelAssociation {
-    fn from_raw(value: u16) -> Option<Self> {
+    fn from_raw(value: u16) -> Self {
         match value {
-            0 => Some(Self::WholeImage),
-            u16::MAX => Some(Self::Unspecified),
-            v => Some(Self::Colour(v)),
+            0 => Self::WholeImage,
+            u16::MAX => Self::Unspecified,
+            v => Self::Colour(v),
         }
     }
 }

@@ -122,6 +122,10 @@ pub(crate) fn build_direct_color_plan<'a>(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 fn build_component_plan_from_storage(
     tile: &Tile<'_>,
     header: &Header<'_>,
@@ -261,6 +265,10 @@ fn build_component_plan_from_storage(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 fn build_grayscale_sub_band_step(
     sub_band: &SubBand,
     sub_band_idx: usize,
@@ -400,6 +408,10 @@ fn direct_sub_band_job_capacity(sub_band: &SubBand, storage: &DecompositionStora
         .sum()
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+)]
 pub(super) fn collect_classic_code_block_data(
     code_block: &CodeBlock,
     style: &crate::j2c::codestream::CodeBlockStyle,

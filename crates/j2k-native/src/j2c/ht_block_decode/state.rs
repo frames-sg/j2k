@@ -63,6 +63,10 @@ pub(super) trait HtDecodeObserver {
     #[inline(always)]
     fn record_block(&mut self, _cleanup_bytes: usize, _refinement_bytes: usize) {}
 
+    #[expect(
+        clippy::inline_always,
+        reason = "erase the unprofiled observer clock hook"
+    )]
     #[inline(always)]
     fn phase_start(&self) -> Option<profile::ProfileInstant> {
         None
@@ -94,11 +98,13 @@ pub(super) struct RecordingHtDecodeStats<'a> {
 }
 
 impl HtDecodeObserver for RecordingHtDecodeStats<'_> {
+    #[expect(clippy::inline_always, reason = "fuse observer accounting into decode")]
     #[inline(always)]
     fn record_block(&mut self, cleanup_bytes: usize, refinement_bytes: usize) {
         self.stats.record_block(cleanup_bytes, refinement_bytes);
     }
 
+    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
     #[inline(always)]
     fn phase_start(&self) -> Option<profile::ProfileInstant> {
         if self.profile_enabled {
@@ -108,6 +114,7 @@ impl HtDecodeObserver for RecordingHtDecodeStats<'_> {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
     #[inline(always)]
     fn add_cleanup_us(&mut self, start: Option<profile::ProfileInstant>) {
         if self.profile_enabled {
@@ -115,6 +122,7 @@ impl HtDecodeObserver for RecordingHtDecodeStats<'_> {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
     #[inline(always)]
     fn add_mag_sgn_us(&mut self, start: Option<profile::ProfileInstant>) {
         if self.profile_enabled {
@@ -122,6 +130,7 @@ impl HtDecodeObserver for RecordingHtDecodeStats<'_> {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
     #[inline(always)]
     fn add_sigma_us(&mut self, start: Option<profile::ProfileInstant>) {
         if self.profile_enabled {
@@ -129,6 +138,7 @@ impl HtDecodeObserver for RecordingHtDecodeStats<'_> {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
     #[inline(always)]
     fn add_sigprop_us(&mut self, start: Option<profile::ProfileInstant>) {
         if self.profile_enabled {
@@ -136,6 +146,7 @@ impl HtDecodeObserver for RecordingHtDecodeStats<'_> {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "fuse observer timing into decode")]
     #[inline(always)]
     fn add_magref_us(&mut self, start: Option<profile::ProfileInstant>) {
         if self.profile_enabled {
@@ -172,6 +183,10 @@ impl HtBlockDecodeScratch {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "fuse scratch clearing into the phase loop"
+)]
 #[inline(always)]
 pub(super) fn zeroed_u16_scratch(buffer: &mut Vec<u16>, len: usize) -> &mut [u16] {
     if buffer.len() < len {
@@ -192,6 +207,10 @@ pub(super) fn zeroed_u32_scratch(buffer: &mut Vec<u32>, len: usize) -> &mut [u32
     &mut buffer[..len]
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "fuse scratch resizing into the phase loop"
+)]
 #[inline(always)]
 pub(super) fn resized_u16_scratch(buffer: &mut Vec<u16>, len: usize) -> &mut [u16] {
     if buffer.len() < len {
@@ -201,6 +220,10 @@ pub(super) fn resized_u16_scratch(buffer: &mut Vec<u16>, len: usize) -> &mut [u1
     &mut buffer[..len]
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "fuse scratch resizing into the phase loop"
+)]
 #[inline(always)]
 pub(super) fn resized_u32_scratch(buffer: &mut Vec<u32>, len: usize) -> &mut [u32] {
     if buffer.len() < len {

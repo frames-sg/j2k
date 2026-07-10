@@ -21,6 +21,14 @@ pub(super) fn interleave_samples(
     });
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "the SIMD IDWT implementation is intentionally specialized at the architecture dispatch boundary"
+)]
+#[expect(
+    clippy::similar_names,
+    reason = "paired LL, HL, LH, and HH band names follow JPEG 2000 specification notation"
+)]
 #[inline(always)]
 fn interleave_samples_inner<S: Simd>(
     simd: S,
@@ -76,8 +84,8 @@ fn interleave_samples_inner<S: Simd>(
         (num_u_high, num_u_low)
     };
 
-    let even_row_start = if v0 % 2 == 0 { 0 } else { 1 };
-    let odd_row_start = if v0 % 2 == 0 { 1 } else { 0 };
+    let even_row_start = usize::from(v0 % 2 != 0);
+    let odd_row_start = usize::from(v0 % 2 == 0);
 
     // Determine whether LL or HL is the band in the first column.
     let (first_even, second_even) = if u0 % 2 == 0 { (ll, hl) } else { (hl, ll) };
@@ -110,6 +118,14 @@ fn interleave_samples_inner<S: Simd>(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the IDWT row kernel keeps paired-band geometry and output bounds explicit in its hot loop"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "the SIMD row kernel is intentionally inlined into the specialized IDWT implementation"
+)]
 #[inline(always)]
 fn interleave_rows<S: Simd>(
     simd: S,
@@ -137,6 +153,10 @@ fn interleave_rows<S: Simd>(
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "the SIMD interleave primitive is intentionally inlined into the IDWT row kernel"
+)]
 #[inline(always)]
 fn interleave_row<S: Simd>(simd: S, first: &[f32], second: &[f32], output: &mut [f32]) {
     let num_pairs = first.len().min(second.len());

@@ -13,6 +13,12 @@ fn marker_offset(codestream: &[u8], marker: u8) -> usize {
         .unwrap_or_else(|| panic!("missing marker FF{marker:02X}"))
 }
 
+fn patterned_pixels(len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|index| u8::try_from(index % 251).expect("pattern value fits u8"))
+        .collect()
+}
+
 fn cod_marker_end(codestream: &[u8]) -> usize {
     let cod_offset = marker_offset(codestream, 0x52);
     let lcod = u16::from_be_bytes([codestream[cod_offset + 2], codestream[cod_offset + 3]]);
@@ -60,7 +66,7 @@ fn insert_tile_header_rgn(mut codestream: Vec<u8>, roi_shift: u8, style: u8) -> 
 
 #[test]
 fn tile_header_rgn_marker_with_zero_shift_is_a_noop() {
-    let pixels: Vec<_> = (0..64 * 64).map(|idx| (idx % 251) as u8).collect();
+    let pixels = patterned_pixels(64 * 64);
     let codestream = encode(&pixels, 64, 64, 1, 8, false, &EncodeOptions::default())
         .expect("lossless fixture encode");
     let with_rgn = insert_tile_header_rgn(codestream, 0, 0);
@@ -78,7 +84,7 @@ fn tile_header_rgn_marker_with_zero_shift_is_a_noop() {
 
 #[test]
 fn encode_whole_component_roi_maxshift_roundtrips_and_writes_rgn() {
-    let pixels: Vec<_> = (0..64 * 64).map(|idx| (idx % 251) as u8).collect();
+    let pixels = patterned_pixels(64 * 64);
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 1,
@@ -108,7 +114,7 @@ fn encode_whole_component_roi_maxshift_roundtrips_and_writes_rgn() {
 
 #[test]
 fn encode_rectangular_roi_maxshift_roundtrips_and_writes_rgn() {
-    let pixels: Vec<_> = (0..64 * 64).map(|idx| (idx % 251) as u8).collect();
+    let pixels = patterned_pixels(64 * 64);
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 1,
@@ -145,7 +151,7 @@ fn encode_rectangular_roi_maxshift_roundtrips_and_writes_rgn() {
 
 #[test]
 fn encode_rejects_ambiguous_whole_component_and_rectangular_roi() {
-    let pixels: Vec<_> = (0..16 * 16).map(|idx| (idx % 251) as u8).collect();
+    let pixels = patterned_pixels(16 * 16);
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 1,
@@ -172,7 +178,7 @@ fn encode_rejects_ambiguous_whole_component_and_rectangular_roi() {
 
 #[test]
 fn tile_header_rgn_with_explicit_style_is_rejected() {
-    let pixels: Vec<_> = (0..64 * 64).map(|idx| (idx % 251) as u8).collect();
+    let pixels = patterned_pixels(64 * 64);
     let codestream = encode(&pixels, 64, 64, 1, 8, false, &EncodeOptions::default())
         .expect("lossless fixture encode");
     let with_rgn = insert_tile_header_rgn(codestream, 7, 1);
@@ -191,7 +197,7 @@ fn tile_header_rgn_with_explicit_style_is_rejected() {
 
 #[test]
 fn main_header_rgn_with_explicit_style_is_rejected() {
-    let pixels: Vec<_> = (0..64 * 64).map(|idx| (idx % 251) as u8).collect();
+    let pixels = patterned_pixels(64 * 64);
     let codestream = encode(&pixels, 64, 64, 1, 8, false, &EncodeOptions::default())
         .expect("lossless fixture encode");
     let with_rgn = insert_main_header_rgn(codestream, 7, 1);
@@ -208,7 +214,7 @@ fn main_header_rgn_with_explicit_style_is_rejected() {
 
 #[test]
 fn crafted_siz_with_absurd_tile_grid_is_rejected_without_allocating() {
-    let pixels: Vec<_> = (0..16 * 16).map(|idx| (idx % 251) as u8).collect();
+    let pixels = patterned_pixels(16 * 16);
     let mut codestream = encode(&pixels, 16, 16, 1, 8, false, &EncodeOptions::default())
         .expect("lossless fixture encode");
 
@@ -313,7 +319,7 @@ fn read_pgx(path: &Path) -> PgxImage {
             .iter()
             .map(|byte| {
                 if signed {
-                    i32::from(*byte as i8)
+                    i32::from((*byte).cast_signed())
                 } else {
                     i32::from(*byte)
                 }
@@ -329,7 +335,7 @@ fn read_pgx(path: &Path) -> PgxImage {
                     u16::from_le_bytes([chunk[0], chunk[1]])
                 };
                 if signed {
-                    i32::from(raw as i16)
+                    i32::from(raw.cast_signed())
                 } else {
                     i32::from(raw)
                 }

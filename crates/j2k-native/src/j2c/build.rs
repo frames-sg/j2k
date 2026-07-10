@@ -120,6 +120,10 @@ fn build_decompositions(tile: &Tile<'_>, storage: &mut DecompositionStorage<'_>)
     Ok(())
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
 fn build_precincts(
     resolution_tile: &ResolutionTile<'_>,
     sub_band_rect: IntRect,
@@ -275,6 +279,10 @@ pub(crate) struct Decomposition {
 }
 
 #[derive(Clone)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "sub_band_type matches JPEG 2000 specification terminology throughout the codec"
+)]
 pub(crate) struct SubBand {
     pub(crate) sub_band_type: SubBandType,
     pub(crate) rect: IntRect,

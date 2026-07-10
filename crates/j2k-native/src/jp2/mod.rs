@@ -232,11 +232,19 @@ pub(crate) struct DecodedImage<'a> {
 const JP2_SIGNATURE_PAYLOAD: [u8; 4] = [0x0D, 0x0A, 0x87, 0x0A];
 
 /// Parse JP2/JPH container boxes without decoding the codestream.
+///
+/// # Errors
+///
+/// Returns an error when the wrapper is malformed or its metadata is inconsistent.
 pub fn inspect_jp2_container(data: &[u8]) -> Result<Jp2Container<'_>> {
     parse_jp2_container_with_strict(data, true)
 }
 
 /// Extract the contiguous codestream payload from a JP2/JPH wrapper.
+///
+/// # Errors
+///
+/// Returns an error when required JP2/JPH boxes are missing or malformed.
 pub fn extract_jp2_codestream_payload(data: &[u8]) -> Result<(Jp2FileKind, usize, &[u8])> {
     if data.len() < 12 {
         bail!(FormatError::TooShort {
@@ -268,7 +276,7 @@ pub fn extract_jp2_codestream_payload(data: &[u8]) -> Result<(Jp2FileKind, usize
     bail!(FormatError::MissingCodestream);
 }
 
-pub(crate) fn parse<'a>(data: &'a [u8], mut settings: DecodeSettings) -> Result<Image<'a>> {
+pub(crate) fn parse(data: &[u8], mut settings: DecodeSettings) -> Result<Image<'_>> {
     let container = parse_jp2_container_with_strict(data, settings.strict)?;
     if container.metadata.has_palette {
         settings.target_resolution = None;
@@ -285,11 +293,14 @@ pub(crate) fn parse<'a>(data: &'a [u8], mut settings: DecodeSettings) -> Result<
             // some files that don't seem to do so, we assume
             // that all channels are mapped via the palette in case not.
             let mappings = (0..palette.columns.len())
-                .map(|i| ComponentMappingEntry {
-                    component_index: 0,
-                    mapping_type: ComponentMappingType::Palette { column: i as u8 },
+                .map(|index| {
+                    let column = u8::try_from(index).map_err(|_| FormatError::InvalidBox)?;
+                    Ok(ComponentMappingEntry {
+                        component_index: 0,
+                        mapping_type: ComponentMappingType::Palette { column },
+                    })
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
 
             image_boxes.component_mapping = Some(ComponentMappingBox { entries: mappings });
         }
@@ -530,7 +541,7 @@ fn public_channel_definition(
             ChannelType::Unspecified => Jp2ChannelType::Unspecified,
             ChannelType::Unknown(value) => Jp2ChannelType::Unknown { value },
         },
-        association: match definition._association {
+        association: match definition.association {
             ChannelAssociation::WholeImage => Jp2ChannelAssociation::WholeImage,
             ChannelAssociation::Colour(index) => Jp2ChannelAssociation::Color { index },
             ChannelAssociation::Unspecified => Jp2ChannelAssociation::Unspecified,
@@ -635,27 +646,24 @@ fn validate_component_precision_metadata(
     };
     let resolved =
         resolved_image_component_descriptors(boxes, header).ok_or(FormatError::InvalidBox)?;
-    if resolved.len() != image_header.components as usize {
+    if resolved.len() != usize::from(image_header.components) {
         bail!(FormatError::InvalidBox);
     }
 
-    match image_header.bits_per_component {
-        Some(descriptor) => {
-            if !boxes.bits_per_component.is_empty() {
-                bail!(FormatError::InvalidBox);
-            }
-            if !resolved.iter().all(|component| *component == descriptor) {
-                bail!(FormatError::InvalidBox);
-            }
+    if let Some(descriptor) = image_header.bits_per_component {
+        if !boxes.bits_per_component.is_empty() {
+            bail!(FormatError::InvalidBox);
         }
-        None => {
-            if boxes.bits_per_component.len() != image_header.components as usize {
+        if !resolved.iter().all(|component| *component == descriptor) {
+            bail!(FormatError::InvalidBox);
+        }
+    } else {
+        if boxes.bits_per_component.len() != usize::from(image_header.components) {
+            bail!(FormatError::InvalidBox);
+        }
+        for (component, descriptor) in resolved.iter().zip(boxes.bits_per_component.iter()) {
+            if component != descriptor {
                 bail!(FormatError::InvalidBox);
-            }
-            for (component, descriptor) in resolved.iter().zip(boxes.bits_per_component.iter()) {
-                if component != descriptor {
-                    bail!(FormatError::InvalidBox);
-                }
             }
         }
     }
@@ -672,7 +680,9 @@ fn resolved_image_component_descriptors(
         for entry in &component_mapping.entries {
             match entry.mapping_type {
                 ComponentMappingType::Direct => {
-                    let component = header.component_infos.get(entry.component_index as usize)?;
+                    let component = header
+                        .component_infos
+                        .get(usize::from(entry.component_index))?;
                     resolved.push(component_descriptor_from_size_info(
                         component.size_info.precision,
                         component.size_info.signed,
@@ -680,7 +690,7 @@ fn resolved_image_component_descriptors(
                 }
                 ComponentMappingType::Palette { column } => {
                     let palette = boxes.palette.as_ref()?;
-                    let column = palette.columns.get(column as usize)?;
+                    let column = palette.columns.get(usize::from(column))?;
                     resolved.push(component_descriptor_from_size_info(
                         column.bit_depth,
                         column.signed,

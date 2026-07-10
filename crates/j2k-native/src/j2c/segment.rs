@@ -47,6 +47,7 @@ fn parse_inner<'a>(
     while !tile_part.header().at_end() {
         let progression_data = progression_iterator.next()?;
         let resolution = progression_data.resolution;
+        let precinct_index = usize::try_from(progression_data.precinct).ok()?;
         let component_info = &component_infos[progression_data.component as usize];
         let tile_decompositions =
             &mut storage.tile_decompositions[progression_data.component as usize];
@@ -96,8 +97,7 @@ fn parse_inner<'a>(
         if !zero_length {
             for sub_band_idx in sub_band_iter {
                 let sub_band = &mut storage.sub_bands[sub_band_idx];
-                let precinct = &mut storage.precincts[sub_band.precincts.clone()]
-                    [progression_data.precinct as usize];
+                let precinct = &mut storage.precincts[sub_band.precincts.clone()][precinct_index];
                 let code_blocks = &mut storage.code_blocks[precinct.code_blocks.clone()];
 
                 for code_block in code_blocks {
@@ -168,7 +168,8 @@ fn resolve_classic_segments(
 
     let sub_band = &storage.sub_bands[sub_band_dx];
     let precincts = &mut storage.precincts[sub_band.precincts.clone()];
-    let Some(precinct) = precincts.get_mut(progression_data.precinct as usize) else {
+    let precinct_index = usize::try_from(progression_data.precinct).ok()?;
+    let Some(precinct) = precincts.get_mut(precinct_index) else {
         // An invalid file could trigger this code path.
         lwarn!("progression data yielded invalid precinct index");
 
@@ -247,7 +248,7 @@ fn resolve_classic_segments(
                 // the number of bits used to signal the length of the code-block contribution can
                 // increase or decrease depending on the number of coding passes included."
                 let length_bits = code_block.l_block + coding_passes_for_segment.ilog2();
-                reader.read_bits_with_stuffing(length_bits as u8)
+                reader.read_bits_with_stuffing(u8::try_from(length_bits).ok()?)
             }?;
 
             storage.segments.push(Segment {
@@ -269,12 +270,12 @@ fn resolve_classic_segments(
         for coding_pass in previous_layers_passes..cumulative_passes {
             let segment = get_segment_idx(coding_pass);
 
-            if segment != last_segment {
+            if segment == last_segment {
+                coding_passes_for_segment += 1;
+            } else {
                 push_segment(last_segment, coding_passes_for_segment)?;
                 last_segment = segment;
                 coding_passes_for_segment = 1;
-            } else {
-                coding_passes_for_segment += 1;
             }
         }
 
@@ -302,7 +303,8 @@ fn resolve_ht_segments(
 
     let sub_band = &storage.sub_bands[sub_band_dx];
     let precincts = &mut storage.precincts[sub_band.precincts.clone()];
-    let Some(precinct) = precincts.get_mut(progression_data.precinct as usize) else {
+    let precinct_index = usize::try_from(progression_data.precinct).ok()?;
+    let Some(precinct) = precincts.get_mut(precinct_index) else {
         lwarn!("progression data yielded invalid precinct index");
 
         return None;
@@ -450,9 +452,9 @@ fn resolve_code_block_inclusion(
             code_block.x_idx,
             code_block.y_idx,
             reader,
-            progression_data.layer_num as u32 + 1,
+            u32::from(progression_data.layer_num) + 1,
             tag_tree_nodes,
-        )? <= progression_data.layer_num as u32
+        )? <= u32::from(progression_data.layer_num)
     };
 
     ltrace!("code-block inclusion: {}", is_included);
@@ -469,13 +471,14 @@ fn resolve_code_block_inclusion(
     // information identifying the actual number of bit-planes used to represent
     // coefficients from the code-block."
     if included_first_time {
-        code_block.missing_bit_planes = precinct.zero_bitplane_tree.read(
+        code_block.missing_bit_planes = u8::try_from(precinct.zero_bitplane_tree.read(
             code_block.x_idx,
             code_block.y_idx,
             reader,
             u32::MAX,
             tag_tree_nodes,
-        )? as u8;
+        )?)
+        .ok()?;
         ltrace!(
             "zero bit-plane information: {}",
             code_block.missing_bit_planes
@@ -493,10 +496,10 @@ fn resolve_code_block_inclusion(
 fn decode_num_classic_coding_passes(reader: &mut BitReader<'_>) -> Option<u8> {
     if reader.peak_bits_with_stuffing(9) == Some(0x1ff) {
         reader.read_bits_with_stuffing(9)?;
-        Some((reader.read_bits_with_stuffing(7)? + 37) as u8)
+        u8::try_from(reader.read_bits_with_stuffing(7)? + 37).ok()
     } else if reader.peak_bits_with_stuffing(4) == Some(0x0f) {
         reader.read_bits_with_stuffing(4)?;
-        Some((reader.read_bits_with_stuffing(5)? + 6) as u8)
+        u8::try_from(reader.read_bits_with_stuffing(5)? + 6).ok()
     } else if reader.peak_bits_with_stuffing(4) == Some(0b1110) {
         reader.read_bits_with_stuffing(4)?;
         Some(5)
@@ -557,23 +560,23 @@ fn parse_ht_segment_lengths(
     missing_bit_planes: u8,
     l_block: &mut u32,
 ) -> Option<ParsedHtSegments> {
-    let placeholder_groups = u32::from(raw_num_passes.saturating_sub(1)) / 3;
-    let missing_bit_planes = missing_bit_planes.checked_add(placeholder_groups as u8)?;
-    let placeholder_passes = (placeholder_groups * 3) as u8;
+    let placeholder_groups = u8::try_from(u32::from(raw_num_passes.saturating_sub(1)) / 3).ok()?;
+    let missing_bit_planes = missing_bit_planes.checked_add(placeholder_groups)?;
+    let placeholder_passes = placeholder_groups.checked_mul(3)?;
     let actual_passes = raw_num_passes.checked_sub(placeholder_passes)?;
 
     *l_block = l_block.checked_add(read_lblock_increment(reader)?)?;
 
     let cleanup_length_bits = *l_block + (u32::from(placeholder_passes) + 1).ilog2();
-    let cleanup_length = reader.read_bits_with_stuffing(cleanup_length_bits as u8)?;
+    let cleanup_length = reader.read_bits_with_stuffing(u8::try_from(cleanup_length_bits).ok()?)?;
 
     if !(2..65535).contains(&cleanup_length) {
         return None;
     }
 
     let refinement_length = if actual_passes > 1 {
-        let length_bits = *l_block + if actual_passes > 2 { 1 } else { 0 };
-        let length = reader.read_bits_with_stuffing(length_bits as u8)?;
+        let length_bits = *l_block + u32::from(actual_passes > 2);
+        let length = reader.read_bits_with_stuffing(u8::try_from(length_bits).ok()?)?;
 
         if length >= 2047 {
             return None;
@@ -604,7 +607,7 @@ fn parse_ht_refinement_only_length(
     *l_block = l_block.checked_add(read_lblock_increment(reader)?)?;
 
     let length_bits = bits_for_ht_refinement_only_length(*l_block, num_coding_passes);
-    let length = reader.read_bits_with_stuffing(length_bits as u8)?;
+    let length = reader.read_bits_with_stuffing(u8::try_from(length_bits).ok()?)?;
     if length == 0 || length >= 2047 {
         return None;
     }
@@ -618,7 +621,7 @@ fn segment_idx_for_bypass(pass_idx: u8) -> u8 {
     if pass_idx < 10 {
         0
     } else {
-        1 + (2 * ((pass_idx - 10) / 3)) + (if ((pass_idx - 10) % 3) == 2 { 1 } else { 0 })
+        1 + (2 * ((pass_idx - 10) / 3)) + u8::from(((pass_idx - 10) % 3) == 2)
     }
 }
 

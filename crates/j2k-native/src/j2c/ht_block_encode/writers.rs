@@ -49,15 +49,7 @@ impl MelEncoder {
     }
 
     pub(super) fn encode(&mut self, bit: bool) -> Result<(), &'static str> {
-        if !bit {
-            self.run += 1;
-            if self.run >= self.threshold {
-                self.emit_bit(true)?;
-                self.run = 0;
-                self.k = (self.k + 1).min(MEL_EXP.len() - 1);
-                self.threshold = 1 << MEL_EXP[self.k];
-            }
-        } else {
+        if bit {
             self.emit_bit(false)?;
             let mut t = MEL_EXP[self.k];
             while t > 0 {
@@ -67,6 +59,14 @@ impl MelEncoder {
             self.run = 0;
             self.k = self.k.saturating_sub(1);
             self.threshold = 1 << MEL_EXP[self.k];
+        } else {
+            self.run += 1;
+            if self.run >= self.threshold {
+                self.emit_bit(true)?;
+                self.run = 0;
+                self.k = (self.k + 1).min(MEL_EXP.len() - 1);
+                self.threshold = 1 << MEL_EXP[self.k];
+            }
         }
 
         Ok(())
@@ -96,6 +96,10 @@ impl VlcEncoder {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the mask is bounded by the available byte bits before packing into the VLC reservoir"
+    )]
     pub(super) fn encode(
         &mut self,
         mut codeword: u32,
@@ -157,6 +161,11 @@ impl MagSgnEncoder {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "take and the flushed reservoir are byte-bounded in this magnitude/sign hot path"
+    )]
     #[inline(always)]
     pub(super) fn encode(
         &mut self,
@@ -191,6 +200,10 @@ impl MagSgnEncoder {
         Ok(())
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "termination flushes a reservoir whose used-bit count is bounded to one byte"
+    )]
     pub(super) fn terminate(&mut self) -> Result<(), &'static str> {
         if self.used_bits > 0 {
             let unused = self.max_bits - self.used_bits;
@@ -213,6 +226,10 @@ impl MagSgnEncoder {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "MEL and VLC termination masks and reservoirs are explicitly bounded to one byte"
+)]
 pub(super) fn terminate_mel_vlc(
     mel: &mut MelEncoder,
     vlc: &mut VlcEncoder,
@@ -275,7 +292,7 @@ mod tests {
             mel.encode(bit).expect("MEL bit");
         }
         let mut vlc = VlcEncoder::new();
-        vlc.encode(0b101101, 6).expect("VLC bits");
+        vlc.encode(0b10_1101, 6).expect("VLC bits");
         vlc.encode(0x1ff, 9).expect("VLC bits");
         terminate_mel_vlc(&mut mel, &mut vlc).expect("terminate MEL/VLC");
 

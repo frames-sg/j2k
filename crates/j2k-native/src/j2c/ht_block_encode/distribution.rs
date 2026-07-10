@@ -11,12 +11,18 @@ use super::quad::{
 };
 use crate::HtCleanupEncodeDistribution;
 
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    reason = "the clamped histogram bucket is nonnegative and this helper runs for every collected field"
+)]
 #[inline(always)]
 fn increment_limited_count(counts: &mut [u64; 32], value: i32) {
     let index = value.clamp(0, 31) as usize;
     counts[index] += 1;
 }
 
+#[expect(clippy::cast_sign_loss, reason = "rho is a nonnegative four-bit mask")]
 fn record_distribution_initial_quad(
     distribution: &mut HtCleanupEncodeDistribution,
     rho: i32,
@@ -30,6 +36,7 @@ fn record_distribution_initial_quad(
     distribution.initial_rho_counts[rho_index] += 1;
 }
 
+#[expect(clippy::cast_sign_loss, reason = "clamped HT fields are valid indices")]
 fn record_distribution_non_initial_quad(
     distribution: &mut HtCleanupEncodeDistribution,
     rho: i32,
@@ -49,6 +56,7 @@ fn record_distribution_non_initial_quad(
     distribution.non_initial_rho_u_q_counts[rho_index][u_q_index] += 1;
 }
 
+#[expect(clippy::cast_sign_loss, reason = "bounded HT fields are nonnegative")]
 fn record_distribution_mag_signs(
     distribution: &mut HtCleanupEncodeDistribution,
     rho: i32,
@@ -78,6 +86,10 @@ fn record_distribution_mag_signs(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "u32 has at most 32 bitplanes"
+)]
 pub(crate) fn collect_encode_distribution(
     coefficients: &[i32],
     width: u32,
@@ -109,7 +121,7 @@ pub(crate) fn collect_encode_distribution(
         width as usize,
         height as usize,
         &mut distribution,
-    )?;
+    );
     Ok(distribution)
 }
 
@@ -119,7 +131,7 @@ fn collect_encode_distribution_from_source<S: CleanupCoefficientSource + ?Sized>
     width: usize,
     height: usize,
     distribution: &mut HtCleanupEncodeDistribution,
-) -> Result<(), &'static str> {
+) {
     let p = 30_u32.saturating_sub(u32::from(missing_msbs));
     let stride = width;
 
@@ -208,8 +220,6 @@ fn collect_encode_distribution_from_source<S: CleanupCoefficientSource + ?Sized>
 
         y += 2;
     }
-
-    Ok(())
 }
 
 struct CollectQuadSink<'a> {
@@ -219,38 +229,38 @@ struct CollectQuadSink<'a> {
 impl QuadSink for CollectQuadSink<'_> {
     type Error = Infallible;
 
-    #[allow(clippy::inline_always)] // per-quad hot path: keep sink dispatch erased
+    #[expect(clippy::inline_always, reason = "erase collector sink dispatch")]
     #[inline(always)]
     fn quad_initial(&mut self, row: InitialQuadRow<'_>) -> Result<i32, Self::Error> {
         Ok(collect_quad_initial_row(row, self.distribution))
     }
 
-    #[allow(clippy::inline_always)] // per-quad hot path: keep sink dispatch erased
+    #[expect(clippy::inline_always, reason = "erase collector sink dispatch")]
     #[inline(always)]
     fn quad_non_initial(&mut self, row: NonInitialQuadRow<'_>) -> Result<i32, Self::Error> {
         Ok(collect_quad_non_initial_row(row, self.distribution))
     }
 
-    #[allow(clippy::inline_always)] // per-quad hot path: keep sink dispatch erased
+    #[expect(clippy::inline_always, reason = "erase collector sink dispatch")]
     #[inline(always)]
     fn initial_uvlc_pair(&mut self, _u_q0: i32, _u_q1: i32) -> Result<(), Self::Error> {
         Ok(())
     }
 
-    #[allow(clippy::inline_always)] // per-quad hot path: keep sink dispatch erased
+    #[expect(clippy::inline_always, reason = "erase collector sink dispatch")]
     #[inline(always)]
     fn initial_uvlc_lone(&mut self, _u_q0: i32) -> Result<(), Self::Error> {
         Ok(())
     }
 
-    #[allow(clippy::inline_always)] // per-quad hot path: keep sink dispatch erased
+    #[expect(clippy::inline_always, reason = "erase collector sink dispatch")]
     #[inline(always)]
     fn non_initial_uvlc(&mut self, _u_q0: i32, _u_q1: i32) -> Result<(), Self::Error> {
         Ok(())
     }
 }
 
-#[allow(clippy::inline_always)] // thin hot-path wrapper over monomorphized quad walker
+#[expect(clippy::inline_always, reason = "fuse the collector quad walker")]
 #[inline(always)]
 fn collect_first_quad_pair<C: CleanupCoefficientSource + ?Sized>(
     request: FirstQuadPairRequest<'_, C>,
@@ -262,7 +272,7 @@ fn collect_first_quad_pair<C: CleanupCoefficientSource + ?Sized>(
     }
 }
 
-#[allow(clippy::inline_always)] // thin hot-path wrapper over monomorphized quad walker
+#[expect(clippy::inline_always, reason = "fuse the collector quad walker")]
 #[inline(always)]
 fn collect_non_initial_quad_pair<C: CleanupCoefficientSource + ?Sized>(
     request: NonInitialQuadPairRequest<'_, C>,
@@ -274,7 +284,12 @@ fn collect_non_initial_quad_pair<C: CleanupCoefficientSource + ?Sized>(
     }
 }
 
-#[allow(clippy::inline_always)] // per-quad HT cleanup hot path
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    reason = "packed quad fields are bounded by HT tables and the collector mirrors the encoder hot path"
+)]
 #[inline(always)]
 fn collect_quad_initial_row(
     row: InitialQuadRow<'_>,
@@ -296,10 +311,10 @@ fn collect_quad_initial_row(
     let mut eps = 0u16;
 
     if u_q > 0 {
-        eps |= u16::from((e_q[offset] == e_qmax) as u8);
-        eps |= u16::from((e_q[offset + 1] == e_qmax) as u8) << 1;
-        eps |= u16::from((e_q[offset + 2] == e_qmax) as u8) << 2;
-        eps |= u16::from((e_q[offset + 3] == e_qmax) as u8) << 3;
+        eps |= u16::from(u8::from(e_q[offset] == e_qmax));
+        eps |= u16::from(u8::from(e_q[offset + 1] == e_qmax)) << 1;
+        eps |= u16::from(u8::from(e_q[offset + 2] == e_qmax)) << 2;
+        eps |= u16::from(u8::from(e_q[offset + 3] == e_qmax)) << 3;
     }
 
     e_val[lep] = e_val[lep].max(e_q[offset + 1] as u8);
@@ -313,7 +328,12 @@ fn collect_quad_initial_row(
     u_q
 }
 
-#[allow(clippy::inline_always)] // per-quad HT cleanup hot path
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    clippy::needless_pass_by_value,
+    reason = "the by-value row matches the sink contract and its bounded packed fields index HT tables"
+)]
 #[inline(always)]
 fn collect_quad_non_initial_row(
     row: NonInitialQuadRow<'_>,
@@ -337,10 +357,10 @@ fn collect_quad_non_initial_row(
     let mut eps = 0u16;
 
     if u_q > 0 {
-        eps |= u16::from((e_q[offset] == e_qmax) as u8);
-        eps |= u16::from((e_q[offset + 1] == e_qmax) as u8) << 1;
-        eps |= u16::from((e_q[offset + 2] == e_qmax) as u8) << 2;
-        eps |= u16::from((e_q[offset + 3] == e_qmax) as u8) << 3;
+        eps |= u16::from(u8::from(e_q[offset] == e_qmax));
+        eps |= u16::from(u8::from(e_q[offset + 1] == e_qmax)) << 1;
+        eps |= u16::from(u8::from(e_q[offset + 2] == e_qmax)) << 2;
+        eps |= u16::from(u8::from(e_q[offset + 3] == e_qmax)) << 3;
     }
 
     let tuple = HT_VLC_ENCODE_TABLE1[(c_q << 8) | ((rho as usize) << 4) | eps as usize];

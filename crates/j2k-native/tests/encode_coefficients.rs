@@ -162,7 +162,7 @@ fn precomputed_encode_writes_component_sampling_in_siz() {
     let sampling = components
         .planes()
         .iter()
-        .map(|plane| plane.sampling())
+        .map(j2k_native::ComponentPlane::sampling)
         .collect::<Vec<_>>();
     assert_eq!(sampling, [(1, 1), (2, 2), (2, 2)]);
 }
@@ -211,7 +211,7 @@ fn precomputed_classic_53_encode_preserves_component_sampling_in_siz() {
     let sampling = components
         .planes()
         .iter()
-        .map(|plane| plane.sampling())
+        .map(j2k_native::ComponentPlane::sampling)
         .collect::<Vec<_>>();
     assert_eq!(sampling, [(1, 1), (2, 2), (2, 2)]);
 }
@@ -258,7 +258,7 @@ fn component_plane_53_encode_preserves_sampling_for_classic_and_htj2k() {
         let sampling = components
             .planes()
             .iter()
-            .map(|plane| plane.sampling())
+            .map(j2k_native::ComponentPlane::sampling)
             .collect::<Vec<_>>();
 
         assert_eq!(sampling, [(1, 1), (2, 2), (2, 2)]);
@@ -484,10 +484,10 @@ fn wrap_codestream_jp2_with_short_cdef(
     bit_depth: u8,
 ) -> Vec<u8> {
     let mut bytes = Vec::new();
-    push_box(&mut bytes, b"jP  ", &[0x0D, 0x0A, 0x87, 0x0A]);
+    push_box(&mut bytes, *b"jP  ", &[0x0D, 0x0A, 0x87, 0x0A]);
     push_box(
         &mut bytes,
-        b"ftyp",
+        *b"ftyp",
         &[b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2', b' '],
     );
 
@@ -497,11 +497,11 @@ fn wrap_codestream_jp2_with_short_cdef(
     ihdr.extend_from_slice(&width.to_be_bytes());
     ihdr.extend_from_slice(&components.to_be_bytes());
     ihdr.extend_from_slice(&[bit_depth.saturating_sub(1), 7, 0, 0]);
-    push_box(&mut jp2h, b"ihdr", &ihdr);
+    push_box(&mut jp2h, *b"ihdr", &ihdr);
 
     let mut colr = vec![1, 0, 0];
     colr.extend_from_slice(&16_u32.to_be_bytes());
-    push_box(&mut jp2h, b"colr", &colr);
+    push_box(&mut jp2h, *b"colr", &colr);
 
     let mut cdef = Vec::new();
     cdef.extend_from_slice(&2_u16.to_be_bytes());
@@ -510,16 +510,19 @@ fn wrap_codestream_jp2_with_short_cdef(
         cdef.extend_from_slice(&0_u16.to_be_bytes());
         cdef.extend_from_slice(&association.to_be_bytes());
     }
-    push_box(&mut jp2h, b"cdef", &cdef);
+    push_box(&mut jp2h, *b"cdef", &cdef);
 
-    push_box(&mut bytes, b"jp2h", &jp2h);
-    push_box(&mut bytes, b"jp2c", codestream);
+    push_box(&mut bytes, *b"jp2h", &jp2h);
+    push_box(&mut bytes, *b"jp2c", codestream);
     bytes
 }
 
-fn push_box(bytes: &mut Vec<u8>, box_type: &[u8; 4], payload: &[u8]) {
-    let len = (8 + payload.len()) as u32;
+fn push_box(bytes: &mut Vec<u8>, box_type: [u8; 4], payload: &[u8]) {
+    let len = u32::try_from(payload.len())
+        .expect("test box payload length fits u32")
+        .checked_add(8)
+        .expect("test box length fits u32");
     bytes.extend_from_slice(&len.to_be_bytes());
-    bytes.extend_from_slice(box_type);
+    bytes.extend_from_slice(&box_type);
     bytes.extend_from_slice(payload);
 }

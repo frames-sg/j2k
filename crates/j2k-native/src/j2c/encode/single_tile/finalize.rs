@@ -35,8 +35,8 @@ pub(super) fn finalize_accelerated_codestream(
 pub(super) fn finalize_staged_codestream(
     options: &EncodeOptions,
     plan: &SingleTilePlan,
-    prepared: PreparedComponentTransforms,
-    encoded: EncodedTilePackets,
+    prepared: &PreparedComponentTransforms,
+    encoded: &EncodedTilePackets,
     profile_enabled: bool,
     total_start: Option<profile::ProfileInstant>,
 ) -> Result<Vec<u8>, &'static str> {

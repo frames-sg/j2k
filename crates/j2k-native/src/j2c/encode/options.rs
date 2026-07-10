@@ -9,6 +9,10 @@ use crate::IrreversibleQuantizationSubbandScales;
 
 /// Encoding options for JPEG 2000.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the public options expose independent JPEG 2000 coding and marker switches"
+)]
 pub struct EncodeOptions {
     /// Number of decomposition levels (default: 5).
     pub num_decomposition_levels: u8,
@@ -203,6 +207,10 @@ pub(super) fn validate_irreversible_quantization_profile(
     }
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
 pub(super) fn precinct_exponents_for_options(
     options: &EncodeOptions,
     num_decomposition_levels: u8,

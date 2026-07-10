@@ -15,26 +15,46 @@ use super::mq::QE_TABLE;
 pub(crate) struct ArithmeticEncoderContext(u8);
 
 impl ArithmeticEncoderContext {
+    #[expect(
+        clippy::inline_always,
+        reason = "MQ state transitions are measured per-symbol hot paths"
+    )]
     #[inline(always)]
     pub(crate) fn index(self) -> u32 {
-        (self.0 & 0x7F) as u32
+        u32::from(self.0 & 0x7F)
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "MQ state transitions are measured per-symbol hot paths"
+    )]
     #[inline(always)]
     pub(crate) fn mps(self) -> u32 {
-        (self.0 >> 7) as u32
+        u32::from(self.0 >> 7)
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "MQ state transitions are measured per-symbol hot paths"
+    )]
     #[inline(always)]
     fn set_index(&mut self, index: u8) {
         self.0 = (self.0 & 0x80) | index;
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "MQ state transitions are measured per-symbol hot paths"
+    )]
     #[inline(always)]
     fn xor_mps(&mut self, val: u32) {
-        self.0 ^= ((val & 1) << 7) as u8;
+        self.0 ^= u8::from(val & 1 != 0) << 7;
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "MQ state transitions are measured per-symbol hot paths"
+    )]
     #[inline(always)]
     pub(crate) fn reset_with_index(&mut self, index: u8) {
         self.0 = index;
@@ -74,6 +94,10 @@ impl ArithmeticEncoder {
     }
 
     /// Encode a single symbol (0 or 1) with the given context (C.2.6 ENCODE).
+    #[expect(
+        clippy::inline_always,
+        reason = "MQ state transitions are measured per-symbol hot paths"
+    )]
     #[inline(always)]
     pub(crate) fn encode(&mut self, bit: u32, context: &mut ArithmeticEncoderContext) {
         let qe_entry = &QE_TABLE[context.index() as usize];
@@ -132,35 +156,39 @@ impl ArithmeticEncoder {
     ///
     /// After 0xFF, only 7 bits are extracted (bit stuffing) to prevent
     /// marker-like byte sequences in the output.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "MQ register masks bound every emitted chunk to one byte"
+    )]
     fn byte_out(&mut self) {
         let last_byte = *self.data.last().unwrap();
         if last_byte == 0xFF {
             // 7-bit mode after 0xFF (bit stuffing)
             let b = (self.c >> 20) as u8;
             self.data.push(b);
-            self.c &= 0xFFFFF;
+            self.c &= 0x000F_FFFF;
             self.ct = 7;
-        } else if self.c & 0x8000000 == 0 {
+        } else if self.c & 0x0800_0000 == 0 {
             // No carry: normal 8-bit output
             let b = (self.c >> 19) as u8;
             self.data.push(b);
-            self.c &= 0x7FFFF;
+            self.c &= 0x0007_FFFF;
             self.ct = 8;
         } else {
             // Carry occurred (bit 27 set): propagate into last byte
             let last = self.data.last_mut().unwrap();
             *last += 1;
-            self.c &= 0x7FFFFFF; // Clear carry bit
+            self.c &= 0x07FF_FFFF; // Clear carry bit
             if *last == 0xFF {
                 // Carry made last byte 0xFF: switch to 7-bit mode
                 let b = (self.c >> 20) as u8;
                 self.data.push(b);
-                self.c &= 0xFFFFF;
+                self.c &= 0x000F_FFFF;
                 self.ct = 7;
             } else {
                 let b = (self.c >> 19) as u8;
                 self.data.push(b);
-                self.c &= 0x7FFFF;
+                self.c &= 0x0007_FFFF;
                 self.ct = 8;
             }
         }
@@ -195,11 +223,15 @@ impl ArithmeticEncoder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ArithmeticEncoder, ArithmeticEncoderContext};
     use crate::j2c::arithmetic_decoder::{ArithmeticDecoder, ArithmeticDecoderContext};
     use alloc::{vec, vec::Vec};
 
     #[test]
+    #[cfg_attr(
+        test,
+        expect(clippy::similar_names, reason = "paired encoder/decoder state")
+    )]
     fn test_encode_decode_round_trip() {
         let symbols: Vec<u32> = vec![0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1];
         let mut encoder = ArithmeticEncoder::new();
@@ -223,6 +255,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        test,
+        expect(clippy::similar_names, reason = "paired encoder/decoder state")
+    )]
     fn test_encode_all_mps() {
         let mut encoder = ArithmeticEncoder::new();
         let mut ctx = ArithmeticEncoderContext::default();
@@ -239,6 +275,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        test,
+        expect(clippy::similar_names, reason = "paired encoder/decoder state")
+    )]
     fn with_capacity_preserves_round_trip_encoding() {
         let mut encoder = ArithmeticEncoder::with_capacity(128);
         let mut enc_ctx = ArithmeticEncoderContext::default();
@@ -257,6 +297,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        test,
+        expect(clippy::similar_names, reason = "paired encoder/decoder state")
+    )]
     fn test_encode_all_lps() {
         let mut encoder = ArithmeticEncoder::new();
         let mut ctx = ArithmeticEncoderContext::default();
@@ -273,6 +317,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        test,
+        expect(clippy::similar_names, reason = "paired encoder/decoder state")
+    )]
     fn test_multiple_contexts() {
         let symbols_a = [0u32, 1, 0, 0, 1, 1, 0, 1];
         let symbols_b = [1u32, 1, 0, 1, 0, 0, 1, 0];
@@ -298,6 +346,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        test,
+        expect(clippy::similar_names, reason = "paired encoder/decoder state")
+    )]
     fn test_many_context_round_trip() {
         let mut state = 0x1234_5678u32;
         let mut symbols = Vec::new();
@@ -332,6 +384,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        test,
+        expect(clippy::similar_names, reason = "paired encoder/decoder state")
+    )]
     fn test_context_state_identical() {
         let mut enc_ctx = ArithmeticEncoderContext::default();
         let mut dec_ctx = ArithmeticDecoderContext::default();

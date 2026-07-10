@@ -145,6 +145,7 @@ pub fn collect_ht_cleanup_encode_distribution(
 /// the decomposed subbands packed into the public `J2kForwardDwt53Output`
 /// type.  The returned layout matches what the encoder feeds to Tier-1.
 #[doc(hidden)]
+#[must_use]
 pub fn forward_dwt53_reference(
     samples: &[f32],
     width: u32,
@@ -181,6 +182,7 @@ pub fn forward_dwt53_reference(
 /// the decomposed subbands packed into the public `J2kForwardDwt97Output`
 /// type. The returned layout matches what the encoder feeds to Tier-1.
 #[doc(hidden)]
+#[must_use]
 pub fn forward_dwt97_reference(
     samples: &[f32],
     width: u32,
@@ -218,6 +220,7 @@ pub fn forward_dwt97_reference(
 /// applied in place and the mutated planes are returned, so callers do not
 /// need to pass a mutable slice.
 #[doc(hidden)]
+#[must_use]
 pub fn forward_rct_reference(mut planes: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
     j2c::forward_mct::forward_rct(&mut planes);
     planes
@@ -229,6 +232,7 @@ pub fn forward_rct_reference(mut planes: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
 /// component planes supplied as owned `Vec<f32>` arrays. The transform is
 /// applied in place and the mutated planes are returned.
 #[doc(hidden)]
+#[must_use]
 pub fn forward_ict_reference(mut planes: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
     j2c::forward_mct::forward_ict(&mut planes);
     planes
@@ -236,6 +240,7 @@ pub fn forward_ict_reference(mut planes: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
 
 /// Adapter scalar sub-band quantization reference for backend stage parity.
 #[doc(hidden)]
+#[must_use]
 pub fn quantize_subband_reference(
     coefficients: &[f32],
     step_exponent: u16,
@@ -259,6 +264,7 @@ pub fn quantize_subband_reference(
 /// parameters are ignored and each coefficient is rounded to the nearest
 /// integer.
 #[doc(hidden)]
+#[must_use]
 pub fn quantize_reversible_reference(
     coefficients: &[f32],
     step_exponent: u16,
@@ -323,6 +329,7 @@ pub fn try_deinterleave_reference(
 /// This compatibility wrapper panics on invalid geometry. Prefer
 /// [`try_deinterleave_reference`] in new code.
 #[doc(hidden)]
+#[must_use]
 pub fn deinterleave_reference(
     pixels: &[u8],
     num_pixels: usize,

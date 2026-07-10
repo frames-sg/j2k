@@ -156,6 +156,10 @@ struct DirectComponentPlane {
 }
 
 /// Execute a adapter direct RGB plan on the CPU and write an RGB8 output region.
+///
+/// # Errors
+///
+/// Returns an error for invalid plan geometry, output bounds, or decode-stage failure.
 pub fn execute_direct_color_plan_rgb8_into(
     plan: &J2kDirectColorPlan,
     output_region: J2kRect,
@@ -174,6 +178,10 @@ pub fn execute_direct_color_plan_rgb8_into(
 }
 
 /// Execute a adapter direct RGB plan on the CPU and write an RGBA8 output region.
+///
+/// # Errors
+///
+/// Returns an error for invalid plan geometry, output bounds, or decode-stage failure.
 pub fn execute_direct_color_plan_rgba8_into(
     plan: &J2kDirectColorPlan,
     output_region: J2kRect,
@@ -284,7 +292,7 @@ fn execute_classic_sub_band(
         prepare_sub_band_output(bands, plan.band_id, plan.rect, plan.width, plan.height)?;
 
     for job in &plan.jobs {
-        let output_range = checked_sub_band_job_output_range(SubBandJobOutputRange {
+        let output_range = checked_sub_band_job_output_range(&SubBandJobOutputRange {
             output_x: job.output_x,
             output_y: job.output_y,
             output_stride: job.output_stride,
@@ -324,7 +332,7 @@ fn execute_ht_sub_band(
         prepare_sub_band_output(bands, plan.band_id, plan.rect, plan.width, plan.height)?;
 
     for job in &plan.jobs {
-        let output_range = checked_sub_band_job_output_range(SubBandJobOutputRange {
+        let output_range = checked_sub_band_job_output_range(&SubBandJobOutputRange {
             output_x: job.output_x,
             output_y: job.output_y,
             output_stride: job.output_stride,
@@ -578,9 +586,11 @@ fn validate_output_region(
     {
         bail!(DecodingError::CodeBlockDecodeFailure);
     }
+    let bytes_per_pixel = u32::try_from(output.bytes_per_pixel())
+        .map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
     let row_bytes = output_region
         .width()
-        .checked_mul(output.bytes_per_pixel() as u32)
+        .checked_mul(bytes_per_pixel)
         .and_then(|len| usize::try_from(len).ok())
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
     if stride < row_bytes {
@@ -603,17 +613,19 @@ fn validate_output_region(
 }
 
 fn checked_area(width: u32, height: u32) -> Result<usize> {
+    let height = usize::try_from(height).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
     usize::try_from(width)
         .ok()
-        .and_then(|width| width.checked_mul(height as usize))
+        .and_then(|width| width.checked_mul(height))
         .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into())
 }
 
 fn checked_block_base(output_x: u32, output_y: u32, stride: usize) -> Result<usize> {
+    let output_x = usize::try_from(output_x).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
     usize::try_from(output_y)
         .ok()
         .and_then(|y| y.checked_mul(stride))
-        .and_then(|base| base.checked_add(output_x as usize))
+        .and_then(|base| base.checked_add(output_x))
         .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into())
 }
 
@@ -629,7 +641,7 @@ struct SubBandJobOutputRange {
     output_len: usize,
 }
 
-fn checked_sub_band_job_output_range(bounds: SubBandJobOutputRange) -> Result<Range<usize>> {
+fn checked_sub_band_job_output_range(bounds: &SubBandJobOutputRange) -> Result<Range<usize>> {
     let base_idx = checked_block_base(bounds.output_x, bounds.output_y, bounds.sub_band_width)?;
     let block_len = checked_block_output_len(bounds.output_stride, bounds.width, bounds.height)?;
     let end_idx = base_idx
@@ -654,9 +666,11 @@ fn checked_block_output_len(stride: usize, width: u32, height: u32) -> Result<us
     if height == 0 {
         return Ok(0);
     }
+    let height = usize::try_from(height).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+    let width = usize::try_from(width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
     stride
-        .checked_mul(height as usize - 1)
-        .and_then(|prefix| prefix.checked_add(width as usize))
+        .checked_mul(height - 1)
+        .and_then(|prefix| prefix.checked_add(width))
         .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into())
 }
 
@@ -665,10 +679,19 @@ fn resize_and_zero(buffer: &mut Vec<f32>, len: usize) {
     buffer.fill(0.0);
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "direct CPU color math intentionally uses the decoder's f32 sample representation"
+)]
 fn sign_addend(bit_depth: u8) -> f32 {
     (1_u32 << (bit_depth - 1)) as f32
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "samples are rounded and clamped before stable 8-bit output quantization"
+)]
 fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
     let rounded = round_f32(sample);
     if bit_depth == 8 {
@@ -690,7 +713,10 @@ mod tests {
 
     fn direct_htj2k_rgb_plan() -> (J2kDirectColorPlan, J2kRect) {
         let pixels = (0..16 * 16 * 3)
-            .map(|idx| ((idx * 13 + idx / 3) & 0xff) as u8)
+            .map(|idx| {
+                u8::try_from((idx * 13 + idx / 3) & 0xff)
+                    .expect("test pattern is masked to one byte")
+            })
             .collect::<Vec<_>>();
         let options = EncodeOptions {
             reversible: true,

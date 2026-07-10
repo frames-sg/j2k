@@ -50,6 +50,7 @@ pub struct HtCodeBlockDecodeWorkspace {
 
 impl HtCodeBlockDecodeWorkspace {
     /// Current coefficient buffer capacity retained by this workspace.
+    #[must_use]
     pub fn coefficient_capacity(&self) -> usize {
         self.coefficients.capacity()
     }
@@ -220,6 +221,10 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace_profiled<const PHASE_LIM
     Ok(())
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the public scalar adapter intentionally emits f32 coefficients"
+)]
 fn write_ht_code_block_output(
     coefficients: &[u32],
     job: HtCodeBlockDecodeJob<'_>,

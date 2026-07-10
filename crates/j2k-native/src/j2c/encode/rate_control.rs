@@ -44,6 +44,10 @@ pub(super) struct ClassicSegmentAssignmentCandidate {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the repeated _idx suffix distinguishes every nested packet location coordinate"
+)]
 pub(super) struct ClassicSegmentLocation {
     pub(super) packet_idx: usize,
     pub(super) subband_idx: usize,
@@ -59,6 +63,10 @@ pub(super) struct HtSegmentAssignmentCandidate {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the repeated _idx suffix distinguishes every nested packet location coordinate"
+)]
 pub(super) struct HtSegmentLocation {
     pub(super) packet_idx: usize,
     pub(super) subband_idx: usize,
@@ -226,6 +234,10 @@ pub(super) fn compare_classic_segment_candidates(
         })
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the codec float domain intentionally receives bounded integer samples or metadata at this rounding boundary"
+)]
 pub(super) fn pcrd_slope(candidate: ClassicSegmentAssignmentCandidate) -> f64 {
     if candidate.rate == 0 {
         return f64::INFINITY;
@@ -417,7 +429,7 @@ pub(super) fn classic_unbudgeted_segment_layers(
 }
 
 pub(super) fn classic_layer_contributions(
-    encoded: bitplane_encode::EncodedCodeBlockWithSegments,
+    encoded: &bitplane_encode::EncodedCodeBlockWithSegments,
     num_layers: u8,
     segment_layers: &[usize],
 ) -> Result<Vec<CodeBlockPacketData>, &'static str> {
@@ -515,12 +527,12 @@ pub(super) fn ht_target_layer(
 }
 
 pub(super) fn ht_layer_contributions(
-    encoded: bitplane_encode::EncodedCodeBlock,
+    encoded: &bitplane_encode::EncodedCodeBlock,
     num_layers: u8,
     segment_layers: &[usize],
 ) -> Result<Vec<CodeBlockPacketData>, &'static str> {
     let layer_count = usize::from(num_layers);
-    if segment_layers.len() != ht_segment_count(&encoded) {
+    if segment_layers.len() != ht_segment_count(encoded) {
         return Err("HTJ2K segment assignment count mismatch");
     }
     if segment_layers.iter().any(|&layer| layer >= layer_count) {

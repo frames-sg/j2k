@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use super::auxiliary::rgn_marker;
 use super::coding::cod_marker;

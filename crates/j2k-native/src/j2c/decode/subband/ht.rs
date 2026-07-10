@@ -15,6 +15,10 @@ use super::{
     decode_ht_sub_band_blocks_parallel,
 };
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub(super) fn decode_sub_band_ht_blocks_i64(
     sub_band_idx: usize,
     sub_band: &SubBand,
@@ -73,8 +77,10 @@ pub(super) fn decode_sub_band_ht_blocks_i64(
                 let out_row = &mut base_store[base_idx..];
 
                 for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    let coefficient =
-                        ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes) as i64;
+                    let coefficient = i64::from(ht_block_decode::coefficient_to_i32(
+                        coefficient,
+                        coded_bitplanes,
+                    ));
                     *output = apply_roi_maxshift_inverse_i64(coefficient, component_info.roi_shift);
                 }
 
@@ -86,6 +92,18 @@ pub(super) fn decode_sub_band_ht_blocks_i64(
     Ok(())
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the codec float domain intentionally receives bounded integer samples or metadata at this rounding boundary"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub(super) fn decode_sub_band_ht_blocks(
     sub_band_idx: usize,
     sub_band: &SubBand,

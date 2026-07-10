@@ -19,14 +19,13 @@ use crate::J2kCodeBlockSegment;
 
 fn seed_130_cb_coefficients() -> Vec<i32> {
     let mut coefficients = Vec::with_capacity(64 * 64);
-    let mut state = 130u32 ^ 0x9e37_79b9;
+    let mut state = 0x82u32 ^ 0x9e37_79b9;
     for _ in 0..64 * 64 {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let _r = (state >> 24) as u8;
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let g = (state >> 24) as u8;
+        let g = u8::try_from(state >> 24).expect("shifted PRNG channel fits u8");
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let b = (state >> 24) as u8;
+        let b = u8::try_from(state >> 24).expect("shifted PRNG channel fits u8");
         coefficients.push(i32::from(b) - i32::from(g));
     }
     coefficients
@@ -37,7 +36,8 @@ fn generated_coefficients(width: u32, height: u32, seed: u32) -> Vec<i32> {
     let mut state = seed ^ 0x9e37_79b9;
     for idx in 0..width * height {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let value = ((state >> 16) & 0x01ff) as i32 - 255;
+        let value =
+            i32::try_from((state >> 16) & 0x01ff).expect("masked coefficient fits i32") - 255;
         coefficients.push(if (idx + seed).is_multiple_of(11) {
             0
         } else {
@@ -473,7 +473,9 @@ fn classic_bitplane_round_trips_subband_and_style_matrix() {
                 sub_band_type,
                 32,
                 19,
-                0x4a32_1000 + style_idx as u32 * 17 + subband_idx as u32,
+                0x4a32_1000
+                    + u32::try_from(style_idx).expect("style index fits u32") * 17
+                    + u32::try_from(subband_idx).expect("subband index fits u32"),
             );
         }
     }

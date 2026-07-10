@@ -101,6 +101,14 @@ fn i32_coefficients_to_i64(coefficients: &[i32]) -> Vec<i64> {
         .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the cohesive pass-order loop is kept intact to protect Tier-1 byte ordering"
+)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable Tier-1 entrypoint borrows the caller's code-block style"
+)]
 pub(crate) fn encode_code_block_with_style_i64(
     coefficients: &[i64],
     width: u32,
@@ -130,8 +138,10 @@ pub(crate) fn encode_code_block_with_style_i64(
     }
 
     let num_bitplanes = 64 - max_magnitude.leading_zeros();
-    debug_assert!(num_bitplanes as u8 <= total_bitplanes);
-    let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes as u8);
+    let num_bitplanes_u8 =
+        u8::try_from(num_bitplanes).expect("a u64 magnitude has at most 64 bitplanes");
+    debug_assert!(num_bitplanes_u8 <= total_bitplanes);
+    let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes_u8);
 
     // Build padded coefficient magnitude and state arrays.
     let pw = w + 2; // Padded width for neighbor access
@@ -247,6 +257,10 @@ pub(crate) fn encode_code_block_with_style_i64(
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable segmented Tier-1 entrypoint borrows the caller's code-block style"
+)]
 pub(crate) fn encode_code_block_segments_with_style(
     coefficients: &[i32],
     width: u32,
@@ -266,6 +280,10 @@ pub(crate) fn encode_code_block_segments_with_style(
     )
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable segmented Tier-1 entrypoint borrows the caller's code-block style"
+)]
 pub(crate) fn encode_code_block_segments_with_style_i64(
     coefficients: &[i64],
     width: u32,
@@ -487,10 +505,10 @@ mod tests {
             },
         ];
         let expected = [
-            (99, 0xfcce40ac5a7f501d, 34, 0, 1, 0x64c946a401c399fb),
-            (150, 0x800fe1ae529cbf1a, 34, 0, 34, 0x2cfae242260a6925),
-            (113, 0xdf22abbf10e119e7, 34, 0, 17, 0x631fdf7d436390a3),
-            (105, 0x45c99a5bbfc68a4f, 34, 0, 1, 0xf29c50e4c7a11511),
+            (99, 0xfcce_40ac_5a7f_501d, 34, 0, 1, 0x64c9_46a4_01c3_99fb),
+            (150, 0x800f_e1ae_529c_bf1a, 34, 0, 34, 0x2cfa_e242_260a_6925),
+            (113, 0xdf22_abbf_10e1_19e7, 34, 0, 17, 0x631f_df7d_4363_90a3),
+            (105, 0x45c9_9a5b_bfc6_8a4f, 34, 0, 1, 0xf29c_50e4_c7a1_1511),
         ];
 
         for (index, style) in styles.iter().enumerate() {
@@ -505,8 +523,8 @@ mod tests {
             let digest = encoded
                 .data
                 .iter()
-                .fold(0xcbf29ce484222325u64, |hash, byte| {
-                    hash.wrapping_mul(0x100000001b3) ^ u64::from(*byte)
+                .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+                    hash.wrapping_mul(0x0100_0000_01b3) ^ u64::from(*byte)
                 });
             let mut segment_bytes = Vec::new();
             for segment in &encoded.segments {
@@ -519,8 +537,8 @@ mod tests {
             }
             let segment_digest = segment_bytes
                 .iter()
-                .fold(0xcbf29ce484222325u64, |hash, byte| {
-                    hash.wrapping_mul(0x100000001b3) ^ u64::from(*byte)
+                .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+                    hash.wrapping_mul(0x0100_0000_01b3) ^ u64::from(*byte)
                 });
             assert_eq!(
                 (

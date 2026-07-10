@@ -130,22 +130,23 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
     if !any_data {
         // Empty packet: just write 0 bit
         header_writer.write_bit(0);
-        return finish_packet(header_writer, Vec::new(), PacketMarkerOptions::default(), 0);
+        return finish_packet(header_writer, &[], PacketMarkerOptions::default(), 0);
     }
 
     // Non-empty packet indicator
     header_writer.write_bit(1);
 
     // Process each subband in order (LL for res 0; HL, LH, HH for res > 0)
-    for subband in resolution.subbands.iter_mut() {
+    for subband in &mut resolution.subbands {
         // Create tag trees for this subband's code-block inclusion and zero bitplanes
         let mut inclusion_tree = TagTreeEncoder::new(subband.num_cbs_x, subband.num_cbs_y);
         let mut zbp_tree = TagTreeEncoder::new(subband.num_cbs_x, subband.num_cbs_y);
 
         // Set up tag tree values
         for (i, cb) in subband.code_blocks.iter().enumerate() {
-            let x = i as u32 % subband.num_cbs_x;
-            let y = i as u32 / subband.num_cbs_x;
+            let index = u32::try_from(i).expect("code-block index fits in u32");
+            let x = index % subband.num_cbs_x;
+            let y = index / subband.num_cbs_x;
 
             let inclusion_val = if cb.num_coding_passes > 0 {
                 0
@@ -153,13 +154,14 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
                 u32::MAX / 2
             };
             inclusion_tree.set_value(x, y, inclusion_val);
-            zbp_tree.set_value(x, y, cb.num_zero_bitplanes as u32);
+            zbp_tree.set_value(x, y, u32::from(cb.num_zero_bitplanes));
         }
 
         // Encode each code-block's packet contribution
         for (i, cb) in subband.code_blocks.iter_mut().enumerate() {
-            let x = i as u32 % subband.num_cbs_x;
-            let y = i as u32 / subband.num_cbs_x;
+            let index = u32::try_from(i).expect("code-block index fits in u32");
+            let x = index % subband.num_cbs_x;
+            let y = index / subband.num_cbs_x;
 
             if !cb.previously_included {
                 // First inclusion: use tag tree
@@ -170,7 +172,12 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
                 }
 
                 // Zero bitplanes: use tag tree
-                zbp_tree.encode(x, y, cb.num_zero_bitplanes as u32 + 1, &mut header_writer);
+                zbp_tree.encode(
+                    x,
+                    y,
+                    u32::from(cb.num_zero_bitplanes) + 1,
+                    &mut header_writer,
+                );
             } else if cb.num_coding_passes > 0 {
                 header_writer.write_bit(1);
             } else {
@@ -182,7 +189,8 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
                 continue;
             }
 
-            let data_len = cb.data.len() as u32;
+            let data_len =
+                u32::try_from(cb.data.len()).expect("code-block payload length fits in u32");
             match cb.block_coding_mode {
                 BlockCodingMode::Classic => {
                     encode_num_coding_passes(cb.num_coding_passes, &mut header_writer);
@@ -202,14 +210,15 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
         }
     }
 
-    finish_packet(header_writer, body, PacketMarkerOptions::default(), 0)
+    finish_packet(header_writer, &body, PacketMarkerOptions::default(), 0)
 }
 
 fn packet_state_seed(packet: &ResolutionPacket) -> Result<PacketStateSeed, &'static str> {
     let mut subbands = Vec::with_capacity(packet.subbands.len());
     for subband in &packet.subbands {
         let expected_code_blocks = subband.num_cbs_x.saturating_mul(subband.num_cbs_y);
-        let actual_code_blocks = subband.code_blocks.len() as u32;
+        let actual_code_blocks = u32::try_from(subband.code_blocks.len())
+            .map_err(|_| "packet subband code-block count exceeds u32")?;
         let empty_subband =
             subband.num_cbs_x == 0 && subband.num_cbs_y == 0 && actual_code_blocks == 0;
         if !empty_subband
@@ -326,8 +335,10 @@ fn build_packet_states(
                 let mut zero_bitplane_tree =
                     TagTreeEncoder::new(seed_subband.num_cbs_x, seed_subband.num_cbs_y);
                 for idx in 0..seed_subband.inclusion_values.len() {
-                    let x = idx as u32 % seed_subband.num_cbs_x;
-                    let y = idx as u32 / seed_subband.num_cbs_x;
+                    let index = u32::try_from(idx)
+                        .map_err(|_| "packet state code-block index exceeds u32")?;
+                    let x = index % seed_subband.num_cbs_x;
+                    let y = index / seed_subband.num_cbs_x;
                     inclusion_tree.set_value(x, y, seed_subband.inclusion_values[idx]);
                     zero_bitplane_tree.set_value(x, y, seed_subband.zero_bitplane_values[idx]);
                 }
@@ -375,7 +386,7 @@ fn form_packet_parts_with_state_and_options(
         header_writer.write_bit(0);
         return Ok(finish_packet_parts(
             header_writer,
-            Vec::new(),
+            &[],
             marker_options,
             packet_sequence,
         ));
@@ -391,8 +402,10 @@ fn form_packet_parts_with_state_and_options(
         }
 
         for (idx, packet_block) in packet_subband.code_blocks.iter().enumerate() {
-            let x = idx as u32 % state_subband.num_cbs_x;
-            let y = idx as u32 / state_subband.num_cbs_x;
+            let index =
+                u32::try_from(idx).map_err(|_| "packet state code-block index exceeds u32")?;
+            let x = index % state_subband.num_cbs_x;
+            let y = index / state_subband.num_cbs_x;
             let state_block = &mut state_subband.code_blocks[idx];
 
             if !state_block.previously_included {
@@ -419,7 +432,8 @@ fn form_packet_parts_with_state_and_options(
                 continue;
             }
 
-            let data_len = packet_block.data.len() as u32;
+            let data_len = u32::try_from(packet_block.data.len())
+                .map_err(|_| "code-block payload length exceeds u32")?;
             match packet_block.block_coding_mode {
                 BlockCodingMode::Classic => {
                     encode_num_coding_passes(packet_block.num_coding_passes, &mut header_writer);
@@ -446,7 +460,7 @@ fn form_packet_parts_with_state_and_options(
 
     Ok(finish_packet_parts(
         header_writer,
-        body,
+        &body,
         marker_options,
         packet_sequence,
     ))
@@ -454,7 +468,7 @@ fn form_packet_parts_with_state_and_options(
 
 fn finish_packet(
     header_writer: BitWriter,
-    body: Vec<u8>,
+    body: &[u8],
     marker_options: PacketMarkerOptions,
     packet_sequence: u16,
 ) -> Vec<u8> {
@@ -463,7 +477,7 @@ fn finish_packet(
 
 fn finish_packet_parts(
     header_writer: BitWriter,
-    body: Vec<u8>,
+    body: &[u8],
     marker_options: PacketMarkerOptions,
     packet_sequence: u16,
 ) -> FormedPacket {
@@ -488,10 +502,10 @@ fn finish_packet_parts(
     let mut merged = Vec::with_capacity(body_prefix.len() + header.len() + body.len());
     merged.extend_from_slice(&body_prefix);
     merged.extend_from_slice(&header);
-    merged.extend_from_slice(&body);
+    merged.extend_from_slice(body);
 
     let mut separated_body = body_prefix;
-    separated_body.extend_from_slice(&body);
+    separated_body.extend_from_slice(body);
 
     FormedPacket {
         merged,
@@ -510,11 +524,11 @@ fn encode_num_coding_passes(num_passes: u8, writer: &mut BitWriter) {
         5 => writer.write_bits(0b1110, 4),
         6..=36 => {
             writer.write_bits(0b1111, 4);
-            writer.write_bits((num_passes - 6) as u32, 5);
+            writer.write_bits(u32::from(num_passes - 6), 5);
         }
         37..=164 => {
             writer.write_bits(0b1_1111_1111, 9);
-            writer.write_bits((num_passes - 37) as u32, 7);
+            writer.write_bits(u32::from(num_passes - 37), 7);
         }
         _ => unreachable!("JPEG 2000 supports 1..=164 coding passes per contribution"),
     }
@@ -550,7 +564,10 @@ fn encode_length(length: u32, l_block: &mut u32, mut num_bits: u32, writer: &mut
         num_bits += 1;
     }
     writer.write_bit(0);
-    writer.write_bits(length, num_bits as u8);
+    writer.write_bits(
+        length,
+        u8::try_from(num_bits).expect("packet length bit count fits in u8"),
+    );
 }
 
 fn encode_classic_segment_lengths(
@@ -602,7 +619,10 @@ fn encode_classic_segment_lengths_with_lblock(
 
     let length_bits = bits_for_length(*l_block, 1);
     for &segment_len in &code_block.classic_segment_lengths {
-        writer.write_bits(segment_len, length_bits as u8);
+        writer.write_bits(
+            segment_len,
+            u8::try_from(length_bits).expect("classic segment length bit count fits in u8"),
+        );
     }
 
     Ok(())
@@ -633,7 +653,10 @@ fn encode_ht_segment_lengths_with_lblock(
             refinement_bits += 1;
         }
         writer.write_bit(0);
-        writer.write_bits(refinement_length, refinement_bits as u8);
+        writer.write_bits(
+            refinement_length,
+            u8::try_from(refinement_bits).expect("HT refinement length bit count fits in u8"),
+        );
         return Ok(());
     }
 
@@ -649,10 +672,17 @@ fn encode_ht_segment_lengths_with_lblock(
         cleanup_bits += 1;
     }
     writer.write_bit(0);
-    writer.write_bits(cleanup_length, cleanup_bits as u8);
+    writer.write_bits(
+        cleanup_length,
+        u8::try_from(cleanup_bits).expect("HT cleanup length bit count fits in u8"),
+    );
 
     if code_block.num_coding_passes > 1 {
-        writer.write_bits(refinement_length, (*l_block + refinement_extra_bits) as u8);
+        writer.write_bits(
+            refinement_length,
+            u8::try_from(*l_block + refinement_extra_bits)
+                .expect("HT refinement length bit count fits in u8"),
+        );
     }
 
     Ok(())
@@ -825,7 +855,7 @@ mod tests {
             }
         }
 
-        Some(num_passes as u8)
+        u8::try_from(num_passes).ok()
     }
 
     fn decode_num_coding_passes_for_test(data: &[u8]) -> Option<u8> {
@@ -858,7 +888,7 @@ mod tests {
         } else {
             return None;
         };
-        Some(passes as u8)
+        u8::try_from(passes).ok()
     }
 
     #[test]
@@ -960,8 +990,9 @@ mod tests {
         for (idx, (&expected_zbp, &expected_len)) in
             zero_bitplanes.iter().zip(lengths.iter()).enumerate()
         {
-            let x = idx as u32 % 8;
-            let y = idx as u32 / 8;
+            let index = u32::try_from(idx).expect("8x8 test code-block index fits u32");
+            let x = index % 8;
+            let y = index / 8;
             let included = inclusion_tree
                 .read(x, y, &mut reader, 1, &mut inclusion_nodes)
                 .expect("inclusion tag")
@@ -981,9 +1012,15 @@ mod tests {
             }
             let length_bits = l_block + u32::from(passes).ilog2();
             let actual_len = reader
-                .read_bits_with_stuffing(length_bits as u8)
+                .read_bits_with_stuffing(
+                    u8::try_from(length_bits).expect("packet length bit count fits u8"),
+                )
                 .expect("code-block length");
-            assert_eq!(actual_len, expected_len as u32, "length at index {idx}");
+            assert_eq!(
+                actual_len,
+                u32::try_from(expected_len).expect("test payload length fits u32"),
+                "length at index {idx}"
+            );
         }
     }
 
@@ -1048,9 +1085,14 @@ mod tests {
                 l_block += 1;
             }
             let actual_len = reader
-                .read_bits_with_stuffing(l_block as u8)
+                .read_bits_with_stuffing(
+                    u8::try_from(l_block).expect("packet length bit count fits u8"),
+                )
                 .expect("code-block length");
-            assert_eq!(actual_len, len as u32);
+            assert_eq!(
+                actual_len,
+                u32::try_from(len).expect("test payload length fits u32")
+            );
 
             reader.align();
             let expected_body = vec![0x80; len];
@@ -1066,10 +1108,14 @@ mod tests {
     fn classic_pass_terminated_lengths_share_one_lblock_increment() {
         let lengths = [1u32, 9, 17];
         let mut code_block = CodeBlockPacketData {
-            data: vec![0; lengths.iter().sum::<u32>() as usize],
+            data: vec![
+                0;
+                usize::try_from(lengths.iter().sum::<u32>())
+                    .expect("test payload length fits usize")
+            ],
             ht_cleanup_length: 0,
             ht_refinement_length: 0,
-            num_coding_passes: lengths.len() as u8,
+            num_coding_passes: u8::try_from(lengths.len()).expect("pass count fits u8"),
             classic_segment_lengths: lengths.to_vec(),
             num_zero_bitplanes: 0,
             previously_included: false,
@@ -1087,7 +1133,10 @@ mod tests {
         let mut reader = BitReader::new(&bytes);
         let passes = decode_num_coding_passes_from_reader_for_test(&mut reader)
             .expect("number of coding passes");
-        assert_eq!(passes, lengths.len() as u8);
+        assert_eq!(
+            passes,
+            u8::try_from(lengths.len()).expect("pass count fits u8")
+        );
 
         let mut l_block = 3u32;
         while reader.read_bits_with_stuffing(1).expect("lblock increment") == 1 {
@@ -1098,7 +1147,9 @@ mod tests {
             .iter()
             .map(|_| {
                 reader
-                    .read_bits_with_stuffing(l_block as u8)
+                    .read_bits_with_stuffing(
+                        u8::try_from(l_block).expect("packet length bit count fits u8"),
+                    )
                     .expect("terminated pass segment length")
             })
             .collect();
@@ -1267,10 +1318,17 @@ mod tests {
             l_block += 1;
             length_bits += 1;
         }
-        assert_eq!(reader.read_bits_with_stuffing(length_bits as u8), Some(3));
+        assert_eq!(
+            reader.read_bits_with_stuffing(
+                u8::try_from(length_bits).expect("cleanup length bit count fits u8")
+            ),
+            Some(3)
+        );
         let refinement_bits = l_block + 1;
         assert_eq!(
-            reader.read_bits_with_stuffing(refinement_bits as u8),
+            reader.read_bits_with_stuffing(
+                u8::try_from(refinement_bits).expect("refinement length bit count fits u8")
+            ),
             Some(2)
         );
         assert_eq!(&packet[header_len..], payload.as_slice());

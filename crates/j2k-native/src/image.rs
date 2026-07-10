@@ -10,13 +10,12 @@ use crate::jp2::{self, DecodedImage, ImageBoxes};
 use crate::{
     checked_decode_byte_len2, checked_decode_byte_len3, checked_decode_byte_len4,
     checked_decode_sample_count, convert_color_space, interleave_and_convert,
-    interleave_and_convert_region, math, native_bytes_per_sample,
-    native_component_plane_dimensions, resolve_palette_indices, validate_channel_definition,
-    validate_interleaved_output_buffer, validate_roi, Bitmap, ColorSpace, ComponentPlane,
-    DecodedComponents, DecodedNativeComponents, DecoderContext, DecodingError,
-    DirectPlanUnsupportedReason, FormatError, HtCodeBlockDecoder, J2kDirectColorPlan,
-    J2kDirectGrayscalePlan, NativeComponentPlane, RawBitmap, Result, Reversible53CoefficientImage,
-    ValidationError, CODESTREAM_MAGIC, JP2_MAGIC,
+    interleave_and_convert_region, native_bytes_per_sample, native_component_plane_dimensions,
+    resolve_palette_indices, validate_channel_definition, validate_interleaved_output_buffer,
+    validate_roi, Bitmap, ColorSpace, ComponentPlane, DecodedComponents, DecodedNativeComponents,
+    DecoderContext, DecodingError, DirectPlanUnsupportedReason, FormatError, HtCodeBlockDecoder,
+    J2kDirectColorPlan, J2kDirectGrayscalePlan, NativeComponentPlane, RawBitmap, Result,
+    Reversible53CoefficientImage, ValidationError, CODESTREAM_MAGIC, JP2_MAGIC,
 };
 
 mod native;
@@ -104,6 +103,10 @@ pub struct Image<'a> {
 
 impl<'a> Image<'a> {
     /// Try to create a new JPEG2000 image from the given data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the input signature, container, or codestream is invalid.
     pub fn new(data: &'a [u8], settings: &DecodeSettings) -> Result<Self> {
         if data.starts_with(JP2_MAGIC) {
             jp2::parse(data, *settings)
@@ -115,27 +118,32 @@ impl<'a> Image<'a> {
     }
 
     /// Whether the image has an alpha channel.
+    #[must_use]
     pub fn has_alpha(&self) -> bool {
         self.has_alpha
     }
 
     /// The color space of the image.
+    #[must_use]
     pub fn color_space(&self) -> &ColorSpace {
         &self.color_space
     }
 
     /// The width of the image.
+    #[must_use]
     pub fn width(&self) -> u32 {
         self.header.size_data.image_width()
     }
 
     /// The height of the image.
+    #[must_use]
     pub fn height(&self) -> u32 {
         self.header.size_data.image_height()
     }
 
     /// The original bit depth of the image. You usually don't need to do anything
     /// with this parameter, it just exists for informational purposes.
+    #[must_use]
     pub fn original_bit_depth(&self) -> u8 {
         // Note that this only works if all components have the same precision.
         self.header.component_infos[0].size_info.precision
@@ -143,6 +151,7 @@ impl<'a> Image<'a> {
 
     /// Whether decode finishes with additional host-side component mutation or reordering.
     #[doc(hidden)]
+    #[must_use]
     pub fn supports_direct_device_plane_reuse(&self) -> bool {
         if self.settings.resolve_palette_indices && self.boxes.palette.is_some() {
             return false;
@@ -163,6 +172,10 @@ impl<'a> Image<'a> {
 
     /// Decode the image and return its decoded result as a `Vec<u8>`, with each
     /// channel interleaved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when image validation, decoding, or output allocation fails.
     pub fn decode(&self) -> Result<Vec<u8>> {
         let bitmap = self.decode_with_context(&mut DecoderContext::default())?;
         Ok(bitmap.data)
@@ -170,11 +183,15 @@ impl<'a> Image<'a> {
 
     /// Decode the image and return its decoded result using a caller-provided
     /// decoder context so allocations can be reused across repeated decodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when image validation, decoding, or output allocation fails.
     pub fn decode_with_context(&self, decoder_context: &mut DecoderContext<'a>) -> Result<Bitmap> {
         let buffer_size = checked_decode_byte_len3(
             self.width() as usize,
             self.height() as usize,
-            self.color_space.num_channels() as usize + if self.has_alpha { 1 } else { 0 },
+            usize::from(self.color_space.num_channels()) + usize::from(self.has_alpha),
         )?;
         let mut buf = vec![0; buffer_size];
         self.decode_into(&mut buf, decoder_context)?;
@@ -191,6 +208,10 @@ impl<'a> Image<'a> {
 
     /// Decode the image into borrowed component planes using a caller-provided
     /// decoder context so allocations can be reused across repeated decodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when component precision is unsupported or decoding fails.
     pub fn decode_components_with_context<'ctx>(
         &self,
         decoder_context: &'ctx mut DecoderContext<'a>,
@@ -208,6 +229,10 @@ impl<'a> Image<'a> {
     /// Unlike [`Self::decode_native`], this preserves per-component bit depth
     /// and signedness metadata and does not require all components to share a
     /// single packed interleaved representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation, decoding, or native sample packing fails.
     pub fn decode_native_components(&self) -> Result<DecodedNativeComponents> {
         let mut decoder_context = DecoderContext::default();
         self.decode_native_components_with_context(&mut decoder_context)
@@ -215,6 +240,10 @@ impl<'a> Image<'a> {
 
     /// Decode the image into owned native-bit-depth component planes using a
     /// caller-provided decoder context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation, decoding, or native sample packing fails.
     pub fn decode_native_components_with_context(
         &self,
         decoder_context: &mut DecoderContext<'a>,
@@ -313,6 +342,10 @@ impl<'a> Image<'a> {
 
     /// Decode borrowed component planes for a requested region using a
     /// caller-provided decoder context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region is invalid, precision is unsupported, or decoding fails.
     pub fn decode_region_components_with_context<'ctx>(
         &self,
         roi: (u32, u32, u32, u32),
@@ -328,6 +361,10 @@ impl<'a> Image<'a> {
 
     /// Decode a source-coordinate region into owned native-bit-depth component
     /// planes using a caller-provided decoder context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region is invalid or decoding and packing fail.
     pub fn decode_native_region_components_with_context(
         &self,
         roi: (u32, u32, u32, u32),
@@ -364,12 +401,20 @@ impl<'a> Image<'a> {
     }
 
     /// Decode a region of the image and return it as an 8-bit interleaved bitmap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region is invalid or decoding fails.
     pub fn decode_region(&self, roi: (u32, u32, u32, u32)) -> Result<Bitmap> {
         self.decode_region_with_context(roi, &mut DecoderContext::default())
     }
 
     /// Decode a region of the image and return it as an 8-bit interleaved bitmap
     /// using a caller-provided decoder context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region is invalid, decoding fails, or output sizing overflows.
     pub fn decode_region_with_context(
         &self,
         roi: (u32, u32, u32, u32),
@@ -379,8 +424,7 @@ impl<'a> Image<'a> {
         let mut decoded_image =
             self.prepare_decoded_image_with_region(decoder_context, Some(roi))?;
         let (_x, _y, width, height) = roi;
-        let channels =
-            self.color_space.num_channels() as usize + if self.has_alpha { 1 } else { 0 };
+        let channels = usize::from(self.color_space.num_channels()) + usize::from(self.has_alpha);
         let data_len = checked_decode_byte_len3(width as usize, height as usize, channels)?;
         let mut data = vec![0; data_len];
         interleave_and_convert_region(
@@ -407,6 +451,10 @@ impl<'a> Image<'a> {
     ///
     /// This is essential for medical imaging (DICOM) where 12-bit and 16-bit
     /// images must preserve their full dynamic range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when decoding or native sample packing fails.
     pub fn decode_native(&self) -> Result<RawBitmap> {
         let mut decoder_context = DecoderContext::default();
         self.decode_native_with_context(&mut decoder_context)
@@ -438,12 +486,20 @@ impl<'a> Image<'a> {
     }
 
     /// Decode a region of the image at native bit depth.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region is invalid or decoding and packing fail.
     pub fn decode_native_region(&self, roi: (u32, u32, u32, u32)) -> Result<RawBitmap> {
         self.decode_native_region_with_context(roi, &mut DecoderContext::default())
     }
 
     /// Decode a source-coordinate region into owned native-bit-depth component
     /// planes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region is invalid or decoding and packing fail.
     pub fn decode_native_region_components(
         &self,
         roi: (u32, u32, u32, u32),
@@ -453,6 +509,10 @@ impl<'a> Image<'a> {
 
     /// Decode the image at native bit depth using a caller-provided decoder
     /// context so allocations can be reused across repeated decodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when decoding, sizing, or native sample packing fails.
     pub fn decode_native_with_context(
         &self,
         decoder_context: &mut DecoderContext<'a>,
@@ -474,7 +534,7 @@ impl<'a> Image<'a> {
             let capacity = checked_decode_byte_len2(pixel_count, usize::from(num_components))?;
             let mut data = Vec::with_capacity(capacity);
             for i in 0..pixel_count {
-                for component in components.iter() {
+                for component in components {
                     Self::push_component_native_sample_bytes(&mut data, component, i, bit_depth);
                 }
             }
@@ -496,7 +556,7 @@ impl<'a> Image<'a> {
             )?;
             let mut data = Vec::with_capacity(capacity);
             for i in 0..pixel_count {
-                for component in components.iter() {
+                for component in components {
                     Self::push_component_native_sample_bytes(&mut data, component, i, bit_depth);
                 }
             }
@@ -516,6 +576,10 @@ impl<'a> Image<'a> {
 
     /// Decode a region of the image at native bit depth using a caller-provided
     /// decoder context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region is invalid or decoding, sizing, and packing fail.
     pub fn decode_native_region_with_context(
         &self,
         roi: (u32, u32, u32, u32),
@@ -664,6 +728,10 @@ impl<'a> Image<'a> {
     /// images in the same session.
     ///
     /// The buffer must have the correct size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when decoding fails or `buf` is too small for the image.
     pub fn decode_into(
         &self,
         buf: &mut [u8],
@@ -728,15 +796,14 @@ impl<'a> Image<'a> {
                 .decoded_components
                 .iter()
                 .cloned()
-                .zip(
-                    cdef.channel_definitions
-                        .iter()
-                        .map(|c| match c._association {
-                            ChannelAssociation::WholeImage => u16::MAX,
-                            ChannelAssociation::Colour(c) => c,
-                            ChannelAssociation::Unspecified => u16::MAX,
-                        }),
-                )
+                .zip(cdef.channel_definitions.iter().map(
+                    |definition| match definition.association {
+                        ChannelAssociation::WholeImage | ChannelAssociation::Unspecified => {
+                            u16::MAX
+                        }
+                        ChannelAssociation::Colour(index) => index,
+                    },
+                ))
                 .collect::<Vec<_>>();
             components.sort_by_key(|component| component.1);
             *decoded_image.decoded_components = components.into_iter().map(|c| c.0).collect();

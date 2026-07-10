@@ -52,9 +52,9 @@ pub(crate) const CRG: u8 = 0x63;
 /// Comment - 'COM'.
 pub(crate) const COM: u8 = 0x64;
 
-#[allow(
+#[expect(
     dead_code,
-    reason = "Not all marker codes are used in every decoding path yet"
+    reason = "not all marker codes are used in every decoding path yet"
 )]
 pub(crate) fn to_string(marker: u8) -> &'static str {
     match marker {

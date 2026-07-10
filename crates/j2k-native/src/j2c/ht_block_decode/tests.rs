@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use alloc::{vec, vec::Vec};
+
 use super::cleanup::{
     cleanup_segment_suffix_length, cleanup_symbol_stride, decode_cleanup_symbols,
 };
@@ -153,7 +155,7 @@ fn cleanup_and_magnitude_sign_phases_decode_odd_sized_block() {
     let height = 13u32;
     let original: Vec<i32> = (0..(width * height))
         .map(|i| {
-            let value = (i as i32 % 61) - 30;
+            let value = (i32::try_from(i).expect("test coefficient index fits i32") % 61) - 30;
             if i % 7 == 0 {
                 0
             } else {
@@ -217,22 +219,28 @@ fn sigma_phase_builds_masks_and_zeroes_edge_sentinels() {
     build_sigma_from_cleanup_phase(&cleanup, &mut sigma, width, height, sstr, mstr)
         .expect("build sigma");
 
-    let expected_first = (((u32::from(cleanup[0]) & 0x30) >> 4)
-        | ((u32::from(cleanup[0]) & 0xC0) >> 2)
-        | ((u32::from(cleanup[2]) & 0x30) << 4)
-        | ((u32::from(cleanup[2]) & 0xC0) << 6)
-        | ((u32::from(cleanup[sstr]) & 0x30) >> 2)
-        | (u32::from(cleanup[sstr]) & 0xC0)
-        | ((u32::from(cleanup[sstr + 2]) & 0x30) << 6)
-        | ((u32::from(cleanup[sstr + 2]) & 0xC0) << 8)) as u16;
-    let expected_second = (((u32::from(cleanup[4]) & 0x30) >> 4)
-        | ((u32::from(cleanup[4]) & 0xC0) >> 2)
-        | ((u32::from(cleanup[6]) & 0x30) << 4)
-        | ((u32::from(cleanup[6]) & 0xC0) << 6)
-        | ((u32::from(cleanup[sstr + 4]) & 0x30) >> 2)
-        | (u32::from(cleanup[sstr + 4]) & 0xC0)
-        | ((u32::from(cleanup[sstr + 6]) & 0x30) << 6)
-        | ((u32::from(cleanup[sstr + 6]) & 0xC0) << 8)) as u16;
+    let expected_first = u16::try_from(
+        ((u32::from(cleanup[0]) & 0x30) >> 4)
+            | ((u32::from(cleanup[0]) & 0xC0) >> 2)
+            | ((u32::from(cleanup[2]) & 0x30) << 4)
+            | ((u32::from(cleanup[2]) & 0xC0) << 6)
+            | ((u32::from(cleanup[sstr]) & 0x30) >> 2)
+            | (u32::from(cleanup[sstr]) & 0xC0)
+            | ((u32::from(cleanup[sstr + 2]) & 0x30) << 6)
+            | ((u32::from(cleanup[sstr + 2]) & 0xC0) << 8),
+    )
+    .expect("sigma test mask fits u16");
+    let expected_second = u16::try_from(
+        ((u32::from(cleanup[4]) & 0x30) >> 4)
+            | ((u32::from(cleanup[4]) & 0xC0) >> 2)
+            | ((u32::from(cleanup[6]) & 0x30) << 4)
+            | ((u32::from(cleanup[6]) & 0xC0) << 6)
+            | ((u32::from(cleanup[sstr + 4]) & 0x30) >> 2)
+            | (u32::from(cleanup[sstr + 4]) & 0xC0)
+            | ((u32::from(cleanup[sstr + 6]) & 0x30) << 6)
+            | ((u32::from(cleanup[sstr + 6]) & 0xC0) << 8),
+    )
+    .expect("sigma test mask fits u16");
     assert_eq!(sigma[0], expected_first);
     assert_eq!(sigma[1], expected_second);
     assert_eq!(sigma[2], 0);
@@ -304,7 +312,7 @@ fn borrowed_segments_decode_matches_owned_combined_decode() {
     let height = 16u32;
     let original: Vec<i32> = (0..(width * height))
         .map(|i| {
-            let value = (i as i32 % 47) - 23;
+            let value = (i32::try_from(i).expect("test coefficient index fits i32") % 47) - 23;
             if i % 5 == 0 {
                 0
             } else {
@@ -317,7 +325,7 @@ fn borrowed_segments_decode_matches_owned_combined_decode() {
         encode_code_block(&original, width, height, total_bitplanes).expect("encode HT block");
     let combined = CombinedCodeBlockData {
         data: encoded.data.clone(),
-        cleanup_length: encoded.data.len() as u32,
+        cleanup_length: u32::try_from(encoded.data.len()).expect("test payload length fits u32"),
         refinement_length: 0,
     };
     let segments = HtCodeBlockSegments {
@@ -376,7 +384,7 @@ fn decode_combined_validated_with_scratch_reuses_zeroed_buffers() {
     let height = 16u32;
     let original: Vec<i32> = (0..(width * height))
         .map(|i| {
-            let value = (i as i32 % 47) - 23;
+            let value = (i32::try_from(i).expect("test coefficient index fits i32") % 47) - 23;
             if i % 5 == 0 {
                 0
             } else {
@@ -389,7 +397,7 @@ fn decode_combined_validated_with_scratch_reuses_zeroed_buffers() {
         encode_code_block(&original, width, height, total_bitplanes).expect("encode HT block");
     let combined = CombinedCodeBlockData {
         data: encoded.data.clone(),
-        cleanup_length: encoded.data.len() as u32,
+        cleanup_length: u32::try_from(encoded.data.len()).expect("test payload length fits u32"),
         refinement_length: 0,
     };
     let mut scratch = HtBlockDecodeScratch::default();

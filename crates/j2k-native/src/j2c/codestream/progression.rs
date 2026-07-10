@@ -41,7 +41,7 @@ pub(crate) fn poc_marker(
         changes.push(ProgressionChange {
             resolution_start,
             component_start,
-            layer_end: layer_end as u8,
+            layer_end: u8::try_from(layer_end).ok()?,
             resolution_end,
             component_end,
             progression_order,

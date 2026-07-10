@@ -66,7 +66,6 @@ The crate is `no_std` compatible but requires an allocator to be available.
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 #![forbid(missing_docs)]
-#![allow(clippy::too_many_arguments)]
 
 extern crate alloc;
 
@@ -306,7 +305,8 @@ pub(crate) fn checked_decode_byte_len4(
 pub(crate) fn checked_decode_sample_count(width: u32, height: u32) -> Result<usize> {
     #[cfg(target_pointer_width = "64")]
     {
-        Ok((u64::from(width) * u64::from(height)) as usize)
+        usize::try_from(u64::from(width) * u64::from(height))
+            .map_err(|_| ValidationError::ImageTooLarge.into())
     }
 
     #[cfg(not(target_pointer_width = "64"))]

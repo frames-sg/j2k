@@ -148,6 +148,10 @@ pub(super) fn resolution_precinct_grid(
     ))
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
 pub(super) fn split_prepared_subband_by_precinct(
     subband: &PreparedEncodeSubband,
     resolution: u32,
@@ -420,9 +424,9 @@ pub(super) fn lrcp_ordered_prepared_resolution_packets(
     Ok(resolution_packets)
 }
 
-pub(super) fn lrcp_ordered_prepared_compact_resolution_packets<'a>(
-    component_resolution_packets: Vec<Vec<PreparedCompactResolutionPacket<'a>>>,
-) -> Result<Vec<PreparedCompactResolutionPacket<'a>>, &'static str> {
+pub(super) fn lrcp_ordered_prepared_compact_resolution_packets(
+    component_resolution_packets: Vec<Vec<PreparedCompactResolutionPacket<'_>>>,
+) -> Result<Vec<PreparedCompactResolutionPacket<'_>>, &'static str> {
     let resolution_count = component_resolution_packets
         .first()
         .map_or(0usize, alloc::vec::Vec::len);
@@ -472,9 +476,9 @@ pub(super) fn component_ordered_prepared_resolution_packets(
     Ok(resolution_packets)
 }
 
-pub(super) fn component_ordered_prepared_compact_resolution_packets<'a>(
-    component_resolution_packets: Vec<Vec<PreparedCompactResolutionPacket<'a>>>,
-) -> Result<Vec<PreparedCompactResolutionPacket<'a>>, &'static str> {
+pub(super) fn component_ordered_prepared_compact_resolution_packets(
+    component_resolution_packets: Vec<Vec<PreparedCompactResolutionPacket<'_>>>,
+) -> Result<Vec<PreparedCompactResolutionPacket<'_>>, &'static str> {
     let resolution_count = component_resolution_packets
         .first()
         .map_or(0usize, alloc::vec::Vec::len);
@@ -547,6 +551,10 @@ pub(super) fn public_packetization_resolutions(
         .collect()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub(super) fn packetize_resolution_packets_with_options(
     resolution_packets: &mut [ResolutionPacket],
     packet_descriptors: &[J2kPacketizationPacketDescriptor],
@@ -560,7 +568,8 @@ pub(super) fn packetize_resolution_packets_with_options(
 ) -> Result<packet_encode::PacketizedTileData, &'static str> {
     let packetization_resolutions = public_packetization_resolutions(resolution_packets);
     let packetization_job = J2kPacketizationEncodeJob {
-        resolution_count: resolution_packets.len() as u32,
+        resolution_count: u32::try_from(resolution_packets.len())
+            .map_err(|_| "packetization resolution count exceeds u32")?,
         num_layers,
         num_components,
         code_block_count: count_code_blocks(resolution_packets)?,

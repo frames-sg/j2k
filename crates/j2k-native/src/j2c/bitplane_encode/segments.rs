@@ -20,6 +20,10 @@ use super::{
     encode_code_block_with_style_i64, EncodedCodeBlockSegment, EncodedCodeBlockWithSegments,
 };
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "segmented scheduling shares one borrowed style across every coding pass"
+)]
 pub(super) fn encode_segmented_code_block(
     coefficients: &[i64],
     width: u32,
@@ -48,7 +52,8 @@ pub(super) fn encode_segmented_code_block(
         return empty_segmented_code_block(total_bitplanes);
     }
 
-    let num_bitplanes = (64 - max_magnitude.leading_zeros()) as u8;
+    let num_bitplanes = u8::try_from(64 - max_magnitude.leading_zeros())
+        .expect("a u64 magnitude has at most 64 bitplanes");
     debug_assert!(num_bitplanes <= total_bitplanes);
     let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes);
     SegmentedCodeBlockEncoder::new(
@@ -62,6 +67,10 @@ pub(super) fn encode_segmented_code_block(
     .encode_all_passes(num_zero_bitplanes)
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the adapter shares the caller's style with the stable encoder entrypoint"
+)]
 fn encode_unsegmented_code_block(
     coefficients: &[i64],
     width: u32,
@@ -360,6 +369,10 @@ impl<'a> SegmentedCodeBlockEncoder<'a> {
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the pass loop keeps one borrowed style rather than copying it for each query"
+)]
 fn segment_index(style: &CodeBlockStyle, coding_pass: u8) -> u8 {
     if style.termination_on_each_pass {
         coding_pass
@@ -370,6 +383,10 @@ fn segment_index(style: &CodeBlockStyle, coding_pass: u8) -> u8 {
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the pass loop keeps one borrowed style rather than copying it for each query"
+)]
 fn pass_uses_arithmetic(style: &CodeBlockStyle, coding_pass: u8) -> bool {
     !style.selective_arithmetic_coding_bypass || coding_pass <= 9 || coding_pass.is_multiple_of(3)
 }
@@ -405,7 +422,7 @@ fn bypass_segment_idx(pass_idx: u8) -> u8 {
     if pass_idx < 10 {
         0
     } else {
-        1 + (2 * ((pass_idx - 10) / 3)) + if ((pass_idx - 10) % 3) == 2 { 1 } else { 0 }
+        1 + (2 * ((pass_idx - 10) / 3)) + u8::from(((pass_idx - 10) % 3) == 2)
     }
 }
 
@@ -422,7 +439,7 @@ pub(super) fn push_segment(
         u32::try_from(data.len()).expect("classic code-block data offset fits in u32");
     let data_length =
         u32::try_from(segment_data.len()).expect("classic code-block segment length fits in u32");
-    data.extend_from_slice(&segment_data);
+    data.extend(segment_data);
     segments.push(EncodedCodeBlockSegment {
         data_offset,
         data_length,

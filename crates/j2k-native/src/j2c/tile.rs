@@ -14,8 +14,16 @@ use crate::j2c::codestream;
 use crate::reader::BitReader;
 use crate::DEFAULT_MAX_DECODE_BYTES;
 
+fn tile_coordinate(value: u64) -> u32 {
+    u32::try_from(value).expect("tile coordinates derived from the u32 reference grid fit in u32")
+}
+
 /// A single tile in the image.
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "tile_parts is the JPEG 2000 specification term for a tile's ordered parts"
+)]
 pub(crate) struct Tile<'a> {
     /// The index of the tile, in row-major order.
     pub(crate) idx: u32,
@@ -124,8 +132,7 @@ impl<'a> TilePart<'a> {
     pub(crate) fn packet_start_offset(&self) -> Option<usize> {
         match self {
             TilePart::Merged(m) if m.packet_lengths.is_present() => Some(m.data.offset()),
-            TilePart::Separated(_) => None,
-            TilePart::Merged(_) => None,
+            TilePart::Separated(_) | TilePart::Merged(_) => None,
         }
     }
 
@@ -160,7 +167,7 @@ impl<'a> TilePart<'a> {
     }
 }
 
-impl<'a> Tile<'a> {
+impl Tile<'_> {
     fn new(idx: u32, header: &Header<'_>) -> Self {
         let rect = {
             let size_data = &header.size_data;
@@ -233,8 +240,8 @@ pub(crate) fn parse<'a>(
 ) -> Result<Vec<Tile<'a>>> {
     validate_tile_structural_budget(main_header)?;
 
-    let mut tiles = (0..main_header.size_data.num_tiles() as usize)
-        .map(|idx| Tile::new(idx as u32, main_header))
+    let mut tiles = (0..main_header.size_data.num_tiles())
+        .map(|idx| Tile::new(idx, main_header))
         .collect::<Vec<_>>();
 
     let mut tile_part_idx = 0;
@@ -280,6 +287,10 @@ fn validate_tile_structural_budget(main_header: &Header<'_>) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 fn parse_tile_part<'a>(
     reader: &mut BitReader<'a>,
     main_header: &Header<'a>,
@@ -292,12 +303,12 @@ fn parse_tile_part<'a>(
 
     let tile_part_header = sot_marker(reader).ok_or(MarkerError::ParseFailure("SOT"))?;
 
-    if tile_part_header.tile_index as u32 >= main_header.size_data.num_tiles() {
+    if u32::from(tile_part_header.tile_index) >= main_header.size_data.num_tiles() {
         bail!(TileError::InvalidIndex);
     }
 
     let data_len = if tile_part_header.tile_part_length == 0 {
-        reader.tail().map(|d| d.len()).unwrap_or(0)
+        reader.tail().map_or(0, <[u8]>::len)
     } else {
         // Subtract 12 to account for the marker length.
 
@@ -309,7 +320,8 @@ fn parse_tile_part<'a>(
     let start = reader.offset();
 
     let tile = &mut tiles[tile_part_header.tile_index as usize];
-    let num_components = tile.component_infos.len();
+    let num_components =
+        u16::try_from(tile.component_infos.len()).map_err(|_| ValidationError::TooManyChannels)?;
 
     let mut packet_length_markers = vec![];
     let mut packet_lengths_present = false;
@@ -347,7 +359,7 @@ fn parse_tile_part<'a>(
             markers::COC => {
                 reader.read_marker()?;
 
-                let (component_index, coc) = codestream::coc_marker(reader, num_components as u16)
+                let (component_index, coc) = codestream::coc_marker(reader, num_components)
                     .ok_or(MarkerError::ParseFailure("COC"))?;
 
                 let old = tile
@@ -368,7 +380,7 @@ fn parse_tile_part<'a>(
             }
             markers::QCC => {
                 reader.read_marker()?;
-                let (component_index, qcc) = codestream::qcc_marker(reader, num_components as u16)
+                let (component_index, qcc) = codestream::qcc_marker(reader, num_components)
                     .ok_or(MarkerError::ParseFailure("QCC"))?;
 
                 tile.component_infos
@@ -379,13 +391,13 @@ fn parse_tile_part<'a>(
             markers::POC => {
                 reader.read_marker()?;
                 tile.progression_changes.extend(
-                    codestream::poc_marker(reader, num_components as u16, tile.num_layers)
+                    codestream::poc_marker(reader, num_components, tile.num_layers)
                         .ok_or(MarkerError::ParseFailure("POC"))?,
                 );
             }
             markers::RGN => {
                 reader.read_marker()?;
-                let rgn = codestream::rgn_marker(reader, num_components as u16)
+                let rgn = codestream::rgn_marker(reader, num_components)
                     .ok_or(MarkerError::ParseFailure("RGN"))?;
                 if rgn.style != 0 {
                     bail!(DecodingError::UnsupportedFeature("explicit ROI coding"));
@@ -427,9 +439,7 @@ fn parse_tile_part<'a>(
         }
     }
 
-    let remaining_bytes = if let Some(len) = data_len.checked_sub(reader.offset() - start) {
-        len
-    } else {
+    let Some(remaining_bytes) = data_len.checked_sub(reader.offset() - start) else {
         return if main_header.strict {
             err!(TileError::Invalid)
         } else {
@@ -465,16 +475,16 @@ fn parse_tile_part<'a>(
         .read_bytes(remaining_bytes)
         .ok_or(TileError::Invalid)?;
 
-    let tile_part = if !headers.is_empty() {
+    let tile_part = if headers.is_empty() {
+        TilePart::Merged(MergedTilePart {
+            data: BitReader::new(data),
+            packet_lengths,
+        })
+    } else {
         TilePart::Separated(SeparatedTilePart {
             headers,
             active_header_reader: 0,
             body: BitReader::new(data),
-            packet_lengths,
-        })
-    } else {
-        TilePart::Merged(MergedTilePart {
-            data: BitReader::new(data),
             packet_lengths,
         })
     };
@@ -495,6 +505,10 @@ pub(crate) struct ComponentTile<'a> {
 }
 
 impl<'a> ComponentTile<'a> {
+    #[expect(
+        clippy::similar_names,
+        reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+    )]
     pub(crate) fn new(tile: &'a Tile<'a>, component_info: &'a ComponentInfo) -> Self {
         let tile_rect = tile.rect;
 
@@ -506,16 +520,16 @@ impl<'a> ComponentTile<'a> {
             // As described in B-12.
             let t_x0 = tile_rect
                 .x0
-                .div_ceil(component_info.size_info.horizontal_resolution as u32);
+                .div_ceil(u32::from(component_info.size_info.horizontal_resolution));
             let t_y0 = tile_rect
                 .y0
-                .div_ceil(component_info.size_info.vertical_resolution as u32);
+                .div_ceil(u32::from(component_info.size_info.vertical_resolution));
             let t_x1 = tile_rect
                 .x1
-                .div_ceil(component_info.size_info.horizontal_resolution as u32);
+                .div_ceil(u32::from(component_info.size_info.horizontal_resolution));
             let t_y1 = tile_rect
                 .y1
-                .div_ceil(component_info.size_info.vertical_resolution as u32);
+                .div_ceil(u32::from(component_info.size_info.vertical_resolution));
 
             IntRect::from_ltrb(t_x0, t_y0, t_x1, t_y1)
         };
@@ -568,14 +582,11 @@ impl<'a> ResolutionTile<'a> {
                 .parameters
                 .num_decomposition_levels;
 
-            let tx0 = (component_tile.rect.x0 as u64)
-                .div_ceil(2_u64.pow(n_l as u32 - resolution as u32)) as u32;
-            let ty0 = (component_tile.rect.y0 as u64)
-                .div_ceil(2_u64.pow(n_l as u32 - resolution as u32)) as u32;
-            let tx1 = (component_tile.rect.x1 as u64)
-                .div_ceil(2_u64.pow(n_l as u32 - resolution as u32)) as u32;
-            let ty1 = (component_tile.rect.y1 as u64)
-                .div_ceil(2_u64.pow(n_l as u32 - resolution as u32)) as u32;
+            let denominator = 2_u64.pow(u32::from(n_l) - u32::from(resolution));
+            let tx0 = tile_coordinate(u64::from(component_tile.rect.x0).div_ceil(denominator));
+            let ty0 = tile_coordinate(u64::from(component_tile.rect.y0).div_ceil(denominator));
+            let tx1 = tile_coordinate(u64::from(component_tile.rect.x1).div_ceil(denominator));
+            let ty1 = tile_coordinate(u64::from(component_tile.rect.y1).div_ceil(denominator));
 
             IntRect::from_ltrb(tx0, ty0, tx1, ty1)
         };
@@ -610,6 +621,10 @@ impl<'a> ResolutionTile<'a> {
         }
     }
 
+    #[expect(
+        clippy::similar_names,
+        reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+    )]
     pub(crate) fn sub_band_rect(&self, sub_band_type: SubBandType) -> IntRect {
         // This is the only permissible sub-band type for the given resolution.
         if self.resolution == 0 {
@@ -618,40 +633,46 @@ impl<'a> ResolutionTile<'a> {
 
         // Formula B-15.
 
-        let xo_b = if matches!(sub_band_type, SubBandType::HighLow | SubBandType::HighHigh) {
-            1
-        } else {
-            0
-        };
-        let yo_b = if matches!(sub_band_type, SubBandType::LowHigh | SubBandType::HighHigh) {
-            1
-        } else {
-            0
-        };
+        let xo_b = u64::from(matches!(
+            sub_band_type,
+            SubBandType::HighLow | SubBandType::HighHigh
+        ));
+        let yo_b = u64::from(matches!(
+            sub_band_type,
+            SubBandType::LowHigh | SubBandType::HighHigh
+        ));
 
         let mut numerator_x = 0;
         let mut numerator_y = 0;
 
         // If decomposition level is 0, xo_b and yo_b are 0 as well.
         if self.decomposition_level > 0 {
-            numerator_x = 2_u64.pow(self.decomposition_level as u32 - 1) * xo_b as u64;
-            numerator_y = 2_u64.pow(self.decomposition_level as u32 - 1) * yo_b as u64;
+            numerator_x = 2_u64.pow(u32::from(self.decomposition_level) - 1) * xo_b;
+            numerator_y = 2_u64.pow(u32::from(self.decomposition_level) - 1) * yo_b;
         }
 
-        let denominator = 2_u64.pow(self.decomposition_level as u32);
+        let denominator = 2_u64.pow(u32::from(self.decomposition_level));
 
-        let tbx_0 = (self.component_tile.rect.x0 as u64)
-            .saturating_sub(numerator_x)
-            .div_ceil(denominator) as u32;
-        let tbx_1 = (self.component_tile.rect.x1 as u64)
-            .saturating_sub(numerator_x)
-            .div_ceil(denominator) as u32;
-        let tby_0 = (self.component_tile.rect.y0 as u64)
-            .saturating_sub(numerator_y)
-            .div_ceil(denominator) as u32;
-        let tby_1 = (self.component_tile.rect.y1 as u64)
-            .saturating_sub(numerator_y)
-            .div_ceil(denominator) as u32;
+        let tbx_0 = tile_coordinate(
+            u64::from(self.component_tile.rect.x0)
+                .saturating_sub(numerator_x)
+                .div_ceil(denominator),
+        );
+        let tbx_1 = tile_coordinate(
+            u64::from(self.component_tile.rect.x1)
+                .saturating_sub(numerator_x)
+                .div_ceil(denominator),
+        );
+        let tby_0 = tile_coordinate(
+            u64::from(self.component_tile.rect.y0)
+                .saturating_sub(numerator_y)
+                .div_ceil(denominator),
+        );
+        let tby_1 = tile_coordinate(
+            u64::from(self.component_tile.rect.y1)
+                .saturating_sub(numerator_y)
+                .div_ceil(denominator),
+        );
 
         IntRect::from_ltrb(tbx_0, tby_0, tbx_1, tby_1)
     }
@@ -687,8 +708,8 @@ impl<'a> ResolutionTile<'a> {
         if x0 == x1 {
             0
         } else {
-            x1.div_ceil(2_u32.pow(self.precinct_exponent_x() as u32))
-                - x0 / 2_u32.pow(self.precinct_exponent_x() as u32)
+            x1.div_ceil(2_u32.pow(u32::from(self.precinct_exponent_x())))
+                - x0 / 2_u32.pow(u32::from(self.precinct_exponent_x()))
         }
     }
 
@@ -699,17 +720,21 @@ impl<'a> ResolutionTile<'a> {
         if y0 == y1 {
             0
         } else {
-            y1.div_ceil(2_u32.pow(self.precinct_exponent_y() as u32))
-                - y0 / 2_u32.pow(self.precinct_exponent_y() as u32)
+            y1.div_ceil(2_u32.pow(u32::from(self.precinct_exponent_y())))
+                - y0 / 2_u32.pow(u32::from(self.precinct_exponent_y()))
         }
     }
 
     pub(crate) fn num_precincts(&self) -> u64 {
-        self.num_precincts_x() as u64 * self.num_precincts_y() as u64
+        u64::from(self.num_precincts_x()) * u64::from(self.num_precincts_y())
     }
 
     /// Return an iterator over the data of the precincts in this resolution
     /// tile.
+    #[expect(
+        clippy::similar_names,
+        reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+    )]
     pub(crate) fn precincts(&self) -> Option<impl Iterator<Item = PrecinctData>> {
         let num_precincts_y = self.num_precincts_y();
         let num_precincts_x = self.num_precincts_x();
@@ -740,24 +765,28 @@ impl<'a> ResolutionTile<'a> {
             .num_decomposition_levels()
             - self.resolution;
 
-        let x_stride =
-            1_u32.checked_shl(self.precinct_exponent_x().checked_add(nl_minus_r)? as u32)?;
-        let y_stride =
-            1_u32.checked_shl(self.precinct_exponent_y().checked_add(nl_minus_r)? as u32)?;
+        let x_stride = 1_u32.checked_shl(u32::from(
+            self.precinct_exponent_x().checked_add(nl_minus_r)?,
+        ))?;
+        let y_stride = 1_u32.checked_shl(u32::from(
+            self.precinct_exponent_y().checked_add(nl_minus_r)?,
+        ))?;
 
-        let precinct_x_step = (self
-            .component_tile
-            .component_info
-            .size_info
-            .horizontal_resolution as u32)
-            .checked_mul(x_stride)?;
+        let precinct_x_step = u32::from(
+            self.component_tile
+                .component_info
+                .size_info
+                .horizontal_resolution,
+        )
+        .checked_mul(x_stride)?;
 
-        let precinct_y_step = (self
-            .component_tile
-            .component_info
-            .size_info
-            .vertical_resolution as u32)
-            .checked_mul(y_stride)?;
+        let precinct_y_step = u32::from(
+            self.component_tile
+                .component_info
+                .size_info
+                .vertical_resolution,
+        )
+        .checked_mul(y_stride)?;
 
         // These variables are used to map the start coordinates of each
         // precinct _on the reference grid_. Remember that the first
@@ -795,7 +824,7 @@ impl<'a> ResolutionTile<'a> {
                     r_x,
                     r_y,
                     rect: IntRect::from_xywh(x0, y0, ppx_pow2, ppy_pow2),
-                    idx: num_precincts_x as u64 * y as u64 + x as u64,
+                    idx: u64::from(num_precincts_x) * u64::from(y) + u64::from(x),
                 };
 
                 // If r_x is already aligned, we simply step by `precinct_x_step`.
@@ -830,7 +859,7 @@ impl<'a> ResolutionTile<'a> {
             u8::min(xcb, self.precinct_exponent_x())
         };
 
-        2_u32.pow(xcb as u32)
+        2_u32.pow(u32::from(xcb))
     }
 
     pub(crate) fn code_block_height(&self) -> u32 {
@@ -848,7 +877,7 @@ impl<'a> ResolutionTile<'a> {
             u8::min(ycb, self.precinct_exponent_y())
         };
 
-        2_u32.pow(ycb as u32)
+        2_u32.pow(u32::from(ycb))
     }
 }
 
@@ -906,6 +935,10 @@ mod tests {
 
     /// Test case for the example in B.4.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the complete JPEG 2000 B.4 fixture stays together so its geometry remains reviewable"
+    )]
     fn test_jpeg2000_standard_example_b4() {
         let component_size_info_0 = ComponentSizeInfo {
             precision: 8,

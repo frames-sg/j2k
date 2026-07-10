@@ -34,6 +34,10 @@ impl HtSigPropBenchmarkState {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the benchmark setup mirrors the stable validated HT decode entry-point signature"
+)]
 pub(crate) fn prepare_sigprop_benchmark_state(
     segments: &HtCodeBlockSegments<'_>,
     missing_bit_planes: u8,

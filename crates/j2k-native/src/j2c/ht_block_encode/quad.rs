@@ -2,7 +2,12 @@
 
 use super::cleanup::CleanupCoefficientSource;
 
-#[allow(clippy::inline_always)] // per-sample HT cleanup hot path
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::inline_always,
+    reason = "shift bounds keep the intermediate in 32 bits and its bit width in i32 on the per-sample hot path"
+)]
 #[inline(always)]
 fn process_sample(
     slot: usize,
@@ -107,7 +112,12 @@ pub(super) trait QuadSink {
     fn non_initial_uvlc(&mut self, u_q0: i32, u_q1: i32) -> Result<(), Self::Error>;
 }
 
-#[allow(clippy::inline_always)] // per-quad-pair hot path: keep each sink monomorphization fused
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    clippy::too_many_lines,
+    reason = "rho is a nonnegative four-bit mask and this normative quad walk stays fused per sink"
+)]
 #[inline(always)]
 pub(super) fn first_quad_pair<C, S>(
     request: FirstQuadPairRequest<'_, C>,
@@ -273,7 +283,13 @@ where
     Ok(())
 }
 
-#[allow(clippy::inline_always)] // per-quad-pair hot path: keep each sink monomorphization fused
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    clippy::too_many_lines,
+    reason = "bounded HT quad fields feed packed marker rows in this normative fused quad walk"
+)]
 #[inline(always)]
 pub(super) fn non_initial_quad_pair<C, S>(
     request: NonInitialQuadPairRequest<'_, C>,

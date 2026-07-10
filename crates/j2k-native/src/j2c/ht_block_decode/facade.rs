@@ -8,8 +8,12 @@ use super::state::{HtBlockDecodeContext, HtBlockDecodeStats};
 use super::validation::decode_segments_validated_with_scratch_for_phase;
 use crate::error::{bail, DecodingError, Result};
 
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "the sign bit is masked before converting the at-most 31-bit coefficient magnitude"
+)]
 pub(crate) fn coefficient_to_i32(value: u32, k_max: u8) -> i32 {
-    let shift = 31_u32.saturating_sub(k_max as u32);
+    let shift = 31_u32.saturating_sub(u32::from(k_max));
     let magnitude = ((value & 0x7FFF_FFFF) >> shift) as i32;
 
     if (value & 0x8000_0000) != 0 {
@@ -19,6 +23,10 @@ pub(crate) fn coefficient_to_i32(value: u32, k_max: u8) -> i32 {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this internal facade preserves the established decode configuration and observer inputs"
+)]
 pub(crate) fn decode_with_stats(
     code_block: &CodeBlock,
     total_bitplanes: u8,

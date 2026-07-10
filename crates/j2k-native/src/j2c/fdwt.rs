@@ -20,6 +20,10 @@ const DELTA: f32 = dwt::DWT97_DELTA_F32;
 const KAPPA: f32 = dwt::DWT97_KAPPA_F32;
 const INV_KAPPA: f32 = dwt::DWT97_INV_KAPPA_F32;
 
+fn dwt_dimension(value: usize) -> u32 {
+    u32::try_from(value).expect("DWT dimensions remain bounded by their u32 inputs")
+}
+
 /// Result of the forward DWT: wavelet coefficients organized by subbands.
 #[derive(Debug)]
 pub(crate) struct DwtDecomposition {
@@ -171,10 +175,10 @@ pub(crate) fn forward_dwt(
             hl,
             lh,
             hh,
-            low_width: low_w as u32,
-            low_height: low_h as u32,
-            high_width: high_w as u32,
-            high_height: high_h as u32,
+            low_width: dwt_dimension(low_w),
+            low_height: dwt_dimension(low_h),
+            high_width: dwt_dimension(high_w),
+            high_height: dwt_dimension(high_h),
         });
 
         current_width = low_w;
@@ -195,8 +199,8 @@ pub(crate) fn forward_dwt(
 
     DwtDecomposition {
         ll,
-        ll_width: current_width as u32,
-        ll_height: current_height as u32,
+        ll_width: dwt_dimension(current_width),
+        ll_height: dwt_dimension(current_height),
         levels,
     }
 }
@@ -288,10 +292,10 @@ pub(crate) fn forward_dwt_i64(
             hl,
             lh,
             hh,
-            low_width: low_w as u32,
-            low_height: low_h as u32,
-            high_width: high_w as u32,
-            high_height: high_h as u32,
+            low_width: dwt_dimension(low_w),
+            low_height: dwt_dimension(low_h),
+            high_width: dwt_dimension(high_w),
+            high_height: dwt_dimension(high_h),
         });
 
         current_width = low_w;
@@ -309,8 +313,8 @@ pub(crate) fn forward_dwt_i64(
 
     DwtDecompositionI64 {
         ll,
-        ll_width: current_width as u32,
-        ll_height: current_height as u32,
+        ll_width: dwt_dimension(current_width),
+        ll_height: dwt_dimension(current_height),
         levels,
     }
 }
@@ -532,6 +536,14 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "this parity test deliberately converts coefficients restricted to the exact f32 integer range"
+    )]
+    #[expect(
+        clippy::similar_names,
+        reason = "i64 and f32 suffixes distinguish the two transform paths under comparison"
+    )]
     fn forward_dwt_i64_matches_f32_path_for_exact_range() {
         let samples_i64 = (0..25)
             .map(|idx| i64::from(((idx * 37 + idx / 3) & 0xffff) - 32_768))
@@ -585,7 +597,12 @@ mod tests {
     fn forward_53_even_fast_path_matches_reference_for_common_tile_widths() {
         for len in [2usize, 4, 8, 64, 512] {
             let mut expected = (0..len)
-                .map(|idx| ((idx * 37 + idx / 3) & 0xff) as f32 - 128.0)
+                .map(|idx| {
+                    f32::from(
+                        u8::try_from((idx * 37 + idx / 3) & 0xff)
+                            .expect("masked test sample fits u8"),
+                    ) - 128.0
+                })
                 .collect::<Vec<_>>();
             let mut actual = expected.clone();
 
@@ -600,7 +617,12 @@ mod tests {
     fn test_forward_97_round_trip() {
         for len in [2usize, 3, 8, 9, 64, 65] {
             let original: Vec<f32> = (0..len)
-                .map(|idx| ((idx * 37 + idx / 3) & 0xff) as f32 - 128.0)
+                .map(|idx| {
+                    f32::from(
+                        u8::try_from((idx * 37 + idx / 3) & 0xff)
+                            .expect("masked test sample fits u8"),
+                    ) - 128.0
+                })
                 .collect();
             let mut data = original.clone();
 
@@ -633,7 +655,9 @@ mod tests {
     #[test]
     fn test_forward_dwt_53_single_level() {
         // 4×4 image
-        let samples: Vec<f32> = (0..16).map(|x| x as f32).collect();
+        let samples: Vec<f32> = (0..16)
+            .map(|x| f32::from(u8::try_from(x).expect("test sample fits u8")))
+            .collect();
         let decomp = forward_dwt(&samples, 4, 4, 1, true);
         assert_eq!(decomp.ll_width, 2);
         assert_eq!(decomp.ll_height, 2);
@@ -642,7 +666,9 @@ mod tests {
 
     #[test]
     fn test_forward_dwt_97_multi_level() {
-        let samples: Vec<f32> = (0..64).map(|x| x as f32).collect();
+        let samples: Vec<f32> = (0..64)
+            .map(|x| f32::from(u8::try_from(x).expect("test sample fits u8")))
+            .collect();
         let decomp = forward_dwt(&samples, 8, 8, 3, false);
         assert_eq!(decomp.levels.len(), 3);
         // After 3 levels of 8×8: 4×4 → 2×2 → 1×1
@@ -652,7 +678,9 @@ mod tests {
 
     #[test]
     fn test_odd_dimensions() {
-        let samples: Vec<f32> = (0..15).map(|x| x as f32).collect();
+        let samples: Vec<f32> = (0..15)
+            .map(|x| f32::from(u8::try_from(x).expect("test sample fits u8")))
+            .collect();
         let decomp = forward_dwt(&samples, 5, 3, 1, true);
         assert_eq!(decomp.ll_width, 3);
         assert_eq!(decomp.ll_height, 2);

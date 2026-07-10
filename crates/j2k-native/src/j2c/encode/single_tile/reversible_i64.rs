@@ -30,6 +30,14 @@ pub(super) struct ReversibleI64SingleTileRequest<'a, A: J2kEncodeStageAccelerato
     pub(super) accelerator: &'a mut A,
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub(super) fn encode_reversible_i64_single_tile_codestream<A: J2kEncodeStageAccelerator>(
     request: ReversibleI64SingleTileRequest<'_, A>,
 ) -> Result<Vec<u8>, &'static str> {

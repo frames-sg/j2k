@@ -178,6 +178,11 @@ use self::typed_i64::encode_typed_component_planes_53_i64;
 ///
 /// # Returns
 /// The encoded JPEG 2000 codestream bytes (`.j2c` format).
+///
+/// # Errors
+///
+/// Returns an error when dimensions, sample data, component metadata, or
+/// encoding options are invalid, or when a codec stage cannot encode them.
 pub fn encode(
     pixels: &[u8],
     width: u32,
@@ -206,6 +211,10 @@ pub fn encode(
 /// encode, and packetization. Returning fallback from a hook preserves the CPU
 /// baseline for that stage.
 #[doc(hidden)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub fn encode_with_accelerator(
     pixels: &[u8],
     width: u32,
@@ -229,6 +238,10 @@ pub fn encode_with_accelerator(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 fn encode_with_accelerator_and_component_sample_info(
     pixels: &[u8],
     width: u32,
@@ -278,6 +291,15 @@ fn encode_with_accelerator_and_component_sample_info(
 /// This uses the normal native encoder pipeline. Non-empty `roi_regions`
 /// produce RGN markers and shift selected quantized coefficients before
 /// code-block encoding.
+///
+/// # Errors
+///
+/// Returns an error for invalid image/sample metadata, invalid ROI regions or
+/// options, or a failure in any codec stage.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub fn encode_with_roi_regions(
     pixels: &[u8],
     width: u32,
@@ -304,6 +326,10 @@ pub fn encode_with_roi_regions(
 
 /// Encode pixel data with rectangular ROI maxshift and optional stage hooks.
 #[doc(hidden)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub fn encode_with_accelerator_and_roi_regions(
     pixels: &[u8],
     width: u32,
@@ -351,6 +377,11 @@ pub fn encode_with_accelerator_and_roi_regions(
 /// Encode pixel data into an HTJ2K codestream.
 ///
 /// Lossless HTJ2K output is self-validated before it is returned.
+///
+/// # Errors
+///
+/// Returns an error when the input or options are invalid, encoding fails, or
+/// the requested output fails HTJ2K self-validation.
 pub fn encode_htj2k(
     pixels: &[u8],
     width: u32,
@@ -379,6 +410,11 @@ pub fn encode_htj2k(
 /// Plane buffers are supplied at each component's own SIZ sampling grid. Set
 /// [`EncodeOptions::use_ht_block_coding`] to select HTJ2K block coding; the
 /// default writes classic Part 1 block coding.
+///
+/// # Errors
+///
+/// Returns an error for invalid component geometry, sampling, sample buffers,
+/// or options, or when a codec stage fails.
 pub fn encode_component_planes_53(
     planes: &[EncodeComponentPlane<'_>],
     width: u32,
@@ -407,6 +443,15 @@ pub fn encode_component_planes_53(
 /// components have different precision or signedness. Plane buffers are
 /// supplied at each component's own SIZ sampling grid. Components are encoded
 /// without a reversible color transform.
+///
+/// # Errors
+///
+/// Returns an error for invalid component count, dimensions, sampling,
+/// precision, sample buffers, or options, or when a codec stage fails.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub fn encode_typed_component_planes_53(
     planes: &[EncodeTypedComponentPlane<'_>],
     width: u32,
@@ -599,4 +644,5 @@ struct PreparedPrecomputedHtj2k97Image {
 }
 
 #[cfg(test)]
-include!("encode_tests.rs");
+#[path = "encode_tests.rs"]
+mod tests;

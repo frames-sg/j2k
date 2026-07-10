@@ -104,10 +104,10 @@ impl<'a> BitReader<'a> {
         ]))
     }
 
-    #[inline(always)]
+    #[inline]
     pub(crate) fn read_bit(&mut self) -> Option<u32> {
         let byte_pos = self.byte_pos();
-        let byte = *self.data.get(byte_pos)? as u32;
+        let byte = u32::from(*self.data.get(byte_pos)?);
         let shift = 7 - self.bit_pos();
         self.cur_pos += 1;
         Some((byte >> shift) & 1)

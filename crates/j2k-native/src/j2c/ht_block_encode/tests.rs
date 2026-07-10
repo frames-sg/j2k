@@ -104,7 +104,9 @@ fn ht_cleanup_encode_distribution_report() {
 
     let coefficients: Vec<i32> = (0usize..64 * 64)
         .map(|index| {
-            let value = (((index * 73) ^ (index >> 2)) & 0x01ff) as i32 - 255;
+            let value = i32::try_from(((index * 73) ^ (index >> 2)) & 0x01ff)
+                .expect("masked test coefficient fits i32")
+                - 255;
             if index % 13 == 0 {
                 0
             } else {

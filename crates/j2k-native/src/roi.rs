@@ -42,13 +42,13 @@ pub(crate) fn apply_roi_maxshift_inverse_i64(coefficient: i64, roi_shift: u8) ->
     }
 
     let magnitude = coefficient.unsigned_abs();
-    let threshold = 1_u64.checked_shl(roi_shift as u32).unwrap_or(u64::MAX);
+    let threshold = 1_u64.checked_shl(u32::from(roi_shift)).unwrap_or(u64::MAX);
     if magnitude < threshold {
         return coefficient;
     }
 
     let shifted = magnitude >> roi_shift;
-    let shifted = shifted.min(i64::MAX as u64) as i64;
+    let shifted = i64::try_from(shifted).unwrap_or(i64::MAX);
     if coefficient < 0 {
         -shifted
     } else {
@@ -57,8 +57,8 @@ pub(crate) fn apply_roi_maxshift_inverse_i64(coefficient: i64, roi_shift: u8) ->
 }
 
 pub(crate) fn apply_roi_maxshift_inverse_i32(coefficient: i32, roi_shift: u8) -> i32 {
-    apply_roi_maxshift_inverse_i64(i64::from(coefficient), roi_shift)
-        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+    let shifted = apply_roi_maxshift_inverse_i64(i64::from(coefficient), roi_shift);
+    i32::try_from(shifted).unwrap_or(if shifted < 0 { i32::MIN } else { i32::MAX })
 }
 
 pub(crate) fn validate_roi(dims: (u32, u32), roi: (u32, u32, u32, u32)) -> Result<()> {

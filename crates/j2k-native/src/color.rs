@@ -26,7 +26,7 @@ pub(crate) fn validate_channel_definition(
 
     let mut seen_color_associations = vec![false; component_count];
     for definition in &cdef.channel_definitions {
-        if let ChannelAssociation::Colour(association) = definition._association {
+        if let ChannelAssociation::Colour(association) = definition.association {
             let Some(index) = association.checked_sub(1).map(usize::from) else {
                 bail!(ValidationError::InvalidChannelDefinition);
             };
@@ -136,6 +136,7 @@ pub enum ColorSpace {
 
 impl ColorSpace {
     /// Return the number of expected channels for the color space.
+    #[must_use]
     pub fn num_channels(&self) -> u16 {
         match self {
             Self::Gray => 1,
@@ -216,6 +217,7 @@ pub struct NativeComponentPlane {
 
 impl NativeComponentPlane {
     /// Packed little-endian sample bytes for this component in row-major order.
+    #[must_use]
     pub fn data(&self) -> &[u8] {
         &self.data
     }
@@ -223,6 +225,7 @@ impl NativeComponentPlane {
     crate::__j2k_component_plane_metadata_accessors!();
 
     /// Bytes used for each packed little-endian sample in [`Self::data`].
+    #[must_use]
     pub fn bytes_per_sample(&self) -> u8 {
         self.bytes_per_sample
     }
@@ -238,21 +241,25 @@ pub struct DecodedNativeComponents {
 
 impl DecodedNativeComponents {
     /// Dimensions of the decoded image represented by these planes.
+    #[must_use]
     pub fn dimensions(&self) -> (u32, u32) {
         self.dimensions
     }
 
     /// Color space after JPEG 2000 color conversion has been applied.
+    #[must_use]
     pub fn color_space(&self) -> &ColorSpace {
         &self.color_space
     }
 
     /// Whether the decoded image has an alpha channel.
+    #[must_use]
     pub fn has_alpha(&self) -> bool {
         self.has_alpha
     }
 
     /// Decoded component planes in display order.
+    #[must_use]
     pub fn planes(&self) -> &[NativeComponentPlane] {
         &self.planes
     }
@@ -269,6 +276,7 @@ pub struct ComponentPlane<'a> {
 
 impl<'a> ComponentPlane<'a> {
     /// Component samples in row-major order.
+    #[must_use]
     pub fn samples(&self) -> &'a [f32] {
         self.samples
     }
@@ -286,21 +294,25 @@ pub struct DecodedComponents<'a> {
 
 impl<'a> DecodedComponents<'a> {
     /// Dimensions of the decoded image represented by these planes.
+    #[must_use]
     pub fn dimensions(&self) -> (u32, u32) {
         self.dimensions
     }
 
     /// Color space after JPEG 2000 color conversion has been applied.
+    #[must_use]
     pub fn color_space(&self) -> &ColorSpace {
         &self.color_space
     }
 
     /// Whether the decoded image has an alpha channel.
+    #[must_use]
     pub fn has_alpha(&self) -> bool {
         self.has_alpha
     }
 
     /// Borrowed decoded component planes in display order.
+    #[must_use]
     pub fn planes(&self) -> &[ComponentPlane<'a>] {
         &self.planes
     }
@@ -329,6 +341,12 @@ fn interleaved_output_len(image: &DecodedImage<'_>) -> Result<usize> {
         .ok_or(ValidationError::ImageTooLarge.into())
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "pixel samples are rounded and intentionally quantized to the stable 8-bit output format"
+)]
 pub(crate) fn interleave_and_convert(image: &mut DecodedImage<'_>, buf: &mut [u8]) -> Result<()> {
     let components = &mut *image.decoded_components;
     let num_components = components.len();
@@ -427,6 +445,12 @@ pub(crate) fn interleave_and_convert(image: &mut DecodedImage<'_>, buf: &mut [u8
     Ok(())
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "region samples use the same stable rounded 8-bit quantization as full-image decode"
+)]
 pub(crate) fn interleave_and_convert_region(
     image: &mut DecodedImage<'_>,
     image_width: usize,
@@ -530,13 +554,15 @@ fn get_color_space(boxes: &ImageBoxes, num_components: usize) -> Result<ColorSpa
     let cs = match boxes
         .color_specification
         .as_ref()
-        .map(|c| &c.color_space)
-        .unwrap_or(&jp2::colr::ColorSpace::Unknown)
-    {
+        .map_or(&jp2::colr::ColorSpace::Unknown, |specification| {
+            &specification.color_space
+        }) {
         jp2::colr::ColorSpace::Enumerated(e) => {
             match e {
                 EnumeratedColorspace::Cmyk => ColorSpace::CMYK,
-                EnumeratedColorspace::Srgb => ColorSpace::RGB,
+                EnumeratedColorspace::Srgb
+                | EnumeratedColorspace::EsRgb
+                | EnumeratedColorspace::Sycc => ColorSpace::RGB,
                 EnumeratedColorspace::RommRgb => {
                     // Use an ICC profile to process the RommRGB color space.
                     ColorSpace::Icc {
@@ -544,9 +570,7 @@ fn get_color_space(boxes: &ImageBoxes, num_components: usize) -> Result<ColorSpa
                         num_channels: 3,
                     }
                 }
-                EnumeratedColorspace::EsRgb => ColorSpace::RGB,
                 EnumeratedColorspace::Greyscale => ColorSpace::Gray,
-                EnumeratedColorspace::Sycc => ColorSpace::RGB,
                 EnumeratedColorspace::CieLab(_) => ColorSpace::Icc {
                     profile: include_bytes!("../assets/LAB.icc").to_vec(),
                     num_channels: 3,
@@ -581,6 +605,10 @@ fn get_color_space(boxes: &ImageBoxes, num_components: usize) -> Result<ColorSpa
     Ok(cs)
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "palette integer values are intentionally exposed through the decoder's f32 component representation"
+)]
 pub(crate) fn resolve_palette_indices(
     components: Vec<ComponentData>,
     boxes: &ImageBoxes,
@@ -600,7 +628,7 @@ pub(crate) fn resolve_palette_indices(
     let mut resolved = Vec::with_capacity(mapping.entries.len());
 
     for entry in &mapping.entries {
-        let component_idx = entry.component_index as usize;
+        let component_idx = usize::from(entry.component_index);
         let component = components
             .get(component_idx)
             .ok_or(ColorError::PaletteResolutionFailed)?;
@@ -608,7 +636,7 @@ pub(crate) fn resolve_palette_indices(
         match entry.mapping_type {
             ComponentMappingType::Direct => resolved.push(component.clone()),
             ComponentMappingType::Palette { column } => {
-                let column_idx = column as usize;
+                let column_idx = usize::from(column);
                 let column_info = palette
                     .columns
                     .get(column_idx)
@@ -618,9 +646,9 @@ pub(crate) fn resolve_palette_indices(
                     Vec::with_capacity(component.container.truncated().len() + SIMD_WIDTH);
 
                 for &sample in component.container.truncated() {
-                    let index = math::round_f32(sample) as i64;
+                    let index = palette_index(sample)?;
                     let raw = palette
-                        .map(index as usize, column_idx)
+                        .map(index, column_idx)
                         .ok_or(ColorError::PaletteResolutionFailed)?;
                     let value = if column_info.signed {
                         sign_extend_palette_value(raw, column_info.bit_depth) as f32
@@ -644,21 +672,34 @@ pub(crate) fn resolve_palette_indices(
     Ok(resolved)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Rust's saturating float-to-integer conversion is retained before rejecting negative indices"
+)]
+fn palette_index(sample: f32) -> Result<usize> {
+    let rounded = math::round_f32(sample) as i64;
+    usize::try_from(rounded).map_err(|_| ColorError::PaletteResolutionFailed.into())
+}
+
 fn sign_extend_palette_value(raw: u64, bit_depth: u8) -> i64 {
     if bit_depth == 0 {
-        return raw as i64;
+        return raw.cast_signed();
     }
     if bit_depth >= 64 {
-        return raw as i64;
+        return raw.cast_signed();
     }
 
     let mask = (1_u64 << bit_depth) - 1;
     let value = raw & mask;
     let shift = 64 - u32::from(bit_depth);
-    ((value << shift) as i64) >> shift
+    (value << shift).cast_signed() >> shift
 }
 
-#[inline(always)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "OpenJPEG-compatible CIE Lab scaling intentionally uses f32 arithmetic"
+)]
+#[inline]
 pub(crate) fn cielab_to_rgb<S: Simd>(
     simd: S,
     components: &mut [ComponentData],
@@ -686,11 +727,16 @@ pub(crate) fn cielab_to_rgb<S: Simd>(
     let ra = lab.ra.unwrap_or(170);
     let rb = lab.rb.unwrap_or(200);
     let ol = lab.ol.unwrap_or(0);
-    let default_oa = (1_u64 << u32::from(bit_depth - 1)).min(u64::from(u32::MAX)) as u32;
-    let default_ob = ((1_u64 << u32::from(bit_depth - 2)) + (1_u64 << u32::from(bit_depth - 3)))
-        .min(u64::from(u32::MAX)) as u32;
-    let oa = lab.oa.unwrap_or(default_oa);
-    let ob = lab.ob.unwrap_or(default_ob);
+    let default_a_offset =
+        u32::try_from((1_u64 << u32::from(bit_depth - 1)).min(u64::from(u32::MAX)))
+            .expect("value is clamped to u32::MAX");
+    let default_b_offset = u32::try_from(
+        ((1_u64 << u32::from(bit_depth - 2)) + (1_u64 << u32::from(bit_depth - 3)))
+            .min(u64::from(u32::MAX)),
+    )
+    .expect("value is clamped to u32::MAX");
+    let oa = lab.oa.unwrap_or(default_a_offset);
+    let ob = lab.ob.unwrap_or(default_b_offset);
 
     // Copied from OpenJPEG.
     let min_l = -(rl as f32 * ol as f32) / ((1_u64 << u32::from(prec0)) - 1) as f32;
@@ -700,7 +746,8 @@ pub(crate) fn cielab_to_rgb<S: Simd>(
     let min_b = -(rb as f32 * ob as f32) / ((1_u64 << u32::from(prec2)) - 1) as f32;
     let max_b = min_b + rb as f32;
 
-    let bit_max = ((1_u64 << u32::from(bit_depth)) - 1).min(u64::from(u32::MAX)) as u32;
+    let bit_max = u32::try_from(((1_u64 << u32::from(bit_depth)) - 1).min(u64::from(u32::MAX)))
+        .expect("value is clamped to u32::MAX");
 
     // Note that we are not doing the actual conversion with the ICC profile yet,
     // just decoding the raw LAB values.
@@ -747,7 +794,11 @@ pub(crate) fn cielab_to_rgb<S: Simd>(
     Ok(())
 }
 
-#[inline(always)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "JPEG 2000 sYCC conversion intentionally uses f32 SIMD arithmetic"
+)]
+#[inline]
 fn sycc_to_rgb<S: Simd>(simd: S, components: &mut [ComponentData], bit_depth: u8) -> Result<()> {
     let offset = (1_u64 << (u32::from(bit_depth) - 1)) as f32;
     let max_value = ((1_u64 << u32::from(bit_depth)) - 1) as f32;
@@ -756,39 +807,53 @@ fn sycc_to_rgb<S: Simd>(simd: S, components: &mut [ComponentData], bit_depth: u8
         .split_at_mut_checked(3)
         .ok_or(ColorError::SyccConversionFailed)?;
 
-    let [y, cb, cr] = head else {
+    let [luma, blue_chroma, red_chroma] = head else {
         bail!(ColorError::SyccConversionFailed);
     };
 
     let offset_v = f32x8::splat(simd, offset);
     let max_v = f32x8::splat(simd, max_value);
     let zero_v = f32x8::splat(simd, 0.0);
-    let cr_to_r = f32x8::splat(simd, 1.402);
-    let cb_to_g = f32x8::splat(simd, -0.344136);
-    let cr_to_g = f32x8::splat(simd, -0.714136);
-    let cb_to_b = f32x8::splat(simd, 1.772);
+    let red_chroma_to_red = f32x8::splat(simd, 1.402);
+    let blue_chroma_to_green = f32x8::splat(simd, -0.344_136);
+    let red_chroma_to_green = f32x8::splat(simd, -0.714_136);
+    let blue_chroma_to_blue = f32x8::splat(simd, 1.772);
 
-    for ((y_chunk, cb_chunk), cr_chunk) in y
+    for ((luma_chunk, blue_chroma_chunk), red_chroma_chunk) in luma
         .container
         .chunks_exact_mut(SIMD_WIDTH)
-        .zip(cb.container.chunks_exact_mut(SIMD_WIDTH))
-        .zip(cr.container.chunks_exact_mut(SIMD_WIDTH))
+        .zip(blue_chroma.container.chunks_exact_mut(SIMD_WIDTH))
+        .zip(red_chroma.container.chunks_exact_mut(SIMD_WIDTH))
     {
-        let y_v = f32x8::from_slice(simd, y_chunk);
-        let cb_v = f32x8::from_slice(simd, cb_chunk) - offset_v;
-        let cr_v = f32x8::from_slice(simd, cr_chunk) - offset_v;
+        let luma_values = f32x8::from_slice(simd, luma_chunk);
+        let blue_chroma_values = f32x8::from_slice(simd, blue_chroma_chunk) - offset_v;
+        let red_chroma_values = f32x8::from_slice(simd, red_chroma_chunk) - offset_v;
 
         // r = y + 1.402 * cr
-        let r = cr_v.mul_add(cr_to_r, y_v);
+        let red = red_chroma_values.mul_add(red_chroma_to_red, luma_values);
         // g = y - 0.344136 * cb - 0.714136 * cr
-        let g = cr_v.mul_add(cr_to_g, cb_v.mul_add(cb_to_g, y_v));
+        let green = red_chroma_values.mul_add(
+            red_chroma_to_green,
+            blue_chroma_values.mul_add(blue_chroma_to_green, luma_values),
+        );
         // b = y + 1.772 * cb
-        let b = cb_v.mul_add(cb_to_b, y_v);
+        let blue = blue_chroma_values.mul_add(blue_chroma_to_blue, luma_values);
 
-        r.min(max_v).max(zero_v).store(y_chunk);
-        g.min(max_v).max(zero_v).store(cb_chunk);
-        b.min(max_v).max(zero_v).store(cr_chunk);
+        red.min(max_v).max(zero_v).store(luma_chunk);
+        green.min(max_v).max(zero_v).store(blue_chroma_chunk);
+        blue.min(max_v).max(zero_v).store(red_chroma_chunk);
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::palette_index;
+
+    #[test]
+    fn palette_indices_reject_negative_samples_without_wrapping() {
+        assert!(palette_index(-1.0).is_err());
+        assert_eq!(palette_index(2.4).expect("valid palette index"), 2);
+    }
 }

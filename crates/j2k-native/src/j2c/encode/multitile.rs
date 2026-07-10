@@ -11,6 +11,18 @@ use super::{
     MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
 };
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub(super) fn encode_multitile_impl(
     pixels: &[u8],
     width: u32,
@@ -251,6 +263,10 @@ pub(super) fn encode_multitile_impl(
     ))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 fn extract_interleaved_tile(
     pixels: &[u8],
     image_width: u32,
@@ -346,6 +362,10 @@ pub(super) fn extract_component_plane_tile(
     Ok(tile)
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
 fn roi_regions_for_tile(
     roi_regions: &[EncodeRoiRegion],
     tile_x: u32,

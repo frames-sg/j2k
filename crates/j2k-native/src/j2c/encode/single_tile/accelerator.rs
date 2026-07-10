@@ -16,6 +16,10 @@ pub(super) struct PreparedComponentTransforms {
     pub(super) dwt_us: u128,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub(super) fn try_encode_complete_ht_tile(
     pixels: &[u8],
     width: u32,
@@ -65,6 +69,10 @@ pub(super) fn try_encode_complete_ht_tile(
     Ok(None)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub(super) fn prepare_accelerated_components(
     pixels: &[u8],
     width: u32,

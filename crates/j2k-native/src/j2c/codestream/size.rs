@@ -95,6 +95,10 @@ fn read_siz_u32(reader: &mut BitReader<'_>) -> Result<u32> {
         .ok_or(MarkerError::ParseFailure("SIZ").into())
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
 fn size_marker_inner(reader: &mut BitReader<'_>) -> Result<SizeData> {
     // Length.
     let _ = read_siz_u16(reader)?;
@@ -132,7 +136,7 @@ fn size_marker_inner(reader: &mut BitReader<'_>) -> Result<SizeData> {
         let precision = (ssiz & 0x7F) + 1;
         let signed = (ssiz & 0x80) != 0;
 
-        if precision > MAX_PART1_COMPONENT_PRECISION || precision as u32 > BITPLANE_BIT_SIZE {
+        if precision > MAX_PART1_COMPONENT_PRECISION || u32::from(precision) > BITPLANE_BIT_SIZE {
             bail!(ValidationError::InvalidComponentMetadata);
         }
 
@@ -162,8 +166,8 @@ fn size_marker_inner(reader: &mut BitReader<'_>) -> Result<SizeData> {
     }
 
     if same_resolution {
-        x_shrink_factor = hr as u32;
-        y_shrink_factor = vr as u32;
+        x_shrink_factor = u32::from(hr);
+        y_shrink_factor = u32::from(vr);
     }
 
     Ok(SizeData {

@@ -27,7 +27,7 @@ pub(crate) fn qcc_marker(reader: &mut BitReader<'_>, csiz: u16) -> Option<(u16, 
     let length = reader.read_u16()?;
 
     let component_index = if csiz < 257 {
-        reader.read_byte()? as u16
+        u16::from(reader.read_byte()?)
     } else {
         reader.read_u16()?
     };
@@ -59,14 +59,14 @@ fn quantization_parameters(
         let exponent = val >> 11;
         let mantissa = val & ((1 << 11) - 1);
 
-        StepSize { exponent, mantissa }
+        StepSize { mantissa, exponent }
     };
 
     match quantization_style {
         QuantizationStyle::NoQuantization => {
             // 8 bits per band (5 bits exponent, 3 bits reserved)
             for _ in 0..remaining_bytes {
-                let value = reader.read_byte()? as u16;
+                let value = u16::from(reader.read_byte()?);
                 step_sizes.push(StepSize {
                     // Unused.
                     mantissa: 0,

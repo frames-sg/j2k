@@ -22,6 +22,11 @@ pub(super) fn cleanup_segment_suffix_length(coded_data: &[u8], lcup: usize) -> O
 
 /// Decodes the first (initial) cleanup quad row into `scratch`, advancing the
 /// shared MEL/VLC state; the trailing sentinel pair is written after the row.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::inline_always,
+    reason = "VLC table fields are defined as 16-bit values and this per-row decoder is a hot path"
+)]
 #[inline(always)]
 pub(super) fn decode_cleanup_symbols_first_row(
     mel: &mut MelDecoder,
@@ -99,6 +104,11 @@ pub(super) fn decode_cleanup_symbols_first_row(
 /// Decodes one non-initial cleanup quad row (`y >= 2`, even) into `scratch`,
 /// reading the previous quad row's context and advancing the shared MEL/VLC
 /// state; the trailing sentinel pair is written after the row.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::inline_always,
+    reason = "VLC table fields are defined as 16-bit values and this per-row decoder is a hot path"
+)]
 #[inline(always)]
 pub(super) fn decode_cleanup_symbols_row(
     mel: &mut MelDecoder,

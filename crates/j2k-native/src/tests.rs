@@ -140,6 +140,10 @@ fn classic_decode_adapter_accepts_legal_38_bit_roi_bitplane_count() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "reversible ROI decoding must preserve exact integer-valued f32 coefficients"
+)]
 fn classic_scalar_decode_applies_nonzero_roi_maxshift() {
     let roi_shift = 3;
     let total_bitplanes = 3;
@@ -276,7 +280,10 @@ fn classic_scalar_profiled_decode_matches_unprofiled_decode() {
         .expect("profiled classic decode");
 
     assert_eq!(actual, expected);
+    #[cfg(feature = "std")]
     assert!(profile.cleanup_us > 0);
+    #[cfg(not(feature = "std"))]
+    assert_eq!(profile.cleanup_us, 0);
 }
 
 #[test]
@@ -288,7 +295,8 @@ fn classic_scalar_workspace_reuse_matches_fresh_decode() {
     for (width, height, seed) in [(8, 8, 0x31), (4, 16, 0x47)] {
         let coefficients = (0..width * height)
             .map(|idx| {
-                let value = ((idx as i32 * seed) % 23) - 11;
+                let idx = i32::try_from(idx).expect("small test index fits i32");
+                let value = ((idx * seed) % 23) - 11;
                 if idx % 7 == 0 {
                     0
                 } else {
@@ -327,13 +335,13 @@ fn default_classic_test_style() -> J2kCodeBlockStyle {
     }
 }
 
-fn classic_low_low_decode_job<'a>(
-    encoded: &'a EncodedJ2kCodeBlock,
+fn classic_low_low_decode_job(
+    encoded: &EncodedJ2kCodeBlock,
     width: u32,
     height: u32,
     total_bitplanes: u8,
     style: J2kCodeBlockStyle,
-) -> J2kCodeBlockDecodeJob<'a> {
+) -> J2kCodeBlockDecodeJob<'_> {
     J2kCodeBlockDecodeJob {
         data: &encoded.data,
         segments: &encoded.segments,
@@ -684,7 +692,7 @@ fn native_bytes_per_sample_tracks_high_bit_depths() {
 #[test]
 fn native_sample_packing_writes_high_bit_unsigned_little_endian_bytes() {
     let mut out = Vec::new();
-    Image::push_native_sample_bytes(&mut out, 0x12_34_56 as f32, 24, false);
+    Image::push_native_sample_bytes(&mut out, 1_193_046.0, 24, false);
     assert_eq!(out, [0x56, 0x34, 0x12]);
 
     out.clear();
@@ -699,7 +707,7 @@ fn native_sample_packing_writes_high_bit_signed_little_endian_bytes() {
     assert_eq!(out, [0xff, 0xff, 0xff, 0xff, 0xff]);
 
     out.clear();
-    Image::push_native_sample_bytes(&mut out, -((1_i64 << 37) as f32), 38, true);
+    Image::push_native_sample_bytes(&mut out, -137_438_953_472.0, 38, true);
     assert_eq!(out, [0x00, 0x00, 0x00, 0x00, 0xe0]);
 }
 
@@ -773,9 +781,8 @@ fn native_parse_accepts_spec_component_count_above_u8() {
     let mut bytes = fixture_gray();
     rewrite_siz_component_count(&mut bytes, MAX_J2K_SPEC_COMPONENTS + 1);
 
-    let err = match Image::new(&bytes, &DecodeSettings::default()) {
-        Err(err) => err,
-        Ok(_) => panic!("component count above the JPEG 2000 spec cap must still reject"),
+    let Err(err) = Image::new(&bytes, &DecodeSettings::default()) else {
+        panic!("component count above the JPEG 2000 spec cap must still reject");
     };
     assert_eq!(
         err,
@@ -809,9 +816,8 @@ fn owned_decode_rejects_large_siz_before_allocating_output() {
     rewrite_siz_to_single_large_tile(&mut bytes, 60_000);
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("large SIZ parses");
 
-    let err = match image.decode() {
-        Err(err) => err,
-        Ok(_) => panic!("large owned decode must be capped"),
+    let Err(err) = image.decode() else {
+        panic!("large owned decode must be capped");
     };
 
     assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
@@ -825,9 +831,8 @@ fn decode_into_rejects_large_siz_before_allocating_component_storage() {
     let mut context = DecoderContext::default();
     let mut out = [];
 
-    let err = match image.decode_into(&mut out, &mut context) {
-        Err(err) => err,
-        Ok(_) => panic!("component storage must be capped before allocation"),
+    let Err(err) = image.decode_into(&mut out, &mut context) else {
+        panic!("component storage must be capped before allocation");
     };
 
     assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
@@ -1479,9 +1484,8 @@ fn ht_decoder_hook_is_used_for_htj2k_codeblocks() {
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
     let mut hooked_context = DecoderContext::default();
     let mut hook = FailingHtDecoder { called: false };
-    let error = match image.decode_components_with_ht_decoder(&mut hooked_context, &mut hook) {
-        Ok(_) => panic!("hooked decode must use external HT decoder"),
-        Err(error) => error,
+    let Err(error) = image.decode_components_with_ht_decoder(&mut hooked_context, &mut hook) else {
+        panic!("hooked decode must use external HT decoder");
     };
 
     assert!(hook.called, "HT decoder hook must be invoked");
@@ -1489,6 +1493,15 @@ fn ht_decoder_hook_is_used_for_htj2k_codeblocks() {
         error,
         DecodeError::Decoding(DecodingError::CodeBlockDecodeFailure)
     );
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "fixture samples are rounded and clamped to the full u8 range before conversion"
+)]
+fn rounded_u8(sample: f32) -> u8 {
+    sample.round().clamp(0.0, 255.0) as u8
 }
 
 #[test]
@@ -1547,7 +1560,8 @@ fn openhtj2k_conformance_fixture_exercises_refinement_passes() {
         let decoded: Vec<u8> = components.planes()[0]
             .samples()
             .iter()
-            .map(|sample| sample.round().clamp(0.0, 255.0) as u8)
+            .copied()
+            .map(rounded_u8)
             .collect();
         assert_eq!(decoded, expected_pixels, "{name}: decoded pixels");
 
@@ -1583,10 +1597,7 @@ fn openhtj2k_refinement_phase_limited_decode_differs_and_records_ht_stats() {
             .decode_components_with_context(&mut full_context)
             .expect("full native decode of OpenHTJ2K refinement fixture");
         let full_samples = full_components.planes()[0].samples().to_vec();
-        let full_decoded: Vec<u8> = full_samples
-            .iter()
-            .map(|sample| sample.round().clamp(0.0, 255.0) as u8)
-            .collect();
+        let full_decoded: Vec<u8> = full_samples.iter().copied().map(rounded_u8).collect();
         (full_samples, full_decoded)
     };
     assert_eq!(
@@ -1612,7 +1623,8 @@ fn openhtj2k_refinement_phase_limited_decode_differs_and_records_ht_stats() {
     let cleanup_decoded: Vec<u8> = cleanup_components.planes()[0]
         .samples()
         .iter()
-        .map(|sample| sample.round().clamp(0.0, 255.0) as u8)
+        .copied()
+        .map(rounded_u8)
         .collect();
     let cleanup_sample_diffs = full_samples
         .iter()
@@ -1721,9 +1733,8 @@ fn classic_decoder_hook_is_used_for_j2k_codeblocks() {
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
     let mut hooked_context = DecoderContext::default();
     let mut hook = FailingClassicDecoder { called: false };
-    let error = match image.decode_components_with_ht_decoder(&mut hooked_context, &mut hook) {
-        Ok(_) => panic!("hooked decode must use external classic decoder"),
-        Err(error) => error,
+    let Err(error) = image.decode_components_with_ht_decoder(&mut hooked_context, &mut hook) else {
+        panic!("hooked decode must use external classic decoder");
     };
 
     assert!(hook.called, "classic decoder hook must be invoked");
@@ -1739,9 +1750,8 @@ fn classic_sub_band_decoder_hook_is_used_for_j2k_codeblocks() {
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
     let mut hooked_context = DecoderContext::default();
     let mut hook = FailingClassicBatchDecoder { called: false };
-    let error = match image.decode_components_with_ht_decoder(&mut hooked_context, &mut hook) {
-        Ok(_) => panic!("hooked decode must use external classic batch decoder"),
-        Err(error) => error,
+    let Err(error) = image.decode_components_with_ht_decoder(&mut hooked_context, &mut hook) else {
+        panic!("hooked decode must use external classic batch decoder");
     };
 
     assert!(hook.called, "classic sub-band decoder hook must be invoked");
@@ -1758,7 +1768,7 @@ fn classic_sub_band_decoder_hook_is_used_for_j2k_codeblocks() {
 #[test]
 fn forward_dwt53_reference_matches_internal_path() {
     // 4×4 constant-ramp input; 1 decomposition level.
-    let samples: Vec<f32> = (0..16).map(|i| i as f32).collect();
+    let samples: Vec<f32> = (0_u8..16).map(f32::from).collect();
     let out = forward_dwt53_reference(&samples, 4, 4, 1);
 
     // Internal path
@@ -1776,6 +1786,10 @@ fn forward_dwt53_reference_matches_internal_path() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the reversible color transform uses exactly representable integer-valued f32 outputs"
+)]
 fn forward_rct_reference_matches_internal_path() {
     // Single pixel: R=100, G=150, B=200
     let planes = vec![vec![100.0f32], vec![150.0f32], vec![200.0f32]];

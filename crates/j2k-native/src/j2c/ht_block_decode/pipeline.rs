@@ -17,6 +17,12 @@ pub(crate) const PHASE_LIMIT_CLEANUP: u8 = 0;
 pub(crate) const PHASE_LIMIT_SIGPROP: u8 = 1;
 pub(crate) const PHASE_LIMIT_MAGREF: u8 = 2;
 
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the monomorphized HT phase pipeline has a stable hot signature and preserves normative pass order"
+)]
 #[inline(always)]
 pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
     cleanup_data: &[u8],

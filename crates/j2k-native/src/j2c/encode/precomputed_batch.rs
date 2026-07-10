@@ -10,6 +10,10 @@ use super::{
     QuantStepSize, SubBandType, Vec, MAX_J2K_SPEC_COMPONENTS,
 };
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub(super) fn prepare_precomputed_htj2k97_image_for_batch(
     image: &PrecomputedHtj2k97Image,
     options: &EncodeOptions,

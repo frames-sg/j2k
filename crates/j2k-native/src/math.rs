@@ -12,13 +12,16 @@ mod inner {
     pub(crate) use fearless_simd::{dispatch, Level, Simd};
 
     #[derive(Copy, Clone)]
-    #[allow(non_camel_case_types)]
     #[repr(C, align(32))]
     pub(crate) struct f32x8<S: Simd> {
         inner: fearless_simd::f32x8<S>,
     }
 
     impl<S: Simd> f32x8<S> {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn from_slice(simd: S, slice: &[f32]) -> Self {
             Self {
@@ -26,6 +29,10 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn splat(simd: S, value: f32) -> Self {
             Self {
@@ -33,6 +40,10 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn mul_add(self, mul: Self, addend: Self) -> Self {
             Self {
@@ -40,6 +51,10 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn floor(self) -> Self {
             Self {
@@ -47,11 +62,19 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn store(self, slice: &mut [f32]) {
             self.inner.store_slice(&mut slice[..SIMD_WIDTH]);
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn zip_low(self, other: Self) -> Self {
             Self {
@@ -59,6 +82,10 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn zip_high(self, other: Self) -> Self {
             Self {
@@ -66,6 +93,10 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn min(self, other: Self) -> Self {
             Self {
@@ -73,6 +104,10 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn max(self, other: Self) -> Self {
             Self {
@@ -83,6 +118,10 @@ mod inner {
 
     impl<S: Simd> Add for f32x8<S> {
         type Output = Self;
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn add(self, rhs: Self) -> Self {
             Self {
@@ -93,6 +132,10 @@ mod inner {
 
     impl<S: Simd> Sub for f32x8<S> {
         type Output = Self;
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn sub(self, rhs: Self) -> Self {
             Self {
@@ -103,6 +146,10 @@ mod inner {
 
     impl<S: Simd> Mul for f32x8<S> {
         type Output = Self;
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn mul(self, rhs: Self) -> Self {
             Self {
@@ -113,6 +160,10 @@ mod inner {
 
     impl<S: Simd> Add<f32> for f32x8<S> {
         type Output = Self;
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn add(self, rhs: f32) -> Self {
             Self {
@@ -123,6 +174,10 @@ mod inner {
 
     impl<S: Simd> Mul<f32> for f32x8<S> {
         type Output = Self;
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn mul(self, rhs: f32) -> Self {
             Self {
@@ -132,6 +187,10 @@ mod inner {
     }
 
     impl<S: Simd> AddAssign for f32x8<S> {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn add_assign(&mut self, rhs: Self) {
             self.inner = self.inner + rhs.inner;
@@ -139,6 +198,10 @@ mod inner {
     }
 
     impl<S: Simd> SubAssign for f32x8<S> {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn sub_assign(&mut self, rhs: Self) {
             self.inner = self.inner - rhs.inner;
@@ -146,6 +209,10 @@ mod inner {
     }
 
     impl<S: Simd> MulAssign<f32> for f32x8<S> {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn mul_assign(&mut self, rhs: f32) {
             self.inner = self.inner * rhs;
@@ -153,6 +220,10 @@ mod inner {
     }
 
     impl<S: Simd> DivAssign<f32> for f32x8<S> {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn div_assign(&mut self, rhs: f32) {
             self.inner = self.inner / rhs;
@@ -174,6 +245,10 @@ mod inner {
 
     pub(crate) struct Level;
     impl Level {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn new() -> Self {
             Level
@@ -181,7 +256,6 @@ mod inner {
     }
 
     #[derive(Copy, Clone)]
-    #[allow(non_camel_case_types)]
     #[repr(C, align(32))]
     pub(crate) struct f32x8<S: Simd> {
         val: [f32; SIMD_WIDTH],
@@ -189,6 +263,10 @@ mod inner {
     }
 
     impl<S: Simd> f32x8<S> {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn from_slice(_simd: S, slice: &[f32]) -> Self {
             let mut val = [0.0f32; SIMD_WIDTH];
@@ -199,6 +277,10 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn splat(_simd: S, value: f32) -> Self {
             Self {
@@ -207,6 +289,11 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[expect(clippy::needless_range_loop, reason = "fixed-width scalar SIMD lanes")]
         #[inline(always)]
         pub(crate) fn mul_add(self, mul: Self, addend: Self) -> Self {
             let mut result = [0.0f32; SIMD_WIDTH];
@@ -219,6 +306,11 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[expect(clippy::needless_range_loop, reason = "fixed-width scalar SIMD lanes")]
         #[inline(always)]
         pub(crate) fn floor(self) -> Self {
             let mut result = [0.0f32; SIMD_WIDTH];
@@ -231,11 +323,19 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn store(self, slice: &mut [f32]) {
             slice[..SIMD_WIDTH].copy_from_slice(&self.val);
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn zip_low(self, other: Self) -> Self {
             Self {
@@ -253,6 +353,10 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         pub(crate) fn zip_high(self, other: Self) -> Self {
             Self {
@@ -270,6 +374,11 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[expect(clippy::needless_range_loop, reason = "fixed-width scalar SIMD lanes")]
         #[inline(always)]
         pub(crate) fn min(self, other: Self) -> Self {
             let mut result = [0.0f32; SIMD_WIDTH];
@@ -282,6 +391,11 @@ mod inner {
             }
         }
 
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[expect(clippy::needless_range_loop, reason = "fixed-width scalar SIMD lanes")]
         #[inline(always)]
         pub(crate) fn max(self, other: Self) -> Self {
             let mut result = [0.0f32; SIMD_WIDTH];
@@ -297,6 +411,11 @@ mod inner {
 
     impl<S: Simd> Add for f32x8<S> {
         type Output = Self;
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[expect(clippy::needless_range_loop, reason = "fixed-width scalar SIMD lanes")]
         #[inline(always)]
         fn add(self, rhs: Self) -> Self {
             let mut result = [0.0f32; SIMD_WIDTH];
@@ -312,6 +431,11 @@ mod inner {
 
     impl<S: Simd> Sub for f32x8<S> {
         type Output = Self;
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[expect(clippy::needless_range_loop, reason = "fixed-width scalar SIMD lanes")]
         #[inline(always)]
         fn sub(self, rhs: Self) -> Self {
             let mut result = [0.0f32; SIMD_WIDTH];
@@ -327,6 +451,11 @@ mod inner {
 
     impl<S: Simd> Mul for f32x8<S> {
         type Output = Self;
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[expect(clippy::needless_range_loop, reason = "fixed-width scalar SIMD lanes")]
         #[inline(always)]
         fn mul(self, rhs: Self) -> Self {
             let mut result = [0.0f32; SIMD_WIDTH];
@@ -342,6 +471,11 @@ mod inner {
 
     impl<S: Simd> Add<f32> for f32x8<S> {
         type Output = Self;
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[expect(clippy::needless_range_loop, reason = "fixed-width scalar SIMD lanes")]
         #[inline(always)]
         fn add(self, rhs: f32) -> Self {
             let mut result = [0.0f32; SIMD_WIDTH];
@@ -357,6 +491,11 @@ mod inner {
 
     impl<S: Simd> Mul<f32> for f32x8<S> {
         type Output = Self;
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[expect(clippy::needless_range_loop, reason = "fixed-width scalar SIMD lanes")]
         #[inline(always)]
         fn mul(self, rhs: f32) -> Self {
             let mut result = [0.0f32; SIMD_WIDTH];
@@ -371,6 +510,10 @@ mod inner {
     }
 
     impl<S: Simd> AddAssign for f32x8<S> {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn add_assign(&mut self, rhs: Self) {
             for i in 0..SIMD_WIDTH {
@@ -380,6 +523,10 @@ mod inner {
     }
 
     impl<S: Simd> SubAssign for f32x8<S> {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn sub_assign(&mut self, rhs: Self) {
             for i in 0..SIMD_WIDTH {
@@ -389,6 +536,10 @@ mod inner {
     }
 
     impl<S: Simd> MulAssign<f32> for f32x8<S> {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn mul_assign(&mut self, rhs: f32) {
             for i in 0..SIMD_WIDTH {
@@ -398,6 +549,10 @@ mod inner {
     }
 
     impl<S: Simd> DivAssign<f32> for f32x8<S> {
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
         #[inline(always)]
         fn div_assign(&mut self, rhs: f32) {
             for i in 0..SIMD_WIDTH {
@@ -422,6 +577,10 @@ mod inner {
 // Note that these polyfills can be very imprecise, but hopefully good enough
 // for the vast majority of cases.
 
+#[expect(
+    clippy::inline_always,
+    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+)]
 #[inline(always)]
 pub(crate) fn mul_add(a: f32, b: f32, c: f32) -> f32 {
     #[cfg(all(
@@ -452,6 +611,18 @@ pub(crate) fn mul_add(a: f32, b: f32, c: f32) -> f32 {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+)]
+#[cfg_attr(
+    not(feature = "std"),
+    expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "the no-std floor polyfill converts through the truncated integer part"
+    )
+)]
 #[inline(always)]
 pub(crate) fn floor_f32(x: f32) -> f32 {
     #[cfg(feature = "std")]
@@ -470,6 +641,10 @@ pub(crate) fn floor_f32(x: f32) -> f32 {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+)]
 #[inline(always)]
 pub(crate) fn round_f32(x: f32) -> f32 {
     #[cfg(feature = "std")]
@@ -486,6 +661,10 @@ pub(crate) fn round_f32(x: f32) -> f32 {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+)]
 #[inline(always)]
 pub(crate) fn log2_f32(x: f32) -> f32 {
     #[cfg(feature = "std")]
@@ -498,6 +677,14 @@ pub(crate) fn log2_f32(x: f32) -> f32 {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "powers of two in the supported exponent range are exactly representable in f32"
+)]
 #[inline(always)]
 pub(crate) fn pow2i(exp: i32) -> f32 {
     if exp >= 0 {
@@ -507,6 +694,10 @@ pub(crate) fn pow2i(exp: i32) -> f32 {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+)]
 #[inline(always)]
 #[cfg(not(feature = "simd"))]
 pub(crate) fn min_f32(a: f32, b: f32) -> f32 {
@@ -524,6 +715,10 @@ pub(crate) fn min_f32(a: f32, b: f32) -> f32 {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+)]
 #[inline(always)]
 #[cfg(not(feature = "simd"))]
 pub(crate) fn max_f32(a: f32, b: f32) -> f32 {
@@ -541,7 +736,10 @@ pub(crate) fn max_f32(a: f32, b: f32) -> f32 {
     }
 }
 
-pub(crate) use inner::*;
+#[cfg(not(feature = "simd"))]
+pub(crate) use inner::{dispatch, f32x8, Level, ScalarSimd, Simd};
+#[cfg(feature = "simd")]
+pub(crate) use inner::{dispatch, f32x8, Level, Simd};
 
 /// A wrapper around `Vec<f32>` that pads the vector to a multiple of `N` elements.
 /// This allows SIMD operations to safely process the data without bounds checking

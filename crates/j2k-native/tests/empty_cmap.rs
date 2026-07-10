@@ -7,10 +7,14 @@ use j2k_native::{
     Image,
 };
 
-fn jp2_box(box_type: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+fn jp2_box(box_type: [u8; 4], payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    out.extend_from_slice(&(8u32 + payload.len() as u32).to_be_bytes());
-    out.extend_from_slice(box_type);
+    let payload_len = u32::try_from(payload.len()).expect("test box payload length fits u32");
+    let box_len = payload_len
+        .checked_add(8)
+        .expect("test box length fits u32");
+    out.extend_from_slice(&box_len.to_be_bytes());
+    out.extend_from_slice(&box_type);
     out.extend_from_slice(payload);
     out
 }
@@ -48,12 +52,11 @@ fn missing_ihdr_returns_invalid_box() {
         ..EncodeOptions::default()
     };
     let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
-    let colr = jp2_box(b"colr", &[1, 0, 0, 0, 0, 0, 17]);
+    let colr = jp2_box(*b"colr", &[1, 0, 0, 0, 0, 0, 17]);
     let jp2 = jp2_with_header_payload(&codestream, &colr);
 
-    let err = match Image::new(&jp2, &DecodeSettings::default()) {
-        Ok(_) => panic!("missing ihdr must reject"),
-        Err(err) => err,
+    let Err(err) = Image::new(&jp2, &DecodeSettings::default()) else {
+        panic!("missing ihdr must reject");
     };
 
     assert!(matches!(
@@ -77,17 +80,16 @@ fn invalid_ihdr_compression_type_returns_invalid_box() {
         payload.extend_from_slice(&4_u32.to_be_bytes());
         payload.extend_from_slice(&1_u16.to_be_bytes());
         payload.extend_from_slice(&[7, 0, 0, 0]);
-        jp2_box(b"ihdr", &payload)
+        jp2_box(*b"ihdr", &payload)
     };
-    let colr = jp2_box(b"colr", &[1, 0, 0, 0, 0, 0, 17]);
+    let colr = jp2_box(*b"colr", &[1, 0, 0, 0, 0, 0, 17]);
     let mut jp2h_payload = Vec::new();
     jp2h_payload.extend_from_slice(&ihdr);
     jp2h_payload.extend_from_slice(&colr);
     let jp2 = jp2_with_header_payload(&codestream, &jp2h_payload);
 
-    let err = match Image::new(&jp2, &DecodeSettings::default()) {
-        Ok(_) => panic!("invalid ihdr compression type must reject"),
-        Err(err) => err,
+    let Err(err) = Image::new(&jp2, &DecodeSettings::default()) else {
+        panic!("invalid ihdr compression type must reject");
     };
 
     assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
@@ -107,12 +109,11 @@ fn missing_colr_returns_invalid_box() {
     ihdr.extend_from_slice(&4_u32.to_be_bytes());
     ihdr.extend_from_slice(&1_u16.to_be_bytes());
     ihdr.extend_from_slice(&[7, 7, 0, 0]);
-    let jp2h = jp2_box(b"ihdr", &ihdr);
+    let jp2h = jp2_box(*b"ihdr", &ihdr);
     let jp2 = jp2_with_header_payload(&codestream, &jp2h);
 
-    let err = match Image::new(&jp2, &DecodeSettings::default()) {
-        Ok(_) => panic!("missing COLR must reject"),
-        Err(err) => err,
+    let Err(err) = Image::new(&jp2, &DecodeSettings::default()) else {
+        panic!("missing COLR must reject");
     };
 
     assert!(matches!(
@@ -132,9 +133,8 @@ fn ihdr_dimension_mismatch_returns_invalid_box() {
     let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
     let jp2 = jp2_with_header_payload(&codestream, &basic_jp2h_payload(5, 4, 1, 8));
 
-    let err = match Image::new(&jp2, &DecodeSettings::default()) {
-        Ok(_) => panic!("IHDR dimensions must reject"),
-        Err(err) => err,
+    let Err(err) = Image::new(&jp2, &DecodeSettings::default()) else {
+        panic!("IHDR dimensions must reject");
     };
 
     assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
@@ -151,9 +151,8 @@ fn ihdr_bpc_mismatch_returns_invalid_box() {
     let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
     let jp2 = jp2_with_header_payload(&codestream, &basic_jp2h_payload(4, 4, 1, 16));
 
-    let err = match Image::new(&jp2, &DecodeSettings::default()) {
-        Ok(_) => panic!("IHDR BPC mismatch must reject"),
-        Err(err) => err,
+    let Err(err) = Image::new(&jp2, &DecodeSettings::default()) else {
+        panic!("IHDR BPC mismatch must reject");
     };
 
     assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
@@ -170,9 +169,8 @@ fn bpcc_precision_mismatch_returns_invalid_box() {
     let codestream = encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
     let jp2 = jp2_with_header_payload(&codestream, &bpcc_jp2h_payload(4, 4, 1, &[15]));
 
-    let err = match Image::new(&jp2, &DecodeSettings::default()) {
-        Ok(_) => panic!("BPCC precision mismatch must reject"),
-        Err(err) => err,
+    let Err(err) = Image::new(&jp2, &DecodeSettings::default()) else {
+        panic!("BPCC precision mismatch must reject");
     };
 
     assert!(matches!(err, DecodeError::Format(FormatError::InvalidBox)));
@@ -193,9 +191,8 @@ fn jph_file_type_rejects_classic_codestream() {
         b"jph \0\0\0\0jph ",
     );
 
-    let err = match Image::new(&jp2, &DecodeSettings::default()) {
-        Ok(_) => panic!("JPH file type must reject classic codestreams"),
-        Err(err) => err,
+    let Err(err) = Image::new(&jp2, &DecodeSettings::default()) else {
+        panic!("JPH file type must reject classic codestreams");
     };
 
     assert!(matches!(
@@ -215,9 +212,8 @@ fn jp2_file_type_rejects_htj2k_codestream() {
     let codestream = encode_htj2k(&pixels, 4, 4, 1, 8, false, &options).expect("encode fixture");
     let jp2 = jp2_with_header_payload(&codestream, &basic_jp2h_payload(4, 4, 1, 8));
 
-    let err = match Image::new(&jp2, &DecodeSettings::default()) {
-        Ok(_) => panic!("JP2 file type must reject HTJ2K codestreams"),
-        Err(err) => err,
+    let Err(err) = Image::new(&jp2, &DecodeSettings::default()) else {
+        panic!("JP2 file type must reject HTJ2K codestreams");
     };
 
     assert!(matches!(
@@ -249,7 +245,7 @@ fn jph_file_type_accepts_htj2k_codestream() {
 
 #[test]
 fn premultiplied_opacity_cdef_sets_alpha() {
-    let pixels: Vec<u8> = (0..4 * 4 * 4).map(|idx| idx as u8).collect();
+    let pixels: Vec<u8> = (0_u8..64).collect();
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 1,
@@ -302,18 +298,18 @@ fn jp2_with_empty_cmap(codestream: &[u8]) -> Vec<u8> {
         payload.extend_from_slice(&4_u32.to_be_bytes());
         payload.extend_from_slice(&1_u16.to_be_bytes());
         payload.extend_from_slice(&[7, 7, 0, 0]);
-        jp2_box(b"ihdr", &payload)
+        jp2_box(*b"ihdr", &payload)
     };
-    let colr = jp2_box(b"colr", &[1, 0, 0, 0, 0, 0, 17]);
+    let colr = jp2_box(*b"colr", &[1, 0, 0, 0, 0, 0, 17]);
     let pclr = {
         let mut payload = Vec::new();
         payload.extend_from_slice(&1_u16.to_be_bytes());
         payload.push(1);
         payload.push(7);
         payload.push(0);
-        jp2_box(b"pclr", &payload)
+        jp2_box(*b"pclr", &payload)
     };
-    let cmap = jp2_box(b"cmap", &[]);
+    let cmap = jp2_box(*b"cmap", &[]);
 
     let mut jp2h_payload = Vec::new();
     jp2h_payload.extend_from_slice(&ihdr);
@@ -330,10 +326,10 @@ fn basic_jp2h_payload(width: u32, height: u32, components: u16, bit_depth: u8) -
     ihdr.extend_from_slice(&width.to_be_bytes());
     ihdr.extend_from_slice(&components.to_be_bytes());
     ihdr.extend_from_slice(&[bit_depth.saturating_sub(1), 7, 0, 0]);
-    let colr = jp2_box(b"colr", &[1, 0, 0, 0, 0, 0, 17]);
+    let colr = jp2_box(*b"colr", &[1, 0, 0, 0, 0, 0, 17]);
 
     let mut jp2h_payload = Vec::new();
-    jp2h_payload.extend_from_slice(&jp2_box(b"ihdr", &ihdr));
+    jp2h_payload.extend_from_slice(&jp2_box(*b"ihdr", &ihdr));
     jp2h_payload.extend_from_slice(&colr);
     jp2h_payload
 }
@@ -344,11 +340,11 @@ fn bpcc_jp2h_payload(width: u32, height: u32, components: u16, bpcc_payload: &[u
     ihdr.extend_from_slice(&width.to_be_bytes());
     ihdr.extend_from_slice(&components.to_be_bytes());
     ihdr.extend_from_slice(&[0xff, 7, 0, 0]);
-    let colr = jp2_box(b"colr", &[1, 0, 0, 0, 0, 0, 17]);
+    let colr = jp2_box(*b"colr", &[1, 0, 0, 0, 0, 0, 17]);
 
     let mut jp2h_payload = Vec::new();
-    jp2h_payload.extend_from_slice(&jp2_box(b"ihdr", &ihdr));
-    jp2h_payload.extend_from_slice(&jp2_box(b"bpcc", bpcc_payload));
+    jp2h_payload.extend_from_slice(&jp2_box(*b"ihdr", &ihdr));
+    jp2h_payload.extend_from_slice(&jp2_box(*b"bpcc", bpcc_payload));
     jp2h_payload.extend_from_slice(&colr);
     jp2h_payload
 }
@@ -369,7 +365,8 @@ fn cdef_jp2h_payload(
     let mut colr = vec![1, 0, 0];
     colr.extend_from_slice(&colorspace.to_be_bytes());
     let mut cdef = Vec::new();
-    cdef.extend_from_slice(&(definitions.len() as u16).to_be_bytes());
+    let definition_count = u16::try_from(definitions.len()).expect("test CDEF count fits u16");
+    cdef.extend_from_slice(&definition_count.to_be_bytes());
     for (channel, channel_type, association) in definitions {
         cdef.extend_from_slice(&channel.to_be_bytes());
         cdef.extend_from_slice(&channel_type.to_be_bytes());
@@ -377,9 +374,9 @@ fn cdef_jp2h_payload(
     }
 
     let mut jp2h_payload = Vec::new();
-    jp2h_payload.extend_from_slice(&jp2_box(b"ihdr", &ihdr));
-    jp2h_payload.extend_from_slice(&jp2_box(b"colr", &colr));
-    jp2h_payload.extend_from_slice(&jp2_box(b"cdef", &cdef));
+    jp2h_payload.extend_from_slice(&jp2_box(*b"ihdr", &ihdr));
+    jp2h_payload.extend_from_slice(&jp2_box(*b"colr", &colr));
+    jp2h_payload.extend_from_slice(&jp2_box(*b"cdef", &cdef));
     jp2h_payload
 }
 
@@ -393,9 +390,9 @@ fn jp2_with_header_payload_and_file_type(
     ftyp_payload: &[u8],
 ) -> Vec<u8> {
     let mut out = Vec::new();
-    out.extend_from_slice(&jp2_box(b"jP  ", &[0x0d, 0x0a, 0x87, 0x0a]));
-    out.extend_from_slice(&jp2_box(b"ftyp", ftyp_payload));
-    out.extend_from_slice(&jp2_box(b"jp2h", jp2h_payload));
-    out.extend_from_slice(&jp2_box(b"jp2c", codestream));
+    out.extend_from_slice(&jp2_box(*b"jP  ", &[0x0d, 0x0a, 0x87, 0x0a]));
+    out.extend_from_slice(&jp2_box(*b"ftyp", ftyp_payload));
+    out.extend_from_slice(&jp2_box(*b"jp2h", jp2h_payload));
+    out.extend_from_slice(&jp2_box(*b"jp2c", codestream));
     out
 }

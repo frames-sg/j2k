@@ -195,17 +195,13 @@ pub(in crate::j2c::encode) fn uniform_level_count<T>(
     u8::try_from(levels).map_err(|_| "decomposition level count exceeds u8")
 }
 
-pub(in crate::j2c::encode) fn dwt_levels_only(levels: usize) -> Result<usize, &'static str> {
-    Ok(levels)
-}
-
 pub(in crate::j2c::encode) fn precomputed_level_count(
     components: &[PrecomputedHtj2k53Component],
 ) -> Result<u8, &'static str> {
     uniform_level_count(
         components,
         |component| component.dwt.levels.len(),
-        dwt_levels_only,
+        Ok,
         "precomputed components must use the same decomposition level count",
     )
 }
@@ -216,7 +212,7 @@ pub(in crate::j2c::encode) fn precomputed_97_level_count(
     uniform_level_count(
         components,
         |component| component.dwt.levels.len(),
-        dwt_levels_only,
+        Ok,
         "precomputed components must use the same decomposition level count",
     )
 }
@@ -392,10 +388,9 @@ pub(in crate::j2c::encode) fn validate_prequantized_resolution(
             }
             continue;
         }
-        debug_assert!(step_size.exponent <= u16::from(u8::MAX));
-        let expected_total_bitplanes = guard_bits
-            .saturating_add(step_size.exponent as u8)
-            .saturating_sub(1);
+        let exponent = u8::try_from(step_size.exponent)
+            .map_err(|_| "prequantized step-size exponent exceeds u8")?;
+        let expected_total_bitplanes = guard_bits.saturating_add(exponent).saturating_sub(1);
         if subband.total_bitplanes != expected_total_bitplanes {
             return Err("prequantized subband bitplane count mismatch");
         }
@@ -443,10 +438,9 @@ pub(in crate::j2c::encode) fn validate_preencoded_resolution(
             }
             continue;
         }
-        debug_assert!(step_size.exponent <= u16::from(u8::MAX));
-        let expected_total_bitplanes = guard_bits
-            .saturating_add(step_size.exponent as u8)
-            .saturating_sub(1);
+        let exponent = u8::try_from(step_size.exponent)
+            .map_err(|_| "preencoded step-size exponent exceeds u8")?;
+        let expected_total_bitplanes = guard_bits.saturating_add(exponent).saturating_sub(1);
         if subband.total_bitplanes != expected_total_bitplanes {
             return Err("preencoded subband bitplane count mismatch");
         }
@@ -495,10 +489,9 @@ pub(in crate::j2c::encode) fn validate_preencoded_compact_resolution(
             }
             continue;
         }
-        debug_assert!(step_size.exponent <= u16::from(u8::MAX));
-        let expected_total_bitplanes = guard_bits
-            .saturating_add(step_size.exponent as u8)
-            .saturating_sub(1);
+        let exponent = u8::try_from(step_size.exponent)
+            .map_err(|_| "preencoded step-size exponent exceeds u8")?;
+        let expected_total_bitplanes = guard_bits.saturating_add(exponent).saturating_sub(1);
         if subband.total_bitplanes != expected_total_bitplanes {
             return Err("preencoded subband bitplane count mismatch");
         }

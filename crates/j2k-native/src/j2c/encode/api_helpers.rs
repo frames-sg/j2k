@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 
 use super::samples::{raw_pixel_bytes_per_sample, read_le_sample_value, sign_extend_sample};
 use super::SubBandType;
-use crate::math::{floor_f32, log2_f32};
 use crate::J2kSubBandType;
 
 pub(super) fn public_sub_band_type(sub_band_type: SubBandType) -> J2kSubBandType {
@@ -37,6 +36,10 @@ pub(super) fn default_public_code_block_style() -> crate::J2kCodeBlockStyle {
 }
 
 /// Convert interleaved pixel bytes to per-component f32 arrays.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the codec float domain intentionally receives bounded integer samples or metadata at this rounding boundary"
+)]
 pub(crate) fn deinterleave_to_f32(
     pixels: &[u8],
     num_pixels: usize,
@@ -96,5 +99,5 @@ pub(super) fn max_decomposition_levels(width: u32, height: u32) -> u8 {
     if min_dim <= 1 {
         return 0;
     }
-    floor_f32(log2_f32(min_dim as f32)) as u8
+    u8::try_from(min_dim.ilog2()).expect("a u32 logarithm fits in u8")
 }

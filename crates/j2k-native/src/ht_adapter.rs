@@ -8,6 +8,7 @@ pub struct HtSigPropBenchmarkState(j2c::ht_block_decode::HtSigPropBenchmarkState
 
 impl HtSigPropBenchmarkState {
     /// Coefficient buffer length required by `decode_ht_sigprop_benchmark_state`.
+    #[must_use]
     pub fn output_len(&self) -> usize {
         self.0.output_len()
     }
@@ -48,48 +49,56 @@ pub fn decode_ht_sigprop_benchmark_state(
 
 /// Adapter HTJ2K VLC table 0 for backend experimentation.
 #[doc(hidden)]
+#[must_use]
 pub fn ht_vlc_table0() -> &'static [u16; 1024] {
     &j2c::ht_tables::VLC_TABLE0
 }
 
 /// Adapter HTJ2K VLC table 1 for backend experimentation.
 #[doc(hidden)]
+#[must_use]
 pub fn ht_vlc_table1() -> &'static [u16; 1024] {
     &j2c::ht_tables::VLC_TABLE1
 }
 
 /// Adapter HTJ2K UVLC table 0 for backend experimentation.
 #[doc(hidden)]
+#[must_use]
 pub fn ht_uvlc_table0() -> &'static [u16; 320] {
     &j2c::ht_tables::UVLC_TABLE0
 }
 
 /// Adapter HTJ2K UVLC table 1 for backend experimentation.
 #[doc(hidden)]
+#[must_use]
 pub fn ht_uvlc_table1() -> &'static [u16; 256] {
     &j2c::ht_tables::UVLC_TABLE1
 }
 
 /// Adapter HTJ2K cleanup encoder VLC table 0 for backend experimentation.
 #[doc(hidden)]
+#[must_use]
 pub fn ht_vlc_encode_table0() -> &'static [u16; 2048] {
     &j2c::ht_encode_tables::HT_VLC_ENCODE_TABLE0
 }
 
 /// Adapter HTJ2K cleanup encoder VLC table 1 for backend experimentation.
 #[doc(hidden)]
+#[must_use]
 pub fn ht_vlc_encode_table1() -> &'static [u16; 2048] {
     &j2c::ht_encode_tables::HT_VLC_ENCODE_TABLE1
 }
 
 /// Adapter HTJ2K cleanup encoder UVLC table for backend experimentation.
 #[doc(hidden)]
+#[must_use]
 pub fn ht_uvlc_encode_table() -> &'static [HtUvlcTableEntry; 75] {
     &j2c::ht_encode_tables::HT_UVLC_ENCODE_TABLE
 }
 
 /// Adapter HTJ2K cleanup encoder UVLC table packed for byte-addressed backends.
 #[doc(hidden)]
+#[must_use]
 pub fn ht_uvlc_encode_table_bytes() -> &'static [u8] {
     &j2c::ht_encode_tables::HT_UVLC_ENCODE_TABLE_BYTES
 }

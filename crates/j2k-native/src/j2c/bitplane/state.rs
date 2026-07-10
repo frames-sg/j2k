@@ -10,6 +10,7 @@ use crate::error::{bail, DecodingError, Result};
 
 // JPEG 2000 Part 1 permits up to 38 sample bits; keep additional headroom for
 // guard bits and ROI-shifted code-block magnitudes while reserving one sign bit.
+#[expect(clippy::cast_possible_truncation, reason = "u64 is eight bytes")]
 pub(crate) const BITPLANE_BIT_SIZE: u32 = size_of::<u64>() as u32 * 8 - 1;
 
 pub(super) const HAS_MAGNITUDE_REFINEMENT_SHIFT: u8 = 6;
@@ -26,13 +27,15 @@ pub(super) const HAS_ZERO_CODING_MASK: u8 = 1 << HAS_ZERO_CODING_SHIFT;
 pub(crate) struct CoefficientState(pub(super) u8);
 
 impl CoefficientState {
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn set_significant(&mut self) {
         self.0 |= SIGNIFICANCE_MASK;
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
-    pub(super) fn is_significant(&self) -> bool {
+    pub(super) fn is_significant(self) -> bool {
         self.0 & SIGNIFICANCE_MASK != 0
     }
 }
@@ -42,15 +45,21 @@ pub(crate) struct Coefficient(pub(super) u64);
 
 impl Coefficient {
     #[cfg(test)]
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "stable accessor")]
     pub(crate) fn get(&self) -> i32 {
-        self.get_i64()
-            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+        i32::try_from(
+            self.get_i64()
+                .clamp(i64::from(i32::MIN), i64::from(i32::MAX)),
+        )
+        .expect("coefficient is clamped to the i32 range")
     }
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "stable accessor")]
     pub(crate) fn get_i64(&self) -> i64 {
-        let mut magnitude = (self.0 & !(1_u64 << 63)).min(i64::MAX as u64) as i64;
+        let mut magnitude = i64::try_from((self.0 & !(1_u64 << 63)).min(i64::MAX as u64))
+            .expect("coefficient magnitude is clamped to i64::MAX");
         // Map sign (0 for positive, 1 for negative) to 1, -1.
-        magnitude *= 1 - 2 * self.sign() as i64;
+        magnitude *= 1 - 2 * i64::from(self.sign() != 0);
 
         magnitude
     }
@@ -59,7 +68,7 @@ impl Coefficient {
         self.0 |= u64::from(sign) << 63;
     }
 
-    pub(super) fn sign(&self) -> u64 {
+    pub(super) fn sign(self) -> u64 {
         (self.0 >> 63) & 1
     }
 
@@ -113,13 +122,13 @@ impl NeighborSignificances {
         self.0 |= 1;
     }
 
-    pub(super) fn all(&self) -> u8 {
+    pub(super) fn all(self) -> u8 {
         self.0
     }
 
     // Needed for vertically causal context.
-    pub(super) fn all_without_bottom(&self) -> u8 {
-        self.0 & 0b11110100
+    pub(super) fn all_without_bottom(self) -> u8 {
+        self.0 & 0b1111_0100
     }
 }
 
@@ -200,6 +209,11 @@ impl Default for BitPlaneDecodeContext {
 }
 
 impl BitPlaneDecodeContext {
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the stable reset boundary mirrors validated codestream job fields explicitly"
+    )]
     pub(super) fn reset_for_job(
         &mut self,
         width: u32,
@@ -264,6 +278,10 @@ impl BitPlaneDecodeContext {
     }
 
     /// Completely reset context so that it can be reused for a new code-block.
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "stable borrowed style boundary"
+    )]
     pub(crate) fn reset(
         &mut self,
         code_block: &CodeBlock,
@@ -330,11 +348,13 @@ impl BitPlaneDecodeContext {
         self.zero_coding_scan_masks.fill(0);
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn set_sign_index(&mut self, idx: usize, sign: u8) {
         self.coefficients[idx].set_sign(sign);
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn set_significant_index(&mut self, idx: usize, padded_width: usize) {
         let is_significant = self.coefficient_states[idx].is_significant();
@@ -356,6 +376,7 @@ impl BitPlaneDecodeContext {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn set_significant_index_for_path<const NORMAL_NEIGHBORS: bool>(
         &mut self,
@@ -369,6 +390,7 @@ impl BitPlaneDecodeContext {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn set_significant_index_normal(&mut self, idx: usize, padded_width: usize) {
         if self.coefficient_states[idx].is_significant() {
@@ -396,11 +418,13 @@ impl BitPlaneDecodeContext {
         bottom[2].set_top_left();
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn push_magnitude_bit_index(&mut self, idx: usize, bit: u32) {
         self.coefficients[idx].push_bit_at(bit, self.current_bit_position);
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn set_zero_coding_index(&mut self, idx: usize, padded_width: usize) {
         self.coefficient_states[idx].0 |= HAS_ZERO_CODING_MASK;
@@ -408,12 +432,14 @@ impl BitPlaneDecodeContext {
         self.zero_coding_scan_masks[scan_unit] |= bit;
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn set_significant_scan_mask(&mut self, idx: usize, padded_width: usize) {
         let (scan_unit, bit) = self.scan_unit_mask_index(idx, padded_width);
         self.significant_scan_masks[scan_unit] |= bit;
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn scan_unit_mask_index(&self, idx: usize, padded_width: usize) -> (usize, u8) {
         let row = idx / padded_width;
@@ -431,17 +457,20 @@ impl BitPlaneDecodeContext {
         (scan_unit, 1u8 << (y & 3))
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn sign_index(&self, idx: usize) -> u8 {
-        self.coefficients[idx].sign() as u8
+        u8::from(self.coefficients[idx].sign() != 0)
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn neighbor_in_next_stripe_y(&self, y: usize) -> bool {
         let neighbor_y = y + 1;
         neighbor_y < self.height as usize && (neighbor_y >> 2) > (y >> 2)
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn neighborhood_significance_states_index(&self, idx: usize, y: usize) -> u8 {
         let neighbors = &self.neighbor_significances[idx];
@@ -453,11 +482,13 @@ impl BitPlaneDecodeContext {
         }
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn normal_neighborhood_significance_states_index(&self, idx: usize) -> u8 {
         self.neighbor_significances[idx].all()
     }
 
+    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     pub(super) fn uses_normal_arithmetic_neighbor_path(&self) -> bool {
         !self.style.selective_arithmetic_coding_bypass

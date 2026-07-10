@@ -52,8 +52,7 @@ impl BitWriter {
     #[cfg(test)]
     pub(crate) fn write_u16_raw(&mut self, value: u16) {
         self.flush();
-        self.data.push((value >> 8) as u8);
-        self.data.push(value as u8);
+        self.data.extend_from_slice(&value.to_be_bytes());
         self.last_byte_was_ff = false;
     }
 
@@ -67,6 +66,10 @@ impl BitWriter {
     }
 
     /// Flush the partial byte, padding with zero bits.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the bit-buffer invariant limits the shifted value to one byte"
+    )]
     pub(crate) fn flush(&mut self) {
         if self.bits_in_buffer > 0 {
             let limit = if self.last_byte_was_ff { 7 } else { 8 };
@@ -85,6 +88,10 @@ impl BitWriter {
         self.data
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the bit-buffer invariant limits the extracted value to one byte"
+    )]
     fn flush_byte(&mut self) {
         let limit = if self.last_byte_was_ff { 7 } else { 8 };
         let byte = (self.buffer >> (self.bits_in_buffer - limit)) as u8;
@@ -103,9 +110,9 @@ mod tests {
     #[test]
     fn test_write_bits_basic() {
         let mut w = BitWriter::new();
-        w.write_bits(0b10110011, 8);
+        w.write_bits(0b1011_0011, 8);
         let data = w.finish();
-        assert_eq!(data, vec![0b10110011]);
+        assert_eq!(data, vec![0b1011_0011]);
     }
 
     #[test]
@@ -114,7 +121,7 @@ mod tests {
         w.write_bits(0b101, 3);
         w.write_bits(0b11001, 5);
         let data = w.finish();
-        assert_eq!(data, vec![0b10111001]);
+        assert_eq!(data, vec![0b1011_1001]);
     }
 
     #[test]
@@ -123,11 +130,11 @@ mod tests {
         // Write 0xFF
         w.write_bits(0xFF, 8);
         // Next byte should be limited to 7 bits due to stuffing
-        w.write_bits(0b1010101, 7);
+        w.write_bits(0b101_0101, 7);
         let data = w.finish();
         assert_eq!(data[0], 0xFF);
         // After 0xFF, the 7 bits are written with a leading 0 (stuffed bit)
-        assert_eq!(data[1], 0b1010101);
+        assert_eq!(data[1], 0b101_0101);
     }
 
     #[test]

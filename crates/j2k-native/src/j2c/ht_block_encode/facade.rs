@@ -17,6 +17,10 @@ pub(crate) fn encode_code_block(
     encode_code_block_with_passes(coefficients, width, height, total_bitplanes, 1)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a u32 magnitude has at most 32 bitplanes, which always fits the u8 metadata field"
+)]
 pub(crate) fn encode_code_block_with_passes(
     coefficients: &[i32],
     width: u32,

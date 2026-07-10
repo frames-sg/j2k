@@ -28,6 +28,10 @@ pub(crate) enum BlockCodingMode {
 
 /// Parameters for encoding a JPEG 2000 codestream.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent codestream marker and coding switches remain explicit in the assembly job"
+)]
 pub(crate) struct EncodeParams {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -344,7 +348,7 @@ fn ht_capability_word(params: &EncodeParams) -> u16 {
     };
 
     let wavelet_flag = if params.reversible { 0u16 } else { 0x0020u16 };
-    wavelet_flag | (bp as u16)
+    wavelet_flag | u16::try_from(bp).expect("HT capability bitplane count fits in u16")
 }
 
 /// Write COD marker segment (A.6.1).
@@ -372,9 +376,9 @@ fn write_cod_marker(out: &mut Vec<u8>, params: &EncodeParams) {
     // SGcod: Progression order
     out.push(progression_order_byte(params.progression_order));
     // Number of layers
-    out.extend_from_slice(&(params.num_layers as u16).to_be_bytes());
+    out.extend_from_slice(&u16::from(params.num_layers).to_be_bytes());
     // Multiple component transform
-    out.push(if params.use_mct { 1 } else { 0 });
+    out.push(u8::from(params.use_mct));
 
     // SPcod: Number of decomposition levels
     out.push(params.num_decomposition_levels);
@@ -390,7 +394,7 @@ fn write_cod_marker(out: &mut Vec<u8>, params: &EncodeParams) {
         };
     out.push(code_block_style);
     // Wavelet transform: 0 = irreversible 9-7, 1 = reversible 5-3
-    out.push(if params.reversible { 1 } else { 0 });
+    out.push(u8::from(params.reversible));
 
     for &(ppx, ppy) in &params.precinct_exponents {
         out.push((ppy << 4) | ppx);
@@ -443,7 +447,7 @@ fn write_plt_markers(out: &mut Vec<u8>, packet_lengths: &[u32]) {
         write_marker(out, markers::PLT);
         let marker_len = u16::try_from(3 + chunk.len()).expect("PLT marker chunk length fits");
         out.extend_from_slice(&marker_len.to_be_bytes());
-        out.push(sequence_idx as u8);
+        out.push(u8::try_from(sequence_idx).expect("PLT sequence index fits in u8"));
         out.extend_from_slice(chunk);
     }
 }
@@ -454,7 +458,7 @@ fn write_plm_markers(out: &mut Vec<u8>, packet_lengths: &[u32]) {
         write_marker(out, markers::PLM);
         let marker_len = u16::try_from(7 + chunk.len()).expect("PLM marker chunk length fits");
         out.extend_from_slice(&marker_len.to_be_bytes());
-        out.push(sequence_idx as u8);
+        out.push(u8::try_from(sequence_idx).expect("PLM sequence index fits in u8"));
         out.extend_from_slice(&u32::try_from(chunk.len()).unwrap_or(u32::MAX).to_be_bytes());
         out.extend_from_slice(chunk);
     }
@@ -568,7 +572,11 @@ fn write_qcd_marker(out: &mut Vec<u8>, params: &EncodeParams, step_sizes: &[(u16
 
     if params.reversible {
         // No quantization: Sqcd = 0x00, then exponent bytes
-        let marker_len = 3 + step_sizes.len() as u16;
+        let step_count =
+            u16::try_from(step_sizes.len()).expect("QCD step-size count fits in the marker length");
+        let marker_len = 3u16
+            .checked_add(step_count)
+            .expect("QCD marker length fits in u16");
         out.extend_from_slice(&marker_len.to_be_bytes());
 
         // Sqcd: no quantization (style 0), guard bits in upper 3 bits
@@ -576,11 +584,19 @@ fn write_qcd_marker(out: &mut Vec<u8>, params: &EncodeParams, step_sizes: &[(u16
 
         // SPqcd: one byte per subband (exponent in upper 5 bits, mantissa = 0)
         for &(exp, _) in step_sizes {
-            out.push((exp as u8) << 3);
+            let exponent = u8::try_from(exp).expect("QCD exponent fits in u8");
+            assert!(exponent <= 0x1F, "QCD exponent fits in five bits");
+            out.push(exponent << 3);
         }
     } else {
         // Scalar expounded: Sqcd = 0x02, then 2 bytes per subband
-        let marker_len = 3 + step_sizes.len() as u16 * 2;
+        let step_bytes = u16::try_from(step_sizes.len())
+            .expect("QCD step-size count fits in the marker length")
+            .checked_mul(2)
+            .expect("QCD step-size bytes fit in u16");
+        let marker_len = 3u16
+            .checked_add(step_bytes)
+            .expect("QCD marker length fits in u16");
         out.extend_from_slice(&marker_len.to_be_bytes());
 
         // Sqcd: scalar expounded quantization, guard bits
@@ -622,15 +638,22 @@ fn write_qcc_marker(
     } else {
         2_u16
     };
+    let step_count =
+        u16::try_from(step_sizes.len()).expect("QCC step-size count fits in the marker length");
     let step_bytes = if params.reversible {
-        step_sizes.len() as u16
+        step_count
     } else {
-        step_sizes.len() as u16 * 2
+        step_count
+            .checked_mul(2)
+            .expect("QCC step-size bytes fit in u16")
     };
-    let marker_len = 3 + component_index_len + step_bytes;
+    let marker_len = 3u16
+        .checked_add(component_index_len)
+        .and_then(|length| length.checked_add(step_bytes))
+        .expect("QCC marker length fits in u16");
     out.extend_from_slice(&marker_len.to_be_bytes());
     if params.num_components < 257 {
-        out.push(component_index as u8);
+        out.push(u8::try_from(component_index).expect("QCC component index fits in u8"));
     } else {
         out.extend_from_slice(&component_index.to_be_bytes());
     }
@@ -638,7 +661,9 @@ fn write_qcc_marker(
     if params.reversible {
         out.push(params.guard_bits << 5);
         for &(exp, _) in step_sizes {
-            out.push((exp as u8) << 3);
+            let exponent = u8::try_from(exp).expect("QCC exponent fits in u8");
+            assert!(exponent <= 0x1F, "QCC exponent fits in five bits");
+            out.push(exponent << 3);
         }
     } else {
         out.push((params.guard_bits << 5) | 0x02);

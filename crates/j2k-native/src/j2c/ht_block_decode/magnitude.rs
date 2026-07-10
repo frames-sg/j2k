@@ -8,6 +8,10 @@ fn sample_mask(bit: u32) -> u32 {
     1 << (4 + bit)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the widened rounding expression is bounded to the 31-bit decoded magnitude field"
+)]
 fn decode_mag_sgn_sample_with_vn(
     magsgn: &mut ForwardBitReader<0xFF>,
     inf: u32,
@@ -43,6 +47,10 @@ fn decode_mag_sgn_sample_with_vn(
 }
 
 #[inline(never)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the phase entry point keeps independent bitstream, geometry, and scratch inputs explicit"
+)]
 pub(super) fn decode_magnitude_sign_phase(
     coded_data: &[u8],
     lcup: usize,
@@ -93,6 +101,11 @@ pub(super) fn decode_magnitude_sign_phase(
     Some(())
 }
 
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "this stable per-quad hot helper keeps scan cursors explicit and must inline into both row walkers"
+)]
 #[inline(always)]
 fn decode_magnitude_sign_pair_from_cleanup(
     magsgn: &mut ForwardBitReader<0xFF>,
@@ -146,6 +159,11 @@ fn decode_magnitude_sign_pair_from_cleanup(
     Some(())
 }
 
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "this stable first-row hot path mirrors the cleanup scan state without packaging transient cursors"
+)]
 #[inline(always)]
 pub(super) fn decode_magnitude_sign_first_row_from_cleanup(
     magsgn: &mut ForwardBitReader<0xFF>,
@@ -193,6 +211,11 @@ pub(super) fn decode_magnitude_sign_first_row_from_cleanup(
     Some(())
 }
 
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "this stable row hot path mirrors the cleanup scan state without packaging transient cursors"
+)]
 #[inline(always)]
 pub(super) fn decode_magnitude_sign_row_from_cleanup(
     magsgn: &mut ForwardBitReader<0xFF>,
@@ -223,7 +246,7 @@ pub(super) fn decode_magnitude_sign_row_from_cleanup(
         let mut gamma = inf & 0xF0;
         gamma &= gamma.wrapping_sub(0x10);
         let mut emax = v_n_scratch[vp] | v_n_scratch[vp + 1];
-        emax = 31 - (emax | 2).leading_zeros();
+        emax = (emax | 2).ilog2();
         let kappa = if gamma != 0 { emax } else { 1 };
         let uq = u_q + kappa;
 
@@ -252,6 +275,10 @@ pub(super) fn decode_magnitude_sign_row_from_cleanup(
 }
 
 #[inline(never)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fused cleanup/magnitude phase keeps bitstream, geometry, scratch, and observer state explicit"
+)]
 pub(super) fn decode_cleanup_and_magnitude_sign_phase(
     coded_data: &[u8],
     lcup: usize,

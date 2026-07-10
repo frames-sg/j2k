@@ -48,7 +48,7 @@ impl<'a> MelDecoder<'a> {
         }
 
         self.bits_left -= 1;
-        Some(((self.current_byte >> self.bits_left) & 1) as u32)
+        Some(u32::from((self.current_byte >> self.bits_left) & 1))
     }
 
     fn read_bits(&mut self, count: usize) -> Option<u32> {
@@ -127,12 +127,13 @@ impl<'a, const PAD: u8> ForwardBitReader<'a, PAD> {
                 PAD
             };
 
-            self.tmp |= (byte as u64) << self.bits;
+            self.tmp |= u64::from(byte) << self.bits;
             self.bits += 8 - u32::from(self.unstuff);
             self.unstuff = byte == 0xFF;
         }
     }
 
+    #[expect(clippy::cast_possible_truncation, reason = "low reservoir word")]
     pub(super) fn fetch(&mut self) -> u32 {
         if self.bits < 32 {
             self.fill();
@@ -158,6 +159,7 @@ pub(super) struct ReverseBitReader<'a> {
 }
 
 impl<'a> ReverseBitReader<'a> {
+    #[expect(clippy::cast_possible_wrap, reason = "validated signed cursor")]
     pub(super) fn new_vlc(data: &'a [u8], lcup: usize, scup: usize) -> Self {
         let d = data[lcup - 2];
         let tmp = u64::from(d >> 4);
@@ -173,6 +175,7 @@ impl<'a> ReverseBitReader<'a> {
         }
     }
 
+    #[expect(clippy::cast_possible_wrap, reason = "validated signed cursor")]
     pub(super) fn new_mrp(data: &'a [u8]) -> Self {
         Self {
             data,
@@ -184,6 +187,7 @@ impl<'a> ReverseBitReader<'a> {
         }
     }
 
+    #[expect(clippy::cast_sign_loss, reason = "nonnegative live cursor")]
     fn fill(&mut self) {
         while self.bits <= 32 {
             let byte = if self.remaining > 0 {
@@ -196,12 +200,13 @@ impl<'a> ReverseBitReader<'a> {
             };
 
             let d_bits = 8 - u32::from(self.unstuff && (byte & 0x7F) == 0x7F);
-            self.tmp |= (byte as u64) << self.bits;
+            self.tmp |= u64::from(byte) << self.bits;
             self.bits += d_bits;
             self.unstuff = byte > 0x8F;
         }
     }
 
+    #[expect(clippy::cast_possible_truncation, reason = "low reservoir word")]
     pub(super) fn fetch(&mut self) -> u32 {
         if self.bits < 32 {
             self.fill();
@@ -210,6 +215,7 @@ impl<'a> ReverseBitReader<'a> {
         self.tmp as u32
     }
 
+    #[expect(clippy::cast_possible_truncation, reason = "low reservoir word")]
     pub(super) fn advance(&mut self, count: u32) -> u32 {
         debug_assert!(count <= self.bits);
         self.tmp >>= count;
@@ -218,6 +224,7 @@ impl<'a> ReverseBitReader<'a> {
     }
 }
 
+#[expect(clippy::inline_always, reason = "inline two loads in refinement scans")]
 #[inline(always)]
 pub(super) fn read_u32_pair(values: &[u16], index: usize) -> u32 {
     u32::from(values[index]) | (u32::from(values[index + 1]) << 16)

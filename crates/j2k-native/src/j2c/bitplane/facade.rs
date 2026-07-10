@@ -15,6 +15,10 @@ use crate::J2kCodeBlockSegment;
 ///
 /// The result will be stored in the form of a vector of signs and magnitudes
 /// in the bitplane decoder context.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable Tier-1 decode boundary borrows the shared code-block style"
+)]
 pub(crate) fn decode(
     code_block: &CodeBlock,
     sub_band_type: SubBandType,
@@ -44,6 +48,11 @@ pub(crate) fn decode(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable validation boundary keeps codestream fields explicit and ordered"
+)]
 pub(crate) fn decode_code_block_segments_validated(
     data: &[u8],
     segments: &[J2kCodeBlockSegment],
@@ -74,6 +83,11 @@ pub(crate) fn decode_code_block_segments_validated(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the profiled validation boundary mirrors the stable unprofiled field order"
+)]
 pub(crate) fn decode_code_block_segments_validated_profiled(
     data: &[u8],
     segments: &[J2kCodeBlockSegment],
@@ -109,6 +123,11 @@ pub(crate) fn decode_code_block_segments_validated_profiled(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the observer adapter preserves the validated boundary without reallocating a hot job"
+)]
 pub(super) fn decode_code_block_segments_validated_with_observer<O: J2kDecodeObserver>(
     data: &[u8],
     segments: &[J2kCodeBlockSegment],

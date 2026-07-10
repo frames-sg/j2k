@@ -112,7 +112,8 @@ fn generated_coefficients(width: u32, height: u32, seed: u32) -> Vec<i32> {
     let mut coefficients = Vec::with_capacity(width as usize * height as usize);
     for idx in 0..width * height {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let value = ((state >> 16) & 0x01ff) as i32 - 255;
+        let value =
+            i32::try_from((state >> 16) & 0x01ff).expect("masked coefficient fits i32") - 255;
         coefficients.push(if (idx + seed).is_multiple_of(13) {
             0
         } else {
@@ -134,7 +135,13 @@ fn default_style() -> J2kCodeBlockStyle {
 
 fn generated_htj2k_encode_batch(blocks: usize, width: u32, height: u32) -> Vec<Vec<i32>> {
     (0..blocks)
-        .map(|index| generated_coefficients(width, height, 0xA5A5_0000 ^ index as u32))
+        .map(|index| {
+            generated_coefficients(
+                width,
+                height,
+                0xA5A5_0000 ^ u32::try_from(index).expect("benchmark block index fits u32"),
+            )
+        })
         .collect()
 }
 
@@ -234,9 +241,7 @@ fn encode_j2k_batch_rayon(
 }
 
 fn benchmark_thread_counts() -> Vec<usize> {
-    let available = std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1);
+    let available = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let mut counts = vec![1, available.min(2), available.min(4), available];
     counts.sort_unstable();
     counts.dedup();
@@ -389,7 +394,8 @@ fn bench_htj2k_cleanup_decode(c: &mut Criterion) {
             .expect("encode HTJ2K code block");
         let job = HtCodeBlockDecodeJob {
             data: &encoded.data,
-            cleanup_length: encoded.data.len() as u32,
+            cleanup_length: u32::try_from(encoded.data.len())
+                .expect("benchmark payload length fits u32"),
             refinement_length: 0,
             width,
             height,
@@ -586,9 +592,7 @@ fn bench_htj2k_cleanup_encode_parallel_granularity(c: &mut Criterion) {
         );
     }
 
-    let available = std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1);
+    let available = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let chunk_pool = ThreadPoolBuilder::new()
         .num_threads(available)
         .build()

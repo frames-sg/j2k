@@ -5,6 +5,10 @@ use super::{
     vec, BlockCodingMode, DecodeSettings, EncodeComponentSampleInfo, EncodeOptions, Image, Vec,
 };
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub(super) fn validate_htj2k_codestream(
     codestream: &[u8],
     pixels: &[u8],

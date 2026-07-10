@@ -145,6 +145,10 @@ fn validate_packet_header_marker_payload(
     Ok(())
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
 pub(super) fn validate_packet_header_marker_payloads(
     write_ppm: bool,
     write_ppt: bool,

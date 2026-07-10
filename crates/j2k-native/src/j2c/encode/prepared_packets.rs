@@ -44,6 +44,10 @@ pub(super) fn encode_prepared_resolution_packets(
         .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub(super) fn encode_prepared_resolution_packets_layered(
     prepared_packets: Vec<PreparedResolutionPacket>,
     num_layers: u8,
@@ -249,11 +253,11 @@ pub(super) fn encode_prepared_resolution_packets_layered(
                     LayeredPreparedBlock::Classic {
                         encoded,
                         segment_layers,
-                    } => classic_layer_contributions(encoded, num_layers, &segment_layers)?,
+                    } => classic_layer_contributions(&encoded, num_layers, &segment_layers)?,
                     LayeredPreparedBlock::HighThroughput {
                         encoded,
                         segment_layers,
-                    } => ht_layer_contributions(encoded, num_layers, &segment_layers)?,
+                    } => ht_layer_contributions(&encoded, num_layers, &segment_layers)?,
                 };
                 for (layer_idx, contribution) in contributions.into_iter().enumerate() {
                     layer_subbands[layer_idx].code_blocks.push(contribution);

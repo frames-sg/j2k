@@ -10,11 +10,11 @@ fn marker_offset(codestream: &[u8], marker: u8) -> usize {
 }
 
 fn packet_length_bytes(mut length: usize) -> Vec<u8> {
-    let mut groups = vec![(length & 0x7F) as u8];
+    let mut groups = vec![u8::try_from(length & 0x7F).expect("7-bit group fits u8")];
     length >>= 7;
 
     while length > 0 {
-        groups.push((length & 0x7F) as u8);
+        groups.push(u8::try_from(length & 0x7F).expect("7-bit group fits u8"));
         length >>= 7;
     }
 

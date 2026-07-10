@@ -86,13 +86,13 @@ impl ComponentInfo {
                     .map(|s| (s.exponent, s.mantissa))
                     .ok_or(ValidationError::MissingStepSize)?;
                 let n_b = if resolution == 0 {
-                    n_ll as u16
+                    u16::from(n_ll)
                 } else {
-                    n_ll as u16 + 1 - resolution as u16
+                    u16::from(n_ll) + 1 - u16::from(resolution)
                 };
 
                 let exponent = e_0
-                    .checked_sub(n_ll as u16)
+                    .checked_sub(u16::from(n_ll))
                     .and_then(|e| e.checked_add(n_b))
                     .ok_or(ValidationError::InvalidExponents)?;
 
@@ -194,14 +194,26 @@ impl CodingStyleFlags {
         Self { raw: value }
     }
 
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+    )]
     pub(crate) fn has_precincts(&self) -> bool {
         (self.raw & 0x01) != 0
     }
 
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+    )]
     pub(crate) fn may_use_sop_markers(&self) -> bool {
         (self.raw & 0x02) != 0
     }
 
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+    )]
     pub(crate) fn uses_eph_marker(&self) -> bool {
         (self.raw & 0x04) != 0
     }
@@ -209,6 +221,10 @@ impl CodingStyleFlags {
 
 /// Code-block style flags (Table A.19).
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each independent JPEG 2000 code-block style flag maps to a COD marker bit"
+)]
 pub(crate) struct CodeBlockStyle {
     pub(crate) selective_arithmetic_coding_bypass: bool,
     pub(crate) reset_context_probabilities: bool,
@@ -232,6 +248,10 @@ impl CodeBlockStyle {
         }
     }
 
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+    )]
     pub(crate) fn uses_high_throughput_block_coding(&self) -> bool {
         self.high_throughput_block_coding
     }

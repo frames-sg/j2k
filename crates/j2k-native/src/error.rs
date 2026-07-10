@@ -474,6 +474,8 @@ pub(crate) use err;
 
 #[cfg(test)]
 mod classification_tests {
+    use alloc::string::ToString;
+
     use super::{
         DecodeError, DecodeErrorClass, DecodingError, DirectPlanUnsupportedReason, FormatError,
         MarkerError, ValidationError,

@@ -6,24 +6,27 @@
 //! encoder's signaling decisions.
 
 /// Returns whether `value` can be signalled in `bits` bits.
+#[must_use]
 #[inline]
 pub fn value_fits_in_bits(value: u32, bits: u32) -> bool {
     bits >= u32::BITS || value < (1u32 << bits)
 }
 
 /// Calculate number of bits needed to encode a segment length.
+#[must_use]
 #[inline]
 pub fn bits_for_length(l_block: u32, num_coding_passes: u8) -> u32 {
     let log2_passes = if num_coding_passes <= 1 {
         0
     } else {
-        (num_coding_passes as u32).ilog2()
+        u32::from(num_coding_passes).ilog2()
     };
     l_block + log2_passes
 }
 
 /// Number of bits needed to encode an HT cleanup segment length, folding
 /// placeholder passes into the pass count.
+#[must_use]
 #[inline]
 pub fn bits_for_ht_cleanup_length(l_block: u32, raw_num_passes: u8) -> u32 {
     let placeholder_groups = u32::from(raw_num_passes.saturating_sub(1)) / 3;
@@ -34,6 +37,7 @@ pub fn bits_for_ht_cleanup_length(l_block: u32, raw_num_passes: u8) -> u32 {
 /// Number of bits needed to encode an HT refinement-only packet
 /// contribution length after the cleanup segment has already appeared in an
 /// earlier quality layer.
+#[must_use]
 #[inline]
 pub fn bits_for_ht_refinement_only_length(l_block: u32, num_coding_passes: u8) -> u32 {
     l_block + u32::from(num_coding_passes > 1)

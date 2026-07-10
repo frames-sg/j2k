@@ -40,6 +40,10 @@ pub(super) struct SingleTilePlan {
     pub(super) params: EncodeParams,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub(super) fn validate_encode_request(
     pixels_len: usize,
     width: u32,
@@ -126,6 +130,14 @@ pub(super) fn validate_encode_request(
     }))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub(super) fn build_single_tile_plan(
     validated: ValidatedSingleTileInput,
     width: u32,

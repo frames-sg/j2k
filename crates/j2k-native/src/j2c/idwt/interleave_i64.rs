@@ -27,6 +27,10 @@ pub(super) fn apply_level_i64(
     }
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired LL, HL, LH, and HH band names follow JPEG 2000 specification notation"
+)]
 fn interleave_samples_i64(
     input: IDWTInputI64<'_>,
     decomposition: &Decomposition,
@@ -67,8 +71,8 @@ fn interleave_samples_i64(
         (num_u_high, num_u_low)
     };
 
-    let even_row_start = if v0 % 2 == 0 { 0 } else { 1 };
-    let odd_row_start = if v0 % 2 == 0 { 1 } else { 0 };
+    let even_row_start = usize::from(v0 % 2 != 0);
+    let odd_row_start = usize::from(v0 % 2 == 0);
 
     let (first_even, second_even) = if u0 % 2 == 0 { (ll, hl) } else { (hl, ll) };
     interleave_rows_i64(
@@ -97,6 +101,10 @@ fn interleave_samples_i64(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the reversible IDWT row kernel keeps paired-band geometry and output bounds explicit in its hot loop"
+)]
 fn interleave_rows_i64(
     first_band: &[i64],
     second_band: &[i64],

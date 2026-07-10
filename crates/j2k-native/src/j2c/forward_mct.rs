@@ -89,6 +89,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the reversible color transform must preserve these exactly representable integer-valued samples"
+    )]
     fn test_forward_rct_basic() {
         // R=100, G=150, B=200
         let mut comps = vec![vec![100.0], vec![150.0], vec![200.0]];
@@ -103,6 +107,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the reversible color-transform round trip must be exactly lossless for these samples"
+    )]
     fn test_rct_round_trip() {
         let r = 128.0f32;
         let g = 64.0f32;

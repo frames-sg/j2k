@@ -14,16 +14,41 @@ fn fixture() -> Vec<u8> {
 }
 
 fn rewrite_component_descriptor(bytes: &mut [u8], component: usize, ssiz: u8) {
-    let siz = bytes
+    let siz_offset = bytes
         .windows(2)
         .position(|marker| marker == [0xff, 0x51])
         .expect("SIZ marker");
-    bytes[siz + 40 + component * 3] = ssiz;
+    bytes[siz_offset + 40 + component * 3] = ssiz;
 }
 
 fn signed_12_bytes(sample: i16) -> [u8; 2] {
-    let raw = (i32::from(sample) & 0x0fff) as u16;
+    let raw = u16::try_from(i32::from(sample) & 0x0fff).expect("masked 12-bit sample fits u16");
     raw.to_le_bytes()
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "decoded fixture samples are integral and constrained to their declared u8 range"
+)]
+fn rounded_u8(sample: f32) -> u8 {
+    sample.round() as u8
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "decoded fixture samples are integral and constrained to their declared i8 range"
+)]
+fn rounded_i8(sample: f32) -> i8 {
+    sample.round() as i8
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "decoded fixture samples are integral and constrained to their declared i16 range"
+)]
+fn rounded_i16(sample: f32) -> i16 {
+    sample.round() as i16
 }
 
 #[test]
@@ -49,7 +74,7 @@ fn decoded_components_expose_component_planes() {
     let mut interleaved = Vec::with_capacity(12);
     for idx in 0..4 {
         for plane in planes.planes() {
-            interleaved.push(plane.samples()[idx].round() as u8);
+            interleaved.push(rounded_u8(plane.samples()[idx]));
         }
     }
     assert_eq!(interleaved, bitmap.data);
@@ -61,9 +86,8 @@ fn decode_native_rejects_mixed_component_bit_depths() {
     rewrite_component_descriptor(&mut bytes, 1, 11);
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("image parses");
 
-    let err = match image.decode_native() {
-        Ok(_) => panic!("mixed bit depths cannot be packed as RawBitmap"),
-        Err(err) => err,
+    let Err(err) = image.decode_native() else {
+        panic!("mixed bit depths cannot be packed as RawBitmap");
     };
 
     assert!(matches!(err, DecodeError::Decoding(_)));
@@ -161,12 +185,14 @@ fn typed_component_plane_encode_preserves_mixed_metadata_for_classic_and_htj2k()
         let decoded_unsigned = decoded.planes()[0]
             .samples()
             .iter()
-            .map(|sample| sample.round() as u8)
+            .copied()
+            .map(rounded_u8)
             .collect::<Vec<_>>();
         let decoded_signed = decoded.planes()[1]
             .samples()
             .iter()
-            .map(|sample| sample.round() as i16)
+            .copied()
+            .map(rounded_i16)
             .collect::<Vec<_>>();
 
         assert_eq!(decoded_unsigned, unsigned);
@@ -229,9 +255,8 @@ fn decode_components_rejects_gt24_bit_float_planes() {
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("image parses");
     let mut context = DecoderContext::default();
 
-    let err = match image.decode_components_with_context(&mut context) {
-        Ok(_) => panic!(">24-bit samples cannot be represented exactly as f32 planes"),
-        Err(err) => err,
+    let Err(err) = image.decode_components_with_context(&mut context) else {
+        panic!(">24-bit samples cannot be represented exactly as f32 planes");
     };
 
     assert!(matches!(err, DecodeError::Decoding(_)));
@@ -262,7 +287,7 @@ fn decoded_region_components_expose_cropped_component_planes() {
     let mut interleaved = Vec::with_capacity(6);
     for idx in 0..2 {
         for plane in planes.planes() {
-            interleaved.push(plane.samples()[idx].round() as u8);
+            interleaved.push(rounded_u8(plane.samples()[idx]));
         }
     }
     assert_eq!(interleaved, bitmap.data);
@@ -270,7 +295,9 @@ fn decoded_region_components_expose_cropped_component_planes() {
 
 fn five_component_pixels() -> Vec<u8> {
     (0..3 * 2 * 5)
-        .map(|idx| ((idx * 17 + idx / 3) & 0xff) as u8)
+        .map(|idx| {
+            u8::try_from((idx * 17 + idx / 3) & 0xff).expect("test pattern is masked to one byte")
+        })
         .collect()
 }
 
@@ -324,7 +351,7 @@ fn htj2k_encode_roundtrips_more_than_four_components() {
 
 #[test]
 fn signed_gray8_roundtrips_through_component_planes_and_native_bytes() {
-    let pixels = [(-10_i8) as u8, (-1_i8) as u8, 0_i8 as u8, 12_i8 as u8];
+    let pixels = [(-10_i8).cast_unsigned(), (-1_i8).cast_unsigned(), 0, 12];
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 1,
@@ -348,7 +375,8 @@ fn signed_gray8_roundtrips_through_component_planes_and_native_bytes() {
     let decoded = components.planes()[0]
         .samples()
         .iter()
-        .map(|sample| sample.round() as i8)
+        .copied()
+        .map(rounded_i8)
         .collect::<Vec<_>>();
     assert_eq!(decoded, [-10, -1, 0, 12]);
 }
@@ -382,7 +410,8 @@ fn signed_gray16_roundtrips_through_native_bytes() {
     let decoded = components.planes()[0]
         .samples()
         .iter()
-        .map(|sample| sample.round() as i16)
+        .copied()
+        .map(rounded_i16)
         .collect::<Vec<_>>();
     assert_eq!(decoded, samples);
 }
@@ -396,7 +425,7 @@ fn unsigned_24_bytes(sample: u32) -> [u8; 3] {
 }
 
 fn signed_24_bytes(sample: i32) -> [u8; 3] {
-    let raw = (sample as u32) & 0x00ff_ffff;
+    let raw = sample.cast_unsigned() & 0x00ff_ffff;
     unsigned_24_bytes(raw)
 }
 

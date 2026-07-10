@@ -2,6 +2,11 @@
 
 use super::readers::{read_u32_pair, ReverseBitReader};
 
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "the magnitude-refinement scan is a hot stable phase boundary with explicit geometry"
+)]
 #[inline(always)]
 pub(super) fn apply_magnitude_refinement_phase(
     refinement_data: &[u8],

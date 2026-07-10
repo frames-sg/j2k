@@ -10,6 +10,10 @@ use super::state::{
     HAS_ZERO_CODING_MASK, SIGNIFICANCE_MASK,
 };
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
+)]
 #[inline(always)]
 fn decode_sign_bit_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
     idx: usize,
@@ -19,8 +23,8 @@ fn decode_sign_bit_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
 ) {
     let (ctx_label, xor_bit) =
         context_label_sign_coding_index_with_neighbors::<NORMAL_NEIGHBORS>(idx, y, ctx);
-    let sign_bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label)) ^ xor_bit as u32;
-    ctx.set_sign_index(idx, sign_bit as u8);
+    let sign_bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label)) ^ u32::from(xor_bit);
+    ctx.set_sign_index(idx, u8::from(sign_bit != 0));
 }
 
 pub(super) fn cleanup_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
@@ -113,6 +117,10 @@ pub(super) fn cleanup_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: boo
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
+)]
 #[inline(always)]
 pub(super) fn cleanup_candidate_scan_mask(
     ctx: &BitPlaneDecodeContext,
@@ -123,6 +131,10 @@ pub(super) fn cleanup_candidate_scan_mask(
         & !(ctx.significant_scan_masks[scan_unit] | ctx.zero_coding_scan_masks[scan_unit])
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
+)]
 #[inline(always)]
 fn scan_unit_valid_mask(stripe_height: usize) -> u8 {
     (1u8 << stripe_height) - 1
@@ -227,6 +239,10 @@ pub(super) fn magnitude_refinement_pass_arithmetic_with_neighbors<const NORMAL_N
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
+)]
 #[inline(always)]
 fn neighborhood_significance_states_for_path<const NORMAL_NEIGHBORS: bool>(
     ctx: &BitPlaneDecodeContext,
@@ -240,6 +256,10 @@ fn neighborhood_significance_states_for_path<const NORMAL_NEIGHBORS: bool>(
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
+)]
 #[inline(always)]
 fn cleanup_run_length_candidate_with_neighbors<const NORMAL_NEIGHBORS: bool>(
     ctx: &BitPlaneDecodeContext,
@@ -260,6 +280,10 @@ fn cleanup_run_length_candidate_with_neighbors<const NORMAL_NEIGHBORS: bool>(
     true
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
+)]
 #[inline(always)]
 fn cleanup_coefficient_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
     ctx: &mut BitPlaneDecodeContext,
@@ -281,6 +305,10 @@ fn cleanup_coefficient_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "Tier-1 coefficient helpers are measured inner-loop hot paths"
+)]
 #[inline(always)]
 pub(super) fn cleanup_run_length_candidate(
     ctx: &BitPlaneDecodeContext,

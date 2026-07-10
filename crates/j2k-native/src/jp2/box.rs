@@ -6,25 +6,25 @@ use crate::error::{FormatError, Result};
 use crate::reader::BitReader;
 
 /// JP2 signature box - 'jP\040\040'.
-pub(crate) const JP2_SIGNATURE: u32 = 0x6A502020;
+pub(crate) const JP2_SIGNATURE: u32 = 0x6A50_2020;
 /// File Type box - 'ftyp'.
-pub(crate) const FILE_TYPE: u32 = 0x66747970;
+pub(crate) const FILE_TYPE: u32 = 0x6674_7970;
 /// JP2 Header box - 'jp2h'.
-pub(crate) const JP2_HEADER: u32 = 0x6A703268;
+pub(crate) const JP2_HEADER: u32 = 0x6A70_3268;
 /// Image Header box - 'ihdr'.
-pub(crate) const IMAGE_HEADER: u32 = 0x69686472;
+pub(crate) const IMAGE_HEADER: u32 = 0x6968_6472;
 /// Bits Per Component box - 'bpcc'.
-pub(crate) const BITS_PER_COMPONENT: u32 = 0x62706363;
+pub(crate) const BITS_PER_COMPONENT: u32 = 0x6270_6363;
 /// Colour Specification box - 'colr'.
-pub(crate) const COLOUR_SPECIFICATION: u32 = 0x636F6C72;
+pub(crate) const COLOUR_SPECIFICATION: u32 = 0x636F_6C72;
 /// Palette box - 'pclr'.
-pub(crate) const PALETTE: u32 = 0x70636C72;
+pub(crate) const PALETTE: u32 = 0x7063_6C72;
 /// Component Mapping box - 'cmap'.
-pub(crate) const COMPONENT_MAPPING: u32 = 0x636D6170;
+pub(crate) const COMPONENT_MAPPING: u32 = 0x636D_6170;
 /// Channel Definition box - 'cdef'.
-pub(crate) const CHANNEL_DEFINITION: u32 = 0x63646566;
+pub(crate) const CHANNEL_DEFINITION: u32 = 0x6364_6566;
 /// Contiguous Codestream box - 'jp2c'.
-pub(crate) const CONTIGUOUS_CODESTREAM: u32 = 0x6A703263;
+pub(crate) const CONTIGUOUS_CODESTREAM: u32 = 0x6A70_3263;
 
 pub(crate) struct Jp2Box<'a> {
     pub(crate) data: &'a [u8],
@@ -35,12 +35,7 @@ pub(crate) struct Jp2Box<'a> {
 ///
 /// Box tags are stored as 4-byte ASCII codes in big-endian format.
 pub(crate) fn tag_to_string(tag: u32) -> String {
-    let bytes = [
-        ((tag >> 24) & 0xFF) as u8,
-        ((tag >> 16) & 0xFF) as u8,
-        ((tag >> 8) & 0xFF) as u8,
-        (tag & 0xFF) as u8,
-    ];
+    let bytes = tag.to_be_bytes();
     String::from_utf8_lossy(&bytes).to_string()
 }
 

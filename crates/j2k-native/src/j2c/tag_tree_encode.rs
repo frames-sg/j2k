@@ -72,6 +72,10 @@ impl TagTreeEncoder {
     }
 
     /// Set the value of a leaf node at position (x, y).
+    #[expect(
+        clippy::similar_names,
+        reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+    )]
     pub(crate) fn set_value(&mut self, x: u32, y: u32, value: u32) {
         let idx = self.level_offsets[0] + (y * self.width + x) as usize;
         self.nodes[idx].value = value;
@@ -227,12 +231,14 @@ mod tests {
         ];
         let mut encoder = TagTreeEncoder::new(8, 8);
         for (idx, value) in values.iter().copied().enumerate() {
-            encoder.set_value(idx as u32 % 8, idx as u32 / 8, value);
+            let index = u32::try_from(idx).expect("8x8 tag-tree index fits u32");
+            encoder.set_value(index % 8, index / 8, value);
         }
 
         let mut writer = BitWriter::new();
         for (idx, value) in values.iter().copied().enumerate() {
-            encoder.encode(idx as u32 % 8, idx as u32 / 8, value + 1, &mut writer);
+            let index = u32::try_from(idx).expect("8x8 tag-tree index fits u32");
+            encoder.encode(index % 8, index / 8, value + 1, &mut writer);
         }
         let bytes = writer.finish();
 
@@ -240,14 +246,9 @@ mod tests {
         let mut decoder = TagTree::new(8, 8, &mut nodes);
         let mut reader = BitReader::new(&bytes);
         for (idx, expected) in values.iter().copied().enumerate() {
+            let index = u32::try_from(idx).expect("8x8 tag-tree index fits u32");
             let actual = decoder
-                .read(
-                    idx as u32 % 8,
-                    idx as u32 / 8,
-                    &mut reader,
-                    u32::MAX,
-                    &mut nodes,
-                )
+                .read(index % 8, index / 8, &mut reader, u32::MAX, &mut nodes)
                 .expect("tag tree decode");
             assert_eq!(actual, expected, "index {idx}");
         }

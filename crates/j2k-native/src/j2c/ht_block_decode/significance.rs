@@ -11,6 +11,11 @@ pub(crate) fn sigma_stride(width: u32) -> usize {
     ((width.div_ceil(4) + 2 + 7) & !7) as usize
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::inline_always,
+    reason = "the assembled cleanup significance mask is exactly two packed 16-bit groups in a hot scan"
+)]
 #[inline(always)]
 pub(super) fn build_sigma_from_cleanup_phase(
     cleanup: &[u16],
@@ -58,6 +63,14 @@ pub(super) fn build_sigma_from_cleanup_phase(
     Some(())
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "the hot significance scan uses bounded block coordinates and stores the low packed mask half"
+)]
 #[inline(always)]
 pub(super) fn apply_significance_propagation_phase(
     refinement_data: &[u8],

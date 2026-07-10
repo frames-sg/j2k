@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    checked_decode_byte_len2, checked_decode_byte_len3, math, native_bytes_per_sample,
+    checked_decode_byte_len2, checked_decode_byte_len3, native_bytes_per_sample,
     native_component_plane_dimensions, ComponentData, DecodedNativeComponents, DecoderContext,
     Image, NativeComponentPlane, RawBitmap, Result, ValidationError, Vec,
 };
@@ -52,10 +52,12 @@ impl<'a> Image<'a> {
     }
 
     pub(super) fn requires_exact_integer_decode(&self) -> bool {
-        self.header
-            .component_infos
-            .iter()
-            .any(|component| component.requires_exact_integer_decode())
+        for component in &self.header.component_infos {
+            if component.requires_exact_integer_decode() {
+                return true;
+            }
+        }
+        false
     }
 
     pub(super) fn decode_native_region_via_full_decode(
@@ -115,13 +117,13 @@ impl<'a> Image<'a> {
                 let (x_rsiz, y_rsiz) = plane.sampling;
                 let crop_x = x / u32::from(x_rsiz);
                 let crop_y = y / u32::from(y_rsiz);
-                let crop_x1 = x1.div_ceil(u32::from(x_rsiz)).min(plane.dimensions.0);
-                let crop_y1 = y1.div_ceil(u32::from(y_rsiz)).min(plane.dimensions.1);
+                let crop_end_x = x1.div_ceil(u32::from(x_rsiz)).min(plane.dimensions.0);
+                let crop_end_y = y1.div_ceil(u32::from(y_rsiz)).min(plane.dimensions.1);
                 (
                     crop_x,
                     crop_y,
-                    crop_x1.saturating_sub(crop_x),
-                    crop_y1.saturating_sub(crop_y),
+                    crop_end_x.saturating_sub(crop_x),
+                    crop_end_y.saturating_sub(crop_y),
                 )
             };
             let row_bytes = (crop_width as usize)
@@ -178,6 +180,11 @@ impl<'a> Image<'a> {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "samples are clamped to the declared signed or unsigned component range before packing"
+    )]
     fn push_native_i64_sample_bytes(out: &mut Vec<u8>, sample: i64, bit_depth: u8, signed: bool) {
         if signed {
             let magnitude_bits = u32::from(bit_depth.saturating_sub(1));
@@ -212,26 +219,33 @@ impl<'a> Image<'a> {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "rounded samples are range-checked before stable native-width packing"
+    )]
     pub(crate) fn push_native_sample_bytes(
         out: &mut Vec<u8>,
         sample: f32,
         bit_depth: u8,
         signed: bool,
     ) {
-        let rounded = math::round_f32(sample);
+        let sample = f64::from(sample);
         if signed {
             let magnitude_bits = u32::from(bit_depth.saturating_sub(1));
             let min = -(1_i64 << magnitude_bits);
             let max = (1_i64 << magnitude_bits) - 1;
-            let rounded = f64::from(rounded);
-            let clamped = if rounded.is_nan() {
+            let clamped = if sample.is_nan() {
                 0
-            } else if rounded <= min as f64 {
+            } else if sample <= min as f64 {
                 min
-            } else if rounded >= max as f64 {
+            } else if sample >= max as f64 {
                 max
+            } else if sample >= 0.0 {
+                (sample + 0.5) as i64
             } else {
-                rounded as i64
+                (sample - 0.5) as i64
             };
             if bit_depth <= 8 {
                 out.push((clamped as i8) as u8);
@@ -244,13 +258,12 @@ impl<'a> Image<'a> {
             }
         } else {
             let max = (1u64 << u32::from(bit_depth)) - 1;
-            let rounded = f64::from(rounded);
-            let clamped = if rounded.is_nan() || rounded <= 0.0 {
+            let clamped = if sample.is_nan() || sample <= 0.0 {
                 0
-            } else if rounded >= max as f64 {
+            } else if sample >= max as f64 {
                 max
             } else {
-                rounded as u64
+                (sample + 0.5) as u64
             };
             if bit_depth <= 8 {
                 out.push(clamped as u8);

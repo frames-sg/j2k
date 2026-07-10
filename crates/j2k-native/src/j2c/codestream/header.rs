@@ -15,6 +15,14 @@ use super::{
 use crate::error::{bail, DecodingError, MarkerError, Result, ValidationError};
 use crate::reader::BitReader;
 
+#[expect(
+    clippy::similar_names,
+    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+)]
 pub(crate) fn read_header<'a>(
     reader: &mut BitReader<'a>,
     settings: &DecodeSettings,
@@ -28,10 +36,11 @@ pub(crate) fn read_header<'a>(
     let mut cod = None;
     let mut qcd = None;
 
-    let num_components = size_data.component_sizes.len() as u16;
-    let mut cod_components = vec![None; num_components as usize];
-    let mut qcd_components = vec![None; num_components as usize];
-    let mut rgn_components = vec![None; num_components as usize];
+    let num_components = u16::try_from(size_data.component_sizes.len())
+        .map_err(|_| ValidationError::TooManyChannels)?;
+    let mut cod_components = vec![None; usize::from(num_components)];
+    let mut qcd_components = vec![None; usize::from(num_components)];
+    let mut rgn_components = vec![None; usize::from(num_components)];
     let mut progression_changes = vec![];
     let mut plm_markers = vec![];
     let mut ppm_markers = vec![];
@@ -149,7 +158,7 @@ pub(crate) fn read_header<'a>(
     // number of resolution levels.
     let min_num_resolution_levels = component_infos
         .iter()
-        .map(|c| c.num_resolution_levels())
+        .map(super::model::ComponentInfo::num_resolution_levels)
         .min()
         .ok_or(ValidationError::InvalidComponentMetadata)?;
     let skipped_resolution_levels =

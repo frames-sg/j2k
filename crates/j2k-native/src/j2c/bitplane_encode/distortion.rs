@@ -14,6 +14,10 @@ pub(super) fn segment_distortion_delta(
     (before - after).max(f64::EPSILON)
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "PCRD distortion is intentionally accumulated in f64 after integer reconstruction"
+)]
 fn coefficient_distortion_after_passes(
     coefficients: &[i64],
     completed_passes: u8,
