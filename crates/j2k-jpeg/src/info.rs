@@ -111,17 +111,18 @@ impl SamplingFactors {
             .iter()
             .all(|&(h, v)| (1..=4).contains(&h) && (1..=4).contains(&v)));
         let mut packed = [(0u8, 0u8); 4];
+        let mut component_count = 0u8;
         let mut max_h = 0u8;
         let mut max_v = 0u8;
         for (idx, &(h, v)) in components.iter().enumerate() {
             packed[idx] = (h, v);
+            component_count += 1;
             max_h = max_h.max(h);
             max_v = max_v.max(v);
         }
         Self {
             components: packed,
-            component_count: u8::try_from(components.len())
-                .expect("validated JPEG sampling contains at most four components"),
+            component_count,
             max_h,
             max_v,
         }
@@ -130,7 +131,7 @@ impl SamplingFactors {
     /// Number of declared components.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.component_count as usize
+        usize::from(self.component_count)
     }
 
     /// True when no components were declared.
@@ -148,7 +149,7 @@ impl SamplingFactors {
     /// Sampling factors in component declaration order.
     #[must_use]
     pub fn components(&self) -> &[(u8, u8)] {
-        &self.components[..self.component_count as usize]
+        &self.components[..usize::from(self.component_count)]
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (u8, u8)> + '_ {

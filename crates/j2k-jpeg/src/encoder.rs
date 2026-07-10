@@ -177,9 +177,9 @@ impl BitWriter {
         }
     }
 
-    fn write_bits(&mut self, code: u16, len: u8) {
+    fn write_bits(&mut self, code: u32, len: u8) {
         for bit_idx in (0..len).rev() {
-            let bit = ((code >> bit_idx) & 1) as u8;
+            let bit = u8::from(((code >> bit_idx) & 1) != 0);
             self.current = (self.current << 1) | bit;
             self.used += 1;
             if self.used == 8 {
@@ -772,10 +772,10 @@ pub(crate) fn encode_block(
 ) -> Result<(), JpegEncodeError> {
     let diff = coeffs[0] - *prev_dc;
     *prev_dc = coeffs[0];
-    let dc_size = magnitude_category(diff);
+    let (dc_size, dc_bits) = magnitude(diff);
     write_huffman_symbol(dc_table, dc_size, writer)?;
     if dc_size > 0 {
-        writer.write_bits(magnitude_bits(diff, dc_size), dc_size);
+        writer.write_bits(dc_bits, dc_size);
     }
 
     let mut zero_run = 0u8;
@@ -789,10 +789,10 @@ pub(crate) fn encode_block(
             write_huffman_symbol(ac_table, 0xF0, writer)?;
             zero_run -= 16;
         }
-        let size = magnitude_category(coeff);
+        let (size, bits) = magnitude(coeff);
         let symbol = (zero_run << 4) | size;
         write_huffman_symbol(ac_table, symbol, writer)?;
-        writer.write_bits(magnitude_bits(coeff, size), size);
+        writer.write_bits(bits, size);
         zero_run = 0;
     }
     if zero_run > 0 {
@@ -810,41 +810,34 @@ fn write_huffman_symbol(
     if len == 0 {
         return Err(JpegEncodeError::MissingHuffmanCode { symbol });
     }
-    writer.write_bits(table.codes[symbol as usize], len);
+    writer.write_bits(u32::from(table.codes[symbol as usize]), len);
     Ok(())
 }
 
-fn magnitude_category(value: i32) -> u8 {
+fn magnitude(value: i32) -> (u8, u32) {
     if value == 0 {
-        return 0;
+        return (0, 0);
     }
-    let mut abs = value.unsigned_abs();
+    let magnitude = value.unsigned_abs();
+    let mut remaining = magnitude;
     let mut size = 0u8;
-    while abs > 0 {
+    while remaining > 0 {
         size += 1;
-        abs >>= 1;
+        remaining >>= 1;
     }
-    size
-}
-
-fn magnitude_bits(value: i32, size: u8) -> u16 {
-    if size == 0 {
-        return 0;
-    }
-    if value >= 0 {
-        u16::try_from(value).expect("non-negative JPEG magnitude must fit in 16 bits")
+    let category_mask = u32::MAX >> (u32::BITS - u32::from(size));
+    let bits = if value >= 0 {
+        magnitude
     } else {
-        u16::try_from(value + ((1i32 << size) - 1))
-            .expect("negative JPEG magnitude encoding must fit in 16 bits")
-    }
+        category_mask - magnitude
+    };
+    (size, bits)
 }
 
 fn cosine_table() -> [[f64; 8]; 8] {
     let mut table = [[0.0; 8]; 8];
-    for (u, row) in table.iter_mut().enumerate() {
-        let u = u32::try_from(u).expect("cosine-table frequency is below eight");
-        for (x, value) in row.iter_mut().enumerate() {
-            let x = u32::try_from(x).expect("cosine-table position is below eight");
+    for (u, row) in (0u32..8).zip(&mut table) {
+        for (x, value) in (0u32..8).zip(row) {
             *value = ((f64::from(2 * x + 1) * f64::from(u) * PI) / 16.0).cos();
         }
     }
@@ -854,6 +847,15 @@ fn cosine_table() -> [[f64; 8]; 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn magnitude_represents_the_full_i32_domain() {
+        assert_eq!(magnitude(0), (0, 0));
+        assert_eq!(magnitude(5), (3, 5));
+        assert_eq!(magnitude(-5), (3, 2));
+        assert_eq!(magnitude(i32::MAX), (31, i32::MAX.unsigned_abs()));
+        assert_eq!(magnitude(i32::MIN), (32, i32::MAX.unsigned_abs()));
+    }
 
     fn patterned_rgb(width: u32, height: u32) -> Vec<u8> {
         let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
