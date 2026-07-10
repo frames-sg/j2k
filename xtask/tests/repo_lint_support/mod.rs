@@ -25,6 +25,7 @@ pub(crate) mod public_docs_policy;
 pub(crate) mod release_policy;
 pub(crate) mod shader_policy;
 pub(crate) mod source_policy;
+pub(crate) mod suppression_policy;
 pub(crate) mod transcode_structure_policy;
 pub(crate) mod workflow_policy;
 pub(crate) mod xtask_main_structure_policy;
@@ -615,10 +616,36 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
         let entry = entry.expect("read directory entry");
         let path = entry.path();
         if path.is_dir() {
+            if should_skip_repo_dir(&path) {
+                continue;
+            }
             collect_rust_sources(&path, out);
         } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
             out.push(path);
         }
+    }
+}
+
+#[test]
+fn rust_source_scan_excludes_generated_repository_trees() {
+    let sources = rust_sources(&repo_root().join("crates"));
+    assert!(!sources.is_empty(), "workspace Rust source inventory");
+
+    for source in sources {
+        assert!(
+            !source.components().any(|component| {
+                matches!(
+                    component,
+                    Component::Normal(name)
+                        if matches!(
+                            name.to_str(),
+                            Some(".codewhale" | ".git" | ".venv" | "target")
+                        )
+                )
+            }),
+            "generated source escaped the repository scan boundary: {}",
+            source.display()
+        );
     }
 }
 
