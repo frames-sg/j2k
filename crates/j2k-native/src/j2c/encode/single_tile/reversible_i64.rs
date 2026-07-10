@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::super::*;
+use super::super::{
+    deinterleave_to_i64, encode_i64_component_resolution_packets, fdwt, forward_rct_i64,
+    prepare_subband_i64, roi_subband_scale, vec, ComponentRoiEncodePlan, EncodeOptions,
+    EncodeParams, I64CodestreamPacketRequest, I64PacketizeRequest, I64SubbandEncodeSettings,
+    J2kEncodeStageAccelerator, PreparedResolutionPacket, QuantStepSize, SubBandType, Vec,
+    MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES,
+};
 
 pub(super) struct ReversibleI64SingleTileRequest<'a, A: J2kEncodeStageAccelerator> {
     pub(super) pixels: &'a [u8],

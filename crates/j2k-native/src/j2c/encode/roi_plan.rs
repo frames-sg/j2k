@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::*;
+use super::{
+    vec, BlockCodingMode, EncodeOptions, EncodeRoiRegion, QuantStepSize, Vec,
+    MAX_CLASSIC_ROI_CODED_BITPLANES, MAX_HT_ROI_CODED_BITPLANES,
+};
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ComponentRoiEncodePlan {
