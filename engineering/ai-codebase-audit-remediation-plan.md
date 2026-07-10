@@ -50,16 +50,15 @@ coverage, and the clean release matrix.
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: STR-011 native HT block-encode split and STR-014 CUDA J2K
-  host-encode split; STR-012 JPEG stripe-emission split is queued for the next
-  free lane
+- Current task: STR-011 native HT block-encode split, STR-012 JPEG
+  stripe-emission split, and STR-015 xtask pedantic-suppression cleanup
 - Parallel tasks: pass-order/bit-consumption-preserving native extraction,
-  precision/color/ROI-preserving JPEG rendering extraction, and
-  ABI/kernel-selection-preserving CUDA transcode extraction
-- Last completed task: STR-012 JPEG baseline-adapter split
-- Last completed implementation commit: f6d76f09
-  (`refactor(jpeg): split baseline encode adapter`); the preceding CUDA Oxide
-  transcode-device split is 0e5dbdc3
+  byte/color/subsampling-preserving JPEG emission extraction, and fail-closed
+  release-tooling lint escalation
+- Last completed task: STR-014 CUDA J2K host-encode split
+- Last completed implementation commit: 5ac4771d
+  (`refactor(cuda-runtime): split j2k encode host stages`); the preceding JPEG
+  baseline-adapter split is f6d76f09
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
@@ -230,7 +229,7 @@ The rubric was checked against current primary or first-party sources on
 | STR-012 | P2 | in progress | STR-009 | Sequential entropy, 12-bit rendering, and baseline adapter complete; stripe-emission root remains |
 | STR-013 | P2 | complete | STR-009 | Split mixed encode/fixture comparison tooling roots |
 | STR-014 | P2 | in progress | STR-009 | Close actionable GPU/runtime findings from the independent large-file pass |
-| STR-015 | P2 | pending | STR-009 through STR-014 | Remove or narrowly justify broad lint suppressions and hidden production namespace seams |
+| STR-015 | P2 | in progress | STR-009 through STR-014 | Remove or narrowly justify broad lint suppressions and hidden production namespace seams |
 | JPEGCOR-001 | P2 | complete | STR-012A | Fixed ordered-dither rounding; stored and live libjpeg-turbo output now matches byte-for-byte |
 | TOOL-001 | P3 | complete | DUP-001 | Adoption report model/render split |
 | CUDA-002 | P1 | complete | SEC-001 | One exact named release-cuda gate with zero skip markers |
@@ -1179,13 +1178,26 @@ fields/order, arithmetic, and the one shared-prelude include match; strict
 checks/Clippy and 90/93 host-test lanes passed. Actual PTX and NVIDIA execution
 remain external because this host lacks CUDA Oxide and CUDA headers.
 
+Completed the host half of priority 5 in commit 5ac4771d: CUDA runtime
+`j2k_encode.rs` fell from 1,630 to a 27-line owner with focused types,
+preprocessing/MCT, DWT, quantization, launch, readback, validation, ABI-test,
+and structure-test modules. The split follows the implementation that actually
+exists; this host layer has no tag-tree, packetization, compaction, dispatch,
+or ABI-struct responsibility to invent. Exact 64/64 function-body, 15/15
+struct-field/order, seven kernel-argument-list, ten kernel-selection,
+resource-order, runtime-string, derive, and documentation parity passed.
+Default/all-feature checks, strict Clippy, 95/95 and 98/98 host tests, and
+dependent `j2k-cuda` compilation passed. The six pre-existing 5/3-versus-9/7
+and host-versus-resident clone pairs did not increase; actual PTX and NVIDIA
+execution remain external. The CUDA Oxide device half remains pending.
+
 | Priority | Split targets | Required boundary |
 |---:|---|---|
 | 1 | JPEG Metal `compute.rs` plus included `fast_packets_impl`, `pack_dispatch_impl`, `batch_decode_full`, `batch_decode_region`, `batch_decode_entry`, `batch_decode_impl`, and `single_decode_impl` (effective 8,511-line namespace) | Replace production `include!` fragments with real modules/explicit imports; split packet, pack, single, RGB/RGBA, and repeated/grouped route families |
 | 2 | Completed: CUDA runtime `j2k_decode.rs` (2,142 physical lines at split) | ABI types, IDWT scheduling, store/MCT, tracing/validation |
 | 3 | Completed: CUDA runtime `jpeg.rs` (1,463 physical lines at split) | Encode/decode ABI and pipeline versus entropy diagnostics; file-wide similar-name allowance removed |
 | 4 | Completed: CUDA runtime `transcode.rs` (1,665 physical lines at split) and CUDA Oxide transcode source (1,509) | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
-| 5 | CUDA runtime `j2k_encode.rs` (1,630) and CUDA Oxide J2K encode source (1,490) | Types/results, preprocessing/MCT/DWT/quantization versus tag-tree/packetization/compaction while retaining one device export surface |
+| 5 | Host completed: CUDA runtime `j2k_encode.rs` (1,630); CUDA Oxide J2K encode source (1,490) remains | Host types/results, preprocessing/MCT/DWT/quantization; derive real device seams from the SIMT source while retaining one export surface |
 | 6 | Completed: CUDA runtime `context.rs` (1,013 physical lines at split) | Context/pinned memory, kernel cache/loading, and compact result types |
 | 7 | Metal `encode.rs` (1,773) and `decoder.rs` (1,560) | Resident batch/single/host fallback; request/direct plan/core adapters/surface transfer |
 | 8 | Metal Tier-1 test support (951 test-only lines inside production module) | Move parity helpers out of the production source without altering hot production code |
