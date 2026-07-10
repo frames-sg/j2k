@@ -56,9 +56,18 @@ struct BenchManifestStanza {
     stanza: &'static str,
 }
 
-const DEFAULT_BASELINE_REF: &str = "j2k-bench-original";
+// This is the immutable ref recorded by docs/benchmark-evidence.md for the
+// current benchmark suite. The older `j2k-bench-original` tag predates the
+// signinum-to-j2k crate rename and cannot host the benchmark source overlay.
+const DEFAULT_BASELINE_REF: &str = "29143c8e1f00bbbe9cf5ab37b3cea882f6d52139";
 const DEFAULT_THRESHOLD_PERCENT: f64 = 10.0;
 const MIN_ABSOLUTE_REGRESSION_NS: f64 = 100.0;
+const BENCH_PACKAGE_MANIFESTS: &[&str] = &[
+    "crates/j2k/Cargo.toml",
+    "crates/j2k-jpeg/Cargo.toml",
+    "crates/j2k-native/Cargo.toml",
+    "crates/j2k-cuda/Cargo.toml",
+];
 const BENCH_COMMANDS: &[BenchCommand] = &[
     BenchCommand {
         package: "j2k",
@@ -169,6 +178,7 @@ pub(crate) fn j2k_perf_guard(args: impl Iterator<Item = String>) -> Result<(), S
         PerfGuardMode::GitRef { baseline_ref } => {
             let baseline_worktree = perf_root.join("baseline-worktree");
             recreate_baseline_worktree(&root, &baseline_worktree, baseline_ref)?;
+            validate_baseline_layout(&baseline_worktree)?;
             sync_benchmark_sources(&root, &baseline_worktree)?;
 
             let baseline_target = perf_root.join("baseline-target");
@@ -213,6 +223,23 @@ pub(crate) fn j2k_perf_guard(args: impl Iterator<Item = String>) -> Result<(), S
     } else {
         Ok(())
     }
+}
+
+fn validate_baseline_layout(baseline_root: &Path) -> Result<(), String> {
+    let missing = BENCH_PACKAGE_MANIFESTS
+        .iter()
+        .filter(|relative| !baseline_root.join(relative).is_file())
+        .copied()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "incompatible performance baseline layout at {}: missing required package manifests: {}; pass --baseline-ref REF for a post-rename baseline compatible with the current benchmark suite",
+        baseline_root.display(),
+        missing.join(", ")
+    ))
 }
 
 fn current_snapshot_path(perf_root: &Path, name: &str) -> Result<PathBuf, String> {
@@ -788,11 +815,55 @@ fn path_str(path: &Path) -> Result<&str, String> {
 mod tests {
     use super::{
         bench_args, compare_estimates, is_enforced_perf_id, read_estimate_snapshot,
-        write_estimate_snapshot, BenchCommand, BenchEstimate, BenchManifestStanza, PerfGuardMode,
-        PerfGuardOptions, BENCH_COMMANDS,
+        validate_baseline_layout, write_estimate_snapshot, BenchCommand, BenchEstimate,
+        BenchManifestStanza, PerfGuardMode, PerfGuardOptions, BENCH_COMMANDS,
+        BENCH_PACKAGE_MANIFESTS, DEFAULT_BASELINE_REF,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn perf_guard_defaults_to_documented_immutable_baseline() {
+        let options = PerfGuardOptions::parse(std::iter::empty()).unwrap();
+
+        assert_eq!(
+            options.mode,
+            PerfGuardMode::GitRef {
+                baseline_ref: "29143c8e1f00bbbe9cf5ab37b3cea882f6d52139".to_string(),
+            }
+        );
+        assert_eq!(
+            DEFAULT_BASELINE_REF,
+            "29143c8e1f00bbbe9cf5ab37b3cea882f6d52139"
+        );
+    }
+
+    #[test]
+    fn baseline_layout_preflight_rejects_pre_rename_tree_and_accepts_current_layout() {
+        let root = temp_dir("j2k-perf-baseline-layout-test");
+        fs::create_dir_all(root.join("crates/signinum-j2k")).unwrap();
+        fs::write(
+            root.join("crates/signinum-j2k/Cargo.toml"),
+            "[package]\nname = \"signinum-j2k\"\n",
+        )
+        .unwrap();
+
+        let error = validate_baseline_layout(&root)
+            .expect_err("a pre-rename baseline must not be mutated or benchmarked");
+
+        assert!(error.contains("incompatible performance baseline layout"));
+        for manifest in BENCH_PACKAGE_MANIFESTS {
+            assert!(error.contains(manifest), "missing {manifest} in {error}");
+            assert!(!root.join(manifest).exists());
+
+            let path = root.join(manifest);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "[package]\nname = \"fixture\"\n").unwrap();
+        }
+        assert!(error.contains("--baseline-ref REF"));
+        validate_baseline_layout(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn perf_guard_parses_current_tree_record_mode() {
