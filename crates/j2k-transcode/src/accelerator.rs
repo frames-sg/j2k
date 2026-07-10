@@ -22,7 +22,7 @@ pub use j2k::{
     PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 use j2k_jpeg::transcode::idct_islow_block;
-use rayon::prelude::*;
+use rayon::prelude::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 const REVERSIBLE_DWT53_UNSUPPORTED_GRID: &str =
     "reversible DCT 5/3 job has unsupported grid geometry";
