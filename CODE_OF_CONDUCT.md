@@ -19,8 +19,11 @@ expected to keep discussion respectful, factual, and focused on the work.
 
 ## Reporting
 
-Report conduct issues through the repository's maintainer contact channel or a
-private maintainer contact if one is listed for the public release. Maintainers
-will review reports, limit disclosure to what is necessary, and may remove
-comments, close issues, or restrict participation when needed to protect the
-project community.
+Until a dedicated private conduct-reporting channel is published, open a
+[minimal repository issue](https://github.com/frames-sg/j2k/issues/new) asking
+for private maintainer contact. Do not include incident details or personal
+information in that issue. Maintainers will review
+reports, limit disclosure to what is necessary, and may remove comments, close
+issues, or restrict participation when needed to protect the project
+community. Vulnerability reporting and response expectations remain defined
+separately in `SECURITY.md`.
