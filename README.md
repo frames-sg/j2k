@@ -8,16 +8,20 @@
 
 **Docs & guides:** <https://frames-sg.github.io/j2k/>
 
-**Memory-safety-first, vendor-independent JPEG 2000 / HTJ2K.**
+**Release status:** `0.6.x` is the latest published and security-supported
+line. The workspace is staging `0.7.0` under
+[Unreleased](CHANGELOG.md); see the [release policy](docs/release.md).
+
+**Safe public Rust APIs, audited unsafe boundaries, and vendor-independent JPEG 2000 / HTJ2K.**
 
 J2K is a Rust image-codec workspace for JPEG 2000 / HTJ2K decode, encode,
-recode, and JPEG-to-J2K/HTJ2K transcoding. It is built for teams that need a
-memory-safe Rust codec for untrusted still-image inputs, permissive
+recode, and JPEG-to-HTJ2K coefficient-domain transcoding. It is built for teams
+that need safe Rust integration for untrusted still-image inputs, permissive
 MIT/Apache-2.0 licensing, and optional acceleration across both CUDA and Apple
 Metal without making a GPU vendor SDK the public API.
 
 Speed matters, but it is not the reason this project exists. The strategic
-gap is a memory-safety-first Rust codec with a portable CPU baseline,
+gap is a memory-safety-oriented Rust codec with a portable CPU baseline,
 multi-vendor GPU adapters, explicit support boundaries, and reproducible
 benchmark gates. The public crate release centers on `j2k`, with lower-level
 crates for native codec internals, device adapters, JPEG input, and transcode
@@ -47,20 +51,24 @@ forces awkward tradeoffs:
 | [OpenJPEG](https://github.com/uclouvain/openjpeg) | Mature C implementation and useful comparator, but C codecs keep memory-safety risk on the adopter. |
 | [Grok](https://github.com/GrokImageCompression/grok) | Capable C++ JPEG 2000 / HTJ2K implementation, but AGPL licensing is not usable for every commercial or embedded integration. |
 
-J2K's intended position is different: a memory-safe Rust public API, isolated
+J2K's intended position is different: a safe Rust public API, isolated
 unsafe boundaries for FFI/GPU work, no active runtime dependency on NVIDIA's
 JPEG 2000 runtime, strict errors for unsupported device routes, and dual
 MIT/Apache-2.0 licensing.
 
 ## Memory Safety Posture
 
-J2K is advertised first as a Rust JPEG 2000 / HTJ2K codec for memory-safe
-integration with untrusted image inputs. The public codec API is safe Rust.
-Unsafe code is limited to FFI, GPU adapter, and explicitly audited buffer-view
-boundaries, where inputs are validated and unsupported shapes fail with errors.
+J2K is designed for safe Rust integration with untrusted image inputs. The
+public codec API is safe Rust.
+Unsafe code is isolated at audited FFI, GPU integration, architecture-specific
+SIMD/intrinsic, allocation, and bounded pointer/buffer boundaries, where inputs
+are validated and unsupported shapes fail with errors. The exhaustive inventory
+is maintained in [docs/unsafe-audit.md](docs/unsafe-audit.md).
 
-This is a memory-safety claim, not a claim that every malformed codestream is
-accepted or that every device path is faster than CPU. CPU remains the portable
+This is an engineering posture backed by an explicit unsafe inventory, tests,
+fuzzing, and review—not a formal proof that all implementation defects are
+impossible. It is also not a claim that every malformed codestream is accepted
+or that every device path is faster than CPU. CPU remains the portable
 correctness baseline; GPU acceleration is promoted only for measured paths.
 
 ## Quickstart
@@ -123,10 +131,10 @@ Use lower-level crates only when you need a specific integration point:
 | JPEG 2000 / HTJ2K inspect, decode, encode, and recode | `j2k` |
 | Shared traits and backend types | `j2k-core` |
 | Shared encode-stage contracts | `j2k-types` |
-| Shared codec constants and pure math tables | `j2k-codec-math` |
+| Shared codec constants and pure helper algorithms | `j2k-codec-math` |
 | JPEG inspect/decode and fixture/fallback encode | `j2k-jpeg` |
 | Native JPEG 2000 and HTJ2K codec engine | `j2k-native` |
-| JPEG to J2K/HTJ2K transcode | `j2k-transcode` |
+| JPEG-to-HTJ2K coefficient-domain transcode | `j2k-transcode` |
 | CUDA adapters | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` |
 | Metal adapters | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` |
 | Tile compression codecs | `j2k-tilecodec` |
@@ -145,7 +153,7 @@ The names `statumen` and `wsi-dicom` are not current package names.
 | JP2/JPH metadata | IHDR/COLR/BPCC/PCLR/CMAP/CDEF/ICC still-image metadata paths covered by repo-local tests | Broader external JP2/JPH metadata parity remains publication evidence. |
 | Recode | J2K-to-HTJ2K coefficient recode where valid, pixel-preserving fallback otherwise | Palette/component-mapped fallbacks intentionally drop mapping metadata after resolving pixels. |
 | JPEG input | JPEG inspect/decode through `j2k-jpeg` | Used by transcode and fixture workflows. |
-| JPEG-to-J2K/HTJ2K transcode | CPU transcode primitives plus CUDA/Metal accelerator adapters | CLI exposes the conservative lossless JPEG-to-HTJ2K command first. |
+| JPEG-to-HTJ2K coefficient-domain transcode | CPU transcode primitives plus CUDA/Metal stage adapters | The public workflow requires HT block coding. |
 | CUDA acceleration | J2K-owned CUDA kernels with CUDA Oxide as the target device-kernel backend | Requires self-hosted CUDA validation before performance claims. |
 | Metal acceleration | macOS Metal adapters for selected decode, encode-stage, and transcode stages | Auto routing stays conservative and benchmark-gated. |
 
@@ -228,8 +236,10 @@ Reference files:
 Benchmark publication requirements are maintained in
 [docs/benchmark-corpora.md](docs/benchmark-corpora.md), with current run
 evidence in [docs/benchmark-evidence.md](docs/benchmark-evidence.md).
-Use `cargo xtask adoption-benchmark` for publication bundles and
-`cargo xtask adoption-report --run-dir <run-dir>` for the guarded report.
+Use `cargo run -p xtask --features adoption -- adoption-benchmark` for
+publication bundles and
+`cargo run -p xtask --features adoption -- adoption-report --run-dir <run-dir>`
+for the guarded report.
 OpenJPEG/Grok/CUDA/Metal/Kakadu/OpenJPH claims must use the required comparator
 or hardware gates described in the benchmark docs; skipped rows and emulated
 rows are diagnostic evidence only.

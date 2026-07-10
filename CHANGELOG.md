@@ -44,64 +44,17 @@ release date.
   while preserving byte output, dispatch order, resource retention, and
   regression coverage.
 
-## [0.6.2] - 2026-06-28
-
-- Defines the public codec claim as JPEG 2000 Part 1 codestream support, JP2
-  still-image wrapping, HTJ2K Part 15 support, and JPH wrapping, with
-  JPX / JPEG 2000 Part 2 extensions explicitly out of scope.
-- Adds the public support matrix and `cargo xtask public-support` gate covering
-  signed/high-bit samples, wide component counts, progression/tile-part cases,
-  packet-marker combinations, ROI maxshift, JP2/JPH metadata, HT refinement
-  decode/encode, J2K-to-HTJ2K recode, and publication gates.
-- Expands the public `j2k` facade with component-plane decode/encode APIs for
-  arbitrary component counts, signedness, sampling, mixed bit depths, and
-  native high-bit sample access while keeping Gray/RGB/RGBA convenience paths.
-- Adds JP2/JPH wrapper helpers and validation for still-image metadata,
-  codestream branding, color boxes, palettes/component mapping, channel
-  definitions, BPCC, and ICC preservation paths.
-- Completes repo-local HTJ2K cleanup/refinement, multi-layer/rate, JPH, and
-  recode self-checks while keeping external OpenJPH/Kakadu evidence as a
-  publication gate.
-- Removes the cuda-oxide transcode IDCT per-thread local-memory table
-  materialization, reducing the self-hosted RTX 4070 SUPER cuda-oxide
-  JPEG-to-HTJ2K transcode profile from `40.813 MP/s` before the fix to
-  `380.411 MP/s` in the `v0.6.2` validation run.
-- Keeps cuda-oxide transcode opt-in and records the CUDA C vs cuda-oxide
-  benchmark evidence in the public benchmark documentation.
-- Adds `j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53` to the
-  CLI as the first conservative JPEG-to-HTJ2K smoke-test command.
-- Refreshes adoption-facing docs with a shorter quickstart, support matrix, and
-  current `0.6.x` security/environment-variable line.
-
-## [0.6.1] - 2026-06-22
-
-- Refreshes public package metadata, docs.rs landing text, and README search
-  signals for the `j2k` rename, Rust programming language discovery, and
-  CUDA/Metal GPU JPEG 2000 / HTJ2K queries.
-
-## [0.6.0] - 2026-06-20
-
-- Stages the `j2k` facade release.
-- Keeps CPU decode as the portable correctness baseline.
-- Treats Runtime backend selection defaults to `Auto` as the public backend
-  policy.
-- Adds resident Metal and CUDA device memory surfaces for supported adapter
-  paths through cuda-runtime integration.
-- Uses J2K-owned CUDA kernels for supported CUDA codec stages.
-- Requires recorded benchmark evidence before NVIDIA performance claims.
-- Consolidates shared J2K encode-stage, CUDA submit, Metal runtime, tilecodec,
-  JPEG output, and test-support helpers.
-
 ### Breaking API Changes
 
 - Collapses the 26 `j2k-metal` lossless encode/submit permutations
   (`{encode,submit}_lossless_from_{padded_,}metal_buffer{,s}` x
-  to-metal/with-report/with-config/to-metal-batch) into three request-based
-  entry points: `submit_lossless_batch` (host codestream bytes),
+  to-metal/with-report/with-config/to-metal-batch) into two supported
+  request-based entry points: `submit_lossless_batch` (host codestream bytes),
   `submit_lossless_batch_to_metal` (Metal-backed codestreams with batch
-  stats), and `encode_lossless_batch_with_report` (host-byte timing
-  reports), all taking the new `MetalLosslessEncodeBatchRequest` (`tiles` +
-  now-public `MetalEncodeInputStaging` + `MetalLosslessEncodeConfig`). The
+  stats), plus the doc-hidden diagnostic helper
+  `encode_lossless_batch_with_report` (host-byte timing reports). All take the
+  new `MetalLosslessEncodeBatchRequest` (`tiles` + now-public
+  `MetalEncodeInputStaging` + `MetalLosslessEncodeConfig`). The
   single-tile submit wrapper `SubmittedJ2kLosslessMetalEncode` is removed
   (submit a one-tile batch and take the first result). Single-tile
   `_with_report` callers now route through the batch report entry, which
@@ -166,3 +119,51 @@ release date.
   stale generated-table dead-code suppression.
 - Refreshes the stable public API inventory after facade and profile surface
   changes.
+
+## [0.6.2] - 2026-06-28
+
+- Defines the public codec claim as JPEG 2000 Part 1 codestream support, JP2
+  still-image wrapping, HTJ2K Part 15 support, and JPH wrapping, with
+  JPX / JPEG 2000 Part 2 extensions explicitly out of scope.
+- Adds the public support matrix and `cargo xtask public-support` gate covering
+  signed/high-bit samples, wide component counts, progression/tile-part cases,
+  packet-marker combinations, ROI maxshift, JP2/JPH metadata, HT refinement
+  decode/encode, J2K-to-HTJ2K recode, and publication gates.
+- Expands the public `j2k` facade with component-plane decode/encode APIs for
+  arbitrary component counts, signedness, sampling, mixed bit depths, and
+  native high-bit sample access while keeping Gray/RGB/RGBA convenience paths.
+- Adds JP2/JPH wrapper helpers and validation for still-image metadata,
+  codestream branding, color boxes, palettes/component mapping, channel
+  definitions, BPCC, and ICC preservation paths.
+- Completes repo-local HTJ2K cleanup/refinement, multi-layer/rate, JPH, and
+  recode self-checks while keeping external OpenJPH/Kakadu evidence as a
+  publication gate.
+- Removes the cuda-oxide transcode IDCT per-thread local-memory table
+  materialization, reducing the self-hosted RTX 4070 SUPER cuda-oxide
+  JPEG-to-HTJ2K transcode profile from `40.813 MP/s` before the fix to
+  `380.411 MP/s` in the `v0.6.2` validation run.
+- Keeps cuda-oxide transcode opt-in and records the CUDA C vs cuda-oxide
+  benchmark evidence in the public benchmark documentation.
+- Adds `j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53` to the
+  CLI as the first conservative JPEG-to-HTJ2K smoke-test command.
+- Refreshes adoption-facing docs with a shorter quickstart, support matrix, and
+  current `0.6.x` security/environment-variable line.
+
+## [0.6.1] - 2026-06-22
+
+- Refreshes public package metadata, docs.rs landing text, and README search
+  signals for the `j2k` rename, Rust programming language discovery, and
+  CUDA/Metal GPU JPEG 2000 / HTJ2K queries.
+
+## [0.6.0] - 2026-06-20
+
+- Stages the `j2k` facade release.
+- Keeps CPU decode as the portable correctness baseline.
+- Treats Runtime backend selection defaults to `Auto` as the public backend
+  policy.
+- Adds resident Metal and CUDA device memory surfaces for supported adapter
+  paths through cuda-runtime integration.
+- Uses J2K-owned CUDA kernels for supported CUDA codec stages.
+- Requires recorded benchmark evidence before NVIDIA performance claims.
+- Consolidates shared J2K encode-stage, CUDA submit, Metal runtime, tilecodec,
+  JPEG output, and test-support helpers.

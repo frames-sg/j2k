@@ -18,6 +18,33 @@ before the release tag and crates exist. Those pages must continue to identify
 evidence. After the tag and crates are published, update the site status in a
 separate post-release commit.
 
+## Candidate freeze and exact-SHA evidence
+
+Finish source, generated artifacts, documentation, changelog, and package
+metadata before freezing a candidate. The freeze starts only from a clean
+worktree:
+
+```bash
+test -z "$(git status --porcelain)"
+RC_SHA=$(git rev-parse HEAD)
+```
+
+Move the intended protected `origin/main` tip to exactly `RC_SHA` through the
+repository's normal reviewed push/merge workflow, then run hosted CI and both
+self-hosted GPU workflows for that exact commit. Verify the aggregate only
+after those jobs have completed:
+
+```bash
+test "$(git rev-parse origin/main)" = "$RC_SHA"
+cargo xtask release-status --sha "$RC_SHA"
+```
+
+Any tracked edit creates a new candidate: commit it, choose a new `RC_SHA`, and
+rerun all exact-SHA evidence. Only after the verifier succeeds may the release
+maintainer create an annotated `v<workspace-version>` tag that peels to
+`RC_SHA`. Push that tag explicitly; do not use `--follow-tags`, move an existing
+release tag, or treat a GitHub Pages deployment as release evidence.
+
 ## Versions and publish order
 
 Release scripts must use manifest versions. Do not publish from stale hard-coded crate/version pairs.

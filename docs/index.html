@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>J2K: Memory-Safe Rust JPEG 2000 / HTJ2K Codec</title>
-  <meta name="description" content="J2K is a memory-safety-first Rust JPEG 2000 Part 1 / HTJ2K Part 15 codec workspace with JP2/JPH wrappers, CPU APIs, CUDA and Apple Metal adapters, and MIT/Apache licensing.">
+  <title>J2K: Rust JPEG 2000 / HTJ2K Codec</title>
+  <meta name="description" content="J2K provides safe public Rust APIs for JPEG 2000 Part 1 / HTJ2K Part 15, with audited unsafe implementation boundaries, JP2/JPH wrappers, and optional CUDA and Apple Metal adapters.">
   <link rel="canonical" href="https://frames-sg.github.io/j2k/">
-  <meta property="og:title" content="J2K: Memory-Safe Rust JPEG 2000 / HTJ2K Codec">
-  <meta property="og:description" content="Memory-safe Rust JPEG 2000 Part 1 and HTJ2K Part 15 codec crates with CPU, CUDA, and Apple Metal backends under MIT/Apache licensing.">
+  <meta property="og:title" content="J2K: Rust JPEG 2000 / HTJ2K Codec">
+  <meta property="og:description" content="Safe public Rust JPEG 2000 Part 1 and HTJ2K Part 15 APIs with audited unsafe implementation boundaries and optional CUDA and Apple Metal adapters.">
   <meta property="og:url" content="https://frames-sg.github.io/j2k/">
   <meta property="og:type" content="website">
   <meta property="og:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="J2K: Memory-Safe Rust JPEG 2000 / HTJ2K Codec">
-  <meta name="twitter:description" content="Memory-safe Rust JPEG 2000 / HTJ2K codec crates with CPU, CUDA, and Apple Metal backends under MIT/Apache licensing.">
+  <meta name="twitter:title" content="J2K: Rust JPEG 2000 / HTJ2K Codec">
+  <meta name="twitter:description" content="Safe public Rust JPEG 2000 / HTJ2K APIs with audited unsafe implementation boundaries and optional CUDA and Apple Metal adapters.">
   <meta name="twitter:image" content="https://frames-sg.github.io/j2k/assets/og-card.png">
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
@@ -25,12 +25,12 @@
     "@context": "https://schema.org",
     "@type": "SoftwareSourceCode",
     "name": "J2K",
-    "headline": "J2K: Memory-Safe Rust JPEG 2000 / HTJ2K Codec",
+    "headline": "J2K: Rust JPEG 2000 / HTJ2K Codec",
     "codeRepository": "https://github.com/frames-sg/j2k",
     "programmingLanguage": "Rust",
     "license": "https://www.apache.org/licenses/LICENSE-2.0",
     "url": "https://frames-sg.github.io/j2k/",
-    "description": "Memory-safety-first Rust JPEG 2000 Part 1 and HTJ2K Part 15 codec APIs with JP2/JPH still-image wrappers, CPU baseline support, CUDA plus Apple Metal adapters, and MIT/Apache licensing."
+    "description": "Safe public Rust JPEG 2000 Part 1 and HTJ2K Part 15 codec APIs with audited unsafe implementation boundaries, JP2/JPH still-image wrappers, and optional CUDA plus Apple Metal adapters."
   }
   </script>
 </head>
@@ -52,13 +52,14 @@
     <section class="hero docs-hero">
       <div class="wrap narrow">
         <p class="eyebrow">Project documentation</p>
-        <h1>J2K: Memory-Safe Rust JPEG 2000 / HTJ2K Codec</h1>
-        <p class="lead">Memory-safe Rust crates for JPEG 2000 Part 1 and HTJ2K Part 15 inspection, decode, encode, recode, and JPEG-to-J2K/HTJ2K transcode workflows. CPU is the correctness baseline; CUDA and Apple Metal adapters accelerate supported paths without becoming the public API.</p>
+        <h1>J2K: Rust JPEG 2000 / HTJ2K Codec</h1>
+        <p class="lead">Safe public Rust APIs for JPEG 2000 Part 1 and HTJ2K Part 15 inspection, decode, encode, recode, and coefficient-domain JPEG-to-HTJ2K transcode workflows. CPU is the correctness baseline; CUDA and Apple Metal adapters accelerate supported paths without becoming the public API.</p>
         <div class="actions">
           <a class="button primary" href="https://crates.io/crates/j2k">crates.io</a>
           <a class="button" href="https://docs.rs/j2k">API docs</a>
           <a class="button" href="https://github.com/frames-sg/j2k">Repository</a>
         </div>
+        <p class="note"><strong>Release status:</strong> this page tracks the unreleased 0.7 workspace. The crates.io and docs.rs links currently resolve to the latest published 0.6.x release.</p>
       </div>
     </section>
 
@@ -67,8 +68,8 @@
         <h2>Why J2K exists</h2>
         <div class="grid three">
           <article class="card">
-            <h3>Memory-safety-first Rust</h3>
-            <p>The public codec surface is safe Rust. Unsafe FFI and GPU code is isolated behind typed APIs.</p>
+            <h3>Safe public Rust APIs</h3>
+            <p>The public codec surface is safe Rust. Audited unsafe code is isolated at FFI, GPU integration, architecture-specific SIMD/intrinsic, allocation, and bounded pointer or buffer boundaries; the <a href="https://github.com/frames-sg/j2k/blob/main/docs/unsafe-audit.md">unsafe audit</a> is authoritative.</p>
           </article>
           <article class="card">
             <h3>Vendor-independent backends</h3>
@@ -155,7 +156,7 @@ j2k transcode input.jpg output.j2k --htj2k --lossless-53</pre>
               </tr>
               <tr>
                 <td><code>j2k-transcode</code></td>
-                <td>JPEG-to-J2K/HTJ2K transcode primitives and shared transcode contracts.</td>
+                <td>JPEG-to-HTJ2K coefficient-domain transcode primitives and shared transcode contracts.</td>
               </tr>
               <tr>
                 <td><code>j2k-cli</code></td>

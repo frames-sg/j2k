@@ -6,13 +6,23 @@ or test-only implementation details and must not be treated as user controls.
 
 Stability values:
 
-- Stable: supported for the v0.7.x release line.
+- Stable: supported for the staged v0.7.x contract. The published v0.6.x
+  surface may differ until the staged line is released.
 - Experimental: accepted for diagnostics or adapter tuning, but may change
   before 1.0.
 - Test/CI: supported only for repository tests, CI, and release validation.
 - Benchmark: supported only for benchmark harnesses and benchmark signoff.
 - Generated: emitted by a build script for version reporting; do not set by
   hand unless reproducing the build-script contract.
+
+The xtask identifier `J2K_METAL_REQUIRED_IGNORED_TESTS` is not an environment
+variable. It is the compile-time inventory of ignored Metal runtime tests that
+`cargo xtask release-metal` must execute exactly; operators cannot set or
+override it.
+
+| Internal identifier | Meaning | Operator default | Stability |
+| --- | --- | --- | --- |
+| `J2K_METAL_REQUIRED_IGNORED_TESTS` | Compile-time xtask inventory used to reject missing, unexpected, skipped, or partially executed ignored Metal runtime tests. This is not read from the environment. | Fixed in xtask source | Internal validation |
 
 ## Library Runtime And Profiling
 
@@ -66,10 +76,9 @@ Stability values:
 | `J2K_REQUIRE_LIBJPEG_TURBO` | Makes libjpeg-turbo comparison tests fail instead of skip when the bench feature/tooling is unavailable. | Skip unavailable comparator path | Test/CI |
 | `J2K_REQUIRE_CUDA_RUNTIME` | Makes CUDA tests and benchmarks require a usable CUDA runtime instead of skipping. | Skip runtime-only CUDA paths | Test/CI |
 | `J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE` | Requires CUDA JPEG hardware decode coverage in relevant CUDA tests/benches. | Hardware decode may skip | Test/CI |
-| `J2K_REQUIRE_METAL_RUNTIME` | Makes Metal tests and validation require a usable Metal runtime instead of skipping when no Metal device is available. | Skip runtime-only Metal paths | Test/CI |
+| `J2K_REQUIRE_METAL_RUNTIME` | Runs runtime-only Metal tests and makes them require a usable Metal runtime instead of default-skipping. | Skip runtime-only Metal paths | Test/CI |
 | `J2K_REQUIRE_CUDA_BENCH` | Makes CUDA benchmark probes fail instead of skip when CUDA is unavailable or does not dispatch. | Skip unavailable CUDA benchmark paths | Benchmark |
 | `J2K_REQUIRE_METAL_BENCH` | Makes Metal benchmark probes fail instead of skip when Metal is unavailable or does not dispatch. | Skip unavailable Metal benchmark paths | Benchmark |
-| `J2K_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS` | Allows hosted macOS CI to run J2K Metal runtime tests that are otherwise skipped there. | Hosted runtime tests skipped | Test/CI |
 | `J2K_REQUIRE_WSI_ROOT` | Makes external JPEG WSI tests fail if `J2K_WSI_ROOT` is missing or empty. | Skip external WSI tests | Test/CI |
 | `J2K_REQUIRE_TRANSCODE_WSI_ROOT` | Makes transcode corpus validation require `J2K_TRANSCODE_WSI_ROOT`. | Skip external transcode WSI corpus | Test/CI |
 | `J2K_REQUIRE_NDPI` | Makes NDPI passthrough tests fail if `J2K_NDPI_PATH` is missing. | Skip NDPI passthrough test | Test/CI |
@@ -173,7 +182,7 @@ Stability values:
 | `J2K_METAL_ENCODE_MANIFEST` | Optional TSV manifest for Metal encode staged PNM sources. Uses `path` and pinned `input_fnv1a64` from `J2K_ENCODE_COMPARE_MANIFEST`. | Not set | Benchmark |
 | `J2K_METAL_ENCODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated Metal host-input auto-routing rows when external staged PNM sources are provided. Stage microbenchmarks remain generated component rows. | Generated Metal host-input rows included | Benchmark |
 | `J2K_METAL_ENCODE_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES` | Maximum raw-byte estimate allowed for a Metal resident host-output encode benchmark row before the row is emitted as a structured memory-budget skip. This protects huge batches from materializing multi-gigabyte host codestream outputs in one benchmark process. | `2147483648` | Benchmark |
-| `J2K_ADOPTION_FIXTURES` | Repository variable or environment override for the CUDA adoption workflow decode fixture directory path-list passed to `cargo xtask adoption-benchmark --fixtures`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
+| `J2K_ADOPTION_FIXTURES` | Repository variable or environment override for the CUDA adoption workflow decode fixture directory path-list passed to `cargo run -p xtask --features adoption -- adoption-benchmark --fixtures`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
 | `J2K_ADOPTION_MANIFEST` | Repository variable or environment override for the CUDA adoption workflow decode fixture manifest passed to `--manifest`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
 | `J2K_ADOPTION_ENCODE_FIXTURES` | Repository variable or environment override for the CUDA adoption workflow staged PNM encode fixture directory path-list passed to `--encode-fixtures`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
 | `J2K_ADOPTION_ENCODE_MANIFEST` | Repository variable or environment override for the CUDA adoption workflow staged PNM encode manifest passed to `--encode-manifest`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |

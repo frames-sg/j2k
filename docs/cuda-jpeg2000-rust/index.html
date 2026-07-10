@@ -49,11 +49,12 @@
         <div>
           <p class="eyebrow">CUDA JPEG2000 Rust</p>
           <h1>CUDA JPEG2000 Rust</h1>
-          <p class="lead">J2K provides NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K device-output, encode-stage, and JPEG-to-J2K/HTJ2K transcode workflows in Rust.</p>
+          <p class="lead">J2K provides NVIDIA CUDA adapter crates for supported JPEG 2000 / HTJ2K device-output and encode-stage paths, plus supported coefficient-domain stages of JPEG-to-HTJ2K transcode workflows.</p>
           <div class="actions">
             <a class="button primary" href="https://crates.io/crates/j2k-cuda">j2k-cuda</a>
             <a class="button" href="https://docs.rs/j2k-cuda">CUDA API docs</a>
           </div>
+          <p class="note"><strong>Release status:</strong> this page tracks the unreleased 0.7 workspace. The crates.io and docs.rs links currently resolve to the latest published 0.6.x release.</p>
         </div>
         <img class="diagram" src="../assets/j2k-gpu-pipeline.svg?v=3" alt="CUDA JPEG2000 Rust pipeline">
       </div>
@@ -72,7 +73,7 @@
         </article>
         <article class="card">
           <h2>Transcode adapter</h2>
-          <p><code>j2k-transcode-cuda</code> accelerates supported coefficient-domain JPEG-to-J2K/HTJ2K stages.</p>
+          <p><code>j2k-transcode-cuda</code> accelerates supported coefficient-domain stages of JPEG-to-HTJ2K transcode; packetization remains outside those transform stages.</p>
           <pre class="code">cargo add j2k-transcode-cuda --features cuda-runtime</pre>
         </article>
       </div>
