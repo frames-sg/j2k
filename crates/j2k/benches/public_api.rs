@@ -469,7 +469,7 @@ fn bench_tile_batch(c: &mut Criterion) {
     let mut ht_distinct = Vec::with_capacity(BATCH_SIZE);
     for idx in 0..BATCH_SIZE {
         let mut pixels = patterned_gray8(TILE_SIDE, TILE_SIDE);
-        pixels[0] = pixels[0].wrapping_add(idx as u8);
+        pixels[0] = pixels[0].wrapping_add(u8::try_from(idx).expect("batch index fits u8"));
         distinct.push(encode_gray8_codestream_from_pixels(
             TILE_SIDE,
             TILE_SIDE,
@@ -567,6 +567,10 @@ fn bench_tile_batch(c: &mut Criterion) {
     group.finish();
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the benchmark keeps one cohesive region-and-scale matrix in a single Criterion group"
+)]
 fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
     let repeated_classic = encode_rgb8_codestream(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE);
     let repeated_htj2k = encode_ht_rgb8_codestream(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE);
@@ -580,7 +584,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
     let mut distinct_htj2k = Vec::with_capacity(BATCH_SIZE);
     for idx in 0..BATCH_SIZE {
         let mut pixels = patterned_rgb8(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE);
-        pixels[0] = pixels[0].wrapping_add(idx as u8);
+        pixels[0] = pixels[0].wrapping_add(u8::try_from(idx).expect("batch index fits u8"));
         distinct_classic.push(encode_rgb8_codestream_from_pixels(
             CPU_MATRIX_SIDE,
             CPU_MATRIX_SIDE,

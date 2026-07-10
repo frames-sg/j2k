@@ -667,7 +667,10 @@ fn raw_channel_association(association: J2kChannelAssociation) -> u16 {
     }
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "a four-byte box type is passed by reference to match byte-slice call sites"
+)]
 fn push_box(out: &mut Vec<u8>, box_type: &[u8; 4], payload: &[u8]) -> Result<(), J2kError> {
     let len = payload.len().checked_add(8).ok_or(J2kError::InvalidBox {
         offset: out.len(),

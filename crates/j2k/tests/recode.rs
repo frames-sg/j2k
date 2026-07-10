@@ -630,7 +630,7 @@ fn mixed_typed_source_uses_pixel_preserving_recode() {
     let signed = signed_values
         .iter()
         .flat_map(|sample| {
-            let raw = (i32::from(*sample) & 0x0fff) as u16;
+            let raw = u16::try_from(i32::from(*sample) & 0x0fff).expect("masked 12-bit sample");
             raw.to_le_bytes()
         })
         .collect::<Vec<_>>();

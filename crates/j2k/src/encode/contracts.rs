@@ -108,7 +108,10 @@ pub enum J2kEncodeValidation {
 
 /// Options controlling JPEG 2000 lossless encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the public options type exposes independent compatibility switches"
+)]
 #[non_exhaustive]
 pub struct J2kLosslessEncodeOptions {
     /// Backend preference for encode stages.

@@ -318,7 +318,7 @@ fn decode_gray8_jp2_roundtrips_reversible_pixels() {
 
 #[test]
 fn decode_components_exposes_signed_gray8_public_samples() {
-    let pixels = [(-10_i8) as u8, (-1_i8) as u8, 0_i8 as u8, 12_i8 as u8];
+    let pixels = [-10_i8, -1, 0, 12].map(|sample| sample.to_le_bytes()[0]);
     let codestream = encode_signed_codestream(&pixels, 2, 2, 8);
 
     let support = J2kDecoder::inspect_support(&codestream).expect("inspect support");
@@ -331,6 +331,10 @@ fn decode_components_exposes_signed_gray8_public_samples() {
     assert!(components.planes()[0].signed());
     assert_eq!(components.planes()[0].bit_depth(), 8);
     assert_eq!(components.planes()[0].dimensions(), (2, 2));
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the decoded signed-8 fixture is rounded within the asserted i8 domain"
+    )]
     let samples = components.planes()[0]
         .samples()
         .iter()
@@ -371,6 +375,10 @@ fn decode_components_exposes_signed_gray16_public_samples() {
     assert!(components.planes()[0].signed());
     assert_eq!(components.planes()[0].bit_depth(), 16);
     assert_eq!(components.planes()[0].dimensions(), (2, 2));
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the decoded signed-16 fixture is rounded within the asserted i16 domain"
+    )]
     let decoded_samples = components.planes()[0]
         .samples()
         .iter()
@@ -878,7 +886,7 @@ fn decode_scaled_into_matches_backend_target_resolution_decode() {
 #[test]
 fn reused_decoder_scaled_decodes_match_fresh_decodes_across_scales() {
     let pixels: Vec<u8> = (0..16 * 16 * 3)
-        .map(|index| ((index * 13 + 17) & 0xFF) as u8)
+        .map(|index| u8::try_from((index * 13 + 17) & 0xFF).expect("masked fixture byte"))
         .collect();
     let codestream = encode_codestream_with_levels(&pixels, 16, 16, 3, 8, true, 2);
     let mut reused = J2kDecoder::new(&codestream).expect("reused decoder");
@@ -921,7 +929,7 @@ fn reused_decoder_scaled_decodes_match_fresh_decodes_across_scales() {
 #[test]
 fn reused_decoder_region_scaled_decodes_match_fresh_decodes_across_scales() {
     let pixels: Vec<u8> = (0..16 * 16 * 3)
-        .map(|index| ((index * 11 + 29) & 0xFF) as u8)
+        .map(|index| u8::try_from((index * 11 + 29) & 0xFF).expect("masked fixture byte"))
         .collect();
     let codestream = encode_codestream_with_levels(&pixels, 16, 16, 3, 8, true, 2);
     let roi = Rect {
@@ -993,6 +1001,10 @@ fn decode_region_into_matches_cropping_full_decode() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the integration test exercises one cohesive pixel-format and scaling matrix"
+)]
 fn decode_region_scaled_into_matches_cropping_scaled_decode_for_supported_formats() {
     let roi = Rect {
         x: 1,

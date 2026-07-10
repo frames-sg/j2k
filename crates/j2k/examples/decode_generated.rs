@@ -12,7 +12,9 @@ use j2k_native::{encode_htj2k, EncodeOptions};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let width = 16_u32;
     let height = 16_u32;
-    let pixels: Vec<u8> = (0..width * height).map(|v| v as u8).collect();
+    let pixels: Vec<u8> = (0..width * height)
+        .map(|value| u8::try_from(value).expect("16x16 fixture index fits u8"))
+        .collect();
     let bytes = encode_htj2k(
         &pixels,
         width,

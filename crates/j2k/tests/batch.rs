@@ -64,7 +64,7 @@ fn rgb_fixture() -> Vec<u8> {
 
 fn ht_rgb_fixture() -> Vec<u8> {
     let pixels = (0..16 * 16 * 3)
-        .map(|idx| ((idx * 13 + idx / 3) & 0xff) as u8)
+        .map(|idx| u8::try_from((idx * 13 + idx / 3) & 0xff).expect("masked fixture byte"))
         .collect::<Vec<_>>();
     encode_ht_codestream(&pixels, 16, 16, 3, 8)
 }

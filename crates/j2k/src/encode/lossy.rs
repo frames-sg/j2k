@@ -332,6 +332,11 @@ pub(super) fn lossy_quality_layer_count(options: &J2kLossyEncodeOptions) -> u8 {
     u8::try_from(options.quality_layers.len().max(1)).unwrap_or(32)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite positive byte targets are range-checked against u64 before conversion"
+)]
 pub(super) fn target_bytes_for_bpp(
     samples: J2kLossySamples<'_>,
     bits_per_pixel: f64,
@@ -359,12 +364,18 @@ pub(super) fn bits_per_pixel(samples: J2kLossySamples<'_>, bytes: u64) -> f64 {
     (u64_to_f64(bytes) * 8.0) / (f64::from(samples.width) * f64::from(samples.height))
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "lossy rate metrics intentionally use approximate f64 ratios"
+)]
 pub(super) fn usize_to_f64(value: usize) -> f64 {
     value as f64
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "lossy rate metrics intentionally use approximate f64 ratios"
+)]
 pub(super) fn u64_to_f64(value: u64) -> f64 {
     value as f64
 }

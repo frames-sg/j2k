@@ -674,7 +674,7 @@ mod tests {
 
     fn encode_rgb_codestream(htj2k: bool) -> Vec<u8> {
         let pixels = (0..16 * 16 * 3)
-            .map(|idx| ((idx * 11 + idx / 3) & 0xff) as u8)
+            .map(|idx| u8::try_from((idx * 11 + idx / 3) & 0xff).expect("masked fixture byte"))
             .collect::<Vec<_>>();
         let options = EncodeOptions {
             reversible: true,

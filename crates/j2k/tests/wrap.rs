@@ -28,9 +28,14 @@ fn rewrite_component_descriptor(bytes: &mut [u8], component: usize, ssiz: u8) {
     bytes[siz_offset + 40 + component * 3] = ssiz;
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "a four-byte box type is passed by reference to match payload helper call sites"
+)]
 fn push_box(out: &mut Vec<u8>, box_type: &[u8; 4], payload: &[u8]) {
-    out.extend_from_slice(&(8_u32 + payload.len() as u32).to_be_bytes());
+    let len = u32::try_from(payload.len().checked_add(8).expect("box length overflow"))
+        .expect("fixture box length fits u32");
+    out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(box_type);
     out.extend_from_slice(payload);
 }
@@ -729,7 +734,7 @@ fn wrap_preserves_premultiplied_alpha_cdef_and_decodes_rgba() {
 #[test]
 fn lossless_encode_facade_roundtrips_more_than_four_components() {
     let pixels = (0..2 * 2 * 5)
-        .map(|idx| ((idx * 29 + 3) & 0xff) as u8)
+        .map(|idx| u8::try_from((idx * 29 + 3) & 0xff).expect("masked fixture byte"))
         .collect::<Vec<_>>();
     let samples =
         J2kLosslessSamples::new(&pixels, 2, 2, 5, 8, false).expect("five component samples");

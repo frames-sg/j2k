@@ -21,6 +21,14 @@ use j2k::{
 use j2k_core::{BackendKind, CodecError};
 use j2k_native::{inspect_j2k_codestream_header, DecodeSettings, DecoderContext, Image};
 
+fn masked_u8(value: usize) -> u8 {
+    u8::try_from(value & 0xff).expect("masked fixture byte fits u8")
+}
+
+fn clamped_u8(value: i32) -> u8 {
+    u8::try_from(value.clamp(0, 255)).expect("clamped fixture byte fits u8")
+}
+
 fn decode_native(codestream: &[u8]) -> j2k_native::RawBitmap {
     Image::new(codestream, &DecodeSettings::default())
         .expect("encoded codestream should parse")
@@ -416,7 +424,7 @@ fn lossless_typed_component_plane_encode_preserves_mixed_metadata() {
     let signed = signed_values
         .iter()
         .flat_map(|sample| {
-            let raw = (i32::from(*sample) & 0x0fff) as u16;
+            let raw = u16::try_from(i32::from(*sample) & 0x0fff).expect("masked 12-bit sample");
             raw.to_le_bytes()
         })
         .collect::<Vec<_>>();
@@ -465,6 +473,10 @@ fn lossless_typed_component_plane_encode_preserves_mixed_metadata() {
     let decoded = image
         .decode_components_with_context(&mut context)
         .expect("decode typed component codestream");
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "decoded fixture samples are rounded within the asserted i16 domain"
+    )]
     let decoded_signed = decoded.planes()[1]
         .samples()
         .iter()
@@ -484,7 +496,7 @@ fn lossless_typed_component_plane_encode_round_trips_mixed_high_bit_metadata() {
     let signed = signed_values
         .iter()
         .flat_map(|sample| {
-            let raw = (i32::from(*sample) & 0x0fff) as u16;
+            let raw = u16::try_from(i32::from(*sample) & 0x0fff).expect("masked 12-bit sample");
             raw.to_le_bytes()
         })
         .collect::<Vec<_>>();
@@ -557,7 +569,7 @@ fn lossless_typed_component_plane_encode_round_trips_mixed_high_bit_multi_tile_m
     let signed = signed_values
         .iter()
         .flat_map(|sample| {
-            let raw = (i32::from(*sample) & 0x0fff) as u16;
+            let raw = u16::try_from(i32::from(*sample) & 0x0fff).expect("masked 12-bit sample");
             raw.to_le_bytes()
         })
         .collect::<Vec<_>>();
@@ -638,7 +650,7 @@ fn lossless_typed_component_plane_encode_round_trips_mixed_35_bit_metadata() {
     let signed = signed_values
         .iter()
         .flat_map(|sample| {
-            let raw = (i32::from(*sample) & 0x0fff) as u16;
+            let raw = u16::try_from(i32::from(*sample) & 0x0fff).expect("masked 12-bit sample");
             raw.to_le_bytes()
         })
         .collect::<Vec<_>>();
@@ -701,7 +713,9 @@ fn lossless_typed_component_plane_encode_round_trips_mixed_35_bit_metadata() {
 
 #[test]
 fn cpu_lossless_rectangular_roi_roundtrips_and_writes_rgn() {
-    let pixels: Vec<_> = (0..64 * 64).map(|idx| (idx % 251) as u8).collect();
+    let pixels: Vec<_> = (0_usize..64 * 64)
+        .map(|idx| u8::try_from(idx % 251).expect("fixture sample fits u8"))
+        .collect();
     let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
     let roi = [J2kRoiRegion {
         component: 0,
@@ -733,7 +747,9 @@ fn cpu_lossless_rectangular_roi_roundtrips_and_writes_rgn() {
 
 #[test]
 fn cpu_lossless_multi_tile_rectangular_roi_roundtrips_and_writes_rgn() {
-    let pixels: Vec<_> = (0..96 * 80).map(|idx| (idx % 251) as u8).collect();
+    let pixels: Vec<_> = (0_usize..96 * 80)
+        .map(|idx| u8::try_from(idx % 251).expect("fixture sample fits u8"))
+        .collect();
     let samples = J2kLosslessSamples::new(&pixels, 96, 80, 1, 8, false).unwrap();
     let roi = [J2kRoiRegion {
         component: 0,
@@ -772,7 +788,9 @@ fn cpu_lossless_multi_tile_rectangular_roi_roundtrips_and_writes_rgn() {
 
 #[test]
 fn cpu_lossless_htj2k_rectangular_roi_roundtrips_at_31_coded_bitplanes() {
-    let pixels: Vec<_> = (0..16 * 16).map(|idx| (idx % 251) as u8).collect();
+    let pixels: Vec<_> = (0_usize..16 * 16)
+        .map(|idx| u8::try_from(idx % 251).expect("fixture sample fits u8"))
+        .collect();
     let samples = J2kLosslessSamples::new(&pixels, 16, 16, 1, 8, false).unwrap();
     let roi = [J2kRoiRegion {
         component: 0,
@@ -892,7 +910,7 @@ fn deinterleave_to_f32_for_test(job: J2kDeinterleaveToF32Job<'_>) -> Vec<Vec<f32
             let sample = if job.bit_depth <= 8 {
                 let byte = job.pixels[sample_idx];
                 if job.signed {
-                    i16::from(byte as i8)
+                    i16::from(i8::from_le_bytes([byte]))
                 } else {
                     i16::try_from(i32::from(byte) - unsigned_offset)
                         .expect("level-shifted 8-bit sample fits in i16")
@@ -975,7 +993,7 @@ fn default_lossless_options_use_auto_cpu_safe_profile() {
 
 #[test]
 fn lossless_encode_can_skip_facade_cpu_validation_for_external_validation() {
-    let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 17) & 0xFF) as u8).collect();
+    let pixels: Vec<u8> = (0_usize..8 * 8 * 3).map(|i| masked_u8(i * 17)).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 3, 8, false).unwrap();
 
     let encoded = encode_j2k_lossless(
@@ -990,7 +1008,7 @@ fn lossless_encode_can_skip_facade_cpu_validation_for_external_validation() {
 
 #[test]
 fn cpu_htj2k_lossless_round_trips_gray8() {
-    let pixels: Vec<u8> = (0..64).map(|value| (value * 9) as u8).collect();
+    let pixels: Vec<u8> = (0_u8..64).map(|value| value.wrapping_mul(9)).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).unwrap();
 
     let encoded = encode_j2k_lossless(
@@ -1011,7 +1029,7 @@ fn cpu_htj2k_lossless_round_trips_gray8() {
 
 #[test]
 fn cpu_htj2k_rpcl_writes_cod_rpcl_and_tlm() {
-    let pixels: Vec<u8> = (0..64).map(|value| (value * 11) as u8).collect();
+    let pixels: Vec<u8> = (0_u8..64).map(|value| value.wrapping_mul(11)).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).unwrap();
 
     let encoded = encode_j2k_lossless(
@@ -1068,7 +1086,7 @@ fn cpu_lossless_all_progression_orders_write_cod_marker_and_round_trip() {
 #[test]
 fn cpu_lossless_multi_tile_codestream_decodes() {
     let pixels: Vec<u8> = (0..96 * 80)
-        .map(|index| (((index * 17) + (index / 9)) & 0xff) as u8)
+        .map(|index| masked_u8(index * 17 + index / 9))
         .collect();
     let samples = J2kLosslessSamples::new(&pixels, 96, 80, 1, 8, false).unwrap();
 
@@ -1091,7 +1109,7 @@ fn cpu_lossless_multi_tile_codestream_decodes() {
 #[test]
 fn cpu_lossless_emits_packet_markers_that_strict_decode_uses() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 31) ^ (index / 7)) & 0xff) as u8)
+        .map(|index| masked_u8((index * 31) ^ (index / 7)))
         .collect();
     let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -1127,7 +1145,7 @@ fn cpu_lossless_emits_packet_markers_that_strict_decode_uses() {
 fn cpu_lossless_emits_ppm_and_ppt_that_strict_decode_uses() {
     for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
         let pixels: Vec<u8> = (0..64 * 64)
-            .map(|index| (((index * 17) ^ (index / 5)) & 0xff) as u8)
+            .map(|index| masked_u8((index * 17) ^ (index / 5)))
             .collect();
         let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -1158,7 +1176,7 @@ fn cpu_lossless_emits_ppm_and_ppt_that_strict_decode_uses() {
 fn cpu_lossless_multi_tile_emits_ppm_and_ppt_that_strict_decode_uses() {
     for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
         let pixels: Vec<u8> = (0..64 * 64)
-            .map(|index| (((index * 29) ^ (index / 11)) & 0xff) as u8)
+            .map(|index| masked_u8((index * 29) ^ (index / 11)))
             .collect();
         let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -1195,7 +1213,7 @@ fn cpu_lossless_multi_tile_emits_ppm_and_ppt_that_strict_decode_uses() {
 #[test]
 fn cpu_lossless_emits_multiple_tile_parts_that_strict_decode_uses() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 19) ^ (index / 3)) & 0xff) as u8)
+        .map(|index| masked_u8((index * 19) ^ (index / 3)))
         .collect();
     let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -1211,8 +1229,14 @@ fn cpu_lossless_emits_multiple_tile_parts_that_strict_decode_uses() {
     assert!(tile_parts.len() > 1, "expected multiple tile-parts");
     for (index, (tile_index, tile_part_index, num_tile_parts)) in tile_parts.iter().enumerate() {
         assert_eq!(*tile_index, 0);
-        assert_eq!(*tile_part_index, index as u8);
-        assert_eq!(*num_tile_parts, tile_parts.len() as u8);
+        assert_eq!(
+            *tile_part_index,
+            u8::try_from(index).expect("tile-part index fits u8")
+        );
+        assert_eq!(
+            *num_tile_parts,
+            u8::try_from(tile_parts.len()).expect("tile-part count fits u8")
+        );
     }
 
     let decoded = strict_decode_native(&encoded.codestream);
@@ -1225,7 +1249,7 @@ fn cpu_lossless_emits_multiple_tile_parts_that_strict_decode_uses() {
 #[test]
 fn cpu_lossless_emits_tlm_for_multiple_tile_parts() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 37) ^ (index / 13)) & 0xff) as u8)
+        .map(|index| masked_u8((index * 37) ^ (index / 13)))
         .collect();
     let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -1251,7 +1275,7 @@ fn cpu_lossless_emits_tlm_for_multiple_tile_parts() {
 fn cpu_lossless_emits_ppm_and_ppt_across_multiple_tile_parts_that_strict_decode_uses() {
     for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
         let pixels: Vec<u8> = (0..64 * 64)
-            .map(|index| (((index * 41) ^ (index / 19)) & 0xff) as u8)
+            .map(|index| masked_u8((index * 41) ^ (index / 19)))
             .collect();
         let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -1306,9 +1330,15 @@ fn default_lossless_policy_keeps_edge_tiles_undecomposed() {
 fn rpcl_lossless_policy_reduces_base_resolution_to_64_or_less() {
     for (tile_size, expected_levels) in [(512usize, 3u8), (1024, 4), (2048, 5)] {
         let pixels = vec![0; tile_size * tile_size];
-        let samples =
-            J2kLosslessSamples::new(&pixels, tile_size as u32, tile_size as u32, 1, 8, false)
-                .unwrap();
+        let samples = J2kLosslessSamples::new(
+            &pixels,
+            u32::try_from(tile_size).expect("fixture tile size fits u32"),
+            u32::try_from(tile_size).expect("fixture tile size fits u32"),
+            1,
+            8,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(
             j2k_lossless_decomposition_levels_for_progression(samples, J2kProgressionOrder::Rpcl),
@@ -1348,7 +1378,7 @@ fn max_decomposition_level_option_caps_rpcl_without_forcing_small_tiles() {
 
 #[test]
 fn cpu_lossless_round_trips_gray8() {
-    let pixels: Vec<u8> = (0..35).map(|v| (v * 7) as u8).collect();
+    let pixels: Vec<u8> = (0_u8..35).map(|value| value * 7).collect();
     let samples = J2kLosslessSamples::new(&pixels, 7, 5, 1, 8, false).unwrap();
 
     let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("lossless encode");
@@ -1483,7 +1513,7 @@ fn unsigned_24_bytes(sample: u32) -> [u8; 3] {
 }
 
 fn signed_24_bytes(sample: i32) -> [u8; 3] {
-    unsigned_24_bytes((sample as u32) & 0x00ff_ffff)
+    unsigned_24_bytes(u32::from_le_bytes(sample.to_le_bytes()) & 0x00ff_ffff)
 }
 
 fn unsigned_38_bytes(sample: u64) -> [u8; 5] {
@@ -2023,9 +2053,9 @@ fn cpu_lossless_round_trips_rgb8_variable_chroma_512() {
             let base = 238 + ((x / 17 + y / 29 + x * y / 8192) & 15);
             let red_delta = ((x * 3 + y * 5) & 31) - 15;
             let blue_delta = ((x * 7 - y * 3) & 31) - 15;
-            pixels.push((base + red_delta).clamp(0, 255) as u8);
-            pixels.push(base.clamp(0, 255) as u8);
-            pixels.push((base + blue_delta).clamp(0, 255) as u8);
+            pixels.push(clamped_u8(base + red_delta));
+            pixels.push(clamped_u8(base));
+            pixels.push(clamped_u8(base + blue_delta));
         }
     }
     let samples = J2kLosslessSamples::new(&pixels, 512, 512, 3, 8, false).unwrap();
@@ -2109,7 +2139,7 @@ fn cpu_lossless_round_trips_gray8_seed_104_64() {
 
 #[test]
 fn auto_falls_back_to_validated_cpu_until_device_encode_is_complete() {
-    let pixels: Vec<u8> = (0..27).map(|v| (v * 3) as u8).collect();
+    let pixels: Vec<u8> = (0_u8..27).map(|value| value * 3).collect();
     let samples = J2kLosslessSamples::new(&pixels, 3, 3, 3, 8, false).unwrap();
 
     let encoded =
@@ -2139,7 +2169,7 @@ fn accelerator_facade_auto_falls_back_when_no_stage_dispatches() {
 
     impl J2kEncodeStageAccelerator for NoDispatchAccelerator {}
 
-    let pixels: Vec<u8> = (0..64).map(|value| (value * 5) as u8).collect();
+    let pixels: Vec<u8> = (0_u8..64).map(|value| value.wrapping_mul(5)).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).unwrap();
     let mut accelerator = NoDispatchAccelerator;
 
@@ -2206,6 +2236,10 @@ fn accelerator_facade_reports_partial_auto_dispatch_and_strictly_rejects_it() {
             Ok(Some(deinterleave_to_f32_for_test(job)))
         }
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "mock accelerator fixture coefficients are rounded within the i32 domain"
+        )]
         fn encode_quantize_subband(
             &mut self,
             job: J2kQuantizeSubbandJob<'_>,
@@ -2228,7 +2262,7 @@ fn accelerator_facade_reports_partial_auto_dispatch_and_strictly_rejects_it() {
         }
     }
 
-    let pixels: Vec<u8> = (0..64).map(|value| (value * 7) as u8).collect();
+    let pixels: Vec<u8> = (0_u8..64).map(|value| value.wrapping_mul(7)).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).unwrap();
     let mut auto_accelerator = PacketizationDispatchAccelerator::default();
 
@@ -2290,6 +2324,10 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
             Ok(Some(deinterleave_to_f32_for_test(job)))
         }
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "mock accelerator fixture coefficients are rounded within the i32 domain"
+        )]
         fn encode_quantize_subband(
             &mut self,
             job: J2kQuantizeSubbandJob<'_>,
@@ -2329,7 +2367,7 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
         }
     }
 
-    let pixels: Vec<u8> = (0..64).map(|value| (value * 7) as u8).collect();
+    let pixels: Vec<u8> = (0_u8..64).map(|value| value.wrapping_mul(7)).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).unwrap();
     let mut accelerator = FullClassicAccelerator::default();
 
@@ -2379,6 +2417,10 @@ fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
             Ok(Some(deinterleave_to_f32_for_test(job)))
         }
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "mock accelerator fixture coefficients are rounded within the i32 domain"
+        )]
         fn encode_quantize_subband(
             &mut self,
             job: J2kQuantizeSubbandJob<'_>,
@@ -2416,7 +2458,7 @@ fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
         }
     }
 
-    let pixels: Vec<u8> = (0..64).map(|value| (value * 13) as u8).collect();
+    let pixels: Vec<u8> = (0_u8..64).map(|value| value.wrapping_mul(13)).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).unwrap();
     let mut accelerator = FullHtAccelerator::default();
 
@@ -2467,7 +2509,7 @@ fn accelerator_facade_ht_lossless_quality_layers_request_refinement_passes() {
         }
     }
 
-    let pixels: Vec<u8> = (0..64).map(|value| (value * 13) as u8).collect();
+    let pixels: Vec<u8> = (0_u8..64).map(|value| value.wrapping_mul(13)).collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).unwrap();
     let mut accelerator = RefinementHtAccelerator::default();
 

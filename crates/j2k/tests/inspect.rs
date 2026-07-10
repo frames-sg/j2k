@@ -36,7 +36,7 @@ fn codestream_without_cod() -> Vec<u8> {
         siz.extend_from_slice(&[0x07, 0x01, 0x01]);
     }
     bytes.extend_from_slice(&[0xFF, 0x51]);
-    push_u16(&mut bytes, (siz.len() + 2) as u16);
+    push_u16(&mut bytes, marker_segment_len(siz.len()));
     bytes.extend_from_slice(&siz);
     bytes.extend_from_slice(&[0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     bytes
@@ -60,7 +60,7 @@ fn codestream_with_component_count(component_count: u16) -> Vec<u8> {
     let first_component = bytes[component_start..component_start + 3].to_vec();
     let new_lsiz = 38 + usize::from(component_count) * 3;
 
-    bytes[siz + 2..siz + 4].copy_from_slice(&(new_lsiz as u16).to_be_bytes());
+    bytes[siz + 2..siz + 4].copy_from_slice(&marker_segment_len(new_lsiz - 2).to_be_bytes());
     bytes[siz + 38..siz + 40].copy_from_slice(&component_count.to_be_bytes());
     bytes.splice(
         component_start..component_end,
@@ -80,7 +80,7 @@ fn jp2_with_truncated_jp2h_child_box() -> Vec<u8> {
     bytes.extend_from_slice(&[
         0, 0, 0, 16, b'j', b'p', b'2', b'h', 0, 0, 0, 32, b'i', b'h', b'd', b'r',
     ]);
-    let len = (8 + codestream.len()) as u32;
+    let len = jp2_box_len(codestream.len());
     bytes.extend_from_slice(&len.to_be_bytes());
     bytes.extend_from_slice(b"jp2c");
     bytes.extend_from_slice(&codestream);
@@ -132,7 +132,7 @@ fn jp2_with_jp2c_before_jp2h() -> Vec<u8> {
         0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
         b' ',
     ]);
-    let len = (8 + codestream.len()) as u32;
+    let len = jp2_box_len(codestream.len());
     bytes.extend_from_slice(&len.to_be_bytes());
     bytes.extend_from_slice(b"jp2c");
     bytes.extend_from_slice(&codestream);
@@ -141,6 +141,16 @@ fn jp2_with_jp2c_before_jp2h() -> Vec<u8> {
         0, 0, 128, 0, 3, 7, 7, 0, 0, 0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0, 0, 0, 0, 16,
     ]);
     bytes
+}
+
+fn marker_segment_len(payload_len: usize) -> u16 {
+    u16::try_from(payload_len.checked_add(2).expect("marker length overflow"))
+        .expect("fixture marker length fits u16")
+}
+
+fn jp2_box_len(payload_len: usize) -> u32 {
+    u32::try_from(payload_len.checked_add(8).expect("box length overflow"))
+        .expect("fixture box length fits u32")
 }
 
 fn jp2_shell() -> Vec<u8> {

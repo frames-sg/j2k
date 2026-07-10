@@ -439,7 +439,7 @@ fn max_decomposition_levels(width: u32, height: u32) -> u8 {
     if min_dim <= 1 {
         return 0;
     }
-    min_dim.ilog2() as u8
+    u8::try_from(min_dim.ilog2()).expect("u32 logarithm fits u8")
 }
 
 #[cfg(test)]
@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn lossless_encode_can_disable_component_transform() {
         let pixels: Vec<u8> = (0..4 * 4 * 3)
-            .map(|value| ((value * 17) & 0xFF) as u8)
+            .map(|value| u8::try_from((value * 17) & 0xFF).expect("masked fixture byte"))
             .collect();
         let samples = J2kLosslessSamples::new(&pixels, 4, 4, 3, 8, false).unwrap();
         let encoded = encode_j2k_lossless(

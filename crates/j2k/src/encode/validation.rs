@@ -59,7 +59,10 @@ pub(super) fn decoded_psnr(
     psnr_from_decoded(samples, &decoded.data)
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "PSNR is an approximate f64 validation metric over bounded sample counts"
+)]
 pub(super) fn psnr_from_decoded(
     samples: J2kLossySamples<'_>,
     decoded: &[u8],
@@ -90,7 +93,10 @@ pub(super) fn psnr_from_decoded(
     Ok(10.0 * ((peak * peak) / mse).log10())
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "sample values are intentionally represented as f64 for PSNR arithmetic"
+)]
 pub(super) fn sample_value(data: &[u8], sample_idx: usize, bit_depth: u8, signed: bool) -> f64 {
     let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth);
     let byte_idx = sample_idx * bytes_per_sample;
@@ -111,6 +117,10 @@ pub(super) fn read_le_sample_value(bytes: &[u8], bit_depth: u8) -> u64 {
     raw & mask
 }
 
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "the cast deliberately reinterprets the shifted sign bit before arithmetic extension"
+)]
 pub(super) fn sign_extend_sample(raw: u64, bit_depth: u8) -> i64 {
     let shift = 64 - u32::from(bit_depth);
     ((raw << shift) as i64) >> shift
@@ -445,17 +455,20 @@ pub(super) fn canonical_native_typed_component_bytes(
         if plane.signed {
             let value = sign_extend_sample(raw, plane.bit_depth);
             if plane.bit_depth <= 8 {
-                out.push((value as i8) as u8);
+                let signed = i8::try_from(value).expect("signed 8-bit sample fits i8");
+                out.push(signed.to_le_bytes()[0]);
             } else if plane.bit_depth <= 16 {
-                out.extend_from_slice(&(value as i16).to_le_bytes());
+                let signed = i16::try_from(value).expect("signed 16-bit sample fits i16");
+                out.extend_from_slice(&signed.to_le_bytes());
             } else {
                 let bytes = value.to_le_bytes();
                 out.extend_from_slice(&bytes[..bytes_per_sample]);
             }
         } else if plane.bit_depth <= 8 {
-            out.push(raw as u8);
+            out.push(u8::try_from(raw).expect("unsigned 8-bit sample fits u8"));
         } else if plane.bit_depth <= 16 {
-            out.extend_from_slice(&(raw as u16).to_le_bytes());
+            let unsigned = u16::try_from(raw).expect("unsigned 16-bit sample fits u16");
+            out.extend_from_slice(&unsigned.to_le_bytes());
         } else {
             let bytes = raw.to_le_bytes();
             out.extend_from_slice(&bytes[..bytes_per_sample]);

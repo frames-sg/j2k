@@ -14,6 +14,10 @@ use j2k::{
 use j2k_core::{BackendKind, CodecError};
 use j2k_native::{DecodeSettings, Image};
 
+fn masked_u8(value: usize) -> u8 {
+    u8::try_from(value & 0xff).expect("masked fixture byte fits u8")
+}
+
 fn decode_native(codestream: &[u8]) -> j2k_native::RawBitmap {
     Image::new(codestream, &DecodeSettings::default())
         .expect("encoded codestream should parse")
@@ -99,7 +103,7 @@ fn plt_packet_lengths(codestream: &[u8]) -> Vec<u32> {
 #[test]
 fn cpu_lossy_rectangular_roi_writes_rgn_and_decodes() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 13) ^ (index / 5)) & 0xFF) as u8)
+        .map(|index| masked_u8((index * 13) ^ (index / 5)))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
     let roi = [J2kRoiRegion {
@@ -238,7 +242,7 @@ fn lossy_quality_layer_targets_must_be_cumulative() {
 #[test]
 fn cpu_classic_lossy_bits_per_pixel_target_encodes_parseable_codestream() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 13) ^ (index / 5)) & 0xFF) as u8)
+        .map(|index| masked_u8((index * 13) ^ (index / 5)))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -269,7 +273,7 @@ fn cpu_classic_lossy_bits_per_pixel_target_encodes_parseable_codestream() {
 #[test]
 fn cpu_classic_lossy_roundtrips_more_than_four_components() {
     let pixels: Vec<u8> = (0..16 * 16 * 5)
-        .map(|index| (((index * 7) + (index / 11)) & 0xFF) as u8)
+        .map(|index| masked_u8(index * 7 + index / 11))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 16, 16, 5, 8, false).unwrap();
 
@@ -289,7 +293,7 @@ fn cpu_classic_lossy_roundtrips_more_than_four_components() {
 #[test]
 fn cpu_classic_lossy_preserves_signed_component_metadata() {
     let pixels: Vec<u8> = (0..16)
-        .map(|index| (i8::try_from(index).unwrap() - 8) as u8)
+        .map(|index| (i8::try_from(index).unwrap() - 8).to_le_bytes()[0])
         .collect();
     let samples = J2kLossySamples::new(&pixels, 4, 4, 1, 8, true).unwrap();
 
@@ -314,7 +318,7 @@ fn cpu_classic_lossy_preserves_signed_component_metadata() {
 #[test]
 fn cpu_classic_lossy_multiple_quality_layers_encode_scalable_codestream() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 17) + (index / 3)) & 0xFF) as u8)
+        .map(|index| masked_u8(index * 17 + index / 3))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -387,7 +391,7 @@ fn cpu_classic_lossy_round_trips_two_component_no_mct_with_strict_decode() {
 #[test]
 fn cpu_classic_lossy_quality_layer_byte_targets_bound_early_layer_packets() {
     let pixels: Vec<u8> = (0..128 * 128)
-        .map(|index| (((index * 53) ^ (index / 11)) & 0xFF) as u8)
+        .map(|index| masked_u8((index * 53) ^ (index / 11)))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 128, 128, 1, 8, false).unwrap();
 
@@ -426,7 +430,7 @@ fn cpu_classic_lossy_quality_layer_byte_targets_bound_early_layer_packets() {
 #[test]
 fn cpu_classic_lossy_multiple_quality_layers_decode_all_progressions() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 29) ^ (index / 7)) & 0xFF) as u8)
+        .map(|index| masked_u8((index * 29) ^ (index / 7)))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -459,7 +463,7 @@ fn cpu_classic_lossy_multiple_quality_layers_decode_all_progressions() {
 #[test]
 fn cpu_classic_lossy_emits_plt_and_plm_that_strict_decode_uses() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 11) + (index / 9)) & 0xFF) as u8)
+        .map(|index| masked_u8(index * 11 + index / 9))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -495,7 +499,7 @@ fn cpu_classic_lossy_emits_plt_and_plm_that_strict_decode_uses() {
 #[test]
 fn cpu_classic_lossy_emits_sop_and_eph_that_strict_decode_uses() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 19) ^ (index / 11)) & 0xFF) as u8)
+        .map(|index| masked_u8((index * 19) ^ (index / 11)))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -538,7 +542,7 @@ fn cpu_classic_lossy_emits_sop_and_eph_that_strict_decode_uses() {
 fn cpu_classic_lossy_emits_ppm_and_ppt_that_strict_decode_uses() {
     for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
         let pixels: Vec<u8> = (0..64 * 64)
-            .map(|index| (((index * 23) ^ (index / 13)) & 0xFF) as u8)
+            .map(|index| masked_u8((index * 23) ^ (index / 13)))
             .collect();
         let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -569,7 +573,7 @@ fn cpu_classic_lossy_emits_ppm_and_ppt_that_strict_decode_uses() {
 fn cpu_classic_lossy_multi_tile_emits_ppm_and_ppt_that_strict_decode_uses() {
     for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
         let pixels: Vec<u8> = (0..64 * 64)
-            .map(|index| (((index * 37) ^ (index / 17)) & 0xFF) as u8)
+            .map(|index| masked_u8((index * 37) ^ (index / 17)))
             .collect();
         let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -606,7 +610,7 @@ fn cpu_classic_lossy_multi_tile_emits_ppm_and_ppt_that_strict_decode_uses() {
 #[test]
 fn cpu_classic_lossy_multi_tile_codestream_decodes() {
     let pixels: Vec<u8> = (0..96 * 80)
-        .map(|index| (((index * 23) + (index / 13)) & 0xFF) as u8)
+        .map(|index| masked_u8(index * 23 + index / 13))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 96, 80, 1, 8, false).unwrap();
     let mut options = J2kLossyEncodeOptions::default()
@@ -639,7 +643,7 @@ fn cpu_classic_lossy_multi_tile_codestream_decodes() {
 #[test]
 fn cpu_classic_lossy_multi_tile_emits_plt_and_plm() {
     let pixels: Vec<u8> = (0..96 * 80)
-        .map(|index| (((index * 41) + (index / 23)) & 0xFF) as u8)
+        .map(|index| masked_u8(index * 41 + index / 23))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 96, 80, 1, 8, false).unwrap();
     let mut options = J2kLossyEncodeOptions::default()
@@ -674,7 +678,7 @@ fn cpu_classic_lossy_multi_tile_emits_plt_and_plm() {
 #[test]
 fn cpu_classic_lossy_emits_multiple_tile_parts_that_strict_decode_uses() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 29) + (index / 11)) & 0xFF) as u8)
+        .map(|index| masked_u8(index * 29 + index / 11))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
     let options = J2kLossyEncodeOptions::default()
@@ -690,8 +694,14 @@ fn cpu_classic_lossy_emits_multiple_tile_parts_that_strict_decode_uses() {
     assert!(tile_parts.len() > 1, "expected multiple tile-parts");
     for (index, (tile_index, tile_part_index, num_tile_parts)) in tile_parts.iter().enumerate() {
         assert_eq!(*tile_index, 0);
-        assert_eq!(*tile_part_index, index as u8);
-        assert_eq!(*num_tile_parts, tile_parts.len() as u8);
+        assert_eq!(
+            *tile_part_index,
+            u8::try_from(index).expect("tile-part index fits u8")
+        );
+        assert_eq!(
+            *num_tile_parts,
+            u8::try_from(tile_parts.len()).expect("tile-part count fits u8")
+        );
     }
 
     let decoded = strict_decode_native(&encoded.codestream);
@@ -703,7 +713,7 @@ fn cpu_classic_lossy_emits_multiple_tile_parts_that_strict_decode_uses() {
 #[test]
 fn cpu_classic_lossy_emits_tlm_for_multiple_tile_parts() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 43) + (index / 17)) & 0xFF) as u8)
+        .map(|index| masked_u8(index * 43 + index / 17))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
     let options = J2kLossyEncodeOptions::default()
@@ -730,7 +740,7 @@ fn cpu_classic_lossy_emits_tlm_for_multiple_tile_parts() {
 fn cpu_classic_lossy_emits_ppm_and_ppt_across_multiple_tile_parts_that_strict_decode_uses() {
     for (marker, marker_byte) in [(J2kMarkerSegment::Ppm, 0x60), (J2kMarkerSegment::Ppt, 0x61)] {
         let pixels: Vec<u8> = (0..64 * 64)
-            .map(|index| (((index * 47) ^ (index / 23)) & 0xFF) as u8)
+            .map(|index| masked_u8((index * 47) ^ (index / 23)))
             .collect();
         let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -765,7 +775,7 @@ fn cpu_classic_lossy_emits_ppm_and_ppt_across_multiple_tile_parts_that_strict_de
 #[test]
 fn cpu_classic_lossy_writes_explicit_single_precinct_exponents() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 31) + (index / 17)) & 0xFF) as u8)
+        .map(|index| masked_u8(index * 31 + index / 17))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
     let mut options = J2kLossyEncodeOptions::default()
@@ -796,7 +806,7 @@ fn cpu_classic_lossy_writes_explicit_single_precinct_exponents() {
 #[test]
 fn cpu_classic_lossy_splits_packets_by_precinct() {
     let pixels: Vec<u8> = (0..128 * 128)
-        .map(|index| (((index * 37) + (index / 19)) & 0xFF) as u8)
+        .map(|index| masked_u8(index * 37 + index / 19))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 128, 128, 1, 8, false).unwrap();
     let mut options = J2kLossyEncodeOptions::default()
@@ -828,7 +838,7 @@ fn cpu_classic_lossy_splits_packets_by_precinct() {
 
 #[test]
 fn cpu_htj2k_lossy_reports_rate_granularity() {
-    let pixels: Vec<u8> = (0..32 * 32).map(|index| (index & 0xFF) as u8).collect();
+    let pixels: Vec<u8> = (0..32 * 32).map(masked_u8).collect();
     let samples = J2kLossySamples::new(&pixels, 32, 32, 1, 8, false).unwrap();
 
     let encoded = encode_j2k_lossy(
@@ -912,7 +922,7 @@ fn tlm_tile_part_lengths(codestream: &[u8]) -> Vec<(u16, u32)> {
 #[test]
 fn cpu_htj2k_lossy_three_quality_layers_use_three_pass_segment_granularity() {
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|index| (((index * 43) ^ (index / 29)) & 0xFF) as u8)
+        .map(|index| masked_u8((index * 43) ^ (index / 29)))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
@@ -979,6 +989,10 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
             Ok(Some(vec![component]))
         }
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "mock accelerator fixture coefficients are rounded within the i32 domain"
+        )]
         fn encode_quantize_subband(
             &mut self,
             job: J2kQuantizeSubbandJob<'_>,
@@ -1019,7 +1033,7 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
     }
 
     let pixels: Vec<u8> = (0..32 * 32)
-        .map(|index| (((index * 47) + (index / 31)) & 0xFF) as u8)
+        .map(|index| masked_u8(index * 47 + index / 31))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 32, 32, 1, 8, false).unwrap();
     let mut options = J2kLossyEncodeOptions::default()

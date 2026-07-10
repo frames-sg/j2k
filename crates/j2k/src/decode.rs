@@ -471,6 +471,11 @@ fn write_samples_as_u8(src: &[f32], bit_depth: u8, dst: &mut [u8]) {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion"
+)]
 fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
     let rounded = sample.round();
     if bit_depth == 8 {
@@ -742,7 +747,8 @@ fn opaque_alpha_u16(bytes_per_sample: usize, bit_depth: u8) -> u16 {
     if bytes_per_sample == 1 {
         u16::MAX
     } else {
-        ((1_u32 << bit_depth.min(16)) - 1).max(1) as u16
+        u16::try_from(((1_u32 << bit_depth.min(16)) - 1).max(1))
+            .expect("16-bit alpha mask fits u16")
     }
 }
 
@@ -761,7 +767,8 @@ fn output_u16_sample(
 
 fn widen_u8_sample_to_u16(sample: u8, bit_depth: u8) -> u16 {
     let max_value = ((1_u32 << bit_depth.min(16)) - 1).max(1);
-    ((u32::from(sample) * u32::from(u16::MAX) + (max_value / 2)) / max_value) as u16
+    u16::try_from((u32::from(sample) * u32::from(u16::MAX) + (max_value / 2)) / max_value)
+        .expect("scaled sample is bounded to u16")
 }
 
 fn convert_or_copy_u16(
