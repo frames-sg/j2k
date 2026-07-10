@@ -58,7 +58,7 @@ struct BenchManifestStanza {
 
 // This is the immutable ref recorded by docs/benchmark-evidence.md for the
 // current benchmark suite. The older `j2k-bench-original` tag predates the
-// signinum-to-j2k crate rename and cannot host the benchmark source overlay.
+// current crate layout and cannot host the benchmark source overlay.
 const DEFAULT_BASELINE_REF: &str = "29143c8e1f00bbbe9cf5ab37b3cea882f6d52139";
 const DEFAULT_THRESHOLD_PERCENT: f64 = 10.0;
 const MIN_ABSOLUTE_REGRESSION_NS: f64 = 100.0;
@@ -841,10 +841,10 @@ mod tests {
     #[test]
     fn baseline_layout_preflight_rejects_pre_rename_tree_and_accepts_current_layout() {
         let root = temp_dir("j2k-perf-baseline-layout-test");
-        fs::create_dir_all(root.join("crates/signinum-j2k")).unwrap();
+        fs::create_dir_all(root.join("crates/legacy-pre-rename")).unwrap();
         fs::write(
-            root.join("crates/signinum-j2k/Cargo.toml"),
-            "[package]\nname = \"signinum-j2k\"\n",
+            root.join("crates/legacy-pre-rename/Cargo.toml"),
+            "[package]\nname = \"legacy-pre-rename\"\n",
         )
         .unwrap();
 
