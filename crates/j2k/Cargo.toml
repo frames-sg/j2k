@@ -1,6 +1,6 @@
 [package]
 name        = "j2k"
-description = "Memory-safety-first JPEG 2000 and HTJ2K codec APIs with optional CUDA and Metal acceleration"
+description = "Safe public JPEG 2000 and HTJ2K CPU codec APIs with optional CUDA and Metal adapters"
 version.workspace = true
 edition.workspace      = true
 rust-version.workspace = true

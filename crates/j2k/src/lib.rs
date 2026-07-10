@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! JPEG 2000 inspect support for j2k.
+//! Public JPEG 2000 Part 1 and HTJ2K Part 15 CPU codec facade.
+//!
+//! This crate provides inspection, decode, encode, lossless J2K-to-HTJ2K
+//! recoding, still-image container wrapping, and device-decode planning. Shared
+//! encode-stage SPI types are re-exported at the crate root for adapter
+//! interoperability, while concrete CUDA and Metal device surfaces and runtime
+//! integration live in the `j2k-cuda` and `j2k-metal` crates.
 
 #![deny(missing_docs)]
 

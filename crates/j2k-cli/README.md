@@ -17,6 +17,6 @@ the source geometry, component count, output bytes, and timing/dispatch summary.
 
 ## Links
 
-- API docs: <https://docs.rs/j2k-cli>
+- Package page: <https://docs.rs/j2k-cli>
 - Repository: <https://github.com/frames-sg/j2k>
 - Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

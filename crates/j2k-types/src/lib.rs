@@ -1,11 +1,9 @@
-//! Shared JPEG 2000 encode-stage contract types for j2k.
+//! Shared JPEG 2000 and HTJ2K encode-stage contracts and helpers for j2k.
 //!
-//! This crate is the neutral public contract between the `j2k`
-//! adapter surface and the `j2k-native` codec engine: job, output,
-//! and report types cross the boundary here so neither crate mirrors the
-//! other's definitions. It intentionally contains plain data types only -
-//! codec behavior stays in `j2k-native` and adapter traits stay in
-//! their owning crates.
+//! This crate is the neutral public contract between the `j2k` facade, the
+//! `j2k-native` codec engine, and device adapters. It defines encode-stage
+//! jobs, outputs, dispatch reports, progression-order helpers, the shared
+//! accelerator trait, and its default CPU-only implementation.
 
 #![no_std]
 #![forbid(unsafe_code)]

@@ -1,6 +1,6 @@
 [package]
 name = "j2k-transcode-cuda"
-description = "CUDA acceleration for JPEG to J2K and HTJ2K transcode paths"
+description = "CUDA acceleration for JPEG-to-HTJ2K coefficient-domain transcode stages"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

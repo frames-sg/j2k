@@ -1,6 +1,6 @@
 [package]
 name = "j2k-codec-math"
-description = "No-std shared codec constants and pure math tables for j2k backends"
+description = "no_std codec constants, generated fragments, and allocation-free helper algorithms for j2k"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

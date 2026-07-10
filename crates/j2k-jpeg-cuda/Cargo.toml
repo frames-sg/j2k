@@ -1,6 +1,6 @@
 [package]
 name = "j2k-jpeg-cuda"
-description = "CUDA JPEG decode adapter for j2k-jpeg"
+description = "CUDA JPEG decode and baseline encode adapter for j2k-jpeg"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

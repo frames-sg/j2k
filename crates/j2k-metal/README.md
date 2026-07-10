@@ -33,9 +33,12 @@ encode path.
 
 The resident path expects `MetalLosslessEncodeTile` inputs with
 `MetalEncodeInputStaging::AlreadyPaddedContiguous` for no-copy Metal-buffer
-workflows. For host-visible outputs, use `encode_lossless_batch_with_report`;
-`host_readback_duration` then measures materializing buffer-backed codestreams
-into host bytes and should be reported separately from resident buffer timing.
+workflows. For supported host-visible outputs, call
+`submit_lossless_batch(...).wait()` to resolve the submission to
+`Vec<EncodedJ2k>`. The hidden `encode_lossless_batch_with_report` helper is for
+internal benchmarking and diagnostics, not the normal application contract.
+When collecting benchmark diagnostics, report host readback separately from
+resident buffer timing.
 
 Keep benchmark claims scoped: compare `resident_host_ms` against CPU only when
 `packetization_used=true`, `codestream_assembly_used=true`, and `batch_size > 1`.

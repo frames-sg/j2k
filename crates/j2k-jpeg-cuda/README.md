@@ -1,13 +1,17 @@
 # j2k-jpeg-cuda
 
-CUDA adapter for J2K JPEG decode surfaces.
+CUDA adapter for J2K baseline JPEG decode and encode surfaces.
 
 Supported CUDA paths use J2K-owned CUDA kernels and CUDA device memory
-outputs. Explicit CUDA requests are strict; unsupported JPEG shapes return
-structured errors instead of silently falling back to CPU.
+decode outputs. Baseline encode accepts Gray8 or Rgb8 CUDA input buffers and
+returns host `EncodedJpeg` output, for both single images and batches. Explicit
+CUDA requests are strict; unsupported JPEG shapes return structured errors
+instead of silently falling back to CPU.
 
-Enable the `cuda-runtime` feature for CUDA Driver API dispatch. Default builds
-expose the API surface but do not require a CUDA runtime.
+Adapter, session, error, and runtime-free stub types compile in default builds.
+Enable `cuda-runtime` for CUDA Driver API dispatch, constructible CUDA-buffer
+and output-tile types, and actual decode or encode execution. Without that
+feature, strict CUDA operations return `CudaUnavailable`.
 
 `cuda-runtime` is not proof that every CUDA Oxide kernel was built on the local
 host. Product PTX is generated only on supported Linux cuda-oxide build hosts;
