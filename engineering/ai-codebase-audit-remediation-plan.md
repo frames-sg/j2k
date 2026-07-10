@@ -50,16 +50,13 @@ coverage, and the clean release matrix.
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: STR-015 core JPEG and J2K-Metal suppression/namespace closure
-- Parallel tasks: remove or explicitly classify the JPEG manifest/file-wide
-  lint overrides and test include seam; remove J2K-Metal high-risk manifest
-  overrides and replace internal production wildcard re-exports
-- Last completed task: native all-target pedantic promotion and JPEG-Metal
-  manifest-wide `too_many_lines` cleanup
-- Last completed implementation commits: 008baec8
-  (`refactor(native): enable pedantic lint policy`) and 42b28fc6
-  (`refactor(jpeg-metal): remove broad line lint allowance`); JPEGCOR-002 and
-  the preceding JPEG-Metal naming cleanup are 23e75193, 51594b8e, and 35d66704
+- Current task: STR-015 core JPEG suppression/test-module closure
+- Parallel tasks: CUDA/JPEG-CUDA suppression inventory and facade/transcode
+  manifest/public-export cleanup
+- Last completed task: J2K-Core broad lint-policy closure
+- Last completed implementation commit: ee80a430
+  (`refactor(core): remove broad lint suppressions`); J2K-Metal, native, and
+  JPEG-Metal suppression closures are f1611ec0, 008baec8, and 42b28fc6
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
@@ -67,7 +64,8 @@ without loading the rest of the file.
 - Last known green broad gates: repository policy 158/158 runnable plus one
   intentional strict API check ignored, affected strict Clippy, JPEG Metal
   171/171 fail-closed library plus 5/5 real-Metal encode integration, J2K
-  Metal device integration 54/54, Metal encode 102/102 runnable,
+  Metal 209/209 library, device integration 54/54, and 18/18 required ignored
+  runtime tests with no skips, Metal encode 102/102 runnable,
   native default/all-feature 277/277 plus one intentional ignore and
   no-default 267/267, transcode routing 6/6, whole-production clone ratio
   3.06% below the 3.34% ceiling, and structural performance <=5%
@@ -1356,6 +1354,26 @@ Completed host fragment conversions: J2K Metal direct execution in 7b1f513b
 and transcode accelerator ownership in 64e150d2. The transcode conversion kept
 explicit root re-exports, passed all-target/all-feature check and strict
 Clippy, 34 library tests, and all three transcode structure-policy tests.
+
+The J2K-Metal suppression/namespace lane closed in f1611ec0. Seven high-risk
+manifest overrides and all actual source/test `#[allow(...)]` attributes are
+gone; only `must_use_candidate` and `missing_errors_doc` remain as an explicit
+public-API documentation policy pending the release fingerprint review. All
+35 non-prelude production wildcard re-exports were replaced by an explicit
+symbol inventory without broadening visibility; `compute.rs` remains under
+its 450-line structure ratchet. Normal and forced strict all-target Clippy,
+public-API rendering, 209 library tests, 54 device integrations, 18 required
+runtime tests, benchmark budgets, shader integrity, and focused repository
+policies pass on real Metal with no skip evidence.
+
+The J2K-Core escalation closed in ee80a430. All five manifest-wide Clippy
+overrides are gone. The 64 diagnostics they hid were resolved with concrete
+`must_use` contracts, public `# Errors` documentation, elided needless trait
+lifetimes, and one fulfilled item-level complexity expectation preserving the
+separate codec/sink error channels. Strict all-target/all-feature Clippy, four
+library tests, 35 API/behavior integration tests, doc tests, formatting, and
+diff hygiene pass. The simplified `cargo-public-api` rendering remains
+byte-identical to the pre-change snapshot.
 
 ### TOOL-001 — adoption report
 
