@@ -50,15 +50,16 @@ coverage, and the clean release matrix.
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: STR-011 native HT block-encode split, STR-012 JPEG
-  stripe-emission split, and STR-015 xtask pedantic-suppression cleanup
-- Parallel tasks: pass-order/bit-consumption-preserving native extraction,
-  byte/color/subsampling-preserving JPEG emission extraction, and fail-closed
-  release-tooling lint escalation
-- Last completed task: STR-014 CUDA J2K host-encode split
-- Last completed implementation commit: 5ac4771d
-  (`refactor(cuda-runtime): split j2k encode host stages`); the preceding JPEG
-  baseline-adapter split is f6d76f09
+- Current task: STR-014 Metal encode/decode owner splits and STR-015 xtask
+  pedantic-suppression cleanup
+- Parallel tasks: Metal encode command/resource-order preservation, Metal
+  decode request/surface-transfer preservation, and fail-closed release-tooling
+  lint escalation
+- Last completed task: STR-014 CUDA J2K device-encode split
+- Last completed implementation commit: 46244c5a
+  (`refactor(cuda-runtime): split j2k encode simt kernels`); the preceding JPEG
+  sequential-emission split is f0497b61 and native HT block-encode split is
+  809caa34
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
@@ -225,8 +226,8 @@ The rubric was checked against current primary or first-party sources on
 | STR-008 | P2 | complete | STR-004, STR-006 | Consolidate the remaining measured 50–63-line production clones |
 | STR-009 | P2 | in progress | STR-005 through STR-008 | Independently classify every remaining 1,000+ line production file and 250+ line function |
 | STR-010 | P2 | complete | STR-009 | Split mixed release-tooling roots (`xtask/main.rs`, coverage) |
-| STR-011 | P2 | in progress | STR-009 | Split mixed native Tier-1, DWT, and codestream implementation roots |
-| STR-012 | P2 | in progress | STR-009 | Sequential entropy, 12-bit rendering, and baseline adapter complete; stripe-emission root remains |
+| STR-011 | P2 | complete | STR-009 | Split mixed native Tier-1, DWT, and codestream implementation roots |
+| STR-012 | P2 | complete | STR-009 | Sequential entropy, 12-bit rendering, baseline adapter, and stripe emission split with byte parity |
 | STR-013 | P2 | complete | STR-009 | Split mixed encode/fixture comparison tooling roots |
 | STR-014 | P2 | in progress | STR-009 | Close actionable GPU/runtime findings from the independent large-file pass |
 | STR-015 | P2 | in progress | STR-009 through STR-014 | Remove or narrowly justify broad lint suppressions and hidden production namespace seams |
@@ -1037,6 +1038,15 @@ Extract phase modules without genericizing the hot state machines:
   benchmark smoke passed in commit 29bac3c3. One 37-line specialized
   arithmetic clone remains for codegen symmetry; quantitative pre/post timing
   is still required by PERF-001.
+- completed: HT block encode reduced from 2,083 physical lines to a 17-line
+  facade with focused writer, cleanup, quad, emission, refinement,
+  distribution, and test modules. Exact 69/69 functions, 16/16 types, 6/6
+  constants, 24/24 runtime strings, 48/48 hot/writer bodies, and all three
+  public functions match. Eleven focused, 276 library, and 38 integration
+  tests, no-default check, strict Clippy, and optimized benchmark smoke passed
+  in commit 809caa34. Three codegen-sensitive encode-versus-instrumentation
+  traversal pairs remain intentionally specialized; quantitative pre/post
+  timing remains part of PERF-001.
 
 - completed HT decode: segment validation/API, MEL/VLC readers, cleanup,
   significance, magnitude refinement, and benchmark instrumentation
@@ -1111,6 +1121,15 @@ table, zigzag, and string-literal hashes match. Whole JPEG bytes remain exact
 for Gray+restart and RGB 4:4:4/4:2:2/4:2:0; independent round trips,
 restart/DCT parity, structural tests, all-target/all-feature check, strict
 Clippy, and the zero-clone touched-family ratchet passed.
+
+Completed STR-012D in commit f0497b61: `entropy/sequential/emit.rs` fell from
+1,010 to a 21-line owner with focused output, RGB, 4:2:0 region, upsample,
+four-component, RGB444, type, and structure-test modules. All nine top-level
+functions, seven structs/field order, output/conversion call order, strings,
+derives, and hot bodies match. Row-streaming parity now covers 4:2:0, 4:2:2,
+and 4:4:4; 12/13 sequential tests and both 36-test default/all-feature byte,
+restart, ROI/scaling, scratch, CMYK, and YCCK suites passed with strict Clippy.
+The three pre-existing output-strategy clone pairs did not increase.
 
 ### STR-013 — comparison tooling
 
@@ -1189,7 +1208,19 @@ resource-order, runtime-string, derive, and documentation parity passed.
 Default/all-feature checks, strict Clippy, 95/95 and 98/98 host tests, and
 dependent `j2k-cuda` compilation passed. The six pre-existing 5/3-versus-9/7
 and host-versus-resident clone pairs did not increase; actual PTX and NVIDIA
-execution remain external. The CUDA Oxide device half remains pending.
+execution remain external. The completed CUDA Oxide device half follows.
+
+Completed the device half of priority 5 in commit 46244c5a: CUDA Oxide J2K
+encode `simt/src/main.rs` fell from 1,490 to a 21-line root with focused ABI,
+constant, 5/3, 9/7, export, helper, packet-writer, packetization,
+quantization, and tag-tree modules at or below 461 lines. The build script now
+fail-closed stages and rerun-tracks all ten device modules. Exact 56/56
+function bodies, 19/19 constants, 10/10 structs/field order, 12/12 kernel
+names/order, 7/7 `repr(C)` layouts, derives, and the single export surface
+match. Strict runtime Clippy, 98/98 host tests, the dependent `j2k-cuda`
+all-target/all-feature check, and a source/staging/ABI ratchet passed. The one
+26-line contiguous-versus-strided deinterleave pair is pre-existing. Actual
+PTX and NVIDIA execution remain exact-SHA external evidence.
 
 | Priority | Split targets | Required boundary |
 |---:|---|---|
@@ -1197,7 +1228,7 @@ execution remain external. The CUDA Oxide device half remains pending.
 | 2 | Completed: CUDA runtime `j2k_decode.rs` (2,142 physical lines at split) | ABI types, IDWT scheduling, store/MCT, tracing/validation |
 | 3 | Completed: CUDA runtime `jpeg.rs` (1,463 physical lines at split) | Encode/decode ABI and pipeline versus entropy diagnostics; file-wide similar-name allowance removed |
 | 4 | Completed: CUDA runtime `transcode.rs` (1,665 physical lines at split) and CUDA Oxide transcode source (1,509) | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
-| 5 | Host completed: CUDA runtime `j2k_encode.rs` (1,630); CUDA Oxide J2K encode source (1,490) remains | Host types/results, preprocessing/MCT/DWT/quantization; derive real device seams from the SIMT source while retaining one export surface |
+| 5 | Completed: CUDA runtime `j2k_encode.rs` (1,630) and CUDA Oxide J2K encode source (1,490) | Host types/results, preprocessing/MCT/DWT/quantization plus device packet/tag-tree/export stages with one export surface |
 | 6 | Completed: CUDA runtime `context.rs` (1,013 physical lines at split) | Context/pinned memory, kernel cache/loading, and compact result types |
 | 7 | Metal `encode.rs` (1,773) and `decoder.rs` (1,560) | Resident batch/single/host fallback; request/direct plan/core adapters/surface transfer |
 | 8 | Metal Tier-1 test support (951 test-only lines inside production module) | Move parity helpers out of the production source without altering hot production code |
