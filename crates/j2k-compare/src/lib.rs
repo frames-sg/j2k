@@ -6,6 +6,8 @@ use std::time::Instant;
 
 use j2k_core::Rect;
 
+pub(crate) const MAX_EXTERNAL_OUTPUT_BYTES: usize = 512 * 1024 * 1024;
+
 /// Color shape requested from an external comparator decode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExternalDecodeColor {

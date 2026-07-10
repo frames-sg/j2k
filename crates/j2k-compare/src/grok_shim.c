@@ -6,13 +6,7 @@
 
 #define GROK_OUTPUT_CAP_BYTES ((size_t)512 * 1024 * 1024)
 
-static void j2k_grok_init_once(void) {
-  static int initialized = 0;
-  if (!initialized) {
-    grk_initialize(NULL, 1, NULL);
-    initialized = 1;
-  }
-}
+void j2k_grok_initialize(void) { grk_initialize(NULL, 1, NULL); }
 
 static uint8_t j2k_clamp_u8(int32_t value) {
   if (value < 0) {
@@ -104,37 +98,45 @@ static int j2k_grok_component_index(const grk_image_comp *component,
   return j2k_grok_checked_add_size(row_offset, (size_t)col, index);
 }
 
-static int32_t j2k_grok_component_sample(const grk_image_comp *component,
-                                              size_t index) {
-  if (!component || !component->data) {
+static int j2k_grok_component_sample_u8(const grk_image_comp *component,
+                                        size_t index, uint8_t *sample) {
+  if (!component || !component->data || !sample) {
     return 0;
   }
   switch (component->data_type) {
   case GRK_INT_8:
     if (!component->sgnd) {
-      return ((const uint8_t *)component->data)[index];
+      *sample = ((const uint8_t *)component->data)[index];
+    } else {
+      *sample = j2k_clamp_u8(((const int8_t *)component->data)[index]);
     }
-    return ((const int8_t *)component->data)[index];
+    return 1;
   case GRK_INT_16:
     if (!component->sgnd) {
-      return ((const uint16_t *)component->data)[index];
+      uint16_t value = ((const uint16_t *)component->data)[index];
+      *sample = value > UINT8_MAX ? UINT8_MAX : (uint8_t)value;
+    } else {
+      *sample = j2k_clamp_u8(((const int16_t *)component->data)[index]);
     }
-    return ((const int16_t *)component->data)[index];
+    return 1;
   case GRK_INT_32:
     if (!component->sgnd) {
-      return (int32_t)((const uint32_t *)component->data)[index];
+      uint32_t value = ((const uint32_t *)component->data)[index];
+      *sample = value > UINT8_MAX ? UINT8_MAX : (uint8_t)value;
+    } else {
+      *sample = j2k_clamp_u8(((const int32_t *)component->data)[index]);
     }
-    return ((const int32_t *)component->data)[index];
+    return 1;
   default:
-    return ((const int32_t *)component->data)[index];
+    return 0;
   }
 }
 
-int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint32_t reduce,
-                              int has_region, uint32_t x0, uint32_t y0,
-                              uint32_t x1, uint32_t y1, uint32_t channels,
-                              uint8_t **out_data, size_t *out_len,
-                              uint32_t *out_width, uint32_t *out_height) {
+int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
+                       int has_region, uint32_t x0, uint32_t y0,
+                       uint32_t x1, uint32_t y1, uint32_t channels,
+                       uint8_t **out_data, size_t *out_len,
+                       uint32_t *out_width, uint32_t *out_height) {
   grk_object *codec = NULL;
   grk_image *image = NULL;
   grk_stream_params stream_params;
@@ -151,7 +153,6 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint32_t reduce,
   *out_width = 0;
   *out_height = 0;
 
-  j2k_grok_init_once();
   memset(&stream_params, 0, sizeof(stream_params));
   memset(&params, 0, sizeof(params));
   memset(&header_info, 0, sizeof(header_info));
@@ -161,7 +162,7 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint32_t reduce,
   stream_params.stream_len = len;
   stream_params.is_read_stream = true;
 
-  params.core.reduce = (uint8_t)reduce;
+  params.core.reduce = reduce;
   params.force_rgb = channels == 3;
   params.upsample = channels == 3;
   params.num_threads = 1;
@@ -234,16 +235,20 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint32_t reduce,
         grk_object_unref(codec);
         return 0;
       }
-      int32_t v0 = j2k_grok_component_sample(c0, c0_index);
+      uint8_t v0 = 0;
+      if (!j2k_grok_component_sample_u8(c0, c0_index, &v0)) {
+        free(packed);
+        grk_object_unref(codec);
+        return 0;
+      }
       if (channels == 1) {
-        packed[dst] = j2k_clamp_u8(v0);
+        packed[dst] = v0;
         continue;
       }
       if (image->numcomps == 1) {
-        uint8_t gray = j2k_clamp_u8(v0);
-        packed[dst] = gray;
-        packed[dst + 1] = gray;
-        packed[dst + 2] = gray;
+        packed[dst] = v0;
+        packed[dst + 1] = v0;
+        packed[dst + 2] = v0;
         continue;
       }
       grk_image_comp *c1 = &image->comps[1];
@@ -256,11 +261,17 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint32_t reduce,
         grk_object_unref(codec);
         return 0;
       }
-      int32_t v1 = j2k_grok_component_sample(c1, c1_index);
-      int32_t v2 = j2k_grok_component_sample(c2, c2_index);
-      packed[dst] = j2k_clamp_u8(v0);
-      packed[dst + 1] = j2k_clamp_u8(v1);
-      packed[dst + 2] = j2k_clamp_u8(v2);
+      uint8_t v1 = 0;
+      uint8_t v2 = 0;
+      if (!j2k_grok_component_sample_u8(c1, c1_index, &v1) ||
+          !j2k_grok_component_sample_u8(c2, c2_index, &v2)) {
+        free(packed);
+        grk_object_unref(codec);
+        return 0;
+      }
+      packed[dst] = v0;
+      packed[dst + 1] = v1;
+      packed[dst + 2] = v2;
     }
   }
 

@@ -9,7 +9,7 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        OnceLock,
+        Barrier, OnceLock,
     },
 };
 
@@ -143,6 +143,40 @@ fn grok_in_process_region_scaled_matches_j2k_rgb_fixture() {
     let ours = j2k_rgb_region_scaled_q4(&input, roi);
     let theirs = j2k_compare::grok::decode_rgb_region_scaled(&input, roi, 2).expect("grok");
     assert_eq!(ours, theirs);
+}
+
+#[test]
+fn grok_concurrent_decodes_share_the_initialized_runtime() {
+    if !j2k_compare::grok::is_available() {
+        assert!(
+            !require_grok(),
+            "J2K_REQUIRE_GROK is set but in-process Grok is unavailable"
+        );
+        return;
+    }
+    let Some(input) = bench_fixture_rgb() else {
+        return;
+    };
+    let expected = j2k_rgb(&input);
+    let workers = 8;
+    let barrier = Barrier::new(workers);
+    std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    j2k_compare::grok::decode_rgb(&input)
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            let decoded = handle
+                .join()
+                .expect("Grok decode worker must not panic")
+                .expect("concurrent Grok decode");
+            assert_eq!(decoded, expected);
+        }
+    });
 }
 
 fn bench_fixture_rgb() -> Option<Vec<u8>> {

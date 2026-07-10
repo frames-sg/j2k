@@ -44,7 +44,11 @@ fn main() {
             .file("src/grok_shim.c")
             .include(config.source_include)
             .include(config.build_include)
-            .warnings(false)
+            .warnings(true)
+            .extra_warnings(true)
+            .warnings_into_errors(true)
+            .flag_if_supported("-Wconversion")
+            .flag_if_supported("-Wsign-conversion")
             .compile("j2k_grok_shim");
     }
 }
