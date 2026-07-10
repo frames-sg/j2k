@@ -358,41 +358,18 @@ pub(super) fn panic_surface() -> Result<(), String> {
         .output()
         .map_err(|err| format!("failed to run cargo clippy panic-surface gate: {err}"))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
             "cargo clippy panic-surface gate failed with status {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
             output.status
         ));
     }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("cargo clippy panic-surface stdout is not UTF-8: {error}"))?;
 
-    let mut unwrap_used_count = 0usize;
-    let mut expect_used_count = 0usize;
-    for message in stdout
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-    {
-        if message
-            .get("reason")
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(|reason| reason != "compiler-message")
-        {
-            continue;
-        }
-        if let Some(code) = message
-            .get("message")
-            .and_then(|message| message.get("code"))
-            .and_then(|code| code.get("code"))
-            .and_then(serde_json::Value::as_str)
-        {
-            match code {
-                "clippy::unwrap_used" => unwrap_used_count += 1,
-                "clippy::expect_used" => expect_used_count += 1,
-                _ => {}
-            }
-        }
-    }
+    let (unwrap_used_count, expect_used_count) = parse_panic_surface_output(&stdout)?;
 
     if unwrap_used_count > PANIC_SURFACE_UNWRAP_USED_BASELINE {
         return Err(format!(
@@ -409,6 +386,75 @@ pub(super) fn panic_surface() -> Result<(), String> {
         "panic-surface ratchet: clippy::unwrap_used {unwrap_used_count}/{PANIC_SURFACE_UNWRAP_USED_BASELINE}, clippy::expect_used {expect_used_count}/{PANIC_SURFACE_EXPECT_USED_BASELINE}"
     );
     Ok(())
+}
+
+fn parse_panic_surface_output(stdout: &str) -> Result<(usize, usize), String> {
+    let mut unwrap_used_count = 0usize;
+    let mut expect_used_count = 0usize;
+    let mut build_finished = None;
+
+    for (index, line) in stdout.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if build_finished.is_some() {
+            return Err(format!(
+                "cargo clippy panic-surface emitted a record after build-finished on line {}",
+                index + 1
+            ));
+        }
+        let message = serde_json::from_str::<serde_json::Value>(line).map_err(|error| {
+            format!(
+                "cargo clippy panic-surface emitted malformed JSON on line {}: {error}",
+                index + 1
+            )
+        })?;
+        let reason = message
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "cargo clippy panic-surface JSON line {} has no string `reason`",
+                    index + 1
+                )
+            })?;
+        if reason == "build-finished" {
+            build_finished = Some(
+                message
+                    .get("success")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| {
+                        "cargo clippy panic-surface build-finished record has no boolean `success`"
+                            .to_string()
+                    })?,
+            );
+            continue;
+        }
+        if reason != "compiler-message" {
+            continue;
+        }
+        if let Some(code) = message
+            .get("message")
+            .and_then(|message| message.get("code"))
+            .and_then(|code| code.get("code"))
+            .and_then(serde_json::Value::as_str)
+        {
+            match code {
+                "clippy::unwrap_used" => unwrap_used_count += 1,
+                "clippy::expect_used" => expect_used_count += 1,
+                _ => {}
+            }
+        }
+    }
+
+    match build_finished {
+        Some(true) => Ok((unwrap_used_count, expect_used_count)),
+        Some(false) => Err("cargo clippy panic-surface reported an unsuccessful build".to_string()),
+        None => Err(
+            "cargo clippy panic-surface output is missing the terminal build-finished record"
+                .to_string(),
+        ),
+    }
 }
 
 pub(super) fn no_std() -> Result<(), String> {
@@ -532,4 +578,61 @@ pub(super) fn verify_unsafe_audit() -> Result<(), String> {
 pub(super) fn downstream_smoke() -> Result<(), String> {
     run_cargo(&["test", "-p", "j2k", "--examples"])?;
     run_cargo(&["test", "-p", "j2k-transcode", "--examples"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_panic_surface_output;
+
+    #[test]
+    fn panic_surface_parser_counts_lints_and_requires_successful_finish() {
+        let output = concat!(
+            r#"{"reason":"compiler-artifact"}"#,
+            "\n",
+            r#"{"reason":"compiler-message","message":{"code":{"code":"clippy::unwrap_used"}}}"#,
+            "\n",
+            r#"{"reason":"compiler-message","message":{"code":{"code":"clippy::expect_used"}}}"#,
+            "\n",
+            r#"{"reason":"compiler-message","message":{"code":{"code":"clippy::expect_used"}}}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n",
+        );
+
+        assert_eq!(parse_panic_surface_output(output).unwrap(), (1, 2));
+    }
+
+    #[test]
+    fn panic_surface_parser_rejects_malformed_or_incomplete_output() {
+        let malformed = concat!(
+            r#"{"reason":"compiler-artifact"}"#,
+            "\nnot-json\n",
+            r#"{"reason":"build-finished","success":true}"#,
+        );
+        let incomplete = r#"{"reason":"compiler-message","message":{"code":null}}"#;
+        let failed = r#"{"reason":"build-finished","success":false}"#;
+
+        assert!(parse_panic_surface_output(malformed)
+            .unwrap_err()
+            .contains("malformed JSON on line 2"));
+        assert!(parse_panic_surface_output(incomplete)
+            .unwrap_err()
+            .contains("missing the terminal build-finished record"));
+        assert!(parse_panic_surface_output(failed)
+            .unwrap_err()
+            .contains("reported an unsuccessful build"));
+    }
+
+    #[test]
+    fn panic_surface_parser_rejects_records_after_finish() {
+        let output = concat!(
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n",
+            r#"{"reason":"compiler-artifact"}"#,
+        );
+
+        assert!(parse_panic_surface_output(output)
+            .unwrap_err()
+            .contains("record after build-finished on line 2"));
+    }
 }
