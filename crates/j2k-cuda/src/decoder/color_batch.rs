@@ -677,34 +677,17 @@ fn finish_color_cuda_resident_surface_with_component_work(
     let component0_buffer = pooled_cuda_buffer(&component0.buffer)?;
     let component1_buffer = pooled_cuda_buffer(&component1.buffer)?;
     let component2_buffer = pooled_cuda_buffer(&component2.buffer)?;
-    let input_width0 = component0
-        .store
-        .input_rect
-        .x1
-        .saturating_sub(component0.store.input_rect.x0);
-    let input_width1 = component1
-        .store
-        .input_rect
-        .x1
-        .saturating_sub(component1.store.input_rect.x0);
-    let input_width2 = component2
-        .store
-        .input_rect
-        .x1
-        .saturating_sub(component2.store.input_rect.x0);
+    let stores = [&component0.store, &component1.store, &component2.store];
+    let input_width0 = color_store_input_width(stores[0]);
+    let input_width1 = color_store_input_width(stores[1]);
+    let input_width2 = color_store_input_width(stores[2]);
     let irreversible97 = u32::from(color.transform == CudaHtj2kTransform::Irreversible97);
     let mct_store_addends = [
         bit_depth_addend(color.bit_depths[0]),
         bit_depth_addend(color.bit_depths[1]),
         bit_depth_addend(color.bit_depths[2]),
     ];
-    let can_fuse_mct_store = color.mct
-        && input_width0 == input_width1
-        && input_width0 == input_width2
-        && component0.store.source_x == component1.store.source_x
-        && component0.store.source_x == component2.store.source_x
-        && component0.store.source_y == component1.store.source_y
-        && component0.store.source_y == component2.store.source_y;
+    let can_fuse_mct_store = color.mct && can_fuse_mct_store_for_stores(stores);
     let addends = if color.mct && can_fuse_mct_store {
         mct_store_addends
     } else if color.mct {
