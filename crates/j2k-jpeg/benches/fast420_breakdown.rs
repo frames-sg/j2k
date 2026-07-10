@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[expect(
-    dead_code,
-    reason = "forced target audit found 59 comparison-only support items; the compare bench compiles this module with dead_code unsuppressed"
-)]
+#[path = "common/fast420/mod.rs"]
 mod common;
 #[path = "common/report.rs"]
 mod report;

@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(has_libjpeg_turbo)]
 use j2k_jpeg::{Downscale, Rect};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct InspectInfo {
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) subsamp: i32,
-}
 
 #[cfg(has_libjpeg_turbo)]
 mod imp {
-    use super::{Downscale, InspectInfo, Rect};
+    use super::{Downscale, Rect};
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
 
@@ -80,77 +74,41 @@ mod imp {
             Ok(Self { handle })
         }
 
-        pub(crate) fn inspect(&mut self, bytes: &[u8]) -> Result<InspectInfo, String> {
-            self.read_header(bytes)
-        }
-
         pub(crate) fn decode_rgb(&mut self, bytes: &[u8]) -> Result<Vec<u8>, String> {
             self.decode(bytes, TJPF_RGB, None, Downscale::None)
         }
 
-        pub(crate) fn decode_gray(&mut self, bytes: &[u8]) -> Result<Vec<u8>, String> {
-            self.decode(bytes, TJPF_GRAY, None, Downscale::None)
-        }
-
-        pub(crate) fn prepare_rgb(&mut self, bytes: &[u8]) -> Result<InspectInfo, String> {
+        pub(crate) fn prepare_full_frame(
+            &mut self,
+            bytes: &[u8],
+        ) -> Result<(u32, u32, i32), String> {
             let header = self.read_header(bytes)?;
             self.set_scaling(TJUNSCALED)?;
             self.set_crop(TJUNCROPPED)?;
             Ok(header)
         }
 
-        pub(crate) fn decode_prepared_rgb_into(
-            &mut self,
-            bytes: &[u8],
-            out: &mut [u8],
-            pitch: usize,
-            width: usize,
-            height: usize,
-        ) -> Result<(), String> {
-            validate_output_buffer(width, height, TJPF_RGB, out, pitch)?;
-            self.decompress(bytes, out, pitch, TJPF_RGB)
-        }
-
-        pub(crate) fn decode_scaled_rgb(
-            &mut self,
-            bytes: &[u8],
-            factor: Downscale,
-        ) -> Result<Vec<u8>, String> {
-            self.decode(bytes, TJPF_RGB, None, factor)
-        }
-
-        pub(crate) fn decode_region_rgb(
-            &mut self,
-            bytes: &[u8],
-            roi: Rect,
-        ) -> Result<Vec<u8>, String> {
-            self.decode(bytes, TJPF_RGB, Some(roi), Downscale::None)
-        }
-
-        pub(crate) fn decode_region_scaled_rgb(
-            &mut self,
-            bytes: &[u8],
-            roi: Rect,
-            factor: Downscale,
-        ) -> Result<Vec<u8>, String> {
-            self.decode(bytes, TJPF_RGB, Some(roi), factor)
-        }
-
-        fn decode(
+        pub(crate) fn decode(
             &mut self,
             bytes: &[u8],
             pixel_format: c_int,
             roi: Option<Rect>,
             factor: Downscale,
         ) -> Result<Vec<u8>, String> {
-            let header = self.read_header(bytes)?;
+            let is_unscaled_full_frame = roi.is_none() && factor == Downscale::None;
+            let header = if is_unscaled_full_frame {
+                self.prepare_full_frame(bytes)?
+            } else {
+                let header = self.read_header(bytes)?;
+                self.set_scaling(scaling_factor(factor))?;
+                header
+            };
             let scale = scaling_factor(factor);
-            self.set_scaling(scale)?;
             let bytes_per_pixel = bytes_per_pixel(pixel_format);
 
             if let Some(roi) = roi {
                 let scaled_roi = scaled_rect(roi, factor);
-                let scaled_mcu = scaled_mcu_width(header.subsamp, scale);
+                let scaled_mcu = scaled_mcu_width(header.2, scale);
                 let aligned_x = scaled_roi.x - scaled_roi.x % scaled_mcu;
                 let trim_left = scaled_roi.x - aligned_x;
                 let crop_width = trim_left + scaled_roi.w;
@@ -177,16 +135,18 @@ mod imp {
                 ));
             }
 
-            self.set_crop(TJUNCROPPED)?;
-            let out_width = scaled_dimension(header.width, scale);
-            let out_height = scaled_dimension(header.height, scale);
+            if !is_unscaled_full_frame {
+                self.set_crop(TJUNCROPPED)?;
+            }
+            let out_width = scaled_dimension(header.0, scale);
+            let out_height = scaled_dimension(header.1, scale);
             let pitch = out_width as usize * bytes_per_pixel;
             let mut out = vec![0u8; pitch * out_height as usize];
             self.decompress(bytes, &mut out, pitch, pixel_format)?;
             Ok(out)
         }
 
-        fn read_header(&mut self, bytes: &[u8]) -> Result<InspectInfo, String> {
+        pub(crate) fn read_header(&mut self, bytes: &[u8]) -> Result<(u32, u32, i32), String> {
             let rc =
                 // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
                 unsafe { tj3DecompressHeader(self.handle.as_ptr(), bytes.as_ptr(), bytes.len()) };
@@ -204,13 +164,13 @@ mod imp {
                 return Err("tj3Get returned incomplete header parameters".to_string());
             }
 
-            Ok(InspectInfo {
-                width: u32::try_from(width)
+            Ok((
+                u32::try_from(width)
                     .map_err(|_| format!("negative libjpeg-turbo width {width}"))?,
-                height: u32::try_from(height)
+                u32::try_from(height)
                     .map_err(|_| format!("negative libjpeg-turbo height {height}"))?,
                 subsamp,
-            })
+            ))
         }
 
         fn set_scaling(&mut self, scale: TjScalingFactor) -> Result<(), String> {
@@ -231,7 +191,7 @@ mod imp {
             Ok(())
         }
 
-        fn decompress(
+        pub(crate) fn decompress(
             &mut self,
             bytes: &[u8],
             out: &mut [u8],
@@ -269,45 +229,6 @@ mod imp {
                 .to_string_lossy()
                 .into_owned()
         }
-    }
-
-    fn validate_output_buffer(
-        width: usize,
-        height: usize,
-        pixel_format: c_int,
-        out: &[u8],
-        pitch: usize,
-    ) -> Result<(), String> {
-        let row_bytes = width
-            .checked_mul(bytes_per_pixel(pixel_format))
-            .ok_or("libjpeg-turbo output row size overflow")?;
-        if pitch < row_bytes {
-            return Err(format!(
-                "libjpeg-turbo output pitch {pitch} is smaller than row bytes {row_bytes}"
-            ));
-        }
-        let required_len = required_strided_len(height, pitch, row_bytes)?;
-        if out.len() < required_len {
-            return Err(format!(
-                "libjpeg-turbo output buffer too small: need {required_len}, got {}",
-                out.len()
-            ));
-        }
-        Ok(())
-    }
-
-    fn required_strided_len(
-        height: usize,
-        pitch: usize,
-        row_bytes: usize,
-    ) -> Result<usize, String> {
-        if height == 0 {
-            return Ok(0);
-        }
-        pitch
-            .checked_mul(height - 1)
-            .and_then(|prefix| prefix.checked_add(row_bytes))
-            .ok_or_else(|| "libjpeg-turbo output buffer size overflow".to_string())
     }
 
     impl Drop for TurboJpegDecoder {
@@ -393,73 +314,16 @@ mod imp {
 
 #[cfg(not(has_libjpeg_turbo))]
 mod imp {
-    use super::{Downscale, InspectInfo, Rect};
-
     pub(crate) struct TurboJpegDecoder;
 
     impl TurboJpegDecoder {
         pub(crate) fn new() -> Result<Self, String> {
-            Err("libjpeg-turbo not available".to_string())
-        }
-
-        pub(crate) fn inspect(&mut self, _bytes: &[u8]) -> Result<InspectInfo, String> {
-            let _ = self;
-            Err("libjpeg-turbo not available".to_string())
+            super::unavailable()
         }
 
         pub(crate) fn decode_rgb(&mut self, _bytes: &[u8]) -> Result<Vec<u8>, String> {
             let _ = self;
-            Err("libjpeg-turbo not available".to_string())
-        }
-
-        pub(crate) fn decode_gray(&mut self, _bytes: &[u8]) -> Result<Vec<u8>, String> {
-            let _ = self;
-            Err("libjpeg-turbo not available".to_string())
-        }
-
-        pub(crate) fn prepare_rgb(&mut self, _bytes: &[u8]) -> Result<InspectInfo, String> {
-            let _ = self;
-            Err("libjpeg-turbo not available".to_string())
-        }
-
-        pub(crate) fn decode_prepared_rgb_into(
-            &mut self,
-            _bytes: &[u8],
-            _out: &mut [u8],
-            _pitch: usize,
-            _width: usize,
-            _height: usize,
-        ) -> Result<(), String> {
-            let _ = self;
-            Err("libjpeg-turbo not available".to_string())
-        }
-
-        pub(crate) fn decode_scaled_rgb(
-            &mut self,
-            _bytes: &[u8],
-            _factor: Downscale,
-        ) -> Result<Vec<u8>, String> {
-            let _ = self;
-            Err("libjpeg-turbo not available".to_string())
-        }
-
-        pub(crate) fn decode_region_rgb(
-            &mut self,
-            _bytes: &[u8],
-            _roi: Rect,
-        ) -> Result<Vec<u8>, String> {
-            let _ = self;
-            Err("libjpeg-turbo not available".to_string())
-        }
-
-        pub(crate) fn decode_region_scaled_rgb(
-            &mut self,
-            _bytes: &[u8],
-            _roi: Rect,
-            _factor: Downscale,
-        ) -> Result<Vec<u8>, String> {
-            let _ = self;
-            Err("libjpeg-turbo not available".to_string())
+            super::unavailable()
         }
     }
 
@@ -469,3 +333,8 @@ mod imp {
 }
 
 pub(crate) use imp::{is_available, TurboJpegDecoder};
+
+#[cfg(not(has_libjpeg_turbo))]
+pub(crate) fn unavailable<T>() -> Result<T, String> {
+    Err("libjpeg-turbo not available".to_string())
+}

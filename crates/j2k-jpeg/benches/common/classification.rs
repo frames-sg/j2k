@@ -31,46 +31,6 @@ pub(crate) fn classify_corpus_input(dimensions: (u32, u32), mode: DecodeMode) ->
     }
 }
 
-pub(crate) fn should_bench_decode_rows_rgb(
-    mode: DecodeMode,
-    input_class: CorpusInputClass,
-) -> bool {
-    should_bench_decode_rows_rgb_for_policy(mode, input_class, force_full_frame_compare_from_env())
-}
-
-pub(crate) fn should_bench_decode_rows_rgb_for_policy(
-    mode: DecodeMode,
-    input_class: CorpusInputClass,
-    force_full_frame: bool,
-) -> bool {
-    if force_full_frame {
-        return false;
-    }
-    mode == DecodeMode::Rgb && input_class == CorpusInputClass::VeryLarge
-}
-
-pub(crate) fn should_compare_full_frame(mode: DecodeMode, input_class: CorpusInputClass) -> bool {
-    should_compare_full_frame_for_policy(mode, input_class, force_full_frame_compare_from_env())
-}
-
-pub(crate) fn should_compare_full_frame_for_policy(
-    mode: DecodeMode,
-    input_class: CorpusInputClass,
-    force_full_frame: bool,
-) -> bool {
-    match input_class {
-        CorpusInputClass::BoundedFullFrame => true,
-        CorpusInputClass::VeryLarge => {
-            force_full_frame && matches!(mode, DecodeMode::Gray | DecodeMode::Rgb)
-        }
-    }
-}
-
-fn force_full_frame_compare_from_env() -> bool {
-    std::env::var_os("J2K_FORCE_FULL_FRAME")
-        .is_some_and(|value| !matches!(value.to_str(), Some("0" | "false" | "FALSE" | "False")))
-}
-
 fn full_frame_output_len(dimensions: (u32, u32), mode: DecodeMode) -> Option<usize> {
     let bpp = match mode {
         DecodeMode::Gray => 1usize,

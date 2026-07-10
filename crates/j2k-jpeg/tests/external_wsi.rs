@@ -3,11 +3,11 @@
 //! Optional local-corpus regression coverage for extracted WSI JPEGs.
 
 #[path = "../benches/common/classification.rs"]
-#[expect(
-    dead_code,
-    reason = "forced target audit found three environment-backed wrappers unused by explicit policy tests; the compare bench compiles them unsuppressed"
-)]
 mod classification;
+#[path = "../benches/common/full_frame_policy.rs"]
+mod full_frame_policy;
+#[path = "../benches/common/row_stream_policy.rs"]
+mod row_stream_policy;
 
 use j2k_jpeg::{ColorSpace, Decoder, Downscale, JpegError, PixelFormat, RowSink};
 use std::fs;
@@ -69,10 +69,8 @@ fn oversized_or_overflowing_inputs_are_treated_as_very_large() {
 
 #[test]
 fn large_file_row_streaming_is_rgb_only_for_the_bench_contract() {
-    use classification::{
-        classify_corpus_input, color_space_mode, should_bench_decode_rows_rgb_for_policy,
-        CorpusInputClass, DecodeMode,
-    };
+    use classification::{classify_corpus_input, color_space_mode, CorpusInputClass, DecodeMode};
+    use row_stream_policy::should_bench_decode_rows_rgb_for_policy;
 
     assert_eq!(
         color_space_mode(ColorSpace::Grayscale),
@@ -108,10 +106,10 @@ fn large_file_row_streaming_is_rgb_only_for_the_bench_contract() {
 #[test]
 fn force_full_frame_policy_disables_large_rgb_skip() {
     use classification::{
-        classify_corpus_input, should_bench_decode_rows_rgb_for_policy,
-        should_compare_full_frame_for_policy, CorpusInputClass, DecodeMode,
-        FULL_FRAME_MAX_OUTPUT_BYTES,
+        classify_corpus_input, CorpusInputClass, DecodeMode, FULL_FRAME_MAX_OUTPUT_BYTES,
     };
+    use full_frame_policy::should_compare_full_frame_for_policy;
+    use row_stream_policy::should_bench_decode_rows_rgb_for_policy;
 
     let rgb_threshold_height = u32::try_from(FULL_FRAME_MAX_OUTPUT_BYTES / 3)
         .expect("benchmark byte threshold fits in u32 dimensions")

@@ -1,21 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[expect(
-    dead_code,
-    reason = "forced target audit found 60 comparison-only support items; the compare bench compiles this module with dead_code unsuppressed"
-)]
+#[path = "common/corpus/mod.rs"]
 mod common;
 #[path = "common/report.rs"]
 mod report;
 
 use common::{
-    centered_roi,
-    classification::{should_compare_full_frame, CorpusInputClass},
-    j2k_decode, j2k_decode_region, j2k_decode_region_scaled, j2k_decode_rows, j2k_decode_scaled,
+    centered_roi, classification::CorpusInputClass, j2k_decode, j2k_decode_region,
+    j2k_decode_region_scaled, j2k_decode_rows, j2k_decode_scaled,
     j2k_decode_tile_batch_region_scaled, j2k_decode_tile_batch_scaled, j2k_inspect,
     jpeg_decoder_decode, jpeg_decoder_decode_batch_region_scaled, jpeg_decoder_decode_batch_scaled,
     jpeg_decoder_decode_region, jpeg_decoder_decode_region_scaled, jpeg_decoder_decode_scaled,
-    jpeg_decoder_inspect, load_bench_inputs, scaled_rect, zune_decode,
+    jpeg_decoder_inspect, load_bench_inputs, scaled_rect, should_compare_full_frame, zune_decode,
     zune_decode_batch_region_scaled, zune_decode_batch_scaled, zune_decode_region,
     zune_decode_region_scaled, zune_decode_scaled, zune_inspect, BenchInput, DecodeMode,
 };
