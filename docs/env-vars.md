@@ -124,7 +124,6 @@ override it.
 | `J2K_REPORT_ITERS` | Iteration count for custom report-style JPEG benchmarks. | Harness default | Benchmark |
 | `J2K_ALLOC_REPORT` | Enables allocation report output in the CPU JPEG encode benchmark. | Disabled | Benchmark |
 | `J2K_FORCE_FULL_FRAME` | Forces benchmark classification to full-frame mode. | Auto classification | Benchmark |
-| `J2K_JPEG_BATCH_THREADS` | Overrides JPEG benchmark batch thread count. | Rayon/runtime default | Benchmark |
 | `J2K_JPEG_TILE_BATCH_SIZE` | Overrides JPEG tile batch size in benchmark comparison runs. | Harness default | Benchmark |
 | `J2K_JPEG_ENCODE_BENCH_DIM` | Image dimensions for the JPEG Metal baseline encode benchmark. | Harness default | Benchmark |
 | `J2K_JPEG_ENCODE_BENCH_BATCH` | Batch size for the JPEG Metal baseline encode benchmark. | Harness default | Benchmark |

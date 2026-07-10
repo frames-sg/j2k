@@ -1497,8 +1497,9 @@ fn copied_test_fixture_helpers_live_in_shared_support() {
         .expect("read transcode 9/7 DCT module");
     let dct97_test = fs::read_to_string(root.join("crates/j2k-transcode/tests/dct97_2d.rs"))
         .expect("read transcode 9/7 DCT test");
-    let dwt_diff = fs::read_to_string(root.join("crates/j2k-transcode/tests/support/dwt_diff.rs"))
-        .expect("read transcode DWT diff test support");
+    let dwt_diff =
+        fs::read_to_string(root.join("crates/j2k-transcode-test-support/src/dwt_diff.rs"))
+            .expect("read shared transcode DWT diff test support");
     let jpeg_batch = fs::read_to_string(root.join("crates/j2k-jpeg/tests/batch.rs"))
         .expect("read JPEG batch tests");
 
@@ -1529,17 +1530,20 @@ fn copied_test_fixture_helpers_live_in_shared_support() {
                 "pub(crate) fn max_abs_diff(&self, other: &Self) -> f64",
             ])
             .forbidden(&["pub fn max_abs_diff(&self, other: &Self) -> f64"]),
-        PatternCheck::new("transcode integration DWT diff helper", &dwt_diff).required(&[
-            "pub(crate) fn max_abs_diff_53(",
-            "pub(crate) fn max_abs_diff_97(",
+        PatternCheck::new("shared transcode DWT diff helper", &dwt_diff).required(&[
+            "pub fn max_abs_diff_53(",
+            "pub fn max_abs_diff_97(",
             "fn max_abs_diff_bands(",
         ]),
         PatternCheck::new(
             "9/7 transcode integration test shared diff helper",
             &dct97_test,
         )
-        .required(&["mod dwt_diff;", "max_abs_diff_97(&"])
-        .forbidden(&["fn max_abs_diff("]),
+        .required(&[
+            "use j2k_transcode_test_support::max_abs_diff_97;",
+            "max_abs_diff_97(&",
+        ])
+        .forbidden(&["mod dwt_diff;", "fn max_abs_diff("]),
     ]);
 
     let ycbcr12_start = jpeg_batch
@@ -2195,7 +2199,7 @@ fn native_adapter_exports_are_doc_hidden() {
             "#[doc(hidden)]\npub use scalar::",
         ]),
         PatternCheck::new("j2k-native hidden scalar encode adapters", &scalar_encode)
-            .required(&["#[doc(hidden)]\npub fn forward_dwt53_reference"]),
+            .required(&["#[doc(hidden)]\n#[must_use]\npub fn forward_dwt53_reference"]),
         PatternCheck::new("j2k-native hidden scalar decode adapters", &scalar_decode)
             .required(&["#[doc(hidden)]\npub fn decode_j2k_code_block_scalar"]),
         PatternCheck::new("j2k-native image contract ownership", &image)
