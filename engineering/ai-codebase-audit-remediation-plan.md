@@ -51,12 +51,13 @@ Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
 - Current task: STR-015 core JPEG suppression/test-module closure
-- Parallel tasks: CUDA/JPEG-CUDA suppression inventory and facade/transcode
-  manifest/public-export cleanup
-- Last completed task: J2K-Core broad lint-policy closure
-- Last completed implementation commit: ee80a430
-  (`refactor(core): remove broad lint suppressions`); J2K-Metal, native, and
-  JPEG-Metal suppression closures are f1611ec0, 008baec8, and 42b28fc6
+- Parallel tasks: facade/transcode-adapter and comparison-tool suppression
+  cleanup
+- Last completed task: CUDA runtime/adapter host-suppression and reviewed
+  device-exception closure
+- Last completed implementation commit: 804ff6ae; J2K-Core, J2K-Types, and
+  Metal-support closures are ee80a430, eecb0dfd, and 7073a99c; J2K-Metal,
+  native, and JPEG-Metal closures are f1611ec0, 008baec8, and 42b28fc6
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
@@ -1375,6 +1376,38 @@ library tests, 35 API/behavior integration tests, doc tests, formatting, and
 diff hygiene pass. The simplified `cargo-public-api` rendering remains
 byte-identical to the pre-change snapshot.
 
+The small shared-contract lanes closed in eecb0dfd and 7073a99c. J2K-Types
+replaced its last actual source allowance with a fulfilled expectation tied to
+the five independent COD flags; strict all-target Clippy and both packet-order
+tests pass. Metal support removed both documentation-wide manifest overrides
+and now documents all 14 public error paths. Strict all-target Clippy, 10/10
+real-Metal buffer/queue tests with no skips, doc tests, and rustdoc with denied
+warnings pass; its simplified public-API rendering is unchanged.
+
+The CUDA host-suppression lane closed in 804ff6ae. J2K-CUDA, JPEG-CUDA, and
+the CUDA runtime now have zero actual host/test `allow(...)` attributes; their
+high-risk manifest overrides are removed, forced back on, and green for both
+all-feature and no-default all-target builds. The only actual source
+allowances left in this lane are the reviewed standalone SIMT device roots and
+one shared mutable-pointer helper that is consumed by only a subset of the ten
+device crates. Each has an inline device-ABI/toolchain reason and a runbook
+owner/trigger. Independent review also removed a zero-consumer const-pointer
+helper that repository policy had incorrectly required, then corrected the
+policy to protect only live shared primitives. Host tests pass 157/76 for
+J2K-CUDA, 40/26 for JPEG-CUDA, and 98/95 for the runtime across all/no-default
+features; API rendering and focused device-source policies pass. Exact CUDA
+execution remains the frozen-SHA Linux/NVIDIA gate.
+
+Reviewed CUDA device-generation exceptions:
+
+| Scope | Owner | Retained lint reason | Removal/review trigger |
+|---|---|---|---|
+| `cuda_oxide_simt_prelude.rs::simt_mut_ptr_at` | CUDA runtime/SIMT ABI | Shared include is consumed by HT decode and transcode but unused in the other standalone device crates | Device crates gain per-helper inclusion, every owner consumes it, or the last two consumers stop using it |
+| `cuda_oxide_htj2k_encode/simt` | HTJ2K CUDA encode | Explicit ceiling division for the device toolchain; flat kernel ABI arguments; monolithic entropy control flow preserves PTX/register behavior | Supported device compiler gains the integer helpers, ABI is packed into stable job structs, or the kernel is split with exact PTX/register and NVIDIA parity evidence |
+| `cuda_oxide_j2k_encode/simt` | Classic/HT J2K CUDA encode | Device-compatible division/parity spelling, flat export/packet ABI, and shared-memory statics | Device compiler support changes, ABI packing changes, or shared-memory access receives a safe device primitive with exact NVIDIA parity |
+| `cuda_oxide_j2k_idwt/simt` | CUDA IDWT | Five row/column shared-memory arrays require device-scoped static references | Shared-memory access receives a safe device primitive with exact NVIDIA parity |
+| `cuda_oxide_jpeg_encode/simt` | JPEG CUDA encode | Bounded DCT/entropy narrowing, conventional coordinate names, and flat entropy/kernel ABI | A typed bounded ABI removes the casts, coordinate refactor stays readable, or arguments are packed without PTX/register/performance regression |
+
 ### TOOL-001 — adoption report
 
 Separate data collection and report-model construction from text rendering.
@@ -1420,6 +1453,7 @@ growth.
 | CUDA HT Tier-1 encode host (1,320 production lines) | CUDA HT encode | Cohesive reserved-ABI-aware job/result/launch family | Third job layout/coding mode or 1,500 lines |
 | CUDA HT Tier-1 decode host (1,315 production lines) | CUDA HT decode | Cohesive cleanup/dequantize launch family | Another decode mode or 1,500 lines |
 | CUDA kernel registry (583 production lines; 517 test lines) | CUDA runtime registry | Entry-point/PTX parity ledger, not an orchestrator | 700 production lines or another registry mechanism |
+| Metal support runtime helpers (710 production lines; 195 test lines) | Shared Metal support | Cohesive queue, pipeline, dispatch, and checked-buffer boundary with short focused functions | Another resource family, 850 production lines, or repeated cross-section ordering defects |
 | CUDA Oxide HT encode core (1,961 lines; 358-line core) | CUDA HT encode parity | One four-entrypoint hot state machine | New coding mode or core exceeds 450 lines |
 | CUDA Oxide JPEG baseline decode (1,698 lines) | CUDA JPEG parity | One synchronized fast-baseline ABI across 420/422/444 | Progressive/lossless support or another output family |
 | CUDA Oxide HT decode (1,326 lines) | CUDA HT decode parity | One cleanup/refinement kernel family | New refinement path or 1,500 lines |
