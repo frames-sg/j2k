@@ -29,7 +29,10 @@ pub enum J2kSubBandType {
 
 /// Adapter classic J2K code-block style for backend experimentation.
 #[derive(Debug, Clone, Copy)]
-#[allow(clippy::struct_excessive_bools)] // models the five independent COD code-block style flags
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the five booleans model independent JPEG 2000 COD code-block style flags"
+)]
 pub struct J2kCodeBlockStyle {
     /// Selective arithmetic coding bypass was enabled.
     pub selective_arithmetic_coding_bypass: bool,
