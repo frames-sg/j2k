@@ -9,10 +9,11 @@ use j2k_jpeg::{
 use j2k_test_support::restart_coded_grayscale_jpeg;
 
 use fixtures::{
-    cmyk_8x8_jpeg, grayscale_8x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
-    lossless_predictor_grayscale_3x3_jpeg, lossless_predictor_rgb_16bit_3x3_jpeg,
-    lossless_predictor_rgb_3x3_jpeg, lossless_predictor_ycbcr_16bit_3x3_jpeg,
-    lossless_predictor_ycbcr_3x3_jpeg, lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
+    baseline_422_16x8_jpeg, baseline_444_8x8_jpeg, cmyk_8x8_jpeg, grayscale_8x8_jpeg,
+    lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
+    lossless_predictor_rgb_16bit_3x3_jpeg, lossless_predictor_rgb_3x3_jpeg,
+    lossless_predictor_ycbcr_16bit_3x3_jpeg, lossless_predictor_ycbcr_3x3_jpeg,
+    lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
     lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
@@ -135,28 +136,34 @@ fn decoder_from_view_matches_decoder_new_rgb_output() {
 }
 
 #[test]
-fn decode_rows_matches_decode_into_rgb8() {
-    let bytes = minimal_baseline_420_jpeg();
-    let dec = Decoder::new(&bytes).expect("decoder::new must succeed");
-    let (w, h) = dec.info().dimensions;
-    let stride = (w * 3) as usize;
+fn decode_rows_matches_decode_into_rgb8_for_ycbcr_sampling_modes() {
+    for (route, bytes) in [
+        ("4:2:0", minimal_baseline_420_jpeg()),
+        ("4:2:2", baseline_422_16x8_jpeg()),
+        ("4:4:4", baseline_444_8x8_jpeg()),
+    ] {
+        let dec = Decoder::new(&bytes).expect("decoder::new must succeed");
+        let (w, h) = dec.info().dimensions;
+        let stride = (w * 3) as usize;
 
-    let mut expected = vec![0u8; stride * h as usize];
-    dec.decode_scaled_into(&mut expected, stride, PixelFormat::Rgb8, Downscale::None)
-        .unwrap();
+        let mut expected = vec![0u8; stride * h as usize];
+        dec.decode_scaled_into(&mut expected, stride, PixelFormat::Rgb8, Downscale::None)
+            .unwrap();
 
-    let mut sink = CollectRows::default();
-    dec.decode_rows(&mut sink)
-        .expect("decode_rows must succeed");
+        let mut sink = CollectRows::default();
+        dec.decode_rows(&mut sink)
+            .expect("decode_rows must succeed");
 
-    assert_eq!(sink.rows.len(), h as usize);
-    for (row_idx, (y, row)) in sink.rows.iter().enumerate() {
-        assert_eq!(*y as usize, row_idx);
-        assert_eq!(row.len(), stride);
-        assert_eq!(
-            row.as_slice(),
-            &expected[row_idx * stride..(row_idx + 1) * stride]
-        );
+        assert_eq!(sink.rows.len(), h as usize, "{route} row count");
+        for (row_idx, (y, row)) in sink.rows.iter().enumerate() {
+            assert_eq!(*y as usize, row_idx, "{route} row index");
+            assert_eq!(row.len(), stride, "{route} row length");
+            assert_eq!(
+                row.as_slice(),
+                &expected[row_idx * stride..(row_idx + 1) * stride],
+                "{route} row {row_idx}"
+            );
+        }
     }
 }
 
