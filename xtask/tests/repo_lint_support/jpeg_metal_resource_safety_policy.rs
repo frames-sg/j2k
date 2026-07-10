@@ -12,14 +12,14 @@ fn jpeg_metal_host_readback_aliases_require_unsafe_contracts() {
     let encode = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/encode.rs"))
         .expect("read JPEG Metal encode module");
     let batch_entry =
-        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_decode_entry.rs"))
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_entry.rs"))
             .expect("read JPEG Metal batch decode entry module");
     let batch_support =
         fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_support.rs"))
             .expect("read JPEG Metal batch support module");
     let pack_dispatch =
-        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/pack_dispatch_impl.rs"))
-            .expect("read JPEG Metal pack dispatch module");
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/pack_dispatch/common.rs"))
+            .expect("read JPEG Metal common pack dispatch module");
     let viewport_cache =
         fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/viewport_cache.rs"))
             .expect("read JPEG Metal viewport cache module");
@@ -147,7 +147,7 @@ fn jpeg_metal_private_texture_aliases_share_safe_write_ordering() {
     let surface = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/surface.rs"))
         .expect("read JPEG Metal surface module");
     let batch_entry =
-        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_decode_entry.rs"))
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_entry.rs"))
             .expect("read JPEG Metal batch decode entry module");
     let viewport_compose =
         fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/viewport_compose.rs"))

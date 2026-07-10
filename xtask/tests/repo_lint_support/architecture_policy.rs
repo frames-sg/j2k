@@ -5,7 +5,7 @@ use std::fs;
 use super::{
     architecture_doc_dependency_edges, assert_file_pattern_checks, cargo_metadata_workspace_edges,
     cargo_public_api_required, const_array_block, format_edge, repo_root, rust_sources,
-    FilePatternCheck,
+    xtask_sources, FilePatternCheck,
 };
 
 #[test]
@@ -93,7 +93,7 @@ fn architecture_docs_classify_workspace_and_in_repo_tool_crates() {
 #[test]
 fn tooling_and_validation_crates_stay_unpublished() {
     let root = repo_root();
-    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(root);
     let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
 
     assert_file_pattern_checks(

@@ -4,7 +4,8 @@ use std::fs;
 
 use super::{
     assert_contains_all, assert_file_pattern_checks, assert_pattern_checks,
-    cargo_metadata_workspace_edges, const_array_block, repo_root, FilePatternCheck, PatternCheck,
+    cargo_metadata_workspace_edges, const_array_block, repo_root, xtask_sources, FilePatternCheck,
+    PatternCheck,
 };
 
 #[test]
@@ -12,7 +13,7 @@ fn crates_io_publish_policy_is_explicit() {
     let root = repo_root();
     let workspace = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
     let changelog = fs::read_to_string(root.join("CHANGELOG.md")).expect("read changelog");
-    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(root);
     let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
     let publish_workflow = fs::read_to_string(root.join(".github/workflows/publish.yml"))
         .expect("read publish workflow");
@@ -61,7 +62,7 @@ fn crates_io_publish_policy_is_explicit() {
 
 #[test]
 fn release_docs_use_manifest_versions_for_publish_order() {
-    let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(repo_root());
 
     assert_file_pattern_checks(
         repo_root(),
@@ -118,12 +119,12 @@ fn j2k_compare_stays_unpublished_and_out_of_j2k_package_deps() {
 #[test]
 fn package_preflight_is_staged_dependency_aware() {
     let root = repo_root();
-    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(root);
 
     assert_file_pattern_checks(
         root,
         &[
-            FilePatternCheck::new("xtask/src/main.rs")
+            FilePatternCheck::new("xtask/src/release_commands.rs")
                 .named("xtask package preflight")
                 .required(&[
                     "PUBLISHABLE_PACKAGES",
@@ -210,7 +211,7 @@ fn const_array_entries(block: &str) -> Vec<&str> {
 #[test]
 fn publish_script_covers_all_publishable_crates() {
     let root = repo_root();
-    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(root);
     let publish_script =
         fs::read_to_string(root.join("scripts/publish-crate.sh")).expect("read publish script");
     let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");

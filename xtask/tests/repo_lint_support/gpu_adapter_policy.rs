@@ -234,8 +234,18 @@ fn cuda_decoder_runtime_paths_live_in_focused_modules() {
 #[test]
 fn jpeg_gpu_encode_host_orchestration_uses_shared_adapter_helper() {
     let root = repo_root();
-    let shared = fs::read_to_string(root.join("crates/j2k-jpeg/src/adapter/baseline_encode.rs"))
-        .expect("read JPEG baseline encode adapter helper");
+    let shared = read_source_files(
+        root,
+        &[
+            "crates/j2k-jpeg/src/adapter/baseline_encode.rs",
+            "crates/j2k-jpeg/src/adapter/baseline_encode/frame.rs",
+            "crates/j2k-jpeg/src/adapter/baseline_encode/orchestrate.rs",
+            "crates/j2k-jpeg/src/adapter/baseline_encode/planning.rs",
+            "crates/j2k-jpeg/src/adapter/baseline_encode/tables.rs",
+            "crates/j2k-jpeg/src/adapter/baseline_encode/types.rs",
+            "crates/j2k-jpeg/src/adapter/baseline_encode/validation.rs",
+        ],
+    );
     let cuda_encode = fs::read_to_string(root.join("crates/j2k-jpeg-cuda/src/encode.rs"))
         .expect("read JPEG CUDA encode host");
     let metal_encode = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/encode.rs"))
@@ -370,8 +380,13 @@ fn jpeg_metal_huffman_derivation_uses_shared_entropy_canonical_tables() {
         .expect("read JPEG fast packet adapter");
     let metal_abi = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/abi.rs"))
         .expect("read JPEG Metal ABI");
-    let cuda_runtime = fs::read_to_string(root.join("crates/j2k-cuda-runtime/src/jpeg.rs"))
-        .expect("read CUDA JPEG runtime ABI");
+    let cuda_runtime = read_source_files(
+        root,
+        &[
+            "crates/j2k-cuda-runtime/src/jpeg.rs",
+            "crates/j2k-cuda-runtime/src/jpeg/types.rs",
+        ],
+    );
 
     assert!(
         codec_math.contains("pub fn derive_canonical_huffman")
@@ -411,15 +426,18 @@ fn jpeg_metal_huffman_derivation_uses_shared_entropy_canonical_tables() {
 #[test]
 fn fast444_region_scaled_batches_use_shared_region_scaled_metal_path() {
     let root = repo_root();
-    let fast_packets =
-        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/fast_packets_impl.rs"))
-            .expect("read JPEG Metal fast packet implementation");
+    let fast_packets = [
+        "crates/j2k-jpeg-metal/src/compute/fast_packets/descriptors.rs",
+        "crates/j2k-jpeg-metal/src/compute/fast_packets/pipelines.rs",
+    ]
+    .map(|path| fs::read_to_string(root.join(path)).expect("read JPEG Metal fast packet module"))
+    .join("\n");
     let region_plan =
         fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/region_scaled_plan.rs"))
             .expect("read JPEG Metal region scaled plan");
     let batch_decode =
-        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_decode_region.rs"))
-            .expect("read JPEG Metal region batch decoder");
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_region/rgb.rs"))
+            .expect("read JPEG Metal region RGB batch decoder");
 
     assert_pattern_checks(&[
         PatternCheck::new("fast packet region-scaled Metal trait", &fast_packets).required(&[
@@ -447,12 +465,13 @@ fn fast444_region_scaled_batches_use_shared_region_scaled_metal_path() {
 #[test]
 fn fast444_full_batches_use_shared_fastsubsampled_metal_path() {
     let root = repo_root();
-    let fast_packets =
-        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/fast_packets_impl.rs"))
-            .expect("read JPEG Metal fast packet implementation");
+    let fast_packets = fs::read_to_string(
+        root.join("crates/j2k-jpeg-metal/src/compute/fast_packets/pipelines.rs"),
+    )
+    .expect("read JPEG Metal fast packet pipelines");
     let batch_decode =
-        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_decode_full.rs"))
-            .expect("read JPEG Metal full batch decoder");
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_full/fast444.rs"))
+            .expect("read JPEG Metal fast444 full batch decoder");
 
     assert_pattern_checks(&[
         PatternCheck::new("fast444 shared FastSubsampledMetal impl", &fast_packets)
@@ -485,6 +504,13 @@ fn jpeg_fast420_profiled_decode_uses_shared_scan_loop() {
     let root = repo_root();
     let sequential = fs::read_to_string(root.join("crates/j2k-jpeg/src/entropy/sequential.rs"))
         .expect("read JPEG entropy sequential decoder");
+    let fast420 = read_source_files(
+        root,
+        &[
+            "crates/j2k-jpeg/src/entropy/sequential/fast420/mod.rs",
+            "crates/j2k-jpeg/src/entropy/sequential/fast420/rows.rs",
+        ],
+    );
     let profile =
         fs::read_to_string(root.join("crates/j2k-jpeg/src/entropy/sequential/profile.rs"))
             .expect("read JPEG entropy sequential profile module");
@@ -521,6 +547,18 @@ fn jpeg_fast420_profiled_decode_uses_shared_scan_loop() {
                 "mod restart;",
                 "mod deposit;",
                 "mod emit;",
+                "mod fast420;",
+            ])
+            .forbidden(&[
+                "fn decode_scan_fast_tile_rgb_impl",
+                "struct NoopFast420ScanProfile",
+                "struct Fast420RegionLayout",
+                "struct McuSkipState",
+                "pub(super) fn deposit_block",
+                "struct StripeEmit",
+            ]),
+        PatternCheck::new("JPEG fast420 shared scan loop implementation", &fast420)
+            .required(&[
                 "fn decode_scan_fast_tile_rgb_impl",
                 "decode_scan_fast_tile_rgb_impl(plan, backend, scan_bytes, pool, writer, &mut profile)",
                 "decode_scan_fast_tile_rgb_impl(plan, backend, scan_bytes, pool, writer, profile)",
@@ -560,7 +598,7 @@ fn jpeg_fast420_profiled_decode_uses_shared_scan_loop() {
             .required(&["fast_tile_profiled_rgb_matches_unprofiled_decode"]),
     ]);
     assert_eq!(
-        sequential.matches("finish_fast_tile_scan(&mut br)").count(),
+        fast420.matches("finish_fast_tile_scan(&mut br)").count(),
         1,
         "JPEG fast420 profiled/unprofiled scan paths must not duplicate the scan loop"
     );
@@ -748,154 +786,6 @@ fn backend_surfaces_use_core_metadata_and_residency() {
 }
 
 #[test]
-fn metal_compute_runtime_registry_is_split_from_compute_god_file() {
-    let root = repo_root();
-    let compute = fs::read_to_string(root.join("crates/j2k-metal/src/compute.rs"))
-        .expect("read Metal compute module");
-    let runtime = fs::read_to_string(root.join("crates/j2k-metal/src/compute/runtime.rs"))
-        .expect("read Metal compute runtime module");
-    let forward_transform =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/forward_transform.rs"))
-            .expect("read Metal compute forward-transform module");
-    let resident_tier1 =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/resident_tier1.rs"))
-            .expect("read Metal compute resident tier1 module");
-    let lossless_prepare =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/lossless_prepare.rs"))
-            .expect("read Metal compute lossless prepare module");
-    let decode_dispatch =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/decode_dispatch.rs"))
-            .expect("read Metal compute decode dispatch module");
-    let tier1_encode =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/tier1_encode.rs"))
-            .expect("read Metal compute tier1 encode module");
-    let resident_codestream =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/resident_codestream.rs"))
-            .expect("read Metal compute resident codestream module");
-    let resident_codestream_tier2 = fs::read_to_string(
-        root.join("crates/j2k-metal/src/compute/resident_codestream/tier2_packetization.rs"),
-    )
-    .expect("read Metal compute resident codestream tier-2 packetization module");
-    let resident_codestream_ht_cleanup = fs::read_to_string(
-        root.join("crates/j2k-metal/src/compute/resident_codestream/ht_cleanup.rs"),
-    )
-    .expect("read Metal compute resident codestream HT cleanup module");
-    let resident_codestream_classic_labels = fs::read_to_string(
-        root.join("crates/j2k-metal/src/compute/resident_codestream/classic_labels.rs"),
-    )
-    .expect("read Metal compute resident codestream classic labels module");
-    let decode_cleanup =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/decode_cleanup.rs"))
-            .expect("read Metal compute decode cleanup module");
-
-    assert!(
-        compute.lines().count() < 390,
-        "compute.rs must stay below the post-split line-count ratchet"
-    );
-    assert!(
-        resident_codestream.lines().count() < 150,
-        "resident_codestream.rs must remain a focused module shell"
-    );
-    assert!(
-        resident_codestream_tier2.lines().count() < 500,
-        "tier2_packetization.rs must stay below its post-extraction line-count ratchet"
-    );
-    assert!(
-        resident_codestream.contains("mod ht_cleanup;")
-            && resident_codestream_ht_cleanup
-                .contains("pub(in crate::compute) fn dispatch_ht_cleanup")
-            && !resident_codestream.contains("fn dispatch_ht_cleanup("),
-        "resident_codestream HT cleanup dispatch helpers must live in resident_codestream/ht_cleanup.rs"
-    );
-    assert!(
-        resident_codestream.contains("mod classic_labels;")
-            && resident_codestream_classic_labels.contains("CLASSIC_TIER1_DENSITY_LABEL")
-            && resident_codestream_classic_labels.contains("next_enabled_classic_stage_label")
-            && !resident_codestream.contains("const CLASSIC_TIER1_DENSITY_LABEL")
-            && !resident_codestream.contains("fn next_enabled_classic_stage_label("),
-        "resident_codestream classic profiling labels must live in resident_codestream/classic_labels.rs"
-    );
-
-    assert_pattern_checks(&[
-        PatternCheck::new("Metal compute runtime module shell", &compute)
-            .required(&[
-                "mod runtime;",
-                "pub(crate) use self::runtime",
-                "MetalRuntime",
-                "runtime_initialization_error",
-            ])
-            .forbidden(&[
-                "pub(crate) struct MetalRuntime",
-                "MetalPipelineLoader::new(device",
-            ]),
-        PatternCheck::new("Metal compute runtime implementation", &runtime).required(&[
-            "pub(crate) struct MetalRuntime",
-            "MetalPipelineLoader::new(device",
-            "DEFAULT_METAL_SESSION",
-            "METAL_RUNTIME_OVERRIDE",
-            "with_runtime_for_session",
-        ]),
-        PatternCheck::new("Metal resident codestream module wiring", &compute)
-            .required(&["mod resident_codestream;"])
-            .forbidden(&["pub(crate) fn encode_tier2_packetization"]),
-        PatternCheck::new(
-            "Metal resident codestream tier-2 module shell",
-            &resident_codestream,
-        )
-        .required(&[
-            "mod tier2_packetization;",
-            "pub(crate) use self::tier2_packetization::*;",
-        ])
-        .forbidden(&["pub(crate) fn encode_tier2_packetization"]),
-        PatternCheck::new(
-            "Metal resident codestream tier-2 packetization implementation",
-            &resident_codestream_tier2,
-        )
-        .required(&["pub(crate) fn encode_tier2_packetization"]),
-    ]);
-    for (module_wire, module_source, owned_item) in [
-        (
-            "mod forward_transform;",
-            &forward_transform,
-            "pub(crate) fn encode_forward_dwt53",
-        ),
-        (
-            "mod resident_tier1;",
-            &resident_tier1,
-            "pub(crate) struct J2kLosslessDeviceCodeBlock",
-        ),
-        (
-            "mod lossless_prepare;",
-            &lossless_prepare,
-            "pub(crate) fn prepare_lossless_device_code_blocks",
-        ),
-        (
-            "mod decode_dispatch;",
-            &decode_dispatch,
-            "pub(crate) fn decode_inverse_mct",
-        ),
-        (
-            "mod tier1_encode;",
-            &tier1_encode,
-            "pub(crate) fn encode_classic_tier1_code_blocks",
-        ),
-        (
-            "mod decode_cleanup;",
-            &decode_cleanup,
-            "pub(crate) fn decode_classic_cleanup_code_block",
-        ),
-    ] {
-        assert_pattern_checks(&[
-            PatternCheck::new("Metal compute module wiring", &compute).required(&[module_wire]),
-            PatternCheck::new("split Metal compute module owned item", module_source)
-                .required(&[owned_item]),
-            PatternCheck::new("Metal compute module shell owned-item exclusion", &compute)
-                .forbidden(&[owned_item]),
-        ]);
-    }
-}
-
-#[test]
 fn cuda_encode_api_and_resident_types_live_in_focused_modules() {
     let root = repo_root();
     let encode = fs::read_to_string(root.join("crates/j2k-cuda/src/encode.rs"))
@@ -1076,119 +966,6 @@ fn transcode_stage_counters_are_shared_between_gpu_adapters() {
                 "fn unavailable<T>(&self)",
                 "MetalTranscodeError::MetalUnavailable | MetalTranscodeError::UnsupportedJob(_)",
             ])]);
-    }
-}
-
-#[test]
-fn metal_direct_plan_types_live_in_focused_module() {
-    let root = repo_root();
-    let direct_execute =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_execute_impl.rs"))
-            .expect("read Metal direct execute implementation");
-    let plan_types =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_plan_types.rs"))
-            .expect("read Metal direct plan types module");
-    let plane_pack =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_plane_pack.rs"))
-            .expect("read Metal direct plane-pack module");
-    let prepare = fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare.rs"))
-        .expect("read Metal direct prepare module");
-    let roi = fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_roi.rs"))
-        .expect("read Metal direct ROI module");
-    let grayscale_execute =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_grayscale_execute.rs"))
-            .expect("read Metal direct grayscale executor module");
-    let stacked_batch =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_stacked_batch.rs"))
-            .expect("read Metal direct stacked batch module");
-    let surface_pack =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_surface_pack.rs"))
-            .expect("read Metal direct surface-pack module");
-
-    assert!(
-        direct_execute.lines().count() < 200,
-        "direct_execute_impl.rs must remain an index shell after the direct split"
-    );
-
-    assert_pattern_checks(&[PatternCheck::new(
-        "direct_execute_impl.rs direct plan type module shell",
-        &direct_execute,
-    )
-    .required(&[
-        "mod direct_plan_types;",
-        "pub(crate) use self::direct_plan_types",
-        "PreparedDirectColorPlan",
-    ])]);
-    for item in [
-        "pub(crate) struct PreparedDirectGrayscalePlan",
-        "pub(crate) struct PreparedDirectColorPlan",
-        "pub(super) enum PreparedDirectGrayscaleStep",
-        "pub(super) struct PreparedDirectIdwt",
-        "pub(super) struct PreparedClassicSubBand",
-        "pub(super) struct PreparedClassicSubBandGroup",
-        "pub(super) struct PreparedHtSubBand",
-        "pub(super) struct PreparedHtSubBandGroup",
-    ] {
-        assert_pattern_checks(&[
-            PatternCheck::new(
-                "direct_execute_impl.rs direct plan type exclusion",
-                &direct_execute,
-            )
-            .forbidden(&[item]),
-            PatternCheck::new(
-                "compute/direct_plan_types.rs direct plan type ownership",
-                &plan_types,
-            )
-            .required(&[item]),
-        ]);
-    }
-    for required in [
-        (
-            "mod direct_plane_pack;",
-            &plane_pack,
-            "pub(super) struct PlaneStage",
-        ),
-        (
-            "mod direct_prepare;",
-            &prepare,
-            "pub(crate) fn prepare_direct_grayscale_plan",
-        ),
-        (
-            "mod direct_roi;",
-            &roi,
-            "pub(crate) fn crop_prepared_direct_grayscale_plan_to_output_region",
-        ),
-        (
-            "mod direct_grayscale_execute;",
-            &grayscale_execute,
-            "pub(super) fn encode_prepared_direct_component_plane_in_command_buffer",
-        ),
-        (
-            "mod direct_stacked_batch;",
-            &stacked_batch,
-            "pub(super) fn encode_stacked_direct_component_plane_batch",
-        ),
-        (
-            "mod direct_surface_pack;",
-            &surface_pack,
-            "pub(super) fn output_shape_for",
-        ),
-    ] {
-        let (module_wire, module_source, owned_item) = required;
-        assert_pattern_checks(&[
-            PatternCheck::new(
-                "direct_execute_impl.rs split module wiring",
-                &direct_execute,
-            )
-            .required(&[module_wire]),
-            PatternCheck::new("direct split module owned item", module_source)
-                .required(&[owned_item]),
-            PatternCheck::new(
-                "direct_execute_impl.rs owned item exclusion",
-                &direct_execute,
-            )
-            .forbidden(&[owned_item]),
-        ]);
     }
 }
 
@@ -1503,56 +1280,201 @@ fn metal_batch_execute_lives_in_focused_module() {
 }
 
 #[test]
-fn jpeg_metal_batch_decode_is_split_by_axis() {
+fn jpeg_metal_compute_uses_real_focused_modules() {
     let root = repo_root();
-    let compute = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute.rs"))
-        .expect("read j2k-jpeg-metal compute");
-    let monolith =
-        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_decode_impl.rs"))
-            .expect("read j2k-jpeg-metal batch decode placeholder");
+    let source_root = root.join("crates/j2k-jpeg-metal/src");
+    let compute =
+        fs::read_to_string(source_root.join("compute.rs")).expect("read j2k-jpeg-metal compute");
 
-    let chunks = [
-        (
-            "compute/batch_decode_full.rs",
-            "try_decode_fast_subsampled_full_rgb_batch_to_surfaces_with_mode_and_output",
-            "full-image RGB batch path",
-        ),
-        (
-            "compute/batch_decode_region.rs",
-            "try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output",
-            "region-scaled RGB batch path",
-        ),
-        (
-            "compute/batch_decode_entry.rs",
-            "decode_full_batch_to_surfaces",
-            "public batch decode entry points",
-        ),
-    ];
+    assert_pattern_checks(&[
+        PatternCheck::new("j2k-jpeg-metal compute module shell", &compute)
+            .required(&[
+                "mod batch_entry;",
+                "mod batch_full;",
+                "mod batch_region;",
+                "mod fast_packets;",
+                "mod pack_dispatch;",
+                "mod single_decode;",
+            ])
+            .forbidden(&["include!(", "fn try_decode_fast_subsampled_"]),
+    ]);
+    assert!(
+        compute.lines().count() < 800,
+        "j2k-jpeg-metal compute.rs must stay below its real-module line-count ratchet"
+    );
 
-    let mut previous_idx = 0;
-    for (file, required_symbol, description) in chunks {
-        let include = format!("include!(\"{file}\")");
-        let idx = compute
-            .find(&include)
-            .unwrap_or_else(|| panic!("j2k-jpeg-metal compute.rs must include `{file}`"));
+    for (relative, required_modules, forbidden_item) in [
+        (
+            "compute/fast_packets.rs",
+            &["mod descriptors;", "mod params;", "mod pipelines;"][..],
+            "trait FastSubsampledMetal",
+        ),
+        (
+            "compute/pack_dispatch.rs",
+            &["mod common;", "mod fast444;", "mod subsampled;"][..],
+            "fn encode_fast444_batch_item(",
+        ),
+        (
+            "compute/single_decode.rs",
+            &["mod fast444;", "mod routing;", "mod subsampled;"][..],
+            "pub(crate) fn decode_to_surface(",
+        ),
+        (
+            "compute/batch_full.rs",
+            &[
+                "mod fast444;",
+                "mod rgb;",
+                "mod texture;",
+                "mod texture_grouped;",
+            ][..],
+            "fn finish_fast_subsampled_full_rgb_batch(",
+        ),
+        (
+            "compute/batch_region.rs",
+            &["mod common;", "mod repeated;", "mod rgb;", "mod texture;"][..],
+            "fn try_decode_repeated_region_scaled_batch_to_surfaces(",
+        ),
+    ] {
+        let path = source_root.join(relative);
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         assert!(
-            idx >= previous_idx,
-            "j2k-jpeg-metal batch decode chunk `{file}` must be included in source order"
+            source.lines().count() < 50,
+            "{relative} must remain a focused real-module shell"
         );
-        previous_idx = idx;
-
-        let source = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src").join(file))
-            .unwrap_or_else(|_| panic!("read j2k-jpeg-metal batch decode chunk `{file}`"));
-        let check_name = format!("j2k-jpeg-metal batch decode chunk {description}");
-        assert_pattern_checks(&[
-            PatternCheck::new(&check_name, &source).required(&[required_symbol])
-        ]);
+        assert_pattern_checks(&[PatternCheck::new(relative, &source)
+            .required(required_modules)
+            .forbidden(&[forbidden_item, "include!("])]);
     }
 
-    assert!(
-        monolith.lines().count() < 50 && !monolith.contains("fn try_decode_"),
-        "j2k-jpeg-metal batch_decode_impl.rs must remain a small split-file pointer"
-    );
+    for obsolete in [
+        "compute/fast_packets_impl.rs",
+        "compute/pack_dispatch_impl.rs",
+        "compute/single_decode_impl.rs",
+        "compute/batch_decode_full.rs",
+        "compute/batch_decode_region.rs",
+        "compute/batch_decode_entry.rs",
+        "compute/batch_decode_impl.rs",
+    ] {
+        assert!(
+            !source_root.join(obsolete).exists(),
+            "obsolete JPEG Metal production include fragment must not exist: {obsolete}"
+        );
+    }
+
+    for (relative, max_lines, required_symbol) in [
+        (
+            "compute/batch_entry.rs",
+            450,
+            "pub(crate) fn decode_full_batch_to_surfaces",
+        ),
+        (
+            "compute/fast_packets/descriptors.rs",
+            400,
+            "trait FastSubsampledMetal",
+        ),
+        (
+            "compute/fast_packets/params.rs",
+            500,
+            "fn restart_work_for_mcu_range",
+        ),
+        (
+            "compute/fast_packets/pipelines.rs",
+            700,
+            "impl FastSubsampledMetal for JpegFast420PacketV1",
+        ),
+        (
+            "compute/pack_dispatch/common.rs",
+            700,
+            "fn batch_output_buffer_or_new",
+        ),
+        (
+            "compute/pack_dispatch/fast444.rs",
+            500,
+            "fn encode_fast444_batch_item",
+        ),
+        (
+            "compute/pack_dispatch/subsampled.rs",
+            650,
+            "fn encode_fast_subsampled_op_batch_item",
+        ),
+        (
+            "compute/single_decode/fast444.rs",
+            550,
+            "fn try_decode_fast444_to_surface",
+        ),
+        (
+            "compute/single_decode/routing.rs",
+            350,
+            "pub(crate) fn decode_to_surface",
+        ),
+        (
+            "compute/single_decode/subsampled.rs",
+            550,
+            "fn try_decode_fast420_to_surface",
+        ),
+        (
+            "compute/batch_full/rgb.rs",
+            750,
+            "fn finish_fast_subsampled_full_rgb_batch",
+        ),
+        (
+            "compute/batch_full/texture.rs",
+            800,
+            "fn decode_fast_subsampled_full_rgba_fused_texture_batch",
+        ),
+        (
+            "compute/batch_full/texture_grouped.rs",
+            100,
+            "fn try_decode_grouped_fast_subsampled_full_rgba_batch_to_textures",
+        ),
+        (
+            "compute/batch_region/common.rs",
+            450,
+            "fn subsampled_region_rgb_batch_shape",
+        ),
+        (
+            "compute/batch_region/repeated.rs",
+            100,
+            "fn try_decode_repeated_region_scaled_batch_to_surfaces",
+        ),
+        (
+            "compute/batch_region/rgb.rs",
+            600,
+            "fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output",
+        ),
+        (
+            "compute/batch_region/texture/fast444.rs",
+            550,
+            "fn try_decode_fast444_region_scaled_rgba_batch_to_textures",
+        ),
+        (
+            "compute/batch_region/texture/subsampled.rs",
+            450,
+            "fn try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures",
+        ),
+    ] {
+        let path = source_root.join(relative);
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert!(
+            source.lines().count() < max_lines,
+            "{relative} must stay below its focused-module line-count ratchet"
+        );
+        assert_pattern_checks(&[PatternCheck::new(relative, &source)
+            .required(&[required_symbol])
+            .forbidden(&["include!(", "use super::*;", "#![allow("])]);
+    }
+
+    for path in rust_sources(&source_root.join("compute")) {
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert!(
+            !source.contains("include!("),
+            "production include fragments are forbidden in {}",
+            path.display()
+        );
+    }
 }
 
 #[test]
@@ -1727,4 +1649,113 @@ fn j2k_metal_decode_and_tile_batch_use_request_api() {
         "pub fn push_tile_region_scaled(",
         "pub fn push_shared_tile_region_scaled(",
     ])]);
+}
+
+#[test]
+fn cuda_transcode_simt_modules_are_focused_and_staged() {
+    let root = repo_root();
+    let source_root = root.join("crates/j2k-cuda-runtime/src/cuda_oxide_transcode/simt/src");
+    let main = fs::read_to_string(source_root.join("main.rs"))
+        .expect("read CUDA Oxide transcode SIMT root");
+    let build = fs::read_to_string(root.join("crates/j2k-cuda-runtime/build.rs"))
+        .expect("read CUDA runtime build script");
+    let modules = [
+        ("abi", "abi.rs", 50),
+        ("constants", "constants.rs", 75),
+        ("dwt97", "dwt97.rs", 550),
+        ("exports", "exports.rs", 650),
+        ("helpers", "helpers.rs", 100),
+        ("quantization", "quantization.rs", 100),
+        ("reversible53", "reversible53.rs", 350),
+    ];
+
+    assert!(
+        main.lines().count() < 40,
+        "CUDA Oxide transcode SIMT main.rs must remain a focused module shell"
+    );
+    assert_eq!(
+        main.matches("include!(\"../../../cuda_oxide_simt_prelude.rs\");")
+            .count(),
+        1,
+        "the transcode SIMT root must include the shared prelude exactly once"
+    );
+    assert!(
+        !main.contains("#[cuda_module]"),
+        "the authoritative CUDA export surface must live in exports.rs"
+    );
+
+    let staging_start = build
+        .find("const CUDA_OXIDE_TRANSCODE_EXTRA_SOURCES")
+        .expect("transcode extra-source staging declaration");
+    let staging_tail = &build[staging_start..];
+    let staging_end = staging_tail
+        .find("];")
+        .expect("end of transcode extra-source staging declaration");
+    let staging = &staging_tail[..staging_end];
+    assert_eq!(
+        staging.matches("\"simt/src/").count(),
+        modules.len(),
+        "the staged transcode SIMT source list must exactly match the declared modules"
+    );
+    assert_pattern_checks(&[
+        PatternCheck::new("CUDA transcode SIMT staging", &build).required(&[
+            "for relative in CUDA_OXIDE_TRANSCODE_EXTRA_SOURCES",
+            "for relative in cuda_oxide_extra_sources(source_dir)",
+            "copy_cuda_oxide_file(source_dir, project_dir, Path::new(relative));",
+            "source_dir == Path::new(\"src/cuda_oxide_transcode\")",
+        ]),
+    ]);
+
+    let mut module_sources = String::new();
+    for (module, filename, max_lines) in modules {
+        assert!(
+            main.contains(&format!("mod {module};")),
+            "transcode SIMT root must declare module {module}"
+        );
+        assert!(
+            staging.contains(&format!("\"simt/src/{filename}\"")),
+            "transcode SIMT module {filename} must be staged for Linux/PTX builds"
+        );
+        let source = fs::read_to_string(source_root.join(filename))
+            .unwrap_or_else(|error| panic!("read transcode SIMT module {filename}: {error}"));
+        assert!(
+            source.lines().count() < max_lines,
+            "transcode SIMT module {filename} exceeded its focused line-count ratchet"
+        );
+        module_sources.push_str(&source);
+    }
+    assert!(
+        !module_sources.contains("use super::*"),
+        "transcode SIMT modules must use explicit imports"
+    );
+
+    let exports = fs::read_to_string(source_root.join("exports.rs"))
+        .expect("read CUDA Oxide transcode export surface");
+    assert_eq!(exports.matches("#[cuda_module]").count(), 1);
+    assert_eq!(exports.matches("#[kernel]").count(), 15);
+    for entrypoint in [
+        "transcode_reversible53_idct",
+        "transcode_reversible53_vertical_low",
+        "transcode_reversible53_vertical_high",
+        "transcode_reversible53_horizontal_low",
+        "transcode_reversible53_horizontal_high",
+        "transcode_dwt97_idct",
+        "transcode_dwt97_row_lift",
+        "transcode_dwt97_column_lift",
+        "transcode_dwt97_idct_batch",
+        "transcode_dwt97_idct_i16_batch",
+        "transcode_dwt97_row_lift_batch",
+        "transcode_dwt97_row_lift_batch_coop",
+        "transcode_dwt97_column_lift_batch",
+        "transcode_dwt97_quantize_codeblocks",
+        "transcode_dwt97_column_lift_quantize_codeblocks_batch",
+    ] {
+        assert_eq!(
+            exports
+                .matches(&format!("pub unsafe fn {entrypoint}("))
+                .count(),
+            1,
+            "CUDA transcode entrypoint {entrypoint} must have one authoritative definition"
+        );
+    }
 }

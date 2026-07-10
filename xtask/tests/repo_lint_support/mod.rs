@@ -11,20 +11,55 @@ use std::{
 
 pub(crate) mod architecture_policy;
 pub(crate) mod corpus_policy;
+pub(crate) mod coverage_structure_policy;
 pub(crate) mod dependency_policy;
 pub(crate) mod docs_and_workflows_policy;
+pub(crate) mod encode_compare_structure_policy;
+pub(crate) mod fixture_compare_structure_policy;
 pub(crate) mod gpu_adapter_policy;
+pub(crate) mod jpeg_decoder_structure_policy;
 pub(crate) mod jpeg_metal_resource_safety_policy;
+pub(crate) mod metal_compute_structure_policy;
 pub(crate) mod public_docs_policy;
 pub(crate) mod release_policy;
 pub(crate) mod shader_policy;
 pub(crate) mod source_policy;
+pub(crate) mod transcode_structure_policy;
 pub(crate) mod workflow_policy;
+pub(crate) mod xtask_main_structure_policy;
 
 pub(crate) fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("workspace root")
+}
+
+pub(crate) fn xtask_sources(root: &Path) -> String {
+    const SOURCES: &[&str] = &[
+        "xtask/src/main.rs",
+        "xtask/src/benchmark_commands.rs",
+        "xtask/src/codegen_commands.rs",
+        "xtask/src/command_support.rs",
+        "xtask/src/quality_commands.rs",
+        "xtask/src/release_commands.rs",
+    ];
+
+    read_source_files(root, SOURCES)
+}
+
+pub(crate) fn read_source_files(root: &Path, relative_paths: &[&str]) -> String {
+    assert!(
+        !relative_paths.is_empty(),
+        "source-family path list must not be empty"
+    );
+    let mut combined = String::new();
+    for relative in relative_paths {
+        let source = fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+        combined.push_str(&source);
+        combined.push('\n');
+    }
+    combined
 }
 
 pub(crate) fn assert_contains_all(source_name: &str, source: &str, required: &[&str]) {
@@ -380,7 +415,7 @@ pub(crate) fn workflow_job<'a>(workflow: &'a str, job_name: &str) -> &'a str {
 }
 
 pub(crate) fn publishable_crate_dirs(root: &Path) -> Vec<PathBuf> {
-    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(root);
     const_array_values(&xtask, "PUBLISHABLE_PACKAGES")
         .into_iter()
         .map(|package| {

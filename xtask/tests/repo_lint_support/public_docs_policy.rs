@@ -6,8 +6,8 @@ use super::{
     assert_file_pattern_checks, assert_pattern_checks, documented_j2k_env_vars,
     is_allowed_legacy_name_history_reference, is_archived_handoff, is_internal_j2k_token,
     is_repo_lint_test_source, j2k_env_tokens, normalize_path, publishable_crate_dirs,
-    referenced_shell_scripts, repo_root, repo_text_files, rust_include_paths, rust_sources,
-    FilePatternCheck, PatternCheck,
+    read_source_files, referenced_shell_scripts, repo_root, repo_text_files, rust_include_paths,
+    rust_sources, xtask_sources, FilePatternCheck, PatternCheck,
 };
 
 #[test]
@@ -349,7 +349,7 @@ fn benchmark_docs_define_publication_gate_for_openjpeg_and_grok() {
         .expect("read benchmark evidence docs");
     let env_vars = fs::read_to_string(root.join("docs/env-vars.md")).expect("read env var docs");
     let benchmark_docs = format!("{benchmark_corpora}\n{benchmark_evidence}\n{env_vars}");
-    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(root);
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
 
     assert_pattern_checks(&[
@@ -441,8 +441,8 @@ fn benchmark_publication_gate_rules_are_single_sourced() {
     let root = repo_root();
     let gate = fs::read_to_string(root.join("xtask/src/publication_gate.rs"))
         .expect("read publication gate module");
-    let benchmark = fs::read_to_string(root.join("xtask/src/adoption_benchmark.rs"))
-        .expect("read adoption benchmark module");
+    let benchmark = fs::read_to_string(root.join("xtask/src/adoption_benchmark/support.rs"))
+        .expect("read adoption benchmark publication support module");
     let report = fs::read_to_string(root.join("xtask/src/adoption_report.rs"))
         .expect("read adoption report module");
 
@@ -494,6 +494,9 @@ fn metal_consistency_cleanup_keeps_names_status_buffers_and_marker_sizes_single_
     let resident_tier1 =
         fs::read_to_string(root.join("crates/j2k-metal/src/compute/resident_tier1.rs"))
             .expect("read resident tier1");
+    let resident_tier1_types =
+        fs::read_to_string(root.join("crates/j2k-metal/src/compute/resident_tier1/types.rs"))
+            .expect("read resident tier1 types");
     let direct_buffers =
         fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_buffers.rs"))
             .expect("read direct buffers");
@@ -508,22 +511,54 @@ fn metal_consistency_cleanup_keeps_names_status_buffers_and_marker_sizes_single_
     let encode_capacity =
         fs::read_to_string(root.join("crates/j2k-metal/src/compute/encode_capacity.rs"))
             .expect("read encode capacity");
-    let jpeg_extended12 =
-        fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/extended12.rs"))
-            .expect("read JPEG Extended12 decoder");
+    let jpeg_extended12 = read_source_files(
+        root,
+        &[
+            "crates/j2k-jpeg/src/decoder/extended12.rs",
+            "crates/j2k-jpeg/src/decoder/extended12/upsample.rs",
+        ],
+    );
+    let split_metal_status_users = [
+        "crates/j2k-metal/src/compute/decode_dispatch/classic_cleanup.rs",
+        "crates/j2k-metal/src/compute/decode_dispatch/classic_subband.rs",
+        "crates/j2k-metal/src/compute/decode_dispatch/ht_distinct.rs",
+        "crates/j2k-metal/src/compute/decode_dispatch/ht_subband.rs",
+        "crates/j2k-metal/src/compute/decode_dispatch/idwt.rs",
+        "crates/j2k-metal/src/compute/decode_dispatch/mct.rs",
+        "crates/j2k-metal/src/compute/decode_dispatch/store.rs",
+        "crates/j2k-metal/src/compute/lossless_prepare/batch.rs",
+        "crates/j2k-metal/src/compute/lossless_prepare/batch_item.rs",
+        "crates/j2k-metal/src/compute/lossless_prepare/commands.rs",
+        "crates/j2k-metal/src/compute/lossless_prepare/forward_encode.rs",
+        "crates/j2k-metal/src/compute/lossless_prepare/single.rs",
+        "crates/j2k-metal/src/compute/lossless_prepare/sizes.rs",
+        "crates/j2k-metal/src/compute/resident_tier1/profile_dispatch/analysis.rs",
+        "crates/j2k-metal/src/compute/resident_tier1/profile_dispatch/tokens.rs",
+        "crates/j2k-metal/src/compute/resident_tier1/readback.rs",
+        "crates/j2k-metal/src/compute/resident_tier1/result_harvest.rs",
+    ]
+    .into_iter()
+    .map(|relative| {
+        fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|error| panic!("read {relative}: {error}"))
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
     let metal_status_users = [
         buffer_validation.as_str(),
         decode_dispatch.as_str(),
         lossless_prepare.as_str(),
         tier1_encode.as_str(),
         resident_codestream.as_str(),
+        resident_tier1.as_str(),
+        split_metal_status_users.as_str(),
     ]
     .join("\n");
 
     assert_pattern_checks(&[
         PatternCheck::new(
             "Metal resident tier1 component-count field",
-            &resident_tier1,
+            &resident_tier1_types,
         )
         .required(&["pub(crate) component_count: u8"])
         .forbidden(&["pub(crate) components: u8", "pub(crate) num_components: u8"]),

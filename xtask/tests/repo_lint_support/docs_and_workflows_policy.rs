@@ -68,32 +68,31 @@ fn codec_api_guide_covers_public_surfaces() {
 
 #[test]
 fn ci_workflow_keeps_docs_and_benchmark_compile_gates() {
+    let xtask = xtask_sources(repo_root());
     assert_file_pattern_checks(
         repo_root(),
-        &[
-            FilePatternCheck::new(".github/workflows/ci.yml")
-                .named("CI workflow docs and benchmark compile gates")
-                .required(&[
-                    "cargo xtask doc",
-                    "cargo xtask stable-api",
-                    "cargo xtask bench-build",
-                    "cargo-public-api@0.52.0",
-                    "macos-latest",
-                ])
-                .forbidden(&["macos-13"]),
-            FilePatternCheck::new("xtask/src/main.rs")
-                .named("xtask benchmark compile gate")
-                .required(&[
-                    "\"doc\"",
-                    "\"--workspace\"",
-                    "\"--all-features\"",
-                    "\"--no-deps\"",
-                    "\"j2k-jpeg-metal\"",
-                    "\"j2k-metal\"",
-                    "\"--no-run\"",
-                ]),
-        ],
+        &[FilePatternCheck::new(".github/workflows/ci.yml")
+            .named("CI workflow docs and benchmark compile gates")
+            .required(&[
+                "cargo xtask doc",
+                "cargo xtask stable-api",
+                "cargo xtask bench-build",
+                "cargo-public-api@0.52.0",
+                "macos-latest",
+            ])
+            .forbidden(&["macos-13"])],
     );
+    assert_pattern_checks(&[
+        PatternCheck::new("xtask benchmark compile gate", &xtask).required(&[
+            "\"doc\"",
+            "\"--workspace\"",
+            "\"--all-features\"",
+            "\"--no-deps\"",
+            "\"j2k-jpeg-metal\"",
+            "\"j2k-metal\"",
+            "\"--no-run\"",
+        ]),
+    ]);
 }
 
 #[test]
@@ -101,7 +100,7 @@ fn ci_workflow_runs_semver_checks_for_stable_library_crates() {
     let root = repo_root();
     let workflow =
         fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
-    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(root);
     let semver_impl =
         fs::read_to_string(root.join("xtask/src/semver.rs")).expect("read semver xtask");
     let stable_api_doc =
@@ -292,7 +291,7 @@ fn reviewed_api_diff_artifacts_are_consistent() {
 
 #[test]
 fn xtask_test_does_not_run_benchmarks_as_tests() {
-    let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(repo_root());
     let test_section = xtask
         .split("fn test()")
         .nth(1)
@@ -376,10 +375,30 @@ fn repo_lint_policy_support_files_stay_split_by_axis() {
             "xtask/tests/repo_lint_support/docs_and_workflows_policy.rs",
             2_750,
         ),
+        (
+            "xtask/tests/repo_lint_support/encode_compare_structure_policy.rs",
+            250,
+        ),
+        (
+            "xtask/tests/repo_lint_support/fixture_compare_structure_policy.rs",
+            250,
+        ),
         ("xtask/tests/repo_lint_support/gpu_adapter_policy.rs", 1_800),
+        (
+            "xtask/tests/repo_lint_support/jpeg_decoder_structure_policy.rs",
+            400,
+        ),
         (
             "xtask/tests/repo_lint_support/jpeg_metal_resource_safety_policy.rs",
             350,
+        ),
+        (
+            "xtask/tests/repo_lint_support/metal_compute_structure_policy.rs",
+            550,
+        ),
+        (
+            "xtask/tests/repo_lint_support/transcode_structure_policy.rs",
+            375,
         ),
     ] {
         let source = fs::read_to_string(root.join(relative))
@@ -393,7 +412,7 @@ fn repo_lint_policy_support_files_stay_split_by_axis() {
 
 #[test]
 fn xtask_exposes_nextest_machete_and_strict_clippy_gates() {
-    let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(repo_root());
     let help_section = xtask
         .split("fn print_help()")
         .nth(1)
@@ -427,7 +446,7 @@ fn xtask_exposes_nextest_machete_and_strict_clippy_gates() {
 #[test]
 fn xtask_fuzz_build_checks_every_fuzz_manifest() {
     let root = repo_root();
-    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let xtask = xtask_sources(root);
     let mut manifests = Vec::new();
 
     for entry in fs::read_dir(root.join("crates")).expect("read crates dir") {
@@ -495,37 +514,56 @@ fn ci_coverage_job_is_a_required_gate() {
 
 #[test]
 fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() {
+    let root = repo_root();
+    let coverage = [
+        "xtask/src/coverage.rs",
+        "xtask/src/coverage/model.rs",
+        "xtask/src/coverage/lane.rs",
+        "xtask/src/coverage/parsing.rs",
+        "xtask/src/coverage/evaluation.rs",
+        "xtask/src/coverage/summary.rs",
+        "xtask/src/coverage/exclusion_policy.rs",
+    ]
+    .into_iter()
+    .map(|relative| {
+        fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|error| panic!("read {relative}: {error}"))
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
+
     assert_file_pattern_checks(
-        repo_root(),
+        root,
         &[
             FilePatternCheck::new("xtask/src/main.rs")
                 .named("coverage command delegation")
                 .required(&["coverage::coverage(env::args().skip(2))"])
                 .forbidden(&["GPU_COVERAGE_EXCLUSION_REGEX", "--ignore-filename-regex"]),
-            FilePatternCheck::new("xtask/src/coverage.rs")
-                .named("changed accelerator coverage policy")
-                .required(&[
-                    "CHANGED_LINE_THRESHOLD_PERCENT: u64 = 80",
-                    "Self::Host => is_production_rust(path)",
-                    "accelerator host lines",
-                    "cuda-simt-device-rust",
-                    "cuda-generated-host-scaffold",
-                    "cuda-driver-ffi-declarations",
-                    "metal-embedded-shader-body",
-                    "cuda_facade_byte_matches_native_across_matrix_when_required",
-                    "runtime_raii_primitives_smoke_when_required",
-                    "metal_kernels_are_wired_to_host_pipelines",
-                    "full_classic_grayscale_decode_to_metal_matches_host_decode",
-                    "lcov-host.info",
-                    "lcov-metal.info",
-                    "lcov-cuda.info",
-                ])
-                .forbidden(&["GPU_COVERAGE_EXCLUSION_REGEX"]),
             FilePatternCheck::new(".gitignore")
                 .named("generated coverage evidence")
                 .required(&["lcov-*.info", "coverage-*-summary.json"]),
         ],
     );
+    assert_pattern_checks(&[
+        PatternCheck::new("changed accelerator coverage policy", &coverage)
+            .required(&[
+                "CHANGED_LINE_THRESHOLD_PERCENT: u64 = 80",
+                "Self::Host => is_production_rust(path)",
+                "accelerator host lines",
+                "cuda-simt-device-rust",
+                "cuda-generated-host-scaffold",
+                "cuda-driver-ffi-declarations",
+                "metal-embedded-shader-body",
+                "cuda_facade_byte_matches_native_across_matrix_when_required",
+                "runtime_raii_primitives_smoke_when_required",
+                "metal_kernels_are_wired_to_host_pipelines",
+                "full_classic_grayscale_decode_to_metal_matches_host_decode",
+                "lcov-host.info",
+                "lcov-metal.info",
+                "lcov-cuda.info",
+            ])
+            .forbidden(&["GPU_COVERAGE_EXCLUSION_REGEX"]),
+    ]);
 }
 
 #[test]
@@ -571,28 +609,36 @@ fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
 
 #[test]
 fn decode_capability_correctness_regressions_are_guarded() {
-    assert_file_pattern_checks(
-        repo_root(),
+    let root = repo_root();
+    let native_codestream = read_source_files(
+        root,
         &[
-            FilePatternCheck::new("crates/j2k-native/src/j2c/codestream.rs")
-                .named("target-resolution shrink-factor arithmetic")
-                .required(&[
-                    ".checked_shl(u32::from(skipped_resolution_levels))",
-                    ".checked_mul(resolution_shrink_factor)",
-                    "size_data.checked_image_width()?;",
-                    "size_data.checked_image_height()?;",
-                    "checked_image_dimensions_reject_shrink_factor_overflow",
-                ]),
-            FilePatternCheck::new("crates/j2k-jpeg/tests/inspect.rs")
-                .named("JPEG progressive inspect/decode agreement fixtures")
-                .required(&[
-                    "fn inspect_and_decoder_info_agree_for_progressive_fixtures()",
-                    "progressive_8x8_jpeg()",
-                    "progressive_12bit_grayscale_8x8_jpeg()",
-                    "progressive_12bit_rgb_8x8_jpeg()",
-                    "assert_eq!(decoder.info(), &inspected, \"{label}\");",
-                ]),
+            "crates/j2k-native/src/j2c/codestream/header.rs",
+            "crates/j2k-native/src/j2c/codestream/tests.rs",
         ],
+    );
+    assert_pattern_checks(&[PatternCheck::new(
+        "target-resolution shrink-factor arithmetic",
+        &native_codestream,
+    )
+    .required(&[
+        ".checked_shl(u32::from(skipped_resolution_levels))",
+        ".checked_mul(resolution_shrink_factor)",
+        "size_data.checked_image_width()?;",
+        "size_data.checked_image_height()?;",
+        "checked_image_dimensions_reject_shrink_factor_overflow",
+    ])]);
+    assert_file_pattern_checks(
+        root,
+        &[FilePatternCheck::new("crates/j2k-jpeg/tests/inspect.rs")
+            .named("JPEG progressive inspect/decode agreement fixtures")
+            .required(&[
+                "fn inspect_and_decoder_info_agree_for_progressive_fixtures()",
+                "progressive_8x8_jpeg()",
+                "progressive_12bit_grayscale_8x8_jpeg()",
+                "progressive_12bit_rgb_8x8_jpeg()",
+                "assert_eq!(decoder.info(), &inspected, \"{label}\");",
+            ])],
     );
 }
 
@@ -725,6 +771,114 @@ fn xtask_adoption_stack_is_feature_gated() {
                 ]),
         ],
     );
+}
+
+#[test]
+fn adoption_benchmark_lives_in_focused_modules() {
+    let root = repo_root();
+    let coordinator = fs::read_to_string(root.join("xtask/src/adoption_benchmark.rs"))
+        .expect("read adoption benchmark coordinator");
+    let options = fs::read_to_string(root.join("xtask/src/adoption_benchmark/options.rs"))
+        .expect("read adoption benchmark options");
+    let runner = fs::read_to_string(root.join("xtask/src/adoption_benchmark/runner.rs"))
+        .expect("read adoption benchmark runner");
+    let existing = fs::read_to_string(root.join("xtask/src/adoption_benchmark/existing.rs"))
+        .expect("read adoption benchmark existing-result discovery");
+    let parsing = fs::read_to_string(root.join("xtask/src/adoption_benchmark/parsing.rs"))
+        .expect("read adoption benchmark parsing");
+    let summary = fs::read_to_string(root.join("xtask/src/adoption_benchmark/summary.rs"))
+        .expect("read adoption benchmark summary");
+    let readme = fs::read_to_string(root.join("xtask/src/adoption_benchmark/readme.rs"))
+        .expect("read adoption benchmark README renderer");
+    let support = fs::read_to_string(root.join("xtask/src/adoption_benchmark/support.rs"))
+        .expect("read adoption benchmark publication/path support");
+
+    for (path, source, max_lines) in [
+        ("adoption_benchmark.rs", coordinator.as_str(), 600),
+        ("adoption_benchmark/options.rs", options.as_str(), 250),
+        ("adoption_benchmark/runner.rs", runner.as_str(), 700),
+        ("adoption_benchmark/existing.rs", existing.as_str(), 200),
+        ("adoption_benchmark/parsing.rs", parsing.as_str(), 700),
+        ("adoption_benchmark/summary.rs", summary.as_str(), 300),
+        ("adoption_benchmark/readme.rs", readme.as_str(), 300),
+        ("adoption_benchmark/support.rs", support.as_str(), 150),
+    ] {
+        assert!(
+            source.lines().count() < max_lines,
+            "xtask/src/{path} must stay below its focused-module line-count ratchet of {max_lines}"
+        );
+        assert!(
+            !source.contains("use super::*") && !source.contains("include!("),
+            "xtask/src/{path} must keep explicit real-Rust module boundaries"
+        );
+    }
+
+    assert_pattern_checks(&[
+        PatternCheck::new("adoption benchmark coordinator wiring", &coordinator).required(&[
+            "mod existing;",
+            "mod options;",
+            "mod parsing;",
+            "mod readme;",
+            "mod runner;",
+            "mod summary;",
+            "mod support;",
+            "pub(crate) fn adoption_benchmark(",
+        ]),
+        PatternCheck::new(
+            "adoption benchmark coordinator ownership exclusions",
+            &coordinator,
+        )
+        .forbidden(&[
+            "const SCRUBBED_BENCH_ENV_VARS",
+            "struct AdoptionStep",
+            "fn run_cpu_encode_compare(",
+            "fn existing_steps(",
+            "fn write_summary(",
+            "fn criterion_summary_json(",
+            "fn write_readme(",
+            "fn enforce_publication_gate(",
+            "impl AdoptionBenchmarkOptions",
+        ]),
+        PatternCheck::new("adoption benchmark option ownership", &options).required(&[
+            "pub(crate) struct AdoptionBenchmarkOptions",
+            "pub(super) fn parse(",
+            "pub(super) fn help_text(",
+            "pub(super) fn parse_batch_size_list(",
+        ]),
+        PatternCheck::new("adoption benchmark runner ownership", &runner).required(&[
+            "pub(super) const SCRUBBED_BENCH_ENV_VARS",
+            "pub(super) fn run_cpu_encode_compare(",
+            "pub(super) fn run_cuda_htj2k_decode(",
+            "pub(super) fn run_metal_transcode_benchmark(",
+            "pub(super) fn run_logged_owned(",
+            "pub(super) fn display_command(",
+        ]),
+        PatternCheck::new("adoption benchmark existing-result ownership", &existing).required(&[
+            "pub(super) fn existing_steps(",
+            "pub(super) fn existing_ran_step(",
+        ]),
+        PatternCheck::new("adoption benchmark parser ownership", &parsing).required(&[
+            "pub(super) fn criterion_summary_json(",
+            "pub(super) fn read_metal_decode_summary(",
+            "pub(super) fn read_metal_encode_summary(",
+            "pub(super) fn read_metal_transcode_summary(",
+            "pub(super) fn read_tsv_metadata(",
+        ]),
+        PatternCheck::new("adoption benchmark summary/model ownership", &summary).required(&[
+            "pub(super) struct AdoptionStep",
+            "pub(super) enum StepStatus",
+            "pub(super) fn write_summary(",
+            "pub(super) fn step_json(",
+        ]),
+        PatternCheck::new("adoption benchmark README ownership", &readme)
+            .required(&["pub(super) fn write_readme("]),
+        PatternCheck::new("adoption benchmark publication/path ownership", &support).required(&[
+            "pub(super) fn enforce_publication_gate(",
+            "pub(super) fn benchmark_env_path(",
+            "pub(super) fn benchmark_env_path_list(",
+            "pub(super) fn canonical_benchmark_path(",
+        ]),
+    ]);
 }
 
 #[test]
@@ -867,7 +1021,7 @@ fn jpeg_fast_packet_accessors_stay_out_of_public_api() {
                     "macro_rules! impl_color_fast_packet_access",
                     "macro_rules! cuda_decode_plan",
                 ]),
-            FilePatternCheck::new("crates/j2k-jpeg-metal/src/compute/fast_packets_impl.rs")
+            FilePatternCheck::new("crates/j2k-jpeg-metal/src/compute/fast_packets/descriptors.rs")
                 .named("Metal fast packets")
                 .required(&[
                     "trait FastSubsampledPacket",
@@ -938,8 +1092,9 @@ fn packet_progression_ordering_uses_shared_packetization_contract() {
     let root = repo_root();
     let packet_contract =
         fs::read_to_string(root.join("crates/j2k-types/src/lib.rs")).expect("read j2k-types");
-    let native_encode = fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode.rs"))
-        .expect("read native encode");
+    let native_encode =
+        fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode/packet_plan.rs"))
+            .expect("read native encode packet plan");
     let native_encode_options =
         fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode/options.rs"))
             .expect("read native encode options");
@@ -1029,15 +1184,13 @@ fn idwt_required_region_propagation_uses_shared_native_helper() {
 #[test]
 fn metal_direct_required_region_retain_uses_shared_job_helper() {
     let root = repo_root();
-    let direct_execute =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_execute_impl.rs"))
-            .expect("read Metal direct execute");
+    let compute = fs::read_to_string(root.join("crates/j2k-metal/src/compute.rs"))
+        .expect("read Metal compute root");
     let direct_roi = fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_roi.rs"))
         .expect("read Metal direct ROI");
 
     assert_pattern_checks(&[
-        PatternCheck::new("Metal direct shell ROI module", &direct_execute)
-            .required(&["mod direct_roi;"]),
+        PatternCheck::new("Metal compute ROI module", &compute).required(&["mod direct_roi;"]),
         PatternCheck::new("Metal direct required-region retain helper", &direct_roi).required(&[
             "trait RequiredRegionJob",
             "impl RequiredRegionJob for J2kClassicCleanupBatchJob",
@@ -1056,15 +1209,14 @@ fn metal_direct_required_region_retain_uses_shared_job_helper() {
 #[test]
 fn metal_direct_sub_band_group_scan_uses_shared_helper() {
     let root = repo_root();
-    let direct_execute =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_execute_impl.rs"))
-            .expect("read Metal direct execute");
+    let compute = fs::read_to_string(root.join("crates/j2k-metal/src/compute.rs"))
+        .expect("read Metal compute root");
     let direct_prepare =
         fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare.rs"))
             .expect("read Metal direct prepare");
 
     assert_pattern_checks(&[
-        PatternCheck::new("Metal direct shell prepare module", &direct_execute)
+        PatternCheck::new("Metal compute prepare module", &compute)
             .required(&["mod direct_prepare;"]),
         PatternCheck::new("Metal direct sub-band grouping helper", &direct_prepare).required(&[
             "fn prepare_sub_band_groups<'a, SubBand: 'a, Group>",
@@ -1126,17 +1278,21 @@ fn wavelet_and_idct_constants_use_codec_math_sources() {
         .expect("read j2k-metal fdwt shader");
     let metal_idwt = fs::read_to_string(root.join("crates/j2k-metal/src/idwt.metal"))
         .expect("read j2k-metal idwt shader");
-    let transcode_metal = fs::read_to_string(root.join("crates/j2k-transcode-metal/src/metal.rs"))
-        .expect("read transcode Metal runtime");
+    let transcode_metal =
+        fs::read_to_string(root.join("crates/j2k-transcode-metal/src/metal/runtime.rs"))
+            .expect("read transcode Metal runtime");
     let transcode_dct97 =
         fs::read_to_string(root.join("crates/j2k-transcode-metal/src/dct97.metal"))
             .expect("read transcode Metal dct97 shader");
     let transcode_cpu_dct97 = fs::read_to_string(root.join("crates/j2k-transcode/src/dct97_2d.rs"))
         .expect("read transcode CPU dct97 module");
-    let cuda_transcode = fs::read_to_string(
-        root.join("crates/j2k-cuda-runtime/src/cuda_oxide_transcode/simt/src/main.rs"),
-    )
-    .expect("read CUDA Oxide transcode SIMT source");
+    let cuda_transcode = read_source_files(
+        root,
+        &[
+            "crates/j2k-cuda-runtime/src/cuda_oxide_transcode/simt/src/main.rs",
+            "crates/j2k-cuda-runtime/src/cuda_oxide_transcode/simt/src/constants.rs",
+        ],
+    );
 
     assert_file_pattern_checks(
         root,
@@ -1268,12 +1424,16 @@ fn jp2_box_parsing_is_native_owned_with_facade_adapter_only() {
 #[test]
 fn native_classic_and_ht_parallel_copyback_share_one_helper() {
     let root = repo_root();
-    let decode = fs::read_to_string(root.join("crates/j2k-native/src/j2c/decode.rs"))
+    let decode_shell = fs::read_to_string(root.join("crates/j2k-native/src/j2c/decode.rs"))
         .expect("read native J2K decode module");
+    let decode_subband =
+        fs::read_to_string(root.join("crates/j2k-native/src/j2c/decode/subband.rs"))
+            .expect("read native J2K subband decode module");
+    let decode = format!("{decode_shell}\n{decode_subband}");
 
     assert_pattern_checks(&[PatternCheck::new(
         "native classic/HT decoded-block copyback",
-        &decode,
+        decode.as_str(),
     )
     .required(&[
         "trait DecodedSubBandBlock",
@@ -1312,8 +1472,8 @@ fn copied_test_fixture_helpers_live_in_shared_support() {
     let root = repo_root();
     let test_support = fs::read_to_string(root.join("crates/j2k-test-support/src/lib.rs"))
         .expect("read j2k-test-support");
-    let compare = fs::read_to_string(root.join("crates/j2k-compare/src/encode_compare.rs"))
-        .expect("read compare encode module");
+    let compare = fs::read_to_string(root.join("crates/j2k-compare/src/encode_compare/images.rs"))
+        .expect("read compare encode image module");
     let dct97 = fs::read_to_string(root.join("crates/j2k-transcode/src/dct97_2d.rs"))
         .expect("read transcode 9/7 DCT module");
     let dct97_test = fs::read_to_string(root.join("crates/j2k-transcode/tests/dct97_2d.rs"))
@@ -1393,9 +1553,38 @@ fn native_encode_options_and_tile_parts_live_in_focused_modules() {
     let tile_parts =
         fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode/tile_parts.rs"))
             .expect("read native encode tile-part module");
-    let precomputed =
+    let precomputed_shell =
         fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode/precomputed.rs"))
             .expect("read native encode precomputed module");
+    let precomputed_accelerator = fs::read_to_string(
+        root.join("crates/j2k-native/src/j2c/encode/precomputed/accelerator.rs"),
+    )
+    .expect("read native precomputed accelerator module");
+    let precomputed_api53 =
+        fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode/precomputed/api53.rs"))
+            .expect("read native precomputed 5-3 API module");
+    let precomputed_api97 =
+        fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode/precomputed/api97.rs"))
+            .expect("read native precomputed 9-7 API module");
+    let precomputed_batch97 =
+        fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode/precomputed/batch97.rs"))
+            .expect("read native precomputed 9-7 batch module");
+    let precomputed_packets =
+        fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode/precomputed/packets.rs"))
+            .expect("read native precomputed packet module");
+    let precomputed_validation =
+        fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode/precomputed/validation.rs"))
+            .expect("read native precomputed validation module");
+    let precomputed = [
+        precomputed_shell.as_str(),
+        precomputed_accelerator.as_str(),
+        precomputed_api53.as_str(),
+        precomputed_api97.as_str(),
+        precomputed_batch97.as_str(),
+        precomputed_packets.as_str(),
+        precomputed_validation.as_str(),
+    ]
+    .join("\n");
     let packet_plan =
         fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode/packet_plan.rs"))
             .expect("read native encode packet-plan module");
@@ -1419,8 +1608,16 @@ fn native_encode_options_and_tile_parts_live_in_focused_modules() {
         .expect("read native encode subband preparation module");
 
     assert!(
-        encode.lines().count() < 3_250,
+        encode.lines().count() < 800,
         "j2c/encode.rs must stay below the post-split line-count ratchet"
+    );
+    assert!(
+        precomputed_api97.lines().count() < 800,
+        "j2c/encode/precomputed/api97.rs must stay below the focused-module line-count ratchet"
+    );
+    assert!(
+        precomputed_batch97.lines().count() < 150,
+        "j2c/encode/precomputed/batch97.rs must stay below the focused-module line-count ratchet"
     );
     assert!(
         roi_plan.lines().count() < 300,
@@ -1491,7 +1688,7 @@ fn native_encode_options_and_tile_parts_live_in_focused_modules() {
     assert_pattern_checks(&[
         PatternCheck::new("j2c/encode.rs focused module wiring", &encode).required(&[
             "mod precomputed;",
-            "pub use self::precomputed::*;",
+            "pub use self::precomputed::{",
             "mod packet_plan;",
             "mod rate_control;",
             "mod roi_plan;",
@@ -1500,6 +1697,17 @@ fn native_encode_options_and_tile_parts_live_in_focused_modules() {
             "mod single_tile;",
             "mod subband;",
         ]),
+        PatternCheck::new("precomputed.rs 9-7 batch wiring", &precomputed_shell).required(&[
+            "mod batch97;",
+            "pub use self::batch97::encode_precomputed_htj2k_97_batch_with_accelerator;",
+        ]),
+        PatternCheck::new("precomputed/api97.rs batch exclusion", &precomputed_api97)
+            .forbidden(&["pub fn encode_precomputed_htj2k_97_batch_with_accelerator("]),
+        PatternCheck::new(
+            "precomputed/batch97.rs batch ownership",
+            &precomputed_batch97,
+        )
+        .required(&["pub fn encode_precomputed_htj2k_97_batch_with_accelerator("]),
     ]);
     for helper in [
         "struct I64PacketizeRequest",
@@ -1542,18 +1750,21 @@ fn native_encode_options_and_tile_parts_live_in_focused_modules() {
         "pub fn encode_precomputed_j2k_53",
         "pub fn encode_precomputed_htj2k_97",
         "pub fn encode_preencoded_htj2k_97",
-        "pub(super) fn validate_precomputed_dwt97_geometry",
+        "pub(in crate::j2c::encode) fn validate_precomputed_dwt97_geometry",
     ];
     assert_pattern_checks(&[
         PatternCheck::new(
             "j2c/encode/precomputed.rs precomputed helpers",
-            &precomputed,
+            precomputed.as_str(),
         )
         .required(&precomputed_helpers),
         PatternCheck::new("j2c/encode.rs precomputed helper exclusion", &encode)
             .forbidden(&precomputed_helpers),
-        PatternCheck::new("precomputed DWT adapter forwarding macro", &precomputed)
-            .required(&["macro_rules! forward_precomputed_encode_stage_hooks"]),
+        PatternCheck::new(
+            "precomputed DWT adapter forwarding macro",
+            precomputed.as_str(),
+        )
+        .required(&["macro_rules! forward_precomputed_encode_stage_hooks"]),
     ]);
     assert_eq!(
         precomputed
@@ -1588,7 +1799,7 @@ fn native_encode_options_and_tile_parts_live_in_focused_modules() {
     ] {
         assert_pattern_checks(&[PatternCheck::new(
             "precomputed DWT defaulted hook exclusions",
-            &precomputed,
+            precomputed.as_str(),
         )
         .forbidden(&[defaulted])]);
     }
@@ -1684,249 +1895,105 @@ fn native_encode_options_and_tile_parts_live_in_focused_modules() {
 }
 
 #[test]
-fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
+fn j2k_encode_facade_lives_in_focused_modules() {
     let root = repo_root();
-    let decoder = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder.rs"))
-        .expect("read JPEG decoder module");
-    let view = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/view.rs"))
-        .expect("read JPEG decoder view module");
-    let output_format =
-        fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/output_format.rs"))
-            .expect("read JPEG decoder output-format module");
-    let extended12 = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/extended12.rs"))
-        .expect("read JPEG decoder extended12 module");
-    let lossless = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/lossless_helpers.rs"))
-        .expect("read JPEG decoder lossless helper module");
-    let lossless_region =
-        fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/lossless_region.rs"))
-            .expect("read JPEG decoder lossless region module");
-    let color_convert =
-        fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/color_convert.rs"))
-            .expect("read JPEG decoder color-convert module");
-    let core_traits = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/core_traits.rs"))
-        .expect("read JPEG decoder core-traits module");
-    let scratch = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/scratch.rs"))
-        .expect("read JPEG decoder scratch module");
-    let sink_writer = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/sink_writer.rs"))
-        .expect("read JPEG decoder sink-writer module");
-    let bench_support = fs::read_to_string(root.join("crates/j2k-jpeg/src/bench_support.rs"))
-        .expect("read JPEG bench support module");
+    let facade =
+        fs::read_to_string(root.join("crates/j2k/src/encode.rs")).expect("read J2K encode facade");
+    let contracts = fs::read_to_string(root.join("crates/j2k/src/encode/contracts.rs"))
+        .expect("read J2K encode contracts");
+    let samples = fs::read_to_string(root.join("crates/j2k/src/encode/samples.rs"))
+        .expect("read J2K encode samples");
+    let native = fs::read_to_string(root.join("crates/j2k/src/encode/native.rs"))
+        .expect("read J2K native encode bridge");
+    let routing = fs::read_to_string(root.join("crates/j2k/src/encode/routing.rs"))
+        .expect("read J2K encode routing");
+    let lossy = fs::read_to_string(root.join("crates/j2k/src/encode/lossy.rs"))
+        .expect("read J2K lossy encode targeting");
+    let validation = fs::read_to_string(root.join("crates/j2k/src/encode/validation.rs"))
+        .expect("read J2K encode validation");
 
-    assert!(
-        decoder.lines().count() < 3_050,
-        "decoder.rs must stay below the post-split line-count ratchet"
-    );
-    assert!(
-        extended12.lines().count() < 1_950,
-        "decoder/extended12.rs must stay below the 12-bit renderer line-count ratchet"
-    );
-    assert!(
-        decoder.contains("fn decode_lossless_output_format_region_scaled(")
-            && decoder.contains("self.lossless_plan.as_ref()?;")
-            && decoder.matches("if self.lossless_plan.is_some()").count() == 1,
-        "decoder.rs must route output-format lossless dispatch through one shared helper"
-    );
-    assert!(
-        decoder.contains("fn decode_lossless_color8_output_into(")
-            && decoder.contains("fn decode_lossless_color16_output_into(")
-            && decoder
-                .matches("match lossless_color_sampling(&self.info)")
-                .count()
-                == 2,
-        "decoder.rs must keep lossless RGB/YCbCr sampling dispatch shared by bit depth"
-    );
-    assert!(
-        lossless_region.contains("pub(super) enum LosslessRgbRegionFallback")
-            && lossless_region.contains("YCbCr8")
-            && lossless_region.contains("Rgb8")
-            && lossless_region.contains("YCbCr16")
-            && lossless_region.contains("Rgb16")
-            && lossless_region.contains("decode_rgb_region_scaled_into(")
-            && lossless_region.contains("decode_rgba_region_scaled_into(")
-            && !decoder.contains("enum LosslessRgbRegionFallback")
-            && !decoder.contains("fn decode_lossless_rgb_region_scaled_into(")
-            && !decoder.contains("fn decode_lossless_rgba8_region_into(")
-            && !decoder.contains("fn decode_lossless_rgba16_region_scaled_into("),
-        "decoder.rs must keep lossless region fallback routing on the focused helper module"
-    );
+    for (path, source) in [
+        ("encode.rs", facade.as_str()),
+        ("encode/contracts.rs", contracts.as_str()),
+        ("encode/samples.rs", samples.as_str()),
+        ("encode/native.rs", native.as_str()),
+        ("encode/routing.rs", routing.as_str()),
+        ("encode/lossy.rs", lossy.as_str()),
+        ("encode/validation.rs", validation.as_str()),
+    ] {
+        assert!(
+            source.lines().count() < 800,
+            "crates/j2k/src/{path} must stay below the focused-module line-count ratchet"
+        );
+        assert!(
+            !source.contains("use super::*") && !source.contains("include!("),
+            "crates/j2k/src/{path} must keep explicit Rust module boundaries"
+        );
+    }
 
     assert_pattern_checks(&[
-        PatternCheck::new("decoder.rs view module shell", &decoder)
-            .required(&["mod view;", "pub use self::view::JpegView;"])
-            .forbidden(&[
-                "pub struct JpegView",
-                "impl<'a> JpegView<'a>",
-                "parse_header(input)?",
-            ]),
-        PatternCheck::new("decoder/view.rs parsed-view API", &view).required(&[
-            "pub struct JpegView",
-            "impl<'a> JpegView<'a>",
-            "pub fn parse(",
-            "pub fn parse_with_options(",
-            "pub fn passthrough_candidate(",
-            "pub fn restart_index(",
+        PatternCheck::new("J2K encode facade wiring", &facade).required(&[
+            "mod contracts;",
+            "pub use self::contracts::{",
+            "mod samples;",
+            "pub use self::samples::{",
+            "mod native;",
+            "mod routing;",
+            "mod lossy;",
+            "mod validation;",
+            "pub fn encode_j2k_lossless(",
+            "pub fn encode_j2k_lossy(",
+            "pub fn j2k_lossless_decomposition_levels(",
         ]),
-        PatternCheck::new("decoder.rs output-format module shell", &decoder).required(&[
-            "mod output_format;",
-            "output_format_from_parts",
-            "checked_output_geometry",
+        PatternCheck::new("J2K encode facade ownership exclusions", &facade).forbidden(&[
+            "pub enum EncodeBackendPreference",
+            "pub struct J2kLosslessSamples",
+            "struct RequiredEncodeStages",
+            "struct LossyAttempt",
+            "fn validate_lossless_roundtrip(",
+            "use self::contracts::*",
+            "use self::samples::*",
         ]),
-    ]);
-    let output_format_patterns = [
-        "pub(super) fn output_format_profile_name",
-        "pub(super) fn downscale_profile_name",
-        "pub(super) fn jpeg_downscale",
-        "pub(super) fn output_format_from_parts",
-        "pub(super) fn allocate_output_buffer",
-        "pub(super) fn scaled_dimensions",
-        "pub(super) fn scaled_rect_covering",
-        "pub(super) fn checked_output_geometry",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder.rs output-format helper exclusion", &decoder)
-            .forbidden(&output_format_patterns),
-        PatternCheck::new("decoder/output_format.rs helpers", &output_format)
-            .required(&output_format_patterns),
-        PatternCheck::new("decoder.rs focused helper module wiring", &decoder).required(&[
-            "mod extended12;",
-            "mod lossless_helpers;",
-            "mod lossless_region;",
-            "mod color_convert;",
-            "mod core_traits;",
-            "mod scratch;",
-            "mod sink_writer;",
+        PatternCheck::new("J2K encode contract ownership", &contracts).required(&[
+            "pub enum EncodeBackendPreference",
+            "pub struct J2kLosslessEncodeOptions",
+            "pub enum J2kRateTarget",
+            "pub struct J2kLossyEncodeOptions",
+            "pub struct EncodedJ2k",
+            "pub struct EncodedLossyJ2k",
         ]),
-    ]);
-    let extended12_patterns = [
-        "pub(super) enum Extended12Output",
-        "pub(super) struct Extended12WriteRegion",
-        "pub(super) fn decode_extended12_color_planes",
-        "pub(super) fn render_progressive12_color_planes",
-        "pub(super) trait UpsampleSample",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder/extended12.rs helpers", &extended12)
-            .required(&extended12_patterns),
-        PatternCheck::new("decoder.rs extended12 helper exclusion", &decoder)
-            .forbidden(&extended12_patterns),
-    ]);
-    let extended12_renderer_patterns = [
-        "pub(super) fn decode_12bit_rgba16_region_scaled_into",
-        "pub(super) fn decode_progressive12_gray16_region_scaled_into",
-        "pub(super) fn decode_progressive12_rgb16_region_scaled_into",
-        "fn decode_progressive12_region_into",
-        "fn decode_progressive12_color444_region_into",
-        "fn decode_progressive12_color_subsampled_region_into",
-        "fn decode_progressive12_four_component_region_into",
-        "pub(super) fn decode_extended12_gray16_into",
-        "pub(super) fn decode_extended12_rgb16_region_scaled_into",
-        "fn decode_extended12_region_into",
-        "fn decode_extended12_color444_region_into",
-        "fn decode_extended12_four_component_subsampled_region_into",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder/extended12.rs 12-bit renderers", &extended12)
-            .required(&extended12_renderer_patterns),
-        PatternCheck::new("decoder.rs 12-bit renderer exclusion", &decoder)
-            .forbidden(&extended12_renderer_patterns),
-    ]);
-    let lossless_patterns = [
-        "pub(super) fn restart_index_for_stream",
-        "pub(super) fn consume_lossless_restart",
-        "pub(super) struct LosslessRestartTracker",
-        "pub(super) struct Extended12RestartTracker",
-        "pub(super) fn validate_lossless_color_plan",
-        "pub(super) fn decode_lossless_plane_sample",
-        "pub(super) fn decode_lossless_color_sample<P, T>",
-        "pub(super) struct LosslessColorIntoSample",
-        "pub(super) struct LosslessColorRowSample",
-        "pub(super) fn decode_lossless_sampled_color_mcu<P>",
-        "pub(super) struct LosslessSampledColorPlanesMut",
-        "pub(super) struct LosslessSampledMcu",
-        "pub(super) fn write_lossless_color16_sampled_output",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder/lossless_helpers.rs helpers", &lossless)
-            .required(&lossless_patterns),
-        PatternCheck::new("decoder.rs lossless helper exclusion", &decoder)
-            .forbidden(&lossless_patterns),
-    ]);
-    assert!(
-        !decoder.contains("Extended12RestartTracker::new(")
-            && extended12
-                .contains("Extended12RestartTracker::new(self.plan.restart_interval, total_mcus)")
-            && extended12
-                .contains("Extended12RestartTracker::new(plan.restart_interval, total_mcus)")
-            && !decoder.contains("consume_extended12_restart(")
-            && !extended12.contains("consume_extended12_restart("),
-        "extended-12 restart cadence must be centralized through Extended12RestartTracker"
-    );
-    assert!(
-        decoder.matches("validate_lossless_color_plan::<P>").count() == 3,
-        "decoder.rs lossless color paths must share validation through decoder/lossless_helpers.rs"
-    );
-    let color_convert_patterns = [
-        "pub(super) fn merged_warnings",
-        "pub(super) fn convert_ycbcr8_to_rgb8_in_place",
-        "pub(super) fn copy_rgb16_scaled_rect",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder/color_convert.rs helpers", &color_convert)
-            .required(&color_convert_patterns),
-        PatternCheck::new("decoder.rs color-convert helper exclusion", &decoder)
-            .forbidden(&color_convert_patterns),
-    ]);
-    let scratch_patterns = [
-        "pub(super) fn compute_decode_scratch_bytes",
-        "pub(super) fn compute_lossless_scratch_bytes",
-        "pub(super) fn compute_extended12_planes_scratch_bytes",
-        "pub(super) fn checked_scratch_len",
-        "pub(super) fn checked_usize_product",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder/scratch.rs helpers", &scratch).required(&scratch_patterns),
-        PatternCheck::new("decoder.rs scratch helper exclusion", &decoder)
-            .forbidden(&scratch_patterns),
-    ]);
-    let core_trait_patterns = [
-        "impl ImageCodec for Decoder<'_>",
-        "impl TileBatchDecode for JpegCodec",
-        "pub(super) struct CroppedWriter",
-        "impl<W: ComponentRowWriter + ?Sized> OutputWriter for &mut W",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder/core_traits.rs trait adapters", &core_traits)
-            .required(&core_trait_patterns)
-            .forbidden(&["ComponentWriterAdapter"]),
-        PatternCheck::new("decoder.rs core trait adapter exclusion", &decoder)
-            .forbidden(&core_trait_patterns),
-        PatternCheck::new("decoder.rs component writer adapter exclusion", &decoder)
-            .forbidden(&["ComponentWriterAdapter"]),
-        PatternCheck::new("decoder.rs sink writer re-export", &decoder)
-            .required(&["pub(crate) use self::sink_writer::SinkWriter;"]),
-    ]);
-    let sink_writer_patterns = [
-        "pub(crate) struct SinkWriter",
-        "pub(crate) fn into_rows",
-        "impl<S> InterleavedRgbWriter for SinkWriter<'_, S>",
-        "impl<S> OutputWriter for SinkWriter<'_, S>",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder/sink_writer.rs helpers", &sink_writer)
-            .required(&sink_writer_patterns),
-        PatternCheck::new("decoder.rs sink writer helper exclusion", &decoder)
-            .forbidden(&sink_writer_patterns),
-        PatternCheck::new("bench profile shared sink writer reuse", &bench_support)
-            .required(&[
-                "struct BlackBoxRowSink",
-                "impl RowSink<u8> for BlackBoxRowSink",
-                "SinkWriter::new(&mut sink, rows, dec.backend)",
-            ])
-            .forbidden(&[
-                "struct BenchProfileSinkWriter",
-                "impl InterleavedRgbWriter for BenchProfileSinkWriter",
-                "impl OutputWriter for BenchProfileSinkWriter",
-            ]),
+        PatternCheck::new("J2K encode sample ownership", &samples).required(&[
+            "pub struct J2kLosslessSamples",
+            "pub struct J2kLosslessComponentSamples",
+            "pub struct J2kLosslessTypedComponentSamples",
+            "pub struct J2kLossySamples",
+            "pub(super) fn raw_pixel_bytes_per_sample",
+        ]),
+        PatternCheck::new("J2K native encode bridge ownership", &native).required(&[
+            "pub(super) fn encode_cpu(",
+            "pub(super) fn native_roi_regions_for_samples(",
+            "pub(super) fn native_lossless_options(",
+            "pub(super) fn native_lossy_options(",
+        ]),
+        PatternCheck::new("J2K encode routing ownership", &routing).required(&[
+            "pub(super) fn resolve_accelerated_encode_backend(",
+            "pub(super) struct RequiredEncodeStages",
+            "pub(super) fn required_encode_stages(",
+            "pub(super) fn required_lossy_encode_stages(",
+        ]),
+        PatternCheck::new("J2K lossy target ownership", &lossy).required(&[
+            "pub(super) struct LossyAttempt",
+            "pub(super) fn encode_lossy_targeted(",
+            "pub(super) fn encode_lossy_to_byte_target(",
+            "pub(super) fn encode_lossy_to_psnr_target(",
+            "pub(super) fn target_bytes_for_bpp(",
+        ]),
+        PatternCheck::new("J2K encode validation ownership", &validation).required(&[
+            "pub(super) fn validate_lossy_roundtrip(",
+            "pub(super) fn validate_lossless_roundtrip(",
+            "pub(super) fn validate_lossless_component_roundtrip(",
+            "pub(super) fn validate_lossless_typed_component_roundtrip(",
+        ]),
     ]);
 }
 
@@ -1967,9 +2034,13 @@ fn jpeg_to_htj2k_options_live_in_focused_module() {
         "pub enum JpegToHtj2kError",
         "pub(super) fn dct53_grid_error",
     ];
-    let batch_items = [
+    let batch_facade_items = [
         "pub fn jpeg_to_htj2k_batch",
         "pub(super) fn jpeg_tile_batch_to_htj2k_with_scratch",
+    ];
+    let batch_items = [
+        batch_facade_items[0],
+        batch_facade_items[1],
         "pub(super) struct IntegerBatchTile",
         "pub(super) fn encode_float97_batch_tile",
     ];
@@ -1993,7 +2064,8 @@ fn jpeg_to_htj2k_options_live_in_focused_module() {
         PatternCheck::new("jpeg_to_htj2k batch item exclusion", &transcode).forbidden(&batch_items),
         PatternCheck::new("jpeg_to_htj2k report item ownership", &report).required(&report_items),
         PatternCheck::new("jpeg_to_htj2k error item ownership", &error).required(&error_items),
-        PatternCheck::new("jpeg_to_htj2k batch item ownership", &batch).required(&batch_items),
+        PatternCheck::new("jpeg_to_htj2k batch facade ownership", &batch)
+            .required(&batch_facade_items),
     ]);
 }
 
@@ -2083,66 +2155,44 @@ fn native_adapter_exports_are_doc_hidden() {
     let root = repo_root();
     let lib =
         fs::read_to_string(root.join("crates/j2k-native/src/lib.rs")).expect("read j2k-native lib");
-
-    assert_pattern_checks(
-        &[
-            PatternCheck::new("j2k-native hidden adapter exports", &lib).required(&[
-                "#[doc(hidden)]\npub use backend::",
-                "#[doc(hidden)]\npub use direct_plan::",
-                "#[doc(hidden)]\npub use ht_adapter::",
-                "#[doc(hidden)]\npub use j2k_types::",
-                "#[doc(hidden)]\npub fn forward_dwt53_reference",
-                "#[doc(hidden)]\npub fn decode_j2k_code_block_scalar",
-                "pub struct DecodeSettings",
-                "pub struct Image",
-            ]),
-        ],
-    );
-}
-
-#[test]
-fn jpeg_decoder_owned_outputs_use_decode_request() {
-    let root = repo_root();
-    let decoder = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder.rs"))
-        .expect("read j2k-jpeg decoder");
-    let lib =
-        fs::read_to_string(root.join("crates/j2k-jpeg/src/lib.rs")).expect("read j2k-jpeg lib");
+    let scalar_encode = fs::read_to_string(root.join("crates/j2k-native/src/scalar/encode.rs"))
+        .expect("read j2k-native scalar encode module");
+    let scalar_decode =
+        fs::read_to_string(root.join("crates/j2k-native/src/scalar/classic_decode.rs"))
+            .expect("read j2k-native scalar classic decode module");
+    let image = fs::read_to_string(root.join("crates/j2k-native/src/image.rs"))
+        .expect("read j2k-native image module");
 
     assert_pattern_checks(&[
-        PatternCheck::new("j2k-jpeg owned-output request API", &decoder).required(&[
-            "pub struct DecodeRequest",
-            "pub const fn full(fmt: PixelFormat) -> Self",
-            "pub const fn scaled(fmt: PixelFormat, scale: Downscale) -> Self",
-            "pub const fn region(fmt: PixelFormat, region: Rect) -> Self",
-            "pub const fn region_scaled(fmt: PixelFormat, region: Rect, scale: Downscale) -> Self",
-            "pub fn decode_request(",
-            "fn decode_request_with_scratch(",
+        PatternCheck::new("j2k-native hidden adapter exports", &lib).required(&[
+            "#[doc(hidden)]\npub use backend::",
+            "#[doc(hidden)]\npub use direct_plan::",
+            "#[doc(hidden)]\npub use ht_adapter::",
+            "#[doc(hidden)]\npub use j2k_types::",
+            "#[doc(hidden)]\npub use scalar::",
         ]),
-        PatternCheck::new("j2k-jpeg owned-output wrapper removal", &decoder).forbidden(&[
-            "pub fn decode(&self, fmt: PixelFormat)",
-            "pub fn decode_scaled(",
-            "pub fn decode_with_scratch(",
-            "pub fn decode_scaled_with_scratch(",
-            "pub fn decode_region(",
-            "pub fn decode_region_scaled(",
-            "pub fn decode_region_with_scratch(",
-            "pub fn decode_region_scaled_with_scratch(",
-        ]),
-        PatternCheck::new("j2k-jpeg DecodeRequest re-export", &lib).required(&[
-            "DecodeOutcome, DecodeRequest",
-            "DecodedTile, Decoder, JpegView",
-        ]),
+        PatternCheck::new("j2k-native hidden scalar encode adapters", &scalar_encode)
+            .required(&["#[doc(hidden)]\npub fn forward_dwt53_reference"]),
+        PatternCheck::new("j2k-native hidden scalar decode adapters", &scalar_decode)
+            .required(&["#[doc(hidden)]\npub fn decode_j2k_code_block_scalar"]),
+        PatternCheck::new("j2k-native image contract ownership", &image)
+            .required(&["pub struct DecodeSettings", "pub struct Image"]),
     ]);
 }
 
 #[test]
 fn jpeg_decoder_upsample_sample_width_twins_use_generic_helpers() {
     let root = repo_root();
-    let extended12 = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/extended12.rs"))
-        .expect("read JPEG decoder extended12 helpers");
-    let lossless = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/lossless_helpers.rs"))
-        .expect("read JPEG decoder lossless helpers");
-    let decoder = format!("{extended12}\n{lossless}");
+    let decoder = read_source_files(
+        root,
+        &[
+            "crates/j2k-jpeg/src/decoder/extended12.rs",
+            "crates/j2k-jpeg/src/decoder/extended12/planes.rs",
+            "crates/j2k-jpeg/src/decoder/extended12/upsample.rs",
+            "crates/j2k-jpeg/src/decoder/extended12/writers.rs",
+            "crates/j2k-jpeg/src/decoder/lossless_helpers.rs",
+        ],
+    );
 
     assert_pattern_checks(&[PatternCheck::new(
         "JPEG decoder sample-width upsample helpers",
@@ -2171,9 +2221,8 @@ fn mirrored_twin_unification_record_is_current() {
     let root = repo_root();
     let record = fs::read_to_string(root.join("engineering/mirrored-twin-unification.md"))
         .expect("read mirrored-twin unification record");
-    let direct_execute =
-        fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_execute_impl.rs"))
-            .expect("read Metal direct execute");
+    let compute = fs::read_to_string(root.join("crates/j2k-metal/src/compute.rs"))
+        .expect("read Metal compute root");
     let direct_prepare =
         fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_prepare.rs"))
             .expect("read Metal direct prepare");
@@ -2181,12 +2230,24 @@ fn mirrored_twin_unification_record_is_current() {
         .expect("read Metal direct ROI");
     let hybrid =
         fs::read_to_string(root.join("crates/j2k-metal/src/hybrid.rs")).expect("read hybrid");
-    let decoder = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/extended12.rs"))
-        .expect("read JPEG decoder extended12 helpers");
+    let decoder = read_source_files(
+        root,
+        &[
+            "crates/j2k-jpeg/src/decoder/extended12.rs",
+            "crates/j2k-jpeg/src/decoder/extended12/planes.rs",
+            "crates/j2k-jpeg/src/decoder/extended12/upsample.rs",
+            "crates/j2k-jpeg/src/decoder/extended12/writers.rs",
+        ],
+    );
     let neon = fs::read_to_string(root.join("crates/j2k-jpeg/src/backend/neon.rs"))
         .expect("read JPEG NEON backend");
-    let native_idwt = fs::read_to_string(root.join("crates/j2k-native/src/j2c/idwt.rs"))
-        .expect("read native IDWT");
+    let native_idwt = read_source_files(
+        root,
+        &[
+            "crates/j2k-native/src/j2c/idwt.rs",
+            "crates/j2k-native/src/j2c/idwt/orchestrate.rs",
+        ],
+    );
 
     assert_pattern_checks(&[
         PatternCheck::new("mirrored-twin unification record", &record).required(&[
@@ -2203,11 +2264,8 @@ fn mirrored_twin_unification_record_is_current() {
             "cargo test -p j2k-jpeg --test decode_into progressive12_ycbcr420",
             "cargo test -p j2k-jpeg --test neon_hot_paths",
         ]),
-        PatternCheck::new(
-            "Metal direct twin-unification module shell",
-            &direct_execute,
-        )
-        .required(&["mod direct_prepare;", "mod direct_roi;"]),
+        PatternCheck::new("Metal direct twin-unification module shell", &compute)
+            .required(&["mod direct_prepare;", "mod direct_roi;"]),
         PatternCheck::new("Metal direct retain unification", &direct_roi)
             .required(&["fn retain_jobs_for_required_region<J: RequiredRegionJob>"]),
         PatternCheck::new(
@@ -2306,6 +2364,9 @@ fn compare_bins_use_library_common_helpers() {
         .expect("read j2k-compare lib");
     let fixture = fs::read_to_string(root.join("crates/j2k-compare/src/fixture_compare.rs"))
         .expect("read fixture compare module");
+    let fixture_cli =
+        fs::read_to_string(root.join("crates/j2k-compare/src/fixture_compare/cli.rs"))
+            .expect("read fixture compare CLI module");
     let fixture_manifest =
         fs::read_to_string(root.join("crates/j2k-compare/src/fixture_compare/manifest.rs"))
             .expect("read fixture compare manifest module");
@@ -2321,8 +2382,8 @@ fn compare_bins_use_library_common_helpers() {
     let fixture_types =
         fs::read_to_string(root.join("crates/j2k-compare/src/fixture_compare/types.rs"))
             .expect("read fixture compare types module");
-    let encode = fs::read_to_string(root.join("crates/j2k-compare/src/encode_compare.rs"))
-        .expect("read encode compare module");
+    let encode_cli = fs::read_to_string(root.join("crates/j2k-compare/src/encode_compare/cli.rs"))
+        .expect("read encode compare CLI module");
     let fixture_bin =
         fs::read_to_string(root.join("crates/j2k-compare/src/bin/jp2k_fixture_compare.rs"))
             .expect("read fixture compare bin");
@@ -2342,8 +2403,8 @@ fn compare_bins_use_library_common_helpers() {
             .required(&["j2k_compare::encode_compare::main();"]),
     ]);
     assert!(
-        fixture.lines().count() < 2_295,
-        "fixture_compare.rs must stay below the post-gate-split line-count ratchet"
+        fixture.lines().count() < 600,
+        "fixture_compare.rs must stay below the focused-coordinator line-count ratchet"
     );
     assert_pattern_checks(&[
         PatternCheck::new("fixture_compare manifest module shell", &fixture)
@@ -2437,9 +2498,9 @@ fn compare_bins_use_library_common_helpers() {
             "pub fn batch_size_config_from_values",
             "pub fn legacy_batch_sizes_from_env",
         ]),
-        PatternCheck::new("fixture_compare shared batch-size helper use", &fixture)
+        PatternCheck::new("fixture_compare shared batch-size helper use", &fixture_cli)
             .required(&[
-                "use crate::{common,",
+                "use super::{",
                 "common::batch_size_config_from_env(",
                 "J2K_FIXTURE_COMPARE_CASE_BATCH_SIZES",
             ])
@@ -2449,9 +2510,9 @@ fn compare_bins_use_library_common_helpers() {
                 "fn batch_size_config_from_values",
                 "fn legacy_batch_sizes_from_env",
             ]),
-        PatternCheck::new("encode_compare shared batch-size helper use", &encode)
+        PatternCheck::new("encode_compare shared batch-size helper use", &encode_cli)
             .required(&[
-                "use crate::{common,",
+                "use super::{",
                 "common::batch_size_config_from_env(",
                 "J2K_ENCODE_COMPARE_CASE_BATCH_SIZES",
             ])
@@ -2467,8 +2528,8 @@ fn compare_bins_use_library_common_helpers() {
 #[test]
 fn deinterleave_reference_has_checked_public_entrypoint() {
     let root = repo_root();
-    let native =
-        fs::read_to_string(root.join("crates/j2k-native/src/lib.rs")).expect("read native lib");
+    let native = fs::read_to_string(root.join("crates/j2k-native/src/scalar/encode.rs"))
+        .expect("read native scalar encode module");
     let cuda_parity = fs::read_to_string(root.join("crates/j2k-cuda/tests/htj2k_encode_parity.rs"))
         .expect("read CUDA parity tests");
     let metal_parity = fs::read_to_string(root.join("crates/j2k-metal/src/encode/tests.rs"))
@@ -2510,8 +2571,8 @@ fn deinterleave_reference_has_checked_public_entrypoint() {
 #[test]
 fn decode_strictness_policy_is_explicit_and_warns_on_lenient_default() {
     let root = repo_root();
-    let native =
-        fs::read_to_string(root.join("crates/j2k-native/src/lib.rs")).expect("read native lib");
+    let native = fs::read_to_string(root.join("crates/j2k-native/src/image.rs"))
+        .expect("read native image module");
     let facade_decode =
         fs::read_to_string(root.join("crates/j2k/src/decode.rs")).expect("read facade decode");
     let facade_view =
