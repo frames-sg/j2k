@@ -47,6 +47,11 @@ head SHA, and fails until the required backend job names have succeeded:
 - `CUDA API compatibility on x86_64` for CUDA or shared GPU changes.
 - `Metal validation on Apple Silicon` for Metal or shared GPU changes.
 
+Hosted macOS CI runs `cargo xtask metal-compile`; that is a compile and pure-test
+gate, not Metal hardware evidence. The self-hosted Metal job runs
+`cargo xtask release-metal`, which fails on skipped runtime tests or a missing
+Metal device.
+
 Do not add `pull_request` or `push` triggers to `gpu-validation.yml` without an
 explicit policy decision.
 
