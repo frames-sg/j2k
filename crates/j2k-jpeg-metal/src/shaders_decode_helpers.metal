@@ -137,7 +137,7 @@ inline bool jpeg_skip_h2v2_boundary_repair_row(uint row, uint row_count, uint mc
 
 inline uchar h2v1_boundary_left_from_samples(uchar left, uchar right) { return uchar((3u * uint(left) + uint(right) + 2u) >> 2); }
 
-inline uchar h2v1_boundary_right_from_samples(uchar left, uchar right) { return uchar((3u * uint(right) + uint(left) + 2u) >> 2); }
+inline uchar h2v1_boundary_right_from_samples(uchar left, uchar right) { return uchar((3u * uint(right) + uint(left) + 1u) >> 2); }
 
 inline void jpeg_write_ycbcr_rgba(
     texture2d<float, access::write> out,

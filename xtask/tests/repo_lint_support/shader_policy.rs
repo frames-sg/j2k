@@ -270,6 +270,34 @@ fn jpeg_metal_shader_is_split_by_subsystem() {
                 "deposit_block_region(plane, stride, width, height, origin_x, origin_y, block_x, block_y, pixels);",
             ]),
     ]);
+    assert_eq!(
+        encode
+            .matches("return uchar((3u * curr + prev + 1u) >> 2);")
+            .count(),
+        3,
+        "all scalar/thread-local 4:2:2 even samples must retain libjpeg ordered +1 rounding"
+    );
+    assert_eq!(
+        encode
+            .matches("return uchar((3u * curr + next + 2u) >> 2);")
+            .count(),
+        3,
+        "all scalar/thread-local 4:2:2 odd samples must retain libjpeg ordered +2 rounding"
+    );
+    assert_pattern_checks(&[
+        PatternCheck::new("j2k-jpeg-metal paired 4:2:2 ordered rounding", &encode)
+            .required(&[
+                "left = uchar((3u * curr + prev + 1u) >> 2);",
+                "right = uchar((3u * curr + next + 2u) >> 2);",
+            ])
+            .forbidden(&["3u * curr + prev + 2u) >> 2"]),
+        PatternCheck::new("j2k-jpeg-metal boundary 4:2:2 ordered rounding", &decode_helpers)
+            .required(&[
+                "return uchar((3u * uint(left) + uint(right) + 2u) >> 2);",
+                "return uchar((3u * uint(right) + uint(left) + 1u) >> 2);",
+            ])
+            .forbidden(&["3u * uint(right) + uint(left) + 2u) >> 2"]),
+    ]);
     for file in [
         "shaders_decode_fast420.metal",
         "shaders_decode_fast422_regions.metal",

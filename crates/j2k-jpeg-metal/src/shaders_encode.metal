@@ -1586,7 +1586,7 @@ inline uchar h2v1_sample(
     if ((x & 1u) == 0u) {
         const uint prev = uint(row[sample - 1u]);
         const uint curr = uint(row[sample]);
-        return uchar((3u * curr + prev + 2u) >> 2);
+        return uchar((3u * curr + prev + 1u) >> 2);
     }
     const uint curr = uint(row[sample]);
     const uint next = uint(row[sample + 1u]);
@@ -1614,7 +1614,7 @@ inline uchar h2v1_sample_thread(
     if ((x & 1u) == 0u) {
         const uint prev = uint(row[sample - 1u]);
         const uint curr = uint(row[sample]);
-        return uchar((3u * curr + prev + 2u) >> 2);
+        return uchar((3u * curr + prev + 1u) >> 2);
     }
     const uint curr = uint(row[sample]);
     const uint next = uint(row[sample + 1u]);
@@ -1645,7 +1645,7 @@ inline uchar h2v1_sample_thread_local(
     if ((x & 1u) == 0u) {
         const uint prev = local_sample == 0u ? uint(left_sample) : uint(row[local_sample - 1u]);
         const uint curr = uint(row[local_sample]);
-        return uchar((3u * curr + prev + 2u) >> 2);
+        return uchar((3u * curr + prev + 1u) >> 2);
     }
     const uint curr = uint(row[local_sample]);
     const uint next = uint(row[local_sample + 1u]);
@@ -1713,7 +1713,7 @@ inline void h2v1_sample_even_pair(
     const uint prev = uint(row[sample - 1u]);
     const uint curr = uint(row[sample]);
     const uint next = uint(row[sample + 1u]);
-    left = uchar((3u * curr + prev + 2u) >> 2);
+    left = uchar((3u * curr + prev + 1u) >> 2);
     right = uchar((3u * curr + next + 2u) >> 2);
 }
 
