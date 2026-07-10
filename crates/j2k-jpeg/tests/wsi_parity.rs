@@ -6,6 +6,8 @@ use j2k_jpeg::{DecodeRequest, Decoder, Downscale, PixelFormat, Rect};
 use j2k_test_support::{
     crop_interleaved_bytes, crop_interleaved_u8, restart_coded_grayscale_jpeg,
     scaled_rect_covering, PixelRect, JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB,
+    JPEG_BASELINE_420_RESTART_32X16, JPEG_BASELINE_420_RESTART_32X16_RGB, JPEG_BASELINE_422_16X8,
+    JPEG_BASELINE_422_16X8_RGB, JPEG_BASELINE_444_8X8, JPEG_BASELINE_444_8X8_RGB,
     JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY,
 };
 
@@ -41,6 +43,75 @@ fn baseline_420_16x16_matches_libjpeg_turbo_bit_exact() {
             &BASELINE_420_RGB[..first_diff.min(BASELINE_420_RGB.len())],
         );
     }
+}
+
+#[test]
+fn baseline_fast444_and_restart_routes_match_stored_rgb_fixtures() {
+    let cases = [
+        (
+            "fast 4:4:4",
+            JPEG_BASELINE_444_8X8,
+            JPEG_BASELINE_444_8X8_RGB,
+        ),
+        (
+            "restart-coded 4:2:0",
+            JPEG_BASELINE_420_RESTART_32X16,
+            JPEG_BASELINE_420_RESTART_32X16_RGB,
+        ),
+    ];
+
+    for (route, encoded, expected) in cases {
+        let decoder = Decoder::new(encoded).expect("fixture must parse");
+        let (width, height) = decoder.info().dimensions;
+        let stride = width as usize * 3;
+        let mut actual = vec![0u8; stride * height as usize];
+        decoder
+            .decode_scaled_into(&mut actual, stride, PixelFormat::Rgb8, Downscale::None)
+            .expect("route must decode");
+        assert_eq!(actual, expected, "{route} output changed");
+    }
+}
+
+#[test]
+fn generic_422_current_output_regression_baseline() {
+    let decoder = Decoder::new(JPEG_BASELINE_422_16X8).expect("4:2:2 fixture must parse");
+    let mut actual_422 = vec![0u8; JPEG_BASELINE_422_16X8_RGB.len()];
+    decoder
+        .decode_scaled_into(&mut actual_422, 16 * 3, PixelFormat::Rgb8, Downscale::None)
+        .expect("generic 4:2:2 route must decode");
+
+    // Preserve the existing j2k output while the separately tracked libjpeg-turbo
+    // 4:2:2 interpolation-parity gap is investigated.
+    let output_hash = actual_422
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+    assert_eq!(
+        output_hash, 0x4a9b_e9f5_ec1f_80df,
+        "generic 4:2:2 output changed"
+    );
+
+    let mut differing_bytes = 0usize;
+    let mut max_delta = 0u8;
+    let mut differing_by_channel = [0usize; 3];
+    for (index, (&actual, &reference)) in actual_422
+        .iter()
+        .zip(JPEG_BASELINE_422_16X8_RGB)
+        .enumerate()
+    {
+        let delta = actual.abs_diff(reference);
+        if delta != 0 {
+            differing_bytes += 1;
+            max_delta = max_delta.max(delta);
+            differing_by_channel[index % 3] += 1;
+        }
+    }
+    assert_eq!(
+        (differing_bytes, max_delta, differing_by_channel),
+        (16, 2, [0, 4, 12]),
+        "update only after resolving the tracked 4:2:2 interpolation gap"
+    );
 }
 
 #[test]

@@ -10,6 +10,44 @@ use alloc::vec;
 use j2k_test_support::JPEG_BASELINE_420_16X16;
 
 #[test]
+fn sequential_decode_modules_stay_focused_and_fragment_free() {
+    const ROOT: &str = include_str!("../sequential.rs");
+    const GENERIC: &str = include_str!("generic.rs");
+    const DCT: &str = include_str!("dct.rs");
+    const RGB444: &str = include_str!("rgb444.rs");
+    const FAST420: &str = include_str!("fast420/mod.rs");
+    const FAST420_ROWS: &str = include_str!("fast420/rows.rs");
+
+    let modules = [
+        ("sequential.rs", ROOT, 240usize),
+        ("sequential/generic.rs", GENERIC, 600),
+        ("sequential/dct.rs", DCT, 200),
+        ("sequential/rgb444.rs", RGB444, 300),
+        ("sequential/fast420/mod.rs", FAST420, 650),
+        ("sequential/fast420/rows.rs", FAST420_ROWS, 700),
+    ];
+
+    for (path, source, max_lines) in modules {
+        let line_count = source.lines().count();
+        assert!(
+            line_count <= max_lines,
+            "{path} grew to {line_count} lines; split it before exceeding {max_lines}"
+        );
+        assert!(
+            !source.contains("include!(") && !source.contains("#[path"),
+            "{path} must remain a real Rust module, not a textual source fragment"
+        );
+    }
+
+    for declaration in ["mod dct;", "mod fast420;", "mod generic;", "mod rgb444;"] {
+        assert!(
+            ROOT.contains(declaration),
+            "sequential facade lost required module boundary {declaration}"
+        );
+    }
+}
+
+#[test]
 fn fast_tile_rgb_matches_generic_baseline_decode() {
     let dec = Decoder::new(JPEG_BASELINE_420_16X16).expect("fixture must parse");
     assert!(dec.plan.matches_fast_tile_shape());

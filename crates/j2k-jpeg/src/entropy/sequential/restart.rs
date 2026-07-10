@@ -140,28 +140,57 @@ pub(super) struct McuSkipState<'a, 'b> {
     pub(super) expected_rst: &'a mut u8,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct McuPosition {
+    pub(super) current: u32,
+    pub(super) total: u32,
+}
+
+pub(super) fn consume_restart_marker_if_due(
+    br: &mut BitReader<'_>,
+    restart: u16,
+    mcus_since_restart: u32,
+    expected_rst: &mut u8,
+    position: McuPosition,
+) -> Result<bool, JpegError> {
+    if restart == 0 || mcus_since_restart != u32::from(restart) {
+        return Ok(false);
+    }
+
+    let _ = br.ensure_bits(1);
+    let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
+        mcu_at: position.current,
+        mcu_total: position.total,
+    })?;
+    let expected = 0xD0 | *expected_rst;
+    if marker != expected {
+        return Err(JpegError::RestartMismatch {
+            offset: br.position(),
+            expected: *expected_rst,
+            found: marker,
+        });
+    }
+    *expected_rst = (*expected_rst + 1) & 0x07;
+    br.reset_at_restart();
+    Ok(true)
+}
+
 pub(super) fn skip_to_mcu(
     plan: &PreparedDecodePlan,
     target: McuSkipTarget,
     state: &mut McuSkipState<'_, '_>,
 ) -> Result<(), JpegError> {
     while *state.current_mcu < target.target_mcu {
-        if target.restart > 0 && *state.mcus_since_restart == u32::from(target.restart) {
-            let _ = state.br.ensure_bits(1);
-            let marker = state.br.take_marker().ok_or(JpegError::UnexpectedEoi {
-                mcu_at: *state.current_mcu,
-                mcu_total: target.total_mcus,
-            })?;
-            let expected = 0xD0 | *state.expected_rst;
-            if marker != expected {
-                return Err(JpegError::RestartMismatch {
-                    offset: state.br.position(),
-                    expected: *state.expected_rst,
-                    found: marker,
-                });
-            }
-            *state.expected_rst = (*state.expected_rst + 1) & 0x07;
-            state.br.reset_at_restart();
+        if consume_restart_marker_if_due(
+            state.br,
+            target.restart,
+            *state.mcus_since_restart,
+            state.expected_rst,
+            McuPosition {
+                current: *state.current_mcu,
+                total: target.total_mcus,
+            },
+        )? {
             state.prev_dc.fill(0);
             *state.mcus_since_restart = 0;
         }
