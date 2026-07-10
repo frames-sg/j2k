@@ -41,41 +41,47 @@ P0 Metal host-read aliasing class: safe readback could overlap mutation through
 safe or publicly reachable raw `Buffer` aliases. SEC-001 closed the confirmed
 class in commits beb4d4e5 and a78cd3e2; an independent equivalent-cache scan
 found no remaining safe host-read/host-write alias path. P1 raw GPU-resource
-ordering and API-hardening work remains release-blocking.
+ordering and API hardening closed in 46130e58. The release remains blocked on
+the final mixed-responsibility module sweep, regenerated API/semver evidence,
+coverage, and the clean release matrix.
 
 ## 2. Handoff capsule
 
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: GPUORD-001 (P1 reusable texture ordering and raw-resource API)
-- Parallel tasks: CUDA-002 exact release gate and STR-002 direct-stacked
-  validation
-- SEC-001 is closed; independent non-overlapping work has resumed
-- Last completed task: SEC-001 JPEG cache/output synchronization
-- Last completed implementation commit: a78cd3e2
-  (`fix(jpeg-metal): synchronize reusable buffer access`)
+- Current task: STR-011 native codestream split, STR-012 JPEG sequential split,
+  and STR-014 CUDA context split
+- Parallel tasks: byte/error-preserving native marker extraction,
+  restart/profile-preserving JPEG entropy extraction, and CUDA
+  context/cache/memory ownership extraction
+- Last completed task: STR-015A J2K Metal direct-execution real-module
+  conversion (266 tests, 22 intentional release/performance ignores)
+- Last completed implementation commit: 7b1f513b
+  (`refactor(metal): replace direct execution include`)
+- Last completed evidence commits: 0e78229a performance guards and c0937284
+  clone scanner/report
 - Candidate state: unfrozen
 - Worktree expectation: dirty; all changes are being reconciled in place
-- Last known green broad gates: pre-SEC-001 hosted Metal compile, focused
-  semver/workflow policy, exact-SHA verifier, and Metal suites; none is
-  candidate proof after the public API correction
+- Last known green broad gates: repository policy 145/145 runnable, affected
+  strict Clippy, JPEG Metal 171/171, J2K Metal 204/204 runnable, Metal device
+  integration 54/54, transcode routing 6/6, and structural performance <=5%
 - Current blockers:
-  - reusable private Metal textures still expose safe raw handles and can be
-    written concurrently through cloned output wrappers
-  - `ResidentPrivateJpegTile` still exposes raw Metal resources as public
-    fields, and one unsafe input contract omits device/session compatibility
-  - STR-002 is mechanically split but paused pending SEC-001; its strict
-    Clippy, behavior, allocation-order, and performance checks remain pending
-  - release-cuda, package verification, clone-scanner reproducibility,
-    structural performance evidence, and publication preflight remain open
-  - generated stable-API and reviewed semver reports will be stale after the
-    approved unsafe-boundary API changes
+  - the focused semantic audit and independent residual red-team pass found
+    mixed native/JPEG/GPU/tooling roots and five concrete clone/interpreter
+    hotspots; completed work is in STR-004 through STR-009 and the remaining
+    roots are tracked in STR-010 through STR-015
+  - the pinned clone scan and affected Metal performance guards must be rerun
+    after those structural edits
+  - stable-API and reviewed semver artifacts must be regenerated after the
+    structural source freeze
+  - the unsafe inventory, staged-release banners, and changelog section
+    placement are being corrected in DOC-002
   - changed-path coverage and the clean final release matrix remain pending
+  - exact-SHA CUDA hardware evidence requires the Linux/NVIDIA runner
   - provenance signoff requires the release maintainer's name/handle and date
-- Exact next local command:
-
-      git diff --check
+- Exact next local command after the three active extraction lanes stop editing:
+  `git diff --check`
 
 - After candidate freeze, derive the immutable SHA with:
 
@@ -127,6 +133,9 @@ The sweep treats these as likely AI-codebase failure modes:
   aliasing, or lifetime requirements.
 - Comprehension debt: thousand-line orchestrators, deeply nested resource
   management, and mixed planning/execution/readback/reporting.
+- Suppression debt: crate/file-wide lint allowances and production `include!`
+  seams that hide the effective namespace, ownership, or newly introduced
+  warnings from normal review.
 - Clone drift: independently copied error mapping, category inference, staging,
   and packet-plan logic that already differs.
 - Release theater: stale tags, empty changelogs, permissive semver flags,
@@ -196,21 +205,34 @@ The rubric was checked against current primary or first-party sources on
 | COV-001 | P2 | pending | METAL-001 | Accelerator host logic is measured |
 | SAFE-001 | P1 | complete | BUILD-001 | Shared checked Metal buffer primitives established |
 | SEC-001 | P0 | complete | SAFE-001 | Safe Metal readback cannot overlap aliased CPU/GPU mutation |
-| GPUORD-001 | P1 | in progress | SEC-001 | Reusable texture writes are serialized; raw texture access is unsafe |
-| APIHARD-001 | P1 | pending | SEC-001 | Resident private raw resources are private/unsafe and contracts are complete |
+| GPUORD-001 | P1 | complete | SEC-001 | Reusable texture writes are serialized; raw texture access is unsafe |
+| APIHARD-001 | P1 | complete | SEC-001 | Resident private raw resources are private/unsafe and contracts are complete |
 | ERR-001 | P2 | complete | BUILD-001 | Neutral native decode classification |
 | DUP-001 | P2 | complete | ERR-001 | Genuine clones consolidated and behavior-tested |
 | ADAPT-001 | P2 | complete | DUP-001 | Test-only adaptive router removed; shipped behavior retained |
 | CUDA-001 | P2 | complete | ADAPT-001 | Five unreachable kernel entrypoints removed |
 | STR-001 | P2 | complete | SAFE-001, CUDA-001 | Resident encoder split with focused parity checks |
-| STR-002 | P2 | in progress (paused) | SEC-001, STR-001 | Direct stacked batch split safely |
+| STR-002 | P2 | complete | SEC-001, STR-001 | Direct stacked batch split safely |
 | STR-003 | P2 | complete | STR-001 | Native single-tile encoder split with byte/hook parity |
+| STR-004 | P2 | complete | STR-003 | Split native roots, J2C encode/decode, and precomputed packet preparation |
+| STR-005 | P2 | complete | STR-003 | Split facade encode and JPEG decoder responsibilities |
+| STR-006 | P2 | complete | STR-001, STR-002 | Split Metal Tier-1, decode dispatch, and direct interpreters |
+| STR-007 | P2 | complete | STR-004 | Split core/CUDA/Metal transcode orchestration by stage |
+| STR-008 | P2 | complete | STR-004, STR-006 | Consolidate the remaining measured 50–63-line production clones |
+| STR-009 | P2 | in progress | STR-005 through STR-008 | Independently classify every remaining 1,000+ line production file and 250+ line function |
+| STR-010 | P2 | complete | STR-009 | Split mixed release-tooling roots (`xtask/main.rs`, coverage) |
+| STR-011 | P2 | in progress | STR-009 | Split mixed native Tier-1, DWT, and codestream implementation roots |
+| STR-012 | P2 | pending | STR-009 | Split mixed JPEG entropy, 12-bit render, baseline-adapter, and stripe-emission roots |
+| STR-013 | P2 | complete | STR-009 | Split mixed encode/fixture comparison tooling roots |
+| STR-014 | P2 | in progress | STR-009 | Close actionable GPU/runtime findings from the independent large-file pass |
+| STR-015 | P2 | pending | STR-009 through STR-014 | Remove or narrowly justify broad lint suppressions and hidden production namespace seams |
+| JPEGCOR-001 | P2 | pending | STR-012A | Determine whether generic baseline 4:2:2 chroma interpolation should match the libjpeg-turbo fixture byte-for-byte |
 | TOOL-001 | P3 | complete | DUP-001 | Adoption report model/render split |
-| CUDA-002 | P1 | pending | SEC-001 | One exact named release-cuda gate with zero skip markers |
-| PKG-001 | P1 | pending | SEC-001 | Construct all packages and verify independent packages |
-| CLONE-001 | P2 | pending | STR-002 | Pin clone tool/config and commit a reproducible report |
-| PERF-001 | P1 | pending | STR-001, STR-002, STR-003 | Enforce five-percent structural regression limit |
-| PUB-002 | P1 | pending | PKG-001, CUDA-002 | Fail-closed origin, Release, and crates.io preflight |
+| CUDA-002 | P1 | complete | SEC-001 | One exact named release-cuda gate with zero skip markers |
+| PKG-001 | P1 | complete | SEC-001 | Construct all packages and verify independent packages |
+| CLONE-001 | P2 | in progress | STR-008 through STR-015 | Scanner/config committed; rerun after final structural source freeze |
+| PERF-001 | P1 | in progress | STR-004 through STR-015 | Existing guards passed; rerun after final structural source freeze |
+| PUB-002 | P1 | complete | PKG-001, CUDA-002 | Fail-closed origin, Release, and crates.io preflight |
 | DOC-002 | P2 | in progress | SEC-001 | Reconcile public claims and keep this as the only plan |
 | PROV-001 | P1 | blocked on maintainer input | DOC-002 | Record release signoff identity and date |
 | FINAL-001 | P1 | pending | all above | Clean local release matrix |
@@ -792,6 +814,278 @@ Split encode_impl into:
 Preserve accelerator-hook order, exact codestream bytes, fallback semantics,
 and allocation behavior.
 
+### STR-004 — native roots and J2C implementation families
+
+The final semantic pass found these still mixing distinct production axes:
+
+- `j2k-native/src/lib.rs` (2,257 lines): scalar codec entry points,
+  `DecodeSettings`, reference transforms, and the `Image` implementation
+- `j2k-native/src/j2c/encode.rs` (3,166 lines): typed i64 entry paths,
+  transforms, validation, packet preparation/rate control, and Tier-1 driving
+- `j2k-native/src/j2c/encode/precomputed.rs` (1,991 lines): public wrappers,
+  geometry validation, packet conversions, and accelerator adaptation
+- `j2k-native/src/j2c/decode.rs` (2,884 lines): direct planning, decode state,
+  subband routing, and output storage
+
+Extract focused modules without changing public paths. In the same task:
+
+- route `encode_typed_component_planes_53_i64` through the existing shared
+  packet preparation instead of retaining its 63-line duplicate
+- extract the 60-line immutable high-bit plan shared by single/multitile encode
+- share subband parameter/style/required-block validation where J2C decode
+  currently carries 26–46-line copies
+
+Acceptance: byte-for-byte encode parity, decode fixture parity, accelerator-hook
+order, exact errors, public API snapshot, and strict Clippy all remain stable.
+
+### STR-005 — facade encode and JPEG decoder
+
+Split by responsibility:
+
+- `j2k/src/encode.rs`: option/sample contracts, native bridge, backend routing,
+  lossy target search, and round-trip/metric validation
+- `j2k-jpeg/src/decoder.rs`: plan construction, public routing, tile/batch API,
+  lossless rendering, and plan validation
+
+Extract the region profile-row emission and RGB routing from
+`decode_region_into_output_format_with_scratch`. Preserve public paths, error
+text, backend selection, allocation caps, and profile labels.
+
+### STR-006 — remaining Metal execution orchestrators
+
+Split:
+
+- `resident_tier1.rs`: types, waits/readback, profile dispatch, counter
+  validation, and result harvest
+- `decode_dispatch.rs`: MCT/store, IDWT, classic cleanup, and classic/HT
+  subband dispatch
+- direct grayscale interpreters: shared lookup/per-step execution while keeping
+  repeated and single-output semantics explicit
+- `lossless_prepare.rs`: per-item preparation versus command strategy
+
+Consolidate the measured 50-line classic-token dispatch clone by dispatching
+into caller-provided shared/private buffers. Preserve command order, lifetime
+retention, pooled allocations, status interpretation, profile counters, and
+the already-recorded structural performance threshold.
+
+### STR-007 — core and accelerator transcode orchestration
+
+Split:
+
+- `j2k-transcode/src/jpeg_to_htj2k.rs`: facade/validation, component planning,
+  and integer/float reference transforms
+- `jpeg_to_htj2k/batch.rs`: preparation/grouping, transforms, storage, and
+  encode/report assembly
+- `j2k-transcode-cuda/src/cuda.rs`: transform dispatch versus resident HT
+  encode/result assembly
+- `j2k-transcode-metal/src/metal.rs`: runtime/shader, reversible path,
+  irreversible path, resident handoff, and buffer/geometry helpers
+
+Preserve route reports, coefficient values, timing ownership, CPU fallback,
+device residency, and public API. Run core behavior tests plus both accelerator
+compile/policy suites; real CUDA execution remains exact-SHA external evidence.
+
+### STR-008 — measured residual clone/interpreter closure
+
+After STR-004 through STR-007, rerun the pinned scanner and inspect every pair
+of at least 50 lines. The known concrete closures are:
+
+- 63/60-line native encode preparation/plan copies
+- 50-line Metal classic-token dispatch copy
+- direct grayscale 31/36-line execution copies where one primitive can remove
+  drift without merging distinct output semantics
+- CUDA color-batch fused-store predicate duplicated instead of using
+  `can_fuse_mct_store_for_stores`
+
+Do not force mathematical, host/SIMT, shader specialization, or stable
+backend-facade symmetry through a branch-heavy abstraction. Any retained pair
+must be added to the accepted-clone register with owner and trigger.
+
+### STR-009 — residual large-file and long-function red-team pass
+
+The focused findings above do not make line count disappear as an audit signal.
+After STR-005 through STR-008 settle, regenerate an inventory of every
+production Rust file at or above 1,000 lines and every production function at
+or above 250 lines. Independently review each item and classify it as one of:
+
+- split now because it mixes planning, execution, storage, reporting, policy,
+  or public-facade responsibilities
+- cohesive algorithm/state machine retained with a named owner and concrete
+  reconsideration trigger
+- generated/device-specialized source with an authoritative generator or
+  parity contract
+- test/fixture-only source whose explicit form improves regression coverage
+
+Do not accept a file solely because it already has child modules. Do not split
+an allocation-sensitive codec or GPU state machine solely to meet a number.
+The review must also flag new production wildcard imports, broad lint allows,
+placeholder branches, duplicated error strings, and phase-order comments that
+no longer match ownership.
+
+Acceptance:
+
+- the inventory command, counts, classifications, owners, and triggers are
+  recorded in this runbook
+- every actionable mixed-responsibility item is fixed and behavior-tested, or
+  remains an explicit release blocker
+- accepted items are added to the large-function/file register
+- the final scanner and performance gates run only after this pass freezes the
+  source tree
+
+The independent CPU/tooling pass classified the following production roots
+after excluding inline tests:
+
+| Disposition | Files | Evidence/next action |
+|---|---|---|
+| Split (STR-010) | `xtask/src/main.rs` (2,096 production lines), `xtask/src/coverage.rs` (1,030) | Mixed dispatch/release/package/codegen/process concerns; mixed lane/LCOV/policy/render concerns |
+| Split (STR-011) | native `ht_block_decode.rs` (1,693), `bitplane.rs` (1,651), `ht_block_encode.rs` (1,882), `bitplane_encode.rs` (1,445), `idwt.rs` (1,530), `codestream.rs` (1,311) | Multiple independent algorithm phases or planning/parsing axes; preserve hot inner loops and exact byte/error behavior |
+| Split (STR-012) | JPEG `entropy/sequential.rs` (2,201), `decoder/extended12.rs` (1,887), `adapter/baseline_encode.rs` (951), `entropy/sequential/emit.rs` (1,010) | Mixed public drivers, specialized decode/render routes, planning/assembly, and color-emission responsibilities |
+| Split (STR-013) | `j2k-compare/src/encode_compare.rs` (2,324) and `fixture_compare.rs` (2,204) | CLI, input/manifest loading, external tools, validation, measurement, decode, and report rendering are independent axes |
+| Accept | native `packet_encode.rs` (794), `tile.rs` (896); JPEG NEON (1,753); `xtask/perf_guard.rs` (785), `xtask/semver.rs` (984); `j2k-types/src/lib.rs` (1,018); transcode accelerator (918) | Cohesive packet/tile/hot-kernel/workflow/public-contract families; triggers are recorded in the accepted register |
+
+The two confirmed 250+ line production functions are the 296-line classic
+Tier-1 segment encoder and the 252-line RGB stripe emitter. They are explicit
+split targets, not accepted exceptions.
+
+The follow-up suppression/namespace scan found three additional concealment
+patterns that line-count-only inventory misses:
+
+- `j2k-native` currently allows `clippy::too_many_arguments` for the entire
+  crate, while the JPEG CPU, CUDA, and Metal encoder/runtime roots carry
+  file-wide lint allowances. These must be removed, reduced to the smallest
+  justified hot kernel or ABI boundary, or retained only with a recorded owner
+  and trigger.
+- `j2k-transcode/src/lib.rs` textually includes the 918-production-line
+  accelerator contract family and `j2k-metal/src/compute.rs` textually includes
+  the direct-execution namespace. JPEG Metal had eight equivalent production
+  fragments before STR-014. Convert host production fragments to real modules
+  with explicit re-exports/imports. Test-only source includes and the shared
+  CUDA device prelude remain acceptable when their scope and parity policy are
+  explicit.
+- seven crate manifests (`j2k`, `j2k-jpeg`, `j2k-metal`, `j2k-cuda`,
+  `j2k-jpeg-metal`, `j2k-jpeg-cuda`, and `j2k-compare`) suppress
+  `too_many_lines` for every target, and `j2k-jpeg` also suppresses
+  `similar_names` globally. Command-line escalation must inventory the hidden
+  warnings before these manifest allowances are removed or narrowed.
+
+No `TODO`, `FIXME`, `HACK`, `XXX`, `todo!`, or `unimplemented!` marker remained
+in the 2026-07-09 source scan. Panic/expect/unreachable sites are reviewed by
+the existing panic-surface gate rather than inferred from text matches alone.
+
+### STR-010 — release tooling roots
+
+Split the `xtask` dispatcher from release/package integrity, benchmark/report
+commands, codegen/API snapshots, and process/path helpers. Split coverage lane
+execution from LCOV/diff parsing, exclusion policy, evaluation, and rendering.
+Preserve command/help/error text, exit status, fail-closed behavior, report
+schemas, and workflow-consumed command lines.
+
+### STR-011 — native algorithm families
+
+Extract phase modules without genericizing the hot state machines:
+
+- completed: classic Tier-1 encode facade reduced from 1,445 production lines
+  to 539 total lines, with token packing (131), pass kernels (676), segment
+  scheduling (434), and distortion accounting (55) separated; the former
+  296-line segmented encoder is a 17-line delegate and four coding-style
+  payload/segment fingerprints are locked by regression tests
+
+- HT decode: segment validation/API, MEL/VLC readers, cleanup, significance,
+  magnitude refinement, and benchmark instrumentation
+- classic decode/encode: state/lookups, pass scheduler/observers, arithmetic
+  versus bypass kernels, token packing, and distortion accounting
+- HT encode: MEL/VLC/MagSgn writers, refinement, cleanup quad walk, and
+  distribution instrumentation
+- IDWT: full/ROI/direct orchestration, f32/i64 interleave, and scalar/SIMD
+  filters
+- codestream: header model/validation versus marker parsers; replace the
+  module-wide unused allowance with narrow ownership
+
+Preserve exact coefficients, segments, coding-pass order, bytes, profile
+counters, SIMD selection, and no-std behavior.
+
+### STR-012 — JPEG entropy and extended rendering
+
+Split sequential public drivers, generic MCU decode, DCT-block extraction,
+fast tile ROI/scale, RGB444/420 routes, extended-precision plane construction,
+progressive/sequential rendering, four-component conversion, baseline planning
+versus marker/frame assembly, and stripe color emission. Preserve output bytes,
+restart state, scratch reuse/caps, profile row order, allocation behavior, and
+backend fast-path selection.
+
+STR-012A exposed a pre-existing, deterministic generic baseline 4:2:2 output
+difference from the stored libjpeg-turbo RGB fixture: the current-output
+FNV-1a fingerprint is `4a9be9f5ec1f80df`, with small chroma interpolation
+deltas. The moved decode/emit bodies are text-identical, so the structural
+commit must lock current J2K bytes without treating libjpeg as a normative
+oracle. JPEGCOR-001 must separately classify rounding/upsampling semantics,
+quantify affected pixels/channels and maximum delta, compare the documented
+upsampling contract and independent implementations, and either fix with
+behavior tests or record a justified compatibility difference before 0.7.
+
+### STR-013 — comparison tooling
+
+For both encode and fixture comparison tools, separate CLI/options, corpus and
+manifest loading, external tool discovery/execution, validation, measurement,
+and row/metadata/publication rendering. Preserve TSV/JSON schemas and order,
+digests, tool commands, environment semantics, publication blockers, and
+subprocess exit behavior.
+
+### STR-014 — GPU/runtime large-file closure
+
+The independent GPU pass found these actionable roots after excluding tests,
+embedded PTX bytes, and shared generated preludes:
+
+Completed priority 1: JPEG Metal now uses real `fast_packets`,
+`pack_dispatch`, `single_decode`, `batch_entry`, `batch_full`, and
+`batch_region` modules. The former seven production fragments were trashed,
+all replacement leaves are under 800 lines, exact function/signature/string/cfg
+parity passed, the real-Metal fail-closed suite ran without skips, and the
+touched clone count improved from 24 to 23.
+
+| Priority | Split targets | Required boundary |
+|---:|---|---|
+| 1 | JPEG Metal `compute.rs` plus included `fast_packets_impl`, `pack_dispatch_impl`, `batch_decode_full`, `batch_decode_region`, `batch_decode_entry`, `batch_decode_impl`, and `single_decode_impl` (effective 8,511-line namespace) | Replace production `include!` fragments with real modules/explicit imports; split packet, pack, single, RGB/RGBA, and repeated/grouped route families |
+| 2 | CUDA runtime `j2k_decode.rs` (2,133 production lines) | ABI types, IDWT scheduling, store/MCT, tracing/validation |
+| 3 | CUDA runtime `jpeg.rs` (1,463) | Encode/decode ABI and pipeline versus entropy diagnostics; remove file-wide similar-name allowance |
+| 4 | CUDA runtime `transcode.rs` (1,665) and CUDA Oxide transcode source (1,509) | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
+| 5 | CUDA runtime `j2k_encode.rs` (1,630) and CUDA Oxide J2K encode source (1,490) | Types/results, preprocessing/MCT/DWT/quantization versus tag-tree/packetization/compaction while retaining one device export surface |
+| 6 | CUDA runtime `context.rs` (840) | Context/pinned memory, kernel cache/loading, and misowned compact result types |
+| 7 | Metal `encode.rs` (1,773) and `decoder.rs` (1,560) | Resident batch/single/host fallback; request/direct plan/core adapters/surface transfer |
+| 8 | Metal Tier-1 test support (951 test-only lines inside production module) | Move parity helpers out of the production source without altering hot production code |
+
+Preserve every `repr(C)` field/order, CUDA entrypoint and generated-PTX
+metadata check, Metal shader ABI, status/error value, profile label/order,
+device command sequence, lifetime retention, and JPEG output order. Real CUDA
+execution remains an exact-SHA Linux/NVIDIA gate after hosted compile/parity.
+
+### STR-015 — suppression and production-namespace closure
+
+Audit every production `#![allow(...)]`, broad `#[allow(...)]`, and
+`include!(...)`, plus every crate-local manifest lint override, after the
+structural splits settle.
+
+- remove the crate-wide native `too_many_arguments` allowance and use focused
+  request/plan types where parameter groups express one responsibility
+- narrow math/SIMD lint exceptions to the smallest hot function that genuinely
+  requires the spelling, with a one-line rationale and owner/trigger in this
+  runbook
+- convert transcode accelerator and Metal direct-execution host fragments into
+  real modules without changing root exports or public API fingerprints
+- replace non-prelude production wildcard re-exports at Metal/JPEG-Metal
+  module seams with explicit inventories; standard Rayon/proptest preludes and
+  test-only `super::*` imports are not defects by themselves
+- make repository policy reject new host-production source includes and new
+  crate/file/manifest-wide lint allowances outside a reviewed allowlist
+- retain the shared CUDA device prelude only because each standalone SIMT
+  crate must compile the same no-std definitions; keep its source/parity ledger
+  authoritative
+
+Acceptance: command-line lint escalation proves no hidden warning survives;
+normal and no-default/native checks pass; API snapshot and semver fingerprints
+are unchanged unless explicitly reviewed; structural policy distinguishes
+test/device-generation includes from host production includes.
+
 ### TOOL-001 — adoption report
 
 Separate data collection and report-model construction from text rendering.
@@ -804,24 +1098,61 @@ Do not split these solely because of line count:
 
 - the fixture builder (3,466 lines and 204 small builders in the 2026-07-09
   audit snapshot), whose builders are cohesive test data
-- the native encode root, whose functions are already materially smaller and
-  domain-focused
+- embedded Metal shader-source composition, where most lines are device source
+  or `include_str!` wiring rather than a host orchestrator
+- cohesive codec state machines listed below, after they are moved into the
+  focused owning modules named above
 
 Reconsider only if they gain a new domain responsibility or sustain further
 growth.
+
+| Function/family | Owner | Why retained | Reconsider when |
+|---|---|---|---|
+| HT/classic resident packet submission (423/397 lines) | Metal resident schedulers | Linear stage and resource-lifetime ordering | New stage, repeated ordering defect, or >500 lines |
+| CUDA HT Tier-1 device encode (358 lines) | CUDA HT Tier-1 | Allocation-free SIMT state machine | New coding-pass mode or proven neutral phase boundary |
+| Native classic Tier-1 segment encode (295 lines) | Native classic Tier-1 | Cohesive pass/segment state machine | New coding style/pass or repeated finalization defect |
+| Resident packet-plan construction (288 lines) | Metal Tier-2 planning | Pure validated state/capacity planning | New progression/state layout |
+| Classic profile dispatch (279 lines) | Metal profiling | Linear optional stage sequence | New stage or label-order defect |
+| Layered packet construction (245 lines) | Native packet/rate control | Cohesive contribution/budget construction | Another rate-control family |
+| Native multi-tile coordination (239 lines) | Native tile encode | One tile assembly responsibility | Another assembly mode |
+| CUDA resident cleanup/dequant batches (230 lines) | CUDA resident decode | Queued resource ownership is clearest together | Third route or timing drift |
+| Metal Tier-2 plan (228 lines) | Metal Tier-2 | Focused pure plan already separated | New descriptor semantics |
+| Metal HT Tier-1 preparation (209 lines) | Metal HT Tier-1 | One job/buffer/dispatch preparation path | Second coefficient storage model |
+| Main/tile header parsers (194/203 lines) | Native codestream parser | Marker state machines | New marker families or another consumer |
+| Single-tile packet encode (194 lines) | Native single-tile encode | Focused subband-to-packet pipeline | Another packetization mode |
+| JPEG stripe emit twins (240/251 lines) | JPEG sequential output | Distinct writer contracts and color dispatch | New color/scale or duplicated bug fix |
+| Native packet encoder (794 production lines) | Native Tier-2 | Cohesive packet-header/body and marker-state family | Production exceeds 900 lines or another packet-header/marker mode |
+| Native tile parser (896 production lines) | Native tile parsing | Tile-part parsing and geometry remain one bounded state transition | Next tile marker/POC/PLT feature, `parse_tile_part` reaches 250 lines, or production exceeds 1,000 |
+| JPEG NEON backend (1,753 production lines) | JPEG AArch64 backend | Cohesive benchmark-sensitive SIMD kernel family | New sampling/output format or 2,000 production lines; require benchmark parity before any split |
+| Performance guard (785 production lines) | Performance tooling | One snapshot/run/compare workflow | Snapshot schema v2, another execution backend, or 900 production lines |
+| Semver workflow (984 production lines) | Release tooling | One API capture/review/report workflow | New review schema/report format or 1,100 production lines |
+| Shared encode SPI registry (1,018 production lines) | `j2k-types` maintainers | Public contract registry with short functions and stable root exports | Another accelerator-stage/schema family or 1,200 lines; require API snapshot checks |
+| Transcode accelerator contracts (918 production lines) | Transcode acceleration | Cohesive job/trait/default-accelerator family; Rayon glob replaced with explicit traits | Third concrete accelerator, job-schema change, or 1,000 production lines |
+| CUDA HT Tier-1 encode host (1,320 production lines) | CUDA HT encode | Cohesive reserved-ABI-aware job/result/launch family | Third job layout/coding mode or 1,500 lines |
+| CUDA HT Tier-1 decode host (1,315 production lines) | CUDA HT decode | Cohesive cleanup/dequantize launch family | Another decode mode or 1,500 lines |
+| CUDA kernel registry (583 production lines; 517 test lines) | CUDA runtime registry | Entry-point/PTX parity ledger, not an orchestrator | 700 production lines or another registry mechanism |
+| CUDA Oxide HT encode core (1,961 lines; 358-line core) | CUDA HT encode parity | One four-entrypoint hot state machine | New coding mode or core exceeds 450 lines |
+| CUDA Oxide JPEG baseline decode (1,698 lines) | CUDA JPEG parity | One synchronized fast-baseline ABI across 420/422/444 | Progressive/lossless support or another output family |
+| CUDA Oxide HT decode (1,326 lines) | CUDA HT decode parity | One cleanup/refinement kernel family | New refinement path or 1,500 lines |
+| Metal Tier-1 production core (1,150 production; 951 test-only lines) | Metal Tier-1 | Cohesive classic/HT device encode; test support moves under STR-014 | Production exceeds 1,300 lines or a third coding mode |
+| Metal compute ABI ledger (983 production lines) | Metal shader ABI | 56 short layout types/constants plus parity tests | Second device ABI or 1,200 lines |
+| CUDA resident decode scheduler (1,265 production lines) | CUDA resident decode | Cohesive staged cleanup/dequantize pipeline | Scheduler reaches 250 lines, another output pipeline, or 1,500 lines |
+| JPEG Metal viewport router (628 production lines; 517 test lines) | JPEG Metal viewport | Cohesive workload/surface selection | Another backend/surface strategy or 800 production lines |
 
 ## 10. Accepted-clone register
 
 The following symmetry is accepted unless its trigger occurs:
 
-| Pattern | Rationale | Reconsider when |
-|---|---|---|
-| RCT and ICT transforms | Mathematical twins remain clearer side by side | A shared primitive removes branches rather than hiding them |
-| Backend error enums | Public/backend context differs | Variants and classifications drift again |
-| Sampling shader variants | Device specialization is explicit | Generated parity becomes enforceable |
-| Host and SIMT pairs | Different execution constraints | One source can generate both without obscuring performance |
-| Fixture builder families | Tests prioritize explicit fixtures | Bug fixes repeatedly diverge across copies |
-| Exact tile batch facades | Stable APIs use backend-private types | A neutral public type already exists |
+| Pattern | Owner | Rationale | Reconsider when |
+|---|---|---|---|
+| RCT and ICT transforms | Native transform maintainers | Mathematical twins remain clearer side by side | A shared primitive removes branches rather than hiding them |
+| Backend error enums | Each public backend adapter | Public/backend context differs | Variants and classifications drift again |
+| Sampling shader variants | Owning GPU codec stage | Device specialization is explicit | Generated parity becomes enforceable |
+| Host and SIMT pairs | Owning codec algorithm | Different execution constraints | One source can generate both without obscuring performance |
+| Fixture builder families | Test-support maintainers | Tests prioritize explicit fixtures | Bug fixes repeatedly diverge across copies |
+| Exact tile batch facades | Backend adapter maintainers | Stable APIs use backend-private types | A neutral public type already exists |
+| JPEG stripe emit twins | JPEG sequential output | Writer contracts differ despite color-dispatch symmetry | New color/scale or the same bug must be fixed twice |
+| CUDA/Metal adapter facades | Respective GPU adapter | Stable device/private types differ | A neutral public request type already exists |
 
 Every newly accepted clone must add a row with an owner and concrete trigger.
 
@@ -857,7 +1188,8 @@ preserved here before that duplicate is removed with `trash`.
 - Removed private operator/host paths and normalized present-tense versus dated
   historical evidence in this runbook.
 - Corrected unsafe-code posture and expanded `docs/unsafe-audit.md`; SEC-001,
-  GPUORD-001, and APIHARD-001 still require their final inventory update.
+  GPUORD-001, and APIHARD-001 boundaries are now described, with the final
+  source-path inventory gate still required after structural moves.
 - Replaced the conduct-reporting placeholder with the existing confidential
   GitHub reporting route without inventing an email address.
 - Repaired adoption commands to use
@@ -891,13 +1223,17 @@ This is historical batch evidence, not candidate proof. Final documentation,
 API, unsafe, link, render, and strict gates must be rerun after source freeze.
 No page was manually deployed.
 
+After adding the staged-0.7/published-0.6 warning to every static page, a local
+browser pass rechecked all six pages at 1280px and 375px: each had one H1 and
+one visible release warning, no broken image, and no horizontal overflow. The
+source-freeze documentation gate still owns the final rerun.
+
 ### Remaining documentation work
 
 - Record the release maintainer's name/handle and approval date for provenance.
-- Update changelog, unsafe inventory, stable API snapshot, reviewed semver
-  report, and all Metal examples for the final corrected raw-resource APIs.
-- Add exact-SHA freeze and `cargo xtask release-status --sha ...` instructions
-  to the release guide where still absent.
+- Regenerate stable API and reviewed semver artifacts after the final structural
+  source freeze; the pre-STR snapshot is not candidate proof.
+- Rerun unsafe inventory after every final source move.
 - Re-run all documentation gates and visual checks on the frozen candidate.
 - Do not re-create a second documentation plan.
 
