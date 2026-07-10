@@ -321,8 +321,7 @@ fn benchmark_targets_are_not_test_targets() {
             let name = block
                 .lines()
                 .find_map(|line| line.trim().strip_prefix("name = "))
-                .map(|value| value.trim_matches('"'))
-                .unwrap_or("<unnamed>");
+                .map_or("<unnamed>", |value| value.trim_matches('"'));
             if !block.lines().any(|line| line.trim() == "test = false") {
                 violations.push(format!(
                     "{}: bench target `{name}` must set `test = false`",
@@ -385,8 +384,12 @@ fn repo_lint_policy_support_files_stay_split_by_axis() {
         ),
         ("xtask/tests/repo_lint_support/gpu_adapter_policy.rs", 1_800),
         (
+            "xtask/tests/repo_lint_support/gpu_device_structure_policy.rs",
+            500,
+        ),
+        (
             "xtask/tests/repo_lint_support/jpeg_decoder_structure_policy.rs",
-            400,
+            425,
         ),
         (
             "xtask/tests/repo_lint_support/jpeg_metal_resource_safety_policy.rs",
@@ -491,10 +494,11 @@ fn xtask_fuzz_build_checks_every_fuzz_manifest() {
 
 #[test]
 fn ci_coverage_job_is_a_required_gate() {
+    const INSTALL_ACTION_SHA: &str = "91534edaf9fd796a162759d80d49cdff574bff2c";
+
     let workflow =
         fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
     let coverage_job = workflow_job(&workflow, "coverage");
-    const INSTALL_ACTION_SHA: &str = "91534edaf9fd796a162759d80d49cdff574bff2c";
 
     let install_action = format!("taiki-e/install-action@{INSTALL_ACTION_SHA}");
     assert_pattern_checks(&[PatternCheck::new("CI coverage job", coverage_job)
@@ -774,6 +778,10 @@ fn xtask_adoption_stack_is_feature_gated() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the adoption benchmark module map is a single fail-closed ownership policy"
+)]
 fn adoption_benchmark_lives_in_focused_modules() {
     let root = repo_root();
     let coordinator = fs::read_to_string(root.join("xtask/src/adoption_benchmark.rs"))
@@ -1264,6 +1272,10 @@ fn metal_hybrid_region_scaled_cache_uses_shared_scope() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "wavelet constant provenance is checked across every backend in one policy matrix"
+)]
 fn wavelet_and_idct_constants_use_codec_math_sources() {
     let root = repo_root();
     let codec_math = fs::read_to_string(root.join("crates/j2k-codec-math/src/lib.rs"))
@@ -1274,17 +1286,17 @@ fn wavelet_and_idct_constants_use_codec_math_sources() {
     let metal_forward_transform =
         fs::read_to_string(root.join("crates/j2k-metal/src/compute/forward_transform.rs"))
             .expect("read j2k-metal forward transform");
-    let metal_fdwt = fs::read_to_string(root.join("crates/j2k-metal/src/fdwt.metal"))
+    let forward_dwt_shader = fs::read_to_string(root.join("crates/j2k-metal/src/fdwt.metal"))
         .expect("read j2k-metal fdwt shader");
-    let metal_idwt = fs::read_to_string(root.join("crates/j2k-metal/src/idwt.metal"))
+    let inverse_dwt_shader = fs::read_to_string(root.join("crates/j2k-metal/src/idwt.metal"))
         .expect("read j2k-metal idwt shader");
     let transcode_metal =
         fs::read_to_string(root.join("crates/j2k-transcode-metal/src/metal/runtime.rs"))
             .expect("read transcode Metal runtime");
-    let transcode_dct97 =
+    let metal_transcode_dct97 =
         fs::read_to_string(root.join("crates/j2k-transcode-metal/src/dct97.metal"))
             .expect("read transcode Metal dct97 shader");
-    let transcode_cpu_dct97 = fs::read_to_string(root.join("crates/j2k-transcode/src/dct97_2d.rs"))
+    let cpu_transcode_dct97 = fs::read_to_string(root.join("crates/j2k-transcode/src/dct97_2d.rs"))
         .expect("read transcode CPU dct97 module");
     let cuda_transcode = read_source_files(
         root,
@@ -1327,7 +1339,7 @@ fn wavelet_and_idct_constants_use_codec_math_sources() {
             &transcode_metal,
         )
         .required(&["j2k_codec_math::generated::DWT97_CONSTANTS_METAL"]),
-        PatternCheck::new("j2k-transcode CPU DCT97 constants", &transcode_cpu_dct97)
+        PatternCheck::new("j2k-transcode CPU DCT97 constants", &cpu_transcode_dct97)
             .required(&[
                 "j2k_codec_math::dwt::DWT97_ALPHA_F64",
                 "j2k_codec_math::dwt::DWT97_BETA_F64",
@@ -1352,11 +1364,11 @@ fn wavelet_and_idct_constants_use_codec_math_sources() {
     ]);
 
     for (relative, source) in [
-        ("crates/j2k-metal/src/fdwt.metal", &metal_fdwt),
-        ("crates/j2k-metal/src/idwt.metal", &metal_idwt),
+        ("crates/j2k-metal/src/fdwt.metal", &forward_dwt_shader),
+        ("crates/j2k-metal/src/idwt.metal", &inverse_dwt_shader),
         (
             "crates/j2k-transcode-metal/src/dct97.metal",
-            &transcode_dct97,
+            &metal_transcode_dct97,
         ),
     ] {
         assert!(
@@ -1544,6 +1556,10 @@ fn copied_test_fixture_helpers_live_in_shared_support() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "native encode ownership checks are intentionally reviewed as one fail-closed matrix"
+)]
 fn native_encode_options_and_tile_parts_live_in_focused_modules() {
     let root = repo_root();
     let encode = fs::read_to_string(root.join("crates/j2k-native/src/j2c/encode.rs"))
@@ -2356,6 +2372,10 @@ fn jpeg_fixture_builders_tables_and_reference_decode_are_split() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "compare-binary ownership and duplication guards form one cohesive policy"
+)]
 fn compare_bins_use_library_common_helpers() {
     let root = repo_root();
     let common = fs::read_to_string(root.join("crates/j2k-compare/src/common.rs"))

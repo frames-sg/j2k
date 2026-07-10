@@ -17,6 +17,7 @@ pub(crate) mod docs_and_workflows_policy;
 pub(crate) mod encode_compare_structure_policy;
 pub(crate) mod fixture_compare_structure_policy;
 pub(crate) mod gpu_adapter_policy;
+pub(crate) mod gpu_device_structure_policy;
 pub(crate) mod jpeg_decoder_structure_policy;
 pub(crate) mod jpeg_metal_resource_safety_policy;
 pub(crate) mod metal_compute_structure_policy;

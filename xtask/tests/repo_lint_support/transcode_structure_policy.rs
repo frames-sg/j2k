@@ -33,6 +33,10 @@ fn transcode_accelerator_contracts_use_a_real_module() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "core and batch transcode ownership is enforced as one cohesive stage matrix"
+)]
 fn jpeg_to_htj2k_core_and_batch_stay_split_by_stage() {
     let core = read("crates/j2k-transcode/src/jpeg_to_htj2k.rs");
     let validation = read("crates/j2k-transcode/src/jpeg_to_htj2k/validation.rs");
@@ -189,6 +193,10 @@ fn jpeg_to_htj2k_core_and_batch_stay_split_by_stage() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "CUDA and Metal residency-stage ownership is one cross-backend structural policy"
+)]
 fn cuda_and_metal_transcode_backends_stay_split_by_residency_stage() {
     let cuda = read("crates/j2k-transcode-cuda/src/cuda.rs");
     let cuda_transform = read("crates/j2k-transcode-cuda/src/cuda/transform.rs");

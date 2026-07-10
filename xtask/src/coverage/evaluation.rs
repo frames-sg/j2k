@@ -161,13 +161,14 @@ pub(super) fn coverage_violations(
 }
 
 fn meets_threshold(counts: &CoverageCounts) -> bool {
+    let threshold = usize::try_from(CHANGED_LINE_THRESHOLD_PERCENT)
+        .expect("the changed-line threshold percentage fits usize");
     counts.measurable == 0
-        || counts.covered.saturating_mul(100)
-            >= counts
-                .measurable
-                .saturating_mul(CHANGED_LINE_THRESHOLD_PERCENT as usize)
+        || counts.covered.saturating_mul(100) >= counts.measurable.saturating_mul(threshold)
 }
 
 pub(super) fn coverage_percent(counts: &CoverageCounts) -> Option<f64> {
-    (counts.measurable > 0).then(|| counts.covered as f64 * 100.0 / counts.measurable as f64)
+    let covered = u32::try_from(counts.covered).ok()?;
+    let measurable = u32::try_from(counts.measurable).ok()?;
+    (measurable > 0).then(|| f64::from(covered) * 100.0 / f64::from(measurable))
 }

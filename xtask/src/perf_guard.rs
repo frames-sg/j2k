@@ -832,7 +832,7 @@ mod tests {
                 name: "htj2k-roi-baseline".to_string()
             }
         );
-        assert_eq!(options.threshold_percent, 7.5);
+        assert!((options.threshold_percent - 7.5).abs() < f64::EPSILON);
     }
 
     #[test]

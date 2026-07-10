@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub(super) const CHANGED_LINE_THRESHOLD_PERCENT: u64 = 80;
 const HOST_LCOV_PATH: &str = "lcov-host.info";
@@ -137,7 +137,9 @@ pub(super) fn parse_options(args: impl Iterator<Item = String>) -> Result<Covera
 }
 
 fn is_production_rust(path: &str) -> bool {
-    path.ends_with(".rs")
+    Path::new(path)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
         && (path.starts_with("xtask/src/")
             || (path.starts_with("crates/") && path.contains("/src/")))
         && !path.contains("/tests/")

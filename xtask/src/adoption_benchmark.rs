@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(row["resident_buffer_ms"], 39.25);
         assert_eq!(row["packetization_used"], true);
         assert_eq!(row["codestream_assembly_used"], true);
-        assert_eq!(row["encoded_host_bytes"], 123456);
+        assert_eq!(row["encoded_host_bytes"], 123_456);
         assert_eq!(row["resident_input_storage"], "private");
         assert_eq!(row["resident_staging"], "already_padded_contiguous");
     }

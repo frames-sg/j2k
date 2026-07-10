@@ -520,12 +520,13 @@ pub(super) fn run_logged(
 
 pub(super) fn run_logged_owned(
     name: &'static str,
-    program: OsString,
+    program: impl AsRef<std::ffi::OsStr>,
     args: &[String],
     envs: &[(String, String)],
     target_dir: Option<&Path>,
     out_dir: &Path,
 ) -> Result<AdoptionStep, String> {
+    let program = program.as_ref();
     let stdout = out_dir.join(format!("{name}.out"));
     let stderr = out_dir.join(format!("{name}.err"));
     let stdout_file = fs::File::create(&stdout)
@@ -533,9 +534,9 @@ pub(super) fn run_logged_owned(
     let stderr_file = fs::File::create(&stderr)
         .map_err(|err| format!("failed to create {}: {err}", stderr.display()))?;
 
-    let display = display_command(&program, args, envs, target_dir);
+    let display = display_command(program, args, envs, target_dir);
     eprintln!("+ {display}");
-    let mut command = Command::new(&program);
+    let mut command = Command::new(program);
     command
         .args(args)
         .stdout(Stdio::from(stdout_file))
@@ -584,7 +585,7 @@ pub(super) fn skipped_step(name: &'static str, reason: &str, out_dir: &Path) -> 
 }
 
 pub(super) fn display_command(
-    program: &OsString,
+    program: &std::ffi::OsStr,
     args: &[String],
     envs: &[(String, String)],
     target_dir: Option<&Path>,

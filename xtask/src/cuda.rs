@@ -147,7 +147,7 @@ const EXACT_CUDA_SUITES: &[ExactCudaSuite] = &[
     },
 ];
 
-/// Runs the complete release-mode CUDA validation policy on a real Linux x86_64 device.
+/// Runs the complete release-mode CUDA validation policy on a real Linux `x86_64` device.
 pub(crate) fn release_cuda() -> Result<(), String> {
     require_cuda_host(env::consts::OS, env::consts::ARCH)?;
     require_cuda_device()?;

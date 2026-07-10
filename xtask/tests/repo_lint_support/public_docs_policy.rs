@@ -474,6 +474,10 @@ fn benchmark_publication_gate_rules_are_single_sourced() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the cross-module Metal consistency checks are one public-contract policy"
+)]
 fn metal_consistency_cleanup_keeps_names_status_buffers_and_marker_sizes_single_sourced() {
     let root = repo_root();
     let buffer_validation =

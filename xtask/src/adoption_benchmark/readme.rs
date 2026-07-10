@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fmt::Write as _, fs};
 
 use crate::markdown::{escape_inline_code, markdown_header, markdown_row};
 use crate::perf_guard::discover_estimates;
@@ -7,6 +7,10 @@ use super::options::AdoptionBenchmarkOptions;
 use super::parsing::read_tsv_metadata;
 use super::summary::{AdoptionStep, StepStatus};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the generated artifact README is a single ordered publication-evidence document"
+)]
 pub(super) fn write_readme(
     options: &AdoptionBenchmarkOptions,
     steps: &[AdoptionStep],
@@ -63,41 +67,59 @@ pub(super) fn write_readme(
     out.push_str("# J2K Adoption Benchmark Run\n\n");
     out.push_str("This directory is a benchmark artifact bundle. Treat `summary.json` as the machine-readable index.\n\n");
     out.push_str("## Inputs\n\n");
-    out.push_str(&format!(
-        "- Fixture dirs: `{}`\n",
-        options.input_dirs.as_deref().unwrap_or("not set")
-    ));
-    out.push_str(&format!(
-        "- Fixture manifest: `{}`\n",
-        options
-            .manifest
-            .as_ref()
-            .map_or_else(|| "not set".to_string(), |path| path.display().to_string())
-    ));
-    out.push_str(&format!(
-        "- Encode source dirs: `{}`\n",
-        options.encode_input_dirs.as_deref().unwrap_or("not set")
-    ));
-    out.push_str(&format!(
-        "- Encode manifest: `{}`\n",
-        options
-            .encode_manifest
-            .as_ref()
-            .map_or_else(|| "not set".to_string(), |path| path.display().to_string())
-    ));
-    out.push_str(&format!(
-        "- Generated fixtures included: `{}`\n",
-        options.include_generated
-    ));
-    out.push_str(&format!(
-        "- OpenJPH comparator requested: `{}`\n",
-        options.openjph
-    ));
-    out.push_str(&format!(
-        "- Kakadu comparator requested: `{}`\n",
-        options.kakadu
-    ));
-    out.push_str(&format!("- Quick mode: `{}`\n\n", options.quick));
+    append_format(
+        &mut out,
+        format_args!(
+            "- Fixture dirs: `{}`\n",
+            options.input_dirs.as_deref().unwrap_or("not set")
+        ),
+    );
+    append_format(
+        &mut out,
+        format_args!(
+            "- Fixture manifest: `{}`\n",
+            options
+                .manifest
+                .as_ref()
+                .map_or_else(|| "not set".to_string(), |path| path.display().to_string())
+        ),
+    );
+    append_format(
+        &mut out,
+        format_args!(
+            "- Encode source dirs: `{}`\n",
+            options.encode_input_dirs.as_deref().unwrap_or("not set")
+        ),
+    );
+    append_format(
+        &mut out,
+        format_args!(
+            "- Encode manifest: `{}`\n",
+            options
+                .encode_manifest
+                .as_ref()
+                .map_or_else(|| "not set".to_string(), |path| path.display().to_string())
+        ),
+    );
+    append_format(
+        &mut out,
+        format_args!(
+            "- Generated fixtures included: `{}`\n",
+            options.include_generated
+        ),
+    );
+    append_format(
+        &mut out,
+        format_args!("- OpenJPH comparator requested: `{}`\n", options.openjph),
+    );
+    append_format(
+        &mut out,
+        format_args!("- Kakadu comparator requested: `{}`\n", options.kakadu),
+    );
+    append_format(
+        &mut out,
+        format_args!("- Quick mode: `{}`\n\n", options.quick),
+    );
     out.push_str("## Steps\n\n");
     markdown_header(&mut out, &["Step", "Status", "Output", "Error log"]);
     for step in steps {
@@ -145,7 +167,7 @@ pub(super) fn write_readme(
             "kakadu_version",
         ] {
             if let Some(value) = metadata.get(key).and_then(serde_json::Value::as_str) {
-                out.push_str(&format!("- `{key}`: `{value}`\n"));
+                append_format(&mut out, format_args!("- `{key}`: `{value}`\n"));
             }
         }
     }
@@ -168,7 +190,7 @@ pub(super) fn write_readme(
             "kakadu_version",
         ] {
             if let Some(value) = metadata.get(key).and_then(serde_json::Value::as_str) {
-                out.push_str(&format!("- `{key}`: `{value}`\n"));
+                append_format(&mut out, format_args!("- `{key}`: `{value}`\n"));
             }
         }
     }
@@ -194,9 +216,8 @@ pub(super) fn write_readme(
         }
     }
     if criterion_rows > 0 {
-        out.push_str(&format!(
-            "\nCriterion estimates are summarized in `summary.json` ({} rows across current-run steps).\n",
-            criterion_rows
+        append_format(&mut out, format_args!(
+            "\nCriterion estimates are summarized in `summary.json` ({criterion_rows} rows across current-run steps).\n"
         ));
     }
     if steps.iter().any(|step| {
@@ -217,4 +238,9 @@ pub(super) fn write_readme(
 
     let path = options.out_dir.join("README.md");
     fs::write(&path, out).map_err(|err| format!("failed to write {}: {err}", path.display()))
+}
+
+fn append_format(out: &mut String, arguments: std::fmt::Arguments<'_>) {
+    out.write_fmt(arguments)
+        .expect("writing formatted text to a String cannot fail");
 }

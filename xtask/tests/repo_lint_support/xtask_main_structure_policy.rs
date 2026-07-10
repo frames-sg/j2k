@@ -4,7 +4,7 @@
 
 use std::fs;
 
-use super::{assert_pattern_checks, repo_root, PatternCheck};
+use super::{assert_pattern_checks, repo_root, rust_sources, PatternCheck};
 
 fn read(relative_path: &str) -> String {
     fs::read_to_string(repo_root().join(relative_path))
@@ -99,4 +99,25 @@ fn xtask_dispatcher_stays_split_by_command_family() {
             "pub(super) fn package()",
         ]),
     ]);
+}
+
+#[test]
+fn xtask_manifest_keeps_pedantic_clippy_enabled() {
+    let manifest = read("xtask/Cargo.toml");
+    assert_pattern_checks(&[PatternCheck::new("xtask manifest", &manifest)
+        .normalized_required(&["pedantic = { level = \"warn\", priority = -1 }"])
+        .normalized_forbidden(&["pedantic = \"allow\"", "pedantic = { level = \"allow\""])]);
+    for relative_dir in ["xtask/src", "xtask/tests"] {
+        for path in rust_sources(&repo_root().join(relative_dir)) {
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            assert!(
+                source
+                    .lines()
+                    .all(|line| !line.trim_start().starts_with(concat!("#!", "[allow"))),
+                "{} must not use crate- or module-wide lint allows",
+                path.strip_prefix(repo_root()).unwrap_or(&path).display()
+            );
+        }
+    }
 }

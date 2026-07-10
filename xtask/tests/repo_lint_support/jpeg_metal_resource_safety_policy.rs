@@ -5,6 +5,10 @@ use std::fs;
 use super::*;
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "all unsafe Metal readback ownership rules are audited together as one safety policy"
+)]
 fn jpeg_metal_host_readback_aliases_require_unsafe_contracts() {
     let root = repo_root();
     let surface = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/surface.rs"))

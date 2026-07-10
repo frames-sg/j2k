@@ -112,7 +112,7 @@ fn assert_committed_conformance_files_are_listed(dir: &Path, listed_files: &BTre
         };
         if !matches!(ext, "jpg" | "rgb" | "gray") {
             continue;
-        };
+        }
         let filename = path
             .file_name()
             .and_then(|name| name.to_str())

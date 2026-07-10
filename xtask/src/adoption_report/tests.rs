@@ -273,7 +273,7 @@ fn publication_issues_accept_complete_required_metal_evidence() {
                     "cpu_ms": 3.0,
                     "metal_resident_ms": 2.0,
                     "metal_readback_ms": 2.5,
-                    "output_bytes": 262144
+                    "output_bytes": 262_144
                 },
                 {
                     "case": "external_gray8",
@@ -586,6 +586,10 @@ fn report_marks_clean_bundle_publishable_without_blocking_section() {
     assert!(!report.contains("Blocking issues:"));
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture builds one complete minimal benchmark bundle for report tests"
+)]
 fn write_minimal_bundle(dir: &Path, publishable: bool) {
     let eligible = if publishable { "true" } else { "false" };
     let blockers = if publishable {
@@ -618,9 +622,9 @@ fn write_minimal_bundle(dir: &Path, publishable: bool) {
                     "estimates": [
                         {
                             "id": "cuda_decode_external_gray8",
-                            "median_ns": 1500000.0,
-                            "median_lower_ns": 1400000.0,
-                            "median_upper_ns": 1600000.0
+                            "median_ns": 1_500_000.0,
+                            "median_lower_ns": 1_400_000.0,
+                            "median_upper_ns": 1_600_000.0
                         }
                     ]
                 },
@@ -630,9 +634,9 @@ fn write_minimal_bundle(dir: &Path, publishable: bool) {
                     "estimates": [
                         {
                             "id": "cuda_encode_external_rgb8",
-                            "median_ns": 2500000.0,
-                            "median_lower_ns": 2400000.0,
-                            "median_upper_ns": 2600000.0
+                            "median_ns": 2_500_000.0,
+                            "median_lower_ns": 2_400_000.0,
+                            "median_upper_ns": 2_600_000.0
                         }
                     ]
                 }
@@ -661,7 +665,7 @@ fn write_minimal_bundle(dir: &Path, publishable: bool) {
                     "cpu_ms": 1.0,
                     "metal_resident_ms": 0.5,
                     "metal_readback_ms": 0.75,
-                    "output_bytes": 262144
+                    "output_bytes": 262_144
                 }
             ]
         },

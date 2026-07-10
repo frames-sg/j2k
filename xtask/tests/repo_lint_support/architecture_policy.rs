@@ -283,6 +283,10 @@ fn obsolete_adaptive_route_policy_model_cannot_return() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the public-API denylist is one fail-closed architecture contract and is reviewed as a whole"
+)]
 fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
     assert_file_pattern_checks(
         repo_root(),

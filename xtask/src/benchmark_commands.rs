@@ -9,6 +9,10 @@ use crate::command_support::{
 };
 use crate::process::cargo;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the benchmark build command intentionally lists the complete fail-fast benchmark matrix"
+)]
 pub(super) fn bench_build() -> Result<(), String> {
     run_cargo(&["bench", "-p", "j2k", "--bench", "public_api", "--no-run"])?;
     run_cargo(&[
@@ -258,9 +262,10 @@ fn comparator_versions() -> Vec<(String, String)> {
         ("Grok".to_string(), grok_comparator_version()),
         (
             "libjpeg-turbo".to_string(),
-            command_output("pkg-config", &["--modversion", "libturbojpeg"])
-                .map(|version| format!("pkg-config libturbojpeg {version}"))
-                .unwrap_or_else(|err| format!("unavailable: {err}")),
+            command_output("pkg-config", &["--modversion", "libturbojpeg"]).map_or_else(
+                |err| format!("unavailable: {err}"),
+                |version| format!("pkg-config libturbojpeg {version}"),
+            ),
         ),
     ]
 }
@@ -271,19 +276,19 @@ fn grok_comparator_version() -> String {
             .unwrap_or_else(|err| format!("libdir unavailable: {err}"));
         return format!("pkg-config libgrokj2k {version}; libdir: {lib_dir}");
     }
-    env::var("J2K_GROK_ROOT")
-        .map(|root| format!("configured root: {root}"))
-        .unwrap_or_else(|_| {
-            "unavailable: pkg-config libgrokj2k and J2K_GROK_ROOT not set".to_string()
-        })
+    env::var("J2K_GROK_ROOT").map_or_else(
+        |_| "unavailable: pkg-config libgrokj2k and J2K_GROK_ROOT not set".to_string(),
+        |root| format!("configured root: {root}"),
+    )
 }
 
 fn comparator_command_version(env_var: &str, fallback: &str, args: &[&str]) -> String {
     let program = env::var(env_var).unwrap_or_else(|_| fallback.to_string());
     let path = program.clone();
-    command_output_allow_failure(&program, args)
-        .map(|version| format!("{}; path: {path}", best_version_line(&version)))
-        .unwrap_or_else(|err| format!("unavailable: {err}; path: {path}"))
+    command_output_allow_failure(&program, args).map_or_else(
+        |err| format!("unavailable: {err}; path: {path}"),
+        |version| format!("{}; path: {path}", best_version_line(&version)),
+    )
 }
 
 fn best_version_line(output: &str) -> &str {

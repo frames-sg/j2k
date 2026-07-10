@@ -7,6 +7,10 @@ pub(crate) const PUBLICATION_GATE_KEYS: [&str; 3] = [
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each boolean records an independent fail-closed publication-gate condition"
+)]
 struct PublicationGateEvaluation {
     metadata_present: bool,
     eligible: bool,

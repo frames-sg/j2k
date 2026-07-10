@@ -45,6 +45,10 @@ struct MetalTranscodeGroup {
     tiles_total: u64,
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "report row counts are bounded by in-memory JSON arrays and remain exactly representable as f64"
+)]
 pub(super) fn metal_decode_summary(out: &mut String, metal: &Value) {
     let Some(rows) = metal.get("benches").and_then(Value::as_array) else {
         out.push_str("\nNo Metal decode benchmark rows recorded.\n");
@@ -139,6 +143,10 @@ fn metal_decode_source_category(row: &Value) -> String {
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "report row counts are bounded by in-memory JSON arrays and remain exactly representable as f64"
+)]
 pub(super) fn metal_auto_summary(out: &mut String, metal: &Value) {
     let Some(rows) = metal.get("auto_benches").and_then(Value::as_array) else {
         out.push_str("\nNo Metal auto benchmark rows recorded.\n");
@@ -209,6 +217,10 @@ pub(super) fn metal_auto_summary(out: &mut String, metal: &Value) {
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "report row counts are bounded by in-memory JSON arrays and remain exactly representable as f64"
+)]
 pub(super) fn metal_resident_summary(out: &mut String, metal: &Value) {
     let Some(rows) = metal.get("resident_benches").and_then(Value::as_array) else {
         out.push_str("\nNo Metal resident benchmark rows recorded.\n");
@@ -310,6 +322,10 @@ pub(super) fn metal_resident_summary(out: &mut String, metal: &Value) {
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "report row counts are bounded by in-memory JSON arrays and remain exactly representable as f64"
+)]
 pub(super) fn metal_transcode_summary(out: &mut String, metal: &Value) {
     let Some(rows) = metal.get("profiles").and_then(Value::as_array) else {
         out.push_str("\nNo Metal transcode profile rows recorded.\n");

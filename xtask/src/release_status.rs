@@ -205,7 +205,7 @@ fn valid_repository_component(value: &str) -> bool {
     !value.is_empty()
         && value != "."
         && value != ".."
-        && !value.ends_with(".git")
+        && !value.to_ascii_lowercase().ends_with(".git")
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))

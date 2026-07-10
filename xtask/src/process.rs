@@ -1,6 +1,6 @@
 use std::{
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     path::Path,
     process::{Command, Output},
 };
@@ -43,13 +43,14 @@ impl<'a> CommandContext<'a> {
 }
 
 pub(crate) fn run_command(
-    program: OsString,
+    program: impl AsRef<OsStr>,
     args: &[&str],
     context: CommandContext<'_>,
 ) -> Result<(), String> {
-    let display = display_command(&program, args, context);
+    let program = program.as_ref();
+    let display = display_command(program, args, context);
     eprintln!("+ {display}");
-    let status = configured_command(&program, args, context)
+    let status = configured_command(program, args, context)
         .status()
         .map_err(|err| format!("failed to start `{}`: {err}", program.to_string_lossy()))?;
     if status.success() {
@@ -63,7 +64,7 @@ pub(crate) fn run_command(
 }
 
 pub(crate) fn run_command_owned(
-    program: OsString,
+    program: impl AsRef<OsStr>,
     args: &[String],
     context: CommandContext<'_>,
 ) -> Result<(), String> {
@@ -72,17 +73,22 @@ pub(crate) fn run_command_owned(
 }
 
 pub(crate) fn command_output(
-    program: OsString,
+    program: impl AsRef<OsStr>,
     args: &[&str],
     context: CommandContext<'_>,
 ) -> Result<Output, String> {
-    configured_command(&program, args, context)
+    let program = program.as_ref();
+    configured_command(program, args, context)
         .output()
         .map_err(|err| format!("failed to start `{}`: {err}", program.to_string_lossy()))
 }
 
-pub(crate) fn command_output_os(program: OsString, args: &[&str]) -> Result<String, String> {
-    let output = command_output(program.clone(), args, CommandContext::new())?;
+pub(crate) fn command_output_os(
+    program: impl AsRef<OsStr>,
+    args: &[&str],
+) -> Result<String, String> {
+    let program = program.as_ref();
+    let output = command_output(program, args, CommandContext::new())?;
     if !output.status.success() {
         return Err(format!(
             "`{}` exited with {}",
@@ -113,7 +119,7 @@ pub(crate) fn command_output_allow_failure(program: &str, args: &[&str]) -> Resu
     }
 }
 
-fn configured_command(program: &OsString, args: &[&str], context: CommandContext<'_>) -> Command {
+fn configured_command(program: &OsStr, args: &[&str], context: CommandContext<'_>) -> Command {
     let mut command = Command::new(program);
     command.args(args);
     if let Some(current_dir) = context.current_dir {
@@ -128,7 +134,7 @@ fn configured_command(program: &OsString, args: &[&str], context: CommandContext
     command
 }
 
-fn display_command(program: &OsString, args: &[&str], context: CommandContext<'_>) -> String {
+fn display_command(program: &OsStr, args: &[&str], context: CommandContext<'_>) -> String {
     let mut parts = Vec::new();
     if let Some(current_dir) = context.current_dir {
         parts.push(format!("cd {} &&", current_dir.display()));

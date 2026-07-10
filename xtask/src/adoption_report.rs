@@ -419,6 +419,10 @@ fn collect_required_metal_decode_issues(summary: &Value, issues: &mut Vec<String
     );
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "all required Metal encode publication gates are evaluated together fail-closed"
+)]
 fn collect_required_metal_encode_issues(summary: &Value, issues: &mut Vec<String>) {
     collect_step_ran_issue(
         summary,

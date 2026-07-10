@@ -99,6 +99,10 @@ pub(super) const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
     "j2k-profile",
 ];
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "release integrity evaluates the complete package policy before reporting aggregated failures"
+)]
 pub(super) fn release_integrity() -> Result<(), String> {
     let metadata = cargo_metadata()?;
     let workspace_version = workspace_version()?;

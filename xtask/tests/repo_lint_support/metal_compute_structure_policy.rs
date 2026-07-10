@@ -5,6 +5,10 @@ use std::fs;
 use super::*;
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the Metal compute registry split is enforced by one cohesive ownership matrix"
+)]
 fn metal_compute_runtime_registry_is_split_from_compute_god_file() {
     let root = repo_root();
     let compute = fs::read_to_string(root.join("crates/j2k-metal/src/compute.rs"))
@@ -225,6 +229,10 @@ fn metal_compute_runtime_registry_is_split_from_compute_god_file() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "direct-plan type ownership and source ratchets form one structural contract"
+)]
 fn metal_direct_plan_types_live_in_focused_module() {
     let root = repo_root();
     let compute = fs::read_to_string(root.join("crates/j2k-metal/src/compute.rs"))

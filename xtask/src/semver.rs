@@ -553,6 +553,10 @@ fn fingerprint(items: &BTreeSet<String>) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the reviewed API report is one stable ordered Markdown schema"
+)]
 fn render_report(
     candidate_version: &str,
     diffs: &[PackageApiDiff],
@@ -962,13 +966,14 @@ fn run_semver_checks(diffs: &[PackageApiDiff]) -> Result<(), String> {
 }
 
 fn capture_command(
-    program: OsString,
+    program: impl AsRef<std::ffi::OsStr>,
     args: &[&str],
     envs: &[(&str, &str)],
     label: &str,
 ) -> Result<String, String> {
+    let program = program.as_ref();
     eprintln!("+ {} {}", program.to_string_lossy(), args.join(" "));
-    let output = process::command_output(program.clone(), args, CommandContext::new().envs(envs))?;
+    let output = process::command_output(program, args, CommandContext::new().envs(envs))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     if output.status.success() {

@@ -7,6 +7,10 @@ use std::fs;
 use super::{assert_pattern_checks, read_source_files, repo_root, PatternCheck};
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the JPEG decoder ownership matrix is one fail-closed structural contract"
+)]
 fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
     let root = repo_root();
     let decoder = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder.rs"))

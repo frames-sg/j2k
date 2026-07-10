@@ -249,7 +249,7 @@ some other output: 12 passed
         let outcomes = compare_estimates(&[baseline], &[current], 10.0).unwrap();
 
         assert!(!outcomes[0].regressed);
-        assert_eq!(outcomes[0].delta_percent, 10.0);
+        assert!((outcomes[0].delta_percent - 10.0).abs() < f64::EPSILON);
     }
 
     #[test]

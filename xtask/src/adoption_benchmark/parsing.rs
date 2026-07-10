@@ -148,6 +148,10 @@ pub(super) fn read_metal_decode_summary(path: &Path, steps: &[AdoptionStep]) -> 
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the Metal encode summary parser keeps one output schema and its counters together"
+)]
 pub(super) fn read_metal_encode_summary(path: &Path, steps: &[AdoptionStep]) -> serde_json::Value {
     let Some(step) = steps
         .iter()
@@ -265,6 +269,10 @@ pub(super) fn read_metal_encode_summary(path: &Path, steps: &[AdoptionStep]) -> 
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the Metal transcode summary parser keeps stdout, stderr, and schema reconciliation together"
+)]
 pub(super) fn read_metal_transcode_summary(
     stdout_path: &Path,
     stderr_path: &Path,

@@ -24,6 +24,10 @@ pub(super) enum StepStatus {
     Skipped { reason: String },
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the benchmark summary writer keeps its machine-readable schema assembled in one place"
+)]
 pub(super) fn write_summary(
     options: &AdoptionBenchmarkOptions,
     steps: &[AdoptionStep],

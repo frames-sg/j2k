@@ -5,6 +5,10 @@ use std::fs;
 use super::*;
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the J2K Metal shader subsystem split is one fail-closed source policy"
+)]
 fn metal_encode_bitstream_shader_is_split_by_subsystem() {
     let root = repo_root();
     let shader_source =
@@ -118,6 +122,10 @@ fn metal_encode_bitstream_shader_is_split_by_subsystem() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the JPEG Metal shader subsystem split is one fail-closed source policy"
+)]
 fn jpeg_metal_shader_is_split_by_subsystem() {
     let root = repo_root();
     let compute = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute.rs"))

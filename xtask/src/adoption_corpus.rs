@@ -51,19 +51,23 @@ pub(crate) fn validate_tsv_field(value: &str) -> Result<(), String> {
 }
 
 pub(crate) fn corpus_category(path: &Path, override_value: Option<&str>) -> String {
-    override_value
-        .map(ToString::to_string)
-        .unwrap_or_else(|| j2k_compare::common::infer_corpus_category(path).to_string())
+    override_value.map_or_else(
+        || j2k_compare::common::infer_corpus_category(path).to_string(),
+        ToString::to_string,
+    )
 }
 
 pub(crate) fn corpus_name(root: &Path, override_value: Option<&str>) -> String {
-    override_value.map(ToString::to_string).unwrap_or_else(|| {
-        root.file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
-            .unwrap_or("external-corpus")
-            .to_string()
-    })
+    override_value.map_or_else(
+        || {
+            root.file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.is_empty())
+                .unwrap_or("external-corpus")
+                .to_string()
+        },
+        ToString::to_string,
+    )
 }
 
 pub(crate) fn codec_from_bytes(bytes: &[u8]) -> &'static str {

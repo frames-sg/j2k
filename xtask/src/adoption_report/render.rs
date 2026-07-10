@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Write as _};
 
 use serde_json::Value;
 
@@ -38,7 +38,7 @@ fn render_overview(out: &mut String, model: &AdoptionReportModel) {
         out.push_str("Status: diagnostic only. Do not use for marketing claims.\n\n");
         out.push_str("Blocking issues:\n");
         for issue in issues {
-            out.push_str(&format!("- {issue}\n"));
+            append_format(out, format_args!("- {issue}\n"));
         }
         out.push('\n');
     }
@@ -253,6 +253,10 @@ fn render_cpu_decode(out: &mut String, fixture: &TsvTable) {
     );
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the hybrid report section preserves one stable ordered Markdown schema"
+)]
 fn render_hybrid_summary(out: &mut String, summary: &Value) {
     out.push_str("\n## Hybrid Summary\n\n");
     metadata_table(
@@ -274,13 +278,16 @@ fn render_hybrid_summary(out: &mut String, summary: &Value) {
     criterion_estimate_table(out, summary, &["cuda-htj2k-decode", "cuda-htj2k-encode"]);
     if let Some(metal) = summary.get("metal_decode_benchmark") {
         out.push_str("\nMetal decode benchmark summary:\n\n");
-        out.push_str(&format!(
-            "- status: {}\n",
-            metal
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("not-recorded")
-        ));
+        append_format(
+            out,
+            format_args!(
+                "- status: {}\n",
+                metal
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("not-recorded")
+            ),
+        );
         if let Some(metadata) = metal.get("metadata") {
             metadata_list(
                 out,
@@ -317,13 +324,16 @@ fn render_hybrid_summary(out: &mut String, summary: &Value) {
     }
     if let Some(metal) = summary.get("metal_encode_auto_routing") {
         out.push_str("\nMetal auto-routing summary:\n\n");
-        out.push_str(&format!(
-            "- status: {}\n",
-            metal
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("not-recorded")
-        ));
+        append_format(
+            out,
+            format_args!(
+                "- status: {}\n",
+                metal
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("not-recorded")
+            ),
+        );
         if let Some(metadata) = metal.get("metadata") {
             metadata_list(
                 out,
@@ -373,13 +383,16 @@ fn render_hybrid_summary(out: &mut String, summary: &Value) {
     }
     if let Some(metal) = summary.get("metal_transcode_benchmark") {
         out.push_str("\nMetal transcode benchmark summary:\n\n");
-        out.push_str(&format!(
-            "- status: {}\n",
-            metal
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("not-recorded")
-        ));
+        append_format(
+            out,
+            format_args!(
+                "- status: {}\n",
+                metal
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("not-recorded")
+            ),
+        );
         metadata_list(
             out,
             &[
@@ -447,15 +460,21 @@ fn measured_table_filtered(
         .copied()
         .collect::<Vec<_>>();
     if !missing_columns.is_empty() {
-        out.push_str(&format!(
-            "Missing expected raw columns: `{}`.\n\n",
-            missing_columns.join("`, `")
-        ));
+        append_format(
+            out,
+            format_args!(
+                "Missing expected raw columns: `{}`.\n\n",
+                missing_columns.join("`, `")
+            ),
+        );
     }
     let measured_rows = table
         .rows
         .iter()
-        .filter(|row| row.get("skip_reason").is_none_or(|value| value.is_empty()))
+        .filter(|row| {
+            row.get("skip_reason")
+                .is_none_or(std::string::String::is_empty)
+        })
         .filter(|row| include(row))
         .collect::<Vec<_>>();
     let rows = measured_rows
@@ -472,25 +491,28 @@ fn measured_table_filtered(
         markdown_row(out, columns.iter().map(|column| row_value(row, column)));
     }
     if measured_rows.len() > limit {
-        out.push_str(&format!(
-            "\nShowing first {limit} measured rows. See raw TSV outputs for the full table.\n"
-        ));
+        append_format(
+            out,
+            format_args!(
+                "\nShowing first {limit} measured rows. See raw TSV outputs for the full table.\n"
+            ),
+        );
     }
 }
 
 fn skipped_summary(out: &mut String, label: &str, table: &TsvTable) {
     let mut counts = BTreeMap::<String, usize>::new();
     for row in &table.rows {
-        let reason = row.get("skip_reason").map(String::as_str).unwrap_or("");
+        let reason = row.get("skip_reason").map_or("", String::as_str);
         if !reason.is_empty() {
             *counts.entry(reason.to_string()).or_default() += 1;
         }
     }
     if counts.is_empty() {
-        out.push_str(&format!("- {label}: none\n"));
+        append_format(out, format_args!("- {label}: none\n"));
     } else {
         for (reason, count) in counts {
-            out.push_str(&format!("- {label}: {reason} ({count} rows)\n"));
+            append_format(out, format_args!("- {label}: {reason} ({count} rows)\n"));
         }
     }
 }
@@ -547,13 +569,14 @@ fn mixed_winner_summary(
         let (winner_name, winner_value) = participants
             .iter()
             .max_by(|(_, left), (_, right)| left.total_cmp(right))
-            .map(|(name, value)| (name.as_str(), *value))
-            .unwrap_or(("NA", f64::NAN));
+            .map_or(("NA", f64::NAN), |(name, value)| (name.as_str(), *value));
         let j2k_vs_winner = participants
             .get("j2k")
             .filter(|_| winner_value.is_finite() && winner_value > 0.0)
-            .map(|value| format!("{:.3}x", value / winner_value))
-            .unwrap_or_else(|| "NA".to_string());
+            .map_or_else(
+                || "NA".to_string(),
+                |value| format!("{:.3}x", value / winner_value),
+            );
         markdown_row(
             out,
             [
@@ -587,7 +610,7 @@ fn metadata_table(out: &mut String, groups: &[(&str, Option<&Value>)], keys: &[&
 
 fn metadata_list(out: &mut String, values: &[(&str, String)]) {
     for (key, value) in values {
-        out.push_str(&format!("- `{key}`: `{}`\n", escape_inline(value)));
+        append_format(out, format_args!("- `{key}`: `{}`\n", escape_inline(value)));
     }
 }
 
@@ -650,9 +673,7 @@ fn criterion_estimate_table(out: &mut String, summary: &Value, step_names: &[&st
 }
 
 fn ns_to_ms_label(value: Option<f64>) -> String {
-    value
-        .map(|ns| format!("{:.3}", ns / 1_000_000.0))
-        .unwrap_or_else(|| "NA".to_string())
+    value.map_or_else(|| "NA".to_string(), |ns| format!("{:.3}", ns / 1_000_000.0))
 }
 
 fn row_value(row: &BTreeMap<String, String>, column: &str) -> String {
@@ -669,8 +690,7 @@ fn numeric_row_field(row: &BTreeMap<String, String>, column: &str) -> Option<f64
 fn metric_label(value: Option<f64>) -> String {
     value
         .filter(|value| value.is_finite())
-        .map(|value| format!("{value:.3}"))
-        .unwrap_or_else(|| "NA".to_string())
+        .map_or_else(|| "NA".to_string(), |value| format!("{value:.3}"))
 }
 
 fn scalar_label(value: &Value, key: &str) -> String {
@@ -682,4 +702,9 @@ fn scalar_label(value: &Value, key: &str) -> String {
         Some(other) => other.to_string(),
         None => "not-recorded".to_string(),
     }
+}
+
+fn append_format(out: &mut String, arguments: std::fmt::Arguments<'_>) {
+    out.write_fmt(arguments)
+        .expect("writing formatted text to a String cannot fail");
 }

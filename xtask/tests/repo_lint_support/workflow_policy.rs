@@ -162,6 +162,10 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "release evidence remains fail-closed by checking the complete workflow matrix together"
+)]
 fn release_candidate_and_publish_evidence_are_fail_closed() {
     let root = repo_root();
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");

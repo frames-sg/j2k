@@ -12,6 +12,10 @@ fn read(relative_path: &str) -> String {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the coverage-module ownership and size checks form one cohesive structural policy"
+)]
 fn coverage_tooling_stays_split_by_responsibility() {
     let coordinator = read("xtask/src/coverage.rs");
     let model = read("xtask/src/coverage/model.rs");

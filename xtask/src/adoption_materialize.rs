@@ -169,31 +169,43 @@ struct DecodeFixtureVariant<'a> {
 }
 
 fn write_decode_fixture_variant(request: DecodeFixtureVariant<'_>) -> Result<(), String> {
-    let bytes = match request.container {
-        DecodeContainer::RawCodestream => request.codestream.to_vec(),
-        DecodeContainer::Jp2 => wrap_j2k_codestream(request.codestream, J2kFileWrapOptions::jp2())
+    let DecodeFixtureVariant {
+        options,
+        decode_rows,
+        decode_dir,
+        id,
+        source,
+        root,
+        source_hash,
+        profile,
+        container,
+        codestream,
+    } = request;
+    let bytes = match container {
+        DecodeContainer::RawCodestream => codestream.to_vec(),
+        DecodeContainer::Jp2 => wrap_j2k_codestream(codestream, J2kFileWrapOptions::jp2())
             .map_err(|err| format!("wrap classic fixture as JP2: {err}"))?,
-        DecodeContainer::Jph => wrap_j2k_codestream(request.codestream, J2kFileWrapOptions::jph())
+        DecodeContainer::Jph => wrap_j2k_codestream(codestream, J2kFileWrapOptions::jph())
             .map_err(|err| format!("wrap HTJ2K fixture as JPH: {err}"))?,
     };
-    let fixture_path = request
-        .decode_dir
-        .join(request.profile.dir_name())
-        .join(format!("{}.{}", request.id, request.container.extension()));
+    let fixture_path =
+        decode_dir
+            .join(profile.dir_name())
+            .join(format!("{}.{}", id, container.extension()));
     fs::write(&fixture_path, &bytes)
         .map_err(|err| format!("write fixture {}: {err}", fixture_path.display()))?;
     let fields = [
         canonical_label(&fixture_path)?,
-        corpus_category(request.source, request.options.corpus_category.as_deref()),
-        corpus_name(request.root, request.options.corpus_name.as_deref()),
-        request.options.license_status.clone(),
-        encode_command_label(&request.profile, request.container, request.source)?,
+        corpus_category(source, options.corpus_category.as_deref()),
+        corpus_name(root, options.corpus_name.as_deref()),
+        options.license_status.clone(),
+        encode_command_label(profile, container, source)?,
         fnv1a64_hex(&bytes),
-        request.source_hash.to_string(),
-        request.profile.codec().to_string(),
-        request.container.manifest_label().to_string(),
+        source_hash.to_string(),
+        profile.codec().to_string(),
+        container.manifest_label().to_string(),
     ];
-    request.decode_rows.push_str(&manifest_row(&fields)?);
+    decode_rows.push_str(&manifest_row(&fields)?);
     Ok(())
 }
 
@@ -276,7 +288,7 @@ fn materialized_id(index: usize, path: &Path, source_hash: &str) -> String {
 }
 
 fn encode_command_label(
-    profile: &MaterializeProfile,
+    profile: MaterializeProfile,
     container: DecodeContainer,
     source: &Path,
 ) -> Result<String, String> {

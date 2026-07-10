@@ -1,6 +1,10 @@
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "these fields preserve independent command-line switches and their require variants"
+)]
 pub(crate) struct AdoptionBenchmarkOptions {
     pub(super) out_dir: PathBuf,
     pub(super) input_dirs: Option<String>,
@@ -22,6 +26,10 @@ pub(crate) struct AdoptionBenchmarkOptions {
 }
 
 impl AdoptionBenchmarkOptions {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeping option recognition and cross-option validation together makes the CLI contract auditable"
+    )]
     pub(super) fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut options = Self {
             out_dir: PathBuf::from("target/j2k-adoption-benchmark"),
