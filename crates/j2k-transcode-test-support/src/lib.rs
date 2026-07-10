@@ -99,21 +99,29 @@ pub fn quantize_codeblock_subband(
             }
             code_blocks.push(PrequantizedHtj2k97CodeBlock {
                 coefficients: block_coefficients,
-                width: block_width as u32,
-                height: block_height as u32,
+                width: u32::try_from(block_width)
+                    .expect("code-block width must fit the codestream u32 field"),
+                height: u32::try_from(block_height)
+                    .expect("code-block height must fit the codestream u32 field"),
             });
         }
     }
 
     PrequantizedHtj2k97Subband {
         sub_band_type,
-        num_cbs_x: num_cbs_x as u32,
-        num_cbs_y: num_cbs_y as u32,
+        num_cbs_x: u32::try_from(num_cbs_x)
+            .expect("horizontal code-block count must fit the codestream u32 field"),
+        num_cbs_y: u32::try_from(num_cbs_y)
+            .expect("vertical code-block count must fit the codestream u32 field"),
         total_bitplanes: htj2k97_subband_total_bitplanes(options, sub_band_type),
         code_blocks,
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the float-to-integer cast intentionally applies Rust's saturating quantizer semantics"
+)]
 fn quantize_subband_coefficients(
     coefficients: &[f64],
     sub_band_type: J2kSubBandType,
@@ -148,6 +156,10 @@ mod tests {
     use j2k_transcode::Dwt97TwoDimensional;
     use j2k_types::{IrreversibleQuantizationSubbandScales, PrequantizedHtj2k97Image};
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the synthetic pattern index is reduced modulo 17 before conversion"
+    )]
     fn sample_band(len: usize, offset: f64) -> Vec<f64> {
         (0..len)
             .map(|idx| ((idx % 17) as f64 - 8.0) * 0.5 + offset)
@@ -158,10 +170,10 @@ mod tests {
     fn prequantized_oracle_matches_native_precomputed_codestream() {
         let width = 17u32;
         let height = 13u32;
-        let low_width = width.div_ceil(2) as usize;
-        let low_height = height.div_ceil(2) as usize;
-        let high_width = (width / 2) as usize;
-        let high_height = (height / 2) as usize;
+        let low_width = usize::try_from(width.div_ceil(2)).expect("fixture width fits usize");
+        let low_height = usize::try_from(height.div_ceil(2)).expect("fixture height fits usize");
+        let high_width = usize::try_from(width / 2).expect("fixture width fits usize");
+        let high_height = usize::try_from(height / 2).expect("fixture height fits usize");
 
         let ll = sample_band(low_width * low_height, 0.25);
         let hl = sample_band(high_width * low_height, -0.75);
@@ -177,6 +189,10 @@ mod tests {
             ..EncodeOptions::default()
         };
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the bounded synthetic fixture values are intentionally narrowed to the f32 native oracle ABI"
+        )]
         let precomputed_image = PrecomputedHtj2k97Image {
             width,
             height,
@@ -187,18 +203,18 @@ mod tests {
                 y_rsiz: 1,
                 dwt: J2kForwardDwt97Output {
                     ll: ll.iter().map(|&v| v as f32).collect(),
-                    ll_width: low_width as u32,
-                    ll_height: low_height as u32,
+                    ll_width: u32::try_from(low_width).expect("fixture width fits u32"),
+                    ll_height: u32::try_from(low_height).expect("fixture height fits u32"),
                     levels: vec![J2kForwardDwt97Level {
                         hl: hl.iter().map(|&v| v as f32).collect(),
                         lh: lh.iter().map(|&v| v as f32).collect(),
                         hh: hh.iter().map(|&v| v as f32).collect(),
                         width,
                         height,
-                        low_width: low_width as u32,
-                        low_height: low_height as u32,
-                        high_width: high_width as u32,
-                        high_height: high_height as u32,
+                        low_width: u32::try_from(low_width).expect("fixture width fits u32"),
+                        low_height: u32::try_from(low_height).expect("fixture height fits u32"),
+                        high_width: u32::try_from(high_width).expect("fixture width fits u32"),
+                        high_height: u32::try_from(high_height).expect("fixture height fits u32"),
                     }],
                 },
             }],

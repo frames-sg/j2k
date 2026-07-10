@@ -120,16 +120,10 @@ pub fn minimal_baseline_jpeg_with_restart_interval(interval: u16) -> Vec<u8> {
         .windows(2)
         .position(|window| window == [0xff, 0xda])
         .expect("minimal fixture includes SOS marker");
+    let [interval_high, interval_low] = interval.to_be_bytes();
     bytes.splice(
         sos_pos..sos_pos,
-        [
-            0xff,
-            0xdd,
-            0x00,
-            0x04,
-            (interval >> 8) as u8,
-            interval as u8,
-        ],
+        [0xff, 0xdd, 0x00, 0x04, interval_high, interval_low],
     );
     bytes
 }
@@ -146,7 +140,7 @@ pub fn restart_coded_grayscale_jpeg(width: u16, height: u16) -> Vec<u8> {
     for mcu in 0..mcu_count {
         bytes.push(0x00);
         if mcu + 1 != mcu_count {
-            bytes.extend_from_slice(&[0xff, 0xd0 | ((mcu as u8) & 0x07)]);
+            bytes.extend_from_slice(&[0xff, 0xd0 | restart_index(mcu)]);
         }
     }
 
@@ -160,8 +154,14 @@ fn grayscale_jpeg_header(width: u16, height: u16) -> Vec<u8> {
     bytes
 }
 
+fn restart_index(mcu: usize) -> u8 {
+    u8::try_from(mcu & 0x07).expect("restart index is three bits")
+}
+
 fn grayscale_jpeg_prefix(width: u16, height: u16) -> Vec<u8> {
     let mut bytes = Vec::new();
+    let [height_high, height_low] = height.to_be_bytes();
+    let [width_high, width_low] = width.to_be_bytes();
     bytes.extend_from_slice(&[0xff, 0xd8]);
     bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
     bytes.extend(core::iter::repeat_n(16u8, 64));
@@ -171,10 +171,10 @@ fn grayscale_jpeg_prefix(width: u16, height: u16) -> Vec<u8> {
         0x00,
         11,
         8,
-        (height >> 8) as u8,
-        height as u8,
-        (width >> 8) as u8,
-        width as u8,
+        height_high,
+        height_low,
+        width_high,
+        width_low,
         1,
         1,
         0x11,
@@ -211,12 +211,12 @@ pub fn minimal_j2k_codestream() -> Vec<u8> {
         siz.extend_from_slice(&[0x07, 0x01, 0x01]);
     }
     bytes.extend_from_slice(&[0xff, 0x51]);
-    push_u16(&mut bytes, (siz.len() + 2) as u16);
+    push_u16(&mut bytes, segment_length_u16(siz.len()));
     bytes.extend_from_slice(&siz);
 
     let cod = [0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x04, 0x04, 0x00, 0x01];
     bytes.extend_from_slice(&[0xff, 0x52]);
-    push_u16(&mut bytes, (cod.len() + 2) as u16);
+    push_u16(&mut bytes, segment_length_u16(cod.len()));
     bytes.extend_from_slice(&cod);
     bytes.extend_from_slice(&[0xff, 0x90, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     bytes
@@ -281,8 +281,8 @@ pub fn wrap_jp2_rgba_codestream(
 ) -> Vec<u8> {
     let mut bytes = jp2_prefix();
     let bpc = bit_depth.saturating_sub(1);
-    let jp2h_len = 8 + 22 + 15 + 34;
-    bytes.extend_from_slice(&(jp2h_len as u32).to_be_bytes());
+    let jp2h_len = 8_u32 + 22 + 15 + 34;
+    bytes.extend_from_slice(&jp2h_len.to_be_bytes());
     bytes.extend_from_slice(b"jp2h");
     bytes.extend_from_slice(&[0, 0, 0, 22, b'i', b'h', b'd', b'r']);
     bytes.extend_from_slice(&height.to_be_bytes());
@@ -318,10 +318,25 @@ fn jp2_prefix() -> Vec<u8> {
 }
 
 fn append_jp2c(bytes: &mut Vec<u8>, codestream: &[u8]) {
-    let len = (8 + codestream.len()) as u32;
+    let len = u32::try_from(
+        codestream
+            .len()
+            .checked_add(8)
+            .expect("JP2 codestream box length must not overflow usize"),
+    )
+    .expect("JP2 codestream box length must fit u32");
     bytes.extend_from_slice(&len.to_be_bytes());
     bytes.extend_from_slice(b"jp2c");
     bytes.extend_from_slice(codestream);
+}
+
+fn segment_length_u16(payload_len: usize) -> u16 {
+    u16::try_from(
+        payload_len
+            .checked_add(2)
+            .expect("marker segment length must not overflow usize"),
+    )
+    .expect("marker segment length must fit u16")
 }
 
 fn push_u16(out: &mut Vec<u8>, value: u16) {

@@ -44,6 +44,11 @@ pub use fixtures::{
     htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture,
 };
 pub use gpu_gate::{gpu_device_unavailable_is_skip, gpu_test_gate, GPU_TEST_SKIP_MARKER};
+/// Convenience prelude for the intentionally broad JPEG fixture catalog.
+///
+/// Keeping this facade synchronized by hand would duplicate the catalog in
+/// `jpeg_fixtures::builders`; the export-policy test below confines wildcard
+/// re-exports to the fixture catalog.
 pub use jpeg_fixtures::*;
 pub use manifest::{
     canonicalize_manifest_row_path, manifest_column, manifest_field, manifest_optional_value,
@@ -88,12 +93,17 @@ pub fn gradient_u8(width: u32, height: u32, channels: usize) -> Vec<u8> {
 }
 
 /// Generates a deterministic gradient variant keyed by `seed`.
+///
+/// # Panics
+///
+/// Panics if `channels` exceeds the generator's `u32` channel-index domain.
 pub fn gradient_variant_u8(width: u32, height: u32, channels: usize, seed: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(width as usize * height as usize * channels);
     for y in 0..height {
         for x in 0..width {
             for c in 0..channels {
-                out.push(((x + y + seed * 13 + (c as u32 * 17)) & 0xFF) as u8);
+                let channel = u32::try_from(c).expect("channel index must fit u32");
+                out.push(((x + y + seed * 13 + channel * 17) & 0xFF) as u8);
             }
         }
     }
@@ -114,9 +124,14 @@ pub fn gpu_bench_rgb8(width: u32, height: u32) -> Vec<u8> {
 }
 
 /// Generates contiguous RGB8 tiles for JPEG baseline encode benches.
+///
+/// # Panics
+///
+/// Panics if `tile_count` exceeds the generator's `u32` tile-index domain.
 pub fn patterned_rgb8_tiles(width: u32, height: u32, tile_count: usize) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(width as usize * height as usize * 3 * tile_count);
-    for tile in 0..tile_count as u32 {
+    let tile_count = u32::try_from(tile_count).expect("tile count must fit u32");
+    for tile in 0..tile_count {
         for y in 0..height {
             for x in 0..width {
                 rgb.push(((x * 13 + y * 3 + tile * 29) & 0xff) as u8);
@@ -448,5 +463,27 @@ mod tests {
     #[test]
     fn fnv1a64_digest_matches_manifest_value() {
         assert_eq!(fnv1a64_hex(b"abc"), "e71fa2190541574b");
+    }
+
+    #[test]
+    fn wildcard_reexports_are_confined_to_the_fixture_catalog() {
+        let root_facade = include_str!("lib.rs");
+        let jpeg_facade = include_str!("jpeg_fixtures.rs");
+        let wildcard_reexports: Vec<_> = root_facade
+            .lines()
+            .chain(jpeg_facade.lines())
+            .map(str::trim)
+            .filter(|line| line.starts_with("pub use ") && line.ends_with("::*;"))
+            .collect();
+
+        assert_eq!(
+            wildcard_reexports,
+            [
+                "pub use jpeg_fixtures::*;",
+                "pub use builders::*;",
+                "pub use tables::*;",
+            ],
+            "wildcard exports are reserved for the documented fixture-catalog prelude",
+        );
     }
 }

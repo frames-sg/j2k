@@ -729,7 +729,8 @@ fn restart_segmented_entropy(mcus: usize, mcu_bits: &[bool]) -> Vec<u8> {
     for mcu in 0..mcus {
         entropy.extend_from_slice(&packed_mcu);
         if mcu + 1 != mcus {
-            entropy.extend_from_slice(&[0xff, 0xd0 | ((mcu as u8) & 0x07)]);
+            let restart_index = u8::try_from(mcu & 0x07).expect("restart index is three bits");
+            entropy.extend_from_slice(&[0xff, 0xd0 | restart_index]);
         }
     }
     entropy
@@ -1154,6 +1155,15 @@ fn set_first_sof3_component_sampling(bytes: &mut [u8], sampling: u8) {
     bytes[sof + 11] = sampling;
 }
 
+fn jpeg_segment_length(payload_len: usize) -> u16 {
+    u16::try_from(
+        payload_len
+            .checked_add(2)
+            .expect("JPEG marker segment length must not overflow usize"),
+    )
+    .expect("JPEG marker segment length must fit u16")
+}
+
 fn lossless_grayscale_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
     assert_eq!(samples.len(), usize::from(width) * usize::from(height));
     let mut bytes = Vec::new();
@@ -1167,7 +1177,7 @@ fn lossless_grayscale_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8
     dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=8);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, predictor, 0, 0]);
     bytes.extend(lossless_entropy(width, predictor, samples));
@@ -1192,7 +1202,7 @@ fn lossless_rgb_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8]) -> 
     dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=8);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
@@ -1225,7 +1235,7 @@ fn lossless_rgb_restart_jpeg(
     dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=8);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
     bytes.extend_from_slice(&restart_interval.to_be_bytes());
@@ -1255,7 +1265,7 @@ fn lossless_ycbcr_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8]) -
     dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=8);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
@@ -1284,7 +1294,7 @@ fn lossless_ycbcr_restart_jpeg(
     dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=8);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
     bytes.extend_from_slice(&restart_interval.to_be_bytes());
@@ -1320,7 +1330,7 @@ fn lossless_grayscale_restart_jpeg(
     dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=8);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
     bytes.extend_from_slice(&restart_interval.to_be_bytes());
@@ -1353,7 +1363,7 @@ fn lossless_grayscale_16bit_jpeg(
     dht.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=15);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, predictor, 0, 0]);
     bytes.extend(lossless_entropy_16bit(width, predictor, samples));
@@ -1380,7 +1390,7 @@ fn lossless_grayscale_16bit_restart_jpeg(
     dht.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=15);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
     bytes.extend_from_slice(&restart_interval.to_be_bytes());
@@ -1412,7 +1422,7 @@ fn lossless_rgb_16bit_jpeg(width: u16, height: u16, predictor: u8, samples: &[u1
     dht.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=15);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
@@ -1445,7 +1455,7 @@ fn lossless_rgb_16bit_restart_jpeg(
     dht.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=15);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
     bytes.extend_from_slice(&restart_interval.to_be_bytes());
@@ -1475,7 +1485,7 @@ fn lossless_ycbcr_16bit_jpeg(width: u16, height: u16, predictor: u8, samples: &[
     dht.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=15);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
@@ -1504,7 +1514,7 @@ fn lossless_ycbcr_16bit_restart_jpeg(
     dht.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=15);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
     bytes.extend_from_slice(&restart_interval.to_be_bytes());
@@ -1581,7 +1591,7 @@ fn lossless_color_8bit_422_jpeg_impl(
     dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=8);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     if let Some(restart_interval) = restart_interval {
         bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
@@ -1669,7 +1679,7 @@ fn lossless_color_8bit_420_jpeg_impl(
     dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=8);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     if let Some(restart_interval) = restart_interval {
         bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
@@ -1748,7 +1758,7 @@ fn lossless_color_16bit_422_jpeg_impl(
     dht.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=15);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     if let Some(restart_interval) = restart_interval {
         bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
@@ -1836,7 +1846,7 @@ fn lossless_color_16bit_420_jpeg_impl(
     dht.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     dht.extend(0..=15);
     bytes.extend_from_slice(&[0xff, 0xc4]);
-    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend_from_slice(&jpeg_segment_length(dht.len()).to_be_bytes());
     bytes.extend(dht);
     if let Some(restart_interval) = restart_interval {
         bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
@@ -2750,14 +2760,15 @@ fn lossless_diff_category(diff: i32) -> u8 {
         return 0;
     }
     let magnitude = diff.unsigned_abs();
-    (32 - magnitude.leading_zeros()) as u8
+    u8::try_from(32 - magnitude.leading_zeros()).expect("i32 magnitude category fits u8")
 }
 
 fn lossless_magnitude_bits(diff: i32, category: u8) -> u32 {
     if diff >= 0 {
-        return diff as u32;
+        return u32::try_from(diff).expect("nonnegative lossless difference fits u32");
     }
-    (diff + ((1i32 << category) - 1)) as u32
+    u32::try_from(diff + ((1_i32 << category) - 1))
+        .expect("encoded negative lossless difference is nonnegative")
 }
 
 fn push_bits(bits: &mut Vec<bool>, value: u32, count: u8) {
@@ -3284,7 +3295,7 @@ fn progressive_12bit_four_component_constant_jpeg_with_restart(
     bytes.extend_from_slice(&width.to_be_bytes());
     bytes.push(4);
     for (idx, &(h, v)) in sampling.iter().enumerate() {
-        bytes.push((idx + 1) as u8);
+        bytes.push(u8::try_from(idx + 1).expect("four-component fixture index fits u8"));
         bytes.push((h << 4) | v);
         bytes.push(0);
     }
@@ -3419,7 +3430,7 @@ fn four_component_constant_jpeg_with_restart(
     bytes.extend_from_slice(&width.to_be_bytes());
     bytes.push(4);
     for (idx, &(h, v)) in sampling.iter().enumerate() {
-        bytes.push((idx + 1) as u8);
+        bytes.push(u8::try_from(idx + 1).expect("four-component fixture index fits u8"));
         bytes.push((h << 4) | v);
         bytes.push(0);
     }

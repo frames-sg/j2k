@@ -8,5 +8,9 @@ mod builders;
 mod reference_decode;
 mod tables;
 
+// These two modules are catalogs: adding a fixture should expose it through
+// this test prelude without maintaining a second, hundred-item export list.
+// `crate::tests::wildcard_reexports_are_confined_to_the_fixture_catalog` locks
+// the exception to these catalog boundaries.
 pub use builders::*;
 pub use tables::*;

@@ -12,6 +12,14 @@ pub(super) fn append_rgb16_pixel(out: &mut Vec<u8>, rgb: [u16; 3]) {
     }
 }
 
+fn weighted_u8(value: u32) -> u8 {
+    u8::try_from(value).expect("weighted 8-bit sample must remain in range")
+}
+
+fn weighted_u16(value: u32) -> u16 {
+    u16::try_from(value).expect("weighted 16-bit sample must remain in range")
+}
+
 pub(super) fn ycbcr420_chroma_row_for_fixture(left: u16, right: u16) -> [u16; 16] {
     let mut row = [0u16; 16];
     row[..8].fill(left);
@@ -48,15 +56,15 @@ pub(super) fn upsample_h2v2_12bit_for_fixture(
         |row: &[u16; 16], index: usize| 3 * u32::from(current[index]) + u32::from(row[index]);
     let this = colsum(near, sample);
     match output_x {
-        0 => ((this * 4 + 8) >> 4) as u16,
-        31 => ((this * 4 + 7) >> 4) as u16,
+        0 => weighted_u16((this * 4 + 8) >> 4),
+        31 => weighted_u16((this * 4 + 7) >> 4),
         _ if output_x.is_multiple_of(2) => {
             let last = colsum(near, sample - 1);
-            ((this * 3 + last + 8) >> 4) as u16
+            weighted_u16((this * 3 + last + 8) >> 4)
         }
         _ => {
             let next = colsum(near, sample + 1);
-            ((this * 3 + next + 7) >> 4) as u16
+            weighted_u16((this * 3 + next + 7) >> 4)
         }
     }
 }
@@ -76,9 +84,9 @@ pub(super) fn ycbcr12_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u1
     let b = y + ((FIX_1_77200 * blue_delta + ROUND) >> 16);
 
     (
-        r.clamp(0, 4095) as u16,
-        g.clamp(0, 4095) as u16,
-        b.clamp(0, 4095) as u16,
+        u16::try_from(r.clamp(0, 4095)).expect("clamped 12-bit red sample fits u16"),
+        u16::try_from(g.clamp(0, 4095)).expect("clamped 12-bit green sample fits u16"),
+        u16::try_from(b.clamp(0, 4095)).expect("clamped 12-bit blue sample fits u16"),
     )
 }
 
@@ -106,9 +114,9 @@ pub(super) fn ycbcr8_to_rgb8_for_fixture(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) 
     let b = y + ((FIX_1_77200 * blue_delta + ROUND) >> 16);
 
     (
-        r.clamp(0, 255) as u8,
-        g.clamp(0, 255) as u8,
-        b.clamp(0, 255) as u8,
+        u8::try_from(r.clamp(0, 255)).expect("clamped red sample fits u8"),
+        u8::try_from(g.clamp(0, 255)).expect("clamped green sample fits u8"),
+        u8::try_from(b.clamp(0, 255)).expect("clamped blue sample fits u8"),
     )
 }
 
@@ -138,9 +146,9 @@ pub(super) fn ycbcr16_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u1
     let b = y + ((FIX_1_77200 * blue_delta + ROUND) >> 16);
 
     (
-        r.clamp(0, i64::from(u16::MAX)) as u16,
-        g.clamp(0, i64::from(u16::MAX)) as u16,
-        b.clamp(0, i64::from(u16::MAX)) as u16,
+        u16::try_from(r.clamp(0, i64::from(u16::MAX))).expect("clamped red sample fits u16"),
+        u16::try_from(g.clamp(0, i64::from(u16::MAX))).expect("clamped green sample fits u16"),
+        u16::try_from(b.clamp(0, i64::from(u16::MAX))).expect("clamped blue sample fits u16"),
     )
 }
 
@@ -278,9 +286,9 @@ pub(super) fn upsample_h2v1_8bit_for_fixture(row: &[u8], output_x: usize) -> u8 
     } else if output_x == row.len() * 2 - 1 {
         row[row.len() - 1]
     } else if output_x.is_multiple_of(2) {
-        ((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4) as u8
+        weighted_u8((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4)
     } else {
-        ((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4) as u8
+        weighted_u8((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4)
     }
 }
 
@@ -302,21 +310,21 @@ pub(super) fn upsample_h2v2_8bit_for_fixture(
     let near = &plane[near_y * chroma_width..(near_y + 1) * chroma_width];
     let colsum = |index: usize| 3 * u32::from(current[index]) + u32::from(near[index]);
     if chroma_width == 1 {
-        return ((4 * colsum(0) + 8) >> 4) as u8;
+        return weighted_u8((4 * colsum(0) + 8) >> 4);
     }
 
     let sample = output_x / 2;
     let this = colsum(sample);
     match output_x {
-        0 => ((this * 4 + 8) >> 4) as u8,
-        _ if output_x == output_width - 1 => ((this * 4 + 7) >> 4) as u8,
+        0 => weighted_u8((this * 4 + 8) >> 4),
+        _ if output_x == output_width - 1 => weighted_u8((this * 4 + 7) >> 4),
         _ if output_x.is_multiple_of(2) => {
             let last = colsum(sample - 1);
-            ((this * 3 + last + 8) >> 4) as u8
+            weighted_u8((this * 3 + last + 8) >> 4)
         }
         _ => {
             let next = colsum(sample + 1);
-            ((this * 3 + next + 7) >> 4) as u8
+            weighted_u8((this * 3 + next + 7) >> 4)
         }
     }
 }
@@ -331,9 +339,9 @@ pub(super) fn upsample_h2v1_16bit_for_fixture(row: &[u16], output_x: usize) -> u
     } else if output_x == row.len() * 2 - 1 {
         row[row.len() - 1]
     } else if output_x.is_multiple_of(2) {
-        ((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4) as u16
+        weighted_u16((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4)
     } else {
-        ((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4) as u16
+        weighted_u16((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4)
     }
 }
 
@@ -355,21 +363,21 @@ pub(super) fn upsample_h2v2_16bit_for_fixture(
     let near = &plane[near_y * chroma_width..(near_y + 1) * chroma_width];
     let colsum = |index: usize| 3 * u32::from(current[index]) + u32::from(near[index]);
     if chroma_width == 1 {
-        return ((4 * colsum(0) + 8) >> 4) as u16;
+        return weighted_u16((4 * colsum(0) + 8) >> 4);
     }
 
     let sample = output_x / 2;
     let this = colsum(sample);
     match output_x {
-        0 => ((this * 4 + 8) >> 4) as u16,
-        _ if output_x == output_width - 1 => ((this * 4 + 7) >> 4) as u16,
+        0 => weighted_u16((this * 4 + 8) >> 4),
+        _ if output_x == output_width - 1 => weighted_u16((this * 4 + 7) >> 4),
         _ if output_x.is_multiple_of(2) => {
             let last = colsum(sample - 1);
-            ((this * 3 + last + 8) >> 4) as u16
+            weighted_u16((this * 3 + last + 8) >> 4)
         }
         _ => {
             let next = colsum(sample + 1);
-            ((this * 3 + next + 7) >> 4) as u16
+            weighted_u16((this * 3 + next + 7) >> 4)
         }
     }
 }
