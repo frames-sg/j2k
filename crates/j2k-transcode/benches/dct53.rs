@@ -83,27 +83,7 @@ use j2k_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
 use std::hint::black_box;
 
 fn bench_dct53_math(c: &mut Criterion) {
-    let coeffs = [91.0, -36.0, 14.0, -9.0, 3.0, 22.0, -11.0, 4.0];
-
-    let mut single_block = c.benchmark_group("dct53_1d_single_block_scalar");
-    single_block.bench_function("direct_linear", |b| {
-        b.iter(|| dct8_to_dwt53_float_linear(black_box(coeffs)));
-    });
-    single_block.bench_function("idct_then_dwt_reference", |b| {
-        b.iter(|| idct8_then_dwt53_float(black_box(coeffs)));
-    });
-    single_block.finish();
-
-    let blocks = pseudo_random_blocks(32);
-
-    let mut multi_block = c.benchmark_group("dct53_1d_multi_block_scalar");
-    multi_block.bench_function("direct_linear", |b| {
-        b.iter(|| dct8_blocks_to_dwt53_float_linear(black_box(&blocks)));
-    });
-    multi_block.bench_function("idct_then_dwt_reference", |b| {
-        b.iter(|| idct8_blocks_then_dwt53_float(black_box(&blocks)));
-    });
-    multi_block.finish();
+    bench_dct53_1d(c);
 
     let block_2d = synthetic_8x8_block();
     let single_block_grid = [block_2d];
@@ -193,6 +173,30 @@ fn bench_dct53_math(c: &mut Criterion) {
         });
     });
     multilevel.finish();
+}
+
+fn bench_dct53_1d(c: &mut Criterion) {
+    let coeffs = [91.0, -36.0, 14.0, -9.0, 3.0, 22.0, -11.0, 4.0];
+
+    let mut single_block = c.benchmark_group("dct53_1d_single_block_scalar");
+    single_block.bench_function("direct_linear", |b| {
+        b.iter(|| dct8_to_dwt53_float_linear(black_box(coeffs)));
+    });
+    single_block.bench_function("idct_then_dwt_reference", |b| {
+        b.iter(|| idct8_then_dwt53_float(black_box(coeffs)));
+    });
+    single_block.finish();
+
+    let blocks = pseudo_random_blocks(32);
+
+    let mut multi_block = c.benchmark_group("dct53_1d_multi_block_scalar");
+    multi_block.bench_function("direct_linear", |b| {
+        b.iter(|| dct8_blocks_to_dwt53_float_linear(black_box(&blocks)));
+    });
+    multi_block.bench_function("idct_then_dwt_reference", |b| {
+        b.iter(|| idct8_blocks_then_dwt53_float(black_box(&blocks)));
+    });
+    multi_block.finish();
 }
 
 fn bench_dct97_grid(c: &mut Criterion, grid_blocks: &[[[f64; 8]; 8]]) {
