@@ -21,6 +21,7 @@ mod adoption_materialize;
 #[cfg(feature = "adoption")]
 mod adoption_report;
 mod coverage;
+mod cuda;
 #[cfg(feature = "adoption")]
 mod markdown;
 mod metal;
@@ -202,6 +203,7 @@ fn run() -> Result<(), String> {
         "release-integrity" => release_integrity(),
         "release-status" => release_status::release_status(env::args().skip(2)),
         "release-cpu" => release_cpu(),
+        "release-cuda" => cuda::release_cuda(),
         "metal-compile" => metal::metal_compile(),
         "release-metal" => metal::release_metal(),
         "coverage" => coverage::coverage(env::args().skip(2)),
@@ -1995,6 +1997,7 @@ fn print_help() {
            release-integrity validate publish membership, docs.rs metadata, workflow order, and release docs\n\
            release-status verify one frozen SHA's CI aggregate and both GPU jobs [--sha SHA] [--repository owner/name]\n\
            release-cpu   run release-mode CPU codec tests\n\
+           release-cuda  run fail-closed release-mode CUDA validation on Linux x86_64\n\
            metal-compile compile all Metal targets and run default/pure tests on hosted macOS\n\
            release-metal run fail-closed release-mode Metal hardware validation on macOS\n\
            coverage      enforce >=80% changed executable Rust coverage [host|metal|cuda] [--base REV]\n\

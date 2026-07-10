@@ -63,6 +63,28 @@ jobs:
           components: rustfmt
       - run: cargo xtask fmt
 
+  diff-check:
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Reject whitespace errors in the submitted delta
+        run: |
+          if [ -n "${BASE_SHA}" ] \
+            && [ "${BASE_SHA}" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "${BASE_SHA}^{commit}"; then
+            git diff --check "${BASE_SHA}...${GITHUB_SHA}"
+          else
+            git show --check --format=fuller "${GITHUB_SHA}" >/dev/null
+          fi
+
+  secret-scan:
+    name: Secret scan
+    uses: ./.github/workflows/secret-scan.yml
+
   clippy:
     runs-on: ubuntu-latest
     steps:
@@ -387,6 +409,8 @@ jobs:
       - gpu-path-policy
       - github-actions-verifier
       - fmt
+      - diff-check
+      - secret-scan
       - clippy
       - panic-surface
       - comparator-parity

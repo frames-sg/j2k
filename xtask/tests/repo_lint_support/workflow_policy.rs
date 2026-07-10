@@ -163,9 +163,13 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
 fn release_candidate_and_publish_evidence_are_fail_closed() {
     let root = repo_root();
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let secret_scan_workflow = fs::read_to_string(root.join(".github/workflows/secret-scan.yml"))
+        .expect("read secret scan workflow");
     let publish = fs::read_to_string(root.join(".github/workflows/publish.yml"))
         .expect("read publish workflow");
     let aggregate = workflow_job(&ci, "release-candidate");
+    let diff_check = workflow_job(&ci, "diff-check");
+    let secret_scan = workflow_job(&ci, "secret-scan");
     let codec_math_codegen = workflow_job(&ci, "codec-math-codegen");
     let public_support_final = workflow_job(&ci, "public-support-final");
     let machete = workflow_job(&ci, "machete");
@@ -185,6 +189,8 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "github-actions-verifier",
             "gpu-path-policy",
             "fmt",
+            "diff-check",
+            "secret-scan",
             "clippy",
             "panic-surface",
             "comparator-parity",
@@ -210,6 +216,23 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "coverage",
             "deny",
             "REQUIRED_RESULTS: ${{ toJSON(needs) }}",
+        ]),
+        PatternCheck::new("CI submitted-delta whitespace gate", diff_check).required(&[
+            "fetch-depth: 0",
+            "BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}",
+            "git diff --check \"${BASE_SHA}...${GITHUB_SHA}\"",
+            "git show --check --format=fuller \"${GITHUB_SHA}\"",
+        ]),
+        PatternCheck::new("CI exact-SHA secret scan gate", secret_scan).required(&[
+            "name: Secret scan",
+            "uses: ./.github/workflows/secret-scan.yml",
+        ]),
+        PatternCheck::new("reusable pinned secret scan", &secret_scan_workflow).required(&[
+            "workflow_call:",
+            "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+            "GITLEAKS_VERSION: \"8.30.1\"",
+            "GITLEAKS_SHA256: \"551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb\"",
+            "./gitleaks detect --source . --redact --verbose",
         ]),
         PatternCheck::new("CI codec-math freshness gate", codec_math_codegen).required(&[
             "runs-on: ubuntu-latest",
@@ -301,9 +324,8 @@ fn gpu_validation_workflow_is_self_hosted_and_explicit() {
                     "cuda",
                     "J2K_REQUIRE_CUDA_OXIDE_BUILD",
                     "J2K_REQUIRE_METAL_RUNTIME",
+                    "cargo xtask release-cuda",
                     "cargo xtask release-metal",
-                    "cargo test -p j2k-jpeg-cuda",
-                    "cargo test -p j2k-cuda",
                     "cargo run -p xtask --features adoption -- adoption-materialize",
                     "cargo run -p xtask --features adoption -- adoption-curate",
                     "cargo run -p xtask --features adoption -- adoption-benchmark",
@@ -345,6 +367,16 @@ fn cuda_gpu_validation_job_stays_cuda_focused() {
         "cargo bench -p j2k-jpeg --no-run",
         "cargo test -p j2k-jpeg-metal",
         "cargo test -p j2k-metal",
+        "cargo test -p j2k-cuda-runtime",
+        "cargo test -p j2k-jpeg-cuda",
+        "cargo test -p j2k-cuda",
+        "cargo test -p j2k-transcode-cuda",
+        "cargo clippy -p j2k-cuda-runtime",
+        "cargo clippy -p j2k-jpeg-cuda",
+        "cargo clippy -p j2k-cuda",
+        "cargo clippy -p j2k-transcode-cuda",
+        "executed-count floor",
+        "passed=$(echo",
     ];
     assert_pattern_checks(&[PatternCheck::new("CUDA GPU validation job", cuda_job)
         .required(&[
@@ -360,12 +392,17 @@ fn cuda_gpu_validation_job_stays_cuda_focused() {
             "cargo -V",
             "nvidia-smi",
             "CUDA runtime validation requires a working CUDA driver",
-            "cargo test -p j2k-jpeg-cuda --all-targets --features cuda-runtime",
-            "cargo test -p j2k-cuda --all-targets --features cuda-runtime",
+            "Run fail-closed CUDA release validation",
+            "cargo xtask release-cuda",
             "cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime --no-run",
             "cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot",
         ])
         .forbidden(&forbidden)]);
+    assert_eq!(
+        cuda_job.matches("cargo xtask release-cuda").count(),
+        1,
+        "CUDA GPU validation must delegate exactly once to the repository-owned release gate"
+    );
 }
 
 #[test]
@@ -446,6 +483,37 @@ fn metal_xtask_owns_complete_compile_and_runtime_policy() {
                 "skipping Metal release tests",
                 "J2K_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS",
             ])],
+    );
+}
+
+#[test]
+fn cuda_xtask_owns_complete_compile_and_runtime_policy() {
+    assert_file_pattern_checks(
+        repo_root(),
+        &[FilePatternCheck::new("xtask/src/cuda.rs")
+            .named("CUDA xtask policy")
+            .required(&[
+                "CUDA_RELEASE_ENV",
+                "J2K_REQUIRE_CUDA_RUNTIME",
+                "J2K_REQUIRE_CUDA_OXIDE_BUILD",
+                "J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE",
+                "RUST_TEST_THREADS",
+                "nvidia-smi",
+                "release-cuda requires Linux x86_64",
+                "j2k-cuda-runtime",
+                "j2k-jpeg-cuda",
+                "j2k-cuda",
+                "j2k-transcode-cuda",
+                "HTJ2K_ENCODE_PARITY_TESTS",
+                "TRANSCODE_PARITY_TESTS",
+                "validate_exact_inventory",
+                "validate_exact_named_run",
+                "J2K_GPU_TEST_SKIPPED",
+                "skipping cuda",
+                "passed zero tests",
+                "was partial",
+            ])
+            .forbidden(&["minimum_passed", "executed-count floor"])],
     );
 }
 
