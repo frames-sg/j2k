@@ -13,7 +13,8 @@ pub(super) struct J2kScalarPackParams {
 #[cfg(target_os = "macos")]
 pub(super) fn j2k_scalar_pack_params(bit_depth: u32) -> J2kScalarPackParams {
     let clamped = bit_depth.min(16);
-    let max_value_u16 = ((1u32 << clamped) - 1).max(1) as u16;
+    let max_value_u16 =
+        u16::try_from(((1u32 << clamped) - 1).max(1)).expect("bit depth is clamped to 16 bits");
     let max_value = f32::from(max_value_u16);
     let u8_scale = 255.0 / max_value;
     let u16_scale = if bit_depth <= 8 {

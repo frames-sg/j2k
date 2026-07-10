@@ -8,6 +8,10 @@ use super::super::{
 };
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "counter validation is an exhaustive ABI field mapping"
+)]
 pub(in crate::compute) fn record_classic_tier1_density_counters(
     stage_stats: &mut J2kResidentEncodeStageStats,
     readback: &J2kResidentClassicTier1DensityReadback,
@@ -160,6 +164,10 @@ pub(in crate::compute) fn record_classic_tier1_density_counters(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "counter validation is an exhaustive ABI field mapping"
+)]
 pub(in crate::compute) fn record_classic_tier1_symbol_plan_counters(
     stage_stats: &mut J2kResidentEncodeStageStats,
     readback: &J2kResidentClassicTier1SymbolPlanReadback,

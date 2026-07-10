@@ -11,6 +11,10 @@ use super::{
 };
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single decomposition dispatch keeps intermediate buffers and copies ordered"
+)]
 pub(crate) fn decode_reversible53_single_decomposition_idwt(
     job: J2kSingleDecompositionIdwtJob<'_>,
     output: &mut [f32],

@@ -23,6 +23,10 @@ use super::{
 };
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "output validation is an exhaustive status-kind mapping"
+)]
 pub(in crate::compute) fn record_resident_tier1_output_usage(
     stage_stats: &mut J2kResidentEncodeStageStats,
     readback: &J2kResidentTier1StatusReadback,
@@ -228,6 +232,10 @@ pub(in crate::compute) fn wait_resident_codestream_command_buffer(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "result harvesting keeps buffer validation and timing ownership atomic"
+)]
 pub(in crate::compute) fn finish_completed_resident_lossless_codestream_batch(
     pending: J2kPendingResidentLosslessCodestreamBatch,
 ) -> Result<J2kResidentLosslessCodestreamBatchResult, Error> {

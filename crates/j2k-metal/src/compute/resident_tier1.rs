@@ -39,8 +39,48 @@ mod readback;
 mod result_harvest;
 mod types;
 
-pub(in crate::compute) use self::counter_validation::*;
-pub(in crate::compute) use self::profile_dispatch::*;
-pub(crate) use self::readback::*;
-pub(in crate::compute) use self::result_harvest::*;
-pub(crate) use self::types::*;
+pub(in crate::compute) use self::counter_validation::{
+    compare_classic_tier1_symbol_plan_and_pass_plan_counters,
+    compare_classic_tier1_symbol_plan_and_split_token_emit_counters,
+    compare_classic_tier1_symbol_plan_and_token_emit_counters, profile_classic_tier1_token_pack,
+    record_classic_tier1_density_counters, record_classic_tier1_pass_plan_counters,
+    record_classic_tier1_symbol_plan_counters, record_classic_tier1_token_emit_counters,
+    validate_classic_tier1_split_token_emit_counters,
+};
+#[cfg(test)]
+pub(in crate::compute) use self::profile_dispatch::dispatch_classic_tier1_split_token_emit_for_cpu_pack;
+pub(in crate::compute) use self::profile_dispatch::{
+    dispatch_classic_tier1_arithmetic_pack_profile, dispatch_classic_tier1_density_profile,
+    dispatch_classic_tier1_pass_plan_profile, dispatch_classic_tier1_raw_pack_profile,
+    dispatch_classic_tier1_split_token_emit_for_gpu_pack,
+    dispatch_classic_tier1_split_token_emit_profile,
+    dispatch_classic_tier1_split_token_pack_from_gpu_tokens,
+    dispatch_classic_tier1_symbol_plan_profile, dispatch_classic_tier1_token_emit_for_gpu_pack,
+    dispatch_classic_tier1_token_emit_profile, dispatch_classic_tier1_token_pack_from_gpu_tokens,
+    schedule_classic_tier1_gpu_token_pack_readback,
+};
+pub(in crate::compute) use self::readback::{
+    schedule_resident_tier1_status_readback, ResidentTier1StatusReadbackRequest,
+};
+pub(crate) use self::readback::{
+    wait_resident_lossless_codestream, wait_resident_lossless_codestream_batch,
+    wait_resident_lossless_codestream_batches,
+};
+pub(in crate::compute) use self::result_harvest::{
+    finish_completed_resident_lossless_codestream_batch, wait_resident_codestream_command_buffer,
+};
+pub(in crate::compute) use self::types::{
+    J2kBatchedPacketPayloadCopyDispatch, J2kResidentClassicTier1DensityReadback,
+    J2kResidentClassicTier1GpuTokenBuffers, J2kResidentClassicTier1PassPlanReadback,
+    J2kResidentClassicTier1SplitTokenBuffers, J2kResidentClassicTier1SymbolPlanReadback,
+    J2kResidentClassicTier1TokenEmitReadback, J2kResidentTier1StatusKind,
+    J2kResidentTier1StatusReadback,
+};
+pub(crate) use self::types::{
+    J2kLosslessCodestreamAssemblyJob, J2kLosslessCodestreamBlockCodingMode,
+    J2kLosslessDeviceBatchPrepareItem, J2kLosslessDeviceCodeBlock, J2kLosslessDevicePrepareJob,
+    J2kPendingResidentLosslessCodestreamBatch, J2kPreparedLosslessDeviceCodeBlocks,
+    J2kResidentLosslessHtCodeBlocks, J2kResidentLosslessTier1CodeBlocks,
+    J2kResidentPacketizationEncodeJob, J2kResidentPacketizationResolution,
+    J2kResidentPacketizationSubband, ResidentLosslessTier1Metal,
+};

@@ -104,6 +104,10 @@ pub(super) struct ClassicTier1ProfileRequest<'a> {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "profile mode dispatch is an exhaustive ordered Metal pipeline"
+)]
 pub(super) fn dispatch_classic_tier1_profiles(
     request: ClassicTier1ProfileRequest<'_>,
 ) -> Result<ClassicTier1ProfileResult, Error> {

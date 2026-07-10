@@ -143,6 +143,10 @@ pub(super) struct J2kForwardDwt97Params {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "forward transform dispatch preserves scratch-buffer and command ordering"
+)]
 pub(crate) fn encode_forward_dwt97(
     samples: &[f32],
     width: u32,
@@ -327,7 +331,8 @@ pub(crate) fn encode_deinterleave_to_f32(
             dst_width: pixel_count,
             dst_height: 1,
             components: u32::from(job.num_components),
-            bytes_per_sample: bytes_per_sample as u32,
+            bytes_per_sample: u32::try_from(bytes_per_sample)
+                .expect("supported sample width fits u32"),
             bit_depth: u32::from(job.bit_depth),
             sample_offset: encode_deinterleave_sample_offset(job.bit_depth, job.signed),
             signed_samples: u32::from(job.signed),

@@ -207,7 +207,10 @@ fn push_auto_region_scaled_direct_batches(
     );
 }
 
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "pixel-format buckets intentionally use parallel rgb8/rgba8/rgb16 names"
+)]
 fn coalesce_distinct_full_color_metal_requests(
     repeated_batches: Vec<GroupedRequests>,
 ) -> Vec<GroupedRequests> {

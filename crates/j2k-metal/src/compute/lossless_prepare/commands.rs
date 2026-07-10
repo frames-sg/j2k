@@ -333,7 +333,8 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_on_buffers(
     let mut current_height = height;
     let mut levels_run = 0u8;
     let mut active_is_input = true;
-    let component_count_u32 = component_count as u32;
+    let component_count_u32 =
+        u32::try_from(component_count).expect("JPEG 2000 component count fits u32");
 
     while levels_run < num_levels && (current_width >= 2 || current_height >= 2) {
         let low_width = current_width.div_ceil(2);
@@ -486,7 +487,8 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_split_profile(
     let mut active_is_input = true;
     let mut vertical_command_buffers = Vec::new();
     let mut horizontal_command_buffers = Vec::new();
-    let component_count_u32 = component_count as u32;
+    let component_count_u32 =
+        u32::try_from(component_count).expect("JPEG 2000 component count fits u32");
 
     while levels_run < num_levels && (current_width >= 2 || current_height >= 2) {
         let low_width = current_width.div_ceil(2);

@@ -464,6 +464,10 @@ fn test_ht_job(output_x: u32, output_y: u32, width: u32, height: u32) -> J2kHtCl
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test helper receives small synthetic band identifiers"
+)]
 fn test_ht_sub_band(band_id: u32) -> PreparedHtSubBand {
     PreparedHtSubBand {
         band_id,

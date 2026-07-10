@@ -183,8 +183,8 @@ fn submit_planned_resident_classic_lossless_tiles_batch(
 
 /// Shared chunked submit driver for the per-family resident lossless batch
 /// paths. `time_prepare_in_submit` preserves each family's historical
-/// prepare_submit_duration semantics: HT (true) measures prepare + item
-/// build + submit, classic (false) measures only the submit call.
+/// `prepare_submit_duration` semantics: HT (`true`) measures prepare + item
+/// build + submit, classic (`false`) measures only the submit call.
 #[cfg(target_os = "macos")]
 fn submit_planned_resident_lossless_tiles_chunked(
     mut planned: Vec<PlannedResidentLosslessBufferEncode>,
@@ -311,5 +311,5 @@ pub(super) fn duration_share(duration: Duration, count: usize) -> Duration {
         return Duration::ZERO;
     }
     let nanos = duration.as_nanos() / count as u128;
-    Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
+    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
 }

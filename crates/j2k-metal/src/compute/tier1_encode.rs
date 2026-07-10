@@ -200,6 +200,10 @@ pub(super) fn read_classic_encoded_code_block(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "batched Tier-1 submission keeps buffer slices and status ordering aligned"
+)]
 pub(crate) fn encode_classic_tier1_code_blocks(
     jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
 ) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {
@@ -343,6 +347,10 @@ pub(crate) fn encode_classic_tier1_code_blocks(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "resident Tier-1 submission keeps command bindings and retained buffers ordered"
+)]
 pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
     session: &crate::MetalBackendSession,
     prepared: J2kPreparedLosslessDeviceCodeBlocks,
@@ -502,6 +510,10 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "resident HT submission keeps command bindings and retained buffers ordered"
+)]
 pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
     session: &crate::MetalBackendSession,
     prepared: J2kPreparedLosslessDeviceCodeBlocks,
@@ -630,6 +642,10 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-block dispatch and validated readback form one operation"
+)]
 pub(crate) fn encode_classic_tier1_code_block(
     job: J2kTier1CodeBlockEncodeJob<'_>,
 ) -> Result<EncodedJ2kCodeBlock, Error> {
@@ -931,6 +947,10 @@ pub(super) fn encode_ht_cleanup_code_blocks_with_runtime(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "HT batch dispatch keeps output/status slice ownership aligned"
+)]
 pub(super) fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     runtime: &MetalRuntime,
     jobs: &[J2kHtCodeBlockEncodeJob<'_>],

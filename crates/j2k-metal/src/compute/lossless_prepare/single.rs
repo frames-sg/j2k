@@ -10,6 +10,10 @@ use super::{
 };
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-item preparation preserves command and scratch-buffer ordering"
+)]
 pub(crate) fn prepare_lossless_device_code_blocks(
     session: &crate::MetalBackendSession,
     job: J2kLosslessDevicePrepareJob<'_>,

@@ -151,6 +151,10 @@ pub(super) fn pack_classic_split_mq_raw_tokens_for_test(
 }
 
 #[cfg(all(test, target_os = "macos"))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test-only route reproduces the complete split-token CPU pipeline"
+)]
 pub(crate) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_cpu_pack_for_test(
     jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
 ) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {

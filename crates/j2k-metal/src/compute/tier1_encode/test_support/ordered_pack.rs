@@ -3,6 +3,10 @@
 use super::*;
 
 #[cfg(all(test, target_os = "macos"))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test-only route reproduces the complete ordered-token pipeline"
+)]
 pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_test(
     jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
 ) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {

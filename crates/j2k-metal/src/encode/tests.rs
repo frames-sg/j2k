@@ -69,6 +69,10 @@ fn should_run_metal_runtime() -> bool {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "public layout matrix is one behavior-focused regression"
+)]
 fn metal_encode_deinterleave_public_layouts_match_native_reference() {
     #[derive(Clone, Copy)]
     struct Case {
@@ -78,6 +82,10 @@ fn metal_encode_deinterleave_public_layouts_match_native_reference() {
         signed: bool,
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded public-layout fixture indices fit target sample widths"
+    )]
     fn case_pixels(case: Case, num_pixels: usize) -> Vec<u8> {
         let sample_count = num_pixels * usize::from(case.num_components);
         if case.bit_depth <= 8 {
@@ -523,6 +531,10 @@ fn submitted_lossless_metal_buffer_encode_public_api_is_available() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive default-field assertion guards the public stats contract"
+)]
 fn resident_lossless_stage_stats_default_to_zero() {
     let stats = super::MetalLosslessEncodeBatchStats::default();
 
@@ -725,6 +737,10 @@ fn resident_lossless_stage_stats_default_to_zero() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive saturation assertion guards every stats field"
+)]
 fn resident_lossless_stage_stats_add_assign_saturates() {
     let mut stats = super::MetalLosslessEncodeStageStats {
         plan_duration: Duration::MAX,
@@ -898,6 +914,10 @@ fn resident_lossless_stage_stats_add_assign_saturates() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive stage aggregation assertion guards every timing field"
+)]
 fn resident_lossless_stage_stats_accumulates_split_gpu_durations() {
     let mut stats = super::MetalLosslessEncodeStageStats {
         ht_block_gpu_duration: Duration::from_micros(2),
@@ -1216,7 +1236,9 @@ fn metal_encode_stage_accelerator_preserves_cpu_codestream_validity() {
         return;
     }
 
-    let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| (i & 0xFF) as u8).collect();
+    let pixels: Vec<u8> = (0..8 * 8 * 3)
+        .map(|i| u8::try_from(i & 0xFF).expect("masked pixel fits u8"))
+        .collect();
     let samples = J2kLosslessSamples::new(&pixels, 8, 8, 3, 8, false).expect("valid RGB samples");
     let options = J2kLosslessEncodeOptions::default()
         .with_backend(EncodeBackendPreference::Auto)
@@ -1368,6 +1390,10 @@ fn metal_forward_ict_compute_rejects_invalid_shape_structured() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic sample expression is nonnegative"
+)]
 fn metal_forward_rct_dispatch_round_trips_rgb8_lossless_tile() {
     if !should_run_metal_runtime() {
         return;
@@ -1402,6 +1428,10 @@ fn metal_forward_rct_dispatch_round_trips_rgb8_lossless_tile() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic byte expression is nonnegative"
+)]
 fn metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips() {
     if !should_run_metal_runtime() {
         return;
@@ -1439,6 +1469,10 @@ fn metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_validation_decodes_and_compares_lossless_codestream_on_device() {
     if !should_run_metal_runtime() {
         return;
@@ -1460,6 +1494,10 @@ fn metal_validation_decodes_and_compares_lossless_codestream_on_device() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_buffer_lossless_encode_pads_edge_tile_on_device() {
     if !should_run_metal_runtime() {
         return;
@@ -1514,6 +1552,10 @@ fn metal_buffer_lossless_encode_pads_edge_tile_on_device() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn submitted_metal_buffer_lossless_encode_wait_round_trips() {
     if !should_run_metal_runtime() {
         return;
@@ -1568,6 +1610,10 @@ fn submitted_metal_buffer_lossless_encode_wait_round_trips() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_buffer_lossless_encode_accepts_padded_contiguous_input_without_copy() {
     if !should_run_metal_runtime() {
         return;
@@ -1613,6 +1659,10 @@ fn metal_buffer_lossless_encode_accepts_padded_contiguous_input_without_copy() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_padded_private_rgb8_encode_uses_resident_coefficient_prep() {
     if !should_run_metal_runtime() {
         return;
@@ -1668,7 +1718,9 @@ fn auto_host_output_encode_options_preserve_auto_for_hybrid_path() {
 #[cfg(target_os = "macos")]
 #[test]
 fn auto_classic_host_output_stays_cpu_without_metal_dispatches() {
-    let pixels: Vec<u8> = (0..64 * 64).map(|i| ((i * 17) & 0xff) as u8).collect();
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|i| u8::try_from((i * 17) & 0xff).expect("masked pixel fits u8"))
+        .collect();
     let samples =
         J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
     let options = lossless_options! {
@@ -1732,6 +1784,10 @@ fn auto_classic_large_host_output_dispatches_benchmark_gated_prep_stages_only() 
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn auto_lossy_host_output_stays_cpu_without_metal_dispatches() {
     let pixels: Vec<u8> = (0..64 * 64)
         .map(|idx| ((idx * 29 + idx / 7) & 0xff) as u8)
@@ -1759,6 +1815,10 @@ fn auto_lossy_host_output_stays_cpu_without_metal_dispatches() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn auto_lossy_packet_marker_shape_stays_cpu_without_packetization_dispatch() {
     let pixels: Vec<u8> = (0..64 * 64)
         .map(|idx| ((idx * 31 + idx / 5) & 0xff) as u8)
@@ -1793,7 +1853,7 @@ fn strict_metal_lossy_packet_marker_shape_requires_packetization_dispatch() {
     }
 
     let pixels: Vec<u8> = (0..64 * 64)
-        .map(|idx| ((idx * 37 + idx / 9) & 0xff) as u8)
+        .map(|idx| u8::try_from((idx * 37 + idx / 9) & 0xff).expect("masked pixel fits u8"))
         .collect();
     let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
     let mut accelerator = MetalEncodeStageAccelerator::default();
@@ -2042,7 +2102,9 @@ fn metal_padded_private_rgb8_auto_host_encode_routes_away_from_resident_prep() {
         return;
     }
 
-    let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 43) & 0xFF) as u8).collect();
+    let pixels: Vec<u8> = (0..8 * 8 * 3)
+        .map(|i| u8::try_from((i * 43) & 0xFF).expect("masked pixel fits u8"))
+        .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
         .expect("private benchmark input buffer");
@@ -2323,6 +2385,10 @@ fn auto_htj2k_padded_private_gray8_batch_host_output_uses_full_resident_path() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_padded_private_rgb8_encode_to_metal_buffer_exposes_finished_bytes() {
     if !should_run_metal_runtime() {
         return;
@@ -2375,6 +2441,10 @@ fn metal_padded_private_rgb8_encode_to_metal_buffer_exposes_finished_bytes() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_edge_private_rgb8_encode_to_metal_buffer_pads_and_stays_resident() {
     if !should_run_metal_runtime() {
         return;
@@ -2438,7 +2508,9 @@ fn submitted_private_padded_rgb8_encode_snapshots_before_wait() {
         return;
     }
 
-    let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 31) & 0xFF) as u8).collect();
+    let pixels: Vec<u8> = (0..8 * 8 * 3)
+        .map(|i| u8::try_from((i * 31) & 0xFF).expect("masked pixel fits u8"))
+        .collect();
     let replacement = vec![0u8; pixels.len()];
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let buffer = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
@@ -2750,6 +2822,10 @@ fn metal_padded_private_gray16_encode_uses_resident_coefficient_prep() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_padded_private_ht_encode_to_metal_buffer_stays_resident() {
     if !should_run_metal_runtime() {
         return;
@@ -2802,6 +2878,10 @@ fn metal_padded_private_ht_encode_to_metal_buffer_stays_resident() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded masked fixture expression is nonnegative"
+)]
 fn metal_padded_private_rgb8_ht_rpcl_512_encode_preserves_three_dwt_levels_and_stays_resident() {
     if !should_run_metal_runtime() {
         return;
@@ -2858,6 +2938,10 @@ fn metal_padded_private_rgb8_ht_rpcl_512_encode_preserves_three_dwt_levels_and_s
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "32x32 batch fixture dimensions and indices fit u8/u32 fields"
+)]
 fn metal_rgb8_ht_batch_uses_fused_deinterleave_rct_kernel() {
     const WIDTH: usize = 32;
     const HEIGHT: usize = 32;
@@ -2931,6 +3015,10 @@ fn metal_rgb8_ht_batch_uses_fused_deinterleave_rct_kernel() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_buffer_lossless_batch_encodes_padded_contiguous_inputs() {
     if !should_run_metal_runtime() {
         return;
@@ -2997,6 +3085,10 @@ fn metal_buffer_lossless_batch_encodes_padded_contiguous_inputs() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_padded_private_batch_encode_to_metal_buffers_exposes_per_frame_bytes() {
     if !should_run_metal_runtime() {
         return;
@@ -3073,6 +3165,10 @@ fn metal_padded_private_batch_encode_to_metal_buffers_exposes_per_frame_bytes() 
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_padded_private_batch_dwt_encode_to_metal_buffers_round_trips() {
     if !should_run_metal_runtime() {
         return;
@@ -3142,6 +3238,10 @@ fn metal_padded_private_batch_dwt_encode_to_metal_buffers_round_trips() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_edge_private_batch_encode_to_metal_buffers_stays_resident() {
     if !should_run_metal_runtime() {
         return;
@@ -3225,6 +3325,10 @@ fn metal_edge_private_batch_encode_to_metal_buffers_stays_resident() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_ht_private_batch_encode_to_metal_buffers_stays_resident() {
     if !should_run_metal_runtime() {
         return;
@@ -3314,6 +3418,10 @@ fn metal_ht_private_batch_encode_to_metal_buffers_stays_resident() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "bounded batch fixture dimensions and indices fit u8/u32 fields"
+)]
 fn metal_ht_private_batch_encode_reuses_private_arenas_between_batches() {
     const WIDTH: usize = 37;
     const HEIGHT: usize = 41;

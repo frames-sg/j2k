@@ -3,6 +3,10 @@
 use super::*;
 
 #[cfg(all(test, target_os = "macos"))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test-only route reproduces the complete GPU token-pack pipeline"
+)]
 pub(crate) fn encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test(
     jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
 ) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {
@@ -185,6 +189,10 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_split_mq_byte_raw_tokens_gpu_
 }
 
 #[cfg(all(test, target_os = "macos"))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test-only route reproduces the complete split-token GPU pipeline"
+)]
 pub(super) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_for_test_with_emit_route(
     jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
     use_mq_byte_emit: bool,

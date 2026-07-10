@@ -66,7 +66,7 @@ pub(super) struct CpuTier1DecodeSubstageCounters {
 impl CpuTier1DecodeSubstageCounters {
     fn add_counter(counter: &AtomicU64, elapsed_us: u128) {
         counter.fetch_add(
-            elapsed_us.min(u128::from(u64::MAX)) as u64,
+            u64::try_from(elapsed_us).unwrap_or(u64::MAX),
             AtomicOrdering::Relaxed,
         );
     }
@@ -200,7 +200,7 @@ pub(super) fn record_completed_decode_split_gpu_stages(
 }
 
 fn elapsed_us_u64(started: Instant) -> u64 {
-    elapsed_us(started).min(u128::from(u64::MAX)) as u64
+    u64::try_from(elapsed_us(started)).unwrap_or(u64::MAX)
 }
 
 pub(super) fn emit_direct_hybrid_stage_timings(

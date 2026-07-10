@@ -183,6 +183,10 @@ pub(super) struct StackedDirectColorBatchRequest<'a> {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "stacked batch validation, submission, and fallback form one atomic route"
+)]
 pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
     request: StackedDirectColorBatchRequest<'_>,
 ) -> Result<Option<Vec<Surface>>, Error> {

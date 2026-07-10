@@ -4,6 +4,10 @@ use super::*;
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_forward_dwt53_dispatch_round_trips_gray8_lossless_tile() {
     if !should_run_metal_runtime() {
         return;
@@ -74,6 +78,10 @@ fn metal_lossless_facade_dispatches_rct_and_dwt_for_wsi_sized_rgb_tile() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic coefficient expression is nonnegative"
+)]
 fn metal_classic_tier1_uses_one_batched_dispatch_for_multiple_code_blocks() {
     if !should_run_metal_runtime() {
         return;
@@ -108,6 +116,10 @@ fn metal_classic_tier1_uses_one_batched_dispatch_for_multiple_code_blocks() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expressions are nonnegative"
+)]
 fn metal_classic_resident_uses_mq_byte_split_gpu_token_pack_by_default() {
     if !should_run_metal_runtime() {
         return;
@@ -206,6 +218,10 @@ fn metal_classic_resident_uses_mq_byte_split_gpu_token_pack_by_default() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expressions are nonnegative"
+)]
 fn metal_classic_resident_gpu_token_pack_route_round_trips() {
     if !should_run_metal_runtime() {
         return;
@@ -312,6 +328,10 @@ fn metal_classic_resident_gpu_token_pack_route_round_trips() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic coefficient expression is nonnegative"
+)]
 fn metal_htj2k_uses_one_batched_dispatch_for_multiple_code_blocks() {
     if !should_run_metal_runtime() {
         return;
@@ -342,6 +362,10 @@ fn metal_htj2k_uses_one_batched_dispatch_for_multiple_code_blocks() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_htj2k_lossless_facade_dispatches_ht_code_blocks_and_packetization() {
     if !should_run_metal_runtime() {
         return;
@@ -377,6 +401,10 @@ fn metal_htj2k_lossless_facade_dispatches_ht_code_blocks_and_packetization() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic pixel expression is nonnegative"
+)]
 fn metal_htj2k_lossy_facade_require_device_dispatches_supported_stages() {
     if !should_run_metal_runtime() {
         return;
@@ -726,6 +754,10 @@ fn metal_classic_tier1_batched_bypass_u16_32_matches_scalar() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "byte-exact route matrix is one end-to-end regression"
+)]
 fn metal_classic_tier1_token_routes_match_scalar_bytes() {
     if !should_run_metal_runtime() {
         return;

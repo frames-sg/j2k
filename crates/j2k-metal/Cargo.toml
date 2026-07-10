@@ -52,12 +52,7 @@ unreachable_pub = "warn"
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 undocumented_unsafe_blocks = "warn"
-module_name_repetitions = "allow"
+# Public API annotation/documentation policy is tracked separately from the
+# implementation-quality lint gate to avoid fingerprint-only release churn.
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-too_many_lines = "allow"
-cast_possible_truncation = "allow"
-cast_sign_loss = "allow"
-cast_possible_wrap = "allow"
-doc_markdown = "allow"

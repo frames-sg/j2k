@@ -612,6 +612,10 @@ impl SubmissionContext<'_, '_, '_> {
         Ok(buffer)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "IDWT command submission keeps scratch lifetimes and stage order explicit"
+    )]
     fn submit_idwt(&mut self, step_idx: usize, idwt: &PreparedDirectIdwt) -> Result<(), Error> {
         let per_instance_len = prepared_idwt_output_len(idwt);
         let output = take_f32_scratch_buffer(self.runtime, per_instance_len * self.count)?;

@@ -353,6 +353,10 @@ pub(super) fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Metal dispatch and retained-resource ordering must remain linear"
+)]
 pub(super) fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,

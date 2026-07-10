@@ -73,6 +73,10 @@ struct ResidentPacketDescriptors {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-pass topology construction keeps packet indices and offsets consistent"
+)]
 fn build_resident_packet_topology<T: ResidentLosslessTier1Metal>(
     tier1: &T,
     job: J2kResidentPacketizationEncodeJob<'_>,
@@ -216,6 +220,10 @@ fn build_resident_packet_topology<T: ResidentLosslessTier1Metal>(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-pass descriptor construction keeps packet state offsets consistent"
+)]
 fn build_resident_packet_descriptors<T: ResidentLosslessTier1Metal>(
     job: J2kResidentPacketizationEncodeJob<'_>,
     resolutions: &[J2kPacketResolution],
@@ -358,8 +366,10 @@ fn build_resident_packet_descriptors<T: ResidentLosslessTier1Metal>(
             layer: u32::from(descriptor.layer),
             resolution: descriptor.resolution,
             component: u32::from(descriptor.component),
-            precinct_lo: descriptor.precinct as u32,
-            precinct_hi: (descriptor.precinct >> 32) as u32,
+            precinct_lo: u32::try_from(descriptor.precinct & u64::from(u32::MAX))
+                .expect("masked precinct low word fits u32"),
+            precinct_hi: u32::try_from(descriptor.precinct >> 32)
+                .expect("precinct high word fits u32"),
             state_block_offset,
         });
     }
@@ -371,6 +381,10 @@ fn build_resident_packet_descriptors<T: ResidentLosslessTier1Metal>(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "resident planning keeps derived capacities and buffer layouts co-located"
+)]
 fn plan_resident_single<T: ResidentLosslessTier1Metal>(
     tier1: &T,
     job: J2kResidentPacketizationEncodeJob<'_>,
@@ -529,6 +543,10 @@ fn plan_resident_single<T: ResidentLosslessTier1Metal>(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "resident submission preserves Metal ABI binding and command ordering"
+)]
 fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
     runtime: &MetalRuntime,
     tier1: &T,

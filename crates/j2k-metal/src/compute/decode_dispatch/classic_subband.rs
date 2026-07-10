@@ -14,6 +14,10 @@ use super::{
 };
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "classic subband dispatch mirrors fixed Metal argument and resource order"
+)]
 pub(in crate::compute) fn encode_repeated_classic_sub_band_to_buffer_in_command_buffer(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
@@ -143,6 +147,10 @@ pub(in crate::compute) fn encode_repeated_classic_sub_band_to_buffer_in_command_
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "grouped subband dispatch mirrors fixed Metal argument and resource order"
+)]
 pub(in crate::compute) fn encode_repeated_classic_sub_band_group_to_buffer_in_command_buffer(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,

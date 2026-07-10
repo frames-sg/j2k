@@ -44,9 +44,13 @@ pub(super) fn duration_share(duration: Duration, count: usize) -> Duration {
         return Duration::ZERO;
     }
     let nanos = duration.as_nanos() / count as u128;
-    Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
+    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive stage-to-counter mapping is clearer in one match"
+)]
 pub(super) fn record_completed_resident_encode_gpu_stages(
     stats: &mut J2kResidentEncodeStageStats,
     command_buffers: &[J2kResidentEncodeGpuStageCommandBuffer],

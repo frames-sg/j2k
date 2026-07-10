@@ -27,9 +27,18 @@ mod forward_encode;
 mod single;
 mod sizes;
 
-pub(crate) use self::batch::*;
+pub(crate) use self::batch::prepare_lossless_device_code_blocks_batch;
 use self::batch_item::{prepare_lossless_batch_item, BatchPrepareItemRequest};
-pub(in crate::compute) use self::commands::*;
-pub(crate) use self::forward_encode::*;
-pub(crate) use self::single::*;
-pub(in crate::compute) use self::sizes::*;
+pub(in crate::compute) use self::commands::{
+    dispatch_batched_packet_payload_copy, dispatch_forward_dwt53_components_on_buffers,
+    dispatch_forward_dwt53_components_split_profile, dispatch_forward_dwt53_on_buffers,
+    dispatch_forward_dwt53_on_buffers_split_profile, dispatch_forward_rct_on_buffers,
+    dispatch_lossless_deinterleave, dispatch_lossless_deinterleave_rct_rgb8,
+    dispatch_lossless_extract_coefficients, lossless_deinterleave_rct_rgb8_supported,
+    ForwardDwt53ComponentsDispatch,
+};
+pub(crate) use self::forward_encode::{
+    encode_forward_ict, encode_forward_rct, encode_quantize_subband,
+};
+pub(crate) use self::single::prepare_lossless_device_code_blocks;
+pub(in crate::compute) use self::sizes::{lossless_prepare_sizes, J2kLosslessPrepareSizes};

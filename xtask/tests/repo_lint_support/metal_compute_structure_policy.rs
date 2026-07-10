@@ -114,9 +114,12 @@ fn metal_compute_runtime_registry_is_split_from_compute_god_file() {
         )
         .required(&[
             "mod tier2_packetization;",
-            "pub(crate) use self::tier2_packetization::*;",
+            "pub(crate) use self::tier2_packetization::encode_tier2_packetization;",
         ])
-        .forbidden(&["pub(crate) fn encode_tier2_packetization"]),
+        .forbidden(&[
+            "pub(crate) use self::tier2_packetization::*;",
+            "pub(crate) fn encode_tier2_packetization",
+        ]),
         PatternCheck::new(
             "Metal resident codestream tier-2 packetization implementation",
             &resident_codestream_tier2,
@@ -321,10 +324,18 @@ fn metal_direct_plan_types_live_in_focused_module() {
             .required(&[
                 "mod component_plane;",
                 "mod single;",
+                "pub(in crate::compute) use self::component_plane::{",
+                "checked_coefficient_len",
+                "encode_prepared_direct_component_plane_in_command_buffer",
+                "upload_cpu_decoded_coefficients",
+                "DirectComponentPlaneRequest",
+                "pub(in crate::compute) use self::single::encode_prepared_direct_grayscale_plan_in_command_buffer;",
+            ])
+            .forbidden(&[
                 "pub(in crate::compute) use self::component_plane::*;",
                 "pub(in crate::compute) use self::single::*;",
-            ])
-            .forbidden(&["fn encode_prepared_direct_component_plane_in_command_buffer("]),
+                "fn encode_prepared_direct_component_plane_in_command_buffer(",
+            ]),
         PatternCheck::new(
             "Metal repeated grayscale execution shell",
             &repeated_grayscale,

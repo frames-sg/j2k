@@ -39,8 +39,11 @@ use super::{
 mod component_plane;
 mod single;
 
-pub(in crate::compute) use self::component_plane::*;
-pub(in crate::compute) use self::single::*;
+pub(in crate::compute) use self::component_plane::{
+    checked_coefficient_len, encode_prepared_direct_component_plane_in_command_buffer,
+    upload_cpu_decoded_coefficients, DirectComponentPlaneRequest,
+};
+pub(in crate::compute) use self::single::encode_prepared_direct_grayscale_plan_in_command_buffer;
 
 #[cfg(target_os = "macos")]
 pub(crate) fn execute_repeated_prepared_direct_grayscale_plan(
@@ -268,6 +271,10 @@ pub(super) fn execute_flattened_hybrid_cpu_tier1_direct_color_plan_batch_for_tes
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "direct color batch command ordering and fallback accounting are coupled"
+)]
 pub(super) fn execute_direct_color_plan_batch_with_tier1_options(
     plans: &[Arc<PreparedDirectColorPlan>],
     fmt: PixelFormat,

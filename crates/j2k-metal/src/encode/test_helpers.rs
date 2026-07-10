@@ -145,7 +145,6 @@ impl TestSubmittedSingleLosslessEncode {
     }
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
 pub(super) fn submit_lossless_from_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -164,7 +163,6 @@ pub(super) fn submit_lossless_from_metal_buffer(
     })
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
 pub(super) fn submit_lossless_from_padded_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -183,7 +181,6 @@ pub(super) fn submit_lossless_from_padded_metal_buffer(
     })
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
 pub(super) fn encode_lossless_from_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -192,7 +189,6 @@ pub(super) fn encode_lossless_from_metal_buffer(
     submit_lossless_from_metal_buffer(tile, options, session)?.wait()
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
 pub(super) fn encode_lossless_from_padded_metal_buffer_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -208,7 +204,6 @@ pub(super) fn encode_lossless_from_padded_metal_buffer_with_report(
     )
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
 pub(super) fn encode_lossless_from_metal_buffers_to_metal_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -227,7 +222,6 @@ pub(super) fn encode_lossless_from_metal_buffers_to_metal_with_report(
     .outcomes)
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
 pub(super) fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -246,7 +240,6 @@ pub(super) fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
     .outcomes)
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
 pub(super) fn encode_lossless_from_metal_buffer_to_metal_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -263,7 +256,6 @@ pub(super) fn encode_lossless_from_metal_buffer_to_metal_with_report(
     Ok(outcomes.remove(0))
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
 pub(super) fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -280,7 +272,6 @@ pub(super) fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
     Ok(outcomes.remove(0))
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
 pub(super) fn encode_lossless_from_padded_metal_buffers_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -297,7 +288,6 @@ pub(super) fn encode_lossless_from_padded_metal_buffers_with_report(
     )
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
 pub(super) fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,

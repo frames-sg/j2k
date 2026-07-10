@@ -59,6 +59,10 @@ pub(super) fn wait_submitted_resident_lossless_buffer_encode_batch(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "wait and harvest preserve chunk outcome and timing order"
+)]
 fn wait_submitted_resident_lossless_buffer_encode_batch_once(
     submitted: &mut SubmittedResidentLosslessMetalBufferEncodeBatch,
 ) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {

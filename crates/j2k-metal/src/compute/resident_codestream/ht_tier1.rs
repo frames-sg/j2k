@@ -35,6 +35,10 @@ pub(super) struct HtTier1Prepared {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "HT Tier-1 planning keeps capacities, buffers, and jobs synchronized"
+)]
 pub(super) fn prepare_ht_tier1(
     runtime: &MetalRuntime,
     prepared_tiles: &[PreparedLosslessBatchTile],

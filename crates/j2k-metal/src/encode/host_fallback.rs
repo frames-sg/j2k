@@ -12,6 +12,10 @@ use super::{
 };
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "host fallback keeps staging, acceleration, and dispatch reporting atomic"
+)]
 pub(super) fn encode_lossless_tile_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: J2kLosslessEncodeOptions,

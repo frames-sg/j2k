@@ -515,6 +515,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded test fixture index fits in u8"
+    )]
     fn auto_region_scaled_rgb_threshold_requires_repeated_inputs() {
         let requests = (0..AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT)
             .map(|idx| auto_rgb_region_scaled_request(Arc::from([idx as u8])))
@@ -609,6 +613,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded test fixture index fits in u8"
+    )]
     fn auto_region_scaled_distinct_rgb_grouping_preserves_cpu_decision() {
         let requests = (0..AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT)
             .map(|idx| {

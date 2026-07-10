@@ -166,6 +166,11 @@ fn gpu_encode_inflight_resolution_rejects_zero_overrides() {
 }
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    clippy::cast_sign_loss,
+    reason = "end-to-end batch regression keeps fixture and ordered comparisons together"
+)]
 fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
     if !should_run_metal_runtime() {
         return;
@@ -309,6 +314,10 @@ fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
 }
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "bounded synthetic batch pixels are nonnegative"
+)]
 fn metal_parallel_batch_returns_indexed_injected_failure() {
     if !should_run_metal_runtime() {
         return;

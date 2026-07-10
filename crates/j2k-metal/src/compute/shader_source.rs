@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "embedded validation and packing Metal source is intentionally contiguous"
+)]
 pub(super) fn shader_source() -> String {
     [
         r"

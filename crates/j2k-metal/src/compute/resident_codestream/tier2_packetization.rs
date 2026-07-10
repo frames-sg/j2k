@@ -33,6 +33,10 @@ struct Tier2PacketizationPlan {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-pass Tier-2 planning keeps packet topology and capacities consistent"
+)]
 fn plan_tier2_packetization(
     job: J2kPacketizationEncodeJob<'_>,
 ) -> Result<Tier2PacketizationPlan, Error> {
@@ -194,8 +198,10 @@ fn plan_tier2_packetization(
             layer: u32::from(descriptor.layer),
             resolution: descriptor.resolution,
             component: u32::from(descriptor.component),
-            precinct_lo: descriptor.precinct as u32,
-            precinct_hi: (descriptor.precinct >> 32) as u32,
+            precinct_lo: u32::try_from(descriptor.precinct & u64::from(u32::MAX))
+                .expect("masked precinct low word fits u32"),
+            precinct_hi: u32::try_from(descriptor.precinct >> 32)
+                .expect("precinct high word fits u32"),
             state_block_offset,
         });
     }

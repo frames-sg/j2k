@@ -47,7 +47,7 @@ fn lossless_device_encode_levels(width: u32, height: u32, options: J2kLosslessEn
         let max_levels = if width.min(height) <= 1 {
             0
         } else {
-            width.min(height).ilog2() as u8
+            u8::try_from(width.min(height).ilog2()).expect("u32 ilog2 result fits in u8")
         };
         while w.min(h) > MIN_LOSSLESS_DWT_DIMENSION && levels < max_levels {
             w = w.div_ceil(2);
@@ -65,7 +65,7 @@ fn lossless_device_encode_levels(width: u32, height: u32, options: J2kLosslessEn
             let max_levels = if width.min(height) <= 1 {
                 0
             } else {
-                width.min(height).ilog2() as u8
+                u8::try_from(width.min(height).ilog2()).expect("u32 ilog2 result fits in u8")
             };
             requested.min(max_levels)
         })
@@ -203,6 +203,10 @@ fn lossless_dwt_level_plans(
     levels
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "encode planning validates and derives one internally consistent layout"
+)]
 pub(super) fn lossless_device_encode_plan(
     width: u32,
     height: u32,

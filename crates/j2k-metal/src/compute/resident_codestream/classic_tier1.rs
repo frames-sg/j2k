@@ -63,6 +63,10 @@ pub(super) struct ClassicTier1Prepared {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "classic Tier-1 planning keeps capacities, buffers, and jobs synchronized"
+)]
 pub(super) fn prepare_classic_tier1(
     runtime: &MetalRuntime,
     prepared_tiles: &[PreparedLosslessBatchTile],
@@ -551,6 +555,10 @@ struct ClassicTier1DispatchResult {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "classic Tier-1 dispatch preserves fixed command and resource order"
+)]
 fn dispatch_classic_tier1(
     request: ClassicTier1DispatchRequest<'_>,
 ) -> Result<ClassicTier1DispatchResult, Error> {

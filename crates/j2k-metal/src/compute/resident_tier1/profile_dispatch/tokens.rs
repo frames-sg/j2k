@@ -14,6 +14,10 @@ use super::super::{
 };
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "profile dispatch keeps Metal bindings and retained buffers in ABI order"
+)]
 pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
@@ -157,6 +161,10 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_profile(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "profile dispatch keeps Metal bindings and retained buffers in ABI order"
+)]
 pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_gpu_pack(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,

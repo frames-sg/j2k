@@ -71,7 +71,6 @@ use crate::profile_env::{
 use crate::{Error, Surface};
 
 mod abi;
-pub(crate) use self::abi::*;
 #[cfg(target_os = "macos")]
 mod buffer_validation;
 #[cfg(target_os = "macos")]
@@ -314,17 +313,11 @@ use self::direct_plane_pack::{
     repeated_shared_direct_color_plan_count, PlaneStage,
 };
 #[cfg(target_os = "macos")]
-mod direct_prepare;
-#[cfg(target_os = "macos")]
-pub(crate) use self::direct_prepare::*;
-#[cfg(target_os = "macos")]
-mod direct_roi;
-#[cfg(target_os = "macos")]
-pub(crate) use self::direct_roi::*;
-#[cfg(target_os = "macos")]
 mod direct_grayscale_execute;
 #[cfg(target_os = "macos")]
-pub(crate) use self::direct_grayscale_execute::*;
+mod direct_prepare;
+#[cfg(target_os = "macos")]
+mod direct_roi;
 #[cfg(target_os = "macos")]
 mod direct_stacked_batch;
 #[cfg(target_os = "macos")]
@@ -360,33 +353,22 @@ use self::direct_execute::{
     prepared_repeated_direct_ht_cleanup_dispatch_count,
 };
 #[cfg(target_os = "macos")]
-mod forward_transform;
-#[cfg(target_os = "macos")]
-pub(crate) use self::forward_transform::*;
-#[cfg(target_os = "macos")]
-mod resident_tier1;
-#[cfg(target_os = "macos")]
-pub(crate) use self::resident_tier1::*;
-#[cfg(target_os = "macos")]
-mod lossless_prepare;
-#[cfg(target_os = "macos")]
-pub(crate) use self::lossless_prepare::*;
+mod decode_cleanup;
 #[cfg(target_os = "macos")]
 mod decode_dispatch;
 #[cfg(target_os = "macos")]
-pub(crate) use self::decode_dispatch::*;
+mod forward_transform;
 #[cfg(target_os = "macos")]
-mod tier1_encode;
-#[cfg(target_os = "macos")]
-pub(crate) use self::tier1_encode::*;
+mod lossless_prepare;
 #[cfg(target_os = "macos")]
 mod resident_codestream;
 #[cfg(target_os = "macos")]
-pub(crate) use self::resident_codestream::*;
+mod resident_tier1;
+#[path = "compute/symbol_inventory.rs"]
+mod symbol_inventory;
 #[cfg(target_os = "macos")]
-mod decode_cleanup;
-#[cfg(target_os = "macos")]
-pub(crate) use self::decode_cleanup::*;
+mod tier1_encode;
+symbol_inventory::wire_compute_symbols!();
 
 #[cfg(target_os = "macos")]
 fn required_classic_output_len(job: J2kCodeBlockDecodeJob<'_>) -> Result<usize, Error> {

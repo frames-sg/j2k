@@ -127,6 +127,10 @@ impl MetalRuntime {
         Self::new_with_device(&device)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pipeline inventory construction mirrors the fixed Metal runtime ABI"
+    )]
     pub(crate) fn new_with_device(device: &Device) -> Result<Self, MetalSupportError> {
         let shader_source = shader_source();
         let loader = MetalPipelineLoader::new(device, &shader_source)?;

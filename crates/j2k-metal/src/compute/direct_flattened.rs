@@ -178,6 +178,10 @@ pub(super) fn build_flattened_cpu_tier1_cache(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-pass bucket planning keeps cross-plan offsets and validation co-located"
+)]
 fn collect_flattened_cpu_tier1_bucket_specs(
     plans: &[Arc<PreparedDirectColorPlan>],
 ) -> Result<Vec<FlattenedCpuTier1BucketSpec<'_>>, Error> {

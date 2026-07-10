@@ -69,6 +69,10 @@ impl HtPacketBuffers {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "resident HT packet submission preserves fixed command and resource order"
+)]
 fn submit_ht_packet_stages(
     runtime: &MetalRuntime,
     prepared_tiles: &[PreparedLosslessBatchTile],

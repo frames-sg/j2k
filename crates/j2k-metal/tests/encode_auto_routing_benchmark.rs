@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(clippy::similar_names)]
-
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
@@ -1040,6 +1038,10 @@ fn run_deinterleave_stage_benchmark(dim: u32) {
     emit_stage_timing("deinterleave", dim, cpu, metal);
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "plane0/plane1/plane2 mirror the three-component transform API"
+)]
 fn run_forward_rct_stage_benchmark(dim: u32) {
     let planes = stage_planes(dim);
     let cpu = measure(|| {
@@ -1066,6 +1068,10 @@ fn run_forward_rct_stage_benchmark(dim: u32) {
     emit_stage_timing("forward_rct", dim, cpu, metal);
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "plane0/plane1/plane2 mirror the three-component transform API"
+)]
 fn run_forward_ict_stage_benchmark(dim: u32) {
     let planes = stage_planes(dim);
     let cpu = measure(|| {
@@ -1272,6 +1278,10 @@ fn stage_sample_value(value: usize) -> f32 {
     f32::from(u8::try_from(value & 0xff).expect("masked stage sample fits u8")) - 128.0
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "plane0/plane1/plane2 are the transform API's positional components"
+)]
 fn split_three_planes(planes: &mut [Vec<f32>]) -> (&mut [f32], &mut [f32], &mut [f32]) {
     assert!(planes.len() >= 3);
     let (plane0, rest) = planes.split_at_mut(1);
@@ -1331,6 +1341,10 @@ fn probe_deinterleave_stage(
     Ok(accelerator.dispatch_report())
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "plane0/plane1/plane2 mirror the three-component transform API"
+)]
 fn probe_forward_rct_stage(planes: &[Vec<f32>]) -> Result<J2kEncodeDispatchReport, String> {
     let mut stage_planes = planes.to_vec();
     let mut accelerator = MetalEncodeStageAccelerator::default();
@@ -1348,6 +1362,10 @@ fn probe_forward_rct_stage(planes: &[Vec<f32>]) -> Result<J2kEncodeDispatchRepor
     Ok(accelerator.dispatch_report())
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "plane0/plane1/plane2 mirror the three-component transform API"
+)]
 fn probe_forward_ict_stage(planes: &[Vec<f32>]) -> Result<J2kEncodeDispatchReport, String> {
     let mut stage_planes = planes.to_vec();
     let mut accelerator = MetalEncodeStageAccelerator::default();

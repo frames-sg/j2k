@@ -150,6 +150,10 @@ fn prepare_batch_item_dwt(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "batch preparation keeps validated offsets and retained resources together"
+)]
 pub(in crate::compute) fn prepare_lossless_batch_item(
     request: BatchPrepareItemRequest<'_, '_>,
 ) -> Result<J2kPreparedLosslessDeviceCodeBlocks, Error> {

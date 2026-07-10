@@ -75,7 +75,11 @@ use self::classic_labels::{
     CLASSIC_TIER1_SPLIT_TOKEN_EMIT_LABEL, CLASSIC_TIER1_SYMBOL_PLAN_LABEL,
     CLASSIC_TIER1_TOKEN_EMIT_LABEL,
 };
-pub(super) use self::ht_cleanup::*;
+pub(super) use self::ht_cleanup::{
+    dispatch_ht_cleanup, dispatch_ht_cleanup_batched,
+    dispatch_ht_cleanup_batched_in_command_buffer, dispatch_ht_cleanup_batched_in_encoder,
+    dispatch_ht_cleanup_repeated_batched_in_command_buffer, HtRepeatedCleanupDispatch,
+};
 
 mod classic_packet;
 mod classic_profile;
@@ -85,13 +89,13 @@ mod ht_tier1;
 mod resident_single;
 mod tier2_packetization;
 
-pub(crate) use self::classic_packet::*;
+pub(crate) use self::classic_packet::submit_lossless_codestream_buffers_from_prepared_classic_batch;
 use self::classic_profile::{
     classic_profile_stages_from_env, dispatch_classic_tier1_profiles, ClassicTier1ProfileRequest,
     ClassicTier1ProfileResult,
 };
 use self::classic_tier1::{prepare_classic_tier1, ClassicTier1Prepared};
-pub(crate) use self::ht_packet::*;
+pub(crate) use self::ht_packet::submit_lossless_codestream_buffers_from_prepared_ht_batch;
 use self::ht_tier1::{prepare_ht_tier1, HtTier1Prepared};
-pub(crate) use self::resident_single::*;
-pub(crate) use self::tier2_packetization::*;
+pub(crate) use self::resident_single::encode_lossless_codestream_buffer_from_resident_tier1;
+pub(crate) use self::tier2_packetization::encode_tier2_packetization;

@@ -30,6 +30,10 @@ pub(super) fn try_encode_lossless_tile_device_resident_with_report(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "device-resident route keeps validation, fallback, and report accounting atomic"
+)]
 fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: J2kLosslessEncodeOptions,

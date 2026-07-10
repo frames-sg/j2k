@@ -32,10 +32,54 @@ mod idwt;
 mod mct;
 mod store;
 
-pub(in crate::compute) use self::classic_cleanup::*;
-pub(in crate::compute) use self::classic_subband::*;
-pub(in crate::compute) use self::ht_distinct::*;
-pub(in crate::compute) use self::ht_subband::*;
-pub(crate) use self::idwt::*;
-pub(crate) use self::mct::*;
-pub(crate) use self::store::*;
+pub(in crate::compute) use self::classic_cleanup::{
+    classic_batch_is_plain_arithmetic, classic_batch_uses_plain_fast_path,
+    classic_repeated_uses_plain_fast_path, dispatch_classic_cleanup_batched,
+    dispatch_classic_cleanup_batched_in_encoder,
+    dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer,
+    dispatch_classic_cleanup_repeated_batched_in_command_buffer,
+    dispatch_classic_store_repeated_batched_in_command_buffer,
+    encode_distinct_classic_sub_band_groups_to_buffer_in_command_buffer,
+    encode_distinct_classic_sub_bands_to_buffer_in_command_buffer, ClassicCleanupBatchDispatch,
+    ClassicPlainDevRepeatedCleanupDispatch, ClassicRepeatedCleanupDispatch,
+    ClassicRepeatedStoreDispatch,
+};
+pub(in crate::compute) use self::classic_subband::{
+    encode_prepared_classic_sub_band_group_to_buffer_in_encoder,
+    encode_prepared_classic_sub_band_to_buffer_in_encoder,
+    encode_repeated_classic_sub_band_group_to_buffer_in_command_buffer,
+    encode_repeated_classic_sub_band_to_buffer_in_command_buffer,
+};
+pub(in crate::compute) use self::ht_distinct::{
+    encode_distinct_ht_sub_band_groups_to_buffer_in_command_buffer,
+    encode_distinct_ht_sub_bands_to_buffer_in_command_buffer,
+};
+pub(in crate::compute) use self::ht_subband::{
+    dispatch_zero_u32_buffer_in_encoder, encode_prepared_ht_sub_band_group_to_buffer_in_encoder,
+    encode_prepared_ht_sub_band_to_buffer_in_encoder,
+    encode_repeated_ht_sub_band_group_to_buffer_in_command_buffer,
+    encode_repeated_ht_sub_band_to_buffer_in_command_buffer, ht_batch_output_word_count,
+    ht_output_word_count, required_ht_output_len,
+};
+pub(crate) use self::idwt::{
+    decode_irreversible97_single_decomposition_idwt, decode_reversible53_single_decomposition_idwt,
+};
+pub(in crate::compute) use self::idwt::{
+    dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets,
+    dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets,
+    dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets,
+    dispatch_reversible53_single_decomposition_buffers_in_command_buffer_with_offsets,
+    dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets, IdwtSubBandBuffers,
+    RepeatedIdwtDispatch, SingleIdwtDispatch,
+};
+pub(crate) use self::mct::decode_inverse_mct;
+pub(in crate::compute) use self::mct::dispatch_inverse_mct_buffers_in_command_buffer;
+pub(crate) use self::store::decode_store_component_and_capture;
+#[cfg(test)]
+pub(in crate::compute) use self::store::repeated_gray_store_is_contiguous_full_surface;
+pub(in crate::compute) use self::store::{
+    dispatch_store_component_buffer_in_command_buffer_with_offsets,
+    dispatch_store_component_buffer_in_encoder_with_offsets,
+    dispatch_store_component_repeated_in_command_buffer, encode_gray_store_to_surface_in_encoder,
+    encode_repeated_gray_store_to_surfaces_in_command_buffer,
+};

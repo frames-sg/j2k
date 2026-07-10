@@ -111,6 +111,11 @@ impl Surface {
     /// are copied into owned storage. This method panics only if the surface
     /// metadata is internally inconsistent; fallible operations such as
     /// [`Self::download_into`] return those errors.
+    ///
+    /// # Panics
+    ///
+    /// Panics if validated surface metadata no longer describes the backing
+    /// storage range.
     pub fn as_bytes(&self) -> Cow<'_, [u8]> {
         self.storage_bytes()
             .expect("validated J2K Metal surface byte range")

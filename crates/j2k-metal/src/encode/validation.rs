@@ -47,12 +47,16 @@ pub(super) fn validate_metal_encode_tile(
             message: "J2K Metal encode input tile exceeds output tile dimensions".to_string(),
         });
     }
-    let row_bytes = tile
-        .width
-        .checked_mul(tile.format.bytes_per_pixel() as u32)
-        .ok_or_else(|| crate::Error::MetalKernel {
-            message: "J2K Metal encode row byte count overflow".to_string(),
-        })? as usize;
+    let bytes_per_pixel =
+        u32::try_from(tile.format.bytes_per_pixel()).map_err(|_| crate::Error::MetalKernel {
+            message: "J2K Metal pixel size exceeds u32".to_string(),
+        })?;
+    let row_bytes =
+        tile.width
+            .checked_mul(bytes_per_pixel)
+            .ok_or_else(|| crate::Error::MetalKernel {
+                message: "J2K Metal encode row byte count overflow".to_string(),
+            })? as usize;
     if tile.pitch_bytes < row_bytes {
         return Err(crate::Error::MetalKernel {
             message: "J2K Metal encode tile pitch is shorter than one row".to_string(),

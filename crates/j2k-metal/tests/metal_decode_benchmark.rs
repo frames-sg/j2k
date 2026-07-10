@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(clippy::similar_names)]
-
 use std::{
     collections::HashMap,
     fs,
@@ -307,6 +305,10 @@ fn decode_len_once(
     }
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "decoder and decoded distinguish the stateful input from its returned report"
+)]
 fn decode_surface_once(
     case: &DecodeBenchCase,
     operation: DecodeOperation,
