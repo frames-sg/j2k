@@ -206,21 +206,22 @@ mod error_context_tests {
 
 #[cfg(test)]
 mod tests {
-    #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
-
     use super::MetalClassicBlockDecoder;
     #[cfg(target_os = "macos")]
     use crate::compute;
+    #[cfg(target_os = "macos")]
     use j2k_native::{
-        decode_j2k_code_block_scalar, encode, ColorSpace, DecodeSettings, DecoderContext,
-        EncodeOptions, HtCodeBlockDecoder, Image, J2kCodeBlockDecodeJob, J2kCodeBlockSegment,
+        decode_j2k_code_block_scalar, HtCodeBlockDecoder, J2kCodeBlockDecodeJob,
+        J2kCodeBlockSegment,
     };
+    use j2k_native::{encode, ColorSpace, DecodeSettings, DecoderContext, EncodeOptions, Image};
 
     #[cfg(target_os = "macos")]
     fn should_run_metal_runtime() -> bool {
         j2k_test_support::metal_runtime_gate(module_path!())
     }
 
+    #[cfg(target_os = "macos")]
     #[derive(Clone)]
     struct OwnedClassicJob {
         data: Vec<u8>,
@@ -238,6 +239,7 @@ mod tests {
         dequantization_step: f32,
     }
 
+    #[cfg(target_os = "macos")]
     impl OwnedClassicJob {
         fn as_job(&self) -> J2kCodeBlockDecodeJob<'_> {
             J2kCodeBlockDecodeJob {
@@ -262,6 +264,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn split_job_into_two_valid_segments(job: &OwnedClassicJob) -> OwnedClassicJob {
         let mut baseline = vec![0.0f32; job.output_len()];
         decode_j2k_code_block_scalar(job.as_job(), &mut baseline).expect("baseline decode");
@@ -301,11 +304,13 @@ mod tests {
         panic!("expected to find a valid two-segment classic codeblock split");
     }
 
+    #[cfg(target_os = "macos")]
     #[derive(Default)]
     struct CaptureFirstClassicJob {
         first: Option<OwnedClassicJob>,
     }
 
+    #[cfg(target_os = "macos")]
     impl HtCodeBlockDecoder for CaptureFirstClassicJob {
         fn decode_j2k_code_block(
             &mut self,
@@ -370,6 +375,7 @@ mod tests {
         encode(&pixels, 8, 8, 1, 1, false, &options).expect("encode classic gray1 multi-block")
     }
 
+    #[cfg(target_os = "macos")]
     fn fixture_j2k_gray8_tall() -> Vec<u8> {
         let pixels: Vec<u8> = (0u16..32u16)
             .map(|value| u8::try_from((value * 17) & 0xFF).expect("fixture sample fits in u8"))
@@ -382,6 +388,7 @@ mod tests {
         encode(&pixels, 4, 8, 1, 8, false, &options).expect("encode classic tall gray8")
     }
 
+    #[cfg(target_os = "macos")]
     fn fixture_j2k_gray16_bypass() -> Vec<u8> {
         let pixels: Vec<u8> = (0u16..16u16)
             .flat_map(|index| ((index * 0x111) | 0x123).to_le_bytes())
@@ -394,6 +401,7 @@ mod tests {
         encode(&pixels, 4, 4, 1, 16, false, &options).expect("encode classic gray16 bypass")
     }
 
+    #[cfg(target_os = "macos")]
     fn integral_coefficients(values: &[f32]) -> Vec<i32> {
         values
             .iter()

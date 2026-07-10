@@ -181,14 +181,13 @@ pub(crate) fn supports_metal_ht_geometry(width: u32, height: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
-
     use super::MetalHtBlockDecoder;
     #[cfg(target_os = "macos")]
     use crate::compute;
+    #[cfg(target_os = "macos")]
+    use j2k_native::{decode_ht_code_block_scalar, HtCodeBlockDecodeJob, HtCodeBlockDecoder};
     use j2k_native::{
-        decode_ht_code_block_scalar, encode_htj2k, ColorSpace, DecodeSettings, DecoderContext,
-        EncodeOptions, HtCodeBlockDecodeJob, HtCodeBlockDecoder, Image,
+        encode_htj2k, ColorSpace, DecodeSettings, DecoderContext, EncodeOptions, Image,
     };
 
     #[cfg(target_os = "macos")]
@@ -196,6 +195,7 @@ mod tests {
         j2k_test_support::metal_runtime_gate(module_path!())
     }
 
+    #[cfg(target_os = "macos")]
     #[derive(Clone)]
     struct OwnedHtJob {
         data: Vec<u8>,
@@ -213,6 +213,7 @@ mod tests {
         dequantization_step: f32,
     }
 
+    #[cfg(target_os = "macos")]
     impl OwnedHtJob {
         fn as_job(&self) -> HtCodeBlockDecodeJob<'_> {
             HtCodeBlockDecodeJob {
@@ -237,11 +238,13 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[derive(Default)]
     struct CaptureFirstHtJob {
         first: Option<OwnedHtJob>,
     }
 
+    #[cfg(target_os = "macos")]
     impl HtCodeBlockDecoder for CaptureFirstHtJob {
         fn decode_code_block(
             &mut self,
@@ -326,6 +329,7 @@ mod tests {
             .expect("encode very-wide-code-block ht gray8")
     }
 
+    #[cfg(target_os = "macos")]
     fn synthetic_refinement_job(number_of_coding_passes: u8) -> OwnedHtJob {
         let bytes = fixture_ht_gray8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");

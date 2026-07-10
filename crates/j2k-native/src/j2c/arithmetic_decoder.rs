@@ -229,7 +229,6 @@ impl<'a> ArithmeticDecoder<'a> {
 pub(crate) struct ArithmeticDecoderContext(u8);
 
 impl ArithmeticDecoderContext {
-    #[cfg_attr(not(test), allow(dead_code))]
     #[expect(
         clippy::inline_always,
         reason = "MQ state transitions are measured per-symbol hot paths"
