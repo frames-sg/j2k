@@ -50,16 +50,15 @@ coverage, and the clean release matrix.
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: STR-011 native classic bitplane-decode split, STR-012
-  extended-12 JPEG renderer split, and STR-014 CUDA host-transcode split
+- Current task: STR-011 native classic bitplane-decode split, STR-012 JPEG
+  baseline-adapter split, and STR-014 CUDA Oxide transcode-device split
 - Parallel tasks: pass-order/bit-consumption-preserving native extraction,
   precision/color/ROI-preserving JPEG rendering extraction, and
   ABI/kernel-selection-preserving CUDA transcode extraction
-- Last completed tasks: STR-011 native HT block-decode split and STR-014 CUDA
-  JPEG runtime split
-- Last completed implementation commit: 1ce31782
-  (`refactor(cuda-runtime): split jpeg pipelines`); the preceding native HT
-  decoder split is d56f327f
+- Last completed task: STR-012 extended-precision JPEG decode split
+- Last completed implementation commit: 5ae75c75
+  (`refactor(cuda-runtime): split transcode host stages`); the preceding
+  extended-precision JPEG split is bc90529c
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
@@ -81,9 +80,10 @@ without loading the rest of the file.
   - changed-path coverage and the clean final release matrix remain pending
   - exact-SHA CUDA hardware evidence requires the Linux/NVIDIA runner
   - provenance signoff requires the release maintainer's name/handle and date
-  - GitHub private vulnerability reporting is currently disabled even though
-    `SECURITY.md` links to its form; enable it or publish an approved private
-    contact before the security and conduct policies can be release-ready
+  - GitHub private vulnerability reporting is currently disabled; the policy
+    now fails closed to a detail-free public contact request when the private
+    form is unavailable, but an approved working private channel is still
+    required before the security and conduct policies can be release-ready
 - Exact next local command after the three active extraction lanes stop editing:
   `git diff --check`
 
@@ -226,7 +226,7 @@ The rubric was checked against current primary or first-party sources on
 | STR-009 | P2 | in progress | STR-005 through STR-008 | Independently classify every remaining 1,000+ line production file and 250+ line function |
 | STR-010 | P2 | complete | STR-009 | Split mixed release-tooling roots (`xtask/main.rs`, coverage) |
 | STR-011 | P2 | in progress | STR-009 | Split mixed native Tier-1, DWT, and codestream implementation roots |
-| STR-012 | P2 | in progress | STR-009 | Sequential entropy complete; 12-bit render, baseline-adapter, and stripe-emission roots remain |
+| STR-012 | P2 | in progress | STR-009 | Sequential entropy and 12-bit rendering complete; baseline-adapter and stripe-emission roots remain |
 | STR-013 | P2 | complete | STR-009 | Split mixed encode/fixture comparison tooling roots |
 | STR-014 | P2 | in progress | STR-009 | Close actionable GPU/runtime findings from the independent large-file pass |
 | STR-015 | P2 | pending | STR-009 through STR-014 | Remove or narrowly justify broad lint suppressions and hidden production namespace seams |
@@ -1079,6 +1079,16 @@ ROI/scaled-ROI, live TurboJPEG, strict Clippy, and baseline encode round-trip
 tests pass. Independent Rust decoders that choose `+2`/`+2` remain standards-
 valid but do not satisfy this repository's stronger compatibility contract.
 
+Completed STR-012B in commit bc90529c: `decoder/extended12.rs` fell from 1,887
+to a 21-line coordinator with focused plane, sampling, state, upsample,
+ROI/scaling-writer, sequential, progressive, and four-component modules. The
+production symbol multiset, diagnostic-literal hash, and generic upsample
+rounding/edge goldens are unchanged. Pre/post `decode_into` passed 113/113;
+batch/session passed 44/44; scratch reuse passed 5/5; all-target/all-feature
+check and strict Clippy passed; and the pinned touched-path scan remained
+exactly 7 clones/175 duplicated lines. Root independently reran the 113-test
+decode/ROI/scaling/color suite before commit.
+
 ### STR-013 — comparison tooling
 
 For both encode and fixture comparison tools, separate CLI/options, corpus and
@@ -1125,12 +1135,22 @@ default/all-feature checks, strict Clippy, 88/88 default and 91/91 all-feature
 host tests, and dependent `j2k-jpeg-cuda` compilation passed. PTX and NVIDIA
 execution remain external.
 
+Completed the host half of priority 4 in commit 5ae75c75: CUDA runtime
+`transcode.rs` fell from 1,665 to a 115-line owner with focused types,
+validation, reversible 5/3, staged 9/7, resident/fused HTJ2K 9/7, readback,
+launch, and ABI-test modules at or below 446 lines. Exact 29/29 original
+function signatures/bodies, every public and internal type field/order, the
+single `repr(C)` layout, all errors/operations, and the 15-kernel selection
+multiset match. Default/all-feature checks, strict Clippy, 90/90 and 93/93 host
+tests, and dependent `j2k-transcode-cuda` compilation passed. The device SIMT
+half remains active; Linux PTX and NVIDIA execution remain external.
+
 | Priority | Split targets | Required boundary |
 |---:|---|---|
 | 1 | JPEG Metal `compute.rs` plus included `fast_packets_impl`, `pack_dispatch_impl`, `batch_decode_full`, `batch_decode_region`, `batch_decode_entry`, `batch_decode_impl`, and `single_decode_impl` (effective 8,511-line namespace) | Replace production `include!` fragments with real modules/explicit imports; split packet, pack, single, RGB/RGBA, and repeated/grouped route families |
 | 2 | Completed: CUDA runtime `j2k_decode.rs` (2,142 physical lines at split) | ABI types, IDWT scheduling, store/MCT, tracing/validation |
 | 3 | Completed: CUDA runtime `jpeg.rs` (1,463 physical lines at split) | Encode/decode ABI and pipeline versus entropy diagnostics; file-wide similar-name allowance removed |
-| 4 | CUDA runtime `transcode.rs` (1,665) and CUDA Oxide transcode source (1,509) | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
+| 4 | Host complete: CUDA runtime `transcode.rs` (1,665 physical lines at split); CUDA Oxide transcode source (1,509) active | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
 | 5 | CUDA runtime `j2k_encode.rs` (1,630) and CUDA Oxide J2K encode source (1,490) | Types/results, preprocessing/MCT/DWT/quantization versus tag-tree/packetization/compaction while retaining one device export surface |
 | 6 | Completed: CUDA runtime `context.rs` (1,013 physical lines at split) | Context/pinned memory, kernel cache/loading, and compact result types |
 | 7 | Metal `encode.rs` (1,773) and `decoder.rs` (1,560) | Resident batch/single/host fallback; request/direct plan/core adapters/surface transfer |
