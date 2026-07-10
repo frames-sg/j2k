@@ -51,6 +51,56 @@ fn assert_independent_decoder_accepts(
     );
 }
 
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+#[test]
+fn baseline_codestream_bytes_match_goldens() {
+    let gray = patterned_gray8(13, 11);
+    let gray = encode_jpeg_baseline(
+        JpegSamples::Gray8 {
+            data: &gray,
+            width: 13,
+            height: 11,
+        },
+        JpegEncodeOptions {
+            quality: 85,
+            subsampling: JpegSubsampling::Gray,
+            restart_interval: Some(4),
+            backend: JpegBackend::Cpu,
+        },
+    )
+    .expect("encode grayscale golden");
+    let actual = [
+        ("gray-restart", gray.data.len(), fnv1a64(&gray.data)),
+        {
+            let encoded = encode_rgb(JpegSubsampling::Ybr444);
+            ("rgb-444", encoded.data.len(), fnv1a64(&encoded.data))
+        },
+        {
+            let encoded = encode_rgb(JpegSubsampling::Ybr422);
+            ("rgb-422", encoded.data.len(), fnv1a64(&encoded.data))
+        },
+        {
+            let encoded = encode_rgb(JpegSubsampling::Ybr420);
+            ("rgb-420", encoded.data.len(), fnv1a64(&encoded.data))
+        },
+    ];
+    assert_eq!(
+        actual,
+        [
+            ("gray-restart", 450, 0xb49e_4d37_8d96_2fa0),
+            ("rgb-444", 1094, 0xe3db_ce49_8363_0bf8),
+            ("rgb-422", 1000, 0x0837_394c_3c14_12b3),
+            ("rgb-420", 977, 0xc966_bef1_7b8d_b2a8),
+        ],
+        "baseline JPEG codestream bytes changed"
+    );
+}
+
 #[test]
 fn cpu_encoder_round_trips_rgb_444_422_420() {
     for subsampling in [
