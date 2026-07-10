@@ -48,7 +48,7 @@ pub(super) const COVERAGE_EXCLUSIONS: &[CoverageExclusion] = &[
             prefix: "crates/j2k-cuda-runtime/src/cuda_oxide_",
             contains: Some("/simt/src/"),
             excludes: None,
-            suffix: "main.rs",
+            suffix: ".rs",
         },
         evidence: CUDA_SIMT_EVIDENCE,
     },
