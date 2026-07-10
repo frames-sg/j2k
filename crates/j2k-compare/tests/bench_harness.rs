@@ -36,6 +36,12 @@ fn fixture_compare_binary_exposes_fair_fixture_matrix() {
         include_str!("../src/fixture_compare/manifest.rs"),
         include_str!("../src/fixture_compare/rows.rs"),
         include_str!("../src/fixture_compare/types.rs"),
+        include_str!("../src/fixture_compare/cli.rs"),
+        include_str!("../src/fixture_compare/fixtures.rs"),
+        include_str!("../src/fixture_compare/metadata.rs"),
+        include_str!("../src/fixture_compare/validation.rs"),
+        include_str!("../src/fixture_compare/measurement.rs"),
+        include_str!("../src/fixture_compare/decode.rs"),
     ]
     .concat();
 

@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{
-    canonicalize_manifest_row_path, collect_j2k_paths, container_from_path_and_bytes,
+use super::fixtures::{collect_j2k_paths, container_from_path_and_bytes};
+use super::metadata::{
     external_manifest_covered_case_count, external_manifest_missing_case_count,
-    mixed_external_group_distinct_inputs_label, publication_blockers, skipped_comparators_label,
-    unique_input_count, BenchmarkMode, Codec, Container, FixtureCase, MixedFixtureBatch, Operation,
-    OperationClass, DEFAULT_CASE_BATCH_SIZES, DEFAULT_MIXED_BATCH_SIZES,
+    mixed_external_group_distinct_inputs_label, skipped_comparators_label,
+};
+use super::{
+    canonicalize_manifest_row_path, publication_blockers, unique_input_count, BenchmarkMode, Codec,
+    Container, FixtureCase, MixedFixtureBatch, Operation, OperationClass, DEFAULT_CASE_BATCH_SIZES,
+    DEFAULT_MIXED_BATCH_SIZES,
 };
 use crate::common;
 use j2k_core::{Downscale, PixelFormat, Rect};
@@ -120,8 +123,14 @@ fn manifest_status_and_source_digest_own_external_publication_counts() {
     );
     missing.manifest_status = "missing".to_string();
 
-    assert_eq!(external_manifest_covered_case_count(&[covered.clone()]), 1);
-    assert_eq!(external_manifest_missing_case_count(&[missing.clone()]), 1);
+    assert_eq!(
+        external_manifest_covered_case_count(std::slice::from_ref(&covered)),
+        1
+    );
+    assert_eq!(
+        external_manifest_missing_case_count(std::slice::from_ref(&missing)),
+        1
+    );
 
     let mut jp2_variant = covered.clone();
     jp2_variant.bytes = b"different container bytes".to_vec();

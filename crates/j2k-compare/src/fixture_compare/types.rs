@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::{Downscale, Rect};
+use std::{collections::HashMap, num::NonZeroUsize, path::PathBuf};
+
+use j2k_core::{Downscale, PixelFormat, Rect};
+use j2k_test_support::fnv1a64_hex;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BenchmarkMode {
@@ -171,4 +174,133 @@ impl BatchInputs {
     pub(super) fn input(&self, index: usize) -> &[u8] {
         self.buffers[index % self.buffers.len()].as_slice()
     }
+}
+
+pub(super) const DEFAULT_REPEATS: usize = 5;
+pub(super) const DEFAULT_CASE_BATCH_SIZES: &[usize] = &[1];
+pub(super) const DEFAULT_MIXED_BATCH_SIZES: &[usize] = &[1, 16, 256, 1024];
+pub(super) const BATCH_INPUT_COPY_LIMIT: usize = 32;
+pub(super) const MIN_PUBLICATION_EXTERNAL_CASES: usize = 24;
+pub(super) const MIN_PUBLICATION_EXTERNAL_INPUTS: usize = 24;
+pub(super) const MIN_PUBLICATION_MIXED_DISTINCT_INPUTS: usize = 2;
+pub(super) const SMALL_SIDE: u32 = 128;
+pub(super) const LARGE_SIDE: u32 = 512;
+pub(super) const DEFAULT_BENCHMARK_MODE: BenchmarkMode = BenchmarkMode::PortableNative;
+
+#[derive(Clone)]
+pub(super) struct FixtureCase {
+    pub(super) name: String,
+    pub(super) input_source: String,
+    pub(super) corpus_category: String,
+    pub(super) corpus_name: String,
+    pub(super) license_status: String,
+    pub(super) encode_command: String,
+    pub(super) manifest_status: String,
+    pub(super) source_fnv1a64: Option<String>,
+    pub(super) codec: Codec,
+    pub(super) container: Container,
+    pub(super) bytes: Vec<u8>,
+    pub(super) dimensions: (u32, u32),
+    pub(super) format: PixelFormat,
+    pub(super) operation: Operation,
+}
+
+impl FixtureCase {
+    pub(super) fn input_len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub(super) fn input_digest(&self) -> String {
+        fnv1a64_hex(&self.bytes)
+    }
+
+    pub(super) fn source_digest(&self) -> String {
+        self.source_fnv1a64
+            .clone()
+            .unwrap_or_else(|| self.input_digest())
+    }
+
+    pub(super) fn output_rect(&self) -> Rect {
+        self.operation.output_rect(self.dimensions)
+    }
+
+    pub(super) fn output_stride(&self) -> usize {
+        self.output_rect().w as usize * self.format.bytes_per_pixel()
+    }
+
+    pub(super) fn output_len(&self) -> usize {
+        self.output_stride() * self.output_rect().h as usize
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct FixtureMetadata {
+    pub(super) input_source: String,
+    pub(super) corpus_category: String,
+    pub(super) corpus_name: String,
+    pub(super) license_status: String,
+    pub(super) encode_command: String,
+    pub(super) manifest_status: String,
+    pub(super) source_fnv1a64: Option<String>,
+}
+
+pub(super) struct FixtureManifest {
+    pub(super) entries: HashMap<PathBuf, ManifestEntry>,
+}
+
+pub(super) struct ManifestEntry {
+    pub(super) corpus_category: String,
+    pub(super) corpus_name: String,
+    pub(super) license_status: String,
+    pub(super) encode_command: String,
+    pub(super) input_fnv1a64: Option<String>,
+    pub(super) source_fnv1a64: Option<String>,
+    pub(super) codec: Option<Codec>,
+    pub(super) container: Option<Container>,
+}
+
+pub(super) struct Measurement {
+    pub(super) decoder: DecoderKind,
+    pub(super) repeats: usize,
+    pub(super) batch_size: usize,
+    pub(super) median_us: f64,
+    pub(super) mean_us: f64,
+    pub(super) tiles_per_second_median: f64,
+    pub(super) decoded_bytes_per_repeat: usize,
+    pub(super) samples_us: Vec<f64>,
+}
+
+pub(super) struct ActiveMeasurement {
+    pub(super) decoder: DecoderKind,
+    pub(super) batch_inputs: BatchInputs,
+    pub(super) samples_us: Vec<f64>,
+    pub(super) decoded_bytes_per_repeat: Option<usize>,
+}
+
+pub(super) struct MixedFixtureBatch {
+    pub(super) name: String,
+    pub(super) cases: Vec<FixtureCase>,
+    pub(super) format: PixelFormat,
+    pub(super) operation_class: OperationClass,
+}
+
+pub(super) struct ActiveMixedMeasurement {
+    pub(super) decoder: DecoderKind,
+    pub(super) samples_us: Vec<f64>,
+    pub(super) decoded_bytes_per_repeat: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct MetadataContext<'a> {
+    pub(super) args: &'a [String],
+    pub(super) benchmark_mode: BenchmarkMode,
+    pub(super) repeats: usize,
+    pub(super) batch_sizes: &'a [usize],
+    pub(super) case_batch_sizes: &'a [usize],
+    pub(super) mixed_batch_sizes: &'a [usize],
+    pub(super) workers: Option<NonZeroUsize>,
+    pub(super) cases: &'a [FixtureCase],
+    pub(super) mixed_batches: &'a [MixedFixtureBatch],
+    pub(super) mode_excluded_cases: &'a [String],
+    pub(super) filters_empty: bool,
 }
