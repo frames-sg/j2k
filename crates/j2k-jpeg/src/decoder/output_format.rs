@@ -45,39 +45,30 @@ pub(super) fn output_format_from_parts(
 ) -> Result<OutputFormat, JpegError> {
     if matches!(sof_kind, SofKind::Extended12 | SofKind::Progressive12) {
         return match (sof_kind, fmt, scale) {
-            (SofKind::Extended12, PixelFormat::Gray16, Downscale::None) => Ok(OutputFormat::Gray16),
-            (SofKind::Extended12, PixelFormat::Gray16, scale) => Ok(OutputFormat::Gray16Scaled {
-                factor: jpeg_downscale(scale),
-            }),
-            (SofKind::Extended12, PixelFormat::Rgb16, Downscale::None) => Ok(OutputFormat::Rgb16),
-            (SofKind::Extended12, PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
-                factor: jpeg_downscale(scale),
-            }),
-            (SofKind::Extended12, PixelFormat::Rgba16, Downscale::None) => {
-                Ok(OutputFormat::Rgba16 { alpha: u16::MAX })
-            }
-            (SofKind::Extended12, PixelFormat::Rgba16, scale) => Ok(OutputFormat::Rgba16Scaled {
-                alpha: u16::MAX,
-                factor: jpeg_downscale(scale),
-            }),
-            (SofKind::Progressive12, PixelFormat::Gray16, Downscale::None) => {
-                Ok(OutputFormat::Gray16)
-            }
-            (SofKind::Progressive12, PixelFormat::Gray16, scale) => {
+            (
+                SofKind::Extended12 | SofKind::Progressive12,
+                PixelFormat::Gray16,
+                Downscale::None,
+            ) => Ok(OutputFormat::Gray16),
+            (SofKind::Extended12 | SofKind::Progressive12, PixelFormat::Gray16, scale) => {
                 Ok(OutputFormat::Gray16Scaled {
                     factor: jpeg_downscale(scale),
                 })
             }
-            (SofKind::Progressive12, PixelFormat::Rgb16, Downscale::None) => {
+            (SofKind::Extended12 | SofKind::Progressive12, PixelFormat::Rgb16, Downscale::None) => {
                 Ok(OutputFormat::Rgb16)
             }
-            (SofKind::Progressive12, PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
-                factor: jpeg_downscale(scale),
-            }),
-            (SofKind::Progressive12, PixelFormat::Rgba16, Downscale::None) => {
-                Ok(OutputFormat::Rgba16 { alpha: u16::MAX })
+            (SofKind::Extended12 | SofKind::Progressive12, PixelFormat::Rgb16, scale) => {
+                Ok(OutputFormat::Rgb16Scaled {
+                    factor: jpeg_downscale(scale),
+                })
             }
-            (SofKind::Progressive12, PixelFormat::Rgba16, scale) => {
+            (
+                SofKind::Extended12 | SofKind::Progressive12,
+                PixelFormat::Rgba16,
+                Downscale::None,
+            ) => Ok(OutputFormat::Rgba16 { alpha: u16::MAX }),
+            (SofKind::Extended12 | SofKind::Progressive12, PixelFormat::Rgba16, scale) => {
                 Ok(OutputFormat::Rgba16Scaled {
                     alpha: u16::MAX,
                     factor: jpeg_downscale(scale),
@@ -142,17 +133,8 @@ pub(super) fn output_format_from_parts(
     }
 }
 
-#[allow(clippy::uninit_vec)]
 pub(super) fn allocate_output_buffer(len: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(len);
-    // Safety: all owned-output entrypoints use tight row strides, and the
-    // decode writers fully initialize every byte in the destination on success.
-    // If decode returns an error, dropping a Vec<u8> with uninitialized bytes is
-    // still sound because `u8` has no drop glue.
-    unsafe {
-        out.set_len(len);
-    }
-    out
+    alloc::vec![0; len]
 }
 
 pub(super) fn scaled_dimensions(dims: (u32, u32), factor: DownscaleFactor) -> (u32, u32) {

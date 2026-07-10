@@ -200,6 +200,132 @@ fn decode_owned_scaled_matches_decode_scaled_into() {
     assert_eq!(outcome, expected_outcome);
 }
 
+fn request_output_dimensions(request: DecodeRequest, full: (u32, u32)) -> (u32, u32) {
+    let rect = request.region.unwrap_or(Rect::full(full));
+    let denominator = request.scale.denominator();
+    let x_end = rect.x.checked_add(rect.w).expect("fixture x extent");
+    let y_end = rect.y.checked_add(rect.h).expect("fixture y extent");
+    (
+        x_end.div_ceil(denominator) - rect.x / denominator,
+        y_end.div_ceil(denominator) - rect.y / denominator,
+    )
+}
+
+fn assert_owned_request_matches_caller_owned(decoder: &Decoder<'_>, request: DecodeRequest) {
+    let output_dimensions = request_output_dimensions(request, decoder.info().dimensions);
+    let stride = usize::try_from(output_dimensions.0)
+        .expect("fixture width fits usize")
+        .checked_mul(request.fmt.bytes_per_pixel())
+        .expect("fixture stride");
+    let len = stride
+        .checked_mul(usize::try_from(output_dimensions.1).expect("fixture height fits usize"))
+        .expect("fixture output length");
+    let mut expected = vec![0xA5; len];
+    let expected_outcome = match (request.region, request.scale) {
+        (None, Downscale::None) => decoder.decode_into(&mut expected, stride, request.fmt),
+        (None, scale) => decoder.decode_scaled_into(&mut expected, stride, request.fmt, scale),
+        (Some(roi), Downscale::None) => {
+            decoder.decode_region_into(&mut expected, stride, request.fmt, roi)
+        }
+        (Some(roi), scale) => {
+            decoder.decode_region_scaled_into(&mut expected, stride, request.fmt, roi, scale)
+        }
+    }
+    .expect("caller-owned decode succeeds");
+
+    let (owned, outcome) = decoder
+        .decode_request(request)
+        .expect("owned decode succeeds");
+    assert_eq!(owned.len(), len, "request={request:?}");
+    assert_eq!(owned, expected, "request={request:?}");
+    assert_eq!(outcome, expected_outcome, "request={request:?}");
+}
+
+fn assert_owned_request_shapes(bytes: &[u8], formats: &[PixelFormat], roi: Rect) {
+    let decoder = Decoder::new(bytes).expect("owned-output fixture decoder");
+    for &format in formats {
+        for request in [
+            DecodeRequest::full(format),
+            DecodeRequest::scaled(format, Downscale::Half),
+            DecodeRequest::region(format, roi),
+            DecodeRequest::region_scaled(format, roi, Downscale::Half),
+        ] {
+            assert_owned_request_matches_caller_owned(&decoder, request);
+        }
+    }
+}
+
+#[test]
+fn owned_output_matches_prefilled_caller_owned_across_codec_routes() {
+    assert_owned_request_shapes(
+        &minimal_baseline_420_jpeg(),
+        &[PixelFormat::Gray8, PixelFormat::Rgb8, PixelFormat::Rgba8],
+        Rect {
+            x: 4,
+            y: 4,
+            w: 8,
+            h: 8,
+        },
+    );
+    assert_owned_request_shapes(
+        &extended_12bit_grayscale_8x8_jpeg(),
+        &[PixelFormat::Gray16, PixelFormat::Rgb16, PixelFormat::Rgba16],
+        Rect {
+            x: 2,
+            y: 2,
+            w: 4,
+            h: 4,
+        },
+    );
+    assert_owned_request_shapes(
+        &progressive_12bit_grayscale_8x8_jpeg(),
+        &[PixelFormat::Gray16, PixelFormat::Rgb16, PixelFormat::Rgba16],
+        Rect {
+            x: 2,
+            y: 2,
+            w: 4,
+            h: 4,
+        },
+    );
+
+    let lossless_roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    assert_owned_request_shapes(
+        &lossless_predictor_grayscale_3x3_jpeg(4),
+        &[PixelFormat::Gray8],
+        lossless_roi,
+    );
+    for bytes in [
+        lossless_predictor_rgb_3x3_jpeg(4),
+        lossless_predictor_ycbcr_3x3_jpeg(4),
+    ] {
+        assert_owned_request_shapes(
+            &bytes,
+            &[PixelFormat::Rgb8, PixelFormat::Rgba8],
+            lossless_roi,
+        );
+    }
+    assert_owned_request_shapes(
+        &lossless_predictor_grayscale_16bit_3x3_jpeg(4),
+        &[PixelFormat::Gray16],
+        lossless_roi,
+    );
+    for bytes in [
+        lossless_predictor_rgb_16bit_3x3_jpeg(4),
+        lossless_predictor_ycbcr_16bit_3x3_jpeg(4),
+    ] {
+        assert_owned_request_shapes(
+            &bytes,
+            &[PixelFormat::Rgb16, PixelFormat::Rgba16],
+            lossless_roi,
+        );
+    }
+}
+
 #[test]
 fn full_tile_region_scaled_matches_full_scaled_decode() {
     let bytes = minimal_baseline_420_jpeg();
@@ -291,10 +417,10 @@ fn decode_scaled_into_gray16_projects_extended12_grayscale_samples() {
     let bytes = extended_12bit_grayscale_8x8_jpeg();
     let dec = Decoder::new(&bytes).expect("12-bit extended grayscale JPEG must construct");
     let scale = Downscale::Half;
-    let scaled_w = 4;
-    let scaled_h = 4;
-    let stride = scaled_w as usize * PixelFormat::Gray16.bytes_per_pixel() + 4;
-    let mut buf = vec![0xaau8; stride * scaled_h as usize];
+    let scaled_w = 4usize;
+    let scaled_h = 4usize;
+    let stride = scaled_w * PixelFormat::Gray16.bytes_per_pixel() + 4;
+    let mut buf = vec![0xaau8; stride * scaled_h];
 
     let outcome = dec
         .decode_scaled_into(&mut buf, stride, PixelFormat::Gray16, scale)
@@ -302,10 +428,10 @@ fn decode_scaled_into_gray16_projects_extended12_grayscale_samples() {
 
     assert_eq!(outcome.decoded, Rect::full(dec.info().dimensions));
     for row in buf.chunks_exact(stride) {
-        for sample in row[..scaled_w as usize * 2].chunks_exact(2) {
+        for sample in row[..scaled_w * 2].chunks_exact(2) {
             assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
         }
-        assert_eq!(&row[scaled_w as usize * 2..], &[0xaa; 4]);
+        assert_eq!(&row[scaled_w * 2..], &[0xaa; 4]);
     }
 }
 
@@ -437,10 +563,10 @@ fn decode_region_into_gray16_crops_progressive12_grayscale_samples() {
 fn decode_scaled_into_gray16_projects_progressive12_grayscale_samples() {
     let bytes = progressive_12bit_grayscale_8x8_jpeg();
     let dec = Decoder::new(&bytes).expect("12-bit progressive grayscale JPEG must construct");
-    let scaled_w = 4;
-    let scaled_h = 4;
-    let stride = scaled_w as usize * PixelFormat::Gray16.bytes_per_pixel() + 4;
-    let mut buf = vec![0xaau8; stride * scaled_h as usize];
+    let scaled_w = 4usize;
+    let scaled_h = 4usize;
+    let stride = scaled_w * PixelFormat::Gray16.bytes_per_pixel() + 4;
+    let mut buf = vec![0xaau8; stride * scaled_h];
 
     let outcome = dec
         .decode_scaled_into(&mut buf, stride, PixelFormat::Gray16, Downscale::Half)
@@ -448,10 +574,10 @@ fn decode_scaled_into_gray16_projects_progressive12_grayscale_samples() {
 
     assert_eq!(outcome.decoded, Rect::full(dec.info().dimensions));
     for row in buf.chunks_exact(stride) {
-        for sample in row[..scaled_w as usize * 2].chunks_exact(2) {
+        for sample in row[..scaled_w * 2].chunks_exact(2) {
             assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
         }
-        assert_eq!(&row[scaled_w as usize * 2..], &[0xaa; 4]);
+        assert_eq!(&row[scaled_w * 2..], &[0xaa; 4]);
     }
 }
 
@@ -1071,6 +1197,10 @@ fn decode_region_scaled_into_rgb16_projects_extended12_restart_app14_rgb_samples
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the end-to-end APP14 matrix keeps full, ROI, scaled, and region-scaled assertions correlated"
+)]
 fn decode_12bit_app14_rgb_subsampled_full_roi_scaled_and_region_scaled_outputs() {
     for (bytes, expected_full, width, height, label) in [
         (
@@ -1480,7 +1610,8 @@ fn decode_into_rgb8_scaled_preserves_constant_app14_rgb_pixels() {
 fn decode_into_gray8_scaled_projects_constant_app14_rgb_pixels() {
     let bytes = rgb_app14_8x8_jpeg();
     let dec = Decoder::new(&bytes).unwrap();
-    let expected = ((77 * 200 + 150 * 20 + 29 * 10 + 128) >> 8) as u8;
+    let expected = u8::try_from((77 * 200 + 150 * 20 + 29 * 10 + 128) >> 8)
+        .expect("weighted grayscale fixture fits in u8");
 
     for (factor, dims) in [
         (Downscale::Half, (4u32, 4u32)),
