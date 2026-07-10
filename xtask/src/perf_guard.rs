@@ -360,15 +360,37 @@ fn ensure_benchmark_manifest_stanza(
     let path = target_root.join(manifest.path);
     let mut contents = fs::read_to_string(&path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    if contents.contains(manifest.stanza) {
-        return Ok(());
-    }
-    if contents.contains(&format!("name = \"{}\"", manifest.bench_name)) {
-        return Err(format!(
-            "{} declares benchmark `{}` without the required Criterion harness stanza",
-            path.display(),
-            manifest.bench_name
-        ));
+    let bench_name_line = format!("name = \"{}\"", manifest.bench_name);
+    let matching_blocks = contents
+        .split("[[bench]]")
+        .skip(1)
+        .map(|tail| &tail[..tail.find("\n[").unwrap_or(tail.len())])
+        .filter(|block| {
+            block
+                .lines()
+                .map(str::trim)
+                .any(|line| line == bench_name_line)
+        })
+        .collect::<Vec<_>>();
+    match matching_blocks.as_slice() {
+        [] => {}
+        [block]
+            if manifest
+                .stanza
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && *line != "[[bench]]")
+                .all(|required| block.lines().map(str::trim).any(|line| line == required)) =>
+        {
+            return Ok(());
+        }
+        _ => {
+            return Err(format!(
+                "{} declares benchmark `{}` without one unambiguous required Criterion harness stanza",
+                path.display(),
+                manifest.bench_name
+            ));
+        }
     }
 
     if !contents.ends_with('\n') {
@@ -766,8 +788,8 @@ fn path_str(path: &Path) -> Result<&str, String> {
 mod tests {
     use super::{
         bench_args, compare_estimates, is_enforced_perf_id, read_estimate_snapshot,
-        write_estimate_snapshot, BenchCommand, BenchEstimate, PerfGuardMode, PerfGuardOptions,
-        BENCH_COMMANDS,
+        write_estimate_snapshot, BenchCommand, BenchEstimate, BenchManifestStanza, PerfGuardMode,
+        PerfGuardOptions, BENCH_COMMANDS,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -826,6 +848,80 @@ mod tests {
             error.contains("choose only one baseline mode"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn benchmark_manifest_stanza_accepts_additional_bench_keys() {
+        let root = temp_dir("j2k-perf-bench-stanza-test");
+        let manifest_path = root.join("crates/j2k-cuda/Cargo.toml");
+        fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
+        let contents = "[package]\nname = \"j2k-cuda\"\n\n[[bench]]\nname = \"htj2k_encode\"\nharness = false\ntest = false\nrequired-features = [\"cuda-runtime\"]\n";
+        fs::write(&manifest_path, contents).unwrap();
+
+        super::ensure_benchmark_manifest_stanza(
+            &root,
+            BenchManifestStanza {
+                path: "crates/j2k-cuda/Cargo.toml",
+                bench_name: "htj2k_encode",
+                stanza: "[[bench]]\nname = \"htj2k_encode\"\nharness = false\nrequired-features = [\"cuda-runtime\"]\n",
+            },
+        )
+        .unwrap();
+
+        let updated = fs::read_to_string(&manifest_path).unwrap();
+        assert_eq!(updated, contents);
+        assert_eq!(updated.matches("name = \"htj2k_encode\"").count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn benchmark_manifest_stanza_rejects_incomplete_or_duplicate_matches() {
+        let required = BenchManifestStanza {
+            path: "crates/j2k-cuda/Cargo.toml",
+            bench_name: "htj2k_encode",
+            stanza: "[[bench]]\nname = \"htj2k_encode\"\nharness = false\nrequired-features = [\"cuda-runtime\"]\n",
+        };
+        for (case, contents) in [
+            (
+                "incomplete",
+                "[package]\nname = \"j2k-cuda\"\n\n[[bench]]\nname = \"htj2k_encode\"\nharness = false\n",
+            ),
+            (
+                "duplicate",
+                "[package]\nname = \"j2k-cuda\"\n\n[[bench]]\nname = \"htj2k_encode\"\nharness = false\nrequired-features = [\"cuda-runtime\"]\n\n[[bench]]\nname = \"htj2k_encode\"\nharness = false\nrequired-features = [\"cuda-runtime\"]\n",
+            ),
+        ] {
+            let root = temp_dir(&format!("j2k-perf-bench-stanza-{case}"));
+            let manifest_path = root.join(required.path);
+            fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
+            fs::write(&manifest_path, contents).unwrap();
+
+            let error = super::ensure_benchmark_manifest_stanza(&root, required)
+                .expect_err("ambiguous or incomplete bench declarations must fail closed");
+            assert!(error.contains("without one unambiguous required"));
+            assert_eq!(fs::read_to_string(&manifest_path).unwrap(), contents);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn benchmark_manifest_stanza_appends_one_missing_declaration() {
+        let root = temp_dir("j2k-perf-bench-stanza-missing");
+        let manifest_path = root.join("crates/j2k-cuda/Cargo.toml");
+        fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
+        fs::write(&manifest_path, "[package]\nname = \"j2k-cuda\"\n").unwrap();
+        let required = BenchManifestStanza {
+            path: "crates/j2k-cuda/Cargo.toml",
+            bench_name: "htj2k_encode",
+            stanza: "[[bench]]\nname = \"htj2k_encode\"\nharness = false\nrequired-features = [\"cuda-runtime\"]\n",
+        };
+
+        super::ensure_benchmark_manifest_stanza(&root, required).unwrap();
+
+        let updated = fs::read_to_string(&manifest_path).unwrap();
+        assert_eq!(updated.matches("name = \"htj2k_encode\"").count(), 1);
+        assert!(updated.ends_with(required.stanza));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
