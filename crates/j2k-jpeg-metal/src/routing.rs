@@ -15,7 +15,10 @@ use crate::{batch::BatchOp, Error};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteDecision {
     CpuHost,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "the Metal route is constructed only on macOS")
+    )]
     MetalKernel,
     RejectExplicitMetal {
         reason: ExplicitMetalRejection,
@@ -23,7 +26,13 @@ pub(crate) enum RouteDecision {
     RejectUnsupportedBackend {
         request: BackendRequest,
     },
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(
+        target_os = "macos",
+        expect(
+            dead_code,
+            reason = "Metal-unavailable routing is constructed only on non-macOS hosts"
+        )
+    )]
     MetalUnavailable,
 }
 

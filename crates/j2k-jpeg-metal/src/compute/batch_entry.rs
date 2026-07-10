@@ -27,7 +27,13 @@ use super::{
 };
 
 #[cfg(target_os = "macos")]
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the default-session entry point is exercised only by crate tests"
+    )
+)]
 pub(crate) fn decode_full_batch_to_surfaces(
     requests: &[batch::QueuedRequest],
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {

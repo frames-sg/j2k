@@ -478,7 +478,10 @@ pub(crate) fn decode_surface_from_bytes(
 }
 
 #[cfg(not(target_os = "macos"))]
-#[allow(clippy::unnecessary_wraps)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the non-Metal stub preserves the cross-platform batch result contract"
+)]
 pub(crate) fn decode_compatible_batch(
     requests: &[batch::QueuedRequest],
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
@@ -486,7 +489,13 @@ pub(crate) fn decode_compatible_batch(
     Ok(None)
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the non-Metal branch preserves the cross-platform session result contract"
+    )
+)]
 pub(crate) fn decode_compatible_batch_with_session(
     requests: &[batch::QueuedRequest],
     session: &mut session::SessionState,

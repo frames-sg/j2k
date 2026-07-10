@@ -32,7 +32,19 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
-pub(crate) use crate::abi::*;
+pub(crate) use crate::abi::{
+    JpegBaselineEncodeHuffmanTable, JpegBaselineEncodeParams, JpegBaselineEncodeStatus,
+    JpegBaselineEntropyEncodeBatchJob, JpegBaselineEntropyEncodeJob, JpegDecodeStatus,
+    JpegEntropyCheckpointHost, JpegFast420BatchParams, JpegFast420Params, JpegFast420ScaledParams,
+    JpegFast420TextureBatchParams, JpegFast420WindowedPackParams, JpegFast444Params,
+    JpegFast444ScaledParams, JpegFast444TextureBatchParams, JpegFastRegionScaledBatchParams,
+    JpegPackParams, JpegRgb8ToRgbaTextureParams, JpegTexturePackBatchParams,
+    JpegWindowedPackBatchParams, JpegWindowedTexturePackBatchParams, PreparedHuffmanHost,
+    FAST420_TEXTURE_BOUNDARY_META_WORDS, FAST420_TEXTURE_BOUNDARY_SAMPLE_BYTES,
+    FAST420_TEXTURE_VERTICAL_META_WORDS, FAST420_TEXTURE_VERTICAL_SAMPLE_BYTES,
+    FAST422_TEXTURE_BOUNDARY_META_WORDS, FAST422_TEXTURE_BOUNDARY_SAMPLE_BYTES,
+    JPEG_BASELINE_ENCODE_STATUS_OK, MODE_GRAY, MODE_RGB, MODE_YCBCR, OUT_GRAY, OUT_RGB, OUT_RGBA,
+};
 
 #[cfg(target_os = "macos")]
 use crate::buffers::{

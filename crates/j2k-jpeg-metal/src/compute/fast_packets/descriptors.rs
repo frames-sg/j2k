@@ -26,7 +26,13 @@ pub(in crate::compute) trait FastSubsampledPacket {
     const SCALED_ENTROPY_PAYLOAD_CTX: &'static str;
     /// Blocks per MCU when the full-RGB batch path needs block-count
     /// validation for the split coeff/IDCT debug mode (4:2:0 only).
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the split coefficient/IDCT diagnostic route is test-only"
+        )
+    )]
     const FULL_RGB_BATCH_BLOCKS_PER_MCU: Option<usize>;
 
     fn dimensions(&self) -> (u32, u32);

@@ -254,7 +254,6 @@ pub(crate) struct JpegFastRegionScaledBatchParams {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub(crate) struct JpegFast444TextureBatchParams {
     pub(crate) width: u32,
     pub(crate) height: u32,

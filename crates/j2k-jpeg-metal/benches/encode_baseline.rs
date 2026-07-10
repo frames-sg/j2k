@@ -1,11 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::similar_names
-)]
-
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
