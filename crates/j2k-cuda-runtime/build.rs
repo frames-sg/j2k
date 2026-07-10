@@ -16,6 +16,18 @@ const CUDA_OXIDE_FEATURE_ENV_VARS: &[&str] = &[
     "CARGO_FEATURE_CUDA_OXIDE_JPEG_DECODE",
     "CARGO_FEATURE_CUDA_OXIDE_JPEG_ENCODE",
 ];
+const CUDA_OXIDE_J2K_ENCODE_EXTRA_SOURCES: &[&str] = &[
+    "simt/src/abi.rs",
+    "simt/src/constants.rs",
+    "simt/src/dwt53.rs",
+    "simt/src/dwt97.rs",
+    "simt/src/exports.rs",
+    "simt/src/helpers.rs",
+    "simt/src/packet_writer.rs",
+    "simt/src/packetization.rs",
+    "simt/src/quantization.rs",
+    "simt/src/tag_tree.rs",
+];
 const CUDA_OXIDE_TRANSCODE_EXTRA_SOURCES: &[&str] = &[
     "simt/src/abi.rs",
     "simt/src/constants.rs",
@@ -49,6 +61,9 @@ fn emit_build_script_metadata() {
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_encode/src/main.rs");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_encode/simt/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_encode/simt/src/main.rs");
+    for relative in CUDA_OXIDE_J2K_ENCODE_EXTRA_SOURCES {
+        println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_encode/{relative}");
+    }
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_decode_store/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_decode_store/rust-toolchain.toml");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_decode_store/src/main.rs");
@@ -432,7 +447,9 @@ fn copy_cuda_oxide_project(source_dir: &Path, project_dir: &Path) {
 }
 
 fn cuda_oxide_extra_sources(source_dir: &Path) -> &'static [&'static str] {
-    if source_dir == Path::new("src/cuda_oxide_transcode") {
+    if source_dir == Path::new("src/cuda_oxide_j2k_encode") {
+        CUDA_OXIDE_J2K_ENCODE_EXTRA_SOURCES
+    } else if source_dir == Path::new("src/cuda_oxide_transcode") {
         CUDA_OXIDE_TRANSCODE_EXTRA_SOURCES
     } else {
         &[]
