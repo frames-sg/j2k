@@ -345,6 +345,10 @@ fn full_rgb_surface_total_blocks<P: FastSubsampledMetal>(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
 fn full_rgb_surface_batch_buffers<P: FastSubsampledMetal>(
     runtime: &MetalRuntime,
     batch_scratch: &mut MetalBatchScratch,

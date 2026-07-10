@@ -61,6 +61,10 @@ fn try_decode_fast_subsampled_to_surface<P: FastSubsampledMetal>(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
 fn decode_fast_subsampled_to_rgb_buffer<P: FastSubsampledMetal>(
     runtime: &MetalRuntime,
     packet: Option<&P>,
@@ -267,6 +271,10 @@ pub(in crate::compute) fn try_decode_fast422_scaled_region_to_surface(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
 fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
     runtime: &MetalRuntime,
     packet: Option<&P>,

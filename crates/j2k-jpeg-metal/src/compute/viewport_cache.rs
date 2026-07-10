@@ -307,6 +307,10 @@ impl PlaneStage {
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::similar_names,
+        reason = "RGB and RGBA identify distinct public pixel formats"
+    )]
     pub(super) fn finish_rgba8_into_texture_output_with_runtime(
         self,
         runtime: &MetalRuntime,

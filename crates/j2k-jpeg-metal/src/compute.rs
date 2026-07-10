@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(clippy::similar_names)]
-
 #[cfg(test)]
 use j2k_core::BackendRequest;
 use j2k_core::{BufferError, PixelFormat, Rect};

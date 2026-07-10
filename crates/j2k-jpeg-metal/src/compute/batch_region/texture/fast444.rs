@@ -240,6 +240,10 @@ fn encode_fast444_region_texture_decode(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
 pub(in crate::compute) fn try_decode_fast444_region_scaled_rgba_batch_to_textures(
     runtime: &MetalRuntime,
     requests: &[batch::QueuedRequest],

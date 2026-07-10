@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(clippy::similar_names)]
-
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
 #[cfg(target_os = "macos")]

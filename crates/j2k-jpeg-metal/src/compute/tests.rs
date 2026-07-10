@@ -1610,6 +1610,10 @@ fn fast444_scaled_batch_decode_matches_cpu_scaled_bytes() {
     }
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "JPEG Y/Cb/Cr components and DC/AC tables use the encoded format's normative names"
+)]
 fn fast420_high_ac_then_dc_only_jpeg(ac_quant: u8) -> Vec<u8> {
     assert!(ac_quant > 0, "JPEG quant entries must be nonzero");
 
@@ -1675,6 +1679,10 @@ fn append_jpeg_segment(bytes: &mut Vec<u8>, marker: u8, payload: &[u8]) {
     bytes.extend_from_slice(payload);
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "JPEG Y/Cb/Cr components and DC/AC tables use the encoded format's normative names"
+)]
 fn minimal_fast420_packet(dimensions: (u32, u32)) -> JpegFast420PacketV1 {
     let [y_dc_table, y_ac_table, cb_dc_table, cb_ac_table, cr_dc_table, cr_ac_table] =
         empty_packet_huffman_tables();
@@ -1698,6 +1706,10 @@ fn minimal_fast420_packet(dimensions: (u32, u32)) -> JpegFast420PacketV1 {
     }
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "JPEG Y/Cb/Cr components and DC/AC tables use the encoded format's normative names"
+)]
 fn minimal_fast422_packet(dimensions: (u32, u32)) -> JpegFast422PacketV1 {
     let [y_dc_table, y_ac_table, cb_dc_table, cb_ac_table, cr_dc_table, cr_ac_table] =
         empty_packet_huffman_tables();
@@ -1721,6 +1733,10 @@ fn minimal_fast422_packet(dimensions: (u32, u32)) -> JpegFast422PacketV1 {
     }
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "JPEG Y/Cb/Cr components and DC/AC tables use the encoded format's normative names"
+)]
 fn minimal_fast444_packet(dimensions: (u32, u32)) -> JpegFast444PacketV1 {
     let [y_dc_table, y_ac_table, cb_dc_table, cb_ac_table, cr_dc_table, cr_ac_table] =
         empty_packet_huffman_tables();

@@ -109,6 +109,10 @@ fn try_decode_fast_subsampled_restart_region_scaled_rgba_batch_to_textures<
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
 fn try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures<
     P: FastSubsampledMetal + FastRegionScaledMetal,
 >(

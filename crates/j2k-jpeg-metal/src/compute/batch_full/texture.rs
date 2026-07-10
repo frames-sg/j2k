@@ -611,6 +611,10 @@ fn decode_fast_subsampled_full_rgba_fused_texture_batch<P: FastSubsampledMetal>(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
 fn decode_fast_subsampled_full_rgba_staged_texture_batch<P: FastSubsampledMetal>(
     ctx: FullRgbaTextureBatchCtx<'_, '_, P>,
     decode_mode: FastBatchDecodeMode,

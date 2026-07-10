@@ -16,6 +16,10 @@ use super::common::{
 };
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
 pub(in crate::compute) fn encode_fast444_region_batch_item(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
@@ -121,6 +125,10 @@ pub(in crate::compute) fn encode_fast444_region_batch_item(
     })
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
 pub(in crate::compute) fn encode_fast444_scaled_batch_item(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
@@ -213,6 +221,10 @@ pub(in crate::compute) fn encode_fast444_scaled_batch_item(
         ],
     })
 }
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
 pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
     request: Fast444ScaledRegionBatchItemRequest<'_>,
 ) -> Result<BatchedDecodeItem, Error> {
@@ -339,6 +351,10 @@ pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::similar_names,
+    reason = "Cb and Cr are normative JPEG component names"
+)]
 pub(in crate::compute) fn encode_fast444_batch_item(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
