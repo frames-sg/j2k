@@ -10,7 +10,7 @@ use metal::foreign_types::ForeignType;
 use std::{
     cell::RefCell,
     mem::{size_of, size_of_val},
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
     time::Instant,
 };
 
@@ -91,7 +91,10 @@ use self::status::{
     decode_error_from_cpu, decode_status_buffer, fast422_status_error, first_decode_error_status,
     jpeg_baseline_encode_status_error,
 };
-use self::viewport_cache::{cached_plane_stage, CachedViewportPlanes, PlaneMode, PlaneStage};
+use self::viewport_cache::{
+    cached_plane_stage, CachedViewportPlanes, PlaneMode, PlaneStage, ViewportPlaneCacheGate,
+    ViewportPlaneCacheLease,
+};
 #[cfg(target_os = "macos")]
 pub(crate) use self::viewport_compose::compose_rgb_viewport_from_regions;
 #[cfg(all(target_os = "macos", test))]
@@ -208,6 +211,7 @@ pub(crate) struct MetalRuntime {
     rgb8_to_rgba_texture_pipeline: ComputePipelineState,
     batch_scratch: Mutex<MetalBatchScratch>,
     viewport_plane_cache: Mutex<Option<CachedViewportPlanes>>,
+    viewport_plane_cache_gate: Arc<ViewportPlaneCacheGate>,
 }
 
 #[cfg(target_os = "macos")]
@@ -304,6 +308,7 @@ impl MetalRuntime {
             rgb8_to_rgba_texture_pipeline: pipeline("jpeg_copy_rgb8_to_rgba_texture")?,
             batch_scratch: Mutex::new(MetalBatchScratch::default()),
             viewport_plane_cache: Mutex::new(None),
+            viewport_plane_cache_gate: ViewportPlaneCacheGate::new(),
         })
     }
 
@@ -321,6 +326,10 @@ impl MetalRuntime {
             .map_err(|_| Error::MetalStatePoisoned {
                 state: "JPEG Metal viewport plane cache",
             })
+    }
+
+    fn viewport_plane_cache_lease(&self) -> Result<ViewportPlaneCacheLease, Error> {
+        self.viewport_plane_cache_gate.acquire()
     }
 
     #[cfg(test)]

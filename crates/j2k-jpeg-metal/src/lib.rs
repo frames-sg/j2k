@@ -884,7 +884,11 @@ pub(crate) fn upload_surface(
                     dimensions,
                     fmt,
                     pitch_bytes,
-                    storage: Storage::Metal { buffer, offset: 0 },
+                    storage: Storage::Metal {
+                        buffer,
+                        offset: 0,
+                        access_gate: None,
+                    },
                 })
             }
             #[cfg(not(target_os = "macos"))]

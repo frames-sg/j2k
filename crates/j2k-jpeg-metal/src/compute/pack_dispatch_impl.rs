@@ -1173,7 +1173,7 @@ fn copy_grouped_surfaces_to_output(
         match result {
             Ok(surface) => {
                 let (source, source_offset) =
-                    surface.metal_buffer().ok_or_else(|| Error::MetalKernel {
+                    surface.metal_buffer_trusted().ok_or_else(|| Error::MetalKernel {
                         message: "JPEG Metal grouped buffer source was not Metal-backed"
                             .to_string(),
                     })?;
@@ -1186,8 +1186,8 @@ fn copy_grouped_surfaces_to_output(
                 copies.push((source.clone(), source_offset, destination_offset));
                 mapped_results.push((
                     original_index,
-                    Ok(Surface::from_metal_buffer_offset(
-                        output_buffer.clone(),
+                    Ok(Surface::from_batch_output_buffer_offset(
+                        output,
                         dimensions,
                         PixelFormat::Rgb8,
                         destination_offset,
@@ -1350,7 +1350,7 @@ fn copy_rgb8_surfaces_to_rgba_textures(
                     });
                 }
                 let (source, source_offset) =
-                    surface.metal_buffer().ok_or_else(|| Error::MetalKernel {
+                    surface.metal_buffer_trusted().ok_or_else(|| Error::MetalKernel {
                         message: "JPEG Metal texture copy source was not Metal-backed".to_string(),
                     })?;
                 let texture =

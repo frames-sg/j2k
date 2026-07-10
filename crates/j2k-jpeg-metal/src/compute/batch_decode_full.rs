@@ -172,6 +172,7 @@ fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_with_mode_and_output<
             timing,
             segment_count,
         },
+        output,
     )?))
 }
 
@@ -527,6 +528,7 @@ fn encode_fast_subsampled_full_rgb_split_decode<P: FastSubsampledMetal>(
 fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
     state: FullRgbFinishState<'_, '_, P>,
     mut timing: FullRgbFinishTiming,
+    output: Option<&crate::MetalBatchOutputBuffer>,
 ) -> Result<Vec<Result<Surface, Error>>, Error> {
     let FullRgbFinishState {
         runtime,
@@ -601,6 +603,7 @@ fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
         PixelFormat::Rgb8,
         requests.len(),
         shape.out_tile_len,
+        output,
     ))
 }
 

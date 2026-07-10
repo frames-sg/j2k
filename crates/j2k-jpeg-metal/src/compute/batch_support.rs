@@ -255,15 +255,21 @@ pub(super) fn surface_batch_success_results(
     pixel_format: j2k_core::PixelFormat,
     tile_count: usize,
     out_tile_len: usize,
+    output: Option<&crate::MetalBatchOutputBuffer>,
 ) -> Vec<Result<Surface, Error>> {
     (0..tile_count)
         .map(|index| {
-            Ok(Surface::from_metal_buffer_offset(
-                out_buffer.clone(),
-                dimensions,
-                pixel_format,
-                index * out_tile_len,
-            ))
+            let offset = index * out_tile_len;
+            Ok(if let Some(output) = output {
+                Surface::from_batch_output_buffer_offset(output, dimensions, pixel_format, offset)
+            } else {
+                Surface::from_metal_buffer_offset(
+                    out_buffer.clone(),
+                    dimensions,
+                    pixel_format,
+                    offset,
+                )
+            })
         })
         .collect()
 }

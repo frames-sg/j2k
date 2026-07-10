@@ -66,7 +66,9 @@ fn metal_surface_exposes_buffer_for_on_device_consumers() {
     let metal_surface = metal_decoder
         .decode_to_device(PixelFormat::Rgb8, BackendRequest::Metal)
         .expect("metal surface");
-    let (buffer, byte_offset) = metal_surface.metal_buffer().expect("metal buffer");
+    // SAFETY: the decode completed before return and this test submits no
+    // commands that access the returned buffer.
+    let (buffer, byte_offset) = unsafe { metal_surface.metal_buffer() }.expect("metal buffer");
     assert_eq!(byte_offset, 0);
     let buffer_len = usize::try_from(buffer.length()).expect("metal buffer length fits usize");
     assert!(buffer_len >= metal_surface.byte_len());
@@ -75,7 +77,8 @@ fn metal_surface_exposes_buffer_for_on_device_consumers() {
     let cpu_surface = cpu_decoder
         .decode_to_device(PixelFormat::Rgb8, BackendRequest::Cpu)
         .expect("cpu surface");
-    assert!(cpu_surface.metal_buffer().is_none());
+    // SAFETY: a host surface has no raw Metal allocation to synchronize.
+    assert!(unsafe { cpu_surface.metal_buffer() }.is_none());
 }
 
 #[cfg(target_os = "macos")]
@@ -96,7 +99,9 @@ fn decode_to_device_with_session_uses_session_device() {
 
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
-    let (buffer, _) = surface.metal_buffer().expect("metal buffer");
+    // SAFETY: the decode completed before return and this test submits no
+    // commands that access the returned buffer.
+    let (buffer, _) = unsafe { surface.metal_buffer() }.expect("metal buffer");
     assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
 }
 
@@ -339,7 +344,8 @@ fn auto_region_scaled_unsupported_metal_shape_returns_cpu_surface() {
 
     assert_eq!(surface.backend_kind(), BackendKind::Cpu);
     assert_eq!(surface.dimensions(), (3, 3));
-    assert!(surface.metal_buffer().is_none());
+    // SAFETY: a CPU-backed surface has no raw Metal allocation to synchronize.
+    assert!(unsafe { surface.metal_buffer() }.is_none());
 }
 
 #[test]
@@ -386,7 +392,8 @@ fn auto_viewport_cpu_fallback_returns_cpu_surface() {
             .expect("auto viewport surface");
 
     assert_eq!(surface.backend_kind(), BackendKind::Cpu);
-    assert!(surface.metal_buffer().is_none());
+    // SAFETY: a CPU-backed surface has no raw Metal allocation to synchronize.
+    assert!(unsafe { surface.metal_buffer() }.is_none());
 }
 
 #[test]

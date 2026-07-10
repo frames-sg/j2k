@@ -547,8 +547,8 @@ fn sparse_viewport_composition_resizes_reusable_metal_output_buffer() {
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     assert_eq!(surface.dimensions(), workload.viewport_dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
-    let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
-    assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+    let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
+    assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
     assert_eq!(offset, 0);
     assert_eq!(surface.as_bytes(), expected.as_slice());
 }
@@ -625,8 +625,8 @@ fn reusable_metal_viewport_buffer_helper_routes_sparse_workload() {
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     assert_eq!(surface.dimensions(), workload.viewport_dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
-    let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
-    assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+    let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
+    assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
     assert_eq!(offset, 0);
     assert_eq!(surface.as_bytes(), expected.as_slice());
 }
@@ -705,8 +705,8 @@ fn contiguous_viewport_region_resizes_reusable_metal_output_buffer() {
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     assert_eq!(surface.dimensions(), workload.viewport_dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
-    let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
-    assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+    let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
+    assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
     assert_eq!(offset, 0);
     assert_eq!(surface.as_bytes(), expected.as_slice());
 }
@@ -823,8 +823,8 @@ fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_buffer()
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     assert_eq!(surface.dimensions(), workload.viewport_dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
-    let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
-    assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+    let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
+    assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
     assert_eq!(offset, 0);
     assert_eq!(surface.as_bytes(), expected.as_slice());
 }

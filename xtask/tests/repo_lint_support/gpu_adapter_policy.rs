@@ -723,6 +723,143 @@ fn backend_surfaces_use_core_metadata_and_residency() {
 }
 
 #[test]
+fn jpeg_metal_host_readback_aliases_require_unsafe_contracts() {
+    let root = repo_root();
+    let surface = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/surface.rs"))
+        .expect("read JPEG Metal surface module");
+    let encode = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/encode.rs"))
+        .expect("read JPEG Metal encode module");
+    let batch_entry =
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_decode_entry.rs"))
+            .expect("read JPEG Metal batch decode entry module");
+    let batch_support =
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_support.rs"))
+            .expect("read JPEG Metal batch support module");
+    let pack_dispatch =
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/pack_dispatch_impl.rs"))
+            .expect("read JPEG Metal pack dispatch module");
+    let viewport_cache =
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/viewport_cache.rs"))
+            .expect("read JPEG Metal viewport cache module");
+    let compute = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute.rs"))
+        .expect("read JPEG Metal compute module");
+    let compute_tests = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/tests.rs"))
+        .expect("read JPEG Metal compute tests");
+
+    assert_pattern_checks(&[
+        PatternCheck::new("JPEG Metal host-readback alias boundary", &surface)
+            .required(&[
+                "pub unsafe fn metal_buffer(&self)",
+                "pub(crate) fn metal_buffer_trusted(&self)",
+                "pub unsafe fn buffer(&self) -> &BufferRef",
+                "pub(crate) fn buffer_trusted(&self)",
+                "no command may write the surface range while",
+                "safe decode into this output or readback",
+                "access_gate: Option<Arc<Mutex<()>>>",
+                "access_gate: Arc<Mutex<()>>",
+                "gate.lock()",
+                "fn storage_bytes(&self) -> Result<Cow",
+                "let bytes = self.storage_bytes()?;",
+                "pub(crate) fn from_batch_output_buffer_offset(",
+                "access_gate: Some(Arc::clone(&output.access_gate))",
+                "pub(crate) fn lock_for_safe_access(&self)",
+            ])
+            .forbidden(&[
+                "pub fn metal_buffer(&self)",
+                "pub fn buffer(&self) -> &BufferRef",
+            ]),
+        PatternCheck::new("JPEG Metal encode source invariant", &encode)
+            .required(&[
+                "pub unsafe fn new(",
+                "pub unsafe fn buffer(&self) -> &BufferRef",
+                "pub(crate) fn buffer_trusted(&self)",
+                "pub fn byte_offset(&self)",
+                "pub fn dimensions(&self)",
+                "pub fn pitch_bytes(&self)",
+                "pub fn output_dimensions(&self)",
+                "pub fn pixel_format(&self)",
+                "The caller must keep that range immutable",
+            ])
+            .forbidden(&[
+                "pub buffer: &'a Buffer",
+                "pub byte_offset: usize",
+                "pub width: u32",
+                "pub height: u32",
+                "pub pitch_bytes: usize",
+                "pub output_width: u32",
+                "pub output_height: u32",
+                "pub format: PixelFormat",
+            ]),
+        PatternCheck::new("JPEG Metal reusable-output write gates", &batch_entry).required(&[
+            "fn decode_full_rgb8_batch_into_output_with_session(",
+            "fn decode_region_scaled_rgb8_batch_into_output_with_session(",
+            "let _output_access = output.lock_for_safe_access()?;",
+        ]),
+        PatternCheck::new(
+            "JPEG Metal direct reusable-output surface aliases",
+            &batch_support,
+        )
+        .required(&[
+            "output: Option<&crate::MetalBatchOutputBuffer>",
+            "Surface::from_batch_output_buffer_offset(",
+        ]),
+        PatternCheck::new(
+            "JPEG Metal grouped reusable-output surface aliases",
+            &pack_dispatch,
+        )
+        .required(&["Surface::from_batch_output_buffer_offset("]),
+        PatternCheck::new(
+            "JPEG Metal viewport reusable-output surface aliases",
+            &viewport_cache,
+        )
+        .required(&[
+            "let _output_access = output.lock_for_safe_access()?;",
+            "Surface::from_batch_output_buffer_offset(",
+            "pub(super) struct ViewportPlaneCacheGate",
+            "pub(super) struct ViewportPlaneCacheLease",
+            "cache_lease: Option<ViewportPlaneCacheLease>",
+            "let cache_lease = runtime.viewport_plane_cache_lease()?;",
+            "cache_lease: Some(cache_lease)",
+            "let cache_owned = self.cache_lease.is_some();",
+            "PixelFormat::Gray8) if !cache_owned",
+        ]),
+        PatternCheck::new("JPEG Metal viewport cache runtime lease", &compute).required(&[
+            "viewport_plane_cache_gate: Arc<ViewportPlaneCacheGate>",
+            "viewport_plane_cache_gate: ViewportPlaneCacheGate::new()",
+            "fn viewport_plane_cache_lease(&self) -> Result<ViewportPlaneCacheLease, Error>",
+        ]),
+        PatternCheck::new(
+            "JPEG Metal viewport cache concurrency regressions",
+            &compute_tests,
+        )
+        .required(&[
+            "fn viewport_plane_cache_lease_serializes_cloned_sessions()",
+            "fn cached_gray_stage_returns_fresh_public_surface()",
+            "safe-readable Gray8 output must not alias the reusable plane cache",
+        ]),
+    ]);
+
+    assert_eq!(
+        batch_entry
+            .matches("let _output_access = output.lock_for_safe_access()?;")
+            .count(),
+        2,
+        "full and region-scaled reusable buffer writes must each hold the allocation gate"
+    );
+
+    let lease_index = viewport_cache
+        .find("let cache_lease = runtime.viewport_plane_cache_lease()?;")
+        .expect("viewport cache lease acquisition");
+    let slot_index = viewport_cache
+        .find("let mut slot = runtime.viewport_plane_cache()?;")
+        .expect("viewport cache slot acquisition");
+    assert!(
+        lease_index < slot_index,
+        "the viewport cache lease must be acquired before any cached buffer is cloned"
+    );
+}
+
+#[test]
 fn metal_compute_runtime_registry_is_split_from_compute_god_file() {
     let root = repo_root();
     let compute = fs::read_to_string(root.join("crates/j2k-metal/src/compute.rs"))
@@ -1210,6 +1347,57 @@ fn metal_surface_lives_in_focused_module() {
         PatternCheck::new("j2k-metal surface item ownership", &surface).required(&surface_items),
         PatternCheck::new("j2k-metal surface helper ownership", &surface)
             .required(&surface_helpers),
+    ]);
+}
+
+#[test]
+fn j2k_metal_public_buffer_aliases_require_unsafe_boundaries() {
+    let root = repo_root();
+    let surface = fs::read_to_string(root.join("crates/j2k-metal/src/surface.rs"))
+        .expect("read j2k-metal surface module");
+    let encoded = fs::read_to_string(root.join("crates/j2k-metal/src/encode/encoded.rs"))
+        .expect("read j2k-metal encoded output module");
+    let encode_types = fs::read_to_string(root.join("crates/j2k-metal/src/encode/types.rs"))
+        .expect("read j2k-metal encode types module");
+
+    assert_pattern_checks(&[
+        PatternCheck::new("j2k-metal Surface raw buffer boundary", &surface)
+            .required(&[
+                "pub unsafe fn metal_buffer(&self) -> Option<(&Buffer, usize)>",
+                "pub(crate) fn metal_buffer_trusted(&self) -> Option<(&Buffer, usize)>",
+                "while this surface or any clone",
+            ])
+            .forbidden(&["pub fn metal_buffer(&self)"]),
+        PatternCheck::new("j2k-metal encoded output raw buffer boundary", &encoded)
+            .required(&[
+                "pub(crate) codestream_buffer: Buffer",
+                "pub unsafe fn from_raw_parts(",
+                "pub unsafe fn into_codestream_buffer(self) -> Buffer",
+                "pub(crate) fn codestream_buffer_trusted(&self) -> &Buffer",
+                "pub fn byte_offset(&self) -> usize",
+                "pub fn byte_len(&self) -> usize",
+                "pub fn capacity(&self) -> usize",
+                "until the returned object is dropped",
+                "sibling tiles in a batch",
+            ])
+            .forbidden(&[
+                "pub codestream_buffer: Buffer",
+                "pub byte_offset: usize",
+                "pub byte_len: usize",
+                "pub capacity: usize",
+                "pub fn codestream_buffer(&self)",
+                "pub unsafe fn codestream_buffer(&self)",
+                "pub fn into_codestream_buffer(self)",
+            ]),
+        PatternCheck::new("j2k-metal encode input raw buffer boundary", &encode_types)
+            .required(&[
+                "pub(super) buffer: &'a Buffer",
+                "pub unsafe fn from_buffer(",
+                "pub(crate) fn from_trusted_buffer(",
+                "Dropping a submitted operation",
+                "actually completed",
+            ])
+            .forbidden(&["pub buffer: &'a Buffer", "pub fn from_buffer("]),
     ]);
 }
 

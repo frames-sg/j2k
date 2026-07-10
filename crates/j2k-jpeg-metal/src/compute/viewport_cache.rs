@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 use std::mem::size_of;
+#[cfg(target_os = "macos")]
+use std::sync::{Arc, Condvar, Mutex};
 
 use j2k_core::{PixelFormat, Rect};
 use j2k_jpeg::{ColorSpace as JpegColorSpace, ComponentRowWriter, JpegError};
@@ -28,12 +30,66 @@ pub(super) enum PlaneMode {
 }
 
 #[cfg(target_os = "macos")]
+pub(super) struct ViewportPlaneCacheGate {
+    leased: Mutex<bool>,
+    available: Condvar,
+}
+
+#[cfg(target_os = "macos")]
+impl ViewportPlaneCacheGate {
+    pub(super) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            leased: Mutex::new(false),
+            available: Condvar::new(),
+        })
+    }
+
+    pub(super) fn acquire(self: &Arc<Self>) -> Result<ViewportPlaneCacheLease, Error> {
+        let mut leased = self.leased.lock().map_err(|_| Error::MetalStatePoisoned {
+            state: "JPEG Metal viewport plane cache lease",
+        })?;
+        while *leased {
+            leased = self
+                .available
+                .wait(leased)
+                .map_err(|_| Error::MetalStatePoisoned {
+                    state: "JPEG Metal viewport plane cache lease",
+                })?;
+        }
+        *leased = true;
+        drop(leased);
+        Ok(ViewportPlaneCacheLease {
+            gate: Arc::clone(self),
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) struct ViewportPlaneCacheLease {
+    gate: Arc<ViewportPlaneCacheGate>,
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for ViewportPlaneCacheLease {
+    fn drop(&mut self) {
+        let mut leased = self
+            .gate
+            .leased
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *leased = false;
+        self.gate.available.notify_one();
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(super) struct PlaneStage {
     pub(super) dims: (u32, u32),
     pub(super) mode: PlaneMode,
     pub(super) plane0: Buffer,
     pub(super) plane1: Option<Buffer>,
     pub(super) plane2: Option<Buffer>,
+    pub(super) cache_lease: Option<ViewportPlaneCacheLease>,
 }
 
 #[cfg(target_os = "macos")]
@@ -103,6 +159,7 @@ impl PlaneStage {
             plane0,
             plane1,
             plane2,
+            cache_lease: None,
         })
     }
 
@@ -136,15 +193,15 @@ impl PlaneStage {
         fmt: PixelFormat,
         residency: PlaneStageResidency,
     ) -> Result<Surface, Error> {
+        let cache_owned = self.cache_lease.is_some();
         match (self.mode, fmt) {
-            (PlaneMode::Gray | PlaneMode::YCbCr, PixelFormat::Gray8) => Ok(
+            (PlaneMode::Gray | PlaneMode::YCbCr, PixelFormat::Gray8) if !cache_owned => Ok(
                 surface_from_plane_buffer(self.plane0, self.dims, fmt, residency),
             ),
             (
                 PlaneMode::Gray | PlaneMode::YCbCr | PlaneMode::Rgb,
-                PixelFormat::Rgb8 | PixelFormat::Rgba8,
-            )
-            | (PlaneMode::Rgb, PixelFormat::Gray8) => {
+                PixelFormat::Gray8 | PixelFormat::Rgb8 | PixelFormat::Rgba8,
+            ) => {
                 self.dispatch_with_runtime(runtime, fmt, residency)
             }
             _ => Err(Error::MetalKernel {
@@ -210,6 +267,7 @@ impl PlaneStage {
         runtime: &MetalRuntime,
         output: &crate::MetalBatchOutputBuffer,
     ) -> Result<Surface, Error> {
+        let _output_access = output.lock_for_safe_access()?;
         let fmt = PixelFormat::Rgb8;
         let pitch_bytes = self.dims.0 as usize * fmt.bytes_per_pixel();
         let tile_len = pitch_bytes * self.dims.1 as usize;
@@ -245,8 +303,8 @@ impl PlaneStage {
         encoder.end_encoding();
         commit_and_wait_jpeg(command_buffer)?;
 
-        Ok(Surface::from_metal_buffer_offset(
-            out_buffer, self.dims, fmt, 0,
+        Ok(Surface::from_batch_output_buffer_offset(
+            output, self.dims, fmt, 0,
         ))
     }
 
@@ -551,6 +609,7 @@ pub(super) fn cached_plane_stage(
     dims: (u32, u32),
 ) -> Result<PlaneStage, Error> {
     let mode = plane_mode_for_color_space(color_space)?;
+    let cache_lease = runtime.viewport_plane_cache_lease()?;
     let mut slot = runtime.viewport_plane_cache()?;
     let len = dims.0 as usize * dims.1 as usize;
     let refresh = slot
@@ -591,6 +650,7 @@ pub(super) fn cached_plane_stage(
         plane0: cached.plane0.clone(),
         plane1: cached.plane1.clone(),
         plane2: cached.plane2.clone(),
+        cache_lease: Some(cache_lease),
     };
     drop(slot);
 

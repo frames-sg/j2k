@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::borrow::Cow;
+#[cfg(target_os = "macos")]
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use j2k_core::{
     copy_tight_pixels_to_strided_output, BackendKind, BufferError, DeviceMemoryRange,
@@ -29,6 +31,7 @@ pub(crate) enum Storage {
     Metal {
         buffer: Buffer,
         offset: usize,
+        access_gate: Option<Arc<Mutex<()>>>,
     },
 }
 
@@ -68,37 +71,63 @@ impl Surface {
     ///
     /// Host storage is borrowed. Metal storage is copied into an owned snapshot
     /// so safe Rust never exposes a slice that aliases later GPU access.
+    ///
+    /// # Panics
+    ///
+    /// Panics if Metal storage cannot be synchronized or read. Use
+    /// [`Surface::download_into`] when readback errors must be handled.
     pub fn as_bytes(&self) -> Cow<'_, [u8]> {
+        self.storage_bytes()
+            .expect("Metal surface storage must be synchronized, CPU-visible, and bounded")
+    }
+
+    fn storage_bytes(&self) -> Result<Cow<'_, [u8]>, Error> {
         match &self.storage {
-            Storage::Host(bytes) => Cow::Borrowed(bytes),
+            Storage::Host(bytes) => Ok(Cow::Borrowed(bytes)),
             #[cfg(target_os = "macos")]
-            Storage::Metal { buffer, offset } => {
+            Storage::Metal {
+                buffer,
+                offset,
+                access_gate,
+            } => {
+                let _access = match access_gate {
+                    Some(gate) => Some(gate.lock().map_err(|_| Error::MetalKernel {
+                        message: "JPEG Metal surface access gate was poisoned".to_string(),
+                    })?),
+                    None => None,
+                };
                 let len = self.byte_len();
-                Cow::Owned(
-                    checked_buffer_slice_at::<u8>(buffer, *offset, len, "surface bytes")
-                        .expect("Metal surface storage must be CPU-visible and bounded"),
-                )
+                checked_buffer_slice_at::<u8>(buffer, *offset, len, "surface bytes").map(Cow::Owned)
             }
         }
     }
 
     /// Copy the tightly packed surface into a caller-provided strided buffer.
     pub fn download_into(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
-        copy_tight_pixels_to_strided_output(
-            self.as_bytes().as_ref(),
-            self.dimensions,
-            self.fmt,
-            out,
-            stride,
-        )
-        .map_err(Error::from)
+        let bytes = self.storage_bytes()?;
+        copy_tight_pixels_to_strided_output(bytes.as_ref(), self.dimensions, self.fmt, out, stride)
+            .map_err(Error::from)
     }
 
     #[cfg(target_os = "macos")]
-    /// Return the Metal buffer and byte offset when the surface is Metal-backed.
-    pub fn metal_buffer(&self) -> Option<(&Buffer, usize)> {
+    /// Return the raw Metal buffer and byte offset when the surface is Metal-backed.
+    ///
+    /// # Safety
+    ///
+    /// The caller must synchronize every CPU and GPU access made through the
+    /// returned buffer or any handle cloned from it. The internal safe-access
+    /// gate cannot observe work submitted through raw handles. In particular,
+    /// no command may write the surface range while [`Surface::as_bytes`] or
+    /// [`Surface::download_into`] reads it, and no raw access may overlap a safe
+    /// decoder write through an aliasing [`MetalBatchOutputBuffer`].
+    pub unsafe fn metal_buffer(&self) -> Option<(&Buffer, usize)> {
+        self.metal_buffer_trusted()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn metal_buffer_trusted(&self) -> Option<(&Buffer, usize)> {
         match &self.storage {
-            Storage::Metal { buffer, offset } => Some((buffer, *offset)),
+            Storage::Metal { buffer, offset, .. } => Some((buffer, *offset)),
             Storage::Host(_) => None,
         }
     }
@@ -125,7 +154,11 @@ impl Surface {
             dimensions,
             fmt,
             pitch_bytes: dimensions.0 as usize * fmt.bytes_per_pixel(),
-            storage: Storage::Metal { buffer, offset },
+            storage: Storage::Metal {
+                buffer,
+                offset,
+                access_gate: None,
+            },
         }
     }
 
@@ -151,7 +184,32 @@ impl Surface {
             dimensions,
             fmt,
             pitch_bytes: dimensions.0 as usize * fmt.bytes_per_pixel(),
-            storage: Storage::Metal { buffer, offset },
+            storage: Storage::Metal {
+                buffer,
+                offset,
+                access_gate: None,
+            },
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn from_batch_output_buffer_offset(
+        output: &MetalBatchOutputBuffer,
+        dimensions: (u32, u32),
+        fmt: PixelFormat,
+        offset: usize,
+    ) -> Self {
+        Self {
+            backend: BackendKind::Metal,
+            residency: SurfaceResidency::MetalResidentDecode,
+            dimensions,
+            fmt,
+            pitch_bytes: dimensions.0 as usize * fmt.bytes_per_pixel(),
+            storage: Storage::Metal {
+                buffer: output.buffer.clone(),
+                offset,
+                access_gate: Some(Arc::clone(&output.access_gate)),
+            },
         }
     }
 }
@@ -182,7 +240,7 @@ impl DeviceSurface for Surface {
         match &self.storage {
             Storage::Host(_) => None,
             #[cfg(target_os = "macos")]
-            Storage::Metal { buffer, offset } => Some(DeviceMemoryRange::new(
+            Storage::Metal { buffer, offset, .. } => Some(DeviceMemoryRange::new(
                 BackendKind::Metal,
                 u64::try_from(buffer.as_ptr() as usize).ok()?,
                 *offset,
@@ -210,6 +268,7 @@ pub struct ResidentPrivateJpegTile {
 /// Reusable caller-owned Metal buffer for full-tile JPEG batch output.
 pub struct MetalBatchOutputBuffer {
     buffer: Buffer,
+    access_gate: Arc<Mutex<()>>,
     dimensions: (u32, u32),
     fmt: PixelFormat,
     pitch_bytes: usize,
@@ -330,6 +389,7 @@ impl MetalBatchOutputBuffer {
             .new_buffer(byte_len_u64, MTLResourceOptions::StorageModeShared);
         Ok(Self {
             buffer,
+            access_gate: Arc::new(Mutex::new(())),
             dimensions,
             fmt,
             pitch_bytes: row_bytes,
@@ -338,9 +398,38 @@ impl MetalBatchOutputBuffer {
         })
     }
 
-    /// Backing Metal buffer.
-    pub fn buffer(&self) -> &BufferRef {
+    /// Return the raw backing Metal buffer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must synchronize every CPU and GPU access made through the
+    /// returned buffer or any handle cloned from it. The internal safe-access
+    /// gate cannot observe work submitted through raw handles. No such access
+    /// may overlap a safe decode into this output or readback from a [`Surface`]
+    /// that aliases this allocation.
+    pub unsafe fn buffer(&self) -> &BufferRef {
+        self.buffer_trusted()
+    }
+
+    pub(crate) fn buffer_trusted(&self) -> &BufferRef {
         self.buffer.as_ref()
+    }
+
+    pub(crate) fn lock_for_safe_access(&self) -> Result<MutexGuard<'_, ()>, Error> {
+        self.access_gate.lock().map_err(|_| Error::MetalKernel {
+            message: "JPEG Metal batch output access gate was poisoned".to_string(),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_access_gate_with(&self, surface: &Surface) -> bool {
+        matches!(
+            &surface.storage,
+            Storage::Metal {
+                access_gate: Some(access_gate),
+                ..
+            } if Arc::ptr_eq(&self.access_gate, access_gate)
+        )
     }
 
     /// Tile dimensions for this output allocation.

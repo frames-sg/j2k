@@ -59,15 +59,17 @@ fn bench_encode_baseline(c: &mut Criterion) {
             tile_bytes as u64,
             metal::MTLResourceOptions::StorageModeShared,
         );
-        let tile = JpegBaselineMetalEncodeTile {
-            buffer: &buffer,
-            byte_offset: 0,
-            width: dim,
-            height: dim,
-            pitch_bytes: dim as usize * 3,
-            output_width: dim,
-            output_height: dim,
-            format: PixelFormat::Rgb8,
+        // SAFETY: the benchmark buffer is initialized before construction and
+        // remains immutable while the tile descriptor is alive.
+        let tile = unsafe {
+            JpegBaselineMetalEncodeTile::new(
+                &buffer,
+                0,
+                (dim, dim),
+                dim as usize * 3,
+                (dim, dim),
+                PixelFormat::Rgb8,
+            )
         };
         single.bench_function(format!("metal_rgb8_422_{dim}x{dim}"), |b| {
             b.iter(|| {
@@ -114,16 +116,18 @@ fn bench_encode_baseline(c: &mut Criterion) {
             rgb.len() as u64,
             metal::MTLResourceOptions::StorageModeShared,
         );
+        // SAFETY: the benchmark buffer is initialized before construction and
+        // remains immutable while all tile descriptors are alive.
         let tiles = (0..batch_size)
-            .map(|tile| JpegBaselineMetalEncodeTile {
-                buffer: &buffer,
-                byte_offset: tile * tile_bytes,
-                width: dim,
-                height: dim,
-                pitch_bytes: dim as usize * 3,
-                output_width: dim,
-                output_height: dim,
-                format: PixelFormat::Rgb8,
+            .map(|tile| unsafe {
+                JpegBaselineMetalEncodeTile::new(
+                    &buffer,
+                    tile * tile_bytes,
+                    (dim, dim),
+                    dim as usize * 3,
+                    (dim, dim),
+                    PixelFormat::Rgb8,
+                )
             })
             .collect::<Vec<_>>();
         batch.bench_function(

@@ -539,6 +539,7 @@ fn try_decode_fast444_to_surface(
         plane0: y_plane,
         plane1: Some(chroma_blue_plane),
         plane2: Some(chroma_red_plane),
+        cache_lease: None,
     }
     .finish_resident_with_runtime(runtime, fmt)
     .map(Some)
@@ -613,6 +614,7 @@ fn try_decode_fast444_to_private_rgb8_tile(
             plane0: y_plane,
             plane1: Some(chroma_blue_plane),
             plane2: Some(chroma_red_plane),
+            cache_lease: None,
         }
         .dispatch_private_rgb8_with_runtime(runtime, status_buffer)?,
     ))
@@ -710,6 +712,7 @@ fn try_decode_fast444_region_to_surface(
         plane0: y_plane,
         plane1: Some(chroma_blue_plane),
         plane2: Some(chroma_red_plane),
+        cache_lease: None,
     }
     .finish_resident_with_runtime(runtime, fmt)
     .map(Some)
@@ -794,6 +797,7 @@ fn try_decode_fast444_scaled_to_surface(
         plane0: y_plane,
         plane1: Some(chroma_blue_plane),
         plane2: Some(chroma_red_plane),
+        cache_lease: None,
     }
     .finish_resident_with_runtime(runtime, fmt)
     .map(Some)
@@ -901,6 +905,7 @@ fn try_decode_fast444_scaled_region_to_surface(
         plane0: y_plane,
         plane1: Some(chroma_blue_plane),
         plane2: Some(chroma_red_plane),
+        cache_lease: None,
     }
     .finish_resident_with_runtime(runtime, fmt)
     .map(Some)

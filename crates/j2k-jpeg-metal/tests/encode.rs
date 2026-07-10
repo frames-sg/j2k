@@ -137,17 +137,20 @@ fn metal_baseline_encoder_round_trips_rgb_422() {
         metal::MTLResourceOptions::StorageModeShared,
     );
 
+    // SAFETY: the buffer was initialized before tile construction and no CPU
+    // or GPU writer accesses it while the tile is alive.
+    let tile = unsafe {
+        JpegBaselineMetalEncodeTile::new(
+            &buffer,
+            0,
+            (width, height),
+            width as usize * 3,
+            (width, height),
+            PixelFormat::Rgb8,
+        )
+    };
     let encoded = encode_jpeg_baseline_from_metal_buffer(
-        JpegBaselineMetalEncodeTile {
-            buffer: &buffer,
-            byte_offset: 0,
-            width,
-            height,
-            pitch_bytes: width as usize * 3,
-            output_width: width,
-            output_height: height,
-            format: PixelFormat::Rgb8,
-        },
+        tile,
         JpegEncodeOptions {
             quality: 90,
             subsampling: JpegSubsampling::Ybr422,
@@ -213,17 +216,20 @@ fn metal_baseline_encoder_round_trips_all_rgb_subsampling_modes() {
         JpegSubsampling::Ybr422,
         JpegSubsampling::Ybr420,
     ] {
+        // SAFETY: the buffer was initialized before tile construction and no
+        // CPU or GPU writer accesses it while the tile is alive.
+        let tile = unsafe {
+            JpegBaselineMetalEncodeTile::new(
+                &buffer,
+                0,
+                (width, height),
+                width as usize * 3,
+                (width, height),
+                PixelFormat::Rgb8,
+            )
+        };
         let encoded = encode_jpeg_baseline_from_metal_buffer(
-            JpegBaselineMetalEncodeTile {
-                buffer: &buffer,
-                byte_offset: 0,
-                width,
-                height,
-                pitch_bytes: width as usize * 3,
-                output_width: width,
-                output_height: height,
-                format: PixelFormat::Rgb8,
-            },
+            tile,
             JpegEncodeOptions {
                 quality: 88,
                 subsampling,
@@ -277,17 +283,20 @@ fn metal_baseline_encoder_round_trips_gray_with_padded_output() {
         metal::MTLResourceOptions::StorageModeShared,
     );
 
+    // SAFETY: the buffer was initialized before tile construction and no CPU
+    // or GPU writer accesses it while the tile is alive.
+    let tile = unsafe {
+        JpegBaselineMetalEncodeTile::new(
+            &buffer,
+            0,
+            (width, height),
+            width as usize,
+            (output_width, output_height),
+            PixelFormat::Gray8,
+        )
+    };
     let encoded = encode_jpeg_baseline_from_metal_buffer(
-        JpegBaselineMetalEncodeTile {
-            buffer: &buffer,
-            byte_offset: 0,
-            width,
-            height,
-            pitch_bytes: width as usize,
-            output_width,
-            output_height,
-            format: PixelFormat::Gray8,
-        },
+        tile,
         JpegEncodeOptions {
             quality: 85,
             subsampling: JpegSubsampling::Gray,
@@ -356,16 +365,18 @@ fn metal_baseline_batch_encoder_round_trips_multiple_rgb_tiles() {
         metal::MTLResourceOptions::StorageModeShared,
     );
     let tile_bytes = width as usize * height as usize * 3;
+    // SAFETY: the buffer was initialized before tile construction and no CPU
+    // or GPU writer accesses any described range while the tiles are alive.
     let tiles: Vec<_> = (0..tile_count)
-        .map(|tile| JpegBaselineMetalEncodeTile {
-            buffer: &buffer,
-            byte_offset: tile * tile_bytes,
-            width,
-            height,
-            pitch_bytes: width as usize * 3,
-            output_width: width,
-            output_height: height,
-            format: PixelFormat::Rgb8,
+        .map(|tile| unsafe {
+            JpegBaselineMetalEncodeTile::new(
+                &buffer,
+                tile * tile_bytes,
+                (width, height),
+                width as usize * 3,
+                (width, height),
+                PixelFormat::Rgb8,
+            )
         })
         .collect();
 

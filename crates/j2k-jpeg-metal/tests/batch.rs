@@ -355,7 +355,8 @@ fn auto_tile_region_scaled_unsupported_metal_shape_returns_cpu_surface() {
     assert_eq!(surface.backend_kind(), BackendKind::Cpu);
     assert_eq!(surface.dimensions(), (2, 2));
     #[cfg(target_os = "macos")]
-    assert!(surface.metal_buffer().is_none());
+    // SAFETY: a CPU-backed surface has no raw Metal allocation to synchronize.
+    assert!(unsafe { surface.metal_buffer() }.is_none());
 }
 
 #[test]

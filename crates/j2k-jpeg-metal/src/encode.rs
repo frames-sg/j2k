@@ -15,7 +15,7 @@ use j2k_jpeg::{EncodedJpeg, JpegEncodeOptions};
 #[cfg(target_os = "macos")]
 use j2k_jpeg::{JpegBackend, JpegEncodeError};
 #[cfg(target_os = "macos")]
-use metal::Buffer;
+use metal::{Buffer, BufferRef};
 
 #[cfg(target_os = "macos")]
 use crate::compute;
@@ -24,22 +24,87 @@ use crate::compute;
 #[derive(Debug, Clone, Copy)]
 /// Metal buffer and layout metadata for one baseline JPEG encode tile.
 pub struct JpegBaselineMetalEncodeTile<'a> {
-    /// Source Metal buffer containing RGB8 or Gray8 pixels.
-    pub buffer: &'a Buffer,
-    /// Byte offset of the first source pixel in `buffer`.
-    pub byte_offset: usize,
-    /// Width of the valid input region in pixels.
-    pub width: u32,
-    /// Height of the valid input region in pixels.
-    pub height: u32,
+    buffer: &'a Buffer,
+    byte_offset: usize,
+    width: u32,
+    height: u32,
+    pitch_bytes: usize,
+    output_width: u32,
+    output_height: u32,
+    format: PixelFormat,
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> JpegBaselineMetalEncodeTile<'a> {
+    /// Describe one Metal-resident source tile for baseline JPEG encoding.
+    ///
+    /// # Safety
+    ///
+    /// All commands that write the described source range must have completed
+    /// before construction. The caller must keep that range immutable to both
+    /// CPU and GPU writers while this tile or any copy can be used, and through
+    /// actual completion of every GPU read submitted from one. The provided
+    /// encode functions are synchronous and wait for those reads before
+    /// returning. The buffer must be usable by the device behind each session
+    /// passed to the safe encode functions.
+    pub unsafe fn new(
+        buffer: &'a Buffer,
+        byte_offset: usize,
+        dimensions: (u32, u32),
+        pitch_bytes: usize,
+        output_dimensions: (u32, u32),
+        format: PixelFormat,
+    ) -> Self {
+        Self {
+            buffer,
+            byte_offset,
+            width: dimensions.0,
+            height: dimensions.1,
+            pitch_bytes,
+            output_width: output_dimensions.0,
+            output_height: output_dimensions.1,
+            format,
+        }
+    }
+
+    /// Byte offset of the first source pixel.
+    pub fn byte_offset(&self) -> usize {
+        self.byte_offset
+    }
+
+    /// Dimensions of the valid input region.
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
     /// Number of bytes between consecutive input rows.
-    pub pitch_bytes: usize,
-    /// Encoded frame width in pixels.
-    pub output_width: u32,
-    /// Encoded frame height in pixels.
-    pub output_height: u32,
+    pub fn pitch_bytes(&self) -> usize {
+        self.pitch_bytes
+    }
+
+    /// Dimensions of the encoded JPEG frame.
+    pub fn output_dimensions(&self) -> (u32, u32) {
+        (self.output_width, self.output_height)
+    }
+
     /// Pixel format of the source buffer.
-    pub format: PixelFormat,
+    pub fn pixel_format(&self) -> PixelFormat {
+        self.format
+    }
+
+    /// Return the raw Metal source buffer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must preserve the synchronization and immutability contract
+    /// established by [`JpegBaselineMetalEncodeTile::new`].
+    pub unsafe fn buffer(&self) -> &BufferRef {
+        self.buffer_trusted().as_ref()
+    }
+
+    pub(crate) fn buffer_trusted(&self) -> &'a Buffer {
+        self.buffer
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -124,7 +189,7 @@ impl<'tile> JpegBaselineGpuEncodeHostAdapter<JpegBaselineMetalEncodeTile<'tile>>
     }
 
     fn source_key(&self, tile: &JpegBaselineMetalEncodeTile<'tile>) -> Self::SourceKey {
-        tile.buffer.gpu_address()
+        tile.buffer_trusted().gpu_address()
     }
 
     fn gpu_tile(
@@ -147,7 +212,7 @@ impl<'tile> JpegBaselineGpuEncodeHostAdapter<JpegBaselineMetalEncodeTile<'tile>>
         compute::encode_jpeg_baseline_entropy_with_session(
             self.session,
             &compute::JpegBaselineEntropyEncodeJob {
-                input: tile.buffer,
+                input: tile.buffer_trusted(),
                 input_offset: tile.byte_offset,
                 params: metal_encode_params(plan.params),
                 q_luma: tables.q_luma,
@@ -171,7 +236,7 @@ impl<'tile> JpegBaselineGpuEncodeHostAdapter<JpegBaselineMetalEncodeTile<'tile>>
         compute::encode_jpeg_baseline_entropy_batch_with_session(
             self.session,
             &compute::JpegBaselineEntropyEncodeBatchJob {
-                input: tiles[0].buffer,
+                input: tiles[0].buffer_trusted(),
                 params,
                 q_luma: tables.q_luma,
                 q_chroma: tables.q_chroma,
@@ -190,7 +255,7 @@ fn metal_gpu_tile(
     tile: JpegBaselineMetalEncodeTile<'_>,
 ) -> Result<JpegBaselineGpuEncodeTile, crate::Error> {
     let buffer_len =
-        usize::try_from(tile.buffer.length()).map_err(|_| crate::Error::MetalKernel {
+        usize::try_from(tile.buffer_trusted().length()).map_err(|_| crate::Error::MetalKernel {
             message: "JPEG Baseline Metal encode buffer length exceeds usize".to_string(),
         })?;
     Ok(JpegBaselineGpuEncodeTile {

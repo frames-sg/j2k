@@ -1041,6 +1041,7 @@ fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output<
         PixelFormat::Rgb8,
         requests.len(),
         shape.plan.out_tile_len,
+        output,
     )))
 }
 

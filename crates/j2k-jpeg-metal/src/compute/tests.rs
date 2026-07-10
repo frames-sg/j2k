@@ -126,6 +126,90 @@ fn viewport_plane_cache_is_runtime_local() {
 }
 
 #[test]
+fn viewport_plane_cache_lease_serializes_cloned_sessions() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = crate::MetalBackendSession::system_default().expect("Metal backend session");
+    let session_alias = session.clone();
+    let runtime = session.runtime_result().as_ref().expect("Metal runtime");
+    let first = cached_plane_stage(runtime, JpegColorSpace::YCbCr, (8, 8)).expect("first stage");
+    let first_buffer = first.plane0.as_ptr() as usize;
+    assert_eq!(
+        session.runtime_ptr_for_test(),
+        session_alias.runtime_ptr_for_test(),
+        "cloned sessions must share the runtime that owns the cache lease"
+    );
+
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let runtime = session_alias
+            .runtime_result()
+            .as_ref()
+            .expect("aliased Metal runtime");
+        started_tx.send(()).expect("signal cache wait start");
+        let second =
+            cached_plane_stage(runtime, JpegColorSpace::YCbCr, (8, 8)).expect("second stage");
+        acquired_tx
+            .send(second.plane0.as_ptr() as usize)
+            .expect("signal cache lease acquisition");
+    });
+
+    started_rx.recv().expect("cache waiter started");
+    assert!(
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err(),
+        "a cloned session must not acquire cached planes while the first stage is live"
+    );
+
+    drop(first);
+    assert_eq!(
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("second cache lease acquired after first stage dropped"),
+        first_buffer,
+        "serialized stages should still reuse the cached allocation"
+    );
+    waiter.join().expect("cache waiter joined");
+}
+
+#[test]
+fn cached_gray_stage_returns_fresh_public_surface() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let runtime = MetalRuntime::new().expect("Metal runtime");
+    let stage = cached_plane_stage(&runtime, JpegColorSpace::Grayscale, (8, 8)).expect("stage");
+    let cached_buffer = stage.plane0.as_ptr();
+    let surface = stage
+        .finish_with_runtime(&runtime, PixelFormat::Gray8)
+        .expect("fresh Gray8 surface");
+    let (surface_buffer, offset) = surface
+        .metal_buffer_trusted()
+        .expect("Metal-backed Gray8 surface");
+
+    assert_eq!(offset, 0);
+    assert_ne!(
+        surface_buffer.as_ptr(),
+        cached_buffer,
+        "safe-readable Gray8 output must not alias the reusable plane cache"
+    );
+    assert_eq!(surface.as_bytes().len(), 8 * 8);
+
+    let reused =
+        cached_plane_stage(&runtime, JpegColorSpace::Grayscale, (8, 8)).expect("reused stage");
+    assert_eq!(
+        reused.plane0.as_ptr(),
+        cached_buffer,
+        "fresh public output must preserve internal cache reuse"
+    );
+}
+
+#[test]
 fn shader_decode_block_clears_coefficients_with_vector_stores() {
     assert!(
         SHADER_SOURCE.contains("thread short4 *coeff_chunks"),
