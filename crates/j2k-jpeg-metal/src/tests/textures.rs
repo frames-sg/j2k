@@ -32,12 +32,15 @@ fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_textures() {
         let tile = tile.expect("texture tile");
         assert_eq!(tile.dimensions(), (8, 8));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
-        assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
-        ));
+        assert!(output.shares_access_gate_with_tile(&tile));
+        // SAFETY: The decode call above waited for completion, and this test
+        // submits no overlapping writer through either raw texture handle.
+        let tile_texture = unsafe { tile.texture() };
+        // SAFETY: Same completed decode and no-overlapping-writer invariant.
+        let output_texture = unsafe { output.texture(index) }.expect("output texture");
+        assert!(std::ptr::eq(tile_texture, output_texture));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile_texture, tile.dimensions()),
             expected_rgba
         );
     }
@@ -102,11 +105,11 @@ fn rgb8_decoder_batch_can_write_into_fixed_metal_textures() {
         assert_eq!(tile.dimensions(), (16, 16));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -225,11 +228,11 @@ fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_textures() {
         assert_eq!(tile.dimensions(), (4, 4));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -267,11 +270,11 @@ fn rgb8_scaled_batch_decode_resizes_reusable_metal_textures() {
         assert_eq!(tile.dimensions(), (4, 4));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -311,11 +314,11 @@ fn rgb8_decoder_scaled_batch_resizes_reusable_metal_textures() {
         assert_eq!(tile.dimensions(), (4, 4));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -352,11 +355,11 @@ fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_textures() {
         assert_eq!(tile.dimensions(), (4, 4));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -408,11 +411,11 @@ fn rgb8_fast422_region_scaled_batch_decode_can_write_into_reusable_metal_texture
         assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -573,10 +576,11 @@ fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatch
         assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
-        let actual_rgba = download_rgba8_texture(&session, tile.texture(), tile.dimensions());
+        let actual_rgba =
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions());
         assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
     }
 }
@@ -738,10 +742,11 @@ fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatch
         assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
-        let actual_rgba = download_rgba8_texture(&session, tile.texture(), tile.dimensions());
+        let actual_rgba =
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions());
         assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
     }
 }
@@ -792,11 +797,11 @@ fn rgb8_fast420_region_scaled_batch_decode_can_write_into_reusable_metal_texture
         assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -853,11 +858,11 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_textures() {
         assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -910,11 +915,11 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_textures() {
         assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -983,11 +988,11 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_texture
         assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -1067,11 +1072,11 @@ fn assert_restart_region_scaled_texture_batch_writes_reusable_metal_output(
         assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -1252,10 +1257,11 @@ fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatch
         assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
-        let actual_rgba = download_rgba8_texture(&session, tile.texture(), tile.dimensions());
+        let actual_rgba =
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions());
         assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
     }
 }
@@ -1287,11 +1293,11 @@ fn rgb8_fast420_batch_decode_can_write_into_reusable_metal_textures() {
         assert_eq!(tile.dimensions(), (16, 16));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -1324,11 +1330,11 @@ fn rgb8_fast422_batch_decode_can_write_into_reusable_metal_textures() {
         assert_eq!(tile.dimensions(), (16, 8));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -1519,10 +1525,11 @@ fn rgb8_table_mixed_fast444_texture_batch_groups_resident_dispatches() {
         assert_eq!(tile.dimensions(), dimensions);
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
-        let actual_rgba = download_rgba8_texture(&session, tile.texture(), tile.dimensions());
+        let actual_rgba =
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions());
         assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
     }
     assert_eq!(
@@ -1725,10 +1732,11 @@ fn rgb8_table_mixed_fast422_texture_batch_groups_resident_dispatches() {
         assert_eq!(tile.dimensions(), dimensions);
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
-        let actual_rgba = download_rgba8_texture(&session, tile.texture(), tile.dimensions());
+        let actual_rgba =
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions());
         assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
     }
     assert_eq!(
@@ -1763,11 +1771,11 @@ fn rgb8_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures
         assert_eq!(tile.dimensions(), (16, 16));
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
         assert_eq!(
-            download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
             expected_rgba
         );
     }
@@ -2077,10 +2085,11 @@ fn rgb8_distinct_restart_fast420_texture_batch_decode_fuses_directly_into_reusab
         assert_eq!(tile.dimensions(), dimensions);
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
-        let actual_rgba = download_rgba8_texture(&session, tile.texture(), tile.dimensions());
+        let actual_rgba =
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions());
         assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
     }
     assert_eq!(
@@ -2209,10 +2218,11 @@ fn rgb8_table_mixed_restart_fast420_texture_batch_groups_resident_dispatches() {
         assert_eq!(tile.dimensions(), dimensions);
         assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
         assert!(std::ptr::eq(
-            tile.texture(),
-            output.texture(index).expect("output texture")
+            tile.texture_trusted(),
+            output.texture_trusted(index).expect("output texture")
         ));
-        let actual_rgba = download_rgba8_texture(&session, tile.texture(), tile.dimensions());
+        let actual_rgba =
+            download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions());
         assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
     }
     assert_eq!(
@@ -2254,12 +2264,19 @@ fn jpeg_private_rgb8_tile_uses_private_output_buffer() {
         .decode_private_rgb8_tile_with_session(&session)
         .expect("resident private JPEG Metal decode");
 
-    assert_eq!(tile.dimensions, (16, 16));
-    assert_eq!(tile.pixel_format, PixelFormat::Rgb8);
-    assert_eq!(tile.pitch_bytes, 16 * PixelFormat::Rgb8.bytes_per_pixel());
-    assert_eq!(tile.byte_offset, 0);
-    assert_eq!(tile.buffer.storage_mode(), metal::MTLStorageMode::Private);
-    assert!(tile.status_buffer.length() > 0);
+    assert_eq!(tile.dimensions(), (16, 16));
+    assert_eq!(tile.pixel_format(), PixelFormat::Rgb8);
+    assert_eq!(tile.pitch_bytes(), 16 * PixelFormat::Rgb8.bytes_per_pixel());
+    assert_eq!(tile.byte_offset(), 0);
+    // SAFETY: The private decode waited for completion and no command accesses
+    // the raw buffer while this test inspects its storage metadata.
+    let raw_buffer = unsafe { tile.buffer() };
+    assert_eq!(raw_buffer.storage_mode(), metal::MTLStorageMode::Private);
+    assert!(tile.status_buffer_trusted().length() > 0);
+
+    let handed_off = tile.clone().into_buffer();
+    assert_eq!(handed_off.storage_mode(), metal::MTLStorageMode::Private);
+    assert_eq!(tile.dimensions(), (16, 16));
 }
 
 #[cfg(target_os = "macos")]

@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+The workspace is staging version `0.7.0`, but no `0.7.0` release has been
+published. At publication, this section becomes `## [0.7.0]` with the actual
+release date.
+
 - Removes unused public API: `j2k-core` `DecodeRequest` (with the four
   `*_request` trait default methods), `BackendFailureKind`, and `WarningKind`;
   `j2k-profile` `MetricUnit` (with the `unit` parameter of
@@ -25,6 +29,20 @@ and stale roadmap entries have been removed from the public documentation set.
   `j2k-test-support` and xtask-shared modules, macro-generates the CUDA
   GPU-ABI byte-view wrappers, and collapses repeated classic Tier-1
   profiling-label chains in `j2k-metal`.
+- Corrects the Metal raw-resource boundary: borrowed `Buffer` and `Texture`
+  accessors that can bypass safe synchronization are now unsafe, resident
+  resource fields are private behind metadata getters and explicit resource
+  contracts, and reusable JPEG buffer/texture outputs serialize safe access
+  across clones, subsets, derived surfaces, and viewport-cache reuse.
+- Replaces approximate CUDA test-count floors and duplicated workflow logic
+  with repository-owned fail-closed CPU, CUDA, Metal, coverage, package, and
+  exact-SHA release gates. Publication now checks the exact origin, annotated
+  tag, absent GitHub Release, complete crates.io version set, and dependency-
+  ordered retry state before the first registry mutation.
+- Splits the largest native single-tile, Metal resident-codestream,
+  direct-stacked batch, and adoption-report orchestrators into focused modules
+  while preserving byte output, dispatch order, resource retention, and
+  regression coverage.
 
 ## [0.6.2] - 2026-06-28
 

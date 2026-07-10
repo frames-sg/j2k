@@ -351,6 +351,7 @@ fn large_test_files_stay_split_by_axis() {
         ("crates/j2k-metal/src/encode/tests/batch.rs", 450),
         ("crates/j2k-metal/src/encode/tests/kernels.rs", 1_300),
         ("crates/j2k-jpeg-metal/src/tests.rs", 2_400),
+        ("crates/j2k-jpeg-metal/src/tests/reusable_output.rs", 250),
         ("crates/j2k-jpeg-metal/src/tests/textures.rs", 2_400),
         ("crates/j2k-cuda-runtime/src/tests.rs", 2_300),
         ("crates/j2k-cuda-runtime/src/tests/pipeline.rs", 2_400),
@@ -376,6 +377,10 @@ fn repo_lint_policy_support_files_stay_split_by_axis() {
             2_750,
         ),
         ("xtask/tests/repo_lint_support/gpu_adapter_policy.rs", 1_800),
+        (
+            "xtask/tests/repo_lint_support/jpeg_metal_resource_safety_policy.rs",
+            350,
+        ),
     ] {
         let source = fs::read_to_string(root.join(relative))
             .unwrap_or_else(|error| panic!("read {relative}: {error}"));

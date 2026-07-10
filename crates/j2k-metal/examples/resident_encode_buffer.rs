@@ -36,8 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tiles = buffers
         .iter()
         .map(|buffer| {
-            // SAFETY: These freshly initialized buffers are not mutated and
-            // remain alive until the submitted batch has completed.
+            // SAFETY: These buffers were allocated from `session`, are not
+            // mutated, and remain alive until the submitted batch completes.
             unsafe {
                 MetalLosslessEncodeTile::from_buffer(
                     buffer,

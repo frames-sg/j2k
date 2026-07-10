@@ -761,11 +761,11 @@ fn contiguous_viewport_region_resizes_reusable_metal_textures() {
     assert_eq!(tile.dimensions(), workload.viewport_dims);
     assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
     assert!(std::ptr::eq(
-        tile.texture(),
-        output.texture(0).expect("output texture")
+        tile.texture_trusted(),
+        output.texture_trusted(0).expect("output texture")
     ));
     assert_eq!(
-        download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+        download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
         expected_rgba
     );
 }
@@ -883,11 +883,11 @@ fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_textures
     assert_eq!(tile.dimensions(), workload.viewport_dims);
     assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
     assert!(std::ptr::eq(
-        tile.texture(),
-        output.texture(0).expect("output texture")
+        tile.texture_trusted(),
+        output.texture_trusted(0).expect("output texture")
     ));
     assert_eq!(
-        download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+        download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
         expected_rgba
     );
 }
@@ -945,11 +945,11 @@ fn reusable_metal_viewport_texture_helper_routes_contiguous_workload() {
     assert_eq!(tile.dimensions(), workload.viewport_dims);
     assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
     assert!(std::ptr::eq(
-        tile.texture(),
-        output.texture(0).expect("output texture")
+        tile.texture_trusted(),
+        output.texture_trusted(0).expect("output texture")
     ));
     assert_eq!(
-        download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+        download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
         expected_rgba
     );
 }
@@ -1027,11 +1027,11 @@ fn sparse_viewport_composition_resizes_reusable_metal_texture_output() {
     assert_eq!(tile.dimensions(), workload.viewport_dims);
     assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
     assert!(std::ptr::eq(
-        tile.texture(),
-        output.texture(0).expect("output texture")
+        tile.texture_trusted(),
+        output.texture_trusted(0).expect("output texture")
     ));
     assert_eq!(
-        download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+        download_rgba8_texture(&session, tile.texture_trusted(), tile.dimensions()),
         expected_rgba
     );
 }

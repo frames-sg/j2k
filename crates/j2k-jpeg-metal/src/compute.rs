@@ -136,15 +136,15 @@ struct FastRgbDecodeBuffer {
 fn private_jpeg_tile_from_fast_rgb_buffer(
     decoded: FastRgbDecodeBuffer,
 ) -> crate::ResidentPrivateJpegTile {
-    crate::ResidentPrivateJpegTile {
-        buffer: decoded.buffer,
-        byte_offset: 0,
-        dimensions: decoded.dimensions,
-        pixel_format: PixelFormat::Rgb8,
-        pitch_bytes: decoded.dimensions.0 as usize * PixelFormat::Rgb8.bytes_per_pixel(),
-        status_buffer: decoded.status_buffer,
-        command_buffer: decoded.command_buffer,
-    }
+    crate::ResidentPrivateJpegTile::new(
+        decoded.buffer,
+        0,
+        decoded.dimensions,
+        PixelFormat::Rgb8,
+        decoded.dimensions.0 as usize * PixelFormat::Rgb8.bytes_per_pixel(),
+        decoded.status_buffer,
+        decoded.command_buffer,
+    )
 }
 
 #[cfg(target_os = "macos")]

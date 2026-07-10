@@ -252,15 +252,106 @@ impl DeviceSurface for Surface {
 
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
-#[derive(Clone)]
 pub struct ResidentPrivateJpegTile {
-    pub buffer: Buffer,
-    pub byte_offset: usize,
-    pub dimensions: (u32, u32),
-    pub pixel_format: PixelFormat,
-    pub pitch_bytes: usize,
-    pub status_buffer: Buffer,
-    pub command_buffer: CommandBuffer,
+    buffer: Buffer,
+    byte_offset: usize,
+    dimensions: (u32, u32),
+    pixel_format: PixelFormat,
+    pitch_bytes: usize,
+    // Keep the producer resources alive for the lifetime of every tile clone.
+    status_buffer: Buffer,
+    command_buffer: CommandBuffer,
+}
+
+#[cfg(target_os = "macos")]
+impl ResidentPrivateJpegTile {
+    pub(crate) fn new(
+        buffer: Buffer,
+        byte_offset: usize,
+        dimensions: (u32, u32),
+        pixel_format: PixelFormat,
+        pitch_bytes: usize,
+        status_buffer: Buffer,
+        command_buffer: CommandBuffer,
+    ) -> Self {
+        Self {
+            buffer,
+            byte_offset,
+            dimensions,
+            pixel_format,
+            pitch_bytes,
+            status_buffer,
+            command_buffer,
+        }
+    }
+
+    /// Byte offset of the first decoded pixel in the backing buffer.
+    pub fn byte_offset(&self) -> usize {
+        self.byte_offset
+    }
+
+    /// Dimensions of the decoded tile.
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Pixel format of the decoded tile.
+    pub fn pixel_format(&self) -> PixelFormat {
+        self.pixel_format
+    }
+
+    /// Number of bytes between consecutive decoded rows.
+    pub fn pitch_bytes(&self) -> usize {
+        self.pitch_bytes
+    }
+
+    /// Return the raw private Metal output buffer.
+    ///
+    /// # Safety
+    ///
+    /// The producer command has completed before this tile is returned, but
+    /// the caller must synchronize every later access made through the returned
+    /// buffer or a handle cloned from it. That obligation covers raw handles
+    /// obtained from every clone of this tile; no two accesses may overlap when
+    /// either can write the decoded range.
+    pub unsafe fn buffer(&self) -> &BufferRef {
+        self.buffer_trusted()
+    }
+
+    pub(crate) fn buffer_trusted(&self) -> &BufferRef {
+        self.buffer.as_ref()
+    }
+
+    /// Consume this wrapper and transfer ownership of its decoded buffer.
+    ///
+    /// The producer command has already completed. Other tile clones, and
+    /// buffers obtained by consuming them, can still refer to the same Metal
+    /// allocation. No surviving tile offers safe host readback, and borrowed
+    /// raw access remains unsafe; normal Metal synchronization remains each
+    /// buffer recipient's responsibility after a handoff.
+    pub fn into_buffer(self) -> Buffer {
+        self.buffer
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_buffer_trusted(&self) -> &BufferRef {
+        self.status_buffer.as_ref()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Clone for ResidentPrivateJpegTile {
+    fn clone(&self) -> Self {
+        Self {
+            buffer: self.buffer.clone(),
+            byte_offset: self.byte_offset,
+            dimensions: self.dimensions,
+            pixel_format: self.pixel_format,
+            pitch_bytes: self.pitch_bytes,
+            status_buffer: self.status_buffer.clone(),
+            command_buffer: self.command_buffer.clone(),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -472,6 +563,7 @@ impl MetalBatchOutputBuffer {
 /// Reusable caller-owned Metal textures for full-tile JPEG batch output.
 pub struct MetalBatchTextureOutput {
     textures: Vec<Texture>,
+    access_gate: Arc<Mutex<()>>,
     dimensions: (u32, u32),
     fmt: PixelFormat,
     metal_fmt: MTLPixelFormat,
@@ -510,6 +602,7 @@ impl MetalBatchTextureOutput {
 
         Ok(Self {
             textures,
+            access_gate: Arc::new(Mutex::new(())),
             dimensions,
             fmt: PixelFormat::Rgba8,
             metal_fmt: MTLPixelFormat::RGBA8Unorm,
@@ -598,20 +691,43 @@ impl MetalBatchTextureOutput {
         self.textures.len()
     }
 
-    /// Return a reusable output texture by tile slot.
-    pub fn texture(&self, index: usize) -> Option<&TextureRef> {
+    /// Return a raw reusable output texture by tile slot.
+    ///
+    /// # Safety
+    ///
+    /// The caller must synchronize every CPU and GPU access made through the
+    /// returned texture or any handle cloned from it. The internal safe-access
+    /// gate cannot observe work submitted through raw handles. No such access
+    /// may overlap a safe decode into this output, any clone or subset that
+    /// shares its allocation gate, or access through a derived
+    /// [`MetalTextureTile`].
+    pub unsafe fn texture(&self, index: usize) -> Option<&TextureRef> {
+        self.texture_trusted(index)
+    }
+
+    pub(crate) fn texture_trusted(&self, index: usize) -> Option<&TextureRef> {
         self.textures.get(index).map(std::convert::AsRef::as_ref)
     }
 
-    pub(crate) fn clone_texture(&self, index: usize) -> Option<Texture> {
+    pub(crate) fn clone_texture_trusted(&self, index: usize) -> Option<Texture> {
         self.textures.get(index).cloned()
+    }
+
+    pub(crate) fn clone_access_gate(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.access_gate)
+    }
+
+    pub(crate) fn lock_for_safe_access(&self) -> Result<MutexGuard<'_, ()>, Error> {
+        self.access_gate.lock().map_err(|_| Error::MetalKernel {
+            message: "JPEG Metal batch texture output access gate was poisoned".to_string(),
+        })
     }
 
     pub(crate) fn clone_slots(&self, indices: &[usize]) -> Result<Self, Error> {
         let mut textures = Vec::with_capacity(indices.len());
         for &index in indices {
             textures.push(
-                self.clone_texture(index)
+                self.clone_texture_trusted(index)
                     .ok_or_else(|| Error::MetalKernel {
                         message: "JPEG Metal batch texture output slot was missing".to_string(),
                     })?,
@@ -619,34 +735,64 @@ impl MetalBatchTextureOutput {
         }
         Ok(Self {
             textures,
+            access_gate: Arc::clone(&self.access_gate),
             dimensions: self.dimensions,
             fmt: self.fmt,
             metal_fmt: self.metal_fmt,
         })
     }
+
+    #[cfg(test)]
+    pub(crate) fn shares_access_gate_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.access_gate, &other.access_gate)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_access_gate_with_tile(&self, tile: &MetalTextureTile) -> bool {
+        Arc::ptr_eq(&self.access_gate, &tile.access_gate)
+    }
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone)]
 /// One decoded JPEG tile resident in a caller-owned Metal texture.
 pub struct MetalTextureTile {
     texture: Texture,
+    access_gate: Arc<Mutex<()>>,
     dimensions: (u32, u32),
     fmt: PixelFormat,
 }
 
 #[cfg(target_os = "macos")]
 impl MetalTextureTile {
-    pub(crate) fn new(texture: Texture, dimensions: (u32, u32), fmt: PixelFormat) -> Self {
+    pub(crate) fn new(
+        texture: Texture,
+        access_gate: Arc<Mutex<()>>,
+        dimensions: (u32, u32),
+        fmt: PixelFormat,
+    ) -> Self {
         Self {
             texture,
+            access_gate,
             dimensions,
             fmt,
         }
     }
 
-    /// Backing Metal texture containing the decoded tile.
-    pub fn texture(&self) -> &TextureRef {
+    /// Return the raw Metal texture containing the decoded tile.
+    ///
+    /// # Safety
+    ///
+    /// The caller must synchronize every CPU and GPU access made through the
+    /// returned texture or any handle cloned from it. The safe decode gate
+    /// shared with the originating [`MetalBatchTextureOutput`] cannot observe
+    /// work submitted through raw handles. No raw access may overlap a safe
+    /// decode through that output, one of its clones or subsets, or another
+    /// tile derived from the same allocation.
+    pub unsafe fn texture(&self) -> &TextureRef {
+        self.texture_trusted()
+    }
+
+    pub(crate) fn texture_trusted(&self) -> &TextureRef {
         self.texture.as_ref()
     }
 
@@ -658,5 +804,17 @@ impl MetalTextureTile {
     /// Decoded tile pixel format.
     pub fn pixel_format(&self) -> PixelFormat {
         self.fmt
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Clone for MetalTextureTile {
+    fn clone(&self) -> Self {
+        Self {
+            texture: self.texture.clone(),
+            access_gate: Arc::clone(&self.access_gate),
+            dimensions: self.dimensions,
+            fmt: self.fmt,
+        }
     }
 }

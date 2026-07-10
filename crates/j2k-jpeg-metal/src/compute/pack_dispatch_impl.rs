@@ -1173,10 +1173,12 @@ fn copy_grouped_surfaces_to_output(
         match result {
             Ok(surface) => {
                 let (source, source_offset) =
-                    surface.metal_buffer_trusted().ok_or_else(|| Error::MetalKernel {
-                        message: "JPEG Metal grouped buffer source was not Metal-backed"
-                            .to_string(),
-                    })?;
+                    surface
+                        .metal_buffer_trusted()
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "JPEG Metal grouped buffer source was not Metal-backed"
+                                .to_string(),
+                        })?;
                 let destination_offset = original_index
                     .checked_mul(output.tile_stride_bytes())
                     .ok_or_else(|| Error::MetalKernel {
@@ -1255,7 +1257,7 @@ fn validate_rgba_texture_batch_output(
     }
 
     for index in 0..tile_count {
-        let Some(texture) = output.texture(index) else {
+        let Some(texture) = output.texture_trusted(index) else {
             return Err(Error::MetalKernel {
                 message: "JPEG Metal batch texture output slot was missing".to_string(),
             });
@@ -1283,12 +1285,13 @@ fn texture_batch_success_results(
     let mut results = Vec::with_capacity(tile_count);
     for index in 0..tile_count {
         let texture = output
-            .clone_texture(index)
+            .clone_texture_trusted(index)
             .ok_or_else(|| Error::MetalKernel {
                 message: "JPEG Metal batch texture output slot was missing".to_string(),
             })?;
         results.push(Ok(crate::MetalTextureTile::new(
             texture,
+            output.clone_access_gate(),
             dimensions,
             PixelFormat::Rgba8,
         )));
@@ -1350,20 +1353,23 @@ fn copy_rgb8_surfaces_to_rgba_textures(
                     });
                 }
                 let (source, source_offset) =
-                    surface.metal_buffer_trusted().ok_or_else(|| Error::MetalKernel {
-                        message: "JPEG Metal texture copy source was not Metal-backed".to_string(),
-                    })?;
-                let texture =
-                    output
-                        .clone_texture(original_index)
+                    surface
+                        .metal_buffer_trusted()
                         .ok_or_else(|| Error::MetalKernel {
-                            message: "JPEG Metal batch texture output slot was missing".to_string(),
+                            message: "JPEG Metal texture copy source was not Metal-backed"
+                                .to_string(),
                         })?;
+                let texture = output
+                    .clone_texture_trusted(original_index)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "JPEG Metal batch texture output slot was missing".to_string(),
+                    })?;
                 copies.push((original_index, source.clone(), source_offset));
                 mapped_results.push((
                     original_index,
                     Ok(crate::MetalTextureTile::new(
                         texture,
+                        output.clone_access_gate(),
                         dimensions,
                         PixelFormat::Rgba8,
                     )),
@@ -1378,11 +1384,12 @@ fn copy_rgb8_surfaces_to_rgba_textures(
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&runtime.rgb8_to_rgba_texture_pipeline);
         for (original_index, source, source_offset) in copies {
-            let texture = output
-                .texture(original_index)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "JPEG Metal batch texture output slot was missing".to_string(),
-                })?;
+            let texture =
+                output
+                    .texture_trusted(original_index)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "JPEG Metal batch texture output slot was missing".to_string(),
+                    })?;
             encoder.set_buffer(
                 0,
                 Some(&source),
@@ -1421,9 +1428,11 @@ fn dispatch_rgba_texture_pack(
     pack_encoder.set_buffer(1, Some(planes.1), 0);
     pack_encoder.set_buffer(2, Some(planes.2), 0);
     for index in 0..tile_count {
-        let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
-            message: "JPEG Metal batch texture output slot was missing".to_string(),
-        })?;
+        let texture = output
+            .texture_trusted(index)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal batch texture output slot was missing".to_string(),
+            })?;
         let mut params = params;
         params.tile_index = checked_u32(index, "texture batch tile index")?;
         pack_encoder.set_texture(0, Some(texture));
@@ -1454,9 +1463,11 @@ fn dispatch_windowed_rgba_texture_pack(
     pack_encoder.set_buffer(1, Some(planes.1), 0);
     pack_encoder.set_buffer(2, Some(planes.2), 0);
     for index in 0..tile_count {
-        let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
-            message: "JPEG Metal batch texture output slot was missing".to_string(),
-        })?;
+        let texture = output
+            .texture_trusted(index)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal batch texture output slot was missing".to_string(),
+            })?;
         let mut params = params;
         params.tile_index = checked_u32(index, "windowed texture batch tile index")?;
         pack_encoder.set_texture(0, Some(texture));
@@ -1491,9 +1502,7 @@ pub(in crate::compute) struct SplitCoeffIdctPasses<'a> {
 }
 
 #[cfg(all(target_os = "macos", test))]
-fn encode_split_coeff_idct_passes(
-    request: SplitCoeffIdctPasses<'_>,
-) {
+fn encode_split_coeff_idct_passes(request: SplitCoeffIdctPasses<'_>) {
     let SplitCoeffIdctPasses {
         command_buffer,
         pipelines,

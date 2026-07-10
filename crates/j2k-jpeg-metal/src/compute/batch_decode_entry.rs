@@ -92,6 +92,7 @@ pub(crate) fn decode_full_rgb8_batch_into_textures_with_session(
     let Some(packets) = batched_fast_packets(requests)? else {
         return Ok(None);
     };
+    let _texture_output_access = output.lock_for_safe_access()?;
 
     with_runtime_for_session(session, |runtime| {
         decode_full_rgb8_batch_into_textures_with_runtime(runtime, requests, &packets, output)
@@ -179,6 +180,7 @@ pub(crate) fn decode_region_scaled_rgb8_batch_into_textures_with_session(
     let Some(packets) = batched_fast_packets(requests)? else {
         return Ok(None);
     };
+    let _texture_output_access = output.lock_for_safe_access()?;
 
     with_runtime_for_session(session, |runtime| {
         decode_region_scaled_rgb8_batch_into_textures_with_runtime(

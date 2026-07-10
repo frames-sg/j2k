@@ -38,7 +38,10 @@ impl<'a> MetalLosslessEncodeTile<'a> {
     /// submissions that outlive the tile value. Dropping a submitted operation
     /// without waiting does not end this obligation unless completion is
     /// established independently. The obligation includes handles cloned before
-    /// this call and outlives copies of the tile.
+    /// this call and outlives copies of the tile. The buffer must belong to the
+    /// same Metal device as every [`crate::MetalBackendSession`] later used to
+    /// encode, submit, or validate this tile; a buffer from another device is
+    /// not compatible even when its layout and storage mode otherwise match.
     pub unsafe fn from_buffer(
         buffer: &'a Buffer,
         byte_offset: usize,

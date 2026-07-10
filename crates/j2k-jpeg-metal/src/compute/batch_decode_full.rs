@@ -214,10 +214,7 @@ struct FullRgbDecodePass<'a, P> {
     buffers: &'a FullRgbSurfaceBatchBuffers,
     shape: FullRgbSurfaceBatchShape,
     decode_mode: FastBatchDecodeMode,
-    huffman_tables: (
-        &'a [PreparedHuffmanHost; 3],
-        &'a [PreparedHuffmanHost; 3],
-    ),
+    huffman_tables: (&'a [PreparedHuffmanHost; 3], &'a [PreparedHuffmanHost; 3]),
 }
 
 #[cfg(target_os = "macos")]
@@ -302,11 +299,12 @@ fn full_rgb_surface_total_blocks<P: FastSubsampledMetal>(
         return Ok(None);
     };
     let total_mcus = first.mcus_per_row() as usize * first.mcu_rows() as usize;
-    let blocks_per_tile = total_mcus
-        .checked_mul(blocks_per_mcu)
-        .ok_or_else(|| Error::MetalKernel {
-            message: format!("JPEG Metal {} batch block count overflowed", P::FAMILY_NAME),
-        })?;
+    let blocks_per_tile =
+        total_mcus
+            .checked_mul(blocks_per_mcu)
+            .ok_or_else(|| Error::MetalKernel {
+                message: format!("JPEG Metal {} batch block count overflowed", P::FAMILY_NAME),
+            })?;
     let total_blocks =
         blocks_per_tile
             .checked_mul(tile_count)
@@ -316,8 +314,10 @@ fn full_rgb_surface_total_blocks<P: FastSubsampledMetal>(
                     P::FAMILY_NAME
                 ),
             })?;
-    let _total_blocks_u32 =
-        checked_u32(total_blocks, &format!("{} batch block count", P::FAMILY_NAME))?;
+    let _total_blocks_u32 = checked_u32(
+        total_blocks,
+        &format!("{} batch block count", P::FAMILY_NAME),
+    )?;
     Ok(Some(total_blocks))
 }
 
@@ -483,14 +483,16 @@ fn encode_fast_subsampled_full_rgb_split_decode<P: FastSubsampledMetal>(
                 P::FAMILY_NAME
             ),
         })?;
-    let idct_component_depth = shape.tile_count_u32.checked_mul(6).ok_or_else(|| {
-        Error::MetalKernel {
-            message: format!(
-                "JPEG Metal {} batch IDCT dispatch overflowed",
-                P::FAMILY_NAME
-            ),
-        }
-    })?;
+    let idct_component_depth =
+        shape
+            .tile_count_u32
+            .checked_mul(6)
+            .ok_or_else(|| Error::MetalKernel {
+                message: format!(
+                    "JPEG Metal {} batch IDCT dispatch overflowed",
+                    P::FAMILY_NAME
+                ),
+            })?;
     let coeff_blocks = runtime
         .device
         .new_buffer(coeff_bytes as u64, MTLResourceOptions::StorageModePrivate);
@@ -515,11 +517,7 @@ fn encode_fast_subsampled_full_rgb_split_decode<P: FastSubsampledMetal>(
         planes: [&buffers.y_plane, &buffers.cb_plane, &buffers.cr_plane],
         scratch: (&coeff_blocks, &dc_only_flags),
         total_decode_threads: shape.total_decode_threads,
-        idct_grid: (
-            first.mcus_per_row(),
-            first.mcu_rows(),
-            idct_component_depth,
-        ),
+        idct_grid: (first.mcus_per_row(), first.mcu_rows(), idct_component_depth),
     });
     Ok(Some((coeff_blocks, dc_only_flags)))
 }
@@ -796,17 +794,15 @@ fn try_decode_fast_subsampled_full_rgba_batch_to_textures<P: FastSubsampledMetal
 
     if decode_mode == FastBatchDecodeMode::Fused {
         return Ok(Some(
-            decode_fast_subsampled_full_rgba_fused_texture_batch::<P>(
-                FullRgbaTextureBatchCtx {
-                    runtime,
-                    requests,
-                    first,
-                    output,
-                    batch_scratch,
-                    entropy_buffers: &entropy_buffers,
-                    shape,
-                },
-            )?,
+            decode_fast_subsampled_full_rgba_fused_texture_batch::<P>(FullRgbaTextureBatchCtx {
+                runtime,
+                requests,
+                first,
+                output,
+                batch_scratch,
+                entropy_buffers: &entropy_buffers,
+                shape,
+            })?,
         ));
     }
 
@@ -886,10 +882,7 @@ struct FullRgbaSplitDecodePass<'a, P> {
     planes: [&'a Buffer; 3],
     shape: FullRgbaTextureBatchShape,
     total_blocks: Option<usize>,
-    huffman_tables: (
-        &'a [PreparedHuffmanHost; 3],
-        &'a [PreparedHuffmanHost; 3],
-    ),
+    huffman_tables: (&'a [PreparedHuffmanHost; 3], &'a [PreparedHuffmanHost; 3]),
 }
 
 #[cfg(target_os = "macos")]
@@ -970,11 +963,15 @@ fn full_rgba_texture_total_blocks<P: FastSubsampledMetal>(
     let Some(blocks_per_mcu) = P::FULL_RGB_BATCH_BLOCKS_PER_MCU else {
         return Ok(None);
     };
-    let blocks_per_tile = total_mcus
-        .checked_mul(blocks_per_mcu)
-        .ok_or_else(|| Error::MetalKernel {
-            message: format!("JPEG Metal {} texture batch block count overflowed", P::FAMILY_NAME),
-        })?;
+    let blocks_per_tile =
+        total_mcus
+            .checked_mul(blocks_per_mcu)
+            .ok_or_else(|| Error::MetalKernel {
+                message: format!(
+                    "JPEG Metal {} texture batch block count overflowed",
+                    P::FAMILY_NAME
+                ),
+            })?;
     blocks_per_tile
         .checked_mul(tile_count)
         .map(Some)
@@ -1070,9 +1067,12 @@ fn encode_fast_subsampled_full_rgba_texture_decode_tiles<P: FastSubsampledMetal>
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(pass.first);
     let texture_decode_pipeline = P::rgba_texture_batch_decode_pipeline(pass.runtime);
     for index in 0..pass.shape.tile_count {
-        let texture = pass.output.texture(index).ok_or_else(|| Error::MetalKernel {
-            message: "JPEG Metal batch texture output slot was missing".to_string(),
-        })?;
+        let texture = pass
+            .output
+            .texture_trusted(index)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal batch texture output slot was missing".to_string(),
+            })?;
         let decoder_encoder = pass.command_buffer.new_compute_command_encoder();
         decoder_encoder.set_compute_pipeline_state(texture_decode_pipeline);
         decoder_encoder.set_buffer(0, Some(&pass.entropy_buffers.payload), 0);
@@ -1167,9 +1167,11 @@ fn encode_fast_subsampled_full_rgba_texture_boundary_passes<P: FastSubsampledMet
     };
     let boundary_pipeline = P::rgba_texture_boundary_pipeline(runtime);
     for index in 0..shape.tile_count {
-        let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
-            message: "JPEG Metal batch texture output slot was missing".to_string(),
-        })?;
+        let texture = output
+            .texture_trusted(index)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal batch texture output slot was missing".to_string(),
+            })?;
         let decode_params =
             full_rgba_texture_params_for_tile::<P>(first, shape, index, tile_index_ctx)?;
         let boundary_encoder = command_buffer.new_compute_command_encoder();
@@ -1224,8 +1226,11 @@ fn decode_fast_subsampled_full_rgba_fused_texture_batch<P: FastSubsampledMetal>(
         P::TEXTURE_BOUNDARY_SAMPLES_KEY,
         &boundary_samples,
     );
-    let vertical_buffers =
-        fast_subsampled_full_texture_vertical_buffers::<P>(runtime, &mut batch_scratch, total_repair_records);
+    let vertical_buffers = fast_subsampled_full_texture_vertical_buffers::<P>(
+        runtime,
+        &mut batch_scratch,
+        total_repair_records,
+    );
     let tile_index_ctx = format!("{} texture batch tile index", P::FAMILY_NAME);
     let command_buffer = runtime.queue.new_command_buffer();
     let decode_tiles = FullRgbaTextureDecodeTiles {
@@ -1415,14 +1420,16 @@ fn encode_fast_subsampled_full_rgba_split_decode<P: FastSubsampledMetal>(
                 P::FAMILY_NAME
             ),
         })?;
-    let idct_component_depth = pass.shape.tile_count_u32.checked_mul(6).ok_or_else(|| {
-        Error::MetalKernel {
-            message: format!(
-                "JPEG Metal {} texture batch IDCT dispatch overflowed",
-                P::FAMILY_NAME
-            ),
-        }
-    })?;
+    let idct_component_depth =
+        pass.shape
+            .tile_count_u32
+            .checked_mul(6)
+            .ok_or_else(|| Error::MetalKernel {
+                message: format!(
+                    "JPEG Metal {} texture batch IDCT dispatch overflowed",
+                    P::FAMILY_NAME
+                ),
+            })?;
     let coeff_blocks = pass.batch_scratch.private_buffer(
         &pass.runtime.device,
         P::SPLIT_TEXTURE_SCRATCH_KEYS.0,
@@ -1549,7 +1556,12 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_into_output(
     packets: &[BatchedFastPacket<'_>],
     output: &crate::MetalBatchOutputBuffer,
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
-    try_decode_fast444_full_rgb_batch_to_surfaces_with_output(runtime, requests, packets, Some(output))
+    try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
+        runtime,
+        requests,
+        packets,
+        Some(output),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -1589,9 +1601,12 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
     let Some(region_requests) = fast444_full_region_scaled_requests(requests, packets) else {
         return Ok(None);
     };
-    try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output::<
-        JpegFast444PacketV1,
-    >(runtime, &region_requests, packets, output)
+    try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output::<JpegFast444PacketV1>(
+        runtime,
+        &region_requests,
+        packets,
+        output,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -1605,13 +1620,8 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
     if decode_mode == FastBatchDecodeMode::Fused {
         if let Some(results) = try_decode_fast_subsampled_full_rgba_batch_to_textures::<
             JpegFast444PacketV1,
-        >(
-            runtime,
-            requests,
-            packets,
-            output,
-            decode_mode,
-        )? {
+        >(runtime, requests, packets, output, decode_mode)?
+        {
             return Ok(Some(results));
         }
     }

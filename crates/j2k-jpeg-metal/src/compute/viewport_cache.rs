@@ -201,9 +201,7 @@ impl PlaneStage {
             (
                 PlaneMode::Gray | PlaneMode::YCbCr | PlaneMode::Rgb,
                 PixelFormat::Gray8 | PixelFormat::Rgb8 | PixelFormat::Rgba8,
-            ) => {
-                self.dispatch_with_runtime(runtime, fmt, residency)
-            }
+            ) => self.dispatch_with_runtime(runtime, fmt, residency),
             _ => Err(Error::MetalKernel {
                 message: format!("unsupported JPEG Metal pixel format {fmt:?}"),
             }),
@@ -327,9 +325,11 @@ impl PlaneStage {
                 rgb_tile_len,
             )
         };
-        let texture = output.texture(0).ok_or_else(|| Error::MetalKernel {
-            message: "JPEG Metal batch texture output slot was missing".to_string(),
-        })?;
+        let texture = output
+            .texture_trusted(0)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal batch texture output slot was missing".to_string(),
+            })?;
         let pack_params = JpegPackParams {
             width: self.dims.0,
             height: self.dims.1,
@@ -384,11 +384,14 @@ impl PlaneStage {
         texture_encoder.end_encoding();
         commit_and_wait_jpeg(command_buffer)?;
 
-        let texture = output.clone_texture(0).ok_or_else(|| Error::MetalKernel {
-            message: "JPEG Metal batch texture output slot was missing".to_string(),
-        })?;
+        let texture = output
+            .clone_texture_trusted(0)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal batch texture output slot was missing".to_string(),
+            })?;
         Ok(crate::MetalTextureTile::new(
             texture,
+            output.clone_access_gate(),
             self.dims,
             PixelFormat::Rgba8,
         ))
@@ -433,15 +436,15 @@ impl PlaneStage {
         commit_and_wait_jpeg(command_buffer)?;
         let command_buffer = command_buffer.to_owned();
 
-        Ok(crate::ResidentPrivateJpegTile {
-            buffer: out_buffer,
-            byte_offset: 0,
-            dimensions: self.dims,
-            pixel_format: fmt,
+        Ok(crate::ResidentPrivateJpegTile::new(
+            out_buffer,
+            0,
+            self.dims,
+            fmt,
             pitch_bytes,
             status_buffer,
             command_buffer,
-        })
+        ))
     }
 }
 

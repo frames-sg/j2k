@@ -14,6 +14,7 @@ pub(crate) mod corpus_policy;
 pub(crate) mod dependency_policy;
 pub(crate) mod docs_and_workflows_policy;
 pub(crate) mod gpu_adapter_policy;
+pub(crate) mod jpeg_metal_resource_safety_policy;
 pub(crate) mod public_docs_policy;
 pub(crate) mod release_policy;
 pub(crate) mod shader_policy;

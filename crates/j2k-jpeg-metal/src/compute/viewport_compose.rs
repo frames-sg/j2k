@@ -50,6 +50,7 @@ pub(crate) fn compose_rgb_viewport_from_regions_into_textures_with_session(
     output: &crate::MetalBatchTextureOutput,
     session: &crate::MetalBackendSession,
 ) -> Result<crate::MetalTextureTile, Error> {
+    let _texture_output_access = output.lock_for_safe_access()?;
     with_runtime_for_session(session, |runtime| {
         let stage = populate_viewport_stage(runtime, decoder, pool, scale, viewport_dims, tiles)?;
         stage.finish_rgba8_into_texture_output_with_runtime(runtime, output)

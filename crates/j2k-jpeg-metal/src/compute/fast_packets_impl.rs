@@ -479,12 +479,12 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
         };
         if ctx.decode_params.mcu_rows > 1 {
             for index in 0..ctx.tile_count {
-                let texture = ctx
-                    .output
-                    .texture(index)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "JPEG Metal batch texture output slot was missing".to_string(),
-                    })?;
+                let texture =
+                    ctx.output
+                        .texture_trusted(index)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "JPEG Metal batch texture output slot was missing".to_string(),
+                        })?;
                 let decode_params = JpegFast420TextureBatchParams {
                     tile_index: checked_u32(index, ctx.tile_index_ctx)?,
                     ..ctx.decode_params
@@ -511,12 +511,12 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
         }
         if ctx.decode_params.mcus_per_row > 1 && ctx.decode_params.mcu_rows > 1 {
             for index in 0..ctx.tile_count {
-                let texture = ctx
-                    .output
-                    .texture(index)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "JPEG Metal batch texture output slot was missing".to_string(),
-                    })?;
+                let texture =
+                    ctx.output
+                        .texture_trusted(index)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "JPEG Metal batch texture output slot was missing".to_string(),
+                        })?;
                 let decode_params = JpegFast420TextureBatchParams {
                     tile_index: checked_u32(index, ctx.tile_index_ctx)?,
                     ..ctx.decode_params
@@ -865,8 +865,7 @@ impl FastSubsampledMetal for JpegFast444PacketV1 {
 
 #[cfg(target_os = "macos")]
 impl FastRegionScaledMetal for JpegFast420PacketV1 {
-    const REGION_SCALED_KEYS: FastScratchKeys =
-        <Self as FastSubsampledMetal>::REGION_SCALED_KEYS;
+    const REGION_SCALED_KEYS: FastScratchKeys = <Self as FastSubsampledMetal>::REGION_SCALED_KEYS;
 
     fn from_region_scaled_batched<'a>(
         packet: &BatchedFastPacket<'a>,
@@ -889,8 +888,7 @@ impl FastRegionScaledMetal for JpegFast420PacketV1 {
 
 #[cfg(target_os = "macos")]
 impl FastRegionScaledMetal for JpegFast422PacketV1 {
-    const REGION_SCALED_KEYS: FastScratchKeys =
-        <Self as FastSubsampledMetal>::REGION_SCALED_KEYS;
+    const REGION_SCALED_KEYS: FastScratchKeys = <Self as FastSubsampledMetal>::REGION_SCALED_KEYS;
 
     fn from_region_scaled_batched<'a>(
         packet: &BatchedFastPacket<'a>,
@@ -913,8 +911,7 @@ impl FastRegionScaledMetal for JpegFast422PacketV1 {
 
 #[cfg(target_os = "macos")]
 impl FastRegionScaledMetal for JpegFast444PacketV1 {
-    const REGION_SCALED_KEYS: FastScratchKeys =
-        <Self as FastSubsampledMetal>::REGION_SCALED_KEYS;
+    const REGION_SCALED_KEYS: FastScratchKeys = <Self as FastSubsampledMetal>::REGION_SCALED_KEYS;
 
     fn from_region_scaled_batched<'a>(
         packet: &BatchedFastPacket<'a>,
