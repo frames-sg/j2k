@@ -104,7 +104,6 @@ pub(super) fn restart_seek_for_mcu(
                 seen += 1;
                 pos = marker_pos + 1;
             }
-            0xd9 => return None,
             _ => return None,
         }
     }

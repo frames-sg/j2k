@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[path = "../benches/common/libjpeg_turbo.rs"]
+#[expect(
+    dead_code,
+    reason = "forced target audit found three comparator-only helper groups; the compare bench compiles the adapter with dead_code unsuppressed"
+)]
 mod libjpeg_turbo;
 
 use j2k_jpeg::{DecodeRequest, Decoder, Downscale, PixelFormat, Rect};

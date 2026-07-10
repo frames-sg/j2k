@@ -80,6 +80,10 @@ pub(super) fn deposit_dc_block(plane: &mut [u8], stride: usize, x: u32, y: u32, 
 }
 
 #[inline]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "compact activity, backend, and plane-target descriptors stay register-passed on the IDCT hot path"
+)]
 pub(super) fn idct_deposit_fast_tile_block(
     activity: BlockActivity,
     backend: Backend,
@@ -189,6 +193,10 @@ impl FastTile420Window {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "entropy state, scratch, and plane target are compact borrowing descriptors consumed as one hot-path operation"
+)]
 pub(super) fn decode_scaled_block_to_plane(
     comp: &PreparedComponentPlan,
     downscale: DownscaleFactor,
@@ -261,6 +269,10 @@ pub(super) fn decode_scaled_block_to_plane(
     Ok(())
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "entropy state and plane target are compact borrowing descriptors used as one reduced-IDCT operation"
+)]
 pub(super) fn decode_quarter_block_to_plane(
     comp: &PreparedComponentPlan,
     pixels_2x2: &mut [u8; 4],
@@ -285,6 +297,10 @@ pub(super) fn decode_quarter_block_to_plane(
     Ok(())
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "entropy state and plane target are compact borrowing descriptors used as one reduced-IDCT operation"
+)]
 pub(super) fn decode_eighth_block_to_plane(
     comp: &PreparedComponentPlan,
     state: EntropyBlockState<'_, '_>,

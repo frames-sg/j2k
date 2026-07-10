@@ -120,28 +120,33 @@ impl SamplingFactors {
         }
         Self {
             components: packed,
-            component_count: components.len() as u8,
+            component_count: u8::try_from(components.len())
+                .expect("validated JPEG sampling contains at most four components"),
             max_h,
             max_v,
         }
     }
 
     /// Number of declared components.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.component_count as usize
     }
 
     /// True when no components were declared.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.component_count == 0
     }
 
     /// Sampling factors for a component by declaration index.
+    #[must_use]
     pub fn component(&self, index: usize) -> Option<(u8, u8)> {
         self.components().get(index).copied()
     }
 
     /// Sampling factors in component declaration order.
+    #[must_use]
     pub fn components(&self) -> &[(u8, u8)] {
         &self.components[..self.component_count as usize]
     }
@@ -221,6 +226,7 @@ pub struct Rect {
 
 impl Rect {
     /// The full image rect for the given dimensions.
+    #[must_use]
     pub fn full(dims: (u32, u32)) -> Self {
         Self {
             x: 0,
@@ -231,6 +237,7 @@ impl Rect {
     }
 
     /// True if the rect is fully inside the bounding box of size `dims`.
+    #[must_use]
     pub fn is_within(&self, dims: (u32, u32)) -> bool {
         let (w, h) = dims;
         self.x.checked_add(self.w).is_some_and(|r| r <= w)
@@ -370,6 +377,7 @@ impl DecodeOptions {
     }
 
     /// Current color-transform override.
+    #[must_use]
     pub fn color_transform(&self) -> ColorTransform {
         self.color_transform
     }
@@ -383,10 +391,9 @@ impl DecodeOptions {
 
     pub(crate) fn apply_to_info(self, info: &mut Info) {
         match (self.color_transform, info.sampling.len()) {
-            (ColorTransform::Auto, _) => {}
             (ColorTransform::ForceRgb, 3) => info.color_space = ColorSpace::Rgb,
             (ColorTransform::ForceYCbCr, 3) => info.color_space = ColorSpace::YCbCr,
-            (ColorTransform::ForceRgb | ColorTransform::ForceYCbCr, _) => {}
+            (ColorTransform::Auto | ColorTransform::ForceRgb | ColorTransform::ForceYCbCr, _) => {}
         }
     }
 }
@@ -420,7 +427,7 @@ impl Info {
     pub fn to_core_info(&self) -> j2k_core::Info {
         j2k_core::Info {
             dimensions: self.dimensions,
-            components: self.sampling.len() as u16,
+            components: u16::from(self.sampling.component_count),
             colorspace: core_colorspace(self.color_space),
             bit_depth: self.bit_depth,
             tile_layout: None,

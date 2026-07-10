@@ -59,6 +59,10 @@ pub(crate) fn decode_scan_fast_tile_rgb<W: OutputWriter + InterleavedRgbWriter>(
     decode_scan_fast_tile_rgb_impl(plan, backend, scan_bytes, pool, writer, &mut profile)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fused 4:2:0 scan loop keeps predictor, restart, stripe, and writer state together for hot-path codegen"
+)]
 fn decode_scan_fast_tile_rgb_impl<W, P>(
     plan: &PreparedDecodePlan,
     backend: Backend,
@@ -74,8 +78,8 @@ where
     debug_assert!(plan.matches_fast_tile_shape());
 
     let (width, height) = plan.dimensions;
-    let max_h = plan.sampling.max_h as u32;
-    let max_v = plan.sampling.max_v as u32;
+    let max_h = u32::from(plan.sampling.max_h);
+    let max_v = u32::from(plan.sampling.max_v);
     let mcu_width_px = 8 * max_h;
     let mcu_height_px = 8 * max_v;
     let mcus_per_row = width.div_ceil(mcu_width_px);
@@ -230,6 +234,10 @@ fn finish_fast_tile_scan(br: &mut BitReader<'_>) -> Result<Vec<Warning>, JpegErr
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fused region loop keeps ROI seek, restart, stripe, and writer state together for hot-path codegen"
+)]
 pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbWriter>(
     plan: &PreparedDecodePlan,
     backend: Backend,
@@ -242,8 +250,8 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
     debug_assert!(plan.matches_fast_tile_shape());
 
     let (width, height) = plan.dimensions;
-    let max_h = plan.sampling.max_h as u32;
-    let max_v = plan.sampling.max_v as u32;
+    let max_h = u32::from(plan.sampling.max_h);
+    let max_v = u32::from(plan.sampling.max_v);
     let mcu_width_px = 8 * max_h;
     let mcu_height_px = 8 * max_v;
     let mcus_per_row = width.div_ceil(mcu_width_px);
@@ -394,6 +402,10 @@ pub(crate) struct FastTileRegionScaledRequest<'a> {
     pub(crate) checkpoint: Option<&'a DeviceCheckpoint>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fused scaled-region loop keeps ROI seek, reduced IDCT, restart, and writer state in decode order"
+)]
 pub(crate) fn decode_scan_fast_tile_rgb_region_scaled<W: OutputWriter + InterleavedRgbWriter>(
     plan: &PreparedDecodePlan,
     backend: Backend,
@@ -411,8 +423,8 @@ pub(crate) fn decode_scan_fast_tile_rgb_region_scaled<W: OutputWriter + Interlea
     debug_assert!(downscale != DownscaleFactor::Full);
 
     let (width, height) = scaled_dimensions(plan.dimensions, downscale);
-    let max_h = plan.sampling.max_h as u32;
-    let max_v = plan.sampling.max_v as u32;
+    let max_h = u32::from(plan.sampling.max_h);
+    let max_v = u32::from(plan.sampling.max_v);
     let block_size = downscale.output_block_size();
     let mcu_width_px = block_size * max_h;
     let mcu_height_px = block_size * max_v;

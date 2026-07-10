@@ -14,7 +14,8 @@ fn seeded_row(len: usize, seed: u8, step: u8) -> Vec<u8> {
     (0..len)
         .map(|i| {
             let mixed = i.wrapping_mul(step).wrapping_add(seed);
-            (mixed ^ (mixed >> 8) ^ (mixed >> 16)) as u8
+            u8::try_from((mixed ^ (mixed >> 8) ^ (mixed >> 16)) & 0xff)
+                .expect("fixture hash is byte-masked")
         })
         .collect()
 }

@@ -19,6 +19,10 @@ impl<'o> Gray8Writer<'o> {
 }
 
 impl OutputWriter for Gray8Writer<'_> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "RGB luma conversion is normalized to the u8 output range"
+    )]
     fn write_rgb_row(
         &mut self,
         y: u32,

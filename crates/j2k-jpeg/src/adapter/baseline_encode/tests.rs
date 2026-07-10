@@ -146,9 +146,15 @@ fn gpu_encode_batch_plan_accumulates_offsets_in_tile_order() {
             .expect("valid batch plan");
 
     assert_eq!(plan.params.len(), 2);
-    assert_eq!(plan.params[0].input_offset_bytes, first.byte_offset as u32);
+    assert_eq!(
+        plan.params[0].input_offset_bytes,
+        u32::try_from(first.byte_offset).expect("fixture offset fits in u32")
+    );
     assert_eq!(plan.params[0].entropy_offset_bytes, 0);
-    assert_eq!(plan.params[1].input_offset_bytes, second.byte_offset as u32);
+    assert_eq!(
+        plan.params[1].input_offset_bytes,
+        u32::try_from(second.byte_offset).expect("fixture offset fits in u32")
+    );
     assert_eq!(
         plan.params[1].entropy_offset_bytes,
         plan.params[0].entropy_capacity

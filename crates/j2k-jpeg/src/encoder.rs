@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::needless_range_loop,
-    clippy::many_single_char_names
-)]
-
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::f64::consts::PI;
@@ -224,6 +216,11 @@ impl BitWriter {
 }
 
 /// Encode grayscale or RGB samples as a baseline JPEG codestream.
+///
+/// # Errors
+///
+/// Returns an error for invalid dimensions, sample layout, quality, restart
+/// configuration, or an unavailable explicitly requested backend.
 pub fn encode_jpeg_baseline(
     samples: JpegSamples<'_>,
     options: JpegEncodeOptions,
@@ -367,8 +364,8 @@ impl JpegSamples<'_> {
             });
         }
         match (name, subsampling) {
-            ("Gray8", JpegSubsampling::Gray) => Ok(()),
-            (
+            ("Gray8", JpegSubsampling::Gray)
+            | (
                 "Rgb8",
                 JpegSubsampling::Ybr444 | JpegSubsampling::Ybr422 | JpegSubsampling::Ybr420,
             ) => Ok(()),
@@ -422,6 +419,10 @@ fn rgb_to_ycbcr(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     (clamp_u8(y), clamp_u8(cb), clamp_u8(cr))
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "RGB-to-YCbCr arithmetic is clamped to the u8 sample range before conversion"
+)]
 fn clamp_u8(value: i32) -> u8 {
     value.clamp(0, 255) as u8
 }
@@ -532,6 +533,10 @@ fn encode_entropy_serial(
 #[expect(
     clippy::too_many_arguments,
     reason = "private JPEG entropy hot path keeps scalar arguments for optimized codegen"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "baseline JPEG component and restart indices are bounded by validated frame geometry"
 )]
 fn encode_entropy_restart_segments(
     planes: &[Vec<u8>],
@@ -674,6 +679,10 @@ where
     clippy::too_many_arguments,
     reason = "private JPEG sample hot path keeps scalar arguments for optimized codegen"
 )]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "edge-replicated source coordinates address validated u8 sample planes"
+)]
 fn sample_block(
     planes: &[Vec<u8>],
     width: u32,
@@ -721,6 +730,10 @@ fn sample_block(
     out
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "rounded baseline DCT coefficients are bounded by the encoder's validated eight-bit input domain"
+)]
 fn fdct_quantize(block: &[u8; 64], quant: &[u8; 64], cosine: &[[f64; 8]; 8]) -> [i32; 64] {
     let mut coeffs = [0i32; 64];
     for v in 0..8 {
@@ -819,17 +832,20 @@ fn magnitude_bits(value: i32, size: u8) -> u16 {
         return 0;
     }
     if value >= 0 {
-        value as u16
+        u16::try_from(value).expect("non-negative JPEG magnitude must fit in 16 bits")
     } else {
-        (value + ((1i32 << size) - 1)) as u16
+        u16::try_from(value + ((1i32 << size) - 1))
+            .expect("negative JPEG magnitude encoding must fit in 16 bits")
     }
 }
 
 fn cosine_table() -> [[f64; 8]; 8] {
     let mut table = [[0.0; 8]; 8];
-    for u in 0..8 {
-        for x in 0..8 {
-            table[u][x] = (((2 * x + 1) as f64 * u as f64 * PI) / 16.0).cos();
+    for (u, row) in table.iter_mut().enumerate() {
+        let u = u32::try_from(u).expect("cosine-table frequency is below eight");
+        for (x, value) in row.iter_mut().enumerate() {
+            let x = u32::try_from(x).expect("cosine-table position is below eight");
+            *value = ((f64::from(2 * x + 1) * f64::from(u) * PI) / 16.0).cos();
         }
     }
     table

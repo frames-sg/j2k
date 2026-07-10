@@ -14,6 +14,10 @@ impl Decoder<'_> {
     /// DCT-backed and 8-bit lossless color paths emit interleaved RGB8 rows.
     /// Lossless 16-bit grayscale SOF3 emits little-endian Gray16 rows, and
     /// supported lossless 16-bit color SOF3 emits little-endian Rgb16 rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns a scan decode error or an error reported by `sink`.
     pub fn decode_rows<S>(&self, sink: &mut S) -> Result<DecodeOutcome, JpegError>
     where
         S: RowSink<u8, Error = JpegError>,
@@ -23,6 +27,10 @@ impl Decoder<'_> {
 
     /// [`Self::decode_rows`] with caller-owned scratch. See
     /// [`Self::decode_into_with_scratch`] for the reuse contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns a scan decode error or an error reported by `sink`.
     pub fn decode_rows_with_scratch<S>(
         &self,
         pool: &mut ScratchPool,
@@ -134,6 +142,10 @@ impl Decoder<'_> {
     }
 
     /// Decode the full image into component rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns a scan decode error or an error reported by `writer`.
     pub fn decode_component_rows_with_scratch<W>(
         &self,
         pool: &mut ScratchPool,
@@ -151,6 +163,11 @@ impl Decoder<'_> {
     }
 
     /// Decode `roi` into component rows, optionally at a reduced scale.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-region or scan error, or an error reported by
+    /// `writer`.
     pub fn decode_region_component_rows_with_scratch<W>(
         &self,
         pool: &mut ScratchPool,

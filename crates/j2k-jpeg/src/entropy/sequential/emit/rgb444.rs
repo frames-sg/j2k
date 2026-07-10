@@ -7,6 +7,10 @@ use crate::{
     output::{InterleavedRgbWriter, OutputWriter},
 };
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "4:4:4 stripe row indices are bounded by validated u32 JPEG dimensions"
+)]
 pub(in crate::entropy::sequential) fn emit_stripe_rgb_444<
     W: OutputWriter + InterleavedRgbWriter,
 >(

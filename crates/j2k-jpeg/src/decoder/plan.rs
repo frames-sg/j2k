@@ -95,6 +95,10 @@ impl Decoder<'_> {
         build_decode_plan(header, info, &dc_tables, &ac_tables, ctx)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "JPEG component counts are validated against the eight-bit SOF field"
+    )]
     pub(super) fn build_lossless_plan(
         header: &ParsedHeader,
         info: &Info,
@@ -117,8 +121,7 @@ impl Decoder<'_> {
         }
         let expected_components = match (info.color_space, info.bit_depth) {
             (ColorSpace::Grayscale, 8 | 16) => 1,
-            (ColorSpace::Rgb, 8 | 16) => 3,
-            (ColorSpace::YCbCr, 8 | 16) => 3,
+            (ColorSpace::Rgb | ColorSpace::YCbCr, 8 | 16) => 3,
             _ => return Err(JpegError::NotImplemented { sof: info.sof_kind }),
         };
         if scan.components.len() != expected_components {
@@ -192,6 +195,14 @@ impl Decoder<'_> {
         Ok((plan, lossless))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "progressive planning validates the ordered scan script while compiling shared table state"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "JPEG scan component counts are validated against the eight-bit SOS field"
+    )]
     pub(super) fn build_progressive_plan(
         header: &ParsedHeader,
         info: &Info,
@@ -207,8 +218,8 @@ impl Decoder<'_> {
             (
                 SofKind::Progressive8 | SofKind::Progressive12,
                 ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb,
-            ) => {}
-            (SofKind::Progressive12, ColorSpace::Cmyk | ColorSpace::Ycck) => {}
+            )
+            | (SofKind::Progressive12, ColorSpace::Cmyk | ColorSpace::Ycck) => {}
             (_, color_space) => return Err(JpegError::UnsupportedColorSpace { color_space }),
         }
         validate_sampling_factors(header, info)?;
@@ -343,6 +354,10 @@ impl Decoder<'_> {
         })
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "JPEG scan component counts are validated against the eight-bit SOS field"
+    )]
     pub(super) fn build_progressive_host_output_plan(
         header: &ParsedHeader,
         info: &Info,
@@ -405,6 +420,10 @@ impl Decoder<'_> {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "JPEG scan component counts are validated against the eight-bit SOS field"
+)]
 fn build_decode_plan(
     header: &ParsedHeader,
     info: &Info,

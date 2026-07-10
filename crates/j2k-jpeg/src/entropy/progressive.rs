@@ -255,6 +255,10 @@ fn decode_progressive_mcu(
     Ok(())
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the block target is a compact reference-and-coordinate descriptor passed through the entropy hot path"
+)]
 fn decode_progressive_block_at(
     scan: &PreparedProgressiveScan,
     target: ProgressiveBlockTarget<'_>,
@@ -491,12 +495,16 @@ fn render_component_images(
     images
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "progressive coefficients are explicitly clamped to i16 before IDCT storage"
+)]
 fn dequantize_block(coeffs: &[i32; 64], quant: &[u16; 64], out: &mut [i16; 64]) {
     out.fill(0);
     for k in 0..64 {
         let natural_idx = usize::from(ZIGZAG[k]);
         let value = coeffs[natural_idx].wrapping_mul(i32::from(quant[k]));
-        out[natural_idx] = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        out[natural_idx] = value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
     }
 }
 

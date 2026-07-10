@@ -104,6 +104,11 @@ impl IdctSample for u8 {
     const LEVEL_SHIFT: i32 = 128;
     const MAX: i32 = 255;
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "IDCT samples are clamped to the u8 output range before conversion"
+    )]
     fn from_clamped_i32(value: i32) -> Self {
         value as Self
     }
@@ -113,6 +118,11 @@ impl IdctSample for u16 {
     const LEVEL_SHIFT: i32 = 2048;
     const MAX: i32 = 4095;
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "12-bit IDCT samples are clamped to their u16 output range before conversion"
+    )]
     fn from_clamped_i32(value: i32) -> Self {
         value as Self
     }
@@ -124,14 +134,14 @@ fn idct_islow_dc_only_sample<T: IdctSample>(dc_coeff: i16) -> T {
 }
 
 fn idct_1d_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize) {
-    let p0 = Wrapping(input[col] as i32);
-    let p1 = Wrapping(input[col + 8] as i32);
-    let p2 = Wrapping(input[col + 16] as i32);
-    let p3 = Wrapping(input[col + 24] as i32);
-    let p4 = Wrapping(input[col + 32] as i32);
-    let p5 = Wrapping(input[col + 40] as i32);
-    let p6 = Wrapping(input[col + 48] as i32);
-    let p7 = Wrapping(input[col + 56] as i32);
+    let p0 = Wrapping(i32::from(input[col]));
+    let p1 = Wrapping(i32::from(input[col + 8]));
+    let p2 = Wrapping(i32::from(input[col + 16]));
+    let p3 = Wrapping(i32::from(input[col + 24]));
+    let p4 = Wrapping(i32::from(input[col + 32]));
+    let p5 = Wrapping(i32::from(input[col + 40]));
+    let p6 = Wrapping(i32::from(input[col + 48]));
+    let p7 = Wrapping(i32::from(input[col + 56]));
 
     if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p4.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
         let dc = p0 << PASS1_BITS;
@@ -203,10 +213,10 @@ fn idct_1d_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize)
 }
 
 fn idct_1d_column_bottom_half_zero(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize) {
-    let p0 = Wrapping(input[col] as i32);
-    let p1 = Wrapping(input[col + 8] as i32);
-    let p2 = Wrapping(input[col + 16] as i32);
-    let p3 = Wrapping(input[col + 24] as i32);
+    let p0 = Wrapping(i32::from(input[col]));
+    let p1 = Wrapping(i32::from(input[col + 8]));
+    let p2 = Wrapping(i32::from(input[col + 16]));
+    let p3 = Wrapping(i32::from(input[col + 24]));
 
     if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 {
         let dc = p0 << PASS1_BITS;
@@ -363,7 +373,7 @@ mod tests {
         let mut output = [0u8; 64];
         idct_islow(&input, &mut output);
         for &px in &output {
-            assert!((px as i32 - 136).abs() <= 1, "got {px}");
+            assert!((i32::from(px) - 136).abs() <= 1, "got {px}");
         }
     }
 
@@ -407,6 +417,11 @@ mod tests {
     }
 
     /// The exact IDCT pixels with JPEG's +128 level shift and `[0, 255]` clamp.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the mathematical reference rounds and clamps each pixel to the u8 domain before conversion"
+    )]
     fn exact_islow_reference(coeffs: &[i16; 64]) -> [u8; 64] {
         let mut out = [0u8; 64];
         for y in 0..8 {
@@ -452,6 +467,11 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the closed-form reference rounds and clamps the expected pixel to the u8 domain"
+    )]
     fn islow_dc_only_matches_closed_form() {
         // DC-only block: every pixel is F(0,0)/8 + 128.
         for dc in [-512i16, -200, -64, 8, 64, 200, 512] {
@@ -502,8 +522,8 @@ mod tests {
         input[1] = 400;
         let mut output = [0u8; 64];
         idct_islow(&input, &mut output);
-        let left = output[0] as i32;
-        let right = output[7] as i32;
+        let left = i32::from(output[0]);
+        let right = i32::from(output[7]);
         assert!(
             (left - right).abs() > 40,
             "AC[1] basis should produce horizontal variation, got L={left} R={right}"

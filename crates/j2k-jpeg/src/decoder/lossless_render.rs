@@ -16,6 +16,10 @@ use super::{
 };
 
 impl Decoder<'_> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "row and column indices are bounded by validated u32 image dimensions"
+    )]
     pub(super) fn decode_lossless_gray8_into(
         &self,
         out: &mut [u8],
@@ -96,6 +100,10 @@ impl Decoder<'_> {
         Ok(outcome)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "row and column indices are bounded by validated u32 image dimensions"
+    )]
     pub(super) fn decode_lossless_gray_rows<P, S>(
         &self,
         sink: &mut S,
@@ -222,6 +230,10 @@ impl Decoder<'_> {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "component row indices are bounded by validated u32 image dimensions"
+    )]
     pub(super) fn decode_lossless_color_components_into<P>(
         &self,
         out: &mut [u8],
@@ -281,6 +293,10 @@ impl Decoder<'_> {
         self.decode_lossless_color_components_into::<u8>(out, stride, color_space)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "MCU and sample indices are bounded by validated u32 image dimensions"
+    )]
     pub(super) fn decode_lossless_color_sampled_into<P>(
         &self,
         out: &mut [u8],
@@ -395,6 +411,10 @@ impl Decoder<'_> {
         self.decode_lossless_color8_output_into(out, stride, ColorSpace::YCbCr)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "row and column indices are bounded by validated u32 image dimensions"
+    )]
     pub(super) fn decode_lossless_color_rows<P, S>(
         &self,
         sink: &mut S,
@@ -594,6 +614,10 @@ impl Decoder<'_> {
         self.decode_lossless_color16_output_into(out, stride, ColorSpace::YCbCr)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "row and column indices are bounded by validated u32 image dimensions"
+    )]
     pub(super) fn decode_lossless_gray16_into(
         &self,
         out: &mut [u8],

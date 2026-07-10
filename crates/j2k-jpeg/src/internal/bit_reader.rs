@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(clippy::inline_always)]
-
 //! Bit-level reader over an entropy-coded JPEG scan. Presents three core
 //! operations: `peek_bits(n)` to examine the next up-to-32 bits, `consume_bits(n)`
 //! to advance past them, and `read_bits(n)` which combines both. Internally
@@ -64,6 +62,10 @@ impl<'a> BitReader<'a> {
 
     /// Ensure at least `n` bits are in the accumulator, refilling as needed.
     /// Returns `HuffmanDecode { TableExhausted }` if the scan is truncated.
+    #[expect(
+        clippy::inline_always,
+        reason = "measured bit-buffer hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
     pub(crate) fn ensure_bits(&mut self, n: u8) -> Result<(), JpegError> {
         while self.bits < n {
@@ -91,6 +93,10 @@ impl<'a> BitReader<'a> {
     /// If refill ran out because the input buffer is physically truncated
     /// (no marker, `pos >= bytes.len()`), we still return `TableExhausted` so
     /// malformed streams are rejected, not silently padded over.
+    #[expect(
+        clippy::inline_always,
+        reason = "measured bit-buffer hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
     pub(crate) fn ensure_bits_padded(&mut self, n: u8) -> Result<(), JpegError> {
         let mut refilled = false;
@@ -119,6 +125,10 @@ impl<'a> BitReader<'a> {
     /// Refill one byte of data into the accumulator. Returns `true` if a
     /// byte was added, `false` if the refill paused at a marker or ran out
     /// of input.
+    #[expect(
+        clippy::inline_always,
+        reason = "measured bit-buffer hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
     fn refill_one_byte(&mut self) -> bool {
         if self.marker.is_some() || self.pos >= self.bytes.len() {
@@ -145,6 +155,10 @@ impl<'a> BitReader<'a> {
         }
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "measured bit-buffer hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
     fn push_byte(&mut self, b: u8) {
         let shift = ACC_BITS - 8 - self.bits;
@@ -155,7 +169,15 @@ impl<'a> BitReader<'a> {
     /// Return the next `n` bits (MSB-first) without advancing. Caller must
     /// have ensured enough bits via `ensure_bits`. `n <= 16` on the hot path
     /// (Huffman codes up to 16 bits).
+    #[expect(
+        clippy::inline_always,
+        reason = "measured bit-buffer hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the shifted accumulator is masked to the requested at-most-32-bit field"
+    )]
     pub(crate) fn peek_bits(&self, n: u8) -> u32 {
         debug_assert!(n <= 32, "peek_bits({n}) exceeds u32");
         debug_assert!(
@@ -171,6 +193,10 @@ impl<'a> BitReader<'a> {
     }
 
     /// Advance past `n` bits previously examined with `peek_bits`.
+    #[expect(
+        clippy::inline_always,
+        reason = "measured bit-buffer hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
     pub(crate) fn consume_bits(&mut self, n: u8) {
         debug_assert!(
@@ -200,7 +226,15 @@ impl<'a> BitReader<'a> {
     /// Signed-value extension per T.81 §F.2.2.1 ("EXTEND" procedure). `ssss`
     /// is the category — a non-zero value in `1..=15` — and the return is the
     /// signed coefficient value.
+    #[expect(
+        clippy::inline_always,
+        reason = "measured bit-buffer hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "JPEG receive-extend reads at most 15 bits before converting to signed arithmetic"
+    )]
     pub(crate) fn receive_extend(&mut self, ssss: u8) -> Result<i32, JpegError> {
         if ssss == 0 {
             return Ok(0);
@@ -338,7 +372,9 @@ mod tests {
             (0b0u16, 1u8, -1i32),
             (0b1u16, 1u8, 1i32),
         ] {
-            let data = [(raw << (8 - ssss)) as u8];
+            let data =
+                [u8::try_from(raw << (8 - ssss))
+                    .expect("test magnitude is aligned within one byte")];
             let mut br = BitReader::new(&data);
             let got = br.receive_extend(ssss).unwrap();
             assert_eq!(got, expected, "ssss={ssss} raw={raw:b}");

@@ -30,6 +30,10 @@ pub(crate) fn upsample_h2v1_fancy(input_row: &[u8], output_row: &mut [u8]) {
 }
 
 /// Horizontal fancy upsample that emits only the visible output width.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "libjpeg-compatible weighted sums are divided back into the u8 chroma range"
+)]
 pub(crate) fn upsample_h2v1_fancy_row(
     input_row: &[u8],
     output_width: usize,
@@ -58,13 +62,13 @@ pub(crate) fn upsample_h2v1_fancy_row(
             0 => input_row[0],
             _ if x == n * 2 - 1 => input_row[n - 1],
             _ if x.is_multiple_of(2) => {
-                let prev = input_row[sample - 1] as u32;
-                let curr = input_row[sample] as u32;
+                let prev = u32::from(input_row[sample - 1]);
+                let curr = u32::from(input_row[sample]);
                 ((3 * curr + prev + 1) / 4) as u8
             }
             _ => {
-                let curr = input_row[sample] as u32;
-                let next = input_row[sample + 1] as u32;
+                let curr = u32::from(input_row[sample]);
+                let next = u32::from(input_row[sample + 1]);
                 ((3 * curr + next + 2) / 4) as u8
             }
         };
@@ -171,6 +175,10 @@ pub(crate) fn h2v2_fancy_sample_for_width(
 }
 
 #[inline]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "libjpeg-compatible weighted sums are shifted back into the u8 chroma range"
+)]
 fn h2v2_fancy_sample_with_len(
     near: &[u8],
     curr: &[u8],
@@ -252,14 +260,16 @@ mod tests {
                         match x {
                             0 => input[0],
                             _ if x == input.len() * 2 - 1 => input[input.len() - 1],
-                            _ if x.is_multiple_of(2) => {
-                                ((3 * u32::from(input[sample]) + u32::from(input[sample - 1]) + 1)
-                                    >> 2) as u8
-                            }
-                            _ => {
-                                ((3 * u32::from(input[sample]) + u32::from(input[sample + 1]) + 2)
-                                    >> 2) as u8
-                            }
+                            _ if x.is_multiple_of(2) => u8::try_from(
+                                (3 * u32::from(input[sample]) + u32::from(input[sample - 1]) + 1)
+                                    >> 2,
+                            )
+                            .expect("weighted u8 interpolation stays in range"),
+                            _ => u8::try_from(
+                                (3 * u32::from(input[sample]) + u32::from(input[sample + 1]) + 2)
+                                    >> 2,
+                            )
+                            .expect("weighted u8 interpolation stays in range"),
                         }
                     })
                     .collect::<Vec<_>>();

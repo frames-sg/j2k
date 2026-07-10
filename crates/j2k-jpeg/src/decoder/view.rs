@@ -19,11 +19,19 @@ pub struct JpegView<'a> {
 
 impl<'a> JpegView<'a> {
     /// Parse the stream into a borrowed view that can later build a decoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the JPEG header is malformed or unsupported.
     pub fn parse(input: &'a [u8]) -> Result<Self, JpegError> {
         Self::parse_with_options(input, DecodeOptions::default())
     }
 
     /// Parse the stream with explicit decode options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the JPEG header is malformed or unsupported.
     pub fn parse_with_options(input: &'a [u8], options: DecodeOptions) -> Result<Self, JpegError> {
         let header = parse_header(input)?;
         let mut info = header.info();
@@ -37,11 +45,13 @@ impl<'a> JpegView<'a> {
     }
 
     /// Header-derived metadata for the parsed stream.
+    #[must_use]
     pub fn info(&self) -> &Info {
         &self.info
     }
 
     /// Original compressed bytes backing this view.
+    #[must_use]
     pub fn bytes(&self) -> &'a [u8] {
         self.bytes
     }
@@ -52,6 +62,7 @@ impl<'a> JpegView<'a> {
     /// Progressive JPEG is intentionally not exposed here because the active
     /// conversion path should transcode it rather than introduce a retired or
     /// unsupported destination syntax.
+    #[must_use]
     pub fn passthrough_candidate(&self) -> Option<PassthroughCandidate<'a>> {
         jpeg_passthrough_syntax(&self.info).map(|transfer_syntax| {
             PassthroughCandidate::new(
@@ -67,6 +78,10 @@ impl<'a> JpegView<'a> {
     ///
     /// Offsets are absolute byte positions in the original JPEG byte slice.
     /// Returns `Ok(None)` when the stream has no non-zero DRI marker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when restart-marker syntax is malformed.
     pub fn restart_index(&self) -> Result<Option<RestartIndex>, JpegError> {
         restart_index_for_stream(
             self.bytes,

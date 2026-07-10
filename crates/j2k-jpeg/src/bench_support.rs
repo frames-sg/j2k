@@ -31,10 +31,12 @@ pub struct Bench420DispatchStats {
 }
 
 impl Bench420DispatchStats {
+    #[must_use]
     pub fn scalar_chunks(&self) -> usize {
         self.scalar_chunks
     }
 
+    #[must_use]
     pub fn neon_tail_chunks(&self) -> usize {
         self.neon_tail_chunks
     }
@@ -60,18 +62,22 @@ pub struct BenchBlockActivityCounts {
 }
 
 impl BenchBlockActivityCounts {
+    #[must_use]
     pub fn total_blocks(self) -> usize {
         self.total
     }
 
+    #[must_use]
     pub fn dc_only_blocks(self) -> usize {
         self.dc_only
     }
 
+    #[must_use]
     pub fn bottom_half_zero_blocks(self) -> usize {
         self.bottom_half_zero
     }
 
+    #[must_use]
     pub fn general_blocks(self) -> usize {
         self.general
     }
@@ -105,30 +111,37 @@ pub struct BenchFast420Profile {
 }
 
 impl BenchFast420Profile {
+    #[must_use]
     pub fn total_ns(self) -> u128 {
         self.total_ns
     }
 
+    #[must_use]
     pub fn parse_plan_ns(self) -> u128 {
         self.parse_plan_ns
     }
 
+    #[must_use]
     pub fn mcu_decode_ns(self) -> u128 {
         self.mcu_decode_ns
     }
 
+    #[must_use]
     pub fn rgb_emit_ns(self) -> u128 {
         self.rgb_emit_ns
     }
 
+    #[must_use]
     pub fn finish_ns(self) -> u128 {
         self.finish_ns
     }
 
+    #[must_use]
     pub fn tile_count(self) -> usize {
         self.tile_count
     }
 
+    #[must_use]
     pub fn block_activity_counts(self) -> BenchBlockActivityCounts {
         self.block_activity_counts
     }
@@ -375,6 +388,10 @@ pub struct BenchRgb420RowPairScratch {
 impl BenchRgb420RowPairScratch {
     /// Create the scratch with a deterministic odd-width-friendly pattern.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "benchmark fixture values are explicitly masked to one byte"
+    )]
     pub fn new(width: usize) -> Self {
         let chroma_width = width.div_ceil(2);
         let seed = |len: usize, offset: usize, scale: usize| -> Vec<u8> {
@@ -558,6 +575,10 @@ pub struct BenchUpsampleH2V2Scratch {
 impl BenchUpsampleH2V2Scratch {
     /// Create the scratch with a deterministic chroma pattern.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "benchmark fixture values intentionally retain the low byte of a wrapping pattern"
+    )]
     pub fn new(chroma_width: usize) -> Self {
         let seed = |offset: usize| -> Vec<u8> {
             (0..chroma_width)
@@ -602,6 +623,10 @@ pub struct BenchColorRowScratch {
 impl BenchColorRowScratch {
     /// Create the scratch with a deterministic luminance/chroma pattern.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "benchmark fixture values are explicitly masked to one byte"
+    )]
     pub fn new(width: usize) -> Self {
         let seed = |offset: usize, scale: usize| -> Vec<u8> {
             (0..width)

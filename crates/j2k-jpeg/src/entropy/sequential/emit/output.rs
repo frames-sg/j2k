@@ -11,6 +11,14 @@ use super::{
 };
 use crate::{error::JpegError, info::ColorSpace, output::OutputWriter};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "stripe emission keeps format-specific row construction and writer calls in output order"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "stripe row indices are bounded by validated u32 JPEG dimensions before writer dispatch"
+)]
 pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
     plan: &PreparedDecodePlan,
     writer: &mut W,
@@ -25,7 +33,7 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
         source_width,
         downscale,
     } = emit;
-    let max_v = plan.sampling.max_v as u32;
+    let max_v = u32::from(plan.sampling.max_v);
     let mcu_height_px = downscale.output_block_size() * max_v;
     let y_start = stripe_index * mcu_height_px;
     let (_, scaled_height) = scaled_dimensions(plan.dimensions, downscale);
@@ -57,8 +65,8 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
                 .map(|(h, v)| (u32::from(h), u32::from(v)))
                 .ok_or(JpegError::UnsupportedComponentCount { count: 2 })?;
 
-            let max_h = plan.sampling.max_h as u32;
-            let max_v = plan.sampling.max_v as u32;
+            let max_h = u32::from(plan.sampling.max_h);
+            let max_v = u32::from(plan.sampling.max_v);
 
             if is_ycbcr_420(plan) {
                 let OutputScratch::YCbCr420(scratch) = output_scratch else {
@@ -171,8 +179,8 @@ pub(in crate::entropy::sequential) fn emit_stripe<W: OutputWriter>(
                 .map(|(h, v)| (u32::from(h), u32::from(v)))
                 .ok_or(JpegError::UnsupportedComponentCount { count: 2 })?;
 
-            let max_h = plan.sampling.max_h as u32;
-            let max_v = plan.sampling.max_v as u32;
+            let max_h = u32::from(plan.sampling.max_h);
+            let max_v = u32::from(plan.sampling.max_v);
 
             let OutputScratch::RgbGeneric(scratch) = output_scratch else {
                 unreachable!("RGB decode requires reusable row scratch");

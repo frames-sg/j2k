@@ -16,6 +16,14 @@ use crate::{
     output::{InterleavedRgbWriter, OutputWriter},
 };
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "RGB stripe emission keeps sampling-family dispatch, upsampling, and writer calls in output order"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "stripe and component row indices are bounded by validated u32 JPEG dimensions"
+)]
 pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + InterleavedRgbWriter>(
     plan: &PreparedDecodePlan,
     backend: Backend,
@@ -31,7 +39,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
         source_width,
         downscale,
     } = emit;
-    let max_v = plan.sampling.max_v as u32;
+    let max_v = u32::from(plan.sampling.max_v);
     let mcu_height_px = downscale.output_block_size() * max_v;
     let y_start = stripe_index * mcu_height_px;
     let (_, scaled_height) = scaled_dimensions(plan.dimensions, downscale);
@@ -119,8 +127,8 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                 .map(|(h, v)| (u32::from(h), u32::from(v)))
                 .ok_or(JpegError::UnsupportedComponentCount { count: 2 })?;
 
-            let max_h = plan.sampling.max_h as u32;
-            let max_v = plan.sampling.max_v as u32;
+            let max_h = u32::from(plan.sampling.max_h);
+            let max_v = u32::from(plan.sampling.max_v);
 
             if cb_h == 1 && cb_v == 1 && cr_h == 1 && cr_v == 1 && max_h == 1 && max_v == 1 {
                 for local_y in 0..stripe_rows {
@@ -189,8 +197,8 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                 .map(|(h, v)| (u32::from(h), u32::from(v)))
                 .ok_or(JpegError::UnsupportedComponentCount { count: 2 })?;
 
-            let max_h = plan.sampling.max_h as u32;
-            let max_v = plan.sampling.max_v as u32;
+            let max_h = u32::from(plan.sampling.max_h);
+            let max_v = u32::from(plan.sampling.max_v);
 
             for local_y in 0..stripe_rows {
                 upsample_component_row_stripe(StripeComponentUpsample {

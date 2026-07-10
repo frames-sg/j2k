@@ -18,7 +18,10 @@ use crate::internal::bit_reader::BitReader;
 
 // ROI seeks invoke this leaf once per skipped MCU; forced inlining keeps its six Huffman skips
 // in the caller's hot loop without adding a branch-and-call boundary.
-#[allow(clippy::inline_always)]
+#[expect(
+    clippy::inline_always,
+    reason = "ROI seek hot path keeps six Huffman skips inside the caller loop"
+)]
 #[inline(always)]
 pub(super) fn skip_mcu_fast_tile_420(
     y_comp: &PreparedComponentPlan,
@@ -37,6 +40,14 @@ pub(super) fn skip_mcu_fast_tile_420(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the scaled MCU-row kernel keeps six component blocks and shared reduced-IDCT scratch in sampling order"
+)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "scratch and window are compact borrowing descriptors threaded through the fused 4:2:0 MCU-row hot path"
+)]
 pub(super) fn decode_mcu_row_fast_tile_420_scaled(
     components: FastTile420Components<'_>,
     state: &mut FastTile420EntropyState<'_, '_>,
@@ -198,6 +209,10 @@ pub(super) fn decode_mcu_row_fast_tile_420_scaled(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the MCU-row kernel keeps six block decodes and plane deposits in JPEG sampling order"
+)]
 pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
     components: FastTile420Components<'_>,
     backend: Backend,
@@ -375,6 +390,10 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the eighth-scale MCU kernel keeps six entropy blocks and 1x1 deposits in sampling order"
+)]
 fn decode_mcu_row_fast_tile_420_eighth(
     components: FastTile420Components<'_>,
     state: &mut FastTile420EntropyState<'_, '_>,
@@ -492,6 +511,10 @@ fn decode_mcu_row_fast_tile_420_eighth(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the quarter-scale MCU kernel keeps six entropy blocks and 2x2 deposits in sampling order"
+)]
 fn decode_mcu_row_fast_tile_420_quarter(
     components: FastTile420Components<'_>,
     state: &mut FastTile420EntropyState<'_, '_>,

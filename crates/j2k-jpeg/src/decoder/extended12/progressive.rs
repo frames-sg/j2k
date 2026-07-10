@@ -39,6 +39,14 @@ impl Decoder<'_> {
         self.decode_progressive12_region_into(out, stride, roi, downscale, Extended12Output::Rgb16)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the progressive 12-bit pass keeps scan state, coefficient reconstruction, and output routing in decode order"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "validated block indices are bounded by u32 JPEG image dimensions"
+    )]
     fn decode_progressive12_region_into(
         &self,
         out: &mut [u8],

@@ -159,6 +159,10 @@ pub fn extract_dct_blocks(
 /// perform IDCT, chroma upsampling, color conversion, or pixel-domain JPEG
 /// encoding. DC deltas are recalculated from each component's quantized DC
 /// sequence as the entropy stream is written.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "baseline DCT component indices are validated against JPEG's component-count byte"
+)]
 pub fn encode_baseline_dct_image(image: &JpegDctImage) -> Result<Vec<u8>, JpegEncodeError> {
     if image.coding_mode != JpegDctCodingMode::BaselineSequential {
         return Err(JpegEncodeError::Internal(
@@ -346,6 +350,10 @@ fn encode_dct_entropy(
     Ok(writer.into_bytes())
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "validated sequential component counts fit JPEG's component-count byte"
+)]
 fn build_sequential_components(
     decoder: &Decoder<'_>,
     mut decoded_blocks: DecodedDctBlocks,
@@ -407,6 +415,10 @@ fn build_sequential_components(
     Ok(components)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the decoded progressive block set is an owned stage result consumed by component assembly"
+)]
 fn build_progressive_components(
     decoder: &Decoder<'_>,
     decoded_blocks: ProgressiveDctBlocks,
@@ -450,19 +462,28 @@ fn build_progressive_components(
     Ok(components)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "quantized coefficients are explicitly clamped to i16 before storage"
+)]
 fn quantized_i16_block(block: &[i32; 64]) -> [i16; 64] {
     let mut out = [0i16; 64];
     for (dst, &value) in out.iter_mut().zip(block.iter()) {
-        *dst = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        *dst = value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
     }
     out
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "dequantized coefficients are explicitly clamped to i16 before storage"
+)]
 fn dequantize_progressive_block(block: &[i32; 64], quant: &[u16; 64]) -> [i16; 64] {
     let mut out = [0i16; 64];
     for (zigzag_idx, &natural_idx) in ZIGZAG.iter().enumerate() {
         let value = block[usize::from(natural_idx)].wrapping_mul(i32::from(quant[zigzag_idx]));
-        out[usize::from(natural_idx)] = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        out[usize::from(natural_idx)] =
+            value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
     }
     out
 }
@@ -481,15 +502,15 @@ mod tests {
         let mut rgb = Vec::with_capacity(width * height * 3);
         for y in 0..height {
             for x in 0..width {
-                rgb.push(((x * 7 + y * 3) & 0xff) as u8);
-                rgb.push(((x * 5 + y * 11) & 0xff) as u8);
-                rgb.push(((x * 13 + y * 2) & 0xff) as u8);
+                rgb.push(u8::try_from((x * 7 + y * 3) & 0xff).expect("fixture is byte-masked"));
+                rgb.push(u8::try_from((x * 5 + y * 11) & 0xff).expect("fixture is byte-masked"));
+                rgb.push(u8::try_from((x * 13 + y * 2) & 0xff).expect("fixture is byte-masked"));
             }
         }
         let encoded = encode_jpeg_baseline(
             JpegSamples::Rgb8 {
-                width: width as u32,
-                height: height as u32,
+                width: u32::try_from(width).expect("fixture width fits in u32"),
+                height: u32::try_from(height).expect("fixture height fits in u32"),
                 data: &rgb,
             },
             JpegEncodeOptions {

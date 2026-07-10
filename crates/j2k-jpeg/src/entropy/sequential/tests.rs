@@ -284,7 +284,7 @@ fn deposit_block_writes_expected_rows_at_offset() {
     let mut plane = vec![0xA5u8; 16 * 16];
     let mut block = [0u8; 64];
     for (i, byte) in block.iter_mut().enumerate() {
-        *byte = i as u8;
+        *byte = u8::try_from(i).expect("8x8 block index fits in u8");
     }
 
     deposit_block(&mut plane, 16, 3, 2, &block);
@@ -307,7 +307,7 @@ fn deposit_block_writes_expected_rows_at_bottom_right_edge() {
     let mut plane = vec![0x5Au8; 16 * 16];
     let mut block = [0u8; 64];
     for (i, byte) in block.iter_mut().enumerate() {
-        *byte = 255u8.wrapping_sub(i as u8);
+        *byte = 255u8.wrapping_sub(u8::try_from(i).expect("8x8 block index fits in u8"));
     }
 
     deposit_block(&mut plane, 16, 8, 8, &block);
@@ -401,9 +401,12 @@ fn emit_stripe_rgb_444_matches_direct_ycbcr_conversion_with_trailing_row() {
     };
     for row in 0..8usize {
         for col in 0..width {
-            stripe.planes[0][row * width + col] = ((row * 31 + col * 7 + 11) & 0xFF) as u8;
-            stripe.planes[1][row * width + col] = ((row * 17 + col * 13 + 97) & 0xFF) as u8;
-            stripe.planes[2][row * width + col] = ((row * 23 + col * 19 + 53) & 0xFF) as u8;
+            stripe.planes[0][row * width + col] =
+                u8::try_from((row * 31 + col * 7 + 11) & 0xFF).expect("fixture is byte-masked");
+            stripe.planes[1][row * width + col] =
+                u8::try_from((row * 17 + col * 13 + 97) & 0xFF).expect("fixture is byte-masked");
+            stripe.planes[2][row * width + col] =
+                u8::try_from((row * 23 + col * 19 + 53) & 0xFF).expect("fixture is byte-masked");
         }
     }
 
@@ -412,12 +415,19 @@ fn emit_stripe_rgb_444_matches_direct_ycbcr_conversion_with_trailing_row() {
         sampling: SamplingFactors::from_validated_components(&[(1, 1), (1, 1), (1, 1)]),
         color_space: ColorSpace::YCbCr,
         restart_interval: None,
-        dimensions: (width as u32, height),
+        dimensions: (
+            u32::try_from(width).expect("fixture width fits in u32"),
+            height,
+        ),
         scan_offset: 0,
         scratch_bytes: 0,
     };
     let mut actual = vec![0u8; width * height as usize * 3];
-    let mut writer = Rgb8Writer::new(&mut actual, width * 3, width as u32);
+    let mut writer = Rgb8Writer::new(
+        &mut actual,
+        width * 3,
+        u32::try_from(width).expect("fixture width fits in u32"),
+    );
 
     emit_stripe_rgb_444(&plan, Backend::detect(), &stripe, 0, &mut writer)
         .expect("emit stripe must succeed");

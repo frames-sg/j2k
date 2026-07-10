@@ -257,6 +257,10 @@ fn backend_scalar_420_row_pair_handles_missing_bottom_row() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the synthetic byte pattern intentionally wraps the bounded row index"
+)]
 fn backend_scalar_420_cropped_row_pair_matches_full_width_crop() {
     let backend = super::Backend {
         kind: super::BackendKind::Scalar,
@@ -335,6 +339,10 @@ fn backend_scalar_420_cropped_row_pair_matches_full_width_crop() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the synthetic byte pattern intentionally wraps the bounded row index"
+)]
 fn backend_scalar_420_cropped_top_only_matches_full_width_crop() {
     let backend = super::Backend {
         kind: super::BackendKind::Scalar,
@@ -844,6 +852,10 @@ fn neon_ycbcr_rows_use_shortest_safe_prefix() {
 
 #[cfg(target_arch = "aarch64")]
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the synthetic byte pattern intentionally wraps the bounded row index"
+)]
 fn neon_ycbcr_rows_match_scalar_reference_across_multiple_chunks() {
     let len = 31usize;
     let y: Vec<u8> = (0..len)
@@ -866,6 +878,10 @@ fn neon_ycbcr_rows_match_scalar_reference_across_multiple_chunks() {
 
 #[cfg(target_arch = "aarch64")]
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the synthetic byte pattern intentionally wraps the row index to exercise tails"
+)]
 fn neon_ycbcr_rows_match_scalar_reference_for_offset_subslice_and_odd_tail_width() {
     let len = 255usize;
     let y_buf: Vec<u8> = (0..len + 3)
@@ -940,6 +956,10 @@ fn neon_420_row_pair_matches_scalar_reference_for_tail_widths() {
 
 #[cfg(target_arch = "aarch64")]
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the synthetic byte pattern intentionally wraps the bounded row index"
+)]
 fn neon_420_row_pair_matches_scalar_reference_across_multiple_chunks() {
     let backend = super::Backend {
         kind: super::BackendKind::Neon,
@@ -1102,6 +1122,10 @@ fn neon_420_row_pair_handles_missing_bottom_row() {
 
 #[cfg(target_arch = "aarch64")]
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the synthetic byte pattern intentionally wraps the bounded row index"
+)]
 fn neon_420_cropped_row_pair_matches_scalar_reference_across_chunks() {
     let backend = super::Backend {
         kind: super::BackendKind::Neon,

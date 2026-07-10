@@ -68,6 +68,10 @@ pub(in crate::entropy::sequential) fn component_row_triplet<'a>(
     (prev_row, curr_row, next_row)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "component row indices are bounded by validated u32 stripe geometry"
+)]
 pub(super) fn upsample_component_row_stripe(request: StripeComponentUpsample<'_, '_>) {
     let StripeComponentUpsample {
         neighbors,
@@ -124,6 +128,10 @@ pub(super) fn upsample_component_row_stripe(request: StripeComponentUpsample<'_,
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "4:2:0 row indices are bounded by validated u32 stripe geometry"
+)]
 pub(super) fn upsample_420_pair(request: Stripe420PairUpsample<'_, '_>) {
     let Stripe420PairUpsample {
         neighbors,

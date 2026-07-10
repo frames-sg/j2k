@@ -30,7 +30,6 @@ pub(crate) fn parse_adobe_app14(payload: &[u8]) -> Option<AdobeTransform> {
         return None;
     }
     match payload[11] {
-        0 => Some(AdobeTransform::Unknown),
         1 => Some(AdobeTransform::YCbCr),
         2 => Some(AdobeTransform::Ycck),
         _ => Some(AdobeTransform::Unknown), // emit warning at caller

@@ -22,6 +22,10 @@ impl Default for HuffmanValues {
 }
 
 impl HuffmanValues {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "JPEG Huffman value arrays contain at most 256 symbols"
+    )]
     pub(crate) fn from_slice(values: &[u8]) -> Self {
         debug_assert!(values.len() <= 256);
         let mut out = Self::default();
@@ -66,6 +70,10 @@ pub(crate) struct RawHuffmanTable {
 
 /// Parse a DQT payload into one or more table slots. Multiple tables may be
 /// concatenated within a single DQT marker per T.81 §B.2.4.1.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "DQT segment lengths are bounded by the JPEG 16-bit marker grammar"
+)]
 pub(crate) fn parse_dqt(
     payload: &[u8],
     payload_offset: usize,
@@ -116,6 +124,10 @@ pub(crate) fn parse_dqt(
 }
 
 /// Parse a DHT payload into the given table storage.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "DHT segment lengths are bounded by the JPEG 16-bit marker grammar"
+)]
 pub(crate) fn parse_dht(
     payload: &[u8],
     payload_offset: usize,
@@ -163,7 +175,7 @@ pub(crate) fn parse_dht(
                 return Err(JpegError::InvalidSegmentLength {
                     offset: payload_offset + i,
                     marker: 0xC4,
-                    length: other as u16,
+                    length: u16::from(other),
                 });
             }
         }

@@ -19,7 +19,17 @@ use core::arch::aarch64::{
 };
 use j2k_codec_math::jpeg::idct;
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "shared IDCT shift constants are small positive compile-time values"
+)]
 const CONST_BITS: i32 = idct::CONST_BITS as i32;
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "shared IDCT shift constants are small positive compile-time values"
+)]
 const PASS1_BITS: i32 = idct::PASS1_BITS as i32;
 
 const FIX_0_298631336: i32 = idct::FIX_0_298631336;

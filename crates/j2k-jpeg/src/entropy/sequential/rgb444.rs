@@ -123,6 +123,10 @@ struct FastRgb444McuRowState<'a, 'b> {
     expected_rst: &'a mut u8,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the 4:4:4 MCU kernel keeps three block decodes and direct RGB row deposition in sampling order"
+)]
 fn decode_mcu_row_fast_rgb_444(
     context: &FastRgb444McuRowContext<'_>,
     state: &mut FastRgb444McuRowState<'_, '_>,

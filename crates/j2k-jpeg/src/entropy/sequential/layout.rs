@@ -168,6 +168,10 @@ impl Fast420RegionLayout {
         Self::new_for_mcu_width(width, roi, 16)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "layout widths originate from validated u32 JPEG dimensions before allocation"
+    )]
     pub(super) fn new_for_mcu_width(width: usize, roi: Rect, mcu_width_px: u32) -> Self {
         let crop_window = RgbCropWindow::new(width, roi);
         let stripe = StripeRegionLayout::new(

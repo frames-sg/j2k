@@ -71,6 +71,10 @@ impl DecoderContext {
         self.resolve_quant_table_with_digest(table, digest)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the digest cast only selects a cache shard and intentionally uses the native word"
+    )]
     fn resolve_quant_table_with_digest(&mut self, table: [u16; 64], digest: u64) -> Arc<[u16; 64]> {
         let start = (digest as usize) % self.quant_tables.len();
         for probe in 0..self.quant_tables.len() {
@@ -112,6 +116,10 @@ impl DecoderContext {
         self.resolve_huffman_table_with_digest(raw, digest)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the digest cast only selects a cache shard and intentionally uses the native word"
+    )]
     fn resolve_huffman_table_with_digest(
         &mut self,
         raw: &RawHuffmanTable,
@@ -151,6 +159,10 @@ impl DecoderContext {
         Ok(table)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the digest cast only selects a cache shard and intentionally uses the native word"
+    )]
     pub(crate) fn resolve_decode_plan<F>(
         &mut self,
         header_prefix: &[u8],

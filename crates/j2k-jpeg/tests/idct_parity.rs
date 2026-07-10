@@ -5,7 +5,7 @@
 //!
 //! The test only exercises the SIMD variant the host CPU can actually run —
 //! we do not cross-compile to the other arch. CI runs on both aarch64 and
-//! x86_64 so each backend is exercised at least once.
+//! `x86_64` so each backend is exercised at least once.
 
 #![cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 
@@ -42,20 +42,20 @@ fn assert_avx2_matches_scalar(input: &[i16; 64]) {
     );
 }
 
-fn vec_into_block(v: Vec<i16>) -> [i16; 64] {
+fn vec_into_block(v: &[i16]) -> [i16; 64] {
     let mut arr = [0i16; 64];
-    arr.copy_from_slice(&v);
+    arr.copy_from_slice(v);
     arr
 }
 
 fn small_coefficients() -> impl Strategy<Value = [i16; 64]> {
     // Typical JPEG space after dequantization: DC up to ~1024, AC small.
-    prop::collection::vec(-512i16..512, 64..=64).prop_map(vec_into_block)
+    prop::collection::vec(-512i16..512, 64..=64).prop_map(|values| vec_into_block(&values))
 }
 
 fn large_coefficients() -> impl Strategy<Value = [i16; 64]> {
     // Full i16 range — exercises wrapping-then-clamp on saturating inputs.
-    prop::collection::vec(any::<i16>(), 64..=64).prop_map(vec_into_block)
+    prop::collection::vec(any::<i16>(), 64..=64).prop_map(|values| vec_into_block(&values))
 }
 
 fn sparse_blocks() -> impl Strategy<Value = [i16; 64]> {

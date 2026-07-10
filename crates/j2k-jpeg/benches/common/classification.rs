@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(dead_code)]
-
 use j2k_jpeg::ColorSpace;
 
 pub(crate) const FULL_FRAME_MAX_OUTPUT_BYTES: usize = 512 * 1024 * 1024;
@@ -12,28 +10,10 @@ pub(crate) enum DecodeMode {
     Rgb,
 }
 
-impl DecodeMode {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Gray => "gray",
-            Self::Rgb => "rgb",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CorpusInputClass {
     BoundedFullFrame,
     VeryLarge,
-}
-
-impl CorpusInputClass {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::BoundedFullFrame => "bounded_full_frame",
-            Self::VeryLarge => "very_large",
-        }
-    }
 }
 
 pub(crate) fn color_space_mode(color_space: ColorSpace) -> Option<DecodeMode> {

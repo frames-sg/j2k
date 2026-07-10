@@ -376,6 +376,10 @@ impl<P: LosslessSample> LosslessColorSampleTarget<P> for LosslessColorRowSample<
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "component indices are validated against the JPEG maximum component count"
+)]
 pub(super) fn decode_lossless_color_sample<P, T>(
     br: &mut BitReader<'_>,
     components: &[PreparedComponentPlan],
@@ -405,6 +409,10 @@ where
     Ok(())
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "component counts are validated against the JPEG maximum before error reporting"
+)]
 pub(super) fn validate_lossless_color_plan<P: LosslessSample>(
     plan: &PreparedLosslessPlan,
     decode_plan: &PreparedDecodePlan,
@@ -491,6 +499,10 @@ pub(super) struct LosslessSampledMcu {
     pub(super) restart_first_mcu: bool,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "component indices are validated against the JPEG maximum component count"
+)]
 pub(super) fn decode_lossless_sampled_color_mcu<P>(
     br: &mut BitReader<'_>,
     components: &[PreparedComponentPlan],

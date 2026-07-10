@@ -229,7 +229,9 @@ fn validate_payloads_from_ifd(
             summary.skipped_too_large += 1;
             continue;
         }
-        let bytes = read_exact_at(file, offset, byte_count as usize)
+        let payload_len = usize::try_from(byte_count)
+            .map_err(|_| format!("JPEG payload length {byte_count} exceeds usize"))?;
+        let bytes = read_exact_at(file, offset, payload_len)
             .map_err(|error| format!("read JPEG payload at offset {offset}: {error}"))?;
         if !bytes.starts_with(&[0xff, 0xd8]) {
             summary.skipped_non_jpeg += 1;
@@ -272,9 +274,7 @@ fn ifd_image_metadata(
         bit_depth: u8::try_from(bit_depth)
             .map_err(|_| format!("BitsPerSample {bit_depth} exceeds u8"))?,
         colorspace: match (photometric, components) {
-            (Some(6), 3) => Colorspace::YCbCr,
             (Some(2), 3) => Colorspace::Rgb,
-            (Some(0 | 1), 1) => Colorspace::Grayscale,
             (_, 1) => Colorspace::Grayscale,
             (_, 3) => Colorspace::YCbCr,
             _ => Colorspace::IccTagged,
@@ -349,7 +349,8 @@ fn ndpi_passthrough_candidate(
             Ok(ParsedNdpiCandidate {
                 candidate,
                 dimensions: view.info().dimensions,
-                components: view.info().sampling.len() as u8,
+                components: u8::try_from(view.info().sampling.len())
+                    .map_err(|_| "JPEG component count exceeds u8".to_string())?,
                 bit_depth: view.info().bit_depth,
                 used_ifd_dimensions: false,
             })
@@ -661,7 +662,7 @@ fn tiff_type_size(field_type: u16) -> Option<usize> {
         1 => Some(1),
         3 => Some(2),
         4 | 9 => Some(4),
-        16 | 17 | 18 => Some(8),
+        16..=18 => Some(8),
         _ => None,
     }
 }
@@ -671,9 +672,9 @@ fn numeric_from_tiff_value(endian: Endian, field_type: u16, bytes: &[u8]) -> u64
         1 => u64::from(bytes[0]),
         3 => u64::from(endian.u16(bytes)),
         4 => u64::from(endian.u32(bytes)),
-        9 => i64::from(endian.u32(bytes) as i32) as u64,
+        9 => i64::from(endian.u32(bytes).cast_signed()).cast_unsigned(),
         16 | 18 => endian.u64(bytes),
-        17 => endian.u64(bytes) as i64 as u64,
+        17 => endian.u64(bytes).cast_signed().cast_unsigned(),
         _ => 0,
     }
 }

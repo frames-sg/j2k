@@ -44,6 +44,10 @@ pub(crate) struct ParsedScan {
 /// Parse the SOS payload. `payload` is the bytes after the 2-byte SOS length
 /// field — i.e. starts with `Ns`. Returns a structural error on wrong length
 /// or out-of-range selectors.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "SOS payload lengths are bounded by the JPEG 16-bit segment-length field"
+)]
 pub(crate) fn parse_scan_header(payload: &[u8], offset: usize) -> Result<ParsedScan, JpegError> {
     if payload.is_empty() {
         return Err(JpegError::InvalidSegmentLength {

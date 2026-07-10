@@ -83,8 +83,10 @@ name = "neon_hot_paths"
 required-features = ["bench-internals"]
 
 [lints.rust]
-# SIMD backends use tightly-scoped intrinsics in `src/backend/`; keep unsafe
-# explicit there while the rest of the crate remains safe Rust.
+# Audited unsafe is confined to SIMD/hot kernels in `src/backend/`,
+# `src/idct/{avx2,neon}.rs`, and `src/entropy/sequential/deposit.rs`, plus
+# benchmark-only SIMD shims, FFI, and allocator instrumentation. Keep every
+# unsafe operation explicit and lint each unsafe block.
 unsafe_code     = "allow"
 unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "warn"
@@ -95,24 +97,9 @@ unreachable_pub = "warn"
 [lints.clippy]
 pedantic                     = { level = "warn", priority = -1 }
 undocumented_unsafe_blocks  = "warn"
-module_name_repetitions      = "allow"
-must_use_candidate           = "allow"
-# Style-only lints that conflict with the plan's explicit-over-idiomatic
-# choices in the marker/header parser (individual SOF-code OR patterns,
-# mixed `as` casts with compile-time-safe ranges, doc strings referring
-# to bit-precision acronyms, etc.). Promote these back to `warn` as the
-# post-integration documentation pass closes out.
-match_same_arms              = "allow"
-manual_range_patterns        = "allow"
-cast_possible_truncation     = "allow"
-cast_lossless                = "allow"
-too_many_lines               = "allow"
-collapsible_if               = "allow"
-doc_markdown                 = "allow"
-no_effect_underscore_binding = "allow"
-cast_sign_loss               = "allow"
-cast_possible_wrap           = "allow"
-missing_errors_doc           = "allow"
-missing_panics_doc           = "allow"
-needless_pass_by_value       = "allow"
+# JPEG equations, component planes, and matched scalar/SIMD kernels use the
+# normative names `x`/`y`, `dc`/`ac`, and `cb`/`cr`. A forced audit found 155
+# unique production sites; per-function attributes or asymmetric renames would
+# obscure parity review. Revisit if this lint begins firing in non-codec policy
+# or orchestration modules rather than representation-matched codec code.
 similar_names                = "allow"

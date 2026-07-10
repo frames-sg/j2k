@@ -120,6 +120,10 @@ pub struct JpegEntropyCheckpointV1 {
 }
 
 impl JpegHuffmanTable {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "canonical JPEG Huffman tables contain at most 256 symbol positions"
+    )]
     fn from_raw(raw: &RawHuffmanTable) -> Self {
         let mut values = [0u8; 256];
         let slice = raw.values.as_slice();

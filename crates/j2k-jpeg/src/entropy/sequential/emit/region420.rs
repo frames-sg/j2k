@@ -12,6 +12,14 @@ use crate::{
     output::{InterleavedRgbWriter, OutputWriter},
 };
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "region 4:2:0 emission keeps chroma phase, boundary repair, and row writes in output order"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "region stripe indices are bounded by validated u32 JPEG dimensions"
+)]
 pub(in crate::entropy::sequential) fn emit_stripe_rgb_420_region<
     W: OutputWriter + InterleavedRgbWriter,
 >(
@@ -29,7 +37,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb_420_region<
         downscale,
     } = stripe;
     let StripeNeighbors { prev, curr, next } = neighbors;
-    let max_v = plan.sampling.max_v as u32;
+    let max_v = u32::from(plan.sampling.max_v);
     let mcu_height_px = downscale.output_block_size() * max_v;
     let y_start = stripe_index * mcu_height_px;
     let (_, scaled_height) = scaled_dimensions(plan.dimensions, downscale);

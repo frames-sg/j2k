@@ -5,10 +5,18 @@
 use crate::color::ycbcr::ycbcr12_to_rgb16;
 use crate::color::ycbcr::ycbcr_to_rgb;
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the normalized product of two u8 samples is bounded to the u8 range"
+)]
 fn multiply_u8(a: u8, b: u8) -> u8 {
     ((u16::from(a) * u16::from(b) + 127) / 255) as u8
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the normalized product of two 12-bit samples is bounded to the u16 range"
+)]
 fn multiply_u12(a: u16, b: u16) -> u16 {
     ((u32::from(a) * u32::from(b) + 2047) / 4095) as u16
 }

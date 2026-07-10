@@ -81,6 +81,10 @@ pub(crate) const fn pixel_format_for_bytes_per_pixel(
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "taking the small error enum by value keeps exhaustive conversion ownership explicit"
+)]
 pub(crate) fn jpeg_buffer_error(error: BufferError, provided_len: usize) -> JpegError {
     match error {
         BufferError::StrideTooSmall { row_bytes, stride } => JpegError::InvalidStride {
@@ -94,11 +98,8 @@ pub(crate) fn jpeg_buffer_error(error: BufferError, provided_len: usize) -> Jpeg
         BufferError::AllocationTooLarge { requested, cap, .. } => {
             JpegError::MemoryCapExceeded { requested, cap }
         }
-        BufferError::SizeOverflow { .. } => JpegError::OutputBufferTooSmall {
-            required: usize::MAX,
-            provided: provided_len,
-        },
-        BufferError::InputTooSmall { .. }
+        BufferError::SizeOverflow { .. }
+        | BufferError::InputTooSmall { .. }
         | BufferError::StrideNotAligned { .. }
         | BufferError::SampleTypeMismatch { .. } => JpegError::OutputBufferTooSmall {
             required: usize::MAX,

@@ -1008,6 +1008,10 @@ fn session_batch_decode_12bit_rgba16_matches_single_tile_decode() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the table-driven end-to-end test keeps four-component fixtures and all output assertions together"
+)]
 fn session_batch_decode_12bit_cmyk_ycck_rgba16_matches_expected_pixels() {
     let cases = [
         (
@@ -1541,9 +1545,9 @@ fn session_batch_decode_reuses_worker_state_across_calls_and_matches_free_batch(
         .map(|_| vec![0u8; expected.len()])
         .collect::<Vec<_>>();
 
-    for pass in 0..3 {
+    for pass in 0u8..3 {
         for output in &mut outputs {
-            output.fill(pass as u8);
+            output.fill(pass);
         }
         let outcomes = {
             let mut jobs = outputs

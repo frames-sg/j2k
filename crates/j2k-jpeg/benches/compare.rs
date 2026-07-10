@@ -25,6 +25,10 @@ use common::{
 use criterion::{criterion_group, criterion_main, Criterion};
 use j2k_jpeg::{Decoder, Downscale, ScratchPool, TileBatchOptions};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "this benchmark registry keeps the comparable codec cases in one ordered Criterion group"
+)]
 fn bench_compare(c: &mut Criterion) {
     let inputs = load_bench_inputs();
 

@@ -235,6 +235,8 @@ fn decode_subsampled_cmyk_ycck_full_and_region_scaled_outputs() {
             "YCCK 4:2:0",
         ),
     ] {
+        let width_u32 = u32::try_from(width).expect("fixture width fits in u32");
+        let height_u32 = u32::try_from(height).expect("fixture height fits in u32");
         let dec = Decoder::new(&bytes)
             .unwrap_or_else(|err| panic!("{label} four-component JPEG should construct: {err}"));
         let mut full = vec![0u8; expected.len()];
@@ -249,22 +251,22 @@ fn decode_subsampled_cmyk_ycck_full_and_region_scaled_outputs() {
 
         assert_eq!(
             outcome.decoded,
-            Rect::full((width as u32, height as u32)),
+            Rect::full((width_u32, height_u32)),
             "{label}"
         );
         assert_eq!(full, expected, "{label}");
 
         let roi = Rect {
-            x: width as u32 / 4,
-            y: height as u32 / 4,
-            w: width as u32 / 2,
-            h: height as u32 / 2,
+            x: width_u32 / 4,
+            y: height_u32 / 4,
+            w: width_u32 / 2,
+            h: height_u32 / 2,
         };
         let scaled_roi = scaled_rect_covering_for_test(roi, 2);
         let row_bytes = scaled_roi.w as usize * PixelFormat::Rgba8.bytes_per_pixel();
         let stride = row_bytes + 4;
         let expected_rgba = rgb8_to_rgba8(
-            &project_scaled_rgb(&expected, width as u32, height as u32, scaled_roi, 2),
+            &project_scaled_rgb(&expected, width_u32, height_u32, scaled_roi, 2),
             255,
         );
         let mut region = vec![0xaau8; stride * scaled_roi.h as usize];
@@ -293,6 +295,10 @@ fn decode_subsampled_cmyk_ycck_full_and_region_scaled_outputs() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the four-component end-to-end matrix keeps full, ROI, scaled, and region-scaled assertions correlated"
+)]
 fn decode_12bit_cmyk_ycck_full_roi_scaled_and_region_scaled_outputs() {
     for (bytes, expected_full, width, height, label) in [
         (

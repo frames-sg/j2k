@@ -97,6 +97,10 @@ impl Decoder<'_> {
         self.decode_extended12_region_into(out, stride, roi, downscale, Extended12Output::Rgb16)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the 12-bit sequential pass keeps entropy state, IDCT, color conversion, and row emission in decode order"
+    )]
     fn decode_extended12_region_into(
         &self,
         out: &mut [u8],

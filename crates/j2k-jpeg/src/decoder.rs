@@ -150,6 +150,7 @@ pub struct DecodeRequest {
 
 impl DecodeRequest {
     /// Full-image decode at native scale.
+    #[must_use]
     pub const fn full(fmt: PixelFormat) -> Self {
         Self {
             fmt,
@@ -159,6 +160,7 @@ impl DecodeRequest {
     }
 
     /// Full-image decode with downscale.
+    #[must_use]
     pub const fn scaled(fmt: PixelFormat, scale: Downscale) -> Self {
         Self {
             fmt,
@@ -168,6 +170,7 @@ impl DecodeRequest {
     }
 
     /// Region decode at native scale.
+    #[must_use]
     pub const fn region(fmt: PixelFormat, region: Rect) -> Self {
         Self {
             fmt,
@@ -177,6 +180,7 @@ impl DecodeRequest {
     }
 
     /// Region decode with downscale.
+    #[must_use]
     pub const fn region_scaled(fmt: PixelFormat, region: Rect, scale: Downscale) -> Self {
         Self {
             fmt,
@@ -238,9 +242,17 @@ pub type TileBatchError = j2k_core::TileBatchError<JpegError>;
 /// interleaved pixel format.
 pub trait ComponentRowWriter {
     /// Receive one grayscale row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the destination cannot accept the row.
     fn write_gray_row(&mut self, y: u32, gray_row: &[u8]) -> Result<(), JpegError>;
 
     /// Receive one full-width Y/Cb/Cr row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the destination cannot accept the component row.
     fn write_ycbcr_row(
         &mut self,
         y: u32,
@@ -250,6 +262,10 @@ pub trait ComponentRowWriter {
     ) -> Result<(), JpegError>;
 
     /// Receive one full-width planar RGB row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the destination cannot accept the component row.
     fn write_rgb_row(
         &mut self,
         y: u32,
@@ -323,12 +339,22 @@ impl<'a> Decoder<'a> {
     }
 
     /// Build a decoder from a previously parsed [`JpegView`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the view describes an unsupported JPEG shape or
+    /// references missing or invalid coding tables.
     pub fn from_view(view: JpegView<'a>) -> Result<Self, JpegError> {
         DEFAULT_CONTEXT.with(|ctx| Self::from_view_in_context(view, &mut ctx.borrow_mut()))
     }
 
     /// Build a decoder from a previously parsed [`JpegView`], reusing shared
     /// compiled DHT/DQT state from `ctx` when table contents repeat.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the view describes an unsupported JPEG shape or
+    /// references missing or invalid coding tables.
     pub fn from_view_in_context(
         view: JpegView<'a>,
         ctx: &mut DecoderContext,
@@ -426,4 +452,4 @@ impl<'a> Decoder<'a> {
 }
 
 #[cfg(test)]
-include!("decoder_tests.rs");
+mod tests;

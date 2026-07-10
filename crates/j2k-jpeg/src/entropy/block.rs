@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(clippy::inline_always)]
-
 //! Per-block entropy decode: one 8×8 DCT coefficient block.
 //!
 //! Steps per T.81 §F.2.1:
@@ -41,6 +39,10 @@ pub(crate) enum ReducedIdctCoefficients {
 }
 
 impl ReducedIdctCoefficients {
+    #[expect(
+        clippy::inline_always,
+        reason = "measured entropy-block hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
     fn keeps(self, natural_idx: usize) -> bool {
         let row = natural_idx >> 3;
@@ -78,6 +80,10 @@ impl Default for CoefficientBlock {
 }
 
 impl CoefficientBlock {
+    #[expect(
+        clippy::inline_always,
+        reason = "measured entropy-block hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
     fn clear_touched(&mut self) {
         match self.clear_mode {
@@ -92,7 +98,15 @@ impl CoefficientBlock {
         self.clear_mode = ClearMode::Sparse;
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "measured entropy-block hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "coefficient indices are bounded to the 64-entry JPEG block"
+    )]
     fn store(&mut self, idx: usize, value: i16) {
         self.coeffs[idx] = value;
         if self.clear_mode == ClearMode::Sparse {
@@ -105,17 +119,29 @@ impl CoefficientBlock {
         }
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "measured entropy-block hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
     pub(crate) fn coefficients(&self) -> &[i16; 64] {
         &self.coeffs
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "measured entropy-block hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
     pub(crate) fn dc_coeff(&self) -> i16 {
         self.coeffs[0]
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured entropy-block hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 fn extend_activity(activity: BlockActivity, natural_idx: usize) -> BlockActivity {
     if natural_idx < 32 {
@@ -148,6 +174,10 @@ pub(crate) fn decode_block(
     decode_block_with_activity(br, dc_table, ac_table, prev_dc, quant, block).map(|_| ())
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured entropy-block hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 pub(crate) fn decode_block_with_activity(
     br: &mut BitReader<'_>,
@@ -163,7 +193,7 @@ pub(crate) fn decode_block_with_activity(
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
     // Dequant the DC in natural-order position 0 (zigzag index 0 → natural 0).
-    let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
+    let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
     block.store(0, clamp_i16(dc_dequant));
 
     let mut activity = BlockActivity::DcOnly;
@@ -172,7 +202,7 @@ pub(crate) fn decode_block_with_activity(
         // Quant table entries are stored in zigzag order per T.81 §B.2.4.1,
         // so `quant[k]` is the matching coefficient (not `quant[natural_idx]`).
         let value = ac_decoded_value(ac);
-        let dequant = value.wrapping_mul(quant[k] as i32);
+        let dequant = value.wrapping_mul(i32::from(quant[k]));
         block.store(natural_idx, clamp_i16(dequant));
         activity = extend_activity(activity, natural_idx);
         Ok(())
@@ -184,6 +214,10 @@ pub(crate) fn decode_block_with_activity(
 ///
 /// The caller must pass an output block that is all zeroes; this function only
 /// writes non-zero decoded coefficients.
+#[expect(
+    clippy::inline_always,
+    reason = "measured entropy-block hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 pub(crate) fn decode_block_dequantized_into(
     br: &mut BitReader<'_>,
@@ -196,19 +230,23 @@ pub(crate) fn decode_block_dequantized_into(
     // DC.
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
-    let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
+    let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
     out[0] = clamp_i16(dc_dequant);
 
     drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
         let natural_idx = ZIGZAG[k] as usize;
         let value = ac_decoded_value(ac);
-        let dequant = value.wrapping_mul(quant[k] as i32);
+        let dequant = value.wrapping_mul(i32::from(quant[k]));
         out[natural_idx] = clamp_i16(dequant);
         Ok(())
     })?;
     Ok(())
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured entropy-block hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
     br: &mut BitReader<'_>,
@@ -226,7 +264,7 @@ pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
     quantized_block.store(0, clamp_i16(*prev_dc));
-    let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
+    let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
     dequantized_block.store(0, clamp_i16(dc_dequant));
 
     let mut activity = BlockActivity::DcOnly;
@@ -234,7 +272,7 @@ pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
         let natural_idx = ZIGZAG[k] as usize;
         let value = ac_decoded_value(ac);
         quantized_block.store(natural_idx, clamp_i16(value));
-        let dequant = value.wrapping_mul(quant[k] as i32);
+        let dequant = value.wrapping_mul(i32::from(quant[k]));
         dequantized_block.store(natural_idx, clamp_i16(dequant));
         activity = extend_activity(activity, natural_idx);
         Ok(())
@@ -242,6 +280,10 @@ pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
     Ok(activity)
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured entropy-block hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 #[cfg(test)]
 pub(crate) fn decode_block_with_dc_status(
@@ -256,14 +298,14 @@ pub(crate) fn decode_block_with_dc_status(
 
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
-    let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
+    let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
     block.store(0, clamp_i16(dc_dequant));
 
     let mut dc_only = true;
     drive_ac_fast::<false, _>(br, ac_table, |k, ac| {
         let natural_idx = ZIGZAG[k] as usize;
         let value = ac_decoded_value(ac);
-        let dequant = value.wrapping_mul(quant[k] as i32);
+        let dequant = value.wrapping_mul(i32::from(quant[k]));
         block.store(natural_idx, clamp_i16(dequant));
         dc_only = false;
         Ok(())
@@ -271,6 +313,10 @@ pub(crate) fn decode_block_with_dc_status(
     Ok(dc_only)
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured entropy-block hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 pub(crate) fn decode_block_for_reduced_idct(
     br: &mut BitReader<'_>,
@@ -285,7 +331,7 @@ pub(crate) fn decode_block_for_reduced_idct(
 
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
-    let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
+    let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
     block.store(0, clamp_i16(dc_dequant));
 
     let mut dc_only_for_reduced_idct = true;
@@ -293,7 +339,7 @@ pub(crate) fn decode_block_for_reduced_idct(
         let natural_idx = ZIGZAG[k] as usize;
         if keep.keeps(natural_idx) {
             let value = ac_decoded_value(ac);
-            let dequant = value.wrapping_mul(quant[k] as i32);
+            let dequant = value.wrapping_mul(i32::from(quant[k]));
             block.store(natural_idx, clamp_i16(dequant));
             dc_only_for_reduced_idct = false;
         }
@@ -302,6 +348,10 @@ pub(crate) fn decode_block_for_reduced_idct(
     Ok(dc_only_for_reduced_idct)
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured entropy-block hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 pub(crate) fn decode_block_for_1x1_idct(
     br: &mut BitReader<'_>,
@@ -315,13 +365,17 @@ pub(crate) fn decode_block_for_1x1_idct(
 
     let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
-    let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
+    let dc_dequant = (*prev_dc).wrapping_mul(i32::from(quant[0]));
     block.store(0, clamp_i16(dc_dequant));
 
     drive_ac_fast::<true, _>(br, ac_table, |_, _| Ok(()))?;
     Ok(())
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured entropy-block hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 pub(crate) fn skip_block(
     br: &mut BitReader<'_>,
@@ -336,6 +390,10 @@ pub(crate) fn skip_block(
     Ok(())
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured entropy-block hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 fn drive_ac_fast<const SKIP_VALUES: bool, F>(
     br: &mut BitReader<'_>,
@@ -369,6 +427,10 @@ where
     Ok(())
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured entropy-block hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 fn invalid_huffman_symbol() -> JpegError {
     JpegError::HuffmanDecode {
@@ -377,10 +439,14 @@ fn invalid_huffman_symbol() -> JpegError {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "dequantized coefficients are explicitly clamped to i16 before storage"
+)]
 fn clamp_i16(v: i32) -> i16 {
-    if v > i16::MAX as i32 {
+    if v > i32::from(i16::MAX) {
         i16::MAX
-    } else if v < i16::MIN as i32 {
+    } else if v < i32::from(i16::MIN) {
         i16::MIN
     } else {
         v as i16
@@ -709,7 +775,10 @@ mod tests {
     fn switches_to_dense_clear_after_threshold_and_zeroes_full_block() {
         let mut block = CoefficientBlock::default();
         for (i, idx) in [0usize, 1, 8, 16, 24].into_iter().enumerate() {
-            block.store(idx, (i + 1) as i16);
+            block.store(
+                idx,
+                i16::try_from(i + 1).expect("fixture coefficient fits in i16"),
+            );
         }
 
         assert_eq!(block.clear_mode, ClearMode::Dense);
@@ -724,7 +793,10 @@ mod tests {
     fn stays_sparse_below_dense_clear_threshold() {
         let mut block = CoefficientBlock::default();
         for (i, idx) in [0usize, 2, 4, 6].into_iter().enumerate() {
-            block.store(idx, (i + 1) as i16);
+            block.store(
+                idx,
+                i16::try_from(i + 1).expect("fixture coefficient fits in i16"),
+            );
         }
 
         assert_eq!(block.clear_mode, ClearMode::Sparse);

@@ -12,6 +12,10 @@ use crate::error::JpegError;
 use crate::internal::bit_reader::BitReader;
 use alloc::vec::Vec;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "DCT block extraction keeps predictors, restart markers, and component traversal in codestream order"
+)]
 pub(crate) fn decode_scan_dct_blocks(
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],

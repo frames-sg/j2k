@@ -321,6 +321,10 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon(request: Rgb420CroppedRowPair<
 }
 
 #[target_feature(enable = "neon")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the SIMD kernel mirrors one scalar 4:2:0 row-pair operation with ordered lane and edge repair"
+)]
 unsafe fn fill_rgb_row_pair_from_420_cropped_neon_dual(
     y_top: &[u8],
     y_bottom: &[u8],
@@ -633,6 +637,10 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_partial_chunk16_top_only(
 }
 
 #[target_feature(enable = "neon")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the SIMD kernel mirrors one scalar 4:2:0 row-pair operation with ordered lane and edge repair"
+)]
 unsafe fn fill_rgb_row_pair_from_420_neon_dual(
     y_top: &[u8],
     y_bottom: &[u8],
@@ -859,6 +867,10 @@ unsafe fn fill_rgb_row_pair_from_420_neon_top_only(
 }
 
 #[target_feature(enable = "neon")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "NEON weighted chroma sums are shifted into the u8 sample range before lane-edge repair"
+)]
 unsafe fn fill_rgb_row_pair_from_420_edge_neon_dual(
     y_top: &[u8],
     y_bottom: &[u8],
@@ -961,6 +973,10 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_dual(
 }
 
 #[target_feature(enable = "neon")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "NEON weighted chroma sums are shifted into the u8 sample range before lane-edge repair"
+)]
 unsafe fn fill_rgb_row_pair_from_420_edge_neon_top_only(
     y_top: &[u8],
     chroma: Rgb420ChromaRows<'_>,
@@ -1018,6 +1034,14 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_top_only(
 }
 
 #[target_feature(enable = "neon")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the SIMD tail kernel keeps lane extraction and scalar edge repair in codegen order"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "NEON tail chroma sums are shifted into the u8 sample range before scalar edge repair"
+)]
 unsafe fn fill_rgb_row_pair_from_420_tail_neon_dual(
     y_top: &[u8],
     y_bottom: &[u8],
@@ -1157,6 +1181,10 @@ unsafe fn fill_rgb_row_pair_from_420_tail_neon_dual(
 }
 
 #[target_feature(enable = "neon")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "NEON tail chroma sums are shifted into the u8 sample range before scalar edge repair"
+)]
 unsafe fn fill_rgb_row_pair_from_420_tail_neon_top_only(
     y_top: &[u8],
     chroma: Rgb420ChromaRows<'_>,

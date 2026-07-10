@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(clippy::inline_always)]
-
 //! Huffman decoder. Two layers:
 //!
 //! 1. **Fast lookup** — a 4096-entry table indexed by the next 12 bits of the
@@ -74,6 +72,10 @@ impl HuffmanTable {
     /// - `HuffmanDecode { CodeOverflow }` if `bits` is oversubscribed (Kraft
     ///   inequality violated — the table claims more codes of some length than
     ///   there is remaining code space).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "canonical JPEG Huffman code lengths and symbol positions are bounded to 16 bits and 256 entries"
+    )]
     pub(crate) fn from_raw(raw: &RawHuffmanTable) -> Result<Self, JpegError> {
         let canonical = derive_canonical_huffman(raw)?;
         let mut fast = [(0u8, 0u8); FAST_ENTRIES];
@@ -108,9 +110,9 @@ impl HuffmanTable {
                         let mag_shift = FAST_BITS - total_len;
                         let mag_mask = (1u16 << sym) - 1;
                         let mag_bits = ((idx as u16) >> mag_shift) & mag_mask;
-                        huff_extend(mag_bits as i32, sym)
+                        huff_extend(i32::from(mag_bits), sym)
                     };
-                    if (i16::MIN as i32..=i16::MAX as i32).contains(&diff) {
+                    if (i32::from(i16::MIN)..=i32::from(i16::MAX)).contains(&diff) {
                         fast_dc[idx] = pack_dc_value(total_len, diff as i16);
                     }
                 }
@@ -134,8 +136,8 @@ impl HuffmanTable {
             let mag_shift = FAST_BITS - total_len;
             let mag_mask = (1u16 << ssss) - 1;
             let mag_bits = ((idx as u16) >> mag_shift) & mag_mask;
-            let value = huff_extend(mag_bits as i32, ssss);
-            if !(i16::MIN as i32..=i16::MAX as i32).contains(&value) {
+            let value = huff_extend(i32::from(mag_bits), ssss);
+            if !(i32::from(i16::MIN)..=i32::from(i16::MAX)).contains(&value) {
                 continue;
             }
             fast_ac[idx] = pack_ac_value(total_len, run as u8, value as i16);
@@ -158,7 +160,17 @@ impl HuffmanTable {
     /// # Errors
     /// - `HuffmanDecode { TableExhausted }` if the stream ran out of bits.
     /// - `HuffmanDecode { CodeOverflow }` if no 1..=16-bit code matches.
+    #[expect(
+        clippy::inline_always,
+        reason = "measured Huffman lookup hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        reason = "the Huffman slow path converts only validated 16-bit codes and non-negative table offsets"
+    )]
     pub(crate) fn decode(&self, br: &mut BitReader<'_>) -> Result<u8, JpegError> {
         br.ensure_bits_padded(FAST_BITS)?;
         let peek = br.peek_bits(FAST_BITS) as usize;
@@ -188,7 +200,15 @@ impl HuffmanTable {
         })
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "measured Huffman lookup hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "packed DC values intentionally reinterpret a validated 16-bit two's-complement field"
+    )]
     pub(crate) fn decode_fast_dc(&self, br: &mut BitReader<'_>) -> Result<i32, JpegError> {
         br.ensure_bits_padded(FAST_BITS)?;
         let peek = br.peek_bits(FAST_BITS) as usize;
@@ -210,7 +230,15 @@ impl HuffmanTable {
         br.receive_extend(ssss)
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "measured Huffman lookup hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "JPEG receive-extend values are bounded to the signed 16-bit packed AC field"
+    )]
     pub(crate) fn decode_fast_ac(&self, br: &mut BitReader<'_>) -> Result<u32, JpegError> {
         br.ensure_bits_padded(FAST_BITS)?;
         let peek = br.peek_bits(FAST_BITS) as usize;
@@ -242,6 +270,10 @@ impl HuffmanTable {
         Ok(pack_ac_value(0, run, value as i16))
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "measured Huffman lookup hot path requires cross-helper inlining"
+    )]
     #[inline(always)]
     pub(crate) fn skip_fast_ac(&self, br: &mut BitReader<'_>) -> Result<u32, JpegError> {
         br.ensure_bits_padded(FAST_BITS)?;
@@ -276,17 +308,33 @@ impl HuffmanTable {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured Huffman lookup hot path requires cross-helper inlining"
+)]
 #[inline(always)]
 pub(crate) fn ac_decoded_run(packed: u32) -> usize {
     ((packed & AC_FAST_RUN_MASK) >> 4) as usize
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "measured Huffman lookup hot path requires cross-helper inlining"
+)]
 #[inline(always)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "packed AC values intentionally reinterpret a 16-bit two's-complement field"
+)]
 pub(crate) fn ac_decoded_value(packed: u32) -> i32 {
     i32::from(((packed >> AC_FAST_VALUE_SHIFT) & 0xFFFF) as u16 as i16)
 }
 
 #[inline]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "signed AC coefficients are intentionally stored as a 16-bit two's-complement bit field"
+)]
 fn pack_ac_value(total_len: u8, run: u8, value: i16) -> u32 {
     AC_FAST_VALUE
         | ((u32::from(value as u16)) << AC_FAST_VALUE_SHIFT)
@@ -305,6 +353,10 @@ fn pack_ac_zrl(total_len: u8) -> u32 {
 }
 
 #[inline]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "signed DC coefficients are intentionally stored as a 16-bit two's-complement bit field"
+)]
 fn pack_dc_value(total_len: u8, value: i16) -> u32 {
     (u32::from(value as u16) << DC_FAST_VALUE_SHIFT) | u32::from(total_len)
 }
@@ -398,13 +450,9 @@ mod tests {
     fn decodes_all_standard_luma_dc_codes() {
         let table = HuffmanTable::from_raw(&luma_dc_raw()).unwrap();
         for &(code, len, expected) in luma_dc_code_cases() {
-            let mut bytes = alloc::vec![0u8; 4];
             let shift = 32 - len;
             let aligned = code << shift;
-            bytes[0] = (aligned >> 24) as u8;
-            bytes[1] = (aligned >> 16) as u8;
-            bytes[2] = (aligned >> 8) as u8;
-            bytes[3] = aligned as u8;
+            let bytes = aligned.to_be_bytes();
             let mut br = BitReader::new(&bytes);
             let sym = table.decode(&mut br).unwrap();
             assert_eq!(sym, expected, "code={code:b} len={len}");

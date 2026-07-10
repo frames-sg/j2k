@@ -560,6 +560,10 @@ fn assert_8bit_lossless_sampled_color_decode(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the lossless 4:2:2 end-to-end test keeps full, ROI, and scaled pixel assertions together"
+)]
 fn decode_16bit_lossless_422_color_full_roi_scaled_and_region_scaled_outputs() {
     let cases = [
         (
@@ -679,6 +683,10 @@ fn decode_16bit_lossless_422_color_full_roi_scaled_and_region_scaled_outputs() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the lossless 4:2:0 end-to-end test keeps full, ROI, and scaled pixel assertions together"
+)]
 fn decode_16bit_lossless_420_color_full_roi_scaled_and_region_scaled_outputs() {
     let cases = [
         (

@@ -191,30 +191,15 @@ fn minimal_two_component_scan_jpeg() -> Vec<u8> {
 }
 
 fn minimal_baseline_jpeg((width, height): (u16, u16)) -> Vec<u8> {
+    let [height_hi, height_lo] = height.to_be_bytes();
+    let [width_hi, width_lo] = width.to_be_bytes();
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
     bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
     bytes.extend(std::iter::repeat_n(16u8, 64));
     bytes.extend_from_slice(&[
-        0xff,
-        0xc0,
-        0x00,
-        17,
-        8,
-        (height >> 8) as u8,
-        height as u8,
-        (width >> 8) as u8,
-        width as u8,
-        3,
-        1,
-        0x11,
-        0,
-        2,
-        0x11,
-        0,
-        3,
-        0x11,
-        0,
+        0xff, 0xc0, 0x00, 17, 8, height_hi, height_lo, width_hi, width_lo, 3, 1, 0x11, 0, 2, 0x11,
+        0, 3, 0x11, 0,
     ]);
     bytes.extend_from_slice(&[
         0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9,

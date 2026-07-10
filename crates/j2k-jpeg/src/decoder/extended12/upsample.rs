@@ -59,6 +59,10 @@ impl UpsampleSample for u8 {
         u32::from(self)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "weighted 12-bit interpolation is normalized back into the u8 sample range"
+    )]
     fn from_u32(value: u32) -> Self {
         value as u8
     }
@@ -69,6 +73,10 @@ impl UpsampleSample for u16 {
         u32::from(self)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "weighted 12-bit interpolation is normalized back into the u16 sample range"
+    )]
     fn from_u32(value: u32) -> Self {
         value as u16
     }

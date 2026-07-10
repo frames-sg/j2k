@@ -346,6 +346,10 @@ fn capability_report_marks_subsampled_cmyk_and_ycck_cpu_rgb8_rgba8_eligible() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the capability report test verifies one coherent 12-bit four-component eligibility contract"
+)]
 fn capability_report_marks_12bit_four_component_cpu_eligible() {
     for (name, input, expected_sof, expected_color, expected_dimensions, expected_sampling) in [
         (
@@ -491,6 +495,10 @@ fn capability_report_marks_12bit_four_component_cpu_eligible() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the capability report test verifies one coherent restart-coded eligibility contract"
+)]
 fn capability_report_marks_restart_coded_12bit_four_component_cpu_eligible() {
     for (name, input, expected_sof, expected_color, expected_dimensions, expected_sampling) in [
         (
@@ -2122,6 +2130,10 @@ fn capability_report_rejects_unsupported_lossless_scan_shapes_without_info_fallb
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the capability report test verifies one coherent sampled-lossless eligibility contract"
+)]
 fn capability_report_marks_lossless_8bit_sampled_color_cpu_eligible() {
     let requests = [
         JpegCapabilityRequest {
@@ -2807,21 +2819,12 @@ fn progressive_12_bit_jpeg() -> Vec<u8> {
 }
 
 fn insert_restart_interval(mut bytes: Vec<u8>, interval: u16) -> Vec<u8> {
+    let [interval_hi, interval_lo] = interval.to_be_bytes();
     let sos = bytes
         .windows(2)
         .position(|window| window == [0xff, 0xda])
         .expect("SOS marker");
-    bytes.splice(
-        sos..sos,
-        [
-            0xff,
-            0xdd,
-            0x00,
-            0x04,
-            (interval >> 8) as u8,
-            interval as u8,
-        ],
-    );
+    bytes.splice(sos..sos, [0xff, 0xdd, 0x00, 0x04, interval_hi, interval_lo]);
     bytes
 }
 

@@ -14,7 +14,7 @@ use crate::error::{JpegError, MarkerKind};
 use memchr::memchr;
 
 /// One parsed marker plus a borrow of its payload bytes. For stand-alone
-/// markers (SOI, EOI, RSTn, TEM) the payload slice is empty.
+/// markers (SOI, EOI, `RSTn`, TEM) the payload slice is empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Marker<'a> {
     pub(crate) code: u8,

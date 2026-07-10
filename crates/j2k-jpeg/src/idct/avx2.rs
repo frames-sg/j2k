@@ -9,8 +9,6 @@
 //! SSE4.1 so the load/store/multiply/pack intrinsics used here are all
 //! available.
 
-#![allow(clippy::cast_possible_truncation, clippy::cast_lossless)]
-
 use core::arch::x86_64::{
     __m128i, _mm_add_epi32, _mm_cvtepi16_epi32, _mm_mullo_epi32, _mm_packs_epi32, _mm_packus_epi16,
     _mm_set1_epi32, _mm_slli_epi32, _mm_srai_epi32, _mm_srli_si128, _mm_storel_epi64,

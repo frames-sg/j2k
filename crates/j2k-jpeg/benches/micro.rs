@@ -8,6 +8,10 @@ use j2k_jpeg::bench_support::{
 use j2k_jpeg::Decoder;
 use j2k_test_support::JPEG_BASELINE_420_16X16;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "this benchmark registry keeps related microbenchmarks in one ordered Criterion group"
+)]
 fn bench_micro(c: &mut Criterion) {
     let small = JPEG_BASELINE_420_16X16;
 

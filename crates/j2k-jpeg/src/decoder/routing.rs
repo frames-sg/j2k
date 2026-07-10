@@ -35,6 +35,10 @@ impl Decoder<'_> {
 
     /// Decode into a freshly allocated tightly packed buffer using a request
     /// object instead of a method-name cross-product.
+    ///
+    /// # Errors
+    ///
+    /// Returns an output-geometry, unsupported-format, or scan decode error.
     pub fn decode_request(
         &self,
         request: DecodeRequest,
@@ -45,6 +49,10 @@ impl Decoder<'_> {
 
     /// Decode the full image into the caller's buffer using the core
     /// `PixelFormat` + `Downscale` contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an output-buffer, unsupported-format, or scan decode error.
     pub fn decode_scaled_into(
         &self,
         out: &mut [u8],
@@ -161,6 +169,10 @@ impl Decoder<'_> {
         Some(result)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "full-image routing keeps buffer validation, decode dispatch, profiling, and scratch restoration in one lifetime"
+    )]
     pub(super) fn decode_into_output_format_with_scratch(
         &self,
         pool: &mut ScratchPool,
@@ -280,6 +292,10 @@ impl Decoder<'_> {
     }
 
     /// [`Self::decode_scaled_into`] with caller-owned scratch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an output-buffer, unsupported-format, or scan decode error.
     pub fn decode_scaled_into_with_scratch(
         &self,
         pool: &mut ScratchPool,
@@ -300,6 +316,11 @@ impl Decoder<'_> {
     /// `roi` is expressed in source-image coordinates. If `fmt` requests a
     /// downscaled output, the written pixels cover the corresponding bounding
     /// box in the scaled image grid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-region, output-buffer, unsupported-format, or scan
+    /// decode error.
     pub fn decode_region_into(
         &self,
         out: &mut [u8],
@@ -324,6 +345,10 @@ impl Decoder<'_> {
         self.decode_region_scaled_into_with_scratch(pool, out, stride, fmt, roi, Downscale::None)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "region routing keeps ROI validation, decode dispatch, profiling, and scratch restoration in one lifetime"
+    )]
     pub(super) fn decode_region_into_output_format_with_scratch(
         &self,
         pool: &mut ScratchPool,
@@ -540,6 +565,11 @@ impl Decoder<'_> {
 
     /// Decode `roi` into the caller's buffer using the core `PixelFormat` +
     /// `Downscale` contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-region, output-buffer, unsupported-format, or scan
+    /// decode error.
     pub fn decode_region_scaled_into(
         &self,
         out: &mut [u8],
@@ -561,6 +591,11 @@ impl Decoder<'_> {
     }
 
     /// [`Self::decode_region_scaled_into`] with caller-owned scratch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-region, output-buffer, unsupported-format, or scan
+    /// decode error.
     pub fn decode_region_scaled_into_with_scratch(
         &self,
         pool: &mut ScratchPool,

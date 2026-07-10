@@ -15,6 +15,11 @@ pub(crate) const FIX_0_71414: i32 = j2k_codec_math::jpeg::ycbcr::FIX_0_71414;
 pub(crate) const FIX_1_77200: i32 = j2k_codec_math::jpeg::ycbcr::FIX_1_77200;
 pub(crate) const ROUND: i32 = j2k_codec_math::jpeg::ycbcr::ROUND;
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the fixed-point color sample is range-checked before conversion to u8"
+)]
 const fn clamp_to_u8(v: i32) -> u8 {
     if v < 0 {
         0
@@ -25,6 +30,11 @@ const fn clamp_to_u8(v: i32) -> u8 {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the fixed-point color sample is range-checked before conversion to 12-bit u16"
+)]
 const fn clamp_to_12bit(v: i32) -> u16 {
     if v < 0 {
         0
@@ -35,6 +45,11 @@ const fn clamp_to_12bit(v: i32) -> u16 {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the fixed-point color sample is range-checked before conversion to u16"
+)]
 const fn clamp_to_u16(v: i64) -> u16 {
     if v < 0 {
         0
@@ -50,9 +65,9 @@ const fn clamp_to_u16(v: i64) -> u16 {
 ///
 /// Returns `(R, G, B)` clamped to `[0, 255]`.
 pub(crate) fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
-    let y = y as i32;
-    let cb_centered = cb as i32 - 128;
-    let cr_centered = cr as i32 - 128;
+    let y = i32::from(y);
+    let cb_centered = i32::from(cb) - 128;
+    let cr_centered = i32::from(cr) - 128;
     let r = y + ((FIX_1_40200 * cr_centered + ROUND) >> 16);
     let g = y - ((FIX_0_34414 * cb_centered + FIX_0_71414 * cr_centered + ROUND) >> 16);
     let b = y + ((FIX_1_77200 * cb_centered + ROUND) >> 16);
@@ -129,9 +144,9 @@ mod tests {
         // Sampled checks against libjpeg-turbo jdcolor.c computed values.
         // Y=100 Cb=150 Cr=200 → R=201, G=41, B=139 (16-bit fixed point).
         let (r, g, b) = ycbcr_to_rgb(100, 150, 200);
-        assert!((r as i32 - 201).abs() <= 1, "R={r}, expected ≈201");
-        assert!((g as i32 - 41).abs() <= 1, "G={g}, expected ≈41");
-        assert!((b as i32 - 139).abs() <= 1, "B={b}, expected ≈139");
+        assert!((i32::from(r) - 201).abs() <= 1, "R={r}, expected ≈201");
+        assert!((i32::from(g) - 41).abs() <= 1, "G={g}, expected ≈41");
+        assert!((i32::from(b) - 139).abs() <= 1, "B={b}, expected ≈139");
     }
 
     #[test]

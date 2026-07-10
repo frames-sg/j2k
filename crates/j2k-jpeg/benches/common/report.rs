@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(crate) fn report_iterations(default_iters: usize) -> usize {
     std::env::var("J2K_REPORT_ITERS")
@@ -12,30 +12,8 @@ pub(crate) fn report_iterations(default_iters: usize) -> usize {
         .unwrap_or(default_iters)
 }
 
-pub(crate) fn median_ns(iterations: usize, mut f: impl FnMut()) -> u128 {
-    f();
-    let mut samples = Vec::with_capacity(iterations);
-    for _ in 0..iterations {
-        let start = Instant::now();
-        f();
-        samples.push(start.elapsed().as_nanos());
-    }
-    samples.sort_unstable();
-    samples[samples.len() / 2]
-}
-
-pub(crate) fn format_ns(ns: u128) -> String {
-    if ns >= 1_000_000 {
-        format!("{:.3} ms", nanos_as_secs(ns) * 1_000.0)
-    } else if ns >= 1_000 {
-        format!("{:.3} µs", nanos_as_secs(ns) * 1_000_000.0)
-    } else {
-        format!("{ns} ns")
-    }
-}
-
-pub(crate) fn format_ms(ns: u128) -> String {
-    format!("{:.3} ms", nanos_as_secs(ns) * 1_000.0)
+pub(crate) fn report_ratio(numerator: u128, denominator: u128) -> f64 {
+    nanos_as_secs(numerator) / nanos_as_secs(denominator)
 }
 
 pub(crate) fn escape_csv(raw: &str) -> String {
@@ -48,7 +26,7 @@ pub(crate) fn escape_markdown_table_cell(raw: &str) -> String {
         .replace('\n', "<br>")
 }
 
-fn nanos_as_secs(ns: u128) -> f64 {
+pub(crate) fn nanos_as_secs(ns: u128) -> f64 {
     let capped = u64::try_from(ns).unwrap_or(u64::MAX);
     Duration::from_nanos(capped).as_secs_f64()
 }

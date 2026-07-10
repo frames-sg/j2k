@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(dead_code)]
-
 pub(crate) mod classification;
 mod libjpeg_turbo;
-pub(crate) mod report;
 
 pub(crate) use self::classification::DecodeMode;
 use self::classification::{classify_corpus_input, color_space_mode, CorpusInputClass};
 pub(crate) use self::libjpeg_turbo::TurboJpegDecoder;
-use j2k_core::tile_batch_worker_count;
 use j2k_jpeg::{
     decode_tiles_into, decode_tiles_region_scaled_into, decode_tiles_scaled_into, DecodeRequest,
-    Decoder, DecoderContext, Downscale, JpegBatchSession, JpegError, JpegOutputBuffer, JpegView,
-    PixelFormat, Rect, RowSink, ScratchPool, TileBatchOptions, TileDecodeJob,
-    TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    Decoder, Downscale, JpegBatchSession, JpegError, JpegOutputBuffer, PixelFormat, Rect, RowSink,
+    ScratchPool, TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use j2k_test_support::{JPEG_BASELINE_420_16X16, JPEG_GRAYSCALE_8X8};
 use std::path::{Path, PathBuf};
@@ -206,7 +201,7 @@ pub(crate) fn j2k_decode_with_scratch(
 }
 
 #[derive(Default)]
-struct NullSink;
+pub(crate) struct NullSink;
 
 impl RowSink<u8> for NullSink {
     type Error = JpegError;
@@ -448,60 +443,6 @@ pub(crate) fn j2k_decode_rows(bytes: &[u8]) {
     dec.decode_rows(&mut sink).expect("j2k decode_rows");
 }
 
-pub(crate) fn j2k_decode_tile_batch(bytes: &[u8], batch_size: usize) {
-    let worker_count = j2k_tile_batch_worker_count(batch_size);
-    if worker_count == 1 {
-        j2k_decode_tile_batch_sequential(bytes, batch_size);
-        return;
-    }
-
-    std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(worker_count);
-        let base_tiles = batch_size / worker_count;
-        let extra_tiles = batch_size % worker_count;
-        for worker in 0..worker_count {
-            let tile_count = base_tiles + usize::from(worker < extra_tiles);
-            handles.push(scope.spawn(move || j2k_decode_tile_batch_worker(bytes, tile_count)));
-        }
-        for handle in handles {
-            handle
-                .join()
-                .expect("j2k decode_tile worker panicked")
-                .expect("j2k decode_tile batch");
-        }
-    });
-}
-
-pub(crate) fn j2k_decode_tile_batch_sequential(bytes: &[u8], batch_size: usize) {
-    j2k_decode_tile_batch_worker(bytes, batch_size).expect("j2k decode_tile batch");
-}
-
-fn j2k_tile_batch_worker_count(batch_size: usize) -> usize {
-    let configured = std::env::var("J2K_JPEG_BATCH_THREADS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .and_then(std::num::NonZeroUsize::new);
-    tile_batch_worker_count(
-        batch_size,
-        TileBatchOptions {
-            workers: configured,
-        },
-        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
-    )
-}
-
-fn j2k_decode_tile_batch_worker(bytes: &[u8], tile_count: usize) -> Result<(), JpegError> {
-    let mut ctx = DecoderContext::new();
-    let mut pool = ScratchPool::new();
-    let mut sink = NullSink;
-    for _ in 0..tile_count {
-        let view = JpegView::parse(bytes)?;
-        let decoder = Decoder::from_view_in_context(view, &mut ctx)?;
-        decoder.decode_rows_with_scratch(&mut pool, &mut sink)?;
-    }
-    Ok(())
-}
-
 pub(crate) fn libjpeg_turbo_decode_batch(
     decoder: &mut TurboJpegDecoder,
     bytes: &[u8],
@@ -729,7 +670,7 @@ pub(crate) fn zune_decode_region(bytes: &[u8], side: u32) {
     );
     let out = decoder.decode().expect("zune-jpeg decode");
     let info = decoder.info().expect("zune-jpeg info");
-    let roi = centered_roi((info.width as u32, info.height as u32), side);
+    let roi = centered_roi((u32::from(info.width), u32::from(info.height)), side);
     let cropped = crop_rgb(&out, info.width.into(), roi);
     std::hint::black_box(cropped);
 }
@@ -763,7 +704,7 @@ pub(crate) fn zune_decode_region_scaled(bytes: &[u8], side: u32, factor: Downsca
     );
     let out = decoder.decode().expect("zune-jpeg decode");
     let info = decoder.info().expect("zune-jpeg info");
-    let roi = centered_roi((info.width as u32, info.height as u32), side);
+    let roi = centered_roi((u32::from(info.width), u32::from(info.height)), side);
     let cropped = crop_rgb(&out, info.width.into(), roi);
     let scaled = decimate_rgb(
         &cropped,

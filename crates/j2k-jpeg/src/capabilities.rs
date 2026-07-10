@@ -100,6 +100,11 @@ pub struct JpegResolvedDecode {
 
 impl JpegResolvedDecode {
     /// Inspect JPEG bytes and resolve the requested backend path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JPEG parse or capability error when `input` is malformed or
+    /// the requested operation cannot be described safely.
     pub fn inspect(input: &[u8], request: JpegDecodeRequest) -> Result<Self, JpegError> {
         let capabilities = JpegCapabilityReport::inspect(input, request.capability())?;
         Ok(Self::from_capabilities(capabilities, request))
@@ -206,6 +211,10 @@ impl JpegCapabilityReport {
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the small Copy capability request is stored by value in the resulting report"
+    )]
     fn for_parsed_info(info: Info, request: JpegCapabilityRequest) -> Self {
         let device = unavailable_device_summary(&info);
         Self {
@@ -380,8 +389,9 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
     }
 
     match (request.fmt, request.op.scale()) {
-        (PixelFormat::Rgb8 | PixelFormat::Gray8, _) => JpegBackendEligibility::eligible(),
-        (PixelFormat::Rgba8, _) => JpegBackendEligibility::eligible(),
+        (PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8, _) => {
+            JpegBackendEligibility::eligible()
+        }
         (PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16, _) => {
             JpegBackendEligibility::rejected("JPEG CPU decode does not support 16-bit output")
         }

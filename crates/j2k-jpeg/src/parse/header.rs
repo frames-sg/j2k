@@ -75,6 +75,10 @@ impl ParsedHeader {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "reported JPEG segment lengths are bounded by the 16-bit marker grammar"
+)]
 pub(crate) fn parse_info(bytes: &[u8]) -> Result<Info, JpegError> {
     let mut walker = MarkerWalker::new(bytes);
     walker.read_soi()?;
@@ -157,6 +161,14 @@ pub(crate) fn parse_info(bytes: &[u8]) -> Result<Info, JpegError> {
 }
 
 /// Walk headers from the start of the input.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the header parser is an ordered JPEG marker state machine with marker-specific validation and warnings"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "validated marker lengths and component counts are bounded by JPEG's 16-bit and 8-bit fields"
+)]
 pub(crate) fn parse_header(bytes: &[u8]) -> Result<ParsedHeader, JpegError> {
     let mut walker = MarkerWalker::new(bytes);
     walker.read_soi()?;
@@ -243,12 +255,13 @@ pub(crate) fn parse_header(bytes: &[u8]) -> Result<ParsedHeader, JpegError> {
                     // APP14
                     if let Some(t) = parse_adobe_app14(m.payload) {
                         adobe = Some(t);
-                        if matches!(t, AdobeTransform::Unknown) && m.payload.len() >= 12 {
-                            if m.payload[11] > 2 {
-                                warnings.push(Warning::AdobeApp14Ambiguous {
-                                    raw_transform: m.payload[11],
-                                });
-                            }
+                        if matches!(t, AdobeTransform::Unknown)
+                            && m.payload.len() >= 12
+                            && m.payload[11] > 2
+                        {
+                            warnings.push(Warning::AdobeApp14Ambiguous {
+                                raw_transform: m.payload[11],
+                            });
                         }
                     } else {
                         warnings.push(Warning::UnknownAppMarker {
@@ -257,9 +270,8 @@ pub(crate) fn parse_header(bytes: &[u8]) -> Result<ParsedHeader, JpegError> {
                         });
                     }
                 }
-                0xE0 => {
-                    // APP0 JFIF — presence noted, contents not interpreted in v1.
-                }
+                // APP0 JFIF and COM are accepted but not interpreted.
+                0xE0 | 0xFE => {}
                 0xE2 => {
                     warnings.push(Warning::IccProfileIgnored {
                         size: m.payload.len(),
@@ -270,9 +282,6 @@ pub(crate) fn parse_header(bytes: &[u8]) -> Result<ParsedHeader, JpegError> {
                         marker: m.code,
                         size: m.payload.len(),
                     });
-                }
-                0xFE => {
-                    // COM — ignored silently.
                 }
                 _ => {
                     return Err(JpegError::InvalidMarker {
@@ -331,6 +340,10 @@ fn normalize_restart_interval(interval: u16) -> Option<u16> {
     (interval > 0).then_some(interval)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "validated sequential scan component counts fit the JPEG SOS byte field"
+)]
 fn validate_sequential_scan_components(
     sof: &crate::parse::sof::ParsedSof,
     scan: &ParsedScan,
@@ -427,6 +440,14 @@ struct ProgressiveScanCollection<'a> {
     warnings: &'a mut Vec<Warning>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "progressive scan collection validates the ordered SOS script and table references in one pass"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "progressive scan segment lengths are bounded by the JPEG 16-bit marker grammar"
+)]
 fn collect_progressive_scans(
     request: ProgressiveScanCollection<'_>,
 ) -> Result<Vec<ParsedProgressiveScan>, JpegError> {
@@ -500,12 +521,13 @@ fn collect_progressive_scans(
             0xEE => {
                 let (payload, next) = marker_payload(bytes, marker_offset, code)?;
                 if let Some(t) = parse_adobe_app14(payload) {
-                    if matches!(t, AdobeTransform::Unknown) && payload.len() >= 12 {
-                        if payload[11] > 2 {
-                            warnings.push(Warning::AdobeApp14Ambiguous {
-                                raw_transform: payload[11],
-                            });
-                        }
+                    if matches!(t, AdobeTransform::Unknown)
+                        && payload.len() >= 12
+                        && payload[11] > 2
+                    {
+                        warnings.push(Warning::AdobeApp14Ambiguous {
+                            raw_transform: payload[11],
+                        });
                     }
                 } else {
                     warnings.push(Warning::UnknownAppMarker {
@@ -551,6 +573,10 @@ fn collect_progressive_scans(
     Ok(scans)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "marker payload lengths are bounded by the JPEG 16-bit segment-length field"
+)]
 fn marker_payload(
     bytes: &[u8],
     marker_offset: usize,
@@ -605,8 +631,7 @@ fn count_scan_markers(bytes: &[u8], mut pos: usize) -> u16 {
         pos = code_pos + 1;
         let code = bytes[code_pos];
         match code {
-            0x00 => {}
-            0xD0..=0xD7 => {}
+            0x00 | 0xD0..=0xD7 => {}
             0xD9 => break,
             0xDA => {
                 count = count.saturating_add(1);
@@ -650,10 +675,7 @@ fn skip_marker_segment(bytes: &[u8], marker_offset: usize) -> Option<usize> {
 fn color_space_for_components(component_count: usize, adobe: Option<AdobeTransform>) -> ColorSpace {
     match (component_count, adobe) {
         (1, _) => ColorSpace::Grayscale,
-        (3, Some(AdobeTransform::YCbCr)) => ColorSpace::YCbCr,
         (3, Some(AdobeTransform::Unknown)) => ColorSpace::Rgb,
-        (3, None) => ColorSpace::YCbCr,
-        (3, Some(AdobeTransform::Ycck)) => ColorSpace::YCbCr,
         (4, Some(AdobeTransform::Ycck)) => ColorSpace::Ycck,
         (4, _) => ColorSpace::Cmyk,
         _ => ColorSpace::YCbCr,

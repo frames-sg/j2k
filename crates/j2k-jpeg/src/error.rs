@@ -459,6 +459,7 @@ pub enum JpegError {
 impl JpegError {
     /// True if the error is recoverable by routing to a different decoder —
     /// any `Unsupported*` variant.
+    #[must_use]
     pub fn is_unsupported(&self) -> bool {
         matches!(
             self,
@@ -471,11 +472,13 @@ impl JpegError {
     }
 
     /// True if the input was truncated — caller may retry with more bytes.
+    #[must_use]
     pub fn is_truncated(&self) -> bool {
         matches!(self, Self::Truncated { .. } | Self::UnexpectedEoi { .. })
     }
 
     /// True if the error indicates caller misuse, not a decode failure.
+    #[must_use]
     pub fn is_api_misuse(&self) -> bool {
         matches!(
             self,
@@ -492,11 +495,13 @@ impl JpegError {
     /// is valid and will decode on a future j2k release, so callers
     /// should *not* reroute to a different decoder permanently. See
     /// [`Self::is_unsupported`] for errors that are permanent routing decisions.
+    #[must_use]
     pub fn is_not_implemented(&self) -> bool {
         matches!(self, Self::NotImplemented { .. })
     }
 
     /// Byte offset where the error was detected in the input stream, if any.
+    #[must_use]
     pub fn offset(&self) -> Option<usize> {
         match self {
             Self::Truncated { offset, .. }

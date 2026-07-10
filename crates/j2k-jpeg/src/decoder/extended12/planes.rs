@@ -349,6 +349,10 @@ pub(super) fn deposit_extended12_block(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "12-bit progressive coefficients are clamped to the i16 storage range before conversion"
+)]
 pub(super) fn dequantize_progressive12_block(
     coeffs: &[i32; 64],
     quant: &[u16; 64],
@@ -358,6 +362,6 @@ pub(super) fn dequantize_progressive12_block(
     for k in 0..64 {
         let natural_idx = usize::from(ZIGZAG[k]);
         let value = coeffs[natural_idx].wrapping_mul(i32::from(quant[k]));
-        out[natural_idx] = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        out[natural_idx] = value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
     }
 }

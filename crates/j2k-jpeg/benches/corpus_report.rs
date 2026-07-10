@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(
-    clippy::cast_precision_loss,
-    clippy::format_push_string,
-    clippy::manual_clamp,
-    clippy::semicolon_if_nothing_returned,
-    clippy::unnested_or_patterns,
-    dead_code
+#[expect(
+    dead_code,
+    reason = "forced target audit found 60 comparison-only support items; the compare bench compiles this module with dead_code unsuppressed"
 )]
-
 mod common;
+#[path = "common/report.rs"]
+mod report;
 
 use common::{
     centered_roi,
@@ -18,15 +15,18 @@ use common::{
     j2k_decode_tile_batch_region_scaled, j2k_decode_tile_batch_scaled, j2k_inspect,
     jpeg_decoder_decode, jpeg_decoder_decode_batch_region_scaled, jpeg_decoder_decode_batch_scaled,
     jpeg_decoder_decode_region, jpeg_decoder_decode_region_scaled, jpeg_decoder_decode_scaled,
-    jpeg_decoder_inspect, load_bench_inputs,
-    report::{escape_csv, escape_markdown_table_cell, format_ns, report_iterations, write_reports},
-    scaled_rect, zune_decode, zune_decode_batch_region_scaled, zune_decode_batch_scaled,
-    zune_decode_region, zune_decode_region_scaled, zune_decode_scaled, zune_inspect, BenchInput,
-    DecodeMode,
+    jpeg_decoder_inspect, load_bench_inputs, scaled_rect, zune_decode,
+    zune_decode_batch_region_scaled, zune_decode_batch_scaled, zune_decode_region,
+    zune_decode_region_scaled, zune_decode_scaled, zune_inspect, BenchInput, DecodeMode,
 };
 use j2k_jpeg::{Downscale, Rect};
+use report::{
+    escape_csv, escape_markdown_table_cell, nanos_as_secs, report_iterations, report_ratio,
+    write_reports,
+};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Instant;
 
@@ -34,6 +34,24 @@ const ROI_SIDE: u32 = 256;
 const TILE_BATCH: usize = 64;
 const DEFAULT_ITERS: usize = 3;
 const TIE_THRESHOLD: f64 = 0.01;
+
+impl DecodeMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Gray => "gray",
+            Self::Rgb => "rgb",
+        }
+    }
+}
+
+impl CorpusInputClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BoundedFullFrame => "bounded_full_frame",
+            Self::VeryLarge => "very_large",
+        }
+    }
+}
 
 fn main() {
     let mut inputs = load_bench_inputs();
@@ -101,16 +119,6 @@ enum Library {
     J2K,
     JpegDecoder,
     Zune,
-}
-
-impl Library {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::J2K => "j2k",
-            Self::JpegDecoder => "jpeg-decoder",
-            Self::Zune => "zune-jpeg",
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -243,8 +251,7 @@ fn iterations_for(input: &BenchInput, operation: Operation, default_iters: usize
     if input.input_class == CorpusInputClass::VeryLarge {
         return match operation {
             Operation::Inspect => default_iters,
-            Operation::DecodeRowsRgb => default_iters.min(2).max(1),
-            Operation::DecodeRgb | Operation::DecodeGray => 1,
+            Operation::DecodeRowsRgb => default_iters.clamp(1, 2),
             _ => 1,
         };
     }
@@ -277,7 +284,6 @@ fn inner_loops_for(input: &BenchInput, operation: Operation) -> usize {
     let Some(output_bytes) = estimated_output_bytes(input, operation) else {
         return match operation {
             Operation::Inspect => 64,
-            Operation::DecodeRowsRgb => 1,
             _ => 1,
         };
     };
@@ -313,28 +319,19 @@ fn estimated_output_bytes(input: &BenchInput, operation: Operation) -> Option<us
     let dims = match operation {
         Operation::DecodeRgb | Operation::DecodeGray | Operation::DecodeRowsRgb => input.dimensions,
         Operation::WsiRegionRgb => rect_dims(centered_roi(input.dimensions, ROI_SIDE)),
-        Operation::WsiScaledRgbQ4 => rect_dims(scaled_rect(
+        Operation::WsiScaledRgbQ4 | Operation::WsiTileBatchScaledRgbQ4 => rect_dims(scaled_rect(
             Rect::full(input.dimensions),
             Downscale::Quarter,
         )),
         Operation::WsiScaledRgbQ8 => {
             rect_dims(scaled_rect(Rect::full(input.dimensions), Downscale::Eighth))
         }
-        Operation::WsiRegionScaledRgbQ4 => rect_dims(scaled_rect(
-            centered_roi(input.dimensions, ROI_SIDE),
-            Downscale::Quarter,
-        )),
+        Operation::WsiRegionScaledRgbQ4 | Operation::WsiTileBatchRegionScaledRgbQ4 => rect_dims(
+            scaled_rect(centered_roi(input.dimensions, ROI_SIDE), Downscale::Quarter),
+        ),
         Operation::WsiRegionScaledRgbQ8 => rect_dims(scaled_rect(
             centered_roi(input.dimensions, ROI_SIDE),
             Downscale::Eighth,
-        )),
-        Operation::WsiTileBatchScaledRgbQ4 => rect_dims(scaled_rect(
-            Rect::full(input.dimensions),
-            Downscale::Quarter,
-        )),
-        Operation::WsiTileBatchRegionScaledRgbQ4 => rect_dims(scaled_rect(
-            centered_roi(input.dimensions, ROI_SIDE),
-            Downscale::Quarter,
         )),
         Operation::Inspect => return None,
     };
@@ -404,74 +401,28 @@ fn run_measurement(
 
     match result {
         Ok(ns) => Measurement::success(ns),
-        Err(payload) => Measurement::failure(panic_message(payload)),
+        Err(payload) => Measurement::failure(panic_message(payload.as_ref())),
     }
 }
 
 fn is_supported(library: Library, operation: Operation, input: &BenchInput) -> bool {
-    matches!(
-        (library, operation, input.mode, input.input_class),
-        (Library::J2K, Operation::Inspect, _, _)
-            | (Library::JpegDecoder, Operation::Inspect, _, _)
-            | (Library::Zune, Operation::Inspect, _, _)
-            | (
-                _,
-                Operation::DecodeRgb,
-                DecodeMode::Rgb,
-                CorpusInputClass::BoundedFullFrame
-            )
-            | (
-                _,
-                Operation::DecodeRgb,
-                DecodeMode::Rgb,
-                CorpusInputClass::VeryLarge
-            )
-            | (
-                _,
-                Operation::DecodeGray,
-                DecodeMode::Gray,
-                CorpusInputClass::BoundedFullFrame
-            )
-            | (
-                _,
-                Operation::DecodeGray,
-                DecodeMode::Gray,
-                CorpusInputClass::VeryLarge
-            )
-            | (
-                _,
-                Operation::WsiRegionRgb,
-                DecodeMode::Rgb,
-                CorpusInputClass::BoundedFullFrame
-            )
-            | (
-                _,
-                Operation::WsiScaledRgbQ4,
-                DecodeMode::Rgb,
-                CorpusInputClass::BoundedFullFrame
-            )
-            | (_, Operation::WsiScaledRgbQ8, DecodeMode::Rgb, _)
-            | (
-                _,
-                Operation::WsiRegionScaledRgbQ4,
-                DecodeMode::Rgb,
-                CorpusInputClass::BoundedFullFrame
-            )
-            | (_, Operation::WsiRegionScaledRgbQ8, DecodeMode::Rgb, _)
-            | (_, Operation::WsiTileBatchScaledRgbQ4, DecodeMode::Rgb, _)
-            | (
-                _,
-                Operation::WsiTileBatchRegionScaledRgbQ4,
-                DecodeMode::Rgb,
-                _
-            )
-            | (
-                Library::J2K,
-                Operation::DecodeRowsRgb,
-                DecodeMode::Rgb,
-                CorpusInputClass::VeryLarge
-            )
-    )
+    match operation {
+        Operation::Inspect => true,
+        Operation::DecodeRgb
+        | Operation::WsiScaledRgbQ8
+        | Operation::WsiRegionScaledRgbQ8
+        | Operation::WsiTileBatchScaledRgbQ4
+        | Operation::WsiTileBatchRegionScaledRgbQ4 => input.mode == DecodeMode::Rgb,
+        Operation::DecodeGray => input.mode == DecodeMode::Gray,
+        Operation::WsiRegionRgb | Operation::WsiScaledRgbQ4 | Operation::WsiRegionScaledRgbQ4 => {
+            input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
+        }
+        Operation::DecodeRowsRgb => {
+            matches!(library, Library::J2K)
+                && input.mode == DecodeMode::Rgb
+                && input.input_class == CorpusInputClass::VeryLarge
+        }
+    }
 }
 
 fn run_compare_measurements(
@@ -527,7 +478,7 @@ fn time_operation(
 
     match result {
         Ok(ns) => Measurement::success(ns),
-        Err(payload) => Measurement::failure(panic_message(payload)),
+        Err(payload) => Measurement::failure(panic_message(payload.as_ref())),
     }
 }
 
@@ -537,15 +488,16 @@ fn run_operation(library: Library, operation: Operation, input: &BenchInput) {
         (Library::JpegDecoder, Operation::Inspect) => jpeg_decoder_inspect(&input.bytes),
         (Library::Zune, Operation::Inspect) => zune_inspect(&input.bytes),
         (Library::J2K, Operation::DecodeRgb) => j2k_decode(&input.bytes, DecodeMode::Rgb),
-        (Library::JpegDecoder, Operation::DecodeRgb) => jpeg_decoder_decode(&input.bytes),
+        (Library::JpegDecoder, Operation::DecodeRgb | Operation::DecodeGray) => {
+            jpeg_decoder_decode(&input.bytes);
+        }
         (Library::Zune, Operation::DecodeRgb) => zune_decode(&input.bytes, DecodeMode::Rgb),
         (Library::J2K, Operation::DecodeGray) => j2k_decode(&input.bytes, DecodeMode::Gray),
-        (Library::JpegDecoder, Operation::DecodeGray) => jpeg_decoder_decode(&input.bytes),
         (Library::Zune, Operation::DecodeGray) => zune_decode(&input.bytes, DecodeMode::Gray),
         (Library::J2K, Operation::DecodeRowsRgb) => j2k_decode_rows(&input.bytes),
         (Library::J2K, Operation::WsiRegionRgb) => j2k_decode_region(&input.bytes, ROI_SIDE),
         (Library::JpegDecoder, Operation::WsiRegionRgb) => {
-            jpeg_decoder_decode_region(&input.bytes, ROI_SIDE)
+            jpeg_decoder_decode_region(&input.bytes, ROI_SIDE);
         }
         (Library::Zune, Operation::WsiRegionRgb) => zune_decode_region(&input.bytes, ROI_SIDE),
         (Library::J2K, Operation::WsiScaledRgbQ4) => {
@@ -616,7 +568,7 @@ fn run_operation(library: Library, operation: Operation, input: &BenchInput) {
     }
 }
 
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<String>() {
         return message.clone();
     }
@@ -632,8 +584,9 @@ fn render_csv(rows: &[ReportRow]) -> String {
     );
     for row in rows {
         let fastest = fastest_label(row).unwrap_or("n/a");
-        csv.push_str(&format!(
-            "\"{}\",{},{},{},{},{},{},\"{}\",\"{}\",\"{}\",{}\n",
+        writeln!(
+            csv,
+            "\"{}\",{},{},{},{},{},{},\"{}\",\"{}\",\"{}\",{}",
             escape_csv(&row.input_name),
             row.mode.as_str(),
             row.input_class.as_str(),
@@ -645,7 +598,8 @@ fn render_csv(rows: &[ReportRow]) -> String {
             escape_csv(row.jpeg_decoder.error.as_deref().unwrap_or("")),
             escape_csv(row.zune.error.as_deref().unwrap_or("")),
             fastest
-        ));
+        )
+        .expect("writing CSV to a String cannot fail");
     }
     csv
 }
@@ -661,25 +615,27 @@ fn render_markdown(rows: &[ReportRow], iterations: usize) -> String {
 
     let mut md = String::new();
     md.push_str("# J2K JPEG corpus report\n\n");
-    md.push_str(&format!(
-        "- inputs: {}\n",
+    writeln!(
+        md,
+        "- inputs: {}",
         rows.iter()
             .map(|row| &row.input_name)
             .collect::<std::collections::BTreeSet<_>>()
             .len()
-    ));
-    md.push_str(&format!("- rows: {}\n", rows.len()));
-    md.push_str(&format!("- iterations per measurement: {iterations}\n"));
-    md.push_str(&format!(
-        "- tie threshold: {:.0}%\n\n",
-        TIE_THRESHOLD * 100.0
-    ));
+    )
+    .expect("writing Markdown to a String cannot fail");
+    writeln!(md, "- rows: {}", rows.len()).expect("writing Markdown to a String cannot fail");
+    writeln!(md, "- iterations per measurement: {iterations}")
+        .expect("writing Markdown to a String cannot fail");
+    writeln!(md, "- tie threshold: {:.0}%\n", TIE_THRESHOLD * 100.0)
+        .expect("writing Markdown to a String cannot fail");
     md.push_str("## Summary by operation\n\n");
     md.push_str("| operation | j2k fastest | vs jpeg wins | vs jpeg losses | vs zune wins | vs zune losses | failures |\n");
     md.push_str("|---|---:|---:|---:|---:|---:|---:|\n");
     for (operation, stats) in &summary {
-        md.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} |\n",
+        writeln!(
+            md,
+            "| {} | {} | {} | {} | {} | {} | {} |",
             operation,
             stats.j2k_fastest,
             stats.vs_jpeg_wins,
@@ -687,7 +643,8 @@ fn render_markdown(rows: &[ReportRow], iterations: usize) -> String {
             stats.vs_zune_wins,
             stats.vs_zune_losses,
             stats.failures,
-        ));
+        )
+        .expect("writing Markdown to a String cannot fail");
     }
     md.push_str("\n## Rows where j2k is not fastest\n\n");
     md.push_str("| input | operation | j2k | jpeg-decoder | zune-jpeg | fastest |\n");
@@ -699,15 +656,17 @@ fn render_markdown(rows: &[ReportRow], iterations: usize) -> String {
             continue;
         }
         any_slower = true;
-        md.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} |\n",
+        writeln!(
+            md,
+            "| {} | {} | {} | {} | {} | {} |",
             escape_markdown_table_cell(&row.input_name),
             escape_markdown_table_cell(row.operation.as_str()),
             escape_markdown_table_cell(&format_measurement(&row.j2k)),
             escape_markdown_table_cell(&format_measurement(&row.jpeg_decoder)),
             escape_markdown_table_cell(&format_measurement(&row.zune)),
             escape_markdown_table_cell(fastest.unwrap_or("n/a")),
-        ));
+        )
+        .expect("writing Markdown to a String cannot fail");
     }
     if !any_slower {
         md.push_str("| none | — | — | — | — | — |\n");
@@ -722,14 +681,16 @@ fn render_markdown(rows: &[ReportRow], iterations: usize) -> String {
             continue;
         }
         any_failures = true;
-        md.push_str(&format!(
-            "| {} | {} | {} | {} | {} |\n",
+        writeln!(
+            md,
+            "| {} | {} | {} | {} | {} |",
             escape_markdown_table_cell(&row.input_name),
             escape_markdown_table_cell(row.operation.as_str()),
             escape_markdown_table_cell(row.j2k.error.as_deref().unwrap_or("ok")),
             escape_markdown_table_cell(row.jpeg_decoder.error.as_deref().unwrap_or("ok")),
             escape_markdown_table_cell(row.zune.error.as_deref().unwrap_or("ok")),
-        ));
+        )
+        .expect("writing Markdown to a String cannot fail");
     }
     if !any_failures {
         md.push_str("| none | — | — | — | — |\n");
@@ -785,17 +746,13 @@ impl MeasurementState {
                 error: None,
             } => self.samples.push(ns),
             Measurement {
-                ns: None,
                 error: Some(message),
+                ..
             } => self.error = Some(message),
             Measurement {
                 ns: None,
                 error: None,
             } => self.error = Some("measurement without result".to_string()),
-            Measurement {
-                ns: Some(_),
-                error: Some(message),
-            } => self.error = Some(message),
         }
     }
 
@@ -842,8 +799,8 @@ fn fastest_label(row: &ReportRow) -> Option<&'static str> {
     }
     let best_ns = best_ns?;
     if row.j2k.ns.is_some_and(|ns| {
-        let max_ns = ns.max(best_ns) as f64;
-        max_ns > 0.0 && ((ns as f64 - best_ns as f64).abs() / max_ns) <= TIE_THRESHOLD
+        let max_ns = ns.max(best_ns);
+        max_ns > 0 && report_ratio(ns.abs_diff(best_ns), max_ns) <= TIE_THRESHOLD
     }) {
         return Some("j2k");
     }
@@ -860,8 +817,8 @@ fn compare_measurements(lhs: &Measurement, rhs: &Measurement) -> Option<Ordering
     let (Some(lhs_ns), Some(rhs_ns)) = (lhs.ns, rhs.ns) else {
         return None;
     };
-    let max_ns = lhs_ns.max(rhs_ns) as f64;
-    if max_ns > 0.0 && ((lhs_ns as f64 - rhs_ns as f64).abs() / max_ns) <= TIE_THRESHOLD {
+    let max_ns = lhs_ns.max(rhs_ns);
+    if max_ns > 0 && report_ratio(lhs_ns.abs_diff(rhs_ns), max_ns) <= TIE_THRESHOLD {
         return Some(Ordering::Equal);
     }
     Some(lhs_ns.cmp(&rhs_ns))
@@ -880,4 +837,14 @@ fn format_measurement(measurement: &Measurement) -> String {
 
 fn render_ns(measurement: &Measurement) -> String {
     measurement.ns.map_or_else(String::new, |ns| ns.to_string())
+}
+
+fn format_ns(ns: u128) -> String {
+    if ns >= 1_000_000 {
+        format!("{:.3} ms", nanos_as_secs(ns) * 1_000.0)
+    } else if ns >= 1_000 {
+        format!("{:.3} µs", nanos_as_secs(ns) * 1_000_000.0)
+    } else {
+        format!("{ns} ns")
+    }
 }

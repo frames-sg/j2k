@@ -266,6 +266,10 @@ impl<'a, W> ProgressiveDownscaleWriter<'a, W> {
         y.is_multiple_of(self.denom)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "validated JPEG output widths originate as u32 dimensions before slice indexing"
+    )]
     fn sample_row(src: &[u8], denom: u32, width: usize, dst: &mut Vec<u8>) {
         dst.resize(width, 0);
         for (x, out) in dst.iter_mut().enumerate() {

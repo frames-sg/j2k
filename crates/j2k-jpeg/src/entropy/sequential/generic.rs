@@ -30,6 +30,10 @@ use crate::internal::scratch::ScratchPool;
 use crate::output::{InterleavedRgbWriter, OutputWriter};
 use alloc::vec::Vec;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the generic scan loop keeps predictors, restart handling, stripe rotation, and output dispatch in codestream order"
+)]
 pub(crate) fn decode_scan_baseline<W: OutputWriter>(
     plan: &PreparedDecodePlan,
     backend: Backend,
@@ -40,8 +44,8 @@ pub(crate) fn decode_scan_baseline<W: OutputWriter>(
     output_rect: Rect,
 ) -> Result<Vec<Warning>, JpegError> {
     let (width, height) = scaled_dimensions(plan.dimensions, downscale);
-    let max_h = plan.sampling.max_h as u32;
-    let max_v = plan.sampling.max_v as u32;
+    let max_h = u32::from(plan.sampling.max_h);
+    let max_v = u32::from(plan.sampling.max_v);
     let block_size = downscale.output_block_size();
     let mcu_width_px = block_size * max_h;
     let mcu_height_px = block_size * max_v;
@@ -69,8 +73,9 @@ pub(crate) fn decode_scan_baseline<W: OutputWriter>(
         ColorSpace::Grayscale => OutputScratch::Grayscale,
         ColorSpace::YCbCr if is_ycbcr_420(plan) => OutputScratch::YCbCr420(ycbcr_420_rows),
         ColorSpace::YCbCr => OutputScratch::YCbCrGeneric(ycbcr_generic_rows),
-        ColorSpace::Rgb => OutputScratch::RgbGeneric(rgb_generic_rows),
-        ColorSpace::Cmyk | ColorSpace::Ycck => OutputScratch::RgbGeneric(rgb_generic_rows),
+        ColorSpace::Rgb | ColorSpace::Cmyk | ColorSpace::Ycck => {
+            OutputScratch::RgbGeneric(rgb_generic_rows)
+        }
     };
     let mut prev_stripe: &mut StripeBuffer = stripe_a;
     let mut curr_stripe: &mut StripeBuffer = stripe_b;
@@ -184,6 +189,10 @@ pub(crate) fn decode_scan_baseline<W: OutputWriter>(
     finish_scan(&mut br, decode_mcu_row_end == mcu_rows)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the RGB scan loop keeps predictors, restart handling, stripe rotation, and output dispatch in codestream order"
+)]
 pub(crate) fn decode_scan_baseline_rgb<W: OutputWriter + InterleavedRgbWriter>(
     plan: &PreparedDecodePlan,
     backend: Backend,
@@ -194,8 +203,8 @@ pub(crate) fn decode_scan_baseline_rgb<W: OutputWriter + InterleavedRgbWriter>(
     output_rect: Rect,
 ) -> Result<Vec<Warning>, JpegError> {
     let (width, height) = scaled_dimensions(plan.dimensions, downscale);
-    let max_h = plan.sampling.max_h as u32;
-    let max_v = plan.sampling.max_v as u32;
+    let max_h = u32::from(plan.sampling.max_h);
+    let max_v = u32::from(plan.sampling.max_v);
     let block_size = downscale.output_block_size();
     let mcu_width_px = block_size * max_h;
     let mcu_height_px = block_size * max_v;
@@ -222,8 +231,9 @@ pub(crate) fn decode_scan_baseline_rgb<W: OutputWriter + InterleavedRgbWriter>(
         ColorSpace::Grayscale => RgbOutputScratch::None,
         ColorSpace::YCbCr if is_ycbcr_420(plan) => RgbOutputScratch::YCbCr420,
         ColorSpace::YCbCr => RgbOutputScratch::YCbCrGeneric(ycbcr_generic_rows),
-        ColorSpace::Rgb => RgbOutputScratch::RgbGeneric(rgb_generic_rows),
-        ColorSpace::Cmyk | ColorSpace::Ycck => RgbOutputScratch::RgbGeneric(rgb_generic_rows),
+        ColorSpace::Rgb | ColorSpace::Cmyk | ColorSpace::Ycck => {
+            RgbOutputScratch::RgbGeneric(rgb_generic_rows)
+        }
     };
     let mut prev_stripe: &mut StripeBuffer = stripe_a;
     let mut curr_stripe: &mut StripeBuffer = stripe_b;
@@ -373,6 +383,10 @@ struct McuRowState<'a, 'b> {
     expected_rst: &'a mut u8,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the generic MCU kernel traverses component sampling factors while preserving predictor and deposit order"
+)]
 fn decode_mcu_row(
     context: &McuRowContext<'_>,
     state: &mut McuRowState<'_, '_>,
@@ -413,8 +427,8 @@ fn decode_mcu_row(
             let in_region = mx >= context.stripe_mcu_start && mx < stripe_mcu_end;
             let local_mcu_x0_px =
                 mx.saturating_sub(context.stripe_mcu_start) * u32::from(comp.h) * block_size;
-            for vy in 0..comp.v as u32 {
-                for vx in 0..comp.h as u32 {
+            for vy in 0..u32::from(comp.v) {
+                for vx in 0..u32::from(comp.h) {
                     let should_output = in_region
                         && (context.full_output_rect
                             || component_block_intersects_rect(

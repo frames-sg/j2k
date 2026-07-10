@@ -160,6 +160,10 @@ pub const fn is_sof_marker(marker: u8) -> bool {
 }
 
 /// Parse a Start-of-Frame payload.
+///
+/// # Errors
+///
+/// Returns an error when the marker or SOF payload is malformed.
 pub fn parse_sof_info(marker: u8, payload: &[u8]) -> Result<JpegSofInfo, JpegError> {
     parse_sof_info_at(marker, payload, 0, false)
 }
@@ -173,12 +177,16 @@ pub(crate) fn parse_sof_info_allowing_zero_dimensions(
 }
 
 /// Parse a Define Restart Interval payload.
+///
+/// # Errors
+///
+/// Returns an error when the DRI payload length is not exactly two bytes.
 pub fn parse_dri(payload: &[u8]) -> Result<Option<u16>, JpegError> {
     if payload.len() != 2 {
         return Err(JpegError::InvalidSegmentLength {
             offset: 0,
             marker: 0xdd,
-            length: (payload.len() + 2) as u16,
+            length: u16::try_from(payload.len() + 2).unwrap_or(u16::MAX),
         });
     }
     let interval = u16::from_be_bytes([payload[0], payload[1]]);
@@ -186,6 +194,10 @@ pub fn parse_dri(payload: &[u8]) -> Result<Option<u16>, JpegError> {
 }
 
 /// Find the first SOS header and scan data ranges.
+///
+/// # Errors
+///
+/// Returns an error when segment syntax is malformed or no SOS marker exists.
 pub fn find_scan_ranges(input: &[u8]) -> Result<JpegScanRanges, JpegError> {
     for segment in iter_segments(input) {
         let segment = segment?;
@@ -211,6 +223,11 @@ pub fn find_scan_ranges(input: &[u8]) -> Result<JpegScanRanges, JpegError> {
 }
 
 /// Return a copy of `input` with the first SOF dimensions rewritten.
+///
+/// # Errors
+///
+/// Returns an error for zero dimensions, malformed segment syntax, or a
+/// missing SOF marker.
 pub fn rewrite_sof_dimensions(input: &[u8], dimensions: (u16, u16)) -> Result<Vec<u8>, JpegError> {
     if dimensions.0 == 0 || dimensions.1 == 0 {
         return Err(JpegError::ZeroDimension {
@@ -243,6 +260,11 @@ pub fn rewrite_sof_dimensions(input: &[u8], dimensions: (u16, u16)) -> Result<Ve
 }
 
 /// Prepare a TIFF/WSI JPEG tile for decode.
+///
+/// # Errors
+///
+/// Returns an error when a complete tile is invalid or an abbreviated tile
+/// cannot be assembled safely with the supplied tables and options.
 pub fn prepare_tiff_jpeg_tile<'a>(
     tile: &'a [u8],
     tables: Option<&'a [u8]>,
@@ -494,6 +516,10 @@ fn table_key(marker: u8, payload: &[u8]) -> Result<Option<TableKey>, JpegError> 
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the segment descriptor owns bytes that may be moved into the deduplicated output"
+)]
 fn push_segment_dedup(
     out: &mut Vec<u8>,
     keyed_segments: &mut Vec<(TableKey, Vec<u8>)>,
@@ -727,6 +753,10 @@ impl<'a> JpegSegmentIter<'a> {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "validated SOF component indices fit the JPEG component-count byte"
+)]
 fn parse_sof_info_at(
     marker: u8,
     payload: &[u8],
@@ -771,13 +801,13 @@ fn parse_sof_info_at(
                 reason: UnsupportedReason::Hierarchical,
             });
         }
-        (0xc9 | 0xca | 0xcb, _) => {
+        (0xc9..=0xcb, _) => {
             return Err(JpegError::UnsupportedSof {
                 marker,
                 reason: UnsupportedReason::ArithmeticCoding,
             });
         }
-        (0xcd | 0xce | 0xcf, _) => {
+        (0xcd..=0xcf, _) => {
             return Err(JpegError::UnsupportedSof {
                 marker,
                 reason: UnsupportedReason::ArithmeticAndHierarchical,

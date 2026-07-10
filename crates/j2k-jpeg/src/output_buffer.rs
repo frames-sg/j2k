@@ -217,7 +217,7 @@ mod tests {
 
     const HUGE_DIMENSIONS: (u32, u32) = (65_500, 65_500);
 
-    fn assert_allocation_too_large(error: BufferError) {
+    fn assert_allocation_too_large(error: &BufferError) {
         assert!(
             matches!(
                 error,
@@ -225,7 +225,7 @@ mod tests {
                     requested,
                     cap: DEFAULT_MAX_HOST_ALLOCATION_BYTES,
                     what: "JPEG output buffer",
-                } if requested > DEFAULT_MAX_HOST_ALLOCATION_BYTES
+                } if *requested > DEFAULT_MAX_HOST_ALLOCATION_BYTES
             ),
             "expected AllocationTooLarge, got {error:?}"
         );
@@ -235,7 +235,7 @@ mod tests {
     fn new_rejects_huge_output_before_allocation() {
         let err = JpegOutputBuffer::new(HUGE_DIMENSIONS, PixelFormat::Rgba16)
             .expect_err("huge output must be capped");
-        assert_allocation_too_large(err);
+        assert_allocation_too_large(&err);
     }
 
     #[test]
@@ -243,7 +243,7 @@ mod tests {
         let stride = HUGE_DIMENSIONS.0 as usize * PixelFormat::Rgba16.bytes_per_pixel();
         let err = JpegOutputBuffer::with_stride(HUGE_DIMENSIONS, stride, PixelFormat::Rgba16)
             .expect_err("huge output must be capped");
-        assert_allocation_too_large(err);
+        assert_allocation_too_large(&err);
     }
 
     #[test]
@@ -253,7 +253,7 @@ mod tests {
         let err = buffer
             .resize(HUGE_DIMENSIONS, PixelFormat::Rgba16)
             .expect_err("huge output must be capped");
-        assert_allocation_too_large(err);
+        assert_allocation_too_large(&err);
         assert_eq!(buffer.dimensions(), (1, 1));
     }
 
@@ -265,7 +265,7 @@ mod tests {
         let err = buffer
             .resize_with_stride(HUGE_DIMENSIONS, stride, PixelFormat::Rgba16)
             .expect_err("huge output must be capped");
-        assert_allocation_too_large(err);
+        assert_allocation_too_large(&err);
         assert_eq!(buffer.dimensions(), (1, 1));
     }
 

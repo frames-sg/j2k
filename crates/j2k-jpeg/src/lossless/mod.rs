@@ -65,7 +65,10 @@ fn invalid_lossless_symbol() -> JpegError {
 /// predicts Ra; the first column predicts Rb. `at(x, y)` must return the
 /// reconstructed sample at the given coordinates; only `(x-1, y)`, `(x, y-1)`
 /// and `(x-1, y-1)` are ever requested.
-#[allow(clippy::inline_always)] // per-sample hot path: keep the accessor closure monomorphized
+#[expect(
+    clippy::inline_always,
+    reason = "per-sample predictor hot path keeps the accessor closure monomorphized"
+)]
 #[inline(always)]
 pub(crate) fn lossless_predict(
     predictor: u8,

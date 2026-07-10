@@ -14,6 +14,10 @@ use super::super::writers::{
 };
 
 impl Decoder<'_> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "validated block indices are bounded by u32 JPEG image dimensions"
+    )]
     pub(super) fn decode_progressive12_color444_region_into(
         &self,
         out: &mut [u8],

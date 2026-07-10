@@ -27,6 +27,10 @@ pub(crate) struct ParsedSof {
     pub(crate) quant_table_ids: Vec<u8>,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "validated SOF component counts fit the JPEG component-count byte"
+)]
 pub(crate) fn parse_sof(
     marker_code: u8,
     payload: &[u8],
@@ -75,14 +79,14 @@ pub(crate) fn parse_sof(
             });
         }
         // Arithmetic
-        (0xC9 | 0xCA | 0xCB, _) => {
+        (0xC9..=0xCB, _) => {
             return Err(JpegError::UnsupportedSof {
                 marker: marker_code,
                 reason: UnsupportedReason::ArithmeticCoding,
             });
         }
         // Differential + arithmetic
-        (0xCD | 0xCE | 0xCF, _) => {
+        (0xCD..=0xCF, _) => {
             return Err(JpegError::UnsupportedSof {
                 marker: marker_code,
                 reason: UnsupportedReason::ArithmeticAndHierarchical,

@@ -61,7 +61,7 @@ pub(crate) fn idct_islow_2x2_scalar(input: &[i16; 64], output: &mut [u8; 4]) {
 }
 
 pub(crate) fn idct_islow_1x1(input: &[i16; 64]) -> u8 {
-    descale_and_clamp(Wrapping(input[0] as i32), 3)
+    descale_and_clamp(Wrapping(i32::from(input[0])), 3)
 }
 
 #[inline]
@@ -70,13 +70,13 @@ fn dc_only_pixel(dc_coeff: i16) -> u8 {
 }
 
 fn idct_4x4_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 32], col: usize) {
-    let p0 = Wrapping(input[col] as i32);
-    let p1 = Wrapping(input[col + 8] as i32);
-    let p2 = Wrapping(input[col + 16] as i32);
-    let p3 = Wrapping(input[col + 24] as i32);
-    let p5 = Wrapping(input[col + 40] as i32);
-    let p6 = Wrapping(input[col + 48] as i32);
-    let p7 = Wrapping(input[col + 56] as i32);
+    let p0 = Wrapping(i32::from(input[col]));
+    let p1 = Wrapping(i32::from(input[col + 8]));
+    let p2 = Wrapping(i32::from(input[col + 16]));
+    let p3 = Wrapping(i32::from(input[col + 24]));
+    let p5 = Wrapping(i32::from(input[col + 40]));
+    let p6 = Wrapping(i32::from(input[col + 48]));
+    let p7 = Wrapping(i32::from(input[col + 56]));
 
     if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
         let dc = p0 << PASS1_BITS;
@@ -154,11 +154,11 @@ fn idct_4x4_row(work: &[Wrapping<i32>; 32], output: &mut [u8; 16], row: usize) {
 }
 
 fn idct_2x2_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 16], col: usize) {
-    let p0 = Wrapping(input[col] as i32);
-    let p1 = Wrapping(input[col + 8] as i32);
-    let p3 = Wrapping(input[col + 24] as i32);
-    let p5 = Wrapping(input[col + 40] as i32);
-    let p7 = Wrapping(input[col + 56] as i32);
+    let p0 = Wrapping(i32::from(input[col]));
+    let p1 = Wrapping(i32::from(input[col + 8]));
+    let p3 = Wrapping(i32::from(input[col + 24]));
+    let p5 = Wrapping(i32::from(input[col + 40]));
+    let p7 = Wrapping(i32::from(input[col + 56]));
 
     if p1.0 == 0 && p3.0 == 0 && p5.0 == 0 && p7.0 == 0 {
         let dc = p0 << PASS1_BITS;
@@ -210,6 +210,10 @@ fn descale(value: Wrapping<i32>, shift: usize) -> Wrapping<i32> {
     Wrapping(value.0 >> shift)
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "reduced IDCT samples are clamped to the u8 output range before conversion"
+)]
 fn descale_and_clamp(value: Wrapping<i32>, shift: usize) -> u8 {
     let shifted = value.0 >> shift;
     let level_shifted = shifted.wrapping_add(128);

@@ -1,23 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(
-    clippy::cast_precision_loss,
-    clippy::format_push_string,
-    clippy::manual_clamp
+#[expect(
+    dead_code,
+    reason = "forced target audit found 59 comparison-only support items; the compare bench compiles this module with dead_code unsuppressed"
 )]
-
 mod common;
+#[path = "common/report.rs"]
+mod report;
 
 use common::{
-    j2k_decode_tile_batch_sequential, libjpeg_turbo_available, libjpeg_turbo_decode_batch,
-    load_bench_inputs,
-    report::{
-        escape_csv, escape_markdown_table_cell, format_ms, median_ns, report_iterations,
-        write_reports,
-    },
+    libjpeg_turbo_available, libjpeg_turbo_decode_batch, load_bench_inputs, NullSink,
     TurboJpegDecoder,
 };
 use j2k_jpeg::bench_support::{bench_profile_fast420_tile_batch, BenchFast420Profile};
+use j2k_jpeg::{Decoder, DecoderContext, JpegView, ScratchPool};
+use report::{
+    escape_csv, escape_markdown_table_cell, nanos_as_secs, report_iterations, report_ratio,
+    write_reports,
+};
+use std::fmt::Write as _;
+use std::time::Instant;
 
 const TILE_BATCH: usize = 64;
 const DEFAULT_ITERS: usize = 3;
@@ -84,8 +86,9 @@ fn render_csv(rows: &[BreakdownRow]) -> String {
     );
     for row in rows {
         let counts = row.profile.block_activity_counts();
-        csv.push_str(&format!(
-            "\"{}\",{},{},{},{},{},{},{},{},{},{},{},{}\n",
+        writeln!(
+            csv,
+            "\"{}\",{},{},{},{},{},{},{},{},{},{},{},{}",
             escape_csv(&row.input_name),
             row.j2k_ns,
             row.turbo_ns.map_or_else(String::new, |ns| ns.to_string()),
@@ -100,7 +103,8 @@ fn render_csv(rows: &[BreakdownRow]) -> String {
             counts.dc_only_blocks(),
             counts.bottom_half_zero_blocks(),
             counts.general_blocks(),
-        ));
+        )
+        .expect("writing CSV to a String cannot fail");
     }
     csv
 }
@@ -108,39 +112,51 @@ fn render_csv(rows: &[BreakdownRow]) -> String {
 fn render_markdown(rows: &[BreakdownRow], iterations: usize) -> String {
     let mut md = String::new();
     md.push_str("# Fast 4:2:0 Breakdown\n\n");
-    md.push_str(&format!(
-        "Batch size: {TILE_BATCH} tiles. Median iterations: {iterations}.\n\n"
-    ));
+    writeln!(
+        md,
+        "Batch size: {TILE_BATCH} tiles. Median iterations: {iterations}.\n"
+    )
+    .expect("writing Markdown to a String cannot fail");
     md.push_str("## Summary\n\n");
     md.push_str("| metric | value |\n");
     md.push_str("|---|---:|\n");
-    md.push_str(&format!("| profiled inputs | {} |\n", rows.len()));
+    writeln!(md, "| profiled inputs | {} |", rows.len())
+        .expect("writing Markdown to a String cannot fail");
     if let Some(speedup) = mean_turbo_speedup(rows) {
-        md.push_str(&format!("| mean turbo speedup | {speedup:.2}x |\n"));
+        writeln!(md, "| mean turbo speedup | {speedup:.2}x |")
+            .expect("writing Markdown to a String cannot fail");
     } else {
         md.push_str("| mean turbo speedup | n/a |\n");
     }
     let (parse, mcu, rgb, finish, total) = aggregate_stage_ns(rows);
-    md.push_str(&format!(
-        "| profile parse/plan | {} ({:.1}%) |\n",
+    writeln!(
+        md,
+        "| profile parse/plan | {} ({:.1}%) |",
         format_ms(parse),
         pct(parse, total)
-    ));
-    md.push_str(&format!(
-        "| profile MCU decode | {} ({:.1}%) |\n",
+    )
+    .expect("writing Markdown to a String cannot fail");
+    writeln!(
+        md,
+        "| profile MCU decode | {} ({:.1}%) |",
         format_ms(mcu),
         pct(mcu, total)
-    ));
-    md.push_str(&format!(
-        "| profile RGB emit | {} ({:.1}%) |\n",
+    )
+    .expect("writing Markdown to a String cannot fail");
+    writeln!(
+        md,
+        "| profile RGB emit | {} ({:.1}%) |",
         format_ms(rgb),
         pct(rgb, total)
-    ));
-    md.push_str(&format!(
-        "| profile finish | {} ({:.1}%) |\n",
+    )
+    .expect("writing Markdown to a String cannot fail");
+    writeln!(
+        md,
+        "| profile finish | {} ({:.1}%) |",
         format_ms(finish),
         pct(finish, total)
-    ));
+    )
+    .expect("writing Markdown to a String cannot fail");
     md.push('\n');
 
     md.push_str("## Inputs\n\n");
@@ -148,8 +164,9 @@ fn render_markdown(rows: &[BreakdownRow], iterations: usize) -> String {
     md.push_str("|---|---:|---:|---:|---:|---:|---:|---:|\n");
     for row in rows {
         let counts = row.profile.block_activity_counts();
-        md.push_str(&format!(
-            "| {} | {} | {} | {} | {} ({:.1}%) | {} ({:.1}%) | {} ({:.1}%) | {}/{}/{} |\n",
+        writeln!(
+            md,
+            "| {} | {} | {} | {} | {} ({:.1}%) | {} ({:.1}%) | {} ({:.1}%) | {}/{}/{} |",
             escape_markdown_table_cell(&row.input_name),
             format_ms(row.j2k_ns),
             row.turbo_ns.map_or_else(|| "n/a".to_string(), format_ms),
@@ -166,7 +183,8 @@ fn render_markdown(rows: &[BreakdownRow], iterations: usize) -> String {
             counts.dc_only_blocks(),
             counts.bottom_half_zero_blocks(),
             counts.general_blocks(),
-        ));
+        )
+        .expect("writing Markdown to a String cannot fail");
     }
     md
 }
@@ -183,26 +201,56 @@ fn aggregate_stage_ns(rows: &[BreakdownRow]) -> (u128, u128, u128, u128, u128) {
     })
 }
 
+fn j2k_decode_tile_batch_sequential(bytes: &[u8], batch_size: usize) {
+    let mut ctx = DecoderContext::new();
+    let mut pool = ScratchPool::new();
+    let mut sink = NullSink;
+    for _ in 0..batch_size {
+        let view = JpegView::parse(bytes).expect("j2k parse tile");
+        let decoder = Decoder::from_view_in_context(view, &mut ctx).expect("j2k prepare tile");
+        decoder
+            .decode_rows_with_scratch(&mut pool, &mut sink)
+            .expect("j2k decode tile");
+    }
+}
+
+fn median_ns(iterations: usize, mut f: impl FnMut()) -> u128 {
+    f();
+    let mut samples = Vec::with_capacity(iterations);
+    for _ in 0..iterations {
+        let start = Instant::now();
+        f();
+        samples.push(start.elapsed().as_nanos());
+    }
+    samples.sort_unstable();
+    samples[samples.len() / 2]
+}
+
+fn format_ms(ns: u128) -> String {
+    format!("{:.3} ms", nanos_as_secs(ns) * 1_000.0)
+}
+
 fn mean_turbo_speedup(rows: &[BreakdownRow]) -> Option<f64> {
     let mut count = 0usize;
     let mut total = 0.0f64;
     for row in rows {
         if let Some(turbo) = row.turbo_ns {
-            total += row.j2k_ns as f64 / turbo as f64;
+            total += report_ratio(row.j2k_ns, turbo);
             count += 1;
         }
     }
-    (count > 0).then(|| total / count as f64)
+    (count > 0)
+        .then(|| total / f64::from(u32::try_from(count).expect("profiled input count fits in u32")))
 }
 
 fn ratio(lhs: u128, rhs: u128) -> String {
-    format!("{:.3}", lhs as f64 / rhs as f64)
+    format!("{:.3}", report_ratio(lhs, rhs))
 }
 
 fn pct(part: u128, total: u128) -> f64 {
     if total == 0 {
         0.0
     } else {
-        part as f64 * 100.0 / total as f64
+        report_ratio(part, total) * 100.0
     }
 }

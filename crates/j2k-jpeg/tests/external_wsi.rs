@@ -3,6 +3,10 @@
 //! Optional local-corpus regression coverage for extracted WSI JPEGs.
 
 #[path = "../benches/common/classification.rs"]
+#[expect(
+    dead_code,
+    reason = "forced target audit found three environment-backed wrappers unused by explicit policy tests; the compare bench compiles them unsuppressed"
+)]
 mod classification;
 
 use j2k_jpeg::{ColorSpace, Decoder, Downscale, JpegError, PixelFormat, RowSink};
@@ -26,7 +30,8 @@ fn bounded_full_frame_classification_uses_output_bytes_and_mode() {
         classify_corpus_input, CorpusInputClass, DecodeMode, FULL_FRAME_MAX_OUTPUT_BYTES,
     };
 
-    let rgb_threshold_height = (FULL_FRAME_MAX_OUTPUT_BYTES / 3) as u32;
+    let rgb_threshold_height = u32::try_from(FULL_FRAME_MAX_OUTPUT_BYTES / 3)
+        .expect("benchmark byte threshold fits in u32 dimensions");
     assert_eq!(
         classify_corpus_input((1, rgb_threshold_height), DecodeMode::Rgb),
         CorpusInputClass::BoundedFullFrame
@@ -36,7 +41,8 @@ fn bounded_full_frame_classification_uses_output_bytes_and_mode() {
         CorpusInputClass::VeryLarge
     );
 
-    let gray_threshold_height = FULL_FRAME_MAX_OUTPUT_BYTES as u32;
+    let gray_threshold_height = u32::try_from(FULL_FRAME_MAX_OUTPUT_BYTES)
+        .expect("benchmark byte threshold fits in u32 dimensions");
     assert_eq!(
         classify_corpus_input((1, gray_threshold_height), DecodeMode::Gray),
         CorpusInputClass::BoundedFullFrame
@@ -107,7 +113,9 @@ fn force_full_frame_policy_disables_large_rgb_skip() {
         FULL_FRAME_MAX_OUTPUT_BYTES,
     };
 
-    let rgb_threshold_height = (FULL_FRAME_MAX_OUTPUT_BYTES / 3) as u32 + 1;
+    let rgb_threshold_height = u32::try_from(FULL_FRAME_MAX_OUTPUT_BYTES / 3)
+        .expect("benchmark byte threshold fits in u32 dimensions")
+        + 1;
     assert_eq!(
         classify_corpus_input((1, rgb_threshold_height), DecodeMode::Rgb),
         CorpusInputClass::VeryLarge
