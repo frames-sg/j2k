@@ -38,7 +38,7 @@ j2k-test-support = { path = "../j2k-test-support" }
 j2k-transcode-test-support = { path = "../j2k-transcode-test-support" }
 
 [lints.rust]
-unsafe_code = "allow"
+unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "warn"
 
@@ -49,5 +49,3 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
-cast_possible_truncation = "allow"
-cast_precision_loss = "allow"

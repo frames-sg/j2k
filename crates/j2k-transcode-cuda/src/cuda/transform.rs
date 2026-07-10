@@ -2,7 +2,7 @@
 
 use super::{
     device_bands_to_preencoded_components, htj2k97_code_block_dim, htj2k97_quantize_params,
-    htj2k97_subband_delta, htj2k97_subband_total_bitplanes, transcode_kernels_built,
+    htj2k97_subband_delta, htj2k97_subband_total_bitplanes, to_u32, transcode_kernels_built,
     validate_band_len, validate_htj2k97_codeblock_options, CudaContext, CudaDwt97BatchGeometry,
     CudaDwt97BatchStageTimings, CudaDwt97BatchWithPoolRequest, CudaHtj2k97CodeblockBands,
     CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2k97QuantizeParams,
@@ -85,6 +85,10 @@ pub(crate) fn dispatch_dwt53(
 
 /// Append the job's `[[f64; 8]; 8]` natural-order DCT blocks to a contiguous
 /// `f32` coefficient buffer (row-major within block) the runtime kernels consume.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the CUDA kernel ABI intentionally consumes f32 DCT coefficients"
+)]
 pub(super) fn append_f64_blocks_to_f32(blocks: &[[[f64; 8]; 8]], out: &mut Vec<f32>) {
     for block in blocks {
         for row in block {
@@ -350,8 +354,8 @@ pub(super) fn subband_from_codeblock_slice(
             }
             code_blocks.push(PrequantizedHtj2k97CodeBlock {
                 coefficients: data[offset..end].to_vec(),
-                width: block_width as u32,
-                height: block_height as u32,
+                width: to_u32(block_width)?,
+                height: to_u32(block_height)?,
             });
             offset = end;
         }
@@ -363,8 +367,8 @@ pub(super) fn subband_from_codeblock_slice(
     }
     Ok(PrequantizedHtj2k97Subband {
         sub_band_type,
-        num_cbs_x: num_cbs_x as u32,
-        num_cbs_y: num_cbs_y as u32,
+        num_cbs_x: to_u32(num_cbs_x)?,
+        num_cbs_y: to_u32(num_cbs_y)?,
         total_bitplanes: htj2k97_subband_total_bitplanes(options, sub_band_type),
         code_blocks,
     })
@@ -372,7 +376,10 @@ pub(super) fn subband_from_codeblock_slice(
 
 /// Reslice the per-item code-block bands into prequantized HTJ2K components,
 /// one per job (resolution nesting `[[LL], [HL, LH, HH]]`).
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "LL, HL, LH, and HH are standard wavelet subband names"
+)]
 pub(super) fn codeblock_bands_to_components(
     bands: &CudaHtj2k97CodeblockBands,
     jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
@@ -442,6 +449,10 @@ pub(super) fn codeblock_bands_to_components(
         .collect()
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the CUDA quantization ABI intentionally consumes f32 inverse deltas"
+)]
 pub(crate) fn dispatch_htj2k97_codeblock_batch(
     session: &mut CudaTranscodeSession,
     jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],

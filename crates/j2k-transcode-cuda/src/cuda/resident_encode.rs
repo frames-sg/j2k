@@ -89,7 +89,10 @@ impl Htj2k97ComponentJob for DctGridI16ToHtj2k97CodeBlockJob<'_> {
     }
 }
 
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "LL, HL, LH, and HH are standard wavelet subband names"
+)]
 pub(super) fn assemble_preencoded_components<J: Htj2k97ComponentJob>(
     jobs: &[J],
     ll_subbands: Vec<PreencodedHtj2k97Subband>,
@@ -128,7 +131,10 @@ pub(super) fn assemble_preencoded_components<J: Htj2k97ComponentJob>(
     Ok(components)
 }
 
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "LL, HL, LH, and HH are standard wavelet subband names"
+)]
 pub(super) fn assemble_compact_preencoded_components<J: Htj2k97ComponentJob>(
     jobs: &[J],
     ll_subbands: Vec<PreencodedHtj2k97CompactSubband>,
@@ -328,7 +334,6 @@ pub(super) fn encode_resident_compact_subbands(
     Ok((payload, ll, hl, lh, hh, ht_timings, dispatches))
 }
 
-#[allow(clippy::similar_names)]
 pub(super) fn device_band_groups_to_preencoded_components<J: Htj2k97ComponentJob>(
     context: &CudaContext,
     resources: &CudaHtj2kEncodeResources,
@@ -431,7 +436,6 @@ pub(super) fn device_band_groups_to_preencoded_components<J: Htj2k97ComponentJob
     Ok((outputs, ht_timings, dispatches))
 }
 
-#[allow(clippy::similar_names)]
 pub(super) fn device_band_groups_to_compact_preencoded_components<J: Htj2k97ComponentJob>(
     context: &CudaContext,
     resources: &CudaHtj2kEncodeResources,

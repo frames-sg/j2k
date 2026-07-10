@@ -125,7 +125,6 @@ pub(crate) fn dispatch_htj2k97_compact_preencoded_i16_batch(
     )
 }
 
-#[allow(clippy::type_complexity)]
 pub(super) fn dispatch_htj2k97_preencoded_i16_batch_groups_with_sink<'a, 'g, 'j, C, X: Default>(
     session: &mut CudaTranscodeSession,
     groups: &'g [DctGridI16ToHtj2k97CodeBlockBatch<'a, 'j>],
@@ -277,6 +276,10 @@ pub(crate) fn dispatch_htj2k97_compact_preencoded_i16_batch_groups(
     ))
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the CUDA quantization ABI intentionally consumes f32 inverse deltas"
+)]
 pub(super) fn htj2k97_quantize_params(
     options: Htj2k97CodeBlockOptions,
 ) -> Result<CudaHtj2k97QuantizeParams, CudaTranscodeError> {
@@ -293,7 +296,10 @@ pub(super) fn htj2k97_quantize_params(
     })
 }
 
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "LL, HL, LH, and HH are standard wavelet subband names"
+)]
 pub(super) fn device_bands_to_preencoded_components<J: Htj2k97ComponentJob>(
     context: &CudaContext,
     resources: &CudaHtj2kEncodeResources,
@@ -324,7 +330,10 @@ pub(super) fn device_bands_to_preencoded_components<J: Htj2k97ComponentJob>(
     Ok((components, ht_timings, dispatches))
 }
 
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "LL, HL, LH, and HH are standard wavelet subband names"
+)]
 pub(super) fn device_bands_to_compact_preencoded_batch<J: Htj2k97ComponentJob>(
     context: &CudaContext,
     resources: &CudaHtj2kEncodeResources,

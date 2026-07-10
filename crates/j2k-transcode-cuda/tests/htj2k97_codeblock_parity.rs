@@ -21,6 +21,10 @@ use j2k_transcode_test_support::prequantized_component_from_dwt97;
 use j2k_test_support::{cuda_runtime_gate, jpeg_baseline_420_16x16};
 
 /// Deterministic small f64 DCT coefficients, varied per job by `salt`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the synthetic coefficient is reduced modulo 23 before exact f64 conversion"
+)]
 fn make_blocks(block_cols: usize, block_rows: usize, salt: usize) -> Vec<[[f64; 8]; 8]> {
     let mut blocks = vec![[[0.0f64; 8]; 8]; block_cols * block_rows];
     for (bi, block) in blocks.iter_mut().enumerate() {

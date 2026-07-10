@@ -57,7 +57,7 @@ use self::resident_encode::{
     assemble_compact_preencoded_components, assemble_preencoded_components,
     cuda_htj2k_encode_tables, device_band_groups_to_compact_preencoded_components,
     device_band_groups_to_preencoded_components, encode_resident_compact_subbands,
-    encode_resident_subbands, htj2k97_code_block_dim, validate_band_len,
+    encode_resident_subbands, htj2k97_code_block_dim, to_u32, validate_band_len,
     validate_htj2k97_codeblock_options, Htj2k97ComponentJob, ResidentDeviceGroup,
 };
 
@@ -171,7 +171,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::similar_names)]
+    #[expect(
+        clippy::similar_names,
+        reason = "LL, HL, LH, and HH are standard wavelet subband names"
+    )]
     fn assemble_preencoded_components_moves_subband_payloads_without_clone() {
         let jobs = [TestComponentJob {
             x_rsiz: 1,

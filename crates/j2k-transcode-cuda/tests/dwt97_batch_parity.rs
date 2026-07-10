@@ -12,6 +12,10 @@ use j2k_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator
 use j2k_transcode_cuda::CudaDctToWaveletStageAccelerator;
 
 /// Deterministic small f64 DCT coefficients, varied per job by `salt`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the synthetic coefficient is reduced modulo 23 before exact f64 conversion"
+)]
 fn make_blocks(block_cols: usize, block_rows: usize, salt: usize) -> Vec<[[f64; 8]; 8]> {
     let mut blocks = vec![[[0.0f64; 8]; 8]; block_cols * block_rows];
     for (bi, block) in blocks.iter_mut().enumerate() {
