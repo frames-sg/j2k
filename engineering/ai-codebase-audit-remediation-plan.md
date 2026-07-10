@@ -50,23 +50,24 @@ coverage, and the clean release matrix.
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: STR-014 Metal encode/decode owner splits and STR-015 xtask
-  pedantic-suppression cleanup
-- Parallel tasks: Metal encode command/resource-order preservation, Metal
-  decode request/surface-transfer preservation, and fail-closed release-tooling
-  lint escalation
-- Last completed task: STR-014 CUDA J2K device-encode split
-- Last completed implementation commit: 46244c5a
-  (`refactor(cuda-runtime): split j2k encode simt kernels`); the preceding JPEG
-  sequential-emission split is f0497b61 and native HT block-encode split is
-  809caa34
+- Current task: STR-015 native pedantic and over-parameterized-function
+  cleanup, split by non-overlapping hot-codec and high-level/container lanes
+- Parallel tasks: Tier-1/math codegen-preserving lint cleanup and
+  color/image/JP2 conversion-contract cleanup; encode/decode orchestration is
+  the next native lane
+- Last completed task: STR-015 xtask pedantic-suppression cleanup
+- Last completed implementation commit: 373f3d53
+  (`refactor(xtask): enable pedantic lint policy`); the preceding Metal decoder,
+  encoder, and Tier-1 test-support splits are a8dd1ab2, 0193f8ef, and bc560767
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
 - Worktree expectation: dirty; all changes are being reconciled in place
-- Last known green broad gates: repository policy 145/145 runnable, affected
-  strict Clippy, JPEG Metal 171/171, J2K Metal 204/204 runnable, Metal device
-  integration 54/54, transcode routing 6/6, and structural performance <=5%
+- Last known green broad gates: repository policy 158/158 runnable plus one
+  intentional strict API check ignored, affected strict Clippy, JPEG Metal
+  171/171, J2K Metal device integration 54/54, Metal encode 102/102 runnable,
+  transcode routing 6/6, whole-production clone ratio 3.06% below the 3.34%
+  ceiling, and structural performance <=5%
 - Current blockers:
   - the focused semantic audit and independent residual red-team pass found
     mixed native/JPEG/GPU/tooling roots and five concrete clone/interpreter
@@ -229,7 +230,7 @@ The rubric was checked against current primary or first-party sources on
 | STR-011 | P2 | complete | STR-009 | Split mixed native Tier-1, DWT, and codestream implementation roots |
 | STR-012 | P2 | complete | STR-009 | Sequential entropy, 12-bit rendering, baseline adapter, and stripe emission split with byte parity |
 | STR-013 | P2 | complete | STR-009 | Split mixed encode/fixture comparison tooling roots |
-| STR-014 | P2 | in progress | STR-009 | Close actionable GPU/runtime findings from the independent large-file pass |
+| STR-014 | P2 | complete | STR-009 | Close actionable GPU/runtime findings from the independent large-file pass |
 | STR-015 | P2 | in progress | STR-009 through STR-014 | Remove or narrowly justify broad lint suppressions and hidden production namespace seams |
 | JPEGCOR-001 | P2 | complete | STR-012A | Fixed ordered-dither rounding; stored and live libjpeg-turbo output now matches byte-for-byte |
 | TOOL-001 | P3 | complete | DUP-001 | Adoption report model/render split |
@@ -1222,6 +1223,32 @@ all-target/all-feature check, and a source/staging/ABI ratchet passed. The one
 26-line contiguous-versus-strided deinterleave pair is pre-existing. Actual
 PTX and NVIDIA execution remain exact-SHA external evidence.
 
+Completed priority 7 encode in commit 0193f8ef: Metal `encode.rs` fell from
+1,819 to a 196-line facade with ten focused batch, resident, fallback, routing,
+validation, submission, wait, unavailable-host, and structural-test modules;
+the largest leaf is 363 lines. All 40 function bodies, both structs, 79
+strings, documentation, cfg attributes, errors, and command ordering match.
+Default/all-feature checks, strict Clippy, 102 runnable real-Metal tests, both
+explicitly required ignored tests, and the resident parity/performance guard
+passed with identical bytes.
+
+Completed priority 7 decode in commit a8dd1ab2: Metal `decoder.rs` fell from
+1,786 to a 25-line facade with focused adapter, core, direct-path, request,
+route, surface, and test modules at or below 476 lines. Exact 64/64 function
+bodies and command-order fingerprints, 24/24 visible signatures, 7/7 types,
+3/3 constants, 61/61 semantic cfg attributes, 51/51 documentation entries,
+and 85/85 runtime strings match. Strict Clippy, 9/9 fail-closed decoder tests,
+and 54/54 fail-closed real-Metal device integrations passed; the touched
+family remains at zero clones.
+
+Completed priority 8 in commit bc560767: the 953-line test-only classic
+Tier-1 token-pack block moved out of production `tier1_encode.rs`. The
+production root is now 1,149 lines; a 24-line test-support shell owns focused
+GPU pack (357), ordered pack (264), and split CPU pack (340) modules. All 27
+production/test function bodies and the 229-string literal multiset match.
+The all-target/all-feature Metal check, structural ratchet, relevant real-Metal
+encode coverage, strict Clippy, and scoped clone audit passed.
+
 | Priority | Split targets | Required boundary |
 |---:|---|---|
 | 1 | JPEG Metal `compute.rs` plus included `fast_packets_impl`, `pack_dispatch_impl`, `batch_decode_full`, `batch_decode_region`, `batch_decode_entry`, `batch_decode_impl`, and `single_decode_impl` (effective 8,511-line namespace) | Replace production `include!` fragments with real modules/explicit imports; split packet, pack, single, RGB/RGBA, and repeated/grouped route families |
@@ -1230,8 +1257,8 @@ PTX and NVIDIA execution remain exact-SHA external evidence.
 | 4 | Completed: CUDA runtime `transcode.rs` (1,665 physical lines at split) and CUDA Oxide transcode source (1,509) | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
 | 5 | Completed: CUDA runtime `j2k_encode.rs` (1,630) and CUDA Oxide J2K encode source (1,490) | Host types/results, preprocessing/MCT/DWT/quantization plus device packet/tag-tree/export stages with one export surface |
 | 6 | Completed: CUDA runtime `context.rs` (1,013 physical lines at split) | Context/pinned memory, kernel cache/loading, and compact result types |
-| 7 | Metal `encode.rs` (1,773) and `decoder.rs` (1,560) | Resident batch/single/host fallback; request/direct plan/core adapters/surface transfer |
-| 8 | Metal Tier-1 test support (951 test-only lines inside production module) | Move parity helpers out of the production source without altering hot production code |
+| 7 | Completed: Metal `encode.rs` (1,819 at split) and `decoder.rs` (1,786 at split) | Resident batch/single/host fallback; request/direct plan/core adapters/surface transfer |
+| 8 | Completed: Metal Tier-1 test support (953 test-only lines inside production module) | Parity helpers moved into three focused test modules without altering hot production code |
 
 Preserve every `repr(C)` field/order, CUDA entrypoint and generated-PTX
 metadata check, Metal shader ABI, status/error value, profile label/order,
@@ -1243,6 +1270,29 @@ execution remains an exact-SHA Linux/NVIDIA gate after hosted compile/parity.
 Audit every production `#![allow(...)]`, broad `#[allow(...)]`, and
 `include!(...)`, plus every crate-local manifest lint override, after the
 structural splits settle.
+
+Completed the xtask group escalation in commit 373f3d53. The manifest now
+enables pedantic warnings; 97 unique initial sites were resolved. The remaining
+fulfilled item expectations are 31 cohesive policy/orchestration/schema
+functions with `too_many_lines`, four report-only row-count precision casts,
+and two structs whose booleans model independent CLI or fail-closed gate state.
+No xtask crate/module allow remains, and repo policy rejects a manifest-level
+pedantic allow or line-leading crate/module `#![allow]`. All 104 xtask unit
+tests, 158 runnable repository-policy tests, strict all-target/all-feature
+Clippy, formatting, and diff hygiene passed.
+
+The native explicit escalation is substantially larger and is being handled
+as a separate code-sensitive project rather than hidden behind a replacement
+allowlist. The 2026-07-09 production inventory is 892 pedantic diagnostics:
+172 possible-truncation casts, 139 lossless casts, 123 `inline(always)` sites,
+69 sign-loss casts, 51 similar names, 46 precision-loss casts, 42 must-use
+candidates, 34 trivial-copy references, 33 missing error-doc sections, 30
+unreadable literals, 29 overlong functions, and smaller categories. A forced
+scan also found 52 functions above the argument-count lint. Hot Tier-1/math,
+high-level color/image/container, and encode/decode orchestration have separate
+ownership so checked input conversions can be fixed while codegen-sensitive
+casts, inlining, and stable signatures receive only narrow fulfilled item
+expectations with explicit reasons.
 
 - remove the crate-wide native `too_many_arguments` allowance and use focused
   request/plan types where parameter groups express one responsibility
