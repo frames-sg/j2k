@@ -50,29 +50,35 @@ coverage, and the clean release matrix.
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: STR-015 native pedantic and over-parameterized-function
-  cleanup, split by non-overlapping hot-codec and high-level/container lanes
-- Parallel tasks: Tier-1/math codegen-preserving lint cleanup and
-  color/image/JP2 conversion-contract cleanup; encode/decode orchestration is
-  the next native lane
-- Last completed task: STR-015 xtask pedantic-suppression cleanup
-- Last completed implementation commit: 373f3d53
-  (`refactor(xtask): enable pedantic lint policy`); the preceding Metal decoder,
-  encoder, and Tier-1 test-support splits are a8dd1ab2, 0193f8ef, and bc560767
+- Current task: STR-015 core JPEG and J2K-Metal suppression/namespace closure
+- Parallel tasks: remove or explicitly classify the JPEG manifest/file-wide
+  lint overrides and test include seam; remove J2K-Metal high-risk manifest
+  overrides and replace internal production wildcard re-exports
+- Last completed task: native all-target pedantic promotion and JPEG-Metal
+  manifest-wide `too_many_lines` cleanup
+- Last completed implementation commits: 008baec8
+  (`refactor(native): enable pedantic lint policy`) and 42b28fc6
+  (`refactor(jpeg-metal): remove broad line lint allowance`); JPEGCOR-002 and
+  the preceding JPEG-Metal naming cleanup are 23e75193, 51594b8e, and 35d66704
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
 - Worktree expectation: dirty; all changes are being reconciled in place
 - Last known green broad gates: repository policy 158/158 runnable plus one
   intentional strict API check ignored, affected strict Clippy, JPEG Metal
-  171/171, J2K Metal device integration 54/54, Metal encode 102/102 runnable,
-  transcode routing 6/6, whole-production clone ratio 3.06% below the 3.34%
-  ceiling, and structural performance <=5%
+  171/171 fail-closed library plus 5/5 real-Metal encode integration, J2K
+  Metal device integration 54/54, Metal encode 102/102 runnable,
+  native default/all-feature 277/277 plus one intentional ignore and
+  no-default 267/267, transcode routing 6/6, whole-production clone ratio
+  3.06% below the 3.34% ceiling, and structural performance <=5%
 - Current blockers:
   - the focused semantic audit and independent residual red-team pass found
     mixed native/JPEG/GPU/tooling roots and five concrete clone/interpreter
     hotspots; completed work is in STR-004 through STR-009 and the remaining
     roots are tracked in STR-010 through STR-015
+  - remaining non-native manifest/file-wide lint overrides and internal
+    wildcard namespace seams are being closed or entered into a reviewed
+    owner/trigger register under STR-015
   - the pinned clone scan and affected Metal performance guards must be rerun
     after those structural edits
   - stable-API and reviewed semver artifacts must be regenerated after the
@@ -233,6 +239,7 @@ The rubric was checked against current primary or first-party sources on
 | STR-014 | P2 | complete | STR-009 | Close actionable GPU/runtime findings from the independent large-file pass |
 | STR-015 | P2 | in progress | STR-009 through STR-014 | Remove or narrowly justify broad lint suppressions and hidden production namespace seams |
 | JPEGCOR-001 | P2 | complete | STR-012A | Fixed ordered-dither rounding; stored and live libjpeg-turbo output now matches byte-for-byte |
+| JPEGCOR-002 | P2 | complete | JPEGCOR-001 | Metal 4:2:2 interpolation now matches the CPU/libjpeg ordered-rounding contract across all routes |
 | TOOL-001 | P3 | complete | DUP-001 | Adoption report model/render split |
 | CUDA-002 | P1 | complete | SEC-001 | One exact named release-cuda gate with zero skip markers |
 | PKG-001 | P1 | complete | SEC-001 | Construct all packages and verify independent packages |
@@ -1105,6 +1112,15 @@ ROI/scaled-ROI, live TurboJPEG, strict Clippy, and baseline encode round-trip
 tests pass. Independent Rust decoders that choose `+2`/`+2` remain standards-
 valid but do not satisfy this repository's stronger compatibility contract.
 
+JPEGCOR-002 closed in commit 23e75193 after the fail-closed JPEG-Metal library
+run exposed 18 Fast422 CPU-parity failures. Three scalar/thread-local shader
+paths and the paired path still used `+2` for the even output phase; the
+cross-segment texture repair also needed its spatial right pixel to use the
+even-phase `+1` bias. The fix preserves `+2` for odd/spatial-left pixels,
+adds a source-policy ratchet for every formula, and passes all 171 library
+tests with `J2K_REQUIRE_METAL_RUNTIME=1`; the two initially isolated wide and
+mixed-table texture failures pass as part of that run.
+
 Completed STR-012B in commit bc90529c: `decoder/extended12.rs` fell from 1,887
 to a 21-line coordinator with focused plane, sampling, state, upsample,
 ROI/scaling-writer, sequential, progressive, and four-component modules. The
@@ -1293,6 +1309,21 @@ high-level color/image/container, and encode/decode orchestration have separate
 ownership so checked input conversions can be fixed while codegen-sensitive
 casts, inlining, and stable signatures receive only narrow fulfilled item
 expectations with explicit reasons.
+
+The native escalation closed in commit 008baec8. Its manifest now enables both
+`all` and `pedantic` at warning level, the crate-wide
+`too_many_arguments` allowance is gone, and scans across source, tests, and
+benches find zero actual `#[allow(...)]` attributes. Normal strict Clippy
+passes for default, all-feature, and no-default all-target builds; 363
+item/statement expectations plus five cfg-sensitive expectations remain as
+fulfilled, reasoned codec/API boundaries. Default and all-feature library
+tests pass 277/277 with one intentional ignore, every integration target
+passes, no-default passes 267/267, and the optimized reference codestreams
+remain byte-exact. The escalation found and fixed two behavior defects: a
+negative palette index could wrap into a huge `usize`, and no-std signed
+38-bit packing could saturate through an `i32` rounding polyfill. The native
+encode tests are now a normal `#[path = "encode_tests.rs"] mod tests` module
+instead of a host `include!` seam.
 
 - remove the crate-wide native `too_many_arguments` allowance and use focused
   request/plan types where parameter groups express one responsibility

@@ -291,12 +291,15 @@ fn jpeg_metal_shader_is_split_by_subsystem() {
                 "right = uchar((3u * curr + next + 2u) >> 2);",
             ])
             .forbidden(&["3u * curr + prev + 2u) >> 2"]),
-        PatternCheck::new("j2k-jpeg-metal boundary 4:2:2 ordered rounding", &decode_helpers)
-            .required(&[
-                "return uchar((3u * uint(left) + uint(right) + 2u) >> 2);",
-                "return uchar((3u * uint(right) + uint(left) + 1u) >> 2);",
-            ])
-            .forbidden(&["3u * uint(right) + uint(left) + 2u) >> 2"]),
+        PatternCheck::new(
+            "j2k-jpeg-metal boundary 4:2:2 ordered rounding",
+            &decode_helpers,
+        )
+        .required(&[
+            "return uchar((3u * uint(left) + uint(right) + 2u) >> 2);",
+            "return uchar((3u * uint(right) + uint(left) + 1u) >> 2);",
+        ])
+        .forbidden(&["3u * uint(right) + uint(left) + 2u) >> 2"]),
     ]);
     for file in [
         "shaders_decode_fast420.metal",
