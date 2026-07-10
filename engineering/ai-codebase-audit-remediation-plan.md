@@ -50,15 +50,15 @@ coverage, and the clean release matrix.
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: STR-011 native codestream split, STR-012 JPEG sequential split,
-  and STR-014 CUDA context split
-- Parallel tasks: byte/error-preserving native marker extraction,
+- Current task: STR-011 native IDWT split, JPEGCOR-001 4:2:2 correctness
+  investigation, and STR-014 CUDA decode-runtime split
+- Parallel tasks: coefficient/rounding-preserving native transform extraction,
   restart/profile-preserving JPEG entropy extraction, and CUDA
   context/cache/memory ownership extraction
-- Last completed task: STR-015A J2K Metal direct-execution real-module
-  conversion (266 tests, 22 intentional release/performance ignores)
-- Last completed implementation commit: 7b1f513b
-  (`refactor(metal): replace direct execution include`)
+- Last completed task: STR-015 transcode accelerator real-module conversion
+  (strict all-target Clippy, 34 library tests, and three structure-policy tests)
+- Last completed implementation commit: 64e150d2
+  (`refactor(transcode): replace accelerator source include`)
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
@@ -80,6 +80,9 @@ without loading the rest of the file.
   - changed-path coverage and the clean final release matrix remain pending
   - exact-SHA CUDA hardware evidence requires the Linux/NVIDIA runner
   - provenance signoff requires the release maintainer's name/handle and date
+  - GitHub private vulnerability reporting is currently disabled even though
+    `SECURITY.md` links to its form; enable it or publish an approved private
+    contact before the security and conduct policies can be release-ready
 - Exact next local command after the three active extraction lanes stop editing:
   `git diff --check`
 
@@ -222,7 +225,7 @@ The rubric was checked against current primary or first-party sources on
 | STR-009 | P2 | in progress | STR-005 through STR-008 | Independently classify every remaining 1,000+ line production file and 250+ line function |
 | STR-010 | P2 | complete | STR-009 | Split mixed release-tooling roots (`xtask/main.rs`, coverage) |
 | STR-011 | P2 | in progress | STR-009 | Split mixed native Tier-1, DWT, and codestream implementation roots |
-| STR-012 | P2 | pending | STR-009 | Split mixed JPEG entropy, 12-bit render, baseline-adapter, and stripe-emission roots |
+| STR-012 | P2 | in progress | STR-009 | Sequential entropy complete; 12-bit render, baseline-adapter, and stripe-emission roots remain |
 | STR-013 | P2 | complete | STR-009 | Split mixed encode/fixture comparison tooling roots |
 | STR-014 | P2 | in progress | STR-009 | Close actionable GPU/runtime findings from the independent large-file pass |
 | STR-015 | P2 | pending | STR-009 through STR-014 | Remove or narrowly justify broad lint suppressions and hidden production namespace seams |
@@ -234,6 +237,7 @@ The rubric was checked against current primary or first-party sources on
 | PERF-001 | P1 | in progress | STR-004 through STR-015 | Existing guards passed; rerun after final structural source freeze |
 | PUB-002 | P1 | complete | PKG-001, CUDA-002 | Fail-closed origin, Release, and crates.io preflight |
 | DOC-002 | P2 | in progress | SEC-001 | Reconcile public claims and keep this as the only plan |
+| CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
 | PROV-001 | P1 | blocked on maintainer input | DOC-002 | Record release signoff identity and date |
 | FINAL-001 | P1 | pending | all above | Clean local release matrix |
 | RC-001 | P1 | pending | FINAL-001 | Immutable exact-SHA candidate |
@@ -967,6 +971,11 @@ patterns that line-count-only inventory misses:
   `too_many_lines` for every target, and `j2k-jpeg` also suppresses
   `similar_names` globally. Command-line escalation must inventory the hidden
   warnings before these manifest allowances are removed or narrowed.
+- `j2k-native/Cargo.toml` warns on Clippy's base `all` group but suppresses the
+  entire `pedantic` group, in addition to the crate-root
+  `too_many_arguments` allowance. Treat this as a broad suppression: run an
+  explicit pedantic escalation, fix correctness/comprehension warnings, and
+  retain only named, narrow algorithm/ABI exceptions with rationales.
 
 No `TODO`, `FIXME`, `HACK`, `XXX`, `todo!`, or `unimplemented!` marker remained
 in the 2026-07-09 source scan. Panic/expect/unreachable sites are reviewed by
@@ -980,6 +989,12 @@ execution from LCOV/diff parsing, exclusion policy, evaluation, and rendering.
 Preserve command/help/error text, exit status, fail-closed behavior, report
 schemas, and workflow-consumed command lines.
 
+Post-split fail-closed review found that the panic-surface parser silently
+discarded malformed Cargo JSON. Commit 2ca3ee5b now requires UTF-8, validates
+every nonblank record, requires one successful terminal `build-finished`
+record, rejects trailing records, and has three parser regressions; xtask
+all-target check and strict Clippy pass.
+
 ### STR-011 — native algorithm families
 
 Extract phase modules without genericizing the hot state machines:
@@ -989,6 +1004,15 @@ Extract phase modules without genericizing the hot state machines:
   scheduling (434), and distortion accounting (55) separated; the former
   296-line segmented encoder is a 17-line delegate and four coding-style
   payload/segment fingerprints are locked by regression tests
+- completed: codestream parser reduced from 1,399 physical lines to a 26-line
+  coordinator with ten model/header/validation/marker modules at or below 423
+  lines; 32 function signatures, 74 crate-visible items, 53 error tokens, and
+  50 string literals match exactly, and the broad unused allowance is gone
+- completed: IDWT reduced from 1,535 to a 20-line coordinator with ten focused
+  production/test modules at or below 411 lines; 50/50 functions, 12/12 9/7
+  constants, 2/2 strings, 7/7 error tokens, and 22/22 normalized hot-loop
+  bodies match, with eight new bit-exact goldens, 261 library tests, and 24
+  high-bit integrations passing in commit 9acb7a75
 
 - HT decode: segment validation/API, MEL/VLC readers, cleanup, significance,
   magnitude refinement, and benchmark instrumentation
@@ -1013,15 +1037,27 @@ versus marker/frame assembly, and stripe color emission. Preserve output bytes,
 restart state, scratch reuse/caps, profile row order, allocation behavior, and
 backend fast-path selection.
 
+Completed STR-012A in commit 882a5c6b: `sequential.rs` fell from 2,209 to 203
+lines, with generic, DCT, RGB444, and two fast-420 modules at or below 617
+lines. Shared restart validation removed the only newly exposed clone while
+preserving marker/error/DC/counter order; the touched clone count and 295
+duplicated lines match HEAD and the percentage improved. All-target/all-feature
+check, strict Clippy, 12 sequential, 7 WSI/golden, 5 scratch, 9 DCT-route, 2
+profile, and 1 partial-byte restart tests passed. The broad all-feature package
+run passed 453 tests in eight binaries before being stopped for repeated
+macOS 0%-CPU dynamic-loader stalls; focused suites cover every moved route.
+
 STR-012A exposed a pre-existing, deterministic generic baseline 4:2:2 output
 difference from the stored libjpeg-turbo RGB fixture: the current-output
-FNV-1a fingerprint is `4a9be9f5ec1f80df`, with small chroma interpolation
-deltas. The moved decode/emit bodies are text-identical, so the structural
-commit must lock current J2K bytes without treating libjpeg as a normative
-oracle. JPEGCOR-001 must separately classify rounding/upsampling semantics,
-quantify affected pixels/channels and maximum delta, compare the documented
-upsampling contract and independent implementations, and either fix with
-behavior tests or record a justified compatibility difference before 0.7.
+FNV-1a fingerprint is `4a9be9f5ec1f80df`. On
+`JPEG_BASELINE_422_16X8`, 16/384 RGB bytes differ, the maximum absolute delta is
+2, and the R/G/B counts are 0/4/12. The route uses
+`upsample_h2v1_fancy_row`, so interpolation/rounding semantics are a plausible
+but unproven explanation. The moved decode/emit bodies are text-identical, so
+the structural commit must lock current J2K bytes without treating libjpeg as
+a normative oracle. JPEGCOR-001 must compare the documented upsampling
+contract and independent implementations, then either fix with behavior tests
+or record a justified compatibility difference before 0.7.
 
 ### STR-013 — comparison tooling
 
@@ -1043,6 +1079,15 @@ all replacement leaves are under 800 lines, exact function/signature/string/cfg
 parity passed, the real-Metal fail-closed suite ran without skips, and the
 touched clone count improved from 24 to 23.
 
+Completed priority 6: CUDA runtime `context.rs` is now a 174-line owner with
+focused device creation, context lifetime/drop, pinned-host staging, kernel
+cache/dispatch, band transfer, compact-result, and test-kernel modules. Exact
+53/53 function-signature, 151/151 string-literal, and 9/9 public-type/field
+parity passed; default/all-feature checks, strict Clippy, 85/85 default and
+88/88 all-feature host tests, the structural ratchet, and the dependent
+`j2k-cuda` compile passed in commit fbc56258. Linux PTX construction and real
+NVIDIA execution remain exact-SHA release evidence.
+
 | Priority | Split targets | Required boundary |
 |---:|---|---|
 | 1 | JPEG Metal `compute.rs` plus included `fast_packets_impl`, `pack_dispatch_impl`, `batch_decode_full`, `batch_decode_region`, `batch_decode_entry`, `batch_decode_impl`, and `single_decode_impl` (effective 8,511-line namespace) | Replace production `include!` fragments with real modules/explicit imports; split packet, pack, single, RGB/RGBA, and repeated/grouped route families |
@@ -1050,7 +1095,7 @@ touched clone count improved from 24 to 23.
 | 3 | CUDA runtime `jpeg.rs` (1,463) | Encode/decode ABI and pipeline versus entropy diagnostics; remove file-wide similar-name allowance |
 | 4 | CUDA runtime `transcode.rs` (1,665) and CUDA Oxide transcode source (1,509) | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
 | 5 | CUDA runtime `j2k_encode.rs` (1,630) and CUDA Oxide J2K encode source (1,490) | Types/results, preprocessing/MCT/DWT/quantization versus tag-tree/packetization/compaction while retaining one device export surface |
-| 6 | CUDA runtime `context.rs` (840) | Context/pinned memory, kernel cache/loading, and misowned compact result types |
+| 6 | Completed: CUDA runtime `context.rs` (1,013 physical lines at split) | Context/pinned memory, kernel cache/loading, and compact result types |
 | 7 | Metal `encode.rs` (1,773) and `decoder.rs` (1,560) | Resident batch/single/host fallback; request/direct plan/core adapters/surface transfer |
 | 8 | Metal Tier-1 test support (951 test-only lines inside production module) | Move parity helpers out of the production source without altering hot production code |
 
@@ -1067,6 +1112,9 @@ structural splits settle.
 
 - remove the crate-wide native `too_many_arguments` allowance and use focused
   request/plan types where parameter groups express one responsibility
+- remove the native manifest-wide `pedantic = allow`; promote the group to the
+  normal warning policy after the explicit escalation is clean, with focused
+  exceptions only where codec math or a stable signature genuinely requires it
 - narrow math/SIMD lint exceptions to the smallest hot function that genuinely
   requires the spelling, with a one-line rationale and owner/trigger in this
   runbook
@@ -1085,6 +1133,11 @@ Acceptance: command-line lint escalation proves no hidden warning survives;
 normal and no-default/native checks pass; API snapshot and semver fingerprints
 are unchanged unless explicitly reviewed; structural policy distinguishes
 test/device-generation includes from host production includes.
+
+Completed host fragment conversions: J2K Metal direct execution in 7b1f513b
+and transcode accelerator ownership in 64e150d2. The transcode conversion kept
+explicit root re-exports, passed all-target/all-feature check and strict
+Clippy, 34 library tests, and all three transcode structure-policy tests.
 
 ### TOOL-001 — adoption report
 
@@ -1190,8 +1243,10 @@ preserved here before that duplicate is removed with `trash`.
 - Corrected unsafe-code posture and expanded `docs/unsafe-audit.md`; SEC-001,
   GPUORD-001, and APIHARD-001 boundaries are now described, with the final
   source-path inventory gate still required after structural moves.
-- Replaced the conduct-reporting placeholder with the existing confidential
-  GitHub reporting route without inventing an email address.
+- Drafted the conduct/security policies around GitHub private vulnerability
+  reporting without inventing an email address; the later live repository
+  check found that private reporting is disabled, so CONTACT-001 supersedes
+  that draft and blocks release readiness.
 - Repaired adoption commands to use
   `cargo run -p xtask --features adoption -- adoption-*`.
 - Aligned staged release state across the changelog, security policy, release
@@ -1230,6 +1285,15 @@ source-freeze documentation gate still owns the final rerun.
 
 ### Remaining documentation work
 
+- Enable GitHub private vulnerability reporting and verify the external form,
+  or publish a maintainer-approved private contact; then align both
+  `SECURITY.md` and `CODE_OF_CONDUCT.md` to the working channel.
+  The 2026-07-09 read-only check
+  `gh api repos/frames-sg/j2k/private-vulnerability-reporting --jq .enabled`
+  returned `false`; GitHub's [private-reporting
+  documentation](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/report-privately)
+  says the public submission form works only when this repository setting is
+  enabled.
 - Record the release maintainer's name/handle and approval date for provenance.
 - Regenerate stable API and reviewed semver artifacts after the final structural
   source freeze; the pre-STR snapshot is not candidate proof.
