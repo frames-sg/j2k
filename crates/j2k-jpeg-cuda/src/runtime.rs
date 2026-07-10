@@ -115,7 +115,10 @@ fn wrap_cuda_surface(
 }
 
 #[cfg(feature = "cuda-runtime")]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "adapter consumes the runtime error while translating its owned message"
+)]
 pub(crate) fn cuda_error(error: CudaError) -> Error {
     if error.is_unavailable() {
         Error::CudaUnavailable

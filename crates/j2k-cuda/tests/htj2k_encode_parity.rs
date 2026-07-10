@@ -119,6 +119,10 @@ fn cuda_quantize_reversible_matches_native_reference_when_required() {
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "deinterleave matrix keeps all supported sample formats in one parity contract"
+)]
 fn cuda_deinterleave_matches_native_reference_when_required() {
     if !cuda_runtime_gate(module_path!()) {
         return;
@@ -355,8 +359,9 @@ fn synthesize_pixels(cell: &ParityCell) -> Vec<u8> {
     if cell.depth <= 8 {
         // 8-bit: one byte per sample; deterministic from index.
         // The modulus is exactly 256, so truncation is intentional.
-        #[allow(clippy::cast_possible_truncation)]
-        (0..nsamples).map(|i| ((i * 31 + 17) % 256) as u8).collect()
+        (0..nsamples)
+            .map(|i| u8::try_from((i * 31 + 17) % 256).expect("modulo value fits u8"))
+            .collect()
     } else {
         // 16-bit: two bytes per sample (little-endian u16, matching the
         // native encoder's u16::from_le_bytes read).
@@ -371,10 +376,9 @@ fn synthesize_pixels(cell: &ParityCell) -> Vec<u8> {
             // nsamples = w*h*comps), which previously panicked in debug builds
             // with "attempt to multiply with overflow". idx ≤ 12288 here, so
             // idx * 1_000_003 + 7 < 2^34 and cannot overflow u64.
-            let idx = i as u64;
+            let idx = u64::try_from(i).expect("fixture index fits u64");
             // The modulo keeps the result < modulus ≤ 2^16, so the cast is exact.
-            #[allow(clippy::cast_possible_truncation)]
-            let v = ((idx * 1_000_003 + 7) % modulus) as u16;
+            let v = u16::try_from((idx * 1_000_003 + 7) % modulus).expect("modulo value fits u16");
             buf.extend_from_slice(&v.to_le_bytes());
         }
         buf
@@ -411,6 +415,10 @@ const MATRIX_LEVELS: &[u8] = &[0, 1, 3];
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "facade matrix is one release parity contract across component and sample modes"
+)]
 fn cuda_facade_byte_matches_native_across_matrix_when_required() {
     if !cuda_runtime_gate(module_path!()) {
         return;

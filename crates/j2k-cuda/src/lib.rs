@@ -13,6 +13,7 @@
 
 mod codec;
 mod decoder;
+#[cfg(any(feature = "cuda-runtime", test))]
 mod direct_plan;
 mod encode;
 mod error;
@@ -23,7 +24,7 @@ mod surface;
 
 pub use codec::Codec;
 pub use decoder::J2kDecoder;
-#[cfg_attr(not(feature = "cuda-runtime"), allow(unused_imports))]
+#[cfg(feature = "cuda-runtime")]
 pub(crate) use direct_plan::{
     CudaHtj2kBandId, CudaHtj2kCodeBlock, CudaHtj2kDecodePlan, CudaHtj2kIdwtStep, CudaHtj2kRect,
     CudaHtj2kStoreStep, CudaHtj2kTransform,

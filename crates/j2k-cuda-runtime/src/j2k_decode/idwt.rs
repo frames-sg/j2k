@@ -193,7 +193,10 @@ impl CudaContext {
     /// value must be kept live until the default stream has been synchronized
     /// by the caller.
     #[doc(hidden)]
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "batched IDWT sequence preserves metadata upload and CUDA launch ordering"
+    )]
     pub fn j2k_inverse_dwt_batch_sequence_enqueue_with_pool(
         &self,
         target_batches: &[&[CudaJ2kIdwtTarget<'_>]],

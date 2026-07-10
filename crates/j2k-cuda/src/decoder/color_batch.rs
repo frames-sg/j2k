@@ -184,6 +184,10 @@ pub(super) fn decode_color_cuda_resident_surface_with_plans_profile(
 }
 
 #[cfg(feature = "cuda-runtime")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "resident color batch orchestration keeps CUDA submission and profile ordering atomic"
+)]
 pub(super) fn decode_color_cuda_resident_batch_surfaces_with_profile(
     inputs: &[&[u8]],
     session: &mut CudaSession,
@@ -610,6 +614,10 @@ struct FinishColorCudaResidentSurfaceRequest<'a> {
 }
 
 #[cfg(feature = "cuda-runtime")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "surface harvest keeps component buffers, color conversion, and timings synchronized"
+)]
 fn finish_color_cuda_resident_surface_with_component_work(
     request: FinishColorCudaResidentSurfaceRequest<'_>,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {

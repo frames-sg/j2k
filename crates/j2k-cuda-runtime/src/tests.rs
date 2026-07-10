@@ -212,7 +212,10 @@ fn cuda_oxide_dwt97_transcode_matches_scalar_fixture_when_required() {
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
 #[test]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "driver symbol inventory is one fail-closed runtime contract"
+)]
 fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
     const WIDE_PATTERN: [f32; 17] = [
         -2.0, -1.75, -1.25, -0.5, 0.0, 0.25, 0.75, 1.0, 1.5, 2.0, -2.5, 2.5, -3.0, 3.0, -0.25, 0.5,
@@ -367,7 +370,10 @@ fn assert_dwt97_bands_close(
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "small deterministic fixture indices are exactly representable as f32"
+)]
 fn dwt97_fixture_blocks(scale: f32) -> [f32; 64] {
     let mut blocks = [0.0f32; 64];
     for (index, value) in DWT97_FIXTURE_VALUES {
@@ -697,7 +703,10 @@ fn cuda_oxide_jpeg_entropy_self_sync_decodes_zero_stream_when_required() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "kernel metadata inventory is one exact host/device parity contract"
+)]
 fn runtime_raii_primitives_smoke_when_required() {
     if !cuda_runtime_gate() {
         return;
@@ -1738,7 +1747,6 @@ fn typed_device_view_reports_element_count_when_required() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
     let cases = [
         (
@@ -1840,7 +1848,10 @@ fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
 }
 
 #[test]
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "paired forward/inverse transform buffers intentionally share stage terminology"
+)]
 fn htj2k_empty_codeblock_decode_zero_fills_coefficients_when_required() {
     if !cuda_runtime_gate() {
         return;
@@ -1875,7 +1886,10 @@ fn htj2k_empty_codeblock_decode_zero_fills_coefficients_when_required() {
 }
 
 #[test]
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "paired forward/inverse transform buffers intentionally share stage terminology"
+)]
 fn htj2k_empty_codeblock_decode_with_resources_zero_fills_when_required() {
     if !cuda_runtime_gate() {
         return;
@@ -1912,7 +1926,10 @@ fn htj2k_empty_codeblock_decode_with_resources_zero_fills_when_required() {
 }
 
 #[test]
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "paired forward/inverse transform buffers intentionally share stage terminology"
+)]
 fn htj2k_decode_table_resources_feed_multiple_payload_uploads_when_required() {
     if !cuda_runtime_gate() {
         return;

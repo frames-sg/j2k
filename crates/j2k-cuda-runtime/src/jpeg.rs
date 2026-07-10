@@ -31,7 +31,13 @@ pub(crate) use self::{
 const _: [(); 32] = [(); core::mem::size_of::<CudaJpeg420Params>()];
 const _: [(); 32] = [(); core::mem::size_of::<CudaJpegEntropyChunkParams>()];
 
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+#[cfg_attr(
+    all(not(feature = "cuda-oxide-jpeg-decode"), not(test)),
+    expect(
+        dead_code,
+        reason = "overflow accounting is used only by the JPEG decode path"
+    )
+)]
 pub(crate) fn jpeg_entropy_overflow_count(subsequence_count: usize) -> usize {
     subsequence_count.saturating_sub(1)
 }

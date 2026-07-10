@@ -1,4 +1,7 @@
-#![allow(static_mut_refs)]
+#![allow(
+    static_mut_refs,
+    reason = "CUDA shared-memory statics are accessed through device-scoped references"
+)]
 
 use cuda_device::{SharedArray, kernel, thread};
 use cuda_host::cuda_module;

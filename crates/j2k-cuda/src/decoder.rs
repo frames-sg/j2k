@@ -88,7 +88,13 @@ use self::resident::{htj2k_batched_dequant_dispatches, split_htj2k_subband_decod
 
 /// CUDA-facing JPEG 2000 decoder wrapper.
 pub struct J2kDecoder<'a> {
-    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "raw codestream bytes are consumed only by CUDA decode routes"
+        )
+    )]
     bytes: &'a [u8],
     inner: CpuDecoder<'a>,
     pool: CpuJ2kScratchPool,

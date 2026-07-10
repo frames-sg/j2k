@@ -34,7 +34,10 @@ impl ContextInner {
     }
 
     #[cfg(not(feature = "cuda-oxide-copy-u8"))]
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
     pub(crate) fn cuda_oxide_copy_u8_kernel_function(&self) -> Result<CuFunction, CudaError> {
         Err(Self::cuda_oxide_feature_missing(
             "CopyU8",
@@ -57,7 +60,10 @@ impl ContextInner {
     }
 
     #[cfg(not(feature = "cuda-oxide-j2k-encode"))]
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
     pub(crate) fn cuda_oxide_j2k_encode_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -84,7 +90,10 @@ impl ContextInner {
     }
 
     #[cfg(not(feature = "cuda-oxide-j2k-decode-store"))]
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
     pub(crate) fn cuda_oxide_j2k_decode_store_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -111,7 +120,10 @@ impl ContextInner {
     }
 
     #[cfg(not(feature = "cuda-oxide-j2k-dequantize"))]
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
     pub(crate) fn cuda_oxide_j2k_dequantize_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -138,7 +150,10 @@ impl ContextInner {
     }
 
     #[cfg(not(feature = "cuda-oxide-j2k-idwt"))]
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
     pub(crate) fn cuda_oxide_j2k_idwt_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -165,7 +180,10 @@ impl ContextInner {
     }
 
     #[cfg(not(feature = "cuda-oxide-htj2k-decode"))]
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
     pub(crate) fn cuda_oxide_htj2k_decode_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -192,7 +210,10 @@ impl ContextInner {
     }
 
     #[cfg(not(feature = "cuda-oxide-htj2k-encode"))]
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
     pub(crate) fn cuda_oxide_htj2k_encode_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -219,7 +240,10 @@ impl ContextInner {
     }
 
     #[cfg(not(feature = "cuda-oxide-transcode"))]
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
     pub(crate) fn cuda_oxide_transcode_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -246,8 +270,17 @@ impl ContextInner {
     }
 
     #[cfg(not(feature = "cuda-oxide-jpeg-decode"))]
-    #[allow(clippy::unused_self)]
-    #[allow(dead_code)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "JPEG decoder callers are absent when the feature is disabled"
+        )
+    )]
     pub(crate) fn cuda_oxide_jpeg_decode_kernel_function(
         &self,
         kernel: CudaKernel,
@@ -276,8 +309,17 @@ impl ContextInner {
     }
 
     #[cfg(not(feature = "cuda-oxide-jpeg-encode"))]
-    #[allow(clippy::unused_self)]
-    #[allow(dead_code)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "JPEG encoder callers are absent when the feature is disabled"
+        )
+    )]
     pub(crate) fn cuda_oxide_jpeg_encode_kernel_function(
         &self,
         kernel: CudaKernel,

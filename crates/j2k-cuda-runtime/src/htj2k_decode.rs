@@ -158,7 +158,6 @@ impl CudaHtj2kStatus {
 
 /// CUDA event timings for resident HTJ2K decode stages.
 #[doc(hidden)]
-#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kDecodeStageTimings {
     /// HT cleanup entropy decode dispatch time, in microseconds.
@@ -341,7 +340,6 @@ pub(crate) const HTJ2K_STATUS_UNSUPPORTED: u32 = 2;
 impl CudaContext {
     /// Decode HTJ2K code blocks into a device-resident f32 coefficient plane.
     #[doc(hidden)]
-    #[allow(clippy::similar_names)]
     pub fn decode_htj2k_codeblocks(
         &self,
         payload: &[u8],
@@ -872,7 +870,10 @@ impl CudaContext {
         })
     }
 
-    #[allow(clippy::similar_names)]
+    #[expect(
+        clippy::similar_names,
+        reason = "per-job block and byte offsets intentionally share domain terminology"
+    )]
     fn launch_htj2k_decode_codeblocks(
         &self,
         launch: Htj2kDecodeCodeblocksLaunch<'_>,
@@ -921,7 +922,10 @@ impl CudaContext {
         )
     }
 
-    #[allow(clippy::similar_names)]
+    #[expect(
+        clippy::similar_names,
+        reason = "per-job block and byte offsets intentionally share domain terminology"
+    )]
     fn launch_htj2k_decode_codeblocks_multi(
         &self,
         launch: Htj2kDecodeCodeblocksMultiLaunch<'_>,

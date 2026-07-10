@@ -1,7 +1,14 @@
 #![allow(
     clippy::manual_div_ceil,
+    reason = "CUDA device toolchain compatibility requires explicit integer ceiling division"
+)]
+#![allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines
+    reason = "flat device helpers mirror CUDA ABI buffers and launch metadata"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "HT device kernels keep bitstream state local to preserve control flow and register layout"
 )]
 
 use cuda_device::{kernel, thread};

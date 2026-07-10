@@ -1159,6 +1159,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "multi-packet deferred-inclusion fixture is one byte-structure regression"
+    )]
     fn cuda_packetization_flatten_accepts_deferred_first_inclusion_after_non_empty_packet() {
         let first_payload = [0x11u8; 3];
         let second_payload = [0x22u8; 5];

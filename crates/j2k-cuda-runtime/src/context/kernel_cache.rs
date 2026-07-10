@@ -11,7 +11,13 @@ use crate::{error::CudaError, kernels::CudaKernel};
 
 use super::inner::ContextInner;
 
-#[cfg_attr(not(j2k_cuda_oxide_enabled), allow(dead_code))]
+#[cfg_attr(
+    not(j2k_cuda_oxide_enabled),
+    expect(
+        dead_code,
+        reason = "compiled module/function pair is used only by CUDA Oxide kernels"
+    )
+)]
 #[derive(Debug)]
 pub(crate) struct CompiledKernel {
     pub(crate) module: CuModule,

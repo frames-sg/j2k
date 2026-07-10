@@ -175,21 +175,75 @@ pub(crate) struct CudaHtj2kRect {
 
 /// Flat CUDA HTJ2K decode plan.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CudaHtj2kDecodePlan {
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "output dimensions are consumed only by CUDA decode routes"
+        )
+    )]
     dimensions: (u32, u32),
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "sample metadata is consumed only by CUDA decode routes"
+        )
+    )]
     bit_depth: u8,
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "output format is consumed only by CUDA decode routes"
+        )
+    )]
     output_format: PixelFormat,
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "output origin is consumed only by CUDA decode routes"
+        )
+    )]
     output_origin: (u32, u32),
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "transform metadata is consumed only by CUDA decode routes"
+        )
+    )]
     transform: CudaHtj2kTransform,
     payload: Vec<u8>,
     code_blocks: Vec<CudaHtj2kCodeBlock>,
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "subband metadata is consumed only by CUDA decode routes"
+        )
+    )]
     subbands: Vec<CudaHtj2kSubband>,
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "IDWT metadata is consumed only by CUDA decode routes"
+        )
+    )]
     idwt_steps: Vec<CudaHtj2kIdwtStep>,
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "store metadata is consumed only by CUDA decode routes"
+        )
+    )]
     store_steps: Vec<CudaHtj2kStoreStep>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CudaHtj2kDecodePlan {
     pub(crate) fn from_grayscale_direct_plan(
         plan: &J2kDirectGrayscalePlan,
@@ -199,6 +253,10 @@ impl CudaHtj2kDecodePlan {
         Self::from_grayscale_direct_plan_region(plan, output_format, output_origin, plan.dimensions)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "direct-plan serialization derives one validated CUDA payload and descriptor set"
+    )]
     pub(crate) fn from_grayscale_direct_plan_region(
         plan: &J2kDirectGrayscalePlan,
         output_format: PixelFormat,
@@ -362,26 +420,50 @@ impl CudaHtj2kDecodePlan {
     }
 
     /// Output dimensions of the decoded surface.
+    #[cfg(feature = "cuda-runtime")]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "output dimensions accessor supports CUDA plan tests"
+        )
+    )]
     pub(crate) fn dimensions(&self) -> (u32, u32) {
         self.dimensions
     }
 
     /// Source component bit depth.
+    #[cfg(feature = "cuda-runtime")]
     pub(crate) fn bit_depth(&self) -> u8 {
         self.bit_depth
     }
 
     /// Output pixel format requested by the caller.
+    #[cfg(feature = "cuda-runtime")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "output format accessor supports CUDA plan tests")
+    )]
     pub(crate) fn output_format(&self) -> PixelFormat {
         self.output_format
     }
 
     /// Destination origin in the caller-visible output surface.
+    #[cfg(feature = "cuda-runtime")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "output origin accessor supports CUDA plan tests")
+    )]
     pub(crate) fn output_origin(&self) -> (u32, u32) {
         self.output_origin
     }
 
     /// DWT transform used by IDWT kernels.
+    #[cfg(feature = "cuda-runtime")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "transform accessor supports CUDA plan tests")
+    )]
     pub(crate) fn transform(&self) -> CudaHtj2kTransform {
         self.transform
     }
@@ -391,7 +473,13 @@ impl CudaHtj2kDecodePlan {
         &self.payload
     }
 
-    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-runtime"), not(test)),
+        expect(
+            dead_code,
+            reason = "shared payload assembly is used only by CUDA batch decode"
+        )
+    )]
     pub(crate) fn append_payload_to_shared(
         &mut self,
         shared_payload: &mut Vec<u8>,
@@ -418,7 +506,13 @@ impl CudaHtj2kDecodePlan {
         Ok(())
     }
 
-    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-runtime"), not(test)),
+        expect(
+            dead_code,
+            reason = "payload rebasing is used only by CUDA batch decode"
+        )
+    )]
     pub(crate) fn rebase_payload_offsets(&mut self, base: u64) -> Result<(), Error> {
         for block in &mut self.code_blocks {
             block.payload_offset =
@@ -438,21 +532,29 @@ impl CudaHtj2kDecodePlan {
     }
 
     /// Flat sub-band metadata.
+    #[cfg(feature = "cuda-runtime")]
     pub(crate) fn subbands(&self) -> &[CudaHtj2kSubband] {
         &self.subbands
     }
 
     /// Flat IDWT step metadata.
+    #[cfg(feature = "cuda-runtime")]
     pub(crate) fn idwt_steps(&self) -> &[CudaHtj2kIdwtStep] {
         &self.idwt_steps
     }
 
     /// Flat store step metadata.
+    #[cfg(feature = "cuda-runtime")]
     pub(crate) fn store_steps(&self) -> &[CudaHtj2kStoreStep] {
         &self.store_steps
     }
 
     /// Number of per-code-block decode dispatches implied by the plan.
+    #[cfg(feature = "cuda-runtime")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "dispatch hint accessor supports CUDA plan tests")
+    )]
     pub(crate) fn dispatch_count_hint(&self) -> usize {
         self.code_blocks.len()
     }

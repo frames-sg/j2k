@@ -2,7 +2,13 @@ use std::os::raw::c_uint;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum CudaKernel {
-    #[cfg_attr(not(feature = "cuda-oxide-copy-u8"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-copy-u8"), not(test)),
+        expect(
+            dead_code,
+            reason = "variant is used only by the CopyU8 kernel feature"
+        )
+    )]
     CopyU8,
     J2kDeinterleaveToF32,
     J2kDeinterleaveStridedToF32,
@@ -39,19 +45,61 @@ pub(crate) enum CudaKernel {
     Htj2kEncodeCodeblocksMultiInputCleanup64,
     Htj2kCompactCodeblocks,
     Htj2kPacketizeCleanup,
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-jpeg-decode"), not(test)),
+        expect(
+            dead_code,
+            reason = "variant is used only by the JPEG decode kernel feature"
+        )
+    )]
     JpegDecodeFast420Rgb8,
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-jpeg-decode"), not(test)),
+        expect(
+            dead_code,
+            reason = "variant is used only by the JPEG decode kernel feature"
+        )
+    )]
     JpegDecodeFast422Rgb8,
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-jpeg-decode"), not(test)),
+        expect(
+            dead_code,
+            reason = "variant is used only by the JPEG decode kernel feature"
+        )
+    )]
     JpegDecodeFast444Rgb8,
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-jpeg-decode"), not(test)),
+        expect(
+            dead_code,
+            reason = "variant is used only by the JPEG decode kernel feature"
+        )
+    )]
     JpegEntropySync420,
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-jpeg-decode"), not(test)),
+        expect(
+            dead_code,
+            reason = "variant is used only by the JPEG decode kernel feature"
+        )
+    )]
     JpegEntropyOverflow420,
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "cuda-oxide-jpeg-encode"),
+        expect(
+            dead_code,
+            reason = "variant is used only by the JPEG encode kernel feature"
+        )
+    )]
     JpegEncodeBaselineEntropy,
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "cuda-oxide-jpeg-encode"),
+        expect(
+            dead_code,
+            reason = "variant is used only by the JPEG encode kernel feature"
+        )
+    )]
     JpegEncodeBaselineEntropyBatch,
     J2kInverseMct,
     J2kStoreGray16,
@@ -85,7 +133,6 @@ pub(crate) struct CudaLaunchGeometry {
 }
 
 impl CudaKernel {
-    #[cfg_attr(not(feature = "cuda-oxide-j2k-encode"), allow(dead_code))]
     pub(crate) fn is_j2k_encode_stage(self) -> bool {
         matches!(
             self,
@@ -102,7 +149,13 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-j2k-encode"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-j2k-encode"), not(test)),
+        expect(
+            dead_code,
+            reason = "classifier is used only by the J2K encode kernel feature"
+        )
+    )]
     pub(crate) fn is_cuda_oxide_j2k_encode_stage(self) -> bool {
         self.is_j2k_encode_stage()
             || matches!(
@@ -111,7 +164,13 @@ impl CudaKernel {
             )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-j2k-decode-store"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-j2k-decode-store"), not(test)),
+        expect(
+            dead_code,
+            reason = "classifier is used only by the J2K store kernel feature"
+        )
+    )]
     pub(crate) fn is_j2k_decode_store_stage(self) -> bool {
         matches!(
             self,
@@ -125,7 +184,13 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-j2k-dequantize"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-j2k-dequantize"), not(test)),
+        expect(
+            dead_code,
+            reason = "classifier is used only by the J2K dequantize kernel feature"
+        )
+    )]
     pub(crate) fn is_j2k_dequantize_stage(self) -> bool {
         matches!(
             self,
@@ -135,7 +200,13 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-htj2k-decode"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-htj2k-decode"), not(test)),
+        expect(
+            dead_code,
+            reason = "classifier is used only by the HTJ2K decode kernel feature"
+        )
+    )]
     pub(crate) fn is_htj2k_decode_stage(self) -> bool {
         matches!(
             self,
@@ -146,7 +217,6 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-htj2k-encode"), allow(dead_code))]
     pub(crate) fn is_htj2k_encode_codeblock_stage(self) -> bool {
         matches!(
             self,
@@ -157,7 +227,13 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-j2k-idwt"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-j2k-idwt"), not(test)),
+        expect(
+            dead_code,
+            reason = "classifier is used only by the J2K IDWT kernel feature"
+        )
+    )]
     pub(crate) fn is_j2k_idwt_stage(self) -> bool {
         matches!(
             self,
@@ -176,7 +252,6 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-transcode"), allow(dead_code))]
     pub(crate) fn is_transcode_reversible53_stage(self) -> bool {
         matches!(
             self,
@@ -188,7 +263,6 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-transcode"), allow(dead_code))]
     pub(crate) fn is_transcode_dwt97_single_stage(self) -> bool {
         matches!(
             self,
@@ -196,7 +270,6 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-transcode"), allow(dead_code))]
     pub(crate) fn is_transcode_dwt97_batch_stage(self) -> bool {
         matches!(
             self,
@@ -210,14 +283,19 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-transcode"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-transcode"), not(test)),
+        expect(
+            dead_code,
+            reason = "classifier is used only by the transcode kernel feature"
+        )
+    )]
     pub(crate) fn is_cuda_oxide_transcode_stage(self) -> bool {
         self.is_transcode_reversible53_stage()
             || self.is_transcode_dwt97_single_stage()
             || self.is_transcode_dwt97_batch_stage()
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
     pub(crate) fn is_jpeg_entropy_stage(self) -> bool {
         matches!(
             self,
@@ -225,7 +303,13 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-jpeg-decode"), not(test)),
+        expect(
+            dead_code,
+            reason = "classifier is used only by the JPEG decode kernel feature"
+        )
+    )]
     pub(crate) fn is_cuda_oxide_jpeg_decode_stage(self) -> bool {
         self.is_jpeg_entropy_stage()
             || matches!(
@@ -236,7 +320,13 @@ impl CudaKernel {
             )
     }
 
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-jpeg-encode"), not(test)),
+        expect(
+            dead_code,
+            reason = "classifier is used only by the JPEG encode kernel feature"
+        )
+    )]
     pub(crate) fn is_cuda_oxide_jpeg_encode_stage(self) -> bool {
         matches!(
             self,
@@ -244,7 +334,13 @@ impl CudaKernel {
         )
     }
 
-    #[cfg_attr(not(j2k_cuda_oxide_enabled), allow(dead_code))]
+    #[cfg_attr(
+        all(not(j2k_cuda_oxide_enabled), not(test)),
+        expect(
+            dead_code,
+            reason = "entrypoint lookup is used only when CUDA Oxide modules are built"
+        )
+    )]
     pub(crate) fn entrypoint(self) -> &'static [u8] {
         match self {
             Self::CopyU8 => b"j2k_copy_u8\0",

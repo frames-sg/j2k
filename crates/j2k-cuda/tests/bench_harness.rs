@@ -234,6 +234,8 @@ fn read_cuda_runtime_sources() -> String {
         "memory.rs",
         "htj2k_decode.rs",
         "j2k_decode.rs",
+        "j2k_decode/idwt.rs",
+        "j2k_decode/idwt_launch.rs",
     ] {
         let path = format!("{src_dir}/{module}");
         runtime.push_str(&std::fs::read_to_string(&path).expect("read CUDA runtime module"));

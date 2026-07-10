@@ -638,6 +638,10 @@ pub(super) fn decode_cuda_component_subbands_with_resources(
 }
 
 #[cfg(feature = "cuda-runtime")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "cleanup/dequant batch submission preserves CUDA stream and buffer lifetime ordering"
+)]
 pub(super) fn run_component_cleanup_dequant_batches(
     context: &j2k_cuda_runtime::CudaContext,
     decode_resources: &CudaHtj2kDecodeResources,
@@ -1001,6 +1005,10 @@ pub(super) fn run_color_component_idwt_batches(
 }
 
 #[cfg(feature = "cuda-runtime")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "IDWT enqueue keeps per-component plan validation and stream ordering together"
+)]
 pub(super) fn enqueue_color_component_idwt_batches(
     context: &j2k_cuda_runtime::CudaContext,
     components: &[&CudaHtj2kDecodePlan],
@@ -1251,7 +1259,10 @@ pub(super) fn pooled_cuda_buffer(
 }
 
 #[cfg(feature = "cuda-runtime")]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "conversion consumes the owned plan error to preserve its message"
+)]
 pub(super) fn cuda_invalid_decode_plan(error: Error) -> CudaError {
     CudaError::InvalidArgument {
         message: error.to_string(),

@@ -39,13 +39,19 @@ macro_rules! emit_cuda_encode_route {
 
 /// CUDA implementation of selected JPEG 2000 encode stages.
 #[derive(Debug, Default, Clone)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent route switches mirror distinct accelerator-stage policies"
+)]
 pub struct CudaEncodeStageAccelerator {
     #[cfg(feature = "cuda-runtime")]
     context: Option<CudaContext>,
     #[cfg(feature = "cuda-runtime")]
     encode_resources: Option<Arc<CudaHtj2kEncodeResources>>,
-    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(dead_code, reason = "profiling state is used only by the CUDA runtime")
+    )]
     collect_profile: bool,
     deinterleave_attempts: usize,
     forward_rct_attempts: usize,
@@ -67,10 +73,10 @@ pub struct CudaEncodeStageAccelerator {
     forward_ict_dispatches: usize,
     forward_dwt53_dispatches: usize,
     forward_dwt97_dispatches: usize,
-    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+    #[cfg(feature = "cuda-runtime")]
     htj2k_tile_dispatches: usize,
     quantize_subband_dispatches: usize,
-    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+    #[cfg(feature = "cuda-runtime")]
     ht_subband_dispatches: usize,
     tier1_code_block_dispatches: usize,
     ht_code_block_dispatches: usize,
@@ -226,7 +232,7 @@ impl CudaEncodeStageAccelerator {
     }
 
     /// Number of forward ICT attempts observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn forward_ict_attempts(&self) -> usize {
         self.forward_ict_attempts
     }
@@ -238,13 +244,13 @@ impl CudaEncodeStageAccelerator {
     }
 
     /// Number of forward 9/7 DWT attempts observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn forward_dwt97_attempts(&self) -> usize {
         self.forward_dwt97_attempts
     }
 
     /// Number of resident HTJ2K tile-body attempts observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn htj2k_tile_attempts(&self) -> usize {
         self.htj2k_tile_attempts
     }
@@ -280,55 +286,55 @@ impl CudaEncodeStageAccelerator {
     }
 
     /// Number of deinterleave CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn deinterleave_dispatches(&self) -> usize {
         self.deinterleave_dispatches
     }
 
     /// Number of forward RCT CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn forward_rct_dispatches(&self) -> usize {
         self.forward_rct_dispatches
     }
 
     /// Number of forward ICT CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn forward_ict_dispatches(&self) -> usize {
         self.forward_ict_dispatches
     }
 
     /// Number of forward 5/3 DWT CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn forward_dwt53_dispatches(&self) -> usize {
         self.forward_dwt53_dispatches
     }
 
     /// Number of forward 9/7 DWT CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn forward_dwt97_dispatches(&self) -> usize {
         self.forward_dwt97_dispatches
     }
 
     /// Number of resident HTJ2K tile-body CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn htj2k_tile_dispatches(&self) -> usize {
         self.htj2k_tile_dispatches
     }
 
     /// Number of sub-band quantization CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn quantize_subband_dispatches(&self) -> usize {
         self.quantize_subband_dispatches
     }
 
     /// Number of HT code-block CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn ht_code_block_dispatches(&self) -> usize {
         self.ht_code_block_dispatches
     }
 
     /// Number of HT sub-band CUDA dispatches observed by crate-local diagnostics.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda-runtime"))]
     pub(crate) fn ht_subband_dispatches(&self) -> usize {
         self.ht_subband_dispatches
     }
@@ -362,7 +368,6 @@ pub(super) fn time_cuda_stage<T>(
 }
 
 /// Cumulative CUDA encode-stage timings collected by `CudaEncodeStageAccelerator`.
-#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CudaEncodeStageTimings {
     /// Pixel deinterleave and level-shift CUDA stage time.
@@ -795,6 +800,10 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         Ok(None)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "accelerator route preserves CUDA stage attempts, fallbacks, and counters"
+    )]
     fn encode_htj2k_tile(
         &mut self,
         job: J2kHtj2kTileEncodeJob<'_>,

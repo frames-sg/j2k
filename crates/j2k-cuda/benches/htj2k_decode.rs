@@ -468,6 +468,10 @@ fn env_falsey(name: &str) -> bool {
         .is_some_and(|value| matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark corpus discovery keeps manifest accounting and deterministic ordering together"
+)]
 fn external_decode_cases(enabled_cases: &[&str]) -> ExternalDecodeCases {
     let dirs = external_input_dirs();
     if dirs.is_empty() {

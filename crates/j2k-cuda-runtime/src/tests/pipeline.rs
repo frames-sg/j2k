@@ -393,7 +393,11 @@ fn j2k_inverse_dwt_batch_odd_origin_matches_single_when_runtime_required() {
 }
 
 #[test]
-#[allow(clippy::cast_precision_loss, clippy::similar_names)]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::similar_names,
+    reason = "small fixture coordinates and parallel plane names mirror the CUDA API"
+)]
 fn j2k_inverse_dwt_batch_large_reversible_matches_single_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;
@@ -489,7 +493,11 @@ fn j2k_inverse_dwt_batch_large_reversible_matches_single_when_runtime_required()
 }
 
 #[test]
-#[allow(clippy::cast_precision_loss, clippy::similar_names)]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::similar_names,
+    reason = "small fixture coordinates and parallel plane names mirror the CUDA API"
+)]
 fn j2k_inverse_dwt_batch_large_irreversible_matches_single_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;
@@ -593,7 +601,11 @@ fn j2k_inverse_dwt_batch_large_irreversible_matches_single_when_runtime_required
 }
 
 #[test]
-#[allow(clippy::cast_precision_loss, clippy::similar_names)]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::similar_names,
+    reason = "small fixture coordinates and parallel plane names mirror the CUDA API"
+)]
 fn j2k_inverse_dwt_batch_512_reversible_matches_single_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;
@@ -770,7 +782,11 @@ fn j2k_inverse_dwt_batch_enqueue_matches_expected_outputs_when_runtime_required(
 }
 
 #[test]
-#[allow(clippy::similar_names, clippy::too_many_lines)]
+#[expect(
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "end-to-end reversible pipeline fixture keeps staged buffer assertions together"
+)]
 fn j2k_inverse_dwt_batch_sequence_enqueue_matches_two_stage_path_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;
@@ -1062,7 +1078,11 @@ fn j2k_store_rgb8_mct_matches_inverse_mct_plus_store_when_runtime_required() {
 }
 
 #[test]
-#[allow(clippy::similar_names, clippy::too_many_lines)]
+#[expect(
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "end-to-end irreversible pipeline fixture keeps staged buffer assertions together"
+)]
 fn j2k_store_rgb8_mct_batch_matches_separate_stores_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;
@@ -1617,7 +1637,10 @@ fn htj2k_decode_multi_cleanup_dequant_kernel_rejects_refinement_jobs() {
 }
 
 #[test]
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "source/destination plane variables mirror the transcode stage contract"
+)]
 fn htj2k_cleanup_multi_empty_targets_use_no_dispatch_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;
@@ -1656,7 +1679,10 @@ fn htj2k_cleanup_multi_empty_targets_use_no_dispatch_when_runtime_required() {
 }
 
 #[test]
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "source/destination plane variables mirror the transcode stage contract"
+)]
 fn htj2k_cleanup_multi_enqueue_empty_targets_finish_with_no_dispatch_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;

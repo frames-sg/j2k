@@ -106,6 +106,10 @@ struct CudaHtj2kPacketizationState {
     subbands: Vec<CudaHtj2kPacketizationSubbandState>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-pass packet-plan flattening keeps descriptor offsets and payload bytes consistent"
+)]
 pub(super) fn flatten_cuda_htj2k_packetization_job(
     job: J2kPacketizationEncodeJob<'_>,
 ) -> core::result::Result<CudaHtj2kPacketizationPlan, &'static str> {
@@ -346,7 +350,10 @@ impl CudaHtj2kPacketizationTagTreeState {
         self.values[idx] = value;
     }
 
-    #[allow(clippy::similar_names)]
+    #[expect(
+        clippy::similar_names,
+        reason = "prev/curr dimensions identify adjacent tag-tree levels"
+    )]
     fn propagate(&mut self) {
         for level in 1..self.widths.len() {
             let prev_w = self.widths[level - 1];
@@ -560,6 +567,10 @@ fn flatten_cuda_htj2k_packet_with_state(
     flatten_cuda_htj2k_packet_inner(resolution, layer, Some(state), sink)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-packet flattening keeps tag-tree state and emitted descriptor offsets coupled"
+)]
 fn flatten_cuda_htj2k_packet_inner(
     resolution: &J2kPacketizationResolution<'_>,
     layer: u8,

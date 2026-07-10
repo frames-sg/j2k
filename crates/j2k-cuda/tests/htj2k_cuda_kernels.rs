@@ -17,13 +17,21 @@ use j2k_native::{
 use j2k_test_support::cuda_runtime_gate;
 
 #[cfg(feature = "cuda-runtime")]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "rounded sample is clamped to the complete u8 range"
+)]
 fn rounded_u8(sample: f32) -> u8 {
     sample.round().clamp(0.0, 255.0) as u8
 }
 
 #[cfg(feature = "cuda-runtime")]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "rounded sample is clamped to the selected u16 range"
+)]
 fn rounded_u16(sample: f32, bit_depth: u32) -> u16 {
     let rounded = sample.round();
     if bit_depth >= 16 {
@@ -584,6 +592,10 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_cleanup_packet_when_req
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "multi-block packet fixture preserves one byte-exact native/CUDA comparison"
+)]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when_required() {
     if !cuda_runtime_gate(module_path!()) {
         return;
@@ -800,6 +812,10 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_refinement_pass_packet_
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "previous-inclusion fixture preserves one byte-exact native/CUDA comparison"
+)]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_layer_when_required() {
     if !cuda_runtime_gate(module_path!()) {
         return;
@@ -949,6 +965,10 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_lay
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "deferred-inclusion fixture preserves one byte-exact native/CUDA comparison"
+)]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusion_when_required() {
     if !cuda_runtime_gate(module_path!()) {
         return;
@@ -1094,6 +1114,10 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "multi-packet deferred-inclusion fixture preserves the complete tag-tree regression"
+)]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusion_after_non_empty_packet_when_required(
 ) {
     if !cuda_runtime_gate(module_path!()) {

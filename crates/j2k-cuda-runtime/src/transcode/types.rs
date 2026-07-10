@@ -262,7 +262,6 @@ pub(super) struct Dwt97ColumnLiftQuantizeCodeblocksBatchLaunch<'a> {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[cfg_attr(not(feature = "cuda-oxide-transcode"), allow(dead_code))]
 pub(super) struct Dwt97ColumnLiftQuantizeCodeblocksParams {
     pub(super) cb_width: i32,
     pub(super) cb_height: i32,

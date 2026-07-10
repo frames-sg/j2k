@@ -83,17 +83,21 @@ impl CodecError for Error {
     }
 }
 
-#[cfg_attr(not(any(test, feature = "cuda-runtime")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, feature = "cuda-runtime")),
+    expect(
+        dead_code,
+        reason = "native decode translation is used by CUDA decode and its tests"
+    )
+)]
 pub(crate) fn native_decode_error(error: NativeDecodeError) -> Error {
     Error::Decode(native_decode_j2k_error(error))
 }
 
-#[cfg_attr(not(any(test, feature = "cuda-runtime")), allow(dead_code))]
 fn adapter_backend_error(message: impl Into<String>) -> J2kError {
     J2kError::Backend(BackendError::new(BackendErrorKind::Other, message))
 }
 
-#[cfg_attr(not(any(test, feature = "cuda-runtime")), allow(dead_code))]
 fn native_decode_j2k_error(error: NativeDecodeError) -> J2kError {
     match error.classify() {
         NativeDecodeErrorClass::InputTooShort { need, have } => {

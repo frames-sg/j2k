@@ -583,7 +583,6 @@ impl CudaContext {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
     fn encode_htj2k_kernel_jobs_device_with_resources(
         &self,
         coefficient_buffer: &CudaDeviceBuffer,
@@ -599,7 +598,10 @@ impl CudaContext {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pooled HT encode keeps CUDA buffer lifetimes, compaction, and timings atomic"
+    )]
     fn encode_htj2k_kernel_jobs_device_with_resources_and_pool(
         &self,
         coefficient_buffer: &CudaDeviceBuffer,
@@ -732,7 +734,10 @@ impl CudaContext {
         })
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "multi-input HT compaction keeps job offsets and device buffers synchronized"
+    )]
     fn encode_htj2k_multi_input_kernel_jobs_device_compact_with_resources_and_pool(
         &self,
         kernel_jobs: &[CudaHtj2kEncodeMultiInputKernelJob],

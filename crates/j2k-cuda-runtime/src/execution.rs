@@ -421,7 +421,11 @@ impl CudaEvent {
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "rounded normalized samples are clamped to the complete u8 output range"
+)]
 pub(crate) fn elapsed_event_us_ceil(start: &CudaEvent, end: &CudaEvent) -> Result<u128, CudaError> {
     let elapsed = CudaEvent::elapsed_time_us(start, end)?;
     if elapsed <= 0.0 {

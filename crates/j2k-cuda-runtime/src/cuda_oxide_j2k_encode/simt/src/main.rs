@@ -1,8 +1,18 @@
 #![allow(
     clippy::manual_div_ceil,
+    reason = "CUDA device toolchain compatibility requires explicit integer ceiling division"
+)]
+#![allow(
     clippy::manual_is_multiple_of,
+    reason = "CUDA device toolchain compatibility requires explicit remainder checks"
+)]
+#![allow(
     clippy::too_many_arguments,
-    static_mut_refs
+    reason = "flat device helpers mirror CUDA ABI buffers and launch metadata"
+)]
+#![allow(
+    static_mut_refs,
+    reason = "CUDA shared-memory statics are accessed through device-scoped references"
 )]
 
 mod abi;

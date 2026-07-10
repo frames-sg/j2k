@@ -79,7 +79,10 @@ impl<'a> Decoder<'a> {
     }
 
     #[cfg(not(feature = "cuda-runtime"))]
-    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled shim preserves the runtime-enabled method signature"
+    )]
     fn decode_cuda_rgb8(&mut self, _session: &mut CudaSession) -> Result<Surface, Error> {
         j2k_profile::emit_gpu_route_decision_profile(
             ("jpeg", "cuda"),

@@ -291,6 +291,10 @@ pub(super) fn cuda_encode_htj2k_device_tile_body(
 }
 
 #[cfg(feature = "cuda-runtime")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "resident HTJ2K encoding keeps CUDA stage order, fallbacks, and profiling atomic"
+)]
 fn cuda_encode_htj2k_resident_components_body(
     context: &CudaContext,
     encode_resources: &CudaHtj2kEncodeResources,

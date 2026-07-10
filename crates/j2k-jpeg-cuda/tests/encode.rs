@@ -1,12 +1,12 @@
 use j2k_core::CodecError;
 #[cfg(feature = "cuda-runtime")]
 use j2k_core::PixelFormat;
-#[cfg(feature = "cuda-runtime")]
-use j2k_jpeg::Decoder;
 use j2k_jpeg::{
-    encode_jpeg_baseline, DecodeRequest, JpegBackend, JpegEncodeError, JpegEncodeOptions,
-    JpegSamples, JpegSubsampling,
+    encode_jpeg_baseline, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSamples,
+    JpegSubsampling,
 };
+#[cfg(feature = "cuda-runtime")]
+use j2k_jpeg::{DecodeRequest, Decoder};
 
 struct EncodeClassificationCase {
     error: JpegEncodeError,

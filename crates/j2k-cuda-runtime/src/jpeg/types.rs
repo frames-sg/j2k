@@ -468,7 +468,6 @@ define_cuda_jpeg_rgb8_decode_plan! {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
 pub(crate) struct CudaJpeg420Params {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -486,7 +485,6 @@ unsafe impl crate::execution::CudaKernelParam for CudaJpeg420Params {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
 pub(crate) struct CudaJpegEntropyChunkParams {
     pub(crate) entropy_len: u32,
     pub(crate) entropy_bits: u32,
@@ -504,7 +502,6 @@ unsafe impl crate::execution::CudaKernelParam for CudaJpegEntropyChunkParams {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
 pub(crate) struct CudaJpegDecodeStatus {
     pub(crate) code: u32,
     pub(crate) detail: u32,

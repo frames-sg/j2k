@@ -108,7 +108,13 @@ impl CudaHtj2kProfileReport {
     }
 
     /// Emit the report using `J2K_PROFILE_STAGES`, when enabled.
-    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "decode reports are emitted only by CUDA runtime routes"
+        )
+    )]
     pub(crate) fn emit(&self, path: &str) {
         emit_htj2k_profile_row(path, self);
         export_trace_if_requested(path, self);
@@ -192,7 +198,13 @@ pub(crate) fn profile_stages_enabled() -> bool {
     profile_stage_mode() != ProfileStageMode::Disabled
 }
 
-#[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+#[cfg_attr(
+    all(not(feature = "cuda-runtime"), not(test)),
+    expect(
+        dead_code,
+        reason = "payload upload timing is recorded only by CUDA runtime routes"
+    )
+)]
 pub(crate) fn add_payload_resource_upload_us(
     report: &mut CudaHtj2kProfileReport,
     elapsed_us: u128,
@@ -201,7 +213,13 @@ pub(crate) fn add_payload_resource_upload_us(
     report.detail.payload_upload_us = report.detail.payload_upload_us.saturating_add(elapsed_us);
 }
 
-#[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+#[cfg_attr(
+    all(not(feature = "cuda-runtime"), not(test)),
+    expect(
+        dead_code,
+        reason = "decode totals are finalized only by CUDA runtime routes"
+    )
+)]
 pub(crate) fn finalize_decode_total_us(report: &mut CudaHtj2kProfileReport) {
     report.total_us = [
         report.parse_us,
@@ -220,7 +238,6 @@ pub(crate) fn finalize_decode_total_us(report: &mut CudaHtj2kProfileReport) {
     report.detail.stage_sum_us = report.total_us;
 }
 
-#[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
 pub(crate) fn emit_htj2k_profile_row(path: &str, report: &CudaHtj2kProfileReport) {
     let parse_us = report.parse_us.to_string();
     let plan_us = report.plan_us.to_string();
@@ -325,7 +342,6 @@ pub(crate) fn emit_htj2k_encode_profile_row(path: &str, report: &CudaHtj2kEncode
     );
 }
 
-#[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
 fn export_trace_if_requested(path: &str, report: &CudaHtj2kProfileReport) {
     let Some(trace_path) = std::env::var_os(CUDA_TRACE_ENV_VAR) else {
         return;
@@ -360,7 +376,6 @@ fn emit_trace_write_failure(
     );
 }
 
-#[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
 fn chrome_trace_json(path: &str, report: &CudaHtj2kProfileReport) -> String {
     let stages = [
         ("parse", report.parse_us),

@@ -665,7 +665,6 @@ fn cuda_oxide_simt_helpers_use_shared_prelude() {
         PatternCheck::new("CUDA Oxide SIMT prelude", &prelude).required(&[
             "fn simt_load<T: Copy>",
             "fn simt_store<T>",
-            "fn simt_ptr_at<T>",
             "fn simt_mut_ptr_at<T>",
             "SAFETY: CUDA-Oxide kernels pass validated device buffers",
         ]),
@@ -720,7 +719,6 @@ fn cuda_oxide_simt_helpers_use_shared_prelude() {
             assert!(
                 source.contains("simt_load")
                     || source.contains("simt_store")
-                    || source.contains("simt_ptr_at")
                     || source.contains("simt_mut_ptr_at"),
                 "{relative} helper wrappers must delegate to the shared SIMT prelude"
             );

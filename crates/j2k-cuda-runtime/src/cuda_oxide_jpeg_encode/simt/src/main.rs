@@ -1,9 +1,15 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::manual_div_ceil,
+    reason = "bounded JPEG device math narrows clamped DCT and entropy values to the kernel ABI"
+)]
+#![allow(
     clippy::many_single_char_names,
-    clippy::too_many_arguments
+    reason = "DCT equations use conventional x/y/u/v frequency coordinates"
+)]
+#![allow(
+    clippy::too_many_arguments,
+    reason = "flat device helpers mirror CUDA ABI buffers and launch metadata"
 )]
 
 use cuda_device::{kernel, thread};

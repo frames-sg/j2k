@@ -112,10 +112,19 @@ pub(crate) struct Driver {
     pub(crate) cu_memcpy_dtoh: CuMemcpyDtoH,
     pub(crate) cu_memset_d32: CuMemsetD32,
     pub(crate) cu_get_error_name: CuGetErrorName,
-    #[cfg_attr(not(j2k_cuda_oxide_enabled), allow(dead_code))]
+    #[cfg_attr(
+        not(j2k_cuda_oxide_enabled),
+        expect(
+            dead_code,
+            reason = "module loading is used only by CUDA Oxide kernels"
+        )
+    )]
     pub(crate) cu_module_load_data: CuModuleLoadData,
     pub(crate) cu_module_unload: CuModuleUnload,
-    #[cfg_attr(not(j2k_cuda_oxide_enabled), allow(dead_code))]
+    #[cfg_attr(
+        not(j2k_cuda_oxide_enabled),
+        expect(dead_code, reason = "kernel lookup is used only by CUDA Oxide modules")
+    )]
     pub(crate) cu_module_get_function: CuModuleGetFunction,
     pub(crate) cu_launch_kernel: CuLaunchKernel,
     pub(crate) cu_ctx_synchronize: CuCtxSynchronize,

@@ -223,7 +223,10 @@ fn cpu_forward_dwt53(samples: &[f32], width: u32, height: u32, num_levels: u8) -
     buffer
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "benchmark oracle intentionally rounds reversible coefficients to i32"
+)]
 fn cpu_quantize_reversible(samples: &[f32]) -> Vec<i32> {
     samples.iter().map(|sample| sample.round() as i32).collect()
 }

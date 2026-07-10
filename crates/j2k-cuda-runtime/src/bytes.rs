@@ -105,9 +105,15 @@ macro_rules! gpu_slice_bytes_mut {
 }
 
 gpu_ref_bytes! {
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "cuda-oxide-jpeg-decode"),
+        expect(dead_code, reason = "helper is used only by the JPEG decode kernel feature")
+    )]
     cuda_jpeg_huffman_table_as_bytes: CudaJpegHuffmanTable;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "cuda-oxide-jpeg-encode"),
+        expect(dead_code, reason = "helper is used only by the JPEG encode kernel feature")
+    )]
     cuda_jpeg_baseline_encode_huffman_table_as_bytes: CudaJpegBaselineEncodeHuffmanTable;
     store_gray8_job_as_bytes: CudaJ2kStoreGray8Job;
     store_gray16_job_as_bytes: CudaJ2kStoreGray16Job;
@@ -123,17 +129,17 @@ gpu_slice_bytes! {
     i16_slice_as_bytes: i16;
     i32_slice_as_bytes: i32;
     u16_slice_as_bytes: u16;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), expect(dead_code, reason = "helper is used only by the JPEG decode kernel feature"))]
     cuda_jpeg_entropy_checkpoints_as_bytes: CudaJpegEntropyCheckpoint;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), expect(dead_code, reason = "helper is used only by the JPEG decode kernel feature"))]
     cuda_jpeg_decode_statuses_as_bytes: CudaJpegDecodeStatus;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), expect(dead_code, reason = "helper is used only by the JPEG decode kernel feature"))]
     cuda_jpeg_entropy_sync_states_as_bytes: CudaJpegEntropySyncState;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), expect(dead_code, reason = "helper is used only by the JPEG decode kernel feature"))]
     cuda_jpeg_entropy_overflow_states_as_bytes: CudaJpegEntropyOverflowState;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), expect(dead_code, reason = "helper is used only by the JPEG encode kernel feature"))]
     cuda_jpeg_baseline_encode_params_as_bytes: CudaJpegBaselineEncodeParams;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), expect(dead_code, reason = "helper is used only by the JPEG encode kernel feature"))]
     cuda_jpeg_baseline_encode_statuses_as_bytes: CudaJpegBaselineEncodeStatus;
     store_rgb8_mct_batch_jobs_as_bytes: CudaJ2kStoreRgb8MctBatchJob;
     htj2k_encode_jobs_as_bytes: CudaHtj2kEncodeKernelJob;
@@ -154,13 +160,13 @@ gpu_slice_bytes! {
 gpu_slice_bytes_mut! {
     f32_slice_as_bytes_mut: f32;
     i32_slice_as_bytes_mut: i32;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), expect(dead_code, reason = "helper is used only by the JPEG decode kernel feature"))]
     cuda_jpeg_decode_statuses_as_bytes_mut: CudaJpegDecodeStatus;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), expect(dead_code, reason = "helper is used only by the JPEG decode kernel feature"))]
     cuda_jpeg_entropy_sync_states_as_bytes_mut: CudaJpegEntropySyncState;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-decode"), expect(dead_code, reason = "helper is used only by the JPEG decode kernel feature"))]
     cuda_jpeg_entropy_overflow_states_as_bytes_mut: CudaJpegEntropyOverflowState;
-    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda-oxide-jpeg-encode"), expect(dead_code, reason = "helper is used only by the JPEG encode kernel feature"))]
     cuda_jpeg_baseline_encode_statuses_as_bytes_mut: CudaJpegBaselineEncodeStatus;
     htj2k_encode_statuses_as_bytes_mut: CudaHtj2kEncodeStatus;
     htj2k_packetization_statuses_as_bytes_mut: CudaHtj2kPacketizationStatus;
