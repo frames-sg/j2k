@@ -345,9 +345,16 @@ fn benchmark_targets_are_not_test_targets() {
 fn large_test_files_stay_split_by_axis() {
     let root = repo_root();
     for (relative, max_lines) in [
-        ("crates/j2k-metal/src/encode/tests.rs", 3_400),
+        ("crates/j2k-metal/src/encode/tests.rs", 150),
         ("crates/j2k-metal/src/encode/tests/batch.rs", 450),
+        ("crates/j2k-metal/src/encode/tests/dwt_parity.rs", 250),
         ("crates/j2k-metal/src/encode/tests/kernels.rs", 1_300),
+        ("crates/j2k-metal/src/encode/tests/layouts.rs", 250),
+        ("crates/j2k-metal/src/encode/tests/resident_batches.rs", 725),
+        ("crates/j2k-metal/src/encode/tests/resident_buffers.rs", 950),
+        ("crates/j2k-metal/src/encode/tests/routing.rs", 850),
+        ("crates/j2k-metal/src/encode/tests/stage_validation.rs", 650),
+        ("crates/j2k-metal/src/encode/tests/stats_inflight.rs", 950),
         ("crates/j2k-jpeg-metal/src/tests.rs", 2_400),
         ("crates/j2k-jpeg-metal/src/tests/reusable_output.rs", 250),
         ("crates/j2k-jpeg-metal/src/tests/textures.rs", 2_400),
