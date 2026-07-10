@@ -241,6 +241,10 @@ fn encode_fast444_region_texture_decode(
 
 #[cfg(target_os = "macos")]
 #[expect(
+    clippy::too_many_lines,
+    reason = "the fast444 texture path keeps validation, Metal resource ownership, command encoding, and completion checks in submission order"
+)]
+#[expect(
     clippy::similar_names,
     reason = "Cb and Cr are normative JPEG component names"
 )]

@@ -423,6 +423,10 @@ fn rgb8_fast422_region_scaled_batch_decode_can_write_into_reusable_metal_texture
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the end-to-end fast422 case verifies mixed tables, resident texture reuse, grouped dispatches, and CPU parity together"
+)]
 fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatches() {
     let Some(session) = metal_session() else {
         return;
@@ -587,6 +591,10 @@ fn rgb8_table_mixed_fast422_region_scaled_texture_batch_groups_resident_dispatch
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the end-to-end fast444 case verifies mixed tables, resident texture reuse, grouped dispatches, and CPU parity together"
+)]
 fn rgb8_table_mixed_fast444_region_scaled_texture_batch_groups_resident_dispatches() {
     let Some(session) = metal_session() else {
         return;
@@ -1102,6 +1110,10 @@ fn rgb8_restart_fast444_region_scaled_batch_decode_writes_reusable_metal_texture
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the end-to-end fast420 case verifies mixed tables, resident texture reuse, grouped dispatches, and CPU parity together"
+)]
 fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatches() {
     let Some(session) = metal_session() else {
         return;
@@ -1408,6 +1420,10 @@ fn rgb8_fast444_texture_batch_decode_fuses_directly_into_reusable_metal_textures
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the end-to-end fast444 case verifies mixed tables, resident texture reuse, grouped dispatches, allocation counts, and CPU parity together"
+)]
 fn rgb8_table_mixed_fast444_texture_batch_groups_resident_dispatches() {
     let Some(session) = metal_session() else {
         return;
@@ -1613,6 +1629,10 @@ fn rgb8_wide_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_tex
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the end-to-end fast422 case verifies mixed tables, resident texture reuse, grouped dispatches, allocation counts, and CPU parity together"
+)]
 fn rgb8_table_mixed_fast422_texture_batch_groups_resident_dispatches() {
     let Some(session) = metal_session() else {
         return;
@@ -2101,6 +2121,10 @@ fn rgb8_distinct_restart_fast420_texture_batch_decode_fuses_directly_into_reusab
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the end-to-end restart case verifies mixed tables, resident texture reuse, grouped dispatches, allocation counts, and CPU parity together"
+)]
 fn rgb8_table_mixed_restart_fast420_texture_batch_groups_resident_dispatches() {
     let Some(session) = metal_session() else {
         return;

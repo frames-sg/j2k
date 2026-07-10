@@ -1166,6 +1166,10 @@ fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_output_buffer() {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this end-to-end helper keeps mixed-table grouping, resident-buffer identity, dispatch counts, and CPU parity in one assertion"
+)]
 fn assert_table_mixed_full_buffer_groups_resident(
     subsampling: JpegSubsampling,
     dimensions: (u32, u32),
@@ -1845,6 +1849,10 @@ fn rgb8_restart_fast444_region_scaled_batch_decode_writes_reusable_metal_output_
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this end-to-end helper keeps region scaling, mixed-table grouping, resident-buffer identity, dispatch counts, and CPU parity in one assertion"
+)]
 fn assert_table_mixed_region_scaled_buffer_groups_resident(
     subsampling: JpegSubsampling,
     dimensions: (u32, u32),

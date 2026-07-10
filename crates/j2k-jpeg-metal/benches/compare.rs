@@ -829,14 +829,7 @@ fn metal_available() -> bool {
     }
 }
 
-fn bench_compare(c: &mut Criterion) {
-    let inputs = load_bench_inputs();
-    let distinct_batches = distinct_region_scaled_batches(&inputs, 64, 256);
-    let coalesced_hit_rate = coalesce_hit_rate_label(63, 64);
-    let has_metal = metal_available();
-
-    bench_fast_packet_planning(c, &inputs);
-
+fn bench_full_and_tile_decode_groups(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
     let mut decode_rgb = c.benchmark_group("decode_rgb");
     for input in inputs.iter().filter(|input| {
         input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
@@ -867,10 +860,13 @@ fn bench_compare(c: &mut Criterion) {
         });
     }
     wsi_tile_batch_rgb.finish();
+}
 
-    bench_resident_texture_batches(c, &inputs, has_metal);
-    bench_resident_viewport_outputs(c, &inputs, has_metal);
-
+fn bench_region_and_scaled_decode_groups(
+    c: &mut Criterion,
+    inputs: &[BenchInput],
+    has_metal: bool,
+) {
     let mut wsi_region_rgb = c.benchmark_group("wsi_region_rgb");
     for input in inputs.iter().filter(|input| {
         input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
@@ -945,7 +941,15 @@ fn bench_compare(c: &mut Criterion) {
         }
     }
     wsi_region_scaled_rgb_q8.finish();
+}
 
+fn bench_scaled_tile_batch_groups(
+    c: &mut Criterion,
+    inputs: &[BenchInput],
+    distinct_batches: &[DistinctTileBatch<'_>],
+    coalesced_hit_rate: &str,
+    has_metal: bool,
+) {
     let mut wsi_tile_batch_scaled_rgb_q4 = c.benchmark_group("wsi_tile_batch_scaled_rgb_q4");
     for input in inputs.iter().filter(|input| input.mode == DecodeMode::Rgb) {
         wsi_tile_batch_scaled_rgb_q4.bench_function(format!("{}/cpu", input.name), |b| {
@@ -993,7 +997,7 @@ fn bench_compare(c: &mut Criterion) {
 
     let mut wsi_tile_batch_region_scaled_distinct_rgb_q4 =
         c.benchmark_group("wsi_tile_batch_region_scaled_distinct_rgb_q4");
-    for batch in &distinct_batches {
+    for batch in distinct_batches {
         wsi_tile_batch_region_scaled_distinct_rgb_q4.bench_function(
             format!(
                 "coalesce_none/{}/cpu/{}",
@@ -1028,7 +1032,9 @@ fn bench_compare(c: &mut Criterion) {
         }
     }
     wsi_tile_batch_region_scaled_distinct_rgb_q4.finish();
+}
 
+fn bench_cold_viewport_groups(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
     let mut viewer_region_scaled_composite_rgb =
         c.benchmark_group("viewer_region_scaled_composite_rgb");
     for input in inputs.iter().filter(|input| {
@@ -1073,7 +1079,9 @@ fn bench_compare(c: &mut Criterion) {
         }
     }
     viewer_region_scaled_composite_rgb_device.finish();
+}
 
+fn bench_warm_viewport_group(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
     let mut viewer_region_scaled_composite_rgb_warm =
         c.benchmark_group("viewer_region_scaled_composite_rgb_warm");
     for input in inputs.iter().filter(|input| {
@@ -1124,7 +1132,9 @@ fn bench_compare(c: &mut Criterion) {
         }
     }
     viewer_region_scaled_composite_rgb_warm.finish();
+}
 
+fn bench_warm_viewport_device_group(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
     let mut viewer_region_scaled_composite_rgb_device_warm =
         c.benchmark_group("viewer_region_scaled_composite_rgb_device_warm");
     for input in inputs.iter().filter(|input| {
@@ -1175,7 +1185,9 @@ fn bench_compare(c: &mut Criterion) {
         }
     }
     viewer_region_scaled_composite_rgb_device_warm.finish();
+}
 
+fn bench_contiguous_viewport_groups(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
     let mut viewer_contiguous_region_scaled_rgb =
         c.benchmark_group("viewer_contiguous_region_scaled_rgb");
     for input in inputs.iter().filter(|input| {
@@ -1262,7 +1274,9 @@ fn bench_compare(c: &mut Criterion) {
         }
     }
     viewer_contiguous_region_scaled_rgb_device.finish();
+}
 
+fn bench_adaptive_viewport_groups(c: &mut Criterion, inputs: &[BenchInput]) {
     let mut viewer_best_region_scaled_rgb_device =
         c.benchmark_group("viewer_best_region_scaled_rgb_device");
     for input in inputs.iter().filter(|input| {
@@ -1344,6 +1358,31 @@ fn bench_compare(c: &mut Criterion) {
         );
     }
     viewer_best_region_scaled_composite_rgb_device.finish();
+}
+
+fn bench_compare(c: &mut Criterion) {
+    let inputs = load_bench_inputs();
+    let distinct_batches = distinct_region_scaled_batches(&inputs, 64, 256);
+    let coalesced_hit_rate = coalesce_hit_rate_label(63, 64);
+    let has_metal = metal_available();
+
+    bench_fast_packet_planning(c, &inputs);
+    bench_full_and_tile_decode_groups(c, &inputs, has_metal);
+    bench_resident_texture_batches(c, &inputs, has_metal);
+    bench_resident_viewport_outputs(c, &inputs, has_metal);
+    bench_region_and_scaled_decode_groups(c, &inputs, has_metal);
+    bench_scaled_tile_batch_groups(
+        c,
+        &inputs,
+        &distinct_batches,
+        &coalesced_hit_rate,
+        has_metal,
+    );
+    bench_cold_viewport_groups(c, &inputs, has_metal);
+    bench_warm_viewport_group(c, &inputs, has_metal);
+    bench_warm_viewport_device_group(c, &inputs, has_metal);
+    bench_contiguous_viewport_groups(c, &inputs, has_metal);
+    bench_adaptive_viewport_groups(c, &inputs);
 }
 
 criterion_group!(benches, bench_compare);

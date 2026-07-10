@@ -222,6 +222,10 @@ pub(in crate::compute) fn encode_fast444_scaled_batch_item(
     })
 }
 #[expect(
+    clippy::too_many_lines,
+    reason = "the scaled-region encoder binds one ordered Metal command sequence and returns every resource retained through completion"
+)]
+#[expect(
     clippy::similar_names,
     reason = "Cb and Cr are normative JPEG component names"
 )]

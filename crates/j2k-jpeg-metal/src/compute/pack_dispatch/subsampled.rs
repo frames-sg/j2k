@@ -20,6 +20,10 @@ use super::common::{
 
 #[cfg(target_os = "macos")]
 #[expect(
+    clippy::too_many_lines,
+    reason = "the region encoder binds one ordered Metal command sequence and retains all buffers required until completion"
+)]
+#[expect(
     clippy::similar_names,
     reason = "Cb and Cr are normative JPEG component names"
 )]
@@ -143,6 +147,10 @@ pub(in crate::compute) fn encode_fast_subsampled_region_batch_item<P: FastSubsam
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the scaled encoder binds one ordered Metal command sequence and retains all buffers required until completion"
+)]
 #[expect(
     clippy::similar_names,
     reason = "Cb and Cr are normative JPEG component names"
@@ -290,6 +298,10 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_batch_item<P: FastSubsam
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the scaled-region encoder binds one ordered Metal command sequence and returns every resource retained through completion"
+)]
 #[expect(
     clippy::similar_names,
     reason = "Cb and Cr are normative JPEG component names"

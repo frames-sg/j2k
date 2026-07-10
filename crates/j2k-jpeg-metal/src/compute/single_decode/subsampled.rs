@@ -272,6 +272,10 @@ pub(in crate::compute) fn try_decode_fast422_scaled_region_to_surface(
 
 #[cfg(target_os = "macos")]
 #[expect(
+    clippy::too_many_lines,
+    reason = "the single-image path keeps ROI validation, Metal buffer lifetimes, command encoding, and status mapping in submission order"
+)]
+#[expect(
     clippy::similar_names,
     reason = "Cb and Cr are normative JPEG component names"
 )]

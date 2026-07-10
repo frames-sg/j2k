@@ -244,6 +244,10 @@ fn decode_region_scaled_rgb8_batch_into_textures_with_runtime(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fallback batch encoder keeps command submission, retained resources, and result ordering in one lifetime scope"
+)]
 fn decode_full_batch_to_surfaces_with_runtime(
     runtime: &MetalRuntime,
     requests: &[batch::QueuedRequest],

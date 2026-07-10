@@ -622,6 +622,10 @@ pub(crate) fn encode_jpeg_baseline_entropy_with_session(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the entropy batch path keeps shared Metal buffers, per-tile descriptors, command submission, and readback in one lifetime scope"
+)]
 pub(crate) fn encode_jpeg_baseline_entropy_batch_with_session(
     session: &crate::MetalBackendSession,
     job: &JpegBaselineEntropyEncodeBatchJob<'_>,

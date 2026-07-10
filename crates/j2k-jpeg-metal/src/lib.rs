@@ -532,6 +532,10 @@ pub fn decode_rgb8_batch_to_device_with_session(
     compute::decode_full_batch_to_surfaces_with_session(&requests, session)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the decoder dispatcher keeps the ordered fast-packet routes and CPU fallback together so backend selection stays deterministic"
+)]
 fn decode_surface_from_decoder(
     decoder: &CpuDecoder<'_>,
     pool: &mut CpuScratchPool,

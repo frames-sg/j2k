@@ -23,11 +23,7 @@ const DEFAULT_DIM: u32 = 512;
 const DEFAULT_BATCH_SIZE: usize = 8;
 const DEFAULT_QUALITY: u8 = 90;
 
-fn bench_encode_baseline(c: &mut Criterion) {
-    let dim = bench_dim();
-    let batch_size = bench_batch_size();
-    let tile_bytes = dim as usize * dim as usize * 3;
-    let rgb = j2k_test_support::patterned_rgb8_tiles(dim, dim, batch_size);
+fn bench_single_encode(c: &mut Criterion, dim: u32, tile_bytes: usize, rgb: &[u8]) {
     let cpu_options = options(JpegBackend::Cpu);
     #[cfg(target_os = "macos")]
     let metal_options = options(JpegBackend::Metal);
@@ -83,7 +79,18 @@ fn bench_encode_baseline(c: &mut Criterion) {
         });
     }
     single.finish();
+}
 
+fn bench_batch_encode(
+    c: &mut Criterion,
+    dim: u32,
+    batch_size: usize,
+    tile_bytes: usize,
+    rgb: &[u8],
+) {
+    let cpu_options = options(JpegBackend::Cpu);
+    #[cfg(target_os = "macos")]
+    let metal_options = options(JpegBackend::Metal);
     let mut batch = c.benchmark_group("jpeg_baseline_encode_batch");
     batch.sample_size(10);
     batch.warm_up_time(Duration::from_secs(1));
@@ -145,6 +152,16 @@ fn bench_encode_baseline(c: &mut Criterion) {
         );
     }
     batch.finish();
+}
+
+fn bench_encode_baseline(c: &mut Criterion) {
+    let dim = bench_dim();
+    let batch_size = bench_batch_size();
+    let tile_bytes = dim as usize * dim as usize * 3;
+    let rgb = j2k_test_support::patterned_rgb8_tiles(dim, dim, batch_size);
+
+    bench_single_encode(c, dim, tile_bytes, &rgb);
+    bench_batch_encode(c, dim, batch_size, tile_bytes, &rgb);
 }
 
 fn options(backend: JpegBackend) -> JpegEncodeOptions {

@@ -55,6 +55,10 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the full-batch GPU path keeps eligibility, scratch allocation, command encoding, and completion timing in dispatch order"
+)]
 pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_with_mode_and_output<
     P: FastSubsampledMetal,
 >(

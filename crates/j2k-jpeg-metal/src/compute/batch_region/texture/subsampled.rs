@@ -110,6 +110,10 @@ fn try_decode_fast_subsampled_restart_region_scaled_rgba_batch_to_textures<
 
 #[cfg(target_os = "macos")]
 #[expect(
+    clippy::too_many_lines,
+    reason = "the subsampled texture path keeps batch shape validation, retained scratch buffers, command encoding, and tile assembly in order"
+)]
+#[expect(
     clippy::similar_names,
     reason = "Cb and Cr are normative JPEG component names"
 )]

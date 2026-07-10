@@ -143,6 +143,10 @@ impl Codec {
     /// when eligible, the exact output dimensions and tile capacity callers
     /// should allocate before dispatch.
     #[doc(hidden)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the ordered fail-closed eligibility checks keep the first unsupported batch reason deterministic"
+    )]
     pub fn inspect_rgb8_decoder_batch_metal_output(
         decoders: &[&Decoder<'_>],
         op: j2k_jpeg::JpegDecodeOp,

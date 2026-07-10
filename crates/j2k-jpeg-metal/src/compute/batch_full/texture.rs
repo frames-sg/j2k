@@ -19,6 +19,10 @@ use super::super::{encode_split_coeff_idct_passes, SplitCoeffIdctPasses};
 use super::texture_grouped::try_decode_grouped_fast_subsampled_full_rgba_batch_to_textures;
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "ordered Metal texture command and resource lifetime"
+)]
 pub(in crate::compute) fn try_decode_fast_subsampled_full_rgba_batch_to_textures<
     P: FastSubsampledMetal,
 >(
@@ -35,7 +39,6 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgba_batch_to_textures
     {
         return Ok(None);
     }
-
     let mut family_packets = Vec::with_capacity(packets.len());
     let mut family_modes = Vec::with_capacity(packets.len());
     let mut family_mode = None;
@@ -54,7 +57,6 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgba_batch_to_textures
         family_packets.push(packet);
         family_modes.push(packet_mode);
     }
-
     let Some(first) = family_packets.first().copied() else {
         return Ok(None);
     };

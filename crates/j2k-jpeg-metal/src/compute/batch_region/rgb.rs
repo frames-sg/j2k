@@ -191,6 +191,10 @@ fn try_decode_fast_subsampled_restart_region_scaled_rgb_batch_to_surfaces_with_o
 
 #[cfg(target_os = "macos")]
 #[expect(
+    clippy::too_many_lines,
+    reason = "the region-scaled GPU path keeps batch eligibility, scratch allocation, command encoding, and output copies in dispatch order"
+)]
+#[expect(
     clippy::similar_names,
     reason = "Cb and Cr are normative JPEG component names"
 )]
@@ -359,6 +363,10 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "grouped region-scaled dispatch keeps per-group command buffers, retained resources, and result placement in one lifetime scope"
+)]
 fn try_decode_grouped_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output<
     P: FastRegionScaledMetal,
 >(
