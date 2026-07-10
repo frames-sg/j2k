@@ -1,0 +1,25 @@
+{
+  "threshold": 3.34,
+  "minLines": 20,
+  "minTokens": 50,
+  "maxLines": 20000,
+  "maxSize": "2mb",
+  "mode": "mild",
+  "format": ["rust"],
+  "reporters": ["console", "json"],
+  "output": "target/jscpd",
+  "gitignore": true,
+  "ignore": [
+    "**/benches/**",
+    "**/examples/**",
+    "**/fuzz/**",
+    "**/generated/**",
+    "**/target/**",
+    "**/tests/**",
+    "**/*_tests.rs",
+    "**/tests.rs",
+    "**/build.rs",
+    "**/j2k-test-support/**",
+    "**/j2k-transcode-test-support/**"
+  ]
+}
