@@ -152,6 +152,13 @@ fn encode_compare_binary_exposes_fair_encoder_matrix() {
     let source = [
         include_str!("../src/bin/jp2k_encode_compare.rs"),
         include_str!("../src/encode_compare.rs"),
+        include_str!("../src/encode_compare/types.rs"),
+        include_str!("../src/encode_compare/cli.rs"),
+        include_str!("../src/encode_compare/images.rs"),
+        include_str!("../src/encode_compare/tools.rs"),
+        include_str!("../src/encode_compare/validation.rs"),
+        include_str!("../src/encode_compare/measurement.rs"),
+        include_str!("../src/encode_compare/render.rs"),
     ]
     .concat();
 
