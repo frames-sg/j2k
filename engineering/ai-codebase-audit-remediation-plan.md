@@ -50,15 +50,16 @@ coverage, and the clean release matrix.
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: STR-011 native classic bitplane-decode split, STR-012 JPEG
-  baseline-adapter split, and STR-014 CUDA Oxide transcode-device split
+- Current task: STR-011 native HT block-encode split and STR-014 CUDA J2K
+  host-encode split; STR-012 JPEG stripe-emission split is queued for the next
+  free lane
 - Parallel tasks: pass-order/bit-consumption-preserving native extraction,
   precision/color/ROI-preserving JPEG rendering extraction, and
   ABI/kernel-selection-preserving CUDA transcode extraction
-- Last completed task: STR-012 extended-precision JPEG decode split
-- Last completed implementation commit: 5ae75c75
-  (`refactor(cuda-runtime): split transcode host stages`); the preceding
-  extended-precision JPEG split is bc90529c
+- Last completed task: STR-012 JPEG baseline-adapter split
+- Last completed implementation commit: f6d76f09
+  (`refactor(jpeg): split baseline encode adapter`); the preceding CUDA Oxide
+  transcode-device split is 0e5dbdc3
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
@@ -226,7 +227,7 @@ The rubric was checked against current primary or first-party sources on
 | STR-009 | P2 | in progress | STR-005 through STR-008 | Independently classify every remaining 1,000+ line production file and 250+ line function |
 | STR-010 | P2 | complete | STR-009 | Split mixed release-tooling roots (`xtask/main.rs`, coverage) |
 | STR-011 | P2 | in progress | STR-009 | Split mixed native Tier-1, DWT, and codestream implementation roots |
-| STR-012 | P2 | in progress | STR-009 | Sequential entropy and 12-bit rendering complete; baseline-adapter and stripe-emission roots remain |
+| STR-012 | P2 | in progress | STR-009 | Sequential entropy, 12-bit rendering, and baseline adapter complete; stripe-emission root remains |
 | STR-013 | P2 | complete | STR-009 | Split mixed encode/fixture comparison tooling roots |
 | STR-014 | P2 | in progress | STR-009 | Close actionable GPU/runtime findings from the independent large-file pass |
 | STR-015 | P2 | pending | STR-009 through STR-014 | Remove or narrowly justify broad lint suppressions and hidden production namespace seams |
@@ -977,6 +978,11 @@ patterns that line-count-only inventory misses:
   `too_many_arguments` allowance. Treat this as a broad suppression: run an
   explicit pedantic escalation, fix correctness/comprehension warnings, and
   retain only named, narrow algorithm/ABI exceptions with rationales.
+- `xtask/Cargo.toml` also suppresses the entire `pedantic` group. Release and
+  policy tooling is not exempt from comprehension/static-analysis review; run
+  the same explicit escalation and replace the manifest-wide suppression with
+  focused, documented exceptions only where command/schema compatibility
+  requires the existing spelling.
 
 No `TODO`, `FIXME`, `HACK`, `XXX`, `todo!`, or `unimplemented!` marker remained
 in the 2026-07-09 source scan. Panic/expect/unreachable sites are reviewed by
@@ -1022,6 +1028,16 @@ Extract phase modules without genericizing the hot state machines:
   the Criterion smoke lane passed in commit d56f327f. One intentional 27-line
   hot-loop similarity remains; quantitative pre/post performance evidence is
   still required by the final PERF-001 rerun.
+- completed: classic bitplane decode reduced from 2,124 production lines to a
+  22-line facade with focused arithmetic, bypass, context, facade, observer,
+  scheduler, state, and test modules. Exact 83/83 production signatures,
+  11/11 constants/tables, 4/4 error tokens, and 30/30 hot bodies match; five
+  style/pass/segment/coefficient goldens and a bypass-stuffing golden lock the
+  bitstream and pass order. Default/no-default checks, strict Clippy, 270
+  library tests with one intentional ignore, 38 integrations, and optimized
+  benchmark smoke passed in commit 29bac3c3. One 37-line specialized
+  arithmetic clone remains for codegen symmetry; quantitative pre/post timing
+  is still required by PERF-001.
 
 - completed HT decode: segment validation/API, MEL/VLC readers, cleanup,
   significance, magnitude refinement, and benchmark instrumentation
@@ -1089,6 +1105,14 @@ check and strict Clippy passed; and the pinned touched-path scan remained
 exactly 7 clones/175 duplicated lines. Root independently reran the 113-test
 decode/ROI/scaling/color suite before commit.
 
+Completed STR-012C in commit f6d76f09: `adapter/baseline_encode.rs` fell from
+1,099 to a 26-line facade with focused frame, orchestration, planning, table,
+type, validation, and test modules. Production API/type, constant, standard
+table, zigzag, and string-literal hashes match. Whole JPEG bytes remain exact
+for Gray+restart and RGB 4:4:4/4:2:2/4:2:0; independent round trips,
+restart/DCT parity, structural tests, all-target/all-feature check, strict
+Clippy, and the zero-clone touched-family ratchet passed.
+
 ### STR-013 — comparison tooling
 
 For both encode and fixture comparison tools, separate CLI/options, corpus and
@@ -1145,12 +1169,22 @@ multiset match. Default/all-feature checks, strict Clippy, 90/90 and 93/93 host
 tests, and dependent `j2k-transcode-cuda` compilation passed. The device SIMT
 half remains active; Linux PTX and NVIDIA execution remain external.
 
+Completed the device half of priority 4 in commit 0e5dbdc3: CUDA Oxide
+transcode `simt/src/main.rs` fell from 1,509 to a 13-line root with focused ABI,
+constant, helper, reversible 5/3, irreversible 9/7, quantization, and export
+modules at or below 605 lines. The build script now fail-closed stages and
+rerun-tracks all seven device modules, and a simulated staged-tree comparison
+is exact. All 48 functions, 15 exported kernels, constants/macros, `repr(C)`
+fields/order, arithmetic, and the one shared-prelude include match; strict
+checks/Clippy and 90/93 host-test lanes passed. Actual PTX and NVIDIA execution
+remain external because this host lacks CUDA Oxide and CUDA headers.
+
 | Priority | Split targets | Required boundary |
 |---:|---|---|
 | 1 | JPEG Metal `compute.rs` plus included `fast_packets_impl`, `pack_dispatch_impl`, `batch_decode_full`, `batch_decode_region`, `batch_decode_entry`, `batch_decode_impl`, and `single_decode_impl` (effective 8,511-line namespace) | Replace production `include!` fragments with real modules/explicit imports; split packet, pack, single, RGB/RGBA, and repeated/grouped route families |
 | 2 | Completed: CUDA runtime `j2k_decode.rs` (2,142 physical lines at split) | ABI types, IDWT scheduling, store/MCT, tracing/validation |
 | 3 | Completed: CUDA runtime `jpeg.rs` (1,463 physical lines at split) | Encode/decode ABI and pipeline versus entropy diagnostics; file-wide similar-name allowance removed |
-| 4 | Host complete: CUDA runtime `transcode.rs` (1,665 physical lines at split); CUDA Oxide transcode source (1,509) active | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
+| 4 | Completed: CUDA runtime `transcode.rs` (1,665 physical lines at split) and CUDA Oxide transcode source (1,509) | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
 | 5 | CUDA runtime `j2k_encode.rs` (1,630) and CUDA Oxide J2K encode source (1,490) | Types/results, preprocessing/MCT/DWT/quantization versus tag-tree/packetization/compaction while retaining one device export surface |
 | 6 | Completed: CUDA runtime `context.rs` (1,013 physical lines at split) | Context/pinned memory, kernel cache/loading, and compact result types |
 | 7 | Metal `encode.rs` (1,773) and `decoder.rs` (1,560) | Resident batch/single/host fallback; request/direct plan/core adapters/surface transfer |
@@ -1172,6 +1206,9 @@ structural splits settle.
 - remove the native manifest-wide `pedantic = allow`; promote the group to the
   normal warning policy after the explicit escalation is clean, with focused
   exceptions only where codec math or a stable signature genuinely requires it
+- remove the xtask manifest-wide `pedantic = allow` under the same fail-closed
+  standard; release automation must not hide warnings that application crates
+  surface normally
 - narrow math/SIMD lint exceptions to the smallest hot function that genuinely
   requires the spelling, with a one-line rationale and owner/trigger in this
   runbook
