@@ -21,13 +21,13 @@ use j2k_native::{
     pack_j2k_code_block_scalar_from_tier1_tokens, ColorSpace as NativeColorSpace,
     DecodedComponents as NativeDecodedComponents, EncodeProgressionOrder, EncodedHtJ2kCodeBlock,
     EncodedJ2kCodeBlock, HtCodeBlockDecodeJob, HtSubBandDecodeJob, J2kCodeBlockDecodeJob,
-    J2kCodeBlockSegment, J2kDeinterleaveToF32Job, J2kDirectBandId, J2kDirectColorPlan,
-    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
-    J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
-    J2kHtCodeBlockEncodeJob, J2kInverseMctJob, J2kPacketizationBlockCodingMode,
-    J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor, J2kQuantizeSubbandJob,
-    J2kRequiredBandRegion, J2kSingleDecompositionIdwtJob, J2kStoreComponentJob,
-    J2kSubBandDecodeJob, J2kTier1CodeBlockEncodeJob, J2kTier1TokenSegment, J2kWaveletTransform,
+    J2kCodeBlockSegment, J2kDeinterleaveToF32Job, J2kDirectBandId, J2kDirectGrayscalePlan,
+    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kForwardDwt53Level,
+    J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output, J2kHtCodeBlockEncodeJob,
+    J2kInverseMctJob, J2kPacketizationBlockCodingMode, J2kPacketizationEncodeJob,
+    J2kPacketizationPacketDescriptor, J2kQuantizeSubbandJob, J2kRequiredBandRegion,
+    J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kSubBandDecodeJob,
+    J2kTier1CodeBlockEncodeJob, J2kTier1TokenSegment, J2kWaveletTransform,
 };
 #[cfg(target_os = "macos")]
 use metal::{
@@ -294,7 +294,71 @@ fn checked_metal_buffer_len_u64(len: usize, context: &'static str) -> Result<u64
     })
 }
 
-include!("compute/direct_execute_impl.rs");
+#[cfg(target_os = "macos")]
+mod direct_plan_types;
+#[cfg(target_os = "macos")]
+use self::direct_plan_types::{
+    HtCodedArena, PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    PreparedClassicSubBandGroupMember, PreparedDirectGrayscaleStep, PreparedDirectIdwt,
+    PreparedHtSubBand, PreparedHtSubBandGroup, PreparedHtSubBandGroupMember,
+};
+#[cfg(target_os = "macos")]
+pub(crate) use self::direct_plan_types::{PreparedDirectColorPlan, PreparedDirectGrayscalePlan};
+#[cfg(target_os = "macos")]
+mod direct_plane_pack;
+#[cfg(target_os = "macos")]
+use self::direct_plane_pack::{
+    encode_batched_mct_rgb8_to_surfaces_in_command_buffer,
+    encode_mct_rgb8_to_surface_in_command_buffer, encode_plane_stage_to_surface_in_command_buffer,
+    encode_repeated_mct_rgb8_to_surfaces_in_command_buffer,
+    repeated_shared_direct_color_plan_count, PlaneStage,
+};
+#[cfg(target_os = "macos")]
+mod direct_prepare;
+#[cfg(target_os = "macos")]
+pub(crate) use self::direct_prepare::*;
+#[cfg(target_os = "macos")]
+mod direct_roi;
+#[cfg(target_os = "macos")]
+pub(crate) use self::direct_roi::*;
+#[cfg(target_os = "macos")]
+mod direct_grayscale_execute;
+#[cfg(target_os = "macos")]
+pub(crate) use self::direct_grayscale_execute::*;
+#[cfg(target_os = "macos")]
+mod direct_stacked_batch;
+#[cfg(target_os = "macos")]
+use self::direct_stacked_batch::{
+    encode_prepared_direct_color_plan_in_command_buffer,
+    encode_repeated_direct_grayscale_plan_in_command_buffer,
+    encode_stacked_direct_component_plane_batch, lookup_direct_band_slice,
+    lookup_direct_band_slice_entry, signed_sample_bias,
+    supports_stacked_direct_component_plane_batch, try_encode_stacked_mct_rgb8_direct_color_batch,
+    DirectBandSlice, DirectColorPlanRequest, RepeatedDirectGrayscalePlanRequest,
+    StackedDirectColorBatchRequest, StackedDirectComponentPlaneBatchRequest,
+};
+#[cfg(target_os = "macos")]
+mod direct_surface_pack;
+#[cfg(all(target_os = "macos", test))]
+use self::direct_surface_pack::j2k_pack_kernel_name_for;
+#[cfg(target_os = "macos")]
+use self::direct_surface_pack::{
+    copy_plane_samples, encode_gray_plane_to_surface_in_command_buffer_with_offset,
+    encode_gray_plane_to_surface_in_encoder,
+    encode_repeated_gray_plane_to_surfaces_in_command_buffer, output_shape_for,
+};
+#[cfg(target_os = "macos")]
+mod direct_execute;
+#[cfg(target_os = "macos")]
+pub(crate) use self::direct_execute::{
+    crop_prepared_direct_color_plan_to_output_region, prepare_direct_color_plan,
+    prepare_direct_color_plan_for_cpu_upload,
+};
+#[cfg(all(target_os = "macos", test))]
+use self::direct_execute::{
+    prepared_direct_grayscale_plan_compute_encoder_count,
+    prepared_repeated_direct_ht_cleanup_dispatch_count,
+};
 #[cfg(target_os = "macos")]
 mod forward_transform;
 #[cfg(target_os = "macos")]

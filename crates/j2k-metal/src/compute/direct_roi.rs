@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{PreparedDirectGrayscalePlan, Rect, Error, PreparedDirectGrayscaleStep, J2kRequiredBandRegion, HashMap, J2kDirectBandId, idwt_required_output_margin, DirectTier1Mode, with_runtime, borrow_slice_buffer, prepare_classic_sub_band_groups, prepare_ht_sub_band_groups, prepare_ungrouped_ht_sub_band_buffers, DirectBandSlice, PreparedDirectIdwt, J2kIdwtSingleDecompositionParams, J2kRepeatedIdwtSingleDecompositionParams, J2kDirectIdwtStep, idwt_required_input_windows, J2kClassicCleanupBatchJob, J2kHtCleanupBatchJob, PreparedHtSubBand, J2kDirectStoreStep};
+use super::{
+    borrow_slice_buffer, idwt_required_input_windows, idwt_required_output_margin,
+    prepare_classic_sub_band_groups, prepare_ht_sub_band_groups,
+    prepare_ungrouped_ht_sub_band_buffers, with_runtime, DirectBandSlice, DirectTier1Mode, Error,
+    HashMap, J2kClassicCleanupBatchJob, J2kDirectBandId, J2kDirectIdwtStep, J2kDirectStoreStep,
+    J2kHtCleanupBatchJob, J2kIdwtSingleDecompositionParams,
+    J2kRepeatedIdwtSingleDecompositionParams, J2kRequiredBandRegion, PreparedDirectGrayscalePlan,
+    PreparedDirectGrayscaleStep, PreparedDirectIdwt, PreparedHtSubBand, Rect,
+};
 
 #[cfg(target_os = "macos")]
 pub(crate) fn crop_prepared_direct_grayscale_plan_to_output_region(

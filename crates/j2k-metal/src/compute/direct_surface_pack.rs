@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{Buffer, Rect, MetalRuntime, ComputeCommandEncoderRef, PixelFormat, Surface, Error, CommandBufferRef, checked_metal_surface_len, checked_metal_buffer_len_u64, MTLResourceOptions, NativeColorSpace, j2k_pack_scale_arrays, J2kPackParams, j2k_u32_param, size_of, dispatch_2d_pipeline, j2k_scalar_pack_params, J2kRepeatedGrayPackParams, dispatch_3d_pipeline, ComputePipelineState};
+use super::{
+    checked_metal_buffer_len_u64, checked_metal_surface_len, dispatch_2d_pipeline,
+    dispatch_3d_pipeline, j2k_pack_scale_arrays, j2k_scalar_pack_params, j2k_u32_param, size_of,
+    Buffer, CommandBufferRef, ComputeCommandEncoderRef, ComputePipelineState, Error, J2kPackParams,
+    J2kRepeatedGrayPackParams, MTLResourceOptions, MetalRuntime, NativeColorSpace, PixelFormat,
+    Rect, Surface,
+};
 
 #[cfg(target_os = "macos")]
 pub(super) fn copy_plane_samples(
@@ -11,9 +17,11 @@ pub(super) fn copy_plane_samples(
 ) -> Result<(), Error> {
     let row_width = roi.w as usize;
     let row_count = roi.h as usize;
-    let dst_len = row_width.checked_mul(row_count).ok_or_else(|| Error::MetalKernel {
-        message: "J2K MetalDirect plane upload sample count overflow".to_string(),
-    })?;
+    let dst_len = row_width
+        .checked_mul(row_count)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K MetalDirect plane upload sample count overflow".to_string(),
+        })?;
     let mut staged = Vec::with_capacity(dst_len);
 
     for row in 0..row_count {

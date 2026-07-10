@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{DirectTier1Mode, PreparedClassicSubBand, Error, J2kClassicSegment, J2kClassicCleanupBatchJob, classic_style_flags, with_runtime, prepare_direct_tier1_input_buffer, PreparedDirectGrayscaleStep, PreparedClassicSubBandGroup, PreparedClassicSubBandGroupMember, BandRequiredRegion, PreparedHtSubBand, J2kHtCleanupBatchJob, PreparedHtSubBandGroup, PreparedHtSubBandGroupMember, HtCodedArena, Buffer, J2kDirectGrayscalePlan, PreparedDirectGrayscalePlan, J2kDirectGrayscaleStep, PreparedDirectIdwt, Arc, CpuTier1CoefficientCache};
+use super::{
+    classic_style_flags, prepare_direct_tier1_input_buffer, with_runtime, Arc, BandRequiredRegion,
+    Buffer, CpuTier1CoefficientCache, DirectTier1Mode, Error, HtCodedArena,
+    J2kClassicCleanupBatchJob, J2kClassicSegment, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
+    J2kHtCleanupBatchJob, PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    PreparedClassicSubBandGroupMember, PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
+    PreparedDirectIdwt, PreparedHtSubBand, PreparedHtSubBandGroup, PreparedHtSubBandGroupMember,
+};
 
 #[cfg(target_os = "macos")]
 pub(super) fn prepare_classic_sub_band(
@@ -94,12 +101,7 @@ pub(super) fn prepare_sub_band_groups<'a, SubBand: 'a, Group>(
     steps: &'a [PreparedDirectGrayscaleStep],
     tier1_prepare_mode: DirectTier1Mode,
     mut sub_band_for_step: impl FnMut(&'a PreparedDirectGrayscaleStep) -> Option<&'a SubBand>,
-    mut prepare_group: impl FnMut(
-        usize,
-        usize,
-        &[&'a SubBand],
-        DirectTier1Mode,
-    ) -> Result<Group, Error>,
+    mut prepare_group: impl FnMut(usize, usize, &[&'a SubBand], DirectTier1Mode) -> Result<Group, Error>,
 ) -> Result<Vec<Group>, Error> {
     let mut groups = Vec::new();
     let mut step_idx = 0;
@@ -427,7 +429,10 @@ pub(super) fn prepare_ungrouped_ht_sub_band_buffers(
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn prepared_ht_buffer<'a>(buffer: Option<&'a Buffer>, label: &str) -> Result<&'a Buffer, Error> {
+pub(super) fn prepared_ht_buffer<'a>(
+    buffer: Option<&'a Buffer>,
+    label: &str,
+) -> Result<&'a Buffer, Error> {
     buffer.ok_or_else(|| Error::MetalKernel {
         message: format!("HTJ2K MetalDirect ungrouped sub-band is missing prepared {label} buffer"),
     })

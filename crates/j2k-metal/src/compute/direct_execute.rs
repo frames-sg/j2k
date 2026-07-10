@@ -1,61 +1,36 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(target_os = "macos")]
-mod direct_plan_types;
-#[cfg(target_os = "macos")]
-pub(crate) use self::direct_plan_types::{PreparedDirectColorPlan, PreparedDirectGrayscalePlan};
-#[cfg(target_os = "macos")]
-use self::direct_plan_types::{
-    HtCodedArena, PreparedClassicSubBand, PreparedClassicSubBandGroup,
-    PreparedClassicSubBandGroupMember, PreparedDirectGrayscaleStep, PreparedDirectIdwt,
-    PreparedHtSubBand, PreparedHtSubBandGroup, PreparedHtSubBandGroupMember,
-};
-#[cfg(target_os = "macos")]
-mod direct_plane_pack;
-#[cfg(target_os = "macos")]
-use self::direct_plane_pack::{PlaneStage, encode_mct_rgb8_to_surface_in_command_buffer, encode_plane_stage_to_surface_in_command_buffer, repeated_shared_direct_color_plan_count, encode_repeated_mct_rgb8_to_surfaces_in_command_buffer, encode_batched_mct_rgb8_to_surfaces_in_command_buffer};
-#[cfg(target_os = "macos")]
-mod direct_prepare;
-#[cfg(target_os = "macos")]
-pub(crate) use self::direct_prepare::*;
-#[cfg(target_os = "macos")]
-mod direct_roi;
-#[cfg(target_os = "macos")]
-pub(crate) use self::direct_roi::*;
-#[cfg(target_os = "macos")]
-mod direct_grayscale_execute;
-#[cfg(target_os = "macos")]
-pub(crate) use self::direct_grayscale_execute::*;
-#[cfg(target_os = "macos")]
-mod direct_stacked_batch;
-#[cfg(target_os = "macos")]
-use self::direct_stacked_batch::{signed_sample_bias, DirectBandSlice, lookup_direct_band_slice_entry, lookup_direct_band_slice, encode_repeated_direct_grayscale_plan_in_command_buffer, RepeatedDirectGrayscalePlanRequest, supports_stacked_direct_component_plane_batch, encode_stacked_direct_component_plane_batch, StackedDirectComponentPlaneBatchRequest, try_encode_stacked_mct_rgb8_direct_color_batch, StackedDirectColorBatchRequest, encode_prepared_direct_color_plan_in_command_buffer, DirectColorPlanRequest};
-#[cfg(target_os = "macos")]
-mod direct_surface_pack;
-#[cfg(target_os = "macos")]
-use self::direct_surface_pack::{
-    copy_plane_samples, encode_gray_plane_to_surface_in_command_buffer_with_offset,
-    encode_gray_plane_to_surface_in_encoder, encode_repeated_gray_plane_to_surfaces_in_command_buffer,
-    output_shape_for,
-};
-#[cfg(all(target_os = "macos", test))]
-use self::direct_surface_pack::j2k_pack_kernel_name_for;
+#[cfg(test)]
+use j2k_core::PixelFormat;
+use j2k_core::Rect;
+use j2k_native::J2kDirectColorPlan;
 
-#[cfg(target_os = "macos")]
+use crate::Error;
+
+#[cfg(test)]
+use super::direct_plan_types::PreparedDirectGrayscaleStep;
+use super::{
+    direct_plan_types::{
+        PreparedClassicSubBandGroup, PreparedDirectColorPlan, PreparedDirectGrayscalePlan,
+        PreparedHtSubBandGroup,
+    },
+    direct_prepare::{prepare_direct_grayscale_plan, prepare_direct_grayscale_plan_for_cpu_upload},
+    direct_roi::crop_prepared_direct_grayscale_plan_to_output_region,
+    direct_tier1::DirectTier1Mode,
+};
+
 pub(crate) fn prepare_direct_color_plan(
     plan: &J2kDirectColorPlan,
 ) -> Result<PreparedDirectColorPlan, Error> {
     prepare_direct_color_plan_with_tier1_mode(plan, DirectTier1Mode::Metal)
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn prepare_direct_color_plan_for_cpu_upload(
     plan: &J2kDirectColorPlan,
 ) -> Result<PreparedDirectColorPlan, Error> {
     prepare_direct_color_plan_with_tier1_mode(plan, DirectTier1Mode::CpuUpload)
 }
 
-#[cfg(target_os = "macos")]
 fn prepare_direct_color_plan_with_tier1_mode(
     plan: &J2kDirectColorPlan,
     tier1_prepare_mode: DirectTier1Mode,
@@ -85,7 +60,6 @@ fn prepare_direct_color_plan_with_tier1_mode(
     })
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn crop_prepared_direct_color_plan_to_output_region(
     plan: &mut PreparedDirectColorPlan,
     region: Rect,
@@ -114,31 +88,38 @@ pub(crate) fn crop_prepared_direct_color_plan_to_output_region(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 impl PreparedDirectGrayscalePlan {
-    fn classic_group_starting_at(&self, step_idx: usize) -> Option<&PreparedClassicSubBandGroup> {
+    pub(in crate::compute) fn classic_group_starting_at(
+        &self,
+        step_idx: usize,
+    ) -> Option<&PreparedClassicSubBandGroup> {
         self.classic_groups
             .iter()
             .find(|group| group.start_step == step_idx)
     }
 
-    fn ht_group_starting_at(&self, step_idx: usize) -> Option<&PreparedHtSubBandGroup> {
+    pub(in crate::compute) fn ht_group_starting_at(
+        &self,
+        step_idx: usize,
+    ) -> Option<&PreparedHtSubBandGroup> {
         self.ht_groups
             .iter()
             .find(|group| group.start_step == step_idx)
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
-fn prepared_direct_grayscale_plan_compute_encoder_count(
+#[cfg(test)]
+pub(in crate::compute) fn prepared_direct_grayscale_plan_compute_encoder_count(
     plan: &PreparedDirectGrayscalePlan,
     _fmt: PixelFormat,
 ) -> usize {
     usize::from(!plan.steps.is_empty())
 }
 
-#[cfg(all(test, target_os = "macos"))]
-fn prepared_repeated_direct_ht_cleanup_dispatch_count(plan: &PreparedDirectGrayscalePlan) -> usize {
+#[cfg(test)]
+pub(in crate::compute) fn prepared_repeated_direct_ht_cleanup_dispatch_count(
+    plan: &PreparedDirectGrayscalePlan,
+) -> usize {
     let mut dispatches = 0;
     let mut step_idx = 0;
     while step_idx < plan.steps.len() {
