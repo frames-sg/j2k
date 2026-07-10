@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(clippy::similar_names)]
-
 #[cfg(feature = "cuda-runtime")]
 use j2k_core::PixelFormat;
 #[cfg(feature = "cuda-runtime")]
