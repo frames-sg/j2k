@@ -332,10 +332,13 @@ pub(super) fn lossy_quality_layer_count(options: &J2kLossyEncodeOptions) -> u8 {
     u8::try_from(options.quality_layers.len().max(1)).unwrap_or(32)
 }
 
+// `u64::MAX as f64` also rounds to 2^64, so this conversion bound must stay exclusive.
+const U64_EXCLUSIVE_UPPER_BOUND_AS_F64: f64 = 18_446_744_073_709_551_616.0;
+
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "finite positive byte targets are range-checked against u64 before conversion"
+    reason = "finite positive byte targets are checked below the exclusive 2^64 bound before conversion"
 )]
 pub(super) fn target_bytes_for_bpp(
     samples: J2kLossySamples<'_>,
@@ -343,7 +346,7 @@ pub(super) fn target_bytes_for_bpp(
 ) -> Result<u64, J2kError> {
     let pixels = f64::from(samples.width) * f64::from(samples.height);
     let bytes = (pixels * bits_per_pixel / 8.0).ceil();
-    if bytes.is_finite() && bytes > 0.0 && bytes <= 18_446_744_073_709_551_615.0 {
+    if bytes.is_finite() && bytes > 0.0 && bytes < U64_EXCLUSIVE_UPPER_BOUND_AS_F64 {
         Ok(bytes as u64)
     } else {
         Err(J2kError::Unsupported(Unsupported {
@@ -378,4 +381,46 @@ pub(super) fn usize_to_f64(value: usize) -> f64 {
 )]
 pub(super) fn u64_to_f64(value: u64) -> f64 {
     value as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        target_bytes_for_bpp, J2kError, J2kLossyEncodeOptions, J2kLossySamples, J2kRateTarget,
+        Unsupported,
+    };
+    use crate::encode_j2k_lossy;
+
+    const TWO_TO_THE_64: f64 = 18_446_744_073_709_551_616.0;
+
+    fn single_pixel_samples() -> J2kLossySamples<'static> {
+        J2kLossySamples::new(&[0], 1, 1, 1, 8, false).expect("valid single-pixel samples")
+    }
+
+    #[test]
+    fn bits_per_pixel_target_rejects_exactly_two_to_the_64_bytes() {
+        let bits_per_pixel = TWO_TO_THE_64 * 8.0;
+        let options = J2kLossyEncodeOptions::default()
+            .with_rate_target(Some(J2kRateTarget::BitsPerPixel(bits_per_pixel)));
+
+        let result = encode_j2k_lossy(single_pixel_samples(), &options);
+
+        assert!(matches!(
+            result,
+            Err(J2kError::Unsupported(Unsupported {
+                what: "JPEG 2000 lossy bits-per-pixel target overflows byte target"
+            }))
+        ));
+    }
+
+    #[test]
+    fn bits_per_pixel_target_accepts_largest_f64_below_two_to_the_64_bytes() {
+        let largest_representable_byte_target = TWO_TO_THE_64.next_down();
+        let bits_per_pixel = largest_representable_byte_target * 8.0;
+
+        let target = target_bytes_for_bpp(single_pixel_samples(), bits_per_pixel)
+            .expect("largest representable f64 byte target below 2^64 should fit");
+
+        assert_eq!(target, u64::MAX - 2_047);
+    }
 }
