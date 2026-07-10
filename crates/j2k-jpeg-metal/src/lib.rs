@@ -22,6 +22,8 @@ mod decoder;
 mod encode;
 mod error;
 mod fast_packets;
+#[cfg(target_os = "macos")]
+mod resident_batch;
 mod routing;
 mod session;
 mod surface;
@@ -63,6 +65,10 @@ pub use decoder::Decoder;
 pub use error::Error;
 pub(crate) use fast_packets::JpegFastPackets;
 pub use j2k_core::SurfaceResidency;
+#[cfg(target_os = "macos")]
+pub(crate) use resident_batch::report_required_output_dimensions;
+#[cfg(target_os = "macos")]
+pub use resident_batch::JpegMetalResidentBatchReport;
 pub use session::{MetalBackendSession, MetalSession};
 pub(crate) use surface::Storage;
 pub use surface::{
@@ -79,53 +85,6 @@ pub use viewport::{
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 /// JPEG codec marker used by J2K's generic decode traits.
 pub struct Codec;
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Preflight report for RGB8 JPEG Metal resident decoder batches.
-#[doc(hidden)]
-pub struct JpegMetalResidentBatchReport {
-    /// Requested decode operation.
-    pub op: j2k_jpeg::JpegDecodeOp,
-    /// Number of decoder tiles in the batch.
-    pub tile_count: usize,
-    /// Required output dimensions when the batch is eligible and shape-compatible.
-    pub output_dimensions: Option<(u32, u32)>,
-    /// Whether the batch can use reusable RGB8 Metal resident output.
-    pub eligibility: j2k_jpeg::JpegBackendEligibility,
-}
-
-#[cfg(target_os = "macos")]
-impl JpegMetalResidentBatchReport {
-    /// Required number of tile slots in caller-owned Metal output.
-    #[must_use]
-    pub fn required_tile_capacity(&self) -> usize {
-        self.tile_count
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn report_required_output_dimensions(
-    report: &JpegMetalResidentBatchReport,
-) -> Result<Option<(u32, u32)>, Error> {
-    if !report.eligibility.eligible {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: report
-                .eligibility
-                .reason
-                .unwrap_or("JPEG Metal resident batch report is not eligible"),
-        });
-    }
-    if report.tile_count == 0 {
-        return Ok(None);
-    }
-    report
-        .output_dimensions
-        .ok_or(Error::UnsupportedMetalRequest {
-            reason: "JPEG Metal resident batch report is missing output dimensions",
-        })
-        .map(Some)
-}
 
 #[doc(hidden)]
 impl ImageCodec for Codec {

@@ -11,10 +11,9 @@ use j2k_core::{
 
 #[cfg(target_os = "macos")]
 use crate::buffers::checked_buffer_slice_at;
-use crate::{
-    report_required_output_dimensions, scaled_dims, Error, JpegMetalResidentBatchReport,
-    MetalBackendSession,
-};
+#[cfg(target_os = "macos")]
+use crate::{report_required_output_dimensions, JpegMetalResidentBatchReport};
+use crate::{scaled_dims, Error, MetalBackendSession};
 
 #[cfg(target_os = "macos")]
 use metal::foreign_types::ForeignType;
