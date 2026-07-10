@@ -6,6 +6,11 @@ This is the canonical execution record for the 0.7 quality sweep. Git history
 preserves the previous audit diary; do not create competing fixed, new, or
 revision-numbered plans.
 
+Present-tense status is limited to the release verdict, handoff capsule, and
+live task dashboard. The captured baseline, numerical observations, and dated
+evidence elsewhere are historical snapshots, not claims about the current
+worktree unless promoted into one of those live sections.
+
 Priority order is security, correctness, maintainability, then delivery speed.
 The release is blocked until every P1 and P2 item is complete and every P3
 item is either complete or explicitly accepted with evidence.
@@ -31,30 +36,46 @@ Captured baseline:
 The local tag is stale because it excludes all working-tree changes. It must
 not be pushed or reused as release evidence.
 
-No P0 issue was confirmed in the audit. Any later critical security finding
-stops feature and refactor work until triage and remediation are complete.
+The initial audit did not confirm a P0 issue. The later API review confirmed a
+P0 Metal host-read aliasing class: safe readback could overlap mutation through
+safe or publicly reachable raw `Buffer` aliases. SEC-001 closed the confirmed
+class in commits beb4d4e5 and a78cd3e2; an independent equivalent-cache scan
+found no remaining safe host-read/host-write alias path. P1 raw GPU-resource
+ordering and API-hardening work remains release-blocking.
 
 ## 2. Handoff capsule
 
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: REC-001
-- Parallel tasks: BUILD-001/TEST-001, METAL-001, SAFE-001
-- Last completed task: DOC-001
-- Last completed commit: none for this remediation run
+- Current task: GPUORD-001 (P1 reusable texture ordering and raw-resource API)
+- Parallel tasks: CUDA-002 exact release gate and STR-002 direct-stacked
+  validation
+- SEC-001 is closed; independent non-overlapping work has resumed
+- Last completed task: SEC-001 JPEG cache/output synchronization
+- Last completed implementation commit: a78cd3e2
+  (`fix(jpeg-metal): synchronize reusable buffer access`)
 - Candidate state: unfrozen
 - Worktree expectation: dirty; all changes are being reconciled in place
-- Last known green broad gates: pre-delta audit gates only; not candidate proof
+- Last known green broad gates: pre-SEC-001 hosted Metal compile, focused
+  semver/workflow policy, exact-SHA verifier, and Metal suites; none is
+  candidate proof after the public API correction
 - Current blockers:
-  - workspace Clippy failure
-  - unresolved test-ignore inventory
-  - Metal runtime false-green
-  - stale local tag and changelog
-  - comparator test module is intentional but remains uncommitted
+  - reusable private Metal textures still expose safe raw handles and can be
+    written concurrently through cloned output wrappers
+  - `ResidentPrivateJpegTile` still exposes raw Metal resources as public
+    fields, and one unsafe input contract omits device/session compatibility
+  - STR-002 is mechanically split but paused pending SEC-001; its strict
+    Clippy, behavior, allocation-order, and performance checks remain pending
+  - release-cuda, package verification, clone-scanner reproducibility,
+    structural performance evidence, and publication preflight remain open
+  - generated stable-API and reviewed semver reports will be stale after the
+    approved unsafe-boundary API changes
+  - changed-path coverage and the clean final release matrix remain pending
+  - provenance signoff requires the release maintainer's name/handle and date
 - Exact next local command:
 
-      git status --short --branch
+      git diff --check
 
 - After candidate freeze, derive the immutable SHA with:
 
@@ -117,30 +138,81 @@ Duplication is not automatically a defect. Domain symmetry is accepted when
 abstraction would couple unrelated public APIs, hide backend constraints, or
 make code harder to review.
 
-## 5. Task dashboard
+### Research grounding used for this audit
+
+The rubric was checked against current primary or first-party sources on
+2026-07-09:
+
+- The 2026 MSR study [Speed at the Cost of
+  Quality](https://www.cs.cmu.edu/~ckaestne/pdf/msr26.pdf) reports persistent
+  increases in static-analysis warnings and code complexity after Cursor
+  adoption. It did not find a significant whole-sample increase in duplicate
+  line density, though heavy adopters showed a possible modest increase. This
+  is why this audit measures and classifies clones instead of pursuing zero
+  duplication.
+- [Debt Behind the AI
+  Boom](https://arxiv.org/abs/2603.28592) attributes 484,366 issues to sampled
+  AI commits; code smells dominate, more than 15% of commits from every sampled
+  assistant introduce an issue, and 22.7% of tracked issues persist. This
+  grounds the focus on static warnings, dead/speculative code, error handling,
+  and debt that survives beyond the generating change.
+- GitHub's [responsible-use guidance for Copilot
+  agents](https://docs.github.com/en/copilot/responsible-use/agents) explicitly
+  warns about missed issues, false positives, inaccurate or insecure
+  suggestions, and the need for careful human review and testing. Automated
+  review output is therefore evidence to verify, never a release approval by
+  itself.
+- Rust Clippy's official [lint
+  configuration](https://doc.rust-lang.org/clippy/lint_configuration.html)
+  documents default review thresholds of 25 for cognitive complexity and 100
+  lines for a function. This runbook uses size/complexity as review triggers,
+  not automatic deletion or abstraction rules.
+- Sonar's [metric
+  definitions](https://docs.sonarsource.com/sonarqube-server/user-guide/code-metrics/metrics-definition)
+  distinguish cognitive complexity from control-flow path count and define
+  token-based duplicated blocks. The audit therefore pairs structural metrics
+  with reference/dispatch searches and behavior tests before calling code dead
+  or duplicated.
+- The 2026 empirical study [Secure coding with AI — from detection to
+  repair](https://link.springer.com/article/10.1007/s10664-026-10812-8)
+  documents both security weaknesses and model limitations in detecting and
+  repairing them. That supports the independent unsafe-boundary, input,
+  dependency, fuzz, and hardware-path checks in the release matrix.
+
+## 5. Live task dashboard (updated 2026-07-09)
 
 | ID | Severity | Status | Depends on | Outcome |
 |---|---:|---|---|---|
 | DOC-001 | P1 | complete | — | Canonical runbook replaces stale diary |
 | REC-001 | P1 | in progress | DOC-001 | Every dirty file is explained and tested |
-| REL-001 | P1 | pending | REC-001 | Stale tag and changelog reconciled |
-| BUILD-001 | P1 | in progress | — | Workspace Clippy restored without allows |
-| TEST-001 | P1 | in progress | — | All 38 new ignores have exact dispositions |
+| REL-001 | P1 | in progress | REC-001 | Local stale tag removed; staged changelog/docs pending |
+| BUILD-001 | P1 | complete | — | Known Clippy failures fixed without allows |
+| TEST-001 | P1 | complete | — | All 38 new ignores have exact dispositions |
 | METAL-001 | P1 | in progress | TEST-001 | Hosted compile and fail-closed runtime lanes |
-| POLICY-001 | P1 | pending | BUILD-001 | Public API scan and strict lane repaired |
-| CI-001 | P1 | pending | METAL-001 | Shared exact-SHA workflow verifier |
-| PUB-001 | P1 | pending | CI-001, POLICY-001 | Publish requires all candidate evidence |
-| SEM-001 | P1 | pending | REC-001 | Reviewed API diff replaces blanket major |
+| POLICY-001 | P1 | complete | BUILD-001 | Public API scan and strict lane repaired |
+| CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier |
+| PUB-001 | P1 | complete | CI-001, POLICY-001 | Publish requires all candidate evidence |
+| SEM-001 | P1 | in progress | REC-001 | Reviewed report complete; generated snapshot pending |
 | COV-001 | P2 | pending | METAL-001 | Accelerator host logic is measured |
-| SAFE-001 | P1 | in progress | BUILD-001 | One truthful Metal buffer-access boundary |
-| ERR-001 | P2 | pending | BUILD-001 | Neutral native decode classification |
-| DUP-001 | P2 | pending | ERR-001 | Genuine clones consolidated |
-| ADAPT-001 | P2 | pending | DUP-001 | Test-only adaptive router removed |
-| CUDA-001 | P2 | pending | ADAPT-001 | Five suspected kernel orphans resolved |
-| STR-001 | P2 | pending | SAFE-001, CUDA-001 | Resident encoder split safely |
-| STR-002 | P2 | pending | STR-001 | Direct stacked batch split safely |
-| STR-003 | P2 | pending | STR-002 | Native single-tile encoder split safely |
-| TOOL-001 | P3 | pending | DUP-001 | Adoption report model/render split |
+| SAFE-001 | P1 | complete | BUILD-001 | Shared checked Metal buffer primitives established |
+| SEC-001 | P0 | complete | SAFE-001 | Safe Metal readback cannot overlap aliased CPU/GPU mutation |
+| GPUORD-001 | P1 | in progress | SEC-001 | Reusable texture writes are serialized; raw texture access is unsafe |
+| APIHARD-001 | P1 | pending | SEC-001 | Resident private raw resources are private/unsafe and contracts are complete |
+| ERR-001 | P2 | complete | BUILD-001 | Neutral native decode classification |
+| DUP-001 | P2 | complete | ERR-001 | Genuine clones consolidated and behavior-tested |
+| ADAPT-001 | P2 | complete | DUP-001 | Test-only adaptive router removed; shipped behavior retained |
+| CUDA-001 | P2 | complete | ADAPT-001 | Five unreachable kernel entrypoints removed |
+| STR-001 | P2 | complete | SAFE-001, CUDA-001 | Resident encoder split with focused parity checks |
+| STR-002 | P2 | in progress (paused) | SEC-001, STR-001 | Direct stacked batch split safely |
+| STR-003 | P2 | complete | STR-001 | Native single-tile encoder split with byte/hook parity |
+| TOOL-001 | P3 | complete | DUP-001 | Adoption report model/render split |
+| CUDA-002 | P1 | pending | SEC-001 | One exact named release-cuda gate with zero skip markers |
+| PKG-001 | P1 | pending | SEC-001 | Construct all packages and verify independent packages |
+| CLONE-001 | P2 | pending | STR-002 | Pin clone tool/config and commit a reproducible report |
+| PERF-001 | P1 | pending | STR-001, STR-002, STR-003 | Enforce five-percent structural regression limit |
+| PUB-002 | P1 | pending | PKG-001, CUDA-002 | Fail-closed origin, Release, and crates.io preflight |
+| DOC-002 | P2 | in progress | SEC-001 | Reconcile public claims and keep this as the only plan |
+| PROV-001 | P1 | blocked on maintainer input | DOC-002 | Record release signoff identity and date |
 | FINAL-001 | P1 | pending | all above | Clean local release matrix |
 | RC-001 | P1 | pending | FINAL-001 | Immutable exact-SHA candidate |
 | TAG-001 | P1 | pending | RC-001 | Annotated tag and guarded publication |
@@ -186,7 +258,7 @@ Acceptance:
 - The comparator test module is tracked, licensed, and green.
 - git diff --check passes.
 
-Current evidence:
+Evidence snapshot (2026-07-09):
 
 - The comparator module is intentionally retained and now has the repository
   SPDX header.
@@ -255,7 +327,7 @@ Acceptance:
 
 ### TEST-001 — exact ignored-test inventory
 
-The current delta adds 38 ignores. Resolve them as follows.
+The 2026-07-09 baseline delta added 38 ignores. Resolve them as follows.
 
 Restore 19 CPU-capable tests to normal execution:
 
@@ -413,7 +485,7 @@ adapter crates.
 
 ### SAFE-001 — Metal buffer access
 
-Current defect:
+Audit-time defect (2026-07-09 baseline):
 
 - j2k-metal-support has a GpuAbi-constrained helper.
 - j2k-jpeg-metal and j2k-metal contain local variants.
@@ -450,6 +522,116 @@ Tests:
 
 If an existing published safe API is unsound, correcting it is an approved 0.7
 compatibility change and must appear in the API report and changelog.
+
+### SEC-001 — P0 Metal host-read aliasing incident
+
+Confirmed after SAFE-001 during the public-API review:
+
+- `j2k-metal::MetalEncodedJ2k` exposed its backing `Buffer` while retaining
+  safe codestream readback.
+- both Metal `Surface` types exposed raw buffers while retaining safe host
+  readback.
+- `j2k-jpeg-metal::MetalBatchOutputBuffer` could safely write a reusable
+  allocation while older `Surface` values safely read the same allocation on
+  another thread; `metal::Buffer` is `Send + Sync`.
+- JPEG viewport/scaled CPU fallback cloned cache-owned shared plane buffers,
+  dropped the cache lock, and could later return the cached Gray8 allocation as
+  a safe-readable `Surface`. A subsequent safe decode could overwrite it.
+- `MetalLosslessEncodeTile` accepted a safe caller-owned buffer that can reach
+  a direct host-read fallback and deferred GPU submission.
+
+Required resolution:
+
+1. Make externally supplied or borrowed raw buffer construction/access unsafe
+   with contracts that cover cloned handles, CPU work, GPU work, copies of
+   descriptor values, deferred submissions, and actual command completion.
+2. Keep validated metadata private and expose ordinary metadata through safe
+   getters.
+3. Keep an owned-buffer handoff unsafe unless the implementation can prove
+   exclusive allocation ownership. Consuming one descriptor is insufficient:
+   batch descriptors can own different ranges of the same allocation while
+   siblings retain safe readback.
+4. Give reusable JPEG batch output and every derived surface one shared
+   allocation gate. Hold it across safe GPU submission and completion and
+   across safe host readback. Replacing a resizable allocation creates a new
+   gate; existing surfaces retain the old allocation and gate.
+5. Lease cached JPEG plane buffers across their complete CPU populate and GPU
+   consume interval, including across cloned sessions, and never return a
+   cache-owned plane as a safe-readable surface. Copy/pack cached Gray8 output
+   into a fresh allocation before releasing the lease.
+6. Surface poisoned-gate errors through fallible APIs; do not silently proceed
+   or turn a fallible readback into an unconditional panic.
+7. Search all pattern-equivalent public Buffer/BufferRef/Texture exposures and
+   internal reusable allocation caches.
+   Distinguish confirmed Rust host-memory soundness from GPU ordering-only APIs
+   and document both.
+8. Update every internal, test, benchmark, example, transcode, changelog,
+   unsafe-inventory, stable-API, and semver-report consumer.
+
+Acceptance:
+
+- independent review finds no remaining safe path that can overlap a raw host
+  read with CPU/GPU mutation of the same allocation
+- focused constructor/range, consuming-handoff, clone/gate, readback, encode,
+  transcode, and policy tests pass
+- all affected Metal targets check and Clippy with `-D warnings`
+- `cargo xtask unsafe-audit` and stable-API/semver checks describe the corrected
+  unsafe boundary
+- no lower-priority implementation resumes before the incident is closed
+
+Completion evidence (2026-07-09):
+
+- beb4d4e5 made J2K Metal surface, encoded-output, and external encode-input
+  buffer boundaries unsafe; private metadata is range-validated and batch
+  sibling sharing is explicit.
+- a78cd3e2 added one shared gate to reusable JPEG buffer outputs and derived
+  surfaces, retained a cache lease through CPU population/GPU completion, and
+  forced cached Gray8 output into a fresh public allocation.
+- An independent static scan covered public raw resource APIs and internal
+  reusable caches/pools in both Metal adapters and found no remaining safe
+  host-read/host-write alias path.
+- Fail-closed real-Metal regressions passed with `J2K_REQUIRE_METAL_RUNTIME=1`:
+  cache serialization 2/2, fresh cached-Gray output 1/1, and reusable-output
+  synchronization/poison handling 2/2. No skip marker was emitted.
+- Affected all-target JPEG-Metal check and Clippy, focused J2K-Metal/transcode
+  checks, both repository policies, and `git diff --check` passed.
+
+Residual P1 work is tracked separately in GPUORD-001 and APIHARD-001; it is a
+GPU ordering/raw-resource API issue, not a remaining safe Rust host-memory
+alias path.
+
+### GPUORD-001 — reusable private-texture ordering
+
+`MetalBatchTextureOutput` is cloneable, exposes safe `TextureRef`s, and accepts
+safe synchronous decode writes. Clones can therefore submit overlapping writes
+or external GPU work without a shared ordering boundary.
+
+Actions:
+
+1. Give every clone of a reusable texture output one shared access gate.
+2. Hold that gate across every safe texture-output submission and actual GPU
+   completion, including viewport/test-only entry paths.
+3. Make raw texture access unsafe with a contract explaining that external
+   commands bypass the internal gate; retain crate-private trusted accessors.
+4. Ensure slot subsets share the original gate and resized allocations receive
+   a new gate.
+5. Add cloned-output serialization behavior tests and repository policy.
+
+### APIHARD-001 — completed private resource hardening
+
+`ResidentPrivateJpegTile` is safely returned after completion but publicly
+exposes raw output/status buffers and a command buffer as fields. It has no safe
+host-readback path, so this was not SEC-001, but the API makes ordering and
+invariants implicit.
+
+Actions:
+
+- make raw resource fields private
+- expose safe metadata getters and only explicitly unsafe raw resource access
+  needed for resident handoff
+- state cloned-handle and later command-ordering obligations
+- add device/session compatibility to `MetalLosslessEncodeTile::from_buffer`
+- update tests, examples, API/semver reports, changelog, and unsafe inventory
 
 ### ERR-001 — native decode error classification
 
@@ -489,20 +671,43 @@ Clone objective:
 
 ### ADAPT-001 — test-only adaptive router
 
-The 1,105-line adaptive_route module and its 423 tests compile only under
-cfg(test), while repository lint positively requires the zombie file.
+At the 2026-07-09 baseline, the 1,105-line adaptive_route module and its
+423-line test file compiled only under cfg(test), while repository lint
+positively required the zombie file.
 
-Actions:
+The baseline contained nine tests in a 423-line test file. Their completed
+assertion map is:
 
-1. Build an assertion map from every old test to:
-   - a real shipped-route test, or
-   - obsolete-by-design with a reason.
-2. Preserve coverage of Auto thresholds/fallback, strict-device refusal,
-   observable reports, and counters.
-3. Do not port imaginary policy merely to preserve test count.
-4. Delete the file with trash.
-5. Remove its module wiring.
-6. Replace the positive lint with a lint forbidding its return.
+| Retired test | Disposition | Shipped behavior or reason |
+|---|---|---|
+| `encode_backend_preference_helpers_select_clear_routes` | mapped | `backend_preference_helpers_select_clear_routes` now exercises the public lossless/lossy option helpers |
+| `adaptive_planner_keeps_small_workloads_on_cpu_without_benchmark_gate` | mapped | facade Auto fallback plus the Metal small-host-output threshold tests exercise the real route |
+| `stage_candidate_remains_cpu_when_end_to_end_gate_is_missing` | obsolete by design | production accepts no synthetic stage/end-to-end benchmark records; adapter-owned thresholds are the shipped policy |
+| `stage_candidate_remains_cpu_when_end_to_end_gate_fails` | obsolete by design | production does not evaluate caller-supplied benchmark percentages |
+| `approved_backend_is_not_masked_by_faster_stage_only_candidate` | obsolete by design | the facade receives one concrete accelerator and performs no imaginary cross-device arbitration |
+| `rca_reclassification_is_exact_to_stage_and_backend` | obsolete by design | no production API accepts mutable RCA findings as routing input |
+| `adaptive_planner_requires_stage_and_end_to_end_gates_before_default_gpu` | mapped | real required-stage completeness tests cover zero, partial, and complete dispatch; benchmark-gate policy was discarded |
+| `logical_gpu_loss_requires_rca_before_reclassification` | obsolete by design | production fallback is determined by actual eligibility/dispatch, not a test-only logical-owner/RCA model |
+| `strict_device_request_fails_when_backend_is_unavailable` | mapped | direct and accelerator facade tests require typed errors instead of silent CPU fallback |
+
+Completion evidence:
+
+- Four retired tests mapped to shipped behavior and five were explicitly
+  obsolete by design.
+- Public facade coverage now verifies option helpers, Auto zero-dispatch
+  fallback, partial-dispatch counters while reporting CPU, complete-dispatch
+  counters while reporting the requested device, and strict-device refusal.
+- Existing Metal tests remain the source of truth for actual Auto workload
+  thresholds, CPU fallback reports, and resident-surface reporting.
+- Both obsolete files were deleted with `trash`, their cfg(test) module wiring
+  was removed, and architecture policy now fails if either file or module
+  declaration returns.
+- Focused validation on 2026-07-09:
+  - `cargo test -p j2k --test encode_lossless backend_preference_helpers_select_clear_routes -- --exact`: 1 passed
+  - `cargo test -p j2k --test encode_lossless accelerator_facade_`: 6 passed
+  - exact direct Auto-fallback and unavailable-device tests: 2 passed
+  - `cargo test -p xtask --test repo_lint obsolete_adaptive_route_policy_model_cannot_return`: 1 passed
+  - scoped rustfmt, `cargo clippy -p j2k --test encode_lossless -- -D warnings`, and `git diff --check`: passed
 
 ### CUDA-001 — suspected orphan kernels
 
@@ -544,8 +749,8 @@ evidence.
 
 ### STR-001 — resident codestream encoder
 
-The current module is 2,778 lines and contains functions near 541, 702, and
-1,128 lines.
+The 2026-07-09 audit snapshot measured this module at 2,778 lines, with
+functions near 541, 702, and 1,128 lines.
 
 Extract in order:
 
@@ -597,8 +802,8 @@ required for this tooling-only path.
 
 Do not split these solely because of line count:
 
-- the 3,466-line fixture builder, whose 204 small builders are cohesive test
-  data
+- the fixture builder (3,466 lines and 204 small builders in the 2026-07-09
+  audit snapshot), whose builders are cohesive test data
 - the native encode root, whose functions are already materially smaller and
   domain-focused
 
@@ -620,7 +825,83 @@ The following symmetry is accepted unless its trigger occurs:
 
 Every newly accepted clone must add a row with an owner and concrete trigger.
 
-## 11. Required verification matrix
+## 11. Documentation reconciliation
+
+This section consolidates the completed documentation-only audit. The former
+untracked `engineering/documentation-remediation-plan.md` was a temporary agent
+ledger, not a second source of truth; its unique decisions and evidence are
+preserved here before that duplicate is removed with `trash`.
+
+### Public contracts verified by the documentation audit
+
+- `0.6.x` is the latest published and security-supported line; workspace
+  `0.7.0` is staged under `Unreleased` until publication.
+- GitHub Pages serves `main/docs`. Pushing a candidate can deploy staged docs,
+  so hosted pages must continue to distinguish staged 0.7 from published 0.6;
+  hosting is not publication evidence.
+- coefficient-domain JPEG transcode output is HTJ2K-only
+- `j2k` is the CPU-facing facade with planning/shared SPI; concrete resident
+  surfaces come from `j2k-cuda` or `j2k-metal`
+- strict CUDA-resident codec operations are HTJ2K-only; selected shared stages
+  may accelerate other supported work
+- CUDA-buffer operations require the `cuda-runtime` feature
+- extra `j2k inspect` trailing arguments are currently ignored, not a stable
+  interface promise
+- unsafe code is isolated to the exhaustive inventory of FFI, GPU,
+  SIMD/intrinsic, allocation, and bounded pointer/buffer boundaries
+
+### Completed documentation batches
+
+- Corrected provenance/lineage, retained license inventory, libjpeg-turbo CLI
+  fixture generation, and OpenHTJ2K fixture-copy locations in `NOTICES.md`.
+- Removed private operator/host paths and normalized present-tense versus dated
+  historical evidence in this runbook.
+- Corrected unsafe-code posture and expanded `docs/unsafe-audit.md`; SEC-001,
+  GPUORD-001, and APIHARD-001 still require their final inventory update.
+- Replaced the conduct-reporting placeholder with the existing confidential
+  GitHub reporting route without inventing an email address.
+- Repaired adoption commands to use
+  `cargo run -p xtask --features adoption -- adoption-*`.
+- Aligned staged release state across the changelog, security policy, release
+  guide, environment guide, stable-API guide, root README, and static site.
+- Documented the current `third_party/block-0.1.6-patched` override and its
+  removal conditions.
+- Corrected CLI, facade, transcode, codec-math, types, CUDA, JPEG-CUDA, and
+  Metal capability/package descriptions.
+- Refreshed JPEG-Metal benchmark names, the HTJ2K `_09` fixture guide, Metal
+  readback record, benchmark provenance disclosure, and four affected static
+  pages; removed manual sitemap `lastmod` values.
+
+### Documentation evidence snapshot (2026-07-09)
+
+Before the later SEC-001 public-API changes, the documentation batch passed:
+
+- normal and strict repository lint
+- documentation and workspace doctests
+- release-integrity, public-support final, unsafe-audit, and downstream-smoke
+- typo and XML checks
+- focused crate tests/checks and strict Metal Clippy
+- 105 local Markdown/HTML targets with zero failures
+- 71 external URLs with only identified crates.io/docs.rs HEAD behavior and
+  bot-blocked/manual-verification cases
+- all six static pages at 1280px and 375px with one header/nav/main/h1, no
+  broken image, and no horizontal overflow
+
+This is historical batch evidence, not candidate proof. Final documentation,
+API, unsafe, link, render, and strict gates must be rerun after source freeze.
+No page was manually deployed.
+
+### Remaining documentation work
+
+- Record the release maintainer's name/handle and approval date for provenance.
+- Update changelog, unsafe inventory, stable API snapshot, reviewed semver
+  report, and all Metal examples for the final corrected raw-resource APIs.
+- Add exact-SHA freeze and `cargo xtask release-status --sha ...` instructions
+  to the release guide where still absent.
+- Re-run all documentation gates and visual checks on the frozen candidate.
+- Do not re-create a second documentation plan.
+
+## 12. Required verification matrix
 
 ### Routine local gates
 
@@ -668,7 +949,7 @@ Every newly accepted clone must add a row with an owner and concrete trigger.
 Run all-feature and non-macOS stub checks so accelerator cleanup cannot break
 unsupported targets.
 
-## 12. Candidate freeze and publication
+## 13. Candidate freeze and publication
 
 1. Recheck that the selected version has no remote tag, GitHub Release, or
    crates.io publication.
@@ -692,7 +973,7 @@ unsupported targets.
 
 Manual workflow_dispatch publication is always dry-run.
 
-## 13. Interface and compatibility decisions
+## 14. Interface and compatibility decisions
 
 - No intentional breaking change to the stable j2k facade.
 - j2k-native gains a neutral decode-error classification interface; record it
@@ -705,7 +986,7 @@ Manual workflow_dispatch publication is always dry-run.
 - Workflows consume repository tooling instead of embedding divergent logic.
 - Every stable API change appears in both the reviewed report and changelog.
 
-## 14. Release stop conditions
+## 15. Release stop conditions
 
 Do not tag or publish when any of these is true:
 
@@ -720,7 +1001,7 @@ Do not tag or publish when any of these is true:
 - package contents differ from the validated candidate
 - a critical benchmark exceeds its approved regression threshold
 
-## 15. Completion definition
+## 16. Completion definition
 
 The remediation is complete only when:
 
