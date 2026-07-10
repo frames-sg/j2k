@@ -212,6 +212,11 @@ use metal::{
 
 #[cfg(target_os = "macos")]
 /// Return the system default Metal device, or a stable error message.
+///
+/// # Errors
+///
+/// Returns [`MetalSupportError::MetalUnavailable`] when the host exposes no
+/// default Metal device.
 pub fn system_default_device() -> Result<Device, MetalSupportError> {
     Device::system_default().ok_or(MetalSupportError::MetalUnavailable)
 }
@@ -245,6 +250,11 @@ impl<R, E> MetalRuntimeSession<R, E> {
     }
 
     /// Create a session bound to the system default Metal device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MetalSupportError::MetalUnavailable`] when the host exposes no
+    /// default Metal device.
     pub fn system_default() -> Result<Self, MetalSupportError> {
         system_default_device().map(Self::new)
     }
@@ -281,6 +291,11 @@ impl<R, E> MetalRuntimeSession<R, E> {
 
 #[cfg(target_os = "macos")]
 /// Create a command queue and surface null-queue failures explicitly.
+///
+/// # Errors
+///
+/// Returns [`MetalSupportError::CommandQueue`] if Objective-C queue creation
+/// fails, or [`MetalSupportError::CommandQueueUnavailable`] for a null queue.
 pub fn checked_command_queue(device: &Device) -> Result<CommandQueue, MetalSupportError> {
     // SAFETY: Objective-C/Metal pointers are null-checked or range-validated before wrapping.
     let queue: *mut MTLCommandQueue = unsafe {
@@ -301,6 +316,11 @@ pub fn checked_command_queue(device: &Device) -> Result<CommandQueue, MetalSuppo
 
 #[cfg(target_os = "macos")]
 /// Commit a command buffer, wait for completion, and surface failed completion.
+///
+/// # Errors
+///
+/// Returns [`MetalSupportError::CommandBuffer`] when Metal does not report a
+/// successful final status.
 pub fn commit_and_wait(command_buffer: &CommandBufferRef) -> Result<(), MetalSupportError> {
     command_buffer.commit();
     wait_for_completion(command_buffer)
@@ -308,6 +328,11 @@ pub fn commit_and_wait(command_buffer: &CommandBufferRef) -> Result<(), MetalSup
 
 #[cfg(target_os = "macos")]
 /// Wait for an already committed command buffer and surface failed completion.
+///
+/// # Errors
+///
+/// Returns [`MetalSupportError::CommandBuffer`] when Metal does not report a
+/// successful final status.
 pub fn wait_for_completion(command_buffer: &CommandBufferRef) -> Result<(), MetalSupportError> {
     command_buffer.wait_until_completed();
     ensure_completed(command_buffer)
@@ -315,6 +340,11 @@ pub fn wait_for_completion(command_buffer: &CommandBufferRef) -> Result<(), Meta
 
 #[cfg(target_os = "macos")]
 /// Surface a failed command buffer after the caller has already synchronized it.
+///
+/// # Errors
+///
+/// Returns [`MetalSupportError::CommandBuffer`] unless the final status is
+/// [`MTLCommandBufferStatus::Completed`].
 pub fn ensure_completed(command_buffer: &CommandBufferRef) -> Result<(), MetalSupportError> {
     let status = command_buffer.status();
     if status == MTLCommandBufferStatus::Completed {
@@ -329,6 +359,10 @@ pub fn ensure_completed(command_buffer: &CommandBufferRef) -> Result<(), MetalSu
 
 #[cfg(target_os = "macos")]
 /// Compile a Metal shader source string with default compile options.
+///
+/// # Errors
+///
+/// Returns [`MetalSupportError::ShaderLibrary`] when Metal rejects the source.
 pub fn shader_library(device: &Device, source: &str) -> Result<Library, MetalSupportError> {
     let options = CompileOptions::new();
     device
@@ -338,6 +372,11 @@ pub fn shader_library(device: &Device, source: &str) -> Result<Library, MetalSup
 
 #[cfg(target_os = "macos")]
 /// Load a named compute pipeline from an already compiled shader library.
+///
+/// # Errors
+///
+/// Returns [`MetalSupportError::PipelineFunction`] when the function is absent,
+/// or [`MetalSupportError::PipelineState`] when pipeline construction fails.
 pub fn named_pipeline(
     device: &Device,
     library: &Library,
@@ -482,6 +521,11 @@ fn checked_buffer_contents_ptr<T: GpuAbi>(
 /// Bounds, offset arithmetic, alignment, CPU visibility, and the [`GpuAbi`]
 /// element contract are validated before the copy.
 ///
+/// # Errors
+///
+/// Returns a [`MetalSupportError`] when the requested range is invalid,
+/// misaligned, zero-sized, or not CPU-visible.
+///
 /// # Safety
 ///
 /// The caller must ensure that all Metal commands which can write this range
@@ -501,6 +545,11 @@ pub unsafe fn checked_buffer_read<T: GpuAbi>(
 ///
 /// The returned vector is owned and therefore cannot alias later Metal writes.
 /// A zero-element request succeeds without dereferencing `contents()`.
+///
+/// # Errors
+///
+/// Returns a [`MetalSupportError`] when the requested range is invalid,
+/// misaligned, zero-sized, not CPU-visible, or cannot be allocated.
 ///
 /// # Safety
 ///
@@ -540,6 +589,11 @@ pub unsafe fn checked_buffer_read_vec<T: GpuAbi>(
 ///
 /// A zero-element write succeeds without dereferencing `contents()`.
 ///
+/// # Errors
+///
+/// Returns a [`MetalSupportError`] when the destination range is invalid,
+/// misaligned, zero-sized, or not CPU-visible.
+///
 /// # Safety
 ///
 /// The caller must ensure that no Metal command or other CPU access reads or
@@ -569,6 +623,11 @@ pub unsafe fn checked_buffer_write<T: GpuAbi>(
 /// Fill a checked byte range in a CPU-visible Metal buffer.
 ///
 /// A zero-byte fill succeeds without dereferencing `contents()`.
+///
+/// # Errors
+///
+/// Returns a [`MetalSupportError`] when the destination range is invalid or not
+/// CPU-visible.
 ///
 /// # Safety
 ///
@@ -687,6 +746,10 @@ pub struct MetalPipelineLoader {
 #[cfg(target_os = "macos")]
 impl MetalPipelineLoader {
     /// Compile `source` and keep the resulting library for named pipeline loads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MetalSupportError::ShaderLibrary`] when Metal rejects the source.
     pub fn new(device: &Device, source: &str) -> Result<Self, MetalSupportError> {
         Ok(Self {
             device: device.clone(),
@@ -695,6 +758,11 @@ impl MetalPipelineLoader {
     }
 
     /// Load one named compute pipeline from the cached shader library.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MetalSupportError::PipelineFunction`] when the function is absent,
+    /// or [`MetalSupportError::PipelineState`] when pipeline construction fails.
     pub fn pipeline(&self, function_name: &str) -> Result<ComputePipelineState, MetalSupportError> {
         named_pipeline(&self.device, &self.library, function_name)
     }
