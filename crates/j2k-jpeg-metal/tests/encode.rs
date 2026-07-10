@@ -1,5 +1,3 @@
-#![allow(clippy::similar_names)]
-
 use j2k_core::CodecError;
 use j2k_jpeg::{DecodeRequest, JpegBackend, JpegEncodeError, JpegSubsampling};
 
@@ -94,7 +92,7 @@ fn assert_independent_decoder_accepts(
     expected_format: jpeg_decoder::PixelFormat,
 ) {
     let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(encoded));
-    let decoded = decoder.decode().expect("jpeg-decoder accepts Metal JPEG");
+    let pixels = decoder.decode().expect("jpeg-decoder accepts Metal JPEG");
     let info = decoder.info().expect("jpeg-decoder exposes frame info");
     assert_eq!(
         (u32::from(info.width), u32::from(info.height)),
@@ -108,7 +106,7 @@ fn assert_independent_decoder_accepts(
         jpeg_decoder::PixelFormat::L16 => 2usize,
     };
     assert_eq!(
-        decoded.len(),
+        pixels.len(),
         width as usize * height as usize * expected_components
     );
 }
@@ -166,12 +164,12 @@ fn metal_baseline_encoder_round_trips_rgb_422() {
     assert!(encoded.data.ends_with(&[0xff, 0xd9]));
 
     let decoder = Decoder::new(&encoded.data).expect("parse Metal-encoded JPEG");
-    let (decoded, outcome) = decoder
+    let (pixels, outcome) = decoder
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("decode Metal-encoded JPEG");
 
     assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
-    assert_eq!(decoded.len(), rgb.len());
+    assert_eq!(pixels.len(), rgb.len());
     assert_independent_decoder_accepts(
         &encoded.data,
         width,
@@ -242,12 +240,12 @@ fn metal_baseline_encoder_round_trips_all_rgb_subsampling_modes() {
 
         assert_eq!(encoded.backend, JpegBackend::Metal);
         let decoder = Decoder::new(&encoded.data).expect("parse Metal-encoded JPEG");
-        let (decoded, outcome) = decoder
+        let (pixels, outcome) = decoder
             .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
             .expect("decode Metal-encoded JPEG");
 
         assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
-        assert_eq!(decoded.len(), rgb.len());
+        assert_eq!(pixels.len(), rgb.len());
         assert_independent_decoder_accepts(
             &encoded.data,
             width,
@@ -309,7 +307,7 @@ fn metal_baseline_encoder_round_trips_gray_with_padded_output() {
 
     assert_eq!(encoded.backend, JpegBackend::Metal);
     let decoder = Decoder::new(&encoded.data).expect("parse Metal-encoded gray JPEG");
-    let (decoded, outcome) = decoder
+    let (pixels, outcome) = decoder
         .decode_request(DecodeRequest::full(PixelFormat::Gray8))
         .expect("decode Metal-encoded gray JPEG");
 
@@ -317,10 +315,7 @@ fn metal_baseline_encoder_round_trips_gray_with_padded_output() {
         (outcome.decoded.w, outcome.decoded.h),
         (output_width, output_height)
     );
-    assert_eq!(
-        decoded.len(),
-        output_width as usize * output_height as usize
-    );
+    assert_eq!(pixels.len(), output_width as usize * output_height as usize);
     assert_independent_decoder_accepts(
         &encoded.data,
         output_width,
@@ -396,11 +391,11 @@ fn metal_baseline_batch_encoder_round_trips_multiple_rgb_tiles() {
     for frame in encoded {
         assert_eq!(frame.backend, JpegBackend::Metal);
         let decoder = Decoder::new(&frame.data).expect("parse Metal batch JPEG");
-        let (decoded, outcome) = decoder
+        let (pixels, outcome) = decoder
             .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
             .expect("decode Metal batch JPEG");
         assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
-        assert_eq!(decoded.len(), tile_bytes);
+        assert_eq!(pixels.len(), tile_bytes);
         assert_independent_decoder_accepts(
             &frame.data,
             width,
