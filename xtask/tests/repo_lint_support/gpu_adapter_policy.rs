@@ -1884,3 +1884,65 @@ fn cuda_j2k_encode_simt_modules_are_focused_and_staged() {
         );
     }
 }
+
+#[test]
+fn metal_tier1_encode_keeps_test_support_out_of_production_source() {
+    let root = repo_root();
+    let source_root = root.join("crates/j2k-metal/src/compute/tier1_encode");
+    let production = fs::read_to_string(root.join("crates/j2k-metal/src/compute/tier1_encode.rs"))
+        .expect("read Metal Tier-1 encode production source");
+    let test_support =
+        fs::read_to_string(source_root.join("test_support.rs")).expect("read test-support shell");
+
+    assert!(
+        production.lines().count() < 1_300,
+        "Metal Tier-1 production source exceeded its focused line-count ratchet"
+    );
+    assert_pattern_checks(&[
+        PatternCheck::new("Metal Tier-1 production/test seam", &production)
+            .required(&["#[cfg(test)]\nmod test_support;"])
+            .forbidden(&[
+                "fn encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test(",
+                "struct ClassicTier1MsbBitWriter",
+                "fn pack_classic_split_mq_raw_tokens_for_test(",
+            ]),
+        PatternCheck::new("Metal Tier-1 test-support shell", &test_support).required(&[
+            "mod gpu_pack;",
+            "mod ordered_pack;",
+            "mod split_cpu_pack;",
+        ]),
+    ]);
+    assert!(
+        test_support.lines().count() < 50,
+        "Metal Tier-1 test-support root must remain a focused module shell"
+    );
+
+    for (filename, max_lines, required_symbol) in [
+        (
+            "test_support/gpu_pack.rs",
+            400,
+            "fn encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test(",
+        ),
+        (
+            "test_support/ordered_pack.rs",
+            325,
+            "fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_test(",
+        ),
+        (
+            "test_support/split_cpu_pack.rs",
+            400,
+            "fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_cpu_pack_for_test(",
+        ),
+    ] {
+        let source = fs::read_to_string(source_root.join(filename))
+            .unwrap_or_else(|error| panic!("read Metal Tier-1 {filename}: {error}"));
+        assert!(
+            source.lines().count() < max_lines,
+            "Metal Tier-1 {filename} exceeded its focused line-count ratchet"
+        );
+        assert!(
+            source.contains(required_symbol),
+            "Metal Tier-1 {filename} must own {required_symbol}"
+        );
+    }
+}
