@@ -21,6 +21,10 @@ pub struct ErrorMetrics {
 impl ErrorMetrics {
     /// Fraction of coefficients that match exactly.
     #[must_use]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "validation rates are intentionally reported as approximate f64 ratios"
+    )]
     pub fn exact_match_rate(&self) -> f64 {
         if self.total == 0 {
             return 1.0;

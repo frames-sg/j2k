@@ -34,33 +34,43 @@ pub struct Dwt97TwoDimensional<T> {
     pub high_height: usize,
 }
 
-#[allow(dead_code, unreachable_pub)]
-#[path = "../tests/support/dct53_1d.rs"]
-mod dct53_1d;
-#[allow(
-    clippy::large_types_passed_by_value,
+#[expect(
     dead_code,
     unreachable_pub,
-    unused_imports
+    reason = "benchmark path-module reuse intentionally compiles a wider helper API"
+)]
+#[path = "../tests/support/dct53_1d.rs"]
+mod dct53_1d;
+#[expect(
+    dead_code,
+    unreachable_pub,
+    unused_imports,
+    reason = "benchmark path-module reuse intentionally compiles non-bench entry points"
 )]
 #[path = "../src/dct53_2d.rs"]
 mod dct53_2d;
-#[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
-#[path = "../tests/support/dct53_multilevel.rs"]
-mod dct53_multilevel;
-#[allow(
+#[expect(
     clippy::large_types_passed_by_value,
     dead_code,
     unreachable_pub,
-    unused_imports
+    reason = "benchmark path-module reuse intentionally compiles a wider helper API"
+)]
+#[path = "../tests/support/dct53_multilevel.rs"]
+mod dct53_multilevel;
+#[expect(
+    dead_code,
+    unreachable_pub,
+    reason = "benchmark path-module reuse intentionally compiles non-bench entry points"
 )]
 #[path = "../src/dct97_2d.rs"]
 mod dct97_2d;
-#[allow(dead_code, unreachable_pub, unused_imports)]
+#[expect(
+    unused_imports,
+    reason = "benchmark path-module reuse intentionally compiles non-bench grid helpers"
+)]
 #[path = "../src/dct_grid.rs"]
 mod dct_grid;
-#[allow(dead_code, unused_imports)]
-#[path = "../src/reversible53.rs"]
+#[path = "../src/reversible53/in_place.rs"]
 mod reversible53;
 
 pub use dct_grid::DctGridError;
@@ -368,6 +378,10 @@ fn synthetic_8x8_block() -> [[f64; 8]; 8] {
     block
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "benchmark grid indices are practically bounded and intentionally mapped into f64 signals"
+)]
 fn synthetic_8x8_grid_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
     let mut blocks = Vec::with_capacity(block_cols * block_rows);
     for block_y in 0..block_rows {

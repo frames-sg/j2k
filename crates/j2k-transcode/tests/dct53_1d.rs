@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[allow(dead_code, unreachable_pub)]
+#[expect(
+    unreachable_pub,
+    reason = "integration-test path-module reuse intentionally compiles extra shared helpers"
+)]
 #[path = "support/dct53_1d.rs"]
 mod dct53_1d;
-#[allow(dead_code, unreachable_pub, unused_imports)]
+#[expect(
+    dead_code,
+    unreachable_pub,
+    reason = "integration-test path-module reuse intentionally compiles extra grid helpers"
+)]
 #[path = "../src/dct_grid.rs"]
 mod dct_grid;
-#[allow(dead_code, unused_imports)]
-#[path = "../src/reversible53.rs"]
+#[path = "../src/reversible53/in_place.rs"]
 mod reversible53;
 
 use dct53_1d::{

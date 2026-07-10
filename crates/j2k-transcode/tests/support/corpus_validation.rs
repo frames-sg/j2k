@@ -282,6 +282,10 @@ fn validate_fixture(
     })
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "fixture validation rates are intentionally reported as approximate f64 ratios"
+)]
 fn classify_corpus_report(report: &CorpusValidationReport) -> TranscodeValidationClassification {
     if report.sample_count == 0 {
         return TranscodeValidationClassification::Exact;

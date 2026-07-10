@@ -631,6 +631,10 @@ mod tests {
     }
 
     /// Small deterministic PRNG (LCG) for reproducible test signals in [-1, 1).
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the deterministic PRNG intentionally maps its upper 53 bits into an f64 fraction"
+    )]
     fn next_unit(state: &mut u64) -> f64 {
         *state = state
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -650,6 +654,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "tiny filter-tap indices are exactly representable in f64"
+    )]
     fn reference_cdf97_taps_satisfy_their_defining_properties() {
         // Low-pass DC gain 1, high-pass DC gain 0 — the normalization the
         // lifting's KAPPA scaling targets.
@@ -697,6 +705,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the fixed forty-sample polynomial domain is exactly representable in f64"
+    )]
     fn forward_lift_97_annihilates_low_degree_polynomials() {
         // Independent of the filter bank: a correct 9/7 high-pass kills cubics in
         // the interior (boundary coefficients use symmetric extension). This pins
@@ -765,6 +777,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the fixed sixteen-sample coordinate domain is exactly representable in f64"
+    )]
     fn linearized_97_2d_separates_horizontal_and_vertical_detail() {
         // Catches an HL/LH swap or a row/column transpose independently of the
         // filter bank: a plane that varies only along x has no vertical detail
@@ -793,6 +809,10 @@ mod tests {
     // `idct8x8_sample` into the wavelet. Validate that IDCT against the defining
     // DCT-III cosine sum so a basis/normalization/transpose bug cannot hide
     // inside both the oracle and its CUDA port.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "IDCT sample and frequency indices are bounded to the 8x8 block domain"
+    )]
     fn exact_idct_sample(block: &[[f64; 8]; 8], x: usize, y: usize) -> f64 {
         let alpha = |k: usize| {
             if k == 0 {
@@ -879,6 +899,10 @@ mod tests {
         assert!(small.max_abs_diff(&expected_small) < 1.0e-9);
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "small deterministic test-grid indices are exactly representable in f64"
+    )]
     fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
         let mut blocks = Vec::with_capacity(block_cols * block_rows);
         for block_y in 0..block_rows {

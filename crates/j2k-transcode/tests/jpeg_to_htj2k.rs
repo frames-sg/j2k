@@ -32,10 +32,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[path = "fixtures/mod.rs"]
-mod jpeg_fixtures;
 use j2k_test_support::{
-    JPEG_BASELINE_420_16X16, JPEG_BASELINE_422_16X8, JPEG_BASELINE_444_8X8, JPEG_GRAYSCALE_8X8,
+    progressive_8x8_jpeg, JPEG_BASELINE_420_16X16, JPEG_BASELINE_422_16X8, JPEG_BASELINE_444_8X8,
+    JPEG_GRAYSCALE_8X8,
 };
 
 #[test]
@@ -343,7 +342,7 @@ fn generated_htj2k_is_accepted_by_available_external_decoder() {
 
 #[test]
 fn progressive_ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
-    let jpeg = jpeg_fixtures::progressive_8x8_jpeg();
+    let jpeg = progressive_8x8_jpeg();
 
     let encoded = jpeg_to_htj2k(&jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode progressive 4:2:0 JPEG to HTJ2K");
@@ -1496,6 +1495,10 @@ fn zero_preencoded_component(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the test quantization domain is finite and constrained to the JPEG 2000 exponent range"
+)]
 fn zero_prequantized_total_bitplanes(
     options: Htj2k97CodeBlockOptions,
     sub_band_type: J2kSubBandType,
@@ -1523,6 +1526,10 @@ fn zero_prequantized_total_bitplanes(
         .saturating_sub(1)
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "powers of two in the exercised exponent range are exactly representable in f32"
+)]
 fn pow2i_f32_for_test(exp: i32) -> f32 {
     if exp >= 0 {
         (1u32 << exp.cast_unsigned()) as f32
@@ -1531,6 +1538,10 @@ fn pow2i_f32_for_test(exp: i32) -> f32 {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "fixture sub-band and code-block dimensions are bounded by the tiny test images"
+)]
 fn zero_preencoded_subband(
     width: usize,
     height: usize,
@@ -1572,6 +1583,10 @@ fn zero_preencoded_subband(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "fixture sub-band and code-block dimensions are bounded by the tiny test images"
+)]
 fn zero_prequantized_subband(
     width: usize,
     height: usize,

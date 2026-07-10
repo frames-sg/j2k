@@ -237,6 +237,10 @@ fn idct8_sample(coefficients: &[f64; 8], sample_idx: usize) -> f64 {
         .sum()
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the fixed test coefficients produce finite IDCT samples within i32 range"
+)]
 fn rounded_idct8_sample(coefficients: &[i16; 8], sample_idx: usize) -> i32 {
     let float_coefficients = coefficients.map(f64::from);
     idct8_sample(&float_coefficients, sample_idx).round() as i32

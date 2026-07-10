@@ -52,9 +52,14 @@ pub use self::options::{
     JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
 };
 mod report;
-pub use self::report::*;
+pub use self::report::{
+    BatchTranscodeReport, TranscodeBatchProfileRequest, TranscodeBatchProfileRow,
+    TranscodeComponentReport, TranscodeReport, TranscodeTimingReport,
+    TranscodeValidationClassification, TranscodeValidationMetrics,
+};
 mod error;
-pub use self::error::*;
+pub use self::error::JpegToHtj2kError;
+use self::error::{dct53_grid_error, dct97_grid_error};
 mod validation;
 use self::validation::{
     component_sampling_for_jpeg, decomposition_levels_for_components,
@@ -80,7 +85,16 @@ use self::integer_reference::{
 mod single_tile_encode;
 use self::single_tile_encode::encode_component_batch;
 mod batch;
-pub use self::batch::*;
+pub use self::batch::jpeg_to_htj2k_batch;
+#[cfg(test)]
+use self::batch::{
+    encode_float97_prepared_tiles, store_compact_preencoded_component,
+    transform_float97_batch_tiles, Float97BatchTile,
+};
+use self::batch::{
+    jpeg_tile_batch_to_htj2k_with_scratch, record_accelerator_attempt, record_accelerator_dispatch,
+    record_batch_attempt, record_cpu_fallback, record_encode_dispatch_delta,
+};
 
 /// Reusable experimental JPEG-to-HTJ2K transcoder state.
 ///

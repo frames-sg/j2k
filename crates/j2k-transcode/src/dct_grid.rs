@@ -32,6 +32,10 @@ pub(crate) fn idct8_basis_table() -> &'static [[f64; 8]; 8] {
     &BASIS
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "DCT basis indices are debug-asserted below eight and exactly representable in f64"
+)]
 fn idct8_basis_uncached(sample_idx: usize, freq: usize) -> f64 {
     let scale = if freq == 0 {
         (1.0_f64 / 8.0).sqrt()

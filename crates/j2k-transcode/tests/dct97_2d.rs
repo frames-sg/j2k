@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[expect(
+    dead_code,
+    reason = "integration-test path-module reuse includes the sibling 5/3 comparison helper"
+)]
 #[path = "support/dwt_diff.rs"]
 mod dwt_diff;
 
@@ -48,6 +52,10 @@ fn dct8x8_grid_to_2d_97_public_path_matches_reference_after_large_grid() {
     );
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "small deterministic test-grid indices are exactly representable in f64"
+)]
 fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
     let mut blocks = Vec::with_capacity(block_cols * block_rows);
     for block_y in 0..block_rows {

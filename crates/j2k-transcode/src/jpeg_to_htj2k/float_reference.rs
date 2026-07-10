@@ -245,6 +245,10 @@ pub(super) fn decompose_97_from_first_level_with_scratch(
     wavelet
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "validated JPEG component geometry fits u32 and the public coefficient ABI stores f32"
+)]
 pub(super) fn j2k_dwt_from_wavelet(
     wavelet: &ComponentWavelet,
     width: usize,
@@ -279,6 +283,10 @@ pub(super) fn j2k_dwt_from_wavelet(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "validated JPEG component geometry fits u32 and the public coefficient ABI stores f32"
+)]
 pub(super) fn j2k_dwt97_from_wavelet(
     wavelet: &ComponentWavelet97,
     width: usize,
@@ -313,6 +321,11 @@ pub(super) fn j2k_dwt97_from_wavelet(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "validated JPEG geometry fits u32 and the public coefficient ABI intentionally stores f32"
+)]
 pub(super) fn j2k_dwt_from_integer_wavelet(wavelet: &IntegerWavelet) -> J2kForwardDwt53Output {
     let mut levels = Vec::with_capacity(wavelet.levels.len());
     for level in &wavelet.levels {
@@ -386,6 +399,10 @@ pub(super) fn append_rounded_i32(
     Ok(())
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the finite rounded coefficient is explicitly checked against the complete i32 range"
+)]
 pub(super) fn round_f64_to_i32(value: f64) -> Result<i32, JpegToHtj2kError> {
     let rounded = value.round();
     if !rounded.is_finite() {

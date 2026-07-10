@@ -509,6 +509,10 @@ fn dummy_precomputed_component(
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "small deterministic fixture indices are intentionally mapped into an f32 signal"
+)]
 fn sample_f32_coefficients(count: u32, seed: f32) -> Vec<f32> {
     (0..count)
         .map(|idx| seed + (idx as f32).sin() * 0.125)

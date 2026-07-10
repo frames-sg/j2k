@@ -88,7 +88,7 @@ pub(super) fn available_decomposition_levels(width: u32, height: u32) -> u8 {
     if min_dim <= 1 {
         0
     } else {
-        min_dim.ilog2() as u8
+        u8::try_from(min_dim.ilog2()).unwrap_or(u8::MAX)
     }
 }
 

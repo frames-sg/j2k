@@ -12,16 +12,23 @@ pub struct Dwt53TwoDimensional<T> {
     pub high_height: usize,
 }
 
-#[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
+#[expect(
+    unreachable_pub,
+    reason = "integration-test path-module reuse intentionally compiles extra transform helpers"
+)]
 #[path = "../src/dct53_2d.rs"]
 mod dct53_2d;
-#[allow(dead_code, unreachable_pub, unused_imports)]
 #[path = "../src/dct_grid.rs"]
 mod dct_grid;
 
 pub use dct_grid::DctGridError;
 
-#[allow(clippy::large_types_passed_by_value, dead_code, unreachable_pub)]
+#[expect(
+    clippy::large_types_passed_by_value,
+    dead_code,
+    unreachable_pub,
+    reason = "integration-test path-module reuse intentionally compiles extra multilevel helpers"
+)]
 #[path = "support/dct53_multilevel.rs"]
 mod dct53_multilevel;
 

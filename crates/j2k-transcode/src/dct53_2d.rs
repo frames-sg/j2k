@@ -452,6 +452,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "small deterministic test-grid indices are exactly representable in f64"
+    )]
     fn synthetic_grid_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
         let mut blocks = Vec::with_capacity(block_cols * block_rows);
         for block_y in 0..block_rows {

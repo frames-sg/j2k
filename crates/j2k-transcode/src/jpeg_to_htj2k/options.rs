@@ -15,7 +15,10 @@ pub const JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE: f32 = 1.9;
 
 /// HTJ2K encode options used after JPEG coefficient-domain wavelet bands are produced.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "stable public options expose independent codec switches rather than an implicit mode matrix"
+)]
 pub struct JpegToHtj2kEncodeOptions {
     /// Number of wavelet decomposition levels.
     pub num_decomposition_levels: u8,

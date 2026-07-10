@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[expect(
+    dead_code,
+    reason = "integration-test path-module reuse includes the sibling 9/7 comparison helper"
+)]
 #[path = "support/dwt_diff.rs"]
 mod dwt_diff;
 
@@ -125,6 +129,10 @@ fn reference_single_block(block: &[[f64; 8]; 8]) -> Dwt53TwoDimensional<f64> {
     dct8x8_blocks_then_dwt53_float(&[*block], 1, 1, 8, 8).expect("valid single DCT block")
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "small deterministic test-grid indices are exactly representable in f64"
+)]
 fn synthetic_grid_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
     let mut blocks = Vec::with_capacity(block_cols * block_rows);
     for block_y in 0..block_rows {
