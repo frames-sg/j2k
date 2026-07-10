@@ -50,15 +50,16 @@ coverage, and the clean release matrix.
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: STR-011 native HT block-decode split, STR-012 extended-12 JPEG
-  renderer split, and STR-014 CUDA JPEG runtime split
-- Parallel tasks: coefficient/rounding-preserving native transform extraction,
-  restart/profile-preserving JPEG entropy extraction, and CUDA
-  context/cache/memory ownership extraction
-- Last completed task: JPEGCOR-001 libjpeg-compatible 4:2:2 fancy-upsample
-  rounding fix with live TurboJPEG, edge, ROI, and scaled-ROI coverage
-- Last completed implementation commit: 5ecbdb7e
-  (`fix(jpeg): match libjpeg 4:2:2 fancy rounding`)
+- Current task: STR-011 native classic bitplane-decode split, STR-012
+  extended-12 JPEG renderer split, and STR-014 CUDA host-transcode split
+- Parallel tasks: pass-order/bit-consumption-preserving native extraction,
+  precision/color/ROI-preserving JPEG rendering extraction, and
+  ABI/kernel-selection-preserving CUDA transcode extraction
+- Last completed tasks: STR-011 native HT block-decode split and STR-014 CUDA
+  JPEG runtime split
+- Last completed implementation commit: 1ce31782
+  (`refactor(cuda-runtime): split jpeg pipelines`); the preceding native HT
+  decoder split is d56f327f
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
@@ -1013,9 +1014,17 @@ Extract phase modules without genericizing the hot state machines:
   constants, 2/2 strings, 7/7 error tokens, and 22/22 normalized hot-loop
   bodies match, with eight new bit-exact goldens, 261 library tests, and 24
   high-bit integrations passing in commit 9acb7a75
+- completed: HT block decode reduced from 2,316 physical lines to a 33-line
+  coordinator with twelve focused modules; 72 function signatures, 20 error
+  tokens, one string literal, 13 unique hot bodies, and ten reader bodies match
+  exactly. Sixteen focused tests, 265 library tests with one intentional
+  ignore, 24 component-plane integrations, 14 coefficient integrations, and
+  the Criterion smoke lane passed in commit d56f327f. One intentional 27-line
+  hot-loop similarity remains; quantitative pre/post performance evidence is
+  still required by the final PERF-001 rerun.
 
-- HT decode: segment validation/API, MEL/VLC readers, cleanup, significance,
-  magnitude refinement, and benchmark instrumentation
+- completed HT decode: segment validation/API, MEL/VLC readers, cleanup,
+  significance, magnitude refinement, and benchmark instrumentation
 - classic decode/encode: state/lookups, pass scheduler/observers, arithmetic
   versus bypass kernels, token packing, and distortion accounting
 - HT encode: MEL/VLC/MagSgn writers, refinement, cleanup quad walk, and
@@ -1107,11 +1116,20 @@ launch/resource multiset parity passed; default/all-feature checks, strict
 Clippy, 86/86 and 89/89 host tests, the structural ratchet, and dependent
 `j2k-cuda` compilation passed. PTX and NVIDIA execution remain external.
 
+Completed priority 3 in commit 1ce31782: CUDA runtime `jpeg.rs` fell from
+1,463 to a 93-line owner with focused types, encode, decode, diagnostics,
+validation, and ABI-test modules at or below 520 lines. The file-wide
+`similar_names` allowance is gone; the remaining exceptions are narrow,
+documented expectations. Exact 32/32 function/body and 12/12 `repr(C)` parity,
+default/all-feature checks, strict Clippy, 88/88 default and 91/91 all-feature
+host tests, and dependent `j2k-jpeg-cuda` compilation passed. PTX and NVIDIA
+execution remain external.
+
 | Priority | Split targets | Required boundary |
 |---:|---|---|
 | 1 | JPEG Metal `compute.rs` plus included `fast_packets_impl`, `pack_dispatch_impl`, `batch_decode_full`, `batch_decode_region`, `batch_decode_entry`, `batch_decode_impl`, and `single_decode_impl` (effective 8,511-line namespace) | Replace production `include!` fragments with real modules/explicit imports; split packet, pack, single, RGB/RGBA, and repeated/grouped route families |
 | 2 | Completed: CUDA runtime `j2k_decode.rs` (2,142 physical lines at split) | ABI types, IDWT scheduling, store/MCT, tracing/validation |
-| 3 | CUDA runtime `jpeg.rs` (1,463) | Encode/decode ABI and pipeline versus entropy diagnostics; remove file-wide similar-name allowance |
+| 3 | Completed: CUDA runtime `jpeg.rs` (1,463 physical lines at split) | Encode/decode ABI and pipeline versus entropy diagnostics; file-wide similar-name allowance removed |
 | 4 | CUDA runtime `transcode.rs` (1,665) and CUDA Oxide transcode source (1,509) | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
 | 5 | CUDA runtime `j2k_encode.rs` (1,630) and CUDA Oxide J2K encode source (1,490) | Types/results, preprocessing/MCT/DWT/quantization versus tag-tree/packetization/compaction while retaining one device export surface |
 | 6 | Completed: CUDA runtime `context.rs` (1,013 physical lines at split) | Context/pinned memory, kernel cache/loading, and compact result types |
