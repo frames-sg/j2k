@@ -50,10 +50,18 @@ Use these groups to decide where Metal makes sense:
   Treat Metal wins here as evidence, not an assumption.
 - `wsi_tile_batch_rgba_textures`: resident texture batches that avoid host
   downloads.
-- `viewer_region_scaled_composite_rgb*`: CPU/hybrid viewport comparisons, with
-  warm variants separating setup from repeated viewer work.
-- `viewer_resident_viewport_rgb_buffer_warm` and
-  `viewer_resident_viewport_rgba_texture_warm`: resident-output viewport cases.
+- `viewer_region_scaled_composite_rgb` and
+  `viewer_region_scaled_composite_rgb_device`: CPU/hybrid viewport comparisons
+  with host and device output.
+- `viewer_region_scaled_composite_rgb_warm` and
+  `viewer_region_scaled_composite_rgb_device_warm`: repeated viewer work with
+  setup separated from warm routing and execution.
+- `viewer_contiguous_region_scaled_rgb` and
+  `viewer_contiguous_region_scaled_rgb_device`: contiguous viewport controls
+  with host and device output.
+- `viewer_best_region_scaled_rgb_device` and
+  `viewer_best_region_scaled_composite_rgb_device`: best-supported resident
+  viewport and composite paths.
 - `jpeg_metal_fast_packet_planning`: route-discovery overhead for accepted and
   rejected fast packet families.
 
@@ -70,11 +78,9 @@ the workload class being changed.
 - Clippy docs: this crate keeps the existing targeted `pedantic` setup and does
   not enable broad `restriction` or `nursery` groups for benchmark-only code.
   <https://doc.rust-lang.org/clippy/lints.html>
-- Cargo features: no new feature flag is added for this routing change; macOS
-  Metal availability remains target-gated so feature unification cannot widen
-  JPEG Metal behavior accidentally.
+- Cargo features: Metal availability is target-gated to macOS, so feature
+  unification does not widen JPEG Metal behavior accidentally.
   <https://doc.rust-lang.org/cargo/reference/features.html>
-- Unsafe Code Guidelines: no new unsafe code is required for the routing or
-  benchmark documentation; the Metal path continues to use the existing runtime
-  wrappers and tests around resident surfaces.
+- Unsafe Code Guidelines: routing and benchmark layers use the existing runtime
+  wrappers and tests around resident surfaces rather than adding unsafe code.
   <https://rust-lang.github.io/unsafe-code-guidelines/introduction.html>
