@@ -1,6 +1,6 @@
 use j2k_test_support::unwired_metal_kernels;
 
-const METAL_SOURCE: &str = include_str!("../src/metal.rs");
+const METAL_SOURCE: &str = include_str!("../src/metal/runtime.rs");
 const SHADER_SOURCE: &str = include_str!("../src/dct97.metal");
 
 #[test]
