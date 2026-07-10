@@ -55,6 +55,7 @@ pub struct ExecutionStats {
 
 impl ExecutionStats {
     /// Construct empty execution statistics.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             submissions: 0,
@@ -95,6 +96,7 @@ pub struct DeviceMemoryRange {
 
 impl DeviceMemoryRange {
     /// Construct a backend-local memory range.
+    #[must_use]
     pub const fn new(backend: BackendKind, allocation: u64, offset: usize, len: usize) -> Self {
         Self {
             backend,
@@ -124,6 +126,7 @@ pub struct SurfaceMetadata {
 
 impl SurfaceMetadata {
     /// Construct tight or explicitly pitched surface metadata with no byte offset.
+    #[must_use]
     pub const fn new(
         backend: BackendKind,
         residency: SurfaceResidency,

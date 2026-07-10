@@ -34,6 +34,7 @@ pub enum PixelFormat {
 
 impl PixelFormat {
     /// Return the channel layout for this pixel format.
+    #[must_use]
     pub const fn layout(self) -> PixelLayout {
         match self {
             Self::Rgb8 | Self::Rgb16 => PixelLayout::Rgb,
@@ -43,6 +44,7 @@ impl PixelFormat {
     }
 
     /// Return the integer sample type for this pixel format.
+    #[must_use]
     pub const fn sample(self) -> SampleType {
         match self {
             Self::Rgb8 | Self::Rgba8 | Self::Gray8 => SampleType::U8,
@@ -51,6 +53,7 @@ impl PixelFormat {
     }
 
     /// Return the number of channels per pixel.
+    #[must_use]
     pub const fn channels(self) -> usize {
         match self.layout() {
             PixelLayout::Rgb => 3,
@@ -60,6 +63,7 @@ impl PixelFormat {
     }
 
     /// Return the number of bytes in one channel sample.
+    #[must_use]
     pub const fn bytes_per_sample(self) -> usize {
         match self.sample() {
             SampleType::U8 => 1,
@@ -68,6 +72,7 @@ impl PixelFormat {
     }
 
     /// Return the number of bytes in one interleaved pixel.
+    #[must_use]
     pub const fn bytes_per_pixel(self) -> usize {
         self.channels() * self.bytes_per_sample()
     }

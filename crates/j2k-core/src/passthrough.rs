@@ -120,6 +120,11 @@ impl<'a> PassthroughCandidate<'a> {
     }
 
     /// Return the original compressed bytes only when passthrough is legal.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PassthroughRejectReason`] describing the first destination
+    /// requirement that the source payload does not satisfy.
     pub fn copy_bytes_if_eligible(
         &self,
         requirements: &PassthroughRequirements,

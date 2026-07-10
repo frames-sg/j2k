@@ -8,5 +8,9 @@ pub trait RowSink<S: Sample> {
     type Error: core::error::Error + Send + Sync + 'static;
 
     /// Write one decoded row at source/output row index `y`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] when the destination cannot accept the row.
     fn write_row(&mut self, y: u32, row: &[S]) -> Result<(), Self::Error>;
 }

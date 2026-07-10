@@ -15,6 +15,7 @@ pub struct CacheStats {
 
 impl CacheStats {
     /// Construct cache statistics from explicit counters.
+    #[must_use]
     pub const fn new(hits: u64, misses: u64) -> Self {
         Self {
             hits,
@@ -25,6 +26,7 @@ impl CacheStats {
     }
 
     /// Construct cache statistics from full counters.
+    #[must_use]
     pub const fn with_slots(hits: u64, misses: u64, occupied_slots: u64, evictions: u64) -> Self {
         Self {
             hits,
@@ -54,6 +56,7 @@ pub struct DecoderContext<C: CodecContext> {
 
 impl<C: CodecContext> DecoderContext<C> {
     /// Construct an empty decoder context.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             codec: C::default(),

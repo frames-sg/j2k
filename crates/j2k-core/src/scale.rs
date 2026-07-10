@@ -17,6 +17,7 @@ pub enum Downscale {
 
 impl Downscale {
     /// Return the integer scale denominator.
+    #[must_use]
     pub const fn denominator(self) -> u32 {
         match self {
             Self::None => 1,
@@ -27,6 +28,7 @@ impl Downscale {
     }
 
     /// Return the decoded DCT block dimension after scaling.
+    #[must_use]
     pub const fn output_block_size(self) -> u32 {
         match self {
             Self::None => 8,

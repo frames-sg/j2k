@@ -58,6 +58,7 @@ pub struct CodedUnitLayout {
 
 impl CodedUnitLayout {
     /// Return the saturating total coded-unit count.
+    #[must_use]
     pub const fn unit_count(&self) -> u32 {
         self.units_x.saturating_mul(self.units_y)
     }
@@ -78,6 +79,7 @@ pub struct Rect {
 
 impl Rect {
     /// Return a rectangle covering the full dimensions.
+    #[must_use]
     pub const fn full(dims: (u32, u32)) -> Self {
         Self {
             x: 0,
@@ -88,6 +90,7 @@ impl Rect {
     }
 
     /// Return whether this rectangle is fully inside `dims`.
+    #[must_use]
     pub fn is_within(&self, dims: (u32, u32)) -> bool {
         let (w, h) = dims;
         self.x.checked_add(self.w).is_some_and(|r| r <= w)
@@ -145,6 +148,7 @@ pub struct DecodeOutcome<W> {
 
 impl<W> DecodeOutcome<W> {
     /// Construct a decode outcome from the decoded rectangle and warnings.
+    #[must_use]
     pub fn new(decoded: Rect, warnings: Vec<W>) -> Self {
         Self { decoded, warnings }
     }
