@@ -133,6 +133,8 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
             "def classify_gpu_paths(",
             "def verify_workflow_run(",
             "def peel_annotated_tag(",
+            "def verify_repository_origin(",
+            "def require_github_release_absent(",
             "def verify_candidate_evidence(",
             "def verify_release_evidence(",
             "CUDA API compatibility on x86_64",
@@ -181,6 +183,11 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
     let verifier_tests =
         fs::read_to_string(root.join("scripts/tests/test_github_actions_verify.py"))
             .expect("read GitHub Actions verifier tests");
+    let crates_io_version = fs::read_to_string(root.join("scripts/crates_io_version.py"))
+        .expect("read crates.io version verifier");
+    let crates_io_version_tests =
+        fs::read_to_string(root.join("scripts/tests/test_crates_io_version.py"))
+            .expect("read crates.io version verifier tests");
 
     assert_pattern_checks(&[
         PatternCheck::new("release candidate aggregate", aggregate).required(&[
@@ -280,6 +287,8 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
                 "DRY_RUN_ONLY: ${{ github.event_name == 'workflow_dispatch' }}",
                 "Verify annotated tag and exact-SHA release evidence",
                 "scripts/github_actions_verify.py verify-release",
+                "--origin-url \"${origin_url}\"",
+                "--server-url \"${GITHUB_SERVER_URL}\"",
                 "--ci-branch main",
                 "--aggregate-job \"Release candidate aggregate\"",
                 "--cuda-job \"CUDA API compatibility on x86_64\"",
@@ -292,7 +301,10 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "if: ${{ github.event_name == 'workflow_dispatch' }}",
             "if: ${{ github.event_name == 'push' }}",
             "candidate_sha=\"$(git rev-parse HEAD)\"",
+            "origin_url=\"$(git remote get-url origin)\"",
             "cargo xtask release-integrity",
+            "Verify every crates.io target version before publication",
+            "scripts/publish-crate.sh --preflight-all",
         ]),
         PatternCheck::new("GitHub Actions verifier mocked tests", &verifier_tests).required(&[
             "test_pull_request_files_are_paginated",
@@ -302,8 +314,29 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "test_annotated_tag_is_peeled",
             "test_post_freeze_candidate_verifies_ci_and_gpu_without_a_tag",
             "test_verify_candidate_parser_smoke",
+            "test_verify_release_parser_requires_origin_context",
+            "test_repository_origin_is_exact_and_credential_free",
+            "test_existing_github_release_in_any_state_is_rejected",
             "test_missing_token_fails_closed",
             "test_http_failure_does_not_expose_token",
+            "test_only_http_404_is_optional_absence",
+        ]),
+        PatternCheck::new("fail-closed crates.io version verifier", &crates_io_version)
+            .required(&[
+                "error.code == 404",
+                "VersionState.AVAILABLE",
+                "VersionState.PUBLISHED",
+                "dependency-order prefix",
+                "could not classify every crates.io target version",
+            ]),
+        PatternCheck::new("crates.io version verifier mocked tests", &crates_io_version_tests)
+            .required(&[
+                "test_http_404_is_available",
+                "test_exact_http_200_payload_is_published_without_authorization",
+                "test_non_404_http_failures_are_not_treated_as_available",
+                "test_initial_publish_rejects_any_existing_version_after_checking_all",
+                "test_idempotent_retry_accepts_only_a_published_prefix",
+                "test_non_prefix_publication_is_rejected",
         ]),
     ]);
 }

@@ -34,12 +34,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
           REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           candidate_sha="$(git rev-parse HEAD)"
+          origin_url="$(git remote get-url origin)"
           python3 scripts/github_actions_verify.py verify-release \
             --repository "${REPOSITORY}" \
+            --origin-url "${origin_url}" \
+            --server-url "${GITHUB_SERVER_URL}" \
             --tag "${RELEASE_TAG}" \
             --candidate-sha "${candidate_sha}" \
             --ci-workflow ci.yml \
@@ -48,7 +52,11 @@ jobs:
             --gpu-workflow gpu-validation.yml \
             --cuda-job "CUDA API compatibility on x86_64" \
             --metal-job "Metal validation on Apple Silicon"
-      - run: cargo xtask release-integrity
+      - name: Verify release metadata integrity
+        run: cargo xtask release-integrity
+      - name: Verify every crates.io target version before publication
+        if: ${{ github.event_name == 'push' }}
+        run: scripts/publish-crate.sh --preflight-all
 
   publish-j2k-core:
     needs: [preflight]

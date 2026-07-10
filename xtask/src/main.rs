@@ -1231,6 +1231,8 @@ fn release_integrity() -> Result<(), String> {
     let semver_set = str_set(STABLE_SEMVER_PACKAGES);
     let mut errors = Vec::new();
 
+    validate_package_gate_partition(&mut errors);
+
     let packages = metadata
         .get("packages")
         .and_then(serde_json::Value::as_array)
@@ -1465,9 +1467,21 @@ fn has_docs_rs_metadata(package: &serde_json::Value) -> bool {
 
 fn validate_publish_workflow(errors: &mut Vec<String>) -> Result<(), String> {
     let workflow_path = Path::new(".github/workflows/publish.yml");
-    let workflow = fs::read_to_string(workflow_path)
+    let workflow_source = fs::read_to_string(workflow_path)
         .map_err(|err| format!("failed to read {}: {err}", workflow_path.display()))?;
-    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow)
+    for required in [
+        "--origin-url \"${origin_url}\"",
+        "--server-url \"${GITHUB_SERVER_URL}\"",
+        "scripts/publish-crate.sh --preflight-all",
+    ] {
+        if !workflow_source.contains(required) {
+            errors.push(format!(
+                "{} does not enforce publication preflight `{required}`",
+                workflow_path.display()
+            ));
+        }
+    }
+    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow_source)
         .map_err(|err| format!("failed to parse {}: {err}", workflow_path.display()))?;
     let mut crates = Vec::new();
     collect_publish_workflow_crates(&workflow, &mut crates);
@@ -1532,10 +1546,15 @@ fn collect_publish_workflow_crates(value: &serde_yaml_ng::Value, crates: &mut Ve
 fn publish_crate_from_run_line(line: &str) -> Option<String> {
     let marker = "scripts/publish-crate.sh";
     let after = line.split_once(marker)?.1;
-    after
+    let argument = after
         .split_whitespace()
         .next()
-        .map(|package| package.trim_matches(['"', '\'']).to_string())
+        .map(|package| package.trim_matches(['"', '\'']).to_string())?;
+    if argument == "--preflight-all" {
+        None
+    } else {
+        Some(argument)
+    }
 }
 
 fn validate_publish_script(errors: &mut Vec<String>) -> Result<(), String> {
@@ -1558,6 +1577,45 @@ fn validate_publish_script(errors: &mut Vec<String>) -> Result<(), String> {
             script_path.display(),
             crates,
             expected
+        ));
+    }
+
+    let independent =
+        shell_array_values(&script, "registry_independent_crates").ok_or_else(|| {
+            format!(
+                "{} does not define the registry_independent_crates shell array",
+                script_path.display()
+            )
+        })?;
+    let expected_independent = REGISTRY_INDEPENDENT_PACKAGES
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if independent != expected_independent {
+        errors.push(format!(
+            "{} registry_independent_crates is {:?}, expected {:?}",
+            script_path.display(),
+            independent,
+            expected_independent
+        ));
+    }
+    for required in [
+        "scripts/crates_io_version.py verify-set",
+        "scripts/crates_io_version.py state",
+        "cargo package -p \"$crate\" --no-verify",
+        "cargo publish -p \"$crate\" --dry-run",
+    ] {
+        if !script.contains(required) {
+            errors.push(format!(
+                "{} does not enforce publish-script check `{required}`",
+                script_path.display()
+            ));
+        }
+    }
+    if script.contains("cargo info") {
+        errors.push(format!(
+            "{} must not treat ambiguous cargo-info failures as version availability",
+            script_path.display()
         ));
     }
     Ok(())
@@ -1604,6 +1662,9 @@ fn validate_release_docs(errors: &mut Vec<String>) -> Result<(), String> {
     }
     for required in [
         "cargo xtask release-integrity",
+        "cargo package --no-verify",
+        "already-published prefix",
+        "Only an exact HTTP 404",
         "CRATES_IO_ALLOW_PUBLISHED_RERUN",
         "v<workspace.package.version>",
     ] {
@@ -1621,6 +1682,37 @@ fn str_set(values: &[&'static str]) -> BTreeSet<&'static str> {
     values.iter().copied().collect()
 }
 
+fn validate_package_gate_partition(errors: &mut Vec<String>) {
+    let publishable = str_set(PUBLISHABLE_PACKAGES);
+    let independent = str_set(REGISTRY_INDEPENDENT_PACKAGES);
+    let staged = str_set(STAGED_DEPENDENCY_PACKAGES);
+    let partitioned = independent.union(&staged).copied().collect::<BTreeSet<_>>();
+
+    if independent.len() != REGISTRY_INDEPENDENT_PACKAGES.len() {
+        errors.push("REGISTRY_INDEPENDENT_PACKAGES contains duplicates".to_string());
+    }
+    if staged.len() != STAGED_DEPENDENCY_PACKAGES.len() {
+        errors.push("STAGED_DEPENDENCY_PACKAGES contains duplicates".to_string());
+    }
+    for package in independent.intersection(&staged) {
+        errors.push(format!(
+            "`{package}` appears in both package-gate partitions"
+        ));
+    }
+    for package in publishable.difference(&partitioned) {
+        errors.push(format!(
+            "publishable package `{package}` is missing from the package-gate partitions"
+        ));
+    }
+    for package in &partitioned {
+        if !publishable.contains(package) {
+            errors.push(format!(
+                "package-gate partition contains non-publishable package `{package}`"
+            ));
+        }
+    }
+}
+
 fn release_cpu() -> Result<(), String> {
     let mut args = vec!["test", "--release"];
     for package in CPU_RELEASE_PACKAGES {
@@ -1635,13 +1727,11 @@ fn package() -> Result<(), String> {
     for package in PUBLISHABLE_PACKAGES {
         run_cargo(&["package", "-p", package, "--list"])?;
     }
-    for package in REGISTRY_INDEPENDENT_PACKAGES {
+    for package in STAGED_DEPENDENCY_PACKAGES {
         run_cargo(&["package", "-p", package, "--no-verify"])?;
     }
-    for package in STAGED_DEPENDENCY_PACKAGES {
-        eprintln!(
-            "skipping strict package verification for {package}: unpublished workspace dependencies are staged for publication; `cargo package --list` validated package contents"
-        );
+    for package in REGISTRY_INDEPENDENT_PACKAGES {
+        run_cargo(&["publish", "-p", package, "--dry-run"])?;
     }
     Ok(())
 }

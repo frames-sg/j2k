@@ -126,29 +126,62 @@ fn package_preflight_is_staged_dependency_aware() {
             FilePatternCheck::new("xtask/src/main.rs")
                 .named("xtask package preflight")
                 .required(&[
+                    "PUBLISHABLE_PACKAGES",
+                    "REGISTRY_INDEPENDENT_PACKAGES",
                     "STAGED_DEPENDENCY_PACKAGES",
                     "\"--list\"",
-                    "unpublished workspace dependencies",
+                    "[\"package\", \"-p\", package, \"--no-verify\"]",
+                    "[\"publish\", \"-p\", package, \"--dry-run\"]",
                 ]),
             FilePatternCheck::new("scripts/publish-crate.sh")
                 .named("publish script")
                 .required(&[
-                    "dry-run package list only",
+                    "registry_independent_crates=(",
+                    "if [[ \"$#\" -ne 1 ]]",
+                    "--preflight-all",
+                    "scripts/crates_io_version.py verify-set",
+                    "scripts/crates_io_version.py state",
+                    "require_positive_decimal \"CRATES_IO_PUBLISH_ATTEMPTS\"",
+                    "require_nonnegative_decimal \"CRATES_IO_RATE_LIMIT_RETRY_SECONDS\"",
+                    "require_nonnegative_decimal \"CRATES_IO_INDEX_SETTLE_SECONDS\"",
                     "j2k-cli",
-                    "cargo package -p \"$crate\" --list",
+                    "cargo package -p \"$crate\" --no-verify",
+                    "cargo publish -p \"$crate\" --dry-run",
+                ])
+                .forbidden(&["dry-run package list only", "cargo info"]),
+            FilePatternCheck::new("scripts/crates_io_version.py")
+                .named("fail-closed crates.io version helper")
+                .required(&[
+                    "VersionState.AVAILABLE",
+                    "VersionState.PUBLISHED",
+                    "error.code == 404",
+                    "dependency-order prefix",
+                    "allow_published_rerun",
                 ]),
             FilePatternCheck::new("docs/release.md")
                 .named("release docs")
                 .required(&[
                     "cargo xtask package",
                     "cargo package --list",
+                    "cargo package --no-verify",
                     "cargo publish --dry-run",
-                    "unpublished workspace dependencies",
+                    "already-published prefix",
+                    "Only an exact HTTP 404",
                 ]),
         ],
     );
+    let publishable_packages =
+        const_array_entries(const_array_block(&xtask, "PUBLISHABLE_PACKAGES"));
     let strict_packages = const_array_block(&xtask, "REGISTRY_INDEPENDENT_PACKAGES");
     let staged_packages = const_array_block(&xtask, "STAGED_DEPENDENCY_PACKAGES");
+    for package in publishable_packages {
+        let strict = strict_packages.contains(&format!("\"{package}\""));
+        let staged = staged_packages.contains(&format!("\"{package}\""));
+        assert_ne!(
+            strict, staged,
+            "publishable package `{package}` must appear in exactly one package-gate partition"
+        );
+    }
     for (package, dependency) in cargo_metadata_workspace_edges(root) {
         assert!(
             !strict_packages.contains(&format!("\"{package}\"")),
@@ -159,6 +192,19 @@ fn package_preflight_is_staged_dependency_aware() {
         staged_packages.contains("\"j2k-cuda-runtime\""),
         "j2k-cuda-runtime depends on staged j2k-core and must not run strict package verification before publication"
     );
+}
+
+fn const_array_entries(block: &str) -> Vec<&str> {
+    block
+        .lines()
+        .map(|line| line.trim().trim_matches([',', '"']))
+        .filter(|entry| {
+            !entry.is_empty()
+                && !entry.starts_with("const ")
+                && !entry.starts_with(']')
+                && !entry.starts_with('&')
+        })
+        .collect()
 }
 
 #[test]

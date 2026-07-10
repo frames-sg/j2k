@@ -45,6 +45,12 @@ class FakeApi:
             raise response
         return response
 
+    def get_optional_json(
+        self, path: str, params: Mapping[str, str | int] | None = None
+    ) -> verifier.OptionalJsonResponse:
+        response = self.get_json(path, params)
+        return verifier.OptionalJsonResponse(found=response is not None, payload=response)
+
 
 def workflow_metadata(api: FakeApi, filename: str, workflow_id: int) -> None:
     api.add(
@@ -155,6 +161,25 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(args.aggregate_job, verifier.RELEASE_CANDIDATE_JOB)
         self.assertEqual(args.cuda_job, verifier.CUDA_JOB)
         self.assertEqual(args.metal_job, verifier.METAL_JOB)
+
+    def test_verify_release_parser_requires_origin_context(self) -> None:
+        args = verifier.build_parser().parse_args(
+            [
+                "verify-release",
+                "--repository",
+                "frames-sg/j2k",
+                "--origin-url",
+                "https://github.com/frames-sg/j2k.git",
+                "--server-url",
+                "https://github.com",
+                "--tag",
+                "v0.7.0",
+                "--candidate-sha",
+                SHA,
+            ]
+        )
+        self.assertEqual(args.command, "verify-release")
+        self.assertEqual(args.origin_url, "https://github.com/frames-sg/j2k.git")
 
 
 class WorkflowVerificationTests(unittest.TestCase):
@@ -381,6 +406,7 @@ class ReleaseVerificationTests(unittest.TestCase):
 
     def test_annotated_tag_is_peeled_and_ci_and_gpu_runs_are_exact(self) -> None:
         api = FakeApi()
+        api.add("/releases/tags/v0.7.0", None)
         api.add(
             "/git/ref/tags/v0.7.0",
             {
@@ -419,6 +445,9 @@ class ReleaseVerificationTests(unittest.TestCase):
         self.assertEqual(
             verifier.verify_release_evidence(
                 api,  # type: ignore[arg-type]
+                repository="frames-sg/j2k",
+                origin_url="https://github.com/frames-sg/j2k.git",
+                server_url="https://github.com",
                 tag="v0.7.0",
                 candidate_sha=SHA,
                 ci_workflow="ci.yml",
@@ -446,6 +475,7 @@ class ReleaseVerificationTests(unittest.TestCase):
             )
 
         annotated = FakeApi()
+        annotated.add("/releases/tags/v0.7.0", None)
         annotated.add(
             "/git/ref/tags/v0.7.0",
             {
@@ -460,6 +490,9 @@ class ReleaseVerificationTests(unittest.TestCase):
         with self.assertRaisesRegex(verifier.VerificationError, "not candidate"):
             verifier.verify_release_evidence(
                 annotated,  # type: ignore[arg-type]
+                repository="frames-sg/j2k",
+                origin_url="https://github.com/frames-sg/j2k",
+                server_url="https://github.com",
                 tag="v0.7.0",
                 candidate_sha=SHA,
                 ci_workflow="ci.yml",
@@ -469,6 +502,55 @@ class ReleaseVerificationTests(unittest.TestCase):
                 metal_job=verifier.METAL_JOB,
                 ci_branch="main",
             )
+
+    def test_repository_origin_is_exact_and_credential_free(self) -> None:
+        verifier.verify_repository_origin(
+            "https://github.com/frames-sg/j2k.git",
+            "https://github.com",
+            "frames-sg/j2k",
+        )
+        for origin in (
+            "git@github.com:frames-sg/j2k.git",
+            "https://github.example/frames-sg/j2k.git",
+            "https://github.com/frames-sg/j2k-other.git",
+            "https://token@github.com/frames-sg/j2k.git",
+            "https://github.com/frames-sg/j2k.git?mirror=true",
+        ):
+            with self.subTest(origin=origin), self.assertRaisesRegex(
+                verifier.VerificationError, "origin does not match"
+            ):
+                verifier.verify_repository_origin(
+                    origin, "https://github.com", "frames-sg/j2k"
+                )
+        with self.assertRaisesRegex(verifier.VerificationError, "server URL"):
+            verifier.verify_repository_origin(
+                "https://github.com/attacker/frames-sg/j2k",
+                "https://github.com/attacker",
+                "frames-sg/j2k",
+            )
+
+    def test_existing_github_release_in_any_state_is_rejected(self) -> None:
+        for draft, prerelease, expected_state in (
+            (True, False, "draft"),
+            (False, True, "prerelease"),
+            (False, False, "published"),
+        ):
+            with self.subTest(expected_state=expected_state):
+                api = FakeApi()
+                api.add(
+                    "/releases/tags/v0.7.0",
+                    {
+                        "tag_name": "v0.7.0",
+                        "draft": draft,
+                        "prerelease": prerelease,
+                    },
+                )
+                with self.assertRaisesRegex(
+                    verifier.VerificationError, expected_state
+                ):
+                    verifier.require_github_release_absent(  # type: ignore[arg-type]
+                        api, "v0.7.0"
+                    )
 
 
 class ApiFailureTests(unittest.TestCase):
@@ -491,6 +573,26 @@ class ApiFailureTests(unittest.TestCase):
         with self.assertRaises(verifier.VerificationError) as captured:
             api.get_json("/actions/workflows/ci.yml")
         self.assertNotIn(token, str(captured.exception))
+
+    def test_only_http_404_is_optional_absence(self) -> None:
+        def missing(request: Any, timeout: int) -> Any:
+            del timeout
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+        api = verifier.GitHubApi(
+            "https://api.github.invalid", "owner/repo", "token", opener=missing
+        )
+        self.assertFalse(api.get_optional_json("/releases/tags/v0.7.0").found)
+
+        def forbidden(request: Any, timeout: int) -> Any:
+            del timeout
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
+
+        api = verifier.GitHubApi(
+            "https://api.github.invalid", "owner/repo", "token", opener=forbidden
+        )
+        with self.assertRaisesRegex(verifier.VerificationError, "HTTP 403"):
+            api.get_optional_json("/releases/tags/v0.7.0")
 
 
 if __name__ == "__main__":

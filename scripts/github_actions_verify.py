@@ -77,6 +77,14 @@ def _integer(value: Any, context: str) -> int:
     return value
 
 
+def _boolean(value: Any, context: str) -> bool:
+    if not isinstance(value, bool):
+        raise VerificationError(
+            f"malformed GitHub response: {context} must be a boolean"
+        )
+    return value
+
+
 def normalize_sha(value: str, context: str = "SHA") -> str:
     if not SHA_PATTERN.fullmatch(value):
         raise VerificationError(f"{context} must be exactly 40 hexadecimal characters")
@@ -90,6 +98,12 @@ def _required_names(values: Iterable[str]) -> tuple[str, ...]:
     if len(set(names)) != len(names):
         raise VerificationError("exact required job names must not contain duplicates")
     return names
+
+
+@dataclass(frozen=True)
+class OptionalJsonResponse:
+    found: bool
+    payload: Any
 
 
 class GitHubApi:
@@ -116,6 +130,25 @@ class GitHubApi:
     def get_json(
         self, path: str, params: Mapping[str, str | int] | None = None
     ) -> Any:
+        response = self._get_json(path, params, allow_not_found=False)
+        if not response.found:
+            raise VerificationError("internal GitHub API state error")
+        return response.payload
+
+    def get_optional_json(
+        self, path: str, params: Mapping[str, str | int] | None = None
+    ) -> OptionalJsonResponse:
+        """Return found=false only for an authenticated HTTP 404 response."""
+
+        return self._get_json(path, params, allow_not_found=True)
+
+    def _get_json(
+        self,
+        path: str,
+        params: Mapping[str, str | int] | None,
+        *,
+        allow_not_found: bool,
+    ) -> OptionalJsonResponse:
         if not path.startswith("/"):
             raise VerificationError("internal API path must begin with a slash")
         query = urllib.parse.urlencode(params or {})
@@ -134,6 +167,9 @@ class GitHubApi:
             with self._opener(request, timeout=30) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
+            error.close()
+            if allow_not_found and error.code == 404:
+                return OptionalJsonResponse(found=False, payload=None)
             raise VerificationError(
                 f"GitHub API request failed with HTTP {error.code} for {path}"
             ) from None
@@ -148,7 +184,7 @@ class GitHubApi:
             ) from None
 
         try:
-            return json.loads(raw)
+            return OptionalJsonResponse(found=True, payload=json.loads(raw))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise VerificationError(
                 f"malformed GitHub response: {path} did not return valid JSON"
@@ -395,6 +431,63 @@ def verify_workflow_run(
     )
 
 
+def verify_repository_origin(
+    origin_url: str, server_url: str, repository: str
+) -> None:
+    """Require the hosted checkout to point at the exact workflow repository."""
+
+    repo_parts = repository.split("/")
+    if len(repo_parts) != 2 or any(not part for part in repo_parts):
+        raise VerificationError("repository must use owner/name form")
+    parsed_server = urllib.parse.urlsplit(server_url)
+    if (
+        parsed_server.scheme != "https"
+        or not parsed_server.netloc
+        or parsed_server.username is not None
+        or parsed_server.password is not None
+        or parsed_server.path not in ("", "/")
+        or parsed_server.query
+        or parsed_server.fragment
+    ):
+        raise VerificationError(
+            "GitHub server URL must be a bare HTTPS origin"
+        )
+    normalized_server = server_url.rstrip("/")
+    expected = f"{normalized_server}/{repository}"
+    if origin_url not in (expected, f"{expected}.git"):
+        raise VerificationError(
+            "git origin does not match the exact GitHub workflow repository"
+        )
+
+
+def require_github_release_absent(api: GitHubApi, tag: str) -> None:
+    """Require publication to start before any GitHub Release exists for the tag."""
+
+    if (
+        not tag
+        or tag.startswith("refs/")
+        or any(ord(character) < 32 for character in tag)
+    ):
+        raise VerificationError("tag must be a non-empty short tag name")
+    encoded_tag = urllib.parse.quote(tag, safe="")
+    response = api.get_optional_json(f"/releases/tags/{encoded_tag}")
+    if not response.found:
+        return
+    release = _dict(response.payload, "GitHub Release")
+    response_tag = _string(release.get("tag_name"), "GitHub Release tag_name")
+    draft = _boolean(release.get("draft"), "GitHub Release draft")
+    prerelease = _boolean(release.get("prerelease"), "GitHub Release prerelease")
+    if response_tag != tag:
+        raise VerificationError(
+            f"GitHub Release tag mismatch: expected {tag}, received {response_tag}"
+        )
+    state = "draft" if draft else "prerelease" if prerelease else "published"
+    raise VerificationError(
+        f"GitHub Release {tag} already exists in {state} state; "
+        "publication preflight requires it to be absent"
+    )
+
+
 def peel_annotated_tag(api: GitHubApi, tag: str) -> str:
     if not tag or tag.startswith("refs/") or any(ord(character) < 32 for character in tag):
         raise VerificationError("tag must be a non-empty short tag name")
@@ -445,6 +538,9 @@ def peel_annotated_tag(api: GitHubApi, tag: str) -> str:
 def verify_release_evidence(
     api: GitHubApi,
     *,
+    repository: str,
+    origin_url: str,
+    server_url: str,
     tag: str,
     candidate_sha: str,
     ci_workflow: str,
@@ -454,6 +550,8 @@ def verify_release_evidence(
     metal_job: str,
     ci_branch: str,
 ) -> tuple[int, int]:
+    verify_repository_origin(origin_url, server_url, repository)
+    require_github_release_absent(api, tag)
     expected_sha = normalize_sha(candidate_sha, "candidate SHA")
     peeled_sha = peel_annotated_tag(api, tag)
     if peeled_sha != expected_sha:
@@ -538,6 +636,8 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-release", help="verify annotated tag and exact-SHA CI/GPU evidence"
     )
     _add_api_arguments(release_parser)
+    release_parser.add_argument("--origin-url", required=True)
+    release_parser.add_argument("--server-url", required=True)
     release_parser.add_argument("--tag", required=True)
     release_parser.add_argument("--candidate-sha", required=True)
     release_parser.add_argument("--ci-workflow", default="ci.yml")
@@ -606,6 +706,9 @@ def run_command(args: argparse.Namespace) -> None:
     if args.command == "verify-release":
         ci_run, gpu_run = verify_release_evidence(
             api,
+            repository=args.repository,
+            origin_url=args.origin_url,
+            server_url=args.server_url,
             tag=args.tag,
             candidate_sha=args.candidate_sha,
             ci_workflow=args.ci_workflow,
@@ -616,7 +719,8 @@ def run_command(args: argparse.Namespace) -> None:
             ci_branch=args.ci_branch,
         )
         print(
-            f"verified annotated tag {args.tag} and exact-SHA evidence "
+            f"verified origin, absent GitHub Release, annotated tag {args.tag}, "
+            "and exact-SHA evidence "
             f"(CI run {ci_run}, GPU run {gpu_run})"
         )
         return
