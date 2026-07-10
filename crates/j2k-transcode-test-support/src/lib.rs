@@ -4,6 +4,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod corpus_validation;
+pub mod dct53_1d;
+pub mod dct53_multilevel;
+mod dwt_diff;
+
 use j2k_transcode::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes, Dwt97TwoDimensional,
     Htj2k97CodeBlockOptions,
@@ -12,6 +17,8 @@ use j2k_types::{
     J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
     PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
+
+pub use dwt_diff::{max_abs_diff_53, max_abs_diff_97};
 
 /// Quantize one level of float 9/7 bands into a prequantized HTJ2K component.
 ///

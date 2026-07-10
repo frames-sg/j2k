@@ -21,6 +21,10 @@ ignored = ["rayon"]
 name = "j2k_transcode_metal"
 path = "src/lib.rs"
 
+[features]
+default = []
+bench-internals = ["j2k-transcode/dev-support"]
+
 [dependencies]
 j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.0" }
 j2k-core = { path = "../j2k-core", version = "=0.7.0" }
@@ -44,6 +48,7 @@ j2k-transcode-test-support = { path = "../j2k-transcode-test-support" }
 name = "dct97"
 harness = false
 test = false
+required-features = ["bench-internals"]
 
 [lints.rust]
 unsafe_code = "deny"

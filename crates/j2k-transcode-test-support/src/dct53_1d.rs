@@ -10,8 +10,7 @@
 
 use core::fmt;
 
-use crate::dct_grid::{high_len, idct8_basis, low_len};
-use crate::reversible53::reversible_lift_53_i32;
+use j2k_transcode::dev_support::{high_len, idct8_basis, low_len, reversible_lift_53_i32};
 
 /// One single-level 5/3 transform result for an 8-sample 1D signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

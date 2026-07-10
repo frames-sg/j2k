@@ -1,22 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[expect(
-    unreachable_pub,
-    reason = "integration-test path-module reuse intentionally compiles extra shared helpers"
-)]
-#[path = "support/dct53_1d.rs"]
-mod dct53_1d;
-#[expect(
-    dead_code,
-    unreachable_pub,
-    reason = "integration-test path-module reuse intentionally compiles extra grid helpers"
-)]
-#[path = "../src/dct_grid.rs"]
-mod dct_grid;
-#[path = "../src/reversible53/in_place.rs"]
-mod reversible53;
-
-use dct53_1d::{
+use j2k_transcode_test_support::dct53_1d::{
     dct8_blocks_to_dwt53_float_linear, dct8_blocks_to_dwt53_float_linear_with_len,
     dct8_to_dwt53_float_linear, dct8_to_dwt53_reversible_i16, idct8_blocks_then_dwt53_float,
     idct8_blocks_then_dwt53_float_with_len, idct8_rounded_then_dwt53_reversible,

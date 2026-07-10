@@ -9,11 +9,11 @@
 
 use core::fmt;
 
-use crate::dct53_2d::{
+use crate::max_abs_diff_53;
+use j2k_transcode::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
-    linearized_53_2d_from_plane,
+    dev_support::linearized_53_2d_from_plane, Dwt53TwoDimensional,
 };
-use crate::Dwt53TwoDimensional;
 
 /// Multilevel 5/3 decomposition result for one component plane.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,7 +40,7 @@ impl Dwt53MultiLevel<f64> {
             .levels
             .iter()
             .zip(other.levels.iter())
-            .map(|(actual, expected)| actual.max_abs_diff(expected))
+            .map(|(actual, expected)| max_abs_diff_53(actual, expected))
             .fold(0.0, f64::max);
 
         self.final_ll

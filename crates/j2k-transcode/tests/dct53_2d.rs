@@ -1,16 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[expect(
-    dead_code,
-    reason = "integration-test path-module reuse includes the sibling 9/7 comparison helper"
-)]
-#[path = "support/dwt_diff.rs"]
-mod dwt_diff;
-
-use dwt_diff::max_abs_diff_53;
 use j2k_transcode::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear, Dwt53TwoDimensional,
 };
+use j2k_transcode_test_support::max_abs_diff_53;
 
 #[test]
 fn dct8x8_to_single_level_2d_53_matches_reference() {

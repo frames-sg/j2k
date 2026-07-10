@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[expect(
-    dead_code,
-    reason = "integration-test path-module reuse includes the sibling 5/3 comparison helper"
-)]
-#[path = "support/dwt_diff.rs"]
-mod dwt_diff;
-
-use dwt_diff::max_abs_diff_97;
 use j2k_transcode::dct8x8_blocks_then_dwt97_float;
+use j2k_transcode_test_support::max_abs_diff_97;
 
 #[test]
 fn dct8x8_grid_to_2d_97_public_path_matches_reference_for_structured_cases() {

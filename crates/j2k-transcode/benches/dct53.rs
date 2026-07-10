@@ -10,86 +10,22 @@ use j2k_test_support::{
     JPEG_BASELINE_444_8X8, JPEG_GRAYSCALE_8X8,
 };
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Dwt53TwoDimensional<T> {
-    pub ll: Vec<T>,
-    pub hl: Vec<T>,
-    pub lh: Vec<T>,
-    pub hh: Vec<T>,
-    pub low_width: usize,
-    pub low_height: usize,
-    pub high_width: usize,
-    pub high_height: usize,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Dwt97TwoDimensional<T> {
-    pub ll: Vec<T>,
-    pub hl: Vec<T>,
-    pub lh: Vec<T>,
-    pub hh: Vec<T>,
-    pub low_width: usize,
-    pub low_height: usize,
-    pub high_width: usize,
-    pub high_height: usize,
-}
-
-#[expect(
-    dead_code,
-    unreachable_pub,
-    reason = "benchmark path-module reuse intentionally compiles a wider helper API"
-)]
-#[path = "../tests/support/dct53_1d.rs"]
-mod dct53_1d;
-#[expect(
-    dead_code,
-    unreachable_pub,
-    unused_imports,
-    reason = "benchmark path-module reuse intentionally compiles non-bench entry points"
-)]
-#[path = "../src/dct53_2d.rs"]
-mod dct53_2d;
-#[expect(
-    clippy::large_types_passed_by_value,
-    dead_code,
-    unreachable_pub,
-    reason = "benchmark path-module reuse intentionally compiles a wider helper API"
-)]
-#[path = "../tests/support/dct53_multilevel.rs"]
-mod dct53_multilevel;
-#[expect(
-    dead_code,
-    unreachable_pub,
-    reason = "benchmark path-module reuse intentionally compiles non-bench entry points"
-)]
-#[path = "../src/dct97_2d.rs"]
-mod dct97_2d;
-#[expect(
-    unused_imports,
-    reason = "benchmark path-module reuse intentionally compiles non-bench grid helpers"
-)]
-#[path = "../src/dct_grid.rs"]
-mod dct_grid;
-#[path = "../src/reversible53/in_place.rs"]
-mod reversible53;
-
-pub use dct_grid::DctGridError;
-
-use dct53_1d::{
+use j2k_transcode::{
+    dct8x8_blocks_then_dwt53_float, dct8x8_blocks_then_dwt97_float,
+    dct8x8_blocks_to_dwt53_float_linear,
+    dev_support::{
+        dct8x8_blocks_then_dwt97_float_with_scratch,
+        dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch, Dct97GridScratch,
+    },
+    jpeg_to_htj2k, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
+};
+use j2k_transcode_test_support::dct53_1d::{
     dct8_blocks_to_dwt53_float_linear, dct8_to_dwt53_float_linear, idct8_blocks_then_dwt53_float,
     idct8_then_dwt53_float,
 };
-use dct53_2d::{
-    dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
-    dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch,
-};
-use dct53_multilevel::{
+use j2k_transcode_test_support::dct53_multilevel::{
     dct8x8_to_dwt53_multilevel_float_linear, idct8x8_then_dwt53_multilevel_float,
 };
-use dct97_2d::{
-    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch,
-};
-use j2k_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
 use std::hint::black_box;
 
 fn bench_dct53_math(c: &mut Criterion) {

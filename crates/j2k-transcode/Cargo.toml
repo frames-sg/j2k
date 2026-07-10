@@ -16,6 +16,10 @@ targets = []
 name = "j2k_transcode"
 path = "src/lib.rs"
 
+[features]
+default = []
+dev-support = []
+
 [dependencies]
 rayon = { workspace = true }
 j2k-core = { path = "../j2k-core", version = "=0.7.0" }
@@ -28,11 +32,13 @@ j2k-native = { path = "../j2k-native", version = "=0.7.0" }
 criterion = { workspace = true }
 proptest = { workspace = true }
 j2k-test-support = { path = "../j2k-test-support" }
+j2k-transcode-test-support = { path = "../j2k-transcode-test-support" }
 
 [[bench]]
 name = "dct53"
 harness = false
 test = false
+required-features = ["dev-support"]
 
 [lints.rust]
 unsafe_code = "forbid"

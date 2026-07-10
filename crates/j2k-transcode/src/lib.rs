@@ -24,6 +24,9 @@ pub use self::accelerator::{
 mod dct53_2d;
 mod dct97_2d;
 mod dct_grid;
+#[cfg(feature = "dev-support")]
+#[doc(hidden)]
+pub mod dev_support;
 mod htj2k97_codeblock_oracle;
 #[doc(hidden)]
 mod jpeg_to_htj2k;

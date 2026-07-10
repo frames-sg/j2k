@@ -11,60 +11,14 @@ use j2k_transcode::accelerator::{
     DctToWaveletStageAccelerator, RayonReversibleDwt53Accelerator,
 };
 use j2k_transcode::{
+    dev_support::{
+        dct8x8_blocks_then_dwt97_float_with_scratch,
+        dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch, Dct97GridScratch,
+    },
     EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions,
     JpegToHtj2kTranscoder, TranscodeBatchProfileRequest, TranscodePipelineMap,
 };
 use j2k_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILABLE};
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Dwt53TwoDimensional<T> {
-    pub ll: Vec<T>,
-    pub hl: Vec<T>,
-    pub lh: Vec<T>,
-    pub hh: Vec<T>,
-    pub low_width: usize,
-    pub low_height: usize,
-    pub high_width: usize,
-    pub high_height: usize,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Dwt97TwoDimensional<T> {
-    pub ll: Vec<T>,
-    pub hl: Vec<T>,
-    pub lh: Vec<T>,
-    pub hh: Vec<T>,
-    pub low_width: usize,
-    pub low_height: usize,
-    pub high_width: usize,
-    pub high_height: usize,
-}
-
-#[expect(
-    dead_code,
-    unreachable_pub,
-    unused_imports,
-    reason = "benchmark path-module reuse intentionally compiles non-benchmark 5/3 helpers"
-)]
-#[path = "../../j2k-transcode/src/dct53_2d.rs"]
-mod dct53_2d;
-#[expect(
-    dead_code,
-    unreachable_pub,
-    reason = "benchmark path-module reuse intentionally compiles non-benchmark 9/7 helpers"
-)]
-#[path = "../../j2k-transcode/src/dct97_2d.rs"]
-mod dct97_2d;
-#[expect(
-    unused_imports,
-    reason = "benchmark path-module reuse intentionally compiles non-benchmark grid imports"
-)]
-#[path = "../../j2k-transcode/src/dct_grid.rs"]
-mod dct_grid;
-
-use dct53_2d::{dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch};
-use dct97_2d::{dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch};
-pub use dct_grid::DctGridError;
 
 const WSI_DIMS: [usize; 4] = [224, 512, 1024, 2048];
 const REVERSIBLE_BATCH_SIZES: [usize; 5] = [1, 8, 32, 128, 512];

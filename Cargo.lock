@@ -668,6 +668,7 @@ dependencies = [
  "j2k-jpeg",
  "j2k-native",
  "j2k-test-support",
+ "j2k-transcode-test-support",
  "proptest",
  "rayon",
 ]

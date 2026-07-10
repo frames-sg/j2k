@@ -3,7 +3,7 @@
 use j2k_transcode::{Dwt53TwoDimensional, Dwt97TwoDimensional};
 
 #[must_use]
-pub(crate) fn max_abs_diff_53(
+pub fn max_abs_diff_53(
     actual: &Dwt53TwoDimensional<f64>,
     expected: &Dwt53TwoDimensional<f64>,
 ) -> f64 {
@@ -21,7 +21,7 @@ pub(crate) fn max_abs_diff_53(
 }
 
 #[must_use]
-pub(crate) fn max_abs_diff_97(
+pub fn max_abs_diff_97(
     actual: &Dwt97TwoDimensional<f64>,
     expected: &Dwt97TwoDimensional<f64>,
 ) -> f64 {

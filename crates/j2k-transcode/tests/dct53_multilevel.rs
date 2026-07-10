@@ -1,38 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Dwt53TwoDimensional<T> {
-    pub ll: Vec<T>,
-    pub hl: Vec<T>,
-    pub lh: Vec<T>,
-    pub hh: Vec<T>,
-    pub low_width: usize,
-    pub low_height: usize,
-    pub high_width: usize,
-    pub high_height: usize,
-}
-
-#[expect(
-    unreachable_pub,
-    reason = "integration-test path-module reuse intentionally compiles extra transform helpers"
-)]
-#[path = "../src/dct53_2d.rs"]
-mod dct53_2d;
-#[path = "../src/dct_grid.rs"]
-mod dct_grid;
-
-pub use dct_grid::DctGridError;
-
-#[expect(
-    clippy::large_types_passed_by_value,
-    dead_code,
-    unreachable_pub,
-    reason = "integration-test path-module reuse intentionally compiles extra multilevel helpers"
-)]
-#[path = "support/dct53_multilevel.rs"]
-mod dct53_multilevel;
-
-use dct53_multilevel::{
+use j2k_transcode_test_support::dct53_multilevel::{
     dct8x8_to_dwt53_multilevel_float_linear, idct8x8_then_dwt53_multilevel_float,
 };
 
