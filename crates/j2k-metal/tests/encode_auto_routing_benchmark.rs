@@ -74,6 +74,53 @@ fn encode_auto_routing_benchmark() {
     run_resident_batch_benchmarks(&external_cases);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "performance guard harness; run explicitly with --ignored --nocapture"]
+fn metal_resident_codestream_perf_guard() {
+    const DIM: u32 = 512;
+    const BATCH_SIZE: usize = 16;
+
+    let case = ExternalEncodeCase {
+        id: "generated_resident_rgb8_512".to_string(),
+        pixels: patterned_rgb8(DIM, DIM),
+        width: DIM,
+        height: DIM,
+        components: Components::Rgb8,
+        input_source: "generated".to_string(),
+    };
+    let group = ResidentCaseGroup {
+        components: Components::Rgb8,
+        width: DIM,
+        height: DIM,
+        cases: vec![&case],
+    };
+    let session = MetalBackendSession::system_default()
+        .unwrap_or_else(|error| panic!("Metal resident performance guard needs a device: {error}"));
+    let (host, buffer) = measure_resident_batches(&session, &group, BATCH_SIZE)
+        .unwrap_or_else(|error| panic!("Metal resident performance guard failed: {error}"));
+
+    assert_eq!(host.value.encoded_bytes, buffer.value.encoded_bytes);
+    assert!(
+        host.value.metrics.packetization_used && buffer.value.metrics.packetization_used,
+        "performance guard must exercise resident packetization"
+    );
+    assert!(
+        host.value.metrics.codestream_assembly_used
+            && buffer.value.metrics.codestream_assembly_used,
+        "performance guard must exercise resident codestream assembly"
+    );
+    println!(
+        "j2k_metal_resident_codestream_perf source=generated codec=htj2k components=rgb8 size={}x{} batch_size={} resident_host_median_ms={} resident_buffer_median_ms={} encoded_bytes={}",
+        DIM,
+        DIM,
+        BATCH_SIZE,
+        duration_ms(host.duration),
+        duration_ms(buffer.duration),
+        host.value.encoded_bytes
+    );
+}
+
 fn run_stage_benchmarks() {
     for &dim in DIMS {
         run_deinterleave_stage_benchmark(dim);
@@ -539,9 +586,9 @@ fn resident_batch_tiles<'a>(
         .map(|index| {
             let case_index = index % group.cases.len();
             let case = group.cases[case_index];
-            // SAFETY: Benchmark buffers were fully initialized before tile
-            // construction and are not mutated while either measured batch is
-            // submitted or awaited.
+            // SAFETY: Benchmark buffers were allocated from the Metal session
+            // used by both measured calls, fully initialized before tile
+            // construction, and are not mutated while either batch is active.
             unsafe {
                 MetalLosslessEncodeTile::from_buffer(
                     &buffers[case_index],

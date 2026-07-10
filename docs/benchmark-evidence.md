@@ -15,10 +15,10 @@ This page is the current public benchmark evidence note. Broader adoption-facing
 speed reports require an external adoption benchmark bundle:
 
 ```bash
-cargo xtask adoption-report --run-dir target/j2k-adoption-benchmark/full
+cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-adoption-benchmark/full
 ```
 
-For adoption reports, `cargo xtask adoption-report` must require a completed
+The `adoption-report` subcommand must require a completed
 external bundle and identify any missing evidence. Generated repo-local
 fixtures and passing codec self-checks remain implementation evidence; use
 manifest-backed external rows for adoption-facing speed reports.
@@ -32,17 +32,20 @@ Host:
 - Architecture: `arm64`
 - Memory: 48 GB
 - OS: macOS 26.5 build `25F71`
-- Baseline ref: `HEAD` (`29143c8e`)
+- Baseline ref: `29143c8e` (the then-current `HEAD`)
 
-Commands:
+Pinned rerun commands:
 
 ```bash
 cargo xtask bench-build
-cargo xtask j2k-perf-guard --baseline-ref HEAD --quick
+cargo xtask j2k-perf-guard --baseline-ref 29143c8e --quick
 ```
 
-Result: both commands passed. The quick guard compared the current remediation
-tree against the local `HEAD` baseline with a +10% median regression threshold.
+Historical result: both commands passed. The quick guard compared the then-current
+remediation tree against commit `29143c8e` with a +10% median regression
+threshold. The tested working-tree revision and benchmark artifact hashes were
+not recorded, so this July 7 quick guard is historical local evidence rather
+than exactly reproducible publication evidence.
 The macOS host cannot build or run the Linux-only cuda-oxide kernels, so
 CUDA-labeled rows in this run are CPU fallback rows; strict CUDA runtime
 validation remains a separate Linux/NVIDIA hardware gate.
@@ -55,6 +58,59 @@ quick guard:
 | `htj2k_cleanup_encode_distribution/rho_eq_uq_64x64/2459041792` | 8.592 us | 7.768 us | -9.59% |
 | `htj2k_cleanup_encode_distribution/rho_eq_uq_64x64/2459041793` | 8.548 us | 7.846 us | -8.22% |
 | `jpeg_cpu_encode_runtime/rgb8_512_420_restart_64` | 2.028 ms | 2.062 ms | +1.66% |
+
+## Metal Structural Refactor Guard - 2026-07-09
+
+This local release-profile comparison is acceptance evidence for the
+resident-codestream and direct-stacked module splits. It is not a public speed
+claim and does not replace exact-SHA Metal release validation.
+
+- Host: the Apple M4 Pro / 48 GB / macOS 26.5 machine recorded above
+- Baseline: `edb27830`, before the three structural refactor commits
+- Candidate library source: `46130e58`; the benchmark-only harness changes are
+  recorded in the following evidence commit
+- Profile: Cargo `--release`, isolated target directories, no concurrent Cargo,
+  Rust, or benchmark processes
+- Sampling: five timed iterations per process; three alternating
+  baseline/candidate processes; comparison uses the median of the three process
+  medians
+- Threshold: reject a candidate slowdown greater than 5%
+
+Command shape for each exact ignored guard:
+
+```bash
+J2K_REQUIRE_METAL_BENCH=1 CARGO_TARGET_DIR=<isolated-target> \
+  cargo test --release -p j2k-metal --test <benchmark-target> <exact-test> \
+  -- --exact --ignored --nocapture --test-threads=1
+```
+
+The direct path uses test target `metal_decode_benchmark` and exact test
+`metal_direct_stacked_batch_perf_guard`. The resident path uses test target
+`encode_auto_routing_benchmark` and exact test
+`metal_resident_codestream_perf_guard`; that one invocation reports both the
+resident-buffer primary path and the host/readback secondary path.
+
+Results:
+
+| Path | Baseline process medians | Candidate process medians | Median-of-medians delta | Result |
+|---|---:|---:|---:|---|
+| Direct stacked RGB8 ROI+quarter batch (8 distinct inputs) | 8.472, 7.244, 6.779 ms | 8.394, 6.726, 6.878 ms | 7.244 to 6.878 ms (-5.052%) | pass |
+| Resident HTJ2K buffer batch (16 RGB8 tiles) | 6.684, 6.722, 6.744 ms | 6.707, 6.717, 6.731 ms | 6.722 to 6.717 ms (-0.074%) | pass |
+| Secondary resident host/readback batch | 8.357, 8.999, 7.356 ms | 8.763, 8.616, 8.677 ms | 8.357 to 8.677 ms (+3.829%) | pass |
+
+Fixture generation, Metal-session creation, private input upload, and tile
+construction occur before timing. The direct guard reaches the stacked RGB
+component-plane graph, requires Metal-resident outputs, and reads only byte
+length metadata. The primary resident guard includes submit/wait and byte-length
+metadata but no host readback; it asserts that resident packetization and
+codestream assembly were used. Output sizes matched on every run (221,184
+direct-decode bytes and 7,982,464 resident-encode bytes).
+
+The baseline benchmark copy needed two syntax-only adaptations for APIs that
+were hardened after `edb27830`: a public tile struct literal in place of the
+candidate's unsafe constructor, and a `byte_len` field read in place of its
+getter. Neither adaptation changed fixtures, timed closures, validation, or
+batch sizes.
 
 ## CUDA JPEG-to-HTJ2K Transcode
 

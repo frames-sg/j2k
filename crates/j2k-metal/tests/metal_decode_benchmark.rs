@@ -6,11 +6,14 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use j2k_core::{BackendKind, BackendRequest, DeviceSurface, Downscale, PixelFormat, Rect};
-use j2k_metal::{DecodeOperation, J2kDecoder, MetalDecodeRequest, SurfaceResidency};
+use j2k_metal::{
+    DecodeOperation, J2kDecoder, MetalDecodeRequest, MetalTileBatch, SurfaceResidency,
+};
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
 use j2k_test_support::{
     fnv1a64_hex, manifest_column, manifest_field, manifest_optional_value,
@@ -24,6 +27,8 @@ const METAL_DECODE_MANIFEST_ENV: &str = "J2K_METAL_DECODE_MANIFEST";
 const METAL_DECODE_INCLUDE_GENERATED_ENV: &str = "J2K_METAL_DECODE_INCLUDE_GENERATED";
 const REQUIRE_METAL_BENCH_ENV: &str = "J2K_REQUIRE_METAL_BENCH";
 const METAL_DECODE_MANIFEST_LABEL: &str = "Metal decode manifest";
+const DIRECT_STACKED_DIM: u32 = 512;
+const DIRECT_STACKED_BATCH_SIZE: usize = 8;
 
 #[derive(Clone)]
 struct DecodeBenchCase {
@@ -74,6 +79,93 @@ fn metal_decode_benchmark() {
     for case in generated_cases.iter().chain(external_cases.iter()) {
         run_decode_case(case);
     }
+}
+
+#[test]
+#[ignore = "performance guard harness; run explicitly with --ignored --nocapture"]
+fn metal_direct_stacked_batch_perf_guard() {
+    if !cfg!(target_os = "macos") {
+        assert!(
+            !env_truthy(REQUIRE_METAL_BENCH_ENV),
+            "J2K Metal direct-stacked performance guard requires macOS"
+        );
+        println!("j2k_metal_direct_stacked_perf_status\tskipped-not-macos");
+        return;
+    }
+
+    let inputs = direct_stacked_inputs();
+    let roi = Rect {
+        x: 64,
+        y: 64,
+        w: 384,
+        h: 384,
+    };
+    let request = MetalDecodeRequest::region_scaled(
+        PixelFormat::Rgb8,
+        roi,
+        Downscale::Quarter,
+        BackendRequest::Metal,
+    );
+    let measured = measure_result(|| run_direct_stacked_batch(&inputs, request))
+        .unwrap_or_else(|error| panic!("Metal direct-stacked performance guard failed: {error}"));
+
+    println!(
+        "j2k_metal_direct_stacked_perf source=generated codec=j2k components=rgb8 size={}x{} batch_size={} median_ms={:.3} output_bytes={}",
+        DIRECT_STACKED_DIM,
+        DIRECT_STACKED_DIM,
+        DIRECT_STACKED_BATCH_SIZE,
+        millis(measured.duration),
+        measured.value
+    );
+}
+
+fn direct_stacked_inputs() -> Vec<Arc<[u8]>> {
+    (0..DIRECT_STACKED_BATCH_SIZE)
+        .map(|seed| {
+            let mut pixels = patterned_rgb8(DIRECT_STACKED_DIM, DIRECT_STACKED_DIM);
+            let seed = u8::try_from(seed).expect("direct-stacked seed fits u8");
+            for pixel in &mut pixels {
+                *pixel = pixel.wrapping_add(seed.wrapping_mul(17));
+            }
+            Arc::<[u8]>::from(encode_classic(
+                &pixels,
+                DIRECT_STACKED_DIM,
+                DIRECT_STACKED_DIM,
+                3,
+            ))
+        })
+        .collect()
+}
+
+fn run_direct_stacked_batch(
+    inputs: &[Arc<[u8]>],
+    request: MetalDecodeRequest,
+) -> Result<usize, String> {
+    let mut batch = MetalTileBatch::with_capacity(inputs.len());
+    for input in inputs {
+        batch
+            .push_shared_tile_request(Arc::clone(input), request)
+            .map_err(|error| error.to_string())?;
+    }
+    let surfaces = batch.decode_all().map_err(|error| error.to_string())?;
+    if surfaces.len() != inputs.len() {
+        return Err(format!(
+            "direct-stacked batch returned {} surfaces for {} inputs",
+            surfaces.len(),
+            inputs.len()
+        ));
+    }
+    if surfaces.iter().any(|surface| {
+        surface.backend_kind() != BackendKind::Metal
+            || surface.residency() != SurfaceResidency::MetalResidentDecode
+    }) {
+        return Err("direct-stacked batch did not keep every output Metal-resident".to_string());
+    }
+    surfaces.iter().try_fold(0usize, |total, surface| {
+        total
+            .checked_add(surface.byte_len())
+            .ok_or_else(|| "direct-stacked output byte count overflow".to_string())
+    })
 }
 
 fn generated_decode_cases() -> Vec<DecodeBenchCase> {
