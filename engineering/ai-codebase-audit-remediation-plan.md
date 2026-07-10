@@ -50,15 +50,15 @@ coverage, and the clean release matrix.
 Update this section whenever a task changes state. Keep it short enough to read
 without loading the rest of the file.
 
-- Current task: STR-011 native IDWT split, JPEGCOR-001 4:2:2 correctness
-  investigation, and STR-014 CUDA decode-runtime split
+- Current task: STR-011 native HT block-decode split, STR-012 extended-12 JPEG
+  renderer split, and STR-014 CUDA JPEG runtime split
 - Parallel tasks: coefficient/rounding-preserving native transform extraction,
   restart/profile-preserving JPEG entropy extraction, and CUDA
   context/cache/memory ownership extraction
-- Last completed task: STR-015 transcode accelerator real-module conversion
-  (strict all-target Clippy, 34 library tests, and three structure-policy tests)
-- Last completed implementation commit: 64e150d2
-  (`refactor(transcode): replace accelerator source include`)
+- Last completed task: JPEGCOR-001 libjpeg-compatible 4:2:2 fancy-upsample
+  rounding fix with live TurboJPEG, edge, ROI, and scaled-ROI coverage
+- Last completed implementation commit: 5ecbdb7e
+  (`fix(jpeg): match libjpeg 4:2:2 fancy rounding`)
 - Last completed evidence commits: 0e78229a performance guards and c0937284
   clone scanner/report
 - Candidate state: unfrozen
@@ -229,7 +229,7 @@ The rubric was checked against current primary or first-party sources on
 | STR-013 | P2 | complete | STR-009 | Split mixed encode/fixture comparison tooling roots |
 | STR-014 | P2 | in progress | STR-009 | Close actionable GPU/runtime findings from the independent large-file pass |
 | STR-015 | P2 | pending | STR-009 through STR-014 | Remove or narrowly justify broad lint suppressions and hidden production namespace seams |
-| JPEGCOR-001 | P2 | pending | STR-012A | Determine whether generic baseline 4:2:2 chroma interpolation should match the libjpeg-turbo fixture byte-for-byte |
+| JPEGCOR-001 | P2 | complete | STR-012A | Fixed ordered-dither rounding; stored and live libjpeg-turbo output now matches byte-for-byte |
 | TOOL-001 | P3 | complete | DUP-001 | Adoption report model/render split |
 | CUDA-002 | P1 | complete | SEC-001 | One exact named release-cuda gate with zero skip markers |
 | PKG-001 | P1 | complete | SEC-001 | Construct all packages and verify independent packages |
@@ -1059,6 +1059,17 @@ a normative oracle. JPEGCOR-001 must compare the documented upsampling
 contract and independent implementations, then either fix with behavior tests
 or record a justified compatibility difference before 0.7.
 
+JPEGCOR-001 closed in commit 5ecbdb7e. Baseline JPEG does not prescribe final
+RGB chroma interpolation, but this repository explicitly promises bit-exact
+libjpeg ISLOW compatibility in its WSI parity suite. The implementation used a
+`+2` quarter-filter bias for both output phases; libjpeg-turbo uses ordered
+dither (`+1` for the left/even phase and `+2` for the right/odd phase) to avoid
+systematic half-tie bias. Installed libjpeg-turbo 3.1.4.1 reproduced the stored
+fixture byte-for-byte, the one-term fix now matches it, and edge/odd-width,
+ROI/scaled-ROI, live TurboJPEG, strict Clippy, and baseline encode round-trip
+tests pass. Independent Rust decoders that choose `+2`/`+2` remain standards-
+valid but do not satisfy this repository's stronger compatibility contract.
+
 ### STR-013 — comparison tooling
 
 For both encode and fixture comparison tools, separate CLI/options, corpus and
@@ -1088,10 +1099,18 @@ parity passed; default/all-feature checks, strict Clippy, 85/85 default and
 `j2k-cuda` compile passed in commit fbc56258. Linux PTX construction and real
 NVIDIA execution remain exact-SHA release evidence.
 
+Completed priority 2 in commit 2584a0ce: CUDA runtime `j2k_decode.rs` fell
+from 2,142 to a 125-line owner with seven ABI/type, validation, tracing,
+IDWT/launch, and store/launch modules at or below 629 lines. Exact 50/50
+function, 17/17 type/field-order, 11/11 `repr(C)`, 23/23 kernel-selection, and
+launch/resource multiset parity passed; default/all-feature checks, strict
+Clippy, 86/86 and 89/89 host tests, the structural ratchet, and dependent
+`j2k-cuda` compilation passed. PTX and NVIDIA execution remain external.
+
 | Priority | Split targets | Required boundary |
 |---:|---|---|
 | 1 | JPEG Metal `compute.rs` plus included `fast_packets_impl`, `pack_dispatch_impl`, `batch_decode_full`, `batch_decode_region`, `batch_decode_entry`, `batch_decode_impl`, and `single_decode_impl` (effective 8,511-line namespace) | Replace production `include!` fragments with real modules/explicit imports; split packet, pack, single, RGB/RGBA, and repeated/grouped route families |
-| 2 | CUDA runtime `j2k_decode.rs` (2,133 production lines) | ABI types, IDWT scheduling, store/MCT, tracing/validation |
+| 2 | Completed: CUDA runtime `j2k_decode.rs` (2,142 physical lines at split) | ABI types, IDWT scheduling, store/MCT, tracing/validation |
 | 3 | CUDA runtime `jpeg.rs` (1,463) | Encode/decode ABI and pipeline versus entropy diagnostics; remove file-wide similar-name allowance |
 | 4 | CUDA runtime `transcode.rs` (1,665) and CUDA Oxide transcode source (1,509) | Matching reversible 5/3 versus irreversible 9/7/HT boundaries |
 | 5 | CUDA runtime `j2k_encode.rs` (1,630) and CUDA Oxide J2K encode source (1,490) | Types/results, preprocessing/MCT/DWT/quantization versus tag-tree/packetization/compaction while retaining one device export surface |
