@@ -129,13 +129,13 @@ pub(super) fn encode_impl(
         profile_enabled,
         accelerator,
     )? {
-        return Ok(finalize_accelerated_codestream(
+        return finalize_accelerated_codestream(
             &plan,
             &tile_data,
             tile_body_us,
             profile_enabled,
             total_start,
-        ));
+        );
     }
 
     let prepared = prepare_accelerated_components(

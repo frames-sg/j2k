@@ -3,6 +3,38 @@ use alloc::vec::Vec;
 
 pub(crate) const SIMD_WIDTH: usize = 8;
 
+/// Number of bits required to represent an unsigned 32-bit magnitude.
+///
+/// The count is kept in its natural `0..=32` range instead of being
+/// calculated in a wider type and narrowed at each call site.
+pub(crate) const fn bit_width_u32(mut value: u32) -> u8 {
+    let mut bits = 0_u8;
+    while value != 0 {
+        bits += 1;
+        value >>= 1;
+    }
+    bits
+}
+
+/// Number of bits required to represent an unsigned 64-bit magnitude.
+pub(crate) const fn bit_width_u64(mut value: u64) -> u8 {
+    let mut bits = 0_u8;
+    while value != 0 {
+        bits += 1;
+        value >>= 1;
+    }
+    bits
+}
+
+/// Smallest exponent whose power of two is at least `value`.
+pub(crate) const fn ceil_log2_u32(value: u32) -> u8 {
+    if value <= 1 {
+        0
+    } else {
+        bit_width_u32(value - 1)
+    }
+}
+
 #[cfg(feature = "simd")]
 mod inner {
     use super::SIMD_WIDTH;
@@ -794,5 +826,29 @@ impl<const N: usize> core::ops::DerefMut for SimdBuffer<N> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.data
+    }
+}
+
+#[cfg(test)]
+mod integer_tests {
+    use super::{bit_width_u32, bit_width_u64, ceil_log2_u32};
+
+    #[test]
+    fn integer_bit_ranges_cover_type_boundaries() {
+        assert_eq!(bit_width_u32(0), 0);
+        assert_eq!(bit_width_u32(1), 1);
+        assert_eq!(bit_width_u32(u32::MAX), 32);
+        assert_eq!(bit_width_u64(0), 0);
+        assert_eq!(bit_width_u64(1_u64 << 63), 64);
+        assert_eq!(bit_width_u64(u64::MAX), 64);
+    }
+
+    #[test]
+    fn ceil_log2_covers_zero_and_full_u32_domain() {
+        assert_eq!(ceil_log2_u32(0), 0);
+        assert_eq!(ceil_log2_u32(1), 0);
+        assert_eq!(ceil_log2_u32(2), 1);
+        assert_eq!(ceil_log2_u32(3), 2);
+        assert_eq!(ceil_log2_u32(u32::MAX), 32);
     }
 }

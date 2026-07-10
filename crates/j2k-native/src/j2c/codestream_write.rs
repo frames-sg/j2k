@@ -133,7 +133,7 @@ pub(crate) fn write_codestream(
     params: &EncodeParams,
     tile_data: &[u8],
     quantization_step_sizes: &[(u16, u16)], // (exponent, mantissa)
-) -> Vec<u8> {
+) -> Result<Vec<u8>, &'static str> {
     write_codestream_with_packet_lengths(params, tile_data, quantization_step_sizes, &[])
 }
 
@@ -142,7 +142,7 @@ pub(crate) fn write_codestream_with_packet_lengths(
     tile_data: &[u8],
     quantization_step_sizes: &[(u16, u16)], // (exponent, mantissa)
     packet_lengths: &[u32],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, &'static str> {
     let tile = TilePartData {
         tile_index: 0,
         tile_part_index: 0,
@@ -158,7 +158,7 @@ pub(crate) fn write_codestream_tiles(
     params: &EncodeParams,
     tiles: &[TilePartData<'_>],
     quantization_step_sizes: &[(u16, u16)], // (exponent, mantissa)
-) -> Vec<u8> {
+) -> Result<Vec<u8>, &'static str> {
     struct PreparedTilePart<'a> {
         tile_index: u16,
         tile_part_index: u8,
@@ -175,7 +175,7 @@ pub(crate) fn write_codestream_tiles(
     for tile in tiles {
         let mut markers = Vec::new();
         if params.write_plt && !tile.packet_lengths.is_empty() {
-            write_plt_markers(&mut markers, tile.packet_lengths);
+            write_plt_markers(&mut markers, tile.packet_lengths)?;
         }
         if params.write_ppt && !tile.packet_headers.is_empty() {
             write_ppt_markers(&mut markers, tile.packet_headers);
@@ -186,13 +186,18 @@ pub(crate) fn write_codestream_tiles(
         if params.write_ppm {
             main_header_packet_headers.extend_from_slice(tile.packet_headers);
         }
-        let tile_part_len = 14
-            + u32::try_from(markers.len()).unwrap_or(u32::MAX)
-            + u32::try_from(tile.data.len()).unwrap_or(u32::MAX);
+        let marker_len =
+            u32::try_from(markers.len()).map_err(|_| "tile-part markers exceed u32")?;
+        let data_len = u32::try_from(tile.data.len()).map_err(|_| "tile-part data exceeds u32")?;
+        let tile_part_len = 14_u32
+            .checked_add(marker_len)
+            .and_then(|length| length.checked_add(data_len))
+            .ok_or("tile-part length exceeds u32")?;
         total_tile_bytes = total_tile_bytes
-            .saturating_add(markers.len())
-            .saturating_add(tile.data.len())
-            .saturating_add(14);
+            .checked_add(markers.len())
+            .and_then(|length| length.checked_add(tile.data.len()))
+            .and_then(|length| length.checked_add(14))
+            .ok_or("codestream output length exceeds usize")?;
         prepared_tiles.push(PreparedTilePart {
             tile_index: tile.tile_index,
             tile_part_index: tile.tile_part_index,
@@ -219,13 +224,13 @@ pub(crate) fn write_codestream_tiles(
     write_cod_marker(&mut out, params);
 
     // QCD (Quantization defaults)
-    write_qcd_marker(&mut out, params, quantization_step_sizes);
-    write_qcc_markers(&mut out, params);
+    write_qcd_marker(&mut out, params, quantization_step_sizes)?;
+    write_qcc_markers(&mut out, params)?;
 
     write_rgn_markers(&mut out, params);
 
     if params.write_plm && !main_header_packet_lengths.is_empty() {
-        write_plm_markers(&mut out, &main_header_packet_lengths);
+        write_plm_markers(&mut out, &main_header_packet_lengths)?;
     }
 
     if params.write_ppm && !main_header_packet_headers.is_empty() {
@@ -254,7 +259,7 @@ pub(crate) fn write_codestream_tiles(
     // EOC (End of codestream)
     write_marker(&mut out, markers::EOC);
 
-    out
+    Ok(out)
 }
 
 fn write_marker(out: &mut Vec<u8>, marker: u8) {
@@ -338,7 +343,7 @@ fn write_cap_marker(out: &mut Vec<u8>, params: &EncodeParams) {
 }
 
 fn ht_capability_word(params: &EncodeParams) -> u16 {
-    let magnitude_bits = u32::from(params.max_component_bit_depth().saturating_sub(1));
+    let magnitude_bits = u16::from(params.max_component_bit_depth().saturating_sub(1));
     let bp = if magnitude_bits <= 8 {
         0
     } else if magnitude_bits < 28 {
@@ -348,7 +353,7 @@ fn ht_capability_word(params: &EncodeParams) -> u16 {
     };
 
     let wavelet_flag = if params.reversible { 0u16 } else { 0x0020u16 };
-    wavelet_flag | u16::try_from(bp).expect("HT capability bitplane count fits in u16")
+    wavelet_flag | bp
 }
 
 /// Write COD marker segment (A.6.1).
@@ -441,27 +446,47 @@ fn write_tlm_marker(out: &mut Vec<u8>, tile_index: u16, tile_part_length: u32) {
     out.extend_from_slice(&tile_part_length.to_be_bytes());
 }
 
-fn write_plt_markers(out: &mut Vec<u8>, packet_lengths: &[u32]) {
+fn write_plt_markers(out: &mut Vec<u8>, packet_lengths: &[u32]) -> Result<(), &'static str> {
     let data = packet_length_bytes(packet_lengths);
-    for (sequence_idx, chunk) in data.chunks(usize::from(u16::MAX) - 3).enumerate() {
+    let chunk_size = usize::from(u16::MAX) - 3;
+    if data.len().div_ceil(chunk_size) > usize::from(u8::MAX) + 1 {
+        return Err("PLT packet lengths require more than 256 marker segments");
+    }
+    for (sequence_idx, chunk) in data.chunks(chunk_size).enumerate() {
         write_marker(out, markers::PLT);
-        let marker_len = u16::try_from(3 + chunk.len()).expect("PLT marker chunk length fits");
+        let marker_len = chunk
+            .len()
+            .checked_add(3)
+            .and_then(|length| u16::try_from(length).ok())
+            .ok_or("PLT marker chunk length exceeds u16")?;
         out.extend_from_slice(&marker_len.to_be_bytes());
-        out.push(u8::try_from(sequence_idx).expect("PLT sequence index fits in u8"));
+        out.push(u8::try_from(sequence_idx).map_err(|_| "PLT sequence index exceeds u8")?);
         out.extend_from_slice(chunk);
     }
+    Ok(())
 }
 
-fn write_plm_markers(out: &mut Vec<u8>, packet_lengths: &[u32]) {
+fn write_plm_markers(out: &mut Vec<u8>, packet_lengths: &[u32]) -> Result<(), &'static str> {
     let data = packet_length_bytes(packet_lengths);
-    for (sequence_idx, chunk) in data.chunks(usize::from(u16::MAX) - 7).enumerate() {
+    let chunk_size = usize::from(u16::MAX) - 7;
+    if data.len().div_ceil(chunk_size) > usize::from(u8::MAX) + 1 {
+        return Err("PLM packet lengths require more than 256 marker segments");
+    }
+    for (sequence_idx, chunk) in data.chunks(chunk_size).enumerate() {
         write_marker(out, markers::PLM);
-        let marker_len = u16::try_from(7 + chunk.len()).expect("PLM marker chunk length fits");
+        let marker_len = chunk
+            .len()
+            .checked_add(7)
+            .and_then(|length| u16::try_from(length).ok())
+            .ok_or("PLM marker chunk length exceeds u16")?;
         out.extend_from_slice(&marker_len.to_be_bytes());
-        out.push(u8::try_from(sequence_idx).expect("PLM sequence index fits in u8"));
-        out.extend_from_slice(&u32::try_from(chunk.len()).unwrap_or(u32::MAX).to_be_bytes());
+        out.push(u8::try_from(sequence_idx).map_err(|_| "PLM sequence index exceeds u8")?);
+        let chunk_len =
+            u32::try_from(chunk.len()).map_err(|_| "PLM marker chunk length exceeds u32")?;
+        out.extend_from_slice(&chunk_len.to_be_bytes());
         out.extend_from_slice(chunk);
     }
+    Ok(())
 }
 
 const PACKET_HEADER_MARKER_PAYLOAD_LIMIT: usize = u16::MAX as usize - 3;
@@ -567,16 +592,22 @@ fn packet_length_bytes(packet_lengths: &[u32]) -> Vec<u8> {
 }
 
 /// Write QCD marker segment (A.6.4).
-fn write_qcd_marker(out: &mut Vec<u8>, params: &EncodeParams, step_sizes: &[(u16, u16)]) {
-    write_marker(out, markers::QCD);
-
+fn write_qcd_marker(
+    out: &mut Vec<u8>,
+    params: &EncodeParams,
+    step_sizes: &[(u16, u16)],
+) -> Result<(), &'static str> {
     if params.reversible {
         // No quantization: Sqcd = 0x00, then exponent bytes
-        let step_count =
-            u16::try_from(step_sizes.len()).expect("QCD step-size count fits in the marker length");
+        let step_count = u16::try_from(step_sizes.len())
+            .map_err(|_| "QCD step-size count exceeds marker capacity")?;
         let marker_len = 3u16
             .checked_add(step_count)
-            .expect("QCD marker length fits in u16");
+            .ok_or("QCD marker length exceeds u16")?;
+        if step_sizes.iter().any(|&(exponent, _)| exponent > 0x1f) {
+            return Err("QCD exponent exceeds five bits");
+        }
+        write_marker(out, markers::QCD);
         out.extend_from_slice(&marker_len.to_be_bytes());
 
         // Sqcd: no quantization (style 0), guard bits in upper 3 bits
@@ -584,19 +615,19 @@ fn write_qcd_marker(out: &mut Vec<u8>, params: &EncodeParams, step_sizes: &[(u16
 
         // SPqcd: one byte per subband (exponent in upper 5 bits, mantissa = 0)
         for &(exp, _) in step_sizes {
-            let exponent = u8::try_from(exp).expect("QCD exponent fits in u8");
-            assert!(exponent <= 0x1F, "QCD exponent fits in five bits");
+            let exponent = u8::try_from(exp).map_err(|_| "QCD exponent exceeds eight bits")?;
             out.push(exponent << 3);
         }
     } else {
         // Scalar expounded: Sqcd = 0x02, then 2 bytes per subband
         let step_bytes = u16::try_from(step_sizes.len())
-            .expect("QCD step-size count fits in the marker length")
+            .map_err(|_| "QCD step-size count exceeds marker capacity")?
             .checked_mul(2)
-            .expect("QCD step-size bytes fit in u16");
+            .ok_or("QCD step-size byte length exceeds u16")?;
         let marker_len = 3u16
             .checked_add(step_bytes)
-            .expect("QCD marker length fits in u16");
+            .ok_or("QCD marker length exceeds u16")?;
+        write_marker(out, markers::QCD);
         out.extend_from_slice(&marker_len.to_be_bytes());
 
         // Sqcd: scalar expounded quantization, guard bits
@@ -608,9 +639,10 @@ fn write_qcd_marker(out: &mut Vec<u8>, params: &EncodeParams, step_sizes: &[(u16
             out.extend_from_slice(&val.to_be_bytes());
         }
     }
+    Ok(())
 }
 
-fn write_qcc_markers(out: &mut Vec<u8>, params: &EncodeParams) {
+fn write_qcc_markers(out: &mut Vec<u8>, params: &EncodeParams) -> Result<(), &'static str> {
     for component_index in 0..params.num_components {
         let Some(step_sizes) = params
             .component_quantization_step_sizes
@@ -621,8 +653,9 @@ fn write_qcc_markers(out: &mut Vec<u8>, params: &EncodeParams) {
         if step_sizes.is_empty() {
             continue;
         }
-        write_qcc_marker(out, params, component_index, step_sizes);
+        write_qcc_marker(out, params, component_index, step_sizes)?;
     }
+    Ok(())
 }
 
 fn write_qcc_marker(
@@ -630,30 +663,32 @@ fn write_qcc_marker(
     params: &EncodeParams,
     component_index: u16,
     step_sizes: &[(u16, u16)],
-) {
-    write_marker(out, markers::QCC);
-
+) -> Result<(), &'static str> {
     let component_index_len = if params.num_components < 257 {
         1_u16
     } else {
         2_u16
     };
-    let step_count =
-        u16::try_from(step_sizes.len()).expect("QCC step-size count fits in the marker length");
+    let step_count = u16::try_from(step_sizes.len())
+        .map_err(|_| "QCC step-size count exceeds marker capacity")?;
     let step_bytes = if params.reversible {
         step_count
     } else {
         step_count
             .checked_mul(2)
-            .expect("QCC step-size bytes fit in u16")
+            .ok_or("QCC step-size byte length exceeds u16")?
     };
     let marker_len = 3u16
         .checked_add(component_index_len)
         .and_then(|length| length.checked_add(step_bytes))
-        .expect("QCC marker length fits in u16");
+        .ok_or("QCC marker length exceeds u16")?;
+    if params.reversible && step_sizes.iter().any(|&(exponent, _)| exponent > 0x1f) {
+        return Err("QCC exponent exceeds five bits");
+    }
+    write_marker(out, markers::QCC);
     out.extend_from_slice(&marker_len.to_be_bytes());
     if params.num_components < 257 {
-        out.push(u8::try_from(component_index).expect("QCC component index fits in u8"));
+        out.push(u8::try_from(component_index).map_err(|_| "QCC component index exceeds u8")?);
     } else {
         out.extend_from_slice(&component_index.to_be_bytes());
     }
@@ -661,8 +696,7 @@ fn write_qcc_marker(
     if params.reversible {
         out.push(params.guard_bits << 5);
         for &(exp, _) in step_sizes {
-            let exponent = u8::try_from(exp).expect("QCC exponent fits in u8");
-            assert!(exponent <= 0x1F, "QCC exponent fits in five bits");
+            let exponent = u8::try_from(exp).map_err(|_| "QCC exponent exceeds eight bits")?;
             out.push(exponent << 3);
         }
     } else {
@@ -672,6 +706,7 @@ fn write_qcc_marker(
             out.extend_from_slice(&val.to_be_bytes());
         }
     }
+    Ok(())
 }
 
 /// Write SOT marker segment (A.4.2).
@@ -722,7 +757,8 @@ mod tests {
 
         let tile_data = vec![0u8; 10];
         let step_sizes = vec![(9u16, 0u16), (8, 0), (8, 0), (7, 0)];
-        let codestream = write_codestream(&params, &tile_data, &step_sizes);
+        let codestream =
+            write_codestream(&params, &tile_data, &step_sizes).expect("valid test codestream");
 
         // Verify SOC marker
         assert_eq!(codestream[0], 0xFF);
@@ -737,6 +773,39 @@ mod tests {
         let len = codestream.len();
         assert_eq!(codestream[len - 2], 0xFF);
         assert_eq!(codestream[len - 1], markers::EOC);
+    }
+
+    #[test]
+    fn reversible_quantization_errors_are_returned() {
+        let params = EncodeParams {
+            reversible: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            write_codestream(&params, &[], &[(32, 0)]),
+            Err("QCD exponent exceeds five bits")
+        );
+
+        let oversized_steps = vec![(1, 0); usize::from(u16::MAX)];
+        assert_eq!(
+            write_codestream(&params, &[], &oversized_steps),
+            Err("QCD marker length exceeds u16")
+        );
+    }
+
+    #[test]
+    fn component_quantization_errors_are_returned() {
+        let params = EncodeParams {
+            reversible: true,
+            component_quantization_step_sizes: vec![vec![(32, 0)]],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            write_codestream(&params, &[], &[(1, 0)]),
+            Err("QCC exponent exceeds five bits")
+        );
     }
 
     #[test]
@@ -817,7 +886,7 @@ mod tests {
             ..Default::default()
         };
 
-        let codestream = write_codestream(&params, &[0], &[(8, 0)]);
+        let codestream = write_codestream(&params, &[0], &[(8, 0)]).expect("valid test codestream");
         let siz_offset = find_marker_offset(&codestream, markers::SIZ).expect("SIZ marker");
         let component_base = siz_offset + 40;
         assert_eq!(
@@ -840,7 +909,8 @@ mod tests {
             ..Default::default()
         };
 
-        let codestream = write_codestream(&params, &[0], &[(8, 0), (7, 0)]);
+        let codestream =
+            write_codestream(&params, &[0], &[(8, 0), (7, 0)]).expect("valid test codestream");
         let qcc_offset = find_marker_offset(&codestream, markers::QCC).expect("QCC marker");
         assert_eq!(
             &codestream[qcc_offset..qcc_offset + 8],
@@ -862,7 +932,7 @@ mod tests {
             ..Default::default()
         };
 
-        let codestream = write_codestream(&params, &[0], &[(8, 0)]);
+        let codestream = write_codestream(&params, &[0], &[(8, 0)]).expect("valid test codestream");
         let parsed = crate::j2c::parse_raw(&codestream, &crate::DecodeSettings::default())
             .expect("parse written codestream");
         assert_eq!(
@@ -938,7 +1008,8 @@ mod tests {
 
         let tile_data = vec![0u8; 1];
         let step_sizes = vec![(12u16, 0u16), (13, 0), (13, 0), (14, 0)];
-        let codestream = write_codestream(&params, &tile_data, &step_sizes);
+        let codestream =
+            write_codestream(&params, &tile_data, &step_sizes).expect("valid test codestream");
 
         let siz_offset = find_marker_offset(&codestream, markers::SIZ).expect("SIZ marker");
         assert_eq!(
@@ -975,7 +1046,8 @@ mod tests {
 
         let tile_data = vec![0u8; 50];
         let step_sizes: Vec<(u16, u16)> = (0..7).map(|i| (9 - i / 3, 0)).collect();
-        let codestream = write_codestream(&params, &tile_data, &step_sizes);
+        let codestream =
+            write_codestream(&params, &tile_data, &step_sizes).expect("valid test codestream");
 
         // Should start with SOC and end with EOC
         assert_eq!(codestream[0], 0xFF);

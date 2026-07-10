@@ -56,8 +56,7 @@ impl Coefficient {
 
     #[expect(clippy::trivially_copy_pass_by_ref, reason = "stable accessor")]
     pub(crate) fn get_i64(&self) -> i64 {
-        let mut magnitude = i64::try_from((self.0 & !(1_u64 << 63)).min(i64::MAX as u64))
-            .expect("coefficient magnitude is clamped to i64::MAX");
+        let mut magnitude = (self.0 & !(1_u64 << 63)).cast_signed();
         // Map sign (0 for positive, 1 for negative) to 1, -1.
         magnitude *= 1 - 2 * i64::from(self.sign() != 0);
 

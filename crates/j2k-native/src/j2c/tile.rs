@@ -14,8 +14,26 @@ use crate::j2c::codestream;
 use crate::reader::BitReader;
 use crate::DEFAULT_MAX_DECODE_BYTES;
 
-fn tile_coordinate(value: u64) -> u32 {
-    u32::try_from(value).expect("tile coordinates derived from the u32 reference grid fit in u32")
+fn ceil_div_by_power_of_two(value: u32, exponent: u8) -> u32 {
+    if exponent == 0 {
+        value
+    } else if u32::from(exponent) >= u32::BITS {
+        u32::from(value != 0)
+    } else {
+        value.div_ceil(1_u32 << exponent)
+    }
+}
+
+fn subband_coordinate(value: u32, decomposition_level: u8, high_pass: bool) -> u32 {
+    let adjusted = if !high_pass || decomposition_level == 0 {
+        value
+    } else if u32::from(decomposition_level) > u32::BITS {
+        0
+    } else {
+        let offset = 1_u32 << (decomposition_level - 1);
+        value.saturating_sub(offset)
+    };
+    ceil_div_by_power_of_two(adjusted, decomposition_level)
 }
 
 /// A single tile in the image.
@@ -582,11 +600,11 @@ impl<'a> ResolutionTile<'a> {
                 .parameters
                 .num_decomposition_levels;
 
-            let denominator = 2_u64.pow(u32::from(n_l) - u32::from(resolution));
-            let tx0 = tile_coordinate(u64::from(component_tile.rect.x0).div_ceil(denominator));
-            let ty0 = tile_coordinate(u64::from(component_tile.rect.y0).div_ceil(denominator));
-            let tx1 = tile_coordinate(u64::from(component_tile.rect.x1).div_ceil(denominator));
-            let ty1 = tile_coordinate(u64::from(component_tile.rect.y1).div_ceil(denominator));
+            let scale = n_l - resolution;
+            let tx0 = ceil_div_by_power_of_two(component_tile.rect.x0, scale);
+            let ty0 = ceil_div_by_power_of_two(component_tile.rect.y0, scale);
+            let tx1 = ceil_div_by_power_of_two(component_tile.rect.x1, scale);
+            let ty1 = ceil_div_by_power_of_two(component_tile.rect.y1, scale);
 
             IntRect::from_ltrb(tx0, ty0, tx1, ty1)
         };
@@ -633,45 +651,28 @@ impl<'a> ResolutionTile<'a> {
 
         // Formula B-15.
 
-        let xo_b = u64::from(matches!(
-            sub_band_type,
-            SubBandType::HighLow | SubBandType::HighHigh
-        ));
-        let yo_b = u64::from(matches!(
-            sub_band_type,
-            SubBandType::LowHigh | SubBandType::HighHigh
-        ));
+        let high_pass_x = matches!(sub_band_type, SubBandType::HighLow | SubBandType::HighHigh);
+        let high_pass_y = matches!(sub_band_type, SubBandType::LowHigh | SubBandType::HighHigh);
 
-        let mut numerator_x = 0;
-        let mut numerator_y = 0;
-
-        // If decomposition level is 0, xo_b and yo_b are 0 as well.
-        if self.decomposition_level > 0 {
-            numerator_x = 2_u64.pow(u32::from(self.decomposition_level) - 1) * xo_b;
-            numerator_y = 2_u64.pow(u32::from(self.decomposition_level) - 1) * yo_b;
-        }
-
-        let denominator = 2_u64.pow(u32::from(self.decomposition_level));
-
-        let tbx_0 = tile_coordinate(
-            u64::from(self.component_tile.rect.x0)
-                .saturating_sub(numerator_x)
-                .div_ceil(denominator),
+        let tbx_0 = subband_coordinate(
+            self.component_tile.rect.x0,
+            self.decomposition_level,
+            high_pass_x,
         );
-        let tbx_1 = tile_coordinate(
-            u64::from(self.component_tile.rect.x1)
-                .saturating_sub(numerator_x)
-                .div_ceil(denominator),
+        let tbx_1 = subband_coordinate(
+            self.component_tile.rect.x1,
+            self.decomposition_level,
+            high_pass_x,
         );
-        let tby_0 = tile_coordinate(
-            u64::from(self.component_tile.rect.y0)
-                .saturating_sub(numerator_y)
-                .div_ceil(denominator),
+        let tby_0 = subband_coordinate(
+            self.component_tile.rect.y0,
+            self.decomposition_level,
+            high_pass_y,
         );
-        let tby_1 = tile_coordinate(
-            u64::from(self.component_tile.rect.y1)
-                .saturating_sub(numerator_y)
-                .div_ceil(denominator),
+        let tby_1 = subband_coordinate(
+            self.component_tile.rect.y1,
+            self.decomposition_level,
+            high_pass_y,
         );
 
         IntRect::from_ltrb(tbx_0, tby_0, tbx_1, tby_1)
@@ -932,6 +933,16 @@ mod tests {
         CodingStyleParameters, ComponentSizeInfo, QuantizationInfo, QuantizationStyle, SizeData,
         WaveletTransform,
     };
+
+    #[test]
+    fn power_of_two_geometry_preserves_u32_boundaries() {
+        assert_eq!(ceil_div_by_power_of_two(u32::MAX, 0), u32::MAX);
+        assert_eq!(ceil_div_by_power_of_two(u32::MAX, 31), 2);
+        assert_eq!(ceil_div_by_power_of_two(u32::MAX, 32), 1);
+        assert_eq!(ceil_div_by_power_of_two(0, u8::MAX), 0);
+        assert_eq!(subband_coordinate(u32::MAX, 32, true), 1);
+        assert_eq!(subband_coordinate(u32::MAX, 33, true), 0);
+    }
 
     /// Test case for the example in B.4.
     #[test]

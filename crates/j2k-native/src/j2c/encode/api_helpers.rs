@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 
 use super::samples::{raw_pixel_bytes_per_sample, read_le_sample_value, sign_extend_sample};
 use super::SubBandType;
+use crate::math::bit_width_u32;
 use crate::J2kSubBandType;
 
 pub(super) fn public_sub_band_type(sub_band_type: SubBandType) -> J2kSubBandType {
@@ -99,5 +100,5 @@ pub(super) fn max_decomposition_levels(width: u32, height: u32) -> u8 {
     if min_dim <= 1 {
         return 0;
     }
-    u8::try_from(min_dim.ilog2()).expect("a u32 logarithm fits in u8")
+    bit_width_u32(min_dim) - 1
 }

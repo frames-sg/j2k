@@ -120,11 +120,7 @@ pub(super) fn write_single_tile_packetized_codestream(
             packet_headers: &part.packet_headers,
         })
         .collect::<Vec<_>>();
-    Ok(codestream_write::write_codestream_tiles(
-        params,
-        &codestream_tile_parts,
-        quant_params,
-    ))
+    codestream_write::write_codestream_tiles(params, &codestream_tile_parts, quant_params)
 }
 
 fn validate_packet_header_marker_payload(

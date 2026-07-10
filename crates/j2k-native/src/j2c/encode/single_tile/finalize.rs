@@ -13,10 +13,10 @@ pub(super) fn finalize_accelerated_codestream(
     tile_body_us: u128,
     profile_enabled: bool,
     total_start: Option<profile::ProfileInstant>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, &'static str> {
     let stage_start = profile::profile_now(profile_enabled);
     let codestream =
-        codestream_write::write_codestream(&plan.params, tile_data, &plan.quant_params);
+        codestream_write::write_codestream(&plan.params, tile_data, &plan.quant_params)?;
     let codestream_us = profile::elapsed_us(stage_start);
     if profile_enabled {
         profile::emit_profile_row(
@@ -29,7 +29,7 @@ pub(super) fn finalize_accelerated_codestream(
             ],
         );
     }
-    codestream
+    Ok(codestream)
 }
 
 pub(super) fn finalize_staged_codestream(

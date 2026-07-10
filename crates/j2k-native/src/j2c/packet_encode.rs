@@ -117,7 +117,10 @@ struct FormedPacket {
 /// Form a packet from a resolution-level packet (possibly multiple subbands).
 ///
 /// Returns the packet bytes (header + body).
-pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
+pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Result<Vec<u8>, &'static str> {
+    for subband in &resolution.subbands {
+        validate_packet_subband_layout(subband)?;
+    }
     let mut header_writer = BitWriter::new();
     let mut body = Vec::new();
 
@@ -130,7 +133,12 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
     if !any_data {
         // Empty packet: just write 0 bit
         header_writer.write_bit(0);
-        return finish_packet(header_writer, &[], PacketMarkerOptions::default(), 0);
+        return Ok(finish_packet(
+            header_writer,
+            &[],
+            PacketMarkerOptions::default(),
+            0,
+        ));
     }
 
     // Non-empty packet indicator
@@ -144,7 +152,7 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
 
         // Set up tag tree values
         for (i, cb) in subband.code_blocks.iter().enumerate() {
-            let index = u32::try_from(i).expect("code-block index fits in u32");
+            let index = u32::try_from(i).map_err(|_| "packet code-block index exceeds u32")?;
             let x = index % subband.num_cbs_x;
             let y = index / subband.num_cbs_x;
 
@@ -159,7 +167,7 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
 
         // Encode each code-block's packet contribution
         for (i, cb) in subband.code_blocks.iter_mut().enumerate() {
-            let index = u32::try_from(i).expect("code-block index fits in u32");
+            let index = u32::try_from(i).map_err(|_| "packet code-block index exceeds u32")?;
             let x = index % subband.num_cbs_x;
             let y = index / subband.num_cbs_x;
 
@@ -189,18 +197,16 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
                 continue;
             }
 
-            let data_len =
-                u32::try_from(cb.data.len()).expect("code-block payload length fits in u32");
+            let data_len = u32::try_from(cb.data.len())
+                .map_err(|_| "code-block payload length exceeds u32")?;
             match cb.block_coding_mode {
                 BlockCodingMode::Classic => {
                     encode_num_coding_passes(cb.num_coding_passes, &mut header_writer);
-                    encode_classic_segment_lengths(cb, data_len, &mut header_writer)
-                        .expect("encoder prepared valid classic segment lengths");
+                    encode_classic_segment_lengths(cb, data_len, &mut header_writer)?;
                 }
                 BlockCodingMode::HighThroughput => {
                     encode_num_ht_coding_passes(cb.num_coding_passes, &mut header_writer);
-                    encode_ht_segment_lengths(cb, &mut header_writer)
-                        .expect("encoder prepared valid HTJ2K segment lengths");
+                    encode_ht_segment_lengths(cb, &mut header_writer)?;
                 }
             }
 
@@ -210,24 +216,37 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
         }
     }
 
-    finish_packet(header_writer, &body, PacketMarkerOptions::default(), 0)
+    Ok(finish_packet(
+        header_writer,
+        &body,
+        PacketMarkerOptions::default(),
+        0,
+    ))
+}
+
+fn validate_packet_subband_layout(subband: &SubbandPrecinct) -> Result<(), &'static str> {
+    let actual_code_blocks = u32::try_from(subband.code_blocks.len())
+        .map_err(|_| "packet subband code-block count exceeds u32")?;
+    if subband.num_cbs_x == 0 && subband.num_cbs_y == 0 && actual_code_blocks == 0 {
+        return Ok(());
+    }
+    let expected_code_blocks = subband
+        .num_cbs_x
+        .checked_mul(subband.num_cbs_y)
+        .ok_or("packet subband code-block grid exceeds u32")?;
+    if subband.num_cbs_x == 0
+        || subband.num_cbs_y == 0
+        || expected_code_blocks != actual_code_blocks
+    {
+        return Err("invalid packet subband code-block layout");
+    }
+    Ok(())
 }
 
 fn packet_state_seed(packet: &ResolutionPacket) -> Result<PacketStateSeed, &'static str> {
     let mut subbands = Vec::with_capacity(packet.subbands.len());
     for subband in &packet.subbands {
-        let expected_code_blocks = subband.num_cbs_x.saturating_mul(subband.num_cbs_y);
-        let actual_code_blocks = u32::try_from(subband.code_blocks.len())
-            .map_err(|_| "packet subband code-block count exceeds u32")?;
-        let empty_subband =
-            subband.num_cbs_x == 0 && subband.num_cbs_y == 0 && actual_code_blocks == 0;
-        if !empty_subband
-            && (subband.num_cbs_x == 0
-                || subband.num_cbs_y == 0
-                || expected_code_blocks != actual_code_blocks)
-        {
-            return Err("invalid packet subband code-block layout");
-        }
+        validate_packet_subband_layout(subband)?;
         subbands.push(PacketSubbandStateSeed {
             num_cbs_x: subband.num_cbs_x,
             num_cbs_y: subband.num_cbs_y,
@@ -557,17 +576,25 @@ fn encode_num_ht_coding_passes(num_passes: u8, writer: &mut BitWriter) {
     }
 }
 
-fn encode_length(length: u32, l_block: &mut u32, mut num_bits: u32, writer: &mut BitWriter) {
+fn encode_length(
+    length: u32,
+    l_block: &mut u32,
+    mut num_bits: u32,
+    writer: &mut BitWriter,
+) -> Result<(), &'static str> {
     while !value_fits_in_bits(length, num_bits) {
         writer.write_bit(1);
-        *l_block += 1;
-        num_bits += 1;
+        *l_block = l_block
+            .checked_add(1)
+            .ok_or("packet length L-block overflow")?;
+        num_bits = num_bits
+            .checked_add(1)
+            .ok_or("packet length bit count overflow")?;
     }
     writer.write_bit(0);
-    writer.write_bits(
-        length,
-        u8::try_from(num_bits).expect("packet length bit count fits in u8"),
-    );
+    let num_bits = u8::try_from(num_bits).map_err(|_| "packet length bit count exceeds u8")?;
+    writer.write_bits(length, num_bits);
+    Ok(())
 }
 
 fn encode_classic_segment_lengths(
@@ -587,10 +614,12 @@ fn encode_classic_segment_lengths_with_lblock(
     l_block: &mut u32,
     writer: &mut BitWriter,
 ) -> Result<(), &'static str> {
+    if *l_block > u32::from(u8::MAX) {
+        return Err("classic packet L-block exceeds u8");
+    }
     if code_block.classic_segment_lengths.is_empty() {
         let num_bits = bits_for_length(*l_block, code_block.num_coding_passes);
-        encode_length(data_len, l_block, num_bits, writer);
-        return Ok(());
+        return encode_length(data_len, l_block, num_bits, writer);
     }
 
     if code_block.classic_segment_lengths.len() != usize::from(code_block.num_coding_passes) {
@@ -612,17 +641,18 @@ fn encode_classic_segment_lengths_with_lblock(
         .any(|&segment_len| !value_fits_in_bits(segment_len, bits_for_length(required_l_block, 1)))
     {
         writer.write_bit(1);
-        required_l_block += 1;
+        required_l_block = required_l_block
+            .checked_add(1)
+            .ok_or("classic packet L-block overflow")?;
     }
     writer.write_bit(0);
     *l_block = required_l_block;
 
     let length_bits = bits_for_length(*l_block, 1);
+    let length_bits =
+        u8::try_from(length_bits).map_err(|_| "classic segment length bit count exceeds u8")?;
     for &segment_len in &code_block.classic_segment_lengths {
-        writer.write_bits(
-            segment_len,
-            u8::try_from(length_bits).expect("classic segment length bit count fits in u8"),
-        );
+        writer.write_bits(segment_len, length_bits);
     }
 
     Ok(())
@@ -643,20 +673,24 @@ fn encode_ht_segment_lengths_with_lblock(
     l_block: &mut u32,
     writer: &mut BitWriter,
 ) -> Result<(), &'static str> {
+    if *l_block > u32::from(u8::MAX) {
+        return Err("HT packet L-block exceeds u8");
+    }
     let (cleanup_length, refinement_length) = ht_segment_lengths(code_block)?;
     if cleanup_length == 0 && refinement_length != 0 {
         let mut refinement_bits =
             bits_for_ht_refinement_only_length(*l_block, code_block.num_coding_passes);
         while !value_fits_in_bits(refinement_length, refinement_bits) {
             writer.write_bit(1);
-            *l_block += 1;
-            refinement_bits += 1;
+            *l_block = l_block.checked_add(1).ok_or("HT packet L-block overflow")?;
+            refinement_bits = refinement_bits
+                .checked_add(1)
+                .ok_or("HT refinement length bit count overflow")?;
         }
         writer.write_bit(0);
-        writer.write_bits(
-            refinement_length,
-            u8::try_from(refinement_bits).expect("HT refinement length bit count fits in u8"),
-        );
+        let refinement_bits = u8::try_from(refinement_bits)
+            .map_err(|_| "HT refinement length bit count exceeds u8")?;
+        writer.write_bits(refinement_length, refinement_bits);
         return Ok(());
     }
 
@@ -665,24 +699,31 @@ fn encode_ht_segment_lengths_with_lblock(
 
     while !value_fits_in_bits(cleanup_length, cleanup_bits)
         || (code_block.num_coding_passes > 1
-            && !value_fits_in_bits(refinement_length, *l_block + refinement_extra_bits))
+            && !value_fits_in_bits(
+                refinement_length,
+                l_block
+                    .checked_add(refinement_extra_bits)
+                    .ok_or("HT refinement length bit count overflow")?,
+            ))
     {
         writer.write_bit(1);
-        *l_block += 1;
-        cleanup_bits += 1;
+        *l_block = l_block.checked_add(1).ok_or("HT packet L-block overflow")?;
+        cleanup_bits = cleanup_bits
+            .checked_add(1)
+            .ok_or("HT cleanup length bit count overflow")?;
     }
     writer.write_bit(0);
-    writer.write_bits(
-        cleanup_length,
-        u8::try_from(cleanup_bits).expect("HT cleanup length bit count fits in u8"),
-    );
+    let cleanup_bits =
+        u8::try_from(cleanup_bits).map_err(|_| "HT cleanup length bit count exceeds u8")?;
+    writer.write_bits(cleanup_length, cleanup_bits);
 
     if code_block.num_coding_passes > 1 {
-        writer.write_bits(
-            refinement_length,
-            u8::try_from(*l_block + refinement_extra_bits)
-                .expect("HT refinement length bit count fits in u8"),
-        );
+        let refinement_bits = l_block
+            .checked_add(refinement_extra_bits)
+            .ok_or("HT refinement length bit count overflow")?;
+        let refinement_bits = u8::try_from(refinement_bits)
+            .map_err(|_| "HT refinement length bit count exceeds u8")?;
+        writer.write_bits(refinement_length, refinement_bits);
     }
 
     Ok(())
@@ -706,17 +747,17 @@ pub(crate) fn form_tile_bitstream(
     resolution_packets: &mut [ResolutionPacket],
     _num_layers: u8,
     _num_components: u16,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, &'static str> {
     let mut tile_data = Vec::new();
 
     // LRCP: Layer → Resolution → Component → Position
     // For single layer, single component, this is just resolution order
     for resolution in resolution_packets.iter_mut() {
-        let packet = form_packet(resolution);
+        let packet = form_packet(resolution)?;
         tile_data.extend_from_slice(&packet);
     }
 
-    tile_data
+    Ok(tile_data)
 }
 
 pub(crate) fn form_tile_bitstream_with_descriptors(
@@ -796,7 +837,7 @@ pub(crate) fn form_tile_bitstream_for_progression(
     num_layers: u8,
     num_components: u16,
     progression_order: J2kPacketizationProgressionOrder,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, &'static str> {
     match progression_order {
         J2kPacketizationProgressionOrder::Lrcp
         | J2kPacketizationProgressionOrder::Rlcp
@@ -911,8 +952,45 @@ mod tests {
             }],
         };
 
-        let packet = form_packet(&mut resolution);
+        let packet = form_packet(&mut resolution).expect("valid test packet");
         assert!(!packet.is_empty());
+    }
+
+    #[test]
+    fn malformed_packet_layout_returns_an_error() {
+        let mut resolution = ResolutionPacket {
+            subbands: vec![SubbandPrecinct {
+                code_blocks: vec![CodeBlockPacketData {
+                    data: Vec::new(),
+                    ht_cleanup_length: 0,
+                    ht_refinement_length: 0,
+                    num_coding_passes: 0,
+                    classic_segment_lengths: Vec::new(),
+                    num_zero_bitplanes: 0,
+                    previously_included: false,
+                    l_block: 3,
+                    block_coding_mode: BlockCodingMode::Classic,
+                }],
+                num_cbs_x: 0,
+                num_cbs_y: 1,
+            }],
+        };
+
+        assert_eq!(
+            form_packet(&mut resolution),
+            Err("invalid packet subband code-block layout")
+        );
+    }
+
+    #[test]
+    fn packet_length_bit_count_overflow_returns_an_error() {
+        let mut writer = BitWriter::new();
+        let mut l_block = u32::from(u8::MAX) + 1;
+        let num_bits = l_block;
+        assert_eq!(
+            encode_length(0, &mut l_block, num_bits, &mut writer),
+            Err("packet length bit count exceeds u8")
+        );
     }
 
     #[test]
@@ -935,7 +1013,7 @@ mod tests {
             }],
         };
 
-        let packet = form_packet(&mut resolution);
+        let packet = form_packet(&mut resolution).expect("valid test packet");
         assert!(packet.len() >= 3);
     }
 
@@ -976,7 +1054,7 @@ mod tests {
             }],
         };
 
-        let packet = form_packet(&mut resolution);
+        let packet = form_packet(&mut resolution).expect("valid test packet");
         let body_len: usize = lengths.iter().sum();
         let header_len = packet.len() - body_len;
         let mut reader = BitReader::new(&packet[..header_len]);
@@ -1045,7 +1123,7 @@ mod tests {
                 }],
             };
 
-            let packet = form_packet(&mut resolution);
+            let packet = form_packet(&mut resolution).expect("valid test packet");
             let header_len = packet.len() - len;
             let has_boundary_ff = packet[header_len - 1] == 0xff
                 || (header_len >= 2
@@ -1208,7 +1286,7 @@ mod tests {
             ],
         };
 
-        let packet = form_packet(&mut resolution);
+        let packet = form_packet(&mut resolution).expect("valid test packet");
         // Should contain all 5 bytes of code-block data
         assert!(packet.len() >= 5);
     }
@@ -1264,7 +1342,7 @@ mod tests {
             }],
         };
 
-        let packet = form_packet(&mut resolution);
+        let packet = form_packet(&mut resolution).expect("valid test packet");
         assert!(packet.len() >= 3);
     }
 
@@ -1289,7 +1367,7 @@ mod tests {
             }],
         };
 
-        let packet = form_packet(&mut resolution);
+        let packet = form_packet(&mut resolution).expect("valid test packet");
         let header_len = packet.len() - payload.len();
         let mut reader = BitReader::new(&packet[..header_len]);
         assert_eq!(reader.read_bits_with_stuffing(1), Some(1));
@@ -1380,8 +1458,8 @@ mod tests {
         let mut expected_second = single_block_packet(vec![0xB0], false);
         let mut expected_first = single_block_packet(vec![0xA0], false);
         let expected = [
-            form_packet(&mut expected_second),
-            form_packet(&mut expected_first),
+            form_packet(&mut expected_second).expect("valid second test packet"),
+            form_packet(&mut expected_first).expect("valid first test packet"),
         ]
         .concat();
 
@@ -1417,11 +1495,15 @@ mod tests {
         let second = single_block_packet(vec![0x22], false);
 
         let mut expected_first = single_block_packet(vec![0x11], false);
-        let first_bytes = form_packet(&mut expected_first);
+        let first_bytes = form_packet(&mut expected_first).expect("valid first test packet");
         let l_block_after_first = expected_first.subbands[0].code_blocks[0].l_block;
         let mut expected_second = single_block_packet(vec![0x22], true);
         expected_second.subbands[0].code_blocks[0].l_block = l_block_after_first;
-        let expected = [first_bytes, form_packet(&mut expected_second)].concat();
+        let expected = [
+            first_bytes,
+            form_packet(&mut expected_second).expect("valid second test packet"),
+        ]
+        .concat();
 
         let actual = form_tile_bitstream_with_descriptors(
             &mut [first, second],

@@ -399,12 +399,12 @@ pub fn encode_j2k_packetization_scalar(
     j2c::packet_encode::validate_ht_segment_lengths(&resolutions)?;
 
     if descriptors.is_empty() {
-        Ok(j2c::packet_encode::form_tile_bitstream_for_progression(
+        j2c::packet_encode::form_tile_bitstream_for_progression(
             &mut resolutions,
             job.num_layers,
             job.num_components,
             job.progression_order,
-        ))
+        )
     } else {
         j2c::packet_encode::form_tile_bitstream_with_descriptors(&mut resolutions, &descriptors)
     }

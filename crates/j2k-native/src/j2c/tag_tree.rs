@@ -8,6 +8,7 @@
 
 use alloc::vec::Vec;
 
+use crate::math::ceil_log2_u32;
 use crate::reader::BitReader;
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -207,12 +208,7 @@ pub(crate) struct TagTree {
 impl TagTree {
     pub(crate) fn new(width: u32, height: u32, nodes: &mut Vec<TagNode>) -> Self {
         // Calculate how many levels the tree has in total.
-        let level = u32::max(
-            width.next_power_of_two().ilog2(),
-            height.next_power_of_two().ilog2(),
-        );
-
-        let level = u16::try_from(level).expect("a u32 tag-tree level fits in u16");
+        let level = u16::from(ceil_log2_u32(width.max(height)));
         let node = TagNode::build(width, height, level, nodes);
         let idx = nodes.len();
         nodes.push(node);

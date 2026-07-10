@@ -727,9 +727,5 @@ pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
         precinct_exponents: precinct_exponents_for_options(&preencoded_options, num_levels)?,
     };
 
-    Ok(codestream_write::write_codestream(
-        &params,
-        &tile_data,
-        &quant_params,
-    ))
+    codestream_write::write_codestream(&params, &tile_data, &quant_params)
 }

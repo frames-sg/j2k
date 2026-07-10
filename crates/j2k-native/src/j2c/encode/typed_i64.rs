@@ -445,11 +445,7 @@ fn encode_typed_component_planes_53_i64_multitile(
         })
         .collect::<Vec<_>>();
 
-    Ok(codestream_write::write_codestream_tiles(
-        &params,
-        &tile_parts,
-        &plan.quant_params,
-    ))
+    codestream_write::write_codestream_tiles(&params, &tile_parts, &plan.quant_params)
 }
 
 #[expect(

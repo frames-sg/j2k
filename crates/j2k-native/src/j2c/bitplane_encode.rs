@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 use super::arithmetic_encoder::{ArithmeticEncoder, ArithmeticEncoderContext};
 use super::build::SubBandType;
 use super::codestream::CodeBlockStyle;
+use crate::math::bit_width_u64;
 
 mod distortion;
 mod passes;
@@ -137,19 +138,20 @@ pub(crate) fn encode_code_block_with_style_i64(
         };
     }
 
-    let num_bitplanes = 64 - max_magnitude.leading_zeros();
-    let num_bitplanes_u8 =
-        u8::try_from(num_bitplanes).expect("a u64 magnitude has at most 64 bitplanes");
-    debug_assert!(num_bitplanes_u8 <= total_bitplanes);
-    let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes_u8);
+    let num_bitplanes = bit_width_u64(max_magnitude);
+    debug_assert!(num_bitplanes <= total_bitplanes);
+    let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes);
 
     // Build padded coefficient magnitude and state arrays.
     let pw = w + 2; // Padded width for neighbor access
     let (magnitudes, mut states) = prepare_padded_coefficients(coefficients, w, h, pw);
     let mut neighbors = vec![0u8; magnitudes.len()]; // Packed neighbor significances
 
-    let mut encoder =
-        ArithmeticEncoder::with_capacity(arithmetic_encoder_capacity(w, h, num_bitplanes as usize));
+    let mut encoder = ArithmeticEncoder::with_capacity(arithmetic_encoder_capacity(
+        w,
+        h,
+        usize::from(num_bitplanes),
+    ));
     let mut contexts = [ArithmeticEncoderContext::default(); 19];
     reset_contexts(&mut contexts);
 

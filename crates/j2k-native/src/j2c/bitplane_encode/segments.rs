@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use super::super::arithmetic_encoder::{ArithmeticEncoder, ArithmeticEncoderContext};
 use super::super::build::SubBandType;
 use super::super::codestream::CodeBlockStyle;
+use crate::math::bit_width_u64;
 use crate::writer::BitWriter;
 
 use super::distortion::segment_distortion_delta;
@@ -52,8 +53,7 @@ pub(super) fn encode_segmented_code_block(
         return empty_segmented_code_block(total_bitplanes);
     }
 
-    let num_bitplanes = u8::try_from(64 - max_magnitude.leading_zeros())
-        .expect("a u64 magnitude has at most 64 bitplanes");
+    let num_bitplanes = bit_width_u64(max_magnitude);
     debug_assert!(num_bitplanes <= total_bitplanes);
     let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes);
     SegmentedCodeBlockEncoder::new(

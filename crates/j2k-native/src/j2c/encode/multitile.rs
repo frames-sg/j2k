@@ -256,11 +256,7 @@ pub(super) fn encode_multitile_impl(
         })
         .collect::<Vec<_>>();
 
-    Ok(codestream_write::write_codestream_tiles(
-        &params,
-        &tile_parts,
-        &quant_params,
-    ))
+    codestream_write::write_codestream_tiles(&params, &tile_parts, &quant_params)
 }
 
 #[expect(

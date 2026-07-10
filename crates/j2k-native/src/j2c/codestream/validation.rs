@@ -2,6 +2,7 @@
 
 use super::{Header, QuantizationStyle};
 use crate::error::{bail, Result, ValidationError};
+use crate::math::bit_width_u32;
 
 pub(super) fn skipped_levels_to_reach_target(source: u32, target: u32) -> u8 {
     if source <= target {
@@ -12,7 +13,7 @@ pub(super) fn skipped_levels_to_reach_target(source: u32, target: u32) -> u8 {
     if shrink_ratio <= 1 {
         0
     } else {
-        u8::try_from((shrink_ratio - 1).ilog2()).expect("a u32 logarithm fits in u8") + 1
+        bit_width_u32(shrink_ratio - 1)
     }
 }
 

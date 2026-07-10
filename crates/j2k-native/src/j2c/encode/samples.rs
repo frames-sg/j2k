@@ -38,13 +38,18 @@ pub(super) fn native_samples_equal(
     };
     let sample_count = expected.len() / bytes_per_sample;
     (0..sample_count).all(|sample_index| {
-        decode_native_sample(expected, sample_index, bit_depth, signed)
-            == decode_native_sample(actual, sample_index, bit_depth, signed)
+        decode_native_sample(expected, sample_index, bytes_per_sample, bit_depth, signed)
+            == decode_native_sample(actual, sample_index, bytes_per_sample, bit_depth, signed)
     })
 }
 
-fn decode_native_sample(bytes: &[u8], sample_index: usize, bit_depth: u8, signed: bool) -> i64 {
-    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth).unwrap_or(1);
+fn decode_native_sample(
+    bytes: &[u8],
+    sample_index: usize,
+    bytes_per_sample: usize,
+    bit_depth: u8,
+    signed: bool,
+) -> i64 {
     let byte_offset = sample_index * bytes_per_sample;
     let raw = read_le_sample_value(
         &bytes[byte_offset..byte_offset + bytes_per_sample],
@@ -54,6 +59,6 @@ fn decode_native_sample(bytes: &[u8], sample_index: usize, bit_depth: u8, signed
     if signed {
         sign_extend_sample(raw, bit_depth)
     } else {
-        i64::try_from(raw).expect("supported unsigned sample values fit in i64")
+        raw.cast_signed()
     }
 }

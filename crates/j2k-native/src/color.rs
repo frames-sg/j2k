@@ -695,6 +695,30 @@ fn sign_extend_palette_value(raw: u64, bit_depth: u8) -> i64 {
     (value << shift).cast_signed() >> shift
 }
 
+fn clamped_power_of_two_u32(exponent: u8) -> u32 {
+    if u32::from(exponent) >= u32::BITS {
+        u32::MAX
+    } else {
+        1_u32 << exponent
+    }
+}
+
+fn clamped_add_u32(left: u32, right: u32) -> u32 {
+    if right > u32::MAX - left {
+        u32::MAX
+    } else {
+        left + right
+    }
+}
+
+fn max_value_for_bit_depth(bit_depth: u8) -> u32 {
+    if u32::from(bit_depth) >= u32::BITS {
+        u32::MAX
+    } else {
+        (1_u32 << bit_depth) - 1
+    }
+}
+
 #[expect(
     clippy::cast_precision_loss,
     reason = "OpenJPEG-compatible CIE Lab scaling intentionally uses f32 arithmetic"
@@ -727,14 +751,20 @@ pub(crate) fn cielab_to_rgb<S: Simd>(
     let ra = lab.ra.unwrap_or(170);
     let rb = lab.rb.unwrap_or(200);
     let ol = lab.ol.unwrap_or(0);
-    let default_a_offset =
-        u32::try_from((1_u64 << u32::from(bit_depth - 1)).min(u64::from(u32::MAX)))
-            .expect("value is clamped to u32::MAX");
-    let default_b_offset = u32::try_from(
-        ((1_u64 << u32::from(bit_depth - 2)) + (1_u64 << u32::from(bit_depth - 3)))
-            .min(u64::from(u32::MAX)),
-    )
-    .expect("value is clamped to u32::MAX");
+    let a_shift = bit_depth
+        .checked_sub(1)
+        .ok_or(ColorError::LabConversionFailed)?;
+    let b_high_shift = bit_depth
+        .checked_sub(2)
+        .ok_or(ColorError::LabConversionFailed)?;
+    let b_low_shift = bit_depth
+        .checked_sub(3)
+        .ok_or(ColorError::LabConversionFailed)?;
+    let default_a_offset = clamped_power_of_two_u32(a_shift);
+    let default_b_offset = clamped_add_u32(
+        clamped_power_of_two_u32(b_high_shift),
+        clamped_power_of_two_u32(b_low_shift),
+    );
     let oa = lab.oa.unwrap_or(default_a_offset);
     let ob = lab.ob.unwrap_or(default_b_offset);
 
@@ -746,8 +776,7 @@ pub(crate) fn cielab_to_rgb<S: Simd>(
     let min_b = -(rb as f32 * ob as f32) / ((1_u64 << u32::from(prec2)) - 1) as f32;
     let max_b = min_b + rb as f32;
 
-    let bit_max = u32::try_from(((1_u64 << u32::from(bit_depth)) - 1).min(u64::from(u32::MAX)))
-        .expect("value is clamped to u32::MAX");
+    let bit_max = max_value_for_bit_depth(bit_depth);
 
     // Note that we are not doing the actual conversion with the ICC profile yet,
     // just decoding the raw LAB values.
@@ -849,7 +878,18 @@ fn sycc_to_rgb<S: Simd>(simd: S, components: &mut [ComponentData], bit_depth: u8
 
 #[cfg(test)]
 mod tests {
-    use super::palette_index;
+    use super::{
+        clamped_add_u32, clamped_power_of_two_u32, max_value_for_bit_depth, palette_index,
+    };
+
+    #[test]
+    fn lab_integer_scaling_preserves_clamped_boundaries() {
+        assert_eq!(clamped_power_of_two_u32(31), 1_u32 << 31);
+        assert_eq!(clamped_power_of_two_u32(32), u32::MAX);
+        assert_eq!(clamped_add_u32(u32::MAX, 1), u32::MAX);
+        assert_eq!(max_value_for_bit_depth(31), (1_u32 << 31) - 1);
+        assert_eq!(max_value_for_bit_depth(32), u32::MAX);
+    }
 
     #[test]
     fn palette_indices_reject_negative_samples_without_wrapping() {

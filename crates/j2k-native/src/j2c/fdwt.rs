@@ -20,8 +20,13 @@ const DELTA: f32 = dwt::DWT97_DELTA_F32;
 const KAPPA: f32 = dwt::DWT97_KAPPA_F32;
 const INV_KAPPA: f32 = dwt::DWT97_INV_KAPPA_F32;
 
-fn dwt_dimension(value: usize) -> u32 {
-    u32::try_from(value).expect("DWT dimensions remain bounded by their u32 inputs")
+fn extract_ll<T: Copy>(buffer: &[T], row_stride: usize, width: usize, height: usize) -> Vec<T> {
+    let mut ll = Vec::with_capacity(width * height);
+    for y in 0..height {
+        let row_start = y * row_stride;
+        ll.extend_from_slice(&buffer[row_start..row_start + width]);
+    }
+    ll
 }
 
 /// Result of the forward DWT: wavelet coefficients organized by subbands.
@@ -87,6 +92,8 @@ pub(crate) fn forward_dwt(
     let mut buffer = samples.to_vec();
     let mut current_width = w;
     let mut current_height = h;
+    let mut current_width_u32 = width;
+    let mut current_height_u32 = height;
 
     let mut levels = Vec::with_capacity(num_levels as usize);
 
@@ -149,6 +156,10 @@ pub(crate) fn forward_dwt(
         let low_h = current_height.div_ceil(2);
         let high_w = current_width / 2;
         let high_h = current_height / 2;
+        let low_width_u32 = current_width_u32.div_ceil(2);
+        let low_height_u32 = current_height_u32.div_ceil(2);
+        let high_width_u32 = current_width_u32 / 2;
+        let high_height_u32 = current_height_u32 / 2;
 
         // Extract subbands: HL (top-right), LH (bottom-left), HH (bottom-right)
         let mut hl = vec![0.0f32; high_w * low_h];
@@ -175,23 +186,20 @@ pub(crate) fn forward_dwt(
             hl,
             lh,
             hh,
-            low_width: dwt_dimension(low_w),
-            low_height: dwt_dimension(low_h),
-            high_width: dwt_dimension(high_w),
-            high_height: dwt_dimension(high_h),
+            low_width: low_width_u32,
+            low_height: low_height_u32,
+            high_width: high_width_u32,
+            high_height: high_height_u32,
         });
 
         current_width = low_w;
         current_height = low_h;
+        current_width_u32 = low_width_u32;
+        current_height_u32 = low_height_u32;
     }
 
     // Extract final LL subband
-    let mut ll = vec![0.0f32; current_width * current_height];
-    for y in 0..current_height {
-        for x in 0..current_width {
-            ll[y * current_width + x] = buffer[y * w + x];
-        }
-    }
+    let ll = extract_ll(&buffer, w, current_width, current_height);
 
     // Levels are stored from highest resolution to lowest, but we want
     // them in the same order the decoder expects (lowest to highest).
@@ -199,8 +207,8 @@ pub(crate) fn forward_dwt(
 
     DwtDecomposition {
         ll,
-        ll_width: dwt_dimension(current_width),
-        ll_height: dwt_dimension(current_height),
+        ll_width: current_width_u32,
+        ll_height: current_height_u32,
         levels,
     }
 }
@@ -218,6 +226,8 @@ pub(crate) fn forward_dwt_i64(
     let mut buffer = samples.to_vec();
     let mut current_width = w;
     let mut current_height = h;
+    let mut current_width_u32 = width;
+    let mut current_height_u32 = height;
     let mut levels = Vec::with_capacity(num_levels as usize);
 
     for _ in 0..num_levels {
@@ -267,6 +277,10 @@ pub(crate) fn forward_dwt_i64(
         let low_h = current_height.div_ceil(2);
         let high_w = current_width / 2;
         let high_h = current_height / 2;
+        let low_width_u32 = current_width_u32.div_ceil(2);
+        let low_height_u32 = current_height_u32.div_ceil(2);
+        let high_width_u32 = current_width_u32 / 2;
+        let high_height_u32 = current_height_u32 / 2;
 
         let mut hl = vec![0_i64; high_w * low_h];
         let mut lh = vec![0_i64; low_w * high_h];
@@ -292,29 +306,26 @@ pub(crate) fn forward_dwt_i64(
             hl,
             lh,
             hh,
-            low_width: dwt_dimension(low_w),
-            low_height: dwt_dimension(low_h),
-            high_width: dwt_dimension(high_w),
-            high_height: dwt_dimension(high_h),
+            low_width: low_width_u32,
+            low_height: low_height_u32,
+            high_width: high_width_u32,
+            high_height: high_height_u32,
         });
 
         current_width = low_w;
         current_height = low_h;
+        current_width_u32 = low_width_u32;
+        current_height_u32 = low_height_u32;
     }
 
-    let mut ll = vec![0_i64; current_width * current_height];
-    for y in 0..current_height {
-        for x in 0..current_width {
-            ll[y * current_width + x] = buffer[y * w + x];
-        }
-    }
+    let ll = extract_ll(&buffer, w, current_width, current_height);
 
     levels.reverse();
 
     DwtDecompositionI64 {
         ll,
-        ll_width: dwt_dimension(current_width),
-        ll_height: dwt_dimension(current_height),
+        ll_width: current_width_u32,
+        ll_height: current_height_u32,
         levels,
     }
 }
