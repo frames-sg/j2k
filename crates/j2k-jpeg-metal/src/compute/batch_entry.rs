@@ -1,3 +1,31 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use super::{
+    batch, batched_fast_packets, commit_and_wait_jpeg, decode_error_from_cpu,
+    encode_fast444_batch_item, encode_fast444_region_batch_item, encode_fast444_scaled_batch_item,
+    encode_fast444_scaled_region_batch_item, encode_fast_subsampled_op_batch_item,
+    fast_batch_decode_mode, first_decode_error_status,
+    try_decode_fast420_region_scaled_rgb_batch_to_surfaces,
+    try_decode_fast420_region_scaled_rgb_batch_to_surfaces_into_output,
+    try_decode_fast420_region_scaled_rgba_batch_to_textures,
+    try_decode_fast422_region_scaled_rgb_batch_to_surfaces,
+    try_decode_fast422_region_scaled_rgb_batch_to_surfaces_into_output,
+    try_decode_fast422_region_scaled_rgba_batch_to_textures,
+    try_decode_fast444_full_rgb_batch_to_surfaces,
+    try_decode_fast444_full_rgb_batch_to_surfaces_into_output,
+    try_decode_fast444_full_rgba_batch_to_textures,
+    try_decode_fast444_region_scaled_rgb_batch_to_surfaces,
+    try_decode_fast444_region_scaled_rgb_batch_to_surfaces_into_output,
+    try_decode_fast444_region_scaled_rgba_batch_to_textures,
+    try_decode_fast_subsampled_full_rgb_batch_to_surfaces,
+    try_decode_fast_subsampled_full_rgb_batch_to_surfaces_into_output,
+    try_decode_fast_subsampled_full_rgba_batch_to_textures,
+    try_decode_repeated_region_scaled_batch_to_surfaces, with_runtime, with_runtime_for_session,
+    BatchDeviceBufferCache, BatchedFastPacket, CpuDecoder, Error,
+    Fast444ScaledRegionBatchItemRequest, FastSubsampledOpBatchItemRequest, JpegFast420PacketV1,
+    JpegFast422PacketV1, MetalRuntime, Surface, REGION_SCALED_BATCH_CHUNK,
+};
+
 #[cfg(target_os = "macos")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn decode_full_batch_to_surfaces(
@@ -277,8 +305,8 @@ fn decode_full_batch_to_surfaces_with_runtime(
             let request = &requests[index];
             let packet = &packets[index];
             let item = match packet {
-                BatchedFastPacket::Fast420(packet) => encode_fast_subsampled_op_batch_item(
-                    FastSubsampledOpBatchItemRequest {
+                BatchedFastPacket::Fast420(packet) => {
+                    encode_fast_subsampled_op_batch_item(FastSubsampledOpBatchItemRequest {
                         runtime,
                         command_buffer,
                         device_buffer_cache: &mut device_buffer_cache,
@@ -286,10 +314,10 @@ fn decode_full_batch_to_surfaces_with_runtime(
                         packet: *packet,
                         fmt: request.fmt,
                         op: request.op,
-                    },
-                )?,
-                BatchedFastPacket::Fast422(packet) => encode_fast_subsampled_op_batch_item(
-                    FastSubsampledOpBatchItemRequest {
+                    })?
+                }
+                BatchedFastPacket::Fast422(packet) => {
+                    encode_fast_subsampled_op_batch_item(FastSubsampledOpBatchItemRequest {
                         runtime,
                         command_buffer,
                         device_buffer_cache: &mut device_buffer_cache,
@@ -297,8 +325,8 @@ fn decode_full_batch_to_surfaces_with_runtime(
                         packet: *packet,
                         fmt: request.fmt,
                         op: request.op,
-                    },
-                )?,
+                    })?
+                }
                 BatchedFastPacket::Fast444(packet, mode) => match request.op {
                     batch::BatchOp::Full => encode_fast444_batch_item(
                         runtime,
