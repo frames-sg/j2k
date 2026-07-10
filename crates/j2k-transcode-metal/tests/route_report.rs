@@ -16,6 +16,10 @@ fn should_run_metal_runtime() -> bool {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[expect(
+    unsafe_code,
+    reason = "the test constructs one audited resident descriptor from a fresh shared Metal allocation"
+)]
 fn metal_encoded_codestream_exports_resident_handoff_descriptor() {
     if !should_run_metal_runtime() {
         return;

@@ -65,7 +65,10 @@ pub(crate) fn dispatch_dct_grid_to_dwt53(
     session.with_runtime(|runtime| dispatch_dct_grid_to_dwt53_with_runtime(runtime, job))
 }
 
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "LL, HL, LH, and HH are standard wavelet subband names"
+)]
 pub(super) fn dispatch_reversible_dwt53_batch_with_runtime(
     runtime: &MetalRuntime,
     block_samples: &[[i32; 64]],

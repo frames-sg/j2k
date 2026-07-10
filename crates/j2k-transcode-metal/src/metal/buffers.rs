@@ -86,6 +86,14 @@ pub(super) fn write_dwt97_blocks_to_buffer(
     Ok(())
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the Metal kernel ABI intentionally consumes f32 DCT coefficients"
+)]
+#[expect(
+    unsafe_code,
+    reason = "the checked Metal buffer helper requires one audited host write boundary"
+)]
 pub(super) fn write_dwt97_blocks_to_buffer_at(
     buffer: &mut Buffer,
     start: usize,
@@ -155,6 +163,10 @@ pub(super) fn read_i32_buffer(
     shared_i32_slice(buffer, value_count)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "the checked Metal buffer helper requires one audited post-completion read boundary"
+)]
 pub(super) fn shared_f32_slice(
     buffer: &Buffer,
     value_count: usize,
@@ -165,6 +177,10 @@ pub(super) fn shared_f32_slice(
         .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))
 }
 
+#[expect(
+    unsafe_code,
+    reason = "the checked Metal buffer helper requires one audited post-completion read boundary"
+)]
 pub(super) fn shared_i32_slice(
     buffer: &Buffer,
     value_count: usize,
@@ -189,6 +205,10 @@ pub(super) fn idct8_basis_table() -> [f32; 64] {
     table
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "IDCT basis indices are bounded to 0..8 and exactly represented by f32"
+)]
 pub(super) fn idct8_basis(sample_idx: usize, freq: usize) -> f32 {
     let scale = if freq == 0 {
         (1.0_f32 / 8.0).sqrt()

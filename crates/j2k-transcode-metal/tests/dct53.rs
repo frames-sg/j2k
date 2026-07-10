@@ -365,6 +365,10 @@ fn max_abs_diff(actual: &Dwt53TwoDimensional<f64>, expected: &Dwt53TwoDimensiona
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "test grid indices are bounded by allocated fixture dimensions"
+)]
 fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
     let mut blocks = Vec::with_capacity(block_cols * block_rows);
     for block_y in 0..block_rows {

@@ -40,23 +40,25 @@ pub struct Dwt97TwoDimensional<T> {
     pub high_height: usize,
 }
 
-#[allow(
-    clippy::large_types_passed_by_value,
+#[expect(
     dead_code,
     unreachable_pub,
-    unused_imports
+    unused_imports,
+    reason = "benchmark path-module reuse intentionally compiles non-benchmark 5/3 helpers"
 )]
 #[path = "../../j2k-transcode/src/dct53_2d.rs"]
 mod dct53_2d;
-#[allow(
-    clippy::large_types_passed_by_value,
+#[expect(
     dead_code,
     unreachable_pub,
-    unused_imports
+    reason = "benchmark path-module reuse intentionally compiles non-benchmark 9/7 helpers"
 )]
 #[path = "../../j2k-transcode/src/dct97_2d.rs"]
 mod dct97_2d;
-#[allow(dead_code, unreachable_pub, unused_imports)]
+#[expect(
+    unused_imports,
+    reason = "benchmark path-module reuse intentionally compiles non-benchmark grid imports"
+)]
 #[path = "../../j2k-transcode/src/dct_grid.rs"]
 mod dct_grid;
 
@@ -821,16 +823,19 @@ struct WsiFixtureSpec {
 
 fn encoded_fixture(spec: WsiFixtureSpec) -> Vec<u8> {
     let rgb = (spec.generator)(spec.dim);
+    let dimension = u32::try_from(spec.dim).expect("benchmark fixture dimension fits u32");
+    let restart_interval =
+        u16::try_from(spec.dim / 8).expect("benchmark restart interval fits u16");
     encode_jpeg_baseline(
         JpegSamples::Rgb8 {
             data: &rgb,
-            width: spec.dim as u32,
-            height: spec.dim as u32,
+            width: dimension,
+            height: dimension,
         },
         JpegEncodeOptions {
             quality: 90,
             subsampling: spec.subsampling,
-            restart_interval: Some((spec.dim / 8) as u16),
+            restart_interval: Some(restart_interval),
             backend: JpegBackend::Cpu,
         },
     )
@@ -934,9 +939,9 @@ fn rgb_srgb_pattern(dim: usize) -> Vec<u8> {
     let mut data = Vec::with_capacity(dim * dim * 3);
     for y in 0..dim {
         for x in 0..dim {
-            data.push(((x * 5 + y * 3 + 17) & 0xff) as u8);
-            data.push(((x * 2 + y * 7 + 41) & 0xff) as u8);
-            data.push(((x * 11 + y * 13 + 73) & 0xff) as u8);
+            data.push(masked_u8(x * 5 + y * 3 + 17));
+            data.push(masked_u8(x * 2 + y * 7 + 41));
+            data.push(masked_u8(x * 11 + y * 13 + 73));
         }
     }
     data
@@ -946,10 +951,10 @@ fn rgb_p3_like_pattern(dim: usize) -> Vec<u8> {
     let mut data = Vec::with_capacity(dim * dim * 3);
     for y in 0..dim {
         for x in 0..dim {
-            let radial = ((x ^ y) & 0xff) as u8;
+            let radial = masked_u8(x ^ y);
             data.push(radial.saturating_add(32));
-            data.push(((x * 9 + y * 5 + 19) & 0xff) as u8);
-            data.push(((x * 3 + y * 15 + 97) & 0xff) as u8);
+            data.push(masked_u8(x * 9 + y * 5 + 19));
+            data.push(masked_u8(x * 3 + y * 15 + 97));
         }
     }
     data
@@ -959,9 +964,9 @@ fn rgb_ycbcr_like_pattern(dim: usize) -> Vec<u8> {
     let mut data = Vec::with_capacity(dim * dim * 3);
     for y in 0..dim {
         for x in 0..dim {
-            let y_sample = i32::from(((x * 3 + y * 2 + ((x / 31 + y / 17) * 23)) & 0xff) as u8);
-            let cb = i32::from((((x / 8) * 9 + y * 2 + 96) & 0xff) as u8) - 128;
-            let cr = i32::from(((x * 2 + (y / 8) * 11 + 160) & 0xff) as u8) - 128;
+            let y_sample = i32::from(masked_u8(x * 3 + y * 2 + (x / 31 + y / 17) * 23));
+            let cb = i32::from(masked_u8((x / 8) * 9 + y * 2 + 96)) - 128;
+            let cr = i32::from(masked_u8(x * 2 + (y / 8) * 11 + 160)) - 128;
             let r = y_sample + ((91_881 * cr) >> 16);
             let g = y_sample - ((22_554 * cb + 46_802 * cr) >> 16);
             let b = y_sample + ((116_130 * cb) >> 16);
@@ -975,6 +980,10 @@ fn rgb_ycbcr_like_pattern(dim: usize) -> Vec<u8> {
 
 fn clamp_u8(value: i32) -> u8 {
     u8::try_from(value.clamp(0, 255)).expect("clamped value fits in u8")
+}
+
+fn masked_u8(value: usize) -> u8 {
+    u8::try_from(value & 0xff).expect("masked pattern sample fits u8")
 }
 
 fn explicit_metal_accepts(job: DctGridToDwt97Job<'_>) -> bool {
@@ -1000,6 +1009,10 @@ fn explicit_metal_accepts_reversible_53_batch(jobs: &[DctGridToReversibleDwt53Jo
     )
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "benchmark grid indices are bounded by allocated fixture dimensions"
+)]
 fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
     let mut blocks = Vec::with_capacity(block_cols * block_rows);
     for block_y in 0..block_rows {

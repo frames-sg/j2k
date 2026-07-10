@@ -66,7 +66,6 @@ pub(crate) fn dispatch_dct_grid_to_htj2k97_codeblock_batch(
     })
 }
 
-#[allow(clippy::similar_names)]
 pub(super) fn dispatch_dct_grid_to_dwt53_with_runtime(
     runtime: &MetalRuntime,
     job: DctGridToDwt53Job<'_>,
@@ -101,7 +100,6 @@ pub(super) fn dispatch_dct_grid_to_dwt53_with_runtime(
     })
 }
 
-#[allow(clippy::similar_names)]
 pub(super) fn dispatch_dct_grid_to_dwt97_with_runtime(
     runtime: &MetalRuntime,
     job: DctGridToDwt97Job<'_>,
@@ -136,7 +134,6 @@ pub(super) fn dispatch_dct_grid_to_dwt97_with_runtime(
     })
 }
 
-#[allow(clippy::similar_names)]
 pub(super) fn dispatch_dct_grid_to_dwt97_batch_with_runtime(
     runtime: &MetalRuntime,
     jobs: &[DctGridToDwt97Job<'_>],

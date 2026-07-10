@@ -324,6 +324,10 @@ pub(super) fn dwt97_total_bitplanes(
     htj2k97_subband_total_bitplanes(options, sub_band_type)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the Metal quantization ABI intentionally consumes an f32 inverse delta"
+)]
 pub(super) fn dwt97_quantize_inv_delta(
     options: Htj2k97CodeBlockOptions,
     sub_band_type: J2kSubBandType,

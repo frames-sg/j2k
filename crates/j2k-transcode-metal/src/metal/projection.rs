@@ -114,7 +114,10 @@ pub(super) struct ProjectedBands {
     pub(super) high_height: usize,
 }
 
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "LL, HL, LH, and HH are standard wavelet subband names"
+)]
 pub(super) fn dispatch_projected_bands_with_runtime(
     runtime: &MetalRuntime,
     job: ProjectionJob<'_>,
@@ -221,7 +224,6 @@ pub(super) fn dispatch_projected_bands_with_runtime(
     })
 }
 
-#[allow(clippy::similar_names)]
 pub(super) fn dispatch_projected_bands_batch_with_runtime(
     runtime: &MetalRuntime,
     job: ProjectionBatchJob<'_, '_>,

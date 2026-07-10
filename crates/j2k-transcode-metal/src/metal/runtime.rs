@@ -164,6 +164,10 @@ pub(super) struct MetalSparseRow {
     pub(super) count: u32,
 }
 
+#[expect(
+    unsafe_code,
+    reason = "the repr(C) sparse-row record is an audited plain-data Metal ABI type"
+)]
 // SAFETY: Metal ABI structs are repr(C) plain data matching shader layouts.
 unsafe impl j2k_core::accelerator::GpuAbi for MetalSparseRow {
     const NAME: &'static str = "MetalSparseRow";
@@ -176,6 +180,10 @@ pub(super) struct MetalWeightTap {
     pub(super) weight: f32,
 }
 
+#[expect(
+    unsafe_code,
+    reason = "the repr(C) weight-tap record is an audited plain-data Metal ABI type"
+)]
 // SAFETY: Metal ABI structs are repr(C) plain data matching shader layouts.
 unsafe impl j2k_core::accelerator::GpuAbi for MetalWeightTap {
     const NAME: &'static str = "MetalWeightTap";

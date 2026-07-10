@@ -24,6 +24,10 @@ impl Dwt97WeightRows {
     /// Build deterministic 9/7 projection rows for a one-dimensional sample
     /// extent.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Metal projection tables intentionally store scalar f64 weights in the f32 shader ABI"
+    )]
     pub fn for_len(sample_len: usize) -> Self {
         let mut low = vec![vec![0.0; sample_len]; low_len(sample_len)];
         let mut high = vec![vec![0.0; sample_len]; high_len(sample_len)];
@@ -58,6 +62,10 @@ impl Dwt53WeightRows {
     /// Build deterministic 5/3 projection rows for a one-dimensional sample
     /// extent.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Metal projection tables intentionally store scalar f64 weights in the f32 shader ABI"
+    )]
     pub fn for_len(sample_len: usize) -> Self {
         let mut low = vec![vec![0.0; sample_len]; low_len(sample_len)];
         let mut high = vec![vec![0.0; sample_len]; high_len(sample_len)];

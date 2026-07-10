@@ -428,7 +428,7 @@ fn assert_explicit_metal_integer53_matches_scalar(
     );
     assert_eq!(
         decoded.num_components,
-        expected_report_sampling.len() as u16
+        u16::try_from(expected_report_sampling.len()).expect("component count fits u16")
     );
     assert_report_sampling(&encoded.report.components, expected_report_sampling);
     assert_component_sampling(&encoded.codestream, expected_codestream_sampling);
