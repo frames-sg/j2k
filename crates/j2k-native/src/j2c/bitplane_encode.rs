@@ -12,13 +12,20 @@ use alloc::vec::Vec;
 use super::arithmetic_encoder::{ArithmeticEncoder, ArithmeticEncoderContext};
 use super::build::SubBandType;
 use super::codestream::CodeBlockStyle;
-use crate::writer::BitWriter;
 
-/// Coefficient state flags.
-const SIGNIFICANT: u8 = 1 << 7;
-const MAGNITUDE_REFINED: u8 = 1 << 6;
-const CODED_IN_CURRENT_PASS: u8 = 1 << 5;
-const NEGATIVE: u8 = 1 << 4;
+mod distortion;
+mod passes;
+mod segments;
+mod tokens;
+
+use self::passes::{
+    cleanup_pass, clear_coded_in_current_pass, magnitude_refinement_pass,
+    prepare_padded_coefficients, significance_propagation_pass,
+};
+use self::segments::{arithmetic_encoder_capacity, encode_segmentation_symbols, reset_contexts};
+pub(crate) use self::tokens::{
+    pack_classic_selective_bypass_tier1_tokens, ClassicTier1TokenSegment,
+};
 
 /// Result of encoding a single code-block.
 #[derive(Debug)]
@@ -52,213 +59,6 @@ pub(crate) struct EncodedCodeBlockWithSegments {
     pub(crate) num_coding_passes: u8,
     pub(crate) num_zero_bitplanes: u8,
 }
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ClassicTier1TokenSegment {
-    pub(crate) token_bit_offset: u32,
-    pub(crate) token_bit_count: u32,
-    pub(crate) start_coding_pass: u8,
-    pub(crate) end_coding_pass: u8,
-    pub(crate) use_arithmetic: bool,
-}
-
-pub(crate) fn pack_classic_selective_bypass_tier1_tokens(
-    token_bytes: &[u8],
-    token_segments: &[ClassicTier1TokenSegment],
-    number_of_coding_passes: u8,
-    missing_bit_planes: u8,
-) -> Result<EncodedCodeBlockWithSegments, &'static str> {
-    let mut reader = ClassicTier1TokenReader::new(token_bytes);
-    let mut contexts = [ArithmeticEncoderContext::default(); 19];
-    reset_contexts(&mut contexts);
-    let mut data = Vec::new();
-    let mut segments = Vec::with_capacity(token_segments.len());
-
-    for segment in token_segments {
-        if segment.start_coding_pass > segment.end_coding_pass {
-            return Err("classic Tier-1 token segment pass range is invalid");
-        }
-        if segment.end_coding_pass > number_of_coding_passes {
-            return Err("classic Tier-1 token segment exceeds coding passes");
-        }
-        let token_bit_offset = usize::try_from(segment.token_bit_offset)
-            .map_err(|_| "classic Tier-1 token bit offset exceeds usize")?;
-        let token_bit_count = usize::try_from(segment.token_bit_count)
-            .map_err(|_| "classic Tier-1 token bit count exceeds usize")?;
-        reader.seek(token_bit_offset)?;
-        if segment.use_arithmetic {
-            if token_bit_count % 6 != 0 {
-                return Err("classic Tier-1 MQ token segment is not aligned to 6-bit symbols");
-            }
-            let symbol_count = token_bit_count / 6;
-            let mut encoder =
-                ArithmeticEncoder::with_capacity(symbol_count.saturating_div(16) + 32);
-            for _ in 0..symbol_count {
-                let token = reader.read_bits(6)?;
-                let ctx = (token & 0x1F) as usize;
-                if ctx >= contexts.len() {
-                    return Err("classic Tier-1 MQ token context is out of range");
-                }
-                let bit = (token >> 5) & 1;
-                encoder.encode(bit, &mut contexts[ctx]);
-            }
-            push_segment(
-                &mut data,
-                &mut segments,
-                segment.start_coding_pass,
-                segment.end_coding_pass,
-                encoder.finish(),
-                f64::EPSILON,
-                true,
-            );
-        } else {
-            let mut writer = BitWriter::new();
-            for _ in 0..token_bit_count {
-                writer.write_bit(reader.read_bits(1)?);
-            }
-            push_segment(
-                &mut data,
-                &mut segments,
-                segment.start_coding_pass,
-                segment.end_coding_pass,
-                writer.finish(),
-                f64::EPSILON,
-                false,
-            );
-        }
-    }
-
-    Ok(EncodedCodeBlockWithSegments {
-        data,
-        segments,
-        num_coding_passes: number_of_coding_passes,
-        num_zero_bitplanes: missing_bit_planes,
-    })
-}
-
-struct ClassicTier1TokenReader<'a> {
-    bytes: &'a [u8],
-    bit_pos: usize,
-}
-
-impl<'a> ClassicTier1TokenReader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, bit_pos: 0 }
-    }
-
-    fn seek(&mut self, bit_pos: usize) -> Result<(), &'static str> {
-        if bit_pos > self.bytes.len().saturating_mul(8) {
-            return Err("classic Tier-1 token offset exceeds token buffer");
-        }
-        self.bit_pos = bit_pos;
-        Ok(())
-    }
-
-    fn read_bits(&mut self, count: u8) -> Result<u32, &'static str> {
-        let end = self
-            .bit_pos
-            .checked_add(usize::from(count))
-            .ok_or("classic Tier-1 token bit range overflows")?;
-        if end > self.bytes.len().saturating_mul(8) {
-            return Err("classic Tier-1 token read exceeds token buffer");
-        }
-        let mut value = 0u32;
-        for _ in 0..count {
-            let byte = self.bytes[self.bit_pos / 8];
-            let shift = 7 - (self.bit_pos % 8);
-            value = (value << 1) | u32::from((byte >> shift) & 1);
-            self.bit_pos += 1;
-        }
-        Ok(value)
-    }
-}
-
-/// Context labels for zero coding (Table D.1).
-/// Index into 256-entry lookup tables by neighbor significance pattern.
-#[rustfmt::skip]
-const ZERO_CTX_LL_LH: [u8; 256] = [
-    0, 3, 1, 3, 5, 7, 6, 7, 1, 3, 2, 3, 6, 7, 6, 7, 5, 7, 6, 7, 8, 8, 8, 8, 6,
-    7, 6, 7, 8, 8, 8, 8, 1, 3, 2, 3, 6, 7, 6, 7, 2, 3, 2, 3, 6, 7, 6, 7, 6, 7,
-    6, 7, 8, 8, 8, 8, 6, 7, 6, 7, 8, 8, 8, 8, 3, 4, 3, 4, 7, 7, 7, 7, 3, 4, 3,
-    4, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 7, 7, 7, 7, 8, 8, 8, 8, 3, 4, 3, 4,
-    7, 7, 7, 7, 3, 4, 3, 4, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 7, 7, 7, 7, 8,
-    8, 8, 8, 1, 3, 2, 3, 6, 7, 6, 7, 2, 3, 2, 3, 6, 7, 6, 7, 6, 7, 6, 7, 8, 8,
-    8, 8, 6, 7, 6, 7, 8, 8, 8, 8, 2, 3, 2, 3, 6, 7, 6, 7, 2, 3, 2, 3, 6, 7, 6,
-    7, 6, 7, 6, 7, 8, 8, 8, 8, 6, 7, 6, 7, 8, 8, 8, 8, 3, 4, 3, 4, 7, 7, 7, 7,
-    3, 4, 3, 4, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 7, 7, 7, 7, 8, 8, 8, 8, 3,
-    4, 3, 4, 7, 7, 7, 7, 3, 4, 3, 4, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 7, 7,
-    7, 7, 8, 8, 8, 8,
-];
-
-#[rustfmt::skip]
-const ZERO_CTX_HL: [u8; 256] = [
-    0, 5, 1, 6, 3, 7, 3, 7, 1, 6, 2, 6, 3, 7, 3, 7, 3, 7, 3, 7, 4, 7, 4, 7, 3,
-    7, 3, 7, 4, 7, 4, 7, 1, 6, 2, 6, 3, 7, 3, 7, 2, 6, 2, 6, 3, 7, 3, 7, 3, 7,
-    3, 7, 4, 7, 4, 7, 3, 7, 3, 7, 4, 7, 4, 7, 5, 8, 6, 8, 7, 8, 7, 8, 6, 8, 6,
-    8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 6, 8, 6, 8,
-    7, 8, 7, 8, 6, 8, 6, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7,
-    8, 7, 8, 1, 6, 2, 6, 3, 7, 3, 7, 2, 6, 2, 6, 3, 7, 3, 7, 3, 7, 3, 7, 4, 7,
-    4, 7, 3, 7, 3, 7, 4, 7, 4, 7, 2, 6, 2, 6, 3, 7, 3, 7, 2, 6, 2, 6, 3, 7, 3,
-    7, 3, 7, 3, 7, 4, 7, 4, 7, 3, 7, 3, 7, 4, 7, 4, 7, 6, 8, 6, 8, 7, 8, 7, 8,
-    6, 8, 6, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 6,
-    8, 6, 8, 7, 8, 7, 8, 6, 8, 6, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8, 7, 8,
-    7, 8, 7, 8, 7, 8,
-];
-
-#[rustfmt::skip]
-const ZERO_CTX_HH: [u8; 256] = [
-    0, 1, 3, 4, 1, 2, 4, 5, 3, 4, 6, 7, 4, 5, 7, 7, 1, 2, 4, 5, 2, 2, 5, 5, 4,
-    5, 7, 7, 5, 5, 7, 7, 3, 4, 6, 7, 4, 5, 7, 7, 6, 7, 8, 8, 7, 7, 8, 8, 4, 5,
-    7, 7, 5, 5, 7, 7, 7, 7, 8, 8, 7, 7, 8, 8, 1, 2, 4, 5, 2, 2, 5, 5, 4, 5, 7,
-    7, 5, 5, 7, 7, 2, 2, 5, 5, 2, 2, 5, 5, 5, 5, 7, 7, 5, 5, 7, 7, 4, 5, 7, 7,
-    5, 5, 7, 7, 7, 7, 8, 8, 7, 7, 8, 8, 5, 5, 7, 7, 5, 5, 7, 7, 7, 7, 8, 8, 7,
-    7, 8, 8, 3, 4, 6, 7, 4, 5, 7, 7, 6, 7, 8, 8, 7, 7, 8, 8, 4, 5, 7, 7, 5, 5,
-    7, 7, 7, 7, 8, 8, 7, 7, 8, 8, 6, 7, 8, 8, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8,
-    8, 7, 7, 8, 8, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 5, 7, 7, 5, 5, 7, 7,
-    7, 7, 8, 8, 7, 7, 8, 8, 5, 5, 7, 7, 5, 5, 7, 7, 7, 7, 8, 8, 7, 7, 8, 8, 7,
-    7, 8, 8, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 8, 8,
-    8, 8, 8, 8, 8, 8,
-];
-
-/// Sign coding context lookup (Table D.2), matching the decoder's convention.
-///
-/// The index is built by combining significance and sign of the 4 cardinal
-/// neighbors into a merged byte:
-///   1. significances = neighbor_byte & 0b01010101 (keep T(6), L(4), R(2), B(0))
-///   2. signs = (top_sign << 6) | (left_sign << 4) | (right_sign << 2) | bottom_sign
-///   3. negative_sigs = significances & signs
-///   4. positive_sigs = significances & !signs
-///   5. merged = (negative_sigs << 1) | positive_sigs
-///
-/// Each entry is (context_label, xor_bit). (0,0) represents impossible combinations.
-#[rustfmt::skip]
-const SIGN_CONTEXT_LOOKUP: [(u8, u8); 256] = [
-    (9,0), (10,0), (10,1), (0,0), (12,0), (13,0), (11,0), (0,0), (12,1), (11,1),
-    (13,1), (0,0), (0,0), (0,0), (0,0), (0,0), (12,0), (13,0), (11,0), (0,0),
-    (12,0), (13,0), (11,0), (0,0), (9,0), (10,0), (10,1), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (12,1), (11,1), (13,1), (0,0), (9,0), (10,0), (10,1), (0,0),
-    (12,1), (11,1), (13,1), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (10,0), (10,0), (9,0), (0,0), (13,0), (13,0), (12,0),
-    (0,0), (11,1), (11,1), (12,1), (0,0), (0,0), (0,0), (0,0), (0,0), (13,0),
-    (13,0), (12,0), (0,0), (13,0), (13,0), (12,0), (0,0), (10,0), (10,0), (9,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (11,1), (11,1), (12,1), (0,0), (10,0),
-    (10,0), (9,0), (0,0), (11,1), (11,1), (12,1), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (10,1), (9,0), (10,1), (0,0),
-    (11,0), (12,0), (11,0), (0,0), (13,1), (12,1), (13,1), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (11,0), (12,0), (11,0), (0,0), (11,0), (12,0), (11,0), (0,0),
-    (10,1), (9,0), (10,1), (0,0), (0,0), (0,0), (0,0), (0,0), (13,1), (12,1),
-    (13,1), (0,0), (10,1), (9,0), (10,1), (0,0), (13,1), (12,1), (13,1), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-    (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
-];
 
 /// Encode a single code-block's quantized coefficients.
 ///
@@ -299,29 +99,6 @@ fn i32_coefficients_to_i64(coefficients: &[i32]) -> Vec<i64> {
         .iter()
         .map(|&coefficient| i64::from(coefficient))
         .collect()
-}
-
-fn prepare_padded_coefficients(
-    coefficients: &[i64],
-    w: usize,
-    h: usize,
-    pw: usize,
-) -> (Vec<u64>, Vec<u8>) {
-    let mut magnitudes = vec![0u64; pw * (h + 2)];
-    let mut states = vec![0u8; magnitudes.len()];
-
-    for y in 0..h {
-        for x in 0..w {
-            let idx = (y + 1) * pw + (x + 1);
-            let coeff = coefficients[y * w + x];
-            magnitudes[idx] = coeff.unsigned_abs();
-            if coeff < 0 {
-                states[idx] = NEGATIVE;
-            }
-        }
-    }
-
-    (magnitudes, states)
 }
 
 pub(crate) fn encode_code_block_with_style_i64(
@@ -497,956 +274,33 @@ pub(crate) fn encode_code_block_segments_with_style_i64(
     total_bitplanes: u8,
     style: &CodeBlockStyle,
 ) -> EncodedCodeBlockWithSegments {
-    if !style.termination_on_each_pass && !style.selective_arithmetic_coding_bypass {
-        let encoded = encode_code_block_with_style_i64(
-            coefficients,
-            width,
-            height,
-            sub_band_type,
-            total_bitplanes,
-            style,
-        );
-        let segments = if encoded.num_coding_passes == 0 {
-            Vec::new()
-        } else {
-            vec![EncodedCodeBlockSegment {
-                data_offset: 0,
-                data_length: u32::try_from(encoded.data.len())
-                    .expect("classic code-block payload length fits in u32"),
-                start_coding_pass: 0,
-                end_coding_pass: encoded.num_coding_passes,
-                distortion_delta: segment_distortion_delta(
-                    coefficients,
-                    0,
-                    encoded.num_coding_passes,
-                    total_bitplanes,
-                ),
-                use_arithmetic: true,
-            }]
-        };
-        return EncodedCodeBlockWithSegments {
-            data: encoded.data,
-            segments,
-            num_coding_passes: encoded.num_coding_passes,
-            num_zero_bitplanes: encoded.num_zero_bitplanes,
-        };
-    }
-
-    let w = width as usize;
-    let h = height as usize;
-    let max_magnitude = coefficients
-        .iter()
-        .map(|c| c.unsigned_abs())
-        .max()
-        .unwrap_or(0);
-
-    if max_magnitude == 0 {
-        return EncodedCodeBlockWithSegments {
-            data: Vec::new(),
-            segments: Vec::new(),
-            num_coding_passes: 0,
-            num_zero_bitplanes: total_bitplanes,
-        };
-    }
-
-    let num_bitplanes = 64 - max_magnitude.leading_zeros();
-    debug_assert!(num_bitplanes as u8 <= total_bitplanes);
-    let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes as u8);
-    let pw = w + 2;
-    let (magnitudes, mut states) = prepare_padded_coefficients(coefficients, w, h, pw);
-    let mut neighbors = vec![0u8; magnitudes.len()];
-
-    let mut contexts = [ArithmeticEncoderContext::default(); 19];
-    reset_contexts(&mut contexts);
-
-    let mut data = Vec::new();
-    let mut segments = Vec::new();
-    let total_passes = 1 + 3 * (num_bitplanes as u8 - 1);
-    let mut current_segment_idx = None;
-    let mut current_segment_start_pass = 0u8;
-    let mut current_use_arithmetic = true;
-    let mut arithmetic_encoder: Option<ArithmeticEncoder> = None;
-    let mut bypass_writer: Option<BitWriter> = None;
-    let mut coded_indices = Vec::new();
-
-    for coding_pass in 0..total_passes {
-        let segment_idx = if style.termination_on_each_pass {
-            coding_pass
-        } else if style.selective_arithmetic_coding_bypass {
-            bypass_segment_idx(coding_pass)
-        } else {
-            0
-        };
-        let use_arithmetic = if style.selective_arithmetic_coding_bypass {
-            coding_pass <= 9 || coding_pass % 3 == 0
-        } else {
-            true
-        };
-
-        if current_segment_idx != Some(segment_idx) {
-            if let Some(previous_idx) = current_segment_idx {
-                if current_use_arithmetic {
-                    push_segment(
-                        &mut data,
-                        &mut segments,
-                        current_segment_start_pass,
-                        coding_pass,
-                        arithmetic_encoder
-                            .take()
-                            .expect("arithmetic segment encoder exists")
-                            .finish(),
-                        segment_distortion_delta(
-                            coefficients,
-                            current_segment_start_pass,
-                            coding_pass,
-                            num_bitplanes as u8,
-                        ),
-                        true,
-                    );
-                } else {
-                    push_segment(
-                        &mut data,
-                        &mut segments,
-                        current_segment_start_pass,
-                        coding_pass,
-                        bypass_writer
-                            .take()
-                            .expect("bypass segment writer exists")
-                            .finish(),
-                        segment_distortion_delta(
-                            coefficients,
-                            current_segment_start_pass,
-                            coding_pass,
-                            num_bitplanes as u8,
-                        ),
-                        false,
-                    );
-                }
-                debug_assert!(previous_idx < segment_idx);
-            }
-
-            current_segment_idx = Some(segment_idx);
-            current_segment_start_pass = coding_pass;
-            current_use_arithmetic = use_arithmetic;
-            if use_arithmetic {
-                arithmetic_encoder = Some(ArithmeticEncoder::new());
-                bypass_writer = None;
-            } else {
-                arithmetic_encoder = None;
-                bypass_writer = Some(BitWriter::new());
-            }
-        }
-
-        let current_bitplane = usize::from(coding_pass.div_ceil(3));
-        let bit_mask = 1u64 << (num_bitplanes as usize - 1 - current_bitplane);
-        match coding_pass % 3 {
-            0 => {
-                let encoder = arithmetic_encoder
-                    .as_mut()
-                    .expect("cleanup pass uses arithmetic encoder");
-                cleanup_pass(
-                    &magnitudes,
-                    &mut states,
-                    &mut neighbors,
-                    encoder,
-                    &mut contexts,
-                    w,
-                    h,
-                    pw,
-                    bit_mask,
-                    sub_band_type,
-                    style,
-                );
-                if style.segmentation_symbols {
-                    encode_segmentation_symbols(encoder, &mut contexts);
-                }
-                clear_coded_in_current_pass(&mut states, &mut coded_indices);
-            }
-            1 => {
-                if current_use_arithmetic {
-                    significance_propagation_pass(
-                        &magnitudes,
-                        &mut states,
-                        &mut neighbors,
-                        &mut coded_indices,
-                        arithmetic_encoder
-                            .as_mut()
-                            .expect("arithmetic encoder exists for significance pass"),
-                        &mut contexts,
-                        w,
-                        h,
-                        pw,
-                        bit_mask,
-                        sub_band_type,
-                        style,
-                    );
-                } else {
-                    significance_propagation_pass_raw(
-                        &magnitudes,
-                        &mut states,
-                        &mut neighbors,
-                        &mut coded_indices,
-                        bypass_writer
-                            .as_mut()
-                            .expect("bypass writer exists for significance pass"),
-                        w,
-                        h,
-                        pw,
-                        bit_mask,
-                        style,
-                    );
-                }
-            }
-            2 => {
-                if current_use_arithmetic {
-                    magnitude_refinement_pass(
-                        &magnitudes,
-                        &mut states,
-                        &mut neighbors,
-                        arithmetic_encoder
-                            .as_mut()
-                            .expect("arithmetic encoder exists for refinement pass"),
-                        &mut contexts,
-                        w,
-                        h,
-                        pw,
-                        bit_mask,
-                        style,
-                    );
-                } else {
-                    magnitude_refinement_pass_raw(
-                        &magnitudes,
-                        &mut states,
-                        &mut neighbors,
-                        bypass_writer
-                            .as_mut()
-                            .expect("bypass writer exists for refinement pass"),
-                        w,
-                        h,
-                        pw,
-                        bit_mask,
-                        style,
-                    );
-                }
-            }
-            _ => unreachable!(),
-        }
-
-        if style.reset_context_probabilities {
-            reset_contexts(&mut contexts);
-        }
-    }
-
-    if current_segment_idx.is_some() {
-        if current_use_arithmetic {
-            push_segment(
-                &mut data,
-                &mut segments,
-                current_segment_start_pass,
-                total_passes,
-                arithmetic_encoder
-                    .take()
-                    .expect("final arithmetic segment encoder exists")
-                    .finish(),
-                segment_distortion_delta(
-                    coefficients,
-                    current_segment_start_pass,
-                    total_passes,
-                    num_bitplanes as u8,
-                ),
-                true,
-            );
-        } else {
-            push_segment(
-                &mut data,
-                &mut segments,
-                current_segment_start_pass,
-                total_passes,
-                bypass_writer
-                    .take()
-                    .expect("final bypass segment writer exists")
-                    .finish(),
-                segment_distortion_delta(
-                    coefficients,
-                    current_segment_start_pass,
-                    total_passes,
-                    num_bitplanes as u8,
-                ),
-                false,
-            );
-        }
-    }
-
-    EncodedCodeBlockWithSegments {
-        data,
-        segments,
-        num_coding_passes: total_passes,
-        num_zero_bitplanes,
-    }
-}
-
-fn reset_contexts(contexts: &mut [ArithmeticEncoderContext; 19]) {
-    *contexts = [ArithmeticEncoderContext::default(); 19];
-    contexts[0].reset_with_index(4);
-    contexts[17].reset_with_index(3);
-    contexts[18].reset_with_index(46);
-}
-
-fn arithmetic_encoder_capacity(width: usize, height: usize, bitplanes: usize) -> usize {
-    1 + width
-        .saturating_mul(height)
-        .saturating_mul(bitplanes)
-        .checked_div(16)
-        .unwrap_or(usize::MAX)
-        .max(32)
-}
-
-fn encode_segmentation_symbols(
-    encoder: &mut ArithmeticEncoder,
-    contexts: &mut [ArithmeticEncoderContext; 19],
-) {
-    encoder.encode(1, &mut contexts[18]);
-    encoder.encode(0, &mut contexts[18]);
-    encoder.encode(1, &mut contexts[18]);
-    encoder.encode(0, &mut contexts[18]);
-}
-
-#[inline]
-fn bypass_segment_idx(pass_idx: u8) -> u8 {
-    if pass_idx < 10 {
-        0
-    } else {
-        1 + (2 * ((pass_idx - 10) / 3)) + if ((pass_idx - 10) % 3) == 2 { 1 } else { 0 }
-    }
-}
-
-fn push_segment(
-    data: &mut Vec<u8>,
-    segments: &mut Vec<EncodedCodeBlockSegment>,
-    start_coding_pass: u8,
-    end_coding_pass: u8,
-    segment_data: Vec<u8>,
-    distortion_delta: f64,
-    use_arithmetic: bool,
-) {
-    let data_offset =
-        u32::try_from(data.len()).expect("classic code-block data offset fits in u32");
-    let data_length =
-        u32::try_from(segment_data.len()).expect("classic code-block segment length fits in u32");
-    data.extend_from_slice(&segment_data);
-    segments.push(EncodedCodeBlockSegment {
-        data_offset,
-        data_length,
-        start_coding_pass,
-        end_coding_pass,
-        distortion_delta,
-        use_arithmetic,
-    });
-}
-
-fn segment_distortion_delta(
-    coefficients: &[i64],
-    start_coding_pass: u8,
-    end_coding_pass: u8,
-    num_bitplanes: u8,
-) -> f64 {
-    let before =
-        coefficient_distortion_after_passes(coefficients, start_coding_pass, num_bitplanes);
-    let after = coefficient_distortion_after_passes(coefficients, end_coding_pass, num_bitplanes);
-    (before - after).max(f64::EPSILON)
-}
-
-fn coefficient_distortion_after_passes(
-    coefficients: &[i64],
-    completed_passes: u8,
-    num_bitplanes: u8,
-) -> f64 {
-    coefficients
-        .iter()
-        .map(|coefficient| {
-            let magnitude = coefficient.unsigned_abs();
-            let reconstructed =
-                reconstructed_magnitude_after_passes(magnitude, completed_passes, num_bitplanes);
-            let error = magnitude.saturating_sub(reconstructed) as f64;
-            error * error
-        })
-        .sum()
-}
-
-fn reconstructed_magnitude_after_passes(
-    magnitude: u64,
-    completed_passes: u8,
-    num_bitplanes: u8,
-) -> u64 {
-    if magnitude == 0 || completed_passes == 0 || num_bitplanes == 0 {
-        return 0;
-    }
-
-    let deepest_coded_bitplane = completed_passes
-        .saturating_sub(1)
-        .div_ceil(3)
-        .min(num_bitplanes.saturating_sub(1));
-    let retained_bitplanes = deepest_coded_bitplane.saturating_add(1);
-    if retained_bitplanes >= num_bitplanes {
-        return magnitude;
-    }
-
-    let lower_bits = u32::from(num_bitplanes - retained_bitplanes);
-    let mask = !((1u64 << lower_bits) - 1);
-    magnitude & mask
-}
-
-fn mark_coded_in_current_pass(idx: usize, states: &mut [u8], coded_indices: &mut Vec<usize>) {
-    if states[idx] & CODED_IN_CURRENT_PASS == 0 {
-        states[idx] |= CODED_IN_CURRENT_PASS;
-        coded_indices.push(idx);
-    }
-}
-
-fn clear_coded_in_current_pass(states: &mut [u8], coded_indices: &mut Vec<usize>) {
-    for idx in coded_indices.drain(..) {
-        states[idx] &= !CODED_IN_CURRENT_PASS;
-    }
-}
-
-/// Significance Propagation Pass (D.3.1)
-fn significance_propagation_pass(
-    magnitudes: &[u64],
-    states: &mut [u8],
-    neighbors: &mut [u8],
-    coded_indices: &mut Vec<usize>,
-    encoder: &mut ArithmeticEncoder,
-    contexts: &mut [ArithmeticEncoderContext; 19],
-    w: usize,
-    h: usize,
-    pw: usize,
-    bit_mask: u64,
-    sub_band_type: SubBandType,
-    style: &CodeBlockStyle,
-) {
-    if style.vertically_causal_context {
-        significance_propagation_pass_impl::<true>(
-            magnitudes,
-            states,
-            neighbors,
-            coded_indices,
-            encoder,
-            contexts,
-            w,
-            h,
-            pw,
-            bit_mask,
-            sub_band_type,
-        );
-    } else {
-        significance_propagation_pass_impl::<false>(
-            magnitudes,
-            states,
-            neighbors,
-            coded_indices,
-            encoder,
-            contexts,
-            w,
-            h,
-            pw,
-            bit_mask,
-            sub_band_type,
-        );
-    }
-}
-
-fn significance_propagation_pass_impl<const VERTICAL_CAUSAL: bool>(
-    magnitudes: &[u64],
-    states: &mut [u8],
-    neighbors: &mut [u8],
-    coded_indices: &mut Vec<usize>,
-    encoder: &mut ArithmeticEncoder,
-    contexts: &mut [ArithmeticEncoderContext; 19],
-    w: usize,
-    h: usize,
-    pw: usize,
-    bit_mask: u64,
-    sub_band_type: SubBandType,
-) {
-    for y_base in (0..h).step_by(4) {
-        for x in 0..w {
-            let y_end = (y_base + 4).min(h);
-            for y in y_base..y_end {
-                let idx = (y + 1) * pw + (x + 1);
-                let is_significant = states[idx] & SIGNIFICANT != 0;
-                let neighbor_sig = effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h);
-                let has_sig_neighbors = neighbor_sig != 0;
-
-                if !is_significant && has_sig_neighbors {
-                    let ctx_label = zero_coding_ctx(neighbor_sig, sub_band_type);
-                    let bit = (magnitudes[idx] & bit_mask != 0) as u32;
-                    encoder.encode(bit, &mut contexts[ctx_label as usize]);
-                    mark_coded_in_current_pass(idx, states, coded_indices);
-
-                    if bit == 1 {
-                        encode_sign::<VERTICAL_CAUSAL>(
-                            idx, neighbors, states, encoder, contexts, pw, y, h,
-                        );
-                        set_significant(idx, states, neighbors, pw);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn significance_propagation_pass_raw(
-    magnitudes: &[u64],
-    states: &mut [u8],
-    neighbors: &mut [u8],
-    coded_indices: &mut Vec<usize>,
-    writer: &mut BitWriter,
-    w: usize,
-    h: usize,
-    pw: usize,
-    bit_mask: u64,
-    style: &CodeBlockStyle,
-) {
-    if style.vertically_causal_context {
-        significance_propagation_pass_raw_impl::<true>(
-            magnitudes,
-            states,
-            neighbors,
-            coded_indices,
-            writer,
-            w,
-            h,
-            pw,
-            bit_mask,
-        );
-    } else {
-        significance_propagation_pass_raw_impl::<false>(
-            magnitudes,
-            states,
-            neighbors,
-            coded_indices,
-            writer,
-            w,
-            h,
-            pw,
-            bit_mask,
-        );
-    }
-}
-
-fn significance_propagation_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
-    magnitudes: &[u64],
-    states: &mut [u8],
-    neighbors: &mut [u8],
-    coded_indices: &mut Vec<usize>,
-    writer: &mut BitWriter,
-    w: usize,
-    h: usize,
-    pw: usize,
-    bit_mask: u64,
-) {
-    for y_base in (0..h).step_by(4) {
-        for x in 0..w {
-            let y_end = (y_base + 4).min(h);
-            for y in y_base..y_end {
-                let idx = (y + 1) * pw + (x + 1);
-                let is_significant = states[idx] & SIGNIFICANT != 0;
-                let neighbor_sig = effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h);
-                if !is_significant && neighbor_sig != 0 {
-                    let bit = (magnitudes[idx] & bit_mask != 0) as u32;
-                    writer.write_bit(bit);
-                    mark_coded_in_current_pass(idx, states, coded_indices);
-                    if bit == 1 {
-                        encode_sign_raw(idx, states, writer);
-                        set_significant(idx, states, neighbors, pw);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Magnitude Refinement Pass (D.3.3)
-fn magnitude_refinement_pass(
-    magnitudes: &[u64],
-    states: &mut [u8],
-    neighbors: &mut [u8],
-    encoder: &mut ArithmeticEncoder,
-    contexts: &mut [ArithmeticEncoderContext; 19],
-    w: usize,
-    h: usize,
-    pw: usize,
-    bit_mask: u64,
-    style: &CodeBlockStyle,
-) {
-    if style.vertically_causal_context {
-        magnitude_refinement_pass_impl::<true>(
-            magnitudes, states, neighbors, encoder, contexts, w, h, pw, bit_mask,
-        );
-    } else {
-        magnitude_refinement_pass_impl::<false>(
-            magnitudes, states, neighbors, encoder, contexts, w, h, pw, bit_mask,
-        );
-    }
-}
-
-fn magnitude_refinement_pass_impl<const VERTICAL_CAUSAL: bool>(
-    magnitudes: &[u64],
-    states: &mut [u8],
-    neighbors: &mut [u8],
-    encoder: &mut ArithmeticEncoder,
-    contexts: &mut [ArithmeticEncoderContext; 19],
-    w: usize,
-    h: usize,
-    pw: usize,
-    bit_mask: u64,
-) {
-    for y_base in (0..h).step_by(4) {
-        for x in 0..w {
-            let y_end = (y_base + 4).min(h);
-            for y in y_base..y_end {
-                let idx = (y + 1) * pw + (x + 1);
-                let is_significant = states[idx] & SIGNIFICANT != 0;
-                let coded_this_pass = states[idx] & CODED_IN_CURRENT_PASS != 0;
-
-                if is_significant && !coded_this_pass {
-                    let ctx_label = magnitude_refinement_ctx(
-                        states[idx],
-                        effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h),
-                    );
-                    let bit = (magnitudes[idx] & bit_mask != 0) as u32;
-                    encoder.encode(bit, &mut contexts[ctx_label as usize]);
-                    states[idx] |= MAGNITUDE_REFINED;
-                }
-            }
-        }
-    }
-}
-
-fn magnitude_refinement_pass_raw(
-    magnitudes: &[u64],
-    states: &mut [u8],
-    neighbors: &mut [u8],
-    writer: &mut BitWriter,
-    w: usize,
-    h: usize,
-    pw: usize,
-    bit_mask: u64,
-    style: &CodeBlockStyle,
-) {
-    if style.vertically_causal_context {
-        magnitude_refinement_pass_raw_impl::<true>(
-            magnitudes, states, neighbors, writer, w, h, pw, bit_mask,
-        );
-    } else {
-        magnitude_refinement_pass_raw_impl::<false>(
-            magnitudes, states, neighbors, writer, w, h, pw, bit_mask,
-        );
-    }
-}
-
-fn magnitude_refinement_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
-    magnitudes: &[u64],
-    states: &mut [u8],
-    neighbors: &mut [u8],
-    writer: &mut BitWriter,
-    w: usize,
-    h: usize,
-    pw: usize,
-    bit_mask: u64,
-) {
-    for y_base in (0..h).step_by(4) {
-        for x in 0..w {
-            let y_end = (y_base + 4).min(h);
-            for y in y_base..y_end {
-                let idx = (y + 1) * pw + (x + 1);
-                let is_significant = states[idx] & SIGNIFICANT != 0;
-                let coded_this_pass = states[idx] & CODED_IN_CURRENT_PASS != 0;
-                let _neighbor_sig = effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h);
-                if is_significant && !coded_this_pass {
-                    let bit = (magnitudes[idx] & bit_mask != 0) as u32;
-                    writer.write_bit(bit);
-                    states[idx] |= MAGNITUDE_REFINED;
-                }
-            }
-        }
-    }
-}
-
-/// Cleanup Pass (D.3.4)
-fn cleanup_pass(
-    magnitudes: &[u64],
-    states: &mut [u8],
-    neighbors: &mut [u8],
-    encoder: &mut ArithmeticEncoder,
-    contexts: &mut [ArithmeticEncoderContext; 19],
-    w: usize,
-    h: usize,
-    pw: usize,
-    bit_mask: u64,
-    sub_band_type: SubBandType,
-    style: &CodeBlockStyle,
-) {
-    if style.vertically_causal_context {
-        cleanup_pass_impl::<true>(
-            magnitudes,
-            states,
-            neighbors,
-            encoder,
-            contexts,
-            w,
-            h,
-            pw,
-            bit_mask,
-            sub_band_type,
-        );
-    } else {
-        cleanup_pass_impl::<false>(
-            magnitudes,
-            states,
-            neighbors,
-            encoder,
-            contexts,
-            w,
-            h,
-            pw,
-            bit_mask,
-            sub_band_type,
-        );
-    }
-}
-
-fn cleanup_pass_impl<const VERTICAL_CAUSAL: bool>(
-    magnitudes: &[u64],
-    states: &mut [u8],
-    neighbors: &mut [u8],
-    encoder: &mut ArithmeticEncoder,
-    contexts: &mut [ArithmeticEncoderContext; 19],
-    w: usize,
-    h: usize,
-    pw: usize,
-    bit_mask: u64,
-    sub_band_type: SubBandType,
-) {
-    for y_base in (0..h).step_by(4) {
-        for x in 0..w {
-            let y_end = (y_base + 4).min(h);
-            let stripe_height = y_end - y_base;
-
-            // Try run-length coding for full 4-row stripes
-            if stripe_height == 4 {
-                let mut all_zero_uncoded = true;
-                for y in y_base..y_end {
-                    let idx = (y + 1) * pw + (x + 1);
-                    if states[idx] & (SIGNIFICANT | CODED_IN_CURRENT_PASS) != 0
-                        || effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h) != 0
-                    {
-                        all_zero_uncoded = false;
-                        break;
-                    }
-                }
-
-                if all_zero_uncoded {
-                    // Check if any coefficient in this stripe becomes significant
-                    let mut first_sig = None;
-                    for (j, y) in (y_base..y_end).enumerate() {
-                        let idx = (y + 1) * pw + (x + 1);
-                        if magnitudes[idx] & bit_mask != 0 {
-                            first_sig = Some(j);
-                            break;
-                        }
-                    }
-
-                    if let Some(pos) = first_sig {
-                        // Not all zero: encode RLC=1, then position
-                        encoder.encode(1, &mut contexts[17]); // RLC context
-                        encoder.encode((pos >> 1) as u32 & 1, &mut contexts[18]); // UNIFORM
-                        encoder.encode(pos as u32 & 1, &mut contexts[18]); // UNIFORM
-
-                        // Encode sign for the first significant
-                        let y = y_base + pos;
-                        let idx = (y + 1) * pw + (x + 1);
-                        encode_sign::<VERTICAL_CAUSAL>(
-                            idx, neighbors, states, encoder, contexts, pw, y, h,
-                        );
-                        set_significant(idx, states, neighbors, pw);
-
-                        // Continue cleanup for remaining samples in stripe
-                        for y in (y_base + pos + 1)..y_end {
-                            let idx = (y + 1) * pw + (x + 1);
-                            if states[idx] & (SIGNIFICANT | CODED_IN_CURRENT_PASS) == 0 {
-                                let ctx_label = zero_coding_ctx(
-                                    effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h),
-                                    sub_band_type,
-                                );
-                                let bit = (magnitudes[idx] & bit_mask != 0) as u32;
-                                encoder.encode(bit, &mut contexts[ctx_label as usize]);
-                                if bit == 1 {
-                                    encode_sign::<VERTICAL_CAUSAL>(
-                                        idx, neighbors, states, encoder, contexts, pw, y, h,
-                                    );
-                                    set_significant(idx, states, neighbors, pw);
-                                }
-                            }
-                        }
-                        continue;
-                    } else {
-                        // All zero: encode RLC=0
-                        encoder.encode(0, &mut contexts[17]);
-                        continue;
-                    }
-                }
-            }
-
-            // Non-RLC: process each sample individually
-            for y in y_base..y_end {
-                let idx = (y + 1) * pw + (x + 1);
-                if states[idx] & (SIGNIFICANT | CODED_IN_CURRENT_PASS) == 0 {
-                    let ctx_label = zero_coding_ctx(
-                        effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h),
-                        sub_band_type,
-                    );
-                    let bit = (magnitudes[idx] & bit_mask != 0) as u32;
-                    encoder.encode(bit, &mut contexts[ctx_label as usize]);
-                    if bit == 1 {
-                        encode_sign::<VERTICAL_CAUSAL>(
-                            idx, neighbors, states, encoder, contexts, pw, y, h,
-                        );
-                        set_significant(idx, states, neighbors, pw);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Encode the sign of a newly significant coefficient.
-///
-/// The sign context is computed exactly as the decoder does it:
-/// combine significance and sign of the 4 cardinal neighbors into a
-/// merged byte and look up SIGN_CONTEXT_LOOKUP.
-fn encode_sign<const VERTICAL_CAUSAL: bool>(
-    idx: usize,
-    neighbors: &[u8],
-    states: &[u8],
-    encoder: &mut ArithmeticEncoder,
-    contexts: &mut [ArithmeticEncoderContext; 19],
-    pw: usize,
-    y: usize,
-    h: usize,
-) {
-    // Get cardinal-neighbor significances: T(6), L(4), R(2), B(0)
-    let significances =
-        effective_neighbor_sig::<VERTICAL_CAUSAL>(neighbors[idx], y, h) & 0b0101_0101;
-
-    // Get sign of each cardinal neighbor (0=positive, 1=negative).
-    // Only meaningful for significant neighbors; insignificant neighbors get 0.
-    let top_sign = if states[idx - pw] & SIGNIFICANT != 0 {
-        ((states[idx - pw] & NEGATIVE) != 0) as u8
-    } else {
-        0
-    };
-    let left_sign = if states[idx - 1] & SIGNIFICANT != 0 {
-        ((states[idx - 1] & NEGATIVE) != 0) as u8
-    } else {
-        0
-    };
-    let right_sign = if states[idx + 1] & SIGNIFICANT != 0 {
-        ((states[idx + 1] & NEGATIVE) != 0) as u8
-    } else {
-        0
-    };
-    let bottom_sign = if VERTICAL_CAUSAL && neighbor_in_next_stripe(y, h) {
-        0
-    } else if states[idx + pw] & SIGNIFICANT != 0 {
-        ((states[idx + pw] & NEGATIVE) != 0) as u8
-    } else {
-        0
-    };
-
-    // Build sign bits at the same positions as significances
-    let sign_bits = (top_sign << 6) | (left_sign << 4) | (right_sign << 2) | bottom_sign;
-
-    // Split into negative-significant and positive-significant
-    let negative_sigs = significances & sign_bits;
-    let positive_sigs = significances & !sign_bits;
-    // Merge: negative at (pos+1), positive at (pos) → 2-bit per neighbor
-    let merged = (negative_sigs << 1) | positive_sigs;
-
-    let (ctx_label, xor_bit) = SIGN_CONTEXT_LOOKUP[merged as usize];
-    let sign_bit = ((states[idx] & NEGATIVE) != 0) as u32;
-    encoder.encode(sign_bit ^ xor_bit as u32, &mut contexts[ctx_label as usize]);
-}
-
-fn encode_sign_raw(idx: usize, states: &[u8], writer: &mut BitWriter) {
-    let is_significant = states[idx] & SIGNIFICANT != 0;
-    debug_assert!(!is_significant);
-    writer.write_bit(((states[idx] & NEGATIVE) != 0) as u32);
-}
-
-#[inline]
-fn neighbor_in_next_stripe(y: usize, height: usize) -> bool {
-    y + 1 < height && ((y + 1) >> 2) > (y >> 2)
-}
-
-#[inline(always)]
-fn effective_neighbor_sig<const VERTICAL_CAUSAL: bool>(
-    neighbor_sig: u8,
-    y: usize,
-    height: usize,
-) -> u8 {
-    if VERTICAL_CAUSAL && neighbor_in_next_stripe(y, height) {
-        neighbor_sig & 0b1111_0100
-    } else {
-        neighbor_sig
-    }
-}
-
-/// Get the zero-coding context label for a coefficient.
-#[inline]
-fn zero_coding_ctx(neighbor_sig: u8, sub_band_type: SubBandType) -> u8 {
-    match sub_band_type {
-        SubBandType::LowLow | SubBandType::LowHigh => ZERO_CTX_LL_LH[neighbor_sig as usize],
-        SubBandType::HighLow => ZERO_CTX_HL[neighbor_sig as usize],
-        SubBandType::HighHigh => ZERO_CTX_HH[neighbor_sig as usize],
-    }
-}
-
-/// Get the magnitude refinement context label (Table D.4).
-///
-/// Matches the decoder: if already magnitude-refined → 16,
-/// else if at least one neighbor is significant → 15, else 14.
-#[inline]
-fn magnitude_refinement_ctx(state: u8, neighbor_sig: u8) -> u8 {
-    if state & MAGNITUDE_REFINED != 0 {
-        16
-    } else {
-        14 + neighbor_sig.min(1)
-    }
-}
-
-/// Mark a coefficient as significant and update neighbor significance maps.
-fn set_significant(idx: usize, states: &mut [u8], neighbors: &mut [u8], pw: usize) {
-    states[idx] |= SIGNIFICANT;
-
-    // Update 8 neighbors
-    // Neighbor bit layout: TL(7) T(6) TR(5) L(4) BL(3) R(2) BR(1) B(0)
-    let top = idx - pw;
-    let bottom = idx + pw;
-
-    neighbors[top - 1] |= 1 << 1; // bottom-right of top-left
-    neighbors[top] |= 1; // bottom of top
-    neighbors[top + 1] |= 1 << 3; // bottom-left of top-right
-    neighbors[idx - 1] |= 1 << 2; // right of left
-    neighbors[idx + 1] |= 1 << 4; // left of right
-    neighbors[bottom - 1] |= 1 << 5; // top-right of bottom-left
-    neighbors[bottom] |= 1 << 6; // top of bottom
-    neighbors[bottom + 1] |= 1 << 7; // top-left of bottom-right
+    segments::encode_segmented_code_block(
+        coefficients,
+        width,
+        height,
+        sub_band_type,
+        total_bitplanes,
+        style,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use super::super::build::SubBandType;
+    use super::super::codestream::CodeBlockStyle;
+    use super::distortion::segment_distortion_delta;
+    use super::passes::{
+        clear_coded_in_current_pass, mark_coded_in_current_pass, prepare_padded_coefficients,
+        CODED_IN_CURRENT_PASS, NEGATIVE, SIGNIFICANT,
+    };
+    use super::{
+        encode_code_block, encode_code_block_segments_with_style,
+        encode_code_block_segments_with_style_i64, pack_classic_selective_bypass_tier1_tokens,
+        ClassicTier1TokenSegment,
+    };
 
     #[test]
     fn test_encode_all_zeros() {
@@ -1601,5 +455,85 @@ mod tests {
             dense_delta > sparse_delta,
             "coefficients with the same MSB but larger residual error should have larger PCRD distortion reduction"
         );
+    }
+
+    #[test]
+    fn str011a_classic_tier1_byte_baseline() {
+        let coefficients = (0..64)
+            .map(|index| {
+                let magnitude = i64::from((index * 37) % 4096);
+                if index % 3 == 0 {
+                    -magnitude
+                } else {
+                    magnitude
+                }
+            })
+            .collect::<Vec<_>>();
+        let styles = [
+            CodeBlockStyle::default(),
+            CodeBlockStyle {
+                termination_on_each_pass: true,
+                ..CodeBlockStyle::default()
+            },
+            CodeBlockStyle {
+                selective_arithmetic_coding_bypass: true,
+                ..CodeBlockStyle::default()
+            },
+            CodeBlockStyle {
+                reset_context_probabilities: true,
+                vertically_causal_context: true,
+                segmentation_symbols: true,
+                ..CodeBlockStyle::default()
+            },
+        ];
+        let expected = [
+            (99, 0xfcce40ac5a7f501d, 34, 0, 1, 0x64c946a401c399fb),
+            (150, 0x800fe1ae529cbf1a, 34, 0, 34, 0x2cfae242260a6925),
+            (113, 0xdf22abbf10e119e7, 34, 0, 17, 0x631fdf7d436390a3),
+            (105, 0x45c99a5bbfc68a4f, 34, 0, 1, 0xf29c50e4c7a11511),
+        ];
+
+        for (index, style) in styles.iter().enumerate() {
+            let encoded = encode_code_block_segments_with_style_i64(
+                &coefficients,
+                8,
+                8,
+                SubBandType::HighHigh,
+                12,
+                style,
+            );
+            let digest = encoded
+                .data
+                .iter()
+                .fold(0xcbf29ce484222325u64, |hash, byte| {
+                    hash.wrapping_mul(0x100000001b3) ^ u64::from(*byte)
+                });
+            let mut segment_bytes = Vec::new();
+            for segment in &encoded.segments {
+                segment_bytes.extend_from_slice(&segment.data_offset.to_le_bytes());
+                segment_bytes.extend_from_slice(&segment.data_length.to_le_bytes());
+                segment_bytes.push(segment.start_coding_pass);
+                segment_bytes.push(segment.end_coding_pass);
+                segment_bytes.extend_from_slice(&segment.distortion_delta.to_bits().to_le_bytes());
+                segment_bytes.push(u8::from(segment.use_arithmetic));
+            }
+            let segment_digest = segment_bytes
+                .iter()
+                .fold(0xcbf29ce484222325u64, |hash, byte| {
+                    hash.wrapping_mul(0x100000001b3) ^ u64::from(*byte)
+                });
+            assert_eq!(
+                (
+                    encoded.data.len(),
+                    digest,
+                    encoded.num_coding_passes,
+                    encoded.num_zero_bitplanes,
+                    encoded.segments.len(),
+                    segment_digest,
+                ),
+                expected[index],
+                "classic Tier-1 bytes or segment accounting changed for style {index}",
+            );
+        }
     }
 }
