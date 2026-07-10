@@ -5,12 +5,12 @@ use crate::{
     context::CudaContext,
     error::CudaError,
     execution::CudaExecutionStats,
-    memory::{CudaDeviceBuffer, checked_image_words},
+    memory::{checked_image_words, CudaDeviceBuffer},
 };
 
 use super::{
-    CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob, CudaJ2kQuantizedSubband,
-    CudaJ2kResidentQuantizedSubband, validate_quantize_region,
+    validate_quantize_region, CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob,
+    CudaJ2kQuantizedSubband, CudaJ2kResidentQuantizedSubband,
 };
 
 impl CudaContext {

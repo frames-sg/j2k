@@ -5,7 +5,7 @@ use crate::{
     driver::{CuDevicePtr, CuFunction},
     error::CudaError,
     execution::cuda_kernel_param,
-    kernels::{CudaKernel, j2k_dwt53_launch_geometry, j2k_forward_rct_launch_geometry},
+    kernels::{j2k_dwt53_launch_geometry, j2k_forward_rct_launch_geometry, CudaKernel},
     memory::CudaDeviceBuffer,
 };
 

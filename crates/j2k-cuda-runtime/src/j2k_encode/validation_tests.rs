@@ -2,7 +2,7 @@
 
 use crate::{
     error::CudaError,
-    j2k_encode::{CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob, validate_quantize_region},
+    j2k_encode::{validate_quantize_region, CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob},
 };
 
 const QUANTIZATION: CudaJ2kQuantizeJob = CudaJ2kQuantizeJob {
