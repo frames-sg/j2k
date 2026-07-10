@@ -406,6 +406,7 @@ fn repo_lint_policy_support_files_stay_split_by_axis() {
             "xtask/tests/repo_lint_support/metal_compute_structure_policy.rs",
             550,
         ),
+        ("xtask/tests/repo_lint_support/transcode_api_policy.rs", 125),
         (
             "xtask/tests/repo_lint_support/transcode_structure_policy.rs",
             375,

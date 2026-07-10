@@ -18,21 +18,6 @@ fn assert_line_budget(relative_path: &str, source: &str, max_lines: usize) {
 }
 
 #[test]
-fn transcode_accelerator_contracts_use_a_real_module() {
-    let root = read("crates/j2k-transcode/src/lib.rs");
-    assert_line_budget("j2k-transcode/src/lib.rs", &root, 150);
-    assert_pattern_checks(&[PatternCheck::new("transcode crate root", &root)
-        .required(&[
-            "#[doc(hidden)]\npub mod accelerator;",
-            "pub use self::accelerator::{",
-        ])
-        .forbidden(&[
-            "include!(\"accelerator.rs\")",
-            "#[path = \"accelerator.rs\"]",
-        ])]);
-}
-
-#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "core and batch transcode ownership is enforced as one cohesive stage matrix"

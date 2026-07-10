@@ -440,7 +440,7 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "pub mod dct97_2d;",
                     "pub mod htj2k97_codeblock_oracle;",
                 ]),
-            FilePatternCheck::new("crates/j2k-transcode/src/accelerator.rs")
+            FilePatternCheck::new("crates/j2k-transcode/src/accelerator_contracts.rs")
                 .named("j2k-transcode counter facade")
                 .required(&[
                     "pub enum DctToWaveletStageCounterEvent",

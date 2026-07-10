@@ -26,6 +26,7 @@ pub(crate) mod release_policy;
 pub(crate) mod shader_policy;
 pub(crate) mod source_policy;
 pub(crate) mod suppression_policy;
+pub(crate) mod transcode_api_policy;
 pub(crate) mod transcode_structure_policy;
 pub(crate) mod workflow_policy;
 pub(crate) mod xtask_main_structure_policy;

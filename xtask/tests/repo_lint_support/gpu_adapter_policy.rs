@@ -932,8 +932,9 @@ fn transcode_gpu_auto_threshold_policy_is_documented() {
 #[test]
 fn transcode_stage_counters_are_shared_between_gpu_adapters() {
     let root = repo_root();
-    let accelerator = fs::read_to_string(root.join("crates/j2k-transcode/src/accelerator.rs"))
-        .expect("read transcode accelerator contracts");
+    let accelerator =
+        fs::read_to_string(root.join("crates/j2k-transcode/src/accelerator_contracts.rs"))
+            .expect("read transcode accelerator contracts");
     let cuda = fs::read_to_string(root.join("crates/j2k-transcode-cuda/src/lib.rs"))
         .expect("read CUDA transcode adapter");
     let metal = fs::read_to_string(root.join("crates/j2k-transcode-metal/src/lib.rs"))
