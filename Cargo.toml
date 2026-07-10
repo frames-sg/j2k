@@ -60,6 +60,7 @@ libm = { version = "0.2", default-features = false }
 openjpeg-sys = "1.0.12"
 serde_json = "1"
 serde_yaml_ng = "0.10"
+toml = "1.1.2"
 
 [patch.crates-io]
 # `metal 0.33.0` still depends on `block 0.1.6`. The crates.io copy declares

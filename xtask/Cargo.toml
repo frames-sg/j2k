@@ -20,6 +20,7 @@ adoption = [
 j2k-codec-math = { path = "../crates/j2k-codec-math" }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
+toml = { workspace = true }
 
 image = { workspace = true, optional = true }
 j2k = { path = "../crates/j2k", optional = true }
