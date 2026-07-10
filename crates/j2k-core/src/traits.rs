@@ -131,27 +131,30 @@ pub trait ImageDecode<'a>: ImageCodec + Sized + 'a {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the compressed input is invalid or unsupported.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the compressed input is invalid or
+    /// unsupported.
     fn inspect(input: &'a [u8]) -> Result<Info, Self::Error>;
     /// Parse compressed bytes into a borrowed view.
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the compressed input cannot be parsed.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the compressed input cannot be
+    /// parsed.
     fn parse(input: &'a [u8]) -> Result<Self::View, Self::Error>;
     /// Build a decoder from a parsed view.
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the parsed view is unsupported or inconsistent.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the parsed view is unsupported or
+    /// inconsistent.
     fn from_view(view: Self::View) -> Result<Self, Self::Error>;
 
     /// Decode the full image into caller-owned output.
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] for invalid input, unsupported output, or an
-    /// undersized or invalid output layout.
+    /// Returns the codec-specific [`ImageCodec::Error`] for invalid input, unsupported output, or
+    /// an undersized or invalid output layout.
     fn decode_into(
         &mut self,
         out: &mut [u8],
@@ -163,8 +166,8 @@ pub trait ImageDecode<'a>: ImageCodec + Sized + 'a {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] for invalid input, unsupported output, scratch
-    /// failure, or an invalid output layout.
+    /// Returns the codec-specific [`ImageCodec::Error`] for invalid input, unsupported output,
+    /// scratch failure, or an invalid output layout.
     fn decode_into_with_scratch(
         &mut self,
         pool: &mut Self::Pool,
@@ -177,8 +180,8 @@ pub trait ImageDecode<'a>: ImageCodec + Sized + 'a {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the input, region, output layout, or scratch
-    /// state cannot be decoded.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the input, region, output layout, or
+    /// scratch state cannot be decoded.
     fn decode_region_into(
         &mut self,
         pool: &mut Self::Pool,
@@ -192,8 +195,8 @@ pub trait ImageDecode<'a>: ImageCodec + Sized + 'a {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the input, scale, output layout, or scratch
-    /// state cannot be decoded.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the input, scale, output layout, or
+    /// scratch state cannot be decoded.
     fn decode_scaled_into(
         &mut self,
         pool: &mut Self::Pool,
@@ -207,8 +210,8 @@ pub trait ImageDecode<'a>: ImageCodec + Sized + 'a {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the input, region, scale, output layout, or
-    /// scratch state cannot be decoded.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the input, region, scale, output
+    /// layout, or scratch state cannot be decoded.
     fn decode_region_scaled_into(
         &mut self,
         pool: &mut Self::Pool,
@@ -354,8 +357,8 @@ pub trait ImageDecodeSubmit<'a>: ImageDecode<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the request is invalid, unsupported, or
-    /// cannot be submitted.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the request is invalid, unsupported,
+    /// or cannot be submitted.
     fn submit_to_device(
         &mut self,
         session: &mut Self::Session,
@@ -367,8 +370,8 @@ pub trait ImageDecodeSubmit<'a>: ImageDecode<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the region or backend request is invalid,
-    /// unsupported, or cannot be submitted.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the region or backend request is
+    /// invalid, unsupported, or cannot be submitted.
     fn submit_region_to_device(
         &mut self,
         session: &mut Self::Session,
@@ -381,8 +384,8 @@ pub trait ImageDecodeSubmit<'a>: ImageDecode<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the scale or backend request is invalid,
-    /// unsupported, or cannot be submitted.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the scale or backend request is
+    /// invalid, unsupported, or cannot be submitted.
     fn submit_scaled_to_device(
         &mut self,
         session: &mut Self::Session,
@@ -395,8 +398,8 @@ pub trait ImageDecodeSubmit<'a>: ImageDecode<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the region, scale, or backend request is
-    /// invalid, unsupported, or cannot be submitted.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the region, scale, or backend request
+    /// is invalid, unsupported, or cannot be submitted.
     fn submit_region_scaled_to_device(
         &mut self,
         session: &mut Self::Session,
@@ -416,7 +419,7 @@ pub trait ImageDecodeDevice<'a>: ImageDecode<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if submission or device execution fails.
+    /// Returns the codec-specific [`ImageCodec::Error`] if submission or device execution fails.
     fn decode_to_device(
         &mut self,
         fmt: PixelFormat,
@@ -433,8 +436,8 @@ pub trait ImageDecodeDevice<'a>: ImageDecode<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if the region is invalid or submission or device
-    /// execution fails.
+    /// Returns the codec-specific [`ImageCodec::Error`] if the region is invalid or submission or
+    /// device execution fails.
     fn decode_region_to_device(
         &mut self,
         fmt: PixelFormat,
@@ -459,8 +462,8 @@ pub trait ImageDecodeDevice<'a>: ImageDecode<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if the scale is unsupported or submission or
-    /// device execution fails.
+    /// Returns the codec-specific [`ImageCodec::Error`] if the scale is unsupported or submission
+    /// or device execution fails.
     fn decode_scaled_to_device(
         &mut self,
         fmt: PixelFormat,
@@ -485,8 +488,8 @@ pub trait ImageDecodeDevice<'a>: ImageDecode<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if the region or scale is invalid or submission
-    /// or device execution fails.
+    /// Returns the codec-specific [`ImageCodec::Error`] if the region or scale is invalid or
+    /// submission or device execution fails.
     fn decode_region_scaled_to_device(
         &mut self,
         fmt: PixelFormat,
@@ -537,7 +540,8 @@ pub trait TileBatchDecode: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the tile input or output layout cannot be decoded.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the tile input or output layout cannot
+    /// be decoded.
     fn decode_tile(
         ctx: &mut DecoderContext<Self::Context>,
         pool: &mut Self::Pool,
@@ -551,7 +555,8 @@ pub trait TileBatchDecode: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the tile, region, or output layout cannot be decoded.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the tile, region, or output layout
+    /// cannot be decoded.
     fn decode_tile_region(
         ctx: &mut DecoderContext<Self::Context>,
         pool: &mut Self::Pool,
@@ -566,7 +571,8 @@ pub trait TileBatchDecode: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the tile, scale, or output layout cannot be decoded.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the tile, scale, or output layout
+    /// cannot be decoded.
     fn decode_tile_scaled(
         ctx: &mut DecoderContext<Self::Context>,
         pool: &mut Self::Pool,
@@ -581,8 +587,8 @@ pub trait TileBatchDecode: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the tile, region, scale, or output layout
-    /// cannot be decoded.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the tile, region, scale, or output
+    /// layout cannot be decoded.
     fn decode_tile_region_scaled(
         ctx: &mut DecoderContext<Self::Context>,
         pool: &mut Self::Pool,
@@ -602,7 +608,8 @@ pub trait TileBatchDecodeDevice: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if the tile cannot be submitted or device execution fails.
+    /// Returns the codec-specific [`ImageCodec::Error`] if the tile cannot be submitted or device
+    /// execution fails.
     fn decode_tile_to_device(
         ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
         pool: &mut Self::Pool,
@@ -632,8 +639,8 @@ pub trait TileBatchDecodeDevice: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if the region is invalid or submission or device
-    /// execution fails.
+    /// Returns the codec-specific [`ImageCodec::Error`] if the region is invalid or submission or
+    /// device execution fails.
     fn decode_tile_region_to_device(
         ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
         pool: &mut Self::Pool,
@@ -665,8 +672,8 @@ pub trait TileBatchDecodeDevice: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if the scale is unsupported or submission or
-    /// device execution fails.
+    /// Returns the codec-specific [`ImageCodec::Error`] if the scale is unsupported or submission
+    /// or device execution fails.
     fn decode_tile_scaled_to_device(
         ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
         pool: &mut Self::Pool,
@@ -698,8 +705,8 @@ pub trait TileBatchDecodeDevice: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if the region or scale is invalid or submission
-    /// or device execution fails.
+    /// Returns the codec-specific [`ImageCodec::Error`] if the region or scale is invalid or
+    /// submission or device execution fails.
     fn decode_tile_region_scaled_to_device(
         ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
         pool: &mut Self::Pool,
@@ -743,7 +750,8 @@ pub trait TileBatchDecodeManyDevice: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if any tile cannot be decoded by the requested backend.
+    /// Returns the codec-specific [`ImageCodec::Error`] if any tile cannot be decoded by the
+    /// requested backend.
     fn decode_tiles_to_device(
         ctx: &mut DecoderContext<Self::Context>,
         pool: &mut Self::Pool,
@@ -768,8 +776,8 @@ pub trait TileBatchDecodeSubmit: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the request is invalid, unsupported, or
-    /// cannot be submitted.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the request is invalid, unsupported,
+    /// or cannot be submitted.
     fn submit_tile_to_device(
         ctx: &mut DecoderContext<Self::Context>,
         session: &mut Self::Session,
@@ -783,8 +791,8 @@ pub trait TileBatchDecodeSubmit: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the region or backend request is invalid,
-    /// unsupported, or cannot be submitted.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the region or backend request is
+    /// invalid, unsupported, or cannot be submitted.
     fn submit_tile_region_to_device(
         ctx: &mut DecoderContext<Self::Context>,
         session: &mut Self::Session,
@@ -799,8 +807,8 @@ pub trait TileBatchDecodeSubmit: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the scale or backend request is invalid,
-    /// unsupported, or cannot be submitted.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the scale or backend request is
+    /// invalid, unsupported, or cannot be submitted.
     fn submit_tile_scaled_to_device(
         ctx: &mut DecoderContext<Self::Context>,
         session: &mut Self::Session,
@@ -815,8 +823,8 @@ pub trait TileBatchDecodeSubmit: ImageCodec {
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when the request is invalid, unsupported, or
-    /// cannot be submitted.
+    /// Returns the codec-specific [`ImageCodec::Error`] when the request is invalid, unsupported,
+    /// or cannot be submitted.
     fn submit_tile_region_scaled_to_device(
         ctx: &mut DecoderContext<Self::Context>,
         session: &mut Self::Session,

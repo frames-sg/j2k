@@ -23,6 +23,7 @@ mod cuda;
 #[cfg(feature = "adoption")]
 mod markdown;
 mod metal;
+mod panic_surface;
 mod perf_guard;
 mod process;
 mod public_support;
@@ -37,9 +38,10 @@ use benchmark_commands::{bench_build, bench_report, j2k_bench_signoff};
 use codegen_commands::{codec_math_codegen, stable_api, CARGO_PUBLIC_API_VERSION};
 #[cfg(test)]
 use command_support::passed_test_count;
+use panic_surface::panic_surface;
 use quality_commands::{
     ci, clippy, clippy_strict, deny, doc, downstream_smoke, fmt, fuzz_build, fuzz_run, machete,
-    miri, nextest, no_std, panic_surface, repo_lint, test, typos, verify_unsafe_audit,
+    miri, nextest, no_std, repo_lint, test, typos, verify_unsafe_audit,
 };
 use release_commands::{package, release_cpu, release_integrity, STABLE_SEMVER_PACKAGES};
 
