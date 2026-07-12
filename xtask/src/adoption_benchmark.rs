@@ -563,3 +563,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod artifact_tests;
