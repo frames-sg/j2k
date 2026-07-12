@@ -739,22 +739,14 @@ fn cached_direct_component_tier1_input_count(plan: &super::PreparedDirectGraysca
     let mut step_idx = 0;
     while step_idx < plan.steps.len() {
         if let Some(group) = plan.classic_group_starting_at(step_idx) {
-            if plan
-                .cached_cpu_tier1_coefficients(step_idx, group.total_coefficients)
-                .expect("classic group cache lookup")
-                .is_some()
-            {
+            if has_cached_cpu_tier1_coefficients(plan, step_idx, group.total_coefficients) {
                 count += 1;
             }
             step_idx = group.end_step;
             continue;
         }
         if let Some(group) = plan.ht_group_starting_at(step_idx) {
-            if plan
-                .cached_cpu_tier1_coefficients(step_idx, group.total_coefficients)
-                .expect("HT group cache lookup")
-                .is_some()
-            {
+            if has_cached_cpu_tier1_coefficients(plan, step_idx, group.total_coefficients) {
                 count += 1;
             }
             step_idx = group.end_step;
@@ -763,21 +755,13 @@ fn cached_direct_component_tier1_input_count(plan: &super::PreparedDirectGraysca
         match &plan.steps[step_idx] {
             PreparedDirectGrayscaleStep::ClassicSubBand(sub_band) => {
                 let output_len = sub_band.width as usize * sub_band.height as usize;
-                if plan
-                    .cached_cpu_tier1_coefficients(step_idx, output_len)
-                    .expect("classic sub-band cache lookup")
-                    .is_some()
-                {
+                if has_cached_cpu_tier1_coefficients(plan, step_idx, output_len) {
                     count += 1;
                 }
             }
             PreparedDirectGrayscaleStep::HtSubBand(sub_band) => {
                 let output_len = sub_band.width as usize * sub_band.height as usize;
-                if plan
-                    .cached_cpu_tier1_coefficients(step_idx, output_len)
-                    .expect("HT sub-band cache lookup")
-                    .is_some()
-                {
+                if has_cached_cpu_tier1_coefficients(plan, step_idx, output_len) {
                     count += 1;
                 }
             }
@@ -786,6 +770,18 @@ fn cached_direct_component_tier1_input_count(plan: &super::PreparedDirectGraysca
         step_idx += 1;
     }
     count
+}
+
+fn has_cached_cpu_tier1_coefficients(
+    plan: &super::PreparedDirectGrayscalePlan,
+    step_idx: usize,
+    output_len: usize,
+) -> bool {
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal test CPU Tier-1 cache lookup");
+    plan.cached_cpu_tier1_coefficients(&mut budget, step_idx, output_len)
+        .expect("CPU Tier-1 cache lookup")
+        .is_some()
 }
 
 fn decode_native_classic_sub_band(plan: &J2kOwnedSubBandPlan) -> Vec<f32> {

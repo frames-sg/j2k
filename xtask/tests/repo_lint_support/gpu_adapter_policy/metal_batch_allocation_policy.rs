@@ -126,6 +126,7 @@ fn remediated_metal_batch_paths_do_not_regress_to_infallible_collections() {
         "crates/j2k-metal/src/compute/decode_dispatch/classic_cleanup/distinct_allocation.rs",
         "crates/j2k-metal/src/compute/decode_dispatch/ht_distinct.rs",
         "crates/j2k-metal/src/compute/direct_execute.rs",
+        "crates/j2k-metal/src/compute/direct_cpu.rs",
         "crates/j2k-metal/src/compute/direct_grayscale_execute.rs",
         "crates/j2k-metal/src/compute/direct_grayscale_execute/allocation.rs",
         "crates/j2k-metal/src/compute/direct_grayscale_execute/component_plane.rs",
@@ -162,6 +163,7 @@ fn remediated_metal_batch_paths_do_not_regress_to_infallible_collections() {
                 "HashMap::<",
                 ".collect::<Vec",
                 ".collect()",
+                "vec![0.0_f32;",
             ]),
     ]);
 }

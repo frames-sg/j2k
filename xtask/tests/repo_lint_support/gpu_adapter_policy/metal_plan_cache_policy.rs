@@ -18,6 +18,7 @@ fn metal_prepared_plan_cache_uses_actual_separate_host_and_device_weights() {
         .collect::<Vec<_>>()
         .join("\n");
     let prepared = read("crates/j2k-metal/src/compute/direct_plan_types/allocation.rs");
+    let direct_cache = read("crates/j2k-metal/src/compute/direct_cache.rs");
     let native = read("crates/j2k-native/src/direct_plan/allocation.rs");
 
     assert_pattern_checks(&[
@@ -61,6 +62,9 @@ fn metal_prepared_plan_cache_uses_actual_separate_host_and_device_weights() {
             "job.segments.capacity()",
             "retained_allocation_bytes",
         ]),
+        PatternCheck::new("fallible CPU Tier-1 cache-hit copies", &direct_cache)
+            .required(&["drop(state)", "budget.try_vec("])
+            .forbidden(&["entry.coefficients.to_vec()"]),
     ]);
 
     assert!(
