@@ -218,6 +218,7 @@ fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
     };
 
     compute::reset_resident_codestream_command_buffer_waits_for_test();
+    super::super::reset_resident_schedule_counters_for_test();
     let serial = super::super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
         &tiles,
         &options,
@@ -230,8 +231,13 @@ fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
     .expect("serial Metal HTJ2K batch");
     assert_eq!(
         compute::resident_codestream_command_buffer_waits_for_test(),
-        1,
-        "multi-chunk HT batch should wait once before harvesting completed chunks"
+        inputs.len(),
+        "an in-flight cap of one must wait and retire each tile before submitting the next"
+    );
+    assert_eq!(
+        super::super::resident_schedule_counters_for_test(),
+        (0, 1, inputs.len()),
+        "the scheduler must never own more than one pending tile"
     );
 
     let cpu_validated_options = lossless_options! {
@@ -240,6 +246,7 @@ fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
         validation: J2kEncodeValidation::CpuRoundTrip,
     };
     compute::reset_resident_codestream_command_buffer_waits_for_test();
+    super::super::reset_resident_schedule_counters_for_test();
     let cpu_validated = super::super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
         &tiles,
         &cpu_validated_options,
@@ -256,7 +263,12 @@ fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
         inputs.len(),
         "CPU roundtrip validation should keep per-chunk waits to preserve overlap"
     );
+    assert_eq!(
+        super::super::resident_schedule_counters_for_test(),
+        (0, 1, inputs.len())
+    );
 
+    super::super::reset_resident_schedule_counters_for_test();
     let parallel = super::super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
         &tiles,
         &options,
@@ -267,6 +279,10 @@ fn metal_ht_batch_encode_preserves_order_and_matches_inflight_one() {
         },
     )
     .expect("parallel Metal HTJ2K batch");
+    assert_eq!(
+        super::super::resident_schedule_counters_for_test(),
+        (0, 2, inputs.len().div_ceil(2))
+    );
     let repeated_parallel = super::super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
         &tiles,
         &options,
@@ -358,13 +374,14 @@ fn metal_parallel_batch_returns_indexed_injected_failure() {
         validation: J2kEncodeValidation::External,
     };
 
+    super::super::reset_resident_schedule_counters_for_test();
     super::super::set_test_resident_encode_failure_index(Some(1));
     let Err(err) = super::super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
         &tiles,
         &options,
         &session,
         super::super::MetalLosslessEncodeConfig {
-            gpu_encode_inflight_tiles: Some(2),
+            gpu_encode_inflight_tiles: Some(1),
             gpu_encode_memory_budget_bytes: Some(1024 * 1024 * 1024),
         },
     ) else {
@@ -377,4 +394,9 @@ fn metal_parallel_batch_returns_indexed_injected_failure() {
         crate::Error::MetalKernel { message }
             if message == "injected J2K Metal resident encode failure at tile 1"
     ));
+    assert_eq!(
+        super::super::resident_schedule_counters_for_test(),
+        (0, 1, 1),
+        "a later preparation failure must not submit that or any later chunk"
+    );
 }

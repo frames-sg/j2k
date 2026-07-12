@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_metal_support::FallibleSubmissionQueue;
-
 use super::{
     checked_buffer_read, completed_command_buffers_gpu_duration, encode_status_error,
     finish_completed_resident_lossless_codestream_batch, new_blit_command_encoder,
@@ -56,22 +54,6 @@ pub(crate) fn wait_resident_lossless_codestream_batch(
 ) -> Result<J2kResidentLosslessCodestreamBatchResult, Error> {
     wait_resident_codestream_command_buffer(&pending.command_buffer)?;
     finish_completed_resident_lossless_codestream_batch(pending)
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn wait_resident_lossless_codestream_batches(
-    pending_batches: Vec<J2kPendingResidentLosslessCodestreamBatch>,
-) -> Result<Vec<J2kResidentLosslessCodestreamBatchResult>, Error> {
-    if let Some(last) = pending_batches.last() {
-        // These command buffers are submitted on the same Metal queue before
-        // harvest, so completing the final one implies earlier chunks are done.
-        wait_resident_codestream_command_buffer(&last.command_buffer)?;
-    }
-    FallibleSubmissionQueue::from_retained(pending_batches).try_finish(
-        "J2K Metal resident batch submission and result metadata",
-        "J2K Metal resident batch results",
-        finish_completed_resident_lossless_codestream_batch,
-    )
 }
 
 #[cfg(target_os = "macos")]

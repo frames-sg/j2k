@@ -22,6 +22,8 @@ mod resident_plan;
 #[cfg(target_os = "macos")]
 mod resident_prepare;
 #[cfg(target_os = "macos")]
+mod resident_schedule;
+#[cfg(target_os = "macos")]
 mod resident_submit;
 #[cfg(target_os = "macos")]
 mod resident_types;
@@ -95,12 +97,15 @@ use self::resident_estimate::{
     resident_codestream_assembly_job_for_metadata,
     resident_ht_batch_encode_should_retry_conservative,
 };
+#[cfg(all(test, target_os = "macos"))]
+use self::resident_schedule::{
+    reset_resident_schedule_counters_for_test, resident_schedule_counters_for_test,
+};
 #[cfg(target_os = "macos")]
 use self::resident_types::{
     FinishedResidentLosslessBufferEncode, PlannedResidentLosslessBufferEncode,
     PreparedResidentLosslessBufferEncode, ResidentLosslessBufferEncodeMetadata,
     SubmittedResidentLosslessMetalBufferEncodeBatch,
-    SubmittedResidentLosslessMetalBufferEncodeBatchKind,
     SubmittedResidentLosslessMetalBufferEncodeChunk,
 };
 pub use self::roundtrip_validation::{
@@ -171,7 +176,9 @@ use self::resident_hybrid::{
 #[cfg(target_os = "macos")]
 use self::resident_plan::plan_resident_lossless_buffer_encode;
 #[cfg(target_os = "macos")]
-use self::resident_submit::{duration_share, submit_planned_resident_lossless_tiles};
+use self::resident_schedule::submit_planned_resident_lossless_tiles;
+#[cfg(target_os = "macos")]
+use self::resident_submit::duration_share;
 #[cfg(target_os = "macos")]
 use self::resident_validation::{
     validate_lossless_roundtrip_on_metal_region_with_session,

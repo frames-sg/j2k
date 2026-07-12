@@ -64,7 +64,6 @@ pub(in crate::compute) use self::readback::{
 };
 pub(crate) use self::readback::{
     wait_resident_lossless_codestream, wait_resident_lossless_codestream_batch,
-    wait_resident_lossless_codestream_batches,
 };
 pub(in crate::compute) use self::result_harvest::{
     finish_completed_resident_lossless_codestream_batch, wait_resident_codestream_command_buffer,
