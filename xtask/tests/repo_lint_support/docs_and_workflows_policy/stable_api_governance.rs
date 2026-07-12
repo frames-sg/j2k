@@ -55,6 +55,9 @@ fn stable_api_and_semver_share_one_fail_closed_inventory_contract() {
         fs::read_to_string(root.join("xtask/src/stable_api.rs")).expect("read API collector");
     let codegen = fs::read_to_string(root.join("xtask/src/codegen_commands.rs"))
         .expect("read stable API generator");
+    let codegen_transaction =
+        fs::read_to_string(root.join("xtask/src/codegen_commands/transaction.rs"))
+            .expect("read generated-file transaction owner");
     let command_support = fs::read_to_string(root.join("xtask/src/command_support.rs"))
         .expect("read xtask command support");
     let policy =
@@ -63,6 +66,7 @@ fn stable_api_and_semver_share_one_fail_closed_inventory_contract() {
     assert_inventory_contracts(
         &stable_api,
         &codegen,
+        &codegen_transaction,
         &semver,
         &semver_review,
         &command_support,
@@ -74,6 +78,7 @@ fn stable_api_and_semver_share_one_fail_closed_inventory_contract() {
 fn assert_inventory_contracts(
     stable_api: &str,
     codegen: &str,
+    codegen_transaction: &str,
     semver: &str,
     semver_review: &str,
     command_support: &str,
@@ -100,13 +105,15 @@ fn assert_inventory_contracts(
             "_RUSTFLAGS",
         ]),
         PatternCheck::new("transactional stable API writer", codegen).required(&[
-            "write_snapshot_pair_transactionally(&snapshots)",
-            "stage_snapshot(",
-            "rollback_snapshot_install(",
-            "restore_originals(",
-            "sync_snapshot_directories(",
+            "write_generated_pair_transactionally(&snapshots)",
             "PUBLIC_API_SNAPSHOT",
             "HIDDEN_API_SNAPSHOT",
+        ]),
+        PatternCheck::new("generated-file transaction owner", codegen_transaction).required(&[
+            "fn stage_generated_file(",
+            "rollback_generated_pair_install(",
+            "fn restore_originals(",
+            "fn sync_generated_directories(",
         ]),
         PatternCheck::new("live semver inventory ratchet", semver)
             .required(&[

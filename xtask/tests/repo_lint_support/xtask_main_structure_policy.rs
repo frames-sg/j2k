@@ -18,6 +18,7 @@ struct XtaskSources {
     main: String,
     benchmark: String,
     codegen: String,
+    codegen_transaction: String,
     support: String,
     panic_surface: String,
     quality: String,
@@ -41,6 +42,7 @@ impl XtaskSources {
             main: read("xtask/src/main.rs"),
             benchmark: read("xtask/src/benchmark_commands.rs"),
             codegen: read("xtask/src/codegen_commands.rs"),
+            codegen_transaction: read("xtask/src/codegen_commands/transaction.rs"),
             support: read("xtask/src/command_support.rs"),
             panic_surface: read("xtask/src/panic_surface.rs"),
             quality: read("xtask/src/quality_commands.rs"),
@@ -80,11 +82,6 @@ fn assert_modules_stay_focused(sources: &XtaskSources) {
         (
             "xtask/src/benchmark_commands.rs",
             sources.benchmark.as_str(),
-            800,
-        ),
-        (
-            "xtask/src/codegen_commands.rs",
-            sources.codegen.as_str(),
             800,
         ),
         (
@@ -155,27 +152,38 @@ fn assert_modules_stay_focused(sources: &XtaskSources) {
             75,
         ),
     ] {
-        let line_count = source.lines().count();
-        assert!(
-            line_count < max_lines,
-            "{relative_path} has {line_count} lines; expected fewer than {max_lines}"
-        );
-        assert!(
-            !source.contains("::*"),
-            "{relative_path} must keep explicit imports"
-        );
-        assert!(
-            !source.contains("include!("),
-            "{relative_path} must remain a real Rust module"
-        );
-        assert!(
-            !source.contains("#[allow("),
-            "{relative_path} must not add lint suppressions"
-        );
+        assert_module_stays_focused(relative_path, source, max_lines);
     }
+    assert_module_stays_focused("xtask/src/codegen_commands.rs", &sources.codegen, 400);
+    assert_module_stays_focused(
+        "xtask/src/codegen_commands/transaction.rs",
+        &sources.codegen_transaction,
+        350,
+    );
+}
+
+fn assert_module_stays_focused(relative_path: &str, source: &str, max_lines: usize) {
+    let line_count = source.lines().count();
+    assert!(
+        line_count < max_lines,
+        "{relative_path} has {line_count} lines; expected fewer than {max_lines}"
+    );
+    assert!(
+        !source.contains("::*"),
+        "{relative_path} must keep explicit imports"
+    );
+    assert!(
+        !source.contains("include!("),
+        "{relative_path} must remain a real Rust module"
+    );
+    assert!(
+        !source.contains("#[allow("),
+        "{relative_path} must not add lint suppressions"
+    );
 }
 
 fn assert_dispatcher_and_command_ownership(sources: &XtaskSources) {
+    assert_codegen_ownership(sources);
     assert_pattern_checks(&[
         PatternCheck::new("xtask root dispatcher", &sources.main)
             .required(&[
@@ -205,13 +213,6 @@ fn assert_dispatcher_and_command_ownership(sources: &XtaskSources) {
             "pub(super) fn j2k_bench_signoff()",
             "pub(super) fn bench_report(",
             "fn render_benchmark_report(",
-        ]),
-        PatternCheck::new("xtask codegen command ownership", &sources.codegen).required(&[
-            "pub(super) fn stable_api(",
-            "pub(super) fn codec_math_codegen(",
-            "fn render_codec_math_dwt97_metal_fragment()",
-            "fn render_stable_api_snapshots()",
-            "fn write_snapshot_pair_transactionally(",
         ]),
         PatternCheck::new("xtask stable API collection ownership", &sources.stable_api).required(
             &[
@@ -265,6 +266,32 @@ fn assert_dispatcher_and_command_ownership(sources: &XtaskSources) {
             "pub(super) fn release_integrity(",
             "pub(super) fn release_cpu()",
             "pub(super) fn package()",
+        ]),
+    ]);
+}
+
+fn assert_codegen_ownership(sources: &XtaskSources) {
+    assert_pattern_checks(&[
+        PatternCheck::new("xtask codegen command ownership", &sources.codegen).required(&[
+            "mod transaction;",
+            "pub(super) fn stable_api(",
+            "pub(super) fn codec_math_codegen(",
+            "fn render_codec_math_dwt97_metal_fragment()",
+            "fn render_stable_api_snapshots()",
+            "write_generated_pair_transactionally(&snapshots)",
+            "write_generated_pair_transactionally(&fragments)",
+        ]),
+        PatternCheck::new(
+            "xtask generated-pair transaction ownership",
+            &sources.codegen_transaction,
+        )
+        .required(&[
+            "pub(super) fn write_generated_pair_transactionally(",
+            "fn stage_generated_entries(",
+            "fn stage_generated_file(",
+            "fn restore_originals(",
+            "pub(super) fn rollback_generated_pair_install(",
+            "fn sync_generated_directories(",
         ]),
     ]);
 }

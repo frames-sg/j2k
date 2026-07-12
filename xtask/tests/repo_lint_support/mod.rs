@@ -96,6 +96,7 @@ pub(crate) fn xtask_sources(root: &Path) -> String {
         "xtask/src/main.rs",
         "xtask/src/benchmark_commands.rs",
         "xtask/src/codegen_commands.rs",
+        "xtask/src/codegen_commands/transaction.rs",
         "xtask/src/command_support.rs",
         "xtask/src/quality_commands.rs",
         "xtask/src/release_commands.rs",

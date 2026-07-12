@@ -114,3 +114,29 @@ fn external_quality_commands_preserve_their_complete_fake_tool_plans() {
         "duplicate package flag: {log}"
     );
 }
+
+#[test]
+fn codec_math_codegen_write_is_transactional_across_both_fragments() {
+    let harness = Harness::new();
+    let workspace = harness.path("codegen-workspace");
+    let generated = workspace.join("crates/j2k-codec-math/generated");
+    fs::create_dir_all(&generated).expect("create generated fragment directory");
+    let metal = generated.join("dwt97_constants.metal");
+    let rust = generated.join("dwt97_constants.rs");
+    fs::write(&metal, "old metal\n").expect("seed Metal fragment");
+    fs::create_dir(&rust).expect("make Rust fragment target unwritable");
+
+    let output = harness.run_in(&workspace, &["codec-math-codegen", "--write"]);
+
+    assert!(!output.status.success(), "unwritable target must fail");
+    assert_eq!(
+        fs::read_to_string(&metal).expect("read Metal fragment after failure"),
+        "old metal\n",
+        "failure updating the Rust fragment must not commit the Metal fragment"
+    );
+    let entries = fs::read_dir(&generated)
+        .expect("read generated fragment directory")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read generated fragment entries");
+    assert_eq!(entries.len(), 2, "failed transaction left sidecar files");
+}

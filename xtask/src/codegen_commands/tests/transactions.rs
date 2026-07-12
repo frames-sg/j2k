@@ -6,10 +6,10 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-use super::super::{
-    ensure_path_absent, remove_file_if_present, rollback_snapshot_install, snapshot_sidecar_path,
-    with_cleanup_errors, write_snapshot_pair_transactionally, SnapshotTransactionEntry,
-    SNAPSHOT_TRANSACTION_NONCE,
+use super::super::transaction::{
+    ensure_path_absent, remove_file_if_present, rollback_generated_pair_install, sidecar_path,
+    with_cleanup_errors, write_generated_pair_transactionally, GeneratedPairEntry,
+    PAIR_TRANSACTION_NONCE,
 };
 
 static TRANSACTION_TEST_SERIAL: Mutex<()> = Mutex::new(());
@@ -21,7 +21,7 @@ fn serial() -> MutexGuard<'static, ()> {
 }
 
 fn transaction_test_directory(label: &str) -> PathBuf {
-    let nonce = SNAPSHOT_TRANSACTION_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nonce = PAIR_TRANSACTION_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "j2k-stable-api-{label}-{}-{nonce}",
         std::process::id()
@@ -39,7 +39,7 @@ fn snapshot_pair_transaction_replaces_both_files() {
     fs::write(&ordinary, "old ordinary").expect("seed ordinary snapshot");
     fs::write(&hidden, "old hidden").expect("seed hidden snapshot");
 
-    write_snapshot_pair_transactionally(&[
+    write_generated_pair_transactionally(&[
         (
             ordinary.to_str().expect("ordinary UTF-8 path"),
             "new ordinary".to_string(),
@@ -64,7 +64,7 @@ fn snapshot_pair_transaction_installs_two_new_files_without_sidecars() {
     let ordinary = directory.join("ordinary.txt");
     let hidden = directory.join("hidden.txt");
 
-    write_snapshot_pair_transactionally(&[
+    write_generated_pair_transactionally(&[
         (
             ordinary.to_str().expect("ordinary UTF-8 path"),
             "ordinary".to_string(),
@@ -90,7 +90,7 @@ fn staging_failure_leaves_existing_snapshot_unchanged() {
     let hidden = directory.join("missing-parent/hidden.txt");
     fs::write(&ordinary, "old ordinary").expect("seed ordinary snapshot");
 
-    let error = write_snapshot_pair_transactionally(&[
+    let error = write_generated_pair_transactionally(&[
         (
             ordinary.to_str().expect("ordinary UTF-8 path"),
             "new ordinary".to_string(),
@@ -102,7 +102,7 @@ fn staging_failure_leaves_existing_snapshot_unchanged() {
     ])
     .unwrap_err();
 
-    assert!(error.contains("create staged snapshot"));
+    assert!(error.contains("create staged generated file"));
     assert_eq!(fs::read_to_string(&ordinary).unwrap(), "old ordinary");
     assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
     fs::remove_dir_all(directory).expect("clean transaction test directory");
@@ -116,11 +116,11 @@ fn snapshot_transaction_preflight_rejects_existing_sidecars_without_mutation() {
     let hidden = directory.join("hidden.txt");
     fs::write(&ordinary, "old ordinary").expect("seed ordinary snapshot");
     fs::write(&hidden, "old hidden").expect("seed hidden snapshot");
-    let nonce = SNAPSHOT_TRANSACTION_NONCE.load(std::sync::atomic::Ordering::Relaxed);
-    let sidecar = snapshot_sidecar_path(&ordinary, nonce, 0, "backup").expect("sidecar path");
+    let nonce = PAIR_TRANSACTION_NONCE.load(std::sync::atomic::Ordering::Relaxed);
+    let sidecar = sidecar_path(&ordinary, nonce, 0, "backup").expect("sidecar path");
     fs::write(&sidecar, "collision").expect("seed colliding sidecar");
 
-    let error = write_snapshot_pair_transactionally(&[
+    let error = write_generated_pair_transactionally(&[
         (
             ordinary.to_str().expect("ordinary UTF-8 path"),
             "new ordinary".to_string(),
@@ -133,7 +133,7 @@ fn snapshot_transaction_preflight_rejects_existing_sidecars_without_mutation() {
     .expect_err("existing transaction sidecar");
 
     assert!(
-        error.contains("refuse to overwrite existing snapshot sidecar"),
+        error.contains("refuse to overwrite existing generated-file sidecar"),
         "unexpected error: {error}"
     );
     assert_eq!(fs::read_to_string(&ordinary).unwrap(), "old ordinary");
@@ -145,8 +145,8 @@ fn snapshot_transaction_preflight_rejects_existing_sidecars_without_mutation() {
 #[test]
 fn snapshot_transaction_requires_two_distinct_paths() {
     let _serial = serial();
-    assert!(write_snapshot_pair_transactionally(&[]).is_err());
-    assert!(write_snapshot_pair_transactionally(&[
+    assert!(write_generated_pair_transactionally(&[]).is_err());
+    assert!(write_generated_pair_transactionally(&[
         ("same", "ordinary".to_string()),
         ("same", "hidden".to_string()),
     ])
@@ -192,13 +192,13 @@ fn rollback_removes_partial_installs_restores_both_originals_and_cleans_staging(
     fs::write(&second_backup, "old hidden").expect("seed hidden backup");
 
     let entries = [
-        SnapshotTransactionEntry {
+        GeneratedPairEntry {
             target: first_target.clone(),
             staged: first_staged.clone(),
             backup: first_backup,
             had_original: true,
         },
-        SnapshotTransactionEntry {
+        GeneratedPairEntry {
             target: second_target.clone(),
             staged: second_staged.clone(),
             backup: second_backup,
@@ -206,7 +206,7 @@ fn rollback_removes_partial_installs_restores_both_originals_and_cleans_staging(
         },
     ];
 
-    let errors = rollback_snapshot_install(&entries, 1);
+    let errors = rollback_generated_pair_install(&entries, 1);
 
     assert!(errors.is_empty(), "rollback errors: {errors:#?}");
     assert_eq!(fs::read_to_string(&first_target).unwrap(), "old ordinary");

@@ -90,10 +90,18 @@ impl Harness {
     }
 
     pub(crate) fn run_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Output {
+        self.run_in_with_env(workspace_root(), args, envs)
+    }
+
+    pub(crate) fn run_in(&self, directory: &Path, args: &[&str]) -> Output {
+        self.run_in_with_env(directory, args, &[])
+    }
+
+    fn run_in_with_env(&self, directory: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
         command
             .args(args)
-            .current_dir(workspace_root())
+            .current_dir(directory)
             .env("CARGO", &self.cargo)
             .env("PATH", &self.path);
         for key in [
