@@ -7,6 +7,7 @@ use crate::{
     memory::PinnedUploadStagingPool,
 };
 
+use super::host_budget::SharedCudaHostBudget;
 use super::{CompiledKernel, CompiledKernelKey, ContextResourceLifecycle};
 
 pub(crate) struct ContextInner {
@@ -15,6 +16,7 @@ pub(crate) struct ContextInner {
     pub(crate) modules: Mutex<HashMap<CompiledKernelKey, CompiledKernel>>,
     pub(crate) pinned_upload_operation: Mutex<()>,
     pub(crate) pinned_upload_staging: Mutex<PinnedUploadStagingPool>,
+    pub(crate) host_budget: std::sync::Arc<SharedCudaHostBudget>,
     pub(crate) resource_lifecycle: ContextResourceLifecycle,
 }
 
@@ -48,6 +50,7 @@ impl Drop for ContextInner {
             // resources are either already released or left for context-wide
             // destruction after a failed/uncertain completion state.
             let _ = unsafe { (self.driver.cu_ctx_destroy)(self.context) };
+            self.host_budget.clear_pinned_after_context_drop();
         }
     }
 }

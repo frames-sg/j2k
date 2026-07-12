@@ -76,17 +76,18 @@ pub fn encode_jpeg_baseline_from_cuda_buffer(
     let pinned_upload = context
         .begin_pinned_upload_operation()
         .map_err(cuda_error)?;
-    let _pinned_pool_lease = session.reserve_pinned_upload_retention(&pinned_upload)?;
+    let pinned_accounting = session.reserve_pinned_upload_retention(&context, &pinned_upload)?;
     let external_live_bytes = session.owned_host_live_bytes()?;
     let mut adapter = CudaJpegBaselineEncodeAdapter {
         external_live_bytes,
     };
-    encode_jpeg_baseline_gpu_tile_with_external_live(
+    let result = encode_jpeg_baseline_gpu_tile_with_external_live(
         tile,
         options,
         &mut adapter,
         external_live_bytes,
-    )
+    );
+    pinned_accounting.finish(result)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -123,17 +124,18 @@ pub fn encode_jpeg_baseline_batch_from_cuda_buffers(
     let pinned_upload = context
         .begin_pinned_upload_operation()
         .map_err(cuda_error)?;
-    let _pinned_pool_lease = session.reserve_pinned_upload_retention(&pinned_upload)?;
+    let pinned_accounting = session.reserve_pinned_upload_retention(&context, &pinned_upload)?;
     let external_live_bytes = session.owned_host_live_bytes()?;
     let mut adapter = CudaJpegBaselineEncodeAdapter {
         external_live_bytes,
     };
-    encode_jpeg_baseline_gpu_batch_with_external_live(
+    let result = encode_jpeg_baseline_gpu_batch_with_external_live(
         tiles,
         options,
         &mut adapter,
         external_live_bytes,
-    )
+    );
+    pinned_accounting.finish(result)
 }
 
 #[cfg(not(feature = "cuda-runtime"))]

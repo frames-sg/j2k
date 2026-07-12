@@ -104,12 +104,7 @@ fn transcode_profile_row_uses_the_shared_fallible_contract() {
 #[test]
 fn cpu_jpeg_profile_callers_use_typed_fallible_fields() {
     let profile = read("crates/j2k-jpeg/src/profile.rs");
-    let encoder = read("crates/j2k-jpeg/src/encoder.rs");
-    let encode_profile = encoder
-        .split_once("fn emit_cpu_encode_profile(")
-        .and_then(|(_, tail)| tail.split_once("impl JpegSamples<'_>"))
-        .map(|(body, _)| body)
-        .expect("CPU encode profile owner");
+    let encode_profile = read("crates/j2k-jpeg/src/encoder/profile.rs");
     let lossless = read("crates/j2k-jpeg/src/decoder/lossless_helpers.rs");
     let lossless_profile = lossless
         .split_once("pub(super) fn emit_decode_scan_profile(")
@@ -117,7 +112,7 @@ fn cpu_jpeg_profile_callers_use_typed_fallible_fields() {
         .map(|(body, _)| body)
         .expect("lossless scan profile owner");
     let routing = read("crates/j2k-jpeg/src/decoder/routing/profile.rs");
-    let callers = [encode_profile, lossless_profile, routing.as_str()].concat();
+    let callers = [encode_profile.as_str(), lossless_profile, routing.as_str()].concat();
 
     assert_pattern_checks(&[
         PatternCheck::new("JPEG typed profile emitter", &profile)

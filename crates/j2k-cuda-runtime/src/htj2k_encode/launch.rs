@@ -52,74 +52,38 @@ impl CudaContext {
         &self,
         request: &CudaHtj2kEncodeMultiInputLaunch<'_>,
     ) -> Result<(), CudaError> {
-        let function =
-            self.htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInput)?;
-        let mut output_ptr = request.output.device_ptr();
-        let mut jobs_ptr = request.jobs.device_ptr();
-        let mut vlc_table0_ptr = request.tables.vlc_table0.device_ptr();
-        let mut vlc_table1_ptr = request.tables.vlc_table1.device_ptr();
-        let mut uvlc_table_ptr = request.tables.uvlc_table.device_ptr();
-        let mut statuses_ptr = request.statuses.device_ptr();
-        let mut job_count_u64 =
-            u64::try_from(request.job_count).map_err(|_| CudaError::LengthTooLarge {
-                len: request.job_count,
-            })?;
-        let mut params = cuda_kernel_params!(
-            output_ptr,
-            jobs_ptr,
-            vlc_table0_ptr,
-            vlc_table1_ptr,
-            uvlc_table_ptr,
-            statuses_ptr,
-            job_count_u64
-        );
-        let geometry = htj2k_encode_codeblock_launch_geometry(request.job_count).ok_or(
-            CudaError::LengthTooLarge {
-                len: request.job_count,
-            },
-        )?;
-        self.launch_kernel_async(function, geometry, &mut params)
+        self.launch_htj2k_encode_multi_input_kernel(
+            CudaKernel::Htj2kEncodeCodeblocksMultiInput,
+            request,
+        )
     }
 
     pub(super) fn launch_htj2k_encode_codeblocks_multi_input_cleanup(
         &self,
         request: &CudaHtj2kEncodeMultiInputLaunch<'_>,
     ) -> Result<(), CudaError> {
-        let function =
-            self.htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup)?;
-        let mut output_ptr = request.output.device_ptr();
-        let mut jobs_ptr = request.jobs.device_ptr();
-        let mut vlc_table0_ptr = request.tables.vlc_table0.device_ptr();
-        let mut vlc_table1_ptr = request.tables.vlc_table1.device_ptr();
-        let mut uvlc_table_ptr = request.tables.uvlc_table.device_ptr();
-        let mut statuses_ptr = request.statuses.device_ptr();
-        let mut job_count_u64 =
-            u64::try_from(request.job_count).map_err(|_| CudaError::LengthTooLarge {
-                len: request.job_count,
-            })?;
-        let mut params = cuda_kernel_params!(
-            output_ptr,
-            jobs_ptr,
-            vlc_table0_ptr,
-            vlc_table1_ptr,
-            uvlc_table_ptr,
-            statuses_ptr,
-            job_count_u64
-        );
-        let geometry = htj2k_encode_codeblock_launch_geometry(request.job_count).ok_or(
-            CudaError::LengthTooLarge {
-                len: request.job_count,
-            },
-        )?;
-        self.launch_kernel_async(function, geometry, &mut params)
+        self.launch_htj2k_encode_multi_input_kernel(
+            CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup,
+            request,
+        )
     }
 
     pub(super) fn launch_htj2k_encode_codeblocks_multi_input_cleanup_64(
         &self,
         request: &CudaHtj2kEncodeMultiInputLaunch<'_>,
     ) -> Result<(), CudaError> {
-        let function = self
-            .htj2k_encode_kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup64)?;
+        self.launch_htj2k_encode_multi_input_kernel(
+            CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup64,
+            request,
+        )
+    }
+
+    fn launch_htj2k_encode_multi_input_kernel(
+        &self,
+        kernel: CudaKernel,
+        request: &CudaHtj2kEncodeMultiInputLaunch<'_>,
+    ) -> Result<(), CudaError> {
+        let function = self.htj2k_encode_kernel_function(kernel)?;
         let mut output_ptr = request.output.device_ptr();
         let mut jobs_ptr = request.jobs.device_ptr();
         let mut vlc_table0_ptr = request.tables.vlc_table0.device_ptr();

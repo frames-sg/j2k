@@ -6,6 +6,7 @@ use super::super::{assert_pattern_checks, repo_root, PatternCheck};
 
 mod architecture;
 mod color_runtime;
+mod resident_leaf_structure;
 
 struct CudaDecoderSources {
     direct_plan: String,
@@ -15,16 +16,19 @@ struct CudaDecoderSources {
     plan: String,
     plan_color_owners: String,
     resident: String,
+    resident_buffer_access: String,
     resident_cleanup_dequant: String,
     resident_component: String,
-    resident_helpers: String,
+    resident_error: String,
     resident_idwt: String,
+    resident_idwt_conversions: String,
     resident_routing: String,
     resident_surface: String,
     color_batch: String,
     color_batch_host_owners: String,
     color_store: String,
     color_store_batch: String,
+    color_store_validation: String,
     profile: String,
 }
 
@@ -45,18 +49,25 @@ impl CudaDecoderSources {
             plan: read("crates/j2k-cuda/src/decoder/plan.rs"),
             plan_color_owners: read("crates/j2k-cuda/src/decoder/plan/color_owners.rs"),
             resident: read("crates/j2k-cuda/src/decoder/resident.rs"),
+            resident_buffer_access: read("crates/j2k-cuda/src/decoder/resident/buffer_access.rs"),
             resident_cleanup_dequant: read(
                 "crates/j2k-cuda/src/decoder/resident/cleanup_dequant.rs",
             ),
             resident_component: read("crates/j2k-cuda/src/decoder/resident/component.rs"),
-            resident_helpers: read("crates/j2k-cuda/src/decoder/resident/helpers.rs"),
+            resident_error: read("crates/j2k-cuda/src/decoder/resident/error.rs"),
             resident_idwt: read("crates/j2k-cuda/src/decoder/resident/idwt.rs"),
+            resident_idwt_conversions: read(
+                "crates/j2k-cuda/src/decoder/resident/idwt/conversions.rs",
+            ),
             resident_routing: read("crates/j2k-cuda/src/decoder/resident/routing.rs"),
             resident_surface: read("crates/j2k-cuda/src/decoder/resident/surface.rs"),
             color_batch: read("crates/j2k-cuda/src/decoder/color_batch.rs"),
             color_batch_host_owners: read("crates/j2k-cuda/src/decoder/color_batch/host_owners.rs"),
             color_store: read("crates/j2k-cuda/src/decoder/color_batch/store.rs"),
             color_store_batch: read("crates/j2k-cuda/src/decoder/color_batch/store/batch.rs"),
+            color_store_validation: read(
+                "crates/j2k-cuda/src/decoder/color_batch/store/validation.rs",
+            ),
             profile: read("crates/j2k-cuda/src/decoder/profile.rs"),
         }
     }
@@ -139,8 +150,18 @@ fn focused_modules_stay_below_line_ratchets() {
             325,
         ),
         ("resident/component.rs", &sources.resident_component, 225),
-        ("resident/helpers.rs", &sources.resident_helpers, 200),
+        (
+            "resident/buffer_access.rs",
+            &sources.resident_buffer_access,
+            50,
+        ),
+        ("resident/error.rs", &sources.resident_error, 50),
         ("resident/idwt.rs", &sources.resident_idwt, 350),
+        (
+            "resident/idwt/conversions.rs",
+            &sources.resident_idwt_conversions,
+            75,
+        ),
         ("resident/routing.rs", &sources.resident_routing, 425),
         ("resident/surface.rs", &sources.resident_surface, 175),
     ] {
@@ -164,6 +185,10 @@ fn focused_modules_stay_below_line_ratchets() {
     assert!(
         sources.color_store_batch.lines().count() < 150,
         "j2k-cuda decoder/color_batch/store/batch.rs must remain a focused preparation leaf"
+    );
+    assert!(
+        sources.color_store_validation.lines().count() < 100,
+        "j2k-cuda decoder/color_batch/store/validation.rs must remain a focused validation leaf"
     );
 }
 

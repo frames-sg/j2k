@@ -181,6 +181,13 @@ where
     Ok(values)
 }
 
+#[cfg(feature = "cuda-runtime")]
+pub(crate) fn checked_cuda_element_count(width: u32, height: u32) -> Option<usize> {
+    usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)
+}
+
 #[cfg(test)]
 pub(crate) fn try_collect_exact<T, I>(iter: I, what: &'static str) -> Result<Vec<T>, Error>
 where
@@ -279,6 +286,8 @@ pub(crate) fn host_allocation_error<T>(element_count: usize, what: &'static str)
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "cuda-runtime")]
+    use super::checked_cuda_element_count;
     use super::{
         try_collect_exact, try_vec_extend_from_slice, try_vec_push, try_vec_reserve,
         try_vec_with_capacity, HostPhaseBudget,
@@ -286,6 +295,15 @@ mod tests {
     use crate::Error;
     #[cfg(feature = "cuda-runtime")]
     use j2k_cuda_runtime::CudaError;
+
+    #[cfg(feature = "cuda-runtime")]
+    #[test]
+    fn cuda_element_count_uses_checked_target_sized_arithmetic() {
+        assert_eq!(checked_cuda_element_count(17, 11), Some(187));
+        assert_eq!(checked_cuda_element_count(0, u32::MAX), Some(0));
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(checked_cuda_element_count(u32::MAX, 2), None);
+    }
 
     #[test]
     fn logically_oversized_capacity_is_rejected_before_allocation() {

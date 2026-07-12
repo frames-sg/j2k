@@ -25,7 +25,7 @@ reviews:
     rationale: "PENDING maintainer review of the complete public API for this new unpublished package."
   j2k-jpeg:
     removed_fingerprint: "fnv1a64:e9c8b4bcdfd4d07c"
-    added_fingerprint: "fnv1a64:8a0e08f53a00de3f"
+    added_fingerprint: "fnv1a64:22365f198fcff3a3"
     hidden_count: 550
     hidden_fingerprint: "fnv1a64:694878382ed6212c"
     rationale: "PENDING maintainer re-review of the JPEG contract cleanup and additions enumerated in the regenerated report."
@@ -38,8 +38,8 @@ reviews:
     rationale: "PENDING maintainer re-review of the tilecodec contraction and additions enumerated in the regenerated report."
     hidden_rationale: "PENDING maintainer review of the complete reachable rustdoc-hidden j2k-tilecodec inventory."
   j2k-jpeg-metal:
-    removed_fingerprint: "fnv1a64:d8657c4a0fa04dd0"
-    added_fingerprint: "fnv1a64:4a52d0388c5ece07"
+    removed_fingerprint: "fnv1a64:7dba0ea76bbcfc83"
+    added_fingerprint: "fnv1a64:0b146f81fdb1b4c5"
     hidden_count: 81
     hidden_fingerprint: "fnv1a64:79623e7d37b72c31"
     rationale: "PENDING maintainer re-review of the Metal JPEG adapter changes enumerated in the regenerated report."
@@ -53,7 +53,7 @@ reviews:
     hidden_rationale: "PENDING maintainer review of the complete reachable rustdoc-hidden j2k-metal inventory."
   j2k-jpeg-cuda:
     removed_fingerprint: "fnv1a64:b89441cc882c4788"
-    added_fingerprint: "fnv1a64:329bd880830328b4"
+    added_fingerprint: "fnv1a64:c7feb31cdb60d809"
     hidden_count: 124
     hidden_fingerprint: "fnv1a64:b8ecbb08e772efc7"
     rationale: "PENDING maintainer review: the intentional 0.7 batch API replaces Vec outputs with CudaJpegBatch so allocation leases remain live; callers retain slice, Deref, and IntoIterator access."
@@ -110,8 +110,8 @@ reviews:
   j2k-cuda-runtime:
     removed_fingerprint: "fnv1a64:de98d6fa72f8a1f1"
     added_fingerprint: "fnv1a64:8fbf11477fdd930c"
-    hidden_count: 828
-    hidden_fingerprint: "fnv1a64:eb448f5d138a17bc"
+    hidden_count: 847
+    hidden_fingerprint: "fnv1a64:4a17a6e4f32a7fbc"
     rationale: "PENDING maintainer re-review of the CUDA runtime contraction and additions enumerated in the regenerated report."
     hidden_rationale: "PENDING maintainer review of the complete reachable rustdoc-hidden j2k-cuda-runtime inventory."
   j2k-profile:

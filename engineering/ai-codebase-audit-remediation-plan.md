@@ -62,20 +62,24 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked**, unfrozen, dirty working tree on `main` at
-  `cb39da75`. Approved local commits now preserve the reconciled implementation
-  (`7853075f`), quality/release tooling (`3fcb2e88`), and the API snapshot
-  newline contract discovered during evidence verification (`cb39da75`). No
-  push, tag, release, or publication has been made. The approved plan authorizes
+  `e741d10243ed`. Approved local commits preserve the reconciled implementation
+  (`7853075f`), quality/release tooling (`3fcb2e88`), API snapshot newline
+  contract (`cb39da75`), and documentation/evidence (`e741d102`). Verification
+  treats that chain cumulatively: the broad source commit depends on the
+  following policy commit for its moved-path repo-lint assertions. No push,
+  tag, release, or publication has been made. The approved plan authorizes
   later exact-SHA movement through the reviewed workflow; it does not authorize
   a release tag or publication.
-- Current objective: commit the reconciled source, policy, and evidence phases,
-  run changed-line coverage and clean-tree packaging, complete maintainer-owned
-  release evidence, and then freeze one exact candidate SHA.
+- Current objective: commit the final review-driven architecture/accounting
+  follow-up, rerun changed-line coverage, clean-tree clone/package and both
+  Metal performance protocols, complete maintainer-owned release evidence, and
+  then freeze one exact candidate SHA.
   Preserve idiomatic Rust ownership, typed errors, fallible allocation, and
   actual allocator-capacity accounting.
-- Immediate continuation point (2026-07-12): all implementation owners have
-  stopped editing. Workspace formatting, diff checks, unsafe audit,
-  strict Clippy, all affected package suites, all 409 ordinary repository
+- Immediate continuation point (2026-07-12): all implementation and independent
+  review owners have stopped editing. Workspace formatting, diff checks, panic
+  and unsafe audits, ordinary plus strict Clippy, all affected package suites,
+  all 411 ordinary repository
   policies, the strict rendered-public-API scan, bounded fuzzing, Miri, Metal
   compile/runtime validation, stable API, ordinary release integrity, and the
   pinned Gitleaks scan are green. Ordinary and
@@ -84,12 +88,32 @@ the issue sections below; this capsule is only the current continuation state.
   green after preserving actual-capacity accounting while restoring bounded
   work stealing and weighted direct-plan admission. Stable-API regeneration
   now also emits exactly one terminal newline, so generated evidence passes
-  both freshness and whitespace checks. `cargo xtask semver` reaches the deliberate
+  both freshness and whitespace checks. The source-aware clone audit passes at
+  1.97% duplicated production lines across 1,187 staged Rust sources. `cargo
+  xtask semver` reaches the deliberate
   fail-closed maintainer-review blocker; do not replace any `PENDING` rationale
-  with an inferred approval. The tooling phase's 161 unit tests and 409
-  ordinary repository policies are green after the commit. Root owns the
-  documentation/evidence commit, changed-line coverage, clean packaging,
-  ledger refresh, and exact-SHA handoff.
+  with an inferred approval. The tooling phase's 162 unit tests, 411 ordinary
+  policies, and strict rendered-API policy are green. The follow-up tree adds a
+  context-wide CUDA host authority with pre-allocation pinned admission and
+  unlocked RAII replacement reservations; independent-session/context-clone
+  races, wrong-context guards, owner-drop, rollback, and compound-error tests
+  pass locally. Root owns the follow-up commit, changed-line coverage,
+  clean-tree clone/package gates, Metal performance runs, and exact-SHA handoff.
+- Independent architecture closure in the follow-up:
+  - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
+    sample-plane, transform, profiling, and test owners. Shared baseline entropy,
+    encode, and DCT contracts sit below both encoder and transcode, eliminating
+    their dependency cycle and duplicate allocation primitive;
+  - the CUDA resident `helpers.rs` catch-all is gone. Buffer access, error
+    mapping, IDWT conversion, component validation, and color-store validation
+    have downward-only focused owners and share one checked element-count
+    primitive;
+  - JPEG Metal `pack_dispatch/common.rs` is replaced by conversion, request,
+    surface, grouped-output, texture, dispatch, and split-IDCT owners, with a
+    policy that forbids the catch-all from returning;
+  - Metal resident packet planning validates parallel input lengths and zips
+    them before access, and the three duplicate CUDA HTJ2K multi-input launches
+    share one private kernel launcher.
 - Active security/correctness closure:
   - the safe `GpuAbi` byte-view contract now requires compile-time proof of a
     padding-free, fully initialized representation. Five padded CUDA host/device
@@ -386,8 +410,8 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Source-aware roles and changed-function enforcement are verified structurally, including the nonterminal external test-module regression; all Rust sources are committed and measurement is the next clean-ledger gate |
-| ALLOC-001 | P2 | in progress | SEC-007 | Source-complete CUDA runtime/adapter actual-capacity phase ownership and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
+| COV-001 | P2 | in progress | METAL-001 | Source-aware roles and changed-function enforcement are verified structurally, including the nonterminal external test-module regression; the final review follow-up Rust sources must be committed before measurement |
+| ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
 | ALLOC-004 | P1 | complete | — | CPU/DCT/GPU planes, entropy, frame copies, batch metadata, returned chunks, and prior frames share actual-capacity high-water plans |
@@ -409,7 +433,7 @@ The rubric was checked against current primary or first-party sources on
 | JPEGCACHE-001 | P1 | in progress | ALLOC-001, ALLOC-008, ALLOC-018, ERR-015 | One neutral 8-entry/64-MiB inspect-once cache is integrated under clone-shared cache, queue, pinned-staging, result, and CPU-fallback ledgers; package/policy gates pass and frozen hardware evidence remains |
 | METALPOOL-001 | P1 | complete | ALLOC-018, SAFE-001 | Separate flat private/shared pools enforce actual-byte and buffer-count limits, fallible metadata admission, deterministic completed-buffer eviction, typed ledger failures, and stable diagnostics; full local Metal package gates pass |
 | CUDAPOOL-001 | P1 | complete | ALLOC-001, CUDAERR-001 | CUDA buffer pools apply shared actual-byte/count/bucket limits, deterministic completed-buffer eviction, deferred safety accounting, and clone-shared high-water diagnostics; strict RTX 4070 SUPER retention tests passed |
-| CUDAPIN-001 | P1 | in progress | ALLOC-001, CUDAPOOL-001, CUDAERR-001 | Page-locked upload staging has clone-shared serialized RAII checkout, bounded best-fit retention, quarantine, exact diagnostics, and JPEG-adapter aggregate integration; local structural/package gates pass and frozen NVIDIA evidence remains |
+| CUDAPIN-001 | P1 | in progress | ALLOC-001, CUDAPOOL-001, CUDAERR-001 | Context-authoritative page-locked staging pre-reserves growth, external owners use unlocked full-headroom RAII replacement transactions, and exact retention/quarantine/compound errors pass local race and package gates; frozen NVIDIA evidence remains |
 | CUDAHANDLE-001 | P2 | complete | CUDAPIN-001, CUDAERR-001 | One typed boundary validates device allocations and every context/module/function/event/stream out-parameter; successful-null function lookup unloads its module |
 | METALALLOC-001 | P1 | complete | SAFE-001 | Metal coefficient transcode uses checked aggregate phase plans, fallible actual-capacity host ownership, checked device construction, typed sources, and linear sparse weights; full local package and policy gates pass |
 | PROFILE-001 | P2 | in progress | ALLOC-003, AUDIT-001 | Source-complete typed limits, transactional fallible ownership, move-only summaries, shared diagnostics, and bounded typed callers; frozen API/semver review and final matrix remain |
@@ -480,7 +504,7 @@ The rubric was checked against current primary or first-party sources on
 | TOOL-001 | P3 | complete | DUP-001 | Adoption report model/render split |
 | CUDA-002 | P1 | complete | SEC-001 | One exact named release-cuda gate with zero skip markers |
 | PKG-001 | P1 | complete | SEC-001 | Construct all packages and verify independent packages |
-| CLONE-001 | P2 | in progress | STR-008 through STR-015 | Repository-owned source-aware scanner/config/CI gate is implemented and passed on the reconciled moving tree; rerun once after the evidence commit to record the clean-tree numeric report |
+| CLONE-001 | P2 | in progress | STR-008 through STR-015 | Repository-owned source-aware scanner/config/CI gate passes the settled follow-up tree at 1.97% duplicated production lines; rerun once after the follow-up commit to record clean-tree evidence |
 | AUDIT-001 | P2 | complete | STR-010, COV-001 | Clone and panic quality gates use shared production-source classification, explicit reviewed ratchets, fixtures, and fail-closed repository policy |
 | PERF-001 | P1 | in progress | STR-004 through STR-015 | Quick guard against `29143c8e` is green after HT decode parallel initialization, conservative full-wave HT encode, weighted direct-batch admission, and bounded restart work stealing; thresholds are unchanged and exact candidate repetition remains |
 | PUB-002 | P1 | complete | PKG-001, CUDA-002 | Fail-closed canonical origin, exact remote annotated tag, Release, and crates.io preflight |
@@ -608,19 +632,20 @@ are current.
 | `third_party/block-0.1.6-patched/PATCH_PROVENANCE.md` | PROV-001, METALDEP-001 | Hash-pinned ABI-delta provenance; maintainer identity/date signoff remains external |
 | root Cargo/config/release files | COV-001, CLONE-001, REC-001, REL-001, DOC-002, CONTACT-001, POLICY-001, METALDEP-001 | Dependency/tooling pins, source classification, ignores, release metadata, contact policy, and patch scope |
 
-Moving-tree reconciliation snapshot on 2026-07-12 after the source and tooling
-phase commits: 16 tracked documentation/evidence paths are modified and two
-reviewed evidence paths are untracked, with zero staged, deleted, or renamed
-paths. All Rust sources are committed. The two untracked paths are the required
-rustdoc-hidden API inventory and patched-`block` provenance record; the latter
-intentionally retains fail-closed reviewer/date placeholders. No backup,
-reject, temporary, generated output, `_new`, or `_fixed` variant exists. No
-tracked text or untracked filename contains the maintainer's private CUDA
-login, hostname, or address.
+Moving-tree reconciliation snapshot on 2026-07-12 after independent review: 65
+tracked paths are modified and 28 reviewed Rust/policy modules are untracked,
+with zero staged or renamed paths and two intentional tracked module deletions.
+The deletions remove the CUDA resident `helpers.rs` catch-all and JPEG Metal
+`pack_dispatch/common.rs`; focused downward-dependency owners replace them.
+Every untracked Rust file is wired and covered by package plus structural
+policy tests. API snapshots, the semver report, exact review fingerprints, and
+the unsafe inventory are regenerated. No backup, reject, temporary, `_new`, or
+`_fixed` variant exists, and no private CUDA connection detail appears in the
+tree.
 
-REC-001 remains in progress until the documentation/evidence phase is committed
-and the candidate worktree is clean. After that commit, changed-line coverage
-and staged dependency-aware packaging are the next local gates.
+REC-001 remains in progress until this review follow-up is committed and the
+worktree is clean. Changed-line coverage and staged dependency-aware packaging
+are the next clean-tree gates.
 
 ### REL-001 — release metadata truth
 
@@ -3719,17 +3744,27 @@ Required closure is one clone-shared per-context operation gate and pool with:
    `pool.rs <400` ceilings, with semantic policy checks rather than stale text
    matching or widened ratchets
 
-Moving-tree evidence on 2026-07-12: the RAII checkout, zero-length and foreign-
-context rejection, clone serialization, best-fit reuse, count/byte caps,
-long-churn stability, compound error selection, abandonment quarantine, and
-gate-poison behavior passed 18 focused hardware-neutral tests before the
-structural split. `operations.rs` is now a facade over API, checkout, gate, and
-policy owners; pool diagnostics and tests are separate children, with both
-established parent ceilings met in the moving tree. Remaining closure is the
-full runtime package/strict Clippy/policy rerun, reconciliation of active-
-checkout wording or metrics in public diagnostics, and the JPEG CUDA adapter's
-exact post-checkout aggregate tests for new, larger-reused, exact, and one-over
-staging. Exact-source NVIDIA execution remains under FINAL-001.
+Closure evidence on 2026-07-12: page-locked growth now reserves exact bytes in
+a context-owned authority before `cuMemHostAlloc` and releases the charge only
+after confirmed free. Every adapter session registers its complete cache plus
+active-owner graph with that same authority. Cache replacement and actual-
+capacity host allocation use an unlocked full-headroom RAII reservation: peer
+sessions and external context clones see the provisional charge and fail before
+allocation, while caller work never executes under the authority mutex.
+Pre-bind owners migrate transactionally when a context binds; wrong-context
+guards reject; early returns/unwinds roll back; and compound operation plus
+accounting failures preserve both typed sources.
+
+The independent-session/same-context race, context-clone pinned growth,
+owner-outlives-context, pinned-first/owner-first, exact/one-over, growth/shrink,
+drop, rollback, quarantine, null allocation, and non-reentrant replacement
+regressions pass. The runtime pinned lane passes 21 tests, context authority 6,
+JPEG CUDA all-feature library 50, and no-default library 12. The combined seven
+affected packages, workspace warning-denied Clippy, strict Clippy, 411 ordinary
+repository policies, and strict rendered-API policy pass. `operations.rs` and
+the context authority are responsibility-split below their existing ceilings;
+the unsafe inventory follows the focused `operations/growth.rs` owner.
+Exact-source NVIDIA execution remains under FINAL-001.
 
 ### CUDAHANDLE-001 — validate successful CUDA out-parameters
 

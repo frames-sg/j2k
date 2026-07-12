@@ -6,14 +6,17 @@ use j2k_cuda_runtime::{
     CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job, CudaJ2kStoreRgb8MctJob, CudaKernelOutput,
 };
 
-use super::super::resident::{bit_depth_addend, checked_area};
 use super::super::{
     cuda_error, CudaHtj2kStoreStep, CudaHtj2kTransform, Error, CUDA_HTJ2K_KERNELS_NOT_READY,
     CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
 };
 
 mod batch;
+mod validation;
 
+use self::validation::bit_depth_addend;
+pub(super) use self::validation::validate_color_stores;
+use crate::allocation::checked_cuda_element_count;
 pub(super) use batch::{prepare_rgb8_mct_batch_store, rgb8_mct_batch_store_target};
 
 #[derive(Clone, Copy)]
@@ -215,12 +218,16 @@ pub(super) fn run_color_mct(
         });
     }
 
-    let mct_len =
-        u32::try_from(checked_area(mct_dimensions.0, mct_dimensions.1)?).map_err(|_| {
+    let mct_len = u32::try_from(
+        checked_cuda_element_count(mct_dimensions.0, mct_dimensions.1).ok_or(
             Error::UnsupportedCudaRequest {
                 reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            }
-        })?;
+            },
+        )?,
+    )
+    .map_err(|_| Error::UnsupportedCudaRequest {
+        reason: CUDA_HTJ2K_KERNELS_NOT_READY,
+    })?;
     let (stats, elapsed_us) = inputs
         .context
         .time_default_stream_named_us_if(collect_stage_timings, "j2k.htj2k.decode.mct", || {

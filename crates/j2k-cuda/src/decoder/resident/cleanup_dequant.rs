@@ -5,7 +5,7 @@ use super::super::{
     CudaHtj2kCleanupTarget, CudaHtj2kDecodeResources, CudaHtj2kDequantizeTarget,
     CudaQueuedHtj2kCleanup, Error, CUDA_HTJ2K_KERNELS_NOT_READY,
 };
-use super::helpers::pooled_cuda_buffer;
+use super::buffer_access::pooled_cuda_buffer;
 use crate::allocation::HostPhaseBudget;
 
 #[cfg(test)]

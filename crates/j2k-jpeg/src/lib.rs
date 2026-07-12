@@ -80,6 +80,10 @@ pub(crate) mod profile;
 
 pub(crate) mod encoded_output;
 
+mod baseline_encode_contract;
+mod baseline_entropy;
+mod dct_contract;
+
 /// Baseline JPEG encoder API.
 mod encoder;
 pub use encoder::{

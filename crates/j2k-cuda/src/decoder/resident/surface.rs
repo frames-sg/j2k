@@ -5,8 +5,8 @@ use super::super::{
     CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaSession, CudaSurfaceStats, Error, PixelFormat,
     Storage, Surface, SurfaceResidency, CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
 };
+use super::buffer_access::pooled_cuda_buffer;
 use super::component::decode_cuda_component_plan;
-use super::helpers::pooled_cuda_buffer;
 
 #[cfg(feature = "cuda-runtime")]
 pub(super) fn decode_grayscale_cuda_resident_surface_with_plan_profile(

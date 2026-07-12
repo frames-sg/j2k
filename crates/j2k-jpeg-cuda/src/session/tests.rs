@@ -4,7 +4,7 @@ use std::sync::{Arc, Barrier};
 
 use j2k_jpeg::adapter::{SharedJpegFastPacket, DEFAULT_JPEG_PLAN_CACHE_HOST_BYTES};
 
-use super::CudaSession;
+use super::{select_operation_accounting_result, CudaSession};
 use crate::Error;
 
 const BASELINE_420: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_420_16x16.jpg");
@@ -48,6 +48,182 @@ fn clone_before_init_reuses_one_context_and_output_pool_when_cuda_is_available()
         .recycle_owned_cuda_output_buffer(buffer)
         .expect("return through second clone");
     assert_eq!(session.retained_owned_cuda_output_buffers().unwrap(), 1);
+}
+
+#[test]
+fn retained_pinned_upload_capacity_blocks_later_host_owner_over_admission() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let mut session = CudaSession::default();
+    let report = crate::owned_decode::diagnose_owned_cuda_420_entropy(
+        BASELINE_420,
+        j2k_cuda_runtime::CudaJpegChunkedEntropyConfig::default(),
+        &mut session,
+    )
+    .expect("seed retained CUDA pinned upload staging");
+    drop(report);
+
+    let diagnostics = session.owned_cuda_host_memory_diagnostics().unwrap();
+    assert!(diagnostics.pinned_upload_retained_bytes > 0);
+    assert_eq!(diagnostics.active_owner_bytes, 0);
+    let available_without_pinned = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES
+        .checked_sub(diagnostics.cache_retained_bytes)
+        .expect("cache remains inside host cap");
+    let error = session
+        .reserve_existing_host_owner(available_without_pinned)
+        .expect_err("retained pinned staging must remain part of admission");
+    assert!(matches!(
+        error,
+        Error::HostAllocationTooLarge { requested, cap, .. }
+            if requested
+                == j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES
+                    + diagnostics.pinned_upload_retained_bytes
+                && cap == j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES
+    ));
+}
+
+#[test]
+fn external_pinned_growth_obeys_live_session_context_owners() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let session = CudaSession::default();
+    let context = session.cuda_context().expect("session context");
+    let external_clone = context.clone();
+    let owner = context
+        .register_external_host_owner(j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES - 7)
+        .expect("seed context owner");
+    let before = context
+        .pinned_upload_staging_pool_diagnostics()
+        .expect("pinned diagnostics before rejection");
+    let error = external_clone
+        .upload_pinned(&[0_u8; 8])
+        .expect_err("external upload must share context authority");
+    assert!(matches!(
+        error,
+        j2k_cuda_runtime::CudaError::HostAllocationTooLarge { .. }
+    ));
+    assert_eq!(
+        owner.bytes(),
+        j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES - 7
+    );
+    assert_eq!(
+        context
+            .pinned_upload_staging_pool_diagnostics()
+            .expect("pinned diagnostics after rejection"),
+        before
+    );
+}
+
+#[test]
+fn independent_sessions_on_one_context_cannot_race_past_the_host_cap() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let first = CudaSession::default();
+    let context = first.cuda_context().expect("shared context");
+    let second = CudaSession::default();
+    second
+        .bind_cuda_context(&context)
+        .expect("bind second independent session");
+    let start = Arc::new(Barrier::new(3));
+    let finish = Arc::new(Barrier::new(3));
+    let requested = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES / 2 + 1;
+    let workers = [first, second].map(|session| {
+        let start = Arc::clone(&start);
+        let finish = Arc::clone(&finish);
+        std::thread::spawn(move || {
+            start.wait();
+            let result = session.allocate_owned_host_owner(|_| Ok(((), requested)));
+            finish.wait();
+            result.map(|((), lease)| lease)
+        })
+    });
+    start.wait();
+    finish.wait();
+    let results = workers.map(|worker| worker.join().expect("allocation worker"));
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+    assert!(results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .any(|error| matches!(
+            error,
+            Error::CudaRuntime {
+                source: j2k_cuda_runtime::CudaError::HostAllocationTooLarge { .. }
+            }
+        )));
+}
+
+#[test]
+fn allocation_transaction_same_context_pinned_reentry_fails_typed_without_deadlock() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let session = CudaSession::default();
+    let context = session.cuda_context().expect("session context");
+    let before = context
+        .pinned_upload_staging_pool_diagnostics()
+        .expect("pinned diagnostics before transaction");
+    let error = session
+        .allocate_owned_host_owner::<()>(|_| {
+            let source = context
+                .upload_pinned(&[1])
+                .expect_err("reserved headroom must block same-context pinned growth");
+            Err(Error::CudaRuntime { source })
+        })
+        .expect_err("allocation operation keeps the pinned admission failure");
+    assert!(matches!(
+        error,
+        Error::CudaRuntime {
+            source: j2k_cuda_runtime::CudaError::HostAllocationTooLarge { .. }
+        }
+    ));
+    assert_eq!(
+        context
+            .pinned_upload_staging_pool_diagnostics()
+            .expect("pinned diagnostics after transaction"),
+        before
+    );
+}
+
+#[test]
+fn pinned_accounting_guard_rejects_a_foreign_context_operation() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let session = CudaSession::default();
+    let context = session.cuda_context().expect("session context");
+    let foreign = j2k_cuda_runtime::CudaContext::system_default().expect("foreign context");
+    let operation = foreign
+        .begin_pinned_upload_operation()
+        .expect("foreign pinned operation");
+    let Err(error) = session.reserve_pinned_upload_retention(&context, &operation) else {
+        panic!("foreign operation must not be charged to the session");
+    };
+    assert!(matches!(error, Error::CudaRuntime { .. }));
+}
+
+#[test]
+fn operation_and_accounting_failures_preserve_both_typed_sources() {
+    let result = select_operation_accounting_result::<()>(
+        Err(Error::UnsupportedCudaRequest { reason: "primary" }),
+        Err(Error::InFlightHostLedgerPoisoned),
+    )
+    .expect_err("both failures must remain visible");
+    let Error::OperationAndHostAccountingFailed {
+        primary,
+        accounting,
+    } = result
+    else {
+        panic!("expected compound operation/accounting failure");
+    };
+    assert!(matches!(
+        *primary,
+        Error::UnsupportedCudaRequest { reason: "primary" }
+    ));
+    assert!(matches!(*accounting, Error::InFlightHostLedgerPoisoned));
 }
 
 #[test]

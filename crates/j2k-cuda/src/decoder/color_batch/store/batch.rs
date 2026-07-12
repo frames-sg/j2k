@@ -3,14 +3,15 @@
 use j2k_core::PixelFormat;
 use j2k_cuda_runtime::{CudaJ2kStoreRgb8MctJob, CudaJ2kStoreRgb8MctTarget};
 
-use super::super::super::resident::{
-    bit_depth_addend, finish_cuda_component_decode, pooled_cuda_buffer, validate_color_stores,
-};
+use super::super::super::resident::{finish_cuda_component_decode, pooled_cuda_buffer};
 use super::super::super::{
     CudaComponentDecodeWork, CudaDecodedComponent, CudaHtj2kColorDecodePlans, Error,
     CUDA_HTJ2K_KERNELS_NOT_READY,
 };
-use super::{can_fuse_mct_store_for_stores, ColorStorePlan, ColorStoreRoute};
+use super::{
+    bit_depth_addend, can_fuse_mct_store_for_stores, validate_color_stores, ColorStorePlan,
+    ColorStoreRoute,
+};
 
 pub(in crate::decoder::color_batch) struct CudaPreparedRgb8MctBatchStore {
     pub(in crate::decoder::color_batch) color: CudaHtj2kColorDecodePlans,

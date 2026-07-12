@@ -34,6 +34,7 @@ fn color_runtime_owns_store_and_queued_idwt_completion() {
         )
         .required(&[
             "mod batch;",
+            "mod validation;",
             "struct ColorStorePlan",
             "fn run_color_mct(",
             "fn dispatch_color_store(",

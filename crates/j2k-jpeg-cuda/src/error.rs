@@ -47,6 +47,14 @@ pub enum Error {
     /// In-flight host-owner accounting can no longer prove an exact total.
     #[error("shared CUDA JPEG in-flight host-owner ledger is poisoned")]
     InFlightHostLedgerPoisoned,
+    /// A CUDA operation and the following host-accounting verification both failed.
+    #[error("CUDA operation failed ({primary}); host-accounting verification also failed ({accounting})")]
+    OperationAndHostAccountingFailed {
+        /// Primary operation failure.
+        primary: Box<Error>,
+        /// Host-accounting verification failure.
+        accounting: Box<Error>,
+    },
     /// A host-side allocation needed by the adapter could not be reserved.
     #[error("host allocation failed for {what}: {bytes} bytes")]
     HostAllocationFailed {
@@ -132,6 +140,7 @@ impl AdapterErrorParts for Error {
             | Self::JpegHostOperationPoisoned
             | Self::CudaSessionRuntimePoisoned
             | Self::InFlightHostLedgerPoisoned
+            | Self::OperationAndHostAccountingFailed { .. }
             | Self::BatchCapacityExceeded { .. }
             | Self::Encode(_)
             | Self::HostAllocationFailed { .. }

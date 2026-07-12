@@ -2721,6 +2721,8 @@ impl core::default::Default for j2k_cuda_runtime::CudaBufferPoolLimits
 impl core::default::Default for j2k_cuda_runtime::CudaJpegBaselineEncodeHuffmanTable
 impl core::default::Default for j2k_cuda_runtime::CudaJpegChunkedEntropyConfig
 impl core::default::Default for j2k_cuda_runtime::CudaPinnedUploadStagingPoolLimits
+impl core::ops::drop::Drop for j2k_cuda_runtime::CudaExternalHostOwner
+impl core::ops::drop::Drop for j2k_cuda_runtime::CudaExternalHostReservation<'_>
 impl core::ops::drop::Drop for j2k_cuda_runtime::CudaPinnedUploadStagingCheckout<'_, '_>
 impl core::ops::drop::Drop for j2k_cuda_runtime::CudaQueuedExecution
 impl core::ops::drop::Drop for j2k_cuda_runtime::CudaQueuedHtj2kCleanup
@@ -2748,6 +2750,8 @@ impl j2k_core::accelerator::GpuAbi for j2k_cuda_runtime::CudaJpegEntropySyncStat
 impl j2k_core::accelerator::GpuAbi for j2k_cuda_runtime::CudaJpegHuffmanTable
 impl j2k_cuda_runtime::CudaDwt53Output
 impl j2k_cuda_runtime::CudaDwt97Output
+impl j2k_cuda_runtime::CudaExternalHostOwner
+impl j2k_cuda_runtime::CudaExternalHostReservation<'_>
 impl j2k_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock
 impl j2k_cuda_runtime::CudaHtj2kCompactEncodedCodeBlocks
 impl j2k_cuda_runtime::CudaHtj2kDecodeOutput
@@ -2778,6 +2782,8 @@ impl j2k_cuda_runtime::CudaResidentDwt53Output
 impl j2k_cuda_runtime::CudaResidentDwt97Output
 impl<T> j2k_cuda_runtime::CudaDeviceBufferView<'_, T>
 impl<T> j2k_cuda_runtime::CudaDeviceBufferViewMut<'_, T>
+pub const fn j2k_cuda_runtime::CudaExternalHostOwner::bytes(&self) -> usize
+pub const fn j2k_cuda_runtime::CudaExternalHostReservation<'_>::external_live_bytes(&self) -> usize
 pub const j2k_cuda_runtime::CudaHtj2kEncodeStatus::NAME: &'static str
 pub const j2k_cuda_runtime::CudaHtj2kPacketizationBlock::NAME: &'static str
 pub const j2k_cuda_runtime::CudaHtj2kPacketizationStatus::NAME: &'static str
@@ -2886,6 +2892,7 @@ pub fn j2k_cuda_runtime::CudaContext::j2k_transcode_reversible_dwt53_and_live_ho
 pub fn j2k_cuda_runtime::CudaContext::packetize_htj2k_cleanup_packets_with_tag_state(&self, &[u8], &[j2k_cuda_runtime::CudaHtj2kPacketizationPacket], &[j2k_cuda_runtime::CudaHtj2kPacketizationSubband], &[j2k_cuda_runtime::CudaHtj2kPacketizationBlock], &[j2k_cuda_runtime::CudaHtj2kPacketizationSubbandTagState], &[j2k_cuda_runtime::CudaHtj2kPacketizationTagNodeState]) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kPacketizedTile, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::packetize_htj2k_cleanup_packets_with_tag_state_and_live_host_bytes(&self, &[u8], &[j2k_cuda_runtime::CudaHtj2kPacketizationPacket], &[j2k_cuda_runtime::CudaHtj2kPacketizationSubband], &[j2k_cuda_runtime::CudaHtj2kPacketizationBlock], &[j2k_cuda_runtime::CudaHtj2kPacketizationSubbandTagState], &[j2k_cuda_runtime::CudaHtj2kPacketizationTagNodeState], usize) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kPacketizedTile, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::pinned_upload_staging_pool_diagnostics(&self) -> core::result::Result<j2k_cuda_runtime::CudaPinnedUploadStagingPoolDiagnostics, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaContext::register_external_host_owner(&self, usize) -> core::result::Result<j2k_cuda_runtime::CudaExternalHostOwner, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::time_default_stream_named_us<T>(&self, &str, impl core::ops::function::FnMut() -> core::result::Result<T, j2k_cuda_runtime::CudaError>) -> core::result::Result<(T, u128), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::time_default_stream_named_us_if<T>(&self, bool, &str, impl core::ops::function::FnMut() -> core::result::Result<T, j2k_cuda_runtime::CudaError>) -> core::result::Result<(T, u128), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::upload_htj2k_decode_resources_with_tables(&self, &[u8], &j2k_cuda_runtime::CudaHtj2kDecodeTableResources) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kDecodeResources, j2k_cuda_runtime::CudaError>
@@ -2910,6 +2917,15 @@ pub fn j2k_cuda_runtime::CudaDwt97Output::execution(&self) -> j2k_cuda_runtime::
 pub fn j2k_cuda_runtime::CudaDwt97Output::levels(&self) -> &[j2k_cuda_runtime::CudaDwt53LevelShape]
 pub fn j2k_cuda_runtime::CudaDwt97Output::ll_dimensions(&self) -> (u32, u32)
 pub fn j2k_cuda_runtime::CudaDwt97Output::transformed(&self) -> &[f32]
+pub fn j2k_cuda_runtime::CudaExternalHostOwner::context_live_bytes(&self) -> core::result::Result<usize, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaExternalHostOwner::context_live_bytes_excluding(&self, usize) -> core::result::Result<usize, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaExternalHostOwner::drop(&mut self)
+pub fn j2k_cuda_runtime::CudaExternalHostOwner::is_for_context(&self, &j2k_cuda_runtime::CudaContext) -> bool
+pub fn j2k_cuda_runtime::CudaExternalHostOwner::pinned_retained_bytes(&self) -> core::result::Result<usize, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaExternalHostOwner::reconcile(&mut self, usize) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaExternalHostOwner::reserve_replacement(&mut self, usize) -> core::result::Result<j2k_cuda_runtime::CudaExternalHostReservation<'_>, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaExternalHostReservation<'_>::commit(self, usize) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaExternalHostReservation<'_>::drop(&mut self)
 pub fn j2k_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::cleanup_length(&self) -> u32
 pub fn j2k_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::execution(&self) -> j2k_cuda_runtime::CudaExecutionStats
 pub fn j2k_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::into_parts(self) -> (core::ops::range::Range<usize>, u32, u32, u8, u8)
@@ -2993,6 +3009,7 @@ pub fn j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'_>::ensure_for_context(
 pub fn j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'_>::is_for_context(&self, &j2k_cuda_runtime::CudaContext) -> bool
 pub fn j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'_>::prepare_upload(&self, usize) -> core::result::Result<j2k_cuda_runtime::CudaPinnedUploadStagingCheckout<'_, '_>, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'_>::upload(&self, &[u8]) -> core::result::Result<j2k_cuda_runtime::CudaDeviceBuffer, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'_>::verify_host_budget(&self) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaPinnedUploadStagingCheckout<'_, '_>::allocation_byte_len(&self) -> usize
 pub fn j2k_cuda_runtime::CudaPinnedUploadStagingCheckout<'_, '_>::drop(&mut self)
 pub fn j2k_cuda_runtime::CudaPinnedUploadStagingCheckout<'_, '_>::recycle(self) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
@@ -3460,6 +3477,8 @@ pub struct j2k_cuda_runtime::CudaDwt97BatchGeometry
 pub struct j2k_cuda_runtime::CudaDwt97BatchStageTimings
 pub struct j2k_cuda_runtime::CudaDwt97BatchWithPoolRequest<'a>
 pub struct j2k_cuda_runtime::CudaDwt97Output
+pub struct j2k_cuda_runtime::CudaExternalHostOwner
+pub struct j2k_cuda_runtime::CudaExternalHostReservation<'a>
 pub struct j2k_cuda_runtime::CudaHtj2k97CodeblockBands
 pub struct j2k_cuda_runtime::CudaHtj2k97CodeblockBatchWithPoolRequest<'a>
 pub struct j2k_cuda_runtime::CudaHtj2k97DeviceCodeblockBands

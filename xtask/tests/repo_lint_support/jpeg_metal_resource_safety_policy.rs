@@ -21,9 +21,10 @@ fn jpeg_metal_host_readback_aliases_require_unsafe_contracts() {
     let batch_support =
         fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/batch_support.rs"))
             .expect("read JPEG Metal batch support module");
-    let pack_dispatch =
-        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/pack_dispatch/common.rs"))
-            .expect("read JPEG Metal common pack dispatch module");
+    let grouped_output = fs::read_to_string(
+        root.join("crates/j2k-jpeg-metal/src/compute/pack_dispatch/grouped_output.rs"),
+    )
+    .expect("read JPEG Metal grouped output module");
     let viewport_cache =
         fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/viewport_cache.rs"))
             .expect("read JPEG Metal viewport cache module");
@@ -91,7 +92,7 @@ fn jpeg_metal_host_readback_aliases_require_unsafe_contracts() {
         ]),
         PatternCheck::new(
             "JPEG Metal grouped reusable-output surface aliases",
-            &pack_dispatch,
+            &grouped_output,
         )
         .required(&["Surface::from_batch_output_buffer_offset("]),
         PatternCheck::new(

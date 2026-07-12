@@ -10,11 +10,10 @@ use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, checked_allocation_len,
     try_reserve_for_len_with_live_budget,
 };
+use crate::baseline_entropy::{encode_block, BitWriter};
 use crate::decoder::{restart_index_allocation_bytes, Decoder};
 use crate::encoded_output::checked_jpeg_baseline_frame_capacity;
-use crate::encoder::{
-    encode_block, BitWriter, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSubsampling,
-};
+use crate::encoder::{JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSubsampling};
 use crate::entropy::progressive::{
     decode_progressive_dct_blocks, PreparedProgressiveComponentPlan, ProgressiveDctBlocks,
 };
@@ -28,7 +27,7 @@ use alloc::vec::Vec;
 
 mod validation;
 use self::validation::validate_baseline_dct_image;
-pub use self::validation::JpegDctImageError;
+pub use crate::dct_contract::{JpegDctCodingMode, JpegDctImageError};
 
 /// Options for experimental DCT block extraction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,15 +95,6 @@ impl JpegDctImage {
         let restart_bytes = restart_index_capacity_bytes(self.restart_index.as_ref())?;
         checked_add_allocation_bytes(component_bytes, restart_bytes)
     }
-}
-
-/// JPEG DCT entropy coding mode represented by [`JpegDctImage`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JpegDctCodingMode {
-    /// SOF0 baseline sequential Huffman DCT.
-    BaselineSequential,
-    /// SOF2 progressive Huffman DCT with accumulated scan coefficients.
-    Progressive,
 }
 
 /// One JPEG component's natural-order DCT blocks.

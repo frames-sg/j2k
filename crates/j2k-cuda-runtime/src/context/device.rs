@@ -7,6 +7,7 @@ use std::{
 
 use crate::{driver::Driver, error::CudaError, memory::PinnedUploadStagingPool};
 
+use super::host_budget::SharedCudaHostBudget;
 use super::{inner::ContextInner, ContextResourceLifecycle, CudaContext};
 
 impl CudaContext {
@@ -51,6 +52,7 @@ impl CudaContext {
                 modules: Mutex::new(HashMap::new()),
                 pinned_upload_operation: Mutex::new(()),
                 pinned_upload_staging: Mutex::new(PinnedUploadStagingPool::new()),
+                host_budget: SharedCudaHostBudget::new(),
                 resource_lifecycle: ContextResourceLifecycle::new(),
             }),
         })

@@ -4,7 +4,7 @@
 
 use super::JpegDctImageError;
 use crate::adapter::JpegBaselineSampling;
-use crate::encoder::magnitude;
+use crate::baseline_entropy::magnitude;
 use crate::transcode::JpegDctImage;
 
 const MAX_BASELINE_DC_CATEGORY: u8 = 11;

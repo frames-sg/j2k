@@ -65,12 +65,17 @@ fn assert_entropy_storage_is_preallocated_before_parallel_fill(
 fn assert_capped_entropy_writer(sources: &JpegEncodeAllocationSources) {
     assert_struct_field_type(
         "JPEG CPU encoder",
-        &sources.encoder,
+        &sources.baseline_entropy,
         "BitWriter",
         "bytes",
         "CappedBytes",
     );
-    calls("JPEG CPU encoder", &sources.encoder, "try_with_max_bytes").assert_contains(
+    calls(
+        "JPEG CPU encoder",
+        &sources.baseline_entropy,
+        "try_with_max_bytes",
+    )
+    .assert_contains(
         "JPEG BitWriter storage",
         &["CappedBytes::try_with_capacity"],
     );

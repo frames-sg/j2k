@@ -31,6 +31,7 @@ pub(crate) mod jpeg_batch_allocation_policy;
 pub(crate) mod jpeg_dct_reemit_policy;
 pub(crate) mod jpeg_decode_allocation_policy;
 pub(crate) mod jpeg_decoder_structure_policy;
+pub(crate) mod jpeg_encoder_structure_policy;
 pub(crate) mod jpeg_header_allocation_policy;
 pub(crate) mod jpeg_metal_resource_safety_policy;
 pub(crate) mod jpeg_prepared_table_policy;

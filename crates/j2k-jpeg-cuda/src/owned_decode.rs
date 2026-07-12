@@ -57,9 +57,10 @@ pub(crate) fn decode_owned_cuda_rgb8_from_decoder(
     let pinned_upload = context
         .begin_pinned_upload_operation()
         .map_err(crate::runtime::cuda_error)?;
-    let _pinned_pool_lease = session.reserve_pinned_upload_retention(&pinned_upload)?;
+    let pinned_accounting = session.reserve_pinned_upload_retention(&context, &pinned_upload)?;
     let packet = resolve_owned_rgb8_packet_from_decoder(decoder, session)?;
-    decode_owned_cuda_rgb8_from_packet(&packet, info.dimensions, session, &context)
+    let result = decode_owned_cuda_rgb8_from_packet(&packet, info.dimensions, session, &context);
+    pinned_accounting.finish(result)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -111,7 +112,7 @@ pub(crate) fn decode_owned_cuda_rgb8_from_decoder_into(
     let pinned_upload = context
         .begin_pinned_upload_operation()
         .map_err(crate::runtime::cuda_error)?;
-    let _pinned_pool_lease = session.reserve_pinned_upload_retention(&pinned_upload)?;
+    let pinned_accounting = session.reserve_pinned_upload_retention(&context, &pinned_upload)?;
     context
         .validate_jpeg_output_buffer_context(output)
         .map_err(cuda_owned_decode_error)?;
@@ -126,7 +127,8 @@ pub(crate) fn decode_owned_cuda_rgb8_from_decoder_into(
             pitch_bytes,
             runtime_external_live,
         )
-        .map_err(cuda_owned_decode_error)?;
+        .map_err(cuda_owned_decode_error);
+    let stats = pinned_accounting.finish(stats)?;
     Ok(CudaSurfaceStats {
         kernel_dispatches: stats.kernel_dispatches(),
         copy_kernel_dispatches: stats.copy_kernel_dispatches(),

@@ -175,8 +175,8 @@ fn cuda_htj2k_decode_steady_state_uses_untimed_runtime_path() {
         "/src/decoder/resident.rs",
         "/src/decoder/resident/cleanup_dequant.rs",
         "/src/decoder/resident/component.rs",
-        "/src/decoder/resident/helpers.rs",
         "/src/decoder/resident/idwt.rs",
+        "/src/decoder/resident/idwt/conversions.rs",
         "/src/decoder/resident/routing.rs",
         "/src/decoder/resident/surface.rs",
     ]

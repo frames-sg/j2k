@@ -15,6 +15,7 @@ use crate::{
 mod band_transfer;
 mod compact;
 mod device;
+mod host_budget;
 mod inner;
 mod kernel_cache;
 mod kernel_dispatch;
@@ -26,6 +27,8 @@ mod resource_creation;
 mod test_kernels;
 
 pub use self::compact::{CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kCompactEncodedCodeBlocks};
+#[doc(hidden)]
+pub use self::host_budget::{CudaExternalHostOwner, CudaExternalHostReservation};
 #[cfg(test)]
 pub(crate) use self::pinned_host::validate_non_null_pinned_host_allocation;
 #[cfg(test)]

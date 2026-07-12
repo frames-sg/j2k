@@ -9,10 +9,6 @@ use crate::command_support::{
 };
 use crate::process::cargo;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the benchmark build command intentionally lists the complete fail-fast benchmark matrix"
-)]
 pub(super) fn bench_build() -> Result<(), String> {
     run_cargo(&["bench", "-p", "j2k", "--bench", "public_api", "--no-run"])?;
     run_cargo(&[

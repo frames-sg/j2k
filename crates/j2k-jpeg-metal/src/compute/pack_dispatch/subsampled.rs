@@ -17,8 +17,9 @@ use super::super::{
     FastDecodeEntropyInputs, FastSubsampledMetal, JpegFast420Params, JpegFast420ScaledParams,
     JpegFast420WindowedPackParams, MetalRuntime, PixelFormat, Rect, Surface,
 };
-use super::common::{
-    checked_u32, FastSubsampledOpBatchItemRequest, FastSubsampledScaledRegionBatchItemRequest,
+use super::conversion::checked_u32;
+use super::requests::{
+    FastSubsampledOpBatchItemRequest, FastSubsampledScaledRegionBatchItemRequest,
 };
 
 #[cfg(target_os = "macos")]

@@ -11,7 +11,6 @@ use j2k_cuda_runtime::{CudaBufferPool, CudaContext};
 
 use crate::{runtime::cuda_error, Error};
 
-#[derive(Default)]
 pub(super) struct SharedCudaRuntimeState {
     state: Mutex<CudaRuntimeState>,
     initialized: AtomicBool,
@@ -24,6 +23,13 @@ struct CudaRuntimeState {
 }
 
 impl SharedCudaRuntimeState {
+    pub(super) fn new() -> Self {
+        Self {
+            state: Mutex::new(CudaRuntimeState::default()),
+            initialized: AtomicBool::new(false),
+        }
+    }
+
     pub(super) fn is_initialized(&self) -> bool {
         self.initialized.load(Ordering::Acquire)
     }

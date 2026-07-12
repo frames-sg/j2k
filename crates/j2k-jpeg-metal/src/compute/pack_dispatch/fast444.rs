@@ -10,10 +10,8 @@ use super::super::{
     BatchedDecodeItem, CommandBufferRef, Error, FastDecodeEntropyInputs, JpegFast444PacketV1,
     JpegFast444Params, JpegFast444ScaledParams, MetalRuntime, PixelFormat, PlaneMode, Rect,
 };
-use super::common::{
-    encode_jpeg_pack_to_surface_in_command_buffer, Fast444ScaledRegionBatchItemRequest,
-    JpegPackSurfaceRequest,
-};
+use super::requests::Fast444ScaledRegionBatchItemRequest;
+use super::surface::{encode_jpeg_pack_to_surface_in_command_buffer, JpegPackSurfaceRequest};
 
 #[cfg(target_os = "macos")]
 #[expect(

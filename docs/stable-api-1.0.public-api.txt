@@ -1363,7 +1363,7 @@ pub j2k_jpeg::JpegEncodeError::IncompatibleSubsampling::subsampling: j2k_jpeg::J
 pub j2k_jpeg::JpegEncodeError::InternalInvariant
 pub j2k_jpeg::JpegEncodeError::InternalInvariant::reason: &'static str
 pub j2k_jpeg::JpegEncodeError::InvalidDctImage
-pub j2k_jpeg::JpegEncodeError::InvalidDctImage::reason: crate::transcode::JpegDctImageError
+pub j2k_jpeg::JpegEncodeError::InvalidDctImage::reason: j2k_jpeg::dct_contract::JpegDctImageError
 pub j2k_jpeg::JpegEncodeError::InvalidRestartInterval
 pub j2k_jpeg::JpegEncodeError::MemoryCapExceeded
 pub j2k_jpeg::JpegEncodeError::MemoryCapExceeded::cap: usize
@@ -1848,15 +1848,15 @@ pub fn j2k_jpeg_metal::Surface::download_into(&self, &mut [u8], usize) -> core::
 pub fn j2k_jpeg_metal::Surface::pitch_bytes(&self) -> usize
 pub fn j2k_jpeg_metal::Surface::residency(&self) -> j2k_core::accelerator::SurfaceResidency
 pub fn j2k_jpeg_metal::choose_viewport_surface_strategy(&j2k_jpeg_metal::ViewportWorkload, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_jpeg_metal::ViewportSurfaceStrategy, j2k_jpeg_metal::Error>
-pub fn j2k_jpeg_metal::encode_jpeg_baseline_batch_from_metal_buffers(&[j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'_>], j2k_jpeg::encoder::JpegEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::encoder::EncodedJpeg>, j2k_jpeg_metal::Error>
-pub fn j2k_jpeg_metal::encode_jpeg_baseline_from_metal_buffer(j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'_>, j2k_jpeg::encoder::JpegEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<j2k_jpeg::encoder::EncodedJpeg, j2k_jpeg_metal::Error>
+pub fn j2k_jpeg_metal::encode_jpeg_baseline_batch_from_metal_buffers(&[j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'_>], j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::baseline_encode_contract::EncodedJpeg>, j2k_jpeg_metal::Error>
+pub fn j2k_jpeg_metal::encode_jpeg_baseline_from_metal_buffer(j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'_>, j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<j2k_jpeg::baseline_encode_contract::EncodedJpeg, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::is_contiguous_viewport_workload(&j2k_jpeg_metal::ViewportWorkload) -> bool
 pub fn j2k_jpeg_metal::suggest_viewport_workload((u32, u32)) -> core::option::Option<j2k_jpeg_metal::ViewportWorkload>
 pub fn j2k_jpeg_metal::viewport_source_bounds(&j2k_jpeg_metal::ViewportWorkload) -> j2k_core::types::Rect
 pub j2k_jpeg_metal::Error::BatchInfrastructure(j2k_core::batch::BatchInfrastructureError)
 pub j2k_jpeg_metal::Error::Buffer(j2k_core::error::BufferError)
 pub j2k_jpeg_metal::Error::Decode(j2k_jpeg::error::JpegError)
-pub j2k_jpeg_metal::Error::Encode(j2k_jpeg::encoder::JpegEncodeError)
+pub j2k_jpeg_metal::Error::Encode(j2k_jpeg::baseline_encode_contract::JpegEncodeError)
 pub j2k_jpeg_metal::Error::FastPacket
 pub j2k_jpeg_metal::Error::FastPacket::source: j2k_jpeg::adapter::fast_packet::error::FastPacketError
 pub j2k_jpeg_metal::Error::JpegPlanCache(j2k_jpeg::adapter::fast_packet::cache::JpegPlanCacheError)
@@ -2122,6 +2122,7 @@ pub use j2k_metal::SurfaceResidency
 
 ```text
 #[non_exhaustive] pub enum j2k_jpeg_cuda::Error
+impl core::default::Default for j2k_jpeg_cuda::CudaSession
 impl core::fmt::Debug for j2k_jpeg_cuda::CudaSession
 impl j2k_jpeg_cuda::Codec
 impl j2k_jpeg_cuda::CudaSession
@@ -2129,6 +2130,7 @@ impl j2k_jpeg_cuda::CudaSurface<'_>
 impl j2k_jpeg_cuda::Surface
 impl<'a> j2k_jpeg_cuda::Decoder<'a>
 pub fn j2k_jpeg_cuda::Codec::decode_tiles_to_device_with_session(&[&[u8]], j2k_core::pixel::PixelFormat, j2k_core::backend::BackendRequest, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<CudaJpegBatch<j2k_jpeg_cuda::Surface>, j2k_jpeg_cuda::Error>
+pub fn j2k_jpeg_cuda::CudaSession::default() -> Self
 pub fn j2k_jpeg_cuda::CudaSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_jpeg_cuda::CudaSession::is_runtime_initialized(&self) -> bool
 pub fn j2k_jpeg_cuda::CudaSession::submissions(&self) -> u64
@@ -2138,8 +2140,8 @@ pub fn j2k_jpeg_cuda::Surface::as_host_bytes(&self) -> core::option::Option<&[u8
 pub fn j2k_jpeg_cuda::Surface::cuda_surface(&self) -> core::option::Option<j2k_jpeg_cuda::CudaSurface<'_>>
 pub fn j2k_jpeg_cuda::Surface::download_into(&self, &mut [u8], usize) -> core::result::Result<(), j2k_jpeg_cuda::Error>
 pub fn j2k_jpeg_cuda::Surface::pitch_bytes(&self) -> usize
-pub fn j2k_jpeg_cuda::encode_jpeg_baseline_batch_from_cuda_buffers(&[j2k_jpeg_cuda::JpegBaselineCudaEncodeTile<'_>], j2k_jpeg::encoder::JpegEncodeOptions, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::encoder::EncodedJpeg>, j2k_jpeg_cuda::Error>
-pub fn j2k_jpeg_cuda::encode_jpeg_baseline_from_cuda_buffer(j2k_jpeg_cuda::JpegBaselineCudaEncodeTile<'_>, j2k_jpeg::encoder::JpegEncodeOptions, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<j2k_jpeg::encoder::EncodedJpeg, j2k_jpeg_cuda::Error>
+pub fn j2k_jpeg_cuda::encode_jpeg_baseline_batch_from_cuda_buffers(&[j2k_jpeg_cuda::JpegBaselineCudaEncodeTile<'_>], j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::baseline_encode_contract::EncodedJpeg>, j2k_jpeg_cuda::Error>
+pub fn j2k_jpeg_cuda::encode_jpeg_baseline_from_cuda_buffer(j2k_jpeg_cuda::JpegBaselineCudaEncodeTile<'_>, j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &mut j2k_jpeg_cuda::CudaSession) -> core::result::Result<j2k_jpeg::baseline_encode_contract::EncodedJpeg, j2k_jpeg_cuda::Error>
 pub j2k_jpeg_cuda::CudaJpegDecodeOutputTile::input: &'a [u8]
 pub j2k_jpeg_cuda::CudaJpegDecodeOutputTile::output: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub j2k_jpeg_cuda::CudaJpegDecodeOutputTile::pitch_bytes: usize
@@ -2152,7 +2154,7 @@ pub j2k_jpeg_cuda::Error::CudaRuntime::source: j2k_cuda_runtime::error::CudaErro
 pub j2k_jpeg_cuda::Error::CudaSessionRuntimePoisoned
 pub j2k_jpeg_cuda::Error::CudaUnavailable
 pub j2k_jpeg_cuda::Error::Decode(j2k_jpeg::error::JpegError)
-pub j2k_jpeg_cuda::Error::Encode(j2k_jpeg::encoder::JpegEncodeError)
+pub j2k_jpeg_cuda::Error::Encode(j2k_jpeg::baseline_encode_contract::JpegEncodeError)
 pub j2k_jpeg_cuda::Error::FastPacket(j2k_jpeg::adapter::fast_packet::error::FastPacketError)
 pub j2k_jpeg_cuda::Error::HostAllocationFailed
 pub j2k_jpeg_cuda::Error::HostAllocationFailed::bytes: usize
@@ -2164,6 +2166,9 @@ pub j2k_jpeg_cuda::Error::HostAllocationTooLarge::what: &'static str
 pub j2k_jpeg_cuda::Error::InFlightHostLedgerPoisoned
 pub j2k_jpeg_cuda::Error::JpegHostOperationPoisoned
 pub j2k_jpeg_cuda::Error::JpegPlanCache(j2k_jpeg::adapter::fast_packet::cache::JpegPlanCacheError)
+pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed
+pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::accounting: alloc::boxed::Box<j2k_jpeg_cuda::Error>
+pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::primary: alloc::boxed::Box<j2k_jpeg_cuda::Error>
 pub j2k_jpeg_cuda::Error::OwnedPacketCachePoisoned
 pub j2k_jpeg_cuda::Error::UnsupportedBackend
 pub j2k_jpeg_cuda::Error::UnsupportedBackend::request: j2k_core::backend::BackendRequest

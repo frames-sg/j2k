@@ -13,7 +13,7 @@ use self::host_owners::{append_color_payload_to_shared, take_component_work};
 #[cfg(feature = "cuda-runtime")]
 use self::store::{
     can_fuse_mct_store_for_stores, dispatch_color_store, prepare_rgb8_mct_batch_store,
-    rgb8_mct_batch_store_target, run_color_mct, ColorStoreInputs,
+    rgb8_mct_batch_store_target, run_color_mct, validate_color_stores, ColorStoreInputs,
 };
 #[cfg(feature = "cuda-runtime")]
 use super::decode_profile::aggregate_decode_reports;
@@ -23,7 +23,7 @@ use super::plan::build_cuda_htj2k_color_plans_from_bytes_with_profile;
 use super::resident::{
     can_batch_color_idwt, decode_cuda_component_subbands_with_resources,
     finish_cuda_component_decode, pooled_cuda_buffer, run_color_component_idwt_batches,
-    run_component_cleanup_dequant_batches, run_cuda_component_idwt_steps, validate_color_stores,
+    run_component_cleanup_dequant_batches, run_cuda_component_idwt_steps,
 };
 #[cfg(feature = "cuda-runtime")]
 use super::{

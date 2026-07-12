@@ -35,9 +35,11 @@ impl StagingSources {
         Self {
             readback: read("crates/j2k-cuda-runtime/src/memory/pool/readback.rs"),
             pinned: read("crates/j2k-cuda-runtime/src/memory/pinned_staging.rs"),
-            pinned_operations: read(
-                "crates/j2k-cuda-runtime/src/memory/pinned_staging/operations.rs",
-            ),
+            pinned_operations: [
+                read("crates/j2k-cuda-runtime/src/memory/pinned_staging/operations.rs"),
+                read("crates/j2k-cuda-runtime/src/memory/pinned_staging/operations/growth.rs"),
+            ]
+            .concat(),
             pinned_api: read("crates/j2k-cuda-runtime/src/memory/pinned_staging/operations/api.rs"),
             pinned_checkout: read(
                 "crates/j2k-cuda-runtime/src/memory/pinned_staging/operations/checkout.rs",

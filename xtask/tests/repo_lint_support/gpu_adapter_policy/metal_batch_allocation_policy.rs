@@ -104,7 +104,8 @@ fn remediated_metal_batch_paths_do_not_regress_to_infallible_collections() {
         "crates/j2k-jpeg-metal/src/compute/batch_region/rgb.rs",
         "crates/j2k-jpeg-metal/src/compute/batch_region/texture/fast444.rs",
         "crates/j2k-jpeg-metal/src/compute/batch_region/texture/subsampled.rs",
-        "crates/j2k-jpeg-metal/src/compute/pack_dispatch/common.rs",
+        "crates/j2k-jpeg-metal/src/compute/pack_dispatch/grouped_output.rs",
+        "crates/j2k-jpeg-metal/src/compute/pack_dispatch/texture.rs",
     ];
     let j2k_paths = [
         "crates/j2k-metal/src/batch/cpu.rs",

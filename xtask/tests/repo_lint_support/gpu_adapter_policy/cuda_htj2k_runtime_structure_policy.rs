@@ -53,7 +53,7 @@ fn encode_modules(root: &Path) -> [FocusedModule; 9] {
         (
             "launch",
             read(root, "crates/j2k-cuda-runtime/src/htj2k_encode/launch.rs"),
-            220,
+            150,
         ),
         (
             "planning",
@@ -215,6 +215,7 @@ fn assert_encode_ownership(modules: &[FocusedModule]) {
         )
         .required(&[
             "launch_htj2k_encode_codeblocks",
+            "launch_htj2k_encode_multi_input_kernel",
             "Htj2kEncodeCodeblocksMultiInputCleanup64",
             "launch_htj2k_compact_codeblocks",
         ]),

@@ -42,15 +42,16 @@ fn assert_decoder_facade_ownership(sources: &CudaDecoderSources) {
         ]),
         PatternCheck::new("CUDA decoder resident facade", &sources.resident)
             .required(&[
+                "mod buffer_access;",
                 "mod cleanup_dequant;",
                 "mod component;",
-                "mod helpers;",
+                "mod error;",
                 "mod idwt;",
                 "mod routing;",
                 "mod surface;",
+                "pub(super) use self::buffer_access::pooled_cuda_buffer;",
                 "pub(super) use self::cleanup_dequant::{",
                 "pub(super) use self::component::{",
-                "pub(super) use self::helpers::{",
                 "pub(super) use self::idwt::{",
                 "pub(super) use self::routing::{",
             ])
@@ -80,6 +81,7 @@ fn assert_resident_pipeline_ownership(sources: &CudaDecoderSources) {
             "fn decode_cuda_component_plan",
             "fn decode_cuda_component_subbands_with_resources",
             "fn finish_cuda_component_decode",
+            "fn cuda_code_block_job_from_plan_block",
         ])
         .forbidden(&[
             "fn run_component_cleanup_dequant_batches",
@@ -102,6 +104,7 @@ fn assert_resident_pipeline_ownership(sources: &CudaDecoderSources) {
         ]),
         PatternCheck::new("CUDA resident IDWT ownership", &sources.resident_idwt)
             .required(&[
+                "mod conversions;",
                 "fn run_cuda_component_idwt_steps",
                 "fn run_color_component_idwt_batches",
                 "fn enqueue_color_component_idwt_batches",
@@ -112,6 +115,15 @@ fn assert_resident_pipeline_ownership(sources: &CudaDecoderSources) {
                 "fn run_component_cleanup_dequant_batches",
                 "fn decode_cuda_component_subbands_with_resources",
             ]),
+        PatternCheck::new(
+            "CUDA resident IDWT conversion ownership",
+            &sources.resident_idwt_conversions,
+        )
+        .required(&[
+            "fn find_cuda_band",
+            "fn cuda_runtime_rect",
+            "fn cuda_idwt_job_from_step",
+        ]),
         PatternCheck::new(
             "CUDA resident surface assembly ownership",
             &sources.resident_surface,
@@ -126,22 +138,6 @@ fn assert_resident_pipeline_ownership(sources: &CudaDecoderSources) {
             "fn decode_region_to_cuda_resident_surface_impl",
             "fn run_component_cleanup_dequant_batches",
         ]),
-        PatternCheck::new(
-            "CUDA resident conversion and validation ownership",
-            &sources.resident_helpers,
-        )
-        .required(&[
-            "fn cuda_code_block_job_from_plan_block",
-            "fn validate_color_stores",
-            "fn checked_area",
-            "fn find_cuda_band",
-            "fn cuda_idwt_job_from_step",
-        ])
-        .forbidden(&[
-            "fn decode_cuda_component_plan",
-            "fn run_color_component_idwt_batches",
-            "fn decode_to_cuda_resident_surface_impl",
-        ]),
     ]);
 }
 
@@ -152,6 +148,13 @@ fn assert_decoder_support_ownership(sources: &CudaDecoderSources) {
             "decode_color_cuda_resident_batch_surfaces_with_profile",
             "prepare_rgb8_mct_batch_store",
         ]),
+        PatternCheck::new(
+            "CUDA decoder color-store validation module",
+            &sources.color_store_validation,
+        )
+        .required(&["fn validate_color_stores", "fn bit_depth_addend"]),
+        PatternCheck::new("CUDA resident error module", &sources.resident_error)
+            .required(&["fn cuda_invalid_decode_plan"]),
         PatternCheck::new("CUDA decoder profile module", &sources.profile).required(&[
             "struct CudaDecodeStageTimings",
             "fn aggregate_decode_reports",

@@ -10,7 +10,10 @@ use crate::adapter::{
 };
 use crate::encoded_output::checked_jpeg_baseline_frame_capacity;
 
-use super::{encode_block, fdct_quantize, sample_block, BitWriter, JpegEncodeError};
+use super::sample_planes::sample_block;
+use super::transform::fdct_quantize;
+use super::JpegEncodeError;
+use crate::baseline_entropy::{encode_block, BitWriter};
 
 mod restart;
 mod workspace;

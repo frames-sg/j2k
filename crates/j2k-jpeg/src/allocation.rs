@@ -10,6 +10,12 @@ use j2k_core::{
 
 use crate::error::JpegError;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AllocationBudgetError {
+    MemoryCapExceeded { requested: usize, cap: usize },
+    HostAllocationFailed { bytes: usize },
+}
+
 /// Tracks the worst live-byte peak while existing vectors grow in a known
 /// order. A reallocating vector may briefly own both its retained allocation
 /// and the requested replacement, so final projected capacity is not enough
@@ -110,15 +116,8 @@ pub(crate) fn try_resize_filled<T: Clone>(
 }
 
 pub(crate) fn try_reserve_for_len<T>(values: &mut Vec<T>, new_len: usize) -> Result<(), JpegError> {
-    checked_allocation_bytes::<T>(new_len)?;
-    if new_len > values.capacity() {
-        values
-            .try_reserve_exact(new_len.saturating_sub(values.len()))
-            .map_err(|_| JpegError::HostAllocationFailed {
-                bytes: new_len.saturating_mul(size_of::<T>()),
-            })?;
-    }
-    ensure_vec_capacity_bytes(values, DEFAULT_MAX_HOST_ALLOCATION_BYTES)
+    try_reserve_for_len_with_budget(values, new_len, DEFAULT_MAX_HOST_ALLOCATION_BYTES)
+        .map_err(map_allocation_budget_error)
 }
 
 /// Reserve one vector while maintaining an actual-capacity live-byte total.
@@ -131,18 +130,98 @@ pub(crate) fn try_reserve_for_len_with_live_budget<T>(
     live_bytes: &mut usize,
     cap: usize,
 ) -> Result<(), JpegError> {
+    try_reserve_for_len_with_live_budget_typed(values, new_len, live_bytes, cap)
+        .map_err(map_allocation_budget_error)
+}
+
+pub(crate) fn try_new_vec_with_live_budget<T>(
+    capacity: usize,
+    live_bytes: &mut usize,
+    cap: usize,
+) -> Result<Vec<T>, AllocationBudgetError> {
+    let initial_live_bytes = *live_bytes;
+    let mut values = Vec::new();
+    if let Err(error) =
+        try_reserve_for_len_with_live_budget_typed(&mut values, capacity, live_bytes, cap)
+    {
+        *live_bytes = initial_live_bytes;
+        return Err(error);
+    }
+    Ok(values)
+}
+
+fn try_reserve_for_len_with_live_budget_typed<T>(
+    values: &mut Vec<T>,
+    new_len: usize,
+    live_bytes: &mut usize,
+    cap: usize,
+) -> Result<(), AllocationBudgetError> {
     let retained_bytes = values.capacity().saturating_mul(size_of::<T>());
     let mut peak = ReallocationPeak::new(*live_bytes);
     peak.include_vec(values, new_len);
-    ensure_live_bytes(peak.bytes(), cap)?;
+    ensure_budget_bytes(peak.bytes(), cap)?;
 
-    try_reserve_for_len(values, new_len)?;
+    try_reserve_for_len_with_budget(values, new_len, cap)?;
 
     let actual_bytes = values.capacity().saturating_mul(size_of::<T>());
     *live_bytes = (*live_bytes)
         .saturating_sub(retained_bytes)
         .saturating_add(actual_bytes);
-    ensure_live_bytes(*live_bytes, cap)
+    ensure_budget_bytes(*live_bytes, cap)
+}
+
+fn try_reserve_for_len_with_budget<T>(
+    values: &mut Vec<T>,
+    new_len: usize,
+    cap: usize,
+) -> Result<(), AllocationBudgetError> {
+    let requested_bytes = checked_budget_element_bytes::<T>(new_len, cap)?;
+    if new_len > values.capacity() {
+        values
+            .try_reserve_exact(new_len.saturating_sub(values.len()))
+            .map_err(|_| AllocationBudgetError::HostAllocationFailed {
+                bytes: requested_bytes,
+            })?;
+    }
+    let actual_bytes = values.capacity().checked_mul(size_of::<T>()).ok_or(
+        AllocationBudgetError::MemoryCapExceeded {
+            requested: usize::MAX,
+            cap,
+        },
+    )?;
+    ensure_budget_bytes(actual_bytes, cap)
+}
+
+fn checked_budget_element_bytes<T>(
+    element_count: usize,
+    cap: usize,
+) -> Result<usize, AllocationBudgetError> {
+    let requested = element_count.checked_mul(size_of::<T>()).ok_or(
+        AllocationBudgetError::MemoryCapExceeded {
+            requested: usize::MAX,
+            cap,
+        },
+    )?;
+    ensure_budget_bytes(requested, cap)?;
+    Ok(requested)
+}
+
+fn ensure_budget_bytes(requested: usize, cap: usize) -> Result<(), AllocationBudgetError> {
+    if requested > cap {
+        return Err(AllocationBudgetError::MemoryCapExceeded { requested, cap });
+    }
+    Ok(())
+}
+
+fn map_allocation_budget_error(error: AllocationBudgetError) -> JpegError {
+    match error {
+        AllocationBudgetError::MemoryCapExceeded { requested, cap } => {
+            JpegError::MemoryCapExceeded { requested, cap }
+        }
+        AllocationBudgetError::HostAllocationFailed { bytes } => {
+            JpegError::HostAllocationFailed { bytes }
+        }
+    }
 }
 
 fn ensure_live_bytes(requested: usize, cap: usize) -> Result<(), JpegError> {
@@ -180,8 +259,9 @@ fn cap_overflow() -> JpegError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_vec_capacity_bytes, host_allocation_error, try_reserve_for_len_with_live_budget,
-        HostAllocationError, ReallocationPeak,
+        ensure_vec_capacity_bytes, host_allocation_error, try_new_vec_with_live_budget,
+        try_reserve_for_len_with_live_budget, AllocationBudgetError, HostAllocationError,
+        ReallocationPeak,
     };
     use crate::JpegError;
 
@@ -231,5 +311,19 @@ mod tests {
                 cap: limit,
             }) if actual == requested && limit == cap
         ));
+    }
+
+    #[test]
+    fn failed_new_vector_budget_is_transactional() {
+        let mut live_bytes = 7;
+
+        assert_eq!(
+            try_new_vec_with_live_budget::<u16>(2, &mut live_bytes, 10),
+            Err(AllocationBudgetError::MemoryCapExceeded {
+                requested: 11,
+                cap: 10,
+            })
+        );
+        assert_eq!(live_bytes, 7);
     }
 }

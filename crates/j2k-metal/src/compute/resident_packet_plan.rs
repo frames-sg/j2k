@@ -148,6 +148,9 @@ pub(super) fn build_resident_batch_packet_plan(
     let batch_err = |suffix: &str| Error::MetalKernel {
         message: format!("{} Metal batch {}", params.family_name, suffix),
     };
+    if prepared_tiles.len() != tile_tier1_job_bases.len() {
+        return Err(batch_err("Tier-1 job-base count mismatch"));
+    }
     let resolution_count = crate::batch_allocation::checked_count_sum(
         prepared_tiles.iter().map(|tile| tile.resolutions.len()),
         "J2K Metal resident packet resolutions",
@@ -253,13 +256,14 @@ pub(super) fn build_resident_batch_packet_plan(
         "J2K Metal resident codestream capacities",
     )?;
 
-    for (tile_index, tile) in prepared_tiles.iter().enumerate() {
+    for (tile_index, (tile, &tier1_job_base)) in
+        prepared_tiles.iter().zip(tile_tier1_job_bases).enumerate()
+    {
         let local_resolution_offset = packet_resolutions.len();
         let local_subband_offset = packet_subbands.len();
         let local_block_offset = resident_blocks.len();
         let local_descriptor_offset = packet_descriptors.len();
         let local_state_block_offset = state_blocks.len();
-        let tier1_job_base = tile_tier1_job_bases[tile_index];
         let mut max_tree_nodes = 1usize;
         let mut local_subband_count = 0usize;
         let mut local_resident_block_count = 0usize;
@@ -518,4 +522,33 @@ pub(super) fn build_resident_batch_packet_plan(
         codestream_offsets,
         codestream_capacities,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_resident_batch_packet_plan, PreparedLosslessBatchTile, ResidentBatchPacketPlanParams,
+    };
+    use crate::Error;
+
+    #[test]
+    fn resident_packet_plan_rejects_mismatched_tier1_job_bases() {
+        let prepared_tiles: &[PreparedLosslessBatchTile] = &[];
+        let error = build_resident_batch_packet_plan(
+            prepared_tiles,
+            &[0],
+            ResidentBatchPacketPlanParams {
+                family_name: "test",
+                block_coding_mode: 0,
+                high_throughput: 0,
+                code_block_style: 0,
+            },
+            |_, _, _| Ok(0),
+        )
+        .err()
+        .expect("mismatched parallel inputs must fail");
+
+        assert!(matches!(error, Error::MetalKernel { .. }));
+        assert!(error.to_string().contains("Tier-1 job-base count mismatch"));
+    }
 }

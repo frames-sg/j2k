@@ -74,7 +74,8 @@ pub use build_flags::transcode_kernels_built;
 #[cfg(test)]
 pub(crate) use context::CudaKernelName;
 pub use context::{
-    CudaContext, CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kCompactEncodedCodeBlocks,
+    CudaContext, CudaExternalHostOwner, CudaExternalHostReservation,
+    CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kCompactEncodedCodeBlocks,
 };
 pub use error::CudaError;
 #[cfg(test)]

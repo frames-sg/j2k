@@ -9,10 +9,13 @@ use super::super::{
     CudaHtj2kDecodePlan, CudaHtj2kIdwtStep, CudaJ2kIdwtTarget, CudaQueuedIdwtBatch, Error,
     CUDA_HTJ2K_KERNELS_NOT_READY,
 };
-use super::helpers::{
-    cuda_idwt_job_from_step, cuda_invalid_decode_plan, find_cuda_band, pooled_cuda_buffer,
-};
+use super::buffer_access::pooled_cuda_buffer;
 use crate::allocation::{try_collect_cuda_results_exact, HostPhaseBudget};
+
+mod conversions;
+
+use self::conversions::{cuda_idwt_job_from_step, find_cuda_band};
+use super::error::cuda_invalid_decode_plan;
 
 #[cfg(feature = "cuda-runtime")]
 pub(in crate::decoder) fn run_cuda_component_idwt_steps(

@@ -34,27 +34,29 @@ use runtime_state::SharedCudaRuntimeState;
 #[doc(hidden)]
 /// Clone-shared host-memory ownership diagnostics for CUDA JPEG operations.
 ///
-/// The current fields are sampled while the session JPEG-host operation gate,
-/// context pinned-upload gate, cache mutex, and host-ledger allocation gate are
-/// held in their normal acquisition order. Peak fields are monotonic owner
-/// high-water marks shared by every clone of the session.
+/// The session JPEG-host and context pinned-upload gates first exclude peer
+/// operations. The host-ledger allocation gate then serializes cache and active
+/// owner changes; context-wide headroom is reserved before allocator work and
+/// committed only after actual capacity is known. Peak fields are monotonic
+/// owner high-water marks shared by every clone of the session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaJpegHostMemoryDiagnostics {
     /// Neutral JPEG plans retained by the session cache.
     pub cache_retained_bytes: usize,
-    /// Packet, decoder, checkpoint, report, and pinned-pool leases currently active.
+    /// Packet, decoder, checkpoint, report, and output owners currently active.
+    /// Pinned upload retention is reported separately below.
     pub active_owner_bytes: usize,
     /// Pinned upload staging retained by the session's one bound CUDA context.
     pub pinned_upload_retained_bytes: usize,
     /// Current cache, active-owner, and pinned-staging total.
     pub current_combined_bytes: usize,
-    /// Highest active-owner lease total observed by the session.
+    /// Highest non-pinned active-owner lease total observed by the session.
     pub peak_active_owner_bytes: usize,
     /// Highest combined host-owner total observed by the session.
     pub peak_combined_bytes: usize,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 /// Reusable CUDA JPEG decode session.
 pub struct CudaSession {
     submissions: u64,
@@ -66,7 +68,61 @@ pub struct CudaSession {
     runtime_state: Arc<SharedCudaRuntimeState>,
 }
 
+#[cfg(feature = "cuda-runtime")]
+pub(crate) struct PinnedUploadAccountingGuard<'operation, 'context> {
+    operation: &'operation j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'context>,
+    finished: bool,
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl PinnedUploadAccountingGuard<'_, '_> {
+    fn reconcile(&self) -> Result<usize, Error> {
+        self.operation.verify_host_budget().map_err(cuda_error)?;
+        self.operation
+            .diagnostics()
+            .map(|diagnostics| diagnostics.retained_bytes)
+            .map_err(cuda_error)
+    }
+
+    pub(crate) fn finish<T>(mut self, result: Result<T, Error>) -> Result<T, Error> {
+        let reconciliation = self.reconcile();
+        self.finished = true;
+        select_operation_accounting_result(result, reconciliation.map(|_| ()))
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl Drop for PinnedUploadAccountingGuard<'_, '_> {
+    fn drop(&mut self) {
+        if !self.finished && self.reconcile().is_err() {
+            // The runtime verification poisons its shared authority on mismatch.
+        }
+    }
+}
+
+impl Default for CudaSession {
+    fn default() -> Self {
+        #[cfg(feature = "cuda-runtime")]
+        {
+            Self::with_owned_packet_cache(Arc::new(OwnedPacketPlanCache::default()))
+        }
+        #[cfg(not(feature = "cuda-runtime"))]
+        Self { submissions: 0 }
+    }
+}
+
 impl CudaSession {
+    #[cfg(feature = "cuda-runtime")]
+    fn with_owned_packet_cache(owned_packet_cache: Arc<OwnedPacketPlanCache>) -> Self {
+        let runtime_state = Arc::new(SharedCudaRuntimeState::new());
+        Self {
+            submissions: 0,
+            owned_packet_cache,
+            jpeg_host_operation_gate: Arc::new(Mutex::new(())),
+            runtime_state,
+        }
+    }
+
     /// Number of decode submissions recorded through this session.
     pub fn submissions(&self) -> u64 {
         self.submissions
@@ -128,9 +184,21 @@ impl CudaSession {
             .transpose()
             .map_err(cuda_error)?
             .map_or(0, |diagnostics| diagnostics.retained_bytes);
-        let diagnostics = self
-            .owned_packet_cache
-            .host_memory_diagnostics(pinned_upload_retained_bytes)?;
+        let accounting = pinned_operation
+            .as_ref()
+            .map(|operation| {
+                self.begin_pinned_upload_accounting(
+                    context
+                        .as_ref()
+                        .expect("pinned operation requires a context"),
+                    operation,
+                )
+            })
+            .transpose()?;
+        let diagnostics = self.owned_packet_cache.host_memory_diagnostics()?;
+        if let Some(accounting) = accounting {
+            accounting.finish(Ok(()))?;
+        }
         Ok(CudaJpegHostMemoryDiagnostics {
             cache_retained_bytes: diagnostics.cache_retained_bytes,
             active_owner_bytes: diagnostics.active_owner_bytes,
@@ -228,12 +296,28 @@ impl CudaSession {
     }
 
     #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn reserve_pinned_upload_retention(
+    pub(crate) fn reserve_pinned_upload_retention<'operation, 'context>(
         &self,
-        operation: &j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'_>,
-    ) -> Result<HostOwnerLease, Error> {
-        let retained_bytes = operation.diagnostics().map_err(cuda_error)?.retained_bytes;
-        self.reserve_existing_host_owner(retained_bytes)
+        context: &j2k_cuda_runtime::CudaContext,
+        operation: &'operation j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'context>,
+    ) -> Result<PinnedUploadAccountingGuard<'operation, 'context>, Error> {
+        self.begin_pinned_upload_accounting(context, operation)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    fn begin_pinned_upload_accounting<'operation, 'context>(
+        &self,
+        context: &j2k_cuda_runtime::CudaContext,
+        operation: &'operation j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'context>,
+    ) -> Result<PinnedUploadAccountingGuard<'operation, 'context>, Error> {
+        operation.ensure_for_context(context).map_err(cuda_error)?;
+        self.owned_packet_cache.ensure_context(context)?;
+        let guard = PinnedUploadAccountingGuard {
+            operation,
+            finished: false,
+        };
+        guard.reconcile()?;
+        Ok(guard)
     }
 
     #[cfg(feature = "cuda-runtime")]
@@ -241,30 +325,54 @@ impl CudaSession {
         self.owned_packet_cache.host_live_bytes()
     }
 
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn owned_host_live_bytes_without_pinned(&self) -> Result<usize, Error> {
+        self.owned_packet_cache.host_live_bytes_without_pinned()
+    }
+
     #[cfg(all(test, feature = "cuda-runtime"))]
     fn with_owned_packet_cache_limits(entry_limit: usize, host_byte_limit: usize) -> Self {
-        Self {
-            owned_packet_cache: Arc::new(OwnedPacketPlanCache::with_limits(
-                entry_limit,
-                host_byte_limit,
-            )),
-            ..Self::default()
-        }
+        Self::with_owned_packet_cache(Arc::new(OwnedPacketPlanCache::with_limits(
+            entry_limit,
+            host_byte_limit,
+        )))
     }
 
     #[cfg(feature = "cuda-runtime")]
     pub(crate) fn cuda_context(&self) -> Result<CudaContext, Error> {
-        self.runtime_state.context()
+        let context = self.runtime_state.context()?;
+        self.owned_packet_cache.bind_context(&context)?;
+        Ok(context)
     }
 
     #[cfg(feature = "cuda-runtime")]
     pub(crate) fn bind_cuda_context(&self, context: &CudaContext) -> Result<CudaContext, Error> {
-        self.runtime_state.bind_context(context)
+        let context = self.runtime_state.bind_context(context)?;
+        self.owned_packet_cache.bind_context(&context)?;
+        Ok(context)
     }
 
     #[cfg(feature = "cuda-runtime")]
     fn owned_output_pool(&self) -> Result<j2k_cuda_runtime::CudaBufferPool, Error> {
-        self.runtime_state.owned_output_pool()
+        let context = self.cuda_context()?;
+        let pool = self.runtime_state.owned_output_pool()?;
+        let _ = context;
+        Ok(pool)
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn select_operation_accounting_result<T>(
+    operation: Result<T, Error>,
+    accounting: Result<(), Error>,
+) -> Result<T, Error> {
+    match (operation, accounting) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(primary), Err(accounting)) => Err(Error::OperationAndHostAccountingFailed {
+            primary: Box::new(primary),
+            accounting: Box::new(accounting),
+        }),
     }
 }
 

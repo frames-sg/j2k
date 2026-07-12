@@ -98,6 +98,10 @@ const REPO_LINT_POLICY_LINE_LIMITS: &[(&str, usize)] = &[
             150,
         ),
         (
+            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_decoder_policy/resident_leaf_structure.rs",
+            75,
+        ),
+        (
             "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy.rs",
             200,
         ),
@@ -166,8 +170,16 @@ const REPO_LINT_POLICY_LINE_LIMITS: &[(&str, usize)] = &[
             140,
         ),
         (
+            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy/encoder_checks/contracts.rs",
+            110,
+        ),
+        (
             "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_allocation_policy/gpu_capacity.rs",
             100,
+        ),
+        (
+            "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_metal_compute_structure_policy.rs",
+            300,
         ),
         (
             "xtask/tests/repo_lint_support/gpu_adapter_policy/jpeg_metal_viewport_structure_policy.rs",
@@ -196,6 +208,10 @@ const REPO_LINT_POLICY_LINE_LIMITS: &[(&str, usize)] = &[
         (
             "xtask/tests/repo_lint_support/jpeg_decoder_structure_policy/support_contracts.rs",
             100,
+        ),
+        (
+            "xtask/tests/repo_lint_support/jpeg_encoder_structure_policy.rs",
+            225,
         ),
         (
             "xtask/tests/repo_lint_support/jpeg_restart_policy.rs",

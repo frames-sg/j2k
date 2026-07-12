@@ -9,8 +9,9 @@ use super::super::{assert_pattern_checks, repo_root, PatternCheck};
 #[test]
 fn jpeg_metal_batch_failures_clone_typed_errors_instead_of_rendering_them() {
     let root = repo_root();
-    let jpeg_encoder = fs::read_to_string(root.join("crates/j2k-jpeg/src/encoder.rs"))
-        .expect("read JPEG encoder errors");
+    let jpeg_encoder =
+        fs::read_to_string(root.join("crates/j2k-jpeg/src/baseline_encode_contract.rs"))
+            .expect("read JPEG encoder errors");
     let metal_error = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/error.rs"))
         .expect("read JPEG Metal errors");
     let metal_batch = [

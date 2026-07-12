@@ -14,7 +14,8 @@ fn jpeg_dct_reemission_input_contract_is_typed_and_complete() {
     let transcode = read("crates/j2k-jpeg/src/transcode.rs");
     let validation = read("crates/j2k-jpeg/src/transcode/validation.rs");
     let coefficients = read("crates/j2k-jpeg/src/transcode/validation/coefficients.rs");
-    let encoder = read("crates/j2k-jpeg/src/encoder.rs");
+    let encoder = read("crates/j2k-jpeg/src/baseline_encode_contract.rs");
+    let dct_contract = read("crates/j2k-jpeg/src/dct_contract.rs");
     let info = read("crates/j2k-jpeg/src/info.rs");
     let contract_tests = read("crates/j2k-jpeg/tests/dct_reemit_contract.rs");
     let parity_tests = read("crates/j2k-jpeg/tests/dct_reemit_parity.rs");
@@ -26,7 +27,13 @@ fn jpeg_dct_reemission_input_contract_is_typed_and_complete() {
         &contract_tests,
         &parity_tests,
     );
-    assert_product_contract(&transcode, &validation, &coefficients, &encoder);
+    assert_product_contract(
+        &transcode,
+        &validation,
+        &coefficients,
+        &encoder,
+        &dct_contract,
+    );
     for (source, owner) in [
         (encoder.as_str(), "EncodedJpeg"),
         (transcode.as_str(), "JpegDctImage"),
@@ -60,42 +67,51 @@ fn assert_source_sizes(
     }
 }
 
-fn assert_product_contract(transcode: &str, validation: &str, coefficients: &str, encoder: &str) {
+fn assert_product_contract(
+    transcode: &str,
+    validation: &str,
+    coefficients: &str,
+    encoder: &str,
+    dct_contract: &str,
+) {
     assert_pattern_checks(&[
         PatternCheck::new("DCT re-emission public error", encoder)
             .required(&[
                 "InvalidDctImage {",
-                "reason: crate::transcode::JpegDctImageError",
+                "use crate::dct_contract::JpegDctImageError",
+                "reason: JpegDctImageError",
                 "InternalInvariant {",
             ])
             .forbidden(&["Internal(String)", "JpegEncodeError::Internal("]),
         PatternCheck::new("DCT re-emission facade", transcode)
             .required(&[
                 "mod validation;",
-                "pub use self::validation::JpegDctImageError;",
+                "pub use crate::dct_contract::{JpegDctCodingMode, JpegDctImageError};",
                 "validate_baseline_dct_image(image)",
                 "JpegEncodeError::InvalidDctImage { reason }",
             ])
             .forbidden(&["JpegEncodeError::Internal(", "format!("]),
+        PatternCheck::new("typed DCT input contract", dct_contract).required(&[
+            "#[non_exhaustive]",
+            "pub enum JpegDctImageError",
+            "UnsupportedCodingMode",
+            "EmptyDimensions",
+            "DimensionsTooLarge",
+            "UnsupportedComponentCount",
+            "ComponentOrderMismatch",
+            "SamplingFactorOutOfRange",
+            "UnsupportedGrayscaleSampling",
+            "TooManyBlocksPerMcu",
+            "BlockGridArithmeticOverflow",
+            "BlockGridMismatch",
+            "QuantizedBlockCountMismatch",
+            "DcMagnitudeCategoryOutOfRange",
+            "AcMagnitudeCategoryOutOfRange",
+            "QuantizationValueOutOfRange",
+            "ChromaQuantizationTableMismatch",
+        ]),
         PatternCheck::new("typed DCT input validation", validation)
             .required(&[
-                "#[non_exhaustive]",
-                "pub enum JpegDctImageError",
-                "UnsupportedCodingMode",
-                "EmptyDimensions",
-                "DimensionsTooLarge",
-                "UnsupportedComponentCount",
-                "ComponentOrderMismatch",
-                "SamplingFactorOutOfRange",
-                "UnsupportedGrayscaleSampling",
-                "TooManyBlocksPerMcu",
-                "BlockGridArithmeticOverflow",
-                "BlockGridMismatch",
-                "QuantizedBlockCountMismatch",
-                "DcMagnitudeCategoryOutOfRange",
-                "AcMagnitudeCategoryOutOfRange",
-                "QuantizationValueOutOfRange",
-                "ChromaQuantizationTableMismatch",
                 "MAX_SAMPLING_FACTOR: u8 = 4",
                 "MAX_BLOCKS_PER_MCU: u16 = 10",
                 ".checked_mul(",
@@ -118,7 +134,7 @@ fn assert_product_contract(transcode: &str, validation: &str, coefficients: &str
                 "MAX_BASELINE_DC_CATEGORY: u8 = 11",
                 "MAX_BASELINE_AC_CATEGORY: u8 = 10",
                 "validate_baseline_coefficients",
-                "use crate::encoder::magnitude",
+                "use crate::baseline_entropy::magnitude",
                 "magnitude(difference).0",
                 "magnitude(i32::from(value)).0",
                 "DcMagnitudeCategoryOutOfRange",

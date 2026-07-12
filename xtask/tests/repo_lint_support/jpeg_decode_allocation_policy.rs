@@ -336,15 +336,20 @@ fn jpeg_shared_allocation_helpers_postcheck_actual_capacity() {
         .expect("read JPEG allocation helpers");
 
     assert_pattern_checks(&[
-        PatternCheck::new("JPEG shared Vec capacity postcheck", &allocation).required(&[
-            "pub(crate) fn try_vec_with_capacity<T>",
-            "pub(crate) fn try_vec_filled<T: Clone>",
-            "pub(crate) fn try_reserve_for_len<T>",
-            "pub(crate) fn try_reserve_for_len_with_live_budget<T>",
-            "fn ensure_vec_capacity_bytes<T>",
-            "ensure_vec_capacity_bytes(&values, DEFAULT_MAX_HOST_ALLOCATION_BYTES)?;",
-            "ensure_vec_capacity_bytes(values, DEFAULT_MAX_HOST_ALLOCATION_BYTES)",
-        ]),
+        PatternCheck::new("JPEG shared Vec capacity postcheck", &allocation)
+            .required(&[
+                "pub(crate) fn try_vec_with_capacity<T>",
+                "pub(crate) fn try_vec_filled<T: Clone>",
+                "pub(crate) fn try_reserve_for_len<T>",
+                "pub(crate) fn try_reserve_for_len_with_live_budget<T>",
+                "fn try_reserve_for_len_with_budget<T>",
+                "fn ensure_vec_capacity_bytes<T>",
+                "ensure_vec_capacity_bytes(&values, DEFAULT_MAX_HOST_ALLOCATION_BYTES)?;",
+            ])
+            .normalized_required(&[
+                "let actual_bytes = values.capacity().checked_mul(size_of::<T>()).ok_or(",
+                "ensure_budget_bytes(actual_bytes, cap)",
+            ]),
     ]);
 }
 

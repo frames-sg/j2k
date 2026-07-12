@@ -43,7 +43,9 @@ fn jpeg_cache_identity_uses_canonical_digest_boundaries() {
                     "state: Mutex<JpegPlanCache>",
                     "cache.resolve_with_external_live(input, external_live_bytes)",
                     "cache.resolve_from_decoder_with_external_live(decoder, external_live_bytes)",
-                    "let result = resolve(&mut cache, active_before);",
+                    "let result = self.ledger.transact_cache(cache_before, |owners_before|",
+                    "let result = resolve(&mut cache, owners_before);",
+                    "cache.diagnostics().retained_bytes",
                 ])
                 .forbidden(&[
                     "j2k_core::__j2k_fnv1a64_bytes!",

@@ -13,7 +13,7 @@ use j2k_jpeg::adapter::{
 };
 use j2k_jpeg::Decoder as CpuDecoder;
 
-use super::host_ledger::{HostOwnerLease, SharedHostLedger};
+use super::host_ledger::{HostCacheTransactionError, HostOwnerLease, SharedHostLedger};
 use crate::Error;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,20 +79,31 @@ impl OwnedPacketPlanCache {
             .state
             .lock()
             .map_err(|_| Error::OwnedPacketCachePoisoned)?;
-        let active_before = self.ledger.active_bytes()?;
-        let result = resolve(&mut cache, active_before);
+        let cache_before = cache.diagnostics().retained_bytes;
+        let result = self.ledger.transact_cache(cache_before, |owners_before| {
+            let result = resolve(&mut cache, owners_before);
+            (result, cache.diagnostics().retained_bytes)
+        });
         let diagnostics = cache.diagnostics();
         self.record_coherent_entries(diagnostics);
-        let current_combined = diagnostics
-            .retained_bytes
-            .checked_add(active_before)
-            .ok_or(Error::HostAllocationTooLarge {
-                requested: usize::MAX,
-                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-                what: "CUDA JPEG cache and in-flight host owners",
-            })?;
+        let current_combined = self.ledger.combined_bytes(diagnostics.retained_bytes)?;
         self.ledger.observe_combined(current_combined)?;
-        let plan = result.map_err(cached_plan_error)?;
+        let plan = match result {
+            Ok(plan) => plan,
+            Err(HostCacheTransactionError::Operation(error)) => {
+                return Err(cached_plan_error(error));
+            }
+            Err(HostCacheTransactionError::Accounting(error)) => return Err(error),
+            Err(HostCacheTransactionError::OperationAndAccounting {
+                operation,
+                accounting,
+            }) => {
+                return Err(Error::OperationAndHostAccountingFailed {
+                    primary: Box::new(cached_plan_error(operation)),
+                    accounting: Box::new(accounting),
+                });
+            }
+        };
         let Some(packet) = plan.fast_packet().cloned() else {
             return Ok(None);
         };
@@ -108,7 +119,7 @@ impl OwnedPacketPlanCache {
             diagnostics.retained_bytes,
             owner_bytes,
             j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-            "CUDA JPEG cache and in-flight host owners",
+            "CUDA JPEG cache, pinned staging, and in-flight host owners",
         )?;
         Ok(Some(LeasedOwnedPacket {
             packet,
@@ -126,22 +137,8 @@ impl OwnedPacketPlanCache {
             .lock()
             .map_err(|_| Error::OwnedPacketCachePoisoned)?;
         let diagnostics = cache.diagnostics();
-        let external_live_bytes = diagnostics
-            .retained_bytes
-            .checked_add(self.ledger.active_bytes()?)
-            .ok_or(Error::HostAllocationTooLarge {
-                requested: usize::MAX,
-                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-                what: "CUDA JPEG cache and in-flight host owners",
-            })?;
-        let (owner, actual_bytes) = allocate(external_live_bytes)?;
-        let lease = self.ledger.reserve(
-            diagnostics.retained_bytes,
-            actual_bytes,
-            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-            "CUDA JPEG cache and in-flight host owners",
-        )?;
-        Ok((owner, lease))
+        self.ledger
+            .allocate_host_owner(diagnostics.retained_bytes, allocate)
     }
 
     pub(super) fn reserve_existing_host_owner(
@@ -157,7 +154,7 @@ impl OwnedPacketPlanCache {
             cache.diagnostics().retained_bytes,
             bytes,
             j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-            "CUDA JPEG cache and in-flight host owners",
+            "CUDA JPEG cache, pinned staging, and in-flight host owners",
         )
     }
 
@@ -167,21 +164,21 @@ impl OwnedPacketPlanCache {
             .state
             .lock()
             .map_err(|_| Error::OwnedPacketCachePoisoned)?;
-        cache
-            .diagnostics()
-            .retained_bytes
-            .checked_add(self.ledger.active_bytes()?)
-            .ok_or(Error::HostAllocationTooLarge {
-                requested: usize::MAX,
-                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-                what: "CUDA JPEG cache and in-flight host owners",
-            })
+        self.ledger
+            .combined_bytes(cache.diagnostics().retained_bytes)
     }
 
-    pub(super) fn host_memory_diagnostics(
-        &self,
-        additional_retained_bytes: usize,
-    ) -> Result<PacketHostMemoryDiagnostics, Error> {
+    pub(super) fn host_live_bytes_without_pinned(&self) -> Result<usize, Error> {
+        let _allocation = self.ledger.lock_allocations()?;
+        let cache = self
+            .state
+            .lock()
+            .map_err(|_| Error::OwnedPacketCachePoisoned)?;
+        self.ledger
+            .combined_bytes_without_pinned(cache.diagnostics().retained_bytes)
+    }
+
+    pub(super) fn host_memory_diagnostics(&self) -> Result<PacketHostMemoryDiagnostics, Error> {
         let _allocation = self.ledger.lock_allocations()?;
         let cache = self
             .state
@@ -191,7 +188,7 @@ impl OwnedPacketPlanCache {
         let ledger = self.ledger.diagnostics()?;
         let current_combined_bytes = cache_retained_bytes
             .checked_add(ledger.active_bytes)
-            .and_then(|bytes| bytes.checked_add(additional_retained_bytes))
+            .and_then(|bytes| bytes.checked_add(ledger.pinned_retained_bytes))
             .ok_or(Error::HostAllocationTooLarge {
                 requested: usize::MAX,
                 cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
@@ -205,6 +202,20 @@ impl OwnedPacketPlanCache {
             peak_active_owner_bytes: ledger.peak_active_bytes,
             peak_combined_bytes: ledger.peak_combined_bytes.max(current_combined_bytes),
         })
+    }
+
+    pub(super) fn bind_context(
+        &self,
+        context: &j2k_cuda_runtime::CudaContext,
+    ) -> Result<(), Error> {
+        self.ledger.bind_context(context)
+    }
+
+    pub(super) fn ensure_context(
+        &self,
+        context: &j2k_cuda_runtime::CudaContext,
+    ) -> Result<(), Error> {
+        self.ledger.ensure_context(context)
     }
 
     pub(super) fn diagnostics(&self) -> Result<JpegPlanCacheDiagnostics, Error> {

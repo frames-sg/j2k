@@ -57,6 +57,14 @@ impl CudaPinnedUploadOperationGuard<'_> {
                     }
                     ReleaseAccounting::Inactive => Ok(()),
                 };
+                let authority_result = self.context.release_pinned_host_bytes(staging_len);
+                let accounting_result = match (accounting_result, authority_result) {
+                    (Ok(()), Ok(())) => Ok(()),
+                    (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                    (Err(accounting), Err(authority)) => {
+                        Err(select_resource_release_error(accounting, authority))
+                    }
+                };
                 match (primary_error, accounting_result) {
                     (None, Ok(())) => Ok(()),
                     (Some(error), Ok(())) | (None, Err(error)) => Err(error),
