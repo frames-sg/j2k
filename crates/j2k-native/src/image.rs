@@ -16,6 +16,8 @@ use crate::{
 
 mod allocation;
 mod compare;
+#[cfg(test)]
+mod contract_tests;
 mod direct_api;
 mod native;
 mod output_api;

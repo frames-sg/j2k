@@ -7,6 +7,8 @@ use std::fs;
 use super::rust_function_policy::FunctionCalls;
 use super::{assert_pattern_checks, repo_root, PatternCheck};
 
+const ACCOUNTING_TESTS: &str = "crates/j2k-native/src/j2c/tile/metadata/accounting_tests.rs";
+
 fn read(relative: &str) -> String {
     fs::read_to_string(repo_root().join(relative))
         .unwrap_or_else(|error| panic!("read {relative}: {error}"))
@@ -20,10 +22,7 @@ fn tile_metadata_policy_stays_focused() {
     assert!(policy_lines < 120, "tile metadata policy exceeds 120 lines");
     for (relative, limit) in [
         ("crates/j2k-native/src/j2c/tile/metadata.rs", 640),
-        (
-            "crates/j2k-native/src/j2c/tile/metadata/accounting_tests.rs",
-            100,
-        ),
+        (ACCOUNTING_TESTS, 100),
         ("crates/j2k-native/src/j2c/tile/tile_part.rs", 540),
         ("crates/j2k-native/src/j2c/tile/tile_part/tests.rs", 140),
     ] {
@@ -100,10 +99,11 @@ fn tile_metadata_uses_one_transactional_actual_capacity_ledger() {
 #[test]
 fn tile_metadata_regressions_cover_boundaries_and_failure_rollback() {
     let regressions = format!(
-        "{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}",
         read("crates/j2k-native/src/j2c/tile/metadata.rs"),
-        read("crates/j2k-native/src/j2c/tile/metadata/accounting_tests.rs"),
+        read(ACCOUNTING_TESTS),
         read("crates/j2k-native/src/j2c/tile/tile_part/tests.rs"),
+        read("crates/j2k-native/src/j2c/tile/tile_part/tests/transaction.rs"),
         read("crates/j2k-native/tests/multitile_tile_parts.rs"),
     );
     assert_pattern_checks(&[

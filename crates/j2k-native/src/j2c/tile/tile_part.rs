@@ -482,8 +482,9 @@ fn ppt_marker<'a>(reader: &mut BitReader<'a>) -> Option<PptMarkerData<'a>> {
 }
 
 fn sot_marker(reader: &mut BitReader<'_>) -> Option<TilePartHeader> {
-    // Length.
-    let _ = reader.read_u16()?;
+    if reader.read_u16()? != 10 {
+        return None;
+    }
 
     let tile_index = reader.read_u16()?;
     let tile_part_length = reader.read_u32()?;

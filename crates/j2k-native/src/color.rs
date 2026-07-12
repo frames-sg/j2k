@@ -15,6 +15,8 @@ use crate::{
 };
 
 mod allocation;
+#[cfg(test)]
+mod boundary_tests;
 mod postprocess;
 pub(crate) use postprocess::{resolve_palette_indices, validate_and_reorder_channels};
 

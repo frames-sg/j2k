@@ -322,3 +322,6 @@ pub(in crate::j2c::encode) fn validate_band_len(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

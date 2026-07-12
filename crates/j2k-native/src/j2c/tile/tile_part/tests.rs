@@ -3,15 +3,14 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::*;
-use crate::error::DecodeError;
+use super::{Header, Tile, TileMetadataBudget};
 use crate::j2c::codestream::{
     CodeBlockStyle, CodingStyleComponent, CodingStyleDefault, CodingStyleFlags,
     CodingStyleParameters, ComponentInfo, ComponentSizeInfo, ProgressionOrder, QuantizationInfo,
     QuantizationStyle, SizeData, StepSize, WaveletTransform,
 };
 
-fn header() -> Header<'static> {
+pub(super) fn header() -> Header<'static> {
     let size_info = ComponentSizeInfo {
         precision: 8,
         signed: false,
@@ -78,42 +77,35 @@ fn header() -> Header<'static> {
     }
 }
 
-#[test]
-fn malformed_ppt_rolls_back_temporary_owner_capacity() {
-    let header = header();
-    let mut budget = TileMetadataBudget::for_image(&header, 0).expect("tile budget");
+pub(super) fn inherited_tile_state<'a>(
+    header: &'a Header<'a>,
+) -> (Vec<Tile<'a>>, TileMetadataBudget, usize) {
+    let mut budget = TileMetadataBudget::for_image(header, 0).expect("tile budget");
     let mut tiles = Vec::new();
     budget
         .try_reserve_retained(&mut tiles, 1)
         .expect("outer tile owner");
-    tiles.push(Tile::new(0, &header));
-    super::super::metadata::inherit_tile_metadata(&mut tiles[0], &header, &mut budget)
+    tiles.push(Tile::new(0, header));
+    super::super::metadata::inherit_tile_metadata(&mut tiles[0], header, &mut budget)
         .expect("inherited tile metadata");
     let retained_before = budget.retained_bytes();
-
-    let malformed_ppt = [
-        0xff, 0x90, // SOT
-        0x00, 0x0a, // Lsot
-        0x00, 0x00, // Isot
-        0x00, 0x00, 0x00, 0x00, // Psot: extends to input end
-        0x00, 0x01, // TPsot, TNsot
-        0xff, 0x61, // PPT
-        0x00, 0x02, // Lppt has no Zppt byte
-    ];
-    let mut reader = BitReader::new(&malformed_ppt);
-    let mut ppm_packet_idx = 0;
-    let error = parse_tile_part(
-        &mut reader,
-        &header,
-        &mut tiles,
-        &mut ppm_packet_idx,
-        &mut budget,
-    )
-    .expect_err("malformed PPT must reject");
-
-    assert_eq!(error, DecodeError::Marker(MarkerError::ParseFailure("PPT")));
-    assert_eq!(budget.retained_bytes(), retained_before);
-    budget
-        .validate_owner_graph(&tiles)
-        .expect("temporary PPT capacity is fully rolled back");
+    (tiles, budget, retained_before)
 }
+
+pub(super) fn tile_part_bytes(
+    tile_index: u16,
+    tile_part_length: u32,
+    include_sod: bool,
+) -> Vec<u8> {
+    let mut bytes = vec![0xff, 0x90, 0x00, 0x0a];
+    bytes.extend_from_slice(&tile_index.to_be_bytes());
+    bytes.extend_from_slice(&tile_part_length.to_be_bytes());
+    bytes.extend_from_slice(&[0x00, 0x01]);
+    if include_sod {
+        bytes.extend_from_slice(&[0xff, 0x93]);
+    }
+    bytes
+}
+
+mod sot;
+mod transaction;
