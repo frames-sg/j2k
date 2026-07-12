@@ -19,6 +19,7 @@ pub(super) struct SourceRoot {
     pub(super) package: String,
     pub(super) path: String,
     pub(super) kind: ReachKind,
+    pub(super) crate_root: bool,
 }
 
 #[derive(Debug)]
@@ -189,6 +190,7 @@ fn cargo_source_roots(
             package: package_name.to_string(),
             path: repository_relative(root, Path::new(source))?,
             kind,
+            crate_root: true,
         });
     }
     if roots.is_empty() {

@@ -76,11 +76,19 @@ pub(super) fn module_reachability(
     let mut states = BTreeMap::<String, ReachState>::new();
     let mut pending = roots
         .iter()
-        .map(|root| (root.path.clone(), root.package.clone(), root.kind, true))
+        .map(|root| {
+            (
+                root.path.clone(),
+                root.package.clone(),
+                root.kind,
+                true,
+                root.crate_root,
+            )
+        })
         .collect::<VecDeque<_>>();
     let mut seen = BTreeSet::new();
-    while let Some((path, package, kind, required)) = pending.pop_front() {
-        if !seen.insert((path.clone(), package.clone(), kind, required)) {
+    while let Some((path, package, kind, required, crate_root)) = pending.pop_front() {
+        if !seen.insert((path.clone(), package.clone(), kind, required, crate_root)) {
             continue;
         }
         states
@@ -94,10 +102,17 @@ pub(super) fn module_reachability(
             &source,
             kind,
             required,
+            crate_root,
             contexts.get(&package)?,
         )?;
         for edge in analysis.edges {
-            pending.push_back((edge.path, package.clone(), edge.kind, edge.required_on_host));
+            pending.push_back((
+                edge.path,
+                package.clone(),
+                edge.kind,
+                edge.required_on_host,
+                false,
+            ));
         }
     }
     Ok(states)

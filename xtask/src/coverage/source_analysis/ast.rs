@@ -47,6 +47,7 @@ pub(super) fn analyze_source(
     source: &str,
     kind: ReachKind,
     required_on_host: bool,
+    crate_root: bool,
     cfg: &CoverageCfgContext,
 ) -> Result<ParsedSource, String> {
     let file = syn::parse_file(source)
@@ -65,7 +66,7 @@ pub(super) fn analyze_source(
     let mut collector = AstCollector {
         root,
         path,
-        module_dir: source_module_dir(path)?,
+        module_dir: source_module_dir(path, crate_root)?,
         path_attr_dir: source_parent_dir(path),
         kind,
         context: TraversalContext {

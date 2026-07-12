@@ -6,9 +6,12 @@ use std::path::{Path, PathBuf};
 use syn::ext::IdentExt;
 use syn::{Attribute, Expr, Lit, Meta};
 
-pub(super) fn source_module_dir(current: &str) -> Result<PathBuf, String> {
+pub(super) fn source_module_dir(current: &str, crate_root: bool) -> Result<PathBuf, String> {
     let current = Path::new(current);
     let parent = current.parent().unwrap_or_else(|| Path::new("."));
+    if crate_root {
+        return Ok(parent.to_path_buf());
+    }
     let stem = current
         .file_stem()
         .and_then(|stem| stem.to_str())

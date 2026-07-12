@@ -139,6 +139,11 @@ impl SourceIndex {
         contexts: &CoverageCfgContexts,
     ) -> Result<Self, String> {
         let states = module_reachability(root, roots, contexts)?;
+        let root_paths = roots
+            .iter()
+            .filter(|root| root.crate_root)
+            .map(|root| root.path.as_str())
+            .collect::<BTreeSet<_>>();
         let mut files = BTreeMap::new();
         for (path, state) in &states {
             let role = state.role();
@@ -155,6 +160,7 @@ impl SourceIndex {
                     &source,
                     kind,
                     state.required_on_host(),
+                    root_paths.contains(path.as_str()),
                     contexts.get(state.package()?)?,
                 )?;
                 SourceFileAnalysis {
@@ -226,6 +232,7 @@ impl SourceIndex {
             source,
             ReachKind::Production,
             true,
+            true,
             &context,
         )?;
         Ok(Self {
@@ -269,6 +276,7 @@ impl SourceIndex {
                     package: package.to_string(),
                     path: (*path).to_string(),
                     kind,
+                    crate_root: *role != SourceRole::Production,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;

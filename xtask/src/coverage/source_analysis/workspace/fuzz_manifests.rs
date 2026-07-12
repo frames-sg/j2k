@@ -157,6 +157,7 @@ fn parse_manifest(root: &Path, manifest: &Path) -> Result<Option<ManifestFuzzPac
             package: name.to_string(),
             path: repository_relative(root, &source)?,
             kind: ReachKind::ExampleBenchFuzz,
+            crate_root: true,
         });
     }
     if roots.is_empty() {

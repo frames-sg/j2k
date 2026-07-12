@@ -69,6 +69,37 @@ fn nested_inline_module_uses_its_real_module_directory() {
 }
 
 #[test]
+fn nonterminal_external_module_in_named_crate_root_uses_sibling_source() {
+    let repository = TestRepository::new();
+    repository.write(
+        "benches/compare.rs",
+        "mod common;\n\npub fn benchmark_entry() {}\nmod later;\n",
+    );
+    repository.write("benches/common.rs", "pub fn shared_fixture() {}\n");
+    repository.write("benches/later.rs", "pub fn later_fixture() {}\n");
+    let changed = BTreeMap::from([
+        ("benches/compare.rs".to_string(), BTreeSet::from([3])),
+        ("benches/common.rs".to_string(), BTreeSet::from([1])),
+        ("benches/later.rs".to_string(), BTreeSet::from([1])),
+    ]);
+    let index = SourceIndex::repository_subset(
+        repository.root(),
+        &changed,
+        &[("benches/compare.rs", SourceRole::ExampleBenchFuzz)],
+    )
+    .unwrap();
+
+    assert_eq!(
+        index.file("benches/common.rs").unwrap().role,
+        SourceRole::ExampleBenchFuzz
+    );
+    assert_eq!(
+        index.file("benches/later.rs").unwrap().role,
+        SourceRole::ExampleBenchFuzz
+    );
+}
+
+#[test]
 fn module_path_cannot_escape_the_repository_root() {
     let repository = TestRepository::new();
     let outside_name = format!("j2k-coverage-outside-{}.rs", std::process::id());

@@ -31,7 +31,7 @@ pub(crate) fn analyze_test_only_syntax(
     source: &str,
 ) -> Result<SourceAuditSyntax, String> {
     let cfg = CoverageCfgContext::for_current_target(BTreeSet::new(), None);
-    let parsed = analyze_source(root, path, source, ReachKind::Production, true, &cfg)?;
+    let parsed = analyze_source(root, path, source, ReachKind::Production, true, false, &cfg)?;
     let analysis = SourceFileAnalysis {
         role: SourceRole::Production,
         test_only_lines: parsed.test_only_lines,
