@@ -361,23 +361,4 @@ fn print_bench_report_help() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::transcode_metal_bench_args;
-
-    #[test]
-    fn transcode_metal_bench_enables_its_declared_internal_surface() {
-        assert_eq!(
-            transcode_metal_bench_args(),
-            [
-                "bench",
-                "-p",
-                "j2k-transcode-metal",
-                "--bench",
-                "dct97",
-                "--features",
-                "bench-internals",
-                "--no-run",
-            ]
-        );
-    }
-}
+mod tests;
