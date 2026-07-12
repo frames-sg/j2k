@@ -19,8 +19,9 @@ Metal buffer access in the J2K Metal adapters.
   `j2k_metal_support::checked_buffer_read_vec` rather than constructing slices
   directly from a Metal pointer.
 - Upload and zero-initialization paths use the shared checked write/fill
-  helpers. Caller-owned no-copy wrappers have explicit unsafe lifetime and
-  exclusivity contracts.
+  helpers. Caller data is copied into Metal-owned storage; the obsolete
+  cloneable no-copy wrapper was removed because it could not encode the borrow
+  lifetime in its return type.
 - The only direct `buffer.contents()` use under `crates/j2k-metal/src` is the
   `buffer_is_cpu_visible` predicate in `direct_buffers.rs`; it checks visibility
   and does not dereference or expose the pointer.
@@ -31,8 +32,7 @@ Metal buffer access in the J2K Metal adapters.
 
 The migrated implementation compiles, its library tests pass, the unsafe
 inventory is current, and the required strict clippy command is green. Remaining
-uploads, zeroing, visibility tests, and explicitly unsafe caller-owned no-copy
-wrappers are not unchecked readback slices.
+uploads, zeroing, and visibility tests are not unchecked readback slices.
 
 ## Verification commands
 
@@ -42,7 +42,9 @@ wrappers are not unchecked readback slices.
 - `cargo xtask unsafe-audit`
 - `cargo clippy -p j2k-metal-support -p j2k-metal --all-targets --all-features -- -D warnings`
 
-2026-07-09 result: `cargo test -p j2k-metal-support --lib` passed 10 tests. At
+2026-07-10 follow-up result: `cargo test -p j2k-metal-support --lib` passed 18
+tests after constructor hardening, removal of the unused no-copy API, and the
+retained-command-resource autorelease-pool regression. At
 the SAFE-001 checkpoint, `cargo test -p j2k-metal --lib` passed 200 runnable
 tests; after the later GPU ordering/API hardening, the candidate passed 204
 runnable tests with 18 explicit hardware-lane tests ignored by the default

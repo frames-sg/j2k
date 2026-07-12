@@ -24,6 +24,14 @@ affected code or including proof-of-concept details. A
 verified direct private channel must be published before the staged `0.7.0`
 release is approved.
 
+The tag-publish preflight authenticates to GitHub and reads the repository's
+private-vulnerability-reporting setting. Publication fails closed unless that
+setting reports `enabled: true`; API authorization failures and malformed
+responses also block publication. Before creating the release tag, a repository
+administrator must enable **Security > Private vulnerability reporting** and
+confirm that **Report a vulnerability** is visible. Ordinary offline repository
+lint does not make this network request.
+
 Response expectations:
 
 - Acknowledgment of a private report within **3 business days**.

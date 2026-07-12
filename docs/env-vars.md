@@ -197,7 +197,7 @@ override it.
 | `J2K_FUZZ_RUNS` | Number of runs passed to each `cargo xtask fuzz-run` target. | `1000` | Test/CI |
 | `J2K_FUZZ_MAX_TOTAL_TIME_SECONDS` | Optional libFuzzer max total time for `cargo xtask fuzz-run`. | Not passed | Test/CI |
 | `J2K_FUZZ_TARGET` | Target triple passed to `cargo fuzz run --target` by `cargo xtask fuzz-run`. | Nightly host target from `rustc -vV` | Test/CI |
-| `J2K_SEMVER_TOOLCHAIN` | Rust toolchain used by `cargo xtask semver`. | `1.96` | Test/CI |
+| `J2K_SEMVER_TOOLCHAIN` | Rejected by `cargo xtask semver`; Rust `1.96` is pinned in source and CI. | Must not be set | Test/CI |
 
 CI overrides the fuzz defaults to 512 runs / 60 seconds for pull requests and
 20,000 runs / 900 seconds for the scheduled long fuzz job.

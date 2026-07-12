@@ -65,7 +65,9 @@ surface behavior should update:
 - API docs for affected public items
 - integration tests covering caller-visible behavior
 - the README benchmark policy when benchmark methodology changes
-- `docs/stable-api-1.0.public-api.txt` via `cargo xtask stable-api --write`
+- `docs/stable-api-1.0.public-api.txt` and
+  `docs/stable-api-1.0.implementation-public-api.txt` transactionally via
+  `cargo xtask stable-api --write`
   when semver-visible public items change
 - `docs/public-support.md` plus `cargo xtask public-support` when codec support
   claims change

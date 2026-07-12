@@ -44,7 +44,7 @@ still-image correctness. Keep row-level status synchronized with
 ## Crate dependency graph
 
 ```text
-j2k -> j2k-core, j2k-native, j2k-types
+j2k -> j2k-codec-math, j2k-core, j2k-native, j2k-types
 j2k-native -> j2k-codec-math, j2k-types, j2k-profile
 j2k-test-support -> j2k-native
 j2k-transcode-test-support -> j2k-transcode, j2k-types
@@ -55,11 +55,11 @@ j2k-jpeg-cuda -> j2k-core, j2k-cuda-runtime, j2k-jpeg, j2k-profile
 j2k-jpeg-metal -> j2k-core, j2k-jpeg, j2k-metal-support, j2k-profile
 j2k-tilecodec -> j2k-core
 j2k-compare -> j2k-core, j2k, j2k-native, j2k-test-support
-j2k-transcode -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-jpeg
+j2k-transcode -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-jpeg, j2k-profile
 j2k-metal-support -> j2k-core
 j2k-cuda-runtime -> j2k-codec-math, j2k-core
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal, j2k-metal-support, j2k-transcode
-j2k-transcode-cuda -> j2k-cuda-runtime, j2k-native, j2k-transcode
+j2k-transcode-cuda -> j2k-core, j2k-cuda-runtime, j2k-native, j2k-transcode
 j2k-cli -> j2k, j2k-jpeg, j2k-transcode
 xtask -> j2k, j2k-codec-math, j2k-compare, j2k-native, j2k-profile, j2k-test-support
 ```
@@ -77,5 +77,8 @@ projects while Rust host code retains Driver API orchestration. `cuda-runtime`
 support is an implementation dependency, not proof of NVIDIA performance.
 
 Metal adapters use `j2k-metal-support` for device, queue, shader-library,
-pipeline loading, and route-label helpers. Codec-specific kernels stay in codec
-adapter crates.
+pipeline loading, checked buffer access, and route-label helpers. It is the
+sole raw Objective-C resource-construction boundary: nil is checked before any
+foreign handle is formed, and autoreleased command resources are retained into
+owned Rust handles before return. Codec-specific kernels stay in codec adapter
+crates.

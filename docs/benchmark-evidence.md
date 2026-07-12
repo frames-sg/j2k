@@ -65,6 +65,11 @@ This local release-profile comparison is acceptance evidence for the
 resident-codestream and direct-stacked module splits. It is not a public speed
 claim and does not replace exact-SHA Metal release validation.
 
+STR-006 follow-up extraction began after this measurement and touches these
+execution families. The results below remain evidence for the earlier splits,
+but the same pinned guards must be rerun against the final structural source
+before candidate freeze.
+
 - Host: the Apple M4 Pro / 48 GB / macOS 26.5 machine recorded above
 - Baseline: `edb27830`, before the three structural refactor commits
 - Candidate library source: `46130e58`; the benchmark-only harness changes are

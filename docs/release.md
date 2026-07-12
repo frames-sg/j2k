@@ -7,7 +7,7 @@ The repository is staged for the `j2k` public crate release. Runtime backend sel
 | Version | Distribution state | Security support |
 | --- | --- | --- |
 | `0.6.x` | Latest publicly published crates and documentation. | Supported. |
-| `0.7.0` | Staged workspace release candidate; its changes remain under `Unreleased` until the tag and crates are published. | Not yet published or security-supported. |
+| `0.7.0` | Staged workspace target, not a frozen release candidate. Release notes use `Unreleased` during remediation and a dated `0.7.0` heading only at candidate freeze. | Not yet published or security-supported. |
 | `<0.6` | Historical releases. | Unsupported. |
 
 The workspace version records the staged package target; it does not by itself
@@ -18,6 +18,13 @@ before the release tag and crates exist. Those pages must continue to identify
 evidence. After the tag and crates are published, update the site status in a
 separate post-release commit.
 
+Version `0.7.0` intentionally contracts parts of the published pre-1.0 `0.6.2`
+API. It does not claim source compatibility with `0.6.x`. The
+[`CHANGELOG`](../CHANGELOG.md) provides migration notes, and the
+[reviewed API report](../engineering/reviewed-public-api-diff-0.7.0.md)
+records the current additions, removals, and changed signatures. That report is
+provisional until it is regenerated and verified after final source freeze.
+
 ## Candidate freeze and exact-SHA evidence
 
 Finish source, generated artifacts, documentation, changelog, and package
@@ -27,7 +34,21 @@ worktree:
 ```bash
 test -z "$(git status --porcelain)"
 RC_SHA=$(git rev-parse HEAD)
+cargo xtask release-integrity --publish
+cargo xtask package
 ```
+
+Both offline candidate gates run from that clean commit. A failure or any
+tracked correction invalidates `RC_SHA`; commit the correction, choose a new
+candidate SHA, and rerun the local and exact-SHA evidence.
+
+During remediation, the changelog keeps a real `## [Unreleased]` heading and a
+structured staged-version line. As the final release-preparation edit before
+candidate freeze, replace that heading with `## [0.7.0] - YYYY-MM-DD` using the
+actual intended tag date and update every staged-document reference that still
+says the notes are under `Unreleased`. Do not guess the date early. Any later
+date or note change creates a new candidate and requires the exact-SHA gates
+again.
 
 Move the intended protected `origin/main` tip to exactly `RC_SHA` through the
 repository's normal reviewed push/merge workflow, then run hosted CI and both
@@ -44,6 +65,16 @@ rerun all exact-SHA evidence. Only after the verifier succeeds may the release
 maintainer create an annotated `v<workspace-version>` tag that peels to
 `RC_SHA`. Push that tag explicitly; do not use `--follow-tags`, move an existing
 release tag, or treat a GitHub Pages deployment as release evidence.
+
+Before final candidate freeze, replace both `PENDING` values in the patched `block`
+[release approval record](../third_party/block-0.1.6-patched/PATCH_PROVENANCE.md)
+with the actual reviewer identity and review date. The date must be a
+calendar-valid `YYYY-MM-DD`; never infer either value from commit metadata.
+Also have a repository administrator enable GitHub private vulnerability
+reporting under **Security** settings before exact-SHA candidate verification.
+The authenticated candidate verifier reads that repository setting and fails
+closed unless it reports enabled; the later tag verifier reuses the same
+prerequisite.
 
 ## Versions and publish order
 
@@ -121,6 +152,7 @@ Run this before publishing:
 ```bash
 cargo xtask codec-math-codegen
 cargo xtask release-integrity
+cargo xtask release-integrity --publish
 cargo xtask public-support --final
 ```
 
@@ -132,6 +164,26 @@ publishable workspace crate is missing from publish order, docs.rs metadata,
 semver/doc gates, or release docs, or if a workspace crate is neither
 publishable nor explicitly `publish = false`.
 
+The ordinary integrity mode is an offline pre-candidate check and accepts the
+structured `Unreleased` changelog state. `--publish` remains offline but
+requires exactly one dated heading for the workspace version, rejects the
+provisional changelog markers, and requires completed patch-review approval
+fields. The tag workflow separately uses the authenticated GitHub verifier to
+confirm private vulnerability reporting, the annotated tag, and exact-SHA
+hosted/GPU evidence. A direct real invocation of `scripts/publish-crate.sh`
+independently requires the expected annotated Git tag to exist and peel exactly
+to `HEAD`, treats `GITHUB_REF_NAME` only as an additional consistency check,
+and rejects tracked or untracked worktree changes. It derives the canonical
+repository identity from `[workspace.package].repository`, normalizes secure
+HTTPS, scp-style SSH, and `ssh://` checkout URLs, and requires the checkout
+`origin` to match that identity. It then queries `origin` directly and requires
+the exact remote tag object and its peeled commit to match the verified local
+annotated tag and `HEAD`. Any Git URL rewrite must still resolve to the same
+canonical identity. Origin and remote-tag failures stop before Cargo or any
+registry operation, and diagnostics do not print remote URLs or transport errors
+that could contain credentials. Finally, the script reruns the strict offline
+integrity mode so it cannot bypass those source and metadata checks.
+
 The public-support gate verifies that the JPEG 2000 Part 1, JP2, HTJ2K Part 15,
 JPH, known-limitation, and publication-gate rows remain synchronized with tests
 and the conformance manifest before a release can claim full scoped codec
@@ -139,11 +191,13 @@ support.
 
 ## Required gates
 
-Hosted CI must pass before release staging:
+After the candidate is frozen and committed, hosted CI must pass for exactly
+`RC_SHA` before release authorization:
 
 - formatting
 - tests
 - clippy
+- authoritative strict Clippy via `cargo xtask clippy-strict`
 - panic-surface ratchet via `cargo xtask panic-surface`
 - codec math fragment freshness via `cargo xtask codec-math-codegen`
 - release integrity
@@ -181,22 +235,56 @@ are failures. These checks retain the per-backend minimum test count floors and
 named runtime sentinels for every Metal-facing package. J2K Metal Criterion
 bench signoff is reset until new narrow profiling benches are added.
 
-The workspace already patches transitive `block v0.1.6` through
-`third_party/block-0.1.6-patched` to mitigate its future-incompatibility
-warning while `metal v0.33.0` remains the current crates.io release. Validate
-the patch with lockfile-strict metadata plus the normal Metal build and runtime
-gates. Remove it only after upstream `metal` no longer depends on the affected
-crate or an approved replacement is adopted, and record that removal in the
-release notes. Do not downgrade or merely silence the warning.
+The workspace resolves `metal v0.33.0` and patches its transitive `block v0.1.6`
+through `third_party/block-0.1.6-patched` to mitigate the dependency's
+future-incompatibility warning. The
+[patch provenance record](../third_party/block-0.1.6-patched/PATCH_PROVENANCE.md)
+pins the source digests and documents the limited ABI spelling changes. It is
+not release signoff: the release remains blocked until the maintainer records a
+real reviewer identity and approval date. Validate the patch with
+lockfile-strict metadata plus the normal Metal build and runtime gates. Remove
+it only after the resolved `metal` dependency no longer uses the affected crate
+or an approved replacement is adopted, and record that removal in the release
+notes. Do not downgrade or merely silence the warning.
+
+This override protects repository builds only. Cargo [reads `[patch]` only
+from the top-level workspace](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#the-patch-section)
+and ignores patch settings supplied by a dependency, so a crates.io consumer
+of the published Metal adapters will still resolve upstream `metal 0.33.0` and
+upstream `block 0.1.6` unless that consumer adds its own override. The current
+upstream [`metal` manifest](https://github.com/gfx-rs/metal-rs/blob/master/Cargo.toml)
+still declares `block 0.1.6`, and its
+[README](https://github.com/gfx-rs/metal-rs/blob/master/README.md) marks
+`metal` deprecated in favor of `objc2-metal`.
+Do not describe the local patch as a downstream fix. The 0.7 package evidence
+must record this resolution explicitly; migration to maintained `objc2-metal`
+or another publishable dependency path remains tracked maintenance debt.
 
 CUDA validation requires a self-hosted CUDA environment for runtime and NVIDIA performance evidence. CUDA paths use J2K-owned CUDA kernels, cuda-runtime integration, and CUDA device memory surfaces for supported shapes. NVIDIA performance claims require recorded self-hosted benchmark output.
 
-Whole accelerator crates are not coverage exclusions. The only exclusions are
-named non-host-instrumentable regions: CUDA SIMT device Rust, generated
-cuda-oxide host scaffolds, the shared SIMT prelude, CUDA/NVTX FFI declaration
-spans, and the embedded MSL string body. Each exclusion is tied to named
-integrity or runtime-parity evidence. Metal and CUDA lanes publish separate LCOV
-and summary artifacts and remain required before release.
+Whole accelerator crates are not coverage exclusions. The changed-line
+denominator covers executable production and required build-script Rust.
+Syntax-level `#[cfg(test)]` code, Cargo test targets, and example/bench/fuzz
+targets are reported as separate non-production source dispositions rather than
+being mislabeled as uncovered production.
+
+Reviewed non-host-instrumentable exclusions are exact and named: CUDA SIMT
+device Rust, generated cuda-oxide host scaffolds, the shared SIMT prelude,
+CUDA/NVTX FFI declaration spans, the embedded MSL string body, the generated
+codec-math DWT fragment, and the vendored patched `block` FFI binding. Every
+generated or reviewed-vendored line must match one of those exclusions and its
+named freshness, integrity, or runtime-parity evidence. Metal and CUDA lanes
+publish separate LCOV and summary artifacts and remain required before release.
+
+Each coverage lane forces `CARGO_LLVM_COV_TARGET_DIR` and
+`CARGO_LLVM_COV_BUILD_DIR` to the same unique empty directory and uses only
+build-script outputs captured from that invocation for custom `cfg`
+classification. This makes byte-identical build-script reruns valid current
+evidence without admitting retained scopes from an earlier run. Every selected
+package with a Cargo custom-build target must have current output; missing or
+conflicting package evidence fails the gate. A custom cfg value not established
+by current evidence remains unknown, so both it and its negation stay in the
+changed-source denominator rather than disappearing as inactive.
 
 ## Published and unpublished crates
 

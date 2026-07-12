@@ -7,7 +7,7 @@ and domain tiles.
 
 The tables below are an evidence plan, not a standing claim that every named
 dataset was present in a local run. A run may claim only the corpora present in
-its pinned manifest and summarized by `cargo xtask adoption-report`.
+its pinned manifest and summarized by the `adoption-report` subcommand.
 
 ## Required Mix
 
@@ -117,7 +117,7 @@ e3111a2fd4da24af15d6459ef9eacfe54106b38e27b4a21821b75c3f5d2d5baf  kodim23.png
 1071c68372cc5a01435c2c225a5cf7d4bb803846ec08bb6b3d6721b156d7cb96  kodim24.png
 SHA256
 )
-cargo xtask adoption-materialize \
+cargo run -p xtask --features adoption -- adoption-materialize \
   --encode-fixtures target/j2k-public-corpora/kodak \
   --source-command "downloaded-from-r0k-us-kodak-lossless-true-color-sha256-pinned" \
   --license-status redistributable \
@@ -138,7 +138,7 @@ unzip -q target/j2k-public-corpora/testimages/rgb8bit.zip \
   -d target/j2k-public-corpora/testimages/rgb8
 unzip -q target/j2k-public-corpora/testimages/gray8bit.zip \
   -d target/j2k-public-corpora/testimages/gray8
-cargo xtask adoption-materialize \
+cargo run -p xtask --features adoption -- adoption-materialize \
   --encode-fixtures "target/j2k-public-corpora/testimages/rgb8:target/j2k-public-corpora/testimages/gray8" \
   --source-command "downloaded-from-imagecompression-info-test-images" \
   --license-status redistributable-with-attribution \
@@ -159,14 +159,14 @@ git -C target/j2k-public-corpora/openjpeg-data fetch --depth 1 origin \
   "${OPENJPEG_DATA_COMMIT}"
 git -C target/j2k-public-corpora/openjpeg-data checkout --detach \
   "${OPENJPEG_DATA_COMMIT}"
-cargo xtask adoption-curate \
+cargo run -p xtask --features adoption -- adoption-curate \
   --fixtures target/j2k-public-corpora/openjpeg-data/input/conformance \
   --encode-command "source-native-openjpeg-data-conformance-dir@39524bd3a601d90ed8e0177559400d23945f96a9" \
   --license-status permissive-test-fixture \
   --corpus-name openjpeg-data-conformance \
   --corpus-category conformance \
   --out-dir target/j2k-public-corpora/openjpeg-conformance-curated
-cargo xtask adoption-curate \
+cargo run -p xtask --features adoption -- adoption-curate \
   --fixtures target/j2k-public-corpora/openjpeg-data/input/nonregression \
   --encode-command "source-native-openjpeg-data-nonregression-dir@39524bd3a601d90ed8e0177559400d23945f96a9" \
   --license-status permissive-test-fixture \
@@ -198,14 +198,14 @@ git -C target/j2k-public-corpora/codec-corpus sparse-checkout set clic2025 gb82 
 
 ## Manifest Generation
 
-Use `cargo xtask adoption-manifest` to create the decode and encode TSVs before
+Use the `adoption-manifest` subcommand to create the decode and encode TSVs before
 running the adoption bundle. The generator walks each configured directory
 recursively, writes canonical absolute paths, infers common corpus categories
 from directory names, emits fixture hashes, and requires source/license fields
 so publication blockers are explicit instead of hidden in local notes:
 
 ```bash
-cargo xtask adoption-manifest \
+cargo run -p xtask --features adoption -- adoption-manifest \
   --decode-fixtures "corpus/vendor/openjpeg-data:corpus/vendor/openjph:corpus/vendor/domain-jp2" \
   --decode-encode-command "source-native-or-recorded-transcode-command" \
   --encode-fixtures "corpus/vendor/kodak:corpus/vendor/tecnick:corpus/vendor/clic:corpus/vendor/domain-source" \
@@ -229,7 +229,7 @@ only in private run artifacts.
 
 For source-image corpora such as Kodak, Tecnick/TESTIMAGES, CLIC, DIV2K,
 Curiosity-style large TIFFs, or extracted WSI/domain tiles, use
-`cargo xtask adoption-materialize` to create fixed benchmark inputs before
+the `adoption-materialize` subcommand to create fixed benchmark inputs before
 running the adoption bundle. The command stages each supported 8-bit grayscale
 or RGB source image to canonical PGM/PPM, encodes classic J2K and HTJ2K
 lossless codestreams through the public J2K CPU facade, emits both raw
@@ -237,7 +237,7 @@ codestream variants plus JP2 wrappers for classic J2K and JPH wrappers for
 HTJ2K decode coverage, validates CPU round trips, and writes both manifests:
 
 ```bash
-cargo xtask adoption-materialize \
+cargo run -p xtask --features adoption -- adoption-materialize \
   --encode-fixtures "corpus/vendor/kodak:corpus/vendor/tecnick:corpus/vendor/clic:corpus/vendor/domain-source" \
   --source-command "source-original-or-recorded-extraction-command" \
   --license-status "redistributable-with-attribution" \
@@ -258,18 +258,18 @@ The output layout is:
 Then run:
 
 ```bash
-cargo xtask adoption-benchmark \
+cargo run -p xtask --features adoption -- adoption-benchmark \
   --fixtures corpus/vendor/materialized-j2k/decode-fixtures \
   --manifest corpus/vendor/materialized-j2k/fixtures.tsv \
   --encode-fixtures corpus/vendor/materialized-j2k/staged-pnm \
   --encode-manifest corpus/vendor/materialized-j2k/encode-fixtures.tsv \
   --cuda-decode-batch-sizes 1,16,256,1024 \
   --out-dir target/j2k-adoption-benchmark/full
-cargo xtask adoption-report --run-dir target/j2k-adoption-benchmark/full
+cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-adoption-benchmark/full
 ```
 
 Add `--require-cuda` and `--require-metal` on hardware runners. Those flags are
-also report gates: `cargo xtask adoption-report` requires the CUDA/Metal steps
+also report gates: the `adoption-report` subcommand requires the CUDA/Metal steps
 to have run, requires manifest-backed external rows, requires generated
 hardware host-input rows to be disabled, and rejects missing Criterion/Metal
 evidence before a hardware claim can be publishable. The
@@ -300,7 +300,7 @@ For a full adoption bundle that reuses the existing CPU, CUDA, and Metal
 benchmark assets without duplicating benchmark logic, use:
 
 ```bash
-cargo xtask adoption-benchmark \
+cargo run -p xtask --features adoption -- adoption-benchmark \
   --fixtures "corpus/vendor/iso-j2k:corpus/vendor/openjpeg-data:corpus/vendor/openjph:corpus/vendor/kodak-htj2k:corpus/vendor/domain" \
   --manifest corpus/vendor/fixtures.tsv \
   --encode-fixtures "corpus/vendor/kodak-pnm:corpus/vendor/tecnick-pnm:corpus/vendor/clic-pnm:corpus/vendor/domain-pnm" \
@@ -309,7 +309,7 @@ cargo xtask adoption-benchmark \
   --cuda-decode-batch-sizes 1,16,256,1024 \
   --require-metal \
   --out-dir target/j2k-adoption-benchmark/full
-cargo xtask adoption-report --run-dir target/j2k-adoption-benchmark/full
+cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-adoption-benchmark/full
 ```
 
 With `--require-cuda`, the report checks CUDA decode and encode evidence: same
@@ -503,7 +503,7 @@ statuses must be explicit publishable terms such as `public-domain`, `cc0`,
 `unknown`, `restricted`, or `no-redistribution` block adoption-facing
 publication.
 Treat `publication_blockers` as the reason a run is not marketing-ready.
-`cargo xtask adoption-report` refuses to render a publishable report from a
+The `adoption-report` subcommand refuses to render a publishable report from a
 blocked bundle unless `--allow-nonpublishable` is explicitly passed. Reports
 created with that override are labeled diagnostic-only.
 

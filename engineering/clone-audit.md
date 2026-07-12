@@ -1,82 +1,87 @@
 # Production Clone Audit
 
-Audit date: 2026-07-09
 Release line: 0.7.0
-Baseline: `v0.6.2` (`f5c1bf05ea33df8c8dec04251ca38a266171a05d`)
-Candidate production source: `0e78229a` plus documentation/metadata-only
-worktree changes
 
-## Method
+Final candidate ratio: pending. The command has been implementation-tested on
+the moving worktree, but its numeric result is not release evidence until the
+0.7 source tree is frozen and the command is rerun at the candidate SHA.
 
-The repository pins `jscpd` 4.0.5 through the exact command below and pins its
-analysis settings in `.jscpd.json`. The scan covers production Rust under
-`crates/`, including nested CUDA SIMT sources. It excludes tests, benchmarks,
-examples, fuzz targets, generated files, build scripts, and test-support
-crates. A reported clone must span at least 20 lines and 50 tokens.
+## Canonical command
 
-The `maxLines` setting is deliberately 20,000. An earlier ad hoc result near
-1.74% used jscpd's default 1,000-line file ceiling, which omitted the largest
-production files—the exact files this audit was supposed to assess. That
-number and the derived 1.93% objective are invalid release evidence. The
-corrected candidate ceiling is 3.34%; jscpd fails when line duplication reaches
-or exceeds that value.
-
-Reproduce the comparison from the repository root:
+Run the repository-owned gate from the repository root:
 
 ```bash
-trash /tmp/j2k-clone-v062 /tmp/j2k-jscpd-v062 2>/dev/null || true
-mkdir -p /tmp/j2k-clone-v062 /tmp/j2k-jscpd-v062
-git archive v0.6.2 crates | tar -x -C /tmp/j2k-clone-v062
-npx --yes jscpd@4.0.5 /tmp/j2k-clone-v062/crates \
-  --config .jscpd.json --threshold 100 --output /tmp/j2k-jscpd-v062 --silent
-npx --yes jscpd@4.0.5 crates --config .jscpd.json --output target/jscpd --silent
-jq '.statistics.total' /tmp/j2k-jscpd-v062/jscpd-report.json
-jq '.statistics.total' target/jscpd/jscpd-report.json
+cargo xtask clone-audit
 ```
 
-The baseline overrides only the failure threshold so its higher historical
-ratio still produces a report. All detection and scope settings remain those
-in `.jscpd.json`.
+The command stages source-aware production Rust under
+`target/clone-audit/production/`, preserving repository-relative paths, byte
+length, and line positions. It then invokes exactly `jscpd@4.0.5` with the
+checked-in `.jscpd.json` and validates the JSON report before succeeding. The
+report is generated at:
 
-## Result
+```text
+target/clone-audit/report/jscpd-report.json
+```
 
-| Metric | v0.6.2 | 0.7 candidate | Change |
-|---|---:|---:|---:|
-| Analyzed production lines | 203,999 | 205,827 | +1,828 (+0.9%) |
-| Analyzed sources | 272 | 394 | +122 (intentional module splits) |
-| Clone pairs | 290 | 241 | -49 (-16.9%) |
-| Duplicated lines | 9,011 | 6,847 | -2,164 (-24.0%) |
-| Duplicated-line ratio | 4.42% | 3.33% | -1.09 percentage points |
-| Duplicated tokens | 81,086 | 60,690 | -20,396 (-25.2%) |
-| Duplicated-token ratio | 4.49% | 3.36% | -1.13 percentage points |
+The command accepts no arguments. Configuration drift, malformed or missing
+scanner output, a scanner failure, an unsupported source symlink, an unreadable
+or unparsable Rust source, or a result at or above the configured threshold
+fails the gate.
 
-The candidate passes the pinned 3.34% line-duplication ceiling. The line ratio
-fell by 24.7% relative to v0.6.2 while production lines grew slightly.
+## Production-source scope
 
-## Review of the largest remaining pairs
+The scan covers Rust below `crates/`, including nested CUDA SIMT sources, while
+excluding physical test targets and helpers, benches, examples, fuzz targets,
+generated sources, build scripts, and test-support crates. Source selection and
+staging are repository-owned; invoking jscpd directly on `crates/` is not the
+canonical audit.
 
-The machine report is a review queue, not an instruction to force every pair
-through one abstraction. The largest remaining categories were checked against
-the accepted-clone register in the remediation runbook:
+Inline test syntax is excluded structurally rather than by text matching. The
+clone audit reuses the coverage tool's Syn-based cfg and span analyzer through
+a narrow `pub(crate)` facade. Exact spans proven to be test-only, including
+`#[cfg(test)]` modules and `#[test]` items, are replaced with spaces while line
+breaks remain in place. Ambiguous cfg expressions remain in production scope,
+and mixed production/test lines are reported by the staging summary. This keeps
+the policy conservative and prevents duplicated inline tests from inflating the
+production clone count.
 
-| Largest observed pattern | Lines | Disposition |
-|---|---:|---|
-| CUDA and JPEG-CUDA device codec facades | 81 | Accepted stable facade symmetry; backend-private types make a shared public abstraction worse |
-| CUDA transcode kernel branches | 66 | Accepted SIMT specialization; reconsider if one generated source can retain device clarity and performance |
-| Native encode/finalization families | 63, 60 | Algorithm-family symmetry; the mixed-responsibility single-tile coordinator was split separately |
-| CUDA transcode geometry variants | 60 | Device-shape specialization; retain until a branch-free common primitive exists |
-| JPEG sequential entropy paths | 58 | Format-state symmetry; retain while state transitions differ |
-| CUDA and Metal error classification | 57 | Public backend context differs; neutral native classification was consolidated to prevent semantic drift |
-| JPEG-CUDA and CUDA decode adapters | 57 | Accepted adapter symmetry; reconsider when a neutral public request type already exists |
-| CUDA/JPEG Metal shader and architecture paths | 51–53 | Accepted host/SIMT or device specialization with parity tests |
+Repository fixtures lock down both sides of that contract: a 20-line clone
+inside inline test modules falls below the production threshold after masking,
+while an equivalent production clone remains visible. Separate tests verify
+path preservation, unchanged byte/newline positions, conservative cfg handling,
+the pinned scanner invocation, the checked-in configuration, and fail-closed
+report validation.
 
-Genuine drift-prone clones found during the audit—corpus inference, viewport
-staging, CUDA checkpoint planning, and native decode error classification—were
-consolidated and behavior-tested. The remaining pairs are owned by explicit
-reconsideration triggers rather than a zero-duplication target.
+## Pinned policy
+
+`.jscpd.json` requires Rust format detection, mild matching, at least 20 lines
+and 50 tokens per clone, a 20,000-line source ceiling, and a 3.34% duplicated-line
+failure threshold. The high source ceiling is intentional: jscpd's historical
+1,000-line default omitted the largest production files and produced misleading
+results.
+
+The generated stage lives below `target/`, so the canonical configuration does
+not ignore `**/target/**`. The xtask validates this invariant and supplies only
+the staged production directory to jscpd. This configuration must not be reused
+for an unscoped repository-root scan.
+
+## Superseded measurements
+
+The 2026-07-09 manual snapshot reported 3.33% duplicated lines. It scanned the
+working `crates/` tree directly and therefore included inline test syntax in
+production files. That number, the earlier 1.74% scan that used jscpd's default
+file ceiling, and objectives derived from either number are not valid final
+0.7 release evidence. They are retained only as historical context in version
+control; this document intentionally does not promote a replacement ratio from
+the moving worktree.
 
 ## Freeze rule
 
-Rerun the candidate command after the final source commit. A ratio of 3.34% or
-higher, a new unclassified pair of at least 50 lines, a changed scan scope, or
-a non-zero scanner exit blocks the candidate until reviewed and recorded.
+After the final structural source commit, run `cargo xtask clone-audit` at the
+frozen candidate SHA and archive the JSON report from CI. A duplicated-line
+ratio of 3.34% or higher, a newly unclassified clone of at least 50 lines, any
+scope/configuration drift, or any non-zero command exit blocks the candidate
+until the cause is reviewed and recorded in the remediation runbook. Record the
+frozen SHA, source/file totals, clone totals, duplicated line/token totals and
+ratios, and dispositions for newly material pairs in this document.
