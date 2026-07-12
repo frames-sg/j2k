@@ -848,4 +848,53 @@ mod tests {
         let field = ProfileField::metric("duration_us", micros).expect("bounded duration field");
         assert_eq!(field.value(), "1234");
     }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn environment_flag_and_stage_cache_preserve_the_first_observed_mode() {
+        const FLAG_KEY: &str = "J2K_PROFILE_TEST_BOOLEAN_FLAG";
+        const MODE_KEY: &str = "J2K_PROFILE_TEST_CACHED_STAGE_MODE";
+
+        std::env::set_var(FLAG_KEY, " enabled ");
+        assert!(env_flag_from_env(FLAG_KEY));
+        std::env::set_var(FLAG_KEY, "disabled");
+        assert!(!env_flag_from_env(FLAG_KEY));
+        std::env::remove_var(FLAG_KEY);
+        assert!(!env_flag_from_env(FLAG_KEY));
+
+        let cache = StageModeCache::new();
+        std::env::set_var(MODE_KEY, "summary");
+        assert_eq!(cache.mode_from_env(MODE_KEY), ProfileStageMode::Summary);
+        std::env::set_var(MODE_KEY, "off");
+        assert_eq!(cache.mode_from_env(MODE_KEY), ProfileStageMode::Summary);
+        std::env::remove_var(MODE_KEY);
+    }
+
+    #[test]
+    fn limit_summary_and_parsed_field_accessors_preserve_configuration() {
+        let limits = ProfileLimits::default()
+            .with_max_labels(3)
+            .with_max_retained_bytes(4_096);
+        let summary = ProfileSummary::new_with_limits([], limits).expect("valid summary limits");
+        assert_eq!(summary.limits(), limits);
+        assert_eq!(summary.limits().max_labels(), 3);
+        assert_eq!(summary.limits().max_retained_bytes(), 4_096);
+
+        let parsed = parse_profile_line("j2k_profile codec=j2k op=decode path=cpu")
+            .expect("valid profile line")
+            .expect("profile prefix");
+        assert_eq!(
+            parsed.fields(),
+            [
+                (String::from("codec"), String::from("j2k")),
+                (String::from("op"), String::from("decode")),
+                (String::from("path"), String::from("cpu")),
+            ]
+        );
+
+        let empty = ProfileSummary::empty_counts_only();
+        assert_eq!(empty.row_count(), 0);
+        assert_eq!(empty.limits(), ProfileLimits::default());
+        assert!(empty.format_rows().expect("empty rows").is_empty());
+    }
 }

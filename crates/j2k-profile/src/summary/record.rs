@@ -600,3 +600,6 @@ impl RecordFields for TypedFields<'_> {
         self.fields[index].summarize_metric()
     }
 }
+
+#[cfg(test)]
+mod tests;
