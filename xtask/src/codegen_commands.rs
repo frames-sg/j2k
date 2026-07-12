@@ -293,7 +293,19 @@ fn render_stable_api_snapshots() -> Result<(String, String), String> {
     )
     .unwrap();
 
-    Ok((public_out, implementation_out))
+    Ok((
+        finalize_text_snapshot(&public_out),
+        finalize_text_snapshot(&implementation_out),
+    ))
+}
+
+fn finalize_text_snapshot(snapshot: &str) -> String {
+    let content = snapshot.trim_end_matches('\n');
+    if content.is_empty() {
+        String::new()
+    } else {
+        format!("{content}\n")
+    }
 }
 
 #[derive(Debug)]
@@ -585,7 +597,9 @@ fn print_codec_math_codegen_help() {
 mod tests {
     use std::{fs, path::PathBuf};
 
-    use super::{write_snapshot_pair_transactionally, SNAPSHOT_TRANSACTION_NONCE};
+    use super::{
+        finalize_text_snapshot, write_snapshot_pair_transactionally, SNAPSHOT_TRANSACTION_NONCE,
+    };
 
     fn transaction_test_directory(label: &str) -> PathBuf {
         let nonce = SNAPSHOT_TRANSACTION_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -595,6 +609,13 @@ mod tests {
         ));
         fs::create_dir(&path).expect("create transaction test directory");
         path
+    }
+
+    #[test]
+    fn text_snapshots_end_with_exactly_one_newline() {
+        assert_eq!(finalize_text_snapshot("content\n\n"), "content\n");
+        assert_eq!(finalize_text_snapshot("content"), "content\n");
+        assert_eq!(finalize_text_snapshot(""), "");
     }
 
     #[test]
