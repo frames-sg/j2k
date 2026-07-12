@@ -61,45 +61,34 @@ NVIDIA and exact-candidate proof rather than additional unowned source edits.
 Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
-- Release state: **blocked** and unfrozen. The source baseline is
-  `3fd23cf2f39f`; HEAD is the documentation-only handoff commit immediately
-  above it. The current local chain includes architecture closeout
-  (`5c161599`), coverage/module and clone-classification repairs
-  (`b86d6b12`, `192b1118`, `ee39a681`, `d5a9a2fa`), staged unpublished-package
-  dependency repair (`4c947c2b`), and typed Metal pool ownership/performance
-  closure (`3fd23cf2`). No push, tag, release, or publication has been made.
-  The approved plan authorizes later exact-SHA movement through the reviewed
-  workflow; it does not authorize a release tag or publication.
-- Current objective: close the remaining direct-CPU fallible allocation and
-  resident in-flight scheduling contracts, repair the coverage evidence model
-  without exclusions or threshold changes, rerun clean-tree clone/package and
-  Metal gates, complete maintainer-owned release evidence, and then freeze one
-  exact candidate SHA.
-  Preserve idiomatic Rust ownership, typed errors, fallible allocation, and
-  actual allocator-capacity accounting.
-- Immediate continuation point (2026-07-12): no owner is editing. Commit
-  `3fd23cf2` replaces repeated Metal `Buffer::length` probes and stringly
-  `(usize, Buffer)` recycling with a move-only, once-validated `PooledBuffer`;
-  private retention covers the 3,083-buffer default resident working set,
-  shared retention keeps its independent 64-record bound, and FIFO metadata is
-  a fallible `VecDeque`. Serial fallible region-plan resolution preserves
-  same-batch cache deduplication. Full Metal validation passes 265 library tests
-  (18 intentional release-lane ignores), 54 device tests, all integrations and
-  docs, 22 support tests, strict Clippy, all 411 ordinary repository policies,
-  stable API, unsafe audit, and the unchanged panic ratchets. Alternating
-  three-process evidence against `0e78229a` passes: direct 8.199 versus 8.458
-  ms, resident buffer 7.952 versus 8.520 ms, and resident host 8.083 versus
-  9.607 ms. The last source-aware clone audit before `3fd23cf2` passed at 1.97%
-  duplicated production lines across 1,187 staged Rust sources and must be
-  rerun for the new committed Rust files. `cargo xtask semver` reaches the deliberate
-  fail-closed maintainer-review blocker; do not replace any `PENDING` rationale
-  with an inferred approval. The tooling phase's 162 unit tests, 411 ordinary
-  policies, and strict rendered-API policy are green. The follow-up tree adds a
-  context-wide CUDA host authority with pre-allocation pinned admission and
-  unlocked RAII replacement reservations; independent-session/context-clone
-  races, wrong-context guards, owner-drop, rollback, and compound-error tests
-  pass locally. Root owns direct-CPU allocation, resident scheduling,
-  changed-line coverage, clean-tree clone/package gates, and exact-SHA handoff.
+- Release state: **blocked** and unfrozen. The latest settled source SHA is
+  `114275ebdfe07f2bc3b99b130035b63c00f1efd4`. No push, release tag, crate
+  publication, or externally visible release action has been made. The local
+  `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
+  movement through the normal reviewed workflow; it does not authorize tagging
+  or publication.
+- Current objective: close the remaining host changed-line and source-body
+  coverage proof without exclusions or threshold changes, then rerun the
+  clean-tree clone, package, API, dependency, corpus, performance, and release
+  gates. Preserve idiomatic Rust ownership, typed errors, fallible allocation,
+  transactional mutation, and actual allocator-capacity accounting.
+- Immediate continuation point (2026-07-12): direct CPU coefficient owners are
+  fallibly budgeted (`59055081`); the Metal resident pool ceiling is derived
+  from its real default working set (`c901602c`); and resident encoding now
+  submits at most the configured in-flight chunk count with transactional range
+  validation and failure stop (`3c2d1793`). Host/Metal/CUDA coverage ownership
+  is partitioned with schema v3 and exact-SHA/lane provenance (`f3823de9`), and
+  covered macro invocations no longer fail merely because the AST treats the
+  invocation as opaque (`d717f7c8`). Release/semver, adoption runner,
+  benchmark/codegen, compare, transcode, JP2 metadata, typed stage-error, and
+  JPEG decoder boundaries now have focused behavior tests through `114275eb`.
+  The exact detached host run at that SHA completed the full host matrix and
+  failed the real gate at 76.0476% (76,459 / 100,541), leaving a 3,974-line
+  numeric gap plus 390 uncovered functions, 462 uncovered executable bodies,
+  1,490 one-line deferred closure bodies, and 791 uncovered opaque macros.
+  Root owns the coverage proof, settled aggregate gates, ledger, and exact-SHA
+  handoff; delegated owners are bounded to native tests, xtask command tests,
+  and compiler-region evidence for deferred closures.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -284,11 +273,11 @@ the issue sections below; this capsule is only the current continuation state.
   identifier and narrowly excluding generated `fnv1a64:` fingerprints. The
   combined panic and typo gates rerun on settled source.
 - Next serialized gates after the source and tooling phase commits:
-  1. implement direct-CPU fallible allocation and true resident in-flight
-     scheduling, then rerun their focused Metal gates;
-  2. repair multi-lane coverage evidence and add missing tests until the real
-     80% gate passes; rerun clone, packaging, and the paired Metal guards after
-     every resulting source commit;
+  1. finish compiler-grounded one-line closure evidence and add behavior tests
+     until every source-body proof and the real 80% host gate pass;
+  2. rerun clone, packaging, paired Metal performance, stable/hidden API,
+     semver, dependency, corpus, and publish-mode integrity gates on the settled
+     committed source;
   3. obtain maintainer API/provenance/security approval, date the changelog,
      run publish-mode offline integrity, and commit a clean candidate SHA;
   4. run exact-SHA hosted CI plus Metal and CUDA hardware validation.
@@ -412,7 +401,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Clean host measurement reaches the real gate and fails at 52.36% overall/20.46% accelerator; lane evidence aggregation and missing host tests must close 47,258/42,016 covered-line gaps without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v3 host evidence at `114275eb` is 76.0476% (76,459 / 100,541); close the 3,974-line numeric gap and compiler-grounded function/body/deferred/macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -894,6 +883,24 @@ exclude accelerator crates, macros, or deferred bodies. The next correction
 must partition and aggregate authoritative host, Metal, and CUDA lane evidence
 while preserving fail-closed function/body accounting, then add missing host
 tests where the host lane itself remains below threshold.
+
+The authoritative follow-up host measurement at
+`114275ebdfe07f2bc3b99b130035b63c00f1efd4` uses schema
+`j2k-changed-line-coverage-v3` and scope `non-accelerator-production`. It ran
+the full host test/parity matrix from a detached clean worktree and failed at
+76,459 of 100,541 measurable lines (76.0476%). Relative to the earlier exact
+`d717f7c8` evidence, focused behavior tests added 1,315 covered lines, reduced
+uncovered instrumentable functions from 450 to 390, and reduced opaque macro
+blockers from 900 to 791. The remaining 80% gap is 3,974 covered lines. The
+same report lists 462 executable bodies without a covered body, 1,490
+one-line deferred closure bodies whose LCOV line is shared with their creation
+site, and 791 uncovered opaque macros. The closure count did not move when
+tests executed the surrounding lines, confirming that line-only LCOV cannot
+prove these bodies. The active tooling correction must use compiler-emitted
+instrumentable source regions with exact-SHA/lane provenance, require positive
+counts for real closure-body regions, and fail closed on missing or stale
+region evidence; it must not accept the shared creation-site line, add an
+exclusion, or lower the threshold.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
