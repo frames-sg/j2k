@@ -12,6 +12,45 @@ use super::options::AdoptionBenchmarkOptions;
 use super::summary::{AdoptionStep, StepStatus};
 use super::support::{benchmark_env_path, benchmark_env_path_list, criterion_target_dir};
 
+#[cfg(all(test, unix))]
+use std::sync::{Mutex, MutexGuard};
+
+#[cfg(all(test, unix))]
+static TEST_CARGO_PROGRAM: Mutex<Option<OsString>> = Mutex::new(None);
+#[cfg(all(test, unix))]
+static TEST_CARGO_SERIAL: Mutex<()> = Mutex::new(());
+
+fn runner_cargo() -> OsString {
+    #[cfg(all(test, unix))]
+    if let Some(program) = TEST_CARGO_PROGRAM
+        .lock()
+        .expect("test Cargo program lock")
+        .clone()
+    {
+        return program;
+    }
+    cargo()
+}
+
+#[cfg(all(test, unix))]
+pub(super) struct TestCargoProgramGuard {
+    _serial: MutexGuard<'static, ()>,
+}
+
+#[cfg(all(test, unix))]
+pub(super) fn use_test_cargo_program(program: OsString) -> TestCargoProgramGuard {
+    let serial = TEST_CARGO_SERIAL.lock().expect("test Cargo serial lock");
+    *TEST_CARGO_PROGRAM.lock().expect("test Cargo program lock") = Some(program);
+    TestCargoProgramGuard { _serial: serial }
+}
+
+#[cfg(all(test, unix))]
+impl Drop for TestCargoProgramGuard {
+    fn drop(&mut self) {
+        *TEST_CARGO_PROGRAM.lock().expect("test Cargo program lock") = None;
+    }
+}
+
 pub(super) const SCRUBBED_BENCH_ENV_VARS: &[&str] = &[
     "J2K_FIXTURE_COMPARE_MODE",
     "J2K_FIXTURE_COMPARE_REPEATS",
@@ -111,7 +150,7 @@ pub(super) fn run_cpu_encode_compare(
 
     run_logged(
         "cpu-encode-compare",
-        cargo(),
+        runner_cargo(),
         &[
             "run",
             "-p",
@@ -185,7 +224,7 @@ pub(super) fn run_cpu_fixture_compare(
 
     run_logged(
         "cpu-fixture-compare",
-        cargo(),
+        runner_cargo(),
         &[
             "run",
             "-p",
@@ -216,7 +255,7 @@ pub(super) fn run_cpu_public_api_encode(
     }
     run_logged_owned(
         "cpu-public-api-encode",
-        cargo(),
+        runner_cargo(),
         &args,
         &[],
         Some(&criterion_target_dir(options, "cpu-public-api-encode")),
@@ -241,7 +280,7 @@ pub(super) fn run_cpu_public_api_decode(
     }
     run_logged_owned(
         "cpu-public-api-decode",
-        cargo(),
+        runner_cargo(),
         &args,
         &[],
         Some(&criterion_target_dir(options, "cpu-public-api-decode")),
@@ -302,7 +341,7 @@ pub(super) fn run_cuda_htj2k_decode(
     }
     run_logged_owned(
         "cuda-htj2k-decode",
-        cargo(),
+        runner_cargo(),
         &args,
         &envs,
         Some(&criterion_target_dir(options, "cuda-htj2k-decode")),
@@ -352,7 +391,7 @@ pub(super) fn run_cuda_htj2k_encode(
     }
     run_logged_owned(
         "cuda-htj2k-encode",
-        cargo(),
+        runner_cargo(),
         &args,
         &envs,
         Some(&criterion_target_dir(options, "cuda-htj2k-encode")),
@@ -406,7 +445,7 @@ pub(super) fn run_metal_decode_benchmark(
     }
     run_logged_owned(
         "metal-decode-benchmark",
-        cargo(),
+        runner_cargo(),
         &args,
         &envs,
         None,
@@ -460,7 +499,7 @@ pub(super) fn run_metal_encode_auto_routing(
     }
     run_logged_owned(
         "metal-encode-auto-routing",
-        cargo(),
+        runner_cargo(),
         &args,
         &envs,
         None,
@@ -496,7 +535,7 @@ pub(super) fn run_metal_transcode_benchmark(
     }
     run_logged_owned(
         "metal-transcode-benchmark",
-        cargo(),
+        runner_cargo(),
         &args,
         &envs,
         Some(&criterion_target_dir(options, "metal-transcode-benchmark")),
@@ -608,3 +647,6 @@ pub(super) fn display_command(
     parts.extend(args.iter().cloned());
     parts.join(" ")
 }
+
+#[cfg(all(test, unix))]
+mod tests;
