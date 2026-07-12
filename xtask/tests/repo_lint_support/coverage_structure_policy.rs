@@ -376,6 +376,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "fn body_without_a_nested_code_region_is_compiler_noninstrumentable()",
             "fn nested_zero_count_code_region_is_uncovered()",
             "fn malformed_or_unrelated_reports_fail_closed()",
+            "fn dependency_macro_expansion_regions_are_ignored_without_hiding_repository_regions()",
         ]),
         PatternCheck::new("coverage changed-line evaluation ownership", &evaluation)
             .required(&[

@@ -129,3 +129,40 @@ fn malformed_or_unrelated_reports_fail_closed() {
         )
         .is_err());
 }
+
+#[test]
+fn dependency_macro_expansion_regions_are_ignored_without_hiding_repository_regions() {
+    let report = parse_compiler_regions(
+        &format!(
+            r#"{{
+                "type": "llvm.coverage.json.export",
+                "version": "3.1.0",
+                "data": [{{
+                    "files": [{{"filename": "{ROOT}/crates/demo/src/lib.rs"}}],
+                    "functions": [{{
+                        "filenames": [
+                            "/cargo/registry/dependency/src/macros.rs",
+                            "{ROOT}/crates/demo/src/lib.rs"
+                        ],
+                        "regions": [
+                            [1, 1, 1, 10, 3, 0, 0, 0],
+                            [2, 5, 2, 12, 4, 1, 0, 0]
+                        ]
+                    }}]
+                }}]
+            }}"#
+        ),
+        Path::new(ROOT),
+    )
+    .unwrap();
+
+    assert_eq!(
+        report
+            .evidence_for(
+                "crates/demo/src/lib.rs",
+                SourceSpan::new(2, 5, 2, 12).unwrap(),
+            )
+            .unwrap(),
+        CompilerRegionEvidence::Covered
+    );
+}

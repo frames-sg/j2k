@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Component, Path};
 
 use proc_macro2::Span;
 use serde_json::Value;
@@ -166,9 +166,9 @@ pub(super) fn parse_compiler_regions(
                 file.get("filename"),
                 &format!("compiler coverage JSON data[{unit_index}].files[{file_index}].filename"),
             )?;
-            report
-                .files
-                .insert(normalize_coverage_path(filename, root)?);
+            if let Some(path) = normalize_compiler_path(filename, root)? {
+                report.files.insert(path);
+            }
         }
         let functions = required_array(
             unit.get("functions"),
@@ -202,13 +202,13 @@ fn parse_function_regions(
                 .ok_or_else(|| {
                     format!("{context}.filenames[{index}] must be a non-empty string")
                 })?;
-            normalize_coverage_path(filename, root)
+            normalize_compiler_path(filename, root)
         })
         .collect::<Result<Vec<_>, _>>()?;
     if filenames.is_empty() {
         return Err(format!("{context}.filenames must not be empty"));
     }
-    report.files.extend(filenames.iter().cloned());
+    report.files.extend(filenames.iter().flatten().cloned());
 
     for (region_index, region) in
         required_array(function.get("regions"), &format!("{context}.regions"))?
@@ -248,6 +248,9 @@ fn parse_function_regions(
             usize_field(values[2], &context, "end line")?,
             usize_field(values[3], &context, "end column")?,
         )?;
+        let Some(path) = path else {
+            continue;
+        };
         report
             .regions
             .entry(path.clone())
@@ -258,6 +261,32 @@ fn parse_function_regions(
             });
     }
     Ok(())
+}
+
+fn normalize_compiler_path(path: &str, root: &Path) -> Result<Option<String>, String> {
+    let path = Path::new(path);
+    if path.is_absolute() && !path.starts_with(root) {
+        return Ok(None);
+    }
+    if !path.is_absolute()
+        && path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!(
+            "compiler coverage source `{}` escapes the repository root",
+            path.display()
+        ));
+    }
+    normalize_coverage_path(
+        path.to_str()
+            .ok_or_else(|| "compiler coverage source path is not valid UTF-8".to_string())?,
+        root,
+    )
+    .map(Some)
 }
 
 fn source_position(line: usize, column: usize, label: &str) -> Result<SourcePosition, String> {
