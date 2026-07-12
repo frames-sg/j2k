@@ -6,7 +6,8 @@ use super::{
     MetalLosslessEncodeBatchStats, MetalLosslessEncodeConfig, MetalLosslessEncodeStageStats,
 };
 
-const GPU_ENCODE_DEFAULT_INFLIGHT_TILES: usize = 512;
+const GPU_ENCODE_DEFAULT_INFLIGHT_TILES: usize =
+    crate::resident_limits::DEFAULT_RESIDENT_CHUNK_TILES;
 const CLASSIC_GPU_ENCODE_SMALL_BATCH_INFLIGHT_TILES: usize = 16;
 const CLASSIC_GPU_ENCODE_LARGE_BATCH_INFLIGHT_TILES: usize = 64;
 const CLASSIC_GPU_ENCODE_VERY_LARGE_BATCH_MIN_TILES: usize = 64;

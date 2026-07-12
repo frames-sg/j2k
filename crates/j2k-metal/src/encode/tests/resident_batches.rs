@@ -558,3 +558,66 @@ fn metal_ht_private_batch_encode_reuses_private_arenas_between_batches() {
     })
     .expect("isolated HTJ2K Metal runtime");
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn perf_shape_ht_private_batch_has_no_warm_pool_misses_or_evictions() {
+    const WIDTH: usize = 512;
+    const HEIGHT: usize = 512;
+    const BATCH_SIZE: usize = 16;
+    const EXPECTED_PRIVATE_BUFFER_TAKES: usize = 103;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let pixels: Vec<u8> = (0..WIDTH * HEIGHT * 3)
+        .map(|index| u8::try_from((index * 29 + index / 7) & 0xff).expect("masked pixel"))
+        .collect();
+    let device = metal::Device::system_default().expect("Metal device");
+    let session = crate::MetalBackendSession::new(device.clone());
+    let input = crate::benchmark_private_buffer_with_bytes(&session, &pixels)
+        .expect("private benchmark input buffer");
+    let width_u32 = u32::try_from(WIDTH).expect("test width fits u32");
+    let height_u32 = u32::try_from(HEIGHT).expect("test height fits u32");
+    let tiles: Vec<_> = (0..BATCH_SIZE)
+        .map(|_| super::super::MetalLosslessEncodeTile {
+            buffer: &input,
+            byte_offset: 0,
+            width: width_u32,
+            height: height_u32,
+            pitch_bytes: WIDTH * 3,
+            output_width: width_u32,
+            output_height: height_u32,
+            format: PixelFormat::Rgb8,
+        })
+        .collect();
+    let options = lossless_options! {
+        backend: EncodeBackendPreference::RequireDevice,
+        block_coding_mode: J2kBlockCodingMode::HighThroughput,
+        validation: J2kEncodeValidation::External,
+    };
+
+    compute::with_isolated_runtime_for_device_for_test(&device, || {
+        super::super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+            &tiles, &options, &session,
+        )?;
+        compute::reset_private_buffer_pool_misses_for_test();
+        compute::reset_private_buffer_pool_take_probes_for_test();
+        let encoded = super::super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+            &tiles, &options, &session,
+        )?;
+        let diagnostics = session.buffer_pool_diagnostics()?;
+
+        assert_eq!(compute::private_buffer_pool_misses_for_test(), 0);
+        assert!(
+            compute::private_buffer_pool_take_probes_for_test()
+                <= EXPECTED_PRIVATE_BUFFER_TAKES * 7,
+            "warm resident buffer acquisition should remain near-linear"
+        );
+        assert_eq!(diagnostics.private.evictions, 0);
+        assert_eq!(encoded.len(), BATCH_SIZE);
+        Ok(())
+    })
+    .expect("isolated 16x512 RGB8 HTJ2K resident batch");
+}

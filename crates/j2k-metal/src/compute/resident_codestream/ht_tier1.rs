@@ -27,8 +27,8 @@ pub(super) struct HtTier1Prepared {
     pub(super) tile_tier1_job_bases: Vec<usize>,
     pub(super) tier1_output_capacity_total: usize,
     pub(super) max_tier1_output_capacity: usize,
-    pub(super) recyclable_private_buffers: Vec<(usize, Buffer)>,
-    pub(super) recyclable_shared_buffers: Vec<(usize, Buffer)>,
+    pub(super) recyclable_private_buffers: Vec<crate::buffer_pool::PooledBuffer>,
+    pub(super) recyclable_shared_buffers: Vec<crate::buffer_pool::PooledBuffer>,
     pub(super) gpu_stage_command_buffers: Vec<J2kResidentEncodeGpuStageCommandBuffer>,
     pub(super) ht_table_build_duration: Duration,
     pub(super) ht_block_encode_duration: Duration,
@@ -50,8 +50,8 @@ pub(super) fn prepare_ht_tier1(
     let ht_tier1_setup_signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_TIER1_SETUP);
     let split_profile_commands = true;
     let mut gpu_stage_command_buffers = Vec::new();
-    let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
-    let recyclable_shared_buffers = Vec::<(usize, Buffer)>::new();
+    let mut recyclable_private_buffers = Vec::new();
+    let recyclable_shared_buffers = Vec::new();
     let shared_coefficient_buffer = prepared_tiles.first().and_then(|first| {
         let ptr = first.coefficient_buffer.as_ptr();
         prepared_tiles

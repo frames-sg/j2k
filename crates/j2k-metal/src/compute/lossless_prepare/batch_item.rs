@@ -20,7 +20,8 @@ pub(in crate::compute) struct BatchPrepareItemRequest<'a, 'job> {
     pub(in crate::compute) coefficient_byte_offset: usize,
     pub(in crate::compute) split_prepare_command_buffers: bool,
     pub(in crate::compute) shared_command_buffer: &'a Option<CommandBuffer>,
-    pub(in crate::compute) shared_recyclable_private_buffers: &'a mut Vec<(usize, Buffer)>,
+    pub(in crate::compute) shared_recyclable_private_buffers:
+        &'a mut Vec<crate::buffer_pool::PooledBuffer>,
 }
 
 struct BatchPrepareCommandStrategy<'a> {

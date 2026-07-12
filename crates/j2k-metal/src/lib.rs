@@ -34,6 +34,8 @@ mod mct;
 mod profile;
 #[cfg(target_os = "macos")]
 mod profile_env;
+#[cfg(any(test, target_os = "macos"))]
+mod resident_limits;
 mod routing;
 mod session;
 #[cfg(any(test, target_os = "macos"))]

@@ -118,7 +118,7 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test(
             message: "classic J2K Metal token-pack job count exceeds u32".to_string(),
         })?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
-        let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        let mut recyclable_private_buffers = Vec::new();
         let token_buffers = dispatch_classic_tier1_token_emit_for_gpu_pack(
             runtime,
             &command_buffer,
@@ -313,7 +313,7 @@ pub(super) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_
             )?,
         )?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
-        let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        let mut recyclable_private_buffers = Vec::new();
         let split_buffers = dispatch_classic_tier1_split_token_emit_for_gpu_pack(
             runtime,
             &command_buffer,

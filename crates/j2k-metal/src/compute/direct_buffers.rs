@@ -85,7 +85,7 @@ pub(super) fn copied_slice_buffer<T: GpuAbi>(device: &Device, data: &[T]) -> Res
 pub(super) fn copied_recyclable_shared_slice_buffer<T: GpuAbi>(
     runtime: &MetalRuntime,
     data: &[T],
-    recyclable_shared_buffers: &mut Vec<(usize, Buffer)>,
+    recyclable_shared_buffers: &mut Vec<crate::buffer_pool::PooledBuffer>,
 ) -> Result<Buffer, Error> {
     let size = size_of_val(data).max(1);
     let buffer = take_recyclable_shared_buffer(runtime, size, recyclable_shared_buffers)?;
@@ -111,7 +111,7 @@ pub(super) fn zeroed_shared_buffer(device: &Device, bytes: usize) -> Result<Buff
 pub(super) fn zeroed_recyclable_shared_buffer(
     runtime: &MetalRuntime,
     bytes: usize,
-    recyclable_shared_buffers: &mut Vec<(usize, Buffer)>,
+    recyclable_shared_buffers: &mut Vec<crate::buffer_pool::PooledBuffer>,
 ) -> Result<Buffer, Error> {
     let bytes = bytes.max(1);
     let buffer = take_recyclable_shared_buffer(runtime, bytes, recyclable_shared_buffers)?;
@@ -138,7 +138,6 @@ pub(super) fn take_classic_coefficients_scratch_buffer(
 ) -> Result<DirectScratchBuffer, Error> {
     let bytes = classic_coefficients_scratch_bytes(job_count)?;
     Ok(DirectScratchBuffer {
-        bytes,
         buffer: runtime.take_private_buffer(bytes)?,
     })
 }
@@ -158,7 +157,6 @@ pub(super) fn take_classic_states_scratch_buffer(
 ) -> Result<DirectScratchBuffer, Error> {
     let bytes = classic_states_scratch_bytes(job_count)?;
     Ok(DirectScratchBuffer {
-        bytes,
         buffer: runtime.take_private_buffer(bytes)?,
     })
 }

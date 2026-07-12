@@ -21,7 +21,7 @@ pub(super) struct PreparedLosslessBatchTile {
     pub(super) coefficient_byte_len: usize,
     pub(super) coefficient_buffer_is_batch_shared: bool,
     pub(super) code_blocks: Vec<J2kLosslessDeviceCodeBlock>,
-    pub(super) recyclable_private_buffers: Vec<(usize, Buffer)>,
+    pub(super) recyclable_private_buffers: Vec<crate::buffer_pool::PooledBuffer>,
     pub(super) prepare_command_buffer: CommandBuffer,
     pub(super) prepare_deinterleave_rct_command_buffer: Option<CommandBuffer>,
     pub(super) prepare_dwt53_command_buffer: Option<CommandBuffer>,

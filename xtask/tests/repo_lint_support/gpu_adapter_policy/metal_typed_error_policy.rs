@@ -79,6 +79,7 @@ fn prepared_plan_cache_crossings_separate_allocation_and_invariant_failures() {
         &[
             "crates/j2k-metal/src/session.rs",
             "crates/j2k-metal/src/hybrid.rs",
+            "crates/j2k-metal/src/hybrid/plan_resolution.rs",
         ],
     );
 

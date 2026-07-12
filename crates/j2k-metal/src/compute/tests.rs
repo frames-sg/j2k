@@ -338,7 +338,7 @@ fn runtime_reuses_recycled_shared_buffers() -> Result<(), crate::Error> {
 
     reset_shared_buffer_pool_misses_for_test();
     let first = runtime.take_shared_buffer(64)?;
-    runtime.recycle_shared_buffer(64, first)?;
+    runtime.recycle_shared_buffer(first)?;
     let _second = runtime.take_shared_buffer(64)?;
 
     assert_eq!(

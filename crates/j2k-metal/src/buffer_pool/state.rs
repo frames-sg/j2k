@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::VecDeque;
+
 use metal::{Buffer, Device};
 
+use super::MetalBufferPoolDiagnostics;
+
 const DEFAULT_RETAINED_BYTES_PER_POOL: usize = 256 * 1024 * 1024;
-const DEFAULT_RETAINED_BUFFERS_PER_POOL: usize = 64;
+const DEFAULT_PRIVATE_RETAINED_BUFFERS_PER_POOL: usize =
+    crate::resident_limits::RESIDENT_PRIVATE_POOL_BUFFER_LIMIT;
+const DEFAULT_SHARED_RETAINED_BUFFERS_PER_POOL: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PoolLimits {
@@ -12,12 +18,20 @@ pub(super) struct PoolLimits {
 }
 
 impl PoolLimits {
-    pub(super) fn for_device(device: &Device) -> Self {
+    pub(super) fn private_for_device(device: &Device) -> Self {
+        Self::for_device(device, DEFAULT_PRIVATE_RETAINED_BUFFERS_PER_POOL)
+    }
+
+    pub(super) fn shared_for_device(device: &Device) -> Self {
+        Self::for_device(device, DEFAULT_SHARED_RETAINED_BUFFERS_PER_POOL)
+    }
+
+    fn for_device(device: &Device, retained_buffers: usize) -> Self {
         let device_limit =
             usize::try_from(device.max_buffer_length()).map_or(usize::MAX, |bytes| bytes);
         Self {
             retained_bytes: device_limit.min(DEFAULT_RETAINED_BYTES_PER_POOL),
-            retained_buffers: DEFAULT_RETAINED_BUFFERS_PER_POOL,
+            retained_buffers,
         }
     }
 
@@ -30,40 +44,6 @@ impl PoolLimits {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[non_exhaustive]
-/// Retention and high-water counters for one Metal scratch-buffer pool.
-pub struct MetalBufferPoolDiagnostics {
-    /// Bytes currently retained in completed reusable buffers.
-    pub cached_bytes: usize,
-    /// Completed reusable buffers currently retained.
-    pub cached_buffers: usize,
-    /// Allocator-reported capacity of the flat host metadata owner.
-    pub metadata_capacity: usize,
-    /// Highest completed-buffer byte count retained by this pool.
-    pub peak_cached_bytes: usize,
-    /// Highest completed-buffer count retained by this pool.
-    pub peak_cached_buffers: usize,
-    /// Oldest completed buffers evicted to admit more useful entries.
-    pub evictions: usize,
-    /// Completed buffers deliberately declined instead of retained.
-    pub rejections: usize,
-    /// Metadata reservations rejected by the host allocator.
-    pub metadata_failures: usize,
-    /// Caller size records that disagreed with the Metal allocation length.
-    pub size_mismatches: usize,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[non_exhaustive]
-/// Separate diagnostics for private and shared Metal scratch retention.
-pub struct MetalBufferPoolsDiagnostics {
-    /// Private-storage scratch pool counters.
-    pub private: MetalBufferPoolDiagnostics,
-    /// Shared-storage scratch pool counters.
-    pub shared: MetalBufferPoolDiagnostics,
-}
-
 #[derive(Default)]
 struct PoolCounters {
     peak_cached_bytes: usize,
@@ -74,13 +54,39 @@ struct PoolCounters {
     size_mismatches: usize,
 }
 
-struct PooledBuffer {
+pub(crate) struct PooledBuffer {
     bytes: usize,
     buffer: Buffer,
 }
 
+impl PooledBuffer {
+    pub(super) fn new_checked(expected_bytes: usize, buffer: Buffer) -> Result<Self, &'static str> {
+        let actual_bytes = usize::try_from(buffer.length())
+            .map_err(|_| "Metal buffer length does not fit usize")?;
+        if actual_bytes != expected_bytes {
+            return Err("recorded buffer size differs from the Metal allocation length");
+        }
+        Ok(Self {
+            bytes: actual_bytes,
+            buffer,
+        })
+    }
+
+    pub(crate) fn buffer(&self) -> &Buffer {
+        &self.buffer
+    }
+}
+
+impl std::ops::Deref for PooledBuffer {
+    type Target = Buffer;
+
+    fn deref(&self) -> &Self::Target {
+        &self.buffer
+    }
+}
+
 pub(super) struct PoolState {
-    entries: Vec<PooledBuffer>,
+    entries: VecDeque<PooledBuffer>,
     retained_bytes: usize,
     limits: PoolLimits,
     counters: PoolCounters,
@@ -91,7 +97,7 @@ pub(super) struct PoolState {
 impl PoolState {
     pub(super) fn new(limits: PoolLimits) -> Self {
         Self {
-            entries: Vec::new(),
+            entries: VecDeque::new(),
             retained_bytes: 0,
             limits,
             counters: PoolCounters::default(),
@@ -100,33 +106,27 @@ impl PoolState {
         }
     }
 
-    pub(super) fn take(&mut self, bytes: usize) -> Result<Option<Buffer>, &'static str> {
-        let Some(index) = self.entries.iter().rposition(|entry| entry.bytes == bytes) else {
+    pub(super) fn take(&mut self, bytes: usize) -> Result<Option<PooledBuffer>, &'static str> {
+        let index = self.entries.iter().position(|entry| {
+            super::record_private_buffer_pool_take_probe_for_test();
+            entry.bytes == bytes
+        });
+        let Some(index) = index else {
             return Ok(None);
         };
-        let entry = self.entries.remove(index);
+        let entry = self
+            .entries
+            .remove(index)
+            .ok_or("buffer pool match disappeared while taking")?;
         self.retained_bytes = self
             .retained_bytes
             .checked_sub(entry.bytes)
             .ok_or("retained byte count underflow while taking a buffer")?;
-        Ok(Some(entry.buffer))
+        Ok(Some(entry))
     }
 
-    pub(super) fn recycle(
-        &mut self,
-        expected_bytes: usize,
-        buffer: Buffer,
-    ) -> Result<(), &'static str> {
-        let actual_bytes = usize::try_from(buffer.length())
-            .map_err(|_| "Metal buffer length does not fit usize")?;
-        if actual_bytes != expected_bytes {
-            self.counters.size_mismatches = self
-                .counters
-                .size_mismatches
-                .checked_add(1)
-                .ok_or("size-mismatch counter overflow")?;
-            return Err("recorded buffer size differs from the Metal allocation length");
-        }
+    pub(super) fn recycle(&mut self, buffer: PooledBuffer) -> Result<(), &'static str> {
+        let actual_bytes = buffer.bytes;
         if actual_bytes > self.limits.retained_bytes || self.limits.retained_buffers == 0 {
             self.record_rejection()?;
             return Ok(());
@@ -149,10 +149,7 @@ impl PoolState {
             self.evict_oldest()?;
         }
 
-        self.entries.push(PooledBuffer {
-            bytes: actual_bytes,
-            buffer,
-        });
+        self.entries.push_back(buffer);
         self.counters.peak_cached_bytes = self.counters.peak_cached_bytes.max(self.retained_bytes);
         self.counters.peak_cached_buffers =
             self.counters.peak_cached_buffers.max(self.entries.len());
@@ -176,7 +173,10 @@ impl PoolState {
     }
 
     fn evict_oldest(&mut self) -> Result<(), &'static str> {
-        let evicted = self.entries.remove(0);
+        let evicted = self
+            .entries
+            .pop_front()
+            .ok_or("buffer pool unexpectedly empty while evicting")?;
         self.retained_bytes = self
             .retained_bytes
             .checked_sub(evicted.bytes)
@@ -205,6 +205,16 @@ impl PoolState {
             .checked_add(1)
             .ok_or("metadata-failure counter overflow")?;
         self.record_rejection()
+    }
+
+    #[cfg(test)]
+    pub(super) fn record_size_mismatch(&mut self) -> Result<(), &'static str> {
+        self.counters.size_mismatches = self
+            .counters
+            .size_mismatches
+            .checked_add(1)
+            .ok_or("size-mismatch counter overflow")?;
+        Ok(())
     }
 
     pub(super) fn diagnostics(&self) -> MetalBufferPoolDiagnostics {

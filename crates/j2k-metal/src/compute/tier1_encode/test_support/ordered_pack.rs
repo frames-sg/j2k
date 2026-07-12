@@ -101,7 +101,7 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_t
         let coefficient_buffer = copied_slice_buffer(&runtime.device, &coefficients)?;
         let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
-        let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        let mut recyclable_private_buffers = Vec::new();
         let token_buffers = dispatch_classic_tier1_token_emit_for_gpu_pack(
             runtime,
             &command_buffer,

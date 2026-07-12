@@ -118,7 +118,7 @@ pub(super) fn collect_prepared_batch_retention(
     profile_stages: bool,
     prepared_tiles: Vec<PreparedLosslessBatchTile>,
     gpu_stage_command_buffers: &mut Vec<J2kResidentEncodeGpuStageCommandBuffer>,
-    recyclable_private_buffers: &mut Vec<(usize, Buffer)>,
+    recyclable_private_buffers: &mut Vec<crate::buffer_pool::PooledBuffer>,
 ) -> Result<(Vec<CommandBuffer>, Vec<Buffer>), crate::Error> {
     if profile_stages {
         record_profiled_prepare_command_buffers(&prepared_tiles, gpu_stage_command_buffers)?;

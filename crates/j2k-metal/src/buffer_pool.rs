@@ -5,21 +5,26 @@ use std::cell::Cell;
 use std::sync::Mutex;
 
 use j2k_metal_support::{checked_private_buffer, checked_shared_buffer};
-use metal::{Buffer, Device};
+use metal::Device;
 
 use crate::Error;
 
+mod diagnostics;
 mod state;
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 mod tests;
 
-pub use state::{MetalBufferPoolDiagnostics, MetalBufferPoolsDiagnostics};
+pub use diagnostics::{MetalBufferPoolDiagnostics, MetalBufferPoolsDiagnostics};
+pub(crate) use state::PooledBuffer;
 use state::{PoolLimits, PoolState};
 
 #[cfg(test)]
 std::thread_local! {
     static PRIVATE_BUFFER_POOL_MISSES: Cell<usize> = const { Cell::new(0) };
     static SHARED_BUFFER_POOL_MISSES: Cell<usize> = const { Cell::new(0) };
+    static PRIVATE_BUFFER_POOL_TAKE_PROBES: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -43,6 +48,26 @@ pub(crate) fn shared_buffer_pool_misses_for_test() -> usize {
 }
 
 #[cfg(test)]
+pub(crate) fn reset_private_buffer_pool_take_probes_for_test() {
+    PRIVATE_BUFFER_POOL_TAKE_PROBES.with(|probes| probes.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn private_buffer_pool_take_probes_for_test() -> usize {
+    PRIVATE_BUFFER_POOL_TAKE_PROBES.with(Cell::get)
+}
+
+#[inline]
+fn record_private_buffer_pool_take_probe_for_test() {
+    #[cfg(test)]
+    {
+        PRIVATE_BUFFER_POOL_TAKE_PROBES.with(|probes| {
+            probes.set(probes.get().checked_add(1).expect("take-probe overflow"));
+        });
+    }
+}
+
+#[cfg(test)]
 fn record_private_buffer_pool_miss_for_test() {
     PRIVATE_BUFFER_POOL_MISSES.with(|misses| misses.set(misses.get() + 1));
 }
@@ -59,8 +84,10 @@ pub(crate) struct MetalBufferPools {
 
 impl MetalBufferPools {
     pub(crate) fn new(device: &Device) -> Self {
-        let limits = PoolLimits::for_device(device);
-        Self::with_limits(limits, limits)
+        Self::with_limits(
+            PoolLimits::private_for_device(device),
+            PoolLimits::shared_for_device(device),
+        )
     }
 
     fn with_limits(private: PoolLimits, shared: PoolLimits) -> Self {
@@ -70,42 +97,48 @@ impl MetalBufferPools {
         }
     }
 
-    pub(crate) fn take_private(&self, device: &Device, bytes: usize) -> Result<Buffer, Error> {
+    pub(crate) fn take_private(
+        &self,
+        device: &Device,
+        bytes: usize,
+    ) -> Result<PooledBuffer, Error> {
         let bytes = bytes.max(1);
         if let Some(buffer) = Self::take_from(&self.private, bytes, "private")? {
             return Ok(buffer);
         }
         #[cfg(test)]
         record_private_buffer_pool_miss_for_test();
-        checked_private_buffer(device, bytes).map_err(|source| {
+        let buffer = checked_private_buffer(device, bytes).map_err(|source| {
             crate::error::metal_kernel_support_error(
                 "J2K Metal private buffer-pool allocation",
                 source,
             )
-        })
+        })?;
+        PooledBuffer::new_checked(bytes, buffer).map_err(|reason| invariant("private", reason))
     }
 
-    pub(crate) fn recycle_private(&self, bytes: usize, buffer: Buffer) -> Result<(), Error> {
-        Self::recycle_into(&self.private, bytes.max(1), buffer, "private")
+    pub(crate) fn recycle_private(&self, buffer: PooledBuffer) -> Result<(), Error> {
+        Self::recycle_into(&self.private, buffer, "private")
     }
 
-    pub(crate) fn take_shared(&self, device: &Device, bytes: usize) -> Result<Buffer, Error> {
+    pub(crate) fn take_shared(&self, device: &Device, bytes: usize) -> Result<PooledBuffer, Error> {
         let bytes = bytes.max(1);
         if let Some(buffer) = Self::take_from(&self.shared, bytes, "shared")? {
             return Ok(buffer);
         }
         #[cfg(test)]
         record_shared_buffer_pool_miss_for_test();
-        checked_shared_buffer(device, bytes).map_err(|source| {
+        let buffer = checked_shared_buffer(device, bytes).map_err(|source| {
             crate::error::metal_kernel_support_error(
                 "J2K Metal shared buffer-pool allocation",
                 source,
             )
-        })
+        })?;
+        PooledBuffer::new_checked(bytes, buffer).map_err(|reason| invariant("shared", reason))
     }
 
-    pub(crate) fn recycle_shared(&self, bytes: usize, buffer: Buffer) -> Result<(), Error> {
-        Self::recycle_into(&self.shared, bytes.max(1), buffer, "shared")
+    pub(crate) fn recycle_shared(&self, buffer: PooledBuffer) -> Result<(), Error> {
+        Self::recycle_into(&self.shared, buffer, "shared")
     }
 
     pub(crate) fn diagnostics(&self) -> Result<MetalBufferPoolsDiagnostics, Error> {
@@ -119,7 +152,7 @@ impl MetalBufferPools {
         pool: &Mutex<PoolState>,
         bytes: usize,
         state: &'static str,
-    ) -> Result<Option<Buffer>, Error> {
+    ) -> Result<Option<PooledBuffer>, Error> {
         pool.lock()
             .map_err(|_| poisoned(state))?
             .take(bytes)
@@ -128,13 +161,12 @@ impl MetalBufferPools {
 
     fn recycle_into(
         pool: &Mutex<PoolState>,
-        bytes: usize,
-        buffer: Buffer,
+        buffer: PooledBuffer,
         state: &'static str,
     ) -> Result<(), Error> {
         pool.lock()
             .map_err(|_| poisoned(state))?
-            .recycle(bytes, buffer)
+            .recycle(buffer)
             .map_err(|reason| invariant(state, reason))
     }
 
@@ -143,29 +175,6 @@ impl MetalBufferPools {
         state: &'static str,
     ) -> Result<MetalBufferPoolDiagnostics, Error> {
         Ok(pool.lock().map_err(|_| poisoned(state))?.diagnostics())
-    }
-
-    #[cfg(test)]
-    fn with_limits_for_test(private: PoolLimits, shared: PoolLimits) -> Self {
-        Self::with_limits(private, shared)
-    }
-
-    #[cfg(test)]
-    fn private_diagnostics(&self) -> Result<MetalBufferPoolDiagnostics, Error> {
-        Self::pool_diagnostics(&self.private, "private")
-    }
-
-    #[cfg(test)]
-    fn shared_diagnostics(&self) -> Result<MetalBufferPoolDiagnostics, Error> {
-        Self::pool_diagnostics(&self.shared, "shared")
-    }
-
-    #[cfg(test)]
-    fn fail_next_private_metadata_reserve_for_test(&self) {
-        self.private
-            .lock()
-            .expect("private pool test lock")
-            .fail_next_metadata_reserve();
     }
 }
 

@@ -141,7 +141,7 @@ pub(in crate::compute) fn dispatch_classic_cleanup_batched(
         .iter()
         .copied()
         .find(|status| status.code != J2K_CLASSIC_STATUS_OK);
-    runtime.recycle_private_buffer(coefficients_scratch.bytes, coefficients_scratch.buffer)?;
+    runtime.recycle_private_buffer(coefficients_scratch.buffer)?;
     if let Some(status) = status {
         return Err(decode_classic_status_error(status));
     }

@@ -45,8 +45,8 @@ pub(super) struct ClassicTier1Prepared {
     pub(super) tier1_output_capacity_total: usize,
     pub(super) max_tier1_output_capacity: usize,
     pub(super) tier1_segment_capacity_total: usize,
-    pub(super) recyclable_private_buffers: Vec<(usize, Buffer)>,
-    pub(super) recyclable_shared_buffers: Vec<(usize, Buffer)>,
+    pub(super) recyclable_private_buffers: Vec<crate::buffer_pool::PooledBuffer>,
+    pub(super) recyclable_shared_buffers: Vec<crate::buffer_pool::PooledBuffer>,
     pub(super) gpu_stage_command_buffers: Vec<J2kResidentEncodeGpuStageCommandBuffer>,
     pub(super) classic_tier1_density_readback: Option<J2kResidentClassicTier1DensityReadback>,
     pub(super) classic_tier1_raw_pack_buffer: Option<Buffer>,
@@ -465,8 +465,8 @@ struct ClassicTier1Buffers {
     tier1_output_buffer: Buffer,
     tier1_status_buffer: Buffer,
     tier1_segment_buffer: Buffer,
-    recyclable_private_buffers: Vec<(usize, Buffer)>,
-    recyclable_shared_buffers: Vec<(usize, Buffer)>,
+    recyclable_private_buffers: Vec<crate::buffer_pool::PooledBuffer>,
+    recyclable_shared_buffers: Vec<crate::buffer_pool::PooledBuffer>,
 }
 
 #[cfg(target_os = "macos")]
@@ -480,8 +480,8 @@ fn allocate_classic_tier1_buffers(
         message: "J2K Metal batch Tier-1 job count exceeds u32".to_string(),
     })?;
     let tier1_job_buffer = copied_slice_buffer(&runtime.device, tier1_jobs)?;
-    let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
-    let recyclable_shared_buffers = Vec::<(usize, Buffer)>::new();
+    let mut recyclable_private_buffers = Vec::new();
+    let recyclable_shared_buffers = Vec::new();
     let tier1_output_buffer = take_recyclable_private_buffer(
         runtime,
         tier1_output_capacity_total.max(1),
@@ -592,7 +592,7 @@ struct ClassicTier1DispatchRequest<'a> {
     route: ClassicTier1Route,
     token_pack_next_label: &'static str,
     profile_stages: bool,
-    recyclable_private_buffers: &'a mut Vec<(usize, Buffer)>,
+    recyclable_private_buffers: &'a mut Vec<crate::buffer_pool::PooledBuffer>,
     gpu_stage_command_buffers: &'a mut Vec<J2kResidentEncodeGpuStageCommandBuffer>,
     classic_block_encode_duration: &'a mut Duration,
     classic_command_buffer_commit_duration: &'a mut Duration,

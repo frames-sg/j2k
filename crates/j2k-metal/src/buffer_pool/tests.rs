@@ -3,11 +3,14 @@
 use super::{MetalBufferPools, PoolLimits};
 use j2k_metal_support::{
     checked_blit_command_encoder, checked_command_buffer, checked_command_queue,
-    checked_private_buffer, checked_shared_buffer, checked_shared_buffer_with_bytes,
-    commit_and_wait,
+    checked_private_buffer, checked_shared_buffer_with_bytes, commit_and_wait,
 };
 use metal::foreign_types::ForeignType;
 use metal::Device;
+
+mod lookup;
+mod production_limits;
+mod warm_reuse;
 
 fn device() -> Device {
     Device::system_default().expect("Metal device")
@@ -18,7 +21,9 @@ fn completed_exact_size_reuse_updates_actual_byte_accounting() {
     let device = device();
     let pools =
         MetalBufferPools::with_limits_for_test(PoolLimits::new(64, 2), PoolLimits::new(64, 2));
-    let mut buffer = checked_private_buffer(&device, 16).expect("private buffer");
+    let mut buffer = pools
+        .take_private(&device, 16)
+        .expect("private buffer owner");
     let upload = checked_shared_buffer_with_bytes(&device, &[0xa5; 16]).expect("upload buffer");
     let queue = checked_command_queue(&device).expect("command queue");
     let command_buffer = checked_command_buffer(&queue).expect("command buffer");
@@ -30,7 +35,7 @@ fn completed_exact_size_reuse_updates_actual_byte_accounting() {
 
     for _ in 0..16 {
         pools
-            .recycle_private(16, buffer)
+            .recycle_private(buffer)
             .expect("recycle private buffer");
         assert_eq!(pools.private_diagnostics().unwrap().cached_bytes, 16);
         buffer = pools
@@ -53,7 +58,7 @@ fn unique_sizes_evict_oldest_buffers_under_both_limits() {
     for bytes in [4, 5, 6] {
         let buffer = checked_private_buffer(&device, bytes).expect("private buffer");
         pools
-            .recycle_private(bytes, buffer)
+            .recycle_private_checked(bytes, buffer)
             .expect("recycle private buffer");
     }
 
@@ -69,19 +74,19 @@ fn oversized_and_metadata_failed_recycles_drop_completed_buffers() {
     let pools =
         MetalBufferPools::with_limits_for_test(PoolLimits::new(8, 2), PoolLimits::new(8, 2));
     pools
-        .recycle_private(
+        .recycle_private_checked(
             8,
             checked_private_buffer(&device, 8).expect("exact private buffer"),
         )
         .expect("exact-limit recycle");
     let oversized = checked_private_buffer(&device, 9).expect("oversized private buffer");
     pools
-        .recycle_private(9, oversized)
+        .recycle_private_checked(9, oversized)
         .expect("oversized recycle is a safe decline");
     pools.fail_next_private_metadata_reserve_for_test();
     let metadata_failure = checked_private_buffer(&device, 4).expect("private buffer");
     pools
-        .recycle_private(4, metadata_failure)
+        .recycle_private_checked(4, metadata_failure)
         .expect("metadata failure is a safe decline");
 
     let diagnostics = pools.private_diagnostics().unwrap();
@@ -98,35 +103,13 @@ fn recorded_size_mismatch_is_a_typed_invariant_failure() {
         MetalBufferPools::with_limits_for_test(PoolLimits::new(16, 2), PoolLimits::new(16, 2));
     let buffer = checked_private_buffer(&device, 8).expect("private buffer");
     assert!(matches!(
-        pools.recycle_private(7, buffer),
+        pools.recycle_private_checked(7, buffer),
         Err(crate::Error::MetalStateInvariant {
             state: "j2k metal private buffer pool",
             reason: "recorded buffer size differs from the Metal allocation length",
         })
     ));
     assert_eq!(pools.private_diagnostics().unwrap().size_mismatches, 1);
-}
-
-#[test]
-fn private_and_shared_retention_are_isolated() {
-    let device = device();
-    let pools =
-        MetalBufferPools::with_limits_for_test(PoolLimits::new(16, 1), PoolLimits::new(32, 1));
-    pools
-        .recycle_private(
-            8,
-            checked_private_buffer(&device, 8).expect("private buffer"),
-        )
-        .expect("recycle private");
-    pools
-        .recycle_shared(
-            12,
-            checked_shared_buffer(&device, 12).expect("shared buffer"),
-        )
-        .expect("recycle shared");
-
-    assert_eq!(pools.private_diagnostics().unwrap().cached_bytes, 8);
-    assert_eq!(pools.shared_diagnostics().unwrap().cached_bytes, 12);
 }
 
 #[test]

@@ -167,7 +167,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_gpu_pack(
     coefficient_buffer: &Buffer,
     tier1_job_buffer: &Buffer,
     tier1_jobs: &[J2kClassicEncodeBatchJob],
-    recyclable_private_buffers: &mut Vec<(usize, Buffer)>,
+    recyclable_private_buffers: &mut Vec<crate::buffer_pool::PooledBuffer>,
     use_mq_byte_emit: bool,
 ) -> Result<J2kResidentClassicTier1SplitTokenBuffers, Error> {
     if !classic_tier1_gpu_token_pack_supported(tier1_jobs) {
@@ -298,7 +298,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_token_emit_for_gpu_pack(
     coefficient_buffer: &Buffer,
     tier1_job_buffer: &Buffer,
     tier1_jobs: &[J2kClassicEncodeBatchJob],
-    recyclable_private_buffers: &mut Vec<(usize, Buffer)>,
+    recyclable_private_buffers: &mut Vec<crate::buffer_pool::PooledBuffer>,
 ) -> Result<J2kResidentClassicTier1GpuTokenBuffers, Error> {
     if !classic_tier1_gpu_token_pack_supported(tier1_jobs) {
         return Err(Error::MetalKernel {

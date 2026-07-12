@@ -25,6 +25,10 @@ pub(crate) const RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED: &str =
     "J2K Metal ROI+scaled hybrid decode currently supports single-tile RGB direct plans for Rgb8/Rgba8/Rgb16";
 pub(crate) const REGION_SCALED_COLOR_PLAN_CACHE_CAP: usize = 128;
 
+mod plan_resolution;
+
+use self::plan_resolution::try_resolve_plans_in_order;
+
 static REGION_SCALED_COLOR_PLAN_CACHE: OnceLock<
     Mutex<PreparedPlanCache<Arc<crate::compute::PreparedDirectColorPlan>>>,
 > = OnceLock::new();
@@ -325,18 +329,9 @@ pub(crate) fn decode_region_scaled_color_batch_direct_to_device(
         return crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt);
     }
 
-    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
-        "J2K Metal region-scaled color batch plan",
-    );
-    let mut plans = budget.try_vec(requests.len(), "J2K Metal region-scaled color plans")?;
-    for (input, roi, scale) in requests {
-        plans.push(build_region_scaled_direct_color_plan_cached(
-            input.as_ref(),
-            fmt,
-            *roi,
-            *scale,
-        )?);
-    }
+    let plans = try_resolve_plans_in_order(requests, |(input, roi, scale)| {
+        build_region_scaled_direct_color_plan_cached(input.as_ref(), fmt, *roi, *scale)
+    })?;
     crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
 }
 

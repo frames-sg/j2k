@@ -276,7 +276,8 @@ pub(crate) use crate::profile_env::metal_profile_stages_enabled;
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use crate::buffer_pool::{
-    private_buffer_pool_misses_for_test, reset_private_buffer_pool_misses_for_test,
+    private_buffer_pool_misses_for_test, private_buffer_pool_take_probes_for_test,
+    reset_private_buffer_pool_misses_for_test, reset_private_buffer_pool_take_probes_for_test,
     reset_shared_buffer_pool_misses_for_test, shared_buffer_pool_misses_for_test,
 };
 

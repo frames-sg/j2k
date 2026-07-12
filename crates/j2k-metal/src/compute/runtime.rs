@@ -16,7 +16,7 @@ use metal::{
 };
 
 use crate::{
-    buffer_pool::MetalBufferPools,
+    buffer_pool::{MetalBufferPools, PooledBuffer},
     error::{metal_kernel_support_error, metal_runtime_support_error},
     Error,
 };
@@ -289,20 +289,20 @@ impl MetalRuntime {
         self.queue.as_ref()
     }
 
-    pub(super) fn take_private_buffer(&self, bytes: usize) -> Result<Buffer, Error> {
+    pub(super) fn take_private_buffer(&self, bytes: usize) -> Result<PooledBuffer, Error> {
         self.buffer_pools.take_private(&self.device, bytes)
     }
 
-    pub(super) fn recycle_private_buffer(&self, bytes: usize, buffer: Buffer) -> Result<(), Error> {
-        self.buffer_pools.recycle_private(bytes, buffer)
+    pub(super) fn recycle_private_buffer(&self, buffer: PooledBuffer) -> Result<(), Error> {
+        self.buffer_pools.recycle_private(buffer)
     }
 
-    pub(super) fn take_shared_buffer(&self, bytes: usize) -> Result<Buffer, Error> {
+    pub(super) fn take_shared_buffer(&self, bytes: usize) -> Result<PooledBuffer, Error> {
         self.buffer_pools.take_shared(&self.device, bytes)
     }
 
-    pub(super) fn recycle_shared_buffer(&self, bytes: usize, buffer: Buffer) -> Result<(), Error> {
-        self.buffer_pools.recycle_shared(bytes, buffer)
+    pub(super) fn recycle_shared_buffer(&self, buffer: PooledBuffer) -> Result<(), Error> {
+        self.buffer_pools.recycle_shared(buffer)
     }
 
     pub(crate) fn buffer_pool_diagnostics(
