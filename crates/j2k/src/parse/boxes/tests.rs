@@ -20,6 +20,8 @@ use crate::{
     J2kChannelAssociation, J2kChannelType, J2kColorSpec, J2kComponentMappingType, J2kError,
 };
 
+mod component_validation;
+
 fn comprehensive_native_metadata() -> Jp2FileMetadata {
     Jp2FileMetadata {
         bits_per_component: vec![

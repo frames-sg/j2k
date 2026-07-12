@@ -7,6 +7,7 @@ use super::{
 use crate::encode_j2k_lossy;
 
 mod rate_validation;
+mod target_contracts;
 
 const TWO_TO_THE_64: f64 = 18_446_744_073_709_551_616.0;
 

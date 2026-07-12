@@ -497,3 +497,6 @@ pub(crate) fn native_progression_order(progression: J2kProgressionOrder) -> Enco
         J2kProgressionOrder::Cprl => EncodeProgressionOrder::Cprl,
     }
 }
+
+#[cfg(test)]
+mod tests;
