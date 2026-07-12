@@ -9,7 +9,9 @@ use super::arithmetic::{
 };
 use super::bypass::{BitDecoder, BypassDecoder, SafeScalarTier1};
 use super::observer::{J2kDecodeObserver, NoJ2kDecodeStats};
-use super::state::{BitPlaneDecodeBuffers, BitPlaneDecodeContext};
+use super::state::{
+    extend_preallocated, push_preallocated, BitPlaneDecodeBuffers, BitPlaneDecodeContext,
+};
 use crate::J2kCodeBlockSegment;
 
 pub(super) fn decode_inner(
@@ -29,39 +31,45 @@ fn decode_inner_with_observer<O: J2kDecodeObserver>(
     bp_buffers: &mut BitPlaneDecodeBuffers,
     observer: &mut O,
 ) -> Option<()> {
-    bp_buffers.reset();
+    bp_buffers.reset()?;
 
     let mut last_segment_idx = 0;
     let mut coding_passes = 0;
 
     // Build a list so that we can associate coding passes with their segments
     // and data more easily.
-    for layer in &storage.layers[code_block.layers.start..code_block.layers.end] {
+    for layer in storage.layers.get(code_block.layers.clone())? {
         if let Some(range) = layer.segments.clone() {
-            let layer_segments = &storage.segments[range.clone()];
+            let layer_segments = storage.segments.get(range)?;
             for segment in layer_segments {
                 if segment.idx != last_segment_idx {
-                    assert_eq!(segment.idx, last_segment_idx + 1);
+                    if last_segment_idx.checked_add(1) != Some(segment.idx) {
+                        return None;
+                    }
 
-                    bp_buffers
-                        .segment_ranges
-                        .push(bp_buffers.combined_layers.len());
-                    bp_buffers.segment_coding_passes.push(coding_passes);
+                    push_preallocated(
+                        &mut bp_buffers.segment_ranges,
+                        bp_buffers.combined_layers.len(),
+                    )?;
+                    push_preallocated(&mut bp_buffers.segment_coding_passes, coding_passes)?;
                     last_segment_idx += 1;
                 }
 
-                bp_buffers.combined_layers.extend(segment.data);
-                coding_passes += segment.coding_pases;
+                extend_preallocated(&mut bp_buffers.combined_layers, segment.data)?;
+                coding_passes = coding_passes.checked_add(segment.coding_pases)?;
             }
         }
     }
 
-    assert_eq!(coding_passes, code_block.number_of_coding_passes);
+    if coding_passes != code_block.number_of_coding_passes {
+        return None;
+    }
 
-    bp_buffers
-        .segment_ranges
-        .push(bp_buffers.combined_layers.len());
-    bp_buffers.segment_coding_passes.push(coding_passes);
+    push_preallocated(
+        &mut bp_buffers.segment_ranges,
+        bp_buffers.combined_layers.len(),
+    )?;
+    push_preallocated(&mut bp_buffers.segment_coding_passes, coding_passes)?;
 
     let is_normal_mode =
         !ctx.style.selective_arithmetic_coding_bypass && !ctx.style.termination_on_each_pass;

@@ -4,10 +4,11 @@ use super::super::super::{
     batch, batch_entropy_buffers, checked_u32, commit_and_wait_jpeg,
     copy_rgb8_surfaces_to_rgba_textures, dispatch_windowed_rgba_texture_pack,
     fast_subsampled_region_scaled_batch_groups, fast_subsampled_region_scaled_batch_plan,
-    texture_batch_error_results, texture_batch_success_results, validate_rgba_texture_batch_output,
-    windowed_texture_pack_params, BatchEntropyBufferKeys, BatchedFastPacket, CpuDecoder, Error,
-    FastRegionScaledMetal, FastSubsampledMetal, JpegDecodeStatus, JpegFast420PacketV1,
-    JpegFast422PacketV1, MetalRuntime, PixelFormat, PlaneMode,
+    new_command_buffer, texture_batch_error_results, texture_batch_success_results,
+    validate_rgba_texture_batch_output, windowed_texture_pack_params, BatchEntropyBufferKeys,
+    BatchEntropyBufferPlan, BatchedFastPacket, Error, FastRegionScaledMetal, FastSubsampledMetal,
+    JpegDecodeStatus, JpegFast420PacketV1, JpegFast422PacketV1, MetalRuntime, PixelFormat,
+    PlaneMode,
 };
 use super::super::common::{
     decode_region_scaled_packet_surface, encode_subsampled_region_texture_decode,
@@ -69,19 +70,28 @@ fn try_decode_fast_subsampled_restart_region_scaled_rgba_batch_to_textures<
     let Some(plan) = first_plan else {
         return Ok(Some(Vec::new()));
     };
-    let mut surfaces = Vec::with_capacity(requests.len());
+    let mut result_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal restart subsampled texture results",
+        requests,
+    )?;
+    let mut surfaces = result_budget.try_vec(
+        requests.len(),
+        "JPEG Metal restart subsampled texture source surfaces",
+    )?;
     for (request, packet) in requests.iter().zip(family_packets.iter().copied()) {
-        let decoder = CpuDecoder::new(request.input.as_ref())?;
         let batched_packet = packet.to_batched();
         surfaces.push(decode_region_scaled_packet_surface(
             runtime,
-            &decoder,
             request,
             &batched_packet,
         ));
     }
 
-    let group_indices = (0..requests.len()).collect::<Vec<_>>();
+    let mut group_indices = result_budget.try_vec(
+        requests.len(),
+        "JPEG Metal restart subsampled texture indices",
+    )?;
+    group_indices.extend(0..requests.len());
     let copied = copy_rgb8_surfaces_to_rgba_textures(
         runtime,
         output,
@@ -89,14 +99,21 @@ fn try_decode_fast_subsampled_restart_region_scaled_rgba_batch_to_textures<
         requests.len(),
         &group_indices,
         surfaces,
+        result_budget.live_bytes(),
     )?;
-    let mut merged_results: Vec<Option<Result<crate::MetalTextureTile, Error>>> =
-        (0..requests.len()).map(|_| None).collect();
+    let mut merged_results = result_budget.try_filled(
+        requests.len(),
+        None,
+        "JPEG Metal restart subsampled texture merged results",
+    )?;
     for (index, result) in copied {
         merged_results[index] = Some(result);
     }
 
-    let mut results = Vec::with_capacity(requests.len());
+    let mut results = result_budget.try_vec(
+        requests.len(),
+        "JPEG Metal ordered restart subsampled texture results",
+    )?;
     for (index, result) in merged_results.into_iter().enumerate() {
         results.push(result.ok_or_else(|| Error::MetalKernel {
             message: format!(
@@ -125,7 +142,7 @@ fn try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures<
     packets: &[BatchedFastPacket<'_>],
     output: &crate::MetalBatchTextureOutput,
 ) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
-    let Some(family_packets) = subsampled_region_texture_packets::<P>(requests, packets) else {
+    let Some(family_packets) = subsampled_region_texture_packets::<P>(requests, packets)? else {
         return Ok(None);
     };
 
@@ -150,11 +167,20 @@ fn try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures<
         return Ok(None);
     }
 
-    let grouped_family_packets = family_packets
-        .iter()
-        .copied()
-        .map(|packet| (packet, PlaneMode::YCbCr))
-        .collect::<Vec<_>>();
+    let mut grouped_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal grouped subsampled texture packet modes",
+        requests,
+    )?;
+    let mut grouped_family_packets = grouped_budget.try_vec(
+        family_packets.len(),
+        "JPEG Metal grouped subsampled texture packet-mode pairs",
+    )?;
+    grouped_family_packets.extend(
+        family_packets
+            .iter()
+            .copied()
+            .map(|packet| (packet, PlaneMode::YCbCr)),
+    );
     let Some(groups) =
         fast_subsampled_region_scaled_batch_groups(requests, &grouped_family_packets)?
     else {
@@ -193,19 +219,22 @@ fn try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures<
     let mut batch_scratch = runtime.batch_scratch()?;
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
+        requests,
         &mut batch_scratch,
-        BatchEntropyBufferKeys {
-            payload: P::REGION_SCALED_TEXTURE_KEYS.entropy,
-            offsets: P::REGION_SCALED_TEXTURE_KEYS.entropy_offsets,
-            lens: P::REGION_SCALED_TEXTURE_KEYS.entropy_lens,
-            checkpoints: P::REGION_SCALED_TEXTURE_KEYS.entropy_checkpoints,
+        BatchEntropyBufferPlan {
+            keys: BatchEntropyBufferKeys {
+                payload: P::REGION_SCALED_TEXTURE_KEYS.entropy,
+                offsets: P::REGION_SCALED_TEXTURE_KEYS.entropy_offsets,
+                lens: P::REGION_SCALED_TEXTURE_KEYS.entropy_lens,
+                checkpoints: P::REGION_SCALED_TEXTURE_KEYS.entropy_checkpoints,
+            },
+            tile_count: shape.tile_count,
+            segment_count: shape.segment_count,
         },
         family_packets.iter().map(|packet| packet.entropy_bytes()),
         family_packets
             .iter()
             .map(|packet| packet.entropy_checkpoints()),
-        shape.tile_count,
-        shape.segment_count,
     )?
     else {
         return Ok(None);
@@ -217,27 +246,35 @@ fn try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures<
         &P::REGION_SCALED_TEXTURE_KEYS,
         shape.plan,
         shape.tile_count,
-    );
-    let statuses = vec![JpegDecodeStatus::default(); shape.total_decode_threads as usize];
+    )?;
+    let mut status_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal subsampled region texture statuses",
+        requests,
+    )?;
+    let statuses = status_budget.try_filled(
+        shape.total_decode_threads as usize,
+        JpegDecodeStatus::default(),
+        "JPEG Metal subsampled region texture decode statuses",
+    )?;
     let status_buffer = batch_scratch.shared_buffer_with_slice(
         &runtime.device,
         P::REGION_SCALED_TEXTURE_KEYS.status,
         &statuses,
-    );
+    )?;
 
-    let command_buffer = runtime.queue.new_command_buffer();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
     encode_subsampled_region_texture_decode::<P>(
         runtime,
-        command_buffer,
+        &command_buffer,
         first,
         &entropy_buffers,
         &status_buffer,
         [&y_plane, &cb_plane, &cr_plane],
         shape,
-    );
+    )?;
 
     dispatch_windowed_rgba_texture_pack(
-        command_buffer,
+        &command_buffer,
         P::pack_windowed_rgba_texture_pipeline(runtime),
         (&y_plane, &cb_plane, &cr_plane),
         output,
@@ -246,7 +283,7 @@ fn try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures<
         shape.plan.out_dims,
     )?;
 
-    commit_and_wait_jpeg(command_buffer)?;
+    commit_and_wait_jpeg(&command_buffer)?;
     drop(batch_scratch);
 
     if let Some(results) =
@@ -256,6 +293,7 @@ fn try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures<
     }
 
     Ok(Some(texture_batch_success_results(
+        requests,
         output,
         shape.plan.out_dims,
         requests.len(),
@@ -310,18 +348,36 @@ fn try_decode_grouped_fast_subsampled_region_scaled_rgba_batch_to_textures<
         validate_rgba_texture_batch_output(output, plan.out_dims, requests.len(), out_tile_len)?;
     }
 
-    let mut merged_results: Vec<Option<Result<crate::MetalTextureTile, Error>>> =
-        (0..requests.len()).map(|_| None).collect();
+    let mut result_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal grouped subsampled texture results",
+        requests,
+    )?;
+    let mut merged_results = result_budget.try_filled(
+        requests.len(),
+        None,
+        "JPEG Metal grouped subsampled texture result slots",
+    )?;
     for group_indices in groups {
         let group_output = output.clone_slots(&group_indices)?;
-        let group_requests = group_indices
-            .iter()
-            .map(|&index| requests[index].clone())
-            .collect::<Vec<_>>();
-        let group_packets = group_indices
-            .iter()
-            .map(|&index| family_packets[index].to_batched())
-            .collect::<Vec<_>>();
+        let mut group_budget = crate::plan_owner_ledger::batch_execution_budget(
+            "JPEG Metal grouped subsampled texture sub-batch",
+            requests,
+        )?;
+        let mut group_requests = group_budget.try_vec(
+            group_indices.len(),
+            "JPEG Metal grouped subsampled texture requests",
+        )?;
+        group_requests.extend(group_indices.iter().map(|&index| requests[index].clone()));
+        let mut group_packets = group_budget.try_vec(
+            group_indices.len(),
+            "JPEG Metal grouped subsampled texture packets",
+        )?;
+        group_packets.extend(
+            group_indices
+                .iter()
+                .map(|&index| family_packets[index].to_batched()),
+        );
+        batch::stamp_execution_owner_baseline(&mut group_requests, 0, group_budget.live_bytes());
 
         let Some(group_results) = try_decode_fast_subsampled_region_scaled_rgba_batch_to_textures::<
             P,
@@ -344,7 +400,10 @@ fn try_decode_grouped_fast_subsampled_region_scaled_rgba_batch_to_textures<
         }
     }
 
-    let mut results = Vec::with_capacity(requests.len());
+    let mut results = result_budget.try_vec(
+        requests.len(),
+        "JPEG Metal ordered grouped subsampled texture results",
+    )?;
     for (index, result) in merged_results.into_iter().enumerate() {
         results.push(result.ok_or_else(|| Error::MetalKernel {
             message: format!(

@@ -7,26 +7,36 @@ use std::ffi::OsStr;
 use std::time::Duration;
 
 use j2k_jpeg::adapter::JpegEntropyCheckpointV1;
-use j2k_jpeg::Decoder as CpuDecoder;
 use metal::Buffer;
 
 use crate::buffers::MetalBatchScratch;
 use crate::{batch, Error, Surface};
 
 use super::{
-    checked_u32, decode_error_from_cpu, entropy_checkpoint_hosts, first_decode_error_status,
+    checked_u32, fast_decode_status_error, first_decode_error_status, JpegEntropyCheckpointHost,
     MetalRuntime,
 };
+use crate::batch_allocation::{BatchMetadataBudget, BatchMetadataRequest};
 
 const FAST420_BATCH_TIMING_ENV: &str = "J2K_JPEG_METAL_FAST420_BATCH_TIMING";
 
 #[cfg(target_os = "macos")]
 thread_local! {
     static FAST420_BATCH_PROFILE_SUMMARY: RefCell<j2k_profile::ProfileSummary> =
-        RefCell::new(j2k_profile::ProfileSummary::new(j2k_profile::same_summary_labels(&[
-            "mode",
-            "dimensions",
-        ])).emit_on_drop());
+        RefCell::new(new_fast420_batch_profile_summary().emit_on_drop());
+}
+
+#[cfg(target_os = "macos")]
+fn new_fast420_batch_profile_summary() -> j2k_profile::ProfileSummary {
+    match j2k_profile::same_summary_labels(&["mode", "dimensions"])
+        .and_then(j2k_profile::ProfileSummary::new)
+    {
+        Ok(summary) => summary,
+        Err(error) => {
+            j2k_profile::emit_profile_error("jpeg_metal_fast420_summary_init", &error);
+            j2k_profile::ProfileSummary::default()
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -64,26 +74,13 @@ impl FastBatchTiming {
         dimensions: (u32, u32),
         segment_count: usize,
     ) {
-        let fields = [
-            j2k_profile::ProfileField::label("mode", label),
-            j2k_profile::ProfileField::metric("tiles", tile_count),
-            j2k_profile::ProfileField::label(
-                "dimensions",
-                format!("{}x{}", dimensions.0, dimensions.1),
-            ),
-            j2k_profile::ProfileField::metric("segments", segment_count),
-            j2k_profile::ProfileField::metric("accepted_us", Self::micros(self.accepted)),
-            j2k_profile::ProfileField::metric(
-                "entropy_concat_us",
-                Self::micros(self.entropy_concat),
-            ),
-            j2k_profile::ProfileField::metric("buffer_alloc_us", Self::micros(self.buffer_alloc)),
-            j2k_profile::ProfileField::metric("encode_decode_us", Self::micros(self.encode_decode)),
-            j2k_profile::ProfileField::metric("wait_decode_us", Self::micros(self.wait_decode)),
-            j2k_profile::ProfileField::metric("encode_pack_us", Self::micros(self.encode_pack)),
-            j2k_profile::ProfileField::metric("wait_pack_us", Self::micros(self.wait_pack)),
-            j2k_profile::ProfileField::metric("total_us", Self::micros(self.total)),
-        ];
+        let fields = match self.profile_fields(label, tile_count, dimensions, segment_count) {
+            Ok(fields) => fields,
+            Err(error) => {
+                j2k_profile::emit_profile_error("jpeg_metal_fast420_fields", &error);
+                return;
+            }
+        };
         j2k_profile::emit_profile_fields(
             fast420_batch_timing_stage_mode(),
             &FAST420_BATCH_PROFILE_SUMMARY,
@@ -92,6 +89,96 @@ impl FastBatchTiming {
             tag,
             &fields,
         );
+    }
+
+    fn profile_fields(
+        self,
+        label: &str,
+        tile_count: usize,
+        dimensions: (u32, u32),
+        segment_count: usize,
+    ) -> j2k_profile::ProfileResult<[j2k_profile::ProfileField; 12]> {
+        Ok([
+            j2k_profile::ProfileField::label("mode", label)?,
+            j2k_profile::ProfileField::metric("tiles", tile_count)?,
+            j2k_profile::ProfileField::label(
+                "dimensions",
+                format_args!("{}x{}", dimensions.0, dimensions.1),
+            )?,
+            j2k_profile::ProfileField::metric("segments", segment_count)?,
+            j2k_profile::ProfileField::metric("accepted_us", Self::micros(self.accepted))?,
+            j2k_profile::ProfileField::metric(
+                "entropy_concat_us",
+                Self::micros(self.entropy_concat),
+            )?,
+            j2k_profile::ProfileField::metric("buffer_alloc_us", Self::micros(self.buffer_alloc))?,
+            j2k_profile::ProfileField::metric(
+                "encode_decode_us",
+                Self::micros(self.encode_decode),
+            )?,
+            j2k_profile::ProfileField::metric("wait_decode_us", Self::micros(self.wait_decode))?,
+            j2k_profile::ProfileField::metric("encode_pack_us", Self::micros(self.encode_pack))?,
+            j2k_profile::ProfileField::metric("wait_pack_us", Self::micros(self.wait_pack))?,
+            j2k_profile::ProfileField::metric("total_us", Self::micros(self.total))?,
+        ])
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod profile_tests {
+    use super::*;
+
+    fn empty_checkpoint() -> JpegEntropyCheckpointV1 {
+        JpegEntropyCheckpointV1 {
+            mcu_index: 0,
+            entropy_pos: 0,
+            bit_acc: 0,
+            bit_count: 0,
+            y_prev_dc: 0,
+            cb_prev_dc: 0,
+            cr_prev_dc: 0,
+            reserved: 0,
+        }
+    }
+
+    #[test]
+    fn fast_batch_profile_fields_reject_oversized_labels() {
+        let oversized = "x".repeat(j2k_profile::ProfileLimits::default().max_token_bytes() + 1);
+        assert!(matches!(
+            FastBatchTiming::default().profile_fields(&oversized, 1, (16, 8), 1),
+            Err(j2k_profile::ProfileError::LimitExceeded {
+                what: "field value",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn batch_entropy_shape_mismatch_fails_before_owner_growth() {
+        let first_entropy = [1_u8];
+        let second_entropy = [2_u8];
+        let first_checkpoints = [empty_checkpoint()];
+        let second_checkpoints = [empty_checkpoint()];
+        let result = batch_entropy_host_data(
+            [&first_entropy[..], &second_entropy[..]].into_iter(),
+            [&first_checkpoints[..], &second_checkpoints[..]].into_iter(),
+            2,
+            2,
+            0,
+            BatchEntropyLabels {
+                offset: "test offset",
+                len: "test length",
+            },
+        );
+        let Err(error) = result else {
+            panic!("checkpoint count mismatch must fail");
+        };
+
+        assert!(matches!(
+            error,
+            Error::MetalKernel { message }
+                if message == "JPEG Metal batch entropy metadata shape mismatch"
+        ));
     }
 }
 
@@ -141,8 +228,15 @@ pub(super) struct BatchEntropyBufferKeys {
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
+pub(super) struct BatchEntropyBufferPlan {
+    pub(super) keys: BatchEntropyBufferKeys,
+    pub(super) tile_count: usize,
+    pub(super) segment_count: usize,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
 pub(super) struct BatchEntropyLabels {
-    pub(super) total_len_overflow: &'static str,
     pub(super) offset: &'static str,
     pub(super) len: &'static str,
 }
@@ -152,37 +246,83 @@ pub(super) struct BatchEntropyHostData {
     pub(super) bytes: Vec<u8>,
     pub(super) offsets: Vec<u32>,
     pub(super) lens: Vec<u32>,
-    pub(super) checkpoints: Vec<JpegEntropyCheckpointV1>,
+    pub(super) checkpoints: Vec<JpegEntropyCheckpointHost>,
 }
 
 #[cfg(target_os = "macos")]
 pub(super) fn batch_entropy_host_data<'a>(
     entropy_bytes_iter: impl Iterator<Item = &'a [u8]> + Clone,
-    entropy_checkpoints_iter: impl Iterator<Item = &'a [JpegEntropyCheckpointV1]>,
+    entropy_checkpoints_iter: impl Iterator<Item = &'a [JpegEntropyCheckpointV1]> + Clone,
     tile_count: usize,
     segment_count: usize,
+    external_live_bytes: usize,
     labels: BatchEntropyLabels,
 ) -> Result<Option<BatchEntropyHostData>, Error> {
     let total_entropy_len = entropy_bytes_iter
         .clone()
         .map(<[u8]>::len)
         .try_fold(0usize, usize::checked_add)
-        .ok_or_else(|| Error::MetalKernel {
-            message: labels.total_len_overflow.to_string(),
+        .ok_or(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+            what: "JPEG Metal batch entropy bytes",
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         })?;
     if total_entropy_len == 0 {
         return Ok(None);
     }
 
-    let mut bytes = Vec::with_capacity(total_entropy_len);
-    let mut offsets = Vec::with_capacity(tile_count);
-    let mut lens = Vec::with_capacity(tile_count);
-    let mut checkpoints = Vec::with_capacity(tile_count * segment_count);
+    let checkpoint_count = crate::batch_allocation::checked_count_product(
+        tile_count,
+        segment_count,
+        "JPEG Metal batch entropy checkpoints",
+    )?;
+    let entropy_tile_count = crate::batch_allocation::checked_count_sum(
+        entropy_bytes_iter.clone().map(|_| 1_usize),
+        "JPEG Metal batch entropy tile count",
+    )?;
+    let checkpoint_tile_count = crate::batch_allocation::checked_count_sum(
+        entropy_checkpoints_iter.clone().map(|_| 1_usize),
+        "JPEG Metal batch checkpoint tile count",
+    )?;
+    let actual_checkpoint_count = crate::batch_allocation::checked_count_sum(
+        entropy_checkpoints_iter
+            .clone()
+            .map(<[JpegEntropyCheckpointV1]>::len),
+        "JPEG Metal batch checkpoint count",
+    )?;
+    if entropy_tile_count != tile_count
+        || checkpoint_tile_count != tile_count
+        || actual_checkpoint_count != checkpoint_count
+    {
+        return Err(Error::MetalKernel {
+            message: "JPEG Metal batch entropy metadata shape mismatch".to_string(),
+        });
+    }
+    let mut budget = BatchMetadataBudget::with_external_live(
+        "JPEG Metal batch entropy host data",
+        external_live_bytes,
+    );
+    budget.preflight(&[
+        BatchMetadataRequest::of::<u8>(total_entropy_len),
+        BatchMetadataRequest::of::<u32>(tile_count),
+        BatchMetadataRequest::of::<u32>(tile_count),
+        BatchMetadataRequest::of::<JpegEntropyCheckpointHost>(checkpoint_count),
+    ])?;
+    let mut bytes = budget.try_vec(total_entropy_len, "JPEG Metal batch entropy bytes")?;
+    let mut offsets = budget.try_vec(tile_count, "JPEG Metal batch entropy offsets")?;
+    let mut lens = budget.try_vec(tile_count, "JPEG Metal batch entropy lengths")?;
+    let mut checkpoints =
+        budget.try_vec(checkpoint_count, "JPEG Metal batch entropy checkpoints")?;
     for (entropy_bytes, entropy_checkpoints) in entropy_bytes_iter.zip(entropy_checkpoints_iter) {
         offsets.push(checked_u32(bytes.len(), labels.offset)?);
         lens.push(checked_u32(entropy_bytes.len(), labels.len)?);
         bytes.extend_from_slice(entropy_bytes);
-        checkpoints.extend(entropy_checkpoints.iter().copied());
+        checkpoints.extend(
+            entropy_checkpoints
+                .iter()
+                .copied()
+                .map(JpegEntropyCheckpointHost::from),
+        );
     }
 
     Ok(Some(BatchEntropyHostData {
@@ -196,20 +336,23 @@ pub(super) fn batch_entropy_host_data<'a>(
 #[cfg(target_os = "macos")]
 pub(super) fn batch_entropy_buffers<'a>(
     runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
     scratch: &mut MetalBatchScratch,
-    keys: BatchEntropyBufferKeys,
+    plan: BatchEntropyBufferPlan,
     entropy_bytes_iter: impl Iterator<Item = &'a [u8]> + Clone,
     entropy_checkpoints_iter: impl Iterator<Item = &'a [JpegEntropyCheckpointV1]> + Clone,
-    tile_count: usize,
-    segment_count: usize,
 ) -> Result<Option<BatchEntropyBuffers>, Error> {
+    let owner_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal batch entropy buffer owners",
+        requests,
+    )?;
     let Some(host) = batch_entropy_host_data(
         entropy_bytes_iter,
         entropy_checkpoints_iter,
-        tile_count,
-        segment_count,
+        plan.tile_count,
+        plan.segment_count,
+        owner_budget.live_bytes(),
         BatchEntropyLabels {
-            total_len_overflow: "JPEG Metal region scaled batch entropy length overflowed",
             offset: "region scaled batch entropy offset",
             len: "region scaled batch entropy length",
         },
@@ -218,16 +361,23 @@ pub(super) fn batch_entropy_buffers<'a>(
         return Ok(None);
     };
 
-    let checkpoints = entropy_checkpoint_hosts(&host.checkpoints)?;
     Ok(Some(BatchEntropyBuffers {
-        payload: scratch.shared_buffer_with_bytes(&runtime.device, keys.payload, &host.bytes),
-        offsets: scratch.shared_buffer_with_slice(&runtime.device, keys.offsets, &host.offsets),
-        lens: scratch.shared_buffer_with_slice(&runtime.device, keys.lens, &host.lens),
+        payload: scratch.shared_buffer_with_bytes(
+            &runtime.device,
+            plan.keys.payload,
+            &host.bytes,
+        )?,
+        offsets: scratch.shared_buffer_with_slice(
+            &runtime.device,
+            plan.keys.offsets,
+            &host.offsets,
+        )?,
+        lens: scratch.shared_buffer_with_slice(&runtime.device, plan.keys.lens, &host.lens)?,
         checkpoints: scratch.shared_buffer_with_slice(
             &runtime.device,
-            keys.checkpoints,
-            &checkpoints,
-        ),
+            plan.keys.checkpoints,
+            &host.checkpoints,
+        )?,
     }))
 }
 
@@ -240,38 +390,45 @@ pub(super) fn surface_batch_error_results(
     let Some(status) = first_decode_error_status(status_buffer, total_decode_threads)? else {
         return Ok(None);
     };
-    let mut results = Vec::with_capacity(requests.len());
-    for request in requests {
-        let decoder = CpuDecoder::new(request.input.as_ref())?;
-        results.push(Err(decode_error_from_cpu(&decoder, request.fmt, status)));
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal surface batch error results",
+        requests,
+    )?;
+    let mut results = budget.try_vec(
+        requests.len(),
+        "JPEG Metal surface batch error result slots",
+    )?;
+    let error = fast_decode_status_error(status);
+    for _ in requests {
+        results.push(Err(error.clone()));
     }
     Ok(Some(results))
 }
 
 #[cfg(target_os = "macos")]
 pub(super) fn surface_batch_success_results(
+    requests: &[batch::QueuedRequest],
     out_buffer: &Buffer,
     dimensions: (u32, u32),
     pixel_format: j2k_core::PixelFormat,
     tile_count: usize,
     out_tile_len: usize,
     output: Option<&crate::MetalBatchOutputBuffer>,
-) -> Vec<Result<Surface, Error>> {
-    (0..tile_count)
-        .map(|index| {
-            let offset = index * out_tile_len;
-            Ok(if let Some(output) = output {
-                Surface::from_batch_output_buffer_offset(output, dimensions, pixel_format, offset)
-            } else {
-                Surface::from_metal_buffer_offset(
-                    out_buffer.clone(),
-                    dimensions,
-                    pixel_format,
-                    offset,
-                )
-            })
-        })
-        .collect()
+) -> Result<Vec<Result<Surface, Error>>, Error> {
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal surface batch results",
+        requests,
+    )?;
+    let mut results = budget.try_vec(tile_count, "JPEG Metal surface batch result slots")?;
+    for index in 0..tile_count {
+        let offset = index * out_tile_len;
+        results.push(Ok(if let Some(output) = output {
+            Surface::from_batch_output_buffer_offset(output, dimensions, pixel_format, offset)
+        } else {
+            Surface::from_metal_buffer_offset(out_buffer.clone(), dimensions, pixel_format, offset)
+        }));
+    }
+    Ok(results)
 }
 
 #[cfg(target_os = "macos")]
@@ -292,10 +449,17 @@ pub(super) fn texture_batch_error_results(
     let Some(status) = first_decode_error_status(status_buffer, total_decode_threads)? else {
         return Ok(None);
     };
-    let mut results = Vec::with_capacity(requests.len());
-    for request in requests {
-        let decoder = CpuDecoder::new(request.input.as_ref())?;
-        results.push(Err(decode_error_from_cpu(&decoder, request.fmt, status)));
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal texture batch error results",
+        requests,
+    )?;
+    let mut results = budget.try_vec(
+        requests.len(),
+        "JPEG Metal texture batch error result slots",
+    )?;
+    let error = fast_decode_status_error(status);
+    for _ in requests {
+        results.push(Err(error.clone()));
     }
     Ok(Some(results))
 }

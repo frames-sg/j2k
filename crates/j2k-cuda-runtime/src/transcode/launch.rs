@@ -207,7 +207,9 @@ impl CudaContext {
             u32::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let base = j2k_dwt53_launch_geometry(grid_w, grid_h)
             .ok_or(CudaError::LengthTooLarge { len: 0 })?;
-        let geometry = with_grid_z(base, items);
+        let geometry = with_grid_z(base, items).ok_or(CudaError::LengthTooLarge {
+            len: items as usize,
+        })?;
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
@@ -245,7 +247,9 @@ impl CudaContext {
         let rows =
             usize::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let base = copy_u8_launch_geometry(rows).ok_or(CudaError::LengthTooLarge { len: rows })?;
-        let geometry = with_grid_y(base, items);
+        let geometry = with_grid_y(base, items).ok_or(CudaError::LengthTooLarge {
+            len: items as usize,
+        })?;
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
@@ -280,14 +284,17 @@ impl CudaContext {
         let rows_per_block = DWT97_ROW_LIFT_COOP_ROWS_PER_BLOCK as usize;
         let grid_x = c_uint::try_from(rows.div_ceil(rows_per_block))
             .map_err(|_| CudaError::LengthTooLarge { len: rows })?;
-        let geometry = kernels::CudaLaunchGeometry {
-            grid: (grid_x, items, 1),
-            block: (
+        let geometry = kernels::CudaLaunchGeometry::new(
+            (grid_x, items, 1),
+            (
                 DWT97_ROW_LIFT_COOP_THREADS_X,
                 DWT97_ROW_LIFT_COOP_ROWS_PER_BLOCK,
                 1,
             ),
-        };
+        )
+        .ok_or(CudaError::LengthTooLarge {
+            len: items as usize,
+        })?;
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
@@ -312,7 +319,9 @@ impl CudaContext {
             cuda_kernel_params!(rows_ptr, band, rows, low_h, high_h, low_ptr, high_ptr);
         let base =
             copy_u8_launch_geometry(columns).ok_or(CudaError::LengthTooLarge { len: columns })?;
-        let geometry = with_grid_y(base, request.items);
+        let geometry = with_grid_y(base, request.items).ok_or(CudaError::LengthTooLarge {
+            len: request.items as usize,
+        })?;
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
@@ -353,7 +362,10 @@ impl CudaContext {
         );
         let base =
             copy_u8_launch_geometry(columns).ok_or(CudaError::LengthTooLarge { len: columns })?;
-        let geometry = with_grid_y(base, request.column.items);
+        let geometry =
+            with_grid_y(base, request.column.items).ok_or(CudaError::LengthTooLarge {
+                len: request.column.items as usize,
+            })?;
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
@@ -440,7 +452,9 @@ impl CudaContext {
         let grid_h = u32::try_from(height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let base = j2k_dwt53_launch_geometry(grid_w, grid_h)
             .ok_or(CudaError::LengthTooLarge { len: 0 })?;
-        let geometry = with_grid_z(base, request.items);
+        let geometry = with_grid_z(base, request.items).ok_or(CudaError::LengthTooLarge {
+            len: request.items as usize,
+        })?;
         self.launch_kernel_async(function, geometry, &mut params)
     }
 }

@@ -1,19 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    bind_projection_input_buffers, buffer_with_slice, checked_batch_len, code_block_len_from_exp,
-    commit_and_wait, dispatch_band_batch, dwt97_block_value_count, dwt97_total_bitplanes,
-    f32_slice_to_f64, metal_sparse_rows, output_buffer, output_i32_buffer, private_f32_buffer,
-    shared_f32_slice, shared_i32_slice, size_of, u32_param, BackendKind, BatchBandGeometry, Buffer,
-    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DeviceMemoryRange, ForeignType,
-    Htj2k97CodeBlockOptions, J2kSubBandType, MetalRuntime, MetalTranscodeError,
-    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution,
-    PrequantizedHtj2k97Subband, ProjectedBands, ProjectionBatchJob, ResidentBufferRef,
+    bind_projection_input_buffers, checked_batch_len, checked_command_buffer,
+    checked_compute_command_encoder, commit_and_wait, dispatch_band_batch, dwt97_block_value_count,
+    output_buffer, output_i32_buffer, private_f32_buffer, read_f32_buffer_at, size_of,
+    try_transcode_vec_with_capacity, u32_param, upload_sparse_rows, BackendKind, BatchBandGeometry,
+    Buffer, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DeviceMemoryRange, ForeignType,
+    MetalRuntime, MetalTranscodeError, ProjectedBands, ProjectionBatchJob, ResidentBufferRef,
     ResidentColorModel, ResidentComponentGeometry, ResidentDctCoefficientOrder,
     ResidentDctGridLayout, ResidentDwtSubband, ResidentDwtSubbandKind, ResidentDwtSubbandLayout,
     ResidentHandoffError, ResidentJpegDctGrid, ResidentSampleInfo, ResidentSampling,
-    DWT97_BLOCK_COEFFICIENTS, METAL_DCT97_UNSUPPORTED_GRID, METAL_DCT_KERNEL_FAILED,
-    METAL_RESIDENT_HANDOFF_VALIDATION_FAILED,
+    DWT97_BLOCK_COEFFICIENTS, METAL_DCT97_UNSUPPORTED_GRID,
 };
 
 #[derive(Clone, Copy)]
@@ -62,10 +59,18 @@ pub(super) fn projection_batch_shape(
         low_height,
         high_width,
         high_height,
-        ll_len: low_width * low_height,
-        hl_len: high_width * low_height,
-        lh_len: low_width * high_height,
-        hh_len: high_width * high_height,
+        ll_len: low_width
+            .checked_mul(low_height)
+            .ok_or(MetalTranscodeError::UnsupportedJob(job.unsupported_grid))?,
+        hl_len: high_width
+            .checked_mul(low_height)
+            .ok_or(MetalTranscodeError::UnsupportedJob(job.unsupported_grid))?,
+        lh_len: low_width
+            .checked_mul(high_height)
+            .ok_or(MetalTranscodeError::UnsupportedJob(job.unsupported_grid))?,
+        hh_len: high_width
+            .checked_mul(high_height)
+            .ok_or(MetalTranscodeError::UnsupportedJob(job.unsupported_grid))?,
     }))
 }
 
@@ -84,20 +89,24 @@ pub(super) fn projection_batch_weight_buffers(
     runtime: &MetalRuntime,
     job: ProjectionBatchJob<'_, '_>,
 ) -> Result<ProjectionBatchWeightBuffers, MetalTranscodeError> {
-    let x_low = metal_sparse_rows(job.x_low, job.unsupported_grid)?;
-    let x_high = metal_sparse_rows(job.x_high, job.unsupported_grid)?;
-    let y_low = metal_sparse_rows(job.y_low, job.unsupported_grid)?;
-    let y_high = metal_sparse_rows(job.y_high, job.unsupported_grid)?;
+    let (x_low_rows, x_low_taps) =
+        upload_sparse_rows(&runtime.device, job.x_low, job.unsupported_grid)?;
+    let (x_high_rows, x_high_taps) =
+        upload_sparse_rows(&runtime.device, job.x_high, job.unsupported_grid)?;
+    let (y_low_rows, y_low_taps) =
+        upload_sparse_rows(&runtime.device, job.y_low, job.unsupported_grid)?;
+    let (y_high_rows, y_high_taps) =
+        upload_sparse_rows(&runtime.device, job.y_high, job.unsupported_grid)?;
 
     Ok(ProjectionBatchWeightBuffers {
-        x_low_rows: buffer_with_slice(&runtime.device, &x_low.rows),
-        x_low_taps: buffer_with_slice(&runtime.device, &x_low.taps),
-        x_high_rows: buffer_with_slice(&runtime.device, &x_high.rows),
-        x_high_taps: buffer_with_slice(&runtime.device, &x_high.taps),
-        y_low_rows: buffer_with_slice(&runtime.device, &y_low.rows),
-        y_low_taps: buffer_with_slice(&runtime.device, &y_low.taps),
-        y_high_rows: buffer_with_slice(&runtime.device, &y_high.rows),
-        y_high_taps: buffer_with_slice(&runtime.device, &y_high.taps),
+        x_low_rows,
+        x_low_taps,
+        x_high_rows,
+        x_high_taps,
+        y_low_rows,
+        y_low_taps,
+        y_high_rows,
+        y_high_taps,
     })
 }
 
@@ -200,7 +209,9 @@ pub(super) fn validate_resident_dct_handoffs(
         ))?
         .require_backend(BackendKind::Metal)
         .map_err(resident_handoff_error)?;
-        count = count.saturating_add(1);
+        count = count.checked_add(1).ok_or(MetalTranscodeError::Kernel(
+            "Metal resident DCT handoff count overflowed",
+        ))?;
         byte_offset =
             byte_offset
                 .checked_add(byte_len)
@@ -307,7 +318,9 @@ pub(super) fn validate_resident_dwt_handoffs(
             ))?
             .require_backend(BackendKind::Metal)
             .map_err(resident_handoff_error)?;
-            count = count.saturating_add(1);
+            count = count.checked_add(1).ok_or(MetalTranscodeError::Kernel(
+                "Metal resident DWT handoff count overflowed",
+            ))?;
         }
     }
     Ok(count)
@@ -334,10 +347,12 @@ pub(super) fn resident_buffer_ref(
     offset: usize,
     len: usize,
 ) -> Result<ResidentBufferRef<'_>, MetalTranscodeError> {
-    let allocation = u64::try_from(buffer.as_ptr() as usize)
-        .map_err(|_| MetalTranscodeError::Kernel(METAL_RESIDENT_HANDOFF_VALIDATION_FAILED))?;
-    let allocation_len = usize::try_from(buffer.length())
-        .map_err(|_| MetalTranscodeError::Kernel(METAL_RESIDENT_HANDOFF_VALIDATION_FAILED))?;
+    let allocation = u64::try_from(buffer.as_ptr() as usize).map_err(|error| {
+        MetalTranscodeError::runtime("Metal resident buffer address conversion", error)
+    })?;
+    let allocation_len = usize::try_from(buffer.length()).map_err(|error| {
+        MetalTranscodeError::runtime("Metal resident buffer length conversion", error)
+    })?;
     resident_result(ResidentBufferRef::with_allocation_len(
         DeviceMemoryRange::new(BackendKind::Metal, allocation, offset, len),
         allocation_len,
@@ -361,8 +376,8 @@ pub(super) fn resident_result<T>(
     result.map_err(resident_handoff_error)
 }
 
-pub(super) fn resident_handoff_error(_error: ResidentHandoffError) -> MetalTranscodeError {
-    MetalTranscodeError::Kernel(METAL_RESIDENT_HANDOFF_VALIDATION_FAILED)
+pub(super) fn resident_handoff_error(error: ResidentHandoffError) -> MetalTranscodeError {
+    MetalTranscodeError::runtime("Metal resident handoff validation", error)
 }
 
 pub(super) fn projection_batch_output_transfer_count(
@@ -426,19 +441,19 @@ pub(super) fn projection_batch_output_buffers(
         ll: output_buffer(
             &runtime.device,
             checked_batch_len(shape.ll_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
         hl: output_buffer(
             &runtime.device,
             checked_batch_len(shape.hl_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
         lh: output_buffer(
             &runtime.device,
             checked_batch_len(shape.lh_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
         hh: output_buffer(
             &runtime.device,
             checked_batch_len(shape.hh_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
     })
 }
 
@@ -451,19 +466,19 @@ pub(super) fn projection_batch_private_output_buffers(
         ll: private_f32_buffer(
             &runtime.device,
             checked_batch_len(shape.ll_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
         hl: private_f32_buffer(
             &runtime.device,
             checked_batch_len(shape.hl_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
         lh: private_f32_buffer(
             &runtime.device,
             checked_batch_len(shape.lh_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
         hh: private_f32_buffer(
             &runtime.device,
             checked_batch_len(shape.hh_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
     })
 }
 
@@ -476,19 +491,19 @@ pub(super) fn dwt97_codeblock_output_buffers(
         ll: output_i32_buffer(
             &runtime.device,
             checked_batch_len(shape.ll_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
         hl: output_i32_buffer(
             &runtime.device,
             checked_batch_len(shape.hl_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
         lh: output_i32_buffer(
             &runtime.device,
             checked_batch_len(shape.lh_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
         hh: output_i32_buffer(
             &runtime.device,
             checked_batch_len(shape.hh_len, shape.batch_count, unsupported_grid)?,
-        ),
+        )?,
     })
 }
 
@@ -500,14 +515,18 @@ pub(super) fn dispatch_projection_batch_bands(
     blocks: &Buffer,
     outputs: &ProjectionBatchOutputBuffers,
 ) -> Result<(), MetalTranscodeError> {
-    let command_buffer = runtime.queue.new_command_buffer();
+    let command_buffer = checked_command_buffer(&runtime.queue).map_err(|error| {
+        MetalTranscodeError::support("Metal batch projection command buffer creation", error)
+    })?;
     command_buffer.set_label(job.label);
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = checked_compute_command_encoder(&command_buffer).map_err(|error| {
+        MetalTranscodeError::support("Metal batch projection compute encoder creation", error)
+    })?;
     encoder.set_compute_pipeline_state(&runtime.dct_project_band_batch);
-    bind_projection_input_buffers(encoder, blocks, &runtime.idct_basis);
+    bind_projection_input_buffers(&encoder, blocks, &runtime.idct_basis);
 
     dispatch_band_batch(
-        encoder,
+        &encoder,
         (&weights.x_low_rows, &weights.x_low_taps),
         (&weights.y_low_rows, &weights.y_low_taps),
         &outputs.ll,
@@ -523,7 +542,7 @@ pub(super) fn dispatch_projection_batch_bands(
         },
     );
     dispatch_band_batch(
-        encoder,
+        &encoder,
         (&weights.x_high_rows, &weights.x_high_taps),
         (&weights.y_low_rows, &weights.y_low_taps),
         &outputs.hl,
@@ -539,7 +558,7 @@ pub(super) fn dispatch_projection_batch_bands(
         },
     );
     dispatch_band_batch(
-        encoder,
+        &encoder,
         (&weights.x_low_rows, &weights.x_low_taps),
         (&weights.y_high_rows, &weights.y_high_taps),
         &outputs.lh,
@@ -555,7 +574,7 @@ pub(super) fn dispatch_projection_batch_bands(
         },
     );
     dispatch_band_batch(
-        encoder,
+        &encoder,
         (&weights.x_high_rows, &weights.x_high_taps),
         (&weights.y_high_rows, &weights.y_high_taps),
         &outputs.hh,
@@ -572,8 +591,9 @@ pub(super) fn dispatch_projection_batch_bands(
     );
 
     encoder.end_encoding();
-    commit_and_wait(command_buffer)
-        .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
+    commit_and_wait(&command_buffer).map_err(|error| {
+        MetalTranscodeError::support("Metal batch projection command buffer", error)
+    })?;
     Ok(())
 }
 
@@ -582,30 +602,14 @@ pub(super) fn read_projected_batch_outputs(
     shape: ProjectionBatchShape,
     unsupported_grid: &'static str,
 ) -> Result<Vec<ProjectedBands>, MetalTranscodeError> {
-    let ll = shared_f32_slice(
-        &buffers.ll,
-        checked_batch_len(shape.ll_len, shape.batch_count, unsupported_grid)?,
-    )?;
-    let hl = shared_f32_slice(
-        &buffers.hl,
-        checked_batch_len(shape.hl_len, shape.batch_count, unsupported_grid)?,
-    )?;
-    let lh = shared_f32_slice(
-        &buffers.lh,
-        checked_batch_len(shape.lh_len, shape.batch_count, unsupported_grid)?,
-    )?;
-    let hh = shared_f32_slice(
-        &buffers.hh,
-        checked_batch_len(shape.hh_len, shape.batch_count, unsupported_grid)?,
-    )?;
-
-    let mut outputs = Vec::with_capacity(shape.batch_count);
+    let mut outputs =
+        try_transcode_vec_with_capacity(shape.batch_count, "projected wavelet batch metadata")?;
     for idx in 0..shape.batch_count {
         outputs.push(ProjectedBands {
-            ll: f32_slice_to_f64(&ll[idx * shape.ll_len..idx * shape.ll_len + shape.ll_len]),
-            hl: f32_slice_to_f64(&hl[idx * shape.hl_len..idx * shape.hl_len + shape.hl_len]),
-            lh: f32_slice_to_f64(&lh[idx * shape.lh_len..idx * shape.lh_len + shape.lh_len]),
-            hh: f32_slice_to_f64(&hh[idx * shape.hh_len..idx * shape.hh_len + shape.hh_len]),
+            ll: read_projected_band(&buffers.ll, shape.ll_len, idx, unsupported_grid)?,
+            hl: read_projected_band(&buffers.hl, shape.hl_len, idx, unsupported_grid)?,
+            lh: read_projected_band(&buffers.lh, shape.lh_len, idx, unsupported_grid)?,
+            hh: read_projected_band(&buffers.hh, shape.hh_len, idx, unsupported_grid)?,
             low_width: shape.low_width,
             low_height: shape.low_height,
             high_width: shape.high_width,
@@ -616,156 +620,15 @@ pub(super) fn read_projected_batch_outputs(
     Ok(outputs)
 }
 
-pub(super) fn read_prequantized_97_codeblock_outputs(
-    buffers: &Dwt97CodeBlockOutputBuffers,
-    jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
-    shape: ProjectionBatchShape,
-    options: Htj2k97CodeBlockOptions,
-    unsupported_grid: &'static str,
-) -> Result<Vec<PrequantizedHtj2k97Component>, MetalTranscodeError> {
-    let ll = shared_i32_slice(
-        &buffers.ll,
-        checked_batch_len(shape.ll_len, shape.batch_count, unsupported_grid)?,
-    )?;
-    let hl = shared_i32_slice(
-        &buffers.hl,
-        checked_batch_len(shape.hl_len, shape.batch_count, unsupported_grid)?,
-    )?;
-    let lh = shared_i32_slice(
-        &buffers.lh,
-        checked_batch_len(shape.lh_len, shape.batch_count, unsupported_grid)?,
-    )?;
-    let hh = shared_i32_slice(
-        &buffers.hh,
-        checked_batch_len(shape.hh_len, shape.batch_count, unsupported_grid)?,
-    )?;
-
-    let mut components = Vec::with_capacity(shape.batch_count);
-    for (idx, job) in jobs.iter().enumerate() {
-        components.push(PrequantizedHtj2k97Component {
-            x_rsiz: job.x_rsiz,
-            y_rsiz: job.y_rsiz,
-            resolutions: vec![
-                PrequantizedHtj2k97Resolution {
-                    subbands: vec![prequantized_subband_from_codeblock_buffer(
-                        codeblock_item_slice(&ll, idx, shape.ll_len, unsupported_grid)?,
-                        shape.low_width,
-                        shape.low_height,
-                        J2kSubBandType::LowLow,
-                        dwt97_total_bitplanes(options, J2kSubBandType::LowLow),
-                        options,
-                    )?],
-                },
-                PrequantizedHtj2k97Resolution {
-                    subbands: vec![
-                        prequantized_subband_from_codeblock_buffer(
-                            codeblock_item_slice(&hl, idx, shape.hl_len, unsupported_grid)?,
-                            shape.high_width,
-                            shape.low_height,
-                            J2kSubBandType::HighLow,
-                            dwt97_total_bitplanes(options, J2kSubBandType::HighLow),
-                            options,
-                        )?,
-                        prequantized_subband_from_codeblock_buffer(
-                            codeblock_item_slice(&lh, idx, shape.lh_len, unsupported_grid)?,
-                            shape.low_width,
-                            shape.high_height,
-                            J2kSubBandType::LowHigh,
-                            dwt97_total_bitplanes(options, J2kSubBandType::LowHigh),
-                            options,
-                        )?,
-                        prequantized_subband_from_codeblock_buffer(
-                            codeblock_item_slice(&hh, idx, shape.hh_len, unsupported_grid)?,
-                            shape.high_width,
-                            shape.high_height,
-                            J2kSubBandType::HighHigh,
-                            dwt97_total_bitplanes(options, J2kSubBandType::HighHigh),
-                            options,
-                        )?,
-                    ],
-                },
-            ],
-        });
-    }
-
-    Ok(components)
-}
-
-pub(super) fn codeblock_item_slice<'a>(
-    values: &'a [i32],
-    item_idx: usize,
+fn read_projected_band(
+    buffer: &Buffer,
     stride: usize,
+    item_idx: usize,
     unsupported_grid: &'static str,
-) -> Result<&'a [i32], MetalTranscodeError> {
-    let start = item_idx
-        .checked_mul(stride)
-        .ok_or(MetalTranscodeError::UnsupportedJob(unsupported_grid))?;
-    let end = start
-        .checked_add(stride)
-        .ok_or(MetalTranscodeError::UnsupportedJob(unsupported_grid))?;
-    values
-        .get(start..end)
-        .ok_or(MetalTranscodeError::UnsupportedJob(unsupported_grid))
-}
-
-pub(super) fn prequantized_subband_from_codeblock_buffer(
-    values: &[i32],
-    width: usize,
-    height: usize,
-    sub_band_type: J2kSubBandType,
-    total_bitplanes: u8,
-    options: Htj2k97CodeBlockOptions,
-) -> Result<PrequantizedHtj2k97Subband, MetalTranscodeError> {
-    if width == 0 || height == 0 {
-        return Ok(PrequantizedHtj2k97Subband {
-            sub_band_type,
-            num_cbs_x: 0,
-            num_cbs_y: 0,
-            total_bitplanes: 0,
-            code_blocks: Vec::new(),
-        });
-    }
-
-    let cb_width = code_block_len_from_exp(options.code_block_width_exp)?;
-    let cb_height = code_block_len_from_exp(options.code_block_height_exp)?;
-    let num_cbs_x = width.div_ceil(cb_width);
-    let num_cbs_y = height.div_ceil(cb_height);
-    let mut offset = 0usize;
-    let mut code_blocks = Vec::with_capacity(num_cbs_x.saturating_mul(num_cbs_y));
-    for cby in 0..num_cbs_y {
-        for cbx in 0..num_cbs_x {
-            let x0 = cbx * cb_width;
-            let y0 = cby * cb_height;
-            let block_width = (width - x0).min(cb_width);
-            let block_height = (height - y0).min(cb_height);
-            let len = block_width.checked_mul(block_height).ok_or(
-                MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID),
-            )?;
-            let end = offset
-                .checked_add(len)
-                .ok_or(MetalTranscodeError::UnsupportedJob(
-                    METAL_DCT97_UNSUPPORTED_GRID,
-                ))?;
-            let coefficients = values
-                .get(offset..end)
-                .ok_or(MetalTranscodeError::UnsupportedJob(
-                    METAL_DCT97_UNSUPPORTED_GRID,
-                ))?
-                .to_vec();
-            code_blocks.push(PrequantizedHtj2k97CodeBlock {
-                coefficients,
-                width: u32_param(block_width, METAL_DCT97_UNSUPPORTED_GRID)?,
-                height: u32_param(block_height, METAL_DCT97_UNSUPPORTED_GRID)?,
-            });
-            offset = end;
-        }
-    }
-
-    Ok(PrequantizedHtj2k97Subband {
-        sub_band_type,
-        num_cbs_x: u32_param(num_cbs_x, METAL_DCT97_UNSUPPORTED_GRID)?,
-        num_cbs_y: u32_param(num_cbs_y, METAL_DCT97_UNSUPPORTED_GRID)?,
-        total_bitplanes,
-        code_blocks,
-    })
+) -> Result<Vec<f64>, MetalTranscodeError> {
+    read_f32_buffer_at(
+        buffer,
+        checked_batch_len(stride, item_idx, unsupported_grid)?,
+        stride,
+    )
 }

@@ -7,6 +7,7 @@ use super::super::decode::DecompositionStorage;
 use super::super::rect::IntRect;
 use super::model::IDWTInput;
 use crate::math::{dispatch, f32x8, Level, Simd, SIMD_WIDTH};
+use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 
 /// The `2D_INTERLEAVE` procedure described in F.3.3.
 pub(super) fn interleave_samples(
@@ -14,11 +15,17 @@ pub(super) fn interleave_samples(
     decomposition: &Decomposition,
     coefficients: &mut Vec<f32>,
     storage: &DecompositionStorage<'_>,
-) {
+) -> Result<()> {
+    let required_len = checked_decode_usize_product2(
+        decomposition.rect.width() as usize,
+        decomposition.rect.height() as usize,
+    )?;
+    try_resize_decode_elements(coefficients, required_len, 0.0)?;
     let level = Level::new();
     dispatch!(level, simd => {
         interleave_samples_inner::<_>(simd, input, decomposition, coefficients, storage);
     });
+    Ok(())
 }
 
 #[expect(
@@ -34,22 +41,11 @@ fn interleave_samples_inner<S: Simd>(
     simd: S,
     input: IDWTInput<'_>,
     decomposition: &Decomposition,
-    coefficients: &mut Vec<f32>,
+    coefficients: &mut [f32],
     storage: &DecompositionStorage<'_>,
 ) {
     let width = decomposition.rect.width() as usize;
     let height = decomposition.rect.height() as usize;
-
-    // Just a sanity check. We should have allocated enough upfront before
-    // starting the IDWT.
-    assert!(coefficients.capacity() >= width * height);
-
-    // The cleaner way would be to first clear and then resize, so that we
-    // have a clean buffer with just zeroes. However, this is actually not
-    // necessary, because when interleaving and generating the border values
-    // we will replace all the data anyway, so we can save the cost of
-    // the clear operation.
-    coefficients.resize(width * height, 0.0);
 
     let IntRect {
         x0: u0,

@@ -4,8 +4,8 @@
 
 use super::deposit::{assert_stripe_deposit_capacity, deposit_block};
 use super::emit::emit_stripe_rgb_444;
-use super::restart::{consume_restart_marker_if_due, McuPosition};
-use super::{PreparedComponentPlan, PreparedDecodePlan, StripeBuffer};
+use super::restart::{consume_restart_marker_if_due, finish_scan, McuPosition};
+use super::{PreparedDecodePlan, ResolvedPreparedComponentPlan, StripeBuffer};
 use crate::backend::Backend;
 use crate::entropy::block::{decode_block_with_activity, BlockActivity, CoefficientBlock};
 use crate::error::{JpegError, Warning};
@@ -17,17 +17,20 @@ use alloc::vec::Vec;
 
 fn fast_rgb444_components(
     plan: &PreparedDecodePlan,
-) -> (
-    &PreparedComponentPlan,
-    &PreparedComponentPlan,
-    &PreparedComponentPlan,
-) {
-    debug_assert!(plan.matches_fast_rgb444_shape());
+) -> Result<
     (
-        &plan.components[0],
-        &plan.components[1],
-        &plan.components[2],
-    )
+        ResolvedPreparedComponentPlan<'_>,
+        ResolvedPreparedComponentPlan<'_>,
+        ResolvedPreparedComponentPlan<'_>,
+    ),
+    JpegError,
+> {
+    debug_assert!(plan.matches_fast_rgb444_shape());
+    Ok((
+        plan.resolved_component(0)?,
+        plan.resolved_component(1)?,
+        plan.resolved_component(2)?,
+    ))
 }
 
 pub(crate) fn decode_scan_fast_rgb_444<W: OutputWriter + InterleavedRgbWriter>(
@@ -47,12 +50,13 @@ pub(crate) fn decode_scan_fast_rgb_444<W: OutputWriter + InterleavedRgbWriter>(
         plan,
         mcus_per_row,
         DownscaleFactor::Full.output_block_size(),
-    );
+        plan.scratch_bytes,
+    )?;
 
     let mut br = BitReader::new(scan_bytes);
     let mut coeff = CoefficientBlock::default();
     let mut pixels = [0u8; 64];
-    let (y_comp, cb_comp, cr_comp) = fast_rgb444_components(plan);
+    let (y_comp, cb_comp, cr_comp) = fast_rgb444_components(plan)?;
     let mut y_dc = 0i32;
     let mut cb_dc = 0i32;
     let mut cr_dc = 0i32;
@@ -87,25 +91,13 @@ pub(crate) fn decode_scan_fast_rgb_444<W: OutputWriter + InterleavedRgbWriter>(
         }
     }
 
-    let mut warnings = Vec::new();
-    match br.take_marker() {
-        Some(0xD9) => Ok(warnings),
-        Some(found) => Err(JpegError::UnexpectedMarker {
-            offset: br.position().saturating_sub(2),
-            expected: crate::error::MarkerKind::Eoi,
-            found,
-        }),
-        None => {
-            warnings.push(Warning::MissingEoi);
-            Ok(warnings)
-        }
-    }
+    finish_scan(&mut br, true)
 }
 
 struct FastRgb444McuRowContext<'a> {
-    y_comp: &'a PreparedComponentPlan,
-    cb_comp: &'a PreparedComponentPlan,
-    cr_comp: &'a PreparedComponentPlan,
+    y_comp: ResolvedPreparedComponentPlan<'a>,
+    cb_comp: ResolvedPreparedComponentPlan<'a>,
+    cr_comp: ResolvedPreparedComponentPlan<'a>,
     backend: Backend,
     mcus_per_row: u32,
     mcu_rows: u32,
@@ -157,10 +149,10 @@ fn decode_mcu_row_fast_rgb_444(
 
         let y_activity = decode_block_with_activity(
             state.br,
-            &context.y_comp.dc_table,
-            &context.y_comp.ac_table,
+            context.y_comp.dc_table,
+            context.y_comp.ac_table,
             state.y_dc,
-            context.y_comp.quant.as_ref(),
+            context.y_comp.quant,
             state.coeff,
         )?;
         match y_activity {
@@ -186,10 +178,10 @@ fn decode_mcu_row_fast_rgb_444(
 
         let cb_activity = decode_block_with_activity(
             state.br,
-            &context.cb_comp.dc_table,
-            &context.cb_comp.ac_table,
+            context.cb_comp.dc_table,
+            context.cb_comp.ac_table,
             state.cb_dc,
-            context.cb_comp.quant.as_ref(),
+            context.cb_comp.quant,
             state.coeff,
         )?;
         match cb_activity {
@@ -215,10 +207,10 @@ fn decode_mcu_row_fast_rgb_444(
 
         let cr_activity = decode_block_with_activity(
             state.br,
-            &context.cr_comp.dc_table,
-            &context.cr_comp.ac_table,
+            context.cr_comp.dc_table,
+            context.cr_comp.ac_table,
             state.cr_dc,
-            context.cr_comp.quant.as_ref(),
+            context.cr_comp.quant,
             state.coeff,
         )?;
         match cr_activity {

@@ -14,6 +14,8 @@
 
 use crate::error::{HuffmanFailure, JpegError};
 
+mod terminal;
+
 /// Maximum bits the accumulator can hold. Kept at 64 so a single `u64` is
 /// enough; refill replenishes up to 56 bits at a time, leaving 8 bits of head
 /// room so a peek of up to 8 bits never needs a refill.
@@ -42,8 +44,14 @@ pub(crate) struct BitReader<'a> {
     acc: u64,
     /// Number of valid bits in `acc`, 0..=64.
     bits: u8,
+    /// Synthetic trailing one bits appended only for terminal Huffman lookahead.
+    synthetic_bits: u8,
     /// Set when refill stopped at a marker. Cleared by [`Self::take_marker`].
     marker: Option<u8>,
+    /// Cursor immediately after the observed marker code, including FF fill.
+    marker_end: usize,
+    /// Permit libjpeg-compatible synthetic lookahead at physical EOF.
+    allow_eof_padding: bool,
 }
 
 impl<'a> BitReader<'a> {
@@ -51,12 +59,19 @@ impl<'a> BitReader<'a> {
     /// first entropy byte — i.e. the byte *after* an SOS payload, what
     /// `ParsedHeader.sos_offset` points at.
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        Self::new_with_eof_padding(bytes, false)
+    }
+
+    pub(crate) fn new_with_eof_padding(bytes: &'a [u8], allow_eof_padding: bool) -> Self {
         Self {
             bytes,
             pos: 0,
             acc: 0,
             bits: 0,
+            synthetic_bits: 0,
             marker: None,
+            marker_end: 0,
+            allow_eof_padding,
         }
     }
 
@@ -90,9 +105,9 @@ impl<'a> BitReader<'a> {
     /// over-read yields invalid Huffman codes rather than spurious short-code
     /// matches.
     ///
-    /// If refill ran out because the input buffer is physically truncated
-    /// (no marker, `pos >= bytes.len()`), we still return `TableExhausted` so
-    /// malformed streams are rejected, not silently padded over.
+    /// Physical EOF normally returns `TableExhausted`. The progressive parser
+    /// can explicitly permit the same one-bit lookahead policy when it has
+    /// recorded EOF as the scan boundary and retained `Warning::MissingEoi`.
     #[expect(
         clippy::inline_always,
         reason = "measured bit-buffer hot path requires cross-helper inlining"
@@ -102,7 +117,9 @@ impl<'a> BitReader<'a> {
         let mut refilled = false;
         while self.bits < n {
             if !self.refill_one_byte() {
-                if self.marker.is_none() {
+                if self.marker.is_none()
+                    && !(self.allow_eof_padding && self.pos == self.bytes.len())
+                {
                     return Err(JpegError::HuffmanDecode {
                         mcu: 0,
                         reason: HuffmanFailure::TableExhausted,
@@ -111,6 +128,7 @@ impl<'a> BitReader<'a> {
                 while self.bits < n {
                     self.acc |= 1u64 << (ACC_BITS - 1 - self.bits);
                     self.bits += 1;
+                    self.synthetic_bits += 1;
                 }
                 return Ok(());
             }
@@ -136,16 +154,22 @@ impl<'a> BitReader<'a> {
         }
         let b = self.bytes[self.pos];
         if b == 0xFF {
-            if self.pos + 1 >= self.bytes.len() {
+            let mut code_pos = self.pos + 1;
+            while code_pos < self.bytes.len() && self.bytes[code_pos] == 0xff {
+                code_pos += 1;
+            }
+            if code_pos >= self.bytes.len() {
                 return false;
             }
-            let next = self.bytes[self.pos + 1];
+            let next = self.bytes[code_pos];
             if next == 0x00 {
                 self.push_byte(0xFF);
-                self.pos += 2;
+                self.pos = code_pos + 1;
                 true
             } else {
+                self.pos = code_pos - 1;
                 self.marker = Some(next);
+                self.marker_end = code_pos + 1;
                 false
             }
         } else {
@@ -204,6 +228,10 @@ impl<'a> BitReader<'a> {
             "consume_bits({n}) with only {} buffered",
             self.bits
         );
+        let real_bits = self.bits - self.synthetic_bits;
+        if n > real_bits {
+            self.synthetic_bits -= n - real_bits;
+        }
         self.acc <<= n;
         self.bits -= n;
     }
@@ -255,8 +283,41 @@ impl<'a> BitReader<'a> {
     /// restart-interval boundaries to observe `RST0..=RST7` and resume.
     pub(crate) fn take_marker(&mut self) -> Option<u8> {
         let m = self.marker.take()?;
-        self.pos += 2;
+        self.pos = self.marker_end;
+        self.marker_end = 0;
         Some(m)
+    }
+
+    /// Consume the next restart marker and return the following RST index.
+    ///
+    /// Entropy decoders normally prefetch far enough to observe the marker.
+    /// When no bits remain buffered, one refill attempt preserves the former
+    /// boundary-probe behavior without discarding an `ensure_bits` error. A
+    /// missing marker is a scan-position failure rather than a Huffman-symbol
+    /// failure, so it retains the caller's MCU coordinates.
+    pub(crate) fn consume_restart_marker(
+        &mut self,
+        expected_rst: u8,
+        mcu_at: u32,
+        mcu_total: u32,
+    ) -> Result<u8, JpegError> {
+        if self.bits == 0 {
+            self.refill_one_byte();
+        }
+        let marker = self
+            .take_marker()
+            .ok_or(JpegError::UnexpectedEoi { mcu_at, mcu_total })?;
+        let expected = 0xd0 | expected_rst;
+        if marker != expected {
+            return Err(JpegError::RestartMismatch {
+                offset: self.position(),
+                expected: expected_rst,
+                found: marker,
+            });
+        }
+
+        self.reset_at_restart();
+        Ok((expected_rst + 1) & 0x07)
     }
 
     /// Current cursor into the input. Used only by diagnostics; not part of
@@ -266,10 +327,16 @@ impl<'a> BitReader<'a> {
     }
 
     pub(crate) fn snapshot(&self) -> BitReaderSnapshot {
+        let real_bits = self.bits.saturating_sub(self.synthetic_bits);
+        let acc = if real_bits == 0 {
+            0
+        } else {
+            self.acc & (u64::MAX << (ACC_BITS - real_bits))
+        };
         BitReaderSnapshot {
             pos: self.pos,
-            acc: self.acc,
-            bits: self.bits,
+            acc,
+            bits: real_bits,
         }
     }
 
@@ -278,6 +345,7 @@ impl<'a> BitReader<'a> {
     pub(crate) fn reset_at_restart(&mut self) {
         self.acc = 0;
         self.bits = 0;
+        self.synthetic_bits = 0;
     }
 
     pub(crate) fn from_snapshot(bytes: &'a [u8], snapshot: BitReaderSnapshot) -> Self {
@@ -286,7 +354,10 @@ impl<'a> BitReader<'a> {
             pos: snapshot.pos,
             acc: snapshot.acc,
             bits: snapshot.bits,
+            synthetic_bits: 0,
             marker: None,
+            marker_end: 0,
+            allow_eof_padding: false,
         }
     }
 }
@@ -417,5 +488,93 @@ mod tests {
 
         let mut restored = BitReader::from_snapshot(&data, snapshot);
         assert_eq!(restored.read_bits(7).unwrap(), expected);
+    }
+
+    #[test]
+    fn snapshot_excludes_synthetic_terminal_lookahead() {
+        let data = [0xabu8];
+        let mut br = BitReader::new_with_eof_padding(&data, true);
+        br.ensure_bits_padded(16).unwrap();
+
+        let snapshot = br.snapshot();
+        assert_eq!(snapshot.bits, 8);
+        assert_eq!(snapshot.acc, 0xab_u64 << 56);
+
+        let mut restored = BitReader::from_snapshot(&data, snapshot);
+        assert_eq!(restored.read_bits(8).unwrap(), 0xab);
+        assert!(restored.read_bits(1).is_err());
+    }
+
+    #[test]
+    fn restart_markers_consume_fill_and_advance_the_expected_sequence() {
+        let data = [0xff, 0xff, 0xd0, 0xff, 0xd1];
+        let mut br = BitReader::new(&data);
+
+        let next = br.consume_restart_marker(0, 1, 3).unwrap();
+        assert_eq!(next, 1);
+        assert_eq!(br.position(), 3);
+
+        let next = br.consume_restart_marker(next, 2, 3).unwrap();
+        assert_eq!(next, 2);
+        assert_eq!(br.position(), data.len());
+    }
+
+    #[test]
+    fn wrong_restart_marker_preserves_offset_and_buffered_padding() {
+        let data = [0xa0, 0xff, 0xd1];
+        let mut br = BitReader::new(&data);
+        assert_eq!(br.read_bits(4).unwrap(), 0x0a);
+        assert_eq!(br.snapshot().bits, 4);
+
+        let error = br.consume_restart_marker(0, 4, 9).unwrap_err();
+        assert_eq!(
+            error,
+            JpegError::RestartMismatch {
+                offset: data.len(),
+                expected: 0,
+                found: 0xd1,
+            }
+        );
+        assert_eq!(br.snapshot().bits, 4);
+    }
+
+    #[test]
+    fn missing_or_truncated_restart_marker_keeps_mcu_coordinates() {
+        for data in [&[][..], &[0xff][..]] {
+            let mut br = BitReader::new(data);
+            assert_eq!(
+                br.consume_restart_marker(0, 7, 11).unwrap_err(),
+                JpegError::UnexpectedEoi {
+                    mcu_at: 7,
+                    mcu_total: 11,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn stuffed_ff_is_entropy_data_not_a_restart_marker() {
+        let data = [0xff, 0x00, 0xff, 0xd0];
+        let mut br = BitReader::new(&data);
+
+        assert_eq!(
+            br.consume_restart_marker(0, 2, 5).unwrap_err(),
+            JpegError::UnexpectedEoi {
+                mcu_at: 2,
+                mcu_total: 5,
+            }
+        );
+        assert_eq!(br.snapshot().bits, 8);
+    }
+
+    #[test]
+    fn validated_restart_discards_only_then_buffered_padding() {
+        let data = [0xa0, 0xff, 0xd0];
+        let mut br = BitReader::new(&data);
+        assert_eq!(br.read_bits(4).unwrap(), 0x0a);
+        assert_eq!(br.snapshot().bits, 4);
+
+        assert_eq!(br.consume_restart_marker(0, 1, 2).unwrap(), 1);
+        assert_eq!(br.snapshot().bits, 0);
     }
 }

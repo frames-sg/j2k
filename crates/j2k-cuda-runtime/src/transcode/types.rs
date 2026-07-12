@@ -4,7 +4,10 @@ use crate::memory::{CudaBufferPool, CudaDeviceBuffer, CudaPooledDeviceBuffer};
 
 /// Reversible 5/3 transcode bands downloaded from the device. Layout matches
 /// `j2k_transcode::accelerator::ReversibleDwt53FirstLevel`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// This owner is move-only because cloning it would infallibly duplicate four
+/// image-sized host buffers. Use `Arc` for explicit shared ownership.
+#[derive(Debug, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct CudaTranscodeReversible53Bands {
     /// Low-horizontal, low-vertical band (`low_width * low_height`).
@@ -47,7 +50,10 @@ pub(crate) struct DctBlockGrid {
 
 /// Irreversible single-level 9/7 transcode bands downloaded from the device.
 /// Device math is f32; callers widen to f64 (parity is within tolerance).
-#[derive(Clone, Debug, PartialEq)]
+///
+/// This owner is move-only because cloning it would infallibly duplicate four
+/// image-sized host buffers. Use `Arc` for explicit shared ownership.
+#[derive(Debug, PartialEq)]
 #[doc(hidden)]
 pub struct CudaTranscodeDwt97Bands {
     /// Low-horizontal, low-vertical band (`low_width * low_height`).
@@ -112,7 +118,7 @@ pub struct CudaDwt97BatchWithPoolRequest<'a> {
     pub blocks: &'a [f32],
     /// Shared geometry for every item in `blocks`.
     pub geometry: CudaDwt97BatchGeometry,
-    /// Pool used for transient device buffers.
+    /// Pool used for transient device buffers. Must belong to the executing context.
     pub pool: &'a CudaBufferPool,
 }
 
@@ -127,7 +133,7 @@ pub struct CudaHtj2k97CodeblockBatchWithPoolRequest<'a> {
     pub geometry: CudaDwt97BatchGeometry,
     /// Per-subband quantization and code-block geometry.
     pub params: CudaHtj2k97QuantizeParams,
-    /// Pool used for transient device buffers.
+    /// Pool used for transient device buffers. Must belong to the executing context.
     pub pool: &'a CudaBufferPool,
 }
 
@@ -142,7 +148,7 @@ pub struct CudaHtj2k97I16CodeblockBatchWithPoolRequest<'a> {
     pub geometry: CudaDwt97BatchGeometry,
     /// Per-subband quantization and code-block geometry.
     pub params: CudaHtj2k97QuantizeParams,
-    /// Pool used for transient device buffers.
+    /// Pool used for transient device buffers. Must belong to the executing context.
     pub pool: &'a CudaBufferPool,
 }
 
@@ -160,7 +166,10 @@ pub(crate) struct Dwt97CodeblockBandBuffers<'a> {
 /// -major order (outer code-block row, inner code-block column, each block
 /// row-major), matching the `j2k-transcode` code-block oracle layout. The
 /// dispatch layer reslices these into prequantized HTJ2K components.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// This owner is move-only because cloning it would infallibly duplicate four
+/// batch-sized host buffers. Use `Arc` for explicit shared ownership.
+#[derive(Debug, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct CudaHtj2k97CodeblockBands {
     /// LL subband (`item_count * low_width * low_height`).

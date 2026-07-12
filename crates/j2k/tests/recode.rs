@@ -41,6 +41,63 @@ fn native_encode_options(reversible: bool, use_mct: bool) -> EncodeOptions {
     }
 }
 
+fn rgb_channel_definitions() -> [J2kChannelDefinition; 3] {
+    [
+        J2kChannelDefinition {
+            channel_index: 0,
+            channel_type: J2kChannelType::Color,
+            association: J2kChannelAssociation::Color { index: 1 },
+        },
+        J2kChannelDefinition {
+            channel_index: 1,
+            channel_type: J2kChannelType::Color,
+            association: J2kChannelAssociation::Color { index: 2 },
+        },
+        J2kChannelDefinition {
+            channel_index: 2,
+            channel_type: J2kChannelType::Color,
+            association: J2kChannelAssociation::Color { index: 3 },
+        },
+    ]
+}
+
+fn rgb_palette() -> J2kPaletteMetadata {
+    J2kPaletteMetadata {
+        columns: vec![
+            J2kPaletteColumn {
+                bit_depth: 8,
+                signed: false,
+            },
+            J2kPaletteColumn {
+                bit_depth: 8,
+                signed: false,
+            },
+            J2kPaletteColumn {
+                bit_depth: 8,
+                signed: false,
+            },
+        ],
+        entries: vec![vec![2, 20, 200], vec![200, 40, 3]],
+    }
+}
+
+fn rgb_palette_mappings() -> [J2kComponentMapping; 3] {
+    [
+        J2kComponentMapping {
+            component_index: 0,
+            mapping_type: J2kComponentMappingType::Palette { column: 0 },
+        },
+        J2kComponentMapping {
+            component_index: 0,
+            mapping_type: J2kComponentMappingType::Palette { column: 1 },
+        },
+        J2kComponentMapping {
+            component_index: 0,
+            mapping_type: J2kComponentMappingType::Palette { column: 2 },
+        },
+    ]
+}
+
 #[test]
 fn classic_lossless_53_rgb_recode_to_htj2k_decodes_pixel_exact() {
     let width = 64;
@@ -321,23 +378,7 @@ fn recode_jph_preserves_channel_definition_metadata_for_coefficient_path() {
     )
     .expect("classic lossless encode")
     .codestream;
-    let channels = [
-        J2kChannelDefinition {
-            channel_index: 0,
-            channel_type: J2kChannelType::Color,
-            association: J2kChannelAssociation::Color { index: 1 },
-        },
-        J2kChannelDefinition {
-            channel_index: 1,
-            channel_type: J2kChannelType::Color,
-            association: J2kChannelAssociation::Color { index: 2 },
-        },
-        J2kChannelDefinition {
-            channel_index: 2,
-            channel_type: J2kChannelType::Color,
-            association: J2kChannelAssociation::Color { index: 3 },
-        },
-    ];
+    let channels = rgb_channel_definitions();
     let jp2 = wrap_j2k_codestream(
         &classic,
         J2kFileWrapOptions::jp2()
@@ -379,54 +420,9 @@ fn recode_jph_drops_palette_metadata_on_pixel_fallback() {
     let classic = encode_j2k_lossless(samples, &lossless_options(J2kBlockCodingMode::Classic))
         .expect("classic lossless encode")
         .codestream;
-    let palette = J2kPaletteMetadata {
-        columns: vec![
-            J2kPaletteColumn {
-                bit_depth: 8,
-                signed: false,
-            },
-            J2kPaletteColumn {
-                bit_depth: 8,
-                signed: false,
-            },
-            J2kPaletteColumn {
-                bit_depth: 8,
-                signed: false,
-            },
-        ],
-        entries: vec![vec![2, 20, 200], vec![200, 40, 3]],
-    };
-    let mappings = [
-        J2kComponentMapping {
-            component_index: 0,
-            mapping_type: J2kComponentMappingType::Palette { column: 0 },
-        },
-        J2kComponentMapping {
-            component_index: 0,
-            mapping_type: J2kComponentMappingType::Palette { column: 1 },
-        },
-        J2kComponentMapping {
-            component_index: 0,
-            mapping_type: J2kComponentMappingType::Palette { column: 2 },
-        },
-    ];
-    let channels = [
-        J2kChannelDefinition {
-            channel_index: 0,
-            channel_type: J2kChannelType::Color,
-            association: J2kChannelAssociation::Color { index: 1 },
-        },
-        J2kChannelDefinition {
-            channel_index: 1,
-            channel_type: J2kChannelType::Color,
-            association: J2kChannelAssociation::Color { index: 2 },
-        },
-        J2kChannelDefinition {
-            channel_index: 2,
-            channel_type: J2kChannelType::Color,
-            association: J2kChannelAssociation::Color { index: 3 },
-        },
-    ];
+    let palette = rgb_palette();
+    let mappings = rgb_palette_mappings();
+    let channels = rgb_channel_definitions();
     let jp2 = wrap_j2k_codestream(
         &classic,
         J2kFileWrapOptions::jp2()
@@ -450,17 +446,36 @@ fn recode_jph_drops_palette_metadata_on_pixel_fallback() {
     .expect("JPH recode uses pixel fallback");
 
     assert_eq!(recoded.report.mode, J2kToHtj2kMode::PixelPreserving);
-    assert_eq!(recoded.report.components, 1);
+    assert_eq!(recoded.report.components, 3);
     let support = j2k::J2kDecoder::inspect_support(&recoded.bytes).expect("inspect recoded JPH");
     let metadata = support.file_metadata.expect("JPH metadata");
     assert!(matches!(
         metadata.color_specs.as_slice(),
-        [J2kColorSpec::Enumerated { value: 17 }]
+        [J2kColorSpec::Enumerated { value: 16 }]
     ));
     assert!(metadata.palette.is_none());
     assert!(metadata.component_mappings.is_empty());
     assert!(metadata.channel_definitions.is_empty());
-    assert_eq!(decode_native(&recoded.bytes).data, decode_native(&jp2).data);
+    let decoded = Image::new(&recoded.bytes, &DecodeSettings::default())
+        .expect("recoded direct RGB JPH")
+        .decode_native_components()
+        .expect("resolved RGB component decode");
+    assert_eq!(decoded.planes().len(), 3);
+    let expected_red = indices
+        .iter()
+        .map(|index| if *index == 0 { 2 } else { 200 })
+        .collect::<Vec<_>>();
+    let expected_green = indices
+        .iter()
+        .map(|index| if *index == 0 { 20 } else { 40 })
+        .collect::<Vec<_>>();
+    let expected_blue = indices
+        .iter()
+        .map(|index| if *index == 0 { 200 } else { 3 })
+        .collect::<Vec<_>>();
+    assert_eq!(decoded.planes()[0].data(), expected_red);
+    assert_eq!(decoded.planes()[1].data(), expected_green);
+    assert_eq!(decoded.planes()[2].data(), expected_blue);
 }
 
 #[test]

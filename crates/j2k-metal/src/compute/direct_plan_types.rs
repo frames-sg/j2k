@@ -13,7 +13,8 @@ use super::{
     J2kHtCleanupBatchJob,
 };
 
-#[derive(Clone)]
+mod allocation;
+
 pub(crate) struct PreparedDirectGrayscalePlan {
     pub(super) dimensions: (u32, u32),
     pub(super) bit_depth: u8,
@@ -24,7 +25,6 @@ pub(crate) struct PreparedDirectGrayscalePlan {
     pub(super) cpu_tier1_cache: Arc<CpuTier1CoefficientCache>,
 }
 
-#[derive(Clone)]
 pub(crate) struct PreparedDirectColorPlan {
     pub(super) dimensions: (u32, u32),
     pub(super) bit_depths: [u8; 3],
@@ -33,7 +33,6 @@ pub(crate) struct PreparedDirectColorPlan {
     pub(super) component_plans: Vec<PreparedDirectGrayscalePlan>,
 }
 
-#[derive(Clone)]
 pub(super) enum PreparedDirectGrayscaleStep {
     ClassicSubBand(PreparedClassicSubBand),
     HtSubBand(PreparedHtSubBand),
@@ -41,13 +40,11 @@ pub(super) enum PreparedDirectGrayscaleStep {
     Store(J2kDirectStoreStep),
 }
 
-#[derive(Clone)]
 pub(super) struct PreparedDirectIdwt {
     pub(super) step: J2kDirectIdwtStep,
     pub(super) output_window: J2kRequiredBandRegion,
 }
 
-#[derive(Clone)]
 pub(super) struct PreparedClassicSubBand {
     pub(super) band_id: J2kDirectBandId,
     pub(super) width: u32,
@@ -61,7 +58,6 @@ pub(super) struct PreparedClassicSubBand {
     pub(super) segments_buffer: Buffer,
 }
 
-#[derive(Clone)]
 pub(super) struct PreparedClassicSubBandGroup {
     pub(super) start_step: usize,
     pub(super) end_step: usize,
@@ -76,14 +72,12 @@ pub(super) struct PreparedClassicSubBandGroup {
     pub(super) members: Vec<PreparedClassicSubBandGroupMember>,
 }
 
-#[derive(Clone)]
 pub(super) struct PreparedClassicSubBandGroupMember {
     pub(super) band_id: J2kDirectBandId,
     pub(super) offset_elements: usize,
     pub(super) window: J2kRequiredBandRegion,
 }
 
-#[derive(Clone)]
 pub(super) struct PreparedHtSubBand {
     pub(super) band_id: J2kDirectBandId,
     pub(super) width: u32,
@@ -94,13 +88,11 @@ pub(super) struct PreparedHtSubBand {
     pub(super) jobs_buffer: Option<Buffer>,
 }
 
-#[derive(Clone)]
 pub(super) struct HtCodedArena {
     pub(super) data: Vec<u8>,
     pub(super) buffer: Buffer,
 }
 
-#[derive(Clone)]
 pub(super) struct PreparedHtSubBandGroup {
     pub(super) start_step: usize,
     pub(super) end_step: usize,
@@ -111,7 +103,6 @@ pub(super) struct PreparedHtSubBandGroup {
     pub(super) members: Vec<PreparedHtSubBandGroupMember>,
 }
 
-#[derive(Clone)]
 pub(super) struct PreparedHtSubBandGroupMember {
     pub(super) band_id: J2kDirectBandId,
     pub(super) offset_elements: usize,

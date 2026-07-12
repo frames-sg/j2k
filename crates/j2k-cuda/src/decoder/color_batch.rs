@@ -4,27 +4,37 @@
 use core::cell::Cell;
 
 #[cfg(feature = "cuda-runtime")]
+mod host_owners;
+#[cfg(feature = "cuda-runtime")]
+mod store;
+
+#[cfg(feature = "cuda-runtime")]
+use self::host_owners::{append_color_payload_to_shared, take_component_work};
+#[cfg(feature = "cuda-runtime")]
+use self::store::{
+    can_fuse_mct_store_for_stores, dispatch_color_store, prepare_rgb8_mct_batch_store,
+    rgb8_mct_batch_store_target, run_color_mct, ColorStoreInputs,
+};
+#[cfg(feature = "cuda-runtime")]
 use super::decode_profile::aggregate_decode_reports;
 #[cfg(feature = "cuda-runtime")]
 use super::plan::build_cuda_htj2k_color_plans_from_bytes_with_profile;
 #[cfg(feature = "cuda-runtime")]
 use super::resident::{
-    bit_depth_addend, can_batch_color_idwt, checked_area,
-    decode_cuda_component_subbands_with_resources, finish_cuda_component_decode,
-    pooled_cuda_buffer, run_color_component_idwt_batches, run_component_cleanup_dequant_batches,
-    run_cuda_component_idwt_steps, validate_color_stores,
+    can_batch_color_idwt, decode_cuda_component_subbands_with_resources,
+    finish_cuda_component_decode, pooled_cuda_buffer, run_color_component_idwt_batches,
+    run_component_cleanup_dequant_batches, run_cuda_component_idwt_steps, validate_color_stores,
 };
 #[cfg(feature = "cuda-runtime")]
 use super::{
     cuda_error, cuda_range_storage, profile, Arc, BackendKind, CudaBufferPool,
-    CudaComponentDecodeWork, CudaError, CudaHtj2kColorDecodePlans, CudaHtj2kProfileReport,
-    CudaHtj2kStoreStep, CudaHtj2kTransform, CudaJ2kInverseMctJob, CudaJ2kStoreRgb16Job,
-    CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job, CudaJ2kStoreRgb8MctJob,
-    CudaJ2kStoreRgb8MctTarget, CudaPreparedRgb8MctBatchStore, CudaSession, CudaSurfaceStats, Error,
-    J2kDecoder, NativeDecoderContext, PixelFormat, Rect, Storage, Surface, SurfaceResidency,
-    CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE, CUDA_HTJ2K_KERNELS_NOT_READY,
-    CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
+    CudaComponentDecodeWork, CudaDecodedComponent, CudaDeviceBuffer, CudaExecutionStats,
+    CudaHtj2kColorDecodePlans, CudaHtj2kProfileReport, CudaQueuedIdwtBatch, CudaSession,
+    CudaSurfaceStats, Error, J2kDecoder, NativeDecoderContext, PixelFormat, Rect, Storage, Surface,
+    SurfaceResidency, CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE, CUDA_HTJ2K_KERNELS_NOT_READY,
 };
+#[cfg(feature = "cuda-runtime")]
+use crate::allocation::HostPhaseBudget;
 
 #[cfg(all(test, feature = "cuda-runtime"))]
 std::thread_local! {
@@ -154,13 +164,16 @@ pub(super) fn decode_color_cuda_resident_surface_with_plans_profile(
         .map_err(cuda_error)?;
     let payload_upload_us = profile::elapsed_us(payload_upload_start);
     profile::add_payload_resource_upload_us(&mut color.report, payload_upload_us);
-    let mut component_work = Vec::with_capacity(3);
+    let mut host_budget = HostPhaseBudget::new("j2k CUDA color decode execution graph");
+    color.account_host_owners(&mut host_budget)?;
+    let mut component_work = host_budget.try_vec_with_capacity(3)?;
     for plan in &color.components {
         component_work.push(decode_cuda_component_subbands_with_resources(
             &context,
             plan,
             &pool,
             collect_stage_timings,
+            &mut host_budget,
         )?);
     }
     run_component_cleanup_dequant_batches(
@@ -169,6 +182,7 @@ pub(super) fn decode_color_cuda_resident_surface_with_plans_profile(
         &mut component_work,
         &pool,
         collect_stage_timings,
+        host_budget.live_bytes(),
     )?;
     finish_color_cuda_resident_surface_with_component_work(FinishColorCudaResidentSurfaceRequest {
         context: &context,
@@ -195,7 +209,8 @@ pub(super) fn decode_color_cuda_resident_batch_surfaces_with_profile(
     collect_stage_timings: bool,
 ) -> Result<(Vec<Surface>, CudaHtj2kProfileReport), Error> {
     let batch_wall_started = profile::profile_now(collect_stage_timings);
-    let mut colors = Vec::with_capacity(inputs.len());
+    let mut initial_budget = HostPhaseBudget::new("j2k CUDA color batch plan owners");
+    let mut colors = initial_budget.try_vec_with_capacity(inputs.len())?;
     let mut shared_payload = Vec::new();
     let mut native_context = NativeDecoderContext::default();
     for input in inputs {
@@ -206,8 +221,20 @@ pub(super) fn decode_color_cuda_resident_batch_surfaces_with_profile(
                 reason: CUDA_HTJ2K_KERNELS_NOT_READY,
             });
         }
-        append_color_payload_to_shared(&mut color, &mut shared_payload)?;
+        let mut append_budget = host_owners::color_batch_budget(
+            &colors,
+            &shared_payload,
+            Some(&color),
+            "j2k CUDA color batch plan owners",
+        )?;
+        append_color_payload_to_shared(&mut color, &mut shared_payload, &mut append_budget)?;
         colors.push(color);
+        host_owners::color_batch_budget(
+            &colors,
+            &shared_payload,
+            None,
+            "j2k CUDA color batch plan owners",
+        )?;
     }
 
     let context = session.cuda_context()?;
@@ -224,12 +251,15 @@ pub(super) fn decode_color_cuda_resident_batch_surfaces_with_profile(
         )
         .map_err(cuda_error)?;
     let payload_upload_us = profile::elapsed_us(payload_upload_start);
+    drop(shared_payload);
 
     let component_count = colors
         .iter()
         .map(|color| color.components.len())
         .sum::<usize>();
-    let mut all_component_work = Vec::with_capacity(component_count);
+    let mut host_budget = HostPhaseBudget::new("j2k CUDA color batch execution graph");
+    host_owners::account_colors(&mut host_budget, &colors)?;
+    let mut all_component_work = host_budget.try_vec_with_capacity(component_count)?;
     for color in &colors {
         for plan in &color.components {
             all_component_work.push(decode_cuda_component_subbands_with_resources(
@@ -237,6 +267,7 @@ pub(super) fn decode_color_cuda_resident_batch_surfaces_with_profile(
                 plan,
                 &pool,
                 collect_stage_timings,
+                &mut host_budget,
             )?);
         }
     }
@@ -246,11 +277,14 @@ pub(super) fn decode_color_cuda_resident_batch_surfaces_with_profile(
         &mut all_component_work,
         &pool,
         collect_stage_timings,
+        host_budget.live_bytes(),
     )?;
-    let batch_components = colors
-        .iter()
-        .flat_map(|color| color.components.iter())
-        .collect::<Vec<_>>();
+    let mut batch_components = host_budget.try_vec_with_capacity(component_count)?;
+    for color in &colors {
+        for component in &color.components {
+            batch_components.push(component);
+        }
+    }
     let idwt_batched = can_batch_color_idwt(&batch_components);
     let pending_idwt_batch = if idwt_batched {
         run_color_component_idwt_batches(
@@ -259,53 +293,64 @@ pub(super) fn decode_color_cuda_resident_batch_surfaces_with_profile(
             &mut all_component_work,
             &pool,
             collect_stage_timings,
+            host_budget.live_bytes(),
         )?
     } else {
         None
     };
     drop(batch_components);
 
-    let can_use_batch_store =
-        idwt_batched && can_batch_rgb8_mct_color_store(fmt, &colors, &all_component_work)?;
-    let (surfaces, reports) = if can_use_batch_store {
-        finish_color_cuda_resident_batch_surfaces_with_rgb8_mct_store(
-            &context,
-            fmt,
-            colors,
-            all_component_work,
-            collect_stage_timings,
-        )?
-    } else {
-        let mut surfaces = Vec::with_capacity(colors.len());
-        let mut reports = Vec::with_capacity(colors.len());
-        let mut work_iter = all_component_work.into_iter();
-        for color in colors {
-            let component_count = color.components.len();
-            let component_work = work_iter.by_ref().take(component_count).collect::<Vec<_>>();
-            if component_work.len() != component_count {
-                return Err(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-                });
+    let completion_result = (|| {
+        let can_use_batch_store =
+            idwt_batched && can_batch_rgb8_mct_color_store(fmt, &colors, &all_component_work)?;
+        let (surfaces, reports) = if can_use_batch_store {
+            finish_color_cuda_resident_batch_surfaces_with_rgb8_mct_store(
+                &context,
+                fmt,
+                colors,
+                all_component_work,
+                collect_stage_timings,
+            )?
+        } else {
+            let mut output_budget = HostPhaseBudget::new("j2k CUDA color batch output graph");
+            host_owners::account_colors(&mut output_budget, &colors)?;
+            host_owners::account_component_work(&mut output_budget, &all_component_work)?;
+            let mut surfaces = output_budget.try_vec_with_capacity(colors.len())?;
+            let mut reports = output_budget.try_vec_with_capacity(colors.len())?;
+            let mut work_iter = all_component_work.into_iter();
+            for color in colors {
+                let component_count = color.components.len();
+                let component_work =
+                    take_component_work(&mut work_iter, component_count, &mut output_budget)?;
+                let (surface, report) = finish_color_cuda_resident_surface_with_component_work(
+                    FinishColorCudaResidentSurfaceRequest {
+                        context: &context,
+                        pool: &pool,
+                        fmt,
+                        color,
+                        component_work,
+                        wall_started: None,
+                        collect_stage_timings,
+                        run_idwt: !idwt_batched,
+                        emit_report: false,
+                    },
+                )?;
+                surfaces.push(surface);
+                reports.push(report);
             }
-            let (surface, report) = finish_color_cuda_resident_surface_with_component_work(
-                FinishColorCudaResidentSurfaceRequest {
-                    context: &context,
-                    pool: &pool,
-                    fmt,
-                    color,
-                    component_work,
-                    wall_started: None,
-                    collect_stage_timings,
-                    run_idwt: !idwt_batched,
-                    emit_report: false,
-                },
-            )?;
-            surfaces.push(surface);
-            reports.push(report);
-        }
-        (surfaces, reports)
-    };
-    drop(pending_idwt_batch);
+            (surfaces, reports)
+        };
+        // Runtime MCT/store launches synchronize before returning, so a
+        // recorded dispatch is also a completion point for preceding IDWT.
+        let completion_established = reports.iter().any(|report| {
+            report.detail.mct_dispatch_count != 0 || report.detail.store_dispatch_count != 0
+        });
+        Ok(((surfaces, reports), completion_established))
+    })();
+    let (surfaces, reports) = CudaQueuedIdwtBatch::resolve_optional_after_completed_work(
+        pending_idwt_batch,
+        completion_result,
+    )?;
 
     let aggregate = finalize_color_batch_decode_report(
         &reports,
@@ -394,16 +439,15 @@ pub(super) fn finish_color_cuda_resident_batch_surfaces_with_rgb8_mct_store(
     all_component_work: Vec<CudaComponentDecodeWork>,
     collect_stage_timings: bool,
 ) -> Result<(Vec<Surface>, Vec<CudaHtj2kProfileReport>), Error> {
-    let mut prepared = Vec::with_capacity(colors.len());
+    let mut host_budget = HostPhaseBudget::new("j2k CUDA prepared color batch store graph");
+    host_owners::account_colors(&mut host_budget, &colors)?;
+    host_owners::account_component_work(&mut host_budget, &all_component_work)?;
+    let mut prepared = host_budget.try_vec_with_capacity(colors.len())?;
     let mut work_iter = all_component_work.into_iter();
     for color in colors {
         let component_count = color.components.len();
-        let component_work = work_iter.by_ref().take(component_count).collect::<Vec<_>>();
-        if component_work.len() != component_count {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            });
-        }
+        let component_work =
+            take_component_work(&mut work_iter, component_count, &mut host_budget)?;
         prepared.push(prepare_rgb8_mct_batch_store(fmt, color, component_work)?);
     }
     if work_iter.next().is_some() {
@@ -412,15 +456,18 @@ pub(super) fn finish_color_cuda_resident_batch_surfaces_with_rgb8_mct_store(
         });
     }
 
-    let targets = prepared
-        .iter()
-        .map(rgb8_mct_batch_store_target)
-        .collect::<Result<Vec<_>, Error>>()?;
+    let targets =
+        host_budget.try_collect_results_exact(prepared.iter().map(rgb8_mct_batch_store_target))?;
     let (store_output, store_us) = context
         .time_default_stream_named_us_if(
             collect_stage_timings,
             "j2k.htj2k.decode.store.color.batch",
-            || context.j2k_store_rgb8_mct_batch_contiguous_device(&targets),
+            || {
+                context.j2k_store_rgb8_mct_batch_contiguous_device_with_live_host_bytes(
+                    &targets,
+                    host_budget.live_bytes(),
+                )
+            },
         )
         .map_err(cuda_error)?;
     drop(targets);
@@ -432,8 +479,14 @@ pub(super) fn finish_color_cuda_resident_batch_surfaces_with_rgb8_mct_store(
     }
     let shared_surface_buffer = Arc::new(surface_buffer);
 
-    let mut surfaces = Vec::with_capacity(prepared.len());
-    let mut reports = Vec::with_capacity(prepared.len());
+    let mut output_budget = HostPhaseBudget::new("j2k CUDA stored color batch output graph");
+    output_budget.account_vec(&prepared)?;
+    for item in &prepared {
+        item.color.account_host_owners(&mut output_budget)?;
+    }
+    output_budget.account_vec(&surface_ranges)?;
+    let mut surfaces = output_budget.try_vec_with_capacity(prepared.len())?;
+    let mut reports = output_budget.try_vec_with_capacity(prepared.len())?;
     let store_dispatches = store_stats.kernel_dispatches();
     let store_decode_dispatches = store_stats.decode_kernel_dispatches();
     for (index, (mut prepared, surface_range)) in
@@ -489,118 +542,6 @@ pub(super) fn finish_color_cuda_resident_batch_surfaces_with_rgb8_mct_store(
 }
 
 #[cfg(feature = "cuda-runtime")]
-pub(super) fn prepare_rgb8_mct_batch_store(
-    fmt: PixelFormat,
-    mut color: CudaHtj2kColorDecodePlans,
-    component_work: Vec<CudaComponentDecodeWork>,
-) -> Result<CudaPreparedRgb8MctBatchStore, Error> {
-    let decoded_components = component_work
-        .into_iter()
-        .map(finish_cuda_component_decode)
-        .collect::<Result<Vec<_>, Error>>()?;
-    let [component0, component1, component2] = decoded_components.as_slice() else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        });
-    };
-    let stores = [&component0.store, &component1.store, &component2.store];
-    validate_color_stores(stores, color.dimensions)?;
-    if !color.mct || !can_fuse_mct_store_for_stores(stores) {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        });
-    }
-
-    let dispatches = decoded_components
-        .iter()
-        .map(|component| component.dispatches)
-        .sum::<usize>();
-    let decode_dispatches = decoded_components
-        .iter()
-        .map(|component| component.decode_dispatches)
-        .sum::<usize>();
-    for component in &decoded_components {
-        component.timings.add_to_report(&mut color.report);
-    }
-
-    let addends = [
-        bit_depth_addend(color.bit_depths[0]),
-        bit_depth_addend(color.bit_depths[1]),
-        bit_depth_addend(color.bit_depths[2]),
-    ];
-    let job = CudaJ2kStoreRgb8MctJob {
-        store: CudaJ2kStoreRgb8Job {
-            input_width0: color_store_input_width(&component0.store),
-            input_width1: color_store_input_width(&component1.store),
-            input_width2: color_store_input_width(&component2.store),
-            source_x0: component0.store.source_x,
-            source_y0: component0.store.source_y,
-            source_x1: component1.store.source_x,
-            source_y1: component1.store.source_y,
-            source_x2: component2.store.source_x,
-            source_y2: component2.store.source_y,
-            copy_width: component0.store.copy_width,
-            copy_height: component0.store.copy_height,
-            output_width: component0.store.output_width,
-            output_height: component0.store.output_height,
-            output_x: component0.store.output_x,
-            output_y: component0.store.output_y,
-            addend0: addends[0],
-            addend1: addends[1],
-            addend2: addends[2],
-            bit_depth0: u32::from(color.bit_depths[0]),
-            bit_depth1: u32::from(color.bit_depths[1]),
-            bit_depth2: u32::from(color.bit_depths[2]),
-            rgba: u32::from(fmt == PixelFormat::Rgba8),
-        },
-        irreversible97: u32::from(color.transform == CudaHtj2kTransform::Irreversible97),
-    };
-
-    Ok(CudaPreparedRgb8MctBatchStore {
-        color,
-        decoded_components,
-        dispatches,
-        decode_dispatches,
-        job,
-    })
-}
-
-#[cfg(feature = "cuda-runtime")]
-pub(super) fn rgb8_mct_batch_store_target(
-    prepared: &CudaPreparedRgb8MctBatchStore,
-) -> Result<CudaJ2kStoreRgb8MctTarget<'_>, Error> {
-    let [component0, component1, component2] = prepared.decoded_components.as_slice() else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        });
-    };
-    Ok(CudaJ2kStoreRgb8MctTarget {
-        plane0: pooled_cuda_buffer(&component0.buffer)?,
-        plane1: pooled_cuda_buffer(&component1.buffer)?,
-        plane2: pooled_cuda_buffer(&component2.buffer)?,
-        job: prepared.job,
-    })
-}
-
-#[cfg(feature = "cuda-runtime")]
-pub(super) fn can_fuse_mct_store_for_stores(stores: [&CudaHtj2kStoreStep; 3]) -> bool {
-    let input_width0 = color_store_input_width(stores[0]);
-    let input_width1 = color_store_input_width(stores[1]);
-    let input_width2 = color_store_input_width(stores[2]);
-    input_width0 == input_width1
-        && input_width0 == input_width2
-        && stores[0].source_x == stores[1].source_x
-        && stores[0].source_x == stores[2].source_x
-        && stores[0].source_y == stores[1].source_y
-        && stores[0].source_y == stores[2].source_y
-}
-
-#[cfg(feature = "cuda-runtime")]
-pub(super) fn color_store_input_width(store: &CudaHtj2kStoreStep) -> u32 {
-    store.input_rect.x1.saturating_sub(store.input_rect.x0)
-}
-
-#[cfg(feature = "cuda-runtime")]
 struct FinishColorCudaResidentSurfaceRequest<'a> {
     context: &'a j2k_cuda_runtime::CudaContext,
     pool: &'a CudaBufferPool,
@@ -614,232 +555,117 @@ struct FinishColorCudaResidentSurfaceRequest<'a> {
 }
 
 #[cfg(feature = "cuda-runtime")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "surface harvest keeps component buffers, color conversion, and timings synchronized"
-)]
-fn finish_color_cuda_resident_surface_with_component_work(
-    request: FinishColorCudaResidentSurfaceRequest<'_>,
-) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
-    let FinishColorCudaResidentSurfaceRequest {
-        context,
-        pool,
-        fmt,
-        mut color,
-        mut component_work,
-        wall_started,
-        collect_stage_timings,
-        run_idwt,
-        emit_report,
-    } = request;
-    let pending_idwt_batch = if run_idwt {
-        let batch_components = color.components.iter().collect::<Vec<_>>();
-        if can_batch_color_idwt(&batch_components) {
-            run_color_component_idwt_batches(
+struct PreparedColorComponents {
+    components: [CudaDecodedComponent; 3],
+    dispatches: usize,
+    decode_dispatches: usize,
+}
+
+#[cfg(feature = "cuda-runtime")]
+struct FinalizeColorSurfaceRequest {
+    fmt: PixelFormat,
+    color: CudaHtj2kColorDecodePlans,
+    surface_buffer: CudaDeviceBuffer,
+    dispatches: usize,
+    decode_dispatches: usize,
+    store_stats: CudaExecutionStats,
+    store_us: u128,
+    wall_started: Option<profile::ProfileInstant>,
+    emit_report: bool,
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn run_pending_color_idwt(
+    context: &j2k_cuda_runtime::CudaContext,
+    color: &CudaHtj2kColorDecodePlans,
+    component_work: &mut [CudaComponentDecodeWork],
+    pool: &CudaBufferPool,
+    collect_stage_timings: bool,
+    host_budget: &mut HostPhaseBudget,
+) -> Result<Option<CudaQueuedIdwtBatch>, Error> {
+    let mut batch_components = host_budget.try_vec_with_capacity(color.components.len())?;
+    for component in &color.components {
+        batch_components.push(component);
+    }
+    if can_batch_color_idwt(&batch_components) {
+        run_color_component_idwt_batches(
+            context,
+            &batch_components,
+            component_work,
+            pool,
+            collect_stage_timings,
+            host_budget.live_bytes(),
+        )
+    } else {
+        for (plan, work) in color.components.iter().zip(component_work.iter_mut()) {
+            run_cuda_component_idwt_steps(
                 context,
-                &batch_components,
-                &mut component_work,
+                plan.idwt_steps(),
+                work,
                 pool,
                 collect_stage_timings,
-            )?
-        } else {
-            for (plan, work) in color.components.iter().zip(component_work.iter_mut()) {
-                run_cuda_component_idwt_steps(
-                    context,
-                    plan.idwt_steps(),
-                    work,
-                    pool,
-                    collect_stage_timings,
-                )?;
-            }
-            None
+            )?;
         }
-    } else {
-        None
-    };
-    let decoded_components = component_work
-        .into_iter()
-        .map(finish_cuda_component_decode)
-        .collect::<Result<Vec<_>, Error>>()?;
-    let [component0, component1, component2] = decoded_components.as_slice() else {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        });
-    };
-    validate_color_stores(
-        [&component0.store, &component1.store, &component2.store],
-        color.dimensions,
-    )?;
+        Ok(None)
+    }
+}
 
-    let mut dispatches = decoded_components
+#[cfg(feature = "cuda-runtime")]
+fn finish_color_components(
+    component_work: Vec<CudaComponentDecodeWork>,
+    color: &mut CudaHtj2kColorDecodePlans,
+) -> Result<PreparedColorComponents, Error> {
+    let [work0, work1, work2]: [CudaComponentDecodeWork; 3] =
+        component_work
+            .try_into()
+            .map_err(|_| Error::UnsupportedCudaRequest {
+                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
+            })?;
+    let components = [
+        finish_cuda_component_decode(work0)?,
+        finish_cuda_component_decode(work1)?,
+        finish_cuda_component_decode(work2)?,
+    ];
+    let stores = [
+        &components[0].store,
+        &components[1].store,
+        &components[2].store,
+    ];
+    validate_color_stores(stores, color.dimensions)?;
+
+    let dispatches = components
         .iter()
         .map(|component| component.dispatches)
         .sum::<usize>();
-    let mut decode_dispatches = decoded_components
+    let decode_dispatches = components
         .iter()
         .map(|component| component.decode_dispatches)
         .sum::<usize>();
-    for component in &decoded_components {
+    for component in &components {
         component.timings.add_to_report(&mut color.report);
     }
-    let component0_buffer = pooled_cuda_buffer(&component0.buffer)?;
-    let component1_buffer = pooled_cuda_buffer(&component1.buffer)?;
-    let component2_buffer = pooled_cuda_buffer(&component2.buffer)?;
-    let stores = [&component0.store, &component1.store, &component2.store];
-    let input_width0 = color_store_input_width(stores[0]);
-    let input_width1 = color_store_input_width(stores[1]);
-    let input_width2 = color_store_input_width(stores[2]);
-    let irreversible97 = u32::from(color.transform == CudaHtj2kTransform::Irreversible97);
-    let mct_store_addends = [
-        bit_depth_addend(color.bit_depths[0]),
-        bit_depth_addend(color.bit_depths[1]),
-        bit_depth_addend(color.bit_depths[2]),
-    ];
-    let can_fuse_mct_store = color.mct && can_fuse_mct_store_for_stores(stores);
-    let addends = if color.mct && can_fuse_mct_store {
-        mct_store_addends
-    } else if color.mct {
-        let mct_len = u32::try_from(checked_area(
-            color.mct_dimensions.0,
-            color.mct_dimensions.1,
-        )?)
-        .map_err(|_| Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })?;
-        let stats = context
-            .time_default_stream_named_us_if(collect_stage_timings, "j2k.htj2k.decode.mct", || {
-                context.j2k_inverse_mct_device(
-                    component0_buffer,
-                    component1_buffer,
-                    component2_buffer,
-                    CudaJ2kInverseMctJob {
-                        len: mct_len,
-                        irreversible97,
-                        addend0: mct_store_addends[0],
-                        addend1: mct_store_addends[1],
-                        addend2: mct_store_addends[2],
-                    },
-                )
-            })
-            .map_err(cuda_error)?;
-        let (stats, mct_us) = stats;
-        dispatches = dispatches.saturating_add(stats.kernel_dispatches());
-        decode_dispatches = decode_dispatches.saturating_add(stats.decode_kernel_dispatches());
-        color.report.mct_us = color.report.mct_us.saturating_add(mct_us);
-        color.report.detail.mct_dispatch_count = color
-            .report
-            .detail
-            .mct_dispatch_count
-            .saturating_add(stats.kernel_dispatches());
-        [0.0, 0.0, 0.0]
-    } else {
-        [
-            component0.store.addend,
-            component1.store.addend,
-            component2.store.addend,
-        ]
-    };
-    let (store_output, store_us) = context
-        .time_default_stream_named_us_if(
-            collect_stage_timings,
-            "j2k.htj2k.decode.store.color",
-            || match fmt {
-                PixelFormat::Rgb8 | PixelFormat::Rgba8 => {
-                    let store_job = CudaJ2kStoreRgb8Job {
-                        input_width0,
-                        input_width1,
-                        input_width2,
-                        source_x0: component0.store.source_x,
-                        source_y0: component0.store.source_y,
-                        source_x1: component1.store.source_x,
-                        source_y1: component1.store.source_y,
-                        source_x2: component2.store.source_x,
-                        source_y2: component2.store.source_y,
-                        copy_width: component0.store.copy_width,
-                        copy_height: component0.store.copy_height,
-                        output_width: component0.store.output_width,
-                        output_height: component0.store.output_height,
-                        output_x: component0.store.output_x,
-                        output_y: component0.store.output_y,
-                        addend0: addends[0],
-                        addend1: addends[1],
-                        addend2: addends[2],
-                        bit_depth0: u32::from(color.bit_depths[0]),
-                        bit_depth1: u32::from(color.bit_depths[1]),
-                        bit_depth2: u32::from(color.bit_depths[2]),
-                        rgba: u32::from(fmt == PixelFormat::Rgba8),
-                    };
-                    if can_fuse_mct_store {
-                        context.j2k_store_rgb8_mct_device(
-                            component0_buffer,
-                            component1_buffer,
-                            component2_buffer,
-                            CudaJ2kStoreRgb8MctJob {
-                                store: store_job,
-                                irreversible97,
-                            },
-                        )
-                    } else {
-                        context.j2k_store_rgb8_device(
-                            component0_buffer,
-                            component1_buffer,
-                            component2_buffer,
-                            store_job,
-                        )
-                    }
-                }
-                PixelFormat::Rgb16 | PixelFormat::Rgba16 => {
-                    let store_job = CudaJ2kStoreRgb16Job {
-                        input_width0,
-                        input_width1,
-                        input_width2,
-                        source_x0: component0.store.source_x,
-                        source_y0: component0.store.source_y,
-                        source_x1: component1.store.source_x,
-                        source_y1: component1.store.source_y,
-                        source_x2: component2.store.source_x,
-                        source_y2: component2.store.source_y,
-                        copy_width: component0.store.copy_width,
-                        copy_height: component0.store.copy_height,
-                        output_width: component0.store.output_width,
-                        output_height: component0.store.output_height,
-                        output_x: component0.store.output_x,
-                        output_y: component0.store.output_y,
-                        addend0: addends[0],
-                        addend1: addends[1],
-                        addend2: addends[2],
-                        bit_depth0: u32::from(color.bit_depths[0]),
-                        bit_depth1: u32::from(color.bit_depths[1]),
-                        bit_depth2: u32::from(color.bit_depths[2]),
-                        rgba: u32::from(fmt == PixelFormat::Rgba16),
-                    };
-                    if can_fuse_mct_store {
-                        context.j2k_store_rgb16_mct_device(
-                            component0_buffer,
-                            component1_buffer,
-                            component2_buffer,
-                            CudaJ2kStoreRgb16MctJob {
-                                store: store_job,
-                                irreversible97,
-                            },
-                        )
-                    } else {
-                        context.j2k_store_rgb16_device(
-                            component0_buffer,
-                            component1_buffer,
-                            component2_buffer,
-                            store_job,
-                        )
-                    }
-                }
-                _ => Err(CudaError::InvalidArgument {
-                    message: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED.to_string(),
-                }),
-            },
-        )
-        .map_err(cuda_error)?;
-    drop(pending_idwt_batch);
-    let (surface_buffer, store_stats) = store_output.into_parts();
+    Ok(PreparedColorComponents {
+        components,
+        dispatches,
+        decode_dispatches,
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn finalize_color_surface(
+    request: FinalizeColorSurfaceRequest,
+) -> (Surface, CudaHtj2kProfileReport) {
+    let FinalizeColorSurfaceRequest {
+        fmt,
+        mut color,
+        surface_buffer,
+        mut dispatches,
+        mut decode_dispatches,
+        store_stats,
+        store_us,
+        wall_started,
+        emit_report,
+    } = request;
     dispatches = dispatches.saturating_add(store_stats.kernel_dispatches());
     decode_dispatches = decode_dispatches.saturating_add(store_stats.decode_kernel_dispatches());
     color.report.dispatch_count = dispatches;
@@ -854,7 +680,6 @@ fn finish_color_cuda_resident_surface_with_component_work(
     if emit_report {
         color.report.emit("decode");
     }
-
     let surface = Surface {
         backend: BackendKind::Cuda,
         residency: SurfaceResidency::CudaResidentDecode,
@@ -868,25 +693,97 @@ fn finish_color_cuda_resident_surface_with_component_work(
         },
         storage: Storage::Cuda(surface_buffer),
     };
-    Ok((surface, color.report))
+    (surface, color.report)
 }
 
 #[cfg(feature = "cuda-runtime")]
-pub(super) fn append_color_payload_to_shared(
-    color: &mut CudaHtj2kColorDecodePlans,
-    shared_payload: &mut Vec<u8>,
-) -> Result<(), Error> {
-    let base = u64::try_from(shared_payload.len()).map_err(|_| Error::UnsupportedCudaRequest {
-        reason: CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE,
-    })?;
-    shared_payload
-        .try_reserve(color.payload.len())
-        .map_err(|_| Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE,
-        })?;
-    for component in &mut color.components {
-        component.rebase_payload_offsets(base)?;
-    }
-    shared_payload.append(&mut color.payload);
-    Ok(())
+fn finish_color_cuda_resident_surface_with_component_work(
+    request: FinishColorCudaResidentSurfaceRequest<'_>,
+) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
+    let FinishColorCudaResidentSurfaceRequest {
+        context,
+        pool,
+        fmt,
+        mut color,
+        mut component_work,
+        wall_started,
+        collect_stage_timings,
+        run_idwt,
+        emit_report,
+    } = request;
+    let mut host_budget =
+        host_owners::color_work_budget(&color, &component_work, "j2k CUDA color completion graph")?;
+    let pending_idwt_batch = if run_idwt {
+        run_pending_color_idwt(
+            context,
+            &color,
+            &mut component_work,
+            pool,
+            collect_stage_timings,
+            &mut host_budget,
+        )?
+    } else {
+        None
+    };
+    let completion_result = (|| {
+        let prepared = finish_color_components(component_work, &mut color)?;
+        let inputs = ColorStoreInputs {
+            context,
+            buffers: [
+                pooled_cuda_buffer(&prepared.components[0].buffer)?,
+                pooled_cuda_buffer(&prepared.components[1].buffer)?,
+                pooled_cuda_buffer(&prepared.components[2].buffer)?,
+            ],
+            stores: [
+                &prepared.components[0].store,
+                &prepared.components[1].store,
+                &prepared.components[2].store,
+            ],
+            bit_depths: color.bit_depths,
+        };
+        let mct = run_color_mct(
+            inputs,
+            color.mct_dimensions,
+            color.mct,
+            color.transform,
+            collect_stage_timings,
+        )?;
+        let dispatches = prepared.dispatches.saturating_add(mct.kernel_dispatches);
+        let decode_dispatches = prepared
+            .decode_dispatches
+            .saturating_add(mct.decode_kernel_dispatches);
+        color.report.mct_us = color.report.mct_us.saturating_add(mct.elapsed_us);
+        color.report.detail.mct_dispatch_count = color
+            .report
+            .detail
+            .mct_dispatch_count
+            .saturating_add(mct.kernel_dispatches);
+        let (store_output, store_us) = context
+            .time_default_stream_named_us_if(
+                collect_stage_timings,
+                "j2k.htj2k.decode.store.color",
+                || dispatch_color_store(inputs, mct, fmt),
+            )
+            .map_err(cuda_error)?;
+        let (surface_buffer, store_stats) = store_output.into_parts();
+        // Both runtime paths synchronize their kernel launch before success.
+        let completion_established =
+            mct.kernel_dispatches != 0 || store_stats.kernel_dispatches() != 0;
+        let output = finalize_color_surface(FinalizeColorSurfaceRequest {
+            fmt,
+            color,
+            surface_buffer,
+            dispatches,
+            decode_dispatches,
+            store_stats,
+            store_us,
+            wall_started,
+            emit_report,
+        });
+        Ok((output, completion_established))
+    })();
+    CudaQueuedIdwtBatch::resolve_optional_after_completed_work(
+        pending_idwt_batch,
+        completion_result,
+    )
 }

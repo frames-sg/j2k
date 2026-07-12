@@ -318,11 +318,14 @@ fn tile_batch_worker_count_clamps_to_batch_size_and_at_least_one_worker() {
 
 #[test]
 fn collect_indexed_batch_results_restores_input_order() {
-    let results = vec![(2, Ok("two")), (0, Ok("zero")), (1, Ok("one"))];
+    let results = vec![
+        (2, Ok::<&str, &str>("two")),
+        (0, Ok("zero")),
+        (1, Ok("one")),
+    ];
 
-    let outcomes =
-        j2k_core::collect_indexed_batch_results(3, results, |index, source: &str| (index, source))
-            .expect("ordered outcomes");
+    let outcomes = j2k_core::try_collect_indexed_batch_results(3, results, 0, usize::MAX)
+        .expect("ordered outcomes");
 
     assert_eq!(outcomes, ["zero", "one", "two"]);
 }
@@ -336,18 +339,193 @@ fn collect_indexed_batch_results_returns_first_error_by_input_index() {
         (3, Ok("three")),
     ];
 
-    let err = j2k_core::collect_indexed_batch_results(4, results, |index, source| (index, source))
+    let error = j2k_core::try_collect_indexed_batch_results(4, results, 0, usize::MAX)
         .expect_err("first failing input index");
 
-    assert_eq!(err, (1, "first"));
+    assert!(matches!(
+        error,
+        j2k_core::BatchDecodeError::Tile(j2k_core::TileBatchError {
+            index: 1,
+            source: "first",
+        })
+    ));
 }
 
 #[test]
-#[should_panic(expected = "indexed batch result index 3 outside job count 3")]
 fn collect_indexed_batch_results_rejects_out_of_bounds_error_index() {
     let results = vec![(3, Err::<&str, _>("outside"))];
 
-    let _ = j2k_core::collect_indexed_batch_results(3, results, |index, source| (index, source));
+    let error = j2k_core::try_collect_indexed_batch_results(3, results, 0, usize::MAX)
+        .expect_err("out-of-range worker index");
+
+    assert!(matches!(
+        error,
+        j2k_core::BatchDecodeError::Infrastructure(
+            j2k_core::BatchInfrastructureError::ResultIndexOutOfBounds {
+                index: 3,
+                job_count: 3,
+            }
+        )
+    ));
+}
+
+#[test]
+fn fallible_batch_collector_accepts_exact_live_cap_and_preserves_order() {
+    let mut results = Vec::with_capacity(3);
+    results.extend([(2, Ok::<u16, &str>(22)), (0, Ok(20)), (1, Ok(21))]);
+    let retained = 17usize;
+    let exact_cap = retained
+        + results.capacity() * core::mem::size_of::<j2k_core::IndexedBatchResult<u16, &str>>()
+        + 3 * core::mem::size_of::<u16>();
+
+    let ordered = j2k_core::try_collect_indexed_batch_results(3, results, retained, exact_cap)
+        .expect("exact-cap collection");
+
+    assert_eq!(ordered, [20, 21, 22]);
+}
+
+#[test]
+fn fallible_batch_collector_rejects_one_byte_below_live_cap() {
+    let mut results = Vec::with_capacity(2);
+    results.extend([(0, Ok::<u32, &str>(10)), (1, Ok(11))]);
+    let exact_cap = results.capacity()
+        * core::mem::size_of::<j2k_core::IndexedBatchResult<u32, &str>>()
+        + 2 * core::mem::size_of::<u32>();
+
+    let error = j2k_core::try_collect_indexed_batch_results(2, results, 0, exact_cap - 1)
+        .expect_err("one byte below exact cap");
+
+    assert!(matches!(
+        error,
+        j2k_core::BatchDecodeError::Infrastructure(
+            j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                what: "indexed batch collection",
+                requested,
+                cap,
+            }
+        ) if requested == exact_cap && cap == exact_cap - 1
+    ));
+}
+
+#[test]
+fn fallible_batch_collector_returns_first_codec_error_in_input_order() {
+    let results = vec![(2, Err::<u8, _>("later")), (0, Ok(0)), (1, Err("first"))];
+
+    let error = j2k_core::try_collect_indexed_batch_results(3, results, 0, usize::MAX)
+        .expect_err("first tile error");
+
+    assert!(matches!(
+        error,
+        j2k_core::BatchDecodeError::Tile(j2k_core::TileBatchError {
+            index: 1,
+            source: "first",
+        })
+    ));
+}
+
+#[test]
+fn fallible_batch_collector_reports_integrity_errors_without_panicking() {
+    let duplicate = vec![(0, Ok::<u8, &str>(0)), (0, Ok(1))];
+    let error = j2k_core::try_collect_indexed_batch_results(2, duplicate, 0, usize::MAX)
+        .expect_err("duplicate index");
+    assert!(matches!(
+        error,
+        j2k_core::BatchDecodeError::Infrastructure(
+            j2k_core::BatchInfrastructureError::DuplicateResult { index: 0 }
+        )
+    ));
+
+    let missing = vec![(1, Ok::<u8, &str>(1))];
+    let error = j2k_core::try_collect_indexed_batch_results(2, missing, 0, usize::MAX)
+        .expect_err("missing index");
+    assert!(matches!(
+        error,
+        j2k_core::BatchDecodeError::Infrastructure(
+            j2k_core::BatchInfrastructureError::MissingResult { index: 0 }
+        )
+    ));
+
+    let outside = vec![(2, Ok::<u8, &str>(2))];
+    let error = j2k_core::try_collect_indexed_batch_results(2, outside, 0, usize::MAX)
+        .expect_err("outside index");
+    assert!(matches!(
+        error,
+        j2k_core::BatchDecodeError::Infrastructure(
+            j2k_core::BatchInfrastructureError::ResultIndexOutOfBounds {
+                index: 2,
+                job_count: 2,
+            }
+        )
+    ));
+}
+
+#[test]
+fn ordered_slot_collector_returns_tile_error_before_allocation_preflight() {
+    let results = vec![Some(Ok::<u8, &str>(0)), Some(Err("tile failure"))];
+
+    let error = j2k_core::try_collect_ordered_batch_results(2, results, usize::MAX, 0)
+        .expect_err("existing tile error wins before output allocation");
+
+    assert!(matches!(
+        error,
+        j2k_core::BatchDecodeError::Tile(j2k_core::TileBatchError {
+            index: 1,
+            source: "tile failure",
+        })
+    ));
+}
+
+#[test]
+fn ordered_slot_collector_preserves_order_and_rejects_missing_slots() {
+    let mut results = Vec::with_capacity(2);
+    results.extend([Some(Ok::<u16, &str>(7)), Some(Ok(9))]);
+    let exact_cap = results.capacity()
+        * core::mem::size_of::<j2k_core::BatchResultSlot<u16, &str>>()
+        + 2 * core::mem::size_of::<u16>();
+    let ordered = j2k_core::try_collect_ordered_batch_results(2, results, 0, exact_cap)
+        .expect("exact-cap ordered slots");
+    assert_eq!(ordered, [7, 9]);
+
+    let missing = vec![Some(Ok::<u16, &str>(7)), None];
+    let error = j2k_core::try_collect_ordered_batch_results(2, missing, 0, usize::MAX)
+        .expect_err("missing ordered slot");
+    assert!(matches!(
+        error,
+        j2k_core::BatchDecodeError::Infrastructure(
+            j2k_core::BatchInfrastructureError::MissingResult { index: 1 }
+        )
+    ));
+}
+
+#[test]
+fn ordered_slot_collector_does_not_understate_inconsistent_domain_retention() {
+    let results = vec![Some(Ok::<u8, &str>(7))];
+    let source_bytes =
+        results.capacity() * core::mem::size_of::<j2k_core::BatchResultSlot<u8, &str>>();
+    let collection_retained = 8usize;
+    let understated_aggregate_cap = source_bytes + core::mem::size_of::<u8>();
+
+    let error = j2k_core::try_collect_ordered_batch_results_with_limits(
+        1,
+        results,
+        0,
+        understated_aggregate_cap,
+        collection_retained,
+        usize::MAX,
+    )
+    .expect_err("collection retention participates in the aggregate limit");
+
+    assert!(matches!(
+        error,
+        j2k_core::BatchDecodeError::Infrastructure(
+            j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                what: "ordered batch collection",
+                requested,
+                cap,
+            }
+        ) if requested == collection_retained + understated_aggregate_cap
+            && cap == understated_aggregate_cap
+    ));
 }
 
 #[test]

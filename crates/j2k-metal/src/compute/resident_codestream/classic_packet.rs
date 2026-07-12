@@ -7,15 +7,16 @@ use super::{
     classic_packet_output_capacity, collect_prepared_batch_retention, copied_slice_buffer,
     dispatch_batched_packet_payload_copy, finish_resident_encode_split_command_buffer_timed,
     hybrid_stage_signpost, label_command_buffer, label_compute_encoder,
-    metal_profile_stages_enabled, prepare_classic_tier1, prepared_lossless_batch_tiles,
-    schedule_resident_tier1_status_readback, size_of, take_recyclable_private_buffer,
-    with_runtime_for_session, zeroed_recyclable_shared_buffer, zeroed_shared_buffer, Buffer,
-    ClassicTier1Prepared, Duration, Error, Instant, J2kBatchedPacketPayloadCopyDispatch,
-    J2kClassicEncodeOutputCapacityMode, J2kCodestreamAssemblyStatus, J2kPacketEncodeStatus,
-    J2kPacketPayloadCopyJob, J2kPendingResidentLosslessCodestreamBatch, J2kResidentBatchEncodeItem,
+    metal_profile_stages_enabled, new_compute_command_encoder, new_shared_buffer,
+    prepare_classic_tier1, prepared_lossless_batch_tiles, schedule_resident_tier1_status_readback,
+    size_of, take_recyclable_private_buffer, with_runtime_for_session,
+    zeroed_recyclable_shared_buffer, zeroed_shared_buffer, Buffer, ClassicTier1Prepared, Duration,
+    Error, Instant, J2kBatchedPacketPayloadCopyDispatch, J2kClassicEncodeOutputCapacityMode,
+    J2kCodestreamAssemblyStatus, J2kPacketEncodeStatus, J2kPacketPayloadCopyJob,
+    J2kPendingResidentLosslessCodestreamBatch, J2kResidentBatchEncodeItem,
     J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer, J2kResidentEncodeStageStats,
-    J2kResidentPacketBlockParams, MTLResourceOptions, MTLSize, MetalRuntime,
-    ResidentBatchPacketPlan, ResidentBatchPacketPlanParams, ResidentTier1StatusReadbackRequest,
+    J2kResidentPacketBlockParams, MTLSize, MetalRuntime, ResidentBatchPacketPlan,
+    ResidentBatchPacketPlanParams, ResidentTier1StatusReadbackRequest,
     PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
     SIGNPOST_ENCODE_HYBRID_CLASSIC_CODESTREAM_ASSEMBLY_COMMAND_ENCODE,
     SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKETIZATION_COMMAND_ENCODE,
@@ -164,11 +165,11 @@ fn submit_classic_packet_stages(
     let classic_packet_buffer_setup_started = profile_stages.then(Instant::now);
     let classic_packet_buffer_setup_signpost =
         hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_BUFFER_SETUP);
-    let packet_resolution_buffer = copied_slice_buffer(&runtime.device, &packet_resolutions);
-    let packet_subband_buffer = copied_slice_buffer(&runtime.device, &packet_subbands);
-    let resident_block_buffer = copied_slice_buffer(&runtime.device, &resident_blocks);
-    let packet_descriptor_buffer = copied_slice_buffer(&runtime.device, &packet_descriptors);
-    let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks);
+    let packet_resolution_buffer = copied_slice_buffer(&runtime.device, &packet_resolutions)?;
+    let packet_subband_buffer = copied_slice_buffer(&runtime.device, &packet_subbands)?;
+    let resident_block_buffer = copied_slice_buffer(&runtime.device, &resident_blocks)?;
+    let packet_descriptor_buffer = copied_slice_buffer(&runtime.device, &packet_descriptors)?;
+    let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks)?;
     let packet_payload_copy_job_buffer = take_recyclable_private_buffer(
         runtime,
         packet_payload_copy_job_capacity_total
@@ -189,21 +190,18 @@ fn submit_classic_packet_stages(
         scratch_words_total.max(1) * size_of::<u32>(),
         &mut recyclable_private_buffers,
     )?;
-    let packet_job_buffer = copied_slice_buffer(&runtime.device, &packet_jobs);
+    let packet_job_buffer = copied_slice_buffer(&runtime.device, &packet_jobs)?;
     let packet_status_buffer = zeroed_recyclable_shared_buffer(
         runtime,
         packet_jobs.len().max(1) * size_of::<J2kPacketEncodeStatus>(),
         &mut recyclable_shared_buffers,
     )?;
-    let codestream_job_buffer = copied_slice_buffer(&runtime.device, &assembly_jobs);
-    let codestream_buffer = runtime.device.new_buffer(
-        codestream_capacity_total.max(1) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let codestream_job_buffer = copied_slice_buffer(&runtime.device, &assembly_jobs)?;
+    let codestream_buffer = new_shared_buffer(&runtime.device, codestream_capacity_total.max(1))?;
     let codestream_status_buffer = zeroed_shared_buffer(
         &runtime.device,
         assembly_jobs.len() * size_of::<J2kCodestreamAssemblyStatus>(),
-    );
+    )?;
     drop(classic_packet_buffer_setup_signpost);
     if let Some(started) = classic_packet_buffer_setup_started {
         classic_packet_buffer_setup_duration = started.elapsed();
@@ -222,8 +220,8 @@ fn submit_classic_packet_stages(
     let command_encode_started = profile_stages.then(Instant::now);
     let signpost =
         hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKETIZATION_COMMAND_ENCODE);
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K packetization");
+    let encoder = new_compute_command_encoder(&command_buffer)?;
+    label_compute_encoder(&encoder, "J2K packetization");
     encoder.set_compute_pipeline_state(&runtime.packet_encode_resident_classic_batched);
     encoder.set_buffer(0, Some(&packet_resolution_buffer), 0);
     encoder.set_buffer(1, Some(&packet_subband_buffer), 0);
@@ -274,7 +272,7 @@ fn submit_classic_packet_stages(
             &mut gpu_stage_command_buffers,
             profile_stages,
             &mut classic_command_buffer_commit_duration,
-        );
+        )?;
     }
     let packet_payload_copy_dispatched = dispatch_batched_packet_payload_copy(
         runtime,
@@ -290,7 +288,7 @@ fn submit_classic_packet_stages(
             label: "J2K packetization payload copy",
             signpost_name: SIGNPOST_ENCODE_HYBRID_CLASSIC_PAYLOAD_COPY_COMMAND_ENCODE,
         },
-    );
+    )?;
     if split_command_buffers {
         if packet_payload_copy_dispatched {
             command_buffer = finish_resident_encode_split_command_buffer_timed(
@@ -301,7 +299,7 @@ fn submit_classic_packet_stages(
                 &mut gpu_stage_command_buffers,
                 profile_stages,
                 &mut classic_command_buffer_commit_duration,
-            );
+            )?;
         } else {
             label_command_buffer(&command_buffer, "j2k classic resident codestream assembly");
         }
@@ -319,8 +317,8 @@ fn submit_classic_packet_stages(
     let command_encode_started = profile_stages.then(Instant::now);
     let signpost =
         hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_CODESTREAM_ASSEMBLY_COMMAND_ENCODE);
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K codestream assembly");
+    let encoder = new_compute_command_encoder(&command_buffer)?;
+    label_compute_encoder(&encoder, "J2K codestream assembly");
     encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble_batched);
     encoder.set_buffer(0, Some(&codestream_buffer), 0);
     encoder.set_buffer(1, Some(&packet_status_buffer), 0);
@@ -353,7 +351,7 @@ fn submit_classic_packet_stages(
             &mut gpu_stage_command_buffers,
             profile_stages,
             &mut classic_command_buffer_commit_duration,
-        );
+        )?;
     }
     let codestream_payload_copy_dispatched = false;
     if let Some(started) = command_encode_started {
@@ -522,7 +520,7 @@ fn finish_classic_batch(
         prepared_tiles,
         &mut gpu_stage_command_buffers,
         &mut recyclable_private_buffers,
-    );
+    )?;
     retained_buffers.push(coefficient_buffer);
     retained_buffers.push(tier1_job_buffer);
     retained_buffers.push(tier1_output_buffer);
@@ -576,7 +574,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
         });
     }
 
-    let prepared_tiles = prepared_lossless_batch_tiles(items);
+    let prepared_tiles = prepared_lossless_batch_tiles(items)?;
     with_runtime_for_session(session, |runtime| {
         let profile_stages = metal_profile_stages_enabled();
         let submitted = submit_classic_packet_stages(

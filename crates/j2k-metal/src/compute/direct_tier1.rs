@@ -5,7 +5,7 @@ use std::sync::Arc;
 use j2k_core::accelerator::GpuAbi;
 use metal::Buffer;
 
-use super::{borrow_slice_buffer, MetalRuntime, PreparedDirectColorPlan};
+use super::{copied_slice_buffer, Error, MetalRuntime, PreparedDirectColorPlan};
 
 pub(super) const HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK: usize = 1;
 
@@ -31,13 +31,13 @@ pub(super) fn prepare_direct_tier1_input_buffer<T: GpuAbi>(
     runtime: &MetalRuntime,
     data: &[T],
     mode: DirectTier1Mode,
-) -> Buffer {
+) -> Result<Buffer, Error> {
     match mode {
         DirectTier1Mode::Metal => {
             record_direct_tier1_input_buffer_prepare();
-            borrow_slice_buffer(&runtime.device, data)
+            copied_slice_buffer(&runtime.device, data)
         }
-        DirectTier1Mode::CpuUpload => runtime.tier1_dummy_buffer.clone(),
+        DirectTier1Mode::CpuUpload => Ok(runtime.tier1_dummy_buffer.clone()),
     }
 }
 

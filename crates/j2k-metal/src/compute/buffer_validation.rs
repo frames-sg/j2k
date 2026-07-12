@@ -3,15 +3,16 @@
 use std::mem::size_of;
 
 use j2k_metal_support::{dispatch_2d_pipeline, dispatch_single_thread};
-use metal::{Buffer, MTLResourceOptions};
+use metal::Buffer;
 
 use crate::{profile_env::label_command_buffer, Error};
 
 use super::{
     commit_and_wait_metal,
     direct_buffers::{checked_buffer_read, zeroed_shared_buffer},
-    with_runtime_for_session, J2kCopyInterleavedParams, J2kValidateBytesParams,
-    J2kValidateBytesStatus,
+    new_command_buffer, new_compute_command_encoder, new_shared_buffer,
+    new_shared_buffer_with_slice, with_runtime_for_session, J2kCopyInterleavedParams,
+    J2kValidateBytesParams, J2kValidateBytesStatus,
 };
 
 pub(crate) fn validate_metal_buffer_matches_bytes(
@@ -31,18 +32,14 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
     })?;
 
     with_runtime_for_session(session, |runtime| {
-        let expected_buffer = runtime.device.new_buffer_with_data(
-            expected.as_ptr().cast(),
-            expected.len() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let expected_buffer = new_shared_buffer_with_slice(&runtime.device, expected)?;
         let status_buffer =
-            zeroed_shared_buffer(&runtime.device, size_of::<J2kValidateBytesStatus>());
+            zeroed_shared_buffer(&runtime.device, size_of::<J2kValidateBytesStatus>())?;
         let params = J2kValidateBytesParams { byte_len };
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        label_command_buffer(command_buffer, "j2k lossless coefficient prep");
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        label_command_buffer(&command_buffer, "j2k lossless coefficient prep");
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.validate_bytes_equal);
         encoder.set_buffer(0, Some(actual_buffer), actual_offset);
         encoder.set_buffer(1, Some(&expected_buffer), 0);
@@ -52,9 +49,9 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
             size_of::<J2kValidateBytesParams>() as u64,
             (&raw const params).cast(),
         );
-        dispatch_single_thread(encoder);
+        dispatch_single_thread(&encoder);
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kValidateBytesStatus>(
             &status_buffer,
@@ -96,14 +93,14 @@ pub(crate) fn validate_metal_buffers_match(
 
     with_runtime_for_session(session, |runtime| {
         let status_buffer =
-            zeroed_shared_buffer(&runtime.device, size_of::<J2kValidateBytesStatus>());
+            zeroed_shared_buffer(&runtime.device, size_of::<J2kValidateBytesStatus>())?;
         let params = J2kValidateBytesParams {
             byte_len: byte_len_u32,
         };
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        label_command_buffer(command_buffer, "j2k lossless coefficient prep batch");
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        label_command_buffer(&command_buffer, "j2k lossless coefficient prep batch");
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.validate_bytes_equal);
         encoder.set_buffer(0, Some(actual_buffer), actual_offset);
         encoder.set_buffer(1, Some(expected_buffer), expected_offset);
@@ -113,9 +110,9 @@ pub(crate) fn validate_metal_buffers_match(
             size_of::<J2kValidateBytesParams>() as u64,
             (&raw const params).cast(),
         );
-        dispatch_single_thread(encoder);
+        dispatch_single_thread(&encoder);
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kValidateBytesStatus>(
             &status_buffer,
@@ -179,9 +176,7 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
     })?;
 
     with_runtime_for_session(copy.session, |runtime| {
-        let dst_buffer = runtime
-            .device
-            .new_buffer(dst_len as u64, MTLResourceOptions::StorageModeShared);
+        let dst_buffer = new_shared_buffer(&runtime.device, dst_len)?;
         let params = J2kCopyInterleavedParams {
             src_width: copy.src_width,
             src_height: copy.src_height,
@@ -191,8 +186,8 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
             dst_stride,
             bytes_per_pixel,
         };
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.copy_interleaved_padded);
         encoder.set_buffer(0, Some(copy.src_buffer), src_offset);
         encoder.set_buffer(1, Some(&dst_buffer), 0);
@@ -202,12 +197,12 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
             (&raw const params).cast(),
         );
         dispatch_2d_pipeline(
-            encoder,
+            &encoder,
             &runtime.copy_interleaved_padded,
             (copy.dst_width, copy.dst_height),
         );
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
         Ok(dst_buffer)
     })
 }

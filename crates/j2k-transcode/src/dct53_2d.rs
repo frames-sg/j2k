@@ -6,8 +6,17 @@
 //! single-level 5/3 result without first storing the 8x8 spatial samples. The
 //! reference path materializes samples to keep the oracle easy to audit.
 
+use j2k_codec_math::dwt::{
+    linearized_dwt53_row, Dwt53Band, DWT53_MAX_HIGH_LINEAR_TAPS, DWT53_MAX_LINEAR_TAPS,
+};
+
+use crate::allocation::{
+    checked_add_allocation_bytes, checked_allocation_bytes, checked_allocation_len,
+    checked_capacity_bytes, try_vec_filled, try_vec_reserve_len, try_vec_resize_with,
+    try_vec_with_capacity, TranscodeAllocationError,
+};
 use crate::dct_grid::{high_len, idct8_basis, low_len, validate_dct_block_grid};
-use crate::{DctGridError, Dwt53TwoDimensional};
+use crate::{DctTransformError, Dwt53TwoDimensional};
 
 #[cfg(test)]
 impl Dwt53TwoDimensional<f64> {
@@ -37,11 +46,19 @@ impl Dwt53TwoDimensional<f64> {
 /// not store spatial samples.
 #[derive(Debug, Default)]
 pub(crate) struct Dct53GridScratch {
+    geometry: Option<(usize, usize)>,
     x_weights: Dwt53WeightRows,
     y_weights: Dwt53WeightRows,
 }
 
 impl Dct53GridScratch {
+    pub(crate) fn retained_bytes(&self) -> Result<usize, TranscodeAllocationError> {
+        checked_add_allocation_bytes(
+            self.x_weights.retained_bytes()?,
+            self.y_weights.retained_bytes()?,
+        )
+    }
+
     #[cfg(test)]
     fn weight_row_capacity(&self) -> usize {
         self.x_weights.weight_capacity() + self.y_weights.weight_capacity()
@@ -58,7 +75,7 @@ pub fn dct8x8_blocks_to_dwt53_float_linear(
     block_rows: usize,
     width: usize,
     height: usize,
-) -> Result<Dwt53TwoDimensional<f64>, DctGridError> {
+) -> Result<Dwt53TwoDimensional<f64>, DctTransformError> {
     let mut scratch = Dct53GridScratch::default();
     dct8x8_blocks_to_dwt53_float_linear_with_scratch(
         blocks,
@@ -79,22 +96,28 @@ pub(crate) fn dct8x8_blocks_to_dwt53_float_linear_with_scratch(
     width: usize,
     height: usize,
     scratch: &mut Dct53GridScratch,
-) -> Result<Dwt53TwoDimensional<f64>, DctGridError> {
+) -> Result<Dwt53TwoDimensional<f64>, DctTransformError> {
     validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
+    validate_direct_workspace(width, height)?;
+
+    if scratch.geometry != Some((width, height)) {
+        *scratch = Dct53GridScratch::default();
+        scratch.geometry = Some((width, height));
+    }
 
     let low_width = low_len(width);
     let low_height = low_len(height);
     let high_width = high_len(width);
     let high_height = high_len(height);
-    scratch.x_weights.ensure_sample_len(width);
-    scratch.y_weights.ensure_sample_len(height);
+    scratch.x_weights.ensure_sample_len(width)?;
+    scratch.y_weights.ensure_sample_len(height)?;
     let x_weights = &scratch.x_weights;
     let y_weights = &scratch.y_weights;
 
-    let mut ll = Vec::with_capacity(low_width * low_height);
-    let mut hl = Vec::with_capacity(high_width * low_height);
-    let mut lh = Vec::with_capacity(low_width * high_height);
-    let mut hh = Vec::with_capacity(high_width * high_height);
+    let mut ll = try_vec_with_capacity(checked_allocation_len::<f64>(low_width, low_height)?)?;
+    let mut hl = try_vec_with_capacity(checked_allocation_len::<f64>(high_width, low_height)?)?;
+    let mut lh = try_vec_with_capacity(checked_allocation_len::<f64>(low_width, high_height)?)?;
+    let mut hh = try_vec_with_capacity(checked_allocation_len::<f64>(high_width, high_height)?)?;
 
     for y in 0..low_height {
         for x in 0..low_width {
@@ -154,10 +177,12 @@ pub fn dct8x8_blocks_then_dwt53_float(
     block_rows: usize,
     width: usize,
     height: usize,
-) -> Result<Dwt53TwoDimensional<f64>, DctGridError> {
+) -> Result<Dwt53TwoDimensional<f64>, DctTransformError> {
     validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
+    let sample_count = checked_allocation_len::<f64>(width, height)?;
+    validate_reference_workspace(sample_count, height)?;
 
-    let mut samples = Vec::with_capacity(width * height);
+    let mut samples = try_vec_with_capacity(sample_count)?;
     for y in 0..height {
         let block_y = y / 8;
         let local_y = y % 8;
@@ -169,7 +194,7 @@ pub fn dct8x8_blocks_then_dwt53_float(
         }
     }
 
-    Ok(linearized_53_2d_from_plane(&samples, width, height))
+    linearized_53_2d_from_plane(&samples, width, height)
 }
 
 fn project_dct_grid(
@@ -225,92 +250,111 @@ pub(crate) fn linearized_53_2d_from_plane(
     samples: &[f64],
     width: usize,
     height: usize,
-) -> Dwt53TwoDimensional<f64> {
-    debug_assert_eq!(samples.len(), width * height);
+) -> Result<Dwt53TwoDimensional<f64>, DctTransformError> {
+    if width == 0 || height == 0 {
+        return Err(DctTransformError::InvalidSamplePlaneDimensions { width, height });
+    }
+    let sample_count = checked_allocation_len::<f64>(width, height)?;
+    if samples.len() != sample_count {
+        return Err(DctTransformError::SamplePlaneLengthMismatch {
+            sample_count: samples.len(),
+            width,
+            height,
+        });
+    }
+    validate_plane_workspace(sample_count, height)?;
 
     let low_width = low_len(width);
     let low_height = low_len(height);
     let high_width = high_len(width);
     let high_height = high_len(height);
 
-    let mut row_low = Vec::with_capacity(height * low_width);
-    let mut row_high = Vec::with_capacity(height * high_width);
-    for y in 0..height {
-        let start = y * width;
-        let row = &samples[start..start + width];
-        let transformed = linearized_53_from_sample_slice(row);
-        row_low.extend(transformed.low);
-        row_high.extend(transformed.high);
+    let mut row_low = try_vec_with_capacity(checked_allocation_len::<f64>(height, low_width)?)?;
+    let mut row_high = try_vec_with_capacity(checked_allocation_len::<f64>(height, high_width)?)?;
+    {
+        let mut transformed = Dwt53OneDimensional {
+            low: try_vec_with_capacity(low_width)?,
+            high: try_vec_with_capacity(high_width)?,
+        };
+        for row in samples.chunks_exact(width) {
+            linearized_53_into(row, &mut transformed);
+            row_low.extend_from_slice(&transformed.low);
+            row_high.extend_from_slice(&transformed.high);
+        }
     }
 
-    let mut ll = Vec::with_capacity(low_width * low_height);
-    let mut lh = Vec::with_capacity(low_width * high_height);
+    let mut ll = try_vec_filled(checked_allocation_len::<f64>(low_width, low_height)?, 0.0)?;
+    let mut lh = try_vec_filled(checked_allocation_len::<f64>(low_width, high_height)?, 0.0)?;
+    let mut hl = try_vec_filled(checked_allocation_len::<f64>(high_width, low_height)?, 0.0)?;
+    let mut hh = try_vec_filled(checked_allocation_len::<f64>(high_width, high_height)?, 0.0)?;
+    let mut column = try_vec_with_capacity(height)?;
+    let mut transformed = Dwt53OneDimensional {
+        low: try_vec_with_capacity(low_height)?,
+        high: try_vec_with_capacity(high_height)?,
+    };
     for x in 0..low_width {
-        let column = column_from_rows(&row_low, low_width, x, height);
-        let transformed = linearized_53_from_sample_slice(&column);
-        ll.extend(transformed.low);
-        lh.extend(transformed.high);
+        fill_column(&row_low, low_width, x, height, &mut column);
+        linearized_53_into(&column, &mut transformed);
+        store_column(&transformed.low, low_width, x, &mut ll);
+        store_column(&transformed.high, low_width, x, &mut lh);
     }
 
-    let mut hl = Vec::with_capacity(high_width * low_height);
-    let mut hh = Vec::with_capacity(high_width * high_height);
     for x in 0..high_width {
-        let column = column_from_rows(&row_high, high_width, x, height);
-        let transformed = linearized_53_from_sample_slice(&column);
-        hl.extend(transformed.low);
-        hh.extend(transformed.high);
+        fill_column(&row_high, high_width, x, height, &mut column);
+        linearized_53_into(&column, &mut transformed);
+        store_column(&transformed.low, high_width, x, &mut hl);
+        store_column(&transformed.high, high_width, x, &mut hh);
     }
 
-    Dwt53TwoDimensional {
-        ll: transpose_band(&ll, low_height, low_width),
-        hl: transpose_band(&hl, low_height, high_width),
-        lh: transpose_band(&lh, high_height, low_width),
-        hh: transpose_band(&hh, high_height, high_width),
+    Ok(Dwt53TwoDimensional {
+        ll,
+        hl,
+        lh,
+        hh,
         low_width,
         low_height,
         high_width,
         high_height,
-    }
+    })
 }
 
-fn column_from_rows(rows: &[f64], stride: usize, x: usize, height: usize) -> Vec<f64> {
-    (0..height).map(|y| rows[y * stride + x]).collect()
-}
-
-fn transpose_band(column_major: &[f64], height: usize, width: usize) -> Vec<f64> {
-    let mut row_major = Vec::with_capacity(width * height);
+fn fill_column(rows: &[f64], stride: usize, x: usize, height: usize, column: &mut Vec<f64>) {
+    column.clear();
     for y in 0..height {
-        for x in 0..width {
-            row_major.push(column_major[x * height + y]);
-        }
+        column.push(rows[y * stride + x]);
     }
-    row_major
 }
 
-fn linearized_53_from_sample_slice(samples: &[f64]) -> Dwt53OneDimensional {
-    let mut high = Vec::with_capacity(high_len(samples.len()));
+fn store_column(column: &[f64], stride: usize, x: usize, band: &mut [f64]) {
+    for (y, value) in column.iter().copied().enumerate() {
+        band[y * stride + x] = value;
+    }
+}
+
+fn linearized_53_into(samples: &[f64], output: &mut Dwt53OneDimensional) {
+    output.high.clear();
     for odd_idx in (1..samples.len()).step_by(2) {
         let left = samples[odd_idx - 1];
         let right = samples.get(odd_idx + 1).copied().unwrap_or(left);
-        high.push(samples[odd_idx] - ((left + right) * 0.5));
+        output.high.push(samples[odd_idx] - ((left + right) * 0.5));
     }
 
-    let mut low = Vec::with_capacity(low_len(samples.len()));
+    output.low.clear();
     for even_idx in (0..samples.len()).step_by(2) {
         let current = samples[even_idx];
         let even_output_idx = even_idx / 2;
-        let left_high = even_output_idx.checked_sub(1).and_then(|idx| high.get(idx));
-        let right_high = high.get(even_output_idx);
+        let left_high = even_output_idx
+            .checked_sub(1)
+            .and_then(|idx| output.high.get(idx));
+        let right_high = output.high.get(even_output_idx);
         let update = match (left_high, right_high) {
             (Some(left), Some(right)) => (*left + *right) * 0.25,
             (None, Some(right)) => *right * 0.5,
             (Some(left), None) => *left * 0.5,
             (None, None) => 0.0,
         };
-        low.push(current + update);
+        output.low.push(current + update);
     }
-
-    Dwt53OneDimensional { low, high }
 }
 
 fn validate_grid(
@@ -319,8 +363,60 @@ fn validate_grid(
     block_rows: usize,
     width: usize,
     height: usize,
-) -> Result<(), DctGridError> {
-    validate_dct_block_grid(block_count, block_cols, block_rows, width, height)
+) -> Result<(), DctTransformError> {
+    validate_dct_block_grid(block_count, block_cols, block_rows, width, height)?;
+    Ok(())
+}
+
+fn validate_direct_workspace(width: usize, height: usize) -> Result<(), DctTransformError> {
+    let sample_count = checked_allocation_len::<f64>(width, height)?;
+    let x_weight_bytes = weight_workspace_bytes(width)?;
+    let y_weight_bytes = weight_workspace_bytes(height)?;
+    let retained_weight_bytes = checked_add_allocation_bytes(x_weight_bytes, y_weight_bytes)?;
+
+    let output_bytes = checked_allocation_bytes::<f64>(sample_count)?;
+    checked_add_allocation_bytes(retained_weight_bytes, output_bytes)?;
+    Ok(())
+}
+
+fn validate_reference_workspace(
+    sample_count: usize,
+    height: usize,
+) -> Result<(), DctTransformError> {
+    let sample_bytes = checked_allocation_bytes::<f64>(sample_count)?;
+    checked_add_allocation_bytes(sample_bytes, plane_workspace_bytes(sample_count, height)?)?;
+    Ok(())
+}
+
+fn validate_plane_workspace(sample_count: usize, height: usize) -> Result<(), DctTransformError> {
+    plane_workspace_bytes(sample_count, height)?;
+    Ok(())
+}
+
+fn plane_workspace_bytes(sample_count: usize, height: usize) -> Result<usize, DctTransformError> {
+    let row_and_output_bytes = allocation_product_bytes::<f64>(sample_count, 2)?;
+    let column_and_split_bytes = allocation_product_bytes::<f64>(height, 2)?;
+    Ok(checked_add_allocation_bytes(
+        row_and_output_bytes,
+        column_and_split_bytes,
+    )?)
+}
+
+fn weight_workspace_bytes(sample_len: usize) -> Result<usize, DctTransformError> {
+    let row_bytes = checked_allocation_bytes::<SparseWeightRow>(sample_len)?;
+    let low_tap_bytes =
+        allocation_product_bytes::<SparseWeightTap>(low_len(sample_len), DWT53_MAX_LINEAR_TAPS)?;
+    let high_tap_bytes = allocation_product_bytes::<SparseWeightTap>(
+        high_len(sample_len),
+        DWT53_MAX_HIGH_LINEAR_TAPS,
+    )?;
+    let tap_bytes = checked_add_allocation_bytes(low_tap_bytes, high_tap_bytes)?;
+    Ok(checked_add_allocation_bytes(row_bytes, tap_bytes)?)
+}
+
+fn allocation_product_bytes<T>(left: usize, right: usize) -> Result<usize, DctTransformError> {
+    let element_count = checked_allocation_len::<T>(left, right)?;
+    Ok(checked_allocation_bytes::<T>(element_count)?)
 }
 
 #[derive(Debug, Default)]
@@ -331,31 +427,37 @@ struct Dwt53WeightRows {
 }
 
 impl Dwt53WeightRows {
-    fn ensure_sample_len(&mut self, sample_len: usize) {
+    fn retained_bytes(&self) -> Result<usize, TranscodeAllocationError> {
+        let mut total = checked_add_allocation_bytes(
+            checked_capacity_bytes::<SparseWeightRow>(self.low.capacity())?,
+            checked_capacity_bytes::<SparseWeightRow>(self.high.capacity())?,
+        )?;
+        for row in self.low.iter().chain(&self.high) {
+            total = checked_add_allocation_bytes(
+                total,
+                checked_capacity_bytes::<SparseWeightTap>(row.taps.capacity())?,
+            )?;
+        }
+        Ok(total)
+    }
+
+    fn ensure_sample_len(&mut self, sample_len: usize) -> Result<(), DctTransformError> {
         if self.sample_len == Some(sample_len) {
-            return;
+            return Ok(());
         }
 
-        resize_weight_rows(&mut self.low, low_len(sample_len), 5);
-        resize_weight_rows(&mut self.high, high_len(sample_len), 3);
-
-        for sample_idx in 0..sample_len {
-            let mut basis = vec![0.0; sample_len];
-            basis[sample_idx] = 1.0;
-            let transformed = linearized_53_from_sample_slice(&basis);
-            for (row, &weight) in self.low.iter_mut().zip(transformed.low.iter()) {
-                if weight != 0.0 {
-                    row.taps.push(SparseWeightTap { sample_idx, weight });
-                }
-            }
-            for (row, &weight) in self.high.iter_mut().zip(transformed.high.iter()) {
-                if weight != 0.0 {
-                    row.taps.push(SparseWeightTap { sample_idx, weight });
-                }
-            }
-        }
+        *self = Self::default();
+        resize_weight_rows(&mut self.low, low_len(sample_len), DWT53_MAX_LINEAR_TAPS)?;
+        resize_weight_rows(
+            &mut self.high,
+            high_len(sample_len),
+            DWT53_MAX_HIGH_LINEAR_TAPS,
+        )?;
+        write_symbolic_weight_rows(&mut self.low, sample_len, Dwt53Band::Low)?;
+        write_symbolic_weight_rows(&mut self.high, sample_len, Dwt53Band::High)?;
 
         self.sample_len = Some(sample_len);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -372,17 +474,61 @@ impl Dwt53WeightRows {
     }
 }
 
-fn resize_weight_rows(rows: &mut Vec<SparseWeightRow>, row_count: usize, max_taps: usize) {
-    if rows.len() < row_count {
-        rows.resize_with(row_count, SparseWeightRow::default);
-    }
-    for row in rows.iter_mut().take(row_count) {
-        row.taps.clear();
-        if row.taps.capacity() < max_taps {
-            row.taps.reserve_exact(max_taps - row.taps.capacity());
+fn write_symbolic_weight_rows(
+    rows: &mut [SparseWeightRow],
+    sample_len: usize,
+    band: Dwt53Band,
+) -> Result<(), DctTransformError> {
+    for (output_index, row) in rows.iter_mut().enumerate() {
+        let symbolic = linearized_dwt53_row(sample_len, band, output_index).ok_or(
+            DctTransformError::SymbolicWeightIndexOutOfRange {
+                sample_len,
+                output_index,
+                high_pass: matches!(band, Dwt53Band::High),
+            },
+        )?;
+        for tap in symbolic.taps() {
+            push_weight_tap(
+                row,
+                SparseWeightTap {
+                    sample_idx: tap.sample_index(),
+                    weight: tap.weight(),
+                },
+            )?;
         }
     }
+    Ok(())
+}
+
+fn resize_weight_rows(
+    rows: &mut Vec<SparseWeightRow>,
+    row_count: usize,
+    max_taps: usize,
+) -> Result<(), DctTransformError> {
+    try_vec_resize_with(rows, row_count, SparseWeightRow::default)?;
+    for row in rows.iter_mut().take(row_count) {
+        row.taps.clear();
+        try_vec_reserve_len(&mut row.taps, max_taps)?;
+    }
     rows.truncate(row_count);
+    Ok(())
+}
+
+fn push_weight_tap(
+    row: &mut SparseWeightRow,
+    tap: SparseWeightTap,
+) -> Result<(), DctTransformError> {
+    let required_len =
+        row.taps
+            .len()
+            .checked_add(1)
+            .ok_or(DctTransformError::MemoryCapExceeded {
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            })?;
+    try_vec_reserve_len(&mut row.taps, required_len)?;
+    row.taps.push(tap);
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -404,6 +550,18 @@ struct Dwt53OneDimensional {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reference_workspace_rejects_aggregate_before_any_single_vector_hits_cap() {
+        let cap = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
+        let sample_count = cap / core::mem::size_of::<f64>() / 3 + 1;
+        assert!(checked_allocation_bytes::<f64>(sample_count).is_ok());
+        assert!(matches!(
+            validate_reference_workspace(sample_count, 1),
+            Err(DctTransformError::MemoryCapExceeded { requested, cap: limit })
+                if requested > limit && limit == cap
+        ));
+    }
 
     #[test]
     fn dct8x8_grid_scratch_reuses_weight_rows_for_same_geometry() {

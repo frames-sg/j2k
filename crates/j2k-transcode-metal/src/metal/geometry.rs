@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    bind_projection_band_buffers, dispatch_projection_threads, htj2k97_subband_delta,
-    htj2k97_subband_total_bitplanes, size_of, Buffer, ComputeCommandEncoderRef,
-    DctBatchProjectionParams, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
-    DctGridToReversibleDwt53Job, DctProjectionParams, Htj2k97CodeBlockOptions, J2kSubBandType,
-    MetalSparseRow, MetalSparseRows, MetalTranscodeError, MetalWeightTap,
-    Reversible53ProjectionParams, SparseWeightRow, METAL_DCT97_UNSUPPORTED_GRID,
-    METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+    bind_projection_band_buffers, buffer_with_slice, dispatch_projection_threads,
+    htj2k97_subband_delta, htj2k97_subband_total_bitplanes, size_of,
+    try_transcode_vec_with_capacity, Buffer, ComputeCommandEncoderRef, DctBatchProjectionParams,
+    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job,
+    DctProjectionParams, Device, Htj2k97CodeBlockOptions, J2kSubBandType, MetalSparseRow,
+    MetalSparseRows, MetalTranscodeError, MetalWeightTap, Reversible53ProjectionParams,
+    SparseWeightRow, METAL_DCT97_UNSUPPORTED_GRID, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+};
+
+mod allocation;
+pub(super) use allocation::{
+    validate_codeblock_projection_allocations, validate_float_projection_allocations,
 };
 
 #[derive(Clone, Copy)]
@@ -302,10 +307,26 @@ pub(super) fn validate_htj2k97_codeblock_options(
     options: Htj2k97CodeBlockOptions,
 ) -> Result<(), MetalTranscodeError> {
     // Shared with CUDA so the two backends accept/reject identical options.
-    // Option failures keep their own message instead of the grid-geometry one.
+    // Each typed option category keeps its own stable decline reason instead
+    // of being collapsed into the grid-geometry fallback.
     j2k_transcode::validate_htj2k97_codeblock_options(options)
         .map(|_| ())
-        .map_err(MetalTranscodeError::UnsupportedJob)
+        .map_err(htj2k97_options_error)
+}
+
+fn htj2k97_options_error(
+    error: j2k_transcode::Htj2k97CodeBlockOptionsError,
+) -> MetalTranscodeError {
+    use j2k_transcode::Htj2k97CodeBlockOptionsError;
+
+    let reason = match error {
+        error @ (Htj2k97CodeBlockOptionsError::NumericOptionsOutOfRange
+        | Htj2k97CodeBlockOptionsError::QuantizationOptionsOutOfRange
+        | Htj2k97CodeBlockOptionsError::DimensionExponentUnsupported { .. }
+        | Htj2k97CodeBlockOptionsError::DimensionsExceedLimits { .. }) => error.reason(),
+        _ => "9/7 code-block options use an unsupported validation category",
+    };
+    MetalTranscodeError::UnsupportedJob(reason)
 }
 
 pub(super) fn code_block_len_from_exp(exp: u8) -> Result<usize, MetalTranscodeError> {
@@ -356,8 +377,18 @@ pub(super) fn metal_sparse_rows(
     rows: &[SparseWeightRow],
     unsupported_grid: &'static str,
 ) -> Result<MetalSparseRows, MetalTranscodeError> {
-    let mut metal_rows = Vec::with_capacity(rows.len());
-    let mut taps = Vec::new();
+    let tap_count = rows.iter().try_fold(0usize, |count, row| {
+        count
+            .checked_add(row.taps.len())
+            .ok_or(MetalTranscodeError::HostAllocationTooLarge {
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                what: "Metal sparse projection taps",
+            })
+    })?;
+    let mut metal_rows =
+        try_transcode_vec_with_capacity(rows.len(), "Metal sparse projection rows")?;
+    let mut taps = try_transcode_vec_with_capacity(tap_count, "Metal sparse projection taps")?;
     for row in rows {
         let offset = u32_param(taps.len(), unsupported_grid)?;
         let count = u32_param(row.taps.len(), unsupported_grid)?;
@@ -373,4 +404,15 @@ pub(super) fn metal_sparse_rows(
         rows: metal_rows,
         taps,
     })
+}
+
+pub(super) fn upload_sparse_rows(
+    device: &Device,
+    rows: &[SparseWeightRow],
+    unsupported_grid: &'static str,
+) -> Result<(Buffer, Buffer), MetalTranscodeError> {
+    let sparse = metal_sparse_rows(rows, unsupported_grid)?;
+    let row_buffer = buffer_with_slice(device, &sparse.rows)?;
+    let tap_buffer = buffer_with_slice(device, &sparse.taps)?;
+    Ok((row_buffer, tap_buffer))
 }

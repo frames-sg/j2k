@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use crate::error::metal_kernel_support_error;
+#[cfg(target_os = "macos")]
 use j2k::EncodedJ2k;
 #[cfg(target_os = "macos")]
 use j2k_core::{BackendKind, DeviceMemoryRange};
@@ -233,14 +235,16 @@ impl MetalEncodedJ2k {
             )
         } {
             Ok(bytes) => Ok(bytes),
-            Err(j2k_metal_support::MetalSupportError::BufferContentsUnavailable) => {
-                Err(crate::Error::MetalKernel {
-                    message: "J2K Metal codestream buffer is not CPU-readable".to_string(),
-                })
+            Err(error @ j2k_metal_support::MetalSupportError::BufferContentsUnavailable) => {
+                Err(metal_kernel_support_error(
+                    "J2K Metal codestream buffer is not CPU-readable",
+                    error,
+                ))
             }
-            Err(error) => Err(crate::Error::MetalKernel {
-                message: format!("J2K Metal codestream byte range invalid: {error}"),
-            }),
+            Err(error) => Err(metal_kernel_support_error(
+                format!("J2K Metal codestream byte range invalid: {error}"),
+                error,
+            )),
         }
     }
 

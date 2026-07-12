@@ -85,6 +85,7 @@ dependencies = [
 name = "j2k"
 version = "0.7.0"
 dependencies = [
+ "j2k-codec-math",
  "j2k-core",
  "j2k-native",
  "j2k-types",

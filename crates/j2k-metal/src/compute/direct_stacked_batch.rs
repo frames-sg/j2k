@@ -51,7 +51,6 @@ pub(super) struct DirectColorPlanRequest<'a> {
     pub(super) tier1_mode: DirectTier1Mode,
     pub(super) stage_timings: &'a mut DirectHybridStageTimings,
     pub(super) retained_buffers: &'a mut Vec<Buffer>,
-    pub(super) retained_cpu_coefficients: &'a mut Vec<Vec<f32>>,
     pub(super) status_checks: &'a mut Vec<DirectStatusCheck>,
     pub(super) scratch_buffers: &'a mut Vec<DirectScratchBuffer>,
 }
@@ -68,7 +67,6 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
         tier1_mode,
         stage_timings,
         retained_buffers,
-        retained_cpu_coefficients,
         status_checks,
         scratch_buffers,
     } = request;
@@ -91,7 +89,6 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
                 tier1_mode,
                 stage_timings,
                 retained_buffers,
-                retained_cpu_coefficients,
                 status_checks,
                 scratch_buffers,
             },
@@ -177,7 +174,6 @@ pub(super) struct StackedDirectColorBatchRequest<'a> {
     pub(super) force_flattened_cpu_tier1: bool,
     pub(super) stage_timings: &'a mut DirectHybridStageTimings,
     pub(super) retained_buffers: &'a mut Vec<Buffer>,
-    pub(super) retained_cpu_coefficients: &'a mut Vec<Vec<f32>>,
     pub(super) status_checks: &'a mut Vec<DirectStatusCheck>,
     pub(super) scratch_buffers: &'a mut Vec<DirectScratchBuffer>,
 }
@@ -198,7 +194,6 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
         force_flattened_cpu_tier1,
         stage_timings,
         retained_buffers,
-        retained_cpu_coefficients,
         status_checks,
         scratch_buffers,
     } = request;
@@ -235,7 +230,6 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
             execution_plans,
             stage_timings,
             retained_buffers,
-            retained_cpu_coefficients,
         )?)
     } else {
         None
@@ -243,10 +237,18 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
 
     let mut stacked_planes = Vec::with_capacity(3);
     for component_idx in 0..3 {
-        let component_plan_refs = execution_plans
-            .iter()
-            .map(|plan| &plan.component_plans[component_idx])
-            .collect::<Vec<_>>();
+        let mut reference_budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal stacked component plan references",
+        );
+        let mut component_plan_refs = reference_budget.try_vec(
+            execution_plans.len(),
+            "J2K Metal stacked component plan reference slots",
+        )?;
+        component_plan_refs.extend(
+            execution_plans
+                .iter()
+                .map(|plan| &plan.component_plans[component_idx]),
+        );
         if !supports_stacked_direct_component_plane_batch(&component_plan_refs) {
             return Ok(None);
         }
@@ -260,7 +262,6 @@ pub(super) fn try_encode_stacked_mct_rgb8_direct_color_batch(
                 tier1_mode,
                 stage_timings,
                 retained_buffers,
-                retained_cpu_coefficients,
                 status_checks,
                 scratch_buffers,
             },
@@ -317,7 +318,6 @@ pub(super) struct StackedDirectComponentPlaneBatchRequest<'a, 'p> {
     pub(super) tier1_mode: DirectTier1Mode,
     pub(super) stage_timings: &'a mut DirectHybridStageTimings,
     pub(super) retained_buffers: &'a mut Vec<Buffer>,
-    pub(super) retained_cpu_coefficients: &'a mut Vec<Vec<f32>>,
     pub(super) status_checks: &'a mut Vec<DirectStatusCheck>,
     pub(super) scratch_buffers: &'a mut Vec<DirectScratchBuffer>,
 }
@@ -328,7 +328,7 @@ pub(super) fn encode_stacked_direct_component_plane_batch(
 ) -> Result<StackedDirectComponentPlane, Error> {
     let tier1_mode = request.tier1_mode;
     let plan = plan_stacked_component_batch(request.plans, tier1_mode)?;
-    let mut resources = prepare_stacked_component_resources(plan.count);
+    let mut resources = prepare_stacked_component_resources(plan.count, plan.first.steps.len())?;
     submit_stacked_component_commands(request, &plan, &mut resources)?;
     assemble_stacked_component_result(resources, &plan, tier1_mode)
 }

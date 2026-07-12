@@ -84,16 +84,23 @@ fn dct97_benchmark_emits_transcode_batch_profile_rows() {
         "ProfileStageMode::Rows",
         "ProfileStageMode::Summary",
         "TRANSCODE_BATCH_PROFILE_SUMMARY",
+        "Option<j2k_profile::ProfileSummary>",
         "ProfileSummary::new",
-        "format_profile_key_value_fields",
-        "emit_profile_line",
-        "\"j2k_profile{}\"",
+        "format_transcode_profile_fields",
+        "format_profile_key_value_fields_with_limits",
+        "with_max_output_bytes",
+        "checked_sub(PROFILE_PREFIX.len())",
+        "eprintln!(\"j2k_profile{fields}\")",
+        "use j2k_profile::emit_profile_error",
+        "transcode_batch_profile_row",
+        "transcode_batch_profile_format",
+        "transcode_batch_summary_record",
         "record_str",
         "row.codec()",
         "row.op()",
         "row.path()",
         "report.profile_row(context, request)",
-        "format_profile_key_value_fields(row.fields())",
+        "format_transcode_profile_fields(row.fields())",
         "TranscodeBatchProfileRequest::Cpu",
         "TranscodeBatchProfileRequest::MetalAuto",
         "TranscodeBatchProfileRequest::MetalExplicit",
@@ -109,4 +116,8 @@ fn dct97_benchmark_emits_transcode_batch_profile_rows() {
             "missing transcode batch profile marker {expected}"
         );
     }
+    assert!(
+        !DCT97_BENCH.contains("format!(\"j2k_profile"),
+        "profile emission must not allocate a second unbounded row string"
+    );
 }

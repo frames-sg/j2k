@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::{
-    error::CudaError,
-    memory::{checked_image_words, CudaDeviceBuffer},
-};
+use crate::{allocation::try_vec_with_capacity, error::CudaError, memory::CudaDeviceBuffer};
 
-use super::types::{CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtTarget, CudaJ2kRect};
+use super::types::{CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtTarget};
 
 pub(crate) fn active_dwt53_buffers<'a>(
     buffer_a: &'a CudaDeviceBuffer,
@@ -22,18 +19,19 @@ pub(crate) fn active_dwt53_buffers<'a>(
 pub(crate) fn j2k_idwt_multi_kernel_jobs(
     targets: &[CudaJ2kIdwtTarget<'_>],
 ) -> Result<Vec<CudaJ2kIdwtMultiKernelJob>, CudaError> {
-    let mut kernel_jobs = Vec::with_capacity(targets.len());
+    let mut kernel_jobs = try_vec_with_capacity(targets.len())?;
+    append_j2k_idwt_multi_kernel_jobs(targets, &mut kernel_jobs)?;
+    Ok(kernel_jobs)
+}
+
+pub(crate) fn append_j2k_idwt_multi_kernel_jobs(
+    targets: &[CudaJ2kIdwtTarget<'_>],
+    kernel_jobs: &mut Vec<CudaJ2kIdwtMultiKernelJob>,
+) -> Result<(), CudaError> {
     for target in targets {
-        let width = target.job.rect.x1.saturating_sub(target.job.rect.x0);
-        let height = target.job.rect.y1.saturating_sub(target.job.rect.y0);
-        if width == 0 || height == 0 {
+        if super::idwt::job_validation::validate_idwt_target(target)? {
             continue;
         }
-        super::ensure_idwt_buffer_len(target.output, target.job.rect)?;
-        super::ensure_idwt_buffer_len(target.ll, target.job.ll_rect)?;
-        super::ensure_idwt_buffer_len(target.hl, target.job.hl_rect)?;
-        super::ensure_idwt_buffer_len(target.lh, target.job.lh_rect)?;
-        super::ensure_idwt_buffer_len(target.hh, target.job.hh_rect)?;
         kernel_jobs.push(CudaJ2kIdwtMultiKernelJob {
             ll_ptr: target.ll.device_ptr(),
             hl_ptr: target.hl.device_ptr(),
@@ -41,23 +39,7 @@ pub(crate) fn j2k_idwt_multi_kernel_jobs(
             hh_ptr: target.hh.device_ptr(),
             output_ptr: target.output.device_ptr(),
             job: target.job,
-        });
-    }
-    Ok(kernel_jobs)
-}
-
-pub(crate) fn ensure_idwt_buffer_len(
-    buffer: &CudaDeviceBuffer,
-    rect: CudaJ2kRect,
-) -> Result<(), CudaError> {
-    let width = rect.x1.saturating_sub(rect.x0);
-    let height = rect.y1.saturating_sub(rect.y0);
-    let words = checked_image_words(width, height, 1)?;
-    let bytes = super::checked_f32_words_byte_len(words)?;
-    if bytes > buffer.byte_len() {
-        return Err(CudaError::OutputTooSmall {
-            required: bytes,
-            have: buffer.byte_len(),
+            reserved_tail: 0,
         });
     }
     Ok(())
@@ -67,46 +49,4 @@ pub(crate) fn checked_f32_words_byte_len(words: usize) -> Result<usize, CudaErro
     words
         .checked_mul(std::mem::size_of::<f32>())
         .ok_or(CudaError::LengthTooLarge { len: words })
-}
-
-pub(crate) fn validate_store_rgb8_plane(
-    plane: &CudaDeviceBuffer,
-    input_width: u32,
-    source_x: u32,
-    source_y: u32,
-    copy_width: u32,
-    copy_height: u32,
-) -> Result<(), CudaError> {
-    if source_x
-        .checked_add(copy_width)
-        .is_none_or(|end_x| end_x > input_width)
-    {
-        return Err(CudaError::LengthTooLarge {
-            len: plane.byte_len(),
-        });
-    }
-    let last_sample = if copy_height == 0 {
-        0
-    } else {
-        (source_y as usize)
-            .checked_add(copy_height as usize - 1)
-            .and_then(|row| row.checked_mul(input_width as usize))
-            .and_then(|row| row.checked_add(source_x as usize))
-            .and_then(|row| row.checked_add(copy_width as usize))
-            .ok_or(CudaError::LengthTooLarge {
-                len: plane.byte_len(),
-            })?
-    };
-    let required_bytes =
-        last_sample
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or(CudaError::LengthTooLarge {
-                len: plane.byte_len(),
-            })?;
-    if required_bytes > plane.byte_len() {
-        return Err(CudaError::LengthTooLarge {
-            len: required_bytes,
-        });
-    }
-    Ok(())
 }

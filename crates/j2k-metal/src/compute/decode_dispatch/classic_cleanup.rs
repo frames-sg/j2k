@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    borrow_slice_buffer, checked_buffer_slice, commit_and_wait_metal, decode_classic_status_error,
-    j2k_u32_param, owned_slice_buffer, size_of, take_classic_coefficients_scratch_buffer,
-    zeroed_shared_buffer, Buffer, CommandBufferRef, ComputeCommandEncoderRef, DirectScratchBuffer,
-    DirectStatusCheck, Error, J2kClassicCleanupBatchJob, J2kClassicRepeatedBatchParams,
-    J2kClassicSegment, J2kClassicStatus, MTLResourceOptions, MTLSize, MetalRuntime,
-    PreparedClassicSubBand, PreparedClassicSubBandGroup, J2K_CLASSIC_MAX_HEIGHT,
-    J2K_CLASSIC_MAX_WIDTH, J2K_CLASSIC_STATUS_OK,
+    checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, decode_classic_status_error,
+    j2k_u32_param, new_command_buffer, new_compute_command_encoder, new_shared_buffer, size_of,
+    take_classic_coefficients_scratch_buffer, zeroed_shared_buffer, Buffer, CommandBufferRef,
+    ComputeCommandEncoderRef, DirectScratchBuffer, DirectStatusCheck, Error,
+    J2kClassicCleanupBatchJob, J2kClassicRepeatedBatchParams, J2kClassicSegment, J2kClassicStatus,
+    MTLSize, MetalRuntime, PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    J2K_CLASSIC_MAX_HEIGHT, J2K_CLASSIC_MAX_WIDTH, J2K_CLASSIC_STATUS_OK,
 };
+
+#[cfg(target_os = "macos")]
+mod distinct_allocation;
+
+#[cfg(target_os = "macos")]
+use self::distinct_allocation::{allocate_distinct_classic_metadata, DistinctClassicMetadata};
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn classic_batch_uses_plain_fast_path(
@@ -67,9 +73,9 @@ pub(in crate::compute) fn dispatch_classic_cleanup_batched(
     segments: &[J2kClassicSegment],
     decoded: &Buffer,
 ) -> Result<(), Error> {
-    let input = borrow_slice_buffer(&runtime.device, coded_data);
-    let jobs_buffer = borrow_slice_buffer(&runtime.device, jobs);
-    let segments_buffer = borrow_slice_buffer(&runtime.device, segments);
+    let input = copied_slice_buffer(&runtime.device, coded_data)?;
+    let jobs_buffer = copied_slice_buffer(&runtime.device, jobs)?;
+    let segments_buffer = copied_slice_buffer(&runtime.device, segments)?;
     let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, jobs.len())?;
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(jobs, segments)
         && runtime
@@ -84,10 +90,10 @@ pub(in crate::compute) fn dispatch_classic_cleanup_batched(
     let status_buffer = zeroed_shared_buffer(
         &runtime.device,
         jobs.len().max(1) * size_of::<J2kClassicStatus>(),
-    );
+    )?;
 
-    let command_buffer = runtime.queue.new_command_buffer();
-    let encoder = command_buffer.new_compute_command_encoder();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
+    let encoder = new_compute_command_encoder(&command_buffer)?;
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(&input), 0);
     encoder.set_buffer(1, Some(decoded), 0);
@@ -127,7 +133,7 @@ pub(in crate::compute) fn dispatch_classic_cleanup_batched(
         );
     }
     encoder.end_encoding();
-    commit_and_wait_metal(command_buffer)?;
+    commit_and_wait_metal(&command_buffer)?;
 
     let statuses =
         checked_buffer_slice::<J2kClassicStatus>(&status_buffer, jobs.len(), "classic status")?;
@@ -205,43 +211,43 @@ pub(in crate::compute) struct ClassicRepeatedStoreDispatch<'a> {
 pub(in crate::compute) fn dispatch_classic_cleanup_batched_in_command_buffer(
     command_buffer: &CommandBufferRef,
     dispatch: ClassicCleanupBatchDispatch<'_>,
-) -> (DirectStatusCheck, Option<Buffer>) {
+) -> Result<(DirectStatusCheck, Option<Buffer>), Error> {
     let status_buffer = zeroed_shared_buffer(
         &dispatch.runtime.device,
         dispatch.job_count.max(1) * size_of::<J2kClassicStatus>(),
-    );
+    )?;
 
-    let encoder = command_buffer.new_compute_command_encoder();
-    dispatch_classic_cleanup_batched_in_encoder_with_status(encoder, dispatch, &status_buffer);
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    dispatch_classic_cleanup_batched_in_encoder_with_status(&encoder, dispatch, &status_buffer);
     encoder.end_encoding();
 
-    (
+    Ok((
         DirectStatusCheck::Classic {
             buffer: status_buffer,
             len: dispatch.job_count,
         },
         None,
-    )
+    ))
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn dispatch_classic_cleanup_batched_in_encoder(
     encoder: &ComputeCommandEncoderRef,
     dispatch: ClassicCleanupBatchDispatch<'_>,
-) -> (DirectStatusCheck, Option<Buffer>) {
+) -> Result<(DirectStatusCheck, Option<Buffer>), Error> {
     let status_buffer = zeroed_shared_buffer(
         &dispatch.runtime.device,
         dispatch.job_count.max(1) * size_of::<J2kClassicStatus>(),
-    );
+    )?;
     dispatch_classic_cleanup_batched_in_encoder_with_status(encoder, dispatch, &status_buffer);
 
-    (
+    Ok((
         DirectStatusCheck::Classic {
             buffer: status_buffer,
             len: dispatch.job_count,
         },
         None,
-    )
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -349,10 +355,10 @@ pub(in crate::compute) fn dispatch_classic_cleanup_repeated_batched_in_command_b
     let status_buffer = zeroed_shared_buffer(
         &runtime.device,
         total_job_count.max(1) * size_of::<J2kClassicStatus>(),
-    );
+    )?;
     let repeated = classic_repeated_batch_params(job_count, total_job_count, output_plane_len)?;
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(command_buffer)?;
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(coded_data), 0);
     encoder.set_buffer(1, Some(decoded), 0);
@@ -424,10 +430,10 @@ pub(in crate::compute) fn dispatch_classic_cleanup_plain_dev_repeated_batched_in
     let status_buffer = zeroed_shared_buffer(
         &runtime.device,
         total_job_count.max(1) * size_of::<J2kClassicStatus>(),
-    );
+    )?;
     let repeated = classic_repeated_batch_params(job_count, total_job_count, output_plane_len)?;
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(command_buffer)?;
     encoder.set_compute_pipeline_state(&runtime.classic_cleanup_plain_dev_repeated_batched);
     encoder.set_buffer(0, Some(coded_data), 0);
     encoder.set_buffer(1, Some(decoded), 0);
@@ -481,7 +487,7 @@ pub(in crate::compute) fn dispatch_classic_store_repeated_batched_in_command_buf
     } = dispatch;
     let repeated = classic_repeated_batch_params(job_count, total_job_count, output_plane_len)?;
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(command_buffer)?;
     encoder.set_compute_pipeline_state(&runtime.classic_store_repeated_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_buffer(1, Some(jobs), 0);
@@ -516,9 +522,7 @@ pub(in crate::compute) fn encode_distinct_classic_sub_bands_to_buffer_in_command
     scratch_buffers: &mut Vec<DirectScratchBuffer>,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     let Some(first) = sub_bands.first() else {
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Classic {
@@ -531,16 +535,15 @@ pub(in crate::compute) fn encode_distinct_classic_sub_bands_to_buffer_in_command
     encode_distinct_classic_batches_to_buffer_in_command_buffer(
         runtime,
         command_buffer,
-        sub_bands.iter().map(|sub_band| DistinctClassicBatch {
-            coded_data: &sub_band.coded_data,
-            jobs: &sub_band.jobs,
-            segments: &sub_band.segments,
-            output_base: sub_bands
-                .iter()
-                .position(|candidate| core::ptr::eq(*candidate, *sub_band))
-                .expect("sub-band exists")
-                * per_instance_len,
-        }),
+        sub_bands
+            .iter()
+            .enumerate()
+            .map(|(index, sub_band)| DistinctClassicBatch {
+                coded_data: &sub_band.coded_data,
+                jobs: &sub_band.jobs,
+                segments: &sub_band.segments,
+                output_base: index * per_instance_len,
+            }),
         output,
         scratch_buffers,
     )
@@ -555,9 +558,7 @@ pub(in crate::compute) fn encode_distinct_classic_sub_band_groups_to_buffer_in_c
     scratch_buffers: &mut Vec<DirectScratchBuffer>,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     let Some(first) = groups.first() else {
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Classic {
@@ -585,6 +586,7 @@ pub(in crate::compute) fn encode_distinct_classic_sub_band_groups_to_buffer_in_c
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
 pub(in crate::compute) struct DistinctClassicBatch<'a> {
     pub(in crate::compute) coded_data: &'a [u8],
     pub(in crate::compute) jobs: &'a [J2kClassicCleanupBatchJob],
@@ -593,74 +595,100 @@ pub(in crate::compute) struct DistinctClassicBatch<'a> {
 }
 
 #[cfg(target_os = "macos")]
+fn append_distinct_classic_batch(
+    metadata: &mut DistinctClassicMetadata,
+    batch: DistinctClassicBatch<'_>,
+) -> Result<(), Error> {
+    let coded_base = u32::try_from(metadata.coded_data.len()).map_err(|_| Error::MetalKernel {
+        message: "classic J2K MetalDirect distinct color coded payload exceeds u32".to_string(),
+    })?;
+    let segment_base = u32::try_from(metadata.segments.len()).map_err(|_| Error::MetalKernel {
+        message: "classic J2K MetalDirect distinct color segment table exceeds u32".to_string(),
+    })?;
+    metadata.coded_data.extend_from_slice(batch.coded_data);
+    for segment in batch.segments {
+        let mut adjusted = *segment;
+        adjusted.data_offset = adjusted
+            .data_offset
+            .checked_add(coded_base)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "classic J2K MetalDirect distinct color segment offset overflow"
+                    .to_string(),
+            })?;
+        metadata.segments.push(adjusted);
+    }
+    let output_base = u32::try_from(batch.output_base).map_err(|_| Error::MetalKernel {
+        message: "classic J2K MetalDirect distinct color output offset exceeds u32".to_string(),
+    })?;
+    for job in batch.jobs {
+        let mut adjusted = *job;
+        adjusted.coded_offset = adjusted
+            .coded_offset
+            .checked_add(coded_base)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "classic J2K MetalDirect distinct color job coded offset overflow"
+                    .to_string(),
+            })?;
+        adjusted.segment_offset = adjusted
+            .segment_offset
+            .checked_add(segment_base)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "classic J2K MetalDirect distinct color job segment offset overflow"
+                    .to_string(),
+            })?;
+        adjusted.output_offset =
+            adjusted
+                .output_offset
+                .checked_add(output_base)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K MetalDirect distinct color job output offset overflow"
+                        .to_string(),
+                })?;
+        metadata.jobs.push(adjusted);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 pub(in crate::compute) fn encode_distinct_classic_batches_to_buffer_in_command_buffer<'a>(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
-    batches: impl IntoIterator<Item = DistinctClassicBatch<'a>>,
+    batches: impl Iterator<Item = DistinctClassicBatch<'a>> + Clone,
     output: &Buffer,
     scratch_buffers: &mut Vec<DirectScratchBuffer>,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
-    let mut coded_data = Vec::new();
-    let mut jobs = Vec::new();
-    let mut segments = Vec::new();
+    let coded_len = crate::batch_allocation::checked_count_sum(
+        batches.clone().map(|batch| batch.coded_data.len()),
+        "classic J2K MetalDirect distinct color coded payload",
+    )?;
+    let job_count = crate::batch_allocation::checked_count_sum(
+        batches.clone().map(|batch| batch.jobs.len()),
+        "classic J2K MetalDirect distinct color jobs",
+    )?;
+    let segment_count = crate::batch_allocation::checked_count_sum(
+        batches.clone().map(|batch| batch.segments.len()),
+        "classic J2K MetalDirect distinct color segments",
+    )?;
+    let mut metadata = allocate_distinct_classic_metadata(
+        coded_len,
+        job_count,
+        segment_count,
+        crate::batch_allocation::BatchMetadataBudget::new(
+            "classic J2K MetalDirect distinct color submission",
+        ),
+    )?;
 
     for batch in batches {
-        let coded_base = u32::try_from(coded_data.len()).map_err(|_| Error::MetalKernel {
-            message: "classic J2K MetalDirect distinct color coded payload exceeds u32".to_string(),
-        })?;
-        let segment_base = u32::try_from(segments.len()).map_err(|_| Error::MetalKernel {
-            message: "classic J2K MetalDirect distinct color segment table exceeds u32".to_string(),
-        })?;
-        coded_data.extend_from_slice(batch.coded_data);
-        for segment in batch.segments {
-            let mut adjusted = *segment;
-            adjusted.data_offset =
-                adjusted
-                    .data_offset
-                    .checked_add(coded_base)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "classic J2K MetalDirect distinct color segment offset overflow"
-                            .to_string(),
-                    })?;
-            segments.push(adjusted);
-        }
-        let output_base = u32::try_from(batch.output_base).map_err(|_| Error::MetalKernel {
-            message: "classic J2K MetalDirect distinct color output offset exceeds u32".to_string(),
-        })?;
-        for job in batch.jobs {
-            let mut adjusted = *job;
-            adjusted.coded_offset =
-                adjusted
-                    .coded_offset
-                    .checked_add(coded_base)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "classic J2K MetalDirect distinct color job coded offset overflow"
-                            .to_string(),
-                    })?;
-            adjusted.segment_offset = adjusted
-                .segment_offset
-                .checked_add(segment_base)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "classic J2K MetalDirect distinct color job segment offset overflow"
-                        .to_string(),
-                })?;
-            adjusted.output_offset =
-                adjusted
-                    .output_offset
-                    .checked_add(output_base)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message:
-                            "classic J2K MetalDirect distinct color job output offset overflow"
-                                .to_string(),
-                    })?;
-            jobs.push(adjusted);
-        }
+        append_distinct_classic_batch(&mut metadata, batch)?;
     }
+    let DistinctClassicMetadata {
+        coded_data,
+        jobs,
+        segments,
+    } = metadata;
 
     if jobs.is_empty() {
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Classic {
@@ -670,9 +698,9 @@ pub(in crate::compute) fn encode_distinct_classic_batches_to_buffer_in_command_b
         ));
     }
 
-    let coded_buffer = owned_slice_buffer(&runtime.device, &coded_data);
-    let jobs_buffer = owned_slice_buffer(&runtime.device, &jobs);
-    let segments_buffer = owned_slice_buffer(&runtime.device, &segments);
+    let coded_buffer = copied_slice_buffer(&runtime.device, &coded_data)?;
+    let jobs_buffer = copied_slice_buffer(&runtime.device, &jobs)?;
+    let segments_buffer = copied_slice_buffer(&runtime.device, &segments)?;
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(&jobs, &segments)
         && runtime
             .classic_cleanup_plain_batched
@@ -691,7 +719,7 @@ pub(in crate::compute) fn encode_distinct_classic_batches_to_buffer_in_command_b
             decoded: output,
             coefficients_scratch: &coefficients_scratch.buffer,
         },
-    );
+    )?;
     let mut retained_buffers = vec![coded_buffer, jobs_buffer, segments_buffer];
     scratch_buffers.push(coefficients_scratch);
     if let Some(states_scratch) = states_scratch {
@@ -699,3 +727,6 @@ pub(in crate::compute) fn encode_distinct_classic_batches_to_buffer_in_command_b
     }
     Ok((retained_buffers, status_check))
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod distinct_metadata_tests;

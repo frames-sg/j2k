@@ -8,9 +8,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use j2k_core::{PixelFormat, Rect};
 use j2k_jpeg::{ColorSpace as JpegColorSpace, ComponentRowWriter, JpegError};
 use j2k_metal_support::dispatch_2d_pipeline;
-use metal::{Buffer, Device, MTLResourceOptions};
+use metal::{Buffer, Device};
 
-use crate::buffers::{checked_copy_bytes_to_buffer_at, checked_fill_buffer_u8, new_private_buffer};
+use crate::buffers::{
+    checked_copy_bytes_to_buffer_at, checked_fill_buffer_u8, new_private_buffer, new_shared_buffer,
+};
 use crate::{Error, Surface};
 
 #[cfg(test)]
@@ -18,8 +20,8 @@ use super::{
     batch_output_buffer_or_new, validate_rgba_texture_batch_output, JpegRgb8ToRgbaTextureParams,
 };
 use super::{
-    bind_three_plane_pack, commit_and_wait_jpeg, JpegPackParams, MetalRuntime, MODE_GRAY, MODE_RGB,
-    MODE_YCBCR, OUT_GRAY, OUT_RGB, OUT_RGBA,
+    bind_three_plane_pack, commit_and_wait_jpeg, new_command_buffer, new_compute_command_encoder,
+    JpegPackParams, MetalRuntime, MODE_GRAY, MODE_RGB, MODE_YCBCR, OUT_GRAY, OUT_RGB, OUT_RGBA,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,6 +102,35 @@ enum PlaneStageResidency {
 }
 
 #[cfg(target_os = "macos")]
+fn checked_output_stride(pitch_bytes: usize, context: &'static str) -> Result<u32, Error> {
+    u32::try_from(pitch_bytes).map_err(|_| Error::MetalKernel {
+        message: format!("{context} ({pitch_bytes} bytes) exceeds the Metal u32 stride ABI"),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn checked_pack_output_format(fmt: PixelFormat) -> Result<u32, Error> {
+    match fmt {
+        PixelFormat::Gray8 => Ok(OUT_GRAY),
+        PixelFormat::Rgb8 => Ok(OUT_RGB),
+        PixelFormat::Rgba8 => Ok(OUT_RGBA),
+        _ => Err(Error::MetalKernel {
+            message: format!("unsupported JPEG Metal viewport pack format {fmt:?}"),
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn required_plane<'a>(
+    plane: Option<&'a Buffer>,
+    component: &'static str,
+) -> Result<&'a Buffer, Error> {
+    plane.ok_or_else(|| Error::MetalKernel {
+        message: format!("JPEG Metal viewport {component} plane is missing"),
+    })
+}
+
+#[cfg(target_os = "macos")]
 pub(super) struct ViewportPlaneWriter<'a> {
     pub(super) stage: &'a mut PlaneStage,
     pub(super) dest: Rect,
@@ -130,28 +161,12 @@ impl PlaneStage {
         device: &Device,
         color_space: JpegColorSpace,
         dims: (u32, u32),
+        external_live_bytes: usize,
     ) -> Result<Self, Error> {
-        let len = dims.0 as usize * dims.1 as usize;
-        let plane0 = device.new_buffer(len as u64, MTLResourceOptions::StorageModeShared);
-        let (mode, plane1, plane2) = match color_space {
-            JpegColorSpace::Grayscale => (PlaneMode::Gray, None, None),
-            JpegColorSpace::YCbCr => (
-                PlaneMode::YCbCr,
-                Some(device.new_buffer(len as u64, MTLResourceOptions::StorageModeShared)),
-                Some(device.new_buffer(len as u64, MTLResourceOptions::StorageModeShared)),
-            ),
-            JpegColorSpace::Rgb => (
-                PlaneMode::Rgb,
-                Some(device.new_buffer(len as u64, MTLResourceOptions::StorageModeShared)),
-                Some(device.new_buffer(len as u64, MTLResourceOptions::StorageModeShared)),
-            ),
-            JpegColorSpace::Cmyk | JpegColorSpace::Ycck => {
-                return Err(Error::MetalKernel {
-                    message: "Metal compute path does not support CMYK/YCCK JPEG output"
-                        .to_string(),
-                })
-            }
-        };
+        let mode = plane_mode_for_color_space(color_space)?;
+        let len = viewport_plane_len(dims)?;
+        let (plane0, plane1, plane2) =
+            allocate_viewport_planes(device, mode, len, external_live_bytes)?;
 
         Ok(Self {
             dims,
@@ -214,34 +229,35 @@ impl PlaneStage {
         fmt: PixelFormat,
         residency: PlaneStageResidency,
     ) -> Result<Surface, Error> {
-        let pitch_bytes = self.dims.0 as usize * fmt.bytes_per_pixel();
-        let out_buffer = runtime.device.new_buffer(
-            (pitch_bytes * self.dims.1 as usize) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let pitch_bytes = crate::batch_allocation::checked_count_product(
+            self.dims.0 as usize,
+            fmt.bytes_per_pixel(),
+            "JPEG Metal viewport output row bytes",
+        )?;
+        let out_len = crate::batch_allocation::checked_count_product(
+            pitch_bytes,
+            self.dims.1 as usize,
+            "JPEG Metal viewport output bytes",
+        )?;
+        let out_buffer = new_shared_buffer(&runtime.device, out_len)?;
         let params = JpegPackParams {
             width: self.dims.0,
             height: self.dims.1,
-            out_stride: u32::try_from(pitch_bytes).expect("JPEG Metal output stride fits in u32"),
+            out_stride: checked_output_stride(pitch_bytes, "JPEG Metal viewport output stride")?,
             alpha: u32::from(u8::MAX),
             mode: match self.mode {
                 PlaneMode::Gray => MODE_GRAY,
                 PlaneMode::YCbCr => MODE_YCBCR,
                 PlaneMode::Rgb => MODE_RGB,
             },
-            out_format: match fmt {
-                PixelFormat::Gray8 => OUT_GRAY,
-                PixelFormat::Rgb8 => OUT_RGB,
-                PixelFormat::Rgba8 => OUT_RGBA,
-                _ => unreachable!("validated by finish"),
-            },
+            out_format: checked_pack_output_format(fmt)?,
         };
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
         bind_three_plane_pack::<JpegPackParams>(
-            encoder,
+            &encoder,
             [
                 Some(&self.plane0),
                 self.plane1.as_ref(),
@@ -250,9 +266,9 @@ impl PlaneStage {
             &out_buffer,
             &params,
         );
-        dispatch_2d_pipeline(encoder, &runtime.pack_pipeline, self.dims);
+        dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, self.dims);
         encoder.end_encoding();
-        commit_and_wait_jpeg(command_buffer)?;
+        commit_and_wait_jpeg(&command_buffer)?;
 
         Ok(surface_from_plane_buffer(
             out_buffer, self.dims, fmt, residency,
@@ -274,7 +290,7 @@ impl PlaneStage {
         let params = JpegPackParams {
             width: self.dims.0,
             height: self.dims.1,
-            out_stride: u32::try_from(pitch_bytes).expect("JPEG Metal output stride fits in u32"),
+            out_stride: checked_output_stride(pitch_bytes, "JPEG Metal viewport output stride")?,
             alpha: u32::from(u8::MAX),
             mode: match self.mode {
                 PlaneMode::Gray => MODE_GRAY,
@@ -284,11 +300,11 @@ impl PlaneStage {
             out_format: OUT_RGB,
         };
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
         bind_three_plane_pack::<JpegPackParams>(
-            encoder,
+            &encoder,
             [
                 Some(&self.plane0),
                 self.plane1.as_ref(),
@@ -297,9 +313,9 @@ impl PlaneStage {
             &out_buffer,
             &params,
         );
-        dispatch_2d_pipeline(encoder, &runtime.pack_pipeline, self.dims);
+        dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, self.dims);
         encoder.end_encoding();
-        commit_and_wait_jpeg(command_buffer)?;
+        commit_and_wait_jpeg(&command_buffer)?;
 
         Ok(Surface::from_batch_output_buffer_offset(
             output, self.dims, fmt, 0,
@@ -327,7 +343,7 @@ impl PlaneStage {
                 &runtime.device,
                 "viewport_sparse_rgba_texture_rgb8",
                 rgb_tile_len,
-            )
+            )?
         };
         let texture = output
             .texture_trusted(0)
@@ -337,8 +353,10 @@ impl PlaneStage {
         let pack_params = JpegPackParams {
             width: self.dims.0,
             height: self.dims.1,
-            out_stride: u32::try_from(rgb_pitch_bytes)
-                .expect("JPEG Metal output stride fits in u32"),
+            out_stride: checked_output_stride(
+                rgb_pitch_bytes,
+                "JPEG Metal viewport RGB output stride",
+            )?,
             alpha: u32::from(u8::MAX),
             mode: match self.mode {
                 PlaneMode::Gray => MODE_GRAY,
@@ -350,16 +368,18 @@ impl PlaneStage {
         let texture_params = JpegRgb8ToRgbaTextureParams {
             width: self.dims.0,
             height: self.dims.1,
-            in_stride: u32::try_from(rgb_pitch_bytes)
-                .expect("JPEG Metal RGB texture input stride fits in u32"),
+            in_stride: checked_output_stride(
+                rgb_pitch_bytes,
+                "JPEG Metal viewport RGB texture input stride",
+            )?,
             alpha: u32::from(u8::MAX),
         };
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let pack_encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let pack_encoder = new_compute_command_encoder(&command_buffer)?;
         pack_encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
         bind_three_plane_pack::<JpegPackParams>(
-            pack_encoder,
+            &pack_encoder,
             [
                 Some(&self.plane0),
                 self.plane1.as_ref(),
@@ -368,10 +388,10 @@ impl PlaneStage {
             &out_buffer,
             &pack_params,
         );
-        dispatch_2d_pipeline(pack_encoder, &runtime.pack_pipeline, self.dims);
+        dispatch_2d_pipeline(&pack_encoder, &runtime.pack_pipeline, self.dims);
         pack_encoder.end_encoding();
 
-        let texture_encoder = command_buffer.new_compute_command_encoder();
+        let texture_encoder = new_compute_command_encoder(&command_buffer)?;
         texture_encoder.set_compute_pipeline_state(&runtime.rgb8_to_rgba_texture_pipeline);
         texture_encoder.set_buffer(0, Some(&out_buffer), 0);
         texture_encoder.set_bytes(
@@ -381,12 +401,12 @@ impl PlaneStage {
         );
         texture_encoder.set_texture(0, Some(texture));
         dispatch_2d_pipeline(
-            texture_encoder,
+            &texture_encoder,
             &runtime.rgb8_to_rgba_texture_pipeline,
             self.dims,
         );
         texture_encoder.end_encoding();
-        commit_and_wait_jpeg(command_buffer)?;
+        commit_and_wait_jpeg(&command_buffer)?;
 
         let texture = output
             .clone_texture_trusted(0)
@@ -408,11 +428,11 @@ impl PlaneStage {
     ) -> Result<crate::ResidentPrivateJpegTile, Error> {
         let fmt = PixelFormat::Rgb8;
         let pitch_bytes = self.dims.0 as usize * fmt.bytes_per_pixel();
-        let out_buffer = new_private_buffer(&runtime.device, pitch_bytes * self.dims.1 as usize);
+        let out_buffer = new_private_buffer(&runtime.device, pitch_bytes * self.dims.1 as usize)?;
         let params = JpegPackParams {
             width: self.dims.0,
             height: self.dims.1,
-            out_stride: u32::try_from(pitch_bytes).expect("JPEG Metal output stride fits in u32"),
+            out_stride: checked_output_stride(pitch_bytes, "JPEG Metal viewport output stride")?,
             alpha: u32::from(u8::MAX),
             mode: match self.mode {
                 PlaneMode::Gray => MODE_GRAY,
@@ -422,11 +442,11 @@ impl PlaneStage {
             out_format: OUT_RGB,
         };
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
         bind_three_plane_pack::<JpegPackParams>(
-            encoder,
+            &encoder,
             [
                 Some(&self.plane0),
                 self.plane1.as_ref(),
@@ -435,10 +455,10 @@ impl PlaneStage {
             &out_buffer,
             &params,
         );
-        dispatch_2d_pipeline(encoder, &runtime.pack_pipeline, self.dims);
+        dispatch_2d_pipeline(&encoder, &runtime.pack_pipeline, self.dims);
         encoder.end_encoding();
-        commit_and_wait_jpeg(command_buffer)?;
-        let command_buffer = command_buffer.to_owned();
+        commit_and_wait_jpeg(&command_buffer)?;
+        let command_buffer = command_buffer.clone();
 
         Ok(crate::ResidentPrivateJpegTile::new(
             out_buffer,
@@ -542,14 +562,14 @@ impl PlaneRowTarget<'_> {
         chroma_red_row: &[u8],
     ) -> Result<(), Error> {
         self.write_plane_row(self.plane0, y, y_row)?;
-        self.write_plane_row(self.plane1.expect("Cb plane"), y, chroma_blue_row)?;
-        self.write_plane_row(self.plane2.expect("Cr plane"), y, chroma_red_row)
+        self.write_plane_row(required_plane(self.plane1, "Cb")?, y, chroma_blue_row)?;
+        self.write_plane_row(required_plane(self.plane2, "Cr")?, y, chroma_red_row)
     }
 
     fn write_rgb_row(&self, y: u32, r_row: &[u8], g_row: &[u8], b_row: &[u8]) -> Result<(), Error> {
         self.write_plane_row(self.plane0, y, r_row)?;
-        self.write_plane_row(self.plane1.expect("G plane"), y, g_row)?;
-        self.write_plane_row(self.plane2.expect("B plane"), y, b_row)
+        self.write_plane_row(required_plane(self.plane1, "G")?, y, g_row)?;
+        self.write_plane_row(required_plane(self.plane2, "B")?, y, b_row)
     }
 
     fn write_plane_row(&self, buffer: &Buffer, y: u32, src: &[u8]) -> Result<(), Error> {
@@ -600,6 +620,48 @@ fn plane_mode_for_color_space(color_space: JpegColorSpace) -> Result<PlaneMode, 
 }
 
 #[cfg(target_os = "macos")]
+fn viewport_plane_len(dims: (u32, u32)) -> Result<usize, Error> {
+    crate::batch_allocation::checked_count_product(
+        dims.0 as usize,
+        dims.1 as usize,
+        "JPEG Metal viewport plane bytes",
+    )
+    .map_err(Error::from)
+}
+
+#[cfg(target_os = "macos")]
+fn allocate_viewport_planes(
+    device: &Device,
+    mode: PlaneMode,
+    len: usize,
+    external_live_bytes: usize,
+) -> Result<(Buffer, Option<Buffer>, Option<Buffer>), Error> {
+    let plane_count = if mode == PlaneMode::Gray { 1 } else { 3 };
+    let total_bytes = crate::batch_allocation::checked_count_product(
+        len,
+        plane_count,
+        "JPEG Metal viewport plane live allocation",
+    )?;
+    crate::batch_allocation::BatchMetadataBudget::with_external_live(
+        "JPEG Metal viewport plane live allocation",
+        external_live_bytes,
+    )
+    .preflight(&[crate::batch_allocation::BatchMetadataRequest::of::<u8>(
+        total_bytes,
+    )])?;
+    let plane0 = new_shared_buffer(device, len)?;
+    let (plane1, plane2) = if mode == PlaneMode::Gray {
+        (None, None)
+    } else {
+        (
+            Some(new_shared_buffer(device, len)?),
+            Some(new_shared_buffer(device, len)?),
+        )
+    };
+    Ok((plane0, plane1, plane2))
+}
+
+#[cfg(target_os = "macos")]
 fn clear_buffer(buffer: &Buffer, len: usize) -> Result<(), Error> {
     fill_buffer(buffer, len, 0)
 }
@@ -614,33 +676,18 @@ pub(super) fn cached_plane_stage(
     runtime: &MetalRuntime,
     color_space: JpegColorSpace,
     dims: (u32, u32),
+    external_live_bytes: usize,
 ) -> Result<PlaneStage, Error> {
     let mode = plane_mode_for_color_space(color_space)?;
     let cache_lease = runtime.viewport_plane_cache_lease()?;
     let mut slot = runtime.viewport_plane_cache()?;
-    let len = dims.0 as usize * dims.1 as usize;
+    let len = viewport_plane_len(dims)?;
     let refresh = slot
         .as_ref()
         .is_none_or(|cached| cached.dims != dims || cached.mode != mode);
     if refresh {
-        let plane0 = runtime
-            .device
-            .new_buffer(len as u64, MTLResourceOptions::StorageModeShared);
-        let (plane1, plane2) = match mode {
-            PlaneMode::Gray => (None, None),
-            PlaneMode::YCbCr | PlaneMode::Rgb => (
-                Some(
-                    runtime
-                        .device
-                        .new_buffer(len as u64, MTLResourceOptions::StorageModeShared),
-                ),
-                Some(
-                    runtime
-                        .device
-                        .new_buffer(len as u64, MTLResourceOptions::StorageModeShared),
-                ),
-            ),
-        };
+        let (plane0, plane1, plane2) =
+            allocate_viewport_planes(&runtime.device, mode, len, external_live_bytes)?;
         *slot = Some(CachedViewportPlanes {
             dims,
             mode,
@@ -650,7 +697,9 @@ pub(super) fn cached_plane_stage(
         });
     }
 
-    let cached = slot.as_ref().expect("viewport plane cache");
+    let cached = slot.as_ref().ok_or_else(|| Error::MetalKernel {
+        message: "JPEG Metal viewport plane cache is missing after refresh".to_string(),
+    })?;
     let stage = PlaneStage {
         dims,
         mode,
@@ -714,5 +763,30 @@ impl ComponentRowWriter for ViewportPlaneWriter<'_> {
         self.row_target()
             .write_rgb_row(y, r_row, g_row, b_row)
             .map_err(jpeg_plane_write_error)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewport_cache_helpers_surface_invalid_state_without_panicking() {
+        let too_wide = usize::try_from(u64::from(u32::MAX) + 1).expect("macOS usize is 64-bit");
+        assert!(matches!(
+            checked_output_stride(too_wide, "test stride"),
+            Err(Error::MetalKernel { message })
+                if message.contains("test stride") && message.contains("u32 stride ABI")
+        ));
+        assert!(matches!(
+            checked_pack_output_format(PixelFormat::Gray16),
+            Err(Error::MetalKernel { message })
+                if message.contains("unsupported JPEG Metal viewport pack format")
+        ));
+        let missing: Option<&Buffer> = None;
+        assert!(matches!(
+            required_plane(missing, "Cb"),
+            Err(Error::MetalKernel { message }) if message.contains("Cb plane is missing")
+        ));
     }
 }

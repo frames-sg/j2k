@@ -2,6 +2,7 @@
 
 mod fast444;
 mod rgb;
+mod rgb_grouped;
 mod texture;
 mod texture_grouped;
 

@@ -8,16 +8,17 @@ use j2k_core::{
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaDeviceBuffer;
 use j2k_jpeg::{
-    decode_tile_into_in_context, decode_tile_region_into_in_context,
-    decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context,
-    Decoder as CpuDecoder, DecoderContext as CpuDecoderContext, JpegDecodeOp, JpegDecodeRequest,
-    JpegResolvedDecode, JpegResolvedDecodePath, ScratchPool as CpuScratchPool,
-    Warning as CpuWarning,
+    decode_tile_region_into_in_context, decode_tile_region_scaled_into_in_context,
+    decode_tile_scaled_into_in_context, Decoder as CpuDecoder, DecoderContext as CpuDecoderContext,
+    JpegCapabilityReport, JpegDecodeOp, JpegDecodeRequest, JpegResolvedDecode,
+    JpegResolvedDecodePath, ScratchPool as CpuScratchPool, Warning as CpuWarning,
 };
 
-use crate::owned_decode::decode_owned_cuda_rgb8;
+use crate::allocation::{try_collect_results_exact, try_vec_filled};
+use crate::batch::CudaJpegBatch;
+use crate::owned_decode::decode_owned_cuda_rgb8_from_decoder;
 #[cfg(feature = "cuda-runtime")]
-use crate::owned_decode::decode_owned_cuda_rgb8_into;
+use crate::owned_decode::decode_owned_cuda_rgb8_from_decoder_into;
 use crate::runtime::{validate_surface_request, wrap_surface};
 use crate::{CudaSession, Error, Surface};
 
@@ -72,7 +73,7 @@ impl Codec {
         input: &[u8],
         config: j2k_cuda_runtime::CudaJpegChunkedEntropyConfig,
         session: &mut CudaSession,
-    ) -> Result<j2k_cuda_runtime::CudaJpegChunkedEntropyReport, Error> {
+    ) -> Result<crate::CudaJpegChunkedEntropyReport, Error> {
         crate::owned_decode::diagnose_owned_cuda_420_entropy(input, config, session)
     }
 
@@ -88,8 +89,8 @@ impl Codec {
         pitch_bytes: usize,
         session: &mut CudaSession,
     ) -> Result<crate::CudaSurfaceStats, Error> {
-        let dimensions = CpuDecoder::inspect(input)?.dimensions;
-        decode_owned_cuda_rgb8_into(input, dimensions, session, output, pitch_bytes)
+        let decoder = CpuDecoder::new(input)?;
+        decode_owned_cuda_rgb8_from_decoder_into(&decoder, session, output, pitch_bytes)
     }
 
     #[cfg(feature = "cuda-runtime")]
@@ -97,32 +98,42 @@ impl Codec {
     ///
     /// This is a strict J2K-owned CUDA-kernel path and currently supports
     /// full-tile RGB8 fast 4:2:0, 4:2:2, and 4:4:4 YCbCr JPEG inputs. Returned
-    /// stats preserve the input tile order.
+    /// stats preserve the input tile order. The returned collection keeps its
+    /// exact vector capacity charged to `session` until it is dropped or its
+    /// owning iterator is dropped.
     #[doc(hidden)]
     pub fn decode_tiles_rgb8_into_cuda_buffers_with_session(
         tiles: &[CudaJpegDecodeOutputTile<'_>],
         session: &mut CudaSession,
-    ) -> Result<Vec<crate::CudaSurfaceStats>, Error> {
-        tiles
-            .iter()
-            .map(|tile| {
-                Self::decode_tile_rgb8_into_cuda_buffer_with_session(
-                    tile.input,
-                    tile.output,
-                    tile.pitch_bytes,
-                    session,
-                )
-            })
-            .collect()
+    ) -> Result<CudaJpegBatch<crate::CudaSurfaceStats>, Error> {
+        let mut batch = CudaJpegBatch::try_with_capacity(
+            session,
+            tiles.len(),
+            "CUDA JPEG decode batch statistics",
+        )?;
+        for tile in tiles {
+            let stats = Self::decode_tile_rgb8_into_cuda_buffer_with_session(
+                tile.input,
+                tile.output,
+                tile.pitch_bytes,
+                session,
+            )?;
+            batch.try_push(stats)?;
+        }
+        Ok(batch)
     }
 
     /// Decode many JPEG tiles to J2K surfaces using a caller-owned CUDA session.
+    ///
+    /// The returned collection keeps its exact vector capacity charged to
+    /// `session`; each host-backed surface separately retains its exact host
+    /// allocation charge until that surface is dropped.
     pub fn decode_tiles_to_device_with_session(
         inputs: &[&[u8]],
         fmt: PixelFormat,
         backend: BackendRequest,
         session: &mut CudaSession,
-    ) -> Result<Vec<Surface>, Error> {
+    ) -> Result<CudaJpegBatch<Surface>, Error> {
         let mut ctx = j2k_core::DecoderContext::<CpuDecoderContext>::new();
         let mut pool = CpuScratchPool::new();
         Self::decode_tiles_to_device_with_session_in_context(
@@ -137,16 +148,19 @@ impl Codec {
         fmt: PixelFormat,
         backend: BackendRequest,
         session: &mut CudaSession,
-    ) -> Result<Vec<Surface>, Error> {
+    ) -> Result<CudaJpegBatch<Surface>, Error> {
         validate_surface_request(backend)?;
-        if inputs.is_empty() {
-            return Ok(Vec::new());
+        let mut batch = CudaJpegBatch::try_with_capacity(
+            session,
+            inputs.len(),
+            "CUDA JPEG decode batch surfaces",
+        )?;
+        for input in inputs {
+            let surface =
+                Self::decode_tile_to_surface_impl(ctx, session, pool, input, fmt, backend)?;
+            batch.try_push(surface)?;
         }
-
-        inputs
-            .iter()
-            .map(|input| Self::decode_tile_to_surface_impl(ctx, session, pool, input, fmt, backend))
-            .collect()
+        Ok(batch)
     }
 
     fn decode_tile_to_surface_impl(
@@ -158,23 +172,26 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
-        let resolved = JpegResolvedDecode::inspect(
-            input,
-            JpegDecodeRequest {
-                backend,
-                fmt,
-                op: JpegDecodeOp::Full,
-            },
-        )?;
+        let request = JpegDecodeRequest {
+            backend,
+            fmt,
+            op: JpegDecodeOp::Full,
+        };
+        let decoder =
+            CpuDecoder::from_view_in_context(j2k_jpeg::JpegView::parse(input)?, ctx.codec_mut())?;
+        let resolved = JpegResolvedDecode::from_capabilities(
+            JpegCapabilityReport::for_decoder(&decoder, request.capability()),
+            request,
+        );
         if resolved.path == JpegResolvedDecodePath::OwnedCudaRgb8 {
-            return decode_owned_cuda_rgb8(input, resolved.capabilities.info.dimensions, session);
+            return decode_owned_cuda_rgb8_from_decoder(&decoder, session);
         }
         if let JpegResolvedDecodePath::Rejected { backend, reason } = resolved.path {
             return Err(rejected_decode_path_error(backend, reason));
         }
         let dims = (resolved.output_rect.w, resolved.output_rect.h);
         let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
-        decode_tile_into_in_context(input, ctx.codec_mut(), pool, &mut out, stride, fmt)?;
+        decoder.decode_into_with_scratch(pool, &mut out, stride, fmt)?;
         wrap_surface(out, dims, fmt, backend, session)
     }
 
@@ -291,7 +308,10 @@ fn allocate_cpu_surface(dims: (u32, u32), fmt: PixelFormat) -> Result<(Vec<u8>, 
         DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         "JPEG CUDA CPU fallback surface",
     )?;
-    Ok((vec![0u8; len], stride))
+    Ok((
+        try_vec_filled(len, 0u8, "JPEG CUDA CPU fallback surface")?,
+        stride,
+    ))
 }
 
 #[doc(hidden)]
@@ -393,13 +413,12 @@ impl TileBatchDecodeManyDevice for Codec {
         backend: BackendRequest,
     ) -> Result<Vec<Self::DeviceSurface>, Self::Error> {
         let mut session = CudaSession::default();
-        Self::decode_tiles_to_device_with_session_in_context(
-            ctx,
-            pool,
-            inputs,
-            fmt,
-            backend,
-            &mut session,
+        validate_surface_request(backend)?;
+        try_collect_results_exact(
+            inputs.iter().map(|input| {
+                Self::decode_tile_to_surface_impl(ctx, &mut session, pool, input, fmt, backend)
+            }),
+            "CUDA JPEG decode batch surfaces",
         )
     }
 }

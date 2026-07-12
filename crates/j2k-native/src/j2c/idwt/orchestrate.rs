@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::super::build::Decomposition;
 use super::super::codestream::WaveletTransform;
 use super::super::decode::{DecompositionStorage, TileDecodeContext};
 use super::direct::apply_level;
 use super::interleave_i64::apply_level_i64;
-use super::model::{IDWTInput, IDWTInputI64, IDWTTempOutput, InputSource};
+use super::model::{idwt_buffer_size, IDWTInput, IDWTInputI64, IDWTTempOutput, InputSource};
 use super::roi::apply_roi;
 use crate::error::{bail, DecodingError};
 use crate::j2c::Header;
-use crate::{HtCodeBlockDecoder, Result};
+use crate::{
+    checked_decode_usize_product2, try_reserve_decode_elements, HtCodeBlockDecoder, Result,
+};
 
 /// Apply the inverse discrete wavelet transform (see Annex F). The output
 /// will be transformed samples covering the rectangle of the smallest
@@ -42,32 +43,18 @@ pub(crate) fn apply(
     // buffer: During IDWT, we need to continuously interleave the 4 sub-bands
     // into a new buffer, which is then either returned or used as the input
     // for the next decomposition, etc. It would be very inefficient if we
-    // kept allocating new buffers each time. Therefore, we try to reuse them,
-    // not only for all decompositions of a single tile, but all decompositions
-    // of _all_ tiles.
-    // Due to the fact that the output from the previous iteration might be
-    // used as the input of the next, we need two separate buffers, which
-    // are continuously swapped.
+    // kept allocating a new buffer at each level. The coordinator drops prior
+    // component/tile capacities before this call to keep the live-allocation
+    // baseline exact; within this component, two buffers are continuously
+    // swapped because one level's output feeds the next.
     let (scratch_buf, output) = (&mut tile_ctx.idwt_scratch_buffer, &mut tile_ctx.idwt_output);
-
-    let estimate_buffer_size = |decomposition: &Decomposition| {
-        let total_width = decomposition.rect.width() as usize;
-        let total_height = decomposition.rect.height() as usize;
-
-        let min = total_width * total_height;
-        // Different sub-bands can have shifts by one, so add padding
-        // for the maximum case.
-        let max = (total_width + 1) * (total_height + 1);
-
-        (min, max)
-    };
 
     if decompositions.is_empty() {
         // Single decomposition, just copy the coefficients from the sub-band.
+        let source = &storage.coefficients[ll_sub_band.coefficients.clone()];
+        try_reserve_decode_elements(&mut output.coefficients, source.len())?;
         output.coefficients.clear();
-        output
-            .coefficients
-            .extend_from_slice(&storage.coefficients[ll_sub_band.coefficients.clone()]);
+        output.coefficients.extend_from_slice(source);
 
         output.rect = ll_sub_band.rect;
         tile_ctx.debug_counters.idwt_output_samples = tile_ctx
@@ -80,20 +67,18 @@ pub(crate) fn apply(
 
     // The coefficient array will always be the one that holds the coefficients
     // from the highest decomposition. Therefore, reserve as much.
-    let (s_min, s_max) = estimate_buffer_size(decompositions.last().unwrap());
+    let (s_min, s_max) = idwt_buffer_size(decompositions.last().unwrap().rect)?;
     if output.coefficients.len() < s_min {
-        output
-            .coefficients
-            .reserve_exact(s_max - output.coefficients.len());
+        try_reserve_decode_elements(&mut output.coefficients, s_max)?;
     }
 
     if decompositions.len() > 1 {
         // Due to the above, the intermediate buffer will never need more than
         // the second-highest decomposition.
-        let (s_min, s_max) = estimate_buffer_size(&decompositions[decompositions.len() - 2]);
+        let (s_min, s_max) = idwt_buffer_size(decompositions[decompositions.len() - 2].rect)?;
 
         if scratch_buf.len() < s_min {
-            scratch_buf.reserve_exact(s_max - scratch_buf.len());
+            try_reserve_decode_elements(scratch_buf, s_max)?;
         }
     }
 
@@ -148,10 +133,14 @@ pub(crate) fn apply(
             InputSource::Output
         };
         current_rect = temp_output.rect;
+        let output_samples = checked_decode_usize_product2(
+            current_rect.width() as usize,
+            current_rect.height() as usize,
+        )?;
         tile_ctx.debug_counters.idwt_output_samples = tile_ctx
             .debug_counters
             .idwt_output_samples
-            .saturating_add(current_rect.width() as usize * current_rect.height() as usize);
+            .saturating_add(output_samples);
         use_scratch = !use_scratch;
     }
 
@@ -188,19 +177,11 @@ fn apply_i64(
         &mut tile_ctx.idwt_output,
     );
 
-    let estimate_buffer_size = |decomposition: &Decomposition| {
-        let total_width = decomposition.rect.width() as usize;
-        let total_height = decomposition.rect.height() as usize;
-        let min = total_width * total_height;
-        let max = (total_width + 1) * (total_height + 1);
-        (min, max)
-    };
-
     if decompositions.is_empty() {
+        let source = &storage.coefficients_i64[ll_sub_band.coefficients.clone()];
+        try_reserve_decode_elements(&mut output.coefficients_i64, source.len())?;
         output.coefficients_i64.clear();
-        output
-            .coefficients_i64
-            .extend_from_slice(&storage.coefficients_i64[ll_sub_band.coefficients.clone()]);
+        output.coefficients_i64.extend_from_slice(source);
         output.rect = ll_sub_band.rect;
         tile_ctx.debug_counters.idwt_output_samples = tile_ctx
             .debug_counters
@@ -209,17 +190,15 @@ fn apply_i64(
         return Ok(());
     }
 
-    let (s_min, s_max) = estimate_buffer_size(decompositions.last().unwrap());
+    let (s_min, s_max) = idwt_buffer_size(decompositions.last().unwrap().rect)?;
     if output.coefficients_i64.len() < s_min {
-        output
-            .coefficients_i64
-            .reserve_exact(s_max - output.coefficients_i64.len());
+        try_reserve_decode_elements(&mut output.coefficients_i64, s_max)?;
     }
 
     if decompositions.len() > 1 {
-        let (s_min, s_max) = estimate_buffer_size(&decompositions[decompositions.len() - 2]);
+        let (s_min, s_max) = idwt_buffer_size(decompositions[decompositions.len() - 2].rect)?;
         if scratch_buf.len() < s_min {
-            scratch_buf.reserve_exact(s_max - scratch_buf.len());
+            try_reserve_decode_elements(scratch_buf, s_max)?;
         }
     }
 
@@ -237,25 +216,25 @@ fn apply_i64(
                 scratch_buf,
                 decomposition,
                 storage,
-            ),
+            )?,
             (InputSource::SubBand, false) => apply_level_i64(
                 IDWTInputI64::from_sub_band(ll_sub_band, storage),
                 &mut output.coefficients_i64,
                 decomposition,
                 storage,
-            ),
+            )?,
             (InputSource::Scratch, false) => apply_level_i64(
                 IDWTInputI64::from_output(scratch_buf, current_rect),
                 &mut output.coefficients_i64,
                 decomposition,
                 storage,
-            ),
+            )?,
             (InputSource::Output, true) => apply_level_i64(
                 IDWTInputI64::from_output(&output.coefficients_i64, current_rect),
                 scratch_buf,
                 decomposition,
                 storage,
-            ),
+            )?,
             (InputSource::Scratch, true) | (InputSource::Output, false) => unreachable!(),
         };
         current_source = if use_scratch {
@@ -264,10 +243,14 @@ fn apply_i64(
             InputSource::Output
         };
         current_rect = temp_output.rect;
+        let output_samples = checked_decode_usize_product2(
+            current_rect.width() as usize,
+            current_rect.height() as usize,
+        )?;
         tile_ctx.debug_counters.idwt_output_samples = tile_ctx
             .debug_counters
             .idwt_output_samples
-            .saturating_add(current_rect.width() as usize * current_rect.height() as usize);
+            .saturating_add(output_samples);
         use_scratch = !use_scratch;
     }
 

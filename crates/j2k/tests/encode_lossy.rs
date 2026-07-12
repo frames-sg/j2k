@@ -8,8 +8,8 @@ use j2k::{
 };
 use j2k::{
     EncodedHtJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kHtCodeBlockEncodeJob, J2kPacketizationEncodeJob,
-    J2kQuantizeSubbandJob,
+    J2kEncodeStageAccelerator, J2kEncodeStageError, J2kEncodeStageResult, J2kHtCodeBlockEncodeJob,
+    J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
 };
 use j2k_core::{BackendKind, CodecError};
 use j2k_native::{DecodeSettings, Image};
@@ -39,13 +39,7 @@ fn strict_decode_native(codestream: &[u8]) -> j2k_native::RawBitmap {
 }
 
 fn public_encoded_ht(block: j2k_native::EncodedHtJ2kCodeBlock) -> EncodedHtJ2kCodeBlock {
-    EncodedHtJ2kCodeBlock {
-        data: block.data,
-        cleanup_length: block.cleanup_length,
-        refinement_length: block.refinement_length,
-        num_coding_passes: block.num_coding_passes,
-        num_zero_bitplanes: block.num_zero_bitplanes,
-    }
+    block
 }
 
 fn plt_packet_length_count(codestream: &[u8]) -> usize {
@@ -978,7 +972,7 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
         fn encode_deinterleave(
             &mut self,
             job: J2kDeinterleaveToF32Job<'_>,
-        ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
             self.deinterleave = self.deinterleave.saturating_add(1);
             assert_eq!(job.bit_depth, 8);
             assert!(!job.signed);
@@ -996,7 +990,7 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
         fn encode_quantize_subband(
             &mut self,
             job: J2kQuantizeSubbandJob<'_>,
-        ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<i32>>> {
             self.quantize_subband = self.quantize_subband.saturating_add(1);
             Ok(Some(
                 job.coefficients
@@ -1009,7 +1003,7 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
         fn encode_ht_code_block(
             &mut self,
             job: J2kHtCodeBlockEncodeJob<'_>,
-        ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
             self.ht_code_block = self.ht_code_block.saturating_add(1);
             assert_eq!(job.target_coding_passes, 3);
             j2k_native::encode_ht_code_block_scalar_with_passes(
@@ -1021,12 +1015,15 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
             )
             .map(public_encoded_ht)
             .map(Some)
+            .map_err(|source| {
+                J2kEncodeStageError::backend("native scalar", "HT Tier-1 refinement encode", source)
+            })
         }
 
         fn encode_packetization(
             &mut self,
             _job: J2kPacketizationEncodeJob<'_>,
-        ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
             self.packetization = self.packetization.saturating_add(1);
             Ok(None)
         }
@@ -1058,4 +1055,58 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
     assert!(accelerator.quantize_subband > 0);
     assert!(accelerator.ht_code_block > 0);
     assert_eq!(decode_native(&encoded.codestream).num_components, 1);
+}
+
+#[test]
+fn lossy_require_device_uses_only_the_selected_final_attempt_dispatch() {
+    #[derive(Default)]
+    struct FirstAttemptOnlyDispatch {
+        packetization_attempts: usize,
+    }
+
+    impl J2kEncodeStageAccelerator for FirstAttemptOnlyDispatch {
+        fn dispatch_report(&self) -> J2kEncodeDispatchReport {
+            if self.packetization_attempts == 0 {
+                return J2kEncodeDispatchReport::default();
+            }
+            J2kEncodeDispatchReport {
+                deinterleave: 1,
+                quantize_subband: 1,
+                ht_code_block: 1,
+                packetization: 1,
+                ..J2kEncodeDispatchReport::default()
+            }
+        }
+
+        fn encode_packetization(
+            &mut self,
+            _job: J2kPacketizationEncodeJob<'_>,
+        ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
+            self.packetization_attempts = self.packetization_attempts.saturating_add(1);
+            Ok(None)
+        }
+    }
+
+    let pixels: Vec<u8> = (0..32 * 32)
+        .map(|index| masked_u8(index * 31 + index / 17))
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 32, 32, 1, 8, false).unwrap();
+    let mut options = J2kLossyEncodeOptions::default()
+        .with_backend(EncodeBackendPreference::RequireDevice)
+        .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+        .with_max_decomposition_levels(Some(0))
+        .with_rate_target(Some(J2kRateTarget::Bytes(100_000)))
+        .with_validation(J2kEncodeValidation::External);
+    options.psnr_iteration_budget = 1;
+    let mut accelerator = FirstAttemptOnlyDispatch::default();
+
+    let error =
+        encode_j2k_lossy_with_accelerator(samples, &options, BackendKind::Cuda, &mut accelerator)
+            .expect_err("the returned final attempt did not dispatch required device stages");
+
+    assert!(error.is_unsupported());
+    assert!(
+        accelerator.packetization_attempts >= 2,
+        "fixture must include search attempts plus the selected final re-encode"
+    );
 }

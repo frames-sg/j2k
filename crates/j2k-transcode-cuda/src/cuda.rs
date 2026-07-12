@@ -36,6 +36,11 @@ use j2k_cuda_runtime::{
 };
 
 use crate::CudaTranscodeError;
+mod allocation;
+use self::allocation::{
+    checked_element_product, checked_element_sum, checked_host_byte_add, checked_host_byte_sum,
+    checked_host_bytes, try_transcode_vec_for_product, HostPhaseBudget,
+};
 mod transform;
 use self::transform::{
     accumulate_batch_timings, add_ht_encode_timings, append_i16_blocks, map_batch_timings,
@@ -90,9 +95,9 @@ pub(crate) struct CudaTranscodeSession {
 impl CudaTranscodeSession {
     fn context(&mut self) -> Result<CudaContext, CudaTranscodeError> {
         if self.context.is_none() {
-            self.context = Some(
-                CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?,
-            );
+            self.context = Some(CudaContext::system_default().map_err(|error| {
+                CudaTranscodeError::runtime("CUDA context initialization", error)
+            })?);
         }
         self.context
             .clone()
@@ -118,8 +123,8 @@ impl CudaTranscodeSession {
         let resources = Arc::new(
             context
                 .upload_htj2k_encode_resources(cuda_htj2k_encode_tables())
-                .map_err(|_| {
-                    CudaTranscodeError::Kernel("CUDA HTJ2K encode resource upload failed")
+                .map_err(|error| {
+                    CudaTranscodeError::runtime("CUDA HTJ2K encode resource upload", error)
                 })?,
         );
         self.encode_resources = Some(Arc::clone(&resources));

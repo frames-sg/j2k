@@ -7,6 +7,8 @@ use super::super::{
     PixelFormat,
 };
 use super::descriptors::FastSubsampledPacket;
+use crate::buffers::{checked_copy_bytes_to_buffer_at, new_shared_buffer};
+use j2k_core::accelerator::GpuAbi;
 
 pub(in crate::compute) fn fast_subsampled_params<P: FastSubsampledPacket>(
     packet: &P,
@@ -290,14 +292,8 @@ pub(in crate::compute) fn restart_offsets_buffer(
             message: "JPEG Metal restart offsets must contain at least one entry".to_string(),
         });
     }
-    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-    let bytes = unsafe {
-        core::slice::from_raw_parts(
-            restart_offsets.as_ptr().cast::<u8>(),
-            size_of_val(restart_offsets),
-        )
-    };
-    Ok(new_shared_buffer_with_data(device, bytes))
+    let bytes = <u32 as GpuAbi>::slice_as_bytes(restart_offsets);
+    new_shared_buffer_with_data(device, bytes)
 }
 
 #[cfg(target_os = "macos")]
@@ -310,31 +306,23 @@ pub(in crate::compute) fn entropy_checkpoints_buffer(
             message: "JPEG Metal entropy checkpoints must contain at least one entry".to_string(),
         });
     }
-    let checkpoints = entropy_checkpoint_hosts(entropy_checkpoints)?;
-    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
-    let bytes = unsafe {
-        core::slice::from_raw_parts(
-            checkpoints.as_ptr().cast::<u8>(),
-            size_of_val(checkpoints.as_slice()),
-        )
-    };
-    Ok(new_shared_buffer_with_data(device, bytes))
-}
-
-#[cfg(target_os = "macos")]
-pub(in crate::compute) fn entropy_checkpoint_hosts(
-    entropy_checkpoints: &[JpegEntropyCheckpointV1],
-) -> Result<Vec<JpegEntropyCheckpointHost>, Error> {
-    if entropy_checkpoints.is_empty() {
-        return Err(Error::MetalKernel {
-            message: "JPEG Metal entropy checkpoints must contain at least one entry".to_string(),
-        });
+    let checkpoint_bytes = core::mem::size_of::<JpegEntropyCheckpointHost>();
+    let total_bytes = crate::batch_allocation::checked_count_product(
+        entropy_checkpoints.len(),
+        checkpoint_bytes,
+        "JPEG Metal entropy checkpoint upload bytes",
+    )?;
+    let buffer = new_shared_buffer(device, total_bytes)?;
+    for (index, checkpoint) in entropy_checkpoints.iter().copied().enumerate() {
+        let checkpoint = JpegEntropyCheckpointHost::from(checkpoint);
+        checked_copy_bytes_to_buffer_at(
+            &buffer,
+            index * checkpoint_bytes,
+            JpegEntropyCheckpointHost::as_bytes(&checkpoint),
+            "upload JPEG Metal entropy checkpoint",
+        )?;
     }
-    Ok(entropy_checkpoints
-        .iter()
-        .copied()
-        .map(JpegEntropyCheckpointHost::from)
-        .collect::<Vec<_>>())
+    Ok(buffer)
 }
 
 #[cfg(target_os = "macos")]

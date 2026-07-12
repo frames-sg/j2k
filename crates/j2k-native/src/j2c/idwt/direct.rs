@@ -13,8 +13,8 @@ use super::roi::interleave_samples_roi;
 use super::vertical::filter_vertical;
 use crate::error::{bail, DecodingError};
 use crate::{
-    HtCodeBlockDecoder, J2kIdwtBand, J2kRect, J2kSingleDecompositionIdwtJob, J2kWaveletTransform,
-    Result,
+    checked_decode_usize_product2, try_resize_decode_elements, HtCodeBlockDecoder, J2kIdwtBand,
+    J2kRect, J2kSingleDecompositionIdwtJob, J2kWaveletTransform, Result,
 };
 
 pub(super) fn apply_level(
@@ -26,9 +26,11 @@ pub(super) fn apply_level(
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
 ) -> Result<IDWTTempOutput> {
     let handled = if let Some(backend) = backend.as_deref_mut() {
-        let required_len =
-            decomposition.rect.width() as usize * decomposition.rect.height() as usize;
-        target.resize(required_len, 0.0);
+        let required_len = checked_decode_usize_product2(
+            decomposition.rect.width() as usize,
+            decomposition.rect.height() as usize,
+        )?;
+        try_resize_decode_elements(target, required_len, 0.0)?;
         let job = single_decomposition_job(input, decomposition, storage, transform);
         backend
             .decode_single_decomposition_idwt(job, target)
@@ -42,7 +44,7 @@ pub(super) fn apply_level(
             rect: decomposition.rect,
         })
     } else {
-        Ok(filter_2d(input, target, decomposition, transform, storage))
+        filter_2d(input, target, decomposition, transform, storage)
     }
 }
 
@@ -57,12 +59,9 @@ pub(crate) fn apply_single_decomposition_idwt_job(
     validate_direct_band(job.hh)?;
 
     target.clear();
-    let required_len = rect
-        .width()
-        .checked_mul(rect.height())
-        .and_then(|len| usize::try_from(len).ok())
-        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-    target.resize(required_len, 0.0);
+    let required_len =
+        checked_decode_usize_product2(rect.width() as usize, rect.height() as usize)?;
+    try_resize_decode_elements(target, required_len, 0.0)?;
 
     interleave_samples_roi(
         direct_coefficient_source(job.ll),
@@ -149,16 +148,16 @@ fn filter_2d(
     decomposition: &Decomposition,
     transform: WaveletTransform,
     storage: &DecompositionStorage<'_>,
-) -> IDWTTempOutput {
+) -> Result<IDWTTempOutput> {
     // First interleave all sub-bands into a single buffer.
-    interleave_samples(input, decomposition, coefficients, storage);
+    interleave_samples(input, decomposition, coefficients, storage)?;
 
     if decomposition.rect.width() > 0 && decomposition.rect.height() > 0 {
         filter_horizontal(coefficients, decomposition.rect, transform);
         filter_vertical(coefficients, decomposition.rect, transform);
     }
 
-    IDWTTempOutput {
+    Ok(IDWTTempOutput {
         rect: decomposition.rect,
-    }
+    })
 }

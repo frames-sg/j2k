@@ -2,8 +2,9 @@
 
 use super::{
     checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
-    decode_mct_status_error, hybrid_stage_signpost, size_of, with_runtime, zeroed_shared_buffer,
-    Buffer, CommandBufferRef, DirectStatusCheck, Error, J2kInverseMctJob, J2kInverseMctParams,
+    decode_mct_status_error, hybrid_stage_signpost, new_command_buffer,
+    new_compute_command_encoder, size_of, with_runtime, zeroed_shared_buffer, Buffer,
+    CommandBufferRef, DirectStatusCheck, Error, J2kInverseMctJob, J2kInverseMctParams,
     J2kMctStatus, J2kWaveletTransform, MTLSize, MetalRuntime, J2K_MCT_STATUS_OK,
     SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE,
 };
@@ -43,13 +44,13 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
             _addend1: addend1,
             _addend2: addend2,
         };
-        let plane0_buffer = copied_slice_buffer(&runtime.device, plane0);
-        let plane1_buffer = copied_slice_buffer(&runtime.device, plane1);
-        let plane2_buffer = copied_slice_buffer(&runtime.device, plane2);
-        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>());
+        let plane0_buffer = copied_slice_buffer(&runtime.device, plane0)?;
+        let plane1_buffer = copied_slice_buffer(&runtime.device, plane1)?;
+        let plane2_buffer = copied_slice_buffer(&runtime.device, plane2)?;
+        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>())?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.inverse_mct);
         encoder.set_buffer(0, Some(&plane0_buffer), 0);
         encoder.set_buffer(1, Some(&plane1_buffer), 0);
@@ -78,7 +79,7 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
             },
         );
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kMctStatus>(&status_buffer, "inverse MCT status")?;
         if status.code != J2K_MCT_STATUS_OK {
@@ -129,10 +130,10 @@ pub(in crate::compute) fn dispatch_inverse_mct_buffers_in_command_buffer(
         _addend1: addends[1],
         _addend2: addends[2],
     };
-    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>());
+    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>())?;
 
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(command_buffer)?;
     encoder.set_compute_pipeline_state(&runtime.inverse_mct);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);

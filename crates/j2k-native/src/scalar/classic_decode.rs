@@ -23,6 +23,16 @@ pub struct J2kCodeBlockDecodeWorkspace {
     bit_plane_decode_context: j2c::bitplane::BitPlaneDecodeContext,
 }
 
+impl J2kCodeBlockDecodeWorkspace {
+    pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
+        self.bit_plane_decode_context.prepare(width, height)
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> Result<usize> {
+        self.bit_plane_decode_context.allocated_bytes()
+    }
+}
+
 /// Adapter scalar classic J2K decoder helper that reuses caller-provided scratch.
 #[doc(hidden)]
 pub fn decode_j2k_code_block_scalar_with_workspace(
@@ -62,7 +72,6 @@ pub fn decode_j2k_code_block_scalar_with_workspace(
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CodeBlockOutputLayout {
     pub(super) stride: usize,
-    pub(super) len: usize,
 }
 
 pub(super) fn checked_code_block_output_layout(
@@ -84,11 +93,7 @@ pub(super) fn checked_code_block_output_layout(
     if output_len < required_len {
         bail!(DecodingError::CodeBlockDecodeFailure);
     }
-    let len = stride
-        .checked_mul(height)
-        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-
-    Ok(CodeBlockOutputLayout { stride, len })
+    Ok(CodeBlockOutputLayout { stride })
 }
 
 #[expect(

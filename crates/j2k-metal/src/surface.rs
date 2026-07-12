@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{borrow::Cow, ops::Range};
+use std::{borrow::Cow, ops::Range, sync::Arc};
 
 use j2k_core::{
     copy_tight_pixels_to_strided_output, BackendKind, DeviceMemoryRange, DeviceSurface,
@@ -11,13 +11,21 @@ use metal::foreign_types::ForeignType;
 #[cfg(target_os = "macos")]
 use metal::Buffer;
 
+#[cfg(target_os = "macos")]
+use crate::error::metal_kernel_support_error;
 use crate::Error;
 
 #[derive(Clone)]
 pub(crate) enum Storage {
-    Host(Vec<u8>),
+    Host(Arc<Vec<u8>>),
     #[cfg(target_os = "macos")]
     Metal(Buffer),
+}
+
+impl Storage {
+    pub(crate) fn from_host(bytes: Vec<u8>) -> Self {
+        Self::Host(Arc::new(bytes))
+    }
 }
 
 #[derive(Clone)]
@@ -92,14 +100,16 @@ impl Surface {
                     )
                 } {
                     Ok(bytes) => Ok(Cow::Owned(bytes)),
-                    Err(j2k_metal_support::MetalSupportError::BufferContentsUnavailable) => {
-                        Err(Error::MetalKernel {
-                            message: "J2K Metal surface buffer is not host-addressable".to_string(),
-                        })
-                    }
-                    Err(error) => Err(Error::MetalKernel {
-                        message: format!("J2K Metal surface byte range invalid: {error}"),
-                    }),
+                    Err(
+                        error @ j2k_metal_support::MetalSupportError::BufferContentsUnavailable,
+                    ) => Err(metal_kernel_support_error(
+                        "J2K Metal surface buffer is not host-addressable",
+                        error,
+                    )),
+                    Err(error) => Err(metal_kernel_support_error(
+                        format!("J2K Metal surface byte range invalid: {error}"),
+                        error,
+                    )),
                 }
             }
         }
@@ -108,17 +118,10 @@ impl Surface {
     /// Return the tightly packed surface bytes.
     ///
     /// Host-backed surfaces are borrowed without copying. Metal-backed surfaces
-    /// are copied into owned storage. This method panics only if the surface
-    /// metadata is internally inconsistent; fallible operations such as
-    /// [`Self::download_into`] return those errors.
-    ///
-    /// # Panics
-    ///
-    /// Panics if validated surface metadata no longer describes the backing
-    /// storage range.
-    pub fn as_bytes(&self) -> Cow<'_, [u8]> {
+    /// are copied into owned storage. Synchronization, readback, and validated
+    /// range failures are returned through the backend's typed error contract.
+    pub fn as_bytes(&self) -> Result<Cow<'_, [u8]>, Error> {
         self.storage_bytes()
-            .expect("validated J2K Metal surface byte range")
     }
 
     /// Copy the tightly packed surface into a caller-provided strided buffer.
@@ -224,5 +227,55 @@ impl DeviceSurface for Surface {
                 self.byte_len(),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Storage, Surface};
+    use crate::Error;
+    use j2k_core::{BackendKind, PixelFormat, SurfaceResidency};
+
+    fn host_surface(bytes: Vec<u8>, byte_offset: usize) -> Surface {
+        Surface {
+            backend: BackendKind::Cpu,
+            residency: SurfaceResidency::Host,
+            dimensions: (2, 1),
+            fmt: PixelFormat::Gray8,
+            pitch_bytes: 2,
+            byte_offset,
+            storage: Storage::from_host(bytes),
+        }
+    }
+
+    #[test]
+    fn host_backed_byte_access_borrows_the_validated_range() {
+        let surface = host_surface(vec![9, 1, 2, 8], 1);
+        let bytes = surface.as_bytes().expect("valid host surface bytes");
+
+        assert!(matches!(bytes, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(bytes.as_ref(), [1, 2]);
+    }
+
+    #[test]
+    fn invalid_host_backed_range_returns_an_error_without_panicking() {
+        let surface = host_surface(vec![1, 2], 1);
+        let error = surface
+            .as_bytes()
+            .expect_err("out-of-range host surface must fail");
+
+        assert!(matches!(error, Error::MetalKernel { .. }));
+    }
+
+    #[test]
+    fn cloning_a_host_surface_shares_the_pixel_owner() {
+        let surface = host_surface(vec![1, 2], 0);
+        let cloned = surface.clone();
+
+        let (Storage::Host(original), Storage::Host(clone)) = (&surface.storage, &cloned.storage)
+        else {
+            panic!("host surface clone must preserve host storage");
+        };
+        assert!(std::sync::Arc::ptr_eq(original, clone));
     }
 }

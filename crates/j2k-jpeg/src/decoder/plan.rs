@@ -2,20 +2,111 @@
 
 //! Prepared decode-plan construction and validation.
 
+mod construction;
+mod progressive_quant;
+
+use construction::PreparedConstructionBudget;
+use progressive_quant::latch_progressive_quant_tables;
+
+use super::allocation::{
+    compute_progressive_scratch_bytes, decode_workspace_cap, ensure_prepared_construction_fits,
+    prepared_decode_plan_allocation_bytes, progressive_prepared_allocation_bytes,
+};
 use super::{
-    checked_usize_product, compute_decode_scratch_bytes, compute_extended12_planes_scratch_bytes,
-    compute_lossless_scratch_bytes, lossless_color_sampling, Arc, ColorSpace, Decoder,
-    DecoderContext, HuffmanTable, HuffmanValues, Info, JpegError, MarkerKind, ParsedHeader,
-    PreparedComponentPlan, PreparedDecodePlan, PreparedLosslessPlan,
-    PreparedProgressiveComponentPlan, PreparedProgressivePlan, PreparedProgressiveScan,
-    PreparedProgressiveScanComponent, RawHuffmanTable, SofKind, Vec, DEFAULT_MAX_DECODE_BYTES,
+    compute_decode_scratch_bytes, compute_extended12_planes_scratch_bytes,
+    compute_lossless_scratch_bytes, lossless_color_sampling, ColorSpace, DecodeOptions, Decoder,
+    DecoderContext, Info, JpegError, MarkerKind, ParsedHeader, PreparedComponentPlan,
+    PreparedDecodePlan, PreparedDecoderMetadata, PreparedHuffmanTableId, PreparedHuffmanTables,
+    PreparedLosslessPlan, PreparedProgressiveComponentPlan, PreparedProgressivePlan,
+    PreparedProgressiveScan, PreparedProgressiveScanComponent, SofKind, DEFAULT_MAX_DECODE_BYTES,
 };
 
 impl Decoder<'_> {
+    pub(super) fn prepare_header_with_external_live(
+        header: ParsedHeader,
+        info: Info,
+        options: DecodeOptions,
+        bytes: &[u8],
+        ctx: &mut DecoderContext,
+        external_live_bytes: usize,
+    ) -> Result<PreparedDecoderMetadata, JpegError> {
+        let retained_parsed_bytes = header.retained_allocation_bytes()?;
+        let mut construction = PreparedConstructionBudget::with_external_live(
+            external_live_bytes,
+            retained_parsed_bytes,
+            ctx.retained_allocation_bytes(),
+        )?;
+        let (plan, progressive_plan, lossless_plan) = if matches!(
+            info.sof_kind,
+            SofKind::Progressive8 | SofKind::Progressive12
+        ) {
+            let progressive_plan =
+                Self::build_progressive_plan(&header, &info, ctx, &mut construction)?;
+            let plan = Self::build_progressive_host_output_plan(
+                &header,
+                &info,
+                &progressive_plan,
+                &mut construction,
+            )?;
+            (plan, Some(progressive_plan), None)
+        } else if info.sof_kind == SofKind::Lossless {
+            let (plan, lossless_plan) =
+                Self::build_lossless_plan(&header, &info, ctx, &mut construction)?;
+            (plan, None, Some(lossless_plan))
+        } else if options == DecodeOptions::default() {
+            if let Some(scan_offset) = header.sos_offset {
+                let header_prefix =
+                    bytes
+                        .get(..scan_offset)
+                        .ok_or(JpegError::InternalInvariant {
+                            reason: "parsed SOS offset is outside the JPEG input",
+                        })?;
+                let plan =
+                    ctx.resolve_decode_plan(header_prefix, retained_parsed_bytes, |ctx| {
+                        Self::build_prepared_plan(&header, &info, ctx, &mut construction)
+                    })?;
+                construction.rebase_after_plan_cache(
+                    ctx.retained_allocation_bytes(),
+                    plan.retained_allocation_bytes()?,
+                )?;
+                (plan, None, None)
+            } else {
+                (
+                    Self::build_prepared_plan(&header, &info, ctx, &mut construction)?,
+                    None,
+                    None,
+                )
+            }
+        } else {
+            (
+                Self::build_prepared_plan(&header, &info, ctx, &mut construction)?,
+                None,
+                None,
+            )
+        };
+        let mut prepared_bytes = plan.retained_allocation_bytes()?;
+        if let Some(progressive) = &progressive_plan {
+            prepared_bytes = crate::allocation::checked_add_allocation_bytes(
+                prepared_bytes,
+                progressive.retained_allocation_bytes()?,
+            )?;
+        }
+        construction.verify_retained(ctx.retained_allocation_bytes(), prepared_bytes)?;
+        ensure_prepared_construction_fits(&header, prepared_bytes)?;
+        Ok(PreparedDecoderMetadata {
+            info,
+            warnings: header.warnings,
+            plan,
+            progressive_plan,
+            lossless_plan,
+        })
+    }
+
     pub(super) fn build_prepared_plan(
         header: &ParsedHeader,
         info: &Info,
         ctx: &mut DecoderContext,
+        construction: &mut PreparedConstructionBudget,
     ) -> Result<PreparedDecodePlan, JpegError> {
         match info.sof_kind {
             SofKind::Baseline8 | SofKind::Extended8 | SofKind::Extended12 => {}
@@ -41,8 +132,6 @@ impl Decoder<'_> {
             | ColorSpace::Ycck => {}
         }
 
-        let mut dc_tables: [Option<Arc<HuffmanTable>>; 4] = Default::default();
-        let mut ac_tables: [Option<Arc<HuffmanTable>>; 4] = Default::default();
         let scan = header.scan.as_ref().ok_or(JpegError::MissingMarker {
             marker: MarkerKind::Sos,
         })?;
@@ -67,32 +156,27 @@ impl Decoder<'_> {
                 return Err(JpegError::NotImplemented { sof: info.sof_kind });
             }
         }
-        for comp in &scan.components {
-            let di = comp.dc_table as usize;
-            let ai = comp.ac_table as usize;
-            if dc_tables[di].is_none() {
-                let raw = header.huffman_tables.dc[di].as_ref().ok_or(
-                    JpegError::MissingHuffmanTable {
-                        component: comp.id,
-                        class: 0,
-                        id: comp.dc_table,
-                    },
-                )?;
-                dc_tables[di] = Some(ctx.resolve_huffman_table(raw)?);
-            }
-            if ac_tables[ai].is_none() {
-                let raw = header.huffman_tables.ac[ai].as_ref().ok_or(
-                    JpegError::MissingHuffmanTable {
-                        component: comp.id,
-                        class: 1,
-                        id: comp.ac_table,
-                    },
-                )?;
-                ac_tables[ai] = Some(ctx.resolve_huffman_table(raw)?);
-            }
-        }
+        let prepared_bytes = prepared_decode_plan_allocation_bytes(
+            scan.components.len(),
+            header.huffman_tables.versions.len(),
+        )?;
+        ensure_prepared_construction_fits(header, prepared_bytes)?;
+        let huffman_tables = compile_huffman_versions(header, ctx, construction)?;
+        let prepared_bytes = prepared_decode_plan_allocation_bytes(
+            scan.components.len(),
+            huffman_tables.capacity(),
+        )?;
+        ensure_prepared_construction_fits(header, prepared_bytes)?;
+        let workspace_cap = decode_workspace_cap(header, prepared_bytes)?;
 
-        build_decode_plan(header, info, &dc_tables, &ac_tables, ctx)
+        build_decode_plan(
+            header,
+            info,
+            huffman_tables,
+            workspace_cap,
+            ctx,
+            construction,
+        )
     }
 
     #[expect(
@@ -103,6 +187,7 @@ impl Decoder<'_> {
         header: &ParsedHeader,
         info: &Info,
         ctx: &mut DecoderContext,
+        construction: &mut PreparedConstructionBudget,
     ) -> Result<(PreparedDecodePlan, PreparedLosslessPlan), JpegError> {
         if info.sof_kind != SofKind::Lossless {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
@@ -129,12 +214,19 @@ impl Decoder<'_> {
                 count: scan.components.len() as u8,
             });
         }
-        let empty_raw = RawHuffmanTable {
-            bits: [0; 16],
-            values: HuffmanValues::default(),
-        };
-        let empty_huffman = ctx.resolve_huffman_table(&empty_raw)?;
-        let mut components = Vec::with_capacity(scan.components.len());
+        let prepared_bytes = prepared_decode_plan_allocation_bytes(
+            scan.components.len(),
+            header.huffman_tables.versions.len(),
+        )?;
+        ensure_prepared_construction_fits(header, prepared_bytes)?;
+        let huffman_tables = compile_huffman_versions(header, ctx, construction)?;
+        let prepared_bytes = prepared_decode_plan_allocation_bytes(
+            scan.components.len(),
+            huffman_tables.capacity(),
+        )?;
+        ensure_prepared_construction_fits(header, prepared_bytes)?;
+        let workspace_cap = decode_workspace_cap(header, prepared_bytes)?;
+        let mut components = construction.try_vec(scan.components.len())?;
         let mut first_dc_table = None;
         for scan_component in scan.components.iter().copied() {
             let component_index = find_component_index(&header.component_ids, scan_component.id)
@@ -149,22 +241,25 @@ impl Decoder<'_> {
                     .ok_or(JpegError::MissingMarker {
                         marker: MarkerKind::Sof,
                     })?;
-            let raw_dc = header.huffman_tables.dc[scan_component.dc_table as usize]
-                .as_ref()
-                .ok_or(JpegError::MissingHuffmanTable {
-                    component: scan_component.id,
-                    class: 0,
-                    id: scan_component.dc_table,
-                })?;
-            let dc_table = ctx.resolve_huffman_table(raw_dc)?;
-            first_dc_table.get_or_insert_with(|| Arc::clone(&dc_table));
+            let dc_table = prepared_active_huffman_id(
+                &header.huffman_tables,
+                &huffman_tables,
+                0,
+                scan_component.dc_table,
+            )
+            .ok_or(JpegError::MissingHuffmanTable {
+                component: scan_component.id,
+                class: 0,
+                id: scan_component.dc_table,
+            })?;
+            first_dc_table.get_or_insert(dc_table);
             components.push(PreparedComponentPlan {
                 h,
                 v,
                 output_index: component_index,
                 quant: ctx.resolve_quant_table([1; 64]),
-                dc_table,
-                ac_table: Arc::clone(&empty_huffman),
+                dc_table: Some(dc_table),
+                ac_table: None,
             });
         }
         if matches!(info.color_space, ColorSpace::Rgb | ColorSpace::YCbCr)
@@ -174,6 +269,7 @@ impl Decoder<'_> {
         }
         let plan = PreparedDecodePlan {
             components,
+            huffman_tables,
             sampling: info.sampling,
             color_space: info.color_space,
             restart_interval: header.restart_interval,
@@ -181,7 +277,7 @@ impl Decoder<'_> {
             scan_offset: header.sos_offset.ok_or(JpegError::MissingMarker {
                 marker: MarkerKind::Sos,
             })?,
-            scratch_bytes: compute_lossless_scratch_bytes(info, DEFAULT_MAX_DECODE_BYTES)?,
+            scratch_bytes: compute_lossless_scratch_bytes(info, workspace_cap)?,
         };
         let lossless = PreparedLosslessPlan {
             predictor: scan.ss,
@@ -199,14 +295,11 @@ impl Decoder<'_> {
         clippy::too_many_lines,
         reason = "progressive planning validates the ordered scan script while compiling shared table state"
     )]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "JPEG scan component counts are validated against the eight-bit SOS field"
-    )]
     pub(super) fn build_progressive_plan(
         header: &ParsedHeader,
         info: &Info,
         ctx: &mut DecoderContext,
+        construction: &mut PreparedConstructionBudget,
     ) -> Result<PreparedProgressivePlan, JpegError> {
         if !matches!(
             info.sof_kind,
@@ -228,12 +321,42 @@ impl Decoder<'_> {
                 marker: MarkerKind::Sos,
             });
         }
+        let latched_quant_tables = latch_progressive_quant_tables(header)?;
 
         let max_h = u32::from(header.sampling.max_h);
         let max_v = u32::from(header.sampling.max_v);
         let mcu_cols = info.dimensions.0.div_ceil(8 * max_h);
         let mcu_rows = info.dimensions.1.div_ceil(8 * max_v);
-        let mut components = Vec::with_capacity(header.component_ids.len());
+        let total_scan_components =
+            header
+                .progressive_scans
+                .iter()
+                .try_fold(0usize, |total, parsed| {
+                    total.checked_add(parsed.scan.components.len()).ok_or(
+                        JpegError::MemoryCapExceeded {
+                            requested: usize::MAX,
+                            cap: DEFAULT_MAX_DECODE_BYTES,
+                        },
+                    )
+                })?;
+        let prepared_bytes = progressive_prepared_allocation_bytes(
+            header.component_ids.len(),
+            header.progressive_scans.len(),
+            total_scan_components,
+            header.huffman_tables.versions.len(),
+        )?;
+        ensure_prepared_construction_fits(header, prepared_bytes)?;
+        let huffman_tables = compile_huffman_versions(header, ctx, construction)?;
+        let prepared_bytes = progressive_prepared_allocation_bytes(
+            header.component_ids.len(),
+            header.progressive_scans.len(),
+            total_scan_components,
+            huffman_tables.capacity(),
+        )?;
+        ensure_prepared_construction_fits(header, prepared_bytes)?;
+        let workspace_cap = decode_workspace_cap(header, prepared_bytes)?;
+
+        let mut components = construction.try_vec(header.component_ids.len())?;
         for (output_index, &id) in header.component_ids.iter().enumerate() {
             let (h, v) =
                 header
@@ -248,16 +371,14 @@ impl Decoder<'_> {
                     .get(output_index)
                     .ok_or(JpegError::MissingMarker {
                         marker: MarkerKind::Sof,
-                    })? as usize;
-            let quant = *header
-                .quant_tables
-                .entries
-                .get(quant_id)
-                .and_then(|q| q.as_ref())
-                .ok_or(JpegError::MissingQuantTable {
-                    component: id,
-                    table_id: quant_id as u8,
-                })?;
+                    })?;
+            let quant =
+                latched_quant_tables
+                    .table(output_index)
+                    .ok_or(JpegError::MissingQuantTable {
+                        component: id,
+                        table_id: quant_id,
+                    })?;
             components.push(PreparedProgressiveComponentPlan {
                 h,
                 v,
@@ -278,33 +399,20 @@ impl Decoder<'_> {
             });
         }
 
-        let mut scans = Vec::with_capacity(header.progressive_scans.len());
+        let mut scan_components = construction.try_vec(total_scan_components)?;
+        let mut scans = construction.try_vec(header.progressive_scans.len())?;
         for parsed in &header.progressive_scans {
-            let mut scan_components = Vec::with_capacity(parsed.scan.components.len());
+            let component_start = scan_components.len();
             for component in &parsed.scan.components {
                 let component_index = find_component_index(&header.component_ids, component.id)
                     .ok_or(JpegError::UnknownScanComponent {
                         offset: parsed.entropy_offset,
                         component: component.id,
                     })?;
-                let quant_id = *header.quant_table_ids.get(component_index).ok_or(
-                    JpegError::MissingMarker {
-                        marker: MarkerKind::Sof,
-                    },
-                )?;
-                let _ = parsed
-                    .quant_tables
-                    .entries
-                    .get(quant_id as usize)
-                    .and_then(|q| q.as_ref())
-                    .ok_or(JpegError::MissingQuantTable {
-                        component: component.id,
-                        table_id: quant_id,
-                    })?;
                 let dc_table = if parsed.scan.ss == 0 {
                     Some(resolve_progressive_huffman(
-                        ctx,
-                        &parsed.huffman_tables.dc,
+                        &parsed.table_state,
+                        &huffman_tables,
                         component.id,
                         0,
                         component.dc_table,
@@ -314,8 +422,8 @@ impl Decoder<'_> {
                 };
                 let ac_table = if parsed.scan.ss > 0 {
                     Some(resolve_progressive_huffman(
-                        ctx,
-                        &parsed.huffman_tables.ac,
+                        &parsed.table_state,
+                        &huffman_tables,
                         component.id,
                         1,
                         component.ac_table,
@@ -330,21 +438,30 @@ impl Decoder<'_> {
                 });
             }
             scans.push(PreparedProgressiveScan {
-                components: scan_components,
+                component_start,
+                component_len: parsed.scan.components.len(),
                 ss: parsed.scan.ss,
                 se: parsed.scan.se,
                 ah: parsed.scan.ah,
                 al: parsed.scan.al,
                 entropy_offset: parsed.entropy_offset,
+                terminal_offset: parsed.terminal_offset,
+                terminal_code: parsed.terminal_code,
                 restart_interval: parsed.restart_interval,
             });
         }
 
-        let scratch_bytes =
-            compute_progressive_scratch_bytes(&components, info.dimensions.0 as usize)?;
+        let scratch_bytes = compute_progressive_scratch_bytes(
+            &components,
+            info.dimensions.0 as usize,
+            info.sof_kind,
+            workspace_cap,
+        )?;
         Ok(PreparedProgressivePlan {
             components,
+            scan_components,
             scans,
+            huffman_tables,
             sampling: info.sampling,
             color_space: info.color_space,
             dimensions: info.dimensions,
@@ -354,56 +471,26 @@ impl Decoder<'_> {
         })
     }
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "JPEG scan component counts are validated against the eight-bit SOS field"
-    )]
     pub(super) fn build_progressive_host_output_plan(
         header: &ParsedHeader,
         info: &Info,
-        ctx: &mut DecoderContext,
+        progressive: &PreparedProgressivePlan,
+        construction: &mut PreparedConstructionBudget,
     ) -> Result<PreparedDecodePlan, JpegError> {
-        let empty_raw = RawHuffmanTable {
-            bits: [0; 16],
-            values: HuffmanValues::default(),
-        };
-        let empty_huffman = ctx.resolve_huffman_table(&empty_raw)?;
-        let mut components = Vec::with_capacity(header.component_ids.len());
-        for (output_index, &id) in header.component_ids.iter().enumerate() {
-            let (h, v) =
-                header
-                    .sampling
-                    .component(output_index)
-                    .ok_or(JpegError::MissingMarker {
-                        marker: MarkerKind::Sof,
-                    })?;
-            let quant_id =
-                *header
-                    .quant_table_ids
-                    .get(output_index)
-                    .ok_or(JpegError::MissingMarker {
-                        marker: MarkerKind::Sof,
-                    })? as usize;
-            let quant = *header
-                .quant_tables
-                .entries
-                .get(quant_id)
-                .and_then(|q| q.as_ref())
-                .ok_or(JpegError::MissingQuantTable {
-                    component: id,
-                    table_id: quant_id as u8,
-                })?;
+        let mut components = construction.try_vec(progressive.components.len())?;
+        for component in &progressive.components {
             components.push(PreparedComponentPlan {
-                h,
-                v,
-                output_index,
-                quant: ctx.resolve_quant_table(quant),
-                dc_table: Arc::clone(&empty_huffman),
-                ac_table: Arc::clone(&empty_huffman),
+                h: component.h,
+                v: component.v,
+                output_index: component.output_index,
+                quant: component.quant,
+                dc_table: None,
+                ac_table: None,
             });
         }
         Ok(PreparedDecodePlan {
             components,
+            huffman_tables: construction.try_huffman_tables(0)?,
             sampling: info.sampling,
             color_space: info.color_space,
             restart_interval: header.restart_interval,
@@ -411,11 +498,10 @@ impl Decoder<'_> {
             scan_offset: header.sos_offset.ok_or(JpegError::MissingMarker {
                 marker: MarkerKind::Sos,
             })?,
-            scratch_bytes: compute_decode_scratch_bytes(
-                info.dimensions,
-                info.sampling,
-                DEFAULT_MAX_DECODE_BYTES,
-            )?,
+            // Progressive decoding uses the aggregate coefficient/render
+            // workspace recorded on `PreparedProgressivePlan`; this companion
+            // plan only supplies shared output geometry and table handles.
+            scratch_bytes: 0,
         })
     }
 }
@@ -427,9 +513,10 @@ impl Decoder<'_> {
 fn build_decode_plan(
     header: &ParsedHeader,
     info: &Info,
-    dc_tables: &[Option<Arc<HuffmanTable>>; 4],
-    ac_tables: &[Option<Arc<HuffmanTable>>; 4],
+    huffman_tables: PreparedHuffmanTables,
+    workspace_cap: usize,
     ctx: &mut DecoderContext,
+    construction: &mut PreparedConstructionBudget,
 ) -> Result<PreparedDecodePlan, JpegError> {
     let scan = header.scan.as_ref().ok_or(JpegError::MissingMarker {
         marker: MarkerKind::Sos,
@@ -438,7 +525,7 @@ fn build_decode_plan(
         marker: MarkerKind::Sos,
     })?;
 
-    let mut components = Vec::with_capacity(scan.components.len());
+    let mut components = construction.try_vec(scan.components.len())?;
     for scan_comp in scan.components.iter().copied() {
         let output_index = find_component_index(&header.component_ids, scan_comp.id).ok_or(
             JpegError::UnknownScanComponent {
@@ -468,32 +555,40 @@ fn build_decode_plan(
                 component: scan_comp.id,
                 table_id: quant_id as u8,
             })?;
-        let dc_table = dc_tables[scan_comp.dc_table as usize].as_ref().ok_or(
-            JpegError::MissingHuffmanTable {
-                component: scan_comp.id,
-                class: 0,
-                id: scan_comp.dc_table,
-            },
-        )?;
-        let ac_table = ac_tables[scan_comp.ac_table as usize].as_ref().ok_or(
-            JpegError::MissingHuffmanTable {
-                component: scan_comp.id,
-                class: 1,
-                id: scan_comp.ac_table,
-            },
-        )?;
+        let dc_table = prepared_active_huffman_id(
+            &header.huffman_tables,
+            &huffman_tables,
+            0,
+            scan_comp.dc_table,
+        )
+        .ok_or(JpegError::MissingHuffmanTable {
+            component: scan_comp.id,
+            class: 0,
+            id: scan_comp.dc_table,
+        })?;
+        let ac_table = prepared_active_huffman_id(
+            &header.huffman_tables,
+            &huffman_tables,
+            1,
+            scan_comp.ac_table,
+        )
+        .ok_or(JpegError::MissingHuffmanTable {
+            component: scan_comp.id,
+            class: 1,
+            id: scan_comp.ac_table,
+        })?;
         components.push(PreparedComponentPlan {
             h,
             v,
             output_index,
             quant: ctx.resolve_quant_table(quant),
-            dc_table: Arc::clone(dc_table),
-            ac_table: Arc::clone(ac_table),
+            dc_table: Some(dc_table),
+            ac_table: Some(ac_table),
         });
     }
 
     let mut scratch_bytes =
-        compute_decode_scratch_bytes(info.dimensions, info.sampling, DEFAULT_MAX_DECODE_BYTES)?;
+        compute_decode_scratch_bytes(info.dimensions, info.sampling, workspace_cap)?;
     if info.sof_kind == SofKind::Extended12 {
         // The sequential 12-bit paths render through full-frame u16 component
         // planes, which dwarf the stripe-based estimate above.
@@ -501,12 +596,13 @@ fn build_decode_plan(
             &components,
             info.dimensions,
             info.sampling,
-            DEFAULT_MAX_DECODE_BYTES,
+            workspace_cap,
         )?);
     }
 
     Ok(PreparedDecodePlan {
         components,
+        huffman_tables,
         sampling: info.sampling,
         color_space: info.color_space,
         restart_interval: header.restart_interval,
@@ -545,77 +641,53 @@ fn validate_leading_component_sampling(
 }
 
 fn resolve_progressive_huffman(
-    ctx: &mut DecoderContext,
-    tables: &[Option<RawHuffmanTable>; 4],
+    state: &crate::parse::tables::ProgressiveTableState,
+    prepared: &PreparedHuffmanTables,
     component: u8,
     class: u8,
     id: u8,
-) -> Result<Arc<HuffmanTable>, JpegError> {
-    let raw = tables
-        .get(id as usize)
-        .and_then(|table| table.as_ref())
-        .ok_or(JpegError::MissingHuffmanTable {
-            component,
-            class,
-            id,
-        })?;
-    ctx.resolve_huffman_table(raw)
+) -> Result<PreparedHuffmanTableId, JpegError> {
+    let version_index = match class {
+        0 => state.dc_version_index(id),
+        1 => state.ac_version_index(id),
+        _ => None,
+    }
+    .ok_or(JpegError::MissingHuffmanTable {
+        component,
+        class,
+        id,
+    })?;
+    prepared
+        .id_at(version_index)
+        .ok_or(JpegError::InternalInvariant {
+            reason: "raw Huffman version is absent from the prepared arena",
+        })
 }
 
-fn compute_progressive_scratch_bytes(
-    components: &[PreparedProgressiveComponentPlan],
-    output_width: usize,
-) -> Result<usize, JpegError> {
-    let cap = DEFAULT_MAX_DECODE_BYTES;
-    let mut total = 0usize;
-    for component in components {
-        let blocks = checked_usize_product(
-            &[component.block_cols as usize, component.block_rows as usize],
-            cap,
-        )?;
-        let coeffs = checked_usize_product(&[blocks, 64, core::mem::size_of::<i32>()], cap)?;
-        total = total
-            .checked_add(coeffs)
-            .ok_or(JpegError::MemoryCapExceeded {
-                requested: usize::MAX,
-                cap,
-            })?;
+fn compile_huffman_versions(
+    header: &ParsedHeader,
+    ctx: &mut DecoderContext,
+    construction: &mut PreparedConstructionBudget,
+) -> Result<PreparedHuffmanTables, JpegError> {
+    let mut prepared = construction.try_huffman_tables(header.huffman_tables.versions.len())?;
+    for raw in &header.huffman_tables.versions {
+        prepared.push(construction.resolve_huffman_table(ctx, raw)?)?;
+    }
+    Ok(prepared)
+}
 
-        let plane = checked_usize_product(
-            &[
-                component.block_cols as usize,
-                component.block_rows as usize,
-                64,
-            ],
-            cap,
-        )?;
-        total = total
-            .checked_add(plane)
-            .ok_or(JpegError::MemoryCapExceeded {
-                requested: usize::MAX,
-                cap,
-            })?;
-        if total > cap {
-            return Err(JpegError::MemoryCapExceeded {
-                requested: total,
-                cap,
-            });
-        }
-    }
-    total =
-        total
-            .checked_add(output_width.saturating_mul(3))
-            .ok_or(JpegError::MemoryCapExceeded {
-                requested: usize::MAX,
-                cap,
-            })?;
-    if total > cap {
-        return Err(JpegError::MemoryCapExceeded {
-            requested: total,
-            cap,
-        });
-    }
-    Ok(total)
+fn prepared_active_huffman_id(
+    tables: &crate::parse::tables::HuffmanTables,
+    prepared: &PreparedHuffmanTables,
+    class: u8,
+    slot: u8,
+) -> Option<PreparedHuffmanTableId> {
+    let version_index = match class {
+        0 => tables.active_dc_version_index(slot),
+        1 => tables.active_ac_version_index(slot),
+        _ => None,
+    }?;
+    prepared.id_at(version_index)
 }
 
 pub(super) fn find_component_index(component_ids: &[u8], id: u8) -> Option<usize> {

@@ -213,7 +213,7 @@ impl RepeatedGrayscaleExecution<'_> {
                 params,
                 decoded: &output.buffer,
             },
-        );
+        )?;
         let stride_bytes = per_instance_len * size_of::<f32>();
         for (instance_idx, bands) in self.band_sets.iter_mut().enumerate() {
             bands.push(DirectBandSlice {
@@ -257,14 +257,14 @@ impl RepeatedGrayscaleExecution<'_> {
                     dispatch_reversible53_single_decomposition_buffers_in_command_buffer_with_offsets(
                         self.command_buffer,
                         dispatch,
-                    );
+                    )?;
                 }
                 J2kWaveletTransform::Irreversible97 => {
                     self.status_checks.push(
                         dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets(
                             self.command_buffer,
                             dispatch,
-                        ),
+                        )?,
                     );
                 }
             }
@@ -353,7 +353,7 @@ impl RepeatedGrayscaleExecution<'_> {
                     addend: store.addend,
                     batch_count,
                 },
-            );
+            )?;
             self.retained_buffers.push(output.buffer.clone());
             self.surfaces
                 .extend(encode_repeated_gray_plane_to_surfaces_in_command_buffer(
@@ -397,7 +397,7 @@ impl RepeatedGrayscaleExecution<'_> {
                 &output.buffer,
                 0,
                 params,
-            );
+            )?;
             self.retained_buffers.push(output.buffer.clone());
             self.surfaces
                 .push(encode_gray_plane_to_surface_in_command_buffer_with_offset(
@@ -461,6 +461,25 @@ pub(in crate::compute) fn encode_repeated_direct_grayscale_plan_in_command_buffe
         status_checks,
         scratch_buffers,
     } = request;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal repeated grayscale execution metadata",
+    );
+    let total_band_capacity = crate::batch_allocation::checked_count_product(
+        count,
+        plan.steps.len(),
+        "J2K Metal repeated grayscale band metadata",
+    )?;
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<Vec<DirectBandSlice>>(count),
+        crate::batch_allocation::BatchMetadataRequest::of::<DirectBandSlice>(total_band_capacity),
+        crate::batch_allocation::BatchMetadataRequest::of::<Surface>(count),
+    ])?;
+    let band_sets = super::super::resources::allocate_preflighted_direct_band_sets(
+        count,
+        plan.steps.len(),
+        &mut budget,
+    )?;
+    let surfaces = budget.try_vec(count, "J2K Metal repeated grayscale execution surfaces")?;
     let mut execution = RepeatedGrayscaleExecution {
         runtime,
         command_buffer,
@@ -471,8 +490,8 @@ pub(in crate::compute) fn encode_repeated_direct_grayscale_plan_in_command_buffe
         retained_buffers,
         status_checks,
         scratch_buffers,
-        band_sets: vec![Vec::new(); count],
-        surfaces: Vec::with_capacity(count),
+        band_sets,
+        surfaces,
         stacked_outputs: true,
     };
     let mut step_idx = 0;

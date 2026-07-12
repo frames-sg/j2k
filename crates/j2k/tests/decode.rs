@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{
-    encode_j2k_lossless_components, BackendErrorKind, EncodeBackendPreference, J2kBlockCodingMode,
-    J2kCodec, J2kComponentPlane, J2kContext, J2kDecoder, J2kError, J2kLosslessComponentPlane,
+    encode_j2k_lossless_components, EncodeBackendPreference, J2kBlockCodingMode, J2kCodec,
+    J2kComponentPlane, J2kContext, J2kDecoder, J2kError, J2kLosslessComponentPlane,
     J2kLosslessComponentSamples, J2kLosslessEncodeOptions, J2kRowDecodeOptions,
     ReversibleTransform,
 };
@@ -11,8 +11,8 @@ use j2k_core::{
     TileBatchDecode,
 };
 use j2k_native::{
-    encode, encode_htj2k, encode_precomputed_htj2k_53, DecodeSettings, EncodeOptions, Image,
-    J2kForwardDwt53Level, J2kForwardDwt53Output, PrecomputedHtj2k53Component,
+    encode, encode_htj2k, encode_precomputed_htj2k_53, DecodeError, DecodeSettings, EncodeOptions,
+    Image, J2kForwardDwt53Level, J2kForwardDwt53Output, MarkerError, PrecomputedHtj2k53Component,
     PrecomputedHtj2k53Image,
 };
 use j2k_test_support::{
@@ -254,10 +254,14 @@ fn decoder_new_rejects_codestream_that_only_header_inspection_accepts() {
         panic!("decoder construction must validate backend");
     };
 
-    let J2kError::Backend(backend) = err else {
-        panic!("expected backend construction error, got {err:?}");
+    let J2kError::NativeDecode { context, source } = err else {
+        panic!("expected typed native construction error, got {err:?}");
     };
-    assert_eq!(backend.kind(), BackendErrorKind::Other);
+    assert_eq!(context, "native JPEG 2000 backend failed");
+    assert!(matches!(
+        std::error::Error::source(&source).and_then(|source| source.downcast_ref::<DecodeError>()),
+        Some(DecodeError::Marker(MarkerError::ParseFailure("COD")))
+    ));
 }
 
 #[test]

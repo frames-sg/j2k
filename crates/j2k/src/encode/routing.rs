@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// j2k-coverage: shared-accelerator-host
 
-use alloc::{format, vec::Vec};
+use alloc::vec::Vec;
 
 use j2k_core::{BackendKind, Unsupported};
 
@@ -12,9 +13,10 @@ use super::lossy::lossy_quality_layer_count;
 use super::native::{native_lossless_options, native_lossy_options};
 use super::samples::{J2kLosslessSamples, J2kLossySamples};
 use super::{
-    j2k_lossless_decomposition_levels_for_options, j2k_lossy_decomposition_levels_for_options,
+    j2k_lossless_decomposition_levels_for_resident_geometry,
+    j2k_lossy_decomposition_levels_for_options,
 };
-use crate::{J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kError};
+use crate::{J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kError, J2kResidentEncodeInput};
 
 pub(super) fn resolve_encode_backend(
     preference: EncodeBackendPreference,
@@ -60,7 +62,12 @@ pub(super) fn encode_with_native_accelerator(
         &options,
         accelerator,
     )
-    .map_err(|err| J2kError::backend(format!("JPEG 2000 lossless encode failed: {err}")))
+    .map_err(|source| {
+        J2kError::from_native_encode_error_with_context(
+            source,
+            "accelerated native JPEG 2000 lossless encode failed",
+        )
+    })
 }
 
 pub(super) fn encode_lossy_with_native_accelerator(
@@ -80,7 +87,12 @@ pub(super) fn encode_lossy_with_native_accelerator(
         &options,
         accelerator,
     )
-    .map_err(|err| J2kError::backend(format!("JPEG 2000 lossy encode failed: {err}")))
+    .map_err(|source| {
+        J2kError::from_native_encode_error_with_context(
+            source,
+            "accelerated native JPEG 2000 lossy encode failed",
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -177,16 +189,45 @@ pub(super) fn required_encode_stages(
     options: J2kLosslessEncodeOptions,
     accelerated_backend: BackendKind,
 ) -> RequiredEncodeStages {
-    let decomposition_levels = j2k_lossless_decomposition_levels_for_options(samples, options);
+    required_encode_stages_for_geometry(
+        samples.width,
+        samples.height,
+        samples.components,
+        options,
+        accelerated_backend,
+    )
+}
+
+pub(super) fn required_resident_encode_stages(
+    input: J2kResidentEncodeInput,
+    options: J2kLosslessEncodeOptions,
+    accelerated_backend: BackendKind,
+) -> RequiredEncodeStages {
+    required_encode_stages_for_geometry(
+        input.width(),
+        input.height(),
+        input.num_components(),
+        options,
+        accelerated_backend,
+    )
+}
+
+fn required_encode_stages_for_geometry(
+    width: u32,
+    height: u32,
+    components: u16,
+    options: J2kLosslessEncodeOptions,
+    accelerated_backend: BackendKind,
+) -> RequiredEncodeStages {
+    let decomposition_levels =
+        j2k_lossless_decomposition_levels_for_resident_geometry(width, height, options);
     let high_throughput = options.block_coding_mode == J2kBlockCodingMode::HighThroughput;
 
     let mut bits = RequiredEncodeStages::PACKETIZATION;
     if matches!(accelerated_backend, BackendKind::Cuda | BackendKind::Metal) {
         bits |= RequiredEncodeStages::DEINTERLEAVE | RequiredEncodeStages::QUANTIZE_SUBBAND;
     }
-    if matches!(samples.components, 3 | 4)
-        && options.reversible_transform == ReversibleTransform::Rct53
-    {
+    if matches!(components, 3 | 4) && options.reversible_transform == ReversibleTransform::Rct53 {
         bits |= RequiredEncodeStages::FORWARD_RCT;
     }
     if decomposition_levels > 0 {

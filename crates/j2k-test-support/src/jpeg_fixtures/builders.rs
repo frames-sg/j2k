@@ -421,7 +421,8 @@ pub fn progressive_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
         0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ]);
     bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 0, 0]);
-    bytes.push(0x00);
+    // One zero-bit DC category code followed by the required all-one fill bits.
+    bytes.push(0x7f);
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
 }

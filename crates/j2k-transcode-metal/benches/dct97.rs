@@ -6,6 +6,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use j2k_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
+use j2k_profile::emit_profile_error;
 use j2k_transcode::accelerator::{
     DctGridToDwt53Job, DctGridToDwt97Job, DctGridToReversibleDwt53Job,
     DctToWaveletStageAccelerator, RayonReversibleDwt53Accelerator,
@@ -27,16 +28,33 @@ const WSI_TILE_BATCH_SIZES: [usize; 3] = [128, 256, 512];
 const TRANSCODE_PROFILE_STAGES_ENV: &str = "J2K_TRANSCODE_METAL_PROFILE_STAGES";
 
 thread_local! {
-    static TRANSCODE_BATCH_PROFILE_SUMMARY: RefCell<j2k_profile::ProfileSummary> =
-        RefCell::new(j2k_profile::ProfileSummary::new(j2k_profile::same_summary_labels(&[
-            "request",
-            "pipeline",
-            "context",
-            "coefficient_path",
-            "extract_processor",
-            "transform_processor",
-            "encode_processor",
-        ])).emit_on_drop());
+    static TRANSCODE_BATCH_PROFILE_SUMMARY: RefCell<Option<j2k_profile::ProfileSummary>> =
+        RefCell::new(transcode_batch_profile_summary());
+}
+
+fn transcode_batch_profile_summary() -> Option<j2k_profile::ProfileSummary> {
+    let labels = match j2k_profile::same_summary_labels(&[
+        "request",
+        "pipeline",
+        "context",
+        "coefficient_path",
+        "extract_processor",
+        "transform_processor",
+        "encode_processor",
+    ]) {
+        Ok(labels) => labels,
+        Err(error) => {
+            emit_profile_error("transcode_batch_summary_labels", &error);
+            return None;
+        }
+    };
+    match j2k_profile::ProfileSummary::new(labels) {
+        Ok(summary) => Some(summary.emit_on_drop()),
+        Err(error) => {
+            emit_profile_error("transcode_batch_summary_init", &error);
+            None
+        }
+    }
 }
 
 const DIRECT_BENCH_MARKERS: [&str; 8] = [
@@ -830,25 +848,59 @@ fn emit_transcode_batch_profile(
     }
 
     let report = &batch.report;
-    let row = report.profile_row(context, request);
+    let row = match report.profile_row(context, request) {
+        Ok(row) => row,
+        Err(error) => {
+            emit_profile_error("transcode_batch_profile_row", &error);
+            return;
+        }
+    };
 
     match mode {
         j2k_profile::ProfileStageMode::Disabled => {}
         j2k_profile::ProfileStageMode::Rows => {
-            j2k_profile::emit_profile_line(format!(
-                "j2k_profile{}",
-                j2k_profile::format_profile_key_value_fields(row.fields())
-            ));
+            let fields = match format_transcode_profile_fields(row.fields()) {
+                Ok(fields) => fields,
+                Err(error) => {
+                    emit_profile_error("transcode_batch_profile_format", &error);
+                    return;
+                }
+            };
+            eprintln!("j2k_profile{fields}");
             emit_pipeline_map(&report.pipeline_map());
         }
         j2k_profile::ProfileStageMode::Summary => {
             TRANSCODE_BATCH_PROFILE_SUMMARY.with(|summary| {
-                summary
-                    .borrow_mut()
-                    .record_str(row.codec(), row.op(), row.path(), row.fields());
+                let mut summary = summary.borrow_mut();
+                let Some(summary) = summary.as_mut() else {
+                    return;
+                };
+                if let Err(error) =
+                    summary.record_str(row.codec(), row.op(), row.path(), row.fields())
+                {
+                    emit_profile_error("transcode_batch_summary_record", &error);
+                }
             });
         }
     }
+}
+
+fn format_transcode_profile_fields(
+    fields: &[(&'static str, String)],
+) -> j2k_profile::ProfileResult<String> {
+    const PROFILE_PREFIX: &str = "j2k_profile";
+
+    let limits = j2k_profile::ProfileLimits::default();
+    let field_output_limit = limits
+        .max_output_bytes()
+        .checked_sub(PROFILE_PREFIX.len())
+        .ok_or(j2k_profile::ProfileError::InvalidLimits {
+            what: "profile output limit is shorter than the row prefix",
+        })?;
+    j2k_profile::format_profile_key_value_fields_with_limits(
+        fields,
+        limits.with_max_output_bytes(field_output_limit),
+    )
 }
 
 fn emit_pipeline_map(map: &TranscodePipelineMap) {

@@ -51,11 +51,15 @@ pub(super) fn plan_resident_lossless_buffer_encode(
         plan.components,
         plan.progression_order,
     )?;
+    let code_block_count = plan.code_blocks.len();
+    let resolution_count = plan.resolutions.len();
     let metadata = ResidentLosslessBufferEncodeMetadata {
         tile: OwnedMetalLosslessEncodeTile::from_tile(tile),
         components,
         bit_depth,
         bytes_per_pixel,
+        code_block_count,
+        resolution_count,
         plan,
         packet_descriptors,
         packetization_resolutions,

@@ -7,6 +7,10 @@ use super::{
     JpegView, OutputWriter, PixelFormat, Rect, RowSink, ScratchPool, SofKind, TileBatchDecode, Vec,
     Warning,
 };
+use crate::allocation::{
+    checked_add_allocation_bytes, checked_allocation_bytes, checked_allocation_len,
+    try_reserve_for_len_with_live_budget, try_resize_filled,
+};
 use j2k_core::TileRegionScaledDecodeJob;
 
 pub(super) fn jpeg_passthrough_syntax(info: &Info) -> Option<CompressedTransferSyntax> {
@@ -230,7 +234,8 @@ pub(super) struct CroppedWriter<W> {
     pub(super) inner: W,
     pub(super) rect: Rect,
     pub(super) source_x0: u32,
-    pub(super) source_width: u32,
+    pub(super) rgb_row_len: usize,
+    pub(super) rgb_rows_bytes: usize,
     pub(super) top_row: Vec<u8>,
     pub(super) bottom_row: Vec<u8>,
 }
@@ -249,17 +254,36 @@ impl<'a, W> ProgressiveDownscaleWriter<'a, W> {
         inner: &'a mut W,
         downscale: DownscaleFactor,
         dimensions: (u32, u32),
-    ) -> Self {
+    ) -> Result<Self, JpegError> {
         let denom = downscale.denominator();
         let scaled_width = dimensions.0.div_ceil(denom) as usize;
-        Self {
+        let row_bytes = checked_allocation_len::<u8>(scaled_width, 3)?;
+        let mut live_bytes = 0;
+        let mut r = Vec::new();
+        try_reserve_for_len_with_live_budget(&mut r, scaled_width, &mut live_bytes, row_bytes)?;
+        r.resize(scaled_width, 0);
+        let mut g = Vec::new();
+        try_reserve_for_len_with_live_budget(&mut g, scaled_width, &mut live_bytes, row_bytes)?;
+        g.resize(scaled_width, 0);
+        let mut b = Vec::new();
+        try_reserve_for_len_with_live_budget(&mut b, scaled_width, &mut live_bytes, row_bytes)?;
+        b.resize(scaled_width, 0);
+        Ok(Self {
             inner,
             denom,
             scaled_width,
-            r: Vec::new(),
-            g: Vec::new(),
-            b: Vec::new(),
-        }
+            r,
+            g,
+            b,
+        })
+    }
+
+    pub(super) fn capacity_bytes(&self) -> Result<usize, JpegError> {
+        let rg = checked_add_allocation_bytes(
+            checked_allocation_bytes::<u8>(self.r.capacity())?,
+            checked_allocation_bytes::<u8>(self.g.capacity())?,
+        )?;
+        checked_add_allocation_bytes(rg, checked_allocation_bytes::<u8>(self.b.capacity())?)
     }
 
     fn should_emit(&self, y: u32) -> bool {
@@ -270,14 +294,20 @@ impl<'a, W> ProgressiveDownscaleWriter<'a, W> {
         clippy::cast_possible_truncation,
         reason = "validated JPEG output widths originate as u32 dimensions before slice indexing"
     )]
-    fn sample_row(src: &[u8], denom: u32, width: usize, dst: &mut Vec<u8>) {
-        dst.resize(width, 0);
+    fn sample_row(
+        src: &[u8],
+        denom: u32,
+        width: usize,
+        dst: &mut Vec<u8>,
+    ) -> Result<(), JpegError> {
+        try_resize_filled(dst, width, 0)?;
         for (x, out) in dst.iter_mut().enumerate() {
             let src_x = (x as u32)
                 .saturating_mul(denom)
                 .min(src.len().saturating_sub(1) as u32);
             *out = src[src_x as usize];
         }
+        Ok(())
     }
 }
 
@@ -292,9 +322,9 @@ impl<W: OutputWriter> OutputWriter for ProgressiveDownscaleWriter<'_, W> {
         if !self.should_emit(y) {
             return Ok(());
         }
-        Self::sample_row(r_row, self.denom, self.scaled_width, &mut self.r);
-        Self::sample_row(g_row, self.denom, self.scaled_width, &mut self.g);
-        Self::sample_row(b_row, self.denom, self.scaled_width, &mut self.b);
+        Self::sample_row(r_row, self.denom, self.scaled_width, &mut self.r)?;
+        Self::sample_row(g_row, self.denom, self.scaled_width, &mut self.g)?;
+        Self::sample_row(b_row, self.denom, self.scaled_width, &mut self.b)?;
         self.inner
             .write_rgb_row(y / self.denom, &self.r, &self.g, &self.b)
     }
@@ -309,9 +339,9 @@ impl<W: OutputWriter> OutputWriter for ProgressiveDownscaleWriter<'_, W> {
         if !self.should_emit(y) {
             return Ok(());
         }
-        Self::sample_row(y_row, self.denom, self.scaled_width, &mut self.r);
-        Self::sample_row(cb_row, self.denom, self.scaled_width, &mut self.g);
-        Self::sample_row(cr_row, self.denom, self.scaled_width, &mut self.b);
+        Self::sample_row(y_row, self.denom, self.scaled_width, &mut self.r)?;
+        Self::sample_row(cb_row, self.denom, self.scaled_width, &mut self.g)?;
+        Self::sample_row(cr_row, self.denom, self.scaled_width, &mut self.b)?;
         self.inner
             .write_ycbcr_row(y / self.denom, &self.r, &self.g, &self.b)
     }
@@ -320,7 +350,7 @@ impl<W: OutputWriter> OutputWriter for ProgressiveDownscaleWriter<'_, W> {
         if !self.should_emit(y) {
             return Ok(());
         }
-        Self::sample_row(gray_row, self.denom, self.scaled_width, &mut self.r);
+        Self::sample_row(gray_row, self.denom, self.scaled_width, &mut self.r)?;
         self.inner.write_gray_row(y / self.denom, &self.r)
     }
 }
@@ -352,16 +382,23 @@ impl<W: ComponentRowWriter + ?Sized> OutputWriter for &mut W {
 }
 
 impl<W> CroppedWriter<W> {
-    pub(super) fn new(inner: W, rect: Rect, source_x0: u32, source_width: u32) -> Self {
-        let row_len = source_width as usize * 3;
-        Self {
+    pub(super) fn new(
+        inner: W,
+        rect: Rect,
+        source_x0: u32,
+        source_width: u32,
+    ) -> Result<Self, JpegError> {
+        let rgb_row_len = checked_allocation_len::<u8>(source_width as usize, 3)?;
+        let rgb_rows_bytes = checked_allocation_len::<u8>(rgb_row_len, 2)?;
+        Ok(Self {
             inner,
             rect,
             source_x0,
-            source_width,
-            top_row: vec![0; row_len],
-            bottom_row: vec![0; row_len],
-        }
+            rgb_row_len,
+            rgb_rows_bytes,
+            top_row: Vec::new(),
+            bottom_row: Vec::new(),
+        })
     }
 
     fn crop_range(&self, bytes_per_pixel: usize) -> Result<core::ops::Range<usize>, JpegError> {
@@ -394,6 +431,38 @@ impl<W> CroppedWriter<W> {
         row.get(range).ok_or(JpegError::InternalInvariant {
             reason: "crop window exceeds source row",
         })
+    }
+
+    fn prepare_rgb_rows(&mut self) -> Result<(), JpegError> {
+        if self.top_row.len() == self.rgb_row_len && self.bottom_row.len() == self.rgb_row_len {
+            return Ok(());
+        }
+
+        self.top_row = Vec::new();
+        self.bottom_row = Vec::new();
+        let mut live_bytes = 0;
+        let reserve_result = (|| {
+            try_reserve_for_len_with_live_budget(
+                &mut self.top_row,
+                self.rgb_row_len,
+                &mut live_bytes,
+                self.rgb_rows_bytes,
+            )?;
+            try_reserve_for_len_with_live_budget(
+                &mut self.bottom_row,
+                self.rgb_row_len,
+                &mut live_bytes,
+                self.rgb_rows_bytes,
+            )
+        })();
+        if let Err(error) = reserve_result {
+            self.top_row = Vec::new();
+            self.bottom_row = Vec::new();
+            return Err(error);
+        }
+        self.top_row.resize(self.rgb_row_len, 0);
+        self.bottom_row.resize(self.rgb_row_len, 0);
+        Ok(())
     }
 }
 
@@ -451,11 +520,7 @@ impl<W: InterleavedRgbWriter> InterleavedRgbWriter for CroppedWriter<W> {
     where
         F: FnOnce(&mut [u8], Option<&mut [u8]>) -> Result<R, JpegError>,
     {
-        let row_len = self.source_width as usize * 3;
-        if self.top_row.len() != row_len {
-            self.top_row.resize(row_len, 0);
-            self.bottom_row.resize(row_len, 0);
-        }
+        self.prepare_rgb_rows()?;
 
         let result = match row_count {
             1 => fill(&mut self.top_row, None)?,

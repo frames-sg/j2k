@@ -1,293 +1,287 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Fallible preparation for shared Tier-1 precomputed 9/7 batches.
+
+use super::precomputed::allocation::ConstructionTracker;
+use super::precomputed::orchestrator::{self, Prepared97PacketPlan};
 use super::precomputed::{precomputed_97_level_count, validate_precomputed_dwt97_geometry};
+use super::tier1_allocation::prepared_subbands_ownership;
 use super::{
-    ordered_prepared_resolution_packets, packet_descriptors_for_order,
-    precinct_exponents_for_options, prepare_subband_cpu_quantized, quantize,
-    split_component_resolution_packets_by_precinct, validate_irreversible_quantization_profile,
-    vec, BlockCodingMode, EncodeOptions, EncodeParams, PrecomputedHtj2k97Component,
-    PrecomputedHtj2k97Image, PreparedPrecomputedHtj2k97Image, PreparedResolutionPacket,
-    QuantStepSize, SubBandType, Vec, MAX_J2K_SPEC_COMPONENTS,
+    prepare_subband_for_session, BlockCodingMode, CpuOnlyJ2kEncodeStageAccelerator, EncodeOptions,
+    F32SubbandEncodeRequest, NativeEncodePipelineError, NativeEncodePipelineResult,
+    NativeEncodeSession, PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
+    PreparedEncodeSubband, PreparedResolutionPacket, QuantStepSize, SubBandType, Vec,
+    MAX_J2K_SPEC_COMPONENTS,
 };
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
-)]
 pub(super) fn prepare_precomputed_htj2k97_image_for_batch(
     image: &PrecomputedHtj2k97Image,
     options: &EncodeOptions,
-) -> Result<PreparedPrecomputedHtj2k97Image, &'static str> {
+    session: &NativeEncodeSession<'_>,
+    retained_base_bytes: usize,
+) -> NativeEncodePipelineResult<Prepared97PacketPlan> {
+    validate_precomputed_request(image)?;
+    validate_precomputed_dwt97_geometry(image).map_err(NativeEncodePipelineError::invalid_input)?;
+    let num_levels = precomputed_97_level_count(&image.components)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    let mut tracker = ConstructionTracker::new(session, retained_base_bytes);
+    let metadata = orchestrator::try_metadata(
+        image.width,
+        image.height,
+        image.bit_depth,
+        image.signed,
+        image
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz)),
+        num_levels,
+        options,
+        &mut tracker,
+    )?;
+    let code_block_width = code_block_dimension(
+        options.code_block_width_exp,
+        "code-block width exponent exceeds supported range",
+    )
+    .map_err(NativeEncodePipelineError::invalid_input)?;
+    let code_block_height = code_block_dimension(
+        options.code_block_height_exp,
+        "code-block height exponent exceeds supported range",
+    )
+    .map_err(NativeEncodePipelineError::invalid_input)?;
+    let mut component_packets = tracker.try_vec::<Vec<PreparedResolutionPacket>>(
+        image.components.len(),
+        "batch precomputed 9/7 component packet owners",
+    )?;
+    let mut cpu = CpuOnlyJ2kEncodeStageAccelerator;
+    for (component_idx, component) in image.components.iter().enumerate() {
+        component_packets.push(try_prepared_component(
+            component_idx,
+            component,
+            &metadata.step_sizes,
+            image.bit_depth,
+            metadata.params.guard_bits,
+            code_block_width,
+            code_block_height,
+            session,
+            &mut tracker,
+            &mut cpu,
+        )?);
+    }
+    orchestrator::finish_plan(
+        metadata,
+        component_packets,
+        options,
+        session,
+        retained_base_bytes,
+    )
+}
+
+fn validate_precomputed_request(image: &PrecomputedHtj2k97Image) -> NativeEncodePipelineResult<()> {
     if image.width == 0 || image.height == 0 {
-        return Err("invalid dimensions");
+        return Err(NativeEncodePipelineError::invalid_input(
+            "invalid dimensions",
+        ));
     }
-    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
-    {
-        return Err("unsupported component count");
+    if image.components.is_empty() {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "component set must be non-empty",
+        ));
     }
-    if image.bit_depth == 0 || image.bit_depth > 16 {
-        return Err("unsupported bit depth");
+    if image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS) {
+        return Err(NativeEncodePipelineError::unsupported(
+            "component count exceeds the JPEG 2000 Part 1 limit",
+        ));
     }
-    validate_irreversible_quantization_profile(options)?;
+    if image.bit_depth == 0 {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "bit depth must be non-zero",
+        ));
+    }
+    if image.bit_depth > 16 {
+        return Err(NativeEncodePipelineError::unsupported(
+            "precomputed 9/7 bit depth exceeds 16 bits",
+        ));
+    }
     if image
         .components
         .iter()
         .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
     {
-        return Err("component sampling factors must be non-zero");
+        return Err(NativeEncodePipelineError::invalid_input(
+            "component sampling factors must be non-zero",
+        ));
     }
-    validate_precomputed_dwt97_geometry(image)?;
-
-    let num_components =
-        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
-    let num_levels = precomputed_97_level_count(&image.components)?;
-    let guard_bits = options.guard_bits.max(2);
-    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
-        image.bit_depth,
-        num_levels,
-        false,
-        guard_bits,
-        options.irreversible_quantization_scale,
-        options.irreversible_quantization_subband_scales,
-    );
-    let quant_params: Vec<(u16, u16)> = step_sizes
-        .iter()
-        .map(|s| (s.exponent, s.mantissa))
-        .collect();
-    let cb_width = 1u32 << (options.code_block_width_exp + 2);
-    let cb_height = 1u32 << (options.code_block_height_exp + 2);
-    let component_sampling = image
-        .components
-        .iter()
-        .map(|component| (component.x_rsiz, component.y_rsiz))
-        .collect::<Vec<_>>();
-    let mut precomputed_options = options.clone();
-    precomputed_options.num_decomposition_levels = num_levels;
-    precomputed_options.reversible = false;
-    precomputed_options.use_ht_block_coding = true;
-    precomputed_options.use_mct = false;
-    precomputed_options.validate_high_throughput_codestream = false;
-    precomputed_options.component_sampling = Some(component_sampling.clone());
-    let precinct_exponents = precinct_exponents_for_options(&precomputed_options, num_levels)?;
-    let params = EncodeParams {
-        width: image.width,
-        height: image.height,
-        tile_width: image.width,
-        tile_height: image.height,
-        num_components,
-        bit_depth: image.bit_depth,
-        signed: image.signed,
-        component_sample_info: Vec::new(),
-        component_quantization_step_sizes: Vec::new(),
-        num_decomposition_levels: num_levels,
-        reversible: false,
-        code_block_width_exp: precomputed_options.code_block_width_exp,
-        code_block_height_exp: precomputed_options.code_block_height_exp,
-        num_layers: 1,
-        use_mct: false,
-        guard_bits,
-        block_coding_mode: BlockCodingMode::HighThroughput,
-        progression_order: precomputed_options.progression_order,
-        write_tlm: precomputed_options.write_tlm,
-        write_plt: precomputed_options.write_plt,
-        write_plm: precomputed_options.write_plm,
-        write_ppm: precomputed_options.write_ppm,
-        write_ppt: precomputed_options.write_ppt,
-        write_sop: precomputed_options.write_sop,
-        write_eph: precomputed_options.write_eph,
-        terminate_coding_passes: false,
-        component_sampling,
-        roi_component_shifts: vec![0; usize::from(num_components)],
-        precinct_exponents,
-    };
-
-    let component_resolution_packets = image
-        .components
-        .iter()
-        .enumerate()
-        .map(|(component_idx, component)| {
-            prepared_resolution_packets_from_precomputed_97_component(
-                component_idx,
-                component,
-                &step_sizes,
-                image.bit_depth,
-                guard_bits,
-                cb_width,
-                cb_height,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let component_resolution_packets = split_component_resolution_packets_by_precinct(
-        component_resolution_packets,
-        image.width,
-        image.height,
-        num_levels,
-        &params.precinct_exponents,
-    )?;
-    let prepared_packets =
-        ordered_prepared_resolution_packets(component_resolution_packets, &precomputed_options)?;
-    let packet_descriptors =
-        packet_descriptors_for_order(&prepared_packets, 1, precomputed_options.progression_order)?;
-
-    Ok(PreparedPrecomputedHtj2k97Image {
-        params,
-        quant_params,
-        packet_descriptors,
-        packet_count: 0,
-        prepared_packets,
-    })
+    Ok(())
 }
 
-pub(super) fn prepared_resolution_packets_from_precomputed_97_component(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the coefficient preparation boundary keeps image, coding, and budget state explicit"
+)]
+fn try_prepared_component(
     component_idx: usize,
     component: &PrecomputedHtj2k97Component,
     step_sizes: &[QuantStepSize],
     bit_depth: u8,
     guard_bits: u8,
-    cb_width: u32,
-    cb_height: u32,
-) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
-    let component_idx = u16::try_from(component_idx).map_err(|_| "component index exceeds u16")?;
-    let mut packets = Vec::with_capacity(component.dwt.levels.len() + 1);
+    code_block_width: u32,
+    code_block_height: u32,
+    session: &NativeEncodeSession<'_>,
+    tracker: &mut ConstructionTracker<'_, '_>,
+    cpu: &mut CpuOnlyJ2kEncodeStageAccelerator,
+) -> NativeEncodePipelineResult<Vec<PreparedResolutionPacket>> {
+    let component_idx = u16::try_from(component_idx).map_err(|_| {
+        NativeEncodePipelineError::arithmetic_overflow("component index exceeds u16")
+    })?;
+    let packet_count = component.dwt.levels.len().checked_add(1).ok_or(
+        crate::EncodeError::ArithmeticOverflow {
+            what: "batch precomputed 9/7 resolution count",
+        },
+    )?;
+    let mut packets = tracker.try_vec::<PreparedResolutionPacket>(
+        packet_count,
+        "batch precomputed 9/7 prepared resolutions",
+    )?;
+    let mut ll_subbands =
+        tracker.try_vec::<PreparedEncodeSubband>(1, "batch precomputed 9/7 LL subband owner")?;
+    ll_subbands.push(try_prepared_subband(
+        &component.dwt.ll,
+        component.dwt.ll_width,
+        component.dwt.ll_height,
+        *step_sizes.first().ok_or_else(|| {
+            NativeEncodePipelineError::internal_invariant("irreversible quantization step missing")
+        })?,
+        bit_depth,
+        guard_bits,
+        code_block_width,
+        code_block_height,
+        SubBandType::LowLow,
+        session,
+        tracker,
+        cpu,
+    )?);
     packets.push(PreparedResolutionPacket {
         component: component_idx,
         resolution: 0,
         precinct: 0,
-        subbands: vec![prepare_subband_cpu_quantized(
-            &component.dwt.ll,
-            component.dwt.ll_width,
-            component.dwt.ll_height,
-            step_sizes
-                .first()
-                .ok_or("irreversible quantization step missing")?,
-            bit_depth,
-            guard_bits,
-            false,
-            BlockCodingMode::HighThroughput,
-            cb_width,
-            cb_height,
-            SubBandType::LowLow,
-        )?],
+        subbands: ll_subbands,
     });
 
     for (level_idx, level) in component.dwt.levels.iter().enumerate() {
-        let step_base = 1 + level_idx * 3;
+        let step_base = level_idx
+            .checked_mul(3)
+            .and_then(|index| index.checked_add(1))
+            .ok_or(crate::EncodeError::ArithmeticOverflow {
+                what: "batch precomputed 9/7 step index",
+            })?;
+        let mut subbands = tracker
+            .try_vec::<PreparedEncodeSubband>(3, "batch precomputed 9/7 detail subband owners")?;
+        for (coefficients, width, height, step_index, sub_band_type) in [
+            (
+                level.hl.as_slice(),
+                level.high_width,
+                level.low_height,
+                step_base,
+                SubBandType::HighLow,
+            ),
+            (
+                level.lh.as_slice(),
+                level.low_width,
+                level.high_height,
+                step_base + 1,
+                SubBandType::LowHigh,
+            ),
+            (
+                level.hh.as_slice(),
+                level.high_width,
+                level.high_height,
+                step_base + 2,
+                SubBandType::HighHigh,
+            ),
+        ] {
+            subbands.push(try_prepared_subband(
+                coefficients,
+                width,
+                height,
+                *step_sizes.get(step_index).ok_or_else(|| {
+                    NativeEncodePipelineError::internal_invariant(
+                        "irreversible quantization step missing",
+                    )
+                })?,
+                bit_depth,
+                guard_bits,
+                code_block_width,
+                code_block_height,
+                sub_band_type,
+                session,
+                tracker,
+                cpu,
+            )?);
+        }
         packets.push(PreparedResolutionPacket {
             component: component_idx,
-            resolution: u32::try_from(level_idx + 1).map_err(|_| "resolution index exceeds u32")?,
+            resolution: u32::try_from(level_idx + 1).map_err(|_| {
+                NativeEncodePipelineError::arithmetic_overflow("resolution index exceeds u32")
+            })?,
             precinct: 0,
-            subbands: vec![
-                prepare_subband_cpu_quantized(
-                    &level.hl,
-                    level.high_width,
-                    level.low_height,
-                    step_sizes
-                        .get(step_base)
-                        .ok_or("irreversible quantization step missing")?,
-                    bit_depth,
-                    guard_bits,
-                    false,
-                    BlockCodingMode::HighThroughput,
-                    cb_width,
-                    cb_height,
-                    SubBandType::HighLow,
-                )?,
-                prepare_subband_cpu_quantized(
-                    &level.lh,
-                    level.low_width,
-                    level.high_height,
-                    step_sizes
-                        .get(step_base + 1)
-                        .ok_or("irreversible quantization step missing")?,
-                    bit_depth,
-                    guard_bits,
-                    false,
-                    BlockCodingMode::HighThroughput,
-                    cb_width,
-                    cb_height,
-                    SubBandType::LowHigh,
-                )?,
-                prepare_subband_cpu_quantized(
-                    &level.hh,
-                    level.high_width,
-                    level.high_height,
-                    step_sizes
-                        .get(step_base + 2)
-                        .ok_or("irreversible quantization step missing")?,
-                    bit_depth,
-                    guard_bits,
-                    false,
-                    BlockCodingMode::HighThroughput,
-                    cb_width,
-                    cb_height,
-                    SubBandType::HighHigh,
-                )?,
-            ],
+            subbands,
         });
     }
-
     Ok(packets)
 }
 
-pub(super) fn copy_code_block_coefficients(
-    quantized: &[i32],
-    width: usize,
-    x0: usize,
-    y0: usize,
-    cbw: usize,
-    cbh: usize,
-) -> Vec<i32> {
-    let len = cbw * cbh;
-    let start = y0 * width + x0;
-    if cbw == width {
-        return quantized[start..start + len].to_vec();
-    }
-
-    let mut coefficients = Vec::with_capacity(len);
-    for y in 0..cbh {
-        let row_start = (y0 + y) * width + x0;
-        coefficients.extend_from_slice(&quantized[row_start..row_start + cbw]);
-    }
-    coefficients
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the subband preparation boundary keeps codec geometry and retained ownership explicit"
+)]
+fn try_prepared_subband(
+    coefficients: &[f32],
+    width: u32,
+    height: u32,
+    step_size: QuantStepSize,
+    bit_depth: u8,
+    guard_bits: u8,
+    code_block_width: u32,
+    code_block_height: u32,
+    sub_band_type: SubBandType,
+    session: &NativeEncodeSession<'_>,
+    tracker: &mut ConstructionTracker<'_, '_>,
+    cpu: &mut CpuOnlyJ2kEncodeStageAccelerator,
+) -> NativeEncodePipelineResult<PreparedEncodeSubband> {
+    let retained_base_bytes = tracker.retained_bytes("batch precomputed 9/7 prepared graph")?;
+    let request = F32SubbandEncodeRequest {
+        coefficients,
+        width,
+        height,
+        step_size: &step_size,
+        bit_depth,
+        guard_bits,
+        reversible: false,
+        block_coding_mode: BlockCodingMode::HighThroughput,
+        cb_width: code_block_width,
+        cb_height: code_block_height,
+        sub_band_type,
+        roi_shift: 0,
+        roi_regions: &[],
+        roi_scale: 1,
+        ht_target_coding_passes: 1,
+        session,
+        retained_base_bytes,
+    };
+    let prepared = prepare_subband_for_session(&request, cpu)?;
+    let retained = prepared_subbands_ownership(core::slice::from_ref(&prepared), 0)?.total()?;
+    tracker.retain_existing(retained, "batch precomputed 9/7 prepared subband")?;
+    Ok(prepared)
 }
 
-pub(super) fn copy_code_block_coefficients_i64(
-    quantized: &[i64],
-    width: usize,
-    x0: usize,
-    y0: usize,
-    cbw: usize,
-    cbh: usize,
-) -> Vec<i64> {
-    let len = cbw * cbh;
-    let start = y0 * width + x0;
-    if cbw == width {
-        return quantized[start..start + len].to_vec();
-    }
-
-    let mut coefficients = Vec::with_capacity(len);
-    for y in 0..cbh {
-        let row_start = (y0 + y) * width + x0;
-        coefficients.extend_from_slice(&quantized[row_start..row_start + cbw]);
-    }
-    coefficients
+fn code_block_dimension(exponent: u8, what: &'static str) -> Result<u32, &'static str> {
+    let exponent = exponent.checked_add(2).ok_or(what)?;
+    1_u32.checked_shl(u32::from(exponent)).ok_or(what)
 }
 
-pub(super) fn coefficients_fit_i32(coefficients: &[i64]) -> bool {
-    coefficients
-        .iter()
-        .all(|&coefficient| i32::try_from(coefficient).is_ok())
-}
-
-pub(super) fn downcast_i64_coefficients_to_i32(
-    coefficients: &[i64],
-) -> Result<Vec<i32>, &'static str> {
-    coefficients
-        .iter()
-        .map(|&coefficient| {
-            i32::try_from(coefficient).map_err(|_| {
-                "HTJ2K/accelerated code-block encode does not support i64 coefficients"
-            })
-        })
-        .collect()
-}
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+pub(super) use self::test_support::{
+    copy_code_block_coefficients, downcast_i64_coefficients_to_i32,
+};

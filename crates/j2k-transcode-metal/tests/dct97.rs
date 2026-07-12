@@ -376,7 +376,7 @@ fn explicit_metal_dct97_codeblock_batch_accepts_zero_guard_bits_and_matches_scal
 #[test]
 fn weight_rows_match_expected_geometry_for_supported_lengths() {
     for sample_len in [8_usize, 13, 16] {
-        let rows = Dwt97WeightRows::for_len(sample_len);
+        let rows = Dwt97WeightRows::for_len(sample_len).expect("bounded dense 9/7 weight rows");
 
         assert_eq!(rows.low.len(), sample_len.div_ceil(2));
         assert_eq!(rows.high.len(), sample_len / 2);
@@ -395,8 +395,8 @@ fn weight_rows_match_expected_geometry_for_supported_lengths() {
 
 #[test]
 fn weight_rows_are_deterministic() {
-    let first = Dwt97WeightRows::for_len(13);
-    let second = Dwt97WeightRows::for_len(13);
+    let first = Dwt97WeightRows::for_len(13).expect("bounded dense 9/7 weight rows");
+    let second = Dwt97WeightRows::for_len(13).expect("bounded dense 9/7 weight rows");
 
     assert_eq!(f32_rows_to_bits(&first.low), f32_rows_to_bits(&second.low));
     assert_eq!(
@@ -408,8 +408,9 @@ fn weight_rows_are_deterministic() {
 #[test]
 fn sparse_weight_rows_reconstruct_dense_rows_for_wsi_lengths() {
     for sample_len in [8_usize, 13, 16, 512, 1024, 2048] {
-        let dense = Dwt97WeightRows::for_len(sample_len);
-        let sparse = SparseDwt97WeightRows::for_len(sample_len);
+        let dense = Dwt97WeightRows::for_len(sample_len).expect("bounded dense 9/7 weight rows");
+        let sparse =
+            SparseDwt97WeightRows::for_len(sample_len).expect("bounded sparse 9/7 weight rows");
 
         assert!(sparse.max_taps_per_row() <= 16);
         assert_eq!(sparse.low.len(), dense.low.len());

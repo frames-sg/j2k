@@ -2,7 +2,7 @@
 
 //! Shared HTJ2K 9/7 code-block option validation and quantization metadata.
 
-use crate::Htj2k97CodeBlockOptions;
+use crate::{Htj2k97CodeBlockAxis, Htj2k97CodeBlockOptions, Htj2k97CodeBlockOptionsError};
 use j2k::J2kSubBandType;
 use j2k_native::irreversible_quantization_step_for_subband;
 
@@ -48,7 +48,7 @@ pub fn htj2k97_subband_total_bitplanes(
 ///
 /// One shared implementation keeps Metal and CUDA from drifting: the same
 /// options must be accepted or rejected identically by every backend. Errors
-/// are backend-neutral static strings for the caller's unsupported-job error.
+/// use a backend-neutral typed taxonomy so adapters never need to parse prose.
 ///
 /// # Errors
 /// Rejects zero/oversized bit depths and guard bits, non-finite or
@@ -57,14 +57,14 @@ pub fn htj2k97_subband_total_bitplanes(
 /// counts outside the supported range.
 pub fn validate_htj2k97_codeblock_options(
     options: Htj2k97CodeBlockOptions,
-) -> Result<(usize, usize), &'static str> {
+) -> Result<(usize, usize), Htj2k97CodeBlockOptionsError> {
     if options.bit_depth == 0
         || options.bit_depth > 30
         || options.guard_bits > 30
         || !options.irreversible_quantization_scale.is_finite()
         || options.irreversible_quantization_scale <= 0.0
     {
-        return Err("9/7 code-block options are outside supported numeric range");
+        return Err(Htj2k97CodeBlockOptionsError::NumericOptionsOutOfRange);
     }
     let subband_scales = options.irreversible_quantization_subband_scales;
     if [
@@ -76,18 +76,23 @@ pub fn validate_htj2k97_codeblock_options(
     .iter()
     .any(|scale| !scale.is_finite() || *scale <= 0.0)
     {
-        return Err("9/7 code-block quantization options are outside supported range");
+        return Err(Htj2k97CodeBlockOptionsError::QuantizationOptionsOutOfRange);
     }
 
-    let cb_width = checked_code_block_dim(options.code_block_width_exp)?;
-    let cb_height = checked_code_block_dim(options.code_block_height_exp)?;
+    let cb_width =
+        checked_code_block_dim(options.code_block_width_exp, Htj2k97CodeBlockAxis::Width)?;
+    let cb_height =
+        checked_code_block_dim(options.code_block_height_exp, Htj2k97CodeBlockAxis::Height)?;
     if cb_width > 1024
         || cb_height > 1024
         || cb_width
             .checked_mul(cb_height)
             .is_none_or(|area| area > 4096)
     {
-        return Err("9/7 code-block dimensions exceed HTJ2K limits");
+        return Err(Htj2k97CodeBlockOptionsError::DimensionsExceedLimits {
+            width: cb_width,
+            height: cb_height,
+        });
     }
 
     for subband in [
@@ -101,17 +106,23 @@ pub fn validate_htj2k97_codeblock_options(
             || delta <= 0.0
             || htj2k97_subband_total_bitplanes(options, subband) > 30
         {
-            return Err("9/7 code-block quantization options are outside supported range");
+            return Err(Htj2k97CodeBlockOptionsError::QuantizationOptionsOutOfRange);
         }
     }
 
     Ok((cb_width, cb_height))
 }
 
-fn checked_code_block_dim(exp_minus_two: u8) -> Result<usize, &'static str> {
-    1usize
-        .checked_shl(u32::from(exp_minus_two) + 2)
-        .ok_or("9/7 code-block dimension exponent is unsupported")
+fn checked_code_block_dim(
+    exp_minus_two: u8,
+    axis: Htj2k97CodeBlockAxis,
+) -> Result<usize, Htj2k97CodeBlockOptionsError> {
+    1usize.checked_shl(u32::from(exp_minus_two) + 2).ok_or(
+        Htj2k97CodeBlockOptionsError::DimensionExponentUnsupported {
+            axis,
+            exponent_minus_two: exp_minus_two,
+        },
+    )
 }
 
 /// Shared `(exponent, mantissa)` for the irreversible 9/7 quantizer.
@@ -191,6 +202,62 @@ mod tests {
             ..valid
         };
         assert!(validate_htj2k97_codeblock_options(zero_guard_bits).is_ok());
+    }
+
+    #[test]
+    fn shared_validator_returns_each_typed_failure_variant() {
+        let valid = Htj2k97CodeBlockOptions {
+            bit_depth: 8,
+            guard_bits: 2,
+            code_block_width_exp: 4,
+            code_block_height_exp: 4,
+            irreversible_quantization_scale: 1.0,
+            irreversible_quantization_subband_scales:
+                IrreversibleQuantizationSubbandScales::default(),
+        };
+
+        let numeric = Htj2k97CodeBlockOptions {
+            bit_depth: 31,
+            ..valid
+        };
+        assert_eq!(
+            validate_htj2k97_codeblock_options(numeric),
+            Err(Htj2k97CodeBlockOptionsError::NumericOptionsOutOfRange)
+        );
+
+        let mut quantization = valid;
+        quantization
+            .irreversible_quantization_subband_scales
+            .low_low = 0.0;
+        assert_eq!(
+            validate_htj2k97_codeblock_options(quantization),
+            Err(Htj2k97CodeBlockOptionsError::QuantizationOptionsOutOfRange)
+        );
+
+        let exponent = Htj2k97CodeBlockOptions {
+            code_block_width_exp: u8::MAX,
+            ..valid
+        };
+        assert_eq!(
+            validate_htj2k97_codeblock_options(exponent),
+            Err(Htj2k97CodeBlockOptionsError::DimensionExponentUnsupported {
+                axis: Htj2k97CodeBlockAxis::Width,
+                exponent_minus_two: u8::MAX,
+            })
+        );
+
+        let dimensions = Htj2k97CodeBlockOptions {
+            code_block_width_exp: 8,
+            code_block_height_exp: 8,
+            ..valid
+        };
+        assert_eq!(
+            validate_htj2k97_codeblock_options(dimensions),
+            Err(Htj2k97CodeBlockOptionsError::DimensionsExceedLimits {
+                width: 1024,
+                height: 1024,
+            })
+        );
     }
 
     #[test]

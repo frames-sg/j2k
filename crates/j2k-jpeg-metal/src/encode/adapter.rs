@@ -7,7 +7,7 @@ use j2k_jpeg::adapter::{
 };
 use j2k_jpeg::{JpegBackend, JpegEncodeError};
 
-use super::{JpegBaselineMetalEncodeTile, MetalJpegBaselineEncodeAdapter};
+use super::{allocation, JpegBaselineMetalEncodeTile, MetalJpegBaselineEncodeAdapter};
 use crate::compute;
 
 fn compute_huffman_table(
@@ -73,7 +73,36 @@ impl<'tile> JpegBaselineGpuEncodeHostAdapter<JpegBaselineMetalEncodeTile<'tile>>
         tables: &JpegBaselineEncodeTables,
         plan: JpegBaselineGpuEncodeBatchPlan,
     ) -> Result<Vec<Vec<u8>>, Self::Error> {
-        let params = plan.params.into_iter().map(metal_encode_params).collect();
+        let neutral_param_capacity = plan.params.capacity();
+        let tile_count = plan.params.len();
+        allocation::checked_batch_conversion_bytes::<
+            JpegBaselineGpuEncodeParams,
+            compute::JpegBaselineEncodeParams,
+        >(neutral_param_capacity, tile_count)?;
+        allocation::checked_batch_runtime_bytes::<
+            compute::JpegBaselineEncodeParams,
+            compute::JpegBaselineEncodeStatus,
+        >(
+            tile_count,
+            tile_count,
+            tile_count,
+            plan.total_entropy_capacity,
+        )?;
+        let params =
+            allocation::try_collect_exact(plan.params.into_iter().map(metal_encode_params))?;
+        allocation::checked_batch_conversion_bytes::<
+            JpegBaselineGpuEncodeParams,
+            compute::JpegBaselineEncodeParams,
+        >(neutral_param_capacity, params.capacity())?;
+        allocation::checked_batch_runtime_bytes::<
+            compute::JpegBaselineEncodeParams,
+            compute::JpegBaselineEncodeStatus,
+        >(
+            params.capacity(),
+            tile_count,
+            tile_count,
+            plan.total_entropy_capacity,
+        )?;
         compute::encode_jpeg_baseline_entropy_batch_with_session(
             self.session,
             &compute::JpegBaselineEntropyEncodeBatchJob {

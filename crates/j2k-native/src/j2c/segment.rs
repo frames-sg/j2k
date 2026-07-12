@@ -1,6 +1,8 @@
 //! Parsing of layers and their segments, as specified in Annex B.
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::mem::size_of;
 
 use super::build::{CodeBlock, Precinct, Segment};
 use super::codestream::markers::{EPH, SOP};
@@ -8,10 +10,11 @@ use super::codestream::{ComponentInfo, Header};
 use super::decode::DecompositionStorage;
 use super::progression::ProgressionData;
 use super::tag_tree::TagNode;
-use super::tile::{Tile, TilePart};
-use crate::error::{bail, Result, TileError};
+use super::tile::{Tile, TilePartCursor};
+use crate::error::{bail, DecodeError, Result, TileError, ValidationError};
 use crate::packet_math::bits_for_ht_refinement_only_length;
 use crate::reader::BitReader;
+use crate::{try_reserve_decode_elements, DEFAULT_MAX_DECODE_BYTES};
 
 pub(crate) const MAX_BITPLANE_COUNT: u8 = 63;
 
@@ -22,15 +25,18 @@ pub(crate) fn parse<'a, 'b>(
     storage: &mut DecompositionStorage<'a>,
 ) -> Result<()> {
     for tile_part in &tile.tile_parts {
-        if parse_inner(
-            tile_part.clone(),
-            &mut progression_iterator,
-            &tile.component_infos,
-            storage,
-        )
-        .is_none()
-            && header.strict
-        {
+        let parsed = tile_part.cursor().and_then(|cursor| {
+            parse_inner(
+                cursor,
+                &mut progression_iterator,
+                &tile.component_infos,
+                storage,
+            )
+        });
+        if let Some(error) = storage.packet_workspace_error.take() {
+            return Err(error);
+        }
+        if parsed.is_none() && header.strict {
             bail!(TileError::Invalid);
         }
     }
@@ -39,7 +45,7 @@ pub(crate) fn parse<'a, 'b>(
 }
 
 fn parse_inner<'a>(
-    mut tile_part: TilePart<'a>,
+    mut tile_part: TilePartCursor<'_, 'a>,
     progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
     component_infos: &[ComponentInfo],
     storage: &mut DecompositionStorage<'a>,
@@ -130,6 +136,101 @@ fn parse_inner<'a>(
     tile_part.validate_all_packet_lengths_consumed()?;
 
     Some(())
+}
+
+fn try_push_segment_with_budget<'a>(
+    segments: &mut Vec<Segment<'a>>,
+    structural_workspace_bytes: usize,
+    segment: Segment<'a>,
+) -> Result<()> {
+    let available_bytes = DEFAULT_MAX_DECODE_BYTES
+        .checked_sub(structural_workspace_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let max_segment_count = available_bytes / size_of::<Segment<'_>>();
+    let required_count = segments
+        .len()
+        .checked_add(1)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if required_count > max_segment_count {
+        return Err(ValidationError::ImageTooLarge.into());
+    }
+
+    if required_count > segments.capacity() {
+        let old_capacity = segments.capacity();
+        let doubled_capacity = old_capacity.checked_mul(2).unwrap_or(max_segment_count);
+        let target_capacity = doubled_capacity
+            .max(4)
+            .max(required_count)
+            .min(max_segment_count);
+        let target_capacity = segment_growth_capacity(
+            structural_workspace_bytes,
+            old_capacity,
+            required_count,
+            target_capacity,
+        )?;
+        try_reserve_decode_elements(segments, target_capacity)?;
+        validate_segment_reallocation_peak(
+            structural_workspace_bytes,
+            old_capacity,
+            segments.capacity(),
+        )?;
+    }
+    segments.push(segment);
+    Ok(())
+}
+
+fn segment_growth_capacity(
+    structural_workspace_bytes: usize,
+    old_capacity: usize,
+    required_count: usize,
+    preferred_capacity: usize,
+) -> Result<usize> {
+    if validate_segment_reallocation_peak(
+        structural_workspace_bytes,
+        old_capacity,
+        preferred_capacity,
+    )
+    .is_ok()
+    {
+        return Ok(preferred_capacity);
+    }
+    validate_segment_reallocation_peak(structural_workspace_bytes, old_capacity, required_count)?;
+    Ok(required_count)
+}
+
+fn validate_segment_reallocation_peak(
+    structural_workspace_bytes: usize,
+    old_capacity: usize,
+    new_capacity: usize,
+) -> Result<()> {
+    let simultaneous_capacity = old_capacity
+        .checked_add(new_capacity)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let segment_bytes = simultaneous_capacity
+        .checked_mul(size_of::<Segment<'_>>())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let peak = structural_workspace_bytes
+        .checked_add(segment_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if peak > DEFAULT_MAX_DECODE_BYTES {
+        return Err(ValidationError::ImageTooLarge.into());
+    }
+    Ok(())
+}
+
+fn push_segment_or_record_error<'a>(
+    segments: &mut Vec<Segment<'a>>,
+    structural_workspace_bytes: usize,
+    packet_workspace_error: &mut Option<DecodeError>,
+    segment: Segment<'a>,
+) -> Option<()> {
+    match try_push_segment_with_budget(segments, structural_workspace_bytes, segment) {
+        Ok(()) => Some(()),
+        Err(error) => {
+            *packet_workspace_error = Some(error);
+            None
+        }
+    }
 }
 
 fn resolve_segments(
@@ -251,13 +352,18 @@ fn resolve_classic_segments(
                 reader.read_bits_with_stuffing(u8::try_from(length_bits).ok()?)
             }?;
 
-            storage.segments.push(Segment {
-                idx: segment,
-                data_length: length,
-                coding_pases: coding_passes_for_segment,
-                // Will be set later.
-                data: &[],
-            });
+            push_segment_or_record_error(
+                &mut storage.segments,
+                storage.structural_workspace_bytes,
+                &mut storage.packet_workspace_error,
+                Segment {
+                    idx: segment,
+                    data_length: length,
+                    coding_pases: coding_passes_for_segment,
+                    // Will be set later.
+                    data: &[],
+                },
+            )?;
 
             ltrace!("length({segment}) {}", length);
 
@@ -354,22 +460,32 @@ fn resolve_ht_segments(
 
             code_block.missing_bit_planes = parsed.missing_bit_planes;
 
-            storage.segments.push(Segment {
-                idx: 0,
-                coding_pases: 1,
-                data_length: parsed.cleanup_length,
-                data: &[],
-            });
+            push_segment_or_record_error(
+                &mut storage.segments,
+                storage.structural_workspace_bytes,
+                &mut storage.packet_workspace_error,
+                Segment {
+                    idx: 0,
+                    coding_pases: 1,
+                    data_length: parsed.cleanup_length,
+                    data: &[],
+                },
+            )?;
 
             ltrace!("HT cleanup length {}", parsed.cleanup_length);
 
             if parsed.actual_passes > 1 {
-                storage.segments.push(Segment {
-                    idx: 1,
-                    coding_pases: parsed.actual_passes - 1,
-                    data_length: parsed.refinement_length,
-                    data: &[],
-                });
+                push_segment_or_record_error(
+                    &mut storage.segments,
+                    storage.structural_workspace_bytes,
+                    &mut storage.packet_workspace_error,
+                    Segment {
+                        idx: 1,
+                        coding_pases: parsed.actual_passes - 1,
+                        data_length: parsed.refinement_length,
+                        data: &[],
+                    },
+                )?;
 
                 ltrace!("HT refinement length {}", parsed.refinement_length);
             }
@@ -387,12 +503,17 @@ fn resolve_ht_segments(
             }
             let refinement_length =
                 parse_ht_refinement_only_length(reader, raw_num_passes, &mut code_block.l_block)?;
-            storage.segments.push(Segment {
-                idx: 1,
-                coding_pases: raw_num_passes,
-                data_length: refinement_length,
-                data: &[],
-            });
+            push_segment_or_record_error(
+                &mut storage.segments,
+                storage.structural_workspace_bytes,
+                &mut storage.packet_workspace_error,
+                Segment {
+                    idx: 1,
+                    coding_pases: raw_num_passes,
+                    data_length: refinement_length,
+                    data: &[],
+                },
+            )?;
             code_block.number_of_coding_passes = cumulative_passes;
 
             ltrace!("HT refinement length {}", refinement_length);
@@ -728,5 +849,86 @@ mod tests {
             }
         );
         assert_eq!(l_block, 5);
+    }
+
+    #[test]
+    fn packet_segment_growth_respects_remaining_workspace_budget() {
+        let segment_bytes = size_of::<Segment<'_>>();
+        let structural_bytes = DEFAULT_MAX_DECODE_BYTES - segment_bytes;
+        let mut segments = Vec::new();
+
+        try_push_segment_with_budget(
+            &mut segments,
+            structural_bytes,
+            Segment {
+                idx: 0,
+                coding_pases: 1,
+                data_length: 0,
+                data: &[],
+            },
+        )
+        .unwrap();
+        let error = try_push_segment_with_budget(
+            &mut segments,
+            structural_bytes,
+            Segment {
+                idx: 1,
+                coding_pases: 1,
+                data_length: 0,
+                data: &[],
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            DecodeError::Validation(ValidationError::ImageTooLarge)
+        );
+        assert_eq!(segments.len(), 1);
+    }
+
+    #[test]
+    fn packet_segment_growth_falls_back_to_the_exact_transient_boundary() {
+        let mut segments = Vec::new();
+        segments
+            .try_reserve_exact(4)
+            .expect("small retained segment buffer");
+        let old_capacity = segments.capacity();
+        for idx in 0..old_capacity {
+            segments.push(Segment {
+                idx: u8::try_from(idx).unwrap_or(u8::MAX),
+                coding_pases: 1,
+                data_length: 0,
+                data: &[],
+            });
+        }
+        let required_count = old_capacity + 1;
+        let transient_count = old_capacity + required_count;
+        let structural_bytes =
+            DEFAULT_MAX_DECODE_BYTES - transient_count * size_of::<Segment<'_>>();
+
+        try_push_segment_with_budget(
+            &mut segments,
+            structural_bytes,
+            Segment {
+                idx: u8::MAX,
+                coding_pases: 1,
+                data_length: 0,
+                data: &[],
+            },
+        )
+        .expect("exact old-plus-required reallocation peak fits");
+
+        assert_eq!(segments.len(), required_count);
+    }
+
+    #[test]
+    fn packet_segment_growth_rejects_old_plus_new_transient_over_cap() {
+        let segment_bytes = size_of::<Segment<'_>>();
+        let structural_bytes = DEFAULT_MAX_DECODE_BYTES - 8 * segment_bytes;
+        assert_eq!(
+            segment_growth_capacity(structural_bytes, 4, 5, 8),
+            Err(DecodeError::Validation(ValidationError::ImageTooLarge))
+        );
     }
 }

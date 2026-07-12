@@ -2,15 +2,15 @@
 
 use super::{
     codestream_progression_order_code, copied_slice_buffer, dispatch_single_thread,
-    lossless_codestream_assembly_capacity, packet_tree_node_count, size_of,
+    lossless_codestream_assembly_capacity, new_command_buffer, new_compute_command_encoder,
+    new_private_buffer, new_shared_buffer, packet_tree_node_count, size_of,
     wait_resident_lossless_codestream, with_runtime_for_session, zeroed_shared_buffer, Error,
-    HashMap, J2kCodestreamAssemblyStatus, J2kLosslessCodestreamAssemblyJob,
+    J2kCodestreamAssemblyStatus, J2kLosslessCodestreamAssemblyJob,
     J2kLosslessCodestreamAssemblyParams, J2kLosslessCodestreamBlockCodingMode, J2kPacketBlock,
     J2kPacketDescriptor, J2kPacketEncodeParams, J2kPacketEncodeStatus, J2kPacketResolution,
     J2kPacketStateBlock, J2kPacketSubband, J2kPendingResidentLosslessCodestream,
     J2kResidentLosslessCodestream, J2kResidentPacketBlock, J2kResidentPacketBlockParams,
-    J2kResidentPacketizationEncodeJob, MTLResourceOptions, MTLSize, MetalRuntime,
-    ResidentLosslessTier1Metal,
+    J2kResidentPacketizationEncodeJob, MTLSize, MetalRuntime, ResidentLosslessTier1Metal,
 };
 
 #[cfg(target_os = "macos")]
@@ -72,6 +72,133 @@ struct ResidentPacketDescriptors {
     state_blocks: Vec<J2kPacketStateBlock>,
 }
 
+struct ResidentPacketAllocationCounts {
+    resolutions: usize,
+    subbands: usize,
+    blocks: usize,
+    unique_states: usize,
+    state_blocks: usize,
+    descriptors: usize,
+}
+
+#[cfg(target_os = "macos")]
+fn resident_job_packet_block_count(
+    tier2_prefix: &str,
+    job: J2kResidentPacketizationEncodeJob<'_>,
+    packet_index: u32,
+) -> Result<usize, Error> {
+    let packet_index = usize::try_from(packet_index).map_err(|_| Error::MetalKernel {
+        message: format!(
+            "{tier2_prefix}Tier-2 Metal resident packet descriptor packet index exceeds usize"
+        ),
+    })?;
+    let resolution = job
+        .resolutions
+        .get(packet_index)
+        .ok_or_else(|| Error::MetalKernel {
+            message: format!(
+                "{tier2_prefix}Tier-2 Metal resident packet descriptor packet index out of range"
+            ),
+        })?;
+    resolution
+        .subbands
+        .iter()
+        .try_fold(0usize, |total, subband| {
+            let count =
+                usize::try_from(subband.code_block_count).map_err(|_| Error::MetalKernel {
+                    message: format!(
+                        "{tier2_prefix}Tier-2 Metal resident packet descriptor block count exceeds usize"
+                    ),
+                })?;
+            crate::batch_allocation::checked_count_sum(
+                [total, count],
+                "J2K Metal resident single state blocks",
+            )
+            .map_err(Error::from)
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn resident_packet_allocation_counts(
+    tier2_prefix: &str,
+    job: J2kResidentPacketizationEncodeJob<'_>,
+) -> Result<ResidentPacketAllocationCounts, Error> {
+    let subbands = crate::batch_allocation::checked_count_sum(
+        job.resolutions
+            .iter()
+            .map(|resolution| resolution.subbands.len()),
+        "J2K Metal resident single subbands",
+    )?;
+    let blocks = job
+        .resolutions
+        .iter()
+        .flat_map(|resolution| &resolution.subbands)
+        .try_fold(0usize, |total, subband| {
+            let count =
+                usize::try_from(subband.code_block_count).map_err(|_| Error::MetalKernel {
+                    message: format!(
+                        "{tier2_prefix}Tier-2 Metal resident packet code-block count exceeds usize"
+                    ),
+                })?;
+            crate::batch_allocation::checked_count_sum(
+                [total, count],
+                "J2K Metal resident single blocks",
+            )
+            .map_err(Error::from)
+        })?;
+    let mut unique_states = 0usize;
+    let mut state_blocks = 0usize;
+    for (index, descriptor) in job.packet_descriptors.iter().enumerate() {
+        if job.packet_descriptors[..index]
+            .iter()
+            .any(|previous| previous.state_index == descriptor.state_index)
+        {
+            continue;
+        }
+        unique_states = crate::batch_allocation::checked_count_sum(
+            [unique_states, 1],
+            "J2K Metal resident single packet states",
+        )?;
+        state_blocks = crate::batch_allocation::checked_count_sum(
+            [
+                state_blocks,
+                resident_job_packet_block_count(tier2_prefix, job, descriptor.packet_index)?,
+            ],
+            "J2K Metal resident single state blocks",
+        )?;
+    }
+    Ok(ResidentPacketAllocationCounts {
+        resolutions: job.resolutions.len(),
+        subbands,
+        blocks,
+        unique_states,
+        state_blocks,
+        descriptors: job.packet_descriptors.len(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn resident_packet_allocation_requests(
+    counts: &ResidentPacketAllocationCounts,
+) -> [crate::batch_allocation::BatchMetadataRequest; 6] {
+    [
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketResolution>(
+            counts.resolutions,
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketSubband>(counts.subbands),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kResidentPacketBlock>(counts.blocks),
+        crate::batch_allocation::BatchMetadataRequest::of::<(u32, u32, usize)>(
+            counts.unique_states,
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketStateBlock>(
+            counts.state_blocks,
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketDescriptor>(
+            counts.descriptors,
+        ),
+    ]
+}
+
 #[cfg(target_os = "macos")]
 #[expect(
     clippy::too_many_lines,
@@ -80,6 +207,8 @@ struct ResidentPacketDescriptors {
 fn build_resident_packet_topology<T: ResidentLosslessTier1Metal>(
     tier1: &T,
     job: J2kResidentPacketizationEncodeJob<'_>,
+    budget: &mut crate::batch_allocation::BatchMetadataBudget,
+    counts: &ResidentPacketAllocationCounts,
 ) -> Result<ResidentPacketTopology, Error> {
     if tier1.batch_job_count() != tier1.code_block_count() {
         return Err(Error::MetalKernel {
@@ -90,9 +219,14 @@ fn build_resident_packet_topology<T: ResidentLosslessTier1Metal>(
         });
     }
 
-    let mut resolutions = Vec::<J2kPacketResolution>::new();
-    let mut subbands = Vec::<J2kPacketSubband>::new();
-    let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
+    let mut resolutions = budget.try_vec(
+        counts.resolutions,
+        "J2K Metal resident single packet resolutions",
+    )?;
+    let mut subbands =
+        budget.try_vec(counts.subbands, "J2K Metal resident single packet subbands")?;
+    let mut resident_blocks =
+        budget.try_vec(counts.blocks, "J2K Metal resident single packet blocks")?;
     let mut max_tree_nodes = 1usize;
 
     for resolution in job.resolutions {
@@ -229,10 +363,21 @@ fn build_resident_packet_descriptors<T: ResidentLosslessTier1Metal>(
     resolutions: &[J2kPacketResolution],
     subbands: &[J2kPacketSubband],
     resident_blocks: &[J2kResidentPacketBlock],
+    budget: &mut crate::batch_allocation::BatchMetadataBudget,
+    counts: &ResidentPacketAllocationCounts,
 ) -> Result<ResidentPacketDescriptors, Error> {
-    let mut state_block_offsets = HashMap::<u32, (u32, usize)>::new();
-    let mut state_blocks = Vec::<J2kPacketStateBlock>::new();
-    let mut descriptors = Vec::<J2kPacketDescriptor>::with_capacity(job.packet_descriptors.len());
+    let mut state_block_offsets = budget.try_vec(
+        counts.unique_states,
+        "J2K Metal resident single packet state offsets",
+    )?;
+    let mut state_blocks = budget.try_vec(
+        counts.state_blocks,
+        "J2K Metal resident single packet state blocks",
+    )?;
+    let mut descriptors = budget.try_vec(
+        counts.descriptors,
+        "J2K Metal resident single packet descriptors",
+    )?;
     for descriptor in job.packet_descriptors {
         let packet_index =
             usize::try_from(descriptor.packet_index).map_err(|_| Error::MetalKernel {
@@ -299,58 +444,61 @@ fn build_resident_packet_descriptors<T: ResidentLosslessTier1Metal>(
                 })?;
         }
 
-        let (state_block_offset, existing_count) =
-            if let Some(&(offset, count)) = state_block_offsets.get(&descriptor.state_index) {
-                (offset, count)
-            } else {
-                let offset = u32::try_from(state_blocks.len()).map_err(|_| Error::MetalKernel {
-                    message: format!(
-                        "{}Tier-2 Metal resident packet state block offset exceeds u32",
-                        T::TIER2_PREFIX
-                    ),
-                })?;
-                for subband in &subbands[subband_start..subband_end] {
-                    let block_start =
-                        usize::try_from(subband.block_offset).map_err(|_| Error::MetalKernel {
+        let (state_block_offset, existing_count) = if let Some(&(_, offset, count)) =
+            state_block_offsets
+                .iter()
+                .find(|(state_index, _, _)| *state_index == descriptor.state_index)
+        {
+            (offset, count)
+        } else {
+            let offset = u32::try_from(state_blocks.len()).map_err(|_| Error::MetalKernel {
+                message: format!(
+                    "{}Tier-2 Metal resident packet state block offset exceeds u32",
+                    T::TIER2_PREFIX
+                ),
+            })?;
+            for subband in &subbands[subband_start..subband_end] {
+                let block_start =
+                    usize::try_from(subband.block_offset).map_err(|_| Error::MetalKernel {
+                        message: format!(
+                            "{}Tier-2 Metal resident packet state block offset exceeds usize",
+                            T::TIER2_PREFIX
+                        ),
+                    })?;
+                let block_count =
+                    usize::try_from(subband.block_count).map_err(|_| Error::MetalKernel {
+                        message: format!(
+                            "{}Tier-2 Metal resident packet state block count exceeds usize",
+                            T::TIER2_PREFIX
+                        ),
+                    })?;
+                let block_end =
+                    block_start
+                        .checked_add(block_count)
+                        .ok_or_else(|| Error::MetalKernel {
                             message: format!(
-                                "{}Tier-2 Metal resident packet state block offset exceeds usize",
+                                "{}Tier-2 Metal resident packet state block range overflow",
                                 T::TIER2_PREFIX
                             ),
                         })?;
-                    let block_count =
-                        usize::try_from(subband.block_count).map_err(|_| Error::MetalKernel {
-                            message: format!(
-                                "{}Tier-2 Metal resident packet state block count exceeds usize",
-                                T::TIER2_PREFIX
-                            ),
-                        })?;
-                    let block_end =
-                        block_start
-                            .checked_add(block_count)
-                            .ok_or_else(|| Error::MetalKernel {
-                                message: format!(
-                                    "{}Tier-2 Metal resident packet state block range overflow",
-                                    T::TIER2_PREFIX
-                                ),
-                            })?;
-                    if block_end > resident_blocks.len() {
-                        return Err(Error::MetalKernel {
-                            message: format!(
-                                "{}Tier-2 Metal resident packet state block range out of bounds",
-                                T::TIER2_PREFIX
-                            ),
-                        });
-                    }
-                    for block in &resident_blocks[block_start..block_end] {
-                        state_blocks.push(J2kPacketStateBlock {
-                            previously_included: block.previously_included,
-                            l_block: block.l_block,
-                        });
-                    }
+                if block_end > resident_blocks.len() {
+                    return Err(Error::MetalKernel {
+                        message: format!(
+                            "{}Tier-2 Metal resident packet state block range out of bounds",
+                            T::TIER2_PREFIX
+                        ),
+                    });
                 }
-                state_block_offsets.insert(descriptor.state_index, (offset, packet_block_count));
-                (offset, packet_block_count)
-            };
+                for block in &resident_blocks[block_start..block_end] {
+                    state_blocks.push(J2kPacketStateBlock {
+                        previously_included: block.previously_included,
+                        l_block: block.l_block,
+                    });
+                }
+            }
+            state_block_offsets.push((descriptor.state_index, offset, packet_block_count));
+            (offset, packet_block_count)
+        };
         if existing_count != packet_block_count {
             return Err(Error::MetalKernel {
                 message: format!(
@@ -390,16 +538,28 @@ fn plan_resident_single<T: ResidentLosslessTier1Metal>(
     job: J2kResidentPacketizationEncodeJob<'_>,
     codestream_job: J2kLosslessCodestreamAssemblyJob,
 ) -> Result<ResidentSinglePlan, Error> {
+    let counts = resident_packet_allocation_counts(T::TIER2_PREFIX, job)?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal resident single packet metadata",
+    );
+    budget.preflight(&resident_packet_allocation_requests(&counts))?;
     let ResidentPacketTopology {
         resolutions,
         subbands,
         resident_blocks,
         max_tree_nodes,
-    } = build_resident_packet_topology(tier1, job)?;
+    } = build_resident_packet_topology(tier1, job, &mut budget, &counts)?;
     let ResidentPacketDescriptors {
         descriptors,
         state_blocks,
-    } = build_resident_packet_descriptors::<T>(job, &resolutions, &subbands, &resident_blocks)?;
+    } = build_resident_packet_descriptors::<T>(
+        job,
+        &resolutions,
+        &subbands,
+        &resident_blocks,
+        &mut budget,
+        &counts,
+    )?;
 
     let header_capacity = resident_blocks
         .len()
@@ -566,27 +726,22 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
         codestream_params,
         resident_block_params,
     } = plan;
-    let resolution_buffer = copied_slice_buffer(&runtime.device, &resolutions);
-    let subband_buffer = copied_slice_buffer(&runtime.device, &subbands);
-    let resident_block_buffer = copied_slice_buffer(&runtime.device, &resident_blocks);
-    let packet_block_buffer = runtime.device.new_buffer(
-        (resident_blocks.len().max(1) * size_of::<J2kPacketBlock>()) as u64,
-        MTLResourceOptions::StorageModePrivate,
-    );
-    let descriptor_buffer = copied_slice_buffer(&runtime.device, &descriptors);
-    let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks);
-    let output_buffer = runtime.device.new_buffer(
-        output_capacity as u64,
-        MTLResourceOptions::StorageModePrivate,
-    );
-    let codestream_buffer = runtime.device.new_buffer(
-        codestream_capacity as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-    let header_buffer = runtime.device.new_buffer(
-        header_capacity as u64,
-        MTLResourceOptions::StorageModePrivate,
-    );
+    let resolution_buffer = copied_slice_buffer(&runtime.device, &resolutions)?;
+    let subband_buffer = copied_slice_buffer(&runtime.device, &subbands)?;
+    let resident_block_buffer = copied_slice_buffer(&runtime.device, &resident_blocks)?;
+    let packet_block_bytes = resident_blocks
+        .len()
+        .max(1)
+        .checked_mul(size_of::<J2kPacketBlock>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "Tier-2 Metal resident packet block size overflow".to_string(),
+        })?;
+    let packet_block_buffer = new_private_buffer(&runtime.device, packet_block_bytes)?;
+    let descriptor_buffer = copied_slice_buffer(&runtime.device, &descriptors)?;
+    let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks)?;
+    let output_buffer = new_private_buffer(&runtime.device, output_capacity)?;
+    let codestream_buffer = new_shared_buffer(&runtime.device, codestream_capacity)?;
+    let header_buffer = new_private_buffer(&runtime.device, header_capacity)?;
     let scratch_words = max_tree_nodes
         .checked_mul(6)
         .ok_or_else(|| Error::MetalKernel {
@@ -595,17 +750,23 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
                 T::TIER2_PREFIX
             ),
         })?;
-    let scratch_buffer = runtime.device.new_buffer(
-        (scratch_words * size_of::<u32>()) as u64,
-        MTLResourceOptions::StorageModePrivate,
-    );
-    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kPacketEncodeStatus>());
+    let scratch_bytes =
+        scratch_words
+            .checked_mul(size_of::<u32>())
+            .ok_or_else(|| Error::MetalKernel {
+                message: format!(
+                    "{}Tier-2 Metal resident packet scratch byte size overflow",
+                    T::TIER2_PREFIX
+                ),
+            })?;
+    let scratch_buffer = new_private_buffer(&runtime.device, scratch_bytes)?;
+    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kPacketEncodeStatus>())?;
     let codestream_status_buffer =
-        zeroed_shared_buffer(&runtime.device, size_of::<J2kCodestreamAssemblyStatus>());
+        zeroed_shared_buffer(&runtime.device, size_of::<J2kCodestreamAssemblyStatus>())?;
 
-    let command_buffer = runtime.queue.new_command_buffer();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
     if !resident_blocks.is_empty() {
-        let encoder = command_buffer.new_compute_command_encoder();
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(T::packet_block_prepare_pipeline(runtime));
         encoder.set_buffer(0, Some(&resident_block_buffer), 0);
         encoder.set_buffer(1, Some(tier1.job_buffer()), 0);
@@ -633,7 +794,7 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
         encoder.end_encoding();
     }
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(&command_buffer)?;
     encoder.set_compute_pipeline_state(&runtime.packet_encode);
     encoder.set_buffer(0, Some(&resolution_buffer), 0);
     encoder.set_buffer(1, Some(&subband_buffer), 0);
@@ -650,10 +811,10 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
     encoder.set_buffer(8, Some(&status_buffer), 0);
     encoder.set_buffer(9, Some(&descriptor_buffer), 0);
     encoder.set_buffer(10, Some(&state_block_buffer), 0);
-    dispatch_single_thread(encoder);
+    dispatch_single_thread(&encoder);
     encoder.end_encoding();
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(&command_buffer)?;
     encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble);
     encoder.set_buffer(0, Some(&output_buffer), 0);
     encoder.set_buffer(1, Some(&status_buffer), 0);
@@ -664,7 +825,7 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
         (&raw const codestream_params).cast(),
     );
     encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
-    dispatch_single_thread(encoder);
+    dispatch_single_thread(&encoder);
     encoder.end_encoding();
     command_buffer.commit();
 
@@ -672,7 +833,7 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
         buffer: codestream_buffer,
         capacity: codestream_capacity,
         status_buffer: codestream_status_buffer,
-        command_buffer: command_buffer.to_owned(),
+        command_buffer,
         retained_command_buffers: vec![
             tier1.prepare_command_buffer().clone(),
             tier1.tier1_command_buffer().clone(),
@@ -696,4 +857,78 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
         length_error: T::CODESTREAM_LENGTH_ERROR,
         capacity_error: T::CODESTREAM_CAPACITY_ERROR,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use core::mem::size_of;
+
+    use super::*;
+    use crate::compute::{J2kResidentPacketizationResolution, J2kResidentPacketizationSubband};
+
+    #[test]
+    fn resident_single_metadata_plan_honors_exact_aggregate_cap() {
+        let resolutions = [J2kResidentPacketizationResolution {
+            subbands: vec![J2kResidentPacketizationSubband {
+                code_block_start: 0,
+                code_block_count: 1,
+                num_cbs_x: 1,
+                num_cbs_y: 1,
+            }],
+        }];
+        let descriptors = [
+            j2k_native::J2kPacketizationPacketDescriptor {
+                packet_index: 0,
+                state_index: 7,
+                layer: 0,
+                resolution: 0,
+                component: 0,
+                precinct: 0,
+            },
+            j2k_native::J2kPacketizationPacketDescriptor {
+                packet_index: 0,
+                state_index: 7,
+                layer: 1,
+                resolution: 0,
+                component: 0,
+                precinct: 0,
+            },
+        ];
+        let job = J2kResidentPacketizationEncodeJob {
+            resolution_count: 1,
+            num_layers: 2,
+            component_count: 1,
+            code_block_count: 1,
+            packet_descriptors: &descriptors,
+            resolutions: &resolutions,
+        };
+        let counts = resident_packet_allocation_counts("test ", job).expect("metadata counts");
+        assert_eq!(counts.unique_states, 1);
+        assert_eq!(counts.state_blocks, 1);
+        let exact_cap = size_of::<J2kPacketResolution>()
+            + size_of::<J2kPacketSubband>()
+            + size_of::<J2kResidentPacketBlock>()
+            + size_of::<(u32, u32, usize)>()
+            + size_of::<J2kPacketStateBlock>()
+            + 2 * size_of::<J2kPacketDescriptor>();
+        let requests = resident_packet_allocation_requests(&counts);
+        crate::batch_allocation::BatchMetadataBudget::with_cap(
+            "J2K Metal resident single packet metadata",
+            exact_cap,
+        )
+        .preflight(&requests)
+        .expect("exact aggregate cap");
+        assert!(matches!(
+            crate::batch_allocation::BatchMetadataBudget::with_cap(
+                "J2K Metal resident single packet metadata",
+                exact_cap - 1,
+            )
+            .preflight(&requests),
+            Err(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                requested,
+                cap,
+                ..
+            }) if requested == exact_cap && cap == exact_cap - 1
+        ));
+    }
 }

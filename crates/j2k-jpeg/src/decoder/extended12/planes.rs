@@ -1,20 +1,24 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Extended-precision component-plane construction and progressive rendering.
+//! Extended-precision sequential decode and progressive plane rendering.
+
+use alloc::vec::Vec;
 
 use super::super::{
-    checked_scratch_len, finish_scan, BitReader, CoefficientBlock, JpegError, PreparedDecodePlan,
+    finish_scan, BitReader, CoefficientBlock, JpegError, PreparedDecodePlan,
     PreparedProgressivePlan, SofKind, Warning, ZIGZAG,
 };
 use super::state::{decode_extended12_block_pixels, Extended12RestartTracker};
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::entropy::progressive::ProgressiveDctBlocks;
 
-pub(super) struct Extended12Plane {
-    pub(super) pixels: Vec<u16>,
-    pub(super) stride: usize,
-    pub(super) width: usize,
-}
+mod allocation;
+
+pub(super) use self::allocation::{ensure_progressive12_coefficient_capacities, Extended12Plane};
+use self::allocation::{
+    ensure_progressive_render_capacities, extended12_four_component_planes_for_sequential_plan,
+    extended12_planes_for_sequential_plan, progressive12_color_planes,
+    progressive12_four_component_planes,
+};
 
 pub(super) fn decode_extended12_color_planes(
     plan: &PreparedDecodePlan,
@@ -51,11 +55,12 @@ pub(super) fn decode_extended12_color_planes(
                 if output_index > 2 {
                     return Err(JpegError::NotImplemented { sof });
                 }
+                let resolved = plan.resolve_component(component)?;
                 for by in 0..u32::from(component.v) {
                     for bx in 0..u32::from(component.h) {
                         decode_extended12_block_pixels(
                             &mut br,
-                            component,
+                            resolved,
                             &mut prev_dc[output_index],
                             &mut coeffs[output_index],
                             &mut pixels[output_index],
@@ -112,11 +117,12 @@ pub(super) fn decode_extended12_four_component_planes(
                 if output_index > 3 {
                     return Err(JpegError::NotImplemented { sof });
                 }
+                let resolved = plan.resolve_component(component)?;
                 for by in 0..u32::from(component.v) {
                     for bx in 0..u32::from(component.h) {
                         decode_extended12_block_pixels(
                             &mut br,
-                            component,
+                            resolved,
                             &mut prev_dc[output_index],
                             &mut coeffs[output_index],
                             &mut pixels[output_index],
@@ -138,95 +144,13 @@ pub(super) fn decode_extended12_four_component_planes(
     Ok((planes, scan_warnings))
 }
 
-pub(super) fn extended12_planes_for_sequential_plan(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<[Extended12Plane; 3], JpegError> {
-    let mcu_cols = plan
-        .dimensions
-        .0
-        .div_ceil(u32::from(plan.sampling.max_h) * 8);
-    let mcu_rows = plan
-        .dimensions
-        .1
-        .div_ceil(u32::from(plan.sampling.max_v) * 8);
-    let mut widths = [0usize; 3];
-    let mut strides = [0usize; 3];
-    let mut heights = [0usize; 3];
-    let mut lens = [0usize; 3];
-    for component in &plan.components {
-        if component.output_index > 2 {
-            return Err(JpegError::NotImplemented { sof });
-        }
-        widths[component.output_index] =
-            plan.dimensions
-                .0
-                .saturating_mul(u32::from(component.h))
-                .div_ceil(u32::from(plan.sampling.max_h)) as usize;
-        strides[component.output_index] =
-            checked_scratch_len(&[mcu_cols as usize, usize::from(component.h), 8])?;
-        heights[component.output_index] =
-            checked_scratch_len(&[mcu_rows as usize, usize::from(component.v), 8])?;
-        lens[component.output_index] = checked_scratch_len(&[
-            strides[component.output_index],
-            heights[component.output_index],
-            core::mem::size_of::<u16>(),
-        ])? / core::mem::size_of::<u16>();
-    }
-    Ok(core::array::from_fn(|index| Extended12Plane {
-        pixels: vec![0u16; lens[index]],
-        stride: strides[index],
-        width: widths[index],
-    }))
-}
-
-pub(super) fn extended12_four_component_planes_for_sequential_plan(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<[Extended12Plane; 4], JpegError> {
-    let mcu_cols = plan
-        .dimensions
-        .0
-        .div_ceil(u32::from(plan.sampling.max_h) * 8);
-    let mcu_rows = plan
-        .dimensions
-        .1
-        .div_ceil(u32::from(plan.sampling.max_v) * 8);
-    let mut widths = [0usize; 4];
-    let mut strides = [0usize; 4];
-    let mut heights = [0usize; 4];
-    let mut lens = [0usize; 4];
-    for component in &plan.components {
-        if component.output_index > 3 {
-            return Err(JpegError::NotImplemented { sof });
-        }
-        widths[component.output_index] =
-            plan.dimensions
-                .0
-                .saturating_mul(u32::from(component.h))
-                .div_ceil(u32::from(plan.sampling.max_h)) as usize;
-        strides[component.output_index] =
-            checked_scratch_len(&[mcu_cols as usize, usize::from(component.h), 8])?;
-        heights[component.output_index] =
-            checked_scratch_len(&[mcu_rows as usize, usize::from(component.v), 8])?;
-        lens[component.output_index] = checked_scratch_len(&[
-            strides[component.output_index],
-            heights[component.output_index],
-            core::mem::size_of::<u16>(),
-        ])? / core::mem::size_of::<u16>();
-    }
-    Ok(core::array::from_fn(|index| Extended12Plane {
-        pixels: vec![0u16; lens[index]],
-        stride: strides[index],
-        width: widths[index],
-    }))
-}
-
 pub(super) fn render_progressive12_color_planes(
     plan: &PreparedProgressivePlan,
-    coeffs: &[Vec<[i32; 64]>],
+    dct_blocks: &ProgressiveDctBlocks,
 ) -> Result<[Extended12Plane; 3], JpegError> {
-    let mut planes = progressive12_color_planes(plan)?;
+    let coeffs = &dct_blocks.quantized;
+    let coefficient_bytes = dct_blocks.capacity_bytes()?;
+    let mut planes = progressive12_color_planes(plan, coefficient_bytes)?;
     let mut dequant = [0i16; 64];
     let mut pixels = [0u16; 64];
     for (component_index, component) in plan.components.iter().enumerate() {
@@ -253,14 +177,17 @@ pub(super) fn render_progressive12_color_planes(
             }
         }
     }
+    ensure_progressive_render_capacities(dct_blocks, &planes, plan.scratch_bytes)?;
     Ok(planes)
 }
 
 pub(super) fn render_progressive12_four_component_planes(
     plan: &PreparedProgressivePlan,
-    coeffs: &[Vec<[i32; 64]>],
+    dct_blocks: &ProgressiveDctBlocks,
 ) -> Result<[Extended12Plane; 4], JpegError> {
-    let mut planes = progressive12_four_component_planes(plan)?;
+    let coeffs = &dct_blocks.quantized;
+    let coefficient_bytes = dct_blocks.capacity_bytes()?;
+    let mut planes = progressive12_four_component_planes(plan, coefficient_bytes)?;
     let mut dequant = [0i16; 64];
     let mut pixels = [0u16; 64];
     for (component_index, component) in plan.components.iter().enumerate() {
@@ -287,53 +214,8 @@ pub(super) fn render_progressive12_four_component_planes(
             }
         }
     }
+    ensure_progressive_render_capacities(dct_blocks, &planes, plan.scratch_bytes)?;
     Ok(planes)
-}
-
-pub(super) fn progressive12_color_planes(
-    plan: &PreparedProgressivePlan,
-) -> Result<[Extended12Plane; 3], JpegError> {
-    let mut widths = [0usize; 3];
-    let mut strides = [0usize; 3];
-    let mut heights = [0usize; 3];
-    for component in &plan.components {
-        if component.output_index > 2 {
-            return Err(JpegError::NotImplemented {
-                sof: SofKind::Progressive12,
-            });
-        }
-        widths[component.output_index] = component.sample_width as usize;
-        strides[component.output_index] = component.block_cols as usize * 8;
-        heights[component.output_index] = component.block_rows as usize * 8;
-    }
-    Ok(core::array::from_fn(|index| Extended12Plane {
-        pixels: vec![0u16; strides[index] * heights[index]],
-        stride: strides[index],
-        width: widths[index],
-    }))
-}
-
-pub(super) fn progressive12_four_component_planes(
-    plan: &PreparedProgressivePlan,
-) -> Result<[Extended12Plane; 4], JpegError> {
-    let mut widths = [0usize; 4];
-    let mut strides = [0usize; 4];
-    let mut heights = [0usize; 4];
-    for component in &plan.components {
-        if component.output_index > 3 {
-            return Err(JpegError::NotImplemented {
-                sof: SofKind::Progressive12,
-            });
-        }
-        widths[component.output_index] = component.sample_width as usize;
-        strides[component.output_index] = component.block_cols as usize * 8;
-        heights[component.output_index] = component.block_rows as usize * 8;
-    }
-    Ok(core::array::from_fn(|index| Extended12Plane {
-        pixels: vec![0u16; strides[index] * heights[index]],
-        stride: strides[index],
-        width: widths[index],
-    }))
 }
 
 pub(super) fn deposit_extended12_block(

@@ -1,19 +1,28 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    borrow_slice_buffer, checked_buffer_read, checked_buffer_slice, checked_buffer_slice_at,
+    checked_buffer_read, checked_buffer_slice, checked_buffer_slice_at,
     classic_encode_code_blocks_pipeline, classic_encode_output_capacity,
     classic_encode_segment_capacity, classic_style_flags, commit_and_wait_metal,
-    dispatch_1d_pipeline, dispatch_single_thread, ht_encode_output_capacity, label_command_buffer,
-    label_compute_encoder, owned_slice_buffer, size_of, with_runtime, with_runtime_for_session,
-    zeroed_shared_buffer, Buffer, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, Error,
-    J2kClassicEncodeBatchJob, J2kClassicEncodeParams, J2kClassicEncodeStatus, J2kClassicSegment,
-    J2kCodeBlockSegment, J2kHtCodeBlockEncodeJob, J2kHtEncodeBatchJob, J2kHtEncodeParams,
-    J2kHtEncodeStatus, J2kPacketEncodeStatus, J2kPreparedLosslessDeviceCodeBlocks,
-    J2kResidentLosslessHtCodeBlocks, J2kResidentLosslessTier1CodeBlocks,
-    J2kTier1CodeBlockEncodeJob, MTLResourceOptions, MetalRuntime, J2K_ENCODE_STATUS_FAIL,
-    J2K_ENCODE_STATUS_OK, J2K_ENCODE_STATUS_UNSUPPORTED,
+    copied_slice_buffer, dispatch_1d_pipeline, dispatch_single_thread, ht_encode_output_capacity,
+    label_command_buffer, label_compute_encoder, new_blit_command_encoder, new_command_buffer,
+    new_compute_command_encoder, new_private_buffer, new_shared_buffer, size_of, with_runtime,
+    with_runtime_for_session, zeroed_shared_buffer, Buffer, EncodedHtJ2kCodeBlock,
+    EncodedJ2kCodeBlock, Error, J2kClassicEncodeBatchJob, J2kClassicEncodeParams,
+    J2kClassicEncodeStatus, J2kClassicSegment, J2kCodeBlockSegment, J2kHtCodeBlockEncodeJob,
+    J2kHtEncodeBatchJob, J2kHtEncodeParams, J2kHtEncodeStatus, J2kLosslessDeviceCodeBlock,
+    J2kPacketEncodeStatus, J2kPreparedLosslessDeviceCodeBlocks, J2kResidentLosslessHtCodeBlocks,
+    J2kResidentLosslessTier1CodeBlocks, J2kTier1CodeBlockEncodeJob, MetalRuntime,
+    J2K_ENCODE_STATUS_FAIL, J2K_ENCODE_STATUS_OK, J2K_ENCODE_STATUS_UNSUPPORTED,
 };
+
+fn checked_type_buffer_bytes<T>(count: usize, context: &'static str) -> Result<usize, Error> {
+    count
+        .checked_mul(size_of::<T>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: format!("{context} byte size overflow"),
+        })
+}
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -95,6 +104,37 @@ pub(super) fn classic_encode_sub_band_code(sub_band_type: j2k_native::J2kSubBand
 }
 
 #[cfg(target_os = "macos")]
+fn project_classic_encode_segments(
+    raw_segments: &[J2kClassicSegment],
+) -> Result<Vec<J2kCodeBlockSegment>, Error> {
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "classic J2K Metal encoded segment metadata",
+    );
+    let mut segments = budget.try_vec(
+        raw_segments.len(),
+        "classic J2K Metal encoded segment metadata",
+    )?;
+    for segment in raw_segments {
+        segments.push(J2kCodeBlockSegment {
+            data_offset: segment.data_offset,
+            data_length: segment.data_length,
+            start_coding_pass: u8::try_from(segment.start_coding_pass).map_err(|_| {
+                Error::MetalKernel {
+                    message: "classic J2K Metal encode segment start pass exceeds u8".to_string(),
+                }
+            })?,
+            end_coding_pass: u8::try_from(segment.end_coding_pass).map_err(|_| {
+                Error::MetalKernel {
+                    message: "classic J2K Metal encode segment end pass exceeds u8".to_string(),
+                }
+            })?,
+            use_arithmetic: segment.use_arithmetic != 0,
+        });
+    }
+    Ok(segments)
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn read_classic_encoded_code_block(
     status: J2kClassicEncodeStatus,
     output: &Buffer,
@@ -169,27 +209,7 @@ pub(super) fn read_classic_encoded_code_block(
                 })?;
         checked_buffer_slice_at::<u8>(output, payload_offset, data_len, "classic encode payload")?
     };
-    let segments = raw_segments
-        .iter()
-        .map(|segment| {
-            Ok(J2kCodeBlockSegment {
-                data_offset: segment.data_offset,
-                data_length: segment.data_length,
-                start_coding_pass: u8::try_from(segment.start_coding_pass).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "classic J2K Metal encode segment start pass exceeds u8"
-                            .to_string(),
-                    }
-                })?,
-                end_coding_pass: u8::try_from(segment.end_coding_pass).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "classic J2K Metal encode segment end pass exceeds u8".to_string(),
-                    }
-                })?,
-                use_arithmetic: segment.use_arithmetic != 0,
-            })
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
+    let segments = project_classic_encode_segments(&raw_segments)?;
 
     Ok(EncodedJ2kCodeBlock {
         data,
@@ -211,8 +231,32 @@ pub(crate) fn encode_classic_tier1_code_blocks(
         if jobs.is_empty() {
             return Ok(Vec::new());
         }
-        let mut coefficients = Vec::<i32>::new();
-        let mut batch_jobs = Vec::<J2kClassicEncodeBatchJob>::with_capacity(jobs.len());
+        let coefficient_count = jobs.iter().try_fold(0usize, |total, job| {
+            let width = usize::try_from(job.width).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal encode width exceeds usize".to_string(),
+            })?;
+            let height = usize::try_from(job.height).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal encode height exceeds usize".to_string(),
+            })?;
+            let count = width
+                .checked_mul(height)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal encode coefficient count overflow".to_string(),
+                })?;
+            total.checked_add(count).ok_or_else(|| {
+                Error::from(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                    what: "classic J2K Metal encode coefficients",
+                    requested: usize::MAX,
+                    cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                })
+            })
+        })?;
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "classic J2K Metal Tier-1 encode batch",
+        );
+        let mut coefficients =
+            budget.try_vec(coefficient_count, "classic J2K Metal encode coefficients")?;
+        let mut batch_jobs = budget.try_vec(jobs.len(), "classic J2K Metal encode batch jobs")?;
         let mut output_capacity_total = 0usize;
         let mut segment_capacity_total = 0usize;
 
@@ -283,26 +327,29 @@ pub(crate) fn encode_classic_tier1_code_blocks(
                 })?;
         }
 
-        let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
-        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
-        let output = runtime.device.new_buffer(
-            output_capacity_total.max(1) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let coefficient_buffer = copied_slice_buffer(&runtime.device, &coefficients)?;
+        let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
+        let output = new_shared_buffer(&runtime.device, output_capacity_total.max(1))?;
         let status_buffer = zeroed_shared_buffer(
             &runtime.device,
-            jobs.len() * size_of::<J2kClassicEncodeStatus>(),
-        );
-        let segment_buffer = runtime.device.new_buffer(
-            (segment_capacity_total * size_of::<J2kClassicSegment>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+            checked_type_buffer_bytes::<J2kClassicEncodeStatus>(
+                jobs.len(),
+                "classic J2K Metal encode status buffer",
+            )?,
+        )?;
+        let segment_buffer = new_shared_buffer(
+            &runtime.device,
+            checked_type_buffer_bytes::<J2kClassicSegment>(
+                segment_capacity_total,
+                "classic J2K Metal encode segment buffer",
+            )?,
+        )?;
         let job_count = u32::try_from(batch_jobs.len()).map_err(|_| Error::MetalKernel {
             message: "classic J2K Metal encode job count exceeds u32".to_string(),
         })?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, &batch_jobs);
         encoder.set_compute_pipeline_state(classic_encode_pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
@@ -311,16 +358,16 @@ pub(crate) fn encode_classic_tier1_code_blocks(
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
         encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
-        dispatch_1d_pipeline(encoder, classic_encode_pipeline, u64::from(job_count));
+        dispatch_1d_pipeline(&encoder, classic_encode_pipeline, u64::from(job_count));
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let statuses = checked_buffer_slice::<J2kClassicEncodeStatus>(
             &status_buffer,
             jobs.len(),
             "classic encode statuses",
         )?;
-        let mut results = Vec::with_capacity(jobs.len());
+        let mut results = budget.try_vec(jobs.len(), "J2K Metal classic Tier-1 encoded blocks")?;
         for (idx, status) in statuses.iter().copied().enumerate() {
             let batch_job = batch_jobs[idx];
             results.push(read_classic_encoded_code_block(
@@ -375,17 +422,11 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
     } = prepared;
     with_runtime_for_session(session, |runtime| {
         if code_blocks.is_empty() {
-            let output = runtime
-                .device
-                .new_buffer(1, MTLResourceOptions::StorageModePrivate);
-            let status_buffer = zeroed_shared_buffer(&runtime.device, 1);
-            let segment_buffer = runtime
-                .device
-                .new_buffer(1, MTLResourceOptions::StorageModePrivate);
-            let job_buffer = runtime
-                .device
-                .new_buffer(1, MTLResourceOptions::StorageModeShared);
-            let command_buffer = runtime.queue.new_command_buffer();
+            let output = new_private_buffer(&runtime.device, 1)?;
+            let status_buffer = zeroed_shared_buffer(&runtime.device, 1)?;
+            let segment_buffer = new_private_buffer(&runtime.device, 1)?;
+            let job_buffer = new_shared_buffer(&runtime.device, 1)?;
+            let command_buffer = new_command_buffer(&runtime.queue)?;
             command_buffer.commit();
             return Ok(J2kResidentLosslessTier1CodeBlocks {
                 output_buffer: output,
@@ -395,7 +436,7 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
                 code_blocks,
                 output_capacity_total: 0,
                 _segment_buffer: segment_buffer,
-                tier1_command_buffer: command_buffer.to_owned(),
+                tier1_command_buffer: command_buffer,
                 _coefficient_buffer: coefficient_buffer,
                 prepare_command_buffer,
                 _deinterleave_status_buffer: deinterleave_status_buffer,
@@ -404,7 +445,13 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
                 _coefficient_job_buffer: coefficient_job_buffer,
             });
         }
-        let mut batch_jobs = Vec::<J2kClassicEncodeBatchJob>::with_capacity(code_blocks.len());
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal resident classic Tier-1 encode jobs",
+        );
+        let mut batch_jobs = budget.try_vec(
+            code_blocks.len(),
+            "J2K Metal resident classic Tier-1 encode jobs",
+        )?;
         let mut output_capacity_total = 0usize;
         let mut segment_capacity_total = 0usize;
 
@@ -459,25 +506,28 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
                 })?;
         }
 
-        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
-        let output = runtime.device.new_buffer(
-            output_capacity_total.max(1) as u64,
-            MTLResourceOptions::StorageModePrivate,
-        );
+        let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
+        let output = new_private_buffer(&runtime.device, output_capacity_total.max(1))?;
         let status_buffer = zeroed_shared_buffer(
             &runtime.device,
-            batch_jobs.len() * size_of::<J2kClassicEncodeStatus>(),
-        );
-        let segment_buffer = runtime.device.new_buffer(
-            (segment_capacity_total * size_of::<J2kClassicSegment>()) as u64,
-            MTLResourceOptions::StorageModePrivate,
-        );
+            checked_type_buffer_bytes::<J2kClassicEncodeStatus>(
+                batch_jobs.len(),
+                "classic J2K Metal resident status buffer",
+            )?,
+        )?;
+        let segment_buffer = new_private_buffer(
+            &runtime.device,
+            checked_type_buffer_bytes::<J2kClassicSegment>(
+                segment_capacity_total,
+                "classic J2K Metal resident segment buffer",
+            )?,
+        )?;
         let job_count = u32::try_from(batch_jobs.len()).map_err(|_| Error::MetalKernel {
             message: "classic J2K Metal resident encode job count exceeds u32".to_string(),
         })?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, &batch_jobs);
         encoder.set_compute_pipeline_state(classic_encode_pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
@@ -486,7 +536,7 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
         encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
-        dispatch_1d_pipeline(encoder, classic_encode_pipeline, u64::from(job_count));
+        dispatch_1d_pipeline(&encoder, classic_encode_pipeline, u64::from(job_count));
         encoder.end_encoding();
         command_buffer.commit();
 
@@ -498,7 +548,7 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
             code_blocks,
             output_capacity_total,
             _segment_buffer: segment_buffer,
-            tier1_command_buffer: command_buffer.to_owned(),
+            tier1_command_buffer: command_buffer,
             _coefficient_buffer: coefficient_buffer,
             prepare_command_buffer,
             _deinterleave_status_buffer: deinterleave_status_buffer,
@@ -538,14 +588,10 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
     } = prepared;
     with_runtime_for_session(session, |runtime| {
         if code_blocks.is_empty() {
-            let output = runtime
-                .device
-                .new_buffer(1, MTLResourceOptions::StorageModePrivate);
-            let status_buffer = zeroed_shared_buffer(&runtime.device, 1);
-            let job_buffer = runtime
-                .device
-                .new_buffer(1, MTLResourceOptions::StorageModeShared);
-            let command_buffer = runtime.queue.new_command_buffer();
+            let output = new_private_buffer(&runtime.device, 1)?;
+            let status_buffer = zeroed_shared_buffer(&runtime.device, 1)?;
+            let job_buffer = new_shared_buffer(&runtime.device, 1)?;
+            let command_buffer = new_command_buffer(&runtime.queue)?;
             command_buffer.commit();
             return Ok(J2kResidentLosslessHtCodeBlocks {
                 output_buffer: output,
@@ -554,17 +600,23 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
                 batch_jobs: Vec::new(),
                 code_blocks,
                 output_capacity_total: 0,
-                tier1_command_buffer: command_buffer.to_owned(),
+                tier1_command_buffer: command_buffer,
                 _coefficient_buffer: coefficient_buffer,
                 prepare_command_buffer,
                 _deinterleave_status_buffer: deinterleave_status_buffer,
-                _plane_buffers: plane_buffers,
-                _scratch_buffers: scratch_buffers,
+                plane_buffers,
+                scratch_buffers,
                 _coefficient_job_buffer: coefficient_job_buffer,
             });
         }
 
-        let mut batch_jobs = Vec::<J2kHtEncodeBatchJob>::with_capacity(code_blocks.len());
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal resident HT Tier-1 encode jobs",
+        );
+        let mut batch_jobs = budget.try_vec(
+            code_blocks.len(),
+            "J2K Metal resident HT Tier-1 encode jobs",
+        )?;
         let mut output_capacity_total = 0usize;
 
         for block in &code_blocks {
@@ -592,23 +644,23 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
                 })?;
         }
 
-        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
-        let output = runtime.device.new_buffer(
-            output_capacity_total.max(1) as u64,
-            MTLResourceOptions::StorageModePrivate,
-        );
+        let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
+        let output = new_private_buffer(&runtime.device, output_capacity_total.max(1))?;
         let status_buffer = zeroed_shared_buffer(
             &runtime.device,
-            batch_jobs.len() * size_of::<J2kHtEncodeStatus>(),
-        );
+            checked_type_buffer_bytes::<J2kHtEncodeStatus>(
+                batch_jobs.len(),
+                "HTJ2K Metal resident status buffer",
+            )?,
+        )?;
         let job_count = u32::try_from(batch_jobs.len()).map_err(|_| Error::MetalKernel {
             message: "HTJ2K Metal resident encode job count exceeds u32".to_string(),
         })?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        label_command_buffer(command_buffer, "j2k htj2k resident tier1");
-        let encoder = command_buffer.new_compute_command_encoder();
-        label_compute_encoder(encoder, "HTJ2K Tier-1 encode");
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        label_command_buffer(&command_buffer, "j2k htj2k resident tier1");
+        let encoder = new_compute_command_encoder(&command_buffer)?;
+        label_compute_encoder(&encoder, "HTJ2K Tier-1 encode");
         let pipeline = &runtime.ht_encode_code_blocks;
         encoder.set_compute_pipeline_state(pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
@@ -619,7 +671,7 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
         encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-        dispatch_1d_pipeline(encoder, pipeline, u64::from(job_count));
+        dispatch_1d_pipeline(&encoder, pipeline, u64::from(job_count));
         encoder.end_encoding();
         command_buffer.commit();
 
@@ -630,12 +682,12 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
             batch_jobs,
             code_blocks,
             output_capacity_total,
-            tier1_command_buffer: command_buffer.to_owned(),
+            tier1_command_buffer: command_buffer,
             _coefficient_buffer: coefficient_buffer,
             prepare_command_buffer,
             _deinterleave_status_buffer: deinterleave_status_buffer,
-            _plane_buffers: plane_buffers,
-            _scratch_buffers: scratch_buffers,
+            plane_buffers,
+            scratch_buffers,
             _coefficient_job_buffer: coefficient_job_buffer,
         })
     })
@@ -686,22 +738,24 @@ pub(crate) fn encode_classic_tier1_code_block(
             })?,
         };
         let coefficients =
-            borrow_slice_buffer(&runtime.device, &job.coefficients[..expected_coefficients]);
-        let output = runtime.device.new_buffer(
-            output_capacity as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+            copied_slice_buffer(&runtime.device, &job.coefficients[..expected_coefficients])?;
+        let output = new_shared_buffer(&runtime.device, output_capacity)?;
         let status_buffer =
-            zeroed_shared_buffer(&runtime.device, size_of::<J2kClassicEncodeStatus>());
-        let segment_buffer = runtime.device.new_buffer(
-            (usize::try_from(params.segment_capacity).map_err(|_| Error::MetalKernel {
+            zeroed_shared_buffer(&runtime.device, size_of::<J2kClassicEncodeStatus>())?;
+        let segment_capacity =
+            usize::try_from(params.segment_capacity).map_err(|_| Error::MetalKernel {
                 message: "classic J2K Metal encode segment capacity exceeds usize".to_string(),
-            })? * size_of::<J2kClassicSegment>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+            })?;
+        let segment_buffer = new_shared_buffer(
+            &runtime.device,
+            checked_type_buffer_bytes::<J2kClassicSegment>(
+                segment_capacity,
+                "classic J2K Metal single segment buffer",
+            )?,
+        )?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.classic_encode_code_block);
         encoder.set_buffer(0, Some(&coefficients), 0);
         encoder.set_buffer(1, Some(&output), 0);
@@ -712,9 +766,9 @@ pub(crate) fn encode_classic_tier1_code_block(
         );
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
-        dispatch_single_thread(encoder);
+        dispatch_single_thread(&encoder);
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let status =
             checked_buffer_read::<J2kClassicEncodeStatus>(&status_buffer, "classic Tier-1 status")?;
@@ -783,28 +837,7 @@ pub(crate) fn encode_classic_tier1_code_block(
                 "classic Tier-1 segments",
             )?
         };
-        let segments = raw_segments
-            .iter()
-            .map(|segment| {
-                Ok(J2kCodeBlockSegment {
-                    data_offset: segment.data_offset,
-                    data_length: segment.data_length,
-                    start_coding_pass: u8::try_from(segment.start_coding_pass).map_err(|_| {
-                        Error::MetalKernel {
-                            message: "classic J2K Metal encode segment start pass exceeds u8"
-                                .to_string(),
-                        }
-                    })?,
-                    end_coding_pass: u8::try_from(segment.end_coding_pass).map_err(|_| {
-                        Error::MetalKernel {
-                            message: "classic J2K Metal encode segment end pass exceeds u8"
-                                .to_string(),
-                        }
-                    })?,
-                    use_arithmetic: segment.use_arithmetic != 0,
-                })
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
+        let segments = project_classic_encode_segments(&raw_segments)?;
 
         Ok(EncodedJ2kCodeBlock {
             data,
@@ -876,14 +909,27 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
             .ok_or_else(|| Error::MetalKernel {
                 message: "HTJ2K Metal resident status readback size overflow".to_string(),
             })?;
-        let output = runtime
-            .device
-            .new_buffer(output_bytes as u64, MTLResourceOptions::StorageModeShared);
-        let status_buffer = zeroed_shared_buffer(&runtime.device, status_bytes);
+        let mut result_budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "HTJ2K Metal resident Tier-1 readback metadata",
+        );
+        result_budget.account_capacity::<J2kHtEncodeBatchJob>(tier1.batch_jobs.capacity())?;
+        result_budget
+            .account_capacity::<J2kLosslessDeviceCodeBlock>(tier1.code_blocks.capacity())?;
+        result_budget.account_capacity::<Buffer>(tier1.plane_buffers.capacity())?;
+        result_budget.account_capacity::<Buffer>(tier1.scratch_buffers.capacity())?;
+        result_budget.preflight(&[crate::batch_allocation::BatchMetadataRequest::of::<
+            EncodedHtJ2kCodeBlock,
+        >(tier1.batch_jobs.len())])?;
+        let mut encoded_blocks = result_budget.try_vec(
+            tier1.batch_jobs.len(),
+            "HTJ2K Metal resident Tier-1 encoded block results",
+        )?;
+        let output = new_shared_buffer(&runtime.device, output_bytes)?;
+        let status_buffer = zeroed_shared_buffer(&runtime.device, status_bytes)?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        label_command_buffer(command_buffer, "j2k htj2k resident tier1 cpu readback");
-        let blit = command_buffer.new_blit_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        label_command_buffer(&command_buffer, "j2k htj2k resident tier1 cpu readback");
+        let blit = new_blit_command_encoder(&command_buffer)?;
         blit.copy_from_buffer(
             &tier1.output_buffer,
             0,
@@ -899,30 +945,26 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
             status_bytes as u64,
         );
         blit.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let statuses = checked_buffer_slice::<J2kHtEncodeStatus>(
             &status_buffer,
             tier1.batch_jobs.len(),
             "resident HT encode statuses",
         )?;
-        tier1
-            .batch_jobs
-            .iter()
-            .zip(statuses.iter().copied())
-            .map(|(batch_job, status)| {
-                read_ht_encoded_code_block(
-                    status,
-                    &output,
-                    usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
-                        message: "HTJ2K Metal resident output offset exceeds usize".to_string(),
-                    })?,
-                    usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
-                        message: "HTJ2K Metal resident output capacity exceeds usize".to_string(),
-                    })?,
-                )
-            })
-            .collect()
+        for (batch_job, status) in tier1.batch_jobs.iter().zip(statuses.iter().copied()) {
+            encoded_blocks.push(read_ht_encoded_code_block(
+                status,
+                &output,
+                usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
+                    message: "HTJ2K Metal resident output offset exceeds usize".to_string(),
+                })?,
+                usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
+                    message: "HTJ2K Metal resident output capacity exceeds usize".to_string(),
+                })?,
+            )?);
+        }
+        Ok(encoded_blocks)
     })
 }
 
@@ -938,12 +980,19 @@ pub(super) fn encode_ht_cleanup_code_blocks_with_runtime(
     runtime: &MetalRuntime,
     jobs: &[J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
-    encode_ht_cleanup_code_blocks_with_runtime_and_statuses(runtime, jobs).map(|blocks| {
-        blocks
-            .into_iter()
-            .map(|(encoded, _status)| encoded)
-            .collect()
-    })
+    let blocks = encode_ht_cleanup_code_blocks_with_runtime_and_statuses(runtime, jobs)?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "HTJ2K Metal encoded block projection metadata",
+    );
+    budget.account_capacity::<(EncodedHtJ2kCodeBlock, J2kHtEncodeStatus)>(blocks.capacity())?;
+    budget.preflight(&[crate::batch_allocation::BatchMetadataRequest::of::<
+        EncodedHtJ2kCodeBlock,
+    >(blocks.len())])?;
+    let mut encoded = budget.try_vec(blocks.len(), "HTJ2K Metal encoded block results")?;
+    for (block, _status) in blocks {
+        encoded.push(block);
+    }
+    Ok(encoded)
 }
 
 #[cfg(target_os = "macos")]
@@ -964,8 +1013,30 @@ pub(super) fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
         });
     }
 
-    let mut coefficients = Vec::<i32>::new();
-    let mut batch_jobs = Vec::<J2kHtEncodeBatchJob>::with_capacity(jobs.len());
+    let coefficient_count = jobs.iter().try_fold(0usize, |total, job| {
+        let width = usize::try_from(job.width).map_err(|_| Error::MetalKernel {
+            message: "HTJ2K Metal encode width exceeds usize".to_string(),
+        })?;
+        let height = usize::try_from(job.height).map_err(|_| Error::MetalKernel {
+            message: "HTJ2K Metal encode height exceeds usize".to_string(),
+        })?;
+        let count = width
+            .checked_mul(height)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K Metal encode coefficient count overflow".to_string(),
+            })?;
+        total.checked_add(count).ok_or_else(|| {
+            Error::from(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                what: "HTJ2K Metal encode coefficients",
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            })
+        })
+    })?;
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("HTJ2K Metal Tier-1 encode batch");
+    let mut coefficients = budget.try_vec(coefficient_count, "HTJ2K Metal encode coefficients")?;
+    let mut batch_jobs = budget.try_vec(jobs.len(), "HTJ2K Metal encode batch jobs")?;
     let mut output_capacity_total = 0usize;
 
     for job in jobs {
@@ -1013,22 +1084,24 @@ pub(super) fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
             })?;
     }
 
-    let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
-    let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
-    let output = runtime.device.new_buffer(
-        output_capacity_total.max(1) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-    let status_buffer =
-        zeroed_shared_buffer(&runtime.device, jobs.len() * size_of::<J2kHtEncodeStatus>());
+    let coefficient_buffer = copied_slice_buffer(&runtime.device, &coefficients)?;
+    let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
+    let output = new_shared_buffer(&runtime.device, output_capacity_total.max(1))?;
+    let status_buffer = zeroed_shared_buffer(
+        &runtime.device,
+        checked_type_buffer_bytes::<J2kHtEncodeStatus>(
+            jobs.len(),
+            "HTJ2K Metal encode status buffer",
+        )?,
+    )?;
     let job_count = u32::try_from(batch_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "HTJ2K Metal encode job count exceeds u32".to_string(),
     })?;
 
-    let command_buffer = runtime.queue.new_command_buffer();
-    label_command_buffer(command_buffer, "j2k htj2k tier1 batch");
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "HTJ2K Tier-1 encode");
+    let command_buffer = new_command_buffer(&runtime.queue)?;
+    label_command_buffer(&command_buffer, "j2k htj2k tier1 batch");
+    let encoder = new_compute_command_encoder(&command_buffer)?;
+    label_compute_encoder(&encoder, "HTJ2K Tier-1 encode");
     let pipeline = &runtime.ht_encode_code_blocks;
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(&coefficient_buffer), 0);
@@ -1039,16 +1112,16 @@ pub(super) fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
     encoder.set_buffer(6, Some(&status_buffer), 0);
     encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-    dispatch_1d_pipeline(encoder, pipeline, u64::from(job_count));
+    dispatch_1d_pipeline(&encoder, pipeline, u64::from(job_count));
     encoder.end_encoding();
-    commit_and_wait_metal(command_buffer)?;
+    commit_and_wait_metal(&command_buffer)?;
 
     let statuses = checked_buffer_slice::<J2kHtEncodeStatus>(
         &status_buffer,
         jobs.len(),
         "HT encode statuses",
     )?;
-    let mut results = Vec::with_capacity(jobs.len());
+    let mut results = budget.try_vec(jobs.len(), "J2K Metal HT Tier-1 encoded blocks")?;
     for (idx, status) in statuses.iter().copied().enumerate() {
         let batch_job = batch_jobs[idx];
         let encoded_block = read_ht_encoded_code_block(
@@ -1104,15 +1177,12 @@ pub(crate) fn encode_ht_cleanup_code_block(
             output_capacity: output_capacity_u32,
         };
         let coefficients =
-            borrow_slice_buffer(&runtime.device, &job.coefficients[..expected_coefficients]);
-        let output = runtime.device.new_buffer(
-            output_capacity as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kHtEncodeStatus>());
+            copied_slice_buffer(&runtime.device, &job.coefficients[..expected_coefficients])?;
+        let output = new_shared_buffer(&runtime.device, output_capacity)?;
+        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kHtEncodeStatus>())?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.ht_encode_code_block);
         encoder.set_buffer(0, Some(&coefficients), 0);
         encoder.set_buffer(1, Some(&output), 0);
@@ -1125,9 +1195,9 @@ pub(crate) fn encode_ht_cleanup_code_block(
         encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
         encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
-        dispatch_single_thread(encoder);
+        dispatch_single_thread(&encoder);
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kHtEncodeStatus>(&status_buffer, "HT encode status")?;
         if status.code != J2K_ENCODE_STATUS_OK {

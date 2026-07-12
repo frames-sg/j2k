@@ -16,11 +16,8 @@ fn metal_buffer_lossless_encode_pads_edge_tile_on_device() {
     let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 19) & 0xFF) as u8).collect();
     let device = metal::Device::system_default().expect("Metal device");
     let session = crate::MetalBackendSession::new(device);
-    let buffer = session.device().new_buffer_with_data(
-        pixels.as_ptr().cast(),
-        pixels.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &pixels)
+        .expect("upload test pixels");
 
     let encoded = super::super::encode_lossless_from_metal_buffer(
         super::super::MetalLosslessEncodeTile {
@@ -73,11 +70,8 @@ fn submitted_metal_buffer_lossless_encode_wait_round_trips() {
 
     let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 19) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = session.device().new_buffer_with_data(
-        pixels.as_ptr().cast(),
-        pixels.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &pixels)
+        .expect("upload test pixels");
 
     let submitted = super::super::submit_lossless_from_metal_buffer(
         super::super::MetalLosslessEncodeTile {
@@ -131,11 +125,8 @@ fn metal_buffer_lossless_encode_accepts_padded_contiguous_input_without_copy() {
 
     let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 31) & 0xFF) as u8).collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = session.device().new_buffer_with_data(
-        pixels.as_ptr().cast(),
-        pixels.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &pixels)
+        .expect("upload test pixels");
 
     let encoded = super::super::encode_lossless_from_padded_metal_buffer_with_report(
         super::super::MetalLosslessEncodeTile {

@@ -1,49 +1,28 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::error::bail;
 use crate::j2c::{ComponentData, Header};
-use crate::jp2::cdef::{ChannelAssociation, ChannelType};
-use crate::jp2::cmap::ComponentMappingType;
+use crate::jp2::cdef::ChannelType;
 use crate::jp2::colr::{CieLab, EnumeratedColorspace};
 use crate::jp2::icc::ICCMetadata;
 use crate::jp2::{self, DecodedImage, ImageBoxes};
 use crate::math::{self, dispatch, f32x8, Level, Simd, SIMD_WIDTH};
 use crate::{
-    checked_decode_sample_count, ColorError, DecodeSettings, DecodingError, FormatError, Result,
-    ValidationError,
+    checked_decode_sample_count, try_reserve_decode_elements, ColorError, DecodeSettings,
+    DecodingError, FormatError, Result, ValidationError, DEFAULT_MAX_DECODE_BYTES,
 };
 
-pub(crate) fn validate_channel_definition(
-    cdef: &jp2::cdef::ChannelDefinitionBox,
-    component_count: usize,
-) -> Result<()> {
-    if cdef.channel_definitions.len() != component_count {
-        bail!(ValidationError::InvalidChannelDefinition);
-    }
-
-    let mut seen_color_associations = vec![false; component_count];
-    for definition in &cdef.channel_definitions {
-        if let ChannelAssociation::Colour(association) = definition.association {
-            let Some(index) = association.checked_sub(1).map(usize::from) else {
-                bail!(ValidationError::InvalidChannelDefinition);
-            };
-            if index >= component_count || seen_color_associations[index] {
-                bail!(ValidationError::InvalidChannelDefinition);
-            }
-            seen_color_associations[index] = true;
-        }
-    }
-
-    Ok(())
-}
+mod allocation;
+mod postprocess;
+pub(crate) use postprocess::{resolve_palette_indices, validate_and_reorder_channels};
 
 pub(crate) fn resolve_alpha_and_color_space(
     boxes: &ImageBoxes,
     header: &Header<'_>,
     settings: &DecodeSettings,
+    retained_baseline_bytes: usize,
 ) -> Result<(ColorSpace, bool)> {
     let mut num_components = header.component_infos.len();
 
@@ -66,13 +45,21 @@ pub(crate) fn resolve_alpha_and_color_space(
         });
     }
 
-    let mut color_space = get_color_space(boxes, num_components)?;
-
-    // If we didn't resolve palette indices, we need to assume grayscale image.
-    if !settings.resolve_palette_indices && boxes.palette.is_some() {
+    // If palette indices remain unresolved, the exposed samples are indices;
+    // avoid cloning an ICC profile that would be discarded immediately.
+    let mut color_space = if !settings.resolve_palette_indices && boxes.palette.is_some() {
         has_alpha = false;
-        color_space = ColorSpace::Gray;
-    }
+        ColorSpace::Gray
+    } else {
+        let retained_container_bytes =
+            crate::image::retained_container_metadata_bytes(header, boxes)?
+                .checked_add(retained_baseline_bytes)
+                .ok_or(ValidationError::ImageTooLarge)?;
+        if retained_container_bytes > DEFAULT_MAX_DECODE_BYTES {
+            return Err(ValidationError::ImageTooLarge.into());
+        }
+        get_color_space(boxes, num_components, retained_container_bytes)?
+    };
 
     let actual_num_components = header.component_infos.len();
 
@@ -112,7 +99,7 @@ pub(crate) fn resolve_alpha_and_color_space(
 }
 
 /// The color space of the image.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ColorSpace {
     /// A grayscale image.
     Gray,
@@ -215,6 +202,10 @@ pub struct NativeComponentPlane {
     pub(crate) bytes_per_sample: u8,
 }
 
+/// Allocation-free facade adapter representation of an owned native component plane.
+#[doc(hidden)]
+pub type NativeComponentPlaneParts = (Vec<u8>, (u32, u32), u8, bool, (u8, u8), u8);
+
 impl NativeComponentPlane {
     /// Packed little-endian sample bytes for this component in row-major order.
     #[must_use]
@@ -228,6 +219,27 @@ impl NativeComponentPlane {
     #[must_use]
     pub fn bytes_per_sample(&self) -> u8 {
         self.bytes_per_sample
+    }
+
+    /// Return the byte capacity owned by this plane.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn allocated_bytes(&self) -> usize {
+        self.data.capacity()
+    }
+
+    /// Consume this plane into allocation-free facade adapter parts.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(self) -> NativeComponentPlaneParts {
+        (
+            self.data,
+            self.dimensions,
+            self.bit_depth,
+            self.signed,
+            self.sampling,
+            self.bytes_per_sample,
+        )
     }
 }
 
@@ -263,6 +275,35 @@ impl DecodedNativeComponents {
     pub fn planes(&self) -> &[NativeComponentPlane] {
         &self.planes
     }
+
+    /// Return the actual heap capacity retained by this owned result.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn allocated_bytes(&self) -> Option<usize> {
+        let mut bytes = self
+            .planes
+            .capacity()
+            .checked_mul(core::mem::size_of::<NativeComponentPlane>())?;
+        for plane in &self.planes {
+            bytes = bytes.checked_add(plane.allocated_bytes())?;
+        }
+        if let ColorSpace::Icc { profile, .. } = &self.color_space {
+            bytes = bytes.checked_add(profile.capacity())?;
+        }
+        Some(bytes)
+    }
+
+    /// Consume this result into allocation-free facade adapter parts.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(self) -> ((u32, u32), ColorSpace, bool, Vec<NativeComponentPlane>) {
+        (
+            self.dimensions,
+            self.color_space,
+            self.has_alpha,
+            self.planes,
+        )
+    }
 }
 
 /// A borrowed decoded component plane.
@@ -274,6 +315,10 @@ pub struct ComponentPlane<'a> {
     pub(crate) sampling: (u8, u8),
 }
 
+/// Allocation-free facade adapter representation of a borrowed component plane.
+#[doc(hidden)]
+pub type ComponentPlaneParts<'a> = (&'a [f32], (u32, u32), u8, bool, (u8, u8));
+
 impl<'a> ComponentPlane<'a> {
     /// Component samples in row-major order.
     #[must_use]
@@ -282,6 +327,19 @@ impl<'a> ComponentPlane<'a> {
     }
 
     crate::__j2k_component_plane_metadata_accessors!();
+
+    /// Consume this borrowed plane into allocation-free facade adapter parts.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(self) -> ComponentPlaneParts<'a> {
+        (
+            self.samples,
+            self.dimensions,
+            self.bit_depth,
+            self.signed,
+            self.sampling,
+        )
+    }
 }
 
 /// Borrowed decoded component planes for an image.
@@ -290,6 +348,7 @@ pub struct DecodedComponents<'a> {
     pub(crate) color_space: ColorSpace,
     pub(crate) has_alpha: bool,
     pub(crate) planes: Vec<ComponentPlane<'a>>,
+    pub(crate) live_bytes: usize,
 }
 
 impl<'a> DecodedComponents<'a> {
@@ -316,10 +375,33 @@ impl<'a> DecodedComponents<'a> {
     pub fn planes(&self) -> &[ComponentPlane<'a>] {
         &self.planes
     }
+
+    /// Return the retained heap capacity that remains live with this borrowed result.
+    ///
+    /// This includes the decoder-context component owners backing the borrowed
+    /// sample slices, SIMD padding, exact-integer shadow buffers, the component
+    /// metadata vector, and an owned ICC profile when present.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn live_bytes(&self) -> usize {
+        self.live_bytes
+    }
+
+    /// Consume this result into allocation-free facade adapter parts.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(self) -> ((u32, u32), ColorSpace, bool, Vec<ComponentPlane<'a>>) {
+        (
+            self.dimensions,
+            self.color_space,
+            self.has_alpha,
+            self.planes,
+        )
+    }
 }
 
 pub(crate) fn validate_interleaved_output_buffer(
-    image: &DecodedImage<'_>,
+    image: &DecodedImage<'_, '_>,
     buf: &[u8],
 ) -> Result<()> {
     let required_len = interleaved_output_len(image)?;
@@ -329,7 +411,7 @@ pub(crate) fn validate_interleaved_output_buffer(
     Ok(())
 }
 
-fn interleaved_output_len(image: &DecodedImage<'_>) -> Result<usize> {
+fn interleaved_output_len(image: &DecodedImage<'_, '_>) -> Result<usize> {
     let Some(first) = image.decoded_components.first() else {
         bail!(DecodingError::CodeBlockDecodeFailure);
     };
@@ -347,7 +429,10 @@ fn interleaved_output_len(image: &DecodedImage<'_>) -> Result<usize> {
     clippy::cast_precision_loss,
     reason = "pixel samples are rounded and intentionally quantized to the stable 8-bit output format"
 )]
-pub(crate) fn interleave_and_convert(image: &mut DecodedImage<'_>, buf: &mut [u8]) -> Result<()> {
+pub(crate) fn interleave_and_convert(
+    image: &mut DecodedImage<'_, '_>,
+    buf: &mut [u8],
+) -> Result<()> {
     let components = &mut *image.decoded_components;
     let num_components = components.len();
 
@@ -452,7 +537,7 @@ pub(crate) fn interleave_and_convert(image: &mut DecodedImage<'_>, buf: &mut [u8
     reason = "region samples use the same stable rounded 8-bit quantization as full-image decode"
 )]
 pub(crate) fn interleave_and_convert_region(
-    image: &mut DecodedImage<'_>,
+    image: &mut DecodedImage<'_, '_>,
     image_width: usize,
     roi: (u32, u32, u32, u32),
     buf: &mut [u8],
@@ -525,11 +610,10 @@ pub(crate) fn native_component_plane_dimensions(
     bail!(DecodingError::CodeBlockDecodeFailure)
 }
 
-pub(crate) fn convert_color_space(image: &mut DecodedImage<'_>, bit_depth: u8) -> Result<()> {
+pub(crate) fn convert_color_space(image: &mut DecodedImage<'_, '_>, bit_depth: u8) -> Result<()> {
     if let Some(jp2::colr::ColorSpace::Enumerated(e)) = &image
         .boxes
-        .color_specification
-        .as_ref()
+        .primary_color_specification()
         .map(|i| &i.color_space)
     {
         match e {
@@ -550,10 +634,13 @@ pub(crate) fn convert_color_space(image: &mut DecodedImage<'_>, bit_depth: u8) -
     Ok(())
 }
 
-fn get_color_space(boxes: &ImageBoxes, num_components: usize) -> Result<ColorSpace> {
+fn get_color_space(
+    boxes: &ImageBoxes,
+    num_components: usize,
+    retained_container_bytes: usize,
+) -> Result<ColorSpace> {
     let cs = match boxes
-        .color_specification
-        .as_ref()
+        .primary_color_specification()
         .map_or(&jp2::colr::ColorSpace::Unknown, |specification| {
             &specification.color_space
         }) {
@@ -566,13 +653,19 @@ fn get_color_space(boxes: &ImageBoxes, num_components: usize) -> Result<ColorSpa
                 EnumeratedColorspace::RommRgb => {
                     // Use an ICC profile to process the RommRGB color space.
                     ColorSpace::Icc {
-                        profile: include_bytes!("../assets/ProPhoto-v2-micro.icc").to_vec(),
+                        profile: try_clone_color_profile(
+                            include_bytes!("../assets/ProPhoto-v2-micro.icc"),
+                            retained_container_bytes,
+                        )?,
                         num_channels: 3,
                     }
                 }
                 EnumeratedColorspace::Greyscale => ColorSpace::Gray,
                 EnumeratedColorspace::CieLab(_) => ColorSpace::Icc {
-                    profile: include_bytes!("../assets/LAB.icc").to_vec(),
+                    profile: try_clone_color_profile(
+                        include_bytes!("../assets/LAB.icc"),
+                        retained_container_bytes,
+                    )?,
                     num_channels: 3,
                 },
                 _ => bail!(FormatError::Unsupported),
@@ -581,7 +674,7 @@ fn get_color_space(boxes: &ImageBoxes, num_components: usize) -> Result<ColorSpa
         jp2::colr::ColorSpace::Icc(icc) => {
             if let Some(metadata) = ICCMetadata::from_data(icc) {
                 ColorSpace::Icc {
-                    profile: icc.clone(),
+                    profile: try_clone_color_profile(icc, retained_container_bytes)?,
                     num_channels: u16::from(metadata.color_space.num_components()),
                 }
             } else {
@@ -605,71 +698,27 @@ fn get_color_space(boxes: &ImageBoxes, num_components: usize) -> Result<ColorSpa
     Ok(cs)
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "palette integer values are intentionally exposed through the decoder's f32 component representation"
-)]
-pub(crate) fn resolve_palette_indices(
-    components: Vec<ComponentData>,
-    boxes: &ImageBoxes,
-) -> Result<Vec<ComponentData>> {
-    let Some(palette) = boxes.palette.as_ref() else {
-        // Nothing to resolve.
-        return Ok(components);
-    };
+fn try_clone_color_profile(profile: &[u8], retained_bytes: usize) -> Result<Vec<u8>> {
+    checked_color_profile_peak(retained_bytes, profile.len(), DEFAULT_MAX_DECODE_BYTES)?;
+    let mut cloned = Vec::new();
+    try_reserve_decode_elements(&mut cloned, profile.len())?;
+    checked_color_profile_peak(retained_bytes, cloned.capacity(), DEFAULT_MAX_DECODE_BYTES)?;
+    cloned.extend_from_slice(profile);
+    Ok(cloned)
+}
 
-    let Some(mapping) = boxes.component_mapping.as_ref() else {
-        bail!(ColorError::PaletteResolutionFailed);
-    };
-    if mapping.entries.is_empty() {
-        bail!(ColorError::PaletteResolutionFailed);
+fn checked_color_profile_peak(
+    retained_bytes: usize,
+    profile_bytes: usize,
+    cap: usize,
+) -> Result<usize> {
+    let peak = retained_bytes
+        .checked_add(profile_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if peak > cap {
+        return Err(ValidationError::ImageTooLarge.into());
     }
-
-    let mut resolved = Vec::with_capacity(mapping.entries.len());
-
-    for entry in &mapping.entries {
-        let component_idx = usize::from(entry.component_index);
-        let component = components
-            .get(component_idx)
-            .ok_or(ColorError::PaletteResolutionFailed)?;
-
-        match entry.mapping_type {
-            ComponentMappingType::Direct => resolved.push(component.clone()),
-            ComponentMappingType::Palette { column } => {
-                let column_idx = usize::from(column);
-                let column_info = palette
-                    .columns
-                    .get(column_idx)
-                    .ok_or(ColorError::PaletteResolutionFailed)?;
-
-                let mut mapped =
-                    Vec::with_capacity(component.container.truncated().len() + SIMD_WIDTH);
-
-                for &sample in component.container.truncated() {
-                    let index = palette_index(sample)?;
-                    let raw = palette
-                        .map(index, column_idx)
-                        .ok_or(ColorError::PaletteResolutionFailed)?;
-                    let value = if column_info.signed {
-                        sign_extend_palette_value(raw, column_info.bit_depth) as f32
-                    } else {
-                        raw as f32
-                    };
-                    mapped.push(value);
-                }
-
-                resolved.push(ComponentData {
-                    container: math::SimdBuffer::new(mapped),
-                    integer_container: None,
-                    bit_depth: column_info.bit_depth,
-                    signed: column_info.signed,
-                });
-            }
-            ComponentMappingType::Unknown { .. } => bail!(ColorError::PaletteResolutionFailed),
-        }
-    }
-
-    Ok(resolved)
+    Ok(peak)
 }
 
 #[expect(
@@ -820,6 +869,13 @@ pub(crate) fn cielab_to_rgb<S: Simd>(
         b_v.mul_add(b_scale_v, b_offset_v).store(b_chunk);
     }
 
+    // The color transform replaced the source samples. Any exact-integer
+    // shadow describes the pre-transform component values and must not win
+    // over the converted f32 planes during native output packing.
+    l.integer_container = None;
+    a.integer_container = None;
+    b.integer_container = None;
+
     Ok(())
 }
 
@@ -873,14 +929,24 @@ fn sycc_to_rgb<S: Simd>(simd: S, components: &mut [ComponentData], bit_depth: u8
         blue.min(max_v).max(zero_v).store(red_chroma_chunk);
     }
 
+    luma.integer_container = None;
+    blue_chroma.integer_container = None;
+    red_chroma.integer_container = None;
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        clamped_add_u32, clamped_power_of_two_u32, max_value_for_bit_depth, palette_index,
+        checked_color_profile_peak, clamped_add_u32, clamped_power_of_two_u32,
+        max_value_for_bit_depth, palette_index, sycc_to_rgb, ColorSpace, ComponentPlane,
+        DecodedComponents, DecodedNativeComponents, NativeComponentPlane,
     };
+    use crate::j2c::ComponentData;
+    use crate::math::{dispatch, Level, SimdBuffer, SIMD_WIDTH};
+    use alloc::{vec, vec::Vec};
+    use core::mem::size_of;
 
     #[test]
     fn lab_integer_scaling_preserves_clamped_boundaries() {
@@ -892,8 +958,127 @@ mod tests {
     }
 
     #[test]
+    fn sycc_conversion_discards_pretransform_integer_shadows() {
+        let component = |value: u8| ComponentData {
+            container: SimdBuffer::<SIMD_WIDTH>::new(vec![f32::from(value); SIMD_WIDTH]),
+            integer_container: Some(vec![i64::from(value); SIMD_WIDTH]),
+            bit_depth: 8,
+            signed: false,
+        };
+        let mut components = vec![component(128), component(128), component(128)];
+
+        dispatch!(Level::new(), simd => sycc_to_rgb(simd, &mut components, 8))
+            .expect("sYCC conversion");
+
+        assert!(
+            components
+                .iter()
+                .all(|component| component.integer_container.is_none()),
+            "native packing must not reuse pre-transform exact samples"
+        );
+    }
+
+    #[test]
+    fn retained_color_profile_peak_accepts_exact_cap_and_rejects_one_over() {
+        assert_eq!(
+            checked_color_profile_peak(7, 5, 12).expect("exact ICC clone peak"),
+            12
+        );
+        assert!(checked_color_profile_peak(8, 5, 12).is_err());
+    }
+
+    #[test]
     fn palette_indices_reject_negative_samples_without_wrapping() {
         assert!(palette_index(-1.0).is_err());
         assert_eq!(palette_index(2.4).expect("valid palette index"), 2);
+    }
+
+    #[test]
+    fn native_component_handoff_preserves_owned_capacities() {
+        let mut data = Vec::with_capacity(9);
+        data.push(3);
+        let mut planes = Vec::with_capacity(4);
+        planes.push(NativeComponentPlane {
+            data,
+            dimensions: (1, 1),
+            bit_depth: 8,
+            signed: false,
+            sampling: (1, 1),
+            bytes_per_sample: 1,
+        });
+        let mut profile = Vec::with_capacity(7);
+        profile.push(1);
+        let decoded = DecodedNativeComponents {
+            dimensions: (1, 1),
+            color_space: ColorSpace::Icc {
+                profile,
+                num_channels: 1,
+            },
+            has_alpha: false,
+            planes,
+        };
+        let expected = decoded.planes.capacity() * size_of::<NativeComponentPlane>()
+            + decoded.planes[0].data.capacity()
+            + match &decoded.color_space {
+                ColorSpace::Icc { profile, .. } => profile.capacity(),
+                _ => 0,
+            };
+        let plane_owner_capacity = decoded.planes.capacity();
+        let data_capacity = decoded.planes[0].data.capacity();
+        let profile_capacity = match &decoded.color_space {
+            ColorSpace::Icc { profile, .. } => profile.capacity(),
+            _ => 0,
+        };
+        assert_eq!(decoded.allocated_bytes(), Some(expected));
+
+        let (_, color_space, _, planes) = decoded.into_parts();
+        assert_eq!(planes.capacity(), plane_owner_capacity);
+        assert_eq!(planes[0].allocated_bytes(), data_capacity);
+        assert!(matches!(
+            color_space,
+            ColorSpace::Icc { profile, .. } if profile.capacity() == profile_capacity
+        ));
+    }
+
+    #[test]
+    fn borrowed_component_handoff_preserves_metadata_capacities() {
+        let samples = [2.0_f32];
+        let mut planes = Vec::with_capacity(3);
+        planes.push(ComponentPlane {
+            samples: &samples,
+            dimensions: (1, 1),
+            bit_depth: 8,
+            signed: false,
+            sampling: (1, 1),
+        });
+        let mut profile = Vec::with_capacity(5);
+        profile.push(1);
+        let decoded = DecodedComponents {
+            dimensions: (1, 1),
+            color_space: ColorSpace::Icc {
+                profile,
+                num_channels: 1,
+            },
+            has_alpha: false,
+            planes,
+            live_bytes: 123,
+        };
+        let plane_owner_capacity = decoded.planes.capacity();
+        let profile_capacity = match &decoded.color_space {
+            ColorSpace::Icc { profile, .. } => profile.capacity(),
+            _ => 0,
+        };
+
+        assert_eq!(decoded.live_bytes(), 123);
+        let (_, color_space, _, planes) = decoded.into_parts();
+        assert_eq!(planes.capacity(), plane_owner_capacity);
+        assert!(core::ptr::eq(
+            planes[0].samples().as_ptr(),
+            samples.as_ptr()
+        ));
+        assert!(matches!(
+            color_space,
+            ColorSpace::Icc { profile, .. } if profile.capacity() == profile_capacity
+        ));
     }
 }

@@ -13,10 +13,10 @@ use super::{
     encode_prepared_ht_sub_band_group_to_buffer_in_encoder,
     encode_prepared_ht_sub_band_to_buffer_in_encoder, idwt_input_windows_from_slices,
     j2k_scalar_pack_params, lookup_direct_band_slice, lookup_direct_band_slice_entry,
-    prepared_idwt_output_len, prepared_idwt_params, size_of, take_f32_scratch_buffer,
-    BandRequiredRegion, Buffer, CommandBufferRef, DirectBandSlice, DirectScratchBuffer,
-    DirectStatusCheck, Error, IdwtSubBandBuffers, J2kGrayStoreParams, J2kStoreParams,
-    J2kWaveletTransform, MetalRuntime, PixelFormat, PreparedDirectGrayscalePlan,
+    new_compute_command_encoder, prepared_idwt_output_len, prepared_idwt_params, size_of,
+    take_f32_scratch_buffer, BandRequiredRegion, Buffer, CommandBufferRef, DirectBandSlice,
+    DirectScratchBuffer, DirectStatusCheck, Error, IdwtSubBandBuffers, J2kGrayStoreParams,
+    J2kStoreParams, J2kWaveletTransform, MetalRuntime, PixelFormat, PreparedDirectGrayscalePlan,
     PreparedDirectGrayscaleStep, SingleIdwtDispatch, Surface,
 };
 use crate::compute::{
@@ -165,7 +165,7 @@ impl SingleGrayscaleExecution<'_> {
                     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
                         self.encoder,
                         dispatch,
-                    ),
+                    )?,
                 );
             }
         }
@@ -274,17 +274,21 @@ pub(in crate::compute) fn encode_prepared_direct_grayscale_plan_in_command_buffe
     status_checks: &mut Vec<DirectStatusCheck>,
     scratch_buffers: &mut Vec<DirectScratchBuffer>,
 ) -> Result<Surface, Error> {
-    let encoder = command_buffer.new_compute_command_encoder();
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K MetalDirect grayscale band metadata",
+    );
+    let bands = budget.try_vec(plan.steps.len(), "J2K MetalDirect grayscale band metadata")?;
+    let encoder = new_compute_command_encoder(command_buffer)?;
     let mut execution = SingleGrayscaleExecution {
         runtime,
-        encoder,
+        encoder: &encoder,
         fmt,
         dimensions: plan.dimensions,
         bit_depth: plan.bit_depth,
         retained_buffers,
         status_checks,
         scratch_buffers,
-        bands: Vec::new(),
+        bands,
         final_surface: None,
     };
     let result = (|| {

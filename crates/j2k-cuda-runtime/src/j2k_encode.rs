@@ -23,5 +23,5 @@ pub use self::types::{
 };
 pub(crate) use self::{
     types::{CudaDwt53LevelPass, CudaDwt53Pass},
-    validation::validate_quantize_region,
+    validation::{validate_encode_buffer_context, validate_quantize_region},
 };

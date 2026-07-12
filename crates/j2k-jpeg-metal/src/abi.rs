@@ -428,6 +428,7 @@ pub(crate) struct JpegEntropyCheckpointHost {
     pub(crate) cb_prev_dc: i32,
     pub(crate) cr_prev_dc: i32,
     pub(crate) reserved: u32,
+    pub(crate) reserved_tail: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -442,16 +443,59 @@ impl From<JpegEntropyCheckpointV1> for JpegEntropyCheckpointHost {
             cb_prev_dc: value.cb_prev_dc,
             cr_prev_dc: value.cr_prev_dc,
             reserved: value.reserved,
+            reserved_tail: 0,
         }
     }
 }
 
 #[cfg(target_os = "macos")]
+macro_rules! prove_gpu_readback_layout {
+    ($ty:ty, $offset:expr;) => {
+        let _: [(); core::mem::size_of::<$ty>()] = [(); $offset];
+    };
+    (
+        $ty:ty,
+        $offset:expr;
+        $field:ident: $field_ty:ty
+        $(, $remaining_field:ident: $remaining_field_ty:ty)*
+    ) => {
+        let _: [(); core::mem::offset_of!($ty, $field)] = [(); $offset];
+        prove_gpu_readback_layout!(
+            $ty,
+            $offset + core::mem::size_of::<$field_ty>();
+            $($remaining_field: $remaining_field_ty),*
+        );
+    };
+}
+
+#[cfg(target_os = "macos")]
 macro_rules! impl_gpu_readback_abi {
-    ($($ty:ty),+ $(,)?) => {
+    ($(
+        $ty:ty {
+            $first_field:ident: $first_field_ty:ty
+            $(, $field:ident: $field_ty:ty)*
+            $(,)?
+        }
+    ),+ $(,)?) => {
         $(
-            // SAFETY: Each listed type is `#[repr(C)]`, `Copy`, contains only
-            // integer scalar fields, and has an exact shader-layout test below.
+            const _: () = {
+                fn assert_field_types(value: &$ty) {
+                    let _: &$first_field_ty = &value.$first_field;
+                    $(let _: &$field_ty = &value.$field;)*
+                }
+                let _ = assert_field_types;
+
+                prove_gpu_readback_layout!(
+                    $ty,
+                    0;
+                    $first_field: $first_field_ty
+                    $(, $field: $field_ty)*
+                );
+            };
+
+            // SAFETY: Each listed type is `#[repr(C)]`, `Copy`, accepts every
+            // bit pattern, and the compile-time field walk proves its complete
+            // object representation contains no padding bytes.
             unsafe impl j2k_core::accelerator::GpuAbi for $ty {
                 const NAME: &'static str = stringify!($ty);
             }
@@ -460,16 +504,73 @@ macro_rules! impl_gpu_readback_abi {
 }
 
 #[cfg(target_os = "macos")]
-impl_gpu_readback_abi!(JpegBaselineEncodeStatus, JpegDecodeStatus);
+impl_gpu_readback_abi!(
+    JpegBaselineEncodeParams {
+        input_offset_bytes: u32,
+        input_width: u32,
+        input_height: u32,
+        output_width: u32,
+        output_height: u32,
+        pitch_bytes: u32,
+        mcus_per_row: u32,
+        mcu_rows: u32,
+        restart_interval_mcus: u32,
+        format: u32,
+        components: u32,
+        max_h: u32,
+        max_v: u32,
+        h0: u32,
+        v0: u32,
+        h1: u32,
+        v1: u32,
+        h2: u32,
+        v2: u32,
+        entropy_offset_bytes: u32,
+        entropy_capacity: u32,
+    },
+    JpegBaselineEncodeStatus {
+        code: u32,
+        entropy_len: u32,
+        detail: u32,
+        reserved: u32,
+    },
+    JpegDecodeStatus {
+        code: u32,
+        detail: u32,
+        position: u32,
+        reserved: u32,
+    },
+    JpegEntropyCheckpointHost {
+        mcu_index: u32,
+        entropy_pos: u32,
+        bit_acc: u64,
+        bit_count: u32,
+        y_prev_dc: i32,
+        cb_prev_dc: i32,
+        cr_prev_dc: i32,
+        reserved: u32,
+        reserved_tail: u32,
+    },
+);
 
 #[cfg(all(test, target_os = "macos"))]
 mod gpu_readback_abi_tests {
     use core::mem::{align_of, offset_of, size_of};
 
-    use super::{JpegBaselineEncodeStatus, JpegDecodeStatus};
+    use j2k_core::accelerator::GpuAbi;
+    use j2k_jpeg::adapter::JpegEntropyCheckpointV1;
+
+    use super::{
+        JpegBaselineEncodeParams, JpegBaselineEncodeStatus, JpegDecodeStatus,
+        JpegEntropyCheckpointHost,
+    };
 
     #[test]
     fn status_layouts_match_metal_shader_abi() {
+        assert_eq!(size_of::<JpegBaselineEncodeParams>(), 84);
+        assert_eq!(align_of::<JpegBaselineEncodeParams>(), 4);
+        assert_eq!(offset_of!(JpegBaselineEncodeParams, input_offset_bytes), 0);
+        assert_eq!(offset_of!(JpegBaselineEncodeParams, entropy_capacity), 80);
         assert_eq!(size_of::<JpegBaselineEncodeStatus>(), 16);
         assert_eq!(align_of::<JpegBaselineEncodeStatus>(), 4);
         assert_eq!(offset_of!(JpegBaselineEncodeStatus, code), 0);
@@ -483,5 +584,36 @@ mod gpu_readback_abi_tests {
         assert_eq!(offset_of!(JpegDecodeStatus, detail), 4);
         assert_eq!(offset_of!(JpegDecodeStatus, position), 8);
         assert_eq!(offset_of!(JpegDecodeStatus, reserved), 12);
+
+        assert_eq!(size_of::<JpegEntropyCheckpointHost>(), 40);
+        assert_eq!(align_of::<JpegEntropyCheckpointHost>(), 8);
+        assert_eq!(offset_of!(JpegEntropyCheckpointHost, mcu_index), 0);
+        assert_eq!(offset_of!(JpegEntropyCheckpointHost, entropy_pos), 4);
+        assert_eq!(offset_of!(JpegEntropyCheckpointHost, bit_acc), 8);
+        assert_eq!(offset_of!(JpegEntropyCheckpointHost, bit_count), 16);
+        assert_eq!(offset_of!(JpegEntropyCheckpointHost, y_prev_dc), 20);
+        assert_eq!(offset_of!(JpegEntropyCheckpointHost, cb_prev_dc), 24);
+        assert_eq!(offset_of!(JpegEntropyCheckpointHost, cr_prev_dc), 28);
+        assert_eq!(offset_of!(JpegEntropyCheckpointHost, reserved), 32);
+        assert_eq!(offset_of!(JpegEntropyCheckpointHost, reserved_tail), 36);
+    }
+
+    #[test]
+    fn checkpoint_conversion_initializes_the_complete_gpu_abi() {
+        let checkpoint = JpegEntropyCheckpointHost::from(JpegEntropyCheckpointV1 {
+            mcu_index: 1,
+            entropy_pos: 2,
+            bit_acc: 3,
+            bit_count: 4,
+            y_prev_dc: 5,
+            cb_prev_dc: 6,
+            cr_prev_dc: 7,
+            reserved: 8,
+        });
+
+        assert_eq!(checkpoint.reserved_tail, 0);
+        let bytes = JpegEntropyCheckpointHost::as_bytes(&checkpoint);
+        assert_eq!(bytes.len(), size_of::<JpegEntropyCheckpointHost>());
+        assert_eq!(&bytes[36..], &[0, 0, 0, 0]);
     }
 }

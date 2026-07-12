@@ -26,50 +26,7 @@ use crate::{
 };
 use j2k_core::accelerator::GpuAbi;
 
-macro_rules! impl_cuda_gpu_abi {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            // SAFETY: These repr(C) structs are copied byte-for-byte to CUDA kernels with matching ABI tests.
-            unsafe impl GpuAbi for $ty {
-                const NAME: &'static str = stringify!($ty);
-            }
-        )+
-    };
-}
-
-impl_cuda_gpu_abi! {
-    CudaJpegHuffmanTable,
-    CudaJpegEntropyCheckpoint,
-    CudaJpegDecodeStatus,
-    CudaJpegEntropySyncState,
-    CudaJpegEntropyOverflowState,
-    CudaJpegBaselineEncodeParams,
-    CudaJpegBaselineEncodeHuffmanTable,
-    CudaJpegBaselineEncodeStatus,
-    CudaHtj2kEncodeStatus,
-    CudaHtj2kEncodeKernelJob,
-    CudaHtj2kEncodeMultiInputKernelJob,
-    CudaHtj2kEncodeCompactJob,
-    CudaHtj2kPacketizationKernelPacket,
-    CudaHtj2kPacketizationSubband,
-    CudaHtj2kPacketizationBlock,
-    CudaHtj2kPacketizationSubbandTagState,
-    CudaHtj2kPacketizationTagNodeState,
-    CudaHtj2kPacketizationStatus,
-    CudaHtj2kCodeBlockKernelJob,
-    CudaHtj2kCleanupMultiKernelJob,
-    CudaHtj2kDequantizeKernelJob,
-    CudaHtj2kStatus,
-    CudaJ2kIdwtJob,
-    CudaJ2kIdwtMultiKernelJob,
-    CudaJ2kStoreGray8Job,
-    CudaJ2kStoreGray16Job,
-    CudaJ2kInverseMctJob,
-    CudaJ2kStoreRgb8Job,
-    CudaJ2kStoreRgb16Job,
-    CudaJ2kStoreRgb8MctBatchJob,
-    CudaJ2kStoreRgb16MctJob,
-}
+mod abi;
 
 macro_rules! gpu_ref_bytes {
     ($($(#[$attr:meta])* $name:ident: $ty:ty;)+) => {

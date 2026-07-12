@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k::{BackendError, BackendErrorKind, J2kError};
+mod native_source;
+
+use j2k::J2kError;
 use j2k_core::{
     adapter_error_is_buffer_error, adapter_error_is_not_implemented, adapter_error_is_truncated,
     adapter_error_is_unsupported, AdapterErrorKind, AdapterErrorParts, BackendRequest, BufferError,
-    CodecError, InputError, Unsupported,
+    CodecError,
 };
-use j2k_native::{DecodeError as NativeDecodeError, DecodeErrorClass as NativeDecodeErrorClass};
+use j2k_native::DecodeError as NativeDecodeError;
+
+pub use native_source::NativeBackendError;
 
 /// Error returned by the CUDA JPEG 2000 adapter.
 #[derive(Debug, thiserror::Error)]
@@ -15,9 +19,38 @@ pub enum Error {
     /// CPU JPEG 2000 decode failed.
     #[error(transparent)]
     Decode(#[from] J2kError),
+    /// Native decoder failure produced while preparing CUDA-resident work.
+    #[error("{context}: {source}")]
+    NativeDecode {
+        /// Stable adapter operation context.
+        context: &'static str,
+        /// Concrete native decoder failure.
+        #[source]
+        source: NativeBackendError,
+    },
     /// Caller-owned output buffers were invalid.
     #[error(transparent)]
     Buffer(#[from] BufferError),
+    /// A host-side allocation needed by the adapter could not be reserved.
+    #[error("host allocation failed for {what}: {bytes} bytes")]
+    HostAllocationFailed {
+        /// Requested allocation size in bytes.
+        bytes: usize,
+        /// Logical allocation purpose.
+        what: &'static str,
+    },
+    /// Allocator-reported host capacity exceeds the codec phase budget.
+    #[error(
+        "host allocation capacity for {what} is too large: requested {requested} bytes, cap {cap} bytes"
+    )]
+    HostAllocationTooLarge {
+        /// Aggregate allocator-reported byte capacity.
+        requested: usize,
+        /// Maximum permitted simultaneously live host bytes.
+        cap: usize,
+        /// Logical phase or owner graph.
+        what: &'static str,
+    },
     /// Backend request is unsupported by this adapter.
     #[error("backend request {request:?} is not supported by j2k-cuda")]
     UnsupportedBackend {
@@ -35,11 +68,29 @@ pub enum Error {
     CudaUnavailable,
     #[cfg(feature = "cuda-runtime")]
     /// CUDA runtime returned an error.
-    #[error("CUDA runtime error: {message}")]
+    #[error("CUDA runtime error: {source}")]
     CudaRuntime {
-        /// Runtime error message.
-        message: String,
+        /// Typed runtime failure, including nested completion or resource-release errors.
+        #[source]
+        source: j2k_cuda_runtime::CudaError,
     },
+    #[cfg(feature = "cuda-runtime")]
+    /// A CUDA operation failed and the required resource cleanup also failed.
+    #[error("CUDA operation failed ({primary}); CUDA cleanup also failed ({cleanup})")]
+    CudaCleanupFailed {
+        /// Error returned by the original operation.
+        primary: Box<Error>,
+        /// Error returned while synchronizing or releasing queued resources.
+        cleanup: Box<Error>,
+    },
+}
+
+#[cfg(feature = "cuda-runtime")]
+pub(crate) fn combine_cuda_cleanup_errors(primary_error: Error, cleanup_error: Error) -> Error {
+    Error::CudaCleanupFailed {
+        primary: Box::new(primary_error),
+        cleanup: Box::new(cleanup_error),
+    }
 }
 
 #[doc(hidden)]
@@ -57,9 +108,12 @@ impl AdapterErrorParts for Error {
             Self::UnsupportedBackend { .. }
             | Self::UnsupportedCudaRequest { .. }
             | Self::CudaUnavailable => AdapterErrorKind::Unsupported,
-            Self::Decode(_) => AdapterErrorKind::Other,
+            Self::Decode(_)
+            | Self::NativeDecode { .. }
+            | Self::HostAllocationFailed { .. }
+            | Self::HostAllocationTooLarge { .. } => AdapterErrorKind::Other,
             #[cfg(feature = "cuda-runtime")]
-            Self::CudaRuntime { .. } => AdapterErrorKind::Other,
+            Self::CudaRuntime { .. } | Self::CudaCleanupFailed { .. } => AdapterErrorKind::Other,
         }
     }
 }
@@ -67,7 +121,10 @@ impl AdapterErrorParts for Error {
 #[doc(hidden)]
 impl CodecError for Error {
     fn is_truncated(&self) -> bool {
-        adapter_error_is_truncated(self)
+        matches!(
+            self,
+            Self::NativeDecode { source, .. } if source.is_decode_truncated()
+        ) || adapter_error_is_truncated(self)
     }
 
     fn is_not_implemented(&self) -> bool {
@@ -75,7 +132,10 @@ impl CodecError for Error {
     }
 
     fn is_unsupported(&self) -> bool {
-        adapter_error_is_unsupported(self)
+        matches!(
+            self,
+            Self::NativeDecode { source, .. } if source.is_unsupported()
+        ) || adapter_error_is_unsupported(self)
     }
 
     fn is_buffer_error(&self) -> bool {
@@ -91,23 +151,9 @@ impl CodecError for Error {
     )
 )]
 pub(crate) fn native_decode_error(error: NativeDecodeError) -> Error {
-    Error::Decode(native_decode_j2k_error(error))
-}
-
-fn adapter_backend_error(message: impl Into<String>) -> J2kError {
-    J2kError::Backend(BackendError::new(BackendErrorKind::Other, message))
-}
-
-fn native_decode_j2k_error(error: NativeDecodeError) -> J2kError {
-    match error.classify() {
-        NativeDecodeErrorClass::InputTooShort { need, have } => {
-            J2kError::Input(InputError::TooShort { need, have })
-        }
-        NativeDecodeErrorClass::InputTruncatedAt { offset, segment } => {
-            J2kError::Input(InputError::TruncatedAt { offset, segment })
-        }
-        NativeDecodeErrorClass::Unsupported { what } => J2kError::Unsupported(Unsupported { what }),
-        _ => adapter_backend_error(error.to_string()),
+    Error::NativeDecode {
+        context: "native JPEG 2000 backend failed",
+        source: NativeBackendError::decode(error),
     }
 }
 
@@ -119,7 +165,44 @@ mod tests {
         DirectPlanUnsupportedReason as NativeDirectPlanUnsupportedReason,
     };
 
-    use super::native_decode_error;
+    #[cfg(feature = "cuda-runtime")]
+    use super::combine_cuda_cleanup_errors;
+    use super::{native_decode_error, Error, NativeBackendError};
+    #[cfg(feature = "cuda-runtime")]
+    use j2k_cuda_runtime::CudaError;
+
+    #[cfg(feature = "cuda-runtime")]
+    fn runtime_error(message: &str) -> Error {
+        Error::CudaRuntime {
+            source: CudaError::StatePoisoned {
+                message: message.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn host_allocation_failure_is_an_operational_error_not_buffer_misuse() {
+        let error = Error::HostAllocationFailed {
+            bytes: 4096,
+            what: "test staging",
+        };
+        assert!(!error.is_buffer_error());
+        assert!(!error.is_unsupported());
+        assert!(error.to_string().contains("4096"));
+    }
+
+    #[test]
+    fn host_capacity_failure_preserves_actual_phase_budget() {
+        let error = Error::HostAllocationTooLarge {
+            requested: 17,
+            cap: 16,
+            what: "test phase",
+        };
+        assert!(!error.is_buffer_error());
+        assert!(!error.is_unsupported());
+        assert!(error.to_string().contains("17"));
+        assert!(error.to_string().contains("16"));
+    }
 
     #[test]
     fn native_decode_unsupported_error_keeps_codec_classification() {
@@ -153,5 +236,69 @@ mod tests {
 
         assert!(error.is_truncated());
         assert!(!error.is_unsupported());
+    }
+
+    #[test]
+    fn native_decode_resource_errors_preserve_typed_sources() {
+        let sources = [
+            NativeDecodeError::AllocationTooLarge {
+                what: "CUDA decode fixture",
+                requested: 9,
+                cap: 8,
+            },
+            NativeDecodeError::HostAllocationFailed {
+                what: "CUDA decode fixture",
+                bytes: 7,
+            },
+        ];
+
+        for source in sources {
+            let error = native_decode_error(source);
+            assert!(matches!(
+                &error,
+                Error::NativeDecode {
+                    context: "native JPEG 2000 backend failed",
+                    source: stored,
+                } if stored == &NativeBackendError::decode(source)
+            ));
+            let opaque = core::error::Error::source(&error).expect("opaque adapter source");
+            assert!(opaque.downcast_ref::<NativeBackendError>().is_some());
+            let concrete = opaque.source().expect("concrete native decode source");
+            assert_eq!(concrete.downcast_ref::<NativeDecodeError>(), Some(&source));
+            assert!(!error.is_buffer_error());
+            assert!(!error.is_unsupported());
+        }
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    #[test]
+    fn cuda_cleanup_failure_preserves_both_runtime_diagnostics() {
+        let combined = combine_cuda_cleanup_errors(
+            runtime_error("primary launch failure"),
+            runtime_error("follow-up synchronization failure"),
+        );
+
+        assert!(matches!(&combined, Error::CudaCleanupFailed { .. }));
+        let rendered = combined.to_string();
+        assert!(rendered.contains("primary launch failure"));
+        assert!(rendered.contains("follow-up synchronization failure"));
+        assert!(!combined.is_unsupported());
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    #[test]
+    fn cuda_cleanup_failure_preserves_non_runtime_primary_and_blocks_fallback() {
+        let combined = combine_cuda_cleanup_errors(
+            Error::UnsupportedCudaRequest {
+                reason: "invalid prepared store",
+            },
+            runtime_error("synchronization failure"),
+        );
+
+        assert!(matches!(&combined, Error::CudaCleanupFailed { .. }));
+        let rendered = combined.to_string();
+        assert!(rendered.contains("invalid prepared store"));
+        assert!(rendered.contains("synchronization failure"));
+        assert!(!combined.is_unsupported());
     }
 }

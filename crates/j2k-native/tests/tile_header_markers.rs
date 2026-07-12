@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use j2k_native::{
-    encode, encode_with_roi_regions, DecodeSettings, EncodeOptions, EncodeRoiRegion, Image,
+    encode, encode_with_roi_regions, DecodeSettings, EncodeError, EncodeOptions, EncodeRoiRegion,
+    Image,
 };
 
 fn marker_offset(codestream: &[u8], marker: u8) -> usize {
@@ -172,7 +173,9 @@ fn encode_rejects_ambiguous_whole_component_and_rectangular_roi() {
 
     assert_eq!(
         err,
-        "ROI region cannot be combined with whole-component ROI shift"
+        EncodeError::InvalidInput {
+            what: "ROI region cannot be combined with whole-component ROI shift"
+        }
     );
 }
 

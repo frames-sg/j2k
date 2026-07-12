@@ -1,4 +1,3 @@
-use alloc::vec;
 use alloc::vec::Vec;
 
 pub(crate) const SIMD_WIDTH: usize = 8;
@@ -776,28 +775,62 @@ pub(crate) use inner::{dispatch, f32x8, Level, Simd};
 /// A wrapper around `Vec<f32>` that pads the vector to a multiple of `N` elements.
 /// This allows SIMD operations to safely process the data without bounds checking
 /// at the end of the buffer.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct SimdBuffer<const N: usize> {
     data: Vec<f32>,
     original_len: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SimdBufferAllocationError;
+
 impl<const N: usize> SimdBuffer<N> {
+    /// Create an empty buffer without allocating.
+    pub(crate) const fn empty() -> Self {
+        Self {
+            data: Vec::new(),
+            original_len: 0,
+        }
+    }
+
     /// Create a new `SimdBuffer` from a `Vec<f32>`, padding it to a multiple of `N`.
+    #[cfg(test)]
     pub(crate) fn new(mut data: Vec<f32>) -> Self {
         let original_len = data.len();
-        let padded_len = Self::padded_len(original_len);
+        let padded_len = Self::padded_len(original_len)
+            .expect("an allocated vector length plus SIMD padding must fit usize");
         if padded_len > original_len {
             data.resize(padded_len, 0.0);
         }
         Self { data, original_len }
     }
 
-    /// Create a new `SimdBuffer` filled with zeros.
-    pub(crate) fn zeros(original_len: usize) -> Self {
-        let padded_len = Self::padded_len(original_len);
-        let data = vec![0.0; padded_len];
-        Self { data, original_len }
+    /// Create a new `SimdBuffer` filled with zeros using fallible allocation.
+    pub(crate) fn try_zeros(
+        original_len: usize,
+    ) -> core::result::Result<Self, SimdBufferAllocationError> {
+        let padded_len = Self::padded_len(original_len).ok_or(SimdBufferAllocationError)?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(padded_len)
+            .map_err(|_| SimdBufferAllocationError)?;
+        data.resize(padded_len, 0.0);
+        Ok(Self { data, original_len })
+    }
+
+    /// Reset the logical length and zero every accessible sample while retaining
+    /// an existing allocation whenever it is large enough.
+    pub(crate) fn try_reset_zeros(
+        &mut self,
+        original_len: usize,
+    ) -> core::result::Result<(), SimdBufferAllocationError> {
+        let padded_len = Self::padded_len(original_len).ok_or(SimdBufferAllocationError)?;
+        if padded_len > self.data.capacity() {
+            return Err(SimdBufferAllocationError);
+        }
+        self.data.resize(padded_len, 0.0);
+        self.data.fill(0.0);
+        self.original_len = original_len;
+        Ok(())
     }
 
     /// Returns only the original (non-padded) data as an immutable slice.
@@ -805,11 +838,19 @@ impl<const N: usize> SimdBuffer<N> {
         &self.data[..self.original_len]
     }
 
+    /// Allocated element capacity retained by this decode buffer.
+    pub(crate) fn capacity(&self) -> usize {
+        self.data.capacity()
+    }
+
     /// Returns the length padded to a multiple of `N`
-    fn padded_len(original_len: usize) -> usize {
+    pub(crate) fn padded_len(original_len: usize) -> Option<usize> {
+        if N == 0 {
+            return None;
+        }
         let remainder = original_len % N;
-        let padding = N - remainder;
-        original_len + padding
+        let padding = (N - remainder) % N;
+        original_len.checked_add(padding)
     }
 }
 
@@ -831,7 +872,7 @@ impl<const N: usize> core::ops::DerefMut for SimdBuffer<N> {
 
 #[cfg(test)]
 mod integer_tests {
-    use super::{bit_width_u32, bit_width_u64, ceil_log2_u32};
+    use super::{bit_width_u32, bit_width_u64, ceil_log2_u32, SimdBuffer};
 
     #[test]
     fn integer_bit_ranges_cover_type_boundaries() {
@@ -841,6 +882,20 @@ mod integer_tests {
         assert_eq!(bit_width_u64(0), 0);
         assert_eq!(bit_width_u64(1_u64 << 63), 64);
         assert_eq!(bit_width_u64(u64::MAX), 64);
+    }
+
+    #[test]
+    fn simd_buffer_fallible_zero_allocation_uses_only_required_padding() {
+        let aligned = SimdBuffer::<8>::try_zeros(16).unwrap();
+        assert_eq!(aligned.len(), 16);
+        assert_eq!(aligned.truncated(), &[0.0; 16]);
+
+        let unaligned = SimdBuffer::<8>::try_zeros(17).unwrap();
+        assert_eq!(unaligned.len(), 24);
+        assert_eq!(unaligned.truncated(), &[0.0; 17]);
+
+        assert!(SimdBuffer::<8>::try_zeros(usize::MAX).is_err());
+        assert!(SimdBuffer::<0>::try_zeros(1).is_err());
     }
 
     #[test]

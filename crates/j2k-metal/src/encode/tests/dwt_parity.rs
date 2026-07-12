@@ -60,7 +60,8 @@ fn metal_forward_dwt53_matches_reference_for_fractional_stage_samples() {
     let samples = (0..width * height)
         .map(|idx| f32::from(u16::try_from(idx).expect("test index fits u16")) * 0.5 - 15.25)
         .collect::<Vec<_>>();
-    let expected = forward_dwt53_reference(&samples, width, height, 1);
+    let expected =
+        forward_dwt53_reference(&samples, width, height, 1).expect("native 5/3 reference DWT");
     let mut accelerator = MetalEncodeStageAccelerator::default();
 
     let actual = accelerator

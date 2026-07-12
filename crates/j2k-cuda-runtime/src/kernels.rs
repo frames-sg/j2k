@@ -1,5 +1,11 @@
 use std::os::raw::c_uint;
 
+mod geometry;
+
+pub(crate) use geometry::CudaLaunchGeometry;
+#[cfg(test)]
+pub(crate) use geometry::{CUDA_MAX_GRID_DIM_X, CUDA_MAX_GRID_DIM_Y_Z};
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum CudaKernel {
     #[cfg_attr(
@@ -124,12 +130,6 @@ pub(crate) enum CudaKernel {
     TranscodeDwt97ColumnLiftBatch,
     TranscodeDwt97QuantizeCodeblocks,
     TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CudaLaunchGeometry {
-    pub grid: (c_uint, c_uint, c_uint),
-    pub block: (c_uint, c_uint, c_uint),
 }
 
 impl CudaKernel {
@@ -482,10 +482,10 @@ pub(crate) fn j2k_forward_rct_launch_geometry(len: usize) -> Option<CudaLaunchGe
 pub(crate) fn j2k_dwt53_launch_geometry(width: u32, height: u32) -> Option<CudaLaunchGeometry> {
     let grid_x = c_uint::try_from(width.div_ceil(J2K_ENCODE_THREADS_X)).ok()?;
     let grid_y = c_uint::try_from(height.div_ceil(J2K_ENCODE_THREADS_Y)).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (grid_x, grid_y, 1),
-        block: (J2K_ENCODE_THREADS_X, J2K_ENCODE_THREADS_Y, 1),
-    })
+    CudaLaunchGeometry::new(
+        (grid_x, grid_y, 1),
+        (J2K_ENCODE_THREADS_X, J2K_ENCODE_THREADS_Y, 1),
+    )
 }
 
 pub(crate) fn j2k_idwt_multi_1d_launch_geometry(
@@ -506,10 +506,7 @@ pub(crate) fn j2k_idwt_multi_coop_launch_geometry(
     } else {
         J2K_IDWT_COOP_THREADS_SMALL_CUDA
     };
-    Some(CudaLaunchGeometry {
-        grid: (lanes, jobs, 1),
-        block: (threads, 1, 1),
-    })
+    CudaLaunchGeometry::new((lanes, jobs, 1), (threads, 1, 1))
 }
 
 pub(crate) fn j2k_idwt_multi_coop_axis_launch_geometry(
@@ -524,10 +521,7 @@ pub(crate) fn j2k_idwt_multi_coop_axis_launch_geometry(
     } else {
         J2K_IDWT_COOP_THREADS_SMALL_CUDA
     };
-    Some(CudaLaunchGeometry {
-        grid: (blocks, jobs, 1),
-        block: (threads, 1, 1),
-    })
+    CudaLaunchGeometry::new((blocks, jobs, 1), (threads, 1, 1))
 }
 
 pub(crate) fn j2k_idwt_multi_coop_columns_launch_geometry(
@@ -543,25 +537,16 @@ pub(crate) fn j2k_idwt_multi_coop_columns_launch_geometry(
     let jobs = c_uint::try_from(job_count).ok()?;
     let block_x = c_uint::try_from(columns_per_block).ok()?;
     let block_y = c_uint::try_from(rows).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (blocks, jobs, 1),
-        block: (block_x, block_y, 1),
-    })
+    CudaLaunchGeometry::new((blocks, jobs, 1), (block_x, block_y, 1))
 }
 
 pub(crate) fn htj2k_codeblock_launch_geometry(job_count: usize) -> Option<CudaLaunchGeometry> {
     if job_count >= HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS {
         let jobs = c_uint::try_from(job_count.div_ceil(HTJ2K_DECODE_CODEBLOCK_THREADS)).ok()?;
-        Some(CudaLaunchGeometry {
-            grid: (jobs, 1, 1),
-            block: (HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA, 1, 1),
-        })
+        CudaLaunchGeometry::new((jobs, 1, 1), (HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA, 1, 1))
     } else {
         let jobs = c_uint::try_from(job_count).ok()?;
-        Some(CudaLaunchGeometry {
-            grid: (jobs, 1, 1),
-            block: (1, 1, 1),
-        })
+        CudaLaunchGeometry::new((jobs, 1, 1), (1, 1, 1))
     }
 }
 
@@ -569,10 +554,7 @@ pub(crate) fn htj2k_codeblock_sample_launch_geometry(
     job_count: usize,
 ) -> Option<CudaLaunchGeometry> {
     let jobs = c_uint::try_from(job_count).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (jobs, 1, 1),
-        block: (COPY_U8_THREADS_CUDA, 1, 1),
-    })
+    CudaLaunchGeometry::new((jobs, 1, 1), (COPY_U8_THREADS_CUDA, 1, 1))
 }
 
 pub(crate) fn j2k_store_batch_launch_geometry(
@@ -593,34 +575,24 @@ fn x_blocks_launch_geometry(
     let blocks = c_uint::try_from(work_items.div_ceil(threads_per_block)).ok()?;
     let grid_y = c_uint::try_from(grid_y).ok()?;
     let block_x = c_uint::try_from(threads_per_block).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (blocks, grid_y, 1),
-        block: (block_x, 1, 1),
-    })
+    CudaLaunchGeometry::new((blocks, grid_y, 1), (block_x, 1, 1))
 }
 
-pub(crate) fn with_grid_y(base: CudaLaunchGeometry, grid_y: c_uint) -> CudaLaunchGeometry {
-    CudaLaunchGeometry {
-        grid: (base.grid.0, grid_y, base.grid.2),
-        block: base.block,
-    }
+pub(crate) fn with_grid_y(base: CudaLaunchGeometry, grid_y: c_uint) -> Option<CudaLaunchGeometry> {
+    let (grid_x, _, grid_z) = base.grid();
+    CudaLaunchGeometry::new((grid_x, grid_y, grid_z), base.block())
 }
 
-pub(crate) fn with_grid_z(base: CudaLaunchGeometry, grid_z: c_uint) -> CudaLaunchGeometry {
-    CudaLaunchGeometry {
-        grid: (base.grid.0, base.grid.1, grid_z),
-        block: base.block,
-    }
+pub(crate) fn with_grid_z(base: CudaLaunchGeometry, grid_z: c_uint) -> Option<CudaLaunchGeometry> {
+    let (grid_x, grid_y, _) = base.grid();
+    CudaLaunchGeometry::new((grid_x, grid_y, grid_z), base.block())
 }
 
 pub(crate) fn htj2k_encode_codeblock_launch_geometry(
     job_count: usize,
 ) -> Option<CudaLaunchGeometry> {
     let jobs = c_uint::try_from(job_count).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (jobs, 1, 1),
-        block: (HTJ2K_ENCODE_CODEBLOCK_THREADS_CUDA, 1, 1),
-    })
+    CudaLaunchGeometry::new((jobs, 1, 1), (HTJ2K_ENCODE_CODEBLOCK_THREADS_CUDA, 1, 1))
 }
 
 pub(crate) fn htj2k_packetize_launch_geometry(packet_count: usize) -> Option<CudaLaunchGeometry> {
@@ -825,33 +797,33 @@ mod tests {
     #[test]
     fn htj2k_sample_geometry_uses_threads_with_one_block_per_codeblock() {
         let geometry = htj2k_codeblock_sample_launch_geometry(3).expect("geometry");
-        assert_eq!(geometry.grid, (3, 1, 1));
-        assert_eq!(geometry.block, (COPY_U8_THREADS_CUDA, 1, 1));
+        assert_eq!(geometry.grid(), (3, 1, 1));
+        assert_eq!(geometry.block(), (COPY_U8_THREADS_CUDA, 1, 1));
     }
 
     #[test]
     fn htj2k_cleanup_decode_geometry_packs_large_batches_into_warps() {
         let small_geometry = htj2k_codeblock_launch_geometry(1_200).expect("small geometry");
-        assert_eq!(small_geometry.grid, (1_200, 1, 1));
-        assert_eq!(small_geometry.block, (1, 1, 1));
+        assert_eq!(small_geometry.grid(), (1_200, 1, 1));
+        assert_eq!(small_geometry.block(), (1, 1, 1));
 
         let large_geometry = htj2k_codeblock_launch_geometry(2_048).expect("large geometry");
-        assert_eq!(large_geometry.grid, (64, 1, 1));
-        assert_eq!(large_geometry.block, (32, 1, 1));
+        assert_eq!(large_geometry.grid(), (64, 1, 1));
+        assert_eq!(large_geometry.block(), (32, 1, 1));
     }
 
     #[test]
     fn htj2k_encode_geometry_uses_cooperative_threads_per_codeblock() {
         let geometry = htj2k_encode_codeblock_launch_geometry(327).expect("geometry");
-        assert_eq!(geometry.grid, (327, 1, 1));
-        assert_eq!(geometry.block, (128, 1, 1));
+        assert_eq!(geometry.grid(), (327, 1, 1));
+        assert_eq!(geometry.block(), (128, 1, 1));
     }
 
     #[test]
     fn htj2k_packetize_geometry_uses_cooperative_threads_per_packet() {
         let geometry = htj2k_packetize_launch_geometry(5).expect("geometry");
-        assert_eq!(geometry.grid, (5, 1, 1));
-        assert_eq!(geometry.block, (COPY_U8_THREADS_CUDA, 1, 1));
+        assert_eq!(geometry.grid(), (5, 1, 1));
+        assert_eq!(geometry.block(), (COPY_U8_THREADS_CUDA, 1, 1));
     }
 
     #[test]
@@ -1137,17 +1109,18 @@ mod tests {
 
     #[test]
     fn copy_u8_launch_geometry_rounds_up_to_256_thread_blocks() {
-        assert_eq!(copy_u8_launch_geometry(1).unwrap().grid, (1, 1, 1));
-        assert_eq!(copy_u8_launch_geometry(256).unwrap().grid, (1, 1, 1));
-        assert_eq!(copy_u8_launch_geometry(257).unwrap().grid, (2, 1, 1));
+        assert_eq!(copy_u8_launch_geometry(0), None);
+        assert_eq!(copy_u8_launch_geometry(1).unwrap().grid(), (1, 1, 1));
+        assert_eq!(copy_u8_launch_geometry(256).unwrap().grid(), (1, 1, 1));
+        assert_eq!(copy_u8_launch_geometry(257).unwrap().grid(), (2, 1, 1));
     }
 
     #[test]
     fn x_blocks_launch_geometry_rounds_work_items_and_preserves_y_grid() {
         let geometry = x_blocks_launch_geometry(513, 7, COPY_U8_THREADS).unwrap();
 
-        assert_eq!(geometry.grid, (3, 7, 1));
-        assert_eq!(geometry.block, (COPY_U8_THREADS_CUDA, 1, 1));
+        assert_eq!(geometry.grid(), (3, 7, 1));
+        assert_eq!(geometry.block(), (COPY_U8_THREADS_CUDA, 1, 1));
     }
 
     #[test]
@@ -1157,40 +1130,90 @@ mod tests {
 
     #[test]
     #[cfg(target_pointer_width = "64")]
-    fn x_blocks_launch_geometry_rejects_grid_dimensions_above_cuda_uint() {
-        assert_eq!(x_blocks_launch_geometry(usize::MAX, usize::MAX, 1), None);
+    fn x_blocks_launch_geometry_enforces_static_grid_boundaries() {
+        let max_work_items = CUDA_MAX_GRID_DIM_X as usize * COPY_U8_THREADS;
+        assert!(copy_u8_launch_geometry(max_work_items).is_some());
+        assert_eq!(copy_u8_launch_geometry(max_work_items + 1), None);
+        assert!(x_blocks_launch_geometry(1, CUDA_MAX_GRID_DIM_Y_Z as usize, 1).is_some());
+        assert_eq!(
+            x_blocks_launch_geometry(1, CUDA_MAX_GRID_DIM_Y_Z as usize + 1, 1),
+            None
+        );
     }
 
     #[test]
     fn with_grid_y_preserves_block_and_other_grid_axes() {
-        let base = CudaLaunchGeometry {
-            grid: (2, 3, 4),
-            block: (16, 8, 1),
-        };
+        let base = CudaLaunchGeometry::new((2, 3, 4), (16, 8, 1)).unwrap();
 
-        let geometry = with_grid_y(base, 9);
+        let geometry = with_grid_y(base, 9).unwrap();
 
-        assert_eq!(geometry.grid, (2, 9, 4));
-        assert_eq!(geometry.block, base.block);
+        assert_eq!(geometry.grid(), (2, 9, 4));
+        assert_eq!(geometry.block(), base.block());
     }
 
     #[test]
     fn with_grid_z_preserves_block_and_other_grid_axes() {
-        let base = CudaLaunchGeometry {
-            grid: (2, 3, 4),
-            block: (16, 8, 1),
-        };
+        let base = CudaLaunchGeometry::new((2, 3, 4), (16, 8, 1)).unwrap();
 
-        let geometry = with_grid_z(base, 11);
+        let geometry = with_grid_z(base, 11).unwrap();
 
-        assert_eq!(geometry.grid, (2, 3, 11));
-        assert_eq!(geometry.block, base.block);
+        assert_eq!(geometry.grid(), (2, 3, 11));
+        assert_eq!(geometry.block(), base.block());
     }
 
     #[test]
     fn j2k_dwt53_launch_geometry_uses_16_by_16_thread_blocks() {
         let geometry = j2k_dwt53_launch_geometry(17, 33).unwrap();
-        assert_eq!(geometry.grid, (2, 3, 1));
-        assert_eq!(geometry.block, (16, 16, 1));
+        assert_eq!(geometry.grid(), (2, 3, 1));
+        assert_eq!(geometry.block(), (16, 16, 1));
+    }
+
+    #[test]
+    fn j2k_dwt53_launch_geometry_enforces_exact_grid_y_boundary() {
+        let max_height = CUDA_MAX_GRID_DIM_Y_Z * J2K_ENCODE_THREADS_Y;
+        assert!(j2k_dwt53_launch_geometry(1, max_height).is_some());
+        assert_eq!(j2k_dwt53_launch_geometry(1, max_height + 1), None);
+    }
+
+    #[test]
+    fn cuda_launch_geometry_policy_is_centralized_and_defensively_enforced() {
+        let geometry = include_str!("kernels/geometry.rs");
+        let geometry_tests = include_str!("kernels/geometry/tests.rs");
+        let execution = include_str!("execution.rs");
+        assert!(geometry.lines().count() < 100);
+        assert!(geometry_tests.lines().count() < 100);
+        for required in [
+            "CUDA_MAX_GRID_DIM_X",
+            "CUDA_MAX_GRID_DIM_Y_Z",
+            "CUDA_MAX_BLOCK_DIM_X_Y",
+            "CUDA_MAX_BLOCK_DIM_Z",
+            "CUDA_MAX_THREADS_PER_BLOCK",
+            "pub(crate) const fn is_valid",
+            "pub(crate) const fn grid",
+            "pub(crate) const fn block",
+        ] {
+            assert!(geometry.contains(required));
+        }
+        assert!(!geometry.contains("pub(crate) grid:"));
+        assert!(!geometry.contains("pub(crate) block:"));
+        let launch = execution
+            .split("pub(crate) fn launch_kernel_async")
+            .nth(1)
+            .expect("launch_kernel_async source");
+        let validation = launch
+            .find("if !geometry.is_valid()")
+            .expect("defensive geometry validation");
+        let driver_scope = launch
+            .find("with_current_resource_operation")
+            .expect("CUDA driver operation scope");
+        assert!(validation < driver_scope);
+        for source in [
+            include_str!("jpeg/decode.rs"),
+            include_str!("jpeg/diagnostics.rs"),
+            include_str!("jpeg/encode_launch.rs"),
+            include_str!("transcode/launch.rs"),
+        ] {
+            assert!(!source.contains("CudaLaunchGeometry {"));
+        }
     }
 }

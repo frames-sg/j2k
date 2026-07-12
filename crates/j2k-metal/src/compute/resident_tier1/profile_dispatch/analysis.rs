@@ -5,12 +5,13 @@ use super::super::{
     metal_profile_classic_tier1_arithmetic_pack_enabled,
     metal_profile_classic_tier1_density_enabled, metal_profile_classic_tier1_pass_plan_enabled,
     metal_profile_classic_tier1_raw_pack_enabled, metal_profile_classic_tier1_symbol_plan_enabled,
-    metal_profile_classic_tier1_token_emit_enabled, size_of, Buffer, CommandBufferRef, Error,
+    metal_profile_classic_tier1_token_emit_enabled, new_compute_command_encoder,
+    new_private_buffer, new_shared_buffer, size_of, Buffer, CommandBufferRef, Error,
     J2kClassicEncodeBatchJob, J2kClassicEncodePipelineKind, J2kClassicTier1DensityCounters,
     J2kClassicTier1PassPlanCounters, J2kClassicTier1SymbolPlanCounters,
     J2kClassicTier1TokenSegment, J2kResidentClassicTier1DensityReadback,
     J2kResidentClassicTier1PassPlanReadback, J2kResidentClassicTier1SymbolPlanReadback,
-    J2kResidentClassicTier1TokenEmitReadback, MTLResourceOptions, MTLSize, MetalRuntime,
+    J2kResidentClassicTier1TokenEmitReadback, MTLSize, MetalRuntime,
     CLASSIC_TIER1_TOKEN_ARENA_BYTES, CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY,
 };
 
@@ -33,15 +34,19 @@ pub(in crate::compute) fn dispatch_classic_tier1_density_profile(
         });
     }
 
-    let counter_buffer = runtime.device.new_buffer(
-        (tier1_jobs.len().max(1) * size_of::<J2kClassicTier1DensityCounters>()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let counter_bytes = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(size_of::<J2kClassicTier1DensityCounters>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 density counter size overflow".to_string(),
+        })?;
+    let counter_buffer = new_shared_buffer(&runtime.device, counter_bytes)?;
     let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal classic Tier-1 density job count exceeds u32".to_string(),
     })?;
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K classic Tier-1 density profile");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K classic Tier-1 density profile");
     encoder.set_compute_pipeline_state(&runtime.classic_tier1_density_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
@@ -89,15 +94,13 @@ pub(in crate::compute) fn dispatch_classic_tier1_raw_pack_profile(
         });
     }
 
-    let raw_output_buffer = runtime.device.new_buffer(
-        tier1_output_capacity_total.max(1) as u64,
-        MTLResourceOptions::StorageModePrivate,
-    );
+    let raw_output_buffer =
+        new_private_buffer(&runtime.device, tier1_output_capacity_total.max(1))?;
     let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal classic Tier-1 raw-pack job count exceeds u32".to_string(),
     })?;
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K classic Tier-1 raw-pack profile");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K classic Tier-1 raw-pack profile");
     encoder.set_compute_pipeline_state(&runtime.classic_tier1_raw_pack_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
@@ -142,15 +145,13 @@ pub(in crate::compute) fn dispatch_classic_tier1_arithmetic_pack_profile(
         });
     }
 
-    let arithmetic_output_buffer = runtime.device.new_buffer(
-        tier1_output_capacity_total.max(1) as u64,
-        MTLResourceOptions::StorageModePrivate,
-    );
+    let arithmetic_output_buffer =
+        new_private_buffer(&runtime.device, tier1_output_capacity_total.max(1))?;
     let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal classic Tier-1 arithmetic-pack job count exceeds u32".to_string(),
     })?;
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K classic Tier-1 arithmetic-pack profile");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K classic Tier-1 arithmetic-pack profile");
     encoder.set_compute_pipeline_state(&runtime.classic_tier1_arithmetic_pack_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
@@ -194,15 +195,19 @@ pub(in crate::compute) fn dispatch_classic_tier1_symbol_plan_profile(
         });
     }
 
-    let counter_buffer = runtime.device.new_buffer(
-        (tier1_jobs.len().max(1) * size_of::<J2kClassicTier1SymbolPlanCounters>()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let counter_bytes = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(size_of::<J2kClassicTier1SymbolPlanCounters>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 symbol counter size overflow".to_string(),
+        })?;
+    let counter_buffer = new_shared_buffer(&runtime.device, counter_bytes)?;
     let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal classic Tier-1 symbol-plan job count exceeds u32".to_string(),
     })?;
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K classic Tier-1 symbol plan");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K classic Tier-1 symbol plan");
     encoder.set_compute_pipeline_state(&runtime.classic_tier1_symbol_plan_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
@@ -249,15 +254,19 @@ pub(in crate::compute) fn dispatch_classic_tier1_pass_plan_profile(
         });
     }
 
-    let counter_buffer = runtime.device.new_buffer(
-        (tier1_jobs.len().max(1) * size_of::<J2kClassicTier1PassPlanCounters>()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let counter_bytes = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(size_of::<J2kClassicTier1PassPlanCounters>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 pass counter size overflow".to_string(),
+        })?;
+    let counter_buffer = new_shared_buffer(&runtime.device, counter_bytes)?;
     let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal classic Tier-1 pass-plan job count exceeds u32".to_string(),
     })?;
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K classic Tier-1 pass plan");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K classic Tier-1 pass plan");
     encoder.set_compute_pipeline_state(&runtime.classic_tier1_pass_plan_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
@@ -304,10 +313,14 @@ pub(in crate::compute) fn dispatch_classic_tier1_token_emit_profile(
         });
     }
 
-    let counter_buffer = runtime.device.new_buffer(
-        (tier1_jobs.len().max(1) * size_of::<J2kClassicTier1SymbolPlanCounters>()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let counter_bytes = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(size_of::<J2kClassicTier1SymbolPlanCounters>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token counter size overflow".to_string(),
+        })?;
+    let counter_buffer = new_shared_buffer(&runtime.device, counter_bytes)?;
     let token_buffer_len = tier1_jobs
         .len()
         .max(1)
@@ -315,10 +328,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_token_emit_profile(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal classic Tier-1 token buffer size overflow".to_string(),
         })?;
-    let token_buffer = runtime.device.new_buffer(
-        token_buffer_len as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let token_buffer = new_shared_buffer(&runtime.device, token_buffer_len)?;
     let segment_buffer_len = tier1_jobs
         .len()
         .max(1)
@@ -327,10 +337,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_token_emit_profile(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal classic Tier-1 token segment buffer size overflow".to_string(),
         })?;
-    let segment_buffer = runtime.device.new_buffer(
-        segment_buffer_len as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let segment_buffer = new_shared_buffer(&runtime.device, segment_buffer_len)?;
     let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal classic Tier-1 token-emitter job count exceeds u32".to_string(),
     })?;
@@ -343,8 +350,8 @@ pub(in crate::compute) fn dispatch_classic_tier1_token_emit_profile(
             message: "J2K Metal classic Tier-1 token segment stride exceeds u32".to_string(),
         })?;
 
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K classic Tier-1 token emit");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K classic Tier-1 token emit");
     encoder.set_compute_pipeline_state(&runtime.classic_tier1_token_emit_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);

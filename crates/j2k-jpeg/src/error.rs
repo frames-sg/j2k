@@ -76,6 +76,123 @@ pub enum TableKind {
     HuffmanDc,
 }
 
+/// Cross-scan progressive coefficient-state violation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProgressiveScanStateError {
+    /// An initial scan selected a coefficient that was already initialized.
+    DuplicateInitial {
+        /// Approximation-low value retained from the earlier scan.
+        previous_al: u8,
+        /// Approximation-low value declared by the duplicate scan.
+        al: u8,
+    },
+    /// A refinement scan selected a coefficient with no initial scan.
+    RefinementBeforeInitial {
+        /// Approximation-high value declared by the refinement scan.
+        ah: u8,
+        /// Approximation-low value declared by the refinement scan.
+        al: u8,
+    },
+    /// A refinement scan skipped or repeated an approximation level.
+    RefinementMismatch {
+        /// Approximation-low value retained from the previous scan.
+        previous_al: u8,
+        /// Approximation-high value declared by the refinement scan.
+        ah: u8,
+        /// Approximation-low value declared by the refinement scan.
+        al: u8,
+    },
+    /// EOI or physical EOF arrived before an initial DC scan for the component.
+    MissingInitialDc,
+}
+
+impl core::fmt::Display for ProgressiveScanStateError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::DuplicateInitial { previous_al, al } => write!(
+                f,
+                "duplicate initial scan (previous Al={previous_al}, new Al={al})"
+            ),
+            Self::RefinementBeforeInitial { ah, al } => {
+                write!(f, "refinement before initial scan (Ah={ah}, Al={al})")
+            }
+            Self::RefinementMismatch {
+                previous_al,
+                ah,
+                al,
+            } => write!(
+                f,
+                "non-contiguous refinement (previous Al={previous_al}, Ah={ah}, Al={al})"
+            ),
+            Self::MissingInitialDc => f.write_str("missing initial DC scan at stream termination"),
+        }
+    }
+}
+
+/// Entropy condition that made a progressive scan terminator invalid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProgressiveScanTerminationError {
+    /// An EOB run extends beyond the final coded block in the scan.
+    ResidualEobRun {
+        /// Number of blocks still covered after the scan's final block.
+        remaining: u32,
+    },
+    /// Complete entropy bytes or too many buffered bits remain after decoding.
+    ExcessEntropy {
+        /// Complete bytes between the decoder cursor and the parsed boundary.
+        unread_bytes: usize,
+        /// Real (non-synthetic) bits still buffered by the entropy reader.
+        unread_bits: u8,
+    },
+    /// The final partial entropy byte is not padded exclusively with one bits.
+    InvalidPadding {
+        /// Number of real padding bits that remained buffered.
+        unread_bits: u8,
+    },
+    /// The entropy reader observed a different boundary than the parser.
+    TerminalMismatch {
+        /// Parser-recorded absolute terminal offset.
+        expected_offset: usize,
+        /// Parser-recorded marker, or `None` for physical EOF.
+        expected_marker: Option<u8>,
+        /// Entropy-reader absolute marker offset, or `None` at physical EOF.
+        found_offset: Option<usize>,
+        /// Entropy-reader marker, or `None` at physical EOF.
+        found_marker: Option<u8>,
+    },
+}
+
+impl core::fmt::Display for ProgressiveScanTerminationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ResidualEobRun { remaining } => {
+                write!(f, "EOB run extends {remaining} blocks past scan end")
+            }
+            Self::ExcessEntropy {
+                unread_bytes,
+                unread_bits,
+            } => write!(
+                f,
+                "excess entropy remains ({unread_bytes} bytes, {unread_bits} buffered bits)"
+            ),
+            Self::InvalidPadding { unread_bits } => {
+                write!(f, "invalid one-bit padding across {unread_bits} bits")
+            }
+            Self::TerminalMismatch {
+                expected_offset,
+                expected_marker,
+                found_offset,
+                found_marker,
+            } => write!(
+                f,
+                "terminal mismatch (expected {expected_marker:?} at {expected_offset}, found {found_marker:?} at {found_offset:?})"
+            ),
+        }
+    }
+}
+
 /// Fatal JPEG decode or API error.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -145,6 +262,19 @@ pub enum JpegError {
         table: TableKind,
         /// Table id.
         id: u8,
+    },
+
+    #[error(
+        "zero quantization value in table {table} at coefficient {coefficient} (offset {offset})"
+    )]
+    /// DQT entries must be non-zero; a zero divisor destroys coefficient data.
+    InvalidQuantizationValue {
+        /// Byte offset of the zero value in the DQT payload.
+        offset: usize,
+        /// Quantization-table identifier (`Tq`).
+        table: u8,
+        /// Quantization entry index in transmitted order.
+        coefficient: u8,
     },
 
     #[error("expected dimensions are required to repair zero SOF dimensions at offset {offset}")]
@@ -265,6 +395,21 @@ pub enum JpegError {
         table_id: u8,
     },
 
+    #[error(
+        "progressive quantization table {table_id} changed for component {component} at scan offset {offset}"
+    )]
+    /// A component's quantization table changed after its first progressive
+    /// scan. Coefficients from that component's scans cannot then share one
+    /// dequantization table.
+    ProgressiveQuantTableChanged {
+        /// Entropy-data offset of the later scan that resolved a new table.
+        offset: usize,
+        /// Frame-component identifier.
+        component: u8,
+        /// Quantization-table identifier (`Tq`) declared by the frame component.
+        table_id: u8,
+    },
+
     #[error("missing Huffman table class={class} id={id} for component {component}")]
     /// Scan references a Huffman table that was not defined.
     MissingHuffmanTable {
@@ -291,6 +436,36 @@ pub enum JpegError {
         ah: u8,
         /// Successive approximation low bit.
         al: u8,
+    },
+
+    #[error(
+        "invalid progressive state at FF{marker:02X} offset {offset} for component {component} coefficient {coefficient}: {state}"
+    )]
+    /// Progressive scans do not form a legal coefficient/refinement script.
+    InvalidProgressiveScanState {
+        /// Byte offset of SOS, EOI, or physical EOF that exposed the violation.
+        offset: usize,
+        /// Raw context (`0xDA` for SOS; `0xD9` for EOI or expected EOI at EOF).
+        marker: u8,
+        /// Frame-component identifier.
+        component: u8,
+        /// Spectral coefficient index (`0..=63`).
+        coefficient: u8,
+        /// Exact cross-scan state violation.
+        state: ProgressiveScanStateError,
+    },
+
+    #[error(
+        "invalid progressive scan termination at offset {offset} (entropy starts at {scan_offset}): {state}"
+    )]
+    /// Progressive entropy did not end exactly at its parser-recorded boundary.
+    InvalidProgressiveScanTermination {
+        /// Parser-recorded absolute terminal offset.
+        offset: usize,
+        /// Absolute offset of the scan's first entropy byte.
+        scan_offset: usize,
+        /// Exact terminal-state violation.
+        state: ProgressiveScanTerminationError,
     },
 
     #[error("unknown scan component id {component} at offset {offset}")]
@@ -380,6 +555,13 @@ pub enum JpegError {
         requested: usize,
         /// Configured byte cap.
         cap: usize,
+    },
+
+    #[error("host allocation failed for {bytes} bytes")]
+    /// The host allocator could not reserve decoder or extraction storage.
+    HostAllocationFailed {
+        /// Requested host byte count.
+        bytes: usize,
     },
 
     #[error("output buffer too small: need {required} bytes, got {provided}")]
@@ -509,7 +691,11 @@ impl JpegError {
             | Self::UnexpectedMarker { offset, .. }
             | Self::DuplicateMarker { offset, .. }
             | Self::InvalidSegmentLength { offset, .. }
+            | Self::InvalidQuantizationValue { offset, .. }
             | Self::InvalidScanParameters { offset, .. }
+            | Self::InvalidProgressiveScanState { offset, .. }
+            | Self::InvalidProgressiveScanTermination { offset, .. }
+            | Self::ProgressiveQuantTableChanged { offset, .. }
             | Self::UnknownScanComponent { offset, .. }
             | Self::DuplicateScanComponent { offset, .. }
             | Self::InvalidSequentialComponentSet { offset, .. }
@@ -703,6 +889,15 @@ mod tests {
             Some(42),
         );
         assert_eq!(JpegError::UnsupportedBitDepth { depth: 16 }.offset(), None,);
+        assert_eq!(
+            JpegError::InvalidQuantizationValue {
+                offset: 73,
+                table: 2,
+                coefficient: 63,
+            }
+            .offset(),
+            Some(73),
+        );
     }
 
     #[test]

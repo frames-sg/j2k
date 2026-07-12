@@ -115,6 +115,112 @@ impl fmt::Display for DctGridError {
 
 impl std::error::Error for DctGridError {}
 
+/// Error returned when a DCT-grid transform cannot be executed safely.
+///
+/// Grid metadata failures remain available as [`Self::Grid`]. Allocation
+/// failures are reported separately so callers do not have to infer memory
+/// pressure from fabricated grid dimensions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DctTransformError {
+    /// DCT block-grid metadata does not cover the requested sample plane.
+    Grid(DctGridError),
+    /// A caller-provided sample plane has a zero width or height.
+    InvalidSamplePlaneDimensions {
+        /// Declared sample-plane width.
+        width: usize,
+        /// Declared sample-plane height.
+        height: usize,
+    },
+    /// A caller-provided sample plane does not match its declared dimensions.
+    SamplePlaneLengthMismatch {
+        /// Supplied sample count.
+        sample_count: usize,
+        /// Declared sample-plane width.
+        width: usize,
+        /// Declared sample-plane height.
+        height: usize,
+    },
+    /// An internal symbolic-row request fell outside its derived band extent.
+    SymbolicWeightIndexOutOfRange {
+        /// Input sample extent.
+        sample_len: usize,
+        /// Requested output-row index.
+        output_index: usize,
+        /// Whether the requested row was high-pass.
+        high_pass: bool,
+    },
+    /// Aggregate simultaneously-live transform workspace exceeds the host cap.
+    MemoryCapExceeded {
+        /// Requested host bytes.
+        requested: usize,
+        /// Maximum permitted host bytes.
+        cap: usize,
+    },
+    /// The host allocator could not reserve the requested transform storage.
+    HostAllocationFailed {
+        /// Requested host bytes.
+        bytes: usize,
+    },
+}
+
+impl From<DctGridError> for DctTransformError {
+    fn from(value: DctGridError) -> Self {
+        Self::Grid(value)
+    }
+}
+
+impl fmt::Display for DctTransformError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Grid(error) => error.fmt(f),
+            Self::InvalidSamplePlaneDimensions { width, height } => {
+                write!(
+                    f,
+                    "sample plane dimensions must be non-zero, got {width}x{height}"
+                )
+            }
+            Self::SamplePlaneLengthMismatch {
+                sample_count,
+                width,
+                height,
+            } => write!(
+                f,
+                "sample plane has {sample_count} values for declared {width}x{height} dimensions"
+            ),
+            Self::SymbolicWeightIndexOutOfRange {
+                sample_len,
+                output_index,
+                high_pass,
+            } => write!(
+                f,
+                "symbolic 5/3 row {output_index} is outside the {}-pass extent for {sample_len} samples",
+                if *high_pass { "high" } else { "low" }
+            ),
+            Self::MemoryCapExceeded { requested, cap } => write!(
+                f,
+                "DCT transform workspace requires {requested} bytes, exceeding the {cap}-byte cap"
+            ),
+            Self::HostAllocationFailed { bytes } => {
+                write!(f, "DCT transform host allocation failed for {bytes} bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DctTransformError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Grid(error) => Some(error),
+            Self::InvalidSamplePlaneDimensions { .. }
+            | Self::SamplePlaneLengthMismatch { .. }
+            | Self::SymbolicWeightIndexOutOfRange { .. }
+            | Self::MemoryCapExceeded { .. }
+            | Self::HostAllocationFailed { .. } => None,
+        }
+    }
+}
+
 pub(crate) fn validate_dct_block_grid(
     block_count: usize,
     block_cols: usize,

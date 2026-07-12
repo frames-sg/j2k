@@ -13,7 +13,7 @@ mod vertical;
 pub(crate) use direct::apply_single_decomposition_idwt_job;
 #[cfg(test)]
 pub(crate) use horizontal::test_irreversible_filter_97i;
-pub(crate) use model::IDWTOutput;
+pub(crate) use model::{idwt_buffer_size, IDWTOutput};
 pub(crate) use orchestrate::apply;
 
 #[cfg(test)]

@@ -3,13 +3,16 @@
 use core::convert::Infallible;
 
 use super::super::ht_encode_tables::{HT_VLC_ENCODE_TABLE0, HT_VLC_ENCODE_TABLE1};
-use super::cleanup::{max_nonzero_magnitude, CleanupCoefficientSource, I32CleanupCoefficients};
+use super::cleanup::{
+    max_nonzero_magnitude_view, CleanupCoefficientSource, I32CleanupCoefficients,
+};
 use super::facade::MAX_HT_BITPLANES;
 use super::quad::{
     first_quad_pair, non_initial_quad_pair, FirstQuadPairRequest, InitialQuadRow,
     NonInitialQuadPairRequest, NonInitialQuadRow, QuadMarkerRows, QuadPairState, QuadSink,
 };
-use crate::HtCleanupEncodeDistribution;
+use crate::j2c::coefficient_view::{validate_tier1_code_block_geometry, CoefficientBlockView};
+use crate::{EncodeError, EncodeResult, HtCleanupEncodeDistribution};
 
 #[expect(
     clippy::cast_sign_loss,
@@ -95,18 +98,27 @@ pub(crate) fn collect_encode_distribution(
     width: u32,
     height: u32,
     total_bitplanes: u8,
-) -> Result<HtCleanupEncodeDistribution, &'static str> {
+) -> EncodeResult<HtCleanupEncodeDistribution> {
     if total_bitplanes == 0 || total_bitplanes > MAX_HT_BITPLANES {
-        return Err("HTJ2K scalar encoder currently supports 1..=31 bitplanes");
+        return Err(EncodeError::InvalidInput {
+            what: "HTJ2K scalar encoder currently supports 1..=31 bitplanes",
+        });
     }
 
-    let Some(max_magnitude) = max_nonzero_magnitude(coefficients) else {
+    let width = width as usize;
+    let height = height as usize;
+    validate_tier1_code_block_geometry(width, height)?;
+    let coefficients_view = CoefficientBlockView::try_contiguous(coefficients, width, height)?;
+
+    let Some(max_magnitude) = max_nonzero_magnitude_view(coefficients_view) else {
         return Ok(HtCleanupEncodeDistribution::default());
     };
 
     let block_bitplanes = (u32::BITS - max_magnitude.leading_zeros()) as u8;
     if block_bitplanes > total_bitplanes {
-        return Err("HTJ2K block magnitude exceeds configured bitplane count");
+        return Err(EncodeError::InvalidInput {
+            what: "HTJ2K block magnitude exceeds configured bitplane count",
+        });
     }
 
     let source = I32CleanupCoefficients {
@@ -118,8 +130,8 @@ pub(crate) fn collect_encode_distribution(
     collect_encode_distribution_from_source(
         &source,
         missing_msbs,
-        width as usize,
-        height as usize,
+        width,
+        height,
         &mut distribution,
     );
     Ok(distribution)
@@ -135,8 +147,8 @@ fn collect_encode_distribution_from_source<S: CleanupCoefficientSource + ?Sized>
     let p = 30_u32.saturating_sub(u32::from(missing_msbs));
     let stride = width;
 
-    let mut e_val = [0u8; 513];
-    let mut cx_val = [0u8; 513];
+    let mut e_val = [0u8; 514];
+    let mut cx_val = [0u8; 514];
 
     let mut e_qmax = [0i32; 2];
     let mut e_q = [0i32; 8];
@@ -368,3 +380,6 @@ fn collect_quad_non_initial_row(
     record_distribution_mag_signs(distribution, rho, e_qmax.max(kappa), tuple);
     u_q
 }
+
+#[cfg(test)]
+mod tests;

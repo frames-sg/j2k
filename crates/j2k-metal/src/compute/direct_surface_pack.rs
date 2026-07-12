@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    checked_metal_buffer_len_u64, checked_metal_surface_len, dispatch_2d_pipeline,
-    dispatch_3d_pipeline, j2k_pack_scale_arrays, j2k_scalar_pack_params, j2k_u32_param, size_of,
+    checked_metal_surface_len, dispatch_2d_pipeline, dispatch_3d_pipeline, j2k_pack_scale_arrays,
+    j2k_scalar_pack_params, j2k_u32_param, new_compute_command_encoder, new_shared_buffer, size_of,
     Buffer, CommandBufferRef, ComputeCommandEncoderRef, ComputePipelineState, Error, J2kPackParams,
-    J2kRepeatedGrayPackParams, MTLResourceOptions, MetalRuntime, NativeColorSpace, PixelFormat,
-    Rect, Surface,
+    J2kRepeatedGrayPackParams, MetalRuntime, NativeColorSpace, PixelFormat, Rect, Surface,
 };
+use crate::error::metal_kernel_support_error;
 
 #[cfg(target_os = "macos")]
 pub(super) fn copy_plane_samples(
@@ -22,7 +22,9 @@ pub(super) fn copy_plane_samples(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K MetalDirect plane upload sample count overflow".to_string(),
         })?;
-    let mut staged = Vec::with_capacity(dst_len);
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K MetalDirect plane upload staging");
+    let mut staged = budget.try_vec(dst_len, "J2K MetalDirect staged plane samples")?;
 
     for row in 0..row_count {
         let src_y = roi.y as usize + row;
@@ -48,8 +50,11 @@ pub(super) fn copy_plane_samples(
     // SAFETY: `buffer` is populated during CPU-side plan preparation before
     // it is bound to or submitted in any Metal command buffer.
     unsafe { j2k_metal_support::checked_buffer_write::<f32>(buffer, 0, &staged) }.map_err(
-        |error| Error::MetalKernel {
-            message: format!("J2K MetalDirect plane upload buffer write invalid: {error}"),
+        |error| {
+            metal_kernel_support_error(
+                format!("J2K MetalDirect plane upload buffer write invalid: {error}"),
+                error,
+            )
         },
     )?;
 
@@ -80,10 +85,10 @@ pub(super) fn encode_gray_plane_to_surface_in_command_buffer_with_offset(
     bit_depth: u8,
     fmt: PixelFormat,
 ) -> Result<Surface, Error> {
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(command_buffer)?;
     let result = encode_gray_plane_to_surface_in_encoder_with_offset(
         runtime,
-        encoder,
+        &encoder,
         plane,
         plane_offset_bytes,
         dims,
@@ -109,13 +114,7 @@ pub(super) fn encode_gray_plane_to_surface_in_encoder_with_offset(
         fmt.bytes_per_pixel(),
         "J2K Metal repeated grayscale output size overflow",
     )?;
-    let out_buffer = runtime.device.new_buffer(
-        checked_metal_buffer_len_u64(
-            surface_bytes,
-            "J2K Metal repeated grayscale output size exceeds u64",
-        )?,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let out_buffer = new_shared_buffer(&runtime.device, surface_bytes)?;
     let (output_channels, opaque_alpha, pipeline) =
         output_shape_for(&NativeColorSpace::Gray, false, 1, fmt, runtime)?;
     let mut bit_depths = [0u32; 4];
@@ -171,13 +170,7 @@ pub(super) fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal repeated grayscale output size overflow".to_string(),
         })?;
-    let output_len = checked_metal_buffer_len_u64(
-        total_bytes,
-        "J2K Metal repeated grayscale output size exceeds u64",
-    )?;
-    let out_buffer = runtime
-        .device
-        .new_buffer(output_len, MTLResourceOptions::StorageModeShared);
+    let out_buffer = new_shared_buffer(&runtime.device, total_bytes)?;
     let scale = j2k_scalar_pack_params(u32::from(bit_depth));
     let params = J2kRepeatedGrayPackParams {
         width: dims.0,
@@ -198,7 +191,7 @@ pub(super) fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
         }
     };
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(command_buffer)?;
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(plane), 0);
     encoder.set_buffer(1, Some(&out_buffer), 0);
@@ -207,10 +200,13 @@ pub(super) fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
         size_of::<J2kRepeatedGrayPackParams>() as u64,
         (&raw const params).cast(),
     );
-    dispatch_3d_pipeline(encoder, pipeline, (dims.0, dims.1, count_u32));
+    dispatch_3d_pipeline(&encoder, pipeline, (dims.0, dims.1, count_u32));
     encoder.end_encoding();
 
-    let mut surfaces = Vec::with_capacity(count);
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal repeated grayscale surface collection",
+    );
+    let mut surfaces = budget.try_vec(count, "J2K Metal repeated grayscale surface handles")?;
     for instance_idx in 0..count {
         surfaces.push(Surface::from_metal_buffer_with_offset(
             out_buffer.clone(),

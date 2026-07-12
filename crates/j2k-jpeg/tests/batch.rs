@@ -180,7 +180,7 @@ fn prepared_jpeg_batch_decode_returns_ordered_per_tile_results() {
                 options: DecodeOptions::default(),
             },
         ];
-        decode_prepared_jpeg_tiles_rgb8(&mut jobs)
+        decode_prepared_jpeg_tiles_rgb8(&mut jobs).expect("prepared batch infrastructure")
     };
 
     assert_eq!(results.len(), 3);
@@ -251,7 +251,8 @@ fn prepared_jpeg_batch_decode_applies_per_job_decode_options() {
                 options: DecodeOptions::default().with_color_transform(ColorTransform::ForceYCbCr),
             },
         ];
-        let results = decode_prepared_jpeg_tiles_rgb8(&mut jobs);
+        let results =
+            decode_prepared_jpeg_tiles_rgb8(&mut jobs).expect("prepared batch infrastructure");
         assert!(results.iter().all(Result::is_ok));
     }
 
@@ -1534,7 +1535,7 @@ fn production_batch_decode_parallel_preserves_order_and_output() {
 }
 
 #[test]
-fn session_batch_decode_reuses_worker_state_across_calls_and_matches_free_batch() {
+fn session_batch_decode_reuses_worker_slots_across_calls_and_matches_free_batch() {
     const JOBS: usize = 32;
     let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
     let options = TileBatchOptions {
@@ -1572,7 +1573,7 @@ fn session_batch_decode_reuses_worker_state_across_calls_and_matches_free_batch(
 }
 
 #[test]
-fn default_session_uses_available_workers_for_small_outputs() {
+fn default_session_uses_workers_up_to_the_available_and_budget_limits() {
     const JOBS: usize = 64;
     let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
     let mut outputs = (0..JOBS)
@@ -1596,7 +1597,9 @@ fn default_session_uses_available_workers_for_small_outputs() {
 
     let available = thread::available_parallelism().map_or(1, NonZeroUsize::get);
     assert_eq!(outcomes.len(), JOBS);
-    assert_eq!(session.worker_count(), available.min(JOBS));
+    assert!(session.worker_count() >= 1);
+    assert!(session.worker_count() <= available.min(JOBS));
+    assert_eq!(session.retained_worker_slots(), session.worker_count());
 }
 
 #[test]
@@ -1654,7 +1657,7 @@ fn session_batch_decode_reports_first_failing_tile_index() {
             .expect_err("bad tile fails")
     };
 
-    assert_eq!(err.index, 1);
+    assert_eq!(err.tile_error().map(|error| error.index), Some(1));
 }
 
 #[test]
@@ -1832,7 +1835,7 @@ fn production_batch_decode_reports_first_failing_tile_index() {
         decode_tiles_into(&mut jobs, PixelFormat::Rgb8, options).expect_err("bad tile fails")
     };
 
-    assert_eq!(err.index, 1);
+    assert_eq!(err.tile_error().map(|error| error.index), Some(1));
 }
 
 #[test]

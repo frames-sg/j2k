@@ -21,11 +21,52 @@ pub(super) struct StackedComponentResources {
     pub(super) final_plane: Option<Buffer>,
 }
 
-pub(super) fn prepare_stacked_component_resources(count: usize) -> StackedComponentResources {
-    StackedComponentResources {
-        band_sets: vec![Vec::<DirectBandSlice>::new(); count],
-        final_plane: None,
+pub(super) fn prepare_stacked_component_resources(
+    count: usize,
+    band_capacity: usize,
+) -> Result<StackedComponentResources, Error> {
+    prepare_stacked_component_resources_with_budget(
+        count,
+        band_capacity,
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal stacked component resources"),
+    )
+}
+
+fn prepare_stacked_component_resources_with_budget(
+    count: usize,
+    band_capacity: usize,
+    mut budget: crate::batch_allocation::BatchMetadataBudget,
+) -> Result<StackedComponentResources, Error> {
+    let total_band_capacity = crate::batch_allocation::checked_count_product(
+        count,
+        band_capacity,
+        "J2K Metal stacked component band metadata",
+    )?;
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<Vec<DirectBandSlice>>(count),
+        crate::batch_allocation::BatchMetadataRequest::of::<DirectBandSlice>(total_band_capacity),
+    ])?;
+    let mut band_sets = budget.try_vec(count, "J2K Metal stacked component band sets")?;
+    for _ in 0..count {
+        band_sets.push(budget.try_vec(band_capacity, "J2K Metal stacked component band metadata")?);
     }
+    Ok(StackedComponentResources {
+        band_sets,
+        final_plane: None,
+    })
+}
+
+pub(super) fn allocate_preflighted_direct_band_sets(
+    count: usize,
+    band_capacity: usize,
+    budget: &mut crate::batch_allocation::BatchMetadataBudget,
+) -> Result<Vec<Vec<DirectBandSlice>>, Error> {
+    let mut band_sets = budget.try_vec(count, "J2K Metal repeated grayscale band sets")?;
+    for _ in 0..count {
+        band_sets
+            .push(budget.try_vec(band_capacity, "J2K Metal repeated grayscale band metadata")?);
+    }
+    Ok(band_sets)
 }
 
 pub(super) fn retain_metal_tier1_output(
@@ -102,7 +143,47 @@ pub(in super::super) fn lookup_repeated_direct_band_layout_entry(
 
 #[cfg(test)]
 mod tests {
+    use j2k_core::BatchInfrastructureError;
+
     use super::*;
+    use crate::batch_allocation::BatchMetadataBudget;
+
+    #[test]
+    fn stacked_band_graph_honors_exact_cap_and_one_byte_over() {
+        let count = 2;
+        let band_capacity = 3;
+        let exact_cap = count * size_of::<Vec<DirectBandSlice>>()
+            + count * band_capacity * size_of::<DirectBandSlice>();
+        let resources = prepare_stacked_component_resources_with_budget(
+            count,
+            band_capacity,
+            BatchMetadataBudget::with_cap("J2K Metal stacked component resources", exact_cap),
+        )
+        .expect("exact stacked band graph cap");
+        assert_eq!(resources.band_sets.capacity(), count);
+        assert!(resources
+            .band_sets
+            .iter()
+            .all(|bands| bands.capacity() == band_capacity));
+
+        assert!(matches!(
+            prepare_stacked_component_resources_with_budget(
+                count,
+                band_capacity,
+                BatchMetadataBudget::with_cap(
+                    "J2K Metal stacked component resources",
+                    exact_cap - 1,
+                ),
+            ),
+            Err(Error::BatchInfrastructure(
+                BatchInfrastructureError::AllocationTooLarge {
+                    requested,
+                    cap,
+                    ..
+                }
+            )) if requested == exact_cap && cap == exact_cap - 1
+        ));
+    }
 
     #[test]
     fn empty_repeated_band_layout_preserves_validation_error() {

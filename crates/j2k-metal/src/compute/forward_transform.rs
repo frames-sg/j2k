@@ -2,11 +2,12 @@
 
 use super::{
     checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, dispatch_2d_pipeline,
-    dispatch_3d_pipeline, label_command_buffer, label_compute_encoder, size_of, size_of_val,
-    with_runtime, Buffer, CommandBufferRef, ComputePipelineState, Error, J2kDeinterleaveToF32Job,
+    dispatch_3d_pipeline, label_command_buffer, label_compute_encoder, new_command_buffer,
+    new_compute_command_encoder, new_shared_buffer, size_of, size_of_val, with_runtime, Buffer,
+    CommandBufferRef, ComputePipelineState, Error, J2kDeinterleaveToF32Job,
     J2kForwardDwt53BatchedParams, J2kForwardDwt53Level, J2kForwardDwt53Output,
     J2kForwardDwt53Params, J2kForwardDwt97Level, J2kForwardDwt97Output,
-    J2kLosslessDeinterleaveParams, MTLResourceOptions,
+    J2kLosslessDeinterleaveParams,
 };
 
 #[cfg(target_os = "macos")]
@@ -34,11 +35,9 @@ pub(crate) fn encode_forward_dwt53(
 
     with_runtime(|runtime| {
         let bytes = size_of_val(samples);
-        let buffer_a = copied_slice_buffer(&runtime.device, samples);
-        let buffer_b = runtime
-            .device
-            .new_buffer(bytes as u64, MTLResourceOptions::StorageModeShared);
-        let command_buffer = runtime.queue.new_command_buffer();
+        let buffer_a = copied_slice_buffer(&runtime.device, samples)?;
+        let buffer_b = new_shared_buffer(&runtime.device, bytes)?;
+        let command_buffer = new_command_buffer(&runtime.queue)?;
 
         let mut current_width = width;
         let mut current_height = height;
@@ -62,12 +61,12 @@ pub(crate) fn encode_forward_dwt53(
                     active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
                 dispatch_forward_dwt53_pass(
                     &runtime.fdwt53_vertical,
-                    command_buffer,
+                    &command_buffer,
                     input,
                     output,
                     params,
                     "J2K forward DWT 5/3 vertical",
-                );
+                )?;
                 active_is_a = !active_is_a;
             }
             if current_width >= 2 {
@@ -75,12 +74,12 @@ pub(crate) fn encode_forward_dwt53(
                     active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
                 dispatch_forward_dwt53_pass(
                     &runtime.fdwt53_horizontal,
-                    command_buffer,
+                    &command_buffer,
                     input,
                     output,
                     params,
                     "J2K forward DWT 5/3 horizontal",
-                );
+                )?;
                 active_is_a = !active_is_a;
             }
 
@@ -100,7 +99,7 @@ pub(crate) fn encode_forward_dwt53(
             levels_run = levels_run.saturating_add(1);
         }
 
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let active_buffer = if active_is_a { &buffer_a } else { &buffer_b };
         let transformed = checked_buffer_slice::<f32>(active_buffer, samples.len(), "DWT 5/3")?;
@@ -175,16 +174,10 @@ pub(crate) fn encode_forward_dwt97(
         });
     }
     let bytes = size_of_val(samples);
-    let bytes_u64 = u64::try_from(bytes).map_err(|_| Error::MetalKernel {
-        message: "J2K Metal forward DWT buffer size exceeds u64".to_string(),
-    })?;
-
     with_runtime(|runtime| {
-        let buffer_a = copied_slice_buffer(&runtime.device, samples);
-        let buffer_b = runtime
-            .device
-            .new_buffer(bytes_u64, MTLResourceOptions::StorageModeShared);
-        let command_buffer = runtime.queue.new_command_buffer();
+        let buffer_a = copied_slice_buffer(&runtime.device, samples)?;
+        let buffer_b = new_shared_buffer(&runtime.device, bytes)?;
+        let command_buffer = new_command_buffer(&runtime.queue)?;
 
         let mut current_width = width;
         let mut current_height = height;
@@ -209,45 +202,45 @@ pub(crate) fn encode_forward_dwt97(
             if current_height >= 2 {
                 dispatch_forward_dwt97_lift_steps(
                     &runtime.fdwt97_lift_vertical,
-                    command_buffer,
+                    &command_buffer,
                     &buffer_a,
                     &buffer_b,
                     active_is_a,
                     base_params,
                     "J2K forward DWT 9/7 vertical",
-                );
+                )?;
                 let (input, output) =
                     active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
                 dispatch_forward_dwt97_pass(
                     &runtime.fdwt97_deinterleave_vertical,
-                    command_buffer,
+                    &command_buffer,
                     input,
                     output,
                     base_params,
                     "J2K forward DWT 9/7 vertical deinterleave",
-                );
+                )?;
                 active_is_a = !active_is_a;
             }
             if current_width >= 2 {
                 dispatch_forward_dwt97_lift_steps(
                     &runtime.fdwt97_lift_horizontal,
-                    command_buffer,
+                    &command_buffer,
                     &buffer_a,
                     &buffer_b,
                     active_is_a,
                     base_params,
                     "J2K forward DWT 9/7 horizontal",
-                );
+                )?;
                 let (input, output) =
                     active_forward_dwt53_buffers(&buffer_a, &buffer_b, active_is_a);
                 dispatch_forward_dwt97_pass(
                     &runtime.fdwt97_deinterleave_horizontal,
-                    command_buffer,
+                    &command_buffer,
                     input,
                     output,
                     base_params,
                     "J2K forward DWT 9/7 horizontal deinterleave",
-                );
+                )?;
                 active_is_a = !active_is_a;
             }
 
@@ -267,7 +260,7 @@ pub(crate) fn encode_forward_dwt97(
             levels_run = levels_run.saturating_add(1);
         }
 
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let active_buffer = if active_is_a { &buffer_a } else { &buffer_b };
         let transformed = checked_buffer_slice::<f32>(active_buffer, samples.len(), "DWT 9/7")?;
@@ -316,14 +309,15 @@ pub(crate) fn encode_deinterleave_to_f32(
         })?;
 
     with_runtime(|runtime| {
-        let input_buffer = copied_slice_buffer(&runtime.device, job.pixels);
-        let plane_buffers = (0..4)
-            .map(|_| {
-                runtime
-                    .device
-                    .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModeShared)
-            })
-            .collect::<Vec<_>>();
+        let input_buffer = copied_slice_buffer(&runtime.device, job.pixels)?;
+        let mut plane_budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal encode deinterleave plane buffers",
+        );
+        let mut plane_buffers =
+            plane_budget.try_vec(4, "J2K Metal deinterleave plane buffer handles")?;
+        for _ in 0..4 {
+            plane_buffers.push(new_shared_buffer(&runtime.device, plane_bytes)?);
+        }
         let params = J2kLosslessDeinterleaveParams {
             src_width: pixel_count,
             src_height: 1,
@@ -338,10 +332,10 @@ pub(crate) fn encode_deinterleave_to_f32(
             signed_samples: u32::from(job.signed),
         };
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        label_command_buffer(command_buffer, "j2k encode-stage deinterleave");
-        let encoder = command_buffer.new_compute_command_encoder();
-        label_compute_encoder(encoder, "J2K encode-stage deinterleave");
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        label_command_buffer(&command_buffer, "j2k encode-stage deinterleave");
+        let encoder = new_compute_command_encoder(&command_buffer)?;
+        label_compute_encoder(&encoder, "J2K encode-stage deinterleave");
         encoder.set_compute_pipeline_state(&runtime.lossless_deinterleave_to_planes);
         encoder.set_buffer(0, Some(&input_buffer), 0);
         encoder.set_buffer(1, Some(&plane_buffers[0]), 0);
@@ -354,12 +348,12 @@ pub(crate) fn encode_deinterleave_to_f32(
         );
         encoder.set_buffer(5, Some(&plane_buffers[3]), 0);
         dispatch_2d_pipeline(
-            encoder,
+            &encoder,
             &runtime.lossless_deinterleave_to_planes,
             (pixel_count, 1),
         );
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let planes = plane_buffers
             .iter()
@@ -385,7 +379,7 @@ pub(super) fn dispatch_forward_dwt97_lift_steps(
     active_is_a: bool,
     base_params: J2kForwardDwt97Params,
     label_prefix: &str,
-) {
+) -> Result<(), Error> {
     let active_buffer = if active_is_a { buffer_a } else { buffer_b };
     for (parity, coefficient) in [
         (FDWT97_HIGH_PASS, FDWT97_ALPHA),
@@ -405,8 +399,9 @@ pub(super) fn dispatch_forward_dwt97_lift_steps(
             active_buffer,
             params,
             label_prefix,
-        );
+        )?;
     }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -417,9 +412,9 @@ pub(super) fn dispatch_forward_dwt97_pass(
     output: &Buffer,
     params: J2kForwardDwt97Params,
     label: &str,
-) {
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, label);
+) -> Result<(), Error> {
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, label);
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(input), 0);
     encoder.set_buffer(1, Some(output), 0);
@@ -429,11 +424,12 @@ pub(super) fn dispatch_forward_dwt97_pass(
         (&raw const params).cast(),
     );
     dispatch_2d_pipeline(
-        encoder,
+        &encoder,
         pipeline,
         (params.current_width, params.current_height),
     );
     encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -497,9 +493,9 @@ pub(super) fn dispatch_forward_dwt53_pass(
     output: &Buffer,
     params: J2kForwardDwt53Params,
     label: &str,
-) {
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, label);
+) -> Result<(), Error> {
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, label);
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(input), 0);
     encoder.set_buffer(1, Some(output), 0);
@@ -509,11 +505,12 @@ pub(super) fn dispatch_forward_dwt53_pass(
         (&raw const params).cast(),
     );
     dispatch_2d_pipeline(
-        encoder,
+        &encoder,
         pipeline,
         (params.current_width, params.current_height),
     );
     encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -524,7 +521,7 @@ pub(super) fn dispatch_forward_dwt53_batched_pass(
     outputs: &[Buffer],
     params: J2kForwardDwt53BatchedParams,
     label: &str,
-) {
+) -> Result<(), Error> {
     debug_assert!(!inputs.is_empty());
     debug_assert!(!outputs.is_empty());
     debug_assert!(params.component_count >= 1 && params.component_count <= 3);
@@ -535,8 +532,8 @@ pub(super) fn dispatch_forward_dwt53_batched_pass(
     let second_output_buffer = outputs.get(1).unwrap_or(first_output_buffer);
     let third_output_buffer = outputs.get(2).unwrap_or(first_output_buffer);
 
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, label);
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, label);
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(first_input_buffer), 0);
     encoder.set_buffer(1, Some(second_input_buffer), 0);
@@ -550,7 +547,7 @@ pub(super) fn dispatch_forward_dwt53_batched_pass(
         (&raw const params).cast(),
     );
     dispatch_3d_pipeline(
-        encoder,
+        &encoder,
         pipeline,
         (
             params.current_width,
@@ -559,6 +556,7 @@ pub(super) fn dispatch_forward_dwt53_batched_pass(
         ),
     );
     encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

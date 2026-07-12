@@ -11,6 +11,7 @@
 #![deny(missing_docs)]
 #![warn(unreachable_pub)]
 
+mod allocation;
 mod codec;
 mod decoder;
 #[cfg(any(feature = "cuda-runtime", test))]
@@ -41,12 +42,12 @@ pub use encode::{
     encode_lossless_from_cuda_buffers_to_cuda_buffers,
     encode_lossless_from_cuda_buffers_to_cuda_buffers_with_report,
     encode_lossless_from_cuda_buffers_with_report, submit_lossless_from_cuda_buffer,
-    submit_lossless_from_cuda_buffers, CudaEncodedJ2k, CudaLosslessBufferEncodeOutcome,
-    CudaLosslessEncodeOutcome, CudaLosslessEncodeResidency, CudaLosslessEncodeTile,
-    CudaResidentCodestreamBuffer, SubmittedJ2kLosslessCudaEncode,
+    submit_lossless_from_cuda_buffers, CudaEncodedJ2k, CudaEncodedJ2kMetadata,
+    CudaLosslessBufferEncodeOutcome, CudaLosslessEncodeOutcome, CudaLosslessEncodeResidency,
+    CudaLosslessEncodeTile, CudaResidentCodestreamBuffer, SubmittedJ2kLosslessCudaEncode,
     SubmittedJ2kLosslessCudaEncodeBatch,
 };
-pub use error::Error;
+pub use error::{Error, NativeBackendError};
 pub use j2k::{J2kContext, J2kScratchPool};
 pub use profile::{
     CudaHtj2kDecodeProfileDetail, CudaHtj2kEncodeProfileReport, CudaHtj2kProfileReport,

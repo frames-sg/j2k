@@ -6,6 +6,7 @@ use j2k_core::{
     ImageDecodeSubmit, PixelFormat, ReadySubmission, Rect, TileBatchDecodeDevice,
     TileBatchDecodeManyDevice, TileBatchDecodeSubmit, TileRegionScaledDeviceDecodeRequest,
 };
+use j2k_metal_support::FallibleSubmissionQueue;
 
 use super::{J2kDecoder, MetalDecodeRequest};
 use crate::{batch, Error, MetalSession, Surface};
@@ -227,9 +228,9 @@ impl TileBatchDecodeManyDevice for Codec {
         }
 
         let mut session = MetalSession::default();
-        let submissions = inputs
-            .iter()
-            .map(|input| {
+        let mut submissions = FallibleSubmissionQueue::with_capacity_hint(inputs.len());
+        for input in inputs {
+            submissions.try_push_with("J2K Metal decode-many submissions", |_, _| {
                 <Self as TileBatchDecodeSubmit>::submit_tile_to_device(
                     ctx,
                     &mut session,
@@ -238,13 +239,14 @@ impl TileBatchDecodeManyDevice for Codec {
                     fmt,
                     backend,
                 )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            })?;
+        }
 
-        submissions
-            .into_iter()
-            .map(j2k_core::DeviceSubmission::wait)
-            .collect()
+        submissions.try_finish(
+            "J2K Metal decode-many submission and surface metadata",
+            "J2K Metal decode-many surfaces",
+            j2k_core::DeviceSubmission::wait,
+        )
     }
 }
 

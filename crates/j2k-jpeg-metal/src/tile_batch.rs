@@ -3,8 +3,14 @@
 use std::sync::Arc;
 
 use j2k_core::{BackendRequest, DeviceSubmission, PixelFormat};
+use j2k_metal_support::FallibleSubmissionQueue;
 
 use crate::{batch, Error, MetalDecodeRequest, MetalSession, Surface};
+
+enum TileRequestInput<'a> {
+    Borrowed(&'a [u8]),
+    Shared(Arc<[u8]>),
+}
 
 /// Convenience wrapper for submitting a group of JPEG tiles to one decoder
 /// session.
@@ -15,7 +21,7 @@ use crate::{batch, Error, MetalDecodeRequest, MetalSession, Surface};
 #[derive(Default)]
 pub struct JpegTileBatch {
     session: MetalSession,
-    submissions: Vec<batch::MetalSubmission>,
+    queue: FallibleSubmissionQueue<batch::MetalSubmission>,
 }
 
 impl JpegTileBatch {
@@ -26,20 +32,22 @@ impl JpegTileBatch {
 
     /// Create an empty tile batch with capacity for `capacity` submissions.
     pub fn with_capacity(capacity: usize) -> Self {
+        // Capacity is a hint only: reserving is deferred to the fallible push
+        // boundary because this constructor cannot report allocation failure.
         Self {
-            submissions: Vec::with_capacity(capacity),
+            queue: FallibleSubmissionQueue::with_capacity_hint(capacity),
             ..Self::default()
         }
     }
 
     /// Number of queued tile requests.
     pub fn len(&self) -> usize {
-        self.submissions.len()
+        self.queue.len()
     }
 
     /// Whether the batch has no queued tile requests.
     pub fn is_empty(&self) -> bool {
-        self.submissions.is_empty()
+        self.queue.is_empty()
     }
 
     /// Number of Metal session submissions already flushed.
@@ -56,7 +64,12 @@ impl JpegTileBatch {
         input: &[u8],
         request: MetalDecodeRequest,
     ) -> Result<usize, Error> {
-        self.push_shared_tile_request(Arc::<[u8]>::from(input), request)
+        self.push_request(
+            TileRequestInput::Borrowed(input),
+            request.fmt,
+            request.backend,
+            request.op.batch_op(),
+        )
     }
 
     /// Queue a tile decode request backed by shared compressed tile bytes.
@@ -65,45 +78,109 @@ impl JpegTileBatch {
         input: Arc<[u8]>,
         request: MetalDecodeRequest,
     ) -> Result<usize, Error> {
-        self.push_shared_request(input, request.fmt, request.backend, request.op.batch_op())
+        self.push_request(
+            TileRequestInput::Shared(input),
+            request.fmt,
+            request.backend,
+            request.op.batch_op(),
+        )
     }
 
     /// Decode all queued tile requests and return surfaces in submission order.
     pub fn decode_all(self) -> Result<Vec<Surface>, Error> {
-        let mut surfaces = Vec::with_capacity(self.submissions.len());
-        for submission in self.submissions {
-            surfaces.push(submission.wait()?);
-        }
-        Ok(surfaces)
+        self.queue.try_finish(
+            "JPEG Metal tile batch surface collection",
+            "JPEG Metal tile batch surface results",
+            DeviceSubmission::wait,
+        )
     }
 
-    fn push_shared_request(
+    fn push_request(
         &mut self,
-        input: Arc<[u8]>,
+        input: TileRequestInput<'_>,
         fmt: PixelFormat,
         backend: BackendRequest,
         op: batch::BatchOp,
     ) -> Result<usize, Error> {
-        let slot = self.submissions.len();
-        let submission = {
-            let mut state = self.session.shared.lock()?;
-            let (fast444_packet, fast422_packet, fast420_packet) =
-                state.resolve_fast_packets(&input, backend);
-            let slot = state.queue_request(batch::QueuedRequest::new_shared(
+        let Self { session, queue } = self;
+        queue.try_push_with(
+            "JPEG Metal tile batch submissions",
+            |_, retained_capacity| {
+                let mut state = session.shared.lock()?;
+                let submission_bytes =
+                    crate::session::submission_capacity_bytes(retained_capacity)?;
+                let resolved = match input {
+                    TileRequestInput::Borrowed(input) => state
+                        .resolve_jpeg_plan_with_external_live(input, backend, submission_bytes)?,
+                    TileRequestInput::Shared(input) => state
+                        .resolve_arc_jpeg_plan_with_external_live(
+                            input,
+                            backend,
+                            submission_bytes,
+                        )?,
+                };
+                let slot = state.queue_request_with_retained(
+                    batch::QueuedRequest::new_shared(
+                        resolved.input,
+                        fmt,
+                        backend,
+                        op,
+                        resolved.fast_packet,
+                        resolved.shape,
+                    ),
+                    retained_capacity,
+                )?;
+                Ok(batch::MetalSubmission {
+                    session: session.shared.clone(),
+                    slot,
+                })
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SharedJpegInput;
+
+    #[test]
+    fn oversized_capacity_hint_fails_before_queue_mutation() {
+        let mut batch = JpegTileBatch::with_capacity(usize::MAX);
+        let error = batch
+            .push_tile_request(
+                &[0xff, 0xd8],
+                MetalDecodeRequest::full(PixelFormat::Rgb8, BackendRequest::Cpu),
+            )
+            .expect_err("oversized capacity hint");
+
+        assert!(matches!(
+            error,
+            Error::BatchInfrastructure(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                what: "JPEG Metal tile batch submissions",
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            })
+        ));
+        assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn shared_tile_request_reuses_caller_arc_payload_without_copying() {
+        let input = Arc::<[u8]>::from(&b"shared non-Metal JPEG bytes"[..]);
+        let expected = SharedJpegInput::try_from_arc(Arc::clone(&input))
+            .expect("shared input within default cap");
+        let mut batch = JpegTileBatch::new();
+
+        batch
+            .push_shared_tile_request(
                 input,
-                fmt,
-                backend,
-                op,
-                fast444_packet,
-                fast422_packet,
-                fast420_packet,
-            ));
-            batch::MetalSubmission {
-                session: self.session.shared.clone(),
-                slot,
-            }
-        };
-        self.submissions.push(submission);
-        Ok(slot)
+                MetalDecodeRequest::full(PixelFormat::Rgb8, BackendRequest::Cpu),
+            )
+            .expect("queue shared CPU request");
+
+        let state = batch.session.shared.lock().expect("session state");
+        assert_eq!(state.queued.len(), 1);
+        assert!(SharedJpegInput::ptr_eq(&expected, &state.queued[0].input));
     }
 }

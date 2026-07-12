@@ -24,20 +24,11 @@ pub(crate) fn decode_to_surface(
     decoder: &CpuDecoder<'_>,
     pool: &mut j2k_jpeg::ScratchPool,
     fmt: PixelFormat,
-    fast444_packet: Option<&JpegFast444PacketV1>,
-    fast422_packet: Option<&JpegFast422PacketV1>,
-    fast420_packet: Option<&JpegFast420PacketV1>,
+    packets: JpegFastPackets<'_>,
+    external_live_bytes: usize,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
-        decode_to_surface_with_runtime(
-            runtime,
-            decoder,
-            pool,
-            fmt,
-            fast444_packet,
-            fast422_packet,
-            fast420_packet,
-        )
+        decode_to_surface_with_runtime(runtime, decoder, pool, fmt, packets, external_live_bytes)
     })
 }
 
@@ -46,21 +37,12 @@ pub(crate) fn decode_to_surface_with_session(
     decoder: &CpuDecoder<'_>,
     pool: &mut j2k_jpeg::ScratchPool,
     fmt: PixelFormat,
-    fast444_packet: Option<&JpegFast444PacketV1>,
-    fast422_packet: Option<&JpegFast422PacketV1>,
-    fast420_packet: Option<&JpegFast420PacketV1>,
+    packets: JpegFastPackets<'_>,
+    external_live_bytes: usize,
     session: &crate::MetalBackendSession,
 ) -> Result<Surface, Error> {
     with_runtime_for_session(session, |runtime| {
-        decode_to_surface_with_runtime(
-            runtime,
-            decoder,
-            pool,
-            fmt,
-            fast444_packet,
-            fast422_packet,
-            fast420_packet,
-        )
+        decode_to_surface_with_runtime(runtime, decoder, pool, fmt, packets, external_live_bytes)
     })
 }
 
@@ -108,23 +90,23 @@ fn decode_to_surface_with_runtime(
     decoder: &CpuDecoder<'_>,
     pool: &mut j2k_jpeg::ScratchPool,
     fmt: PixelFormat,
-    fast444_packet: Option<&JpegFast444PacketV1>,
-    fast422_packet: Option<&JpegFast422PacketV1>,
-    fast420_packet: Option<&JpegFast420PacketV1>,
+    packets: JpegFastPackets<'_>,
+    external_live_bytes: usize,
 ) -> Result<Surface, Error> {
-    if let Some(surface) = try_decode_fast444_to_surface(runtime, decoder, fast444_packet, fmt)? {
+    if let Some(surface) = try_decode_fast444_to_surface(runtime, decoder, packets.fast444, fmt)? {
         return Ok(surface);
     }
-    if let Some(surface) = try_decode_fast422_to_surface(runtime, fast422_packet, fmt)? {
+    if let Some(surface) = try_decode_fast422_to_surface(runtime, packets.fast422, fmt)? {
         return Ok(surface);
     }
-    if let Some(surface) = try_decode_fast420_to_surface(runtime, decoder, fast420_packet, fmt)? {
+    if let Some(surface) = try_decode_fast420_to_surface(runtime, decoder, packets.fast420, fmt)? {
         return Ok(surface);
     }
     let mut stage = PlaneStage::new(
         &runtime.device,
         decoder.info().color_space,
         decoder.info().dimensions,
+        external_live_bytes,
     )?;
     decoder.decode_component_rows_with_scratch(pool, &mut stage)?;
     stage.finish_with_runtime(runtime, fmt)
@@ -136,28 +118,32 @@ pub(crate) fn decode_region_to_surface(
     pool: &mut j2k_jpeg::ScratchPool,
     fmt: PixelFormat,
     roi: j2k_jpeg::Rect,
-    fast444_packet: Option<&JpegFast444PacketV1>,
-    fast422_packet: Option<&JpegFast422PacketV1>,
-    fast420_packet: Option<&JpegFast420PacketV1>,
+    packets: JpegFastPackets<'_>,
+    external_live_bytes: usize,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
         if let Some(surface) =
-            try_decode_fast444_region_to_surface(runtime, decoder, fast444_packet, fmt, roi)?
+            try_decode_fast444_region_to_surface(runtime, decoder, packets.fast444, fmt, roi)?
         {
             return Ok(surface);
         }
         if let Some(surface) =
-            try_decode_fast422_region_to_surface(runtime, fast422_packet, fmt, roi)?
+            try_decode_fast422_region_to_surface(runtime, packets.fast422, fmt, roi)?
         {
             return Ok(surface);
         }
         if let Some(surface) =
-            try_decode_fast420_region_to_surface(runtime, decoder, fast420_packet, fmt, roi)?
+            try_decode_fast420_region_to_surface(runtime, decoder, packets.fast420, fmt, roi)?
         {
             return Ok(surface);
         }
         let dims = (roi.w, roi.h);
-        let mut stage = cached_plane_stage(runtime, decoder.info().color_space, dims)?;
+        let mut stage = cached_plane_stage(
+            runtime,
+            decoder.info().color_space,
+            dims,
+            external_live_bytes,
+        )?;
         decoder.decode_region_component_rows_with_scratch(
             pool,
             &mut stage,
@@ -174,23 +160,22 @@ pub(crate) fn decode_scaled_to_surface(
     pool: &mut j2k_jpeg::ScratchPool,
     fmt: PixelFormat,
     scale: j2k_core::Downscale,
-    fast444_packet: Option<&JpegFast444PacketV1>,
-    fast422_packet: Option<&JpegFast422PacketV1>,
-    fast420_packet: Option<&JpegFast420PacketV1>,
+    packets: JpegFastPackets<'_>,
+    external_live_bytes: usize,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
         if let Some(surface) =
-            try_decode_fast444_scaled_to_surface(runtime, decoder, fast444_packet, fmt, scale)?
+            try_decode_fast444_scaled_to_surface(runtime, decoder, packets.fast444, fmt, scale)?
         {
             return Ok(surface);
         }
         if let Some(surface) =
-            try_decode_fast422_scaled_to_surface(runtime, fast422_packet, fmt, scale)?
+            try_decode_fast422_scaled_to_surface(runtime, packets.fast422, fmt, scale)?
         {
             return Ok(surface);
         }
         if let Some(surface) =
-            try_decode_fast420_scaled_to_surface(runtime, decoder, fast420_packet, fmt, scale)?
+            try_decode_fast420_scaled_to_surface(runtime, decoder, packets.fast420, fmt, scale)?
         {
             return Ok(surface);
         }
@@ -208,8 +193,12 @@ pub(crate) fn decode_scaled_to_surface(
             h: full.1,
         })
         .scaled_covering(scale);
-        let mut stage =
-            cached_plane_stage(runtime, decoder.info().color_space, (scaled.w, scaled.h))?;
+        let mut stage = cached_plane_stage(
+            runtime,
+            decoder.info().color_space,
+            (scaled.w, scaled.h),
+            external_live_bytes,
+        )?;
         decoder.decode_region_component_rows_with_scratch(pool, &mut stage, roi, scale)?;
         stage.finish_with_runtime(runtime, fmt)
     })
@@ -223,6 +212,7 @@ pub(crate) fn decode_region_scaled_to_surface(
     roi: j2k_jpeg::Rect,
     scale: j2k_core::Downscale,
     packets: JpegFastPackets<'_>,
+    external_live_bytes: usize,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
         let scaled_roi = (Rect {
@@ -283,8 +273,12 @@ pub(crate) fn decode_region_scaled_to_surface(
             h: roi.h,
         })
         .scaled_covering(scale);
-        let mut stage =
-            cached_plane_stage(runtime, decoder.info().color_space, (scaled.w, scaled.h))?;
+        let mut stage = cached_plane_stage(
+            runtime,
+            decoder.info().color_space,
+            (scaled.w, scaled.h),
+            external_live_bytes,
+        )?;
         decoder.decode_region_component_rows_with_scratch(pool, &mut stage, roi, scale)?;
         stage.finish_with_runtime(runtime, fmt)
     })

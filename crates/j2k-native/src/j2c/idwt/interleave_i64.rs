@@ -8,13 +8,19 @@ use super::super::rect::IntRect;
 use super::horizontal::filter_horizontal_i64;
 use super::model::{IDWTInputI64, IDWTTempOutput};
 use super::vertical::filter_vertical_i64;
+use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 
 pub(super) fn apply_level_i64(
     input: IDWTInputI64<'_>,
     target: &mut Vec<i64>,
     decomposition: &Decomposition,
     storage: &DecompositionStorage<'_>,
-) -> IDWTTempOutput {
+) -> Result<IDWTTempOutput> {
+    let required_len = checked_decode_usize_product2(
+        decomposition.rect.width() as usize,
+        decomposition.rect.height() as usize,
+    )?;
+    try_resize_decode_elements(target, required_len, 0)?;
     interleave_samples_i64(input, decomposition, target, storage);
 
     if decomposition.rect.width() > 0 && decomposition.rect.height() > 0 {
@@ -22,9 +28,9 @@ pub(super) fn apply_level_i64(
         filter_vertical_i64(target, decomposition.rect);
     }
 
-    IDWTTempOutput {
+    Ok(IDWTTempOutput {
         rect: decomposition.rect,
-    }
+    })
 }
 
 #[expect(
@@ -34,13 +40,11 @@ pub(super) fn apply_level_i64(
 fn interleave_samples_i64(
     input: IDWTInputI64<'_>,
     decomposition: &Decomposition,
-    coefficients: &mut Vec<i64>,
+    coefficients: &mut [i64],
     storage: &DecompositionStorage<'_>,
 ) {
     let width = decomposition.rect.width() as usize;
     let height = decomposition.rect.height() as usize;
-    assert!(coefficients.capacity() >= width * height);
-    coefficients.resize(width * height, 0);
 
     let IntRect {
         x0: u0,

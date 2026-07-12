@@ -10,6 +10,8 @@ use metal::{Buffer, BufferRef};
 
 #[cfg(target_os = "macos")]
 mod adapter;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod allocation;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]

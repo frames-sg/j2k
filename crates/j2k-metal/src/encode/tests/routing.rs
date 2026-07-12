@@ -4,6 +4,29 @@ use super::*;
 
 #[cfg(target_os = "macos")]
 #[test]
+fn hybrid_encode_upload_owns_bytes_after_caller_storage_is_reused() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = crate::MetalBackendSession::system_default().expect("Metal session");
+    let expected = vec![3u8, 5, 8, 13, 21];
+    let mut caller_bytes = expected.clone();
+    let buffer = super::super::copy_padded_metal_buffer_from_bytes(&session, &caller_bytes)
+        .expect("copy hybrid encode input");
+
+    caller_bytes.fill(0xff);
+    drop(caller_bytes);
+    // SAFETY: The buffer is shared, Metal-owned storage initialized by the
+    // synchronous upload helper and has not been submitted for GPU mutation.
+    let uploaded =
+        unsafe { j2k_metal_support::checked_buffer_read_vec::<u8>(&buffer, 0, expected.len()) }
+            .expect("read Metal-owned hybrid input");
+    assert_eq!(uploaded, expected);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn auto_host_output_encode_options_preserve_auto_for_hybrid_path() {
     let routed = super::super::host_output_encode_options(lossless_options! {
         backend: EncodeBackendPreference::Auto,

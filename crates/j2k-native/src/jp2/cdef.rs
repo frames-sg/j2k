@@ -3,17 +3,21 @@
 use alloc::vec::Vec;
 
 use crate::error::{bail, FormatError, Result};
-use crate::jp2::ImageBoxes;
+use crate::jp2::{allocation::Jp2AllocationBudget, ImageBoxes};
 use crate::reader::BitReader;
 
-pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
+pub(super) fn parse(
+    boxes: &mut ImageBoxes,
+    data: &[u8],
+    budget: &mut Jp2AllocationBudget,
+) -> Result<()> {
     let mut reader = BitReader::new(data);
     let count = usize::from(reader.read_u16().ok_or(FormatError::InvalidBox)?);
-    let mut definitions = Vec::with_capacity(count);
 
     if count == 0 {
         bail!(FormatError::InvalidBox);
     }
+    let mut definitions = budget.try_vec(count, "JP2 channel definitions")?;
 
     for _ in 0..count {
         let channel_index = reader.read_u16().ok_or(FormatError::InvalidBox)?;
@@ -27,14 +31,17 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
         });
     }
 
-    boxes.channel_definition = Some(ChannelDefinitionBox {
+    let replaced = boxes.channel_definition.replace(ChannelDefinitionBox {
         channel_definitions: definitions,
     });
+    if let Some(replaced) = replaced {
+        budget.release_vec(&replaced.channel_definitions)?;
+    }
 
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ChannelDefinitionBox {
     pub(crate) channel_definitions: Vec<ChannelDefinition>,
 }

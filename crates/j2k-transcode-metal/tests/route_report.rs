@@ -18,7 +18,7 @@ fn should_run_metal_runtime() -> bool {
 #[test]
 #[expect(
     unsafe_code,
-    reason = "the test constructs one audited resident descriptor from a fresh shared Metal allocation"
+    reason = "the test constructs one audited resident descriptor from a fresh checked shared Metal allocation"
 )]
 fn metal_encoded_codestream_exports_resident_handoff_descriptor() {
     if !should_run_metal_runtime() {
@@ -29,7 +29,8 @@ fn metal_encoded_codestream_exports_resident_handoff_descriptor() {
         metal_device_unavailable_is_skip(module_path!());
         return;
     };
-    let codestream_buffer = device.new_buffer(512, metal::MTLResourceOptions::StorageModeShared);
+    let codestream_buffer = j2k_metal_support::checked_shared_buffer(&device, 512)
+        .expect("checked Metal fixture allocation");
     // SAFETY: This fresh shared allocation has no pending writers and remains
     // immutable for the lifetime of the encoded descriptor.
     let encoded = unsafe {

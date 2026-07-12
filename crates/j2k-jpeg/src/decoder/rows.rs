@@ -3,9 +3,9 @@
 //! Row-oriented decode entry points and component-row routing.
 
 use super::{
-    jpeg_downscale, scaled_rect_covering, ColorSpace, ComponentRowWriter, CroppedWriter,
-    DecodeOutcome, Decoder, Downscale, DownscaleFactor, JpegError, Rect, RowSink, ScratchPool,
-    SinkWriter, DEFAULT_SCRATCH,
+    checked_scratch_len, jpeg_downscale, scaled_rect_covering, ColorSpace, ComponentRowWriter,
+    CroppedWriter, DecodeOutcome, Decoder, Downscale, DownscaleFactor, JpegError, Rect, RowSink,
+    ScratchPool, SinkWriter, DEFAULT_SCRATCH,
 };
 
 impl Decoder<'_> {
@@ -43,7 +43,8 @@ impl Decoder<'_> {
             return self.decode_lossless_rows_with_scratch(pool, sink);
         }
         let width = self.info.dimensions.0 as usize;
-        let rows = pool.take_sink_rows(width);
+        let scratch_bytes = self.prepare_decode_workspace(pool, 0)?;
+        let rows = pool.take_sink_rows(width.saturating_mul(3), scratch_bytes)?;
         let mut writer = SinkWriter::new(sink, rows, self.backend);
         let result = self.decode_rgb_with_writer(
             pool,
@@ -76,9 +77,13 @@ impl Decoder<'_> {
         }
 
         let width = self.info.dimensions.0 as usize;
+        let scratch_bytes = self.prepare_decode_workspace(pool, 0)?;
         match (self.info.color_space, plan.bit_depth) {
             (ColorSpace::Grayscale, 8) => {
-                let mut rows = pool.take_sink_rows(width);
+                let predictor_len = checked_scratch_len(&[width])?;
+                let sink_len = checked_scratch_len(&[width, 3])?;
+                let mut rows =
+                    pool.prepare_lossless_rows(predictor_len, sink_len, scratch_bytes)?;
                 let result = self.decode_lossless_gray8_rows(
                     sink,
                     &mut pool.lossless_prev_row,
@@ -88,20 +93,29 @@ impl Decoder<'_> {
                 pool.restore_sink_rows(rows);
                 result
             }
-            (ColorSpace::Grayscale, 16) => self.decode_lossless_gray16_rows(
-                sink,
-                &mut pool.lossless_prev_row,
-                &mut pool.lossless_curr_row,
-            ),
-            (ColorSpace::Rgb, 8) => self.decode_lossless_color8_rows(
-                sink,
-                &mut pool.lossless_prev_row,
-                &mut pool.lossless_curr_row,
-                None,
-                ColorSpace::Rgb,
-            ),
+            (ColorSpace::Grayscale, 16) => {
+                let predictor_len = checked_scratch_len(&[width, 2])?;
+                let _rows = pool.prepare_lossless_rows(predictor_len, 0, scratch_bytes)?;
+                self.decode_lossless_gray16_rows(
+                    sink,
+                    &mut pool.lossless_prev_row,
+                    &mut pool.lossless_curr_row,
+                )
+            }
+            (ColorSpace::Rgb, 8) => {
+                let predictor_len = checked_scratch_len(&[width, 3])?;
+                let _rows = pool.prepare_lossless_rows(predictor_len, 0, scratch_bytes)?;
+                self.decode_lossless_color8_rows(
+                    sink,
+                    &mut pool.lossless_prev_row,
+                    &mut pool.lossless_curr_row,
+                    None,
+                    ColorSpace::Rgb,
+                )
+            }
             (ColorSpace::YCbCr, 8) => {
-                let mut rows = pool.take_sink_rows(width);
+                let row_len = checked_scratch_len(&[width, 3])?;
+                let mut rows = pool.prepare_lossless_rows(row_len, row_len, scratch_bytes)?;
                 let result = self.decode_lossless_color8_rows(
                     sink,
                     &mut pool.lossless_prev_row,
@@ -112,16 +126,20 @@ impl Decoder<'_> {
                 pool.restore_sink_rows(rows);
                 result
             }
-            (ColorSpace::Rgb, 16) => self.decode_lossless_color16_rows(
-                sink,
-                &mut pool.lossless_prev_row,
-                &mut pool.lossless_curr_row,
-                None,
-                ColorSpace::Rgb,
-            ),
+            (ColorSpace::Rgb, 16) => {
+                let predictor_len = checked_scratch_len(&[width, 6])?;
+                let _rows = pool.prepare_lossless_rows(predictor_len, 0, scratch_bytes)?;
+                self.decode_lossless_color16_rows(
+                    sink,
+                    &mut pool.lossless_prev_row,
+                    &mut pool.lossless_curr_row,
+                    None,
+                    ColorSpace::Rgb,
+                )
+            }
             (ColorSpace::YCbCr, 16) => {
-                let mut rows = pool.take_sink_rows(width);
-                rows.top_row.resize(width.saturating_mul(6), 0);
+                let row_len = checked_scratch_len(&[width, 6])?;
+                let mut rows = pool.prepare_lossless_rows(row_len, row_len, scratch_bytes)?;
                 let result = self.decode_lossless_color16_rows(
                     sink,
                     &mut pool.lossless_prev_row,
@@ -194,7 +212,7 @@ impl Decoder<'_> {
         } else {
             let (source_x0, source_width) =
                 self.source_window_for_output_rect(downscale, scaled_roi);
-            let mut cropped = CroppedWriter::new(writer, scaled_roi, source_x0, source_width);
+            let mut cropped = CroppedWriter::new(writer, scaled_roi, source_x0, source_width)?;
             self.decode_with_writer(pool, &mut cropped, downscale, roi)
         }
     }

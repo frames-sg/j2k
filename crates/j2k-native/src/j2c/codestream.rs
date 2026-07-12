@@ -1,5 +1,6 @@
 //! Read and decode a JPEG2000 codestream, as described in Annex A.
 
+pub(crate) mod allocation;
 mod auxiliary;
 mod coding;
 mod header;
@@ -10,7 +11,9 @@ mod quantization;
 mod size;
 mod validation;
 
-pub(crate) use auxiliary::{decode_packet_lengths, plt_marker, rgn_marker, skip_marker_segment};
+#[cfg(test)]
+pub(crate) use auxiliary::decode_packet_lengths;
+pub(crate) use auxiliary::{plt_marker, rgn_marker, skip_marker_segment};
 pub(crate) use coding::{coc_marker, cod_marker};
 pub(crate) use header::read_header;
 pub(crate) use model::{

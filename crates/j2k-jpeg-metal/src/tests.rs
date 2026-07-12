@@ -24,13 +24,14 @@ fn download_rgba8_texture(
 ) -> Vec<u8> {
     let row_bytes = dimensions.0 as usize * PixelFormat::Rgba8.bytes_per_pixel();
     let byte_len = row_bytes * dimensions.1 as usize;
-    let buffer = session.device().new_buffer(
-        byte_len as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
-    let queue = session.device().new_command_queue();
-    let command_buffer = queue.new_command_buffer();
-    let blit = command_buffer.new_blit_command_encoder();
+    let buffer = j2k_metal_support::checked_shared_buffer(session.device(), byte_len)
+        .expect("texture readback buffer");
+    let queue =
+        j2k_metal_support::checked_command_queue(session.device()).expect("texture readback queue");
+    let command_buffer =
+        j2k_metal_support::checked_command_buffer(&queue).expect("texture readback command buffer");
+    let blit = j2k_metal_support::checked_blit_command_encoder(&command_buffer)
+        .expect("texture readback blit encoder");
     blit.copy_from_texture_to_buffer(
         texture,
         0,
@@ -44,7 +45,7 @@ fn download_rgba8_texture(
         metal::MTLBlitOption::None,
     );
     blit.end_encoding();
-    j2k_metal_support::commit_and_wait(command_buffer).expect("texture readback blit");
+    j2k_metal_support::commit_and_wait(&command_buffer).expect("texture readback blit");
 
     crate::buffers::checked_buffer_slice::<u8>(&buffer, byte_len, "texture test readback")
         .expect("texture readback buffer must be CPU-visible and bounded")
@@ -395,7 +396,8 @@ fn assert_reusable_rgba_texture_tiles(
 #[cfg(target_os = "macos")]
 use j2k_jpeg::adapter::build_fast422_packet;
 use j2k_jpeg::adapter::{
-    build_fast420_packet, build_fast444_packet, build_gray_packet, JpegHuffmanTable,
+    build_fast420_packet, build_fast444_packet, build_gray_packet, JpegFast420PacketV1,
+    JpegFast422PacketV1, JpegFast444PacketV1, JpegHuffmanTable,
 };
 #[cfg(target_os = "macos")]
 use j2k_jpeg::{
@@ -791,7 +793,10 @@ fn rgb8_batch_decode_can_write_into_reusable_metal_output_buffer() {
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -831,7 +836,10 @@ fn rgb8_decoder_batch_resizes_reusable_metal_output_buffer() {
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -868,7 +876,10 @@ fn rgb8_decoder_batch_can_write_into_fixed_metal_output_buffer() {
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1161,7 +1172,10 @@ fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_output_buffer() {
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1317,7 +1331,10 @@ fn assert_table_mixed_full_buffer_groups_resident(
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected_tiles[index].as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected_tiles[index].as_slice()
+        );
     }
 }
 
@@ -1369,7 +1386,10 @@ fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_output_buffer() {
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1411,7 +1431,10 @@ fn rgb8_decoder_scaled_batch_resizes_reusable_metal_output_buffer() {
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1450,7 +1473,10 @@ fn rgb8_decoder_scaled_batch_can_write_into_fixed_metal_output_buffer() {
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1501,7 +1527,10 @@ fn rgb8_region_scaled_batch_decode_can_write_into_reusable_metal_output_buffer()
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1558,7 +1587,10 @@ fn rgb8_region_scaled_batch_decode_resizes_reusable_metal_output_buffer() {
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1618,7 +1650,10 @@ fn rgb8_decoder_region_scaled_batch_resizes_reusable_metal_output_buffer() {
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1673,7 +1708,10 @@ fn rgb8_decoder_region_scaled_batch_can_write_into_fixed_metal_output_buffer() {
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1744,7 +1782,10 @@ fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_output_
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1826,7 +1867,10 @@ fn assert_restart_region_scaled_buffer_batch_writes_reusable_metal_output(
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -2019,7 +2063,10 @@ fn assert_table_mixed_region_scaled_buffer_groups_resident(
         let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
         assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
         assert_eq!(offset, index * output.tile_stride_bytes());
-        assert_eq!(surface.as_bytes(), expected_tiles[index].as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected_tiles[index].as_slice()
+        );
     }
 }
 

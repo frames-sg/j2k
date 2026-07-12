@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
+    allocation::{try_vec_filled, HostPhaseBudget},
     bytes::{f32_slice_as_bytes_mut, i32_slice_as_bytes_mut},
     driver::CuDevicePtr,
     error::CudaError,
@@ -38,7 +39,7 @@ impl CudaJ2kResidentComponents {
     /// Download component planes into host memory for verification or host APIs.
     pub fn download_components(&self) -> Result<Vec<Vec<f32>>, CudaError> {
         if self.num_pixels == 0 {
-            return Ok(vec![Vec::new(); usize::from(self.num_components)]);
+            return try_vec_filled(usize::from(self.num_components), Vec::new());
         }
         let sample_count = self
             .num_pixels
@@ -46,19 +47,36 @@ impl CudaJ2kResidentComponents {
             .ok_or(CudaError::LengthTooLarge {
                 len: self.num_pixels,
             })?;
-        let mut flattened = vec![0.0f32; sample_count];
+        let mut host_budget = HostPhaseBudget::new("CUDA component readback");
+        let mut flattened = host_budget.try_vec_filled(sample_count, 0.0f32)?;
         self.buffer
             .copy_to_host(f32_slice_as_bytes_mut(&mut flattened))?;
-        Ok(flattened
-            .chunks_exact(self.num_pixels)
-            .map(<[f32]>::to_vec)
-            .collect())
+        let mut components = host_budget.try_vec_with_capacity(usize::from(self.num_components))?;
+        for component in flattened.chunks_exact(self.num_pixels) {
+            components.push(host_budget.try_vec_from_slice(component)?);
+        }
+        Ok(components)
     }
 
     pub(super) fn component_plane_device_ptr(
         &self,
         component: u8,
     ) -> Result<CuDevicePtr, CudaError> {
+        let range = self.component_plane_byte_range(component)?;
+        let offset = u64::try_from(range.start)
+            .map_err(|_| CudaError::LengthTooLarge { len: range.start })?;
+        self.buffer
+            .device_ptr()
+            .checked_add(offset)
+            .ok_or(CudaError::LengthTooLarge {
+                len: self.buffer.byte_len(),
+            })
+    }
+
+    pub(super) fn component_plane_byte_range(
+        &self,
+        component: u8,
+    ) -> Result<std::ops::Range<usize>, CudaError> {
         if component >= self.num_components {
             return Err(CudaError::InvalidArgument {
                 message: "component plane index is out of range".to_string(),
@@ -82,14 +100,7 @@ impl CudaJ2kResidentComponents {
                 have: self.buffer.byte_len(),
             });
         }
-        let offset =
-            u64::try_from(offset).map_err(|_| CudaError::LengthTooLarge { len: offset })?;
-        self.buffer
-            .device_ptr()
-            .checked_add(offset)
-            .ok_or(CudaError::LengthTooLarge {
-                len: self.buffer.byte_len(),
-            })
+        Ok(offset..end)
     }
 }
 
@@ -145,7 +156,15 @@ impl CudaResidentDwt53Output {
 
     /// Download transformed coefficients into host memory.
     pub fn download_transformed(&self) -> Result<Vec<f32>, CudaError> {
-        let mut transformed = vec![0f32; self.sample_count];
+        let mut host_budget = HostPhaseBudget::new("CUDA forward 5/3 DWT readback");
+        self.download_transformed_with_budget(&mut host_budget)
+    }
+
+    pub(super) fn download_transformed_with_budget(
+        &self,
+        host_budget: &mut HostPhaseBudget,
+    ) -> Result<Vec<f32>, CudaError> {
+        let mut transformed = host_budget.try_vec_filled(self.sample_count, 0f32)?;
         self.buffer
             .copy_to_host(f32_slice_as_bytes_mut(&mut transformed))?;
         Ok(transformed)
@@ -202,7 +221,15 @@ impl CudaResidentDwt97Output {
 
     /// Download transformed coefficients into host memory.
     pub fn download_transformed(&self) -> Result<Vec<f32>, CudaError> {
-        let mut transformed = vec![0f32; self.sample_count];
+        let mut host_budget = HostPhaseBudget::new("CUDA forward 9/7 DWT readback");
+        self.download_transformed_with_budget(&mut host_budget)
+    }
+
+    pub(super) fn download_transformed_with_budget(
+        &self,
+        host_budget: &mut HostPhaseBudget,
+    ) -> Result<Vec<f32>, CudaError> {
+        let mut transformed = host_budget.try_vec_filled(self.sample_count, 0f32)?;
         self.buffer
             .copy_to_host(f32_slice_as_bytes_mut(&mut transformed))?;
         Ok(transformed)
@@ -230,6 +257,11 @@ impl CudaJ2kQuantizedSubband {
         &self.coefficients
     }
 
+    /// Consume the output and return its quantized coefficients.
+    pub fn into_coefficients(self) -> Vec<i32> {
+        self.coefficients
+    }
+
     /// CUDA execution counters for the quantization stage.
     pub fn execution(&self) -> CudaExecutionStats {
         self.execution
@@ -249,7 +281,7 @@ impl CudaJ2kResidentQuantizedSubband {
 
     /// Copy quantized coefficients to host memory.
     pub fn download_coefficients(&self) -> Result<Vec<i32>, CudaError> {
-        let mut coefficients = vec![0i32; self.coefficient_count];
+        let mut coefficients = try_vec_filled(self.coefficient_count, 0i32)?;
         self.coefficients
             .copy_to_host(i32_slice_as_bytes_mut(&mut coefficients))?;
         Ok(coefficients)

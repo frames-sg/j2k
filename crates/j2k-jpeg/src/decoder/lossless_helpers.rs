@@ -1,12 +1,27 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    downscale_profile_name, duration_us_string, emit_jpeg_profile_row, lossless_predict,
-    upsample_h2v1_sample_at, upsample_h2v2_rows_at, BitReader, ColorSpace, DownscaleFactor,
-    Duration, HuffmanTable, Info, JpegError, LosslessColorSampling, LosslessSample, MarkerKind,
-    PreparedLosslessPlan, Rect, RestartIndex, RestartSegment, SofKind, Vec,
+    downscale_profile_name, emit_jpeg_profile_fields, lossless_predict, upsample_h2v1_sample_at,
+    upsample_h2v2_rows_at, BitReader, ColorSpace, DownscaleFactor, Duration, HuffmanTable, Info,
+    JpegError, LosslessColorSampling, LosslessSample, MarkerKind, PreparedLosslessPlan,
+    ProfileField, Rect, RestartIndex, RestartSegment, SofKind,
 };
-use crate::entropy::sequential::{PreparedComponentPlan, PreparedDecodePlan};
+use crate::allocation::{checked_allocation_bytes, try_vec_with_capacity};
+use crate::entropy::sequential::PreparedDecodePlan;
+
+pub(crate) fn restart_index_allocation_bytes(
+    info: &Info,
+    restart_interval: Option<u16>,
+) -> Result<usize, JpegError> {
+    let Some(interval_mcus) = restart_interval
+        .filter(|&interval| interval > 0)
+        .map(u32::from)
+    else {
+        return Ok(0);
+    };
+    let capacity = restart_segment_capacity(info.mcu_geometry.count, interval_mcus)?;
+    checked_allocation_bytes::<RestartSegment>(capacity)
+}
 
 pub(super) fn restart_index_for_stream(
     bytes: &[u8],
@@ -28,7 +43,8 @@ pub(super) fn restart_index_for_stream(
     }
     let total_mcus = info.mcu_geometry.count;
     let expected_restarts = total_mcus.saturating_sub(1) / interval_mcus;
-    let mut segments = Vec::new();
+    let segment_capacity = restart_segment_capacity(total_mcus, interval_mcus)?;
+    let mut segments = try_vec_with_capacity(segment_capacity)?;
     segments.push(RestartSegment {
         start_mcu: 0,
         entropy_offset: scan_data_offset,
@@ -119,6 +135,19 @@ pub(super) fn restart_index_for_stream(
     })
 }
 
+fn restart_segment_capacity(total_mcus: u32, interval_mcus: u32) -> Result<usize, JpegError> {
+    let expected_restarts = total_mcus.saturating_sub(1) / interval_mcus;
+    let capacity = usize::try_from(expected_restarts)
+        .ok()
+        .and_then(|count| count.checked_add(1))
+        .ok_or(JpegError::MemoryCapExceeded {
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        })?;
+    checked_allocation_bytes::<RestartSegment>(capacity)?;
+    Ok(capacity)
+}
+
 pub(super) fn emit_decode_scan_profile(
     scan_path: &str,
     dimensions: (u32, u32),
@@ -126,28 +155,19 @@ pub(super) fn emit_decode_scan_profile(
     downscale: DownscaleFactor,
     elapsed: Duration,
 ) {
-    let source_width_s = dimensions.0.to_string();
-    let source_height_s = dimensions.1.to_string();
-    let decoded_x_s = decoded.x.to_string();
-    let decoded_y_s = decoded.y.to_string();
-    let decoded_w_s = decoded.w.to_string();
-    let decoded_h_s = decoded.h.to_string();
-    let scan_us = duration_us_string(elapsed);
-    emit_jpeg_profile_row(
-        "decode_scan",
-        "cpu",
-        &[
-            ("scan_path", scan_path),
-            ("downscale", downscale_profile_name(downscale)),
-            ("source_width", source_width_s.as_str()),
-            ("source_height", source_height_s.as_str()),
-            ("decoded_x", decoded_x_s.as_str()),
-            ("decoded_y", decoded_y_s.as_str()),
-            ("decoded_w", decoded_w_s.as_str()),
-            ("decoded_h", decoded_h_s.as_str()),
-            ("scan_us", scan_us.as_str()),
-        ],
-    );
+    emit_jpeg_profile_fields("jpeg_lossless_scan_fields", "decode_scan", "cpu", || {
+        Ok([
+            ProfileField::label("scan_path", scan_path)?,
+            ProfileField::label("downscale", downscale_profile_name(downscale))?,
+            ProfileField::metric_with_summary("source_width", dimensions.0, false)?,
+            ProfileField::metric_with_summary("source_height", dimensions.1, false)?,
+            ProfileField::metric_with_summary("decoded_x", decoded.x, false)?,
+            ProfileField::metric_with_summary("decoded_y", decoded.y, false)?,
+            ProfileField::metric_with_summary("decoded_w", decoded.w, false)?,
+            ProfileField::metric_with_summary("decoded_h", decoded.h, false)?,
+            ProfileField::metric("scan_us", elapsed.as_micros())?,
+        ])
+    });
 }
 
 pub(super) fn consume_lossless_restart(
@@ -157,21 +177,7 @@ pub(super) fn consume_lossless_restart(
     expected_rst: &mut u8,
 ) -> Result<(), JpegError> {
     br.reset_at_restart();
-    let _ = br.ensure_bits(1);
-    let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
-        mcu_at: sample_index,
-        mcu_total: total_samples,
-    })?;
-    let expected = 0xD0 | *expected_rst;
-    if marker != expected {
-        return Err(JpegError::RestartMismatch {
-            offset: br.position(),
-            expected: *expected_rst,
-            found: marker,
-        });
-    }
-    *expected_rst = (*expected_rst + 1) & 0x07;
-    br.reset_at_restart();
+    *expected_rst = br.consume_restart_marker(*expected_rst, sample_index, total_samples)?;
     Ok(())
 }
 
@@ -215,21 +221,7 @@ pub(super) fn consume_extended12_restart(
     total_mcus: u32,
     expected_rst: &mut u8,
 ) -> Result<(), JpegError> {
-    let _ = br.ensure_bits(1);
-    let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
-        mcu_at: mcu_index,
-        mcu_total: total_mcus,
-    })?;
-    let expected = 0xD0 | *expected_rst;
-    if marker != expected {
-        return Err(JpegError::RestartMismatch {
-            offset: br.position(),
-            expected: *expected_rst,
-            found: marker,
-        });
-    }
-    *expected_rst = (*expected_rst + 1) & 0x07;
-    br.reset_at_restart();
+    *expected_rst = br.consume_restart_marker(*expected_rst, mcu_index, total_mcus)?;
     Ok(())
 }
 
@@ -382,7 +374,7 @@ impl<P: LosslessSample> LosslessColorSampleTarget<P> for LosslessColorRowSample<
 )]
 pub(super) fn decode_lossless_color_sample<P, T>(
     br: &mut BitReader<'_>,
-    components: &[PreparedComponentPlan],
+    decode_plan: &PreparedDecodePlan,
     predictor: u8,
     restart_first_sample: bool,
     target: &mut T,
@@ -391,10 +383,10 @@ where
     P: LosslessSample,
     T: LosslessColorSampleTarget<P>,
 {
-    for component in components {
+    for component in &decode_plan.components {
         if component.output_index >= 3 {
             return Err(JpegError::UnsupportedComponentCount {
-                count: components.len() as u8,
+                count: decode_plan.components.len() as u8,
             });
         }
         let predicted = if restart_first_sample {
@@ -402,7 +394,7 @@ where
         } else {
             target.predict(predictor, component.output_index)
         };
-        let diff = component.dc_table.decode_fast_dc(br)?;
+        let diff = decode_plan.dc_table(component)?.decode_fast_dc(br)?;
         let sample = P::from_i32(predicted + diff)?;
         target.write(component.output_index, sample);
     }
@@ -505,7 +497,7 @@ pub(super) struct LosslessSampledMcu {
 )]
 pub(super) fn decode_lossless_sampled_color_mcu<P>(
     br: &mut BitReader<'_>,
-    components: &[PreparedComponentPlan],
+    decode_plan: &PreparedDecodePlan,
     predictor: u8,
     mcu: LosslessSampledMcu,
     planes: &mut LosslessSampledColorPlanesMut<'_, P>,
@@ -513,12 +505,12 @@ pub(super) fn decode_lossless_sampled_color_mcu<P>(
 where
     P: LosslessSample,
 {
-    for component in components {
+    for component in &decode_plan.components {
         let Some((plane, plane_width, plane_height)) =
             planes.component_plane(component.output_index)
         else {
             return Err(JpegError::UnsupportedComponentCount {
-                count: components.len() as u8,
+                count: decode_plan.components.len() as u8,
             });
         };
         for local_y in 0..component.v as usize {
@@ -530,7 +522,7 @@ where
                 }
                 decode_lossless_plane_sample(
                     br,
-                    &component.dc_table,
+                    decode_plan.dc_table(component)?,
                     predictor,
                     plane,
                     plane_width,
@@ -750,4 +742,24 @@ pub(super) fn lossless_predictor_value_u16(
 
 pub(super) fn read_gray16_sample(out: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([out[offset], out[offset + 1]])
+}
+
+#[cfg(test)]
+mod restart_allocation_tests {
+    use super::{restart_segment_capacity, JpegError, RestartSegment};
+
+    #[test]
+    fn restart_segment_capacity_has_an_exact_shared_cap_boundary() {
+        let max_segments =
+            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES / core::mem::size_of::<RestartSegment>();
+        let max_mcus = u32::try_from(max_segments).expect("restart boundary fits u32");
+        assert_eq!(
+            restart_segment_capacity(max_mcus, 1).expect("exact restart boundary"),
+            max_segments
+        );
+        assert!(matches!(
+            restart_segment_capacity(max_mcus + 1, 1),
+            Err(JpegError::MemoryCapExceeded { requested, cap }) if requested > cap
+        ));
+    }
 }

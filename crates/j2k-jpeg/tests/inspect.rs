@@ -197,6 +197,25 @@ fn complete_tiff_jpeg_tile_preparation_returns_borrowed_bytes() {
 }
 
 #[test]
+fn prepared_jpeg_try_clone_borrows_or_copies_without_changing_bytes() {
+    let bytes = [0xff, 0xd8, 0xff, 0xd9];
+    let borrowed = PreparedJpeg::Borrowed(&bytes);
+    let borrowed_clone = borrowed.try_clone().expect("clone borrowed JPEG");
+    let PreparedJpeg::Borrowed(borrowed_bytes) = borrowed_clone else {
+        panic!("borrowed JPEG must stay borrowed");
+    };
+    assert!(std::ptr::eq(borrowed_bytes.as_ptr(), bytes.as_ptr()));
+
+    let owned = PreparedJpeg::Owned(bytes.to_vec());
+    let owned_clone = owned.try_clone().expect("clone owned JPEG");
+    assert_eq!(owned_clone.as_bytes(), bytes);
+    let PreparedJpeg::Owned(owned_bytes) = owned_clone else {
+        panic!("owned JPEG must stay owned");
+    };
+    assert_ne!(owned_bytes.as_ptr(), owned.as_bytes().as_ptr());
+}
+
+#[test]
 fn prepared_tiff_jpeg_bytes_decode_complete_tile() {
     let bytes = minimal_baseline_jpeg();
     let prepared = prepare_tiff_jpeg_tile(&bytes, None, prepare_options()).expect("prepared");
@@ -254,6 +273,7 @@ fn abbreviated_tiff_jpeg_tile_with_jpeg_tables_assembles_decode_ready_stream() {
     assert_eq!(info.dimensions, (16, 16));
     assert!(prepared.as_bytes().starts_with(&[0xff, 0xd8]));
     assert!(prepared.as_bytes().ends_with(&[0xff, 0xd9]));
+    assert_eq!(prepared.as_bytes(), full.as_slice());
 }
 
 #[test]
@@ -299,6 +319,29 @@ fn identical_duplicate_jpeg_tables_are_deduplicated_under_allow_identical() {
         .count();
 
     assert_eq!(dqt_count, 1);
+}
+
+#[test]
+fn reject_conflicting_preserves_identical_table_redefinitions() {
+    let full = minimal_baseline_jpeg();
+    let (mut tables, tile) = split_tables_and_scan(&full);
+    let dqt = tables
+        .windows(2)
+        .position(|window| window == [0xff, 0xdb])
+        .expect("DQT");
+    let dqt_len = u16::from_be_bytes([tables[dqt + 2], tables[dqt + 3]]) as usize + 2;
+    let duplicate = tables[dqt..dqt + dqt_len].to_vec();
+    tables.splice(dqt..dqt, duplicate);
+
+    let prepared = prepare_tiff_jpeg_tile(&tile, Some(&tables), prepare_options())
+        .expect("identical definitions are non-conflicting");
+    let dqt_count = prepared
+        .as_bytes()
+        .windows(2)
+        .filter(|window| *window == [0xff, 0xdb])
+        .count();
+
+    assert_eq!(dqt_count, 2);
 }
 
 #[test]

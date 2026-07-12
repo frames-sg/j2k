@@ -14,18 +14,20 @@ use super::{
     classic_resident_style_flags_from_env, classic_tier1_gpu_token_pack_requested,
     classic_tier1_gpu_token_pack_supported, classic_tier1_split_gpu_token_pack_requested,
     classic_tier1_split_mq_byte_gpu_token_pack_disabled,
-    classic_tier1_split_mq_byte_gpu_token_pack_requested, dispatch_1d_pipeline,
-    dispatch_classic_tier1_profiles, dispatch_classic_tier1_split_token_emit_for_gpu_pack,
+    classic_tier1_split_mq_byte_gpu_token_pack_requested, copied_slice_buffer,
+    dispatch_1d_pipeline, dispatch_classic_tier1_profiles,
+    dispatch_classic_tier1_split_token_emit_for_gpu_pack,
     dispatch_classic_tier1_split_token_pack_from_gpu_tokens,
     dispatch_classic_tier1_token_emit_for_gpu_pack,
     dispatch_classic_tier1_token_pack_from_gpu_tokens,
     finish_resident_encode_split_command_buffer_timed, hybrid_stage_signpost, label_command_buffer,
-    label_compute_encoder, new_resident_encode_command_buffer, owned_slice_buffer,
+    label_compute_encoder, new_blit_command_encoder, new_compute_command_encoder,
+    new_private_buffer, new_resident_encode_command_buffer,
     schedule_classic_tier1_gpu_token_pack_readback, size_of, take_recyclable_private_buffer,
     Buffer, ClassicTier1ProfileRequest, ClassicTier1ProfileResult, Duration, Error, ForeignType,
     Instant, J2kClassicEncodeBatchJob, J2kClassicEncodeOutputCapacityMode, J2kClassicEncodeStatus,
     J2kClassicSegment, J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer,
-    MTLResourceOptions, MetalRuntime, SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_COMMAND_ENCODE,
+    MetalRuntime, SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_COMMAND_ENCODE,
     SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_SETUP,
 };
 
@@ -238,18 +240,30 @@ fn prepare_classic_coefficients(
         "j2k classic resident encode batch"
     };
     let mut command_buffer =
-        new_resident_encode_command_buffer(runtime, initial_command_buffer_label);
+        new_resident_encode_command_buffer(runtime, initial_command_buffer_label)?;
     let (coefficient_buffer, coefficient_offsets) =
         if let Some(coefficient_buffer) = shared_coefficient_buffer {
-            (
-                coefficient_buffer,
+            let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+                "J2K Metal resident classic coefficient offsets",
+            );
+            let mut coefficient_offsets = budget.try_vec(
+                prepared_tiles.len(),
+                "J2K Metal resident classic coefficient offsets",
+            )?;
+            coefficient_offsets.extend(
                 prepared_tiles
                     .iter()
-                    .map(|tile| tile.coefficient_byte_offset)
-                    .collect::<Vec<_>>(),
-            )
+                    .map(|tile| tile.coefficient_byte_offset),
+            );
+            (coefficient_buffer, coefficient_offsets)
         } else {
-            let mut coefficient_offsets = Vec::<usize>::with_capacity(prepared_tiles.len());
+            let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+                "J2K Metal resident classic coefficient offsets",
+            );
+            let mut coefficient_offsets = budget.try_vec(
+                prepared_tiles.len(),
+                "J2K Metal resident classic coefficient offsets",
+            )?;
             let mut total_coefficient_bytes = 0usize;
             for tile in prepared_tiles {
                 coefficient_offsets.push(total_coefficient_bytes);
@@ -259,11 +273,9 @@ fn prepare_classic_coefficients(
                         message: "J2K Metal batch coefficient buffer size overflow".to_string(),
                     })?;
             }
-            let coefficient_buffer = runtime.device.new_buffer(
-                total_coefficient_bytes.max(1) as u64,
-                MTLResourceOptions::StorageModePrivate,
-            );
-            let blit = command_buffer.new_blit_command_encoder();
+            let coefficient_buffer =
+                new_private_buffer(&runtime.device, total_coefficient_bytes.max(1))?;
+            let blit = new_blit_command_encoder(&command_buffer)?;
             if profile_stages {
                 blit.set_label("J2K coefficient prep");
             }
@@ -288,7 +300,7 @@ fn prepare_classic_coefficients(
                     &mut *gpu_stage_command_buffers,
                     profile_stages,
                     &mut *classic_command_buffer_commit_duration,
-                );
+                )?;
             }
             (coefficient_buffer, coefficient_offsets)
         };
@@ -309,6 +321,41 @@ struct ClassicTier1JobPlan {
     tier1_segment_capacity_total: usize,
 }
 
+struct ClassicTier1JobOwners {
+    tier1_jobs: Vec<J2kClassicEncodeBatchJob>,
+    tile_job_bases: Vec<usize>,
+    tile_output_capacities: Vec<usize>,
+}
+
+#[cfg(target_os = "macos")]
+fn allocate_classic_tier1_job_owners(
+    prepared_tiles: &[PreparedLosslessBatchTile],
+) -> Result<ClassicTier1JobOwners, Error> {
+    let job_count = crate::batch_allocation::checked_count_sum(
+        prepared_tiles.iter().map(|tile| tile.code_blocks.len()),
+        "J2K Metal resident classic Tier-1 jobs",
+    )?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal resident classic Tier-1 job plan",
+    );
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kClassicEncodeBatchJob>(job_count),
+        crate::batch_allocation::BatchMetadataRequest::of::<usize>(prepared_tiles.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<usize>(prepared_tiles.len()),
+    ])?;
+    Ok(ClassicTier1JobOwners {
+        tier1_jobs: budget.try_vec(job_count, "J2K Metal resident classic Tier-1 jobs")?,
+        tile_job_bases: budget.try_vec(
+            prepared_tiles.len(),
+            "J2K Metal resident classic tile job bases",
+        )?,
+        tile_output_capacities: budget.try_vec(
+            prepared_tiles.len(),
+            "J2K Metal resident classic tile output capacities",
+        )?,
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn plan_classic_tier1_jobs(
     prepared_tiles: &[PreparedLosslessBatchTile],
@@ -316,12 +363,14 @@ fn plan_classic_tier1_jobs(
     output_capacity_mode: J2kClassicEncodeOutputCapacityMode,
     classic_resident_style_flags: u32,
 ) -> Result<ClassicTier1JobPlan, Error> {
-    let mut tier1_jobs = Vec::<J2kClassicEncodeBatchJob>::new();
+    let ClassicTier1JobOwners {
+        mut tier1_jobs,
+        tile_job_bases: mut tile_tier1_job_bases,
+        tile_output_capacities: mut tile_tier1_output_capacities,
+    } = allocate_classic_tier1_job_owners(prepared_tiles)?;
     let mut tier1_output_capacity_total = 0usize;
     let mut max_tier1_output_capacity = 0usize;
     let mut tier1_segment_capacity_total = 0usize;
-    let mut tile_tier1_job_bases = Vec::<usize>::with_capacity(prepared_tiles.len());
-    let mut tile_tier1_output_capacities = Vec::<usize>::with_capacity(prepared_tiles.len());
     for (tile, &coefficient_byte_offset) in prepared_tiles.iter().zip(coefficient_offsets.iter()) {
         tile_tier1_job_bases.push(tier1_jobs.len());
         let tile_output_start = tier1_output_capacity_total;
@@ -430,7 +479,7 @@ fn allocate_classic_tier1_buffers(
     let tier1_job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal batch Tier-1 job count exceeds u32".to_string(),
     })?;
-    let tier1_job_buffer = owned_slice_buffer(&runtime.device, tier1_jobs);
+    let tier1_job_buffer = copied_slice_buffer(&runtime.device, tier1_jobs)?;
     let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
     let recyclable_shared_buffers = Vec::<(usize, Buffer)>::new();
     let tier1_output_buffer = take_recyclable_private_buffer(
@@ -609,7 +658,7 @@ fn dispatch_classic_tier1(
                     &mut *gpu_stage_command_buffers,
                     profile_stages,
                     &mut *classic_command_buffer_commit_duration,
-                );
+                )?;
             }
             dispatch_classic_tier1_split_token_pack_from_gpu_tokens(
                 runtime,
@@ -619,7 +668,7 @@ fn dispatch_classic_tier1(
                 tier1_output_buffer,
                 tier1_status_buffer,
                 tier1_segment_buffer,
-            );
+            )?;
             drop(signpost);
             if let Some(started) = command_encode_started {
                 *classic_block_encode_duration =
@@ -635,7 +684,7 @@ fn dispatch_classic_tier1(
                     &mut *gpu_stage_command_buffers,
                     profile_stages,
                     &mut *classic_command_buffer_commit_duration,
-                );
+                )?;
             }
         } else if use_classic_gpu_token_pack {
             let token_buffers = dispatch_classic_tier1_token_emit_for_gpu_pack(
@@ -655,7 +704,7 @@ fn dispatch_classic_tier1(
                     &mut *gpu_stage_command_buffers,
                     profile_stages,
                     &mut *classic_command_buffer_commit_duration,
-                );
+                )?;
             }
             dispatch_classic_tier1_token_pack_from_gpu_tokens(
                 runtime,
@@ -665,7 +714,7 @@ fn dispatch_classic_tier1(
                 tier1_output_buffer,
                 tier1_status_buffer,
                 tier1_segment_buffer,
-            );
+            )?;
             classic_gpu_token_pack_readback = schedule_classic_tier1_gpu_token_pack_readback(
                 runtime,
                 &command_buffer,
@@ -687,11 +736,11 @@ fn dispatch_classic_tier1(
                     &mut *gpu_stage_command_buffers,
                     profile_stages,
                     &mut *classic_command_buffer_commit_duration,
-                );
+                )?;
             }
         } else {
-            let encoder = command_buffer.new_compute_command_encoder();
-            label_compute_encoder(encoder, "J2K Tier-1 encode");
+            let encoder = new_compute_command_encoder(&command_buffer)?;
+            label_compute_encoder(&encoder, "J2K Tier-1 encode");
             let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, tier1_jobs);
             encoder.set_compute_pipeline_state(classic_encode_pipeline);
             encoder.set_buffer(0, Some(coefficient_buffer), 0);
@@ -704,7 +753,11 @@ fn dispatch_classic_tier1(
                 size_of::<u32>() as u64,
                 (&raw const tier1_job_count).cast(),
             );
-            dispatch_1d_pipeline(encoder, classic_encode_pipeline, u64::from(tier1_job_count));
+            dispatch_1d_pipeline(
+                &encoder,
+                classic_encode_pipeline,
+                u64::from(tier1_job_count),
+            );
             encoder.end_encoding();
             drop(signpost);
             if let Some(started) = command_encode_started {
@@ -721,7 +774,7 @@ fn dispatch_classic_tier1(
                     &mut *gpu_stage_command_buffers,
                     profile_stages,
                     &mut *classic_command_buffer_commit_duration,
-                );
+                )?;
             }
         }
     } else if split_command_buffers {

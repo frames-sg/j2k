@@ -29,24 +29,32 @@ pub(crate) struct MarkerWalker<'a> {
     soi_seen: bool,
 }
 
-pub(crate) fn next_marker_after_entropy(bytes: &[u8], mut pos: usize) -> Option<(usize, u8)> {
+pub(crate) fn next_marker_after_entropy(
+    bytes: &[u8],
+    mut pos: usize,
+) -> Result<Option<(usize, u8)>, JpegError> {
     while pos < bytes.len() {
-        let ff_rel = memchr(0xFF, &bytes[pos..])?;
+        let Some(ff_rel) = memchr(0xFF, &bytes[pos..]) else {
+            return Ok(None);
+        };
         let marker_prefix = pos + ff_rel;
         let mut code_pos = marker_prefix + 1;
         while code_pos < bytes.len() && bytes[code_pos] == 0xFF {
             code_pos += 1;
         }
         if code_pos >= bytes.len() {
-            return None;
+            return Err(JpegError::Truncated {
+                offset: code_pos,
+                expected: 1,
+            });
         }
         let code = bytes[code_pos];
         match code {
             0x00 | 0xD0..=0xD7 => pos = code_pos + 1,
-            _ => return Some((code_pos - 1, code)),
+            _ => return Ok(Some((code_pos - 1, code))),
         }
     }
-    None
+    Ok(None)
 }
 
 impl<'a> MarkerWalker<'a> {
@@ -94,7 +102,6 @@ impl<'a> MarkerWalker<'a> {
 
         // Require at least one 0xFF byte before the marker code. Consume any
         // additional 0xFF fill bytes per T.81 §B.1.1.2.
-        let scan_start = self.pos;
         if self.pos >= self.bytes.len() {
             return Err(JpegError::Truncated {
                 offset: self.pos,
@@ -116,8 +123,6 @@ impl<'a> MarkerWalker<'a> {
                 expected: 1,
             });
         }
-        let _ = scan_start; // kept for future diagnostics
-
         let code = self.bytes[self.pos];
         let marker_offset = self.pos - 1; // safe: we consumed ≥1 0xFF
         self.pos += 1;
@@ -291,21 +296,27 @@ mod tests {
     fn entropy_marker_scan_skips_stuffed_bytes_and_restart_markers() {
         let bytes = &[0x11, 0xFF, 0x00, 0x22, 0xFF, 0xD3, 0x33, 0xFF, 0xD9];
 
-        assert_eq!(next_marker_after_entropy(bytes, 0), Some((7, 0xD9)));
+        assert_eq!(next_marker_after_entropy(bytes, 0), Ok(Some((7, 0xD9))));
     }
 
     #[test]
     fn entropy_marker_scan_skips_fill_bytes_before_marker() {
         let bytes = &[0x11, 0xFF, 0xFF, 0xFF, 0xDA];
 
-        assert_eq!(next_marker_after_entropy(bytes, 0), Some((3, 0xDA)));
+        assert_eq!(next_marker_after_entropy(bytes, 0), Ok(Some((3, 0xDA))));
     }
 
     #[test]
-    fn entropy_marker_scan_returns_none_for_trailing_fill() {
+    fn entropy_marker_scan_rejects_trailing_fill() {
         let bytes = &[0x11, 0x22, 0xFF, 0xFF];
 
-        assert_eq!(next_marker_after_entropy(bytes, 0), None);
+        assert!(matches!(
+            next_marker_after_entropy(bytes, 0),
+            Err(JpegError::Truncated {
+                offset: 4,
+                expected: 1
+            })
+        ));
     }
 
     #[test]

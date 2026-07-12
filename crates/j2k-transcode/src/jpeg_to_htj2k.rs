@@ -17,15 +17,16 @@ use j2k_jpeg::transcode::{
     extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctComponent, JpegDctImage,
 };
 use j2k_native::{
-    encode_precomputed_htj2k_53_with_accelerator,
-    encode_precomputed_htj2k_97_batch_with_accelerator,
-    encode_precomputed_htj2k_97_with_accelerator,
-    encode_preencoded_htj2k_97_compact_owned_with_accelerator,
-    encode_preencoded_htj2k_97_owned_with_accelerator,
-    encode_prequantized_htj2k_97_with_accelerator,
+    encode_precomputed_htj2k_53_with_accelerator_and_max_host_bytes,
+    encode_precomputed_htj2k_97_batch_owned_with_accelerator_and_max_host_bytes,
+    encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes,
+    encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
 };
 use rayon::prelude::*;
 
+use crate::allocation::try_vec_with_capacity;
 use crate::dct53_2d::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear_with_scratch,
     linearized_53_2d_from_plane, Dct53GridScratch,
@@ -34,16 +35,16 @@ use crate::dct97_2d::{
     dct8x8_blocks_then_dwt97_float, dct8x8_blocks_then_dwt97_float_with_scratch,
     linearized_97_2d_from_plane_with_scratch, Dct97GridScratch,
 };
-use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
+use crate::metrics::{error_metrics_i32_with_live_budget, ErrorMetrics, MetricsError};
 use crate::reversible53::{
     reversible_lift_53_high_at_fallible, reversible_lift_53_i32, reversible_lift_53_low_at_fallible,
 };
 use crate::{
-    CpuOnlyDctToWaveletStageAccelerator, DctGridError, DctGridI16ToHtj2k97CodeBlockBatch,
+    CpuOnlyDctToWaveletStageAccelerator, DctGridI16ToHtj2k97CodeBlockBatch,
     DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt53Job, DctGridToDwt97Job,
     DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator,
-    Dwt53TwoDimensional, Dwt97BatchStageTimings, Dwt97TwoDimensional, Htj2k97CodeBlockOptions,
-    ReversibleDwt53FirstLevel, TranscodeStageError,
+    DctTransformError, Dwt53TwoDimensional, Dwt97BatchStageTimings, Dwt97TwoDimensional,
+    Htj2k97CodeBlockOptions, ReversibleDwt53FirstLevel, TranscodeStageError,
 };
 
 mod options;
@@ -58,30 +59,50 @@ pub use self::report::{
     TranscodeValidationClassification, TranscodeValidationMetrics,
 };
 mod error;
-pub use self::error::JpegToHtj2kError;
-use self::error::{dct53_grid_error, dct97_grid_error};
+use self::error::{dct53_transform_error, dct97_transform_error, map_encode_error};
+pub use self::error::{Htj2kEncodeError, Htj2kEncodeErrorKind, JpegToHtj2kError};
 mod validation;
 use self::validation::{
     component_sampling_for_jpeg, decomposition_levels_for_components,
     validate_component_block_grid, validate_transcode_options,
 };
+mod workspace;
+use self::workspace::validate_jpeg_transcode_workspace;
+mod scratch;
+use self::scratch::JpegToHtj2kScratch;
+mod output;
+pub use self::output::{EncodedTranscode, EncodedTranscodeBatch, JpegTileBatchInput};
+mod live_budget;
+use self::live_budget::{
+    encoded_transcode_retained_bytes, precomputed_batch_retained_bytes,
+    validation_metrics_retained_bytes, HostLiveBudget,
+};
 mod component_plan;
 use self::component_plan::{
     integer_dct_job_for_component, transcode_component_batch, transcode_path_name,
-    PrecomputedComponentBatch,
+    ComponentBatchRequest, ComponentTranscodeBatch, PrecomputedComponentBatch,
 };
+mod component_groups;
+use self::component_groups::same_geometry_component_groups;
 mod float_reference;
 use self::float_reference::{
     dct_blocks_to_8x8_f64, decompose_97_from_first_level, float97_reference_coefficients,
     float_direct_97_wavelet_from_component, float_direct_wavelet_from_component,
-    float_reference_coefficients, j2k_dwt97_from_wavelet, j2k_dwt_from_integer_wavelet,
-    j2k_dwt_from_wavelet, rounded_wavelet97_i32, rounded_wavelet_i32, ComponentWavelet97,
+    float_reference_coefficients, ComponentWavelet, ComponentWavelet97,
+};
+mod float_output;
+use self::float_output::{
+    j2k_dwt97_from_wavelet, j2k_dwt_from_integer_wavelet, j2k_dwt_from_wavelet,
+    rounded_wavelet97_i32, rounded_wavelet_i32,
 };
 mod integer_reference;
 use self::integer_reference::{
     flatten_integer_wavelet, integer_direct_wavelet_from_component, integer_reference_coefficients,
     integer_wavelet_from_first_level, IntegerWavelet,
 };
+mod integer_storage;
+mod single;
+use self::single::jpeg_to_htj2k_with_scratch;
 mod single_tile_encode;
 use self::single_tile_encode::encode_component_batch;
 mod batch;
@@ -151,6 +172,7 @@ impl JpegToHtj2kTranscoder {
             &mut self.scratch,
             transform_accelerator,
             encode_accelerator,
+            0,
         )
     }
 
@@ -199,41 +221,6 @@ impl JpegToHtj2kTranscoder {
     }
 }
 
-#[derive(Debug, Default)]
-struct JpegToHtj2kScratch {
-    dct_blocks_f64: Vec<[[f64; 8]; 8]>,
-    dct53_grid: Dct53GridScratch,
-    dct97_grid: Dct97GridScratch,
-    integer_idct_blocks: Vec<Option<[i32; 64]>>,
-    integer_row: Vec<i32>,
-}
-
-/// Encoded transcode output and validation/report metadata.
-#[derive(Debug, Clone)]
-pub struct EncodedTranscode {
-    /// HTJ2K codestream bytes.
-    pub codestream: Vec<u8>,
-    /// Summary of the experimental path used.
-    pub report: TranscodeReport,
-}
-
-/// One JPEG tile input for batch transcode.
-#[derive(Debug, Clone, Copy)]
-pub struct JpegTileBatchInput<'a> {
-    /// JPEG codestream bytes for one tile.
-    pub bytes: &'a [u8],
-}
-
-/// Batch transcode output. Tile-level parse/encode failures are preserved so a
-/// WSI ingest queue can continue past isolated bad tiles.
-#[derive(Debug)]
-pub struct EncodedTranscodeBatch {
-    /// Per-input tile result in input order.
-    pub tiles: Vec<Result<EncodedTranscode, JpegToHtj2kError>>,
-    /// Aggregate batch report.
-    pub report: BatchTranscodeReport,
-}
-
 /// Transcode a constrained baseline grayscale JPEG tile into an HTJ2K
 /// codestream using direct DCT-domain wavelet coefficients.
 ///
@@ -245,103 +232,6 @@ pub fn jpeg_to_htj2k(
     options: &JpegToHtj2kOptions,
 ) -> Result<EncodedTranscode, JpegToHtj2kError> {
     JpegToHtj2kTranscoder::default().transcode(bytes, options)
-}
-
-fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator, E: J2kEncodeStageAccelerator>(
-    bytes: &[u8],
-    options: &JpegToHtj2kOptions,
-    scratch: &mut JpegToHtj2kScratch,
-    accelerator: &mut A,
-    encode_accelerator: &mut E,
-) -> Result<EncodedTranscode, JpegToHtj2kError> {
-    validate_transcode_options(options)?;
-    let mut timings = TranscodeTimingReport {
-        tile_count: 1,
-        ..TranscodeTimingReport::default()
-    };
-
-    let extract_start = Instant::now();
-    let jpeg = extract_dct_blocks(bytes, DctExtractOptions::default())?;
-    let extract_us = extract_start.elapsed().as_micros();
-    timings.jpeg_dct_extract_us = extract_us;
-
-    if jpeg.components.is_empty() || jpeg.components.len() > 4 {
-        return Err(JpegToHtj2kError::Unsupported(
-            "unsupported JPEG component count for jpeg_to_htj2k",
-        ));
-    }
-    let component_sampling =
-        component_sampling_for_jpeg(&jpeg.components, jpeg.width, jpeg.height)?;
-    let decomposition_levels = decomposition_levels_for_components(
-        &jpeg.components,
-        options.encode_options.num_decomposition_levels,
-    )?;
-    let all_unit_sampled = component_sampling
-        .iter()
-        .all(|&(x_rsiz, y_rsiz)| x_rsiz == 1 && y_rsiz == 1);
-    let component_reports = jpeg
-        .components
-        .iter()
-        .zip(component_sampling.iter().copied())
-        .map(|(component, (x_rsiz, y_rsiz))| TranscodeComponentReport {
-            component_index: component.component_index,
-            width: component.width,
-            height: component.height,
-            block_cols: component.block_cols,
-            block_rows: component.block_rows,
-            x_rsiz,
-            y_rsiz,
-        })
-        .collect();
-
-    let transform_start = Instant::now();
-    let component_batch = transcode_component_batch(
-        &jpeg.components,
-        &component_sampling,
-        decomposition_levels,
-        options,
-        scratch,
-        accelerator,
-        &mut timings,
-    )?;
-    let transform_us = transform_start.elapsed().as_micros();
-    timings.dct_to_wavelet_total_us = transform_us;
-
-    let (codestream, encode_us) = encode_component_batch(
-        jpeg.width,
-        jpeg.height,
-        component_batch.precomputed_components,
-        options,
-        encode_accelerator,
-        &mut timings,
-    )?;
-
-    Ok(EncodedTranscode {
-        codestream,
-        report: TranscodeReport {
-            width: jpeg.width,
-            height: jpeg.height,
-            component_count: jpeg.components.len(),
-            components: component_reports,
-            float_reference_classification: component_batch
-                .float_reference_metrics
-                .as_ref()
-                .map(TranscodeValidationClassification::classify_metrics),
-            float_reference_metrics: component_batch.float_reference_metrics,
-            integer_reference_classification: component_batch
-                .integer_reference_metrics
-                .as_ref()
-                .map(TranscodeValidationClassification::classify_metrics),
-            integer_reference_metrics: component_batch.integer_reference_metrics,
-            decomposition_levels,
-            coefficient_path: options.coefficient_path,
-            path: transcode_path_name(all_unit_sampled, options.coefficient_path),
-            extract_us,
-            transform_us,
-            encode_us,
-            timings,
-        },
-    })
 }
 
 #[cfg(test)]

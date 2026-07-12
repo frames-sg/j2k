@@ -6,7 +6,10 @@ use metal::CommandBuffer;
 
 use crate::profile_env::label_command_buffer;
 
-use super::{completed_command_buffer_gpu_duration, J2kResidentEncodeStageStats, MetalRuntime};
+use super::{
+    completed_command_buffer_gpu_duration, new_command_buffer, Error, J2kResidentEncodeStageStats,
+    MetalRuntime,
+};
 
 pub(super) struct J2kResidentEncodeGpuStageCommandBuffer {
     pub(super) stage: J2kResidentEncodeGpuStage,
@@ -189,10 +192,10 @@ pub(super) fn record_completed_resident_encode_gpu_stages(
 pub(super) fn new_resident_encode_command_buffer(
     runtime: &MetalRuntime,
     label: &str,
-) -> CommandBuffer {
-    let command_buffer = runtime.queue.new_command_buffer().to_owned();
+) -> Result<CommandBuffer, Error> {
+    let command_buffer = new_command_buffer(&runtime.queue)?;
     label_command_buffer(&command_buffer, label);
-    command_buffer
+    Ok(command_buffer)
 }
 
 pub(super) fn finish_resident_encode_split_command_buffer(
@@ -201,7 +204,7 @@ pub(super) fn finish_resident_encode_split_command_buffer(
     stage: J2kResidentEncodeGpuStage,
     next_label: &str,
     command_buffers: &mut Vec<J2kResidentEncodeGpuStageCommandBuffer>,
-) -> CommandBuffer {
+) -> Result<CommandBuffer, Error> {
     command_buffer.commit();
     command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
         stage,
@@ -218,7 +221,7 @@ pub(super) fn finish_resident_encode_split_command_buffer_timed(
     command_buffers: &mut Vec<J2kResidentEncodeGpuStageCommandBuffer>,
     profile_stages: bool,
     accumulated: &mut Duration,
-) -> CommandBuffer {
+) -> Result<CommandBuffer, Error> {
     let started = profile_stages.then(Instant::now);
     let next = finish_resident_encode_split_command_buffer(
         command_buffer,
@@ -226,9 +229,9 @@ pub(super) fn finish_resident_encode_split_command_buffer_timed(
         stage,
         next_label,
         command_buffers,
-    );
+    )?;
     if let Some(started) = started {
         *accumulated = accumulated.saturating_add(started.elapsed());
     }
-    next
+    Ok(next)
 }

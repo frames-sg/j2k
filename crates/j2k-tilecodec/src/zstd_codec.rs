@@ -26,11 +26,11 @@ impl TileDecompress for ZstdCodec {
     ) -> Result<usize, Self::Error> {
         pool.scratch.clear();
         let mut decoder = zstd::stream::read::Decoder::new(input)
-            .map_err(|error| crate::error::malformed_io_error(&error, "zstd decoder init"))?;
+            .map_err(|error| crate::error::malformed_io_error(error, "zstd decoder init"))?;
         read_to_output_bounded(&mut decoder, &mut pool.scratch, out).map_err(|error| match error {
             BoundedReadError::OutputTooSmall(error) => TileCodecError::Buffer(error),
             BoundedReadError::Io(error) => {
-                crate::error::malformed_io_error(&error, "zstd decode failed")
+                crate::error::malformed_io_error(error, "zstd decode failed")
             }
         })
     }

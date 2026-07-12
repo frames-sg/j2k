@@ -62,7 +62,7 @@ impl Decoder<'_> {
 
         Ok(DecodeOutcome {
             decoded: roi,
-            warnings: merged_warnings(&self.warnings, scan_warnings),
+            warnings: merged_warnings(&self.warnings, scan_warnings)?,
         })
     }
 }

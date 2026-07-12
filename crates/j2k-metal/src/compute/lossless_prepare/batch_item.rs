@@ -7,7 +7,7 @@ use super::{
     dispatch_lossless_deinterleave_rct_rgb8, dispatch_lossless_extract_coefficients,
     lossless_deinterleave_rct_rgb8_supported, new_resident_encode_command_buffer, size_of,
     take_recyclable_private_buffer, zeroed_shared_buffer, Buffer, CommandBuffer, CommandBufferRef,
-    Error, ForwardDwt53ComponentsDispatch, J2kLosslessCoefficientJob,
+    Error, ForwardDwt53ComponentsDispatch, ForwardDwt53SplitProfile, J2kLosslessCoefficientJob,
     J2kLosslessDeviceBatchPrepareItem, J2kLosslessDevicePrepareJob, J2kLosslessPrepareSizes,
     J2kMctStatus, J2kPreparedLosslessDeviceCodeBlocks, MetalRuntime,
 };
@@ -30,14 +30,13 @@ struct BatchPrepareCommandStrategy<'a> {
 }
 
 impl BatchPrepareCommandStrategy<'_> {
-    fn command_buffer(&self, label: &'static str) -> CommandBuffer {
+    fn command_buffer(&self, label: &'static str) -> Result<CommandBuffer, Error> {
         if self.split {
             new_resident_encode_command_buffer(self.runtime, label)
         } else {
-            self.shared
-                .as_ref()
-                .expect("shared coefficient prep command buffer exists")
-                .clone()
+            self.shared.clone().ok_or_else(|| Error::MetalKernel {
+                message: "shared coefficient prep command buffer is missing".to_string(),
+            })
         }
     }
 
@@ -50,10 +49,10 @@ impl BatchPrepareCommandStrategy<'_> {
         }
     }
 
-    fn shared_command_buffer(&self) -> &CommandBufferRef {
-        self.shared
-            .as_ref()
-            .expect("shared coefficient prep command buffer exists")
+    fn shared_command_buffer(&self) -> Result<&CommandBufferRef, Error> {
+        self.shared.as_deref().ok_or_else(|| Error::MetalKernel {
+            message: "shared coefficient prep command buffer is missing".to_string(),
+        })
     }
 }
 
@@ -68,7 +67,7 @@ fn prepare_batch_item_dwt(
     job: J2kLosslessDevicePrepareJob<'_>,
     plane_buffers: &[Buffer],
     scratch_buffers: &[Buffer],
-) -> BatchDwtPreparation {
+) -> Result<BatchDwtPreparation, Error> {
     let component_count = usize::from(job.component_count);
     let mut active_planes = Vec::with_capacity(component_count);
     let mut vertical_command_buffers = Vec::new();
@@ -78,11 +77,11 @@ fn prepare_batch_item_dwt(
         active_planes.extend(plane_buffers.iter().take(component_count).cloned());
     } else if strategy.split {
         if component_count > 1 {
-            let (
-                mut component_active_planes,
-                mut component_vertical_command_buffers,
-                mut component_horizontal_command_buffers,
-            ) = dispatch_forward_dwt53_components_split_profile(
+            let ForwardDwt53SplitProfile {
+                active: mut component_active_planes,
+                vertical_command_buffers: mut component_vertical_command_buffers,
+                horizontal_command_buffers: mut component_horizontal_command_buffers,
+            } = dispatch_forward_dwt53_components_split_profile(
                 strategy.runtime,
                 plane_buffers,
                 scratch_buffers,
@@ -90,24 +89,24 @@ fn prepare_batch_item_dwt(
                 job.output_height,
                 job.num_decomposition_levels,
                 component_count,
-            );
+            )?;
             active_planes.append(&mut component_active_planes);
             vertical_command_buffers.append(&mut component_vertical_command_buffers);
             horizontal_command_buffers.append(&mut component_horizontal_command_buffers);
         } else {
             for component in 0..component_count {
-                let (
-                    active_plane,
-                    mut component_vertical_command_buffers,
-                    mut component_horizontal_command_buffers,
-                ) = dispatch_forward_dwt53_on_buffers_split_profile(
+                let ForwardDwt53SplitProfile {
+                    active: active_plane,
+                    vertical_command_buffers: mut component_vertical_command_buffers,
+                    horizontal_command_buffers: mut component_horizontal_command_buffers,
+                } = dispatch_forward_dwt53_on_buffers_split_profile(
                     strategy.runtime,
                     &plane_buffers[component],
                     &scratch_buffers[component],
                     job.output_width,
                     job.output_height,
                     job.num_decomposition_levels,
-                );
+                )?;
                 active_planes.push(active_plane);
                 vertical_command_buffers.append(&mut component_vertical_command_buffers);
                 horizontal_command_buffers.append(&mut component_horizontal_command_buffers);
@@ -117,36 +116,36 @@ fn prepare_batch_item_dwt(
         active_planes =
             dispatch_forward_dwt53_components_on_buffers(ForwardDwt53ComponentsDispatch {
                 runtime: strategy.runtime,
-                command_buffer: strategy.shared_command_buffer(),
+                command_buffer: strategy.shared_command_buffer()?,
                 plane_buffers,
                 scratch_buffers,
                 width: job.output_width,
                 height: job.output_height,
                 num_levels: job.num_decomposition_levels,
                 component_count,
-            });
+            })?;
     } else {
         for component in 0..component_count {
             active_planes.push(dispatch_forward_dwt53_on_buffers(
                 strategy.runtime,
-                strategy.shared_command_buffer(),
+                strategy.shared_command_buffer()?,
                 &plane_buffers[component],
                 &scratch_buffers[component],
                 job.output_width,
                 job.output_height,
                 job.num_decomposition_levels,
-            ));
+            )?);
         }
     }
 
     while active_planes.len() < 3 {
         active_planes.push(active_planes[0].clone());
     }
-    BatchDwtPreparation {
+    Ok(BatchDwtPreparation {
         active_planes,
         vertical_command_buffers,
         horizontal_command_buffers,
-    }
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -194,11 +193,11 @@ pub(in crate::compute) fn prepare_lossless_batch_item(
         )?);
     }
 
-    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>());
+    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>())?;
 
     let prepare_dwt53_command_buffer = None;
     let deinterleave_command_buffer =
-        command_strategy.command_buffer("j2k coefficient prep deinterleave rct");
+        command_strategy.command_buffer("j2k coefficient prep deinterleave rct")?;
     if lossless_deinterleave_rct_rgb8_supported(job) {
         dispatch_lossless_deinterleave_rct_rgb8(
             runtime,
@@ -245,7 +244,7 @@ pub(in crate::compute) fn prepare_lossless_batch_item(
     let prepare_deinterleave_rct_command_buffer =
         command_strategy.finish_split_stage(deinterleave_command_buffer);
     let dwt_preparation =
-        prepare_batch_item_dwt(&command_strategy, job, &plane_buffers, &scratch_buffers);
+        prepare_batch_item_dwt(&command_strategy, job, &plane_buffers, &scratch_buffers)?;
 
     let coefficient_word_offset = coefficient_byte_offset
         .checked_div(size_of::<i32>())
@@ -259,33 +258,36 @@ pub(in crate::compute) fn prepare_lossless_batch_item(
                 item.tile_index
             ),
         })?;
-    let coefficient_jobs = item
-        .code_blocks
-        .iter()
-        .map(|block| {
-            let coefficient_offset = block
-                .coefficient_offset
-                .checked_add(coefficient_word_offset_u32)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: format!(
-                        "J2K Metal resident batch coefficient offset overflow at tile {}",
-                        item.tile_index
-                    ),
-                })?;
-            Ok(J2kLosslessCoefficientJob {
-                coefficient_offset,
-                component: block.component,
-                subband_x: block.subband_x,
-                subband_y: block.subband_y,
-                block_x: block.block_x,
-                block_y: block.block_y,
-                block_width: block.width,
-                block_height: block.height,
-                full_width: job.output_width,
-            })
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    let extract_command_buffer = command_strategy.command_buffer("j2k coefficient prep extract");
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal resident batch coefficient job metadata",
+    );
+    let mut coefficient_jobs = budget.try_vec(
+        item.code_blocks.len(),
+        "J2K Metal resident batch coefficient jobs",
+    )?;
+    for block in &item.code_blocks {
+        let coefficient_offset = block
+            .coefficient_offset
+            .checked_add(coefficient_word_offset_u32)
+            .ok_or_else(|| Error::MetalKernel {
+                message: format!(
+                    "J2K Metal resident batch coefficient offset overflow at tile {}",
+                    item.tile_index
+                ),
+            })?;
+        coefficient_jobs.push(J2kLosslessCoefficientJob {
+            coefficient_offset,
+            component: block.component,
+            subband_x: block.subband_x,
+            subband_y: block.subband_y,
+            block_x: block.block_x,
+            block_y: block.block_y,
+            block_width: block.width,
+            block_height: block.height,
+            full_width: job.output_width,
+        });
+    }
+    let extract_command_buffer = command_strategy.command_buffer("j2k coefficient prep extract")?;
     let coefficient_job_buffer = dispatch_lossless_extract_coefficients(
         runtime,
         &extract_command_buffer,

@@ -1,21 +1,37 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    encode_precomputed_htj2k_53_with_accelerator,
-    encode_precomputed_htj2k_97_batch_with_accelerator,
-    encode_precomputed_htj2k_97_with_accelerator,
-    encode_preencoded_htj2k_97_compact_owned_with_accelerator,
-    encode_preencoded_htj2k_97_owned_with_accelerator,
-    encode_prequantized_htj2k_97_with_accelerator, error_metrics_i32, transcode_path_name,
-    CpuOnlyJ2kEncodeStageAccelerator, EncodedTranscode, Float97BatchTile,
-    Float97PrecomputedBatchRecord, Instant, IntegerBatchTile, IntoParallelIterator,
-    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, JpegToHtj2kError, JpegToHtj2kOptions,
-    ParallelIterator, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    encode_precomputed_htj2k_53_with_accelerator_and_max_host_bytes,
+    encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes,
+    encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
+    encoded_transcode_retained_bytes, error_metrics_i32_with_live_budget, map_encode_error,
+    transcode_path_name, CpuOnlyJ2kEncodeStageAccelerator, EncodedTranscode, Float97BatchTile,
+    HostLiveBudget, Instant, IntegerBatchTile, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    JpegToHtj2kError, JpegToHtj2kOptions, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
     PrecomputedHtj2k97Image, PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
     PreencodedHtj2k97Component, PreencodedHtj2k97Image, PrequantizedHtj2k97Component,
     PrequantizedHtj2k97Image, TranscodeReport, TranscodeTimingReport,
     TranscodeValidationClassification,
 };
+use crate::allocation::try_vec_with_capacity;
+use crate::TranscodeValidationMetrics;
+
+mod precomputed;
+use self::precomputed::{
+    can_encode_float97_precomputed_tiles_batch, encode_float97_precomputed_tiles_batch,
+};
+pub(super) mod live;
+use self::live::{
+    checked_batch_live_bytes, float97_tile_retained_bytes, float97_tiles_nested_bytes,
+    integer_tile_retained_bytes, integer_tiles_nested_bytes,
+};
+mod float97_input;
+use self::float97_input::{select_float97_batch_encoding, Float97BatchEncodingInput};
+
+type IndexedEncodedTile = (usize, Result<EncodedTranscode, JpegToHtj2kError>);
+type EncodedTileBatchResult = Result<Vec<IndexedEncodedTile>, JpegToHtj2kError>;
 
 pub(in super::super) fn record_encode_dispatch_delta(
     timings: &mut TranscodeTimingReport,
@@ -56,302 +72,240 @@ pub(in super::super) fn encode_integer_prepared_tiles<E: J2kEncodeStageAccelerat
     prepared_tiles: Vec<IntegerBatchTile>,
     options: &JpegToHtj2kOptions,
     encode_accelerator: &mut E,
-) -> Vec<(usize, Result<EncodedTranscode, JpegToHtj2kError>)> {
-    if encode_accelerator.prefer_parallel_cpu_tile_encode() {
-        return prepared_tiles
-            .into_par_iter()
-            .map(|prepared| {
-                let tile_index = prepared.tile_index;
-                let mut cpu_accelerator = CpuOnlyJ2kEncodeStageAccelerator;
-                (
-                    tile_index,
-                    encode_integer_batch_tile(prepared, options, &mut cpu_accelerator),
-                )
-            })
-            .collect();
+    external_live_bytes: usize,
+) -> EncodedTileBatchResult {
+    let mut output = try_vec_with_capacity(prepared_tiles.len())?;
+    let cpu_only = encode_accelerator.prefer_parallel_cpu_tile_encode();
+    let mut fixed_live = HostLiveBudget::process_cap();
+    fixed_live.add_bytes(external_live_bytes)?;
+    fixed_live.add_capacity::<IntegerBatchTile>(prepared_tiles.capacity())?;
+    fixed_live.add_capacity::<IndexedEncodedTile>(output.capacity())?;
+    let mut remaining_tiles = integer_tiles_nested_bytes(&prepared_tiles)?;
+    let mut completed_outputs = 0usize;
+    for prepared in prepared_tiles {
+        let tile_index = prepared.tile_index;
+        let tile_bytes = integer_tile_retained_bytes(&prepared)?;
+        remaining_tiles =
+            remaining_tiles
+                .checked_sub(tile_bytes)
+                .ok_or(JpegToHtj2kError::InternalInvariant {
+                    what: "integer batch tile live-byte accounting underflowed",
+                })?;
+        let tile_external = checked_batch_live_bytes(
+            fixed_live.live_bytes(),
+            remaining_tiles,
+            completed_outputs,
+            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        )?;
+        let encoded = if cpu_only {
+            let mut cpu_accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+            encode_integer_batch_tile(prepared, options, &mut cpu_accelerator, tile_external)
+        } else {
+            encode_integer_batch_tile(prepared, options, encode_accelerator, tile_external)
+        };
+        if let Ok(encoded) = encoded.as_ref() {
+            completed_outputs = checked_completed_output_bytes(completed_outputs, encoded)?;
+        }
+        output.push((tile_index, encoded));
     }
-
-    prepared_tiles
-        .into_iter()
-        .map(|prepared| {
-            let tile_index = prepared.tile_index;
-            (
-                tile_index,
-                encode_integer_batch_tile(prepared, options, encode_accelerator),
-            )
-        })
-        .collect()
+    Ok(output)
 }
 
 pub(in super::super) fn encode_float97_prepared_tiles<E: J2kEncodeStageAccelerator>(
     prepared_tiles: Vec<Float97BatchTile>,
     options: &JpegToHtj2kOptions,
     encode_accelerator: &mut E,
-) -> Vec<(usize, Result<EncodedTranscode, JpegToHtj2kError>)> {
+    external_live_bytes: usize,
+) -> EncodedTileBatchResult {
     if !encode_accelerator.prefer_parallel_cpu_tile_encode()
         && can_encode_float97_precomputed_tiles_batch(&prepared_tiles, options)
     {
-        return encode_float97_precomputed_tiles_batch(prepared_tiles, options, encode_accelerator);
+        return encode_float97_precomputed_tiles_batch(
+            prepared_tiles,
+            options,
+            encode_accelerator,
+            external_live_bytes,
+        );
     }
 
-    if encode_accelerator.prefer_parallel_cpu_tile_encode() {
-        return prepared_tiles
-            .into_par_iter()
-            .map(|prepared| {
-                let tile_index = prepared.tile_index;
-                let mut cpu_accelerator = CpuOnlyJ2kEncodeStageAccelerator;
-                (
-                    tile_index,
-                    encode_float97_batch_tile(prepared, options, &mut cpu_accelerator),
-                )
-            })
-            .collect();
-    }
-
-    prepared_tiles
-        .into_iter()
-        .map(|prepared| {
-            let tile_index = prepared.tile_index;
-            (
-                tile_index,
-                encode_float97_batch_tile(prepared, options, encode_accelerator),
-            )
-        })
-        .collect()
-}
-
-pub(in super::super) fn can_encode_float97_precomputed_tiles_batch(
-    prepared_tiles: &[Float97BatchTile],
-    options: &JpegToHtj2kOptions,
-) -> bool {
-    options.encode_options.num_layers == 1
-        && prepared_tiles.iter().all(|tile| {
-            tile.precomputed_components.iter().all(Option::is_some)
-                && tile.preencoded_compact_payload.is_empty()
-                && tile
-                    .preencoded_compact_components
-                    .iter()
-                    .all(Option::is_none)
-                && tile.preencoded_components.iter().all(Option::is_none)
-                && tile.prequantized_components.iter().all(Option::is_none)
-        })
-}
-
-pub(in super::super) fn encode_float97_precomputed_tiles_batch<E: J2kEncodeStageAccelerator>(
-    prepared_tiles: Vec<Float97BatchTile>,
-    options: &JpegToHtj2kOptions,
-    encode_accelerator: &mut E,
-) -> Vec<(usize, Result<EncodedTranscode, JpegToHtj2kError>)> {
-    let (records, images) = match prepare_float97_precomputed_batch(prepared_tiles) {
-        Ok(prepared) => prepared,
-        Err((tile_index, error)) => return vec![(tile_index, Err(error))],
-    };
-
-    let encode_start = Instant::now();
-    let encode_dispatch_before = encode_accelerator.dispatch_report();
-    let native_encode_options = options.encode_options.to_native();
-    let codestreams = match encode_precomputed_htj2k_97_batch_with_accelerator(
-        &images,
-        &native_encode_options,
-        encode_accelerator,
-    ) {
-        Ok(codestreams) => codestreams,
-        Err(error) => {
-            return records
-                .into_iter()
-                .map(|record| (record.tile_index, Err(JpegToHtj2kError::Encode(error))))
-                .collect();
+    let mut output = try_vec_with_capacity(prepared_tiles.len())?;
+    let cpu_only = encode_accelerator.prefer_parallel_cpu_tile_encode();
+    let mut fixed_live = HostLiveBudget::process_cap();
+    fixed_live.add_bytes(external_live_bytes)?;
+    fixed_live.add_capacity::<Float97BatchTile>(prepared_tiles.capacity())?;
+    fixed_live.add_capacity::<IndexedEncodedTile>(output.capacity())?;
+    let mut remaining_tiles = float97_tiles_nested_bytes(&prepared_tiles)?;
+    let mut completed_outputs = 0usize;
+    for prepared in prepared_tiles {
+        let tile_index = prepared.tile_index;
+        let tile_bytes = float97_tile_retained_bytes(&prepared)?;
+        remaining_tiles =
+            remaining_tiles
+                .checked_sub(tile_bytes)
+                .ok_or(JpegToHtj2kError::InternalInvariant {
+                    what: "9/7 batch tile live-byte accounting underflowed",
+                })?;
+        let tile_external = checked_batch_live_bytes(
+            fixed_live.live_bytes(),
+            remaining_tiles,
+            completed_outputs,
+            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        )?;
+        let encoded = if cpu_only {
+            let mut cpu_accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+            encode_float97_batch_tile(prepared, options, &mut cpu_accelerator, tile_external)
+        } else {
+            encode_float97_batch_tile(prepared, options, encode_accelerator, tile_external)
+        };
+        if let Ok(encoded) = encoded.as_ref() {
+            completed_outputs = checked_completed_output_bytes(completed_outputs, encoded)?;
         }
-    };
-    let encode_dispatch_after = encode_accelerator.dispatch_report();
-    let encode_us = encode_start.elapsed().as_micros();
-
-    if codestreams.len() != records.len() {
-        return records
-            .into_iter()
-            .map(|record| {
-                (
-                    record.tile_index,
-                    Err(JpegToHtj2kError::Validation(
-                        "9/7 precomputed batch encode returned the wrong tile count",
-                    )),
-                )
-            })
-            .collect();
+        output.push((tile_index, encoded));
     }
-
-    records
-        .into_iter()
-        .zip(codestreams)
-        .enumerate()
-        .map(|(batch_index, (record, codestream))| {
-            let encode_measurement = (batch_index == 0).then_some((
-                encode_dispatch_before,
-                encode_dispatch_after,
-                encode_us,
-            ));
-            (
-                record.tile_index,
-                encoded_float97_precomputed_batch_record(
-                    record,
-                    codestream,
-                    options,
-                    encode_measurement,
-                ),
-            )
-        })
-        .collect()
+    Ok(output)
 }
 
-fn prepare_float97_precomputed_batch(
-    prepared_tiles: Vec<Float97BatchTile>,
+fn checked_completed_output_bytes(
+    completed: usize,
+    encoded: &EncodedTranscode,
+) -> Result<usize, JpegToHtj2kError> {
+    completed
+        .checked_add(encoded_transcode_retained_bytes(encoded)?)
+        .ok_or(JpegToHtj2kError::MemoryCapExceeded {
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        })
+}
+
+struct IntegerBatchValidationOwners {
+    float_actual: Vec<i32>,
+    float_expected: Vec<i32>,
+    integer_actual: Vec<i32>,
+    integer_expected: Vec<i32>,
+}
+
+#[derive(Clone, Copy)]
+struct IntegerBatchValidationRequest<'a> {
+    options: &'a JpegToHtj2kOptions,
+    batch_external_bytes: usize,
+    component_report_capacity: usize,
+    codestream_capacity: usize,
+    native_external: HostLiveBudget,
+}
+
+fn integer_batch_validation_metrics(
+    request: IntegerBatchValidationRequest<'_>,
+    owners: IntegerBatchValidationOwners,
 ) -> Result<
     (
-        Vec<Float97PrecomputedBatchRecord>,
-        Vec<PrecomputedHtj2k97Image>,
+        Option<TranscodeValidationMetrics>,
+        Option<TranscodeValidationMetrics>,
     ),
-    (usize, JpegToHtj2kError),
+    JpegToHtj2kError,
 > {
-    let mut records = Vec::with_capacity(prepared_tiles.len());
-    let mut images = Vec::with_capacity(prepared_tiles.len());
-
-    for tile in prepared_tiles {
-        let Float97BatchTile {
-            tile_index,
-            jpeg,
-            decomposition_levels,
-            all_unit_sampled,
-            component_reports,
-            precomputed_components,
-            preencoded_compact_payload: _,
-            preencoded_compact_components: _,
-            preencoded_components: _,
-            prequantized_components: _,
-            float_validation_actual,
-            float_validation_expected,
-            timings,
-            ..
-        } = tile;
-        let components = precomputed_components
-            .into_iter()
-            .map(|component| {
-                component.ok_or(JpegToHtj2kError::Validation(
-                    "9/7 precomputed batch transcode did not produce all components",
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| (tile_index, error))?;
-        images.push(PrecomputedHtj2k97Image {
-            width: jpeg.width,
-            height: jpeg.height,
-            bit_depth: 8,
-            signed: false,
-            components,
-        });
-        records.push(Float97PrecomputedBatchRecord {
-            tile_index,
-            jpeg,
-            decomposition_levels,
-            all_unit_sampled,
-            component_reports,
-            float_validation_actual,
-            float_validation_expected,
-            timings,
-        });
-    }
-
-    Ok((records, images))
-}
-
-pub(in super::super) fn encoded_float97_precomputed_batch_record(
-    record: Float97PrecomputedBatchRecord,
-    codestream: Vec<u8>,
-    options: &JpegToHtj2kOptions,
-    encode_measurement: Option<(J2kEncodeDispatchReport, J2kEncodeDispatchReport, u128)>,
-) -> Result<EncodedTranscode, JpegToHtj2kError> {
-    let Float97PrecomputedBatchRecord {
-        jpeg,
-        decomposition_levels,
-        all_unit_sampled,
-        component_reports,
-        float_validation_actual,
-        float_validation_expected,
-        mut timings,
-        ..
-    } = record;
-
-    if let Some((encode_dispatch_before, encode_dispatch_after, encode_us)) = encode_measurement {
-        record_encode_dispatch_delta(&mut timings, encode_dispatch_before, encode_dispatch_after);
-        timings.htj2k_encode_us = encode_us;
-    }
-    let encode_us = timings.htj2k_encode_us;
-    let float_reference_metrics = if options.validate_against_float_reference {
-        Some(error_metrics_i32(
-            &float_validation_actual,
-            &float_validation_expected,
+    let IntegerBatchValidationOwners {
+        float_actual,
+        float_expected,
+        integer_actual,
+        integer_expected,
+    } = owners;
+    let float_metrics = if request.options.validate_against_float_reference {
+        let mut metrics_external = request.native_external;
+        metrics_external.add_capacity::<u8>(request.codestream_capacity)?;
+        Some(error_metrics_i32_with_live_budget(
+            &float_actual,
+            &float_expected,
+            metrics_external.live_bytes(),
+            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         )?)
     } else {
         None
     };
+    drop(float_actual);
+    drop(float_expected);
 
-    Ok(EncodedTranscode {
-        codestream,
-        report: TranscodeReport {
-            width: jpeg.width,
-            height: jpeg.height,
-            component_count: jpeg.components.len(),
-            components: component_reports,
-            float_reference_classification: float_reference_metrics
-                .as_ref()
-                .map(TranscodeValidationClassification::classify_metrics),
-            float_reference_metrics,
-            integer_reference_classification: None,
-            integer_reference_metrics: None,
-            decomposition_levels,
-            coefficient_path: options.coefficient_path,
-            path: transcode_path_name(all_unit_sampled, options.coefficient_path),
-            extract_us: timings.jpeg_dct_extract_us,
-            transform_us: 0,
-            encode_us,
-            timings,
-        },
-    })
+    let integer_metrics = if request.options.validate_against_integer_reference {
+        let mut metrics_external = HostLiveBudget::process_cap();
+        metrics_external.add_bytes(request.batch_external_bytes)?;
+        metrics_external
+            .add_capacity::<super::TranscodeComponentReport>(request.component_report_capacity)?;
+        metrics_external.add_capacity::<u8>(request.codestream_capacity)?;
+        metrics_external.add_capacity::<i32>(integer_actual.capacity())?;
+        metrics_external.add_capacity::<i32>(integer_expected.capacity())?;
+        if let Some(metrics) = float_metrics.as_ref() {
+            metrics_external.add_bytes(metrics.absolute_error_histogram.retained_bytes()?)?;
+        }
+        Some(error_metrics_i32_with_live_budget(
+            &integer_actual,
+            &integer_expected,
+            metrics_external.live_bytes(),
+            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        )?)
+    } else {
+        None
+    };
+    Ok((float_metrics, integer_metrics))
 }
 
 pub(in super::super) fn encode_integer_batch_tile<E: J2kEncodeStageAccelerator>(
     tile: IntegerBatchTile,
     options: &JpegToHtj2kOptions,
     encode_accelerator: &mut E,
+    batch_external_bytes: usize,
 ) -> Result<EncodedTranscode, JpegToHtj2kError> {
-    let mut timings = tile.timings;
-    let components = tile
-        .precomputed_components
-        .into_iter()
-        .map(|component| {
-            component.ok_or(JpegToHtj2kError::Validation(
-                "integer batch transcode did not produce all components",
-            ))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let IntegerBatchTile {
+        jpeg,
+        component_sampling: _,
+        decomposition_levels,
+        all_unit_sampled,
+        component_reports,
+        precomputed_components,
+        float_validation_actual,
+        float_validation_expected,
+        integer_validation_actual,
+        integer_validation_expected,
+        mut timings,
+        ..
+    } = tile;
+    let (width, height, component_count) = (jpeg.width, jpeg.height, jpeg.components.len());
+    drop(jpeg);
+    let components = require_all_components(
+        precomputed_components,
+        "integer batch transcode did not produce all components",
+    )?;
     let encode_start = Instant::now();
     let precomputed = PrecomputedHtj2k53Image {
-        width: tile.jpeg.width,
-        height: tile.jpeg.height,
+        width,
+        height,
         bit_depth: 8,
         signed: false,
         components,
     };
     let encode_dispatch_before = encode_accelerator.dispatch_report();
-    let native_precomputed = precomputed;
+    let mut native_external = HostLiveBudget::process_cap();
+    native_external.add_bytes(batch_external_bytes)?;
+    native_external
+        .add_capacity::<super::TranscodeComponentReport>(component_reports.capacity())?;
+    for capacity in [
+        float_validation_actual.capacity(),
+        float_validation_expected.capacity(),
+        integer_validation_actual.capacity(),
+        integer_validation_expected.capacity(),
+    ] {
+        native_external.add_capacity::<i32>(capacity)?;
+    }
+    let native_host_cap = native_external.remaining_bytes()?;
     let codestream = {
-        let native_encode_options = options.encode_options.to_native();
-        encode_precomputed_htj2k_53_with_accelerator(
-            &native_precomputed,
+        let native_encode_options = options.encode_options.to_native()?;
+        encode_precomputed_htj2k_53_with_accelerator_and_max_host_bytes(
+            &precomputed,
             &native_encode_options,
             encode_accelerator,
+            native_host_cap,
         )
-        .map_err(JpegToHtj2kError::Encode)?
+        .map_err(map_encode_error)?
     };
+    drop(precomputed);
     record_encode_dispatch_delta(
         &mut timings,
         encode_dispatch_before,
@@ -359,30 +313,29 @@ pub(in super::super) fn encode_integer_batch_tile<E: J2kEncodeStageAccelerator>(
     );
     let encode_us = encode_start.elapsed().as_micros();
     timings.htj2k_encode_us = encode_us;
-    let integer_reference_metrics = if options.validate_against_integer_reference {
-        Some(error_metrics_i32(
-            &tile.integer_validation_actual,
-            &tile.integer_validation_expected,
-        )?)
-    } else {
-        None
-    };
-    let float_reference_metrics = if options.validate_against_float_reference {
-        Some(error_metrics_i32(
-            &tile.float_validation_actual,
-            &tile.float_validation_expected,
-        )?)
-    } else {
-        None
-    };
+    let (float_reference_metrics, integer_reference_metrics) = integer_batch_validation_metrics(
+        IntegerBatchValidationRequest {
+            options,
+            batch_external_bytes,
+            component_report_capacity: component_reports.capacity(),
+            codestream_capacity: codestream.capacity(),
+            native_external,
+        },
+        IntegerBatchValidationOwners {
+            float_actual: float_validation_actual,
+            float_expected: float_validation_expected,
+            integer_actual: integer_validation_actual,
+            integer_expected: integer_validation_expected,
+        },
+    )?;
 
     Ok(EncodedTranscode {
         codestream,
         report: TranscodeReport {
-            width: tile.jpeg.width,
-            height: tile.jpeg.height,
-            component_count: tile.jpeg.components.len(),
-            components: tile.component_reports,
+            width,
+            height,
+            component_count,
+            components: component_reports,
             float_reference_classification: float_reference_metrics
                 .as_ref()
                 .map(TranscodeValidationClassification::classify_metrics),
@@ -391,9 +344,9 @@ pub(in super::super) fn encode_integer_batch_tile<E: J2kEncodeStageAccelerator>(
                 .as_ref()
                 .map(TranscodeValidationClassification::classify_metrics),
             integer_reference_metrics,
-            decomposition_levels: tile.decomposition_levels,
+            decomposition_levels,
             coefficient_path: options.coefficient_path,
-            path: transcode_path_name(tile.all_unit_sampled, options.coefficient_path),
+            path: transcode_path_name(all_unit_sampled, options.coefficient_path),
             extract_us: timings.jpeg_dct_extract_us,
             transform_us: 0,
             encode_us,
@@ -416,101 +369,57 @@ fn require_all_components<T>(
     components: Vec<Option<T>>,
     missing_component: &'static str,
 ) -> Result<Vec<T>, JpegToHtj2kError> {
-    components
-        .into_iter()
-        .map(|component| component.ok_or(JpegToHtj2kError::Validation(missing_component)))
-        .collect()
+    let mut required = try_vec_with_capacity(components.len())?;
+    for component in components {
+        required.push(component.ok_or(JpegToHtj2kError::Validation(missing_component))?);
+    }
+    Ok(required)
 }
 
 fn encode_float97_batch_components<E: J2kEncodeStageAccelerator>(
     inputs: Float97BatchEncodeInputs,
     options: &JpegToHtj2kOptions,
     encode_accelerator: &mut E,
+    max_host_bytes: usize,
 ) -> Result<Vec<u8>, JpegToHtj2kError> {
-    let Float97BatchEncodeInputs {
-        width,
-        height,
-        precomputed_components,
-        preencoded_compact_payload,
-        preencoded_compact_components,
-        preencoded_components,
-        prequantized_components,
-    } = inputs;
-    let native_encode_options = options.encode_options.to_native();
-
-    if preencoded_compact_components.iter().any(Option::is_some) {
-        let components = require_all_components(
-            preencoded_compact_components,
-            "9/7 compact preencoded batch transcode did not produce all components",
-        )?;
-        let preencoded = PreencodedHtj2k97CompactImage {
-            width,
-            height,
-            bit_depth: 8,
-            signed: false,
-            payload: preencoded_compact_payload,
-            components,
-        };
-        encode_preencoded_htj2k_97_compact_owned_with_accelerator(
-            preencoded,
-            &native_encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)
-    } else if preencoded_components.iter().any(Option::is_some) {
-        let components = require_all_components(
-            preencoded_components,
-            "9/7 preencoded batch transcode did not produce all components",
-        )?;
-        let preencoded = PreencodedHtj2k97Image {
-            width,
-            height,
-            bit_depth: 8,
-            signed: false,
-            components,
-        };
-        encode_preencoded_htj2k_97_owned_with_accelerator(
-            preencoded,
-            &native_encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)
-    } else if prequantized_components.iter().any(Option::is_some) {
-        let components = require_all_components(
-            prequantized_components,
-            "9/7 code-block batch transcode did not produce all components",
-        )?;
-        let prequantized = PrequantizedHtj2k97Image {
-            width,
-            height,
-            bit_depth: 8,
-            signed: false,
-            components,
-        };
-        encode_prequantized_htj2k_97_with_accelerator(
-            &prequantized,
-            &native_encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)
-    } else {
-        let components = require_all_components(
-            precomputed_components,
-            "9/7 batch transcode did not produce all components",
-        )?;
-        let precomputed = PrecomputedHtj2k97Image {
-            width,
-            height,
-            bit_depth: 8,
-            signed: false,
-            components,
-        };
-        encode_precomputed_htj2k_97_with_accelerator(
-            &precomputed,
-            &native_encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)
+    let native_encode_options = options.encode_options.to_native()?;
+    match select_float97_batch_encoding(inputs)? {
+        Float97BatchEncodingInput::Compact(preencoded) => {
+            encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes(
+                preencoded,
+                &native_encode_options,
+                encode_accelerator,
+                max_host_bytes,
+            )
+            .map_err(map_encode_error)
+        }
+        Float97BatchEncodingInput::Preencoded(preencoded) => {
+            encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes(
+                preencoded,
+                &native_encode_options,
+                encode_accelerator,
+                max_host_bytes,
+            )
+            .map_err(map_encode_error)
+        }
+        Float97BatchEncodingInput::Prequantized(prequantized) => {
+            encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes(
+                &prequantized,
+                &native_encode_options,
+                encode_accelerator,
+                max_host_bytes,
+            )
+            .map_err(map_encode_error)
+        }
+        Float97BatchEncodingInput::Precomputed(precomputed) => {
+            encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes(
+                &precomputed,
+                &native_encode_options,
+                encode_accelerator,
+                max_host_bytes,
+            )
+            .map_err(map_encode_error)
+        }
     }
 }
 
@@ -518,6 +427,7 @@ pub(in super::super) fn encode_float97_batch_tile<E: J2kEncodeStageAccelerator>(
     tile: Float97BatchTile,
     options: &JpegToHtj2kOptions,
     encode_accelerator: &mut E,
+    batch_external_bytes: usize,
 ) -> Result<EncodedTranscode, JpegToHtj2kError> {
     let Float97BatchTile {
         jpeg,
@@ -534,13 +444,24 @@ pub(in super::super) fn encode_float97_batch_tile<E: J2kEncodeStageAccelerator>(
         mut timings,
         ..
     } = tile;
+    let width = jpeg.width;
+    let height = jpeg.height;
+    let component_count = jpeg.components.len();
+    drop(jpeg);
 
     let encode_start = Instant::now();
     let encode_dispatch_before = encode_accelerator.dispatch_report();
+    let mut native_external = HostLiveBudget::process_cap();
+    native_external.add_bytes(batch_external_bytes)?;
+    native_external
+        .add_capacity::<super::TranscodeComponentReport>(component_reports.capacity())?;
+    native_external.add_capacity::<i32>(float_validation_actual.capacity())?;
+    native_external.add_capacity::<i32>(float_validation_expected.capacity())?;
+    let native_host_cap = native_external.remaining_bytes()?;
     let codestream = encode_float97_batch_components(
         Float97BatchEncodeInputs {
-            width: jpeg.width,
-            height: jpeg.height,
+            width,
+            height,
             precomputed_components,
             preencoded_compact_payload,
             preencoded_compact_components,
@@ -549,6 +470,7 @@ pub(in super::super) fn encode_float97_batch_tile<E: J2kEncodeStageAccelerator>(
         },
         options,
         encode_accelerator,
+        native_host_cap,
     )?;
     record_encode_dispatch_delta(
         &mut timings,
@@ -558,9 +480,13 @@ pub(in super::super) fn encode_float97_batch_tile<E: J2kEncodeStageAccelerator>(
     let encode_us = encode_start.elapsed().as_micros();
     timings.htj2k_encode_us = encode_us;
     let float_reference_metrics = if options.validate_against_float_reference {
-        Some(error_metrics_i32(
+        let mut metrics_external = native_external;
+        metrics_external.add_capacity::<u8>(codestream.capacity())?;
+        Some(error_metrics_i32_with_live_budget(
             &float_validation_actual,
             &float_validation_expected,
+            metrics_external.live_bytes(),
+            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         )?)
     } else {
         None
@@ -569,9 +495,9 @@ pub(in super::super) fn encode_float97_batch_tile<E: J2kEncodeStageAccelerator>(
     Ok(EncodedTranscode {
         codestream,
         report: TranscodeReport {
-            width: jpeg.width,
-            height: jpeg.height,
-            component_count: jpeg.components.len(),
+            width,
+            height,
+            component_count,
             components: component_reports,
             float_reference_classification: float_reference_metrics
                 .as_ref()

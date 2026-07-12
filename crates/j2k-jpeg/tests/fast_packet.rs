@@ -43,6 +43,25 @@ fn rewrite_three_component_ids(mut bytes: Vec<u8>, component_ids: [u8; 3]) -> Ve
     bytes
 }
 
+fn rewrite_first_sof_quant_table_selector(mut bytes: Vec<u8>, selector: u8) -> Vec<u8> {
+    assert_eq!(&bytes[..2], &[0xff, 0xd8], "fixture must start with SOI");
+    let mut pos = 2usize;
+    while pos + 4 <= bytes.len() {
+        assert_eq!(bytes[pos], 0xff, "marker alignment");
+        let marker = bytes[pos + 1];
+        pos += 2;
+        let len = u16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as usize;
+        let payload_start = pos + 2;
+        if matches!(marker, 0xc0..=0xc3) {
+            assert!(bytes[payload_start + 5] > 0, "SOF must contain a component");
+            bytes[payload_start + 8] = selector;
+            return bytes;
+        }
+        pos += len;
+    }
+    panic!("fixture must contain a supported SOF marker");
+}
+
 fn strip_dri_and_restart_markers(bytes: &[u8]) -> Vec<u8> {
     assert_eq!(&bytes[..2], &[0xff, 0xd8], "fixture must start with SOI");
     let mut out = Vec::with_capacity(bytes.len());
@@ -173,6 +192,16 @@ fn baseline_420_fixture_builds_fast420_packet() {
     assert!(packet.cb_ac_table.values_len > 0);
     assert!(packet.cr_dc_table.values_len > 0);
     assert!(packet.cr_ac_table.values_len > 0);
+}
+
+#[test]
+fn fast_packet_rejects_out_of_range_sof_quant_selector_without_panicking() {
+    let bytes = rewrite_first_sof_quant_table_selector(fixtures::grayscale_8x8_jpeg(), u8::MAX);
+
+    assert_eq!(
+        build_gray_packet(&bytes),
+        Err(FastPacketError::MissingQuantTable { slot: u8::MAX })
+    );
 }
 
 #[test]

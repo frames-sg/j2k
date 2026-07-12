@@ -5,6 +5,7 @@ pub(crate) mod bitplane_encode;
 pub(crate) mod build;
 pub(crate) mod codestream;
 pub(crate) mod codestream_write;
+pub(crate) mod coefficient_view;
 mod decode;
 pub(crate) mod encode;
 pub(crate) mod fdwt;
@@ -50,7 +51,7 @@ pub(crate) struct ParsedCodestream<'a> {
     pub(crate) data: &'a [u8],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ComponentData {
     pub(crate) container: SimdBuffer<{ SIMD_WIDTH }>,
     pub(crate) integer_container: Option<Vec<i64>>,
@@ -59,10 +60,17 @@ pub(crate) struct ComponentData {
 }
 
 pub(crate) fn parse<'a>(stream: &'a [u8], settings: &DecodeSettings) -> Result<Image<'a>> {
-    let parsed_codestream = parse_raw(stream, settings)?;
-    let header = &parsed_codestream.header;
-    let mut boxes = ImageBoxes::default();
+    parse_with_retained_baseline(stream, settings, 0)
+}
 
+pub(crate) fn parse_with_retained_baseline<'a>(
+    stream: &'a [u8],
+    settings: &DecodeSettings,
+    retained_baseline_bytes: usize,
+) -> Result<Image<'a>> {
+    let parsed_codestream =
+        parse_raw_with_retained_baseline(stream, settings, retained_baseline_bytes)?;
+    let header = &parsed_codestream.header;
     // Raw codestreams do not carry JP2 channel definitions. Keep the
     // conventional grayscale/RGB assumptions for 1- and 3-component images,
     // but preserve two-component data as independent channels instead of
@@ -81,24 +89,52 @@ pub(crate) fn parse<'a>(stream: &'a [u8], settings: &DecodeSettings) -> Result<I
         enumerated_value,
         color_space: cs,
     };
-    boxes.color_specifications.push(color_specification.clone());
-    boxes.color_specification = Some(color_specification);
+    let boxes = ImageBoxes::try_with_synthetic_color_specification(
+        header,
+        color_specification,
+        retained_baseline_bytes,
+    )?;
 
-    let (color_space, has_alpha) =
-        resolve_alpha_and_color_space(&boxes, &parsed_codestream.header, settings)?;
-    Ok(Image {
-        codestream: parsed_codestream.data,
-        header: parsed_codestream.header,
-        boxes,
-        settings: *settings,
-        color_space,
-        has_alpha,
-    })
+    let (color_space, has_alpha) = resolve_alpha_and_color_space(
+        &boxes,
+        &parsed_codestream.header,
+        settings,
+        retained_baseline_bytes,
+    )?;
+    if retained_baseline_bytes == 0 {
+        Image::from_parsed_parts(
+            parsed_codestream.data,
+            parsed_codestream.header,
+            boxes,
+            *settings,
+            color_space,
+            has_alpha,
+        )
+    } else {
+        Image::from_parsed_parts_with_retained_baseline(
+            parsed_codestream.data,
+            parsed_codestream.header,
+            boxes,
+            *settings,
+            color_space,
+            has_alpha,
+            retained_baseline_bytes,
+        )
+    }
 }
 
+#[cfg(test)]
 pub(crate) fn parse_raw<'a>(
     stream: &'a [u8],
     settings: &DecodeSettings,
+) -> Result<ParsedCodestream<'a>> {
+    parse_raw_with_retained_baseline(stream, settings, 0)
+}
+
+pub(crate) fn parse_raw_with_retained_baseline<'a>(
+    stream: &'a [u8],
+    settings: &DecodeSettings,
+    retained_baseline_bytes: usize,
 ) -> Result<ParsedCodestream<'a>> {
     let mut reader = BitReader::new(stream);
 
@@ -107,7 +143,7 @@ pub(crate) fn parse_raw<'a>(
         bail!(MarkerError::Expected("SOC"));
     }
 
-    let header = codestream::read_header(&mut reader, settings)?;
+    let header = codestream::read_header(&mut reader, settings, retained_baseline_bytes)?;
     let code_stream_data = reader.tail().ok_or(FormatError::MissingCodestream)?;
 
     Ok(ParsedCodestream {

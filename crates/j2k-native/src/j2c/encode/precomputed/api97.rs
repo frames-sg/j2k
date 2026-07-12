@@ -1,731 +1,409 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{
-    codestream_write, count_compact_code_blocks, encode_prepared_resolution_packets,
-    encode_with_accelerator, ordered_prepared_compact_resolution_packets,
-    ordered_prepared_resolution_packets, packet_descriptors_for_compact_order,
-    packet_descriptors_for_order, packet_encode, packetize_resolution_packets_with_options,
-    precinct_exponents_for_options, precomputed_97_level_count, preencoded_97_level_count,
-    preencoded_compact_97_level_count,
-    prepared_resolution_packets_from_preencoded_compact_component,
-    prepared_resolution_packets_from_preencoded_component,
-    prepared_resolution_packets_from_preencoded_component_owned,
-    prepared_resolution_packets_from_prequantized_component, prequantized_97_level_count,
-    public_packetization_progression_order, public_packetization_resolutions_from_compact,
-    quantize, validate_irreversible_quantization_profile, validate_precomputed_dwt97_geometry,
-    validate_preencoded_compact_htj2k97_image, validate_preencoded_htj2k97_image,
-    validate_prequantized_htj2k97_image, vec, write_single_tile_packetized_codestream,
-    zero_pixel_buffer, BlockCodingMode, CpuOnlyJ2kEncodeStageAccelerator, EncodeOptions,
-    EncodeParams, J2kEncodeStageAccelerator, J2kPacketizationEncodeJob,
-    PrecomputedDwt97Accelerator, PrecomputedHtj2k97Image, PreencodedHtj2k97CompactImage,
-    PreencodedHtj2k97Image, PrequantizedHtj2k97Image, Vec, MAX_J2K_SPEC_COMPONENTS,
+//! Public legacy 9/7 adapters over typed, phase-accounted orchestration.
+
+#[cfg(test)]
+use super::allocation::{
+    precomputed_97_image_retained_bytes, prequantized_97_image_retained_bytes,
 };
+use super::allocation::{preencoded_97_image_retained_bytes, ConstructionTracker};
+use super::orchestrator::{self, Prepared97Metadata};
+use super::{
+    encode_precomputed_97_single_tile, move_preencoded_payloads_into_skeleton,
+    precomputed_97_level_count, preencoded_97_level_count, prequantized_97_level_count,
+    try_precomputed_options, try_preencoded_owned_skeleton,
+    try_prepared_packets_from_preencoded_component,
+    try_prepared_packets_from_prequantized_component, validate_irreversible_quantization_profile,
+    validate_precomputed_dwt97_geometry, validate_preencoded_htj2k97_image,
+    validate_prequantized_htj2k97_image, CpuOnlyJ2kEncodeStageAccelerator, EncodeOptions,
+    J2kEncodeStageAccelerator, NativeEncodePipelineError, NativeEncodePipelineResult,
+    NativeEncodeRetainedInput, NativeEncodeSession, PrecomputedHtj2k97Image, PrecomputedOptionMode,
+    PrecomputedStageAccelerator, PreencodedHtj2k97CompactImage, PreencodedHtj2k97Image,
+    PreparedResolutionPacket, PrequantizedHtj2k97Image, Vec, MAX_J2K_SPEC_COMPONENTS,
+};
+use crate::j2c::encode::multitile::encode_options_retained_bytes;
 
 /// Encode precomputed irreversible 9/7 wavelet coefficients into an HTJ2K
 /// codestream.
 ///
-/// This experimental entry point is the lossy counterpart of
-/// [`encode_precomputed_htj2k_53`]. It bypasses the encoder's forward 9/7 DWT
-/// stage by supplying precomputed floating-point DWT output through the
-/// internal stage hook. Coefficients are expected in the same sample domain as
-/// the native irreversible FDWT input: unsigned components are already level
-/// shifted by subtracting `2^(bit_depth - 1)`.
+/// Coefficients must use the native irreversible FDWT sample domain. Unsigned
+/// components are level shifted by subtracting `2^(bit_depth - 1)` before the
+/// transform. The encoder borrows every supplied LL/HL/LH/HH allocation for
+/// the duration of the call.
 #[doc(hidden)]
 pub fn encode_precomputed_htj2k_97(
     image: &PrecomputedHtj2k97Image,
     options: &EncodeOptions,
-) -> Result<Vec<u8>, &'static str> {
+) -> crate::EncodeResult<Vec<u8>> {
     let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
     encode_precomputed_htj2k_97_with_accelerator(image, options, &mut accelerator)
 }
 
-/// Encode precomputed irreversible 9/7 wavelet coefficients into an HTJ2K
-/// codestream using optional block encode and packetization hooks.
+/// Encode precomputed irreversible 9/7 wavelet coefficients while borrowing
+/// the supplied coefficient tree directly.
 #[doc(hidden)]
 pub fn encode_precomputed_htj2k_97_with_accelerator(
     image: &PrecomputedHtj2k97Image,
     options: &EncodeOptions,
     accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> Result<Vec<u8>, &'static str> {
-    if image.width == 0 || image.height == 0 {
-        return Err("invalid dimensions");
-    }
-    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
-    {
-        return Err("unsupported component count");
-    }
-    if image.bit_depth == 0 || image.bit_depth > 16 {
-        return Err("unsupported bit depth");
-    }
-    validate_irreversible_quantization_profile(options)?;
-    if image
-        .components
-        .iter()
-        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
-    {
-        return Err("component sampling factors must be non-zero");
-    }
-    validate_precomputed_dwt97_geometry(image)?;
-
-    let num_components =
-        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
-    let num_levels = precomputed_97_level_count(&image.components)?;
-    let mut precomputed_options = options.clone();
-    precomputed_options.num_decomposition_levels = num_levels;
-    precomputed_options.reversible = false;
-    precomputed_options.use_ht_block_coding = true;
-    precomputed_options.use_mct = false;
-    precomputed_options.validate_high_throughput_codestream = false;
-    precomputed_options.component_sampling = Some(
-        image
-            .components
-            .iter()
-            .map(|component| (component.x_rsiz, component.y_rsiz))
-            .collect(),
-    );
-
-    let dummy_pixels =
-        zero_pixel_buffer(image.width, image.height, num_components, image.bit_depth)?;
-    let mut precomputed_accelerator = PrecomputedDwt97Accelerator {
-        outputs: image
-            .components
-            .iter()
-            .map(|component| component.dwt.clone())
-            .collect(),
-        encode_accelerator: accelerator,
-    };
-
-    encode_with_accelerator(
-        &dummy_pixels,
-        image.width,
-        image.height,
-        num_components,
-        image.bit_depth,
-        image.signed,
-        &precomputed_options,
-        &mut precomputed_accelerator,
+) -> crate::EncodeResult<Vec<u8>> {
+    super::limits::encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes(
+        image,
+        options,
+        accelerator,
+        crate::DEFAULT_MAX_CODEC_BYTES,
     )
 }
 
-/// Encode prequantized irreversible 9/7 code-block coefficients into an HTJ2K
-/// codestream.
+pub(super) fn encode_precomputed_for_session(
+    image: &PrecomputedHtj2k97Image,
+    options: &EncodeOptions,
+    session: &NativeEncodeSession<'_>,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> NativeEncodePipelineResult<Vec<u8>> {
+    validate_common_image(
+        image.width,
+        image.height,
+        image.bit_depth,
+        image.components.len(),
+        image
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz)),
+    )?;
+    validate_irreversible_quantization_profile(options)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    validate_precomputed_dwt97_geometry(image).map_err(NativeEncodePipelineError::invalid_input)?;
+    let num_levels = precomputed_97_level_count(&image.components)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    let mut tracker = ConstructionTracker::new(session, 0);
+    let adjusted = try_precomputed_options(
+        options,
+        image
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz)),
+        PrecomputedOptionMode {
+            num_levels,
+            reversible: false,
+            use_ht_block_coding: true,
+            use_mct: false,
+        },
+        &mut tracker,
+    )?;
+    let options_bytes = encode_options_retained_bytes(&adjusted)?;
+    let adjusted_session = session.checked_child_session(
+        &adjusted,
+        options_bytes,
+        "borrowed precomputed 9/7 options",
+    )?;
+    let mut stage_accelerator = PrecomputedStageAccelerator {
+        encode_accelerator: accelerator,
+    };
+    encode_precomputed_97_single_tile(image, &adjusted, &adjusted_session, &mut stage_accelerator)
+}
+
+/// Encode prequantized irreversible 9/7 code-block coefficients into HTJ2K.
 #[doc(hidden)]
 pub fn encode_prequantized_htj2k_97(
     image: &PrequantizedHtj2k97Image,
     options: &EncodeOptions,
-) -> Result<Vec<u8>, &'static str> {
+) -> crate::EncodeResult<Vec<u8>> {
     let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
     encode_prequantized_htj2k_97_with_accelerator(image, options, &mut accelerator)
 }
 
-/// Encode prequantized irreversible 9/7 code-block coefficients into an HTJ2K
-/// codestream using optional block encode and packetization hooks.
+/// Encode prequantized irreversible 9/7 code-block coefficients with optional
+/// Tier-1 and packetization acceleration.
 #[doc(hidden)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
-)]
 pub fn encode_prequantized_htj2k_97_with_accelerator(
     image: &PrequantizedHtj2k97Image,
     options: &EncodeOptions,
     accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> Result<Vec<u8>, &'static str> {
-    if image.width == 0 || image.height == 0 {
-        return Err("invalid dimensions");
-    }
-    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
-    {
-        return Err("unsupported component count");
-    }
-    if image.bit_depth == 0 || image.bit_depth > 16 {
-        return Err("unsupported bit depth");
-    }
-    validate_irreversible_quantization_profile(options)?;
-    if image
-        .components
-        .iter()
-        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
-    {
-        return Err("component sampling factors must be non-zero");
-    }
-
-    let num_components =
-        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
-    let num_levels = prequantized_97_level_count(&image.components)?;
-    let guard_bits = options.guard_bits.max(2);
-    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
-        image.bit_depth,
-        num_levels,
-        false,
-        guard_bits,
-        options.irreversible_quantization_scale,
-        options.irreversible_quantization_subband_scales,
-    );
-    validate_prequantized_htj2k97_image(image, guard_bits, &step_sizes)?;
-
-    let mut prequantized_options = options.clone();
-    prequantized_options.num_decomposition_levels = num_levels;
-    prequantized_options.reversible = false;
-    prequantized_options.use_ht_block_coding = true;
-    prequantized_options.use_mct = false;
-    prequantized_options.validate_high_throughput_codestream = false;
-    prequantized_options.component_sampling = Some(
-        image
-            .components
-            .iter()
-            .map(|component| (component.x_rsiz, component.y_rsiz))
-            .collect(),
-    );
-
-    let component_resolution_packets = image
-        .components
-        .iter()
-        .enumerate()
-        .map(|(component_idx, component)| {
-            prepared_resolution_packets_from_prequantized_component(component_idx, component)
-        })
-        .collect::<Result<Vec<_>, &'static str>>()?;
-    let prepared_resolution_packets =
-        ordered_prepared_resolution_packets(component_resolution_packets, &prequantized_options)?;
-    let packet_descriptors = packet_descriptors_for_order(
-        &prepared_resolution_packets,
-        1,
-        prequantized_options.progression_order,
-    )?;
-    let mut resolution_packets =
-        encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
-    let packetized_tile = packetize_resolution_packets_with_options(
-        &mut resolution_packets,
-        &packet_descriptors,
-        1,
-        num_components,
-        prequantized_options.progression_order,
-        packet_encode::PacketMarkerOptions {
-            write_sop: prequantized_options.write_sop,
-            write_eph: prequantized_options.write_eph,
-            separate_packet_headers: prequantized_options.write_ppm
-                || prequantized_options.write_ppt,
-        },
-        true,
-        prequantized_options.write_plt
-            || prequantized_options.write_plm
-            || prequantized_options.write_ppm
-            || prequantized_options.write_ppt
-            || prequantized_options.write_sop
-            || prequantized_options.write_eph
-            || prequantized_options.tile_part_packet_limit.is_some(),
+) -> crate::EncodeResult<Vec<u8>> {
+    super::limits::encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes(
+        image,
+        options,
         accelerator,
-    )?;
-
-    let quant_params: Vec<(u16, u16)> = step_sizes
-        .iter()
-        .map(|s| (s.exponent, s.mantissa))
-        .collect();
-    let params = EncodeParams {
-        width: image.width,
-        height: image.height,
-        tile_width: image.width,
-        tile_height: image.height,
-        num_components,
-        bit_depth: image.bit_depth,
-        signed: image.signed,
-        component_sample_info: Vec::new(),
-        component_quantization_step_sizes: Vec::new(),
-        num_decomposition_levels: num_levels,
-        reversible: false,
-        code_block_width_exp: prequantized_options.code_block_width_exp,
-        code_block_height_exp: prequantized_options.code_block_height_exp,
-        num_layers: 1,
-        use_mct: false,
-        guard_bits,
-        block_coding_mode: BlockCodingMode::HighThroughput,
-        progression_order: prequantized_options.progression_order,
-        write_tlm: prequantized_options.write_tlm,
-        write_plt: prequantized_options.write_plt,
-        write_plm: prequantized_options.write_plm,
-        write_ppm: prequantized_options.write_ppm,
-        write_ppt: prequantized_options.write_ppt,
-        write_sop: prequantized_options.write_sop,
-        write_eph: prequantized_options.write_eph,
-        terminate_coding_passes: false,
-        component_sampling: prequantized_options
-            .component_sampling
-            .clone()
-            .ok_or("component sampling missing")?,
-        roi_component_shifts: vec![0; usize::from(num_components)],
-        precinct_exponents: precinct_exponents_for_options(&prequantized_options, num_levels)?,
-    };
-
-    write_single_tile_packetized_codestream(
-        &params,
-        &packetized_tile,
-        &quant_params,
-        prequantized_options.tile_part_packet_limit,
+        crate::DEFAULT_MAX_CODEC_BYTES,
     )
 }
 
-/// Encode preencoded irreversible 9/7 HTJ2K code-block payloads into a
-/// codestream.
+pub(super) fn prepare_prequantized_plan(
+    image: &PrequantizedHtj2k97Image,
+    options: &EncodeOptions,
+    session: &NativeEncodeSession<'_>,
+) -> NativeEncodePipelineResult<orchestrator::Prepared97PacketPlan> {
+    validate_common_image(
+        image.width,
+        image.height,
+        image.bit_depth,
+        image.components.len(),
+        image
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz)),
+    )?;
+    let num_levels = prequantized_97_level_count(&image.components)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    let mut tracker = ConstructionTracker::new(session, 0);
+    let metadata = try_packet_metadata(
+        image.width,
+        image.height,
+        image.bit_depth,
+        image.signed,
+        image
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz)),
+        num_levels,
+        options,
+        &mut tracker,
+    )?;
+    validate_prequantized_htj2k97_image(image, metadata.params.guard_bits, &metadata.step_sizes)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    let mut components = tracker.try_vec::<Vec<_>>(
+        image.components.len(),
+        "prequantized 9/7 prepared component owners",
+    )?;
+    for (component_idx, component) in image.components.iter().enumerate() {
+        components.push(try_prepared_packets_from_prequantized_component(
+            component_idx,
+            component,
+            &mut tracker,
+        )?);
+    }
+    orchestrator::finish_plan(metadata, components, options, session, 0)
+}
+
+/// Encode preencoded irreversible 9/7 HTJ2K code-block payloads.
 #[doc(hidden)]
 pub fn encode_preencoded_htj2k_97(
     image: &PreencodedHtj2k97Image,
     options: &EncodeOptions,
-) -> Result<Vec<u8>, &'static str> {
+) -> crate::EncodeResult<Vec<u8>> {
     let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
     encode_preencoded_htj2k_97_with_accelerator(image, options, &mut accelerator)
 }
 
-/// Encode preencoded irreversible 9/7 HTJ2K code-block payloads into a
-/// codestream using optional packetization hooks.
+/// Encode borrowed preencoded 9/7 payloads. Payload copies are explicit,
+/// fallible, and included with the borrowed source in one retained phase.
 #[doc(hidden)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
-)]
 pub fn encode_preencoded_htj2k_97_with_accelerator(
     image: &PreencodedHtj2k97Image,
     options: &EncodeOptions,
     accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> Result<Vec<u8>, &'static str> {
-    if image.width == 0 || image.height == 0 {
-        return Err("invalid dimensions");
-    }
-    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
-    {
-        return Err("unsupported component count");
-    }
-    if image.bit_depth == 0 || image.bit_depth > 16 {
-        return Err("unsupported bit depth");
-    }
-    validate_irreversible_quantization_profile(options)?;
-    if image
-        .components
-        .iter()
-        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
-    {
-        return Err("component sampling factors must be non-zero");
-    }
+) -> crate::EncodeResult<Vec<u8>> {
+    let retained_bytes = preencoded_97_image_retained_bytes(image)?;
+    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::from_owner_bytes(
+        image,
+        retained_bytes,
+    ))?;
+    prepare_borrowed_preencoded_plan(image, options, &session)
+        .and_then(|plan| orchestrator::encode_plan(plan, &session, accelerator))
+        .map_err(NativeEncodePipelineError::into_encode_error)
+}
 
-    let num_components =
-        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
-    let num_levels = preencoded_97_level_count(&image.components)?;
-    let guard_bits = options.guard_bits.max(2);
-    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+fn prepare_borrowed_preencoded_plan(
+    image: &PreencodedHtj2k97Image,
+    options: &EncodeOptions,
+    session: &NativeEncodeSession<'_>,
+) -> NativeEncodePipelineResult<orchestrator::Prepared97PacketPlan> {
+    validate_preencoded_request(image)?;
+    let num_levels = preencoded_97_level_count(&image.components)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    let mut tracker = ConstructionTracker::new(session, 0);
+    let metadata = try_packet_metadata(
+        image.width,
+        image.height,
         image.bit_depth,
-        num_levels,
-        false,
-        guard_bits,
-        options.irreversible_quantization_scale,
-        options.irreversible_quantization_subband_scales,
-    );
-    validate_preencoded_htj2k97_image(image, guard_bits, &step_sizes)?;
-
-    let mut preencoded_options = options.clone();
-    preencoded_options.num_decomposition_levels = num_levels;
-    preencoded_options.reversible = false;
-    preencoded_options.use_ht_block_coding = true;
-    preencoded_options.use_mct = false;
-    preencoded_options.validate_high_throughput_codestream = false;
-    preencoded_options.component_sampling = Some(
+        image.signed,
         image
             .components
             .iter()
-            .map(|component| (component.x_rsiz, component.y_rsiz))
-            .collect(),
-    );
-
-    let component_resolution_packets = image
-        .components
-        .iter()
-        .enumerate()
-        .map(|(component_idx, component)| {
-            prepared_resolution_packets_from_preencoded_component(component_idx, component)
-        })
-        .collect::<Result<Vec<_>, &'static str>>()?;
-    let prepared_resolution_packets =
-        ordered_prepared_resolution_packets(component_resolution_packets, &preencoded_options)?;
-    let packet_descriptors = packet_descriptors_for_order(
-        &prepared_resolution_packets,
-        1,
-        preencoded_options.progression_order,
+            .map(|component| (component.x_rsiz, component.y_rsiz)),
+        num_levels,
+        options,
+        &mut tracker,
     )?;
-    let mut resolution_packets =
-        encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
-    let packetized_tile = packetize_resolution_packets_with_options(
-        &mut resolution_packets,
-        &packet_descriptors,
-        1,
-        num_components,
-        preencoded_options.progression_order,
-        packet_encode::PacketMarkerOptions {
-            write_sop: preencoded_options.write_sop,
-            write_eph: preencoded_options.write_eph,
-            separate_packet_headers: preencoded_options.write_ppm || preencoded_options.write_ppt,
-        },
-        true,
-        preencoded_options.write_plt
-            || preencoded_options.write_plm
-            || preencoded_options.write_ppm
-            || preencoded_options.write_ppt
-            || preencoded_options.write_sop
-            || preencoded_options.write_eph
-            || preencoded_options.tile_part_packet_limit.is_some(),
-        accelerator,
+    validate_preencoded_htj2k97_image(image, metadata.params.guard_bits, &metadata.step_sizes)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    let mut components = tracker.try_vec::<Vec<_>>(
+        image.components.len(),
+        "preencoded 9/7 prepared component owners",
     )?;
-
-    let quant_params: Vec<(u16, u16)> = step_sizes
-        .iter()
-        .map(|s| (s.exponent, s.mantissa))
-        .collect();
-    let params = EncodeParams {
-        width: image.width,
-        height: image.height,
-        tile_width: image.width,
-        tile_height: image.height,
-        num_components,
-        bit_depth: image.bit_depth,
-        signed: image.signed,
-        component_sample_info: Vec::new(),
-        component_quantization_step_sizes: Vec::new(),
-        num_decomposition_levels: num_levels,
-        reversible: false,
-        code_block_width_exp: preencoded_options.code_block_width_exp,
-        code_block_height_exp: preencoded_options.code_block_height_exp,
-        num_layers: 1,
-        use_mct: false,
-        guard_bits,
-        block_coding_mode: BlockCodingMode::HighThroughput,
-        progression_order: preencoded_options.progression_order,
-        write_tlm: preencoded_options.write_tlm,
-        write_plt: preencoded_options.write_plt,
-        write_plm: preencoded_options.write_plm,
-        write_ppm: preencoded_options.write_ppm,
-        write_ppt: preencoded_options.write_ppt,
-        write_sop: preencoded_options.write_sop,
-        write_eph: preencoded_options.write_eph,
-        terminate_coding_passes: false,
-        component_sampling: preencoded_options
-            .component_sampling
-            .clone()
-            .ok_or("component sampling missing")?,
-        roi_component_shifts: vec![0; usize::from(num_components)],
-        precinct_exponents: precinct_exponents_for_options(&preencoded_options, num_levels)?,
-    };
-
-    write_single_tile_packetized_codestream(
-        &params,
-        &packetized_tile,
-        &quant_params,
-        preencoded_options.tile_part_packet_limit,
-    )
+    for (component_idx, component) in image.components.iter().enumerate() {
+        components.push(try_prepared_packets_from_preencoded_component(
+            component_idx,
+            component,
+            &mut tracker,
+        )?);
+    }
+    orchestrator::finish_plan(metadata, components, options, session, 0)
 }
 
-/// Encode preencoded irreversible 9/7 HTJ2K code-block payloads into a
-/// codestream, consuming the image so code-block payloads can move into packet
-/// preparation without cloning.
+/// Encode preencoded 9/7 payloads by moving every payload vector into packet
+/// preparation without cloning it.
 #[doc(hidden)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
-)]
 pub fn encode_preencoded_htj2k_97_owned_with_accelerator(
     image: PreencodedHtj2k97Image,
     options: &EncodeOptions,
     accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> Result<Vec<u8>, &'static str> {
-    if image.width == 0 || image.height == 0 {
-        return Err("invalid dimensions");
-    }
-    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
-    {
-        return Err("unsupported component count");
-    }
-    if image.bit_depth == 0 || image.bit_depth > 16 {
-        return Err("unsupported bit depth");
-    }
-    validate_irreversible_quantization_profile(options)?;
-    if image
-        .components
-        .iter()
-        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
-    {
-        return Err("component sampling factors must be non-zero");
-    }
-
-    let width = image.width;
-    let height = image.height;
-    let bit_depth = image.bit_depth;
-    let signed = image.signed;
-    let num_components =
-        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
-    let num_levels = preencoded_97_level_count(&image.components)?;
-    let guard_bits = options.guard_bits.max(2);
-    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
-        bit_depth,
-        num_levels,
-        false,
-        guard_bits,
-        options.irreversible_quantization_scale,
-        options.irreversible_quantization_subband_scales,
-    );
-    validate_preencoded_htj2k97_image(&image, guard_bits, &step_sizes)?;
-
-    let component_sampling = image
-        .components
-        .iter()
-        .map(|component| (component.x_rsiz, component.y_rsiz))
-        .collect::<Vec<_>>();
-    let mut preencoded_options = options.clone();
-    preencoded_options.num_decomposition_levels = num_levels;
-    preencoded_options.reversible = false;
-    preencoded_options.use_ht_block_coding = true;
-    preencoded_options.use_mct = false;
-    preencoded_options.validate_high_throughput_codestream = false;
-    preencoded_options.component_sampling = Some(component_sampling);
-
-    let component_resolution_packets = image
-        .components
-        .into_iter()
-        .enumerate()
-        .map(|(component_idx, component)| {
-            prepared_resolution_packets_from_preencoded_component_owned(component_idx, component)
-        })
-        .collect::<Result<Vec<_>, &'static str>>()?;
-    let prepared_resolution_packets =
-        ordered_prepared_resolution_packets(component_resolution_packets, &preencoded_options)?;
-    let packet_descriptors = packet_descriptors_for_order(
-        &prepared_resolution_packets,
-        1,
-        preencoded_options.progression_order,
-    )?;
-    let mut resolution_packets =
-        encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
-    let packetized_tile = packetize_resolution_packets_with_options(
-        &mut resolution_packets,
-        &packet_descriptors,
-        1,
-        num_components,
-        preencoded_options.progression_order,
-        packet_encode::PacketMarkerOptions {
-            write_sop: preencoded_options.write_sop,
-            write_eph: preencoded_options.write_eph,
-            separate_packet_headers: preencoded_options.write_ppm || preencoded_options.write_ppt,
-        },
-        true,
-        preencoded_options.write_plt
-            || preencoded_options.write_plm
-            || preencoded_options.write_ppm
-            || preencoded_options.write_ppt
-            || preencoded_options.write_sop
-            || preencoded_options.write_eph
-            || preencoded_options.tile_part_packet_limit.is_some(),
+) -> crate::EncodeResult<Vec<u8>> {
+    super::limits::encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes(
+        image,
+        options,
         accelerator,
-    )?;
-
-    let quant_params: Vec<(u16, u16)> = step_sizes
-        .iter()
-        .map(|s| (s.exponent, s.mantissa))
-        .collect();
-    let params = EncodeParams {
-        width,
-        height,
-        tile_width: width,
-        tile_height: height,
-        num_components,
-        bit_depth,
-        signed,
-        component_sample_info: Vec::new(),
-        component_quantization_step_sizes: Vec::new(),
-        num_decomposition_levels: num_levels,
-        reversible: false,
-        code_block_width_exp: preencoded_options.code_block_width_exp,
-        code_block_height_exp: preencoded_options.code_block_height_exp,
-        num_layers: 1,
-        use_mct: false,
-        guard_bits,
-        block_coding_mode: BlockCodingMode::HighThroughput,
-        progression_order: preencoded_options.progression_order,
-        write_tlm: preencoded_options.write_tlm,
-        write_plt: preencoded_options.write_plt,
-        write_plm: preencoded_options.write_plm,
-        write_ppm: preencoded_options.write_ppm,
-        write_ppt: preencoded_options.write_ppt,
-        write_sop: preencoded_options.write_sop,
-        write_eph: preencoded_options.write_eph,
-        terminate_coding_passes: false,
-        component_sampling: preencoded_options
-            .component_sampling
-            .clone()
-            .ok_or("component sampling missing")?,
-        roi_component_shifts: vec![0; usize::from(num_components)],
-        precinct_exponents: precinct_exponents_for_options(&preencoded_options, num_levels)?,
-    };
-
-    write_single_tile_packetized_codestream(
-        &params,
-        &packetized_tile,
-        &quant_params,
-        preencoded_options.tile_part_packet_limit,
+        crate::DEFAULT_MAX_CODEC_BYTES,
     )
 }
 
-/// Encode compact preencoded irreversible 9/7 HTJ2K code-block payloads into a
-/// codestream, borrowing code-block ranges from one image-level payload buffer
-/// during packetization.
-#[doc(hidden)]
+pub(super) fn prepare_owned_preencoded_plan(
+    image: PreencodedHtj2k97Image,
+    options: &EncodeOptions,
+    max_host_bytes: usize,
+) -> NativeEncodePipelineResult<orchestrator::Prepared97PacketPlan> {
+    let OwnedPreencodedHandoff {
+        metadata,
+        mut components,
+    } = prepare_owned_preencoded_handoff(&image, options, max_host_bytes)?;
+    move_preencoded_payloads_into_skeleton(image, &mut components)
+        .map_err(NativeEncodePipelineError::internal_invariant)?;
+    let session = NativeEncodeSession::try_with_lowered_cap(
+        NativeEncodeRetainedInput::none(),
+        max_host_bytes,
+    )?;
+    orchestrator::finish_plan(metadata, components, options, &session, 0)
+}
+
+struct OwnedPreencodedHandoff {
+    metadata: Prepared97Metadata,
+    components: Vec<Vec<PreparedResolutionPacket>>,
+}
+
+fn prepare_owned_preencoded_handoff(
+    image: &PreencodedHtj2k97Image,
+    options: &EncodeOptions,
+    max_host_bytes: usize,
+) -> NativeEncodePipelineResult<OwnedPreencodedHandoff> {
+    validate_preencoded_request(image)?;
+    let num_levels = preencoded_97_level_count(&image.components)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    let input_bytes = preencoded_97_image_retained_bytes(image)?;
+    let input_session = NativeEncodeSession::try_with_lowered_cap(
+        NativeEncodeRetainedInput::from_owner_bytes(image, input_bytes),
+        max_host_bytes,
+    )?;
+    let mut tracker = ConstructionTracker::new(&input_session, 0);
+    let metadata = try_packet_metadata(
+        image.width,
+        image.height,
+        image.bit_depth,
+        image.signed,
+        image
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz)),
+        num_levels,
+        options,
+        &mut tracker,
+    )?;
+    validate_preencoded_htj2k97_image(image, metadata.params.guard_bits, &metadata.step_sizes)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    let components = try_preencoded_owned_skeleton(image, &mut tracker)?;
+    Ok(OwnedPreencodedHandoff {
+        metadata,
+        components,
+    })
+}
+
+fn validate_preencoded_request(image: &PreencodedHtj2k97Image) -> NativeEncodePipelineResult<()> {
+    validate_common_image(
+        image.width,
+        image.height,
+        image.bit_depth,
+        image.components.len(),
+        image
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz)),
+    )
+}
+
 #[expect(
-    clippy::too_many_lines,
-    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
+    clippy::too_many_arguments,
+    reason = "the coefficient-image plan keeps validated geometry explicit"
 )]
+fn try_packet_metadata(
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+    signed: bool,
+    sampling: impl ExactSizeIterator<Item = (u8, u8)>,
+    num_levels: u8,
+    options: &EncodeOptions,
+    tracker: &mut ConstructionTracker<'_, '_>,
+) -> NativeEncodePipelineResult<Prepared97Metadata> {
+    orchestrator::try_metadata(
+        width, height, bit_depth, signed, sampling, num_levels, options, tracker,
+    )
+}
+
+fn validate_common_image(
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+    component_count: usize,
+    mut sampling: impl Iterator<Item = (u8, u8)>,
+) -> NativeEncodePipelineResult<()> {
+    if width == 0 || height == 0 {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "invalid dimensions",
+        ));
+    }
+    if component_count == 0 {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "component set must be non-empty",
+        ));
+    }
+    if component_count > usize::from(MAX_J2K_SPEC_COMPONENTS) {
+        return Err(NativeEncodePipelineError::unsupported(
+            "component count exceeds the JPEG 2000 Part 1 limit",
+        ));
+    }
+    if bit_depth == 0 {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "bit depth must be non-zero",
+        ));
+    }
+    if bit_depth > 16 {
+        return Err(NativeEncodePipelineError::unsupported(
+            "precomputed 9/7 bit depth exceeds 16 bits",
+        ));
+    }
+    if sampling.any(|(x_rsiz, y_rsiz)| x_rsiz == 0 || y_rsiz == 0) {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "component sampling factors must be non-zero",
+        ));
+    }
+    Ok(())
+}
+
+/// Encode compact preencoded irreversible 9/7 HTJ2K payloads.
+#[doc(hidden)]
 pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
     image: PreencodedHtj2k97CompactImage,
     options: &EncodeOptions,
     accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> Result<Vec<u8>, &'static str> {
-    if image.width == 0 || image.height == 0 {
-        return Err("invalid dimensions");
-    }
-    if image.components.is_empty() || image.components.len() > usize::from(MAX_J2K_SPEC_COMPONENTS)
-    {
-        return Err("unsupported component count");
-    }
-    if image.bit_depth == 0 || image.bit_depth > 16 {
-        return Err("unsupported bit depth");
-    }
-    if options.write_plt
-        || options.write_plm
-        || options.write_sop
-        || options.write_eph
-        || options.tile_part_packet_limit.is_some()
-    {
-        return Err(
-            "compact preencoded HTJ2K encode does not support packet marker or tile-part options",
-        );
-    }
-    validate_irreversible_quantization_profile(options)?;
-    if image
-        .components
-        .iter()
-        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
-    {
-        return Err("component sampling factors must be non-zero");
-    }
-
-    let width = image.width;
-    let height = image.height;
-    let bit_depth = image.bit_depth;
-    let signed = image.signed;
-    let num_components =
-        u16::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
-    let num_levels = preencoded_compact_97_level_count(&image.components)?;
-    let guard_bits = options.guard_bits.max(2);
-    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
-        bit_depth,
-        num_levels,
-        false,
-        guard_bits,
-        options.irreversible_quantization_scale,
-        options.irreversible_quantization_subband_scales,
-    );
-    validate_preencoded_compact_htj2k97_image(&image, guard_bits, &step_sizes)?;
-
-    let component_sampling = image
-        .components
-        .iter()
-        .map(|component| (component.x_rsiz, component.y_rsiz))
-        .collect::<Vec<_>>();
-    let mut preencoded_options = options.clone();
-    preencoded_options.num_decomposition_levels = num_levels;
-    preencoded_options.reversible = false;
-    preencoded_options.use_ht_block_coding = true;
-    preencoded_options.use_mct = false;
-    preencoded_options.validate_high_throughput_codestream = false;
-    preencoded_options.component_sampling = Some(component_sampling);
-
-    let PreencodedHtj2k97CompactImage {
-        payload,
-        components,
-        ..
-    } = image;
-    let component_resolution_packets = components
-        .iter()
-        .enumerate()
-        .map(|(component_idx, component)| {
-            prepared_resolution_packets_from_preencoded_compact_component(
-                component_idx,
-                component,
-                &payload,
-            )
-        })
-        .collect::<Result<Vec<_>, &'static str>>()?;
-    let prepared_resolution_packets = ordered_prepared_compact_resolution_packets(
-        component_resolution_packets,
-        &preencoded_options,
-    )?;
-    let packet_descriptors = packet_descriptors_for_compact_order(
-        &prepared_resolution_packets,
-        1,
-        preencoded_options.progression_order,
-    )?;
-    let packetization_resolutions =
-        public_packetization_resolutions_from_compact(&prepared_resolution_packets);
-    let packetization_job = J2kPacketizationEncodeJob {
-        resolution_count: u32::try_from(packetization_resolutions.len())
-            .map_err(|_| "packetization resolution count exceeds u32")?,
-        num_layers: 1,
-        num_components,
-        code_block_count: count_compact_code_blocks(&prepared_resolution_packets)?,
-        progression_order: public_packetization_progression_order(
-            preencoded_options.progression_order,
-        ),
-        packet_descriptors: &packet_descriptors,
-        resolutions: &packetization_resolutions,
-    };
-    let tile_data = accelerator
-        .encode_packetization(packetization_job)?
-        .map_or_else(
-            || crate::encode_j2k_packetization_scalar(packetization_job),
-            Ok,
-        )?;
-
-    let quant_params: Vec<(u16, u16)> = step_sizes
-        .iter()
-        .map(|s| (s.exponent, s.mantissa))
-        .collect();
-    let params = EncodeParams {
-        width,
-        height,
-        tile_width: width,
-        tile_height: height,
-        num_components,
-        bit_depth,
-        signed,
-        component_sample_info: Vec::new(),
-        component_quantization_step_sizes: Vec::new(),
-        num_decomposition_levels: num_levels,
-        reversible: false,
-        code_block_width_exp: preencoded_options.code_block_width_exp,
-        code_block_height_exp: preencoded_options.code_block_height_exp,
-        num_layers: 1,
-        use_mct: false,
-        guard_bits,
-        block_coding_mode: BlockCodingMode::HighThroughput,
-        progression_order: preencoded_options.progression_order,
-        write_tlm: preencoded_options.write_tlm,
-        write_plt: preencoded_options.write_plt,
-        write_plm: preencoded_options.write_plm,
-        write_ppm: preencoded_options.write_ppm,
-        write_ppt: preencoded_options.write_ppt,
-        write_sop: preencoded_options.write_sop,
-        write_eph: preencoded_options.write_eph,
-        terminate_coding_passes: false,
-        component_sampling: preencoded_options
-            .component_sampling
-            .clone()
-            .ok_or("component sampling missing")?,
-        roi_component_shifts: vec![0; usize::from(num_components)],
-        precinct_exponents: precinct_exponents_for_options(&preencoded_options, num_levels)?,
-    };
-
-    codestream_write::write_codestream(&params, &tile_data, &quant_params)
+) -> crate::EncodeResult<Vec<u8>> {
+    super::limits::encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes(
+        image,
+        options,
+        accelerator,
+        crate::DEFAULT_MAX_CODEC_BYTES,
+    )
 }
+
+#[cfg(test)]
+#[path = "api97/tests.rs"]
+mod tests;

@@ -13,7 +13,7 @@ pub(super) struct LosslessSubbandPlan {
     pub(super) code_block_count: usize,
 }
 
-#[derive(Clone)]
+#[derive(Default)]
 pub(super) struct LosslessResolutionPlan {
     pub(super) subbands: Vec<LosslessSubbandPlan>,
 }
@@ -31,6 +31,12 @@ pub(super) struct LosslessDeviceEncodePlan {
     pub(super) resolutions: Vec<LosslessResolutionPlan>,
     pub(super) progression_order: EncodeProgressionOrder,
     pub(super) write_tlm: bool,
+}
+
+impl LosslessDeviceEncodePlan {
+    pub(super) fn take_code_blocks(&mut self) -> Vec<compute::J2kLosslessDeviceCodeBlock> {
+        std::mem::take(&mut self.code_blocks)
+    }
 }
 
 pub(super) const RESIDENT_CLASSIC_CODE_BLOCK_EDGE: u32 = 32;
@@ -350,8 +356,8 @@ pub(super) fn lossless_device_encode_plan(
     let mut resolutions =
         Vec::with_capacity(resolution_count.saturating_mul(usize::from(components)));
     for resolution in 0..resolution_count {
-        for component in &component_resolutions {
-            resolutions.push(component[resolution].clone());
+        for component in &mut component_resolutions {
+            resolutions.push(std::mem::take(&mut component[resolution]));
         }
     }
 
@@ -369,4 +375,33 @@ pub(super) fn lossless_device_encode_plan(
         progression_order,
         write_tlm: options.progression == J2kProgressionOrder::Rpcl,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lossless_device_encode_plan;
+
+    #[test]
+    fn code_block_ownership_transfer_preserves_allocation_without_clone() {
+        let mut plan = lossless_device_encode_plan(
+            64,
+            64,
+            1,
+            8,
+            j2k::J2kLosslessEncodeOptions::default(),
+            32,
+            32,
+        )
+        .expect("plan result")
+        .expect("supported plan");
+        let original_ptr = plan.code_blocks.as_ptr();
+        let original_capacity = plan.code_blocks.capacity();
+
+        let code_blocks = plan.take_code_blocks();
+
+        assert!(plan.code_blocks.is_empty());
+        assert_eq!(plan.code_blocks.capacity(), 0);
+        assert_eq!(code_blocks.as_ptr(), original_ptr);
+        assert_eq!(code_blocks.capacity(), original_capacity);
+    }
 }

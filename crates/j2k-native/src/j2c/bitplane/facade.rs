@@ -35,8 +35,6 @@ pub(crate) fn decode(
         total_bitplanes,
         strict,
     )?;
-    tile_ctx.bit_plane_decode_buffers.reset();
-
     decode_inner(
         code_block,
         storage,

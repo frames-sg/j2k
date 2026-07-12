@@ -3,13 +3,19 @@
 #[cfg(j2k_cuda_oxide_enabled)]
 use std::ffi::{c_char, c_void};
 
+#[cfg(j2k_cuda_oxide_enabled)]
+use crate::allocation::host_allocation_error;
 use crate::driver::{CuFunction, CuModule};
+#[cfg(any(test, j2k_cuda_oxide_enabled))]
+use crate::error::{select_resource_release_error, CudaError};
 #[cfg(j2k_cuda_oxide_enabled)]
 use crate::kernels;
 #[cfg(j2k_cuda_oxide_enabled)]
-use crate::{error::CudaError, kernels::CudaKernel};
+use crate::kernels::CudaKernel;
 
 use super::inner::ContextInner;
+#[cfg(any(test, j2k_cuda_oxide_enabled))]
+use super::validate_resource_handle;
 
 #[cfg_attr(
     not(j2k_cuda_oxide_enabled),
@@ -22,6 +28,27 @@ use super::inner::ContextInner;
 pub(crate) struct CompiledKernel {
     pub(crate) module: CuModule,
     pub(crate) function: CuFunction,
+}
+
+#[cfg(any(test, j2k_cuda_oxide_enabled))]
+fn resolve_loaded_kernel_function(
+    module: CuModule,
+    lookup: impl FnOnce(CuModule) -> Result<CuFunction, CudaError>,
+    unload: impl FnOnce(CuModule) -> Result<(), CudaError>,
+) -> Result<CompiledKernel, CudaError> {
+    match lookup(module).and_then(|function| {
+        validate_resource_handle(
+            function,
+            "CUDA returned a null function after successful lookup",
+        )?;
+        Ok(function)
+    }) {
+        Ok(function) => Ok(CompiledKernel { module, function }),
+        Err(error) => match unload(module) {
+            Ok(()) => Err(error),
+            Err(unload_error) => Err(select_resource_release_error(error, unload_error)),
+        },
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -87,6 +114,11 @@ impl ContextInner {
             return Ok(compiled.function);
         }
 
+        modules.try_reserve(1).map_err(|_| {
+            host_allocation_error::<(CompiledKernelKey, CompiledKernel)>(
+                modules.len().saturating_add(1),
+            )
+        })?;
         let compiled = CompiledKernel::load(self, key)?;
         let function = compiled.function;
         modules.insert(key, compiled);
@@ -154,29 +186,52 @@ impl CompiledKernelKey {
 #[cfg(j2k_cuda_oxide_enabled)]
 impl CompiledKernel {
     pub(crate) fn load(context: &ContextInner, key: CompiledKernelKey) -> Result<Self, CudaError> {
-        context.set_current()?;
-        let mut module = std::ptr::null_mut();
-        // SAFETY: image is a NUL-terminated PTX string. CUDA copies or parses
-        // it during module load, and the context cache unloads the module on
-        // context drop.
-        context.driver.check("cuModuleLoadData", unsafe {
-            (context.driver.cu_module_load_data)(
-                &raw mut module,
-                key.ptx().as_ptr().cast::<c_void>(),
-            )
+        let module = context.with_current_stateful_operation(|| {
+            let mut module = std::ptr::null_mut();
+            // SAFETY: image is a NUL-terminated PTX string. CUDA copies or
+            // parses it while this context's lifecycle gate is held.
+            context.driver.check("cuModuleLoadData", unsafe {
+                (context.driver.cu_module_load_data)(
+                    &raw mut module,
+                    key.ptx().as_ptr().cast::<c_void>(),
+                )
+            })?;
+            validate_resource_handle(module, "CUDA returned a null module after successful load")?;
+            Ok(module)
         })?;
-        let mut function = std::ptr::null_mut();
-        // SAFETY: name is a NUL-terminated kernel symbol in this module.
-        context.driver.check("cuModuleGetFunction", unsafe {
-            (context.driver.cu_module_get_function)(
-                &raw mut function,
-                module,
-                key.entrypoint().as_ptr().cast::<c_char>(),
-            )
-        })?;
-        Ok(Self { module, function })
+        resolve_loaded_kernel_function(
+            module,
+            |module| {
+                context.with_current_resource_operation(|| {
+                    let mut function = std::ptr::null_mut();
+                    // SAFETY: name is a NUL-terminated kernel symbol in this
+                    // live module, and the context lifecycle gate is held.
+                    context.driver.check("cuModuleGetFunction", unsafe {
+                        (context.driver.cu_module_get_function)(
+                            &raw mut function,
+                            module,
+                            key.entrypoint().as_ptr().cast::<c_char>(),
+                        )
+                    })?;
+                    Ok(function)
+                })
+            },
+            |module| {
+                context.with_current_stateful_operation(|| {
+                    // SAFETY: module was loaded successfully above, no function
+                    // from it was launched, and the lifecycle gate is held.
+                    // Stateful unload failure quarantines the context.
+                    context.driver.check("cuModuleUnload", unsafe {
+                        (context.driver.cu_module_unload)(module)
+                    })
+                })
+            },
+        )
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 // SAFETY: CompiledKernel stores opaque CUDA module/function handles. Lifetime
 // and unloading are coordinated by ContextInner's module cache mutex.

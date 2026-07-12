@@ -5,17 +5,19 @@ use std::{mem::size_of, sync::MutexGuard};
 use super::super::{
     batch, batch_entropy_buffers, bind_fast_decode_entropy_inputs, checked_u32,
     commit_and_wait_jpeg, dispatch_1d_pipeline, dispatch_rgba_texture_pack,
-    fast_packet_huffman_tables, fast_subsampled_full_rgb_batch_groups, packed_pair_extent,
-    plane_mode_to_u32, texture_batch_error_results, texture_batch_success_results,
-    validate_rgba_texture_batch_output, BatchEntropyBufferKeys, BatchEntropyBuffers,
-    BatchedFastPacket, Buffer, CommandBufferRef, Error, FastBatchDecodeMode,
-    FastDecodeEntropyInputs, FastSubsampledMetal, FastTextureRepairCtx, JpegDecodeStatus,
-    JpegFast420BatchParams, JpegFast420TextureBatchParams, JpegFast444TextureBatchParams,
-    JpegTexturePackBatchParams, MetalBatchScratch, MetalRuntime, PixelFormat, PlaneMode,
-    PreparedHuffmanHost, MODE_YCBCR,
+    fast_packet_huffman_tables, fast_subsampled_full_rgb_batch_groups, new_command_buffer,
+    new_compute_command_encoder, packed_pair_extent, plane_mode_to_u32,
+    texture_batch_error_results, texture_batch_success_results, validate_rgba_texture_batch_output,
+    BatchEntropyBufferKeys, BatchEntropyBufferPlan, BatchEntropyBuffers, BatchedFastPacket, Buffer,
+    CommandBufferRef, Error, FastBatchDecodeMode, FastDecodeEntropyInputs, FastSubsampledMetal,
+    FastTextureRepairCtx, JpegDecodeStatus, JpegFast420BatchParams, JpegFast420TextureBatchParams,
+    JpegFast444TextureBatchParams, JpegTexturePackBatchParams, MetalBatchScratch, MetalRuntime,
+    PixelFormat, PlaneMode, PreparedHuffmanHost, MODE_YCBCR,
 };
-#[cfg(test)]
-use super::super::{encode_split_coeff_idct_passes, SplitCoeffIdctPasses};
+#[cfg(target_os = "macos")]
+mod staged;
+#[cfg(target_os = "macos")]
+use self::staged::decode_fast_subsampled_full_rgba_staged_texture_batch;
 use super::texture_grouped::try_decode_grouped_fast_subsampled_full_rgba_batch_to_textures;
 
 #[cfg(target_os = "macos")]
@@ -39,8 +41,20 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgba_batch_to_textures
     {
         return Ok(None);
     }
-    let mut family_packets = Vec::with_capacity(packets.len());
-    let mut family_modes = Vec::with_capacity(packets.len());
+    let mut packet_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal full texture family packet plan",
+        requests,
+    )?;
+    packet_budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<&P>(packets.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<PlaneMode>(packets.len()),
+    ])?;
+    let mut family_packets = packet_budget.try_vec(
+        packets.len(),
+        "JPEG Metal full texture family packet references",
+    )?;
+    let mut family_modes =
+        packet_budget.try_vec(packets.len(), "JPEG Metal full texture family modes")?;
     let mut family_mode = None;
     for packet in packets {
         let Some(packet_mode) = P::texture_plane_mode_from_batched(packet) else {
@@ -66,7 +80,7 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgba_batch_to_textures
         return Ok(None);
     }
 
-    let Some(groups) = fast_subsampled_full_rgb_batch_groups(&family_packets) else {
+    let Some(groups) = fast_subsampled_full_rgb_batch_groups(requests, &family_packets)? else {
         return Ok(None);
     };
     if groups.len() > 1 {
@@ -97,19 +111,22 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgba_batch_to_textures
     let mut batch_scratch = runtime.batch_scratch()?;
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
+        requests,
         &mut batch_scratch,
-        BatchEntropyBufferKeys {
-            payload: P::TEXTURE_KEYS.entropy,
-            offsets: P::TEXTURE_KEYS.entropy_offsets,
-            lens: P::TEXTURE_KEYS.entropy_lens,
-            checkpoints: P::TEXTURE_KEYS.entropy_checkpoints,
+        BatchEntropyBufferPlan {
+            keys: BatchEntropyBufferKeys {
+                payload: P::TEXTURE_KEYS.entropy,
+                offsets: P::TEXTURE_KEYS.entropy_offsets,
+                lens: P::TEXTURE_KEYS.entropy_lens,
+                checkpoints: P::TEXTURE_KEYS.entropy_checkpoints,
+            },
+            tile_count,
+            segment_count,
         },
         family_packets.iter().map(|packet| packet.entropy_bytes()),
         family_packets
             .iter()
             .map(|packet| packet.entropy_checkpoints()),
-        tile_count,
-        segment_count,
     )?
     else {
         return Ok(None);
@@ -180,6 +197,14 @@ struct FullRgbaTextureBatchCtx<'a, 'scratch, P> {
 }
 
 #[cfg(target_os = "macos")]
+struct FullRgbaTextureRepairBuffers {
+    status: Buffer,
+    boundary_meta: Buffer,
+    boundary_samples: Buffer,
+    vertical: Option<(Buffer, Buffer)>,
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 struct FullRgbaTextureDecodeTiles<'a, P> {
     runtime: &'a MetalRuntime,
@@ -194,18 +219,86 @@ struct FullRgbaTextureDecodeTiles<'a, P> {
     tile_index_ctx: &'a str,
 }
 
-#[cfg(all(target_os = "macos", test))]
-struct FullRgbaSplitDecodePass<'a, P> {
-    runtime: &'a MetalRuntime,
-    command_buffer: &'a CommandBufferRef,
-    first: &'a P,
-    batch_scratch: &'a mut MetalBatchScratch,
-    entropy_buffers: &'a BatchEntropyBuffers,
-    status_buffer: &'a Buffer,
-    planes: [&'a Buffer; 3],
+#[cfg(target_os = "macos")]
+fn full_rgba_texture_status_buffer<P: FastSubsampledMetal>(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    batch_scratch: &mut MetalBatchScratch,
+    total_decode_threads: u32,
+) -> Result<Buffer, Error> {
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal full texture batch statuses",
+        requests,
+    )?;
+    let statuses = budget.try_filled(
+        total_decode_threads as usize,
+        JpegDecodeStatus::default(),
+        "JPEG Metal full texture decode statuses",
+    )?;
+    batch_scratch.shared_buffer_with_slice(&runtime.device, P::TEXTURE_KEYS.status, &statuses)
+}
+
+#[cfg(target_os = "macos")]
+fn full_rgba_texture_repair_buffers<P: FastSubsampledMetal>(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    batch_scratch: &mut MetalBatchScratch,
     shape: FullRgbaTextureBatchShape,
-    total_blocks: Option<usize>,
-    huffman_tables: (&'a [PreparedHuffmanHost; 3], &'a [PreparedHuffmanHost; 3]),
+) -> Result<FullRgbaTextureRepairBuffers, Error> {
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal full texture batch statuses",
+        requests,
+    )?;
+    let statuses = budget.try_filled(
+        shape.total_decode_threads as usize,
+        JpegDecodeStatus::default(),
+        "JPEG Metal full texture decode statuses",
+    )?;
+    let total_records = P::texture_repair_record_count(
+        shape.tile_count,
+        shape.total_mcus,
+        shape.total_decode_threads,
+    )?;
+    let metadata_count = total_records
+        .checked_mul(P::TEXTURE_BOUNDARY_META_WORDS)
+        .ok_or(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+            what: "JPEG Metal texture boundary metadata",
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        })?;
+    let sample_count = total_records
+        .checked_mul(P::TEXTURE_BOUNDARY_SAMPLE_BYTES)
+        .ok_or(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+            what: "JPEG Metal texture boundary samples",
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        })?;
+    let metadata =
+        budget.try_filled(metadata_count, 0u32, "JPEG Metal texture boundary metadata")?;
+    let samples = budget.try_filled(sample_count, 0u8, "JPEG Metal texture boundary samples")?;
+    Ok(FullRgbaTextureRepairBuffers {
+        status: batch_scratch.shared_buffer_with_slice(
+            &runtime.device,
+            P::TEXTURE_KEYS.status,
+            &statuses,
+        )?,
+        boundary_meta: batch_scratch.shared_buffer_with_slice(
+            &runtime.device,
+            P::TEXTURE_BOUNDARY_META_KEY,
+            &metadata,
+        )?,
+        boundary_samples: batch_scratch.shared_buffer_with_bytes(
+            &runtime.device,
+            P::TEXTURE_BOUNDARY_SAMPLES_KEY,
+            &samples,
+        )?,
+        vertical: fast_subsampled_full_texture_vertical_buffers::<P>(
+            runtime,
+            batch_scratch,
+            total_records,
+            &mut budget,
+        )?,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -368,19 +461,47 @@ fn fast_subsampled_full_texture_vertical_buffers<P: FastSubsampledMetal>(
     runtime: &MetalRuntime,
     batch_scratch: &mut MetalBatchScratch,
     total_repair_records: usize,
-) -> Option<(Buffer, Buffer)> {
-    P::TEXTURE_VERTICAL_REPAIR.map(|spec| {
-        let vertical_meta = vec![0u32; total_repair_records * spec.meta_words];
-        let vertical_samples = vec![0u8; total_repair_records * spec.sample_bytes];
-        (
-            batch_scratch.shared_buffer_with_slice(&runtime.device, spec.meta_key, &vertical_meta),
-            batch_scratch.shared_buffer_with_bytes(
-                &runtime.device,
-                spec.samples_key,
-                &vertical_samples,
-            ),
-        )
-    })
+    budget: &mut crate::batch_allocation::BatchMetadataBudget,
+) -> Result<Option<(Buffer, Buffer)>, Error> {
+    let Some(spec) = P::TEXTURE_VERTICAL_REPAIR else {
+        return Ok(None);
+    };
+    let meta_count = total_repair_records.checked_mul(spec.meta_words).ok_or(
+        j2k_core::BatchInfrastructureError::AllocationTooLarge {
+            what: "JPEG Metal vertical texture repair metadata",
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        },
+    )?;
+    let sample_count = total_repair_records.checked_mul(spec.sample_bytes).ok_or(
+        j2k_core::BatchInfrastructureError::AllocationTooLarge {
+            what: "JPEG Metal vertical texture repair samples",
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        },
+    )?;
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<u32>(meta_count),
+        crate::batch_allocation::BatchMetadataRequest::of::<u8>(sample_count),
+    ])?;
+    let vertical_meta = budget.try_filled(
+        meta_count,
+        0u32,
+        "JPEG Metal vertical texture repair metadata",
+    )?;
+    let vertical_samples = budget.try_filled(
+        sample_count,
+        0u8,
+        "JPEG Metal vertical texture repair samples",
+    )?;
+    Ok(Some((
+        batch_scratch.shared_buffer_with_slice(&runtime.device, spec.meta_key, &vertical_meta)?,
+        batch_scratch.shared_buffer_with_bytes(
+            &runtime.device,
+            spec.samples_key,
+            &vertical_samples,
+        )?,
+    )))
 }
 
 #[cfg(target_os = "macos")]
@@ -396,11 +517,11 @@ fn encode_fast_subsampled_full_rgba_texture_decode_tiles<P: FastSubsampledMetal>
             .ok_or_else(|| Error::MetalKernel {
                 message: "JPEG Metal batch texture output slot was missing".to_string(),
             })?;
-        let decoder_encoder = pass.command_buffer.new_compute_command_encoder();
+        let decoder_encoder = new_compute_command_encoder(pass.command_buffer)?;
         decoder_encoder.set_compute_pipeline_state(texture_decode_pipeline);
         decoder_encoder.set_buffer(0, Some(&pass.entropy_buffers.payload), 0);
         bind_full_rgba_texture_params_for_tile::<P>(
-            decoder_encoder,
+            &decoder_encoder,
             4,
             pass.first,
             pass.shape,
@@ -464,7 +585,7 @@ fn encode_fast_subsampled_full_rgba_texture_decode_tiles<P: FastSubsampledMetal>
         }
         decoder_encoder.set_texture(0, Some(texture));
         dispatch_1d_pipeline(
-            decoder_encoder,
+            &decoder_encoder,
             texture_decode_pipeline,
             pass.shape.segment_count_u32,
         );
@@ -497,7 +618,7 @@ fn encode_fast_subsampled_full_rgba_texture_boundary_passes<P: FastSubsampledMet
             })?;
         let decode_params =
             full_rgba_texture_params_for_tile::<P>(first, shape, index, tile_index_ctx)?;
-        let boundary_encoder = command_buffer.new_compute_command_encoder();
+        let boundary_encoder = new_compute_command_encoder(command_buffer)?;
         boundary_encoder.set_compute_pipeline_state(boundary_pipeline);
         boundary_encoder.set_buffer(0, Some(boundary_buffers.0), 0);
         boundary_encoder.set_buffer(1, Some(boundary_buffers.1), 0);
@@ -507,7 +628,7 @@ fn encode_fast_subsampled_full_rgba_texture_boundary_passes<P: FastSubsampledMet
             (&raw const decode_params).cast(),
         );
         boundary_encoder.set_texture(0, Some(texture));
-        dispatch_1d_pipeline(boundary_encoder, boundary_pipeline, repair_threads);
+        dispatch_1d_pipeline(&boundary_encoder, boundary_pipeline, repair_threads);
         boundary_encoder.end_encoding();
     }
     Ok(())
@@ -529,62 +650,39 @@ fn decode_fast_subsampled_full_rgba_fused_texture_batch<P: FastSubsampledMetal>(
     // Chroma reconstruction needs neighboring samples at MCU boundaries. The
     // fused path carries same-segment boundaries in-thread, then resolves
     // cross-segment boundaries from compact shared records.
-    let statuses = vec![JpegDecodeStatus::default(); shape.total_decode_threads as usize];
-    let status_buffer =
-        batch_scratch.shared_buffer_with_slice(&runtime.device, P::TEXTURE_KEYS.status, &statuses);
-    let total_repair_records = P::texture_repair_record_count(
-        shape.tile_count,
-        shape.total_mcus,
-        shape.total_decode_threads,
-    )?;
-    let boundary_meta = vec![0u32; total_repair_records * P::TEXTURE_BOUNDARY_META_WORDS];
-    let boundary_samples = vec![0u8; total_repair_records * P::TEXTURE_BOUNDARY_SAMPLE_BYTES];
-    let boundary_meta_buffer = batch_scratch.shared_buffer_with_slice(
-        &runtime.device,
-        P::TEXTURE_BOUNDARY_META_KEY,
-        &boundary_meta,
-    );
-    let boundary_samples_buffer = batch_scratch.shared_buffer_with_bytes(
-        &runtime.device,
-        P::TEXTURE_BOUNDARY_SAMPLES_KEY,
-        &boundary_samples,
-    );
-    let vertical_buffers = fast_subsampled_full_texture_vertical_buffers::<P>(
-        runtime,
-        &mut batch_scratch,
-        total_repair_records,
-    );
+    let repair =
+        full_rgba_texture_repair_buffers::<P>(runtime, requests, &mut batch_scratch, shape)?;
     let tile_index_ctx = format!("{} texture batch tile index", P::FAMILY_NAME);
-    let command_buffer = runtime.queue.new_command_buffer();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
     let decode_tiles = FullRgbaTextureDecodeTiles {
         runtime,
-        command_buffer,
+        command_buffer: &command_buffer,
         output,
         first,
         entropy_buffers,
-        status_buffer: &status_buffer,
-        boundary_buffers: (&boundary_meta_buffer, &boundary_samples_buffer),
-        vertical_buffers: vertical_buffers.as_ref(),
+        status_buffer: &repair.status,
+        boundary_buffers: (&repair.boundary_meta, &repair.boundary_samples),
+        vertical_buffers: repair.vertical.as_ref(),
         shape,
         tile_index_ctx: &tile_index_ctx,
     };
     encode_fast_subsampled_full_rgba_texture_decode_tiles::<P>(&decode_tiles)?;
     encode_fast_subsampled_full_rgba_texture_boundary_passes::<P>(
         runtime,
-        command_buffer,
+        &command_buffer,
         output,
         first,
-        (&boundary_meta_buffer, &boundary_samples_buffer),
+        (&repair.boundary_meta, &repair.boundary_samples),
         shape,
         &tile_index_ctx,
     )?;
     P::encode_extra_texture_repair_passes(
         runtime,
         &FastTextureRepairCtx {
-            command_buffer,
+            command_buffer: &command_buffer,
             output,
-            boundary_meta_buffer: &boundary_meta_buffer,
-            vertical_buffers: vertical_buffers.as_ref(),
+            boundary_meta_buffer: &repair.boundary_meta,
+            vertical_buffers: repair.vertical.as_ref(),
             decode_params: JpegFast420TextureBatchParams {
                 width: shape.width,
                 height: shape.height,
@@ -602,198 +700,12 @@ fn decode_fast_subsampled_full_rgba_fused_texture_batch<P: FastSubsampledMetal>(
         },
     )?;
 
-    commit_and_wait_jpeg(command_buffer)?;
+    commit_and_wait_jpeg(&command_buffer)?;
     drop(batch_scratch);
     if let Some(results) =
-        texture_batch_error_results(requests, &status_buffer, shape.total_decode_threads)?
+        texture_batch_error_results(requests, &repair.status, shape.total_decode_threads)?
     {
         return Ok(results);
     }
-    texture_batch_success_results(output, first.dimensions(), requests.len())
-}
-
-#[cfg(target_os = "macos")]
-#[expect(
-    clippy::similar_names,
-    reason = "Cb and Cr are normative JPEG component names"
-)]
-fn decode_fast_subsampled_full_rgba_staged_texture_batch<P: FastSubsampledMetal>(
-    ctx: FullRgbaTextureBatchCtx<'_, '_, P>,
-    decode_mode: FastBatchDecodeMode,
-    #[cfg(test)] total_blocks: Option<usize>,
-) -> Result<Vec<Result<crate::MetalTextureTile, Error>>, Error> {
-    let FullRgbaTextureBatchCtx {
-        runtime,
-        requests,
-        first,
-        output,
-        mut batch_scratch,
-        entropy_buffers,
-        shape,
-    } = ctx;
-    let y_plane = batch_scratch.private_buffer(
-        &runtime.device,
-        P::TEXTURE_KEYS.y,
-        shape.y_len * shape.tile_count,
-    );
-    let cb_plane = batch_scratch.private_buffer(
-        &runtime.device,
-        P::TEXTURE_KEYS.cb,
-        shape.chroma_len * shape.tile_count,
-    );
-    let cr_plane = batch_scratch.private_buffer(
-        &runtime.device,
-        P::TEXTURE_KEYS.cr,
-        shape.chroma_len * shape.tile_count,
-    );
-    let statuses = vec![JpegDecodeStatus::default(); shape.total_decode_threads as usize];
-    let status_buffer =
-        batch_scratch.shared_buffer_with_slice(&runtime.device, P::TEXTURE_KEYS.status, &statuses);
-    let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
-    let command_buffer = runtime.queue.new_command_buffer();
-    match decode_mode {
-        FastBatchDecodeMode::Fused => {
-            let decode_pipeline = P::full_rgb_batch_decode_pipeline(runtime);
-            let decoder_encoder = command_buffer.new_compute_command_encoder();
-            decoder_encoder.set_compute_pipeline_state(decode_pipeline);
-            bind_fast_decode_entropy_inputs::<JpegFast420BatchParams>(
-                decoder_encoder,
-                &FastDecodeEntropyInputs {
-                    entropy_buffer: &entropy_buffers.payload,
-                    planes: [&y_plane, &cb_plane, &cr_plane],
-                    params: &shape.params,
-                    quants: [first.y_quant(), first.cb_quant(), first.cr_quant()],
-                    dc_tables: &dc_tables,
-                    ac_tables: &ac_tables,
-                    slot14_buffer: &entropy_buffers.offsets,
-                    slot15_buffer: &entropy_buffers.lens,
-                    slot16_buffer: &status_buffer,
-                },
-            );
-            decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
-            dispatch_1d_pipeline(decoder_encoder, decode_pipeline, shape.total_decode_threads);
-            decoder_encoder.end_encoding();
-        }
-        #[cfg(test)]
-        FastBatchDecodeMode::SplitCoeffIdct => {
-            let mut split_pass = FullRgbaSplitDecodePass {
-                runtime,
-                command_buffer,
-                first,
-                batch_scratch: &mut batch_scratch,
-                entropy_buffers,
-                status_buffer: &status_buffer,
-                planes: [&y_plane, &cb_plane, &cr_plane],
-                shape,
-                total_blocks,
-                huffman_tables: (&dc_tables, &ac_tables),
-            };
-            encode_fast_subsampled_full_rgba_split_decode::<P>(&mut split_pass)?;
-        }
-    }
-
-    let pack_params = JpegTexturePackBatchParams {
-        width: shape.width,
-        height: shape.height,
-        chroma_width: shape.chroma_width,
-        chroma_height: shape.chroma_height,
-        tile_index: 0,
-        alpha: u32::from(u8::MAX),
-        mode: MODE_YCBCR,
-    };
-    dispatch_rgba_texture_pack(
-        command_buffer,
-        P::pack_rgba_texture_pipeline(runtime),
-        (&y_plane, &cb_plane, &cr_plane),
-        output,
-        pack_params,
-        shape.tile_count,
-        (
-            packed_pair_extent(shape.width),
-            P::packed_height_extent(shape.height),
-        ),
-    )?;
-
-    commit_and_wait_jpeg(command_buffer)?;
-    drop(batch_scratch);
-    if let Some(results) =
-        texture_batch_error_results(requests, &status_buffer, shape.total_decode_threads)?
-    {
-        return Ok(results);
-    }
-    texture_batch_success_results(output, first.dimensions(), requests.len())
-}
-
-#[cfg(all(target_os = "macos", test))]
-fn encode_fast_subsampled_full_rgba_split_decode<P: FastSubsampledMetal>(
-    pass: &mut FullRgbaSplitDecodePass<'_, P>,
-) -> Result<(), Error> {
-    let Some((split, total_blocks)) =
-        P::split_coeff_idct_pipelines(pass.runtime).zip(pass.total_blocks)
-    else {
-        return Err(Error::MetalKernel {
-            message: format!(
-                "JPEG Metal {} texture batch split coeff/IDCT decode mode is unsupported",
-                P::FAMILY_NAME
-            ),
-        });
-    };
-    let coeff_bytes = total_blocks
-        .checked_mul(64)
-        .and_then(|bytes| bytes.checked_mul(size_of::<i16>()))
-        .ok_or_else(|| Error::MetalKernel {
-            message: format!(
-                "JPEG Metal {} texture batch coefficient scratch overflowed",
-                P::FAMILY_NAME
-            ),
-        })?;
-    let idct_component_depth =
-        pass.shape
-            .tile_count_u32
-            .checked_mul(6)
-            .ok_or_else(|| Error::MetalKernel {
-                message: format!(
-                    "JPEG Metal {} texture batch IDCT dispatch overflowed",
-                    P::FAMILY_NAME
-                ),
-            })?;
-    let coeff_blocks = pass.batch_scratch.private_buffer(
-        &pass.runtime.device,
-        P::SPLIT_TEXTURE_SCRATCH_KEYS.0,
-        coeff_bytes,
-    );
-    let dc_only_flags = pass.batch_scratch.private_buffer(
-        &pass.runtime.device,
-        P::SPLIT_TEXTURE_SCRATCH_KEYS.1,
-        total_blocks,
-    );
-
-    encode_split_coeff_idct_passes(SplitCoeffIdctPasses {
-        command_buffer: pass.command_buffer,
-        pipelines: split,
-        params: &pass.shape.params,
-        quants: [
-            pass.first.y_quant(),
-            pass.first.cb_quant(),
-            pass.first.cr_quant(),
-        ],
-        dc_tables: pass.huffman_tables.0,
-        ac_tables: pass.huffman_tables.1,
-        entropy: (
-            &pass.entropy_buffers.payload,
-            &pass.entropy_buffers.offsets,
-            &pass.entropy_buffers.lens,
-            &pass.entropy_buffers.checkpoints,
-        ),
-        status_buffer: pass.status_buffer,
-        planes: pass.planes,
-        scratch: (&coeff_blocks, &dc_only_flags),
-        total_decode_threads: pass.shape.total_decode_threads,
-        idct_grid: (
-            pass.first.mcus_per_row(),
-            pass.first.mcu_rows(),
-            idct_component_depth,
-        ),
-    });
-    Ok(())
+    texture_batch_success_results(requests, output, first.dimensions(), requests.len())
 }

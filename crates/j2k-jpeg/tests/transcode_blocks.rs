@@ -5,6 +5,25 @@ use j2k_test_support as fixtures;
 use j2k_jpeg::transcode::{
     extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctCodingMode,
 };
+use j2k_jpeg::{rewrite_sof_dimensions, JpegError};
+
+#[test]
+fn huge_sequential_dct_planes_are_rejected_before_entropy_for_both_extract_modes() {
+    let rewritten = rewrite_sof_dimensions(&fixtures::grayscale_8x8_jpeg(), (65_500, 65_500))
+        .expect("rewrite grayscale SOF dimensions");
+
+    for options in [
+        DctExtractOptions::default(),
+        DctExtractOptions::dequantized_only(),
+    ] {
+        let error = extract_dct_blocks(&rewritten, options)
+            .expect_err("huge sequential DCT workspace must be rejected");
+        assert!(
+            matches!(error, JpegError::MemoryCapExceeded { requested, cap } if requested > cap),
+            "unexpected huge sequential extraction error: {error:?}"
+        );
+    }
+}
 
 #[test]
 fn extracts_grayscale_dct_blocks() {
@@ -166,6 +185,28 @@ fn extracts_progressive_ycbcr_420_dct_blocks_at_native_component_resolution() {
     assert_component(&image.components[1], (4, 4), (1, 1), (1, 1), 1);
     assert_component(&image.components[2], (4, 4), (1, 1), (1, 1), 1);
     assert!(image.restart_index.is_none());
+}
+
+#[test]
+fn progressive_dequantized_only_extraction_omits_quantized_blocks() {
+    let bytes = fixtures::progressive_8x8_jpeg();
+    let default_image = extract_dct_blocks(&bytes, DctExtractOptions::default())
+        .expect("extract default progressive DCT blocks");
+    let dequantized_only = extract_dct_blocks(&bytes, DctExtractOptions::dequantized_only())
+        .expect("extract dequantized-only progressive DCT blocks");
+
+    assert_eq!(
+        dequantized_only.components.len(),
+        default_image.components.len()
+    );
+    for (actual, expected) in dequantized_only
+        .components
+        .iter()
+        .zip(default_image.components.iter())
+    {
+        assert!(actual.quantized_blocks.is_empty());
+        assert_eq!(actual.dequantized_blocks, expected.dequantized_blocks);
+    }
 }
 
 #[test]

@@ -4,7 +4,7 @@ use metal::{CommandBuffer, CommandBufferRef};
 
 use crate::profile_env::label_command_buffer;
 
-use super::MetalRuntime;
+use super::{new_command_buffer, Error, MetalRuntime};
 
 #[derive(Clone, Copy)]
 pub(super) struct DirectIdwtCommandBuffers<'a> {
@@ -51,24 +51,24 @@ pub(super) struct DecodeHybridSplitCommandBuffers {
 }
 
 impl DecodeHybridSplitCommandBuffers {
-    pub(super) fn new(runtime: &MetalRuntime) -> Self {
-        let idwt_interleave = runtime.queue.new_command_buffer().to_owned();
+    pub(super) fn new(runtime: &MetalRuntime) -> Result<Self, Error> {
+        let idwt_interleave = new_command_buffer(&runtime.queue)?;
         label_command_buffer(&idwt_interleave, "j2k decode hybrid IDWT interleave stage");
-        let idwt_horizontal = runtime.queue.new_command_buffer().to_owned();
+        let idwt_horizontal = new_command_buffer(&runtime.queue)?;
         label_command_buffer(&idwt_horizontal, "j2k decode hybrid IDWT horizontal stage");
-        let idwt_vertical = runtime.queue.new_command_buffer().to_owned();
+        let idwt_vertical = new_command_buffer(&runtime.queue)?;
         label_command_buffer(&idwt_vertical, "j2k decode hybrid IDWT vertical stage");
-        let store = runtime.queue.new_command_buffer().to_owned();
+        let store = new_command_buffer(&runtime.queue)?;
         label_command_buffer(&store, "j2k decode hybrid store stage");
-        let mct_pack = runtime.queue.new_command_buffer().to_owned();
+        let mct_pack = new_command_buffer(&runtime.queue)?;
         label_command_buffer(&mct_pack, "j2k decode hybrid MCT pack stage");
-        Self {
+        Ok(Self {
             idwt_interleave,
             idwt_horizontal,
             idwt_vertical,
             store,
             mct_pack,
-        }
+        })
     }
 
     pub(super) fn refs(&self) -> DirectColorBatchCommandBuffers<'_> {

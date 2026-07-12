@@ -10,15 +10,20 @@
 
 #![warn(unreachable_pub)]
 
+mod allocation;
+mod batch;
 mod codec;
 mod decoder;
 mod encode;
 mod error;
 mod owned_decode;
+mod profile;
 mod runtime;
 mod session;
 mod surface;
 
+#[doc(hidden)]
+pub use batch::{CudaJpegBatch, CudaJpegBatchIntoIter};
 pub use codec::Codec;
 #[cfg(feature = "cuda-runtime")]
 pub use codec::CudaJpegDecodeOutputTile;
@@ -29,5 +34,9 @@ pub use encode::{
 };
 pub use error::Error;
 pub use j2k_jpeg::{DecoderContext, ScratchPool};
+#[cfg(feature = "cuda-runtime")]
+pub use owned_decode::CudaJpegChunkedEntropyReport;
+#[cfg(feature = "cuda-runtime")]
+pub use session::CudaJpegHostMemoryDiagnostics;
 pub use session::CudaSession;
 pub use surface::{CudaJpegDecodePath, CudaSurface, CudaSurfaceStats, Surface};

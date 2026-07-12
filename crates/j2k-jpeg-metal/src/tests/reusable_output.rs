@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use j2k_metal_support::MetalSupportError;
 
 #[test]
 fn metal_batch_output_buffer_ensure_reuses_matching_allocation_and_grows_capacity() {
@@ -57,7 +58,7 @@ fn cloned_reusable_output_surface_readback_waits_for_safe_output_access() {
     let (finished_tx, finished_rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
         started_tx.send(()).expect("signal readback start");
-        let byte_len = surface.as_bytes().len();
+        let byte_len = surface.as_bytes().expect("surface byte access").len();
         finished_tx
             .send(byte_len)
             .expect("signal readback completion");
@@ -82,7 +83,7 @@ fn cloned_reusable_output_surface_readback_waits_for_safe_output_access() {
 }
 
 #[test]
-fn reusable_output_surface_download_reports_poisoned_access_gate() {
+fn reusable_output_surface_as_bytes_reports_poisoned_access_gate() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -100,14 +101,57 @@ fn reusable_output_surface_download_reports_poisoned_access_gate() {
     });
     assert!(poisoner.join().is_err(), "poisoning thread must panic");
 
+    let error = surface
+        .as_bytes()
+        .expect_err("fallible byte access must report a poisoned access gate");
+    assert!(matches!(
+        error,
+        Error::MetalStatePoisoned {
+            state: "surface access gate"
+        }
+    ));
+
     let mut bytes = [0_u8; 3];
     let error = surface
         .download_into(&mut bytes, 3)
         .expect_err("fallible download must report a poisoned access gate");
-    assert!(
-        matches!(&error, Error::MetalKernel { message } if message.contains("access gate was poisoned")),
-        "unexpected poisoned-gate error: {error:?}"
-    );
+    assert!(matches!(
+        error,
+        Error::MetalStatePoisoned {
+            state: "surface access gate"
+        }
+    ));
+}
+
+#[test]
+fn reusable_output_surface_as_bytes_retains_typed_range_source() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let output =
+        MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+    let buffer_len = output.byte_len();
+    let surface =
+        Surface::from_batch_output_buffer_offset(&output, (1, 1), PixelFormat::Rgb8, buffer_len);
+    let error = surface
+        .as_bytes()
+        .expect_err("out-of-range surface readback must fail");
+
+    assert!(matches!(
+        error,
+        Error::MetalSupport {
+            source: MetalSupportError::BufferBounds {
+                offset_bytes,
+                byte_len,
+                buffer_len: source_buffer_len,
+            },
+            ..
+        } if offset_bytes == buffer_len
+            && byte_len == PixelFormat::Rgb8.bytes_per_pixel()
+            && source_buffer_len == buffer_len
+    ));
 }
 
 #[test]
@@ -156,6 +200,14 @@ fn reusable_texture_output_clones_and_subsets_share_one_access_gate() {
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (4, 4), 2).expect("texture output");
     let output_clone = output.clone();
     let output_subset = output.clone_slots(&[1]).expect("texture output subset");
+    assert!(
+        output.shares_allocation_set_with(&output_clone),
+        "Clone must share the complete texture allocation set"
+    );
+    assert!(
+        !output.shares_allocation_set_with(&output_subset),
+        "a slot subset owns only its fallibly allocated handle collection"
+    );
     assert!(output.shares_access_gate_with(&output_clone));
     assert!(output.shares_access_gate_with(&output_subset));
 

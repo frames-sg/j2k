@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    checked_command_queue, idct8_basis_table, size_of_val, system_default_device, Arc, Buffer,
-    CommandQueue, ComputePipelineState, Device, MTLResourceOptions, MetalPipelineLoader,
-    MetalTranscodeError, METAL_DCT_RUNTIME_FAILED,
+    checked_command_queue, idct8_basis_table, shared_buffer_with_slice, system_default_device, Arc,
+    Buffer, CommandQueue, ComputePipelineState, Device, MetalPipelineLoader, MetalTranscodeError,
 };
 
 pub(super) fn shader_source() -> String {
@@ -202,12 +201,13 @@ impl MetalRuntime {
 
     fn new_with_device(device: Device) -> Result<Self, MetalTranscodeError> {
         let shader_source = shader_source();
-        let loader = MetalPipelineLoader::new(&device, &shader_source)
-            .map_err(|_| MetalTranscodeError::Runtime(METAL_DCT_RUNTIME_FAILED))?;
+        let loader = MetalPipelineLoader::new(&device, &shader_source).map_err(|error| {
+            MetalTranscodeError::support("Metal transcode shader compilation", error)
+        })?;
         let pipeline = |name| {
             loader
                 .pipeline(name)
-                .map_err(|_| MetalTranscodeError::Runtime(METAL_DCT_RUNTIME_FAILED))
+                .map_err(|error| MetalTranscodeError::support("Metal pipeline creation", error))
         };
         let dct_project_band = pipeline("dct97_project_band")?;
         let dct_project_band_batch = pipeline("dct97_project_band_batch")?;
@@ -215,14 +215,12 @@ impl MetalRuntime {
         let dct97_column_lift_batch = pipeline("dct97_column_lift_batch")?;
         let dct97_quantize_codeblocks_batch = pipeline("dct97_quantize_codeblocks_batch")?;
         let reversible53_project_band = pipeline("reversible53_project_band")?;
-        let queue = checked_command_queue(&device)
-            .map_err(|_| MetalTranscodeError::Runtime(METAL_DCT_RUNTIME_FAILED))?;
+        let queue = checked_command_queue(&device).map_err(|error| {
+            MetalTranscodeError::support("Metal transcode command queue creation", error)
+        })?;
         let idct_basis_data = idct8_basis_table();
-        let idct_basis = device.new_buffer_with_data(
-            idct_basis_data.as_ptr().cast(),
-            size_of_val(&idct_basis_data) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let idct_basis =
+            shared_buffer_with_slice(&device, &idct_basis_data, "Metal IDCT basis table")?;
 
         Ok(Self {
             device,

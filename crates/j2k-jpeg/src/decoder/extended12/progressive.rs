@@ -3,10 +3,10 @@
 //! Progressive 12-bit routing and grayscale rendering.
 
 use super::super::{
-    decode_progressive_dct_blocks, scaled_rect_covering, ColorSpace, DecodeOutcome, Decoder,
-    DownscaleFactor, JpegError, Rect, SofKind,
+    decode_progressive_dct_blocks, scaled_rect_covering, try_clone_warnings, ColorSpace,
+    DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect, SofKind,
 };
-use super::planes::dequantize_progressive12_block;
+use super::planes::{dequantize_progressive12_block, ensure_progressive12_coefficient_capacities};
 use super::sampling::{
     progressive_color_sampling, progressive_four_component_sampling, Extended12ColorSampling,
 };
@@ -144,7 +144,8 @@ impl Decoder<'_> {
         }
 
         let output_rect = scaled_rect_covering(roi, downscale)?;
-        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes, 0)?;
+        ensure_progressive12_coefficient_capacities(&dct_blocks, plan.scratch_bytes)?;
         let component = &plan.components[0];
         let component_coeffs = &dct_blocks.quantized[0];
         let (width, height) = self.info.dimensions;
@@ -182,7 +183,7 @@ impl Decoder<'_> {
 
         Ok(DecodeOutcome {
             decoded: roi,
-            warnings: self.warnings.to_vec(),
+            warnings: try_clone_warnings(&self.warnings)?,
         })
     }
 }

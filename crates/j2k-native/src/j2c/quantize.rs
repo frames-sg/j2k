@@ -8,7 +8,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::math::{floor_f32, log2_f32, pow2i, round_f32};
-use crate::{IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales, J2kSubBandType};
+use crate::{
+    EncodeError, EncodeResult, IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales,
+    J2kSubBandType,
+};
 
 /// Quantization parameters for a single subband.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +178,7 @@ pub(crate) fn compute_step_sizes_with_irreversible_scale(
 
 /// Compute quantization step sizes with global and per-subband irreversible
 /// 9/7 scale multipliers.
+#[cfg(test)]
 pub(crate) fn compute_step_sizes_with_irreversible_profile(
     bit_depth: u8,
     num_decompositions: u8,
@@ -184,7 +188,27 @@ pub(crate) fn compute_step_sizes_with_irreversible_profile(
     irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
 ) -> Vec<QuantStepSize> {
     let mut step_sizes = Vec::new();
+    append_step_sizes_with_irreversible_profile(
+        &mut step_sizes,
+        bit_depth,
+        num_decompositions,
+        reversible,
+        guard_bits,
+        irreversible_quantization_scale,
+        irreversible_quantization_subband_scales,
+    );
+    step_sizes
+}
 
+pub(crate) fn append_step_sizes_with_irreversible_profile(
+    step_sizes: &mut Vec<QuantStepSize>,
+    bit_depth: u8,
+    num_decompositions: u8,
+    reversible: bool,
+    guard_bits: u8,
+    irreversible_quantization_scale: f32,
+    irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
+) {
     if reversible {
         // For reversible 5-3, QCD stores the subband exponent only.
         // The decoder reconstructs the number of bitplanes as:
@@ -244,8 +268,6 @@ pub(crate) fn compute_step_sizes_with_irreversible_profile(
             ));
         }
     }
-
-    step_sizes
 }
 
 /// Quantize wavelet coefficients for a single subband.
@@ -288,6 +310,55 @@ pub(crate) fn quantize_subband(
             })
             .collect()
     }
+}
+
+/// Fallible counterpart used by the allocation-bounded native encode path.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary"
+)]
+pub(crate) fn try_quantize_subband(
+    coefficients: &[f32],
+    step_size: &QuantStepSize,
+    range_bits: u8,
+    reversible: bool,
+) -> EncodeResult<Vec<i32>> {
+    let requested_bytes = coefficients
+        .len()
+        .checked_mul(core::mem::size_of::<i32>())
+        .ok_or(EncodeError::ArithmeticOverflow {
+            what: "quantized subband coefficients",
+        })?;
+    let mut quantized = Vec::new();
+    quantized
+        .try_reserve_exact(coefficients.len())
+        .map_err(|_| EncodeError::HostAllocationFailed {
+            what: "quantized subband coefficients",
+            bytes: requested_bytes,
+        })?;
+    if reversible {
+        for &coefficient in coefficients {
+            quantized.push(round_f32(coefficient) as i32);
+        }
+        return Ok(quantized);
+    }
+
+    let delta = step_size.delta(range_bits);
+    if delta <= 0.0 {
+        quantized.resize(coefficients.len(), 0);
+        return Ok(quantized);
+    }
+    let inv_delta = 1.0 / delta;
+    for &coefficient in coefficients {
+        let sign = if coefficient < 0.0 { -1 } else { 1 };
+        let magnitude = floor_f32(coefficient.abs() * inv_delta) as i32;
+        quantized.push(sign * magnitude);
+    }
+    Ok(quantized)
 }
 
 #[cfg(test)]

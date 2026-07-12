@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::borrow::Cow;
+use std::sync::Arc;
 #[cfg(target_os = "macos")]
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 use j2k_core::{
     copy_tight_pixels_to_strided_output, BackendKind, BufferError, DeviceMemoryRange,
@@ -10,7 +11,9 @@ use j2k_core::{
 };
 
 #[cfg(target_os = "macos")]
-use crate::buffers::checked_buffer_slice_at;
+use crate::buffers::{checked_buffer_slice_at, new_shared_buffer};
+#[cfg(target_os = "macos")]
+use crate::error::metal_kernel_support_error;
 #[cfg(target_os = "macos")]
 use crate::{report_required_output_dimensions, JpegMetalResidentBatchReport};
 use crate::{scaled_dims, Error, MetalBackendSession};
@@ -19,13 +22,13 @@ use crate::{scaled_dims, Error, MetalBackendSession};
 use metal::foreign_types::ForeignType;
 #[cfg(target_os = "macos")]
 use metal::{
-    Buffer, BufferRef, CommandBuffer, MTLPixelFormat, MTLResourceOptions, MTLStorageMode,
-    MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor, TextureRef,
+    Buffer, BufferRef, CommandBuffer, MTLPixelFormat, MTLStorageMode, MTLTextureType,
+    MTLTextureUsage, Texture, TextureRef,
 };
 
 #[derive(Clone)]
 pub(crate) enum Storage {
-    Host(Vec<u8>),
+    Host(Arc<Vec<u8>>),
     #[cfg(target_os = "macos")]
     Metal {
         buffer: Buffer,
@@ -46,6 +49,14 @@ pub struct Surface {
 }
 
 impl Surface {
+    pub(crate) fn retained_host_capacity_bytes(&self) -> usize {
+        match &self.storage {
+            Storage::Host(bytes) => bytes.capacity(),
+            #[cfg(target_os = "macos")]
+            Storage::Metal { .. } => 0,
+        }
+    }
+
     fn metadata(&self) -> SurfaceMetadata {
         SurfaceMetadata::new(
             self.backend,
@@ -70,19 +81,15 @@ impl Surface {
     ///
     /// Host storage is borrowed. Metal storage is copied into an owned snapshot
     /// so safe Rust never exposes a slice that aliases later GPU access.
-    ///
-    /// # Panics
-    ///
-    /// Panics if Metal storage cannot be synchronized or read. Use
-    /// [`Surface::download_into`] when readback errors must be handled.
-    pub fn as_bytes(&self) -> Cow<'_, [u8]> {
+    /// Synchronization, access-gate, and checked readback failures are returned
+    /// through the backend's typed error contract.
+    pub fn as_bytes(&self) -> Result<Cow<'_, [u8]>, Error> {
         self.storage_bytes()
-            .expect("Metal surface storage must be synchronized, CPU-visible, and bounded")
     }
 
     fn storage_bytes(&self) -> Result<Cow<'_, [u8]>, Error> {
         match &self.storage {
-            Storage::Host(bytes) => Ok(Cow::Borrowed(bytes)),
+            Storage::Host(bytes) => Ok(Cow::Borrowed(bytes.as_slice())),
             #[cfg(target_os = "macos")]
             Storage::Metal {
                 buffer,
@@ -90,8 +97,8 @@ impl Surface {
                 access_gate,
             } => {
                 let _access = match access_gate {
-                    Some(gate) => Some(gate.lock().map_err(|_| Error::MetalKernel {
-                        message: "JPEG Metal surface access gate was poisoned".to_string(),
+                    Some(gate) => Some(gate.lock().map_err(|_| Error::MetalStatePoisoned {
+                        state: "surface access gate",
                     })?),
                     None => None,
                 };
@@ -471,12 +478,7 @@ impl MetalBatchOutputBuffer {
                 .ok_or(BufferError::SizeOverflow {
                     what: "JPEG Metal batch output bytes",
                 })?;
-        let byte_len_u64 = u64::try_from(byte_len).map_err(|_| BufferError::SizeOverflow {
-            what: "JPEG Metal batch output bytes",
-        })?;
-        let buffer = session
-            .device()
-            .new_buffer(byte_len_u64, MTLResourceOptions::StorageModeShared);
+        let buffer = new_shared_buffer(session.device(), byte_len)?;
         Ok(Self {
             buffer,
             access_gate: Arc::new(Mutex::new(())),
@@ -561,6 +563,11 @@ impl MetalBatchOutputBuffer {
 #[derive(Clone)]
 /// Reusable caller-owned Metal textures for full-tile JPEG batch output.
 pub struct MetalBatchTextureOutput {
+    set: Arc<MetalBatchTextureSet>,
+}
+
+#[cfg(target_os = "macos")]
+struct MetalBatchTextureSet {
     textures: Vec<Texture>,
     access_gate: Arc<Mutex<()>>,
     dimensions: (u32, u32),
@@ -583,7 +590,9 @@ impl MetalBatchTextureOutput {
             });
         }
 
-        let descriptor = TextureDescriptor::new();
+        let descriptor = j2k_metal_support::checked_texture_descriptor().map_err(|source| {
+            metal_kernel_support_error("JPEG Metal texture descriptor creation", source)
+        })?;
         descriptor.set_texture_type(MTLTextureType::D2);
         descriptor.set_pixel_format(MTLPixelFormat::RGBA8Unorm);
         descriptor.set_width(u64::from(dimensions.0));
@@ -594,17 +603,64 @@ impl MetalBatchTextureOutput {
         descriptor.set_storage_mode(MTLStorageMode::Private);
         descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
 
-        let mut textures = Vec::with_capacity(tile_capacity);
+        let pixels = crate::batch_allocation::checked_count_product(
+            dimensions.0 as usize,
+            dimensions.1 as usize,
+            "JPEG Metal batch texture pixels",
+        )?;
+        let tile_bytes = crate::batch_allocation::checked_count_product(
+            pixels,
+            PixelFormat::Rgba8.bytes_per_pixel(),
+            "JPEG Metal batch texture bytes",
+        )?;
+        let heap_texture_bytes = usize::try_from(
+            session
+                .device()
+                .heap_texture_size_and_align(&descriptor)
+                .size,
+        )
+        .map_err(|_| j2k_core::BatchInfrastructureError::AllocationTooLarge {
+            what: "JPEG Metal batch texture planned bytes",
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        })?;
+        let planned_texture_bytes = crate::batch_allocation::checked_count_product(
+            tile_bytes.max(heap_texture_bytes),
+            tile_capacity,
+            "JPEG Metal batch texture planned allocation",
+        )?;
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "JPEG Metal batch texture collection",
+        );
+        budget.preflight(&[
+            crate::batch_allocation::BatchMetadataRequest::of::<Texture>(tile_capacity),
+            crate::batch_allocation::BatchMetadataRequest::of::<u8>(planned_texture_bytes),
+        ])?;
+        let mut textures = budget.try_vec(tile_capacity, "JPEG Metal batch texture handles")?;
         for _ in 0..tile_capacity {
-            textures.push(session.device().new_texture(&descriptor));
+            let texture = j2k_metal_support::checked_texture(session.device(), &descriptor)
+                .map_err(|source| {
+                    metal_kernel_support_error("JPEG Metal batch texture allocation", source)
+                })?;
+            let texture_bytes = usize::try_from(texture.allocated_size()).map_err(|_| {
+                j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                    what: "JPEG Metal batch texture allocated bytes",
+                    requested: usize::MAX,
+                    cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                }
+            })?;
+            budget.account_capacity::<u8>(texture_bytes)?;
+            textures.push(texture);
         }
 
         Ok(Self {
-            textures,
-            access_gate: Arc::new(Mutex::new(())),
-            dimensions,
-            fmt: PixelFormat::Rgba8,
-            metal_fmt: MTLPixelFormat::RGBA8Unorm,
+            set: Arc::new(MetalBatchTextureSet {
+                textures,
+                access_gate: Arc::new(Mutex::new(())),
+                dimensions,
+                fmt: PixelFormat::Rgba8,
+                metal_fmt: MTLPixelFormat::RGBA8Unorm,
+            }),
         })
     }
 
@@ -619,15 +675,16 @@ impl MetalBatchTextureOutput {
         dimensions: (u32, u32),
         tile_capacity: usize,
     ) -> Result<(), Error> {
-        if self.dimensions == dimensions
-            && self.fmt == PixelFormat::Rgba8
-            && self.metal_fmt == MTLPixelFormat::RGBA8Unorm
+        if self.set.dimensions == dimensions
+            && self.set.fmt == PixelFormat::Rgba8
+            && self.set.metal_fmt == MTLPixelFormat::RGBA8Unorm
             && self.tile_capacity() >= tile_capacity
         {
             return Ok(());
         }
 
-        *self = Self::new_rgba8_tiles(session, dimensions, tile_capacity)?;
+        let replacement = Self::new_rgba8_tiles(session, dimensions, tile_capacity)?;
+        self.set = replacement.set;
         Ok(())
     }
 
@@ -672,22 +729,22 @@ impl MetalBatchTextureOutput {
 
     /// Tile dimensions for this output allocation.
     pub fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
+        self.set.dimensions
     }
 
     /// Pixel format for this output allocation.
     pub fn pixel_format(&self) -> PixelFormat {
-        self.fmt
+        self.set.fmt
     }
 
     /// Metal pixel format for each backing texture.
     pub fn metal_pixel_format(&self) -> MTLPixelFormat {
-        self.metal_fmt
+        self.set.metal_fmt
     }
 
     /// Number of reusable tile texture slots.
     pub fn tile_capacity(&self) -> usize {
-        self.textures.len()
+        self.set.textures.len()
     }
 
     /// Return a raw reusable output texture by tile slot.
@@ -705,25 +762,31 @@ impl MetalBatchTextureOutput {
     }
 
     pub(crate) fn texture_trusted(&self, index: usize) -> Option<&TextureRef> {
-        self.textures.get(index).map(std::convert::AsRef::as_ref)
+        self.set
+            .textures
+            .get(index)
+            .map(std::convert::AsRef::as_ref)
     }
 
     pub(crate) fn clone_texture_trusted(&self, index: usize) -> Option<Texture> {
-        self.textures.get(index).cloned()
+        self.set.textures.get(index).cloned()
     }
 
     pub(crate) fn clone_access_gate(&self) -> Arc<Mutex<()>> {
-        Arc::clone(&self.access_gate)
+        Arc::clone(&self.set.access_gate)
     }
 
     pub(crate) fn lock_for_safe_access(&self) -> Result<MutexGuard<'_, ()>, Error> {
-        self.access_gate.lock().map_err(|_| Error::MetalKernel {
+        self.set.access_gate.lock().map_err(|_| Error::MetalKernel {
             message: "JPEG Metal batch texture output access gate was poisoned".to_string(),
         })
     }
 
     pub(crate) fn clone_slots(&self, indices: &[usize]) -> Result<Self, Error> {
-        let mut textures = Vec::with_capacity(indices.len());
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "JPEG Metal cloned texture slot collection",
+        );
+        let mut textures = budget.try_vec(indices.len(), "JPEG Metal cloned texture handles")?;
         for &index in indices {
             textures.push(
                 self.clone_texture_trusted(index)
@@ -733,22 +796,29 @@ impl MetalBatchTextureOutput {
             );
         }
         Ok(Self {
-            textures,
-            access_gate: Arc::clone(&self.access_gate),
-            dimensions: self.dimensions,
-            fmt: self.fmt,
-            metal_fmt: self.metal_fmt,
+            set: Arc::new(MetalBatchTextureSet {
+                textures,
+                access_gate: Arc::clone(&self.set.access_gate),
+                dimensions: self.set.dimensions,
+                fmt: self.set.fmt,
+                metal_fmt: self.set.metal_fmt,
+            }),
         })
     }
 
     #[cfg(test)]
+    pub(crate) fn shares_allocation_set_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.set, &other.set)
+    }
+
+    #[cfg(test)]
     pub(crate) fn shares_access_gate_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.access_gate, &other.access_gate)
+        Arc::ptr_eq(&self.set.access_gate, &other.set.access_gate)
     }
 
     #[cfg(test)]
     pub(crate) fn shares_access_gate_with_tile(&self, tile: &MetalTextureTile) -> bool {
-        Arc::ptr_eq(&self.access_gate, &tile.access_gate)
+        Arc::ptr_eq(&self.set.access_gate, &tile.access_gate)
     }
 }
 
@@ -815,5 +885,49 @@ impl Clone for MetalTextureTile {
             dimensions: self.dimensions,
             fmt: self.fmt,
         }
+    }
+}
+
+#[cfg(test)]
+mod surface_access_tests {
+    use std::sync::Arc;
+
+    use super::{Storage, Surface};
+    use j2k_core::{BackendKind, PixelFormat, SurfaceResidency};
+
+    #[test]
+    fn host_backed_byte_access_remains_borrowed_and_fallible() {
+        let surface = Surface {
+            backend: BackendKind::Cpu,
+            residency: SurfaceResidency::Host,
+            dimensions: (2, 1),
+            fmt: PixelFormat::Gray8,
+            pitch_bytes: 2,
+            storage: Storage::Host(Arc::new(vec![1, 2])),
+        };
+        let bytes = surface.as_bytes().expect("valid host surface bytes");
+
+        assert!(matches!(bytes, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(bytes.as_ref(), [1, 2]);
+    }
+
+    #[test]
+    fn cloning_host_surface_shares_immutable_payload_allocation() {
+        let surface = Surface {
+            backend: BackendKind::Cpu,
+            residency: SurfaceResidency::Host,
+            dimensions: (4, 1),
+            fmt: PixelFormat::Gray8,
+            pitch_bytes: 4,
+            storage: Storage::Host(Arc::new(vec![1, 2, 3, 4])),
+        };
+        let cloned = surface.clone();
+
+        let (Storage::Host(original), Storage::Host(shared)) = (&surface.storage, &cloned.storage)
+        else {
+            panic!("host surfaces must remain host-backed after clone");
+        };
+        assert!(Arc::ptr_eq(original, shared));
+        assert_eq!(original.capacity(), shared.capacity());
     }
 }

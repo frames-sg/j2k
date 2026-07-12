@@ -7,6 +7,8 @@ use j2k_core::DeviceSubmission;
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
 #[cfg(target_os = "macos")]
+use j2k_metal_support::FallibleSubmissionQueue;
+#[cfg(target_os = "macos")]
 use metal::Buffer;
 
 use super::MetalLosslessBufferEncodeBatchOutcome;
@@ -124,11 +126,12 @@ impl DeviceSubmission for SubmittedJ2kLosslessMetalEncodeBatch {
                 config,
             } => {
                 encode_lossless_owned_tiles_with_report(&tiles, options, &session, staging, config)
-                    .map(|outcomes| {
-                        outcomes
-                            .into_iter()
-                            .map(|outcome| outcome.encoded)
-                            .collect()
+                    .and_then(|outcomes| {
+                        FallibleSubmissionQueue::from_retained(outcomes).try_finish(
+                            "J2K Metal encoded outcome and result metadata",
+                            "J2K Metal encoded results",
+                            |outcome| Ok(outcome.encoded),
+                        )
                     })
             }
         }

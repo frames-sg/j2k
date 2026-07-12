@@ -5,9 +5,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{driver::Driver, error::CudaError};
+use crate::{driver::Driver, error::CudaError, memory::PinnedUploadStagingPool};
 
-use super::{inner::ContextInner, CudaContext};
+use super::{inner::ContextInner, ContextResourceLifecycle, CudaContext};
 
 impl CudaContext {
     /// Create a context for the system default CUDA device.
@@ -39,13 +39,19 @@ impl CudaContext {
         driver.check("cuCtxCreate_v2", unsafe {
             (driver.cu_ctx_create)(&raw mut context, 0, device)
         })?;
+        super::validate_resource_handle(
+            context,
+            "CUDA returned a null context after successful creation",
+        )?;
 
         Ok(Self {
             inner: Arc::new(ContextInner {
                 driver,
                 context,
                 modules: Mutex::new(HashMap::new()),
-                pinned_upload_staging: Mutex::new(Vec::new()),
+                pinned_upload_operation: Mutex::new(()),
+                pinned_upload_staging: Mutex::new(PinnedUploadStagingPool::new()),
+                resource_lifecycle: ContextResourceLifecycle::new(),
             }),
         })
     }

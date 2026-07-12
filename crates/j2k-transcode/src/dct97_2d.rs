@@ -7,8 +7,16 @@
 
 use rayon::prelude::*;
 
-use crate::dct_grid::{high_len, idct8_basis, idct8_basis_table, low_len, validate_dct_block_grid};
-use crate::{DctGridError, Dwt97TwoDimensional};
+use crate::allocation::{
+    checked_add_allocation_bytes, checked_allocation_bytes, checked_allocation_len,
+    checked_capacity_bytes, try_vec_filled, try_vec_reserve_len, try_vec_resize_with,
+    TranscodeAllocationError,
+};
+use crate::dct_grid::{high_len, idct8_basis_table, low_len, validate_dct_block_grid};
+use crate::{DctTransformError, Dwt97TwoDimensional};
+
+#[cfg(test)]
+use crate::dct_grid::idct8_basis;
 
 const ALPHA: f64 = j2k_codec_math::dwt::DWT97_ALPHA_F64;
 const BETA: f64 = j2k_codec_math::dwt::DWT97_BETA_F64;
@@ -42,6 +50,7 @@ impl Dwt97TwoDimensional<f64> {
 /// Scratch storage for repeated DCT-grid to 9/7 transform calls.
 #[derive(Debug, Default)]
 pub(crate) struct Dct97GridScratch {
+    geometry: Option<(usize, usize)>,
     spatial_samples: Vec<f64>,
     plane: Dwt97PlaneScratch,
 }
@@ -54,6 +63,18 @@ struct Dwt97PlaneScratch {
 }
 
 impl Dct97GridScratch {
+    pub(crate) fn retained_bytes(&self) -> Result<usize, TranscodeAllocationError> {
+        let mut total = checked_capacity_bytes::<f64>(self.spatial_samples.capacity())?;
+        for capacity in [
+            self.plane.row_low.capacity(),
+            self.plane.row_high.capacity(),
+            self.plane.lift_workspace.capacity(),
+        ] {
+            total = checked_add_allocation_bytes(total, checked_capacity_bytes::<f64>(capacity)?)?;
+        }
+        Ok(total)
+    }
+
     #[cfg(test)]
     fn spatial_sample_capacity(&self) -> usize {
         self.spatial_samples.capacity()
@@ -68,22 +89,16 @@ pub fn dct8x8_blocks_then_dwt97_float(
     block_rows: usize,
     width: usize,
     height: usize,
-) -> Result<Dwt97TwoDimensional<f64>, DctGridError> {
-    validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
-
-    let mut samples = Vec::with_capacity(width * height);
-    for y in 0..height {
-        let block_y = y / 8;
-        let local_y = y % 8;
-        for x in 0..width {
-            let block_x = x / 8;
-            let local_x = x % 8;
-            let block = &blocks[block_y * block_cols + block_x];
-            samples.push(idct8x8_sample(block, local_x, local_y));
-        }
-    }
-
-    Ok(linearized_97_2d_from_plane(&samples, width, height))
+) -> Result<Dwt97TwoDimensional<f64>, DctTransformError> {
+    let mut scratch = Dct97GridScratch::default();
+    dct8x8_blocks_then_dwt97_float_with_scratch(
+        blocks,
+        block_cols,
+        block_rows,
+        width,
+        height,
+        &mut scratch,
+    )
 }
 
 /// Reference 9/7 path with caller-owned spatial-sample scratch:
@@ -95,33 +110,40 @@ pub(crate) fn dct8x8_blocks_then_dwt97_float_with_scratch(
     width: usize,
     height: usize,
     scratch: &mut Dct97GridScratch,
-) -> Result<Dwt97TwoDimensional<f64>, DctGridError> {
+) -> Result<Dwt97TwoDimensional<f64>, DctTransformError> {
     validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
+    let sample_count = checked_allocation_len::<f64>(width, height)?;
+    validate_grid_workspace(sample_count, width, height)?;
+    if scratch.geometry != Some((width, height)) {
+        scratch.plane = Dwt97PlaneScratch::default();
+        scratch.geometry = Some((width, height));
+    }
 
-    let sample_count = width.saturating_mul(height);
-    scratch.spatial_samples.clear();
-    scratch.spatial_samples.resize(sample_count, 0.0);
+    try_vec_resize_with(&mut scratch.spatial_samples, sample_count, || 0.0)?;
+    let block_row_sample_count = checked_allocation_len::<u8>(width, 8)?;
     idct8x8_blocks_to_samples(
         blocks,
         block_cols,
         width,
         height,
+        block_row_sample_count,
         &mut scratch.spatial_samples,
     );
 
-    Ok(linearized_97_2d_from_plane_with_plane_scratch(
+    linearized_97_2d_from_plane_with_plane_scratch(
         &scratch.spatial_samples,
         width,
         height,
         &mut scratch.plane,
-    ))
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn linearized_97_2d_from_plane(
     samples: &[f64],
     width: usize,
     height: usize,
-) -> Dwt97TwoDimensional<f64> {
+) -> Result<Dwt97TwoDimensional<f64>, DctTransformError> {
     let mut scratch = Dct97GridScratch::default();
     linearized_97_2d_from_plane_with_scratch(samples, width, height, &mut scratch)
 }
@@ -131,7 +153,15 @@ pub(crate) fn linearized_97_2d_from_plane_with_scratch(
     width: usize,
     height: usize,
     scratch: &mut Dct97GridScratch,
-) -> Dwt97TwoDimensional<f64> {
+) -> Result<Dwt97TwoDimensional<f64>, DctTransformError> {
+    let sample_count = validate_sample_plane(samples, width, height)?;
+    validate_plane_workspace(sample_count, width, height)?;
+    if scratch.geometry == Some((width, height)) {
+        scratch.spatial_samples = Vec::new();
+    } else {
+        *scratch = Dct97GridScratch::default();
+        scratch.geometry = Some((width, height));
+    }
     linearized_97_2d_from_plane_with_plane_scratch(samples, width, height, &mut scratch.plane)
 }
 
@@ -140,18 +170,24 @@ fn linearized_97_2d_from_plane_with_plane_scratch(
     width: usize,
     height: usize,
     scratch: &mut Dwt97PlaneScratch,
-) -> Dwt97TwoDimensional<f64> {
-    debug_assert_eq!(samples.len(), width * height);
-
+) -> Result<Dwt97TwoDimensional<f64>, DctTransformError> {
     let low_width = low_len(width);
     let low_height = low_len(height);
     let high_width = high_len(width);
     let high_height = high_len(height);
 
-    scratch.row_low.clear();
-    scratch.row_low.resize(height * low_width, 0.0);
-    scratch.row_high.clear();
-    scratch.row_high.resize(height * high_width, 0.0);
+    try_vec_resize_with(
+        &mut scratch.row_low,
+        checked_allocation_len::<f64>(height, low_width)?,
+        || 0.0,
+    )?;
+    try_vec_resize_with(
+        &mut scratch.row_high,
+        checked_allocation_len::<f64>(height, high_width)?,
+        || 0.0,
+    )?;
+    scratch.lift_workspace.clear();
+    try_vec_reserve_len(&mut scratch.lift_workspace, width.max(height))?;
 
     for y in 0..height {
         let start = y * width;
@@ -163,11 +199,11 @@ fn linearized_97_2d_from_plane_with_plane_scratch(
             &mut scratch.row_low[low_start..low_start + low_width],
             &mut scratch.row_high[high_start..high_start + high_width],
             &mut scratch.lift_workspace,
-        );
+        )?;
     }
 
-    let mut ll = vec![0.0; low_width * low_height];
-    let mut lh = vec![0.0; low_width * high_height];
+    let mut ll = try_vec_filled(checked_allocation_len::<f64>(low_width, low_height)?, 0.0)?;
+    let mut lh = try_vec_filled(checked_allocation_len::<f64>(low_width, high_height)?, 0.0)?;
     for x in 0..low_width {
         linearized_97_split_strided_into(
             Dwt97StridedSplit {
@@ -180,11 +216,11 @@ fn linearized_97_2d_from_plane_with_plane_scratch(
             &mut ll,
             &mut lh,
             &mut scratch.lift_workspace,
-        );
+        )?;
     }
 
-    let mut hl = vec![0.0; high_width * low_height];
-    let mut hh = vec![0.0; high_width * high_height];
+    let mut hl = try_vec_filled(checked_allocation_len::<f64>(high_width, low_height)?, 0.0)?;
+    let mut hh = try_vec_filled(checked_allocation_len::<f64>(high_width, high_height)?, 0.0)?;
     for x in 0..high_width {
         linearized_97_split_strided_into(
             Dwt97StridedSplit {
@@ -197,10 +233,10 @@ fn linearized_97_2d_from_plane_with_plane_scratch(
             &mut hl,
             &mut hh,
             &mut scratch.lift_workspace,
-        );
+        )?;
     }
 
-    Dwt97TwoDimensional {
+    Ok(Dwt97TwoDimensional {
         ll,
         hl,
         lh,
@@ -209,9 +245,10 @@ fn linearized_97_2d_from_plane_with_plane_scratch(
         low_height,
         high_width,
         high_height,
-    }
+    })
 }
 
+#[cfg(test)]
 fn idct8x8_sample(block: &[[f64; 8]; 8], x: usize, y: usize) -> f64 {
     let mut sample = 0.0;
     for (freq_y, row) in block.iter().enumerate() {
@@ -228,9 +265,10 @@ fn idct8x8_blocks_to_samples(
     block_cols: usize,
     width: usize,
     height: usize,
+    block_row_sample_count: usize,
     samples: &mut [f64],
 ) {
-    debug_assert_eq!(samples.len(), width * height);
+    let sample_count = samples.len();
     let basis = idct8_basis_table();
     let active_block_cols = width.div_ceil(8);
     let active_block_rows = height.div_ceil(8);
@@ -243,9 +281,9 @@ fn idct8x8_blocks_to_samples(
         active_block_cols,
     };
 
-    if width * height >= PARALLEL_IDCT_MIN_SAMPLES {
+    if sample_count >= PARALLEL_IDCT_MIN_SAMPLES {
         samples
-            .par_chunks_mut(width * 8)
+            .par_chunks_mut(block_row_sample_count)
             .enumerate()
             .take(active_block_rows)
             .for_each(|(block_y, sample_rows)| {
@@ -380,11 +418,12 @@ fn linearized_97_split_contiguous_into(
     low: &mut [f64],
     high: &mut [f64],
     workspace: &mut Vec<f64>,
-) {
+) -> Result<(), DctTransformError> {
     debug_assert_eq!(low.len(), low_len(samples.len()));
     debug_assert_eq!(high.len(), high_len(samples.len()));
 
     workspace.clear();
+    try_vec_reserve_len(workspace, samples.len())?;
     workspace.extend_from_slice(samples);
     forward_lift_97(workspace);
 
@@ -394,6 +433,7 @@ fn linearized_97_split_contiguous_into(
     for (target, value) in high.iter_mut().zip(workspace.iter().skip(1).step_by(2)) {
         *target = *value;
     }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -410,7 +450,7 @@ fn linearized_97_split_strided_into(
     low: &mut [f64],
     high: &mut [f64],
     workspace: &mut Vec<f64>,
-) {
+) -> Result<(), DctTransformError> {
     let Dwt97StridedSplit {
         samples,
         stride,
@@ -421,7 +461,10 @@ fn linearized_97_split_strided_into(
     debug_assert_eq!(high.len(), band_width * high_len(height));
 
     workspace.clear();
-    workspace.extend((0..height).map(|y| samples[y * stride + x]));
+    try_vec_reserve_len(workspace, height)?;
+    for y in 0..height {
+        workspace.push(samples[y * stride + x]);
+    }
     forward_lift_97(workspace);
 
     for (low_y, value) in workspace.iter().step_by(2).enumerate() {
@@ -430,6 +473,66 @@ fn linearized_97_split_strided_into(
     for (high_y, value) in workspace.iter().skip(1).step_by(2).enumerate() {
         high[high_y * band_width + x] = *value;
     }
+    Ok(())
+}
+
+fn validate_sample_plane(
+    samples: &[f64],
+    width: usize,
+    height: usize,
+) -> Result<usize, DctTransformError> {
+    if width == 0 || height == 0 {
+        return Err(DctTransformError::InvalidSamplePlaneDimensions { width, height });
+    }
+    let sample_count = checked_allocation_len::<f64>(width, height)?;
+    if samples.len() != sample_count {
+        return Err(DctTransformError::SamplePlaneLengthMismatch {
+            sample_count: samples.len(),
+            width,
+            height,
+        });
+    }
+    Ok(sample_count)
+}
+
+fn validate_grid_workspace(
+    sample_count: usize,
+    width: usize,
+    height: usize,
+) -> Result<(), DctTransformError> {
+    let spatial_bytes = checked_allocation_bytes::<f64>(sample_count)?;
+    checked_add_allocation_bytes(
+        spatial_bytes,
+        plane_workspace_bytes(sample_count, width, height)?,
+    )?;
+    Ok(())
+}
+
+fn validate_plane_workspace(
+    sample_count: usize,
+    width: usize,
+    height: usize,
+) -> Result<(), DctTransformError> {
+    plane_workspace_bytes(sample_count, width, height)?;
+    Ok(())
+}
+
+fn plane_workspace_bytes(
+    sample_count: usize,
+    width: usize,
+    height: usize,
+) -> Result<usize, DctTransformError> {
+    let row_and_output_bytes = allocation_product_bytes::<f64>(sample_count, 2)?;
+    let lift_bytes = checked_allocation_bytes::<f64>(width.max(height))?;
+    Ok(checked_add_allocation_bytes(
+        row_and_output_bytes,
+        lift_bytes,
+    )?)
+}
+
+fn allocation_product_bytes<T>(left: usize, right: usize) -> Result<usize, DctTransformError> {
+    let element_count = checked_allocation_len::<T>(left, right)?;
+    Ok(checked_allocation_bytes::<T>(element_count)?)
 }
 
 fn validate_grid(
@@ -438,8 +541,9 @@ fn validate_grid(
     block_rows: usize,
     width: usize,
     height: usize,
-) -> Result<(), DctGridError> {
-    validate_dct_block_grid(block_count, block_cols, block_rows, width, height)
+) -> Result<(), DctTransformError> {
+    validate_dct_block_grid(block_count, block_cols, block_rows, width, height)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -453,6 +557,18 @@ mod tests {
     use core::f64::consts::PI;
 
     use super::*;
+
+    #[test]
+    fn grid_workspace_rejects_aggregate_before_any_single_vector_hits_cap() {
+        let cap = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
+        let sample_count = cap / core::mem::size_of::<f64>() / 4 + 1;
+        assert!(checked_allocation_bytes::<f64>(sample_count).is_ok());
+        assert!(matches!(
+            validate_grid_workspace(sample_count, sample_count, 1),
+            Err(DctTransformError::MemoryCapExceeded { requested, cap: limit })
+                if requested > limit && limit == cap
+        ));
+    }
 
     fn assert_all_close(values: &[f64], expected: f64, epsilon: f64) {
         for &value in values {
@@ -480,7 +596,8 @@ mod tests {
         for (width, height) in [(8usize, 8usize), (9, 7)] {
             let samples = vec![50.0; width * height];
 
-            let transformed = linearized_97_2d_from_plane(&samples, width, height);
+            let transformed = linearized_97_2d_from_plane(&samples, width, height)
+                .expect("small test plane fits the transform workspace");
 
             assert_all_close(&transformed.ll, 50.0, 0.001);
             assert_all_close(&transformed.hl, 0.0, 0.001);
@@ -752,7 +869,8 @@ mod tests {
             let samples: Vec<f64> = (0..width * height)
                 .map(|_| next_unit(&mut state) * 100.0)
                 .collect();
-            let got = linearized_97_2d_from_plane(&samples, width, height);
+            let got = linearized_97_2d_from_plane(&samples, width, height)
+                .expect("small test plane fits the transform workspace");
             let want = ref_analysis_2d(&samples, width, height);
             assert_eq!(
                 (
@@ -790,14 +908,16 @@ mod tests {
         let varies_in_x: Vec<f64> = (0..width * height)
             .map(|i| ((i % width) as f64).sin().mul_add(30.0, 5.0))
             .collect();
-        let t = linearized_97_2d_from_plane(&varies_in_x, width, height);
+        let t = linearized_97_2d_from_plane(&varies_in_x, width, height)
+            .expect("small test plane fits the transform workspace");
         assert_all_close(&t.lh, 0.0, 1e-9);
         assert_all_close(&t.hh, 0.0, 1e-9);
 
         let varies_in_y: Vec<f64> = (0..width * height)
             .map(|i| ((i / width) as f64).cos().mul_add(30.0, 5.0))
             .collect();
-        let t = linearized_97_2d_from_plane(&varies_in_y, width, height);
+        let t = linearized_97_2d_from_plane(&varies_in_y, width, height)
+            .expect("small test plane fits the transform workspace");
         assert_all_close(&t.hl, 0.0, 1e-9);
         assert_all_close(&t.hh, 0.0, 1e-9);
     }

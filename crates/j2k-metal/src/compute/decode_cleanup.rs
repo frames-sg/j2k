@@ -1,12 +1,58 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    classic_style_flags, dispatch_classic_cleanup_batched, dispatch_ht_cleanup,
-    dispatch_ht_cleanup_batched, required_classic_output_len, required_ht_output_len, with_runtime,
-    wrap_f32_output_buffer, Error, HtCodeBlockDecodeJob, HtSubBandDecodeJob,
-    J2kClassicCleanupBatchJob, J2kClassicSegment, J2kCodeBlockDecodeJob, J2kHtCleanupBatchJob,
-    J2kHtCleanupParams, J2kSubBandDecodeJob,
+    checked_buffer_slice, classic_style_flags, copied_slice_buffer,
+    dispatch_classic_cleanup_batched, dispatch_ht_cleanup, dispatch_ht_cleanup_batched,
+    required_classic_output_len, required_ht_output_len, with_runtime, Error, HtCodeBlockDecodeJob,
+    HtSubBandDecodeJob, J2kClassicCleanupBatchJob, J2kClassicSegment, J2kCodeBlockDecodeJob,
+    J2kHtCleanupBatchJob, J2kHtCleanupParams, J2kSubBandDecodeJob,
 };
+
+#[cfg(target_os = "macos")]
+struct ClassicCleanupOwners {
+    jobs: Vec<J2kClassicCleanupBatchJob>,
+    coded_data: Vec<u8>,
+    segments: Vec<J2kClassicSegment>,
+}
+
+#[cfg(target_os = "macos")]
+fn allocate_classic_cleanup_owners(
+    job: &J2kSubBandDecodeJob<'_>,
+) -> Result<ClassicCleanupOwners, Error> {
+    let coded_len = crate::batch_allocation::checked_count_sum(
+        job.jobs.iter().map(|block| block.code_block.data.len()),
+        "classic J2K Metal batched coded payload",
+    )?;
+    let segment_count = crate::batch_allocation::checked_count_sum(
+        job.jobs.iter().map(|block| block.code_block.segments.len()),
+        "classic J2K Metal batched segment table",
+    )?;
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("classic J2K Metal cleanup batch");
+    Ok(ClassicCleanupOwners {
+        jobs: budget.try_vec(job.jobs.len(), "classic J2K Metal cleanup jobs")?,
+        coded_data: budget.try_vec(coded_len, "classic J2K Metal batched coded payload")?,
+        segments: budget.try_vec(segment_count, "classic J2K Metal batched segment table")?,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn validate_classic_sub_band_output(
+    job: &J2kSubBandDecodeJob<'_>,
+    output_len: usize,
+) -> Result<(), Error> {
+    let required_len = (job.width as usize)
+        .checked_mul(job.height as usize)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "classic J2K Metal sub-band size overflow".to_string(),
+        })?;
+    if output_len < required_len {
+        return Err(Error::MetalKernel {
+            message: "classic J2K Metal sub-band output slice is too small".to_string(),
+        });
+    }
+    Ok(())
+}
 
 #[cfg(target_os = "macos")]
 pub(crate) fn decode_classic_cleanup_code_block(
@@ -24,8 +70,23 @@ pub(crate) fn decode_classic_cleanup_code_block(
         return Ok(());
     }
 
+    let mut segment_budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "classic J2K Metal cleanup segment metadata",
+    );
+    let mut segments =
+        segment_budget.try_vec(job.segments.len(), "classic J2K Metal cleanup segments")?;
+    for segment in job.segments {
+        segments.push(J2kClassicSegment {
+            data_offset: segment.data_offset,
+            data_length: segment.data_length,
+            start_coding_pass: u32::from(segment.start_coding_pass),
+            end_coding_pass: u32::from(segment.end_coding_pass),
+            use_arithmetic: u32::from(segment.use_arithmetic),
+        });
+    }
+
     with_runtime(|runtime| {
-        let decoded = wrap_f32_output_buffer(&runtime.device, output);
+        let decoded = copied_slice_buffer(&runtime.device, output)?;
         let batch_job = J2kClassicCleanupBatchJob {
             coded_offset: 0,
             coded_len: u32::try_from(job.data.len()).map_err(|_| Error::MetalKernel {
@@ -55,18 +116,10 @@ pub(crate) fn decode_classic_cleanup_code_block(
             strict: u32::from(job.strict),
             dequantization_step: job.dequantization_step,
         };
-        let segments: Vec<_> = job
-            .segments
-            .iter()
-            .map(|segment| J2kClassicSegment {
-                data_offset: segment.data_offset,
-                data_length: segment.data_length,
-                start_coding_pass: u32::from(segment.start_coding_pass),
-                end_coding_pass: u32::from(segment.end_coding_pass),
-                use_arithmetic: u32::from(segment.use_arithmetic),
-            })
-            .collect();
         dispatch_classic_cleanup_batched(runtime, job.data, &[batch_job], &segments, &decoded)?;
+        let decoded_host =
+            checked_buffer_slice::<f32>(&decoded, output.len(), "classic cleanup output")?;
+        output.copy_from_slice(&decoded_host);
         Ok(())
     })
 }
@@ -76,26 +129,18 @@ pub(crate) fn decode_classic_cleanup_sub_band(
     job: J2kSubBandDecodeJob<'_>,
     output: &mut [f32],
 ) -> Result<(), Error> {
-    let required_len = (job.width as usize)
-        .checked_mul(job.height as usize)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "classic J2K Metal sub-band size overflow".to_string(),
-        })?;
-    if output.len() < required_len {
-        return Err(Error::MetalKernel {
-            message: "classic J2K Metal sub-band output slice is too small".to_string(),
-        });
-    }
+    validate_classic_sub_band_output(&job, output.len())?;
     if job.jobs.is_empty() {
         return Ok(());
     }
 
     with_runtime(|runtime| {
-        let decoded = wrap_f32_output_buffer(&runtime.device, output);
-
-        let mut jobs = Vec::with_capacity(job.jobs.len());
-        let mut coded_data = Vec::new();
-        let mut segments = Vec::new();
+        let decoded = copied_slice_buffer(&runtime.device, output)?;
+        let ClassicCleanupOwners {
+            mut jobs,
+            mut coded_data,
+            mut segments,
+        } = allocate_classic_cleanup_owners(&job)?;
 
         for block in job.jobs {
             let coded_offset = u32::try_from(coded_data.len()).map_err(|_| Error::MetalKernel {
@@ -178,6 +223,9 @@ pub(crate) fn decode_classic_cleanup_sub_band(
         }
 
         dispatch_classic_cleanup_batched(runtime, &coded_data, &jobs, &segments, &decoded)?;
+        let decoded_host =
+            checked_buffer_slice::<f32>(&decoded, output.len(), "classic sub-band output")?;
+        output.copy_from_slice(&decoded_host);
         Ok(())
     })
 }
@@ -217,8 +265,11 @@ pub(crate) fn decode_ht_cleanup_code_block(
             dequantization_step: job.dequantization_step,
             stripe_causal: u32::from(job.stripe_causal),
         };
-        let decoded = wrap_f32_output_buffer(&runtime.device, output);
+        let decoded = copied_slice_buffer(&runtime.device, output)?;
         dispatch_ht_cleanup(runtime, job.data, params, &decoded)?;
+        let decoded_host =
+            checked_buffer_slice::<f32>(&decoded, output.len(), "HT cleanup output")?;
+        output.copy_from_slice(&decoded_host);
 
         Ok(())
     })
@@ -245,10 +296,16 @@ pub(crate) fn decode_ht_cleanup_sub_band(
     }
 
     with_runtime(|runtime| {
-        let decoded = wrap_f32_output_buffer(&runtime.device, output);
+        let decoded = copied_slice_buffer(&runtime.device, output)?;
 
-        let mut jobs = Vec::with_capacity(job.jobs.len());
-        let mut coded_data = Vec::new();
+        let coded_len = crate::batch_allocation::checked_count_sum(
+            job.jobs.iter().map(|block| block.code_block.data.len()),
+            "HTJ2K Metal batched coded payload",
+        )?;
+        let mut budget =
+            crate::batch_allocation::BatchMetadataBudget::new("HTJ2K Metal cleanup batch");
+        let mut jobs = budget.try_vec(job.jobs.len(), "HTJ2K Metal cleanup jobs")?;
+        let mut coded_data = budget.try_vec(coded_len, "HTJ2K Metal batched coded payload")?;
 
         for block in job.jobs {
             let coded_offset = u32::try_from(coded_data.len()).map_err(|_| Error::MetalKernel {
@@ -303,6 +360,9 @@ pub(crate) fn decode_ht_cleanup_sub_band(
         }
 
         dispatch_ht_cleanup_batched(runtime, &coded_data, &jobs, &decoded)?;
+        let decoded_host =
+            checked_buffer_slice::<f32>(&decoded, output.len(), "HT sub-band output")?;
+        output.copy_from_slice(&decoded_host);
         Ok(())
     })
 }

@@ -288,6 +288,7 @@ fn decode_bytes_once(
     Ok(decode_surface_once(case, operation, backend)?
         .surface
         .as_bytes()
+        .map_err(|error| error.to_string())?
         .to_vec())
 }
 
@@ -299,7 +300,11 @@ fn decode_len_once(
 ) -> Result<usize, String> {
     let decoded = decode_surface_once(case, operation, backend)?;
     if readback {
-        Ok(decoded.surface.as_bytes().len())
+        Ok(decoded
+            .surface
+            .as_bytes()
+            .map_err(|error| error.to_string())?
+            .len())
     } else {
         Ok(decoded.surface.byte_len())
     }

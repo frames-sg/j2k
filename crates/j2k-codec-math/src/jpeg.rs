@@ -224,6 +224,14 @@ mod tests {
     }
 
     #[test]
+    fn canonical_huffman_derivation_accepts_complete_decoder_table() {
+        let bits = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        let derived = derive_canonical_huffman(&bits, 2).expect("complete prefix table derives");
+        assert_eq!(&derived.huffcode[..2], &[0, 1]);
+    }
+
+    #[test]
     fn idct_constants_match_existing_integer_backend() {
         assert_eq!(idct::CONST_BITS, 13);
         assert_eq!(idct::PASS1_BITS, 2);

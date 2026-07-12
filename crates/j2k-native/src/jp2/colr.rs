@@ -3,10 +3,16 @@
 use alloc::vec::Vec;
 
 use crate::error::{FormatError, Result};
+use crate::jp2::allocation::Jp2AllocationBudget;
 use crate::jp2::ImageBoxes;
 use crate::reader::BitReader;
+use crate::DecodeError;
 
-pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
+pub(super) fn parse(
+    boxes: &mut ImageBoxes,
+    data: &[u8],
+    budget: &mut Jp2AllocationBudget,
+) -> Result<()> {
     let mut reader = BitReader::new(data);
 
     let meth = reader.read_byte().ok_or(FormatError::InvalidBox)?;
@@ -25,7 +31,10 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
             )
         }
         2 => {
-            let profile_data = reader.tail().ok_or(FormatError::InvalidBox)?.to_vec();
+            let profile_data = budget.try_copy_bytes(
+                reader.tail().ok_or(FormatError::InvalidBox)?,
+                "JP2 ICC profile",
+            )?;
             ColorSpace::Icc(profile_data)
         }
         _ => ColorSpace::Unknown,
@@ -36,26 +45,26 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
         enumerated_value,
         color_space: method,
     };
-    if boxes.color_specification.is_none() {
-        // "A JP2 file may contain multiple Colour Specification boxes, but
-        // must contain at least one, specifying different methods
-        // for achieving "equivalent" results. A conforming JP2 reader shall
-        // ignore all Colour Specification boxes after the first.
-        boxes.color_specification = Some(parsed.clone());
+    if boxes.color_specifications.len() == boxes.color_specifications.capacity() {
+        return Err(DecodeError::AllocationTooLarge {
+            what: "JP2 COLR metadata plan",
+            requested: usize::MAX,
+            cap: crate::DEFAULT_MAX_DECODE_BYTES,
+        });
     }
     boxes.color_specifications.push(parsed);
 
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ColorSpecificationBox {
     pub(crate) method: u8,
     pub(crate) enumerated_value: Option<u32>,
     pub(crate) color_space: ColorSpace,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ColorSpace {
     Enumerated(EnumeratedColorspace),
     Icc(Vec<u8>),

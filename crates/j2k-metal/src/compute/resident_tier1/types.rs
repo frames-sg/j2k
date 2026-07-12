@@ -75,7 +75,7 @@ pub(crate) struct J2kResidentPacketizationSubband {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct J2kResidentPacketizationResolution {
     pub(crate) subbands: Vec<J2kResidentPacketizationSubband>,
 }
@@ -146,8 +146,8 @@ pub(crate) struct J2kResidentLosslessHtCodeBlocks {
     pub(in crate::compute) _coefficient_buffer: Buffer,
     pub(in crate::compute) prepare_command_buffer: CommandBuffer,
     pub(in crate::compute) _deinterleave_status_buffer: Buffer,
-    pub(in crate::compute) _plane_buffers: Vec<Buffer>,
-    pub(in crate::compute) _scratch_buffers: Vec<Buffer>,
+    pub(in crate::compute) plane_buffers: Vec<Buffer>,
+    pub(in crate::compute) scratch_buffers: Vec<Buffer>,
     pub(in crate::compute) _coefficient_job_buffer: Buffer,
 }
 

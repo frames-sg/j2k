@@ -6,6 +6,7 @@ use super::{upsample_h2v1_sample_at, upsample_h2v2_rows_at};
 fn extended12_decode_modules_stay_focused_and_fragment_free() {
     const ROOT: &str = include_str!("../extended12.rs");
     const PLANES: &str = include_str!("planes.rs");
+    const PLANE_ALLOCATION: &str = include_str!("planes/allocation.rs");
     const PROGRESSIVE: &str = include_str!("progressive.rs");
     const PROGRESSIVE_444: &str = include_str!("progressive/color444.rs");
     const PROGRESSIVE_SUBSAMPLED: &str = include_str!("progressive/subsampled.rs");
@@ -23,6 +24,7 @@ fn extended12_decode_modules_stay_focused_and_fragment_free() {
     let modules = [
         ("extended12.rs", ROOT, 40usize),
         ("extended12/planes.rs", PLANES, 400),
+        ("extended12/planes/allocation.rs", PLANE_ALLOCATION, 320),
         ("extended12/progressive.rs", PROGRESSIVE, 210),
         ("extended12/progressive/color444.rs", PROGRESSIVE_444, 120),
         (
@@ -89,6 +91,10 @@ fn extended12_decode_modules_stay_focused_and_fragment_free() {
             );
         }
     }
+    assert!(
+        PLANES.contains("mod allocation;"),
+        "extended12 plane orchestration lost its allocation boundary"
+    );
 }
 
 #[test]

@@ -30,9 +30,6 @@ fn assert_neon_matches_scalar(input: &[i16; 64]) {
 
 #[cfg(target_arch = "x86_64")]
 fn assert_avx2_matches_scalar(input: &[i16; 64]) {
-    if !std::is_x86_feature_detected!("avx2") {
-        return; // AVX2 unavailable on this host — skip silently.
-    }
     let scalar_out = scalar(input);
     let mut avx_out = [0u8; 64];
     j2k_jpeg::bench_support::bench_idct_avx2_block(input, &mut avx_out);

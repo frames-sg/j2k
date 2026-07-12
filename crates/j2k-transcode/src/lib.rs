@@ -3,6 +3,7 @@
 //! JPEG-to-HTJ2K coefficient-domain transcode workflow.
 
 mod accelerator_contracts;
+mod allocation;
 pub use self::accelerator_contracts::{
     idct_blocks_to_signed_samples_rayon, CpuOnlyDctToWaveletStageAccelerator,
     DctGridI16ToHtj2k97CodeBlockBatch, DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt53Job,
@@ -60,7 +61,7 @@ pub struct DctGridToReversibleDwt53Job<'a> {
 }
 
 /// One separable single-level reversible integer 5/3 transform result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ReversibleDwt53FirstLevel {
     /// Low-horizontal, low-vertical band.
     pub ll: Vec<i32>,
@@ -127,24 +128,13 @@ pub struct Dwt97BatchStageTimings {
     pub readback_bytes: u64,
 }
 
-/// Error returned by accelerated transcode stage backends.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TranscodeStageError {
-    /// The job shape, options, or environment are outside what this backend
-    /// supports.
-    Unsupported(&'static str),
-    /// The backend failed while executing the stage.
-    Backend(String),
-    /// The device or runtime backing this accelerator is unavailable.
-    DeviceUnavailable,
-}
-
 mod dct53_2d;
 mod dct97_2d;
 mod dct_grid;
 #[cfg(feature = "dev-support")]
 #[doc(hidden)]
 pub mod dev_support;
+mod htj2k97_codeblock_error;
 mod htj2k97_codeblock_oracle;
 #[doc(hidden)]
 mod jpeg_to_htj2k;
@@ -153,11 +143,12 @@ pub mod metrics;
 mod pipeline_map;
 mod resident;
 mod reversible53;
+mod transcode_stage_error;
 
 pub use j2k::J2kProgressionOrder as EncodeProgressionOrder;
 
 /// One separable single-level 2D 5/3 transform result.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Dwt53TwoDimensional<T> {
     /// Low-horizontal, low-vertical band.
     pub ll: Vec<T>,
@@ -178,7 +169,7 @@ pub struct Dwt53TwoDimensional<T> {
 }
 
 /// One separable single-level 2D 9/7 transform result.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Dwt97TwoDimensional<T> {
     /// Low-horizontal, low-vertical band.
     pub ll: Vec<T>,
@@ -200,17 +191,19 @@ pub struct Dwt97TwoDimensional<T> {
 
 pub use dct53_2d::{dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear};
 pub use dct97_2d::dct8x8_blocks_then_dwt97_float;
-pub use dct_grid::DctGridError;
+pub use dct_grid::{DctGridError, DctTransformError};
+pub use htj2k97_codeblock_error::{Htj2k97CodeBlockAxis, Htj2k97CodeBlockOptionsError};
 pub use htj2k97_codeblock_oracle::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes, validate_htj2k97_codeblock_options,
 };
 pub use jpeg_to_htj2k::{
     jpeg_to_htj2k, jpeg_to_htj2k_batch, BatchTranscodeReport, EncodedTranscode,
-    EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kCoefficientPath,
-    JpegToHtj2kEncodeOptions, JpegToHtj2kError, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
-    TranscodeBatchProfileRequest, TranscodeBatchProfileRow, TranscodeComponentReport,
-    TranscodeReport, TranscodeTimingReport, TranscodeValidationClassification,
-    TranscodeValidationMetrics, JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
+    EncodedTranscodeBatch, Htj2kEncodeError, Htj2kEncodeErrorKind, JpegTileBatchInput,
+    JpegToHtj2kCoefficientPath, JpegToHtj2kEncodeOptions, JpegToHtj2kError, JpegToHtj2kOptions,
+    JpegToHtj2kTranscoder, TranscodeBatchProfileRequest, TranscodeBatchProfileRow,
+    TranscodeComponentReport, TranscodeReport, TranscodeTimingReport,
+    TranscodeValidationClassification, TranscodeValidationMetrics,
+    JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
 };
 pub use pipeline_map::{
     TranscodePipelineMap, TranscodePipelineStageKind, TranscodePipelineStageReport,
@@ -222,3 +215,4 @@ pub use resident::{
     ResidentDwtSubbandLayout, ResidentHandoffError, ResidentJpegDctGrid, ResidentSampleInfo,
     ResidentSampling,
 };
+pub use transcode_stage_error::TranscodeStageError;

@@ -66,21 +66,44 @@ pub(super) fn wait_submitted_resident_lossless_buffer_encode_batch(
 fn wait_submitted_resident_lossless_buffer_encode_batch_once(
     submitted: &mut SubmittedResidentLosslessMetalBufferEncodeBatch,
 ) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
-    let mut outcomes = Vec::new();
+    let outcome_count = match &submitted.kind {
+        SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty => 0,
+        SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(chunks) => chunks
+            .iter()
+            .try_fold(0usize, |total, chunk| {
+                total.checked_add(chunk.metadatas.len())
+            })
+            .ok_or(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                what: "J2K Metal resident encode outcome collection",
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            })?,
+    };
+    let mut outcome_budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal resident encode outcome collection",
+    );
+    let mut outcomes =
+        outcome_budget.try_vec(outcome_count, "J2K Metal resident encode outcome slots")?;
     match std::mem::replace(
         &mut submitted.kind,
         SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty,
     ) {
         SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty => {}
         SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(chunks) => {
-            outcomes.reserve(chunks.iter().map(|chunk| chunk.metadatas.len()).sum());
             if submitted.options.validation == J2kEncodeValidation::External
                 && submitted.options.block_coding_mode == J2kBlockCodingMode::HighThroughput
                 && chunks.len() > 1
             {
                 let wait_started = compute::metal_profile_stages_enabled().then(Instant::now);
-                let mut chunk_metadatas = Vec::with_capacity(chunks.len());
-                let mut pending_batches = Vec::with_capacity(chunks.len());
+                let mut chunk_budget = crate::batch_allocation::BatchMetadataBudget::new(
+                    "J2K Metal resident encode chunk wait plan",
+                );
+                let mut chunk_metadatas = chunk_budget.try_vec(
+                    chunks.len(),
+                    "J2K Metal resident encode chunk metadata groups",
+                )?;
+                let mut pending_batches = chunk_budget
+                    .try_vec(chunks.len(), "J2K Metal resident encode pending batches")?;
                 for chunk in chunks {
                     chunk_metadatas.push((
                         chunk.metadatas,

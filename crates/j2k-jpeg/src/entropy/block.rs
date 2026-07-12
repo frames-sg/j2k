@@ -443,7 +443,7 @@ fn invalid_huffman_symbol() -> JpegError {
     clippy::cast_possible_truncation,
     reason = "dequantized coefficients are explicitly clamped to i16 before storage"
 )]
-fn clamp_i16(v: i32) -> i16 {
+pub(crate) fn clamp_i16(v: i32) -> i16 {
     if v > i32::from(i16::MAX) {
         i16::MAX
     } else if v < i32::from(i16::MIN) {

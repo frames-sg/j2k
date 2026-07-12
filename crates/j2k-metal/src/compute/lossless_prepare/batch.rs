@@ -2,9 +2,9 @@
 
 use super::{
     lossless_prepare_sizes, metal_profile_coefficient_prep_split_commands_enabled,
-    prepare_lossless_batch_item, take_recyclable_private_buffer, with_runtime_for_session,
-    BatchPrepareItemRequest, Error, J2kLosslessDeviceBatchPrepareItem,
-    J2kPreparedLosslessDeviceCodeBlocks,
+    new_command_buffer, prepare_lossless_batch_item, take_recyclable_private_buffer,
+    with_runtime_for_session, BatchPrepareItemRequest, Error, J2kLosslessDeviceBatchPrepareItem,
+    J2kLosslessPrepareSizes, J2kPreparedLosslessDeviceCodeBlocks,
 };
 
 #[cfg(target_os = "macos")]
@@ -16,8 +16,19 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
         return Ok(Vec::new());
     }
 
-    let mut sizes = Vec::with_capacity(items.len());
-    let mut coefficient_byte_offsets = Vec::with_capacity(items.len());
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal lossless device batch preparation",
+    );
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kLosslessPrepareSizes>(items.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<usize>(items.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPreparedLosslessDeviceCodeBlocks>(
+            items.len(),
+        ),
+    ])?;
+    let mut sizes = budget.try_vec(items.len(), "J2K Metal lossless preparation sizes")?;
+    let mut coefficient_byte_offsets =
+        budget.try_vec(items.len(), "J2K Metal lossless coefficient byte offsets")?;
     let mut total_coefficient_bytes = 0usize;
     for item in &items {
         let item_sizes = lossless_prepare_sizes(item.job).map_err(|err| Error::MetalKernel {
@@ -46,9 +57,10 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
         let shared_command_buffer = if split_prepare_command_buffers {
             None
         } else {
-            Some(runtime.queue.new_command_buffer().to_owned())
+            Some(new_command_buffer(&runtime.queue)?)
         };
-        let mut prepared = Vec::with_capacity(items.len());
+        let mut prepared =
+            budget.try_vec(items.len(), "J2K Metal prepared lossless device items")?;
 
         for ((item, item_sizes), coefficient_byte_offset) in
             items.into_iter().zip(sizes).zip(coefficient_byte_offsets)

@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    error_metrics_i32, flatten_integer_wavelet, float97_reference_coefficients,
+    error_metrics_i32_with_live_budget, flatten_integer_wavelet, float97_reference_coefficients,
     float_direct_97_wavelet_from_component, float_direct_wavelet_from_component,
     float_reference_coefficients, integer_direct_wavelet_from_component,
     integer_reference_coefficients, integer_wavelet_from_first_level, j2k_dwt97_from_wavelet,
-    j2k_dwt_from_integer_wavelet, j2k_dwt_from_wavelet, record_accelerator_dispatch,
-    record_batch_attempt, rounded_wavelet97_i32, rounded_wavelet_i32,
-    validate_component_block_grid, DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator,
-    Instant, IntegerWavelet, JpegDctComponent, JpegToHtj2kCoefficientPath, JpegToHtj2kError,
-    JpegToHtj2kOptions, JpegToHtj2kScratch, PrecomputedHtj2k53Component,
-    PrecomputedHtj2k97Component, TranscodeTimingReport, TranscodeValidationMetrics,
+    j2k_dwt_from_integer_wavelet, j2k_dwt_from_wavelet, precomputed_batch_retained_bytes,
+    record_accelerator_dispatch, record_batch_attempt, rounded_wavelet97_i32, rounded_wavelet_i32,
+    same_geometry_component_groups, validate_component_block_grid, DctGridToReversibleDwt53Job,
+    DctToWaveletStageAccelerator, HostLiveBudget, Instant, IntegerWavelet, JpegDctComponent,
+    JpegToHtj2kCoefficientPath, JpegToHtj2kError, JpegToHtj2kOptions, JpegToHtj2kScratch,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k97Component, TranscodeTimingReport,
+    TranscodeValidationMetrics,
 };
+use crate::allocation::{try_extend_from_slice, try_vec_from_slice, try_vec_with_capacity};
 
 pub(super) struct ComponentTranscodeBatch {
     pub(super) precomputed_components: PrecomputedComponentBatch,
@@ -35,19 +37,25 @@ pub(super) enum PrecomputedComponent {
     Dwt97(PrecomputedHtj2k97Component),
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ComponentBatchRequest<'a> {
+    pub(super) components: &'a [JpegDctComponent],
+    pub(super) component_sampling: &'a [(u8, u8)],
+    pub(super) decomposition_levels: u8,
+    pub(super) options: &'a JpegToHtj2kOptions,
+    pub(super) retained_pipeline_bytes: usize,
+}
+
 pub(super) fn transcode_component_batch(
-    components: &[JpegDctComponent],
-    component_sampling: &[(u8, u8)],
-    decomposition_levels: u8,
-    options: &JpegToHtj2kOptions,
+    request: ComponentBatchRequest<'_>,
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut impl DctToWaveletStageAccelerator,
     timings: &mut TranscodeTimingReport,
 ) -> Result<ComponentTranscodeBatch, JpegToHtj2kError> {
     if matches!(
-        options.coefficient_path,
+        request.options.coefficient_path,
         JpegToHtj2kCoefficientPath::FloatDirectLinear97
-    ) && options.validate_against_integer_reference
+    ) && request.options.validate_against_integer_reference
     {
         return Err(JpegToHtj2kError::Unsupported(
             "integer reversible validation is only defined for 5/3 coefficient paths",
@@ -55,22 +63,21 @@ pub(super) fn transcode_component_batch(
     }
 
     if matches!(
-        options.coefficient_path,
+        request.options.coefficient_path,
         JpegToHtj2kCoefficientPath::IntegerDirect53
     ) {
-        return transcode_integer_component_batch(
-            components,
-            component_sampling,
-            decomposition_levels,
-            options,
-            scratch,
-            accelerator,
-            timings,
-        );
+        return transcode_integer_component_batch(request, scratch, accelerator, timings);
     }
 
-    let mut precomputed_53 = Vec::with_capacity(components.len());
-    let mut precomputed_97 = Vec::with_capacity(components.len());
+    let ComponentBatchRequest {
+        components,
+        component_sampling,
+        decomposition_levels,
+        options,
+        retained_pipeline_bytes,
+    } = request;
+    let mut precomputed_53 = try_vec_with_capacity(components.len())?;
+    let mut precomputed_97 = try_vec_with_capacity(components.len())?;
     let mut float_validation_actual = Vec::new();
     let mut float_validation_expected = Vec::new();
     let mut integer_validation_actual = Vec::new();
@@ -94,31 +101,14 @@ pub(super) fn transcode_component_batch(
             PrecomputedComponent::Dwt97(precomputed) => precomputed_97.push(precomputed),
         }
         if let Some((actual, expected)) = component_result.float_validation_coefficients {
-            float_validation_actual.extend(actual);
-            float_validation_expected.extend(expected);
+            try_extend_from_slice(&mut float_validation_actual, &actual)?;
+            try_extend_from_slice(&mut float_validation_expected, &expected)?;
         }
         if let Some((actual, expected)) = component_result.integer_validation_coefficients {
-            integer_validation_actual.extend(actual);
-            integer_validation_expected.extend(expected);
+            try_extend_from_slice(&mut integer_validation_actual, &actual)?;
+            try_extend_from_slice(&mut integer_validation_expected, &expected)?;
         }
     }
-
-    let float_reference_metrics = if options.validate_against_float_reference {
-        Some(error_metrics_i32(
-            &float_validation_actual,
-            &float_validation_expected,
-        )?)
-    } else {
-        None
-    };
-    let integer_reference_metrics = if options.validate_against_integer_reference {
-        Some(error_metrics_i32(
-            &integer_validation_actual,
-            &integer_validation_expected,
-        )?)
-    } else {
-        None
-    };
 
     let precomputed_components = if matches!(
         options.coefficient_path,
@@ -128,31 +118,41 @@ pub(super) fn transcode_component_batch(
     } else {
         PrecomputedComponentBatch::Dwt53(precomputed_53)
     };
-
-    Ok(ComponentTranscodeBatch {
+    finish_component_batch(
         precomputed_components,
-        float_reference_metrics,
-        integer_reference_metrics,
-    })
+        ValidationCoefficientOwners {
+            float_actual: float_validation_actual,
+            float_expected: float_validation_expected,
+            integer_actual: integer_validation_actual,
+            integer_expected: integer_validation_expected,
+        },
+        options,
+        scratch,
+        retained_pipeline_bytes,
+    )
 }
 
 pub(super) fn transcode_integer_component_batch(
-    components: &[JpegDctComponent],
-    component_sampling: &[(u8, u8)],
-    decomposition_levels: u8,
-    options: &JpegToHtj2kOptions,
+    request: ComponentBatchRequest<'_>,
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut impl DctToWaveletStageAccelerator,
     timings: &mut TranscodeTimingReport,
 ) -> Result<ComponentTranscodeBatch, JpegToHtj2kError> {
-    let mut precomputed_53: Vec<Option<PrecomputedHtj2k53Component>> =
-        (0..components.len()).map(|_| None).collect();
+    let ComponentBatchRequest {
+        components,
+        component_sampling,
+        decomposition_levels,
+        options,
+        retained_pipeline_bytes,
+    } = request;
+    let mut precomputed_53 = try_vec_with_capacity(components.len())?;
+    precomputed_53.resize_with(components.len(), || None);
     let mut float_validation_actual = Vec::new();
     let mut float_validation_expected = Vec::new();
     let mut integer_validation_actual = Vec::new();
     let mut integer_validation_expected = Vec::new();
 
-    for group in same_geometry_component_groups(components) {
+    for group in same_geometry_component_groups(components)? {
         let group_wavelets = integer_wavelets_for_component_group(
             &group,
             components,
@@ -164,61 +164,127 @@ pub(super) fn transcode_integer_component_batch(
         for (component_index, wavelet) in group.into_iter().zip(group_wavelets) {
             let component = &components[component_index];
             let (x_rsiz, y_rsiz) = component_sampling[component_index];
-            let actual_coefficients = flatten_integer_wavelet(&wavelet);
+            let actual_coefficients = flatten_integer_wavelet(&wavelet)?;
             precomputed_53[component_index] = Some(PrecomputedHtj2k53Component {
                 x_rsiz,
                 y_rsiz,
-                dwt: j2k_dwt_from_integer_wavelet(&wavelet),
+                dwt: j2k_dwt_from_integer_wavelet(&wavelet)?,
             });
 
             if options.validate_against_float_reference {
-                float_validation_actual.extend(actual_coefficients.clone());
-                float_validation_expected.extend(float_reference_coefficients(
-                    component,
-                    decomposition_levels,
-                    scratch,
-                )?);
+                try_extend_from_slice(&mut float_validation_actual, &actual_coefficients)?;
+                let expected =
+                    float_reference_coefficients(component, decomposition_levels, scratch)?;
+                try_extend_from_slice(&mut float_validation_expected, &expected)?;
             }
             if options.validate_against_integer_reference {
-                integer_validation_actual.extend(actual_coefficients);
-                integer_validation_expected.extend(integer_reference_coefficients(
-                    component,
-                    decomposition_levels,
-                )?);
+                try_extend_from_slice(&mut integer_validation_actual, &actual_coefficients)?;
+                let expected = integer_reference_coefficients(component, decomposition_levels)?;
+                try_extend_from_slice(&mut integer_validation_expected, &expected)?;
             }
         }
     }
 
+    let mut precomputed_components = try_vec_with_capacity(precomputed_53.len())?;
+    for component in precomputed_53 {
+        precomputed_components.push(component.ok_or(JpegToHtj2kError::Validation(
+            "integer transcode did not produce all components",
+        ))?);
+    }
+
+    finish_component_batch(
+        PrecomputedComponentBatch::Dwt53(precomputed_components),
+        ValidationCoefficientOwners {
+            float_actual: float_validation_actual,
+            float_expected: float_validation_expected,
+            integer_actual: integer_validation_actual,
+            integer_expected: integer_validation_expected,
+        },
+        options,
+        scratch,
+        retained_pipeline_bytes,
+    )
+}
+
+struct ValidationCoefficientOwners {
+    float_actual: Vec<i32>,
+    float_expected: Vec<i32>,
+    integer_actual: Vec<i32>,
+    integer_expected: Vec<i32>,
+}
+
+fn finish_component_batch(
+    precomputed_components: PrecomputedComponentBatch,
+    owners: ValidationCoefficientOwners,
+    options: &JpegToHtj2kOptions,
+    scratch: &JpegToHtj2kScratch,
+    retained_pipeline_bytes: usize,
+) -> Result<ComponentTranscodeBatch, JpegToHtj2kError> {
+    let ValidationCoefficientOwners {
+        float_actual,
+        float_expected,
+        integer_actual,
+        integer_expected,
+    } = owners;
+
     let float_reference_metrics = if options.validate_against_float_reference {
-        Some(error_metrics_i32(
-            &float_validation_actual,
-            &float_validation_expected,
+        let mut budget =
+            component_metrics_budget(&precomputed_components, scratch, retained_pipeline_bytes)?;
+        for capacity in [
+            float_actual.capacity(),
+            float_expected.capacity(),
+            integer_actual.capacity(),
+            integer_expected.capacity(),
+        ] {
+            budget.add_capacity::<i32>(capacity)?;
+        }
+        Some(error_metrics_i32_with_live_budget(
+            &float_actual,
+            &float_expected,
+            budget.live_bytes(),
+            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         )?)
     } else {
         None
     };
+    drop(float_actual);
+    drop(float_expected);
+
     let integer_reference_metrics = if options.validate_against_integer_reference {
-        Some(error_metrics_i32(
-            &integer_validation_actual,
-            &integer_validation_expected,
+        let mut budget =
+            component_metrics_budget(&precomputed_components, scratch, retained_pipeline_bytes)?;
+        budget.add_capacity::<i32>(integer_actual.capacity())?;
+        budget.add_capacity::<i32>(integer_expected.capacity())?;
+        if let Some(metrics) = float_reference_metrics.as_ref() {
+            budget.add_bytes(metrics.absolute_error_histogram.retained_bytes()?)?;
+        }
+        Some(error_metrics_i32_with_live_budget(
+            &integer_actual,
+            &integer_expected,
+            budget.live_bytes(),
+            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         )?)
     } else {
         None
     };
-    let precomputed_components = precomputed_53
-        .into_iter()
-        .map(|component| {
-            component.ok_or(JpegToHtj2kError::Validation(
-                "integer transcode did not produce all components",
-            ))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ComponentTranscodeBatch {
-        precomputed_components: PrecomputedComponentBatch::Dwt53(precomputed_components),
+        precomputed_components,
         float_reference_metrics,
         integer_reference_metrics,
     })
+}
+
+fn component_metrics_budget(
+    precomputed_components: &PrecomputedComponentBatch,
+    scratch: &JpegToHtj2kScratch,
+    retained_pipeline_bytes: usize,
+) -> Result<HostLiveBudget, JpegToHtj2kError> {
+    let mut budget = HostLiveBudget::process_cap();
+    budget.add_bytes(retained_pipeline_bytes)?;
+    budget.add_bytes(scratch.retained_bytes()?)?;
+    budget.add_bytes(precomputed_batch_retained_bytes(precomputed_components)?)?;
+    Ok(budget)
 }
 
 pub(super) fn integer_wavelets_for_component_group(
@@ -229,10 +295,10 @@ pub(super) fn integer_wavelets_for_component_group(
     accelerator: &mut impl DctToWaveletStageAccelerator,
     timings: &mut TranscodeTimingReport,
 ) -> Result<Vec<IntegerWavelet>, JpegToHtj2kError> {
-    let jobs = group
-        .iter()
-        .map(|&component_index| integer_dct_job_for_component(&components[component_index]))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut jobs = try_vec_with_capacity(group.len())?;
+    for &component_index in group {
+        jobs.push(integer_dct_job_for_component(&components[component_index])?);
+    }
     record_batch_attempt(timings, group.len());
     let accelerator_start = Instant::now();
     let accelerated_first_levels = accelerator
@@ -251,62 +317,30 @@ pub(super) fn integer_wavelets_for_component_group(
         timings.component_count = timings.component_count.saturating_add(group.len());
         record_accelerator_dispatch(timings, group.len());
         let decompose_start = Instant::now();
-        let wavelets = first_levels
-            .into_iter()
-            .map(|first_level| integer_wavelet_from_first_level(first_level, decomposition_levels))
-            .collect();
+        let mut wavelets = try_vec_with_capacity(first_levels.len())?;
+        for first_level in first_levels {
+            wavelets.push(integer_wavelet_from_first_level(
+                first_level,
+                decomposition_levels,
+            )?);
+        }
         timings.dwt_decompose_us = timings
             .dwt_decompose_us
             .saturating_add(decompose_start.elapsed().as_micros());
         return Ok(wavelets);
     }
 
-    group
-        .iter()
-        .map(|&component_index| {
-            integer_direct_wavelet_from_component(
-                &components[component_index],
-                decomposition_levels,
-                scratch,
-                accelerator,
-                timings,
-            )
-        })
-        .collect()
-}
-
-pub(super) fn same_geometry_component_groups(components: &[JpegDctComponent]) -> Vec<Vec<usize>> {
-    let mut assigned = vec![false; components.len()];
-    let mut groups = Vec::new();
-
-    for component_index in 0..components.len() {
-        if assigned[component_index] {
-            continue;
-        }
-        assigned[component_index] = true;
-        let mut group = vec![component_index];
-        for candidate_index in component_index + 1..components.len() {
-            if !assigned[candidate_index]
-                && same_component_geometry(
-                    &components[component_index],
-                    &components[candidate_index],
-                )
-            {
-                assigned[candidate_index] = true;
-                group.push(candidate_index);
-            }
-        }
-        groups.push(group);
+    let mut wavelets = try_vec_with_capacity(group.len())?;
+    for &component_index in group {
+        wavelets.push(integer_direct_wavelet_from_component(
+            &components[component_index],
+            decomposition_levels,
+            scratch,
+            accelerator,
+            timings,
+        )?);
     }
-
-    groups
-}
-
-pub(super) fn same_component_geometry(left: &JpegDctComponent, right: &JpegDctComponent) -> bool {
-    left.width == right.width
-        && left.height == right.height
-        && left.block_cols == right.block_cols
-        && left.block_rows == right.block_rows
+    Ok(wavelets)
 }
 
 pub(super) fn integer_dct_job_for_component(
@@ -357,9 +391,9 @@ pub(super) fn component_to_precomputed_htj2k(
                 PrecomputedComponent::Dwt53(PrecomputedHtj2k53Component {
                     x_rsiz,
                     y_rsiz,
-                    dwt: j2k_dwt_from_integer_wavelet(&wavelet),
+                    dwt: j2k_dwt_from_integer_wavelet(&wavelet)?,
                 }),
-                flatten_integer_wavelet(&wavelet),
+                flatten_integer_wavelet(&wavelet)?,
             )
         }
         JpegToHtj2kCoefficientPath::FloatDirectLinear53 => {
@@ -378,7 +412,7 @@ pub(super) fn component_to_precomputed_htj2k(
                         &wavelet,
                         component.width as usize,
                         component.height as usize,
-                    ),
+                    )?,
                 }),
                 rounded_wavelet_i32(&wavelet)?,
             )
@@ -399,7 +433,7 @@ pub(super) fn component_to_precomputed_htj2k(
                         &wavelet,
                         component.width as usize,
                         component.height as usize,
-                    ),
+                    )?,
                 }),
                 rounded_wavelet97_i32(&wavelet)?,
             )
@@ -415,7 +449,7 @@ pub(super) fn component_to_precomputed_htj2k(
                 float_reference_coefficients(component, decomposition_levels, scratch)?
             }
         };
-        Some((actual_coefficients.clone(), expected))
+        Some((try_vec_from_slice(&actual_coefficients)?, expected))
     } else {
         None
     };

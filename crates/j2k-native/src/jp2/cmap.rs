@@ -3,16 +3,20 @@
 use alloc::vec::Vec;
 
 use crate::error::{bail, FormatError, Result};
-use crate::jp2::ImageBoxes;
+use crate::jp2::{allocation::Jp2AllocationBudget, ImageBoxes};
 use crate::reader::BitReader;
 
-pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
+pub(super) fn parse(
+    boxes: &mut ImageBoxes,
+    data: &[u8],
+    budget: &mut Jp2AllocationBudget,
+) -> Result<()> {
     if data.is_empty() || !data.len().is_multiple_of(4) {
         bail!(FormatError::InvalidBox);
     }
 
     let mut reader = BitReader::new(data);
-    let mut entries = Vec::with_capacity(data.len() / 4);
+    let mut entries = budget.try_vec(data.len() / 4, "JP2 component mappings")?;
 
     while !reader.at_end() {
         let component_index = reader.read_u16().ok_or(FormatError::InvalidBox)?;
@@ -36,12 +40,17 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
         });
     }
 
-    boxes.component_mapping = Some(ComponentMappingBox { entries });
+    let replaced = boxes
+        .component_mapping
+        .replace(ComponentMappingBox { entries });
+    if let Some(replaced) = replaced {
+        budget.release_vec(&replaced.entries)?;
+    }
 
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ComponentMappingBox {
     pub(crate) entries: Vec<ComponentMappingEntry>,
 }

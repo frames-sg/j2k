@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    native_samples_equal, raw_pixel_bytes_per_sample, read_le_sample_value, sign_extend_sample,
-    vec, BlockCodingMode, DecodeSettings, EncodeComponentSampleInfo, EncodeOptions, Image, Vec,
+    allocation::checked_add_bytes, native_samples_equal, BlockCodingMode,
+    EncodeComponentSampleInfo, EncodeOptions, Vec,
 };
+use crate::{DecodeError, DecodeSettings, DecoderContext, EncodeError, EncodeResult, Image};
+
+#[cfg(test)]
+mod tests;
 
 #[expect(
     clippy::too_many_arguments,
@@ -11,6 +15,7 @@ use super::{
 )]
 pub(super) fn validate_htj2k_codestream(
     codestream: &[u8],
+    codestream_capacity: usize,
     pixels: &[u8],
     width: u32,
     height: u32,
@@ -18,26 +23,65 @@ pub(super) fn validate_htj2k_codestream(
     bit_depth: u8,
     signed: bool,
     reversible: bool,
-) -> Result<(), &'static str> {
-    let image = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|_| "generated HTJ2K codestream failed self-validation")?;
+) -> EncodeResult<()> {
+    let image = Image::new_with_retained_baseline(
+        codestream,
+        &DecodeSettings::default(),
+        codestream_capacity,
+    )
+    .map_err(map_self_validation_decode_error)?;
+    let retained_decode_baseline = checked_add_bytes(
+        codestream_capacity,
+        image
+            .retained_allocation_bytes()
+            .map_err(map_self_validation_decode_error)?,
+        "HTJ2K self-validation retained output and metadata",
+    )?;
+    let mut decoder_context = DecoderContext::default();
     let decoded = image
-        .decode_native()
-        .map_err(|_| "generated HTJ2K codestream failed self-validation")?;
+        .decode_native_with_context_and_retained_baseline(
+            &mut decoder_context,
+            retained_decode_baseline,
+        )
+        .map_err(map_self_validation_decode_error)?;
 
     if decoded.width != width
         || decoded.height != height
         || decoded.bit_depth != bit_depth
         || decoded.num_components != num_components
     {
-        return Err("generated HTJ2K codestream failed self-validation");
+        return Err(EncodeError::CodestreamValidation {
+            detail: "generated HTJ2K codestream failed self-validation",
+        });
     }
 
     if reversible && !native_samples_equal(pixels, &decoded.data, bit_depth, signed) {
-        return Err("generated HTJ2K codestream did not roundtrip");
+        return Err(EncodeError::CodestreamValidation {
+            detail: "generated HTJ2K codestream did not roundtrip",
+        });
     }
 
     Ok(())
+}
+
+fn map_self_validation_decode_error(error: DecodeError) -> EncodeError {
+    match error {
+        DecodeError::AllocationTooLarge {
+            what,
+            requested,
+            cap,
+        } => EncodeError::AllocationTooLarge {
+            what,
+            requested,
+            cap,
+        },
+        DecodeError::HostAllocationFailed { what, bytes } => {
+            EncodeError::HostAllocationFailed { what, bytes }
+        }
+        _ => EncodeError::CodestreamValidation {
+            detail: "generated HTJ2K codestream failed self-validation",
+        },
+    }
 }
 
 pub(super) fn validate_reversible_i64_encode_options(
@@ -65,39 +109,6 @@ pub(super) fn validate_reversible_i64_encode_options(
         return Err("25-38 bit encode currently requires full-resolution components");
     }
     Ok(())
-}
-
-pub(super) fn deinterleave_to_i64(
-    pixels: &[u8],
-    num_pixels: usize,
-    num_components: u16,
-    bit_depth: u8,
-    signed: bool,
-) -> Vec<Vec<i64>> {
-    let nc = num_components as usize;
-    let mut components = vec![vec![0_i64; num_pixels]; nc];
-    let unsigned_offset = if signed {
-        0
-    } else {
-        1_i64 << (u32::from(bit_depth) - 1)
-    };
-    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth).unwrap_or(5);
-    for (i, pixel) in pixels
-        .chunks_exact(nc * bytes_per_sample)
-        .take(num_pixels)
-        .enumerate()
-    {
-        for (component_idx, component) in components.iter_mut().enumerate().take(nc) {
-            let offset = component_idx * bytes_per_sample;
-            let raw = read_le_sample_value(&pixel[offset..offset + bytes_per_sample], bit_depth);
-            component[i] = if signed {
-                sign_extend_sample(raw, bit_depth)
-            } else {
-                i64::try_from(raw).unwrap_or(i64::MAX) - unsigned_offset
-            };
-        }
-    }
-    components
 }
 
 pub(super) fn forward_rct_i64(components: &mut [Vec<i64>]) {

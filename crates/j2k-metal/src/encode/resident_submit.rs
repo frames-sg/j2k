@@ -1,11 +1,76 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::resident_prepare::{
+    prepare_planned_resident_lossless_tiles_batch, PreparedResidentLosslessBatchItem,
+};
+
+struct ResidentChunkItems {
+    metadatas: Vec<super::ResidentLosslessBufferEncodeMetadata>,
+    prepare_durations: Vec<Duration>,
+    batch_items: Vec<compute::J2kResidentBatchEncodeItem>,
+}
+
+fn build_resident_chunk_items(
+    prepared: Vec<PreparedResidentLosslessBatchItem>,
+    budget: &mut crate::batch_allocation::BatchMetadataBudget,
+) -> Result<ResidentChunkItems, crate::Error> {
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<
+            super::ResidentLosslessBufferEncodeMetadata,
+        >(prepared.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<Duration>(prepared.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<compute::J2kResidentBatchEncodeItem>(
+            prepared.len(),
+        ),
+    ])?;
+    let mut metadatas = budget.try_vec(prepared.len(), "J2K Metal resident chunk metadata")?;
+    let mut prepare_durations = budget.try_vec(
+        prepared.len(),
+        "J2K Metal resident chunk preparation durations",
+    )?;
+    let mut batch_items =
+        budget.try_vec(prepared.len(), "J2K Metal resident chunk encode items")?;
+    for item in prepared {
+        let PreparedResidentLosslessBatchItem {
+            prepared,
+            prepare_duration,
+        } = item;
+        let mut metadata = prepared.metadata;
+        let codestream = resident_codestream_assembly_job_for_metadata(&metadata);
+        let packet_descriptors = metadata.take_packet_descriptors();
+        let resolutions = metadata.take_packetization_resolutions();
+        batch_items.push(compute::J2kResidentBatchEncodeItem {
+            prepared: prepared.prepared,
+            resolution_count: u32::try_from(metadata.resolution_count).map_err(|_| {
+                crate::Error::MetalKernel {
+                    message: "J2K Metal resident encode resolution count exceeds u32".to_string(),
+                }
+            })?,
+            num_layers: 1,
+            component_count: metadata.plan.components,
+            code_block_count: u32::try_from(metadata.code_block_count).map_err(|_| {
+                crate::Error::MetalKernel {
+                    message: "J2K Metal resident encode code-block count exceeds u32".to_string(),
+                }
+            })?,
+            packet_descriptors,
+            resolutions,
+            codestream,
+        });
+        prepare_durations.push(prepare_duration);
+        metadatas.push(metadata);
+    }
+    Ok(ResidentChunkItems {
+        metadatas,
+        prepare_durations,
+        batch_items,
+    })
+}
 use super::{
     add_resident_prep_wall_duration, compute, resident_codestream_assembly_job_for_metadata,
     resident_lossless_chunk_ranges_from_code_blocks, resident_lossless_code_block_chunk_cap,
     Duration, Instant, J2kBlockCodingMode, MetalLosslessEncodeBatchStats,
-    PlannedResidentLosslessBufferEncode, PreparedResidentLosslessBufferEncode,
-    SubmittedResidentLosslessMetalBufferEncodeBatchKind,
+    PlannedResidentLosslessBufferEncode, SubmittedResidentLosslessMetalBufferEncodeBatchKind,
     SubmittedResidentLosslessMetalBufferEncodeChunk,
 };
 
@@ -44,92 +109,21 @@ pub(super) fn submit_planned_resident_lossless_tiles(
 }
 
 #[cfg(target_os = "macos")]
-struct PreparedResidentLosslessBatchItem {
-    prepared: PreparedResidentLosslessBufferEncode,
-    prepare_duration: Duration,
-}
-
-#[cfg(target_os = "macos")]
-fn prepare_planned_resident_lossless_tiles_batch(
-    planned: Vec<PlannedResidentLosslessBufferEncode>,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<PreparedResidentLosslessBatchItem>, crate::Error> {
-    struct BatchPlanInfo {
-        index: usize,
-        coefficient_count: usize,
-        bytes_per_sample: u8,
-        code_blocks: Vec<compute::J2kLosslessDeviceCodeBlock>,
-    }
-
-    let started = Instant::now();
-    let mut metadatas = Vec::with_capacity(planned.len());
-    let mut plan_infos = Vec::with_capacity(planned.len());
-    for planned in planned {
-        #[cfg(test)]
-        if planned.failure_injection_index == Some(planned.index) {
-            return Err(crate::Error::MetalKernel {
-                message: format!(
-                    "injected J2K Metal resident encode failure at tile {}",
-                    planned.index
-                ),
-            });
-        }
-
-        plan_infos.push(BatchPlanInfo {
-            index: planned.index,
-            coefficient_count: planned.coefficient_count,
-            bytes_per_sample: planned.bytes_per_sample,
-            code_blocks: planned.metadata.plan.code_blocks.clone(),
-        });
-        metadatas.push(planned.metadata);
-    }
-
-    let mut batch_items = Vec::with_capacity(metadatas.len());
-    for (metadata, plan_info) in metadatas.iter().zip(plan_infos) {
-        let tile = metadata.tile.as_tile();
-        batch_items.push(compute::J2kLosslessDeviceBatchPrepareItem {
-            tile_index: plan_info.index,
-            job: compute::J2kLosslessDevicePrepareJob {
-                input: tile.buffer,
-                input_byte_offset: tile.byte_offset,
-                input_width: tile.width,
-                input_height: tile.height,
-                input_pitch_bytes: tile.pitch_bytes,
-                output_width: tile.output_width,
-                output_height: tile.output_height,
-                component_count: metadata.components,
-                bytes_per_sample: plan_info.bytes_per_sample,
-                bit_depth: metadata.bit_depth,
-                num_decomposition_levels: metadata.plan.num_decomposition_levels,
-                coefficient_count: plan_info.coefficient_count,
-            },
-            code_blocks: plan_info.code_blocks,
-        });
-    }
-
-    let prepared = compute::prepare_lossless_device_code_blocks_batch(session, batch_items)?;
-    let prepare_duration = duration_share(started.elapsed(), prepared.len());
-    Ok(metadatas
-        .into_iter()
-        .zip(prepared)
-        .map(|(metadata, prepared)| PreparedResidentLosslessBatchItem {
-            prepared: PreparedResidentLosslessBufferEncode { metadata, prepared },
-            prepare_duration,
-        })
-        .collect())
-}
-
-#[cfg(target_os = "macos")]
 fn submit_planned_resident_ht_lossless_tiles_batch(
     planned: Vec<PlannedResidentLosslessBufferEncode>,
     session: &crate::MetalBackendSession,
     inflight_tiles: usize,
     stats: &mut MetalLosslessEncodeBatchStats,
 ) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
-    let code_block_counts = planned
-        .iter()
-        .map(|planned| planned.metadata.plan.code_blocks.len())
-        .collect::<Vec<_>>();
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident HT chunk plan");
+    let mut code_block_counts =
+        budget.try_vec(planned.len(), "J2K Metal resident HT code-block counts")?;
+    code_block_counts.extend(
+        planned
+            .iter()
+            .map(|planned| planned.metadata.plan.code_blocks.len()),
+    );
     let chunk_ranges = resident_lossless_chunk_ranges_from_code_blocks(
         &code_block_counts,
         inflight_tiles,
@@ -160,10 +154,16 @@ fn submit_planned_resident_classic_lossless_tiles_batch(
     stats: &mut MetalLosslessEncodeBatchStats,
 ) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
     let batch_limit = inflight_tiles.max(1);
-    let chunk_ranges = (0..planned.len())
-        .step_by(batch_limit)
-        .map(|start| start..(start + batch_limit).min(planned.len()))
-        .collect::<Vec<_>>();
+    let chunk_count = planned.len().div_ceil(batch_limit);
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident classic chunk plan");
+    let mut chunk_ranges =
+        budget.try_vec(chunk_count, "J2K Metal resident classic chunk ranges")?;
+    chunk_ranges.extend(
+        (0..planned.len())
+            .step_by(batch_limit)
+            .map(|start| start..(start + batch_limit).min(planned.len())),
+    );
     submit_planned_resident_lossless_tiles_chunked(
         planned,
         session,
@@ -216,54 +216,33 @@ fn submit_planned_resident_lossless_tiles_chunked(
             .unwrap_or(0),
     );
 
-    let mut chunks = Vec::with_capacity(chunk_ranges.len());
+    let mut chunk_budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident submitted chunks");
+    let mut chunks = chunk_budget.try_vec(
+        chunk_ranges.len(),
+        "J2K Metal resident submitted chunk records",
+    )?;
     for range in chunk_ranges {
         let take = range.len();
-        let chunk_planned = planned.drain(..take).collect::<Vec<_>>();
+        let mut iteration_budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal resident chunk preparation",
+        );
+        let mut chunk_planned =
+            iteration_budget.try_vec(take, "J2K Metal resident chunk planned tiles")?;
+        chunk_planned.extend(planned.drain(..take));
         let early_prepare_submit_started =
             (profile_stages && time_prepare_in_submit).then(Instant::now);
         let prep_wall_started = profile_stages.then(Instant::now);
-        let prepared = prepare_planned_resident_lossless_tiles_batch(chunk_planned, session)
-            .map_err(|err| crate::Error::MetalKernel {
-                message: format!("J2K Metal resident {family_name} batch encode failed: {err}"),
-            })?;
+        let prepared = prepare_planned_resident_lossless_tiles_batch(chunk_planned, session)?;
         if let Some(started) = prep_wall_started {
             add_resident_prep_wall_duration(stats, started.elapsed(), profile_stages);
         }
 
-        let mut metadatas = Vec::with_capacity(prepared.len());
-        let mut prepare_durations = Vec::with_capacity(prepared.len());
-        let mut batch_items = Vec::with_capacity(prepared.len());
-        for item in prepared {
-            let PreparedResidentLosslessBatchItem {
-                prepared,
-                prepare_duration,
-            } = item;
-            let metadata = prepared.metadata;
-            let codestream = resident_codestream_assembly_job_for_metadata(&metadata);
-            batch_items.push(compute::J2kResidentBatchEncodeItem {
-                prepared: prepared.prepared,
-                resolution_count: u32::try_from(metadata.plan.resolutions.len()).map_err(|_| {
-                    crate::Error::MetalKernel {
-                        message: "J2K Metal resident encode resolution count exceeds u32"
-                            .to_string(),
-                    }
-                })?,
-                num_layers: 1,
-                component_count: metadata.plan.components,
-                code_block_count: u32::try_from(metadata.plan.code_blocks.len()).map_err(|_| {
-                    crate::Error::MetalKernel {
-                        message: "J2K Metal resident encode code-block count exceeds u32"
-                            .to_string(),
-                    }
-                })?,
-                packet_descriptors: metadata.packet_descriptors.clone(),
-                resolutions: metadata.packetization_resolutions.clone(),
-                codestream,
-            });
-            prepare_durations.push(prepare_duration);
-            metadatas.push(metadata);
-        }
+        let ResidentChunkItems {
+            metadatas,
+            prepare_durations,
+            batch_items,
+        } = build_resident_chunk_items(prepared, &mut iteration_budget)?;
 
         let batch_started = Instant::now();
         let prepare_submit_started = if time_prepare_in_submit {

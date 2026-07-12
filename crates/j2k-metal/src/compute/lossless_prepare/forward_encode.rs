@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    borrow_mut_slice_buffer, checked_buffer_read, checked_buffer_slice, commit_and_wait_metal,
-    copied_slice_buffer, decode_mct_status_error, dispatch_1d_pipeline, label_command_buffer,
-    label_compute_encoder, size_of, with_runtime, zeroed_shared_buffer, Error, J2kForwardIctParams,
-    J2kForwardRctParams, J2kMctStatus, J2kQuantizeSubbandJob, J2kQuantizeSubbandParams,
-    MTLResourceOptions, MTLSize, J2K_MCT_STATUS_OK,
+    checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
+    decode_mct_status_error, dispatch_1d_pipeline, label_command_buffer, label_compute_encoder,
+    new_command_buffer, new_compute_command_encoder, new_shared_buffer, size_of, with_runtime,
+    zeroed_shared_buffer, Error, J2kForwardIctParams, J2kForwardRctParams, J2kMctStatus,
+    J2kQuantizeSubbandJob, J2kQuantizeSubbandParams, MTLSize, J2K_MCT_STATUS_OK,
 };
 
 #[cfg(target_os = "macos")]
@@ -34,13 +34,13 @@ pub(crate) fn encode_forward_rct(
             _reserved1: 0,
             _reserved2: 0,
         };
-        let plane0_buffer = borrow_mut_slice_buffer(&runtime.device, plane0);
-        let plane1_buffer = borrow_mut_slice_buffer(&runtime.device, plane1);
-        let plane2_buffer = borrow_mut_slice_buffer(&runtime.device, plane2);
-        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>());
+        let plane0_buffer = copied_slice_buffer(&runtime.device, plane0)?;
+        let plane1_buffer = copied_slice_buffer(&runtime.device, plane1)?;
+        let plane2_buffer = copied_slice_buffer(&runtime.device, plane2)?;
+        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>())?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.forward_rct);
         encoder.set_buffer(0, Some(&plane0_buffer), 0);
         encoder.set_buffer(1, Some(&plane1_buffer), 0);
@@ -69,12 +69,27 @@ pub(crate) fn encode_forward_rct(
             },
         );
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kMctStatus>(&status_buffer, "forward RCT status")?;
         if status.code != J2K_MCT_STATUS_OK {
             return Err(decode_mct_status_error(status));
         }
+        plane0.copy_from_slice(&checked_buffer_slice::<f32>(
+            &plane0_buffer,
+            len,
+            "forward RCT plane 0",
+        )?);
+        plane1.copy_from_slice(&checked_buffer_slice::<f32>(
+            &plane1_buffer,
+            len,
+            "forward RCT plane 1",
+        )?);
+        plane2.copy_from_slice(&checked_buffer_slice::<f32>(
+            &plane2_buffer,
+            len,
+            "forward RCT plane 2",
+        )?);
 
         Ok(())
     })
@@ -106,13 +121,13 @@ pub(crate) fn encode_forward_ict(
             _reserved1: 0,
             _reserved2: 0,
         };
-        let plane0_buffer = borrow_mut_slice_buffer(&runtime.device, plane0);
-        let plane1_buffer = borrow_mut_slice_buffer(&runtime.device, plane1);
-        let plane2_buffer = borrow_mut_slice_buffer(&runtime.device, plane2);
-        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>());
+        let plane0_buffer = copied_slice_buffer(&runtime.device, plane0)?;
+        let plane1_buffer = copied_slice_buffer(&runtime.device, plane1)?;
+        let plane2_buffer = copied_slice_buffer(&runtime.device, plane2)?;
+        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>())?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.forward_ict);
         encoder.set_buffer(0, Some(&plane0_buffer), 0);
         encoder.set_buffer(1, Some(&plane1_buffer), 0);
@@ -141,12 +156,27 @@ pub(crate) fn encode_forward_ict(
             },
         );
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kMctStatus>(&status_buffer, "forward ICT status")?;
         if status.code != J2K_MCT_STATUS_OK {
             return Err(decode_mct_status_error(status));
         }
+        plane0.copy_from_slice(&checked_buffer_slice::<f32>(
+            &plane0_buffer,
+            len,
+            "forward ICT plane 0",
+        )?);
+        plane1.copy_from_slice(&checked_buffer_slice::<f32>(
+            &plane1_buffer,
+            len,
+            "forward ICT plane 1",
+        )?);
+        plane2.copy_from_slice(&checked_buffer_slice::<f32>(
+            &plane2_buffer,
+            len,
+            "forward ICT plane 2",
+        )?);
 
         Ok(())
     })
@@ -191,10 +221,8 @@ pub(crate) fn encode_quantize_subband(job: J2kQuantizeSubbandJob<'_>) -> Result<
         })?;
 
     with_runtime(|runtime| {
-        let input_buffer = copied_slice_buffer(&runtime.device, job.coefficients);
-        let output_buffer = runtime
-            .device
-            .new_buffer(output_bytes as u64, MTLResourceOptions::StorageModeShared);
+        let input_buffer = copied_slice_buffer(&runtime.device, job.coefficients)?;
+        let output_buffer = new_shared_buffer(&runtime.device, output_bytes)?;
         let params = J2kQuantizeSubbandParams {
             _len: len_u32,
             _step_exponent: u32::from(job.step_exponent),
@@ -206,10 +234,10 @@ pub(crate) fn encode_quantize_subband(job: J2kQuantizeSubbandJob<'_>) -> Result<
             _reserved2: 0,
         };
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        label_command_buffer(command_buffer, "j2k encode-stage quantize_subband");
-        let encoder = command_buffer.new_compute_command_encoder();
-        label_compute_encoder(encoder, "J2K encode-stage quantize_subband");
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        label_command_buffer(&command_buffer, "j2k encode-stage quantize_subband");
+        let encoder = new_compute_command_encoder(&command_buffer)?;
+        label_compute_encoder(&encoder, "J2K encode-stage quantize_subband");
         encoder.set_compute_pipeline_state(&runtime.quantize_subband);
         encoder.set_buffer(0, Some(&input_buffer), 0);
         encoder.set_buffer(1, Some(&output_buffer), 0);
@@ -218,9 +246,9 @@ pub(crate) fn encode_quantize_subband(job: J2kQuantizeSubbandJob<'_>) -> Result<
             size_of::<J2kQuantizeSubbandParams>() as u64,
             (&raw const params).cast(),
         );
-        dispatch_1d_pipeline(encoder, &runtime.quantize_subband, u64::from(len_u32));
+        dispatch_1d_pipeline(&encoder, &runtime.quantize_subband, u64::from(len_u32));
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         checked_buffer_slice::<i32>(&output_buffer, len, "quantized subband")
     })

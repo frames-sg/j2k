@@ -70,25 +70,29 @@ fn encode_huffman_table(
     let mut code = 0u16;
     let mut idx = 0usize;
     for (len_minus_1, count) in bits.iter().copied().enumerate() {
-        let len = u8::try_from(len_minus_1 + 1)
-            .map_err(|_| JpegEncodeError::Internal("Huffman code length exceeds u8".into()))?;
+        let len =
+            u8::try_from(len_minus_1 + 1).map_err(|_| JpegEncodeError::InternalInvariant {
+                reason: "Huffman code length exceeds u8",
+            })?;
         for _ in 0..count {
-            let symbol = *values.get(idx).ok_or_else(|| {
-                JpegEncodeError::Internal("Huffman table count exceeds values".into())
+            let symbol = *values.get(idx).ok_or(JpegEncodeError::InternalInvariant {
+                reason: "Huffman table count exceeds values",
             })?;
             table.codes[symbol as usize] = code;
             table.lens[symbol as usize] = len;
             code = code
                 .checked_add(1)
-                .ok_or_else(|| JpegEncodeError::Internal("Huffman code overflow".into()))?;
+                .ok_or(JpegEncodeError::InternalInvariant {
+                    reason: "Huffman code overflow",
+                })?;
             idx += 1;
         }
         code <<= 1;
     }
     if idx != values.len() {
-        return Err(JpegEncodeError::Internal(
-            "Huffman values exceed table counts".into(),
-        ));
+        return Err(JpegEncodeError::InternalInvariant {
+            reason: "Huffman values exceed table counts",
+        });
     }
     Ok(table)
 }

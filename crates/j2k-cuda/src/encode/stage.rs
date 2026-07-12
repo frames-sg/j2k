@@ -2,39 +2,79 @@
 
 use j2k::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardDwt97Job,
-    J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
-    J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
-    J2kTier1CodeBlockEncodeJob,
+    J2kEncodeStageAccelerator, J2kEncodeStageError, J2kForwardDwt53Job, J2kForwardDwt53Output,
+    J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
+    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
+    J2kPacketizationEncodeJob, J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::{CudaContext, CudaError, CudaHtj2kEncodeResources, CudaJ2kQuantizeJob};
 #[cfg(feature = "cuda-runtime")]
 use std::sync::Arc;
 
+#[cfg(feature = "cuda-runtime")]
+use crate::allocation::HostPhaseBudget;
 use crate::profile;
 
+#[cfg(feature = "cuda-runtime")]
+use super::cuda_component_count_u8;
 #[cfg(feature = "cuda-runtime")]
 use super::htj2k::{
     cuda_encode_ht_code_block, cuda_encode_ht_code_blocks, cuda_encode_ht_subband,
     cuda_encode_htj2k_tile_body, cuda_htj2k_encode_tables, encoded_ht_code_blocks_from_cuda,
 };
-use super::packetization::flatten_cuda_htj2k_packetization_job;
 #[cfg(feature = "cuda-runtime")]
 use super::packetization::{
     cuda_packetization_blocks, cuda_packetization_packets, cuda_packetization_subbands,
     cuda_packetization_tag_nodes, cuda_packetization_tag_states,
 };
+use super::packetization::{
+    flatten_cuda_htj2k_packetization_job_classified, CudaHtj2kPacketizationPlanError,
+};
 #[cfg(feature = "cuda-runtime")]
-use super::{cuda_component_count_u8, cuda_dwt53_output_to_j2k, cuda_dwt97_output_to_j2k};
+use super::stage_error::internal_invariant;
+#[cfg(feature = "cuda-runtime")]
+use super::stage_error::runtime_error;
+use super::stage_error::{adapter_error, arithmetic_overflow, CudaStageResult};
+
+#[cfg(feature = "cuda-runtime")]
+mod dwt_output;
+#[cfg(feature = "cuda-runtime")]
+pub(super) use self::dwt_output::cuda_dwt53_output_to_j2k;
+#[cfg(feature = "cuda-runtime")]
+use self::dwt_output::cuda_dwt97_output_to_j2k;
 
 macro_rules! emit_cuda_encode_route {
     ($(($key:expr, $value:expr)),+ $(,)?) => {{
-        if j2k_profile::gpu_route_profile_enabled() {
-            let fields = [$(j2k_profile::ProfileField::label($key, $value)),+];
-            j2k_profile::emit_gpu_route_fields("j2k", "cuda", &fields);
-        }
+        crate::profile::emit_optional_gpu_route_fields(
+            "j2k_cuda_encode_route_fields",
+            || Ok([$(j2k_profile::ProfileField::label($key, $value)?),+]),
+            |fields| j2k_profile::emit_gpu_route_fields("j2k", "cuda", &fields),
+        );
     }};
+}
+
+pub(super) fn cuda_packetization_plan_fallback_reason(
+    error: CudaHtj2kPacketizationPlanError,
+) -> CudaStageResult<&'static str> {
+    match error {
+        CudaHtj2kPacketizationPlanError::Invalid(reason) => Ok(reason),
+        CudaHtj2kPacketizationPlanError::ArithmeticOverflow(what) => Err(arithmetic_overflow(what)),
+        CudaHtj2kPacketizationPlanError::MemoryCapExceeded {
+            what,
+            requested,
+            cap,
+        } => Err(J2kEncodeStageError::memory_cap_exceeded(
+            what, requested, cap,
+        )),
+        CudaHtj2kPacketizationPlanError::HostAllocation { what, bytes } => {
+            Err(J2kEncodeStageError::host_allocation_failed(what, bytes))
+        }
+        CudaHtj2kPacketizationPlanError::Adapter(source) => Err(adapter_error(
+            "prepare CUDA HTJ2K packetization plan",
+            source,
+        )),
+    }
 }
 
 /// CUDA implementation of selected JPEG 2000 encode stages.
@@ -176,12 +216,16 @@ impl CudaEncodeStageAccelerator {
     }
 
     #[cfg(feature = "cuda-runtime")]
-    fn cuda_context(&mut self) -> core::result::Result<Option<CudaContext>, &'static str> {
+    fn cuda_context(&mut self) -> CudaStageResult<Option<CudaContext>> {
         if self.context.is_none() {
             match CudaContext::system_default() {
                 Ok(context) => self.context = Some(context),
-                Err(_) if cuda_runtime_required() => return Err("CUDA encode stage unavailable"),
-                Err(_) => return Ok(None),
+                Err(error) if !cuda_runtime_required() && error.is_unavailable() => {
+                    return Ok(None);
+                }
+                Err(error) => {
+                    return Err(runtime_error("initialize CUDA encode context", error));
+                }
             }
         }
         Ok(self.context.clone())
@@ -191,16 +235,16 @@ impl CudaEncodeStageAccelerator {
     fn cuda_encode_resources(
         &mut self,
         context: &CudaContext,
-    ) -> core::result::Result<Arc<CudaHtj2kEncodeResources>, &'static str> {
+    ) -> CudaStageResult<Arc<CudaHtj2kEncodeResources>> {
         if self.encode_resources.is_none() {
             let resources = context
                 .upload_htj2k_encode_resources(cuda_htj2k_encode_tables())
-                .map_err(|_| "CUDA HTJ2K encode resource upload failed")?;
+                .map_err(|error| runtime_error("upload CUDA HTJ2K encode resources", error))?;
             self.encode_resources = Some(Arc::new(resources));
         }
         self.encode_resources
             .clone()
-            .ok_or("CUDA HTJ2K encode resources unavailable")
+            .ok_or_else(|| internal_invariant("CUDA HTJ2K encode resources unavailable"))
     }
 
     pub(super) fn encode_profile_report(
@@ -356,15 +400,9 @@ pub(super) fn time_cuda_stage<T>(
     name: &'static str,
     context: &CudaContext,
     collect_profile: bool,
-    work: impl FnOnce() -> core::result::Result<T, CudaError>,
+    work: impl FnMut() -> core::result::Result<T, CudaError>,
 ) -> core::result::Result<(T, u128), CudaError> {
-    if collect_profile {
-        context.time_default_stream_named_us(name, work)
-    } else {
-        context
-            .with_nvtx_range(name, work)
-            .map(|output| (output, 0))
-    }
+    context.time_default_stream_named_us_if(collect_profile, name, work)
 }
 
 /// Cumulative CUDA encode-stage timings collected by `CudaEncodeStageAccelerator`.
@@ -410,17 +448,17 @@ impl CudaEncodeStageTimings {
     }
 }
 
-fn ht_subband_code_block_count(
-    job: J2kHtSubbandEncodeJob<'_>,
-) -> core::result::Result<usize, &'static str> {
+fn ht_subband_code_block_count(job: J2kHtSubbandEncodeJob<'_>) -> CudaStageResult<usize> {
     if job.code_block_width == 0 || job.code_block_height == 0 {
-        return Err("CUDA HTJ2K subband encode job has invalid code-block dimensions");
+        return Err(J2kEncodeStageError::invalid_request(
+            "CUDA HTJ2K subband encode job has invalid code-block dimensions",
+        ));
     }
     let num_cbs_x = job.width.div_ceil(job.code_block_width);
     let num_cbs_y = job.height.div_ceil(job.code_block_height);
     (num_cbs_x as usize)
         .checked_mul(num_cbs_y as usize)
-        .ok_or("CUDA HTJ2K subband code-block count overflow")
+        .ok_or_else(|| arithmetic_overflow("CUDA HTJ2K subband code-block count overflow"))
 }
 
 #[doc(hidden)]
@@ -442,7 +480,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_deinterleave(
         &mut self,
         job: J2kDeinterleaveToF32Job<'_>,
-    ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+    ) -> CudaStageResult<Option<Vec<Vec<f32>>>> {
         self.deinterleave_attempts = self.deinterleave_attempts.saturating_add(1);
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
@@ -464,7 +502,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                     )
                 },
             )
-            .map_err(|_| "CUDA deinterleave encode kernel failed")?;
+            .map_err(|error| runtime_error("deinterleave encode pixels", error))?;
             let dispatches = output.execution().kernel_dispatches();
             self.deinterleave_dispatches = self.deinterleave_dispatches.saturating_add(dispatches);
             self.deinterleave_us = self.deinterleave_us.saturating_add(elapsed_us);
@@ -487,10 +525,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         Ok(None)
     }
 
-    fn encode_forward_rct(
-        &mut self,
-        job: J2kForwardRctJob<'_>,
-    ) -> core::result::Result<bool, &'static str> {
+    fn encode_forward_rct(&mut self, job: J2kForwardRctJob<'_>) -> CudaStageResult<bool> {
         self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
         if self.prefer_cpu_forward_rct {
             emit_cuda_encode_route!(
@@ -509,7 +544,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 self.collect_profile,
                 || context.j2k_forward_rct(job.plane0, job.plane1, job.plane2),
             )
-            .map_err(|_| "CUDA forward RCT encode kernel failed")?;
+            .map_err(|error| runtime_error("apply forward RCT", error))?;
             self.forward_rct_dispatches = self
                 .forward_rct_dispatches
                 .saturating_add(execution.kernel_dispatches());
@@ -531,10 +566,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         Ok(false)
     }
 
-    fn encode_forward_ict(
-        &mut self,
-        job: J2kForwardIctJob<'_>,
-    ) -> core::result::Result<bool, &'static str> {
+    fn encode_forward_ict(&mut self, job: J2kForwardIctJob<'_>) -> CudaStageResult<bool> {
         self.forward_ict_attempts = self.forward_ict_attempts.saturating_add(1);
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
@@ -544,7 +576,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 self.collect_profile,
                 || context.j2k_forward_ict(job.plane0, job.plane1, job.plane2),
             )
-            .map_err(|_| "CUDA forward ICT encode kernel failed")?;
+            .map_err(|error| runtime_error("apply forward ICT", error))?;
             self.forward_ict_dispatches = self
                 .forward_ict_dispatches
                 .saturating_add(execution.kernel_dispatches());
@@ -569,7 +601,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_forward_dwt53(
         &mut self,
         job: J2kForwardDwt53Job<'_>,
-    ) -> core::result::Result<Option<J2kForwardDwt53Output>, &'static str> {
+    ) -> CudaStageResult<Option<J2kForwardDwt53Output>> {
         self.forward_dwt53_attempts = self.forward_dwt53_attempts.saturating_add(1);
         if job.num_levels == 0 {
             emit_cuda_encode_route!(
@@ -587,7 +619,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 self.collect_profile,
                 || context.j2k_forward_dwt53(job.samples, job.width, job.height, job.num_levels),
             )
-            .map_err(|_| "CUDA forward 5/3 DWT encode kernel failed")?;
+            .map_err(|error| runtime_error("apply forward 5/3 DWT", error))?;
             let dispatches = output.execution().kernel_dispatches();
             self.forward_dwt53_dispatches =
                 self.forward_dwt53_dispatches.saturating_add(dispatches);
@@ -615,7 +647,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_forward_dwt97(
         &mut self,
         job: J2kForwardDwt97Job<'_>,
-    ) -> core::result::Result<Option<J2kForwardDwt97Output>, &'static str> {
+    ) -> CudaStageResult<Option<J2kForwardDwt97Output>> {
         self.forward_dwt97_attempts = self.forward_dwt97_attempts.saturating_add(1);
         if job.num_levels == 0 {
             emit_cuda_encode_route!(
@@ -633,7 +665,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 self.collect_profile,
                 || context.j2k_forward_dwt97(job.samples, job.width, job.height, job.num_levels),
             )
-            .map_err(|_| "CUDA forward 9/7 DWT encode kernel failed")?;
+            .map_err(|error| runtime_error("apply forward 9/7 DWT", error))?;
             let dispatches = output.execution().kernel_dispatches();
             self.forward_dwt97_dispatches =
                 self.forward_dwt97_dispatches.saturating_add(dispatches);
@@ -661,7 +693,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_quantize_subband(
         &mut self,
         job: J2kQuantizeSubbandJob<'_>,
-    ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+    ) -> CudaStageResult<Option<Vec<i32>>> {
         self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
         if self.prefer_cpu_quantize_subband {
             emit_cuda_encode_route!(
@@ -690,7 +722,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                     )
                 },
             )
-            .map_err(|_| "CUDA quantize subband encode kernel failed")?;
+            .map_err(|error| runtime_error("quantize encode subband", error))?;
             let dispatches = output.execution().kernel_dispatches();
             self.quantize_subband_dispatches =
                 self.quantize_subband_dispatches.saturating_add(dispatches);
@@ -701,7 +733,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 ("samples", job.coefficients.len()),
                 ("dispatches", dispatches),
             );
-            return Ok(Some(output.coefficients().to_vec()));
+            return Ok(Some(output.into_coefficients()));
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
@@ -716,7 +748,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_tier1_code_block(
         &mut self,
         _job: J2kTier1CodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
+    ) -> CudaStageResult<Option<EncodedJ2kCodeBlock>> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(1);
         emit_cuda_encode_route!(
             ("op", "encode_tier1_code_block"),
@@ -729,7 +761,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_ht_code_block(
         &mut self,
         job: J2kHtCodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+    ) -> CudaStageResult<Option<EncodedHtJ2kCodeBlock>> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(1);
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
@@ -737,10 +769,10 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             let encoded = cuda_encode_ht_code_block(&context, resources.as_ref(), job)?;
             let dispatches = encoded.execution().kernel_dispatches();
             let ht_encode_us = encoded.stage_timings().ht_encode_us;
-            let mut outputs = encoded_ht_code_blocks_from_cuda(&encoded);
-            let output = outputs
-                .pop()
-                .ok_or("CUDA HTJ2K code-block encode returned no output")?;
+            let mut outputs = encoded_ht_code_blocks_from_cuda(encoded)?;
+            let output = outputs.pop().ok_or_else(|| {
+                internal_invariant("CUDA HTJ2K code-block encode returned no output")
+            })?;
             self.ht_code_block_dispatches =
                 self.ht_code_block_dispatches.saturating_add(dispatches);
             if self.collect_profile {
@@ -768,7 +800,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_ht_code_blocks(
         &mut self,
         jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+    ) -> CudaStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(jobs.len());
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
@@ -776,7 +808,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             let encoded = cuda_encode_ht_code_blocks(&context, resources.as_ref(), jobs)?;
             let dispatches = encoded.execution().kernel_dispatches();
             let ht_encode_us = encoded.stage_timings().ht_encode_us;
-            let outputs = encoded_ht_code_blocks_from_cuda(&encoded);
+            let outputs = encoded_ht_code_blocks_from_cuda(encoded)?;
             self.ht_code_block_dispatches =
                 self.ht_code_block_dispatches.saturating_add(dispatches);
             if self.collect_profile {
@@ -807,7 +839,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_htj2k_tile(
         &mut self,
         job: J2kHtj2kTileEncodeJob<'_>,
-    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+    ) -> CudaStageResult<Option<Vec<u8>>> {
         self.htj2k_tile_attempts = self.htj2k_tile_attempts.saturating_add(1);
         if self.prefer_cpu_forward_rct || self.prefer_cpu_packetization {
             emit_cuda_encode_route!(
@@ -916,7 +948,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_ht_subband(
         &mut self,
         job: J2kHtSubbandEncodeJob<'_>,
-    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+    ) -> CudaStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
         let code_block_count = ht_subband_code_block_count(job)?;
         self.ht_subband_attempts = self.ht_subband_attempts.saturating_add(1);
         self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
@@ -936,7 +968,8 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 cuda_encode_ht_subband(&context, resources.as_ref(), job, self.collect_profile)?;
             let quantize_dispatches = encoded.quantize_dispatches;
             let encode_dispatches = encoded.encode.execution().kernel_dispatches();
-            let outputs = encoded_ht_code_blocks_from_cuda(&encoded.encode);
+            let timings = encoded.timings;
+            let outputs = encoded_ht_code_blocks_from_cuda(encoded.encode)?;
             self.ht_subband_dispatches = self.ht_subband_dispatches.saturating_add(1);
             self.quantize_subband_dispatches = self
                 .quantize_subband_dispatches
@@ -945,10 +978,8 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 .ht_code_block_dispatches
                 .saturating_add(encode_dispatches);
             if self.collect_profile {
-                self.quantize_us = self.quantize_us.saturating_add(encoded.timings.quantize_us);
-                self.ht_encode_us = self
-                    .ht_encode_us
-                    .saturating_add(encoded.timings.ht_encode_us);
+                self.quantize_us = self.quantize_us.saturating_add(timings.quantize_us);
+                self.ht_encode_us = self.ht_encode_us.saturating_add(timings.ht_encode_us);
             }
             emit_cuda_encode_route!(
                 ("op", "encode_ht_subband"),
@@ -974,7 +1005,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_packetization(
         &mut self,
         job: J2kPacketizationEncodeJob<'_>,
-    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+    ) -> CudaStageResult<Option<Vec<u8>>> {
         self.packetization_attempts = self.packetization_attempts.saturating_add(1);
         if self.prefer_cpu_packetization {
             emit_cuda_encode_route!(
@@ -985,9 +1016,10 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             let _ = job;
             return Ok(None);
         }
-        let plan = match flatten_cuda_htj2k_packetization_job(job) {
+        let plan = match flatten_cuda_htj2k_packetization_job_classified(job) {
             Ok(plan) => plan,
-            Err(reason) => {
+            Err(error) => {
+                let reason = cuda_packetization_plan_fallback_reason(error)?;
                 emit_cuda_encode_route!(
                     ("op", "encode_packetization"),
                     ("decision", "cpu_fallback"),
@@ -998,21 +1030,41 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         };
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
-            let packets = cuda_packetization_packets(&plan);
-            let subbands = cuda_packetization_subbands(&plan);
-            let blocks = cuda_packetization_blocks(&plan);
-            let tag_states = cuda_packetization_tag_states(&plan);
-            let tag_nodes = cuda_packetization_tag_nodes(&plan);
+            let mut host_budget = HostPhaseBudget::new("j2k CUDA HTJ2K staged packetization");
+            host_budget
+                .account_vec(&plan.payload)
+                .map_err(|error| adapter_error("retain CUDA packetization payload", error))?;
+            host_budget
+                .account_vec(&plan.packets)
+                .map_err(|error| adapter_error("retain CUDA packet descriptors", error))?;
+            host_budget
+                .account_vec(&plan.subbands)
+                .map_err(|error| adapter_error("retain CUDA packet subbands", error))?;
+            host_budget
+                .account_vec(&plan.blocks)
+                .map_err(|error| adapter_error("retain CUDA packet blocks", error))?;
+            host_budget
+                .account_vec(&plan.tag_states)
+                .map_err(|error| adapter_error("retain CUDA packet tag states", error))?;
+            host_budget
+                .account_vec(&plan.tag_nodes)
+                .map_err(|error| adapter_error("retain CUDA packet tag nodes", error))?;
+            let packets = cuda_packetization_packets(&plan, &mut host_budget)?;
+            let subbands = cuda_packetization_subbands(&plan, &mut host_budget)?;
+            let blocks = cuda_packetization_blocks(&plan, &mut host_budget)?;
+            let tag_states = cuda_packetization_tag_states(&plan, &mut host_budget)?;
+            let tag_nodes = cuda_packetization_tag_nodes(&plan, &mut host_budget)?;
             let packetized = context
-                .packetize_htj2k_cleanup_packets_with_tag_state(
+                .packetize_htj2k_cleanup_packets_with_tag_state_and_live_host_bytes(
                     &plan.payload,
                     &packets,
                     &subbands,
                     &blocks,
                     &tag_states,
                     &tag_nodes,
+                    host_budget.live_bytes(),
                 )
-                .map_err(|_| "CUDA HTJ2K packetization kernel failed")?;
+                .map_err(|error| runtime_error("packetize HTJ2K cleanup packets", error))?;
             let dispatches = packetized.execution().kernel_dispatches();
             let packetize_us = packetized.stage_timings().packetize_us;
             self.packetization_dispatches =
@@ -1026,7 +1078,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 ("packets", packets.len()),
                 ("dispatches", dispatches),
             );
-            return Ok(Some(packetized.data().to_vec()));
+            return Ok(Some(packetized.into_data()));
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = plan;

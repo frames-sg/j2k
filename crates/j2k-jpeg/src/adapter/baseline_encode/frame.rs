@@ -2,8 +2,6 @@
 
 //! Exact baseline JPEG marker, table-segment, and frame assembly.
 
-use alloc::vec::Vec;
-
 use super::tables::{
     JPEG_BASELINE_ZIGZAG, STD_CHROMA_AC_BITS, STD_CHROMA_AC_VALUES, STD_CHROMA_DC_BITS,
     STD_CHROMA_DC_VALUES, STD_LUMA_AC_BITS, STD_LUMA_AC_VALUES, STD_LUMA_DC_BITS,
@@ -13,6 +11,7 @@ use super::types::{JpegBaselineEncodeTables, JpegBaselineSampling};
 use super::validation::{
     validate_jpeg_baseline_dimensions, validate_jpeg_baseline_restart_interval,
 };
+use crate::encoded_output::{checked_jpeg_baseline_frame_capacity, CappedBytes};
 use crate::encoder::{EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions};
 
 /// Assemble a complete baseline JPEG codestream from entropy bytes and tables.
@@ -27,8 +26,9 @@ pub fn assemble_jpeg_baseline_frame(
     validate_jpeg_baseline_dimensions(width, height)?;
     validate_jpeg_baseline_restart_interval(options.restart_interval)?;
 
-    let mut out = Vec::with_capacity(768usize.saturating_add(entropy.len()));
-    write_marker(&mut out, 0xD8);
+    let frame_capacity = checked_jpeg_baseline_frame_capacity(entropy.len())?;
+    let mut out = CappedBytes::try_with_capacity(frame_capacity, frame_capacity)?;
+    write_marker(&mut out, 0xD8)?;
     write_dqt(&mut out, 0, &tables.q_luma)?;
     if tables.sampling.components == 3 {
         write_dqt(&mut out, 1, &tables.q_chroma)?;
@@ -44,10 +44,13 @@ pub fn assemble_jpeg_baseline_frame(
         write_dht(&mut out, 1, 1, &STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES)?;
     }
     write_sos(&mut out, tables.sampling.components)?;
-    out.extend_from_slice(entropy);
-    write_marker(&mut out, 0xD9);
+    out.extend_from_slice(entropy)?;
+    write_marker(&mut out, 0xD9)?;
 
-    Ok(EncodedJpeg { data: out, backend })
+    Ok(EncodedJpeg {
+        data: out.into_vec(),
+        backend,
+    })
 }
 
 pub(crate) fn assemble_jpeg_baseline_frame_with_quant_tables(
@@ -61,12 +64,13 @@ pub(crate) fn assemble_jpeg_baseline_frame_with_quant_tables(
 ) -> Result<EncodedJpeg, JpegEncodeError> {
     validate_jpeg_baseline_dimensions(width, height)?;
 
-    let mut out = Vec::with_capacity(768usize.saturating_add(entropy.len()));
-    write_marker(&mut out, 0xD8);
+    let frame_capacity = checked_jpeg_baseline_frame_capacity(entropy.len())?;
+    let mut out = CappedBytes::try_with_capacity(frame_capacity, frame_capacity)?;
+    write_marker(&mut out, 0xD8)?;
     write_dqt(&mut out, 0, q_luma)?;
     if sampling.components == 3 {
-        let q_chroma = q_chroma.ok_or_else(|| {
-            JpegEncodeError::Internal("three-component DCT JPEG requires chroma quant table".into())
+        let q_chroma = q_chroma.ok_or(JpegEncodeError::InternalInvariant {
+            reason: "three-component DCT JPEG requires chroma quant table",
         })?;
         write_dqt(&mut out, 1, q_chroma)?;
     }
@@ -78,49 +82,60 @@ pub(crate) fn assemble_jpeg_baseline_frame_with_quant_tables(
         write_dht(&mut out, 1, 1, &STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES)?;
     }
     write_sos(&mut out, sampling.components)?;
-    out.extend_from_slice(entropy);
-    write_marker(&mut out, 0xD9);
+    out.extend_from_slice(entropy)?;
+    write_marker(&mut out, 0xD9)?;
 
-    Ok(EncodedJpeg { data: out, backend })
+    Ok(EncodedJpeg {
+        data: out.into_vec(),
+        backend,
+    })
 }
 
-fn write_marker(out: &mut Vec<u8>, marker: u8) {
-    out.push(0xFF);
-    out.push(marker);
+fn write_marker(out: &mut CappedBytes, marker: u8) -> Result<(), JpegEncodeError> {
+    out.push(0xFF)?;
+    out.push(marker)
 }
 
 fn write_segment(
-    out: &mut Vec<u8>,
+    out: &mut CappedBytes,
     marker: u8,
     payload: &[u8],
     name: &'static str,
 ) -> Result<(), JpegEncodeError> {
-    let len = payload
-        .len()
+    write_segment_header(out, marker, payload.len(), name)?;
+    out.extend_from_slice(payload)
+}
+
+fn write_segment_header(
+    out: &mut CappedBytes,
+    marker: u8,
+    payload_len: usize,
+    name: &'static str,
+) -> Result<(), JpegEncodeError> {
+    let len = payload_len
         .checked_add(2)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or(JpegEncodeError::SegmentTooLarge { name })?;
-    write_marker(out, marker);
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(payload);
+    write_marker(out, marker)?;
+    out.extend_from_slice(&len.to_be_bytes())?;
     Ok(())
 }
 
-fn write_dqt(out: &mut Vec<u8>, table_id: u8, quant: &[u8; 64]) -> Result<(), JpegEncodeError> {
-    let mut payload = Vec::with_capacity(65);
-    payload.push(table_id);
+fn write_dqt(out: &mut CappedBytes, table_id: u8, quant: &[u8; 64]) -> Result<(), JpegEncodeError> {
+    write_segment_header(out, 0xDB, 65, "DQT")?;
+    out.push(table_id)?;
     for &natural_idx in &JPEG_BASELINE_ZIGZAG {
-        payload.push(quant[natural_idx as usize]);
+        out.push(quant[natural_idx as usize])?;
     }
-    write_segment(out, 0xDB, &payload, "DQT")
+    Ok(())
 }
 
-fn write_dri(out: &mut Vec<u8>, restart_interval: u16) -> Result<(), JpegEncodeError> {
+fn write_dri(out: &mut CappedBytes, restart_interval: u16) -> Result<(), JpegEncodeError> {
     write_segment(out, 0xDD, &restart_interval.to_be_bytes(), "DRI")
 }
 
 fn write_sof0(
-    out: &mut Vec<u8>,
+    out: &mut CappedBytes,
     width: u32,
     height: u32,
     sampling: JpegBaselineSampling,
@@ -131,44 +146,44 @@ fn write_sof0(
         width,
         height: u32::from(height),
     })?;
-    let mut payload = Vec::with_capacity(6 + sampling.components as usize * 3);
-    payload.push(8);
-    payload.extend_from_slice(&height.to_be_bytes());
-    payload.extend_from_slice(&width.to_be_bytes());
-    payload.push(sampling.components);
+    write_segment_header(out, 0xC0, 6 + usize::from(sampling.components) * 3, "SOF0")?;
+    out.push(8)?;
+    out.extend_from_slice(&height.to_be_bytes())?;
+    out.extend_from_slice(&width.to_be_bytes())?;
+    out.push(sampling.components)?;
     for component in 0..sampling.components as usize {
-        let component_id = u8::try_from(component + 1)
-            .map_err(|_| JpegEncodeError::Internal("JPEG component id exceeds u8".into()))?;
-        payload.push(component_id);
-        payload.push((sampling.h[component] << 4) | sampling.v[component]);
-        payload.push(u8::from(component != 0));
+        let component_id =
+            u8::try_from(component + 1).map_err(|_| JpegEncodeError::InternalInvariant {
+                reason: "JPEG component id exceeds u8",
+            })?;
+        out.push(component_id)?;
+        out.push((sampling.h[component] << 4) | sampling.v[component])?;
+        out.push(u8::from(component != 0))?;
     }
-    write_segment(out, 0xC0, &payload, "SOF0")
+    Ok(())
 }
 
 fn write_dht(
-    out: &mut Vec<u8>,
+    out: &mut CappedBytes,
     class: u8,
     table_id: u8,
     bits: &[u8; 16],
     values: &[u8],
 ) -> Result<(), JpegEncodeError> {
-    let mut payload = Vec::with_capacity(17 + values.len());
-    payload.push((class << 4) | table_id);
-    payload.extend_from_slice(bits);
-    payload.extend_from_slice(values);
-    write_segment(out, 0xC4, &payload, "DHT")
+    write_segment_header(out, 0xC4, 17 + values.len(), "DHT")?;
+    out.push((class << 4) | table_id)?;
+    out.extend_from_slice(bits)?;
+    out.extend_from_slice(values)
 }
 
-fn write_sos(out: &mut Vec<u8>, components: u8) -> Result<(), JpegEncodeError> {
-    let mut payload = Vec::with_capacity(4 + components as usize * 2);
-    payload.push(components);
+fn write_sos(out: &mut CappedBytes, components: u8) -> Result<(), JpegEncodeError> {
+    write_segment_header(out, 0xDA, 4 + usize::from(components) * 2, "SOS")?;
+    out.push(components)?;
     for component in 0..components {
-        payload.push(component + 1);
-        payload.push(if component == 0 { 0x00 } else { 0x11 });
+        out.push(component + 1)?;
+        out.push(if component == 0 { 0x00 } else { 0x11 })?;
     }
-    payload.push(0);
-    payload.push(63);
-    payload.push(0);
-    write_segment(out, 0xDA, &payload, "SOS")
+    out.push(0)?;
+    out.push(63)?;
+    out.push(0)
 }

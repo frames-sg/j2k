@@ -43,7 +43,10 @@ fn decode_to_metal_matches_cpu_decode_bytes() {
     assert_eq!(surface.dimensions(), dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
     assert_eq!(surface.byte_len(), host.len());
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -154,7 +157,10 @@ fn fast422_decode_to_metal_matches_cpu_decode_bytes() {
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -215,7 +221,10 @@ fn region_and_scaled_metal_bytes_match_cpu_decode() {
             roi,
         )
         .expect("cpu region");
-    assert_eq!(region_surface.as_bytes(), region_host.as_slice());
+    assert_eq!(
+        region_surface.as_bytes().expect("surface byte access"),
+        region_host.as_slice()
+    );
 
     let scaled_surface = metal_decoder
         .decode_scaled_to_device(
@@ -234,7 +243,10 @@ fn region_and_scaled_metal_bytes_match_cpu_decode() {
             j2k_core::Downscale::Quarter,
         )
         .expect("cpu scaled");
-    assert_eq!(scaled_surface.as_bytes(), scaled_host.as_slice());
+    assert_eq!(
+        scaled_surface.as_bytes().expect("surface byte access"),
+        scaled_host.as_slice()
+    );
 }
 
 #[test]
@@ -287,7 +299,10 @@ fn region_scaled_metal_bytes_match_cpu_decode() {
         .expect("cpu region scaled");
 
     assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]

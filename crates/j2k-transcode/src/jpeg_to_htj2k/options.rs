@@ -2,8 +2,11 @@
 
 use std::vec::Vec;
 
+use crate::allocation::try_vec_from_slice;
 use j2k::IrreversibleQuantizationSubbandScales;
 use j2k::J2kProgressionOrder;
+
+use super::JpegToHtj2kError;
 
 /// Default irreversible quantization multiplier for JPEG direct 9/7 HTJ2K.
 ///
@@ -103,8 +106,8 @@ impl Default for JpegToHtj2kEncodeOptions {
 }
 
 impl JpegToHtj2kEncodeOptions {
-    pub(super) fn to_native(&self) -> j2k_native::EncodeOptions {
-        j2k_native::EncodeOptions {
+    pub(super) fn to_native(&self) -> Result<j2k_native::EncodeOptions, JpegToHtj2kError> {
+        Ok(j2k_native::EncodeOptions {
             num_decomposition_levels: self.num_decomposition_levels,
             reversible: self.reversible,
             code_block_width_exp: self.code_block_width_exp,
@@ -121,16 +124,20 @@ impl JpegToHtj2kEncodeOptions {
             write_eph: self.write_eph,
             use_mct: self.use_mct,
             num_layers: self.num_layers,
-            quality_layer_byte_targets: self.quality_layer_byte_targets.clone(),
+            quality_layer_byte_targets: try_vec_from_slice(&self.quality_layer_byte_targets)?,
             validate_high_throughput_codestream: self.validate_high_throughput_codestream,
             irreversible_quantization_scale: self.irreversible_quantization_scale,
             irreversible_quantization_subband_scales: self.irreversible_quantization_subband_scales,
-            component_sampling: self.component_sampling.clone(),
+            component_sampling: self
+                .component_sampling
+                .as_deref()
+                .map(try_vec_from_slice)
+                .transpose()?,
             tile_size: self.tile_size,
             tile_part_packet_limit: self.tile_part_packet_limit,
-            precinct_exponents: self.precinct_exponents.clone(),
+            precinct_exponents: try_vec_from_slice(&self.precinct_exponents)?,
             roi_component_shifts: Vec::new(),
-        }
+        })
     }
 }
 

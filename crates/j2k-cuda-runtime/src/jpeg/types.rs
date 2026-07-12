@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
+use crate::kernels::CudaLaunchGeometry;
 use crate::{error::CudaError, execution::CudaExecutionStats, memory::CudaDeviceBuffer};
 
 macro_rules! define_cuda_jpeg_rgb8_decode_plan {
@@ -50,13 +52,13 @@ macro_rules! define_cuda_jpeg_rgb8_decode_plan {
 #[doc(hidden)]
 pub struct CudaJpegHuffmanTable {
     /// Largest Huffman code for each bit length; negative means no codes of that length.
-    pub max_code: [i32; 17],
+    pub(crate) max_code: [i32; 17],
     /// Value-index offset for each bit length.
-    pub val_offset: [i32; 17],
+    pub(crate) val_offset: [i32; 17],
     /// Huffman values in canonical order.
-    pub values: [u8; 256],
+    pub(crate) values: [u8; 256],
     /// Number of valid entries in `values`.
-    pub values_len: u32,
+    pub(crate) values_len: u32,
 }
 
 impl CudaJpegHuffmanTable {
@@ -72,6 +74,16 @@ impl CudaJpegHuffmanTable {
             .map_err(|error| CudaError::InvalidArgument {
                 message: format!("JPEG Huffman {error}"),
             })?;
+        for len in 1usize..=16 {
+            let all_ones = (1i32 << len) - 1;
+            if canonical.max_code[len] == all_ones {
+                return Err(CudaError::InvalidArgument {
+                    message: format!(
+                        "JPEG Huffman length {len} assigns the forbidden all-ones code"
+                    ),
+                });
+            }
+        }
 
         Ok(Self {
             max_code: canonical.max_code,
@@ -103,6 +115,8 @@ pub struct CudaJpegEntropyCheckpoint {
     pub cr_prev_dc: i32,
     /// Reserved for ABI-compatible expansion.
     pub reserved: u32,
+    /// Explicitly occupies the repr(C) tail bytes required by `bit_acc` alignment.
+    pub reserved_tail: u32,
 }
 
 /// J2K-owned CUDA baseline JPEG RGB8 kernel shape.
@@ -227,7 +241,11 @@ pub struct CudaJpegEntropyOverflowState {
 
 #[doc(hidden)]
 /// Host-side report returned by experimental JPEG entropy self-sync diagnostics.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// The report is move-only because cloning it would infallibly duplicate the
+/// coefficient-sized diagnostic state vectors. Share it explicitly through
+/// `Arc` when more than one owner is required.
+#[derive(Debug, Eq, PartialEq)]
 pub struct CudaJpegChunkedEntropyReport {
     /// Diagnostic chunk configuration.
     pub config: CudaJpegChunkedEntropyConfig,
@@ -242,6 +260,25 @@ pub struct CudaJpegChunkedEntropyReport {
 }
 
 impl CudaJpegChunkedEntropyReport {
+    /// Allocator-reported bytes retained by diagnostic result vectors.
+    #[doc(hidden)]
+    pub fn retained_host_bytes(&self) -> Result<usize, CudaError> {
+        self.states
+            .capacity()
+            .checked_mul(core::mem::size_of::<CudaJpegEntropySyncState>())
+            .and_then(|states| {
+                self.overflows
+                    .capacity()
+                    .checked_mul(core::mem::size_of::<CudaJpegEntropyOverflowState>())
+                    .and_then(|overflows| states.checked_add(overflows))
+            })
+            .ok_or(CudaError::HostAllocationTooLarge {
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                what: "CUDA JPEG entropy diagnostic report",
+            })
+    }
+
     /// Number of subsequences examined.
     pub fn subsequence_count(&self) -> usize {
         self.states.len()
@@ -388,7 +425,7 @@ pub(crate) struct CudaJpegBaselineEncodeStatus {
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct CudaJpegBaselineEntropyEncodeJob<'a> {
-    /// Resident CUDA input pixels.
+    /// Resident CUDA input pixels. Must belong to the context executing this job.
     pub input: &'a CudaDeviceBuffer,
     /// Byte offset applied while binding the input buffer.
     pub input_offset: usize,
@@ -414,7 +451,8 @@ pub struct CudaJpegBaselineEntropyEncodeJob<'a> {
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct CudaJpegBaselineEntropyEncodeBatchJob<'a> {
-    /// Resident CUDA input pixels shared by every tile.
+    /// Resident CUDA input pixels shared by every tile. Must belong to the
+    /// executing context when `params` is nonempty.
     pub input: &'a CudaDeviceBuffer,
     /// Encoded tile parameters. Each entry contains its own input and entropy offset.
     pub params: Vec<CudaJpegBaselineEncodeParams>,
@@ -514,4 +552,5 @@ pub(crate) struct CudaJpegDecodeStatus {
 pub(crate) struct CudaJpegRgb8ValidatedPlan {
     pub(crate) params: CudaJpeg420Params,
     pub(crate) output_len: usize,
+    pub(crate) geometry: CudaLaunchGeometry,
 }

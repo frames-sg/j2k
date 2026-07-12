@@ -4,39 +4,58 @@ use super::decode::{DecompositionStorage, TileDecompositions};
 use super::rect::IntRect;
 use super::tag_tree::TagTree;
 use super::tile::{ResolutionTile, Tile};
-use crate::error::{DecodingError, Result};
-use alloc::vec;
-use core::iter;
-use core::ops::Range;
+use crate::error::{DecodingError, Result, ValidationError};
+use crate::try_resize_decode_elements;
+use core::{iter, ops::Range};
+
+mod allocation;
+use allocation::{
+    code_block_grid, prepare_decomposition_storage, push_preallocated, tag_tree_node_count,
+    DecompositionAllocationPlan,
+};
+pub(crate) use allocation::{release_unused_roi_workspace, BuildWorkspace};
 
 /// Build and allocate all necessary structures to process the code-blocks
 /// for a specific tile. Also parses the segments for each code-block.
-pub(crate) fn build(tile: &Tile<'_>, storage: &mut DecompositionStorage<'_>) -> Result<()> {
-    build_decompositions(tile, storage)
+pub(crate) fn build(
+    tile: &Tile<'_>,
+    storage: &mut DecompositionStorage<'_>,
+    retained_baseline_bytes: usize,
+    include_roi_workspace: bool,
+    workspace: BuildWorkspace,
+) -> Result<()> {
+    build_decompositions(
+        tile,
+        storage,
+        retained_baseline_bytes,
+        include_roi_workspace,
+        workspace,
+    )
 }
 
-fn build_decompositions(tile: &Tile<'_>, storage: &mut DecompositionStorage<'_>) -> Result<()> {
-    let mut total_coefficients = 0;
-
-    for component_tile in tile.component_tiles() {
-        total_coefficients +=
-            component_tile.rect.width() as usize * component_tile.rect.height() as usize;
+fn build_decompositions(
+    tile: &Tile<'_>,
+    storage: &mut DecompositionStorage<'_>,
+    retained_baseline_bytes: usize,
+    include_roi_workspace: bool,
+    workspace: BuildWorkspace,
+) -> Result<()> {
+    if !build_storage_is_empty(storage) {
+        return Err(DecodingError::InvalidPrecinct.into());
     }
 
-    if storage.coefficients.is_empty() {
-        // Fast path that requests pre-zeroed memory from the OS where available.
-        storage.coefficients = vec![0.0; total_coefficients];
-    } else {
-        storage.coefficients.resize(total_coefficients, 0.0);
-    }
+    let plan = prepare_decomposition_storage(
+        tile,
+        storage,
+        retained_baseline_bytes,
+        include_roi_workspace,
+        workspace,
+    )?;
+    try_resize_decode_elements(&mut storage.coefficients, plan.coefficients, 0.0)?;
     if storage.exact_integer_decode {
-        if storage.coefficients_i64.is_empty() {
-            storage.coefficients_i64 = vec![0; total_coefficients];
-        } else {
-            storage.coefficients_i64.resize(total_coefficients, 0);
-        }
+        try_resize_decode_elements(&mut storage.coefficients_i64, plan.coefficients, 0)?;
     }
-    let mut coefficient_counter = 0;
+    let mut coefficient_counter = 0usize;
 
     for (component_idx, component_tile) in tile.component_tiles().enumerate() {
         let d_start = storage.decompositions.len();
@@ -68,17 +87,28 @@ fn build_decompositions(tile: &Tile<'_>, storage: &mut DecompositionStorage<'_>)
 
             let precincts = build_precincts(resolution_tile, sub_band_rect, tile, storage)?;
 
-            let added_coefficients = (sub_band_rect.width() * sub_band_rect.height()) as usize;
-            let coefficients = coefficient_counter..(coefficient_counter + added_coefficients);
-            coefficient_counter += added_coefficients;
+            let added_coefficients = (sub_band_rect.width() as usize)
+                .checked_mul(sub_band_rect.height() as usize)
+                .ok_or(ValidationError::ImageTooLarge)?;
+            let coefficient_end = coefficient_counter
+                .checked_add(added_coefficients)
+                .ok_or(ValidationError::ImageTooLarge)?;
+            if coefficient_end > storage.coefficients.len() {
+                return Err(DecodingError::InvalidPrecinct.into());
+            }
+            let coefficients = coefficient_counter..coefficient_end;
+            coefficient_counter = coefficient_end;
 
             let idx = storage.sub_bands.len();
-            storage.sub_bands.push(SubBand {
-                sub_band_type,
-                rect: sub_band_rect,
-                precincts: precincts.clone(),
-                coefficients,
-            });
+            push_preallocated(
+                &mut storage.sub_bands,
+                SubBand {
+                    sub_band_type,
+                    rect: sub_band_rect,
+                    precincts: precincts.clone(),
+                    coefficients,
+                },
+            )?;
 
             Ok(idx)
         };
@@ -99,31 +129,58 @@ fn build_decompositions(tile: &Tile<'_>, storage: &mut DecompositionStorage<'_>)
                 rect: resolution_tile.rect,
             };
 
-            storage.decompositions.push(decomposition);
+            push_preallocated(&mut storage.decompositions, decomposition)?;
         }
 
         let d_end = storage.decompositions.len();
 
-        storage.tile_decompositions.push(TileDecompositions {
-            decompositions: d_start..d_end,
-            first_ll_sub_band,
-        });
+        push_preallocated(
+            &mut storage.tile_decompositions,
+            TileDecompositions {
+                decompositions: d_start..d_end,
+                first_ll_sub_band,
+            },
+        )?;
     }
 
-    if coefficient_counter != storage.coefficients.len() {
-        return Err(DecodingError::InvalidPrecinct.into());
-    }
-    if storage.exact_integer_decode && coefficient_counter != storage.coefficients_i64.len() {
-        return Err(DecodingError::InvalidPrecinct.into());
-    }
-
+    validate_built_storage(&plan, storage, coefficient_counter)?;
+    storage.structural_workspace_bytes = plan.total_bytes;
     Ok(())
 }
 
-#[expect(
-    clippy::similar_names,
-    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
-)]
+fn build_storage_is_empty(storage: &DecompositionStorage<'_>) -> bool {
+    storage.segments.is_empty()
+        && storage.layers.is_empty()
+        && storage.code_blocks.is_empty()
+        && storage.precincts.is_empty()
+        && storage.tag_tree_nodes.is_empty()
+        && storage.coefficients.is_empty()
+        && storage.coefficients_i64.is_empty()
+        && storage.sub_bands.is_empty()
+        && storage.decompositions.is_empty()
+        && storage.tile_decompositions.is_empty()
+}
+
+fn validate_built_storage(
+    plan: &DecompositionAllocationPlan,
+    storage: &DecompositionStorage<'_>,
+    coefficient_count: usize,
+) -> Result<()> {
+    let coefficient_lengths_match = coefficient_count == storage.coefficients.len()
+        && (!storage.exact_integer_decode || coefficient_count == storage.coefficients_i64.len());
+    let structural_lengths_match = storage.tile_decompositions.len() == plan.tile_decompositions
+        && storage.decompositions.len() == plan.decompositions
+        && storage.sub_bands.len() == plan.sub_bands
+        && storage.precincts.len() == plan.precincts
+        && storage.code_blocks.len() == plan.code_blocks
+        && storage.layers.len() == plan.layers
+        && storage.tag_tree_nodes.len() == plan.tag_tree_nodes;
+    if !coefficient_lengths_match || !structural_lengths_match {
+        return Err(DecodingError::InvalidPrecinct.into());
+    }
+    Ok(())
+}
+
 fn build_precincts(
     resolution_tile: &ResolutionTile<'_>,
     sub_band_rect: IntRect,
@@ -136,65 +193,51 @@ fn build_precincts(
         .precincts()
         .ok_or(DecodingError::InvalidPrecinct)?
     {
-        let precinct_rect = precinct_data.rect;
-
-        let cb_width = resolution_tile.code_block_width();
-        let cb_height = resolution_tile.code_block_height();
-
-        // See Figure B.9. Conceptually, the area of code-blocks is aligned
-        // to the width/height of a code block.
-        let cb_x0 = (u32::max(precinct_rect.x0, sub_band_rect.x0) / cb_width) * cb_width;
-        let cb_y0 = (u32::max(precinct_rect.y0, sub_band_rect.y0) / cb_height) * cb_height;
-        let cb_x1 = (u32::min(precinct_rect.x1, sub_band_rect.x1).div_ceil(cb_width)) * cb_width;
-        let cb_y1 = (u32::min(precinct_rect.y1, sub_band_rect.y1).div_ceil(cb_height)) * cb_height;
-
-        let code_block_area = IntRect::from_ltrb(cb_x0, cb_y0, cb_x1, cb_y1);
-
-        // If the sub-band is empty, there are no code-blocks, but due to our
-        // flooring/ceiling above, we would get 1 code-block in each direction.
-        // Because of this, we need to special-case this.
-        let code_blocks_x = if sub_band_rect.width() == 0 {
-            0
-        } else {
-            code_block_area.width() / cb_width
-        };
-
-        let code_blocks_y = if sub_band_rect.height() == 0 {
-            0
-        } else {
-            code_block_area.height() / cb_height
-        };
+        let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
 
         ltrace!(
             "Precinct rect: [{},{} {}x{}], num_code_blocks_wide: {}, num_code_blocks_high: {}",
-            precinct_rect.x0,
-            precinct_rect.y0,
-            precinct_rect.width(),
-            precinct_rect.height(),
-            code_blocks_x,
-            code_blocks_y
+            precinct_data.rect.x0,
+            precinct_data.rect.y0,
+            precinct_data.rect.width(),
+            precinct_data.rect.height(),
+            grid.columns,
+            grid.rows
         );
 
         let blocks = build_code_blocks(
-            code_block_area,
+            grid.area,
             sub_band_rect,
             resolution_tile,
-            code_blocks_x,
-            code_blocks_y,
+            grid.columns,
+            grid.rows,
             tile,
             storage,
-        );
+        )?;
 
+        let tree_node_count = tag_tree_node_count(grid.columns, grid.rows)?;
+        let tree_nodes_end = tree_node_count
+            .checked_mul(2)
+            .and_then(|count| storage.tag_tree_nodes.len().checked_add(count))
+            .ok_or(ValidationError::ImageTooLarge)?;
+        if tree_nodes_end > storage.tag_tree_nodes.capacity() {
+            return Err(DecodingError::HostAllocationFailed.into());
+        }
         let code_inclusion_tree =
-            TagTree::new(code_blocks_x, code_blocks_y, &mut storage.tag_tree_nodes);
-        let zero_bitplane_tree =
-            TagTree::new(code_blocks_x, code_blocks_y, &mut storage.tag_tree_nodes);
+            TagTree::new(grid.columns, grid.rows, &mut storage.tag_tree_nodes);
+        let zero_bitplane_tree = TagTree::new(grid.columns, grid.rows, &mut storage.tag_tree_nodes);
+        if storage.tag_tree_nodes.len() != tree_nodes_end {
+            return Err(DecodingError::InvalidPrecinct.into());
+        }
 
-        storage.precincts.push(Precinct {
-            code_blocks: blocks,
-            code_inclusion_tree,
-            zero_bitplane_tree,
-        });
+        push_preallocated(
+            &mut storage.precincts,
+            Precinct {
+                code_blocks: blocks,
+                code_inclusion_tree,
+                zero_bitplane_tree,
+            },
+        )?;
     }
 
     let end = storage.precincts.len();
@@ -210,7 +253,7 @@ fn build_code_blocks(
     code_blocks_y: u32,
     tile: &Tile<'_>,
     storage: &mut DecompositionStorage<'_>,
-) -> Range<usize> {
+) -> Result<Range<usize>> {
     let mut y = code_block_area.y0;
 
     let code_block_width = tile_instance.code_block_width();
@@ -238,6 +281,12 @@ fn build_code_blocks(
             );
 
             let start = storage.layers.len();
+            let end = start
+                .checked_add(usize::from(tile.num_layers))
+                .ok_or(ValidationError::ImageTooLarge)?;
+            if end > storage.layers.capacity() {
+                return Err(DecodingError::HostAllocationFailed.into());
+            }
             storage.layers.extend(iter::repeat_n(
                 Layer {
                     // This will be updated once we actually read the
@@ -246,29 +295,38 @@ fn build_code_blocks(
                 },
                 tile.num_layers as usize,
             ));
-            let end = storage.layers.len();
+            if storage.layers.len() != end {
+                return Err(DecodingError::InvalidPrecinct.into());
+            }
 
-            storage.code_blocks.push(CodeBlock {
-                x_idx,
-                y_idx,
-                rect: area,
-                has_been_included: false,
-                missing_bit_planes: 0,
-                l_block: 3,
-                number_of_coding_passes: 0,
-                layers: start..end,
-                non_empty_layer_count: 0,
-            });
+            push_preallocated(
+                &mut storage.code_blocks,
+                CodeBlock {
+                    x_idx,
+                    y_idx,
+                    rect: area,
+                    has_been_included: false,
+                    missing_bit_planes: 0,
+                    l_block: 3,
+                    number_of_coding_passes: 0,
+                    layers: start..end,
+                    non_empty_layer_count: 0,
+                },
+            )?;
 
-            x += code_block_width;
+            x = x
+                .checked_add(code_block_width)
+                .ok_or(ValidationError::ImageTooLarge)?;
         }
 
-        y += code_block_height;
+        y = y
+            .checked_add(code_block_height)
+            .ok_or(ValidationError::ImageTooLarge)?;
     }
 
     let end = storage.code_blocks.len();
 
-    start..end
+    Ok(start..end)
 }
 
 pub(crate) struct Decomposition {

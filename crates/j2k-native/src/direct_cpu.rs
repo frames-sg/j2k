@@ -5,11 +5,16 @@ use crate::error::{bail, DecodingError, Result};
 use crate::j2c::idwt;
 use crate::math::{floor_f32, round_f32};
 use crate::{
-    decode_ht_code_block_scalar, decode_j2k_code_block_scalar, HtCodeBlockDecodeJob,
-    HtOwnedSubBandPlan, J2kCodeBlockDecodeJob, J2kDirectBandId, J2kDirectColorPlan,
-    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
-    J2kIdwtBand, J2kOwnedSubBandPlan, J2kRect, J2kSingleDecompositionIdwtJob, J2kWaveletTransform,
+    decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar_with_workspace,
+    try_resize_decode_elements, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
+    HtOwnedSubBandPlan, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kDirectBandId,
+    J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep,
+    J2kDirectStoreStep, J2kIdwtBand, J2kOwnedSubBandPlan, J2kRect, J2kSingleDecompositionIdwtJob,
+    J2kWaveletTransform,
 };
+
+mod allocation;
+use allocation::{prepare_direct_scratch, DirectWorkspaceBudget};
 
 /// Adapter reusable scratch for executing direct J2K RGB plans on the CPU.
 #[derive(Debug, Default)]
@@ -30,18 +35,22 @@ impl J2kDirectCpuScratch {
 
     /// Release retained scratch allocations.
     pub fn clear(&mut self) {
-        self.component_band_sets.clear();
-        self.component_planes.clear();
+        *self = Self::new();
     }
 
-    fn prepare_component_scratch(&mut self, component_count: usize) {
-        while self.component_band_sets.len() < component_count {
-            self.component_band_sets
-                .push(DirectComponentBandScratch::default());
-        }
-        while self.component_planes.len() < component_count {
-            self.component_planes.push(DirectComponentPlane::default());
-        }
+    /// Prepare retained scratch for `plan` and report the actual-capacity peak
+    /// allocation for one execution, including the retained plan and temporary
+    /// scalar code-block workspace.
+    ///
+    /// This is an adapter accounting hook used to admit concurrent direct CPU
+    /// executions without treating every small ROI as a worst-case full-frame
+    /// native decode.
+    #[doc(hidden)]
+    pub fn prepare_execution_allocation_bytes(
+        &mut self,
+        plan: &J2kDirectColorPlan,
+    ) -> Result<usize> {
+        prepare_direct_scratch(plan, self).map(DirectWorkspaceBudget::peak_bytes)
     }
 
     #[cfg(test)]
@@ -112,17 +121,22 @@ impl DirectComponentBandScratch {
         &self.bands[..self.active_len]
     }
 
-    fn prepare_band(&mut self, band_id: J2kDirectBandId, rect: J2kRect, len: usize) -> usize {
+    fn prepare_band(
+        &mut self,
+        band_id: J2kDirectBandId,
+        rect: J2kRect,
+        len: usize,
+    ) -> Result<usize> {
         let index = self.active_len;
         if index == self.bands.len() {
-            self.bands.push(DirectCpuBand::empty());
+            return Err(DecodingError::HostAllocationFailed.into());
         }
         let band = &mut self.bands[index];
         band.band_id = band_id;
         band.rect = rect;
-        resize_and_zero(&mut band.coefficients, len);
+        resize_and_zero(&mut band.coefficients, len)?;
         self.active_len += 1;
-        index
+        Ok(index)
     }
 }
 
@@ -229,11 +243,11 @@ fn execute_direct_color_plan_u8_into(
     }
     validate_output_region(plan, output_region, out.len(), stride, output)?;
 
-    scratch.prepare_component_scratch(plan.component_plans.len());
+    let workspace_budget = prepare_direct_scratch(plan, scratch)?;
     for (component_index, component_plan) in plan.component_plans.iter().enumerate() {
         let band_scratch = &mut scratch.component_band_sets[component_index];
         let plane = &mut scratch.component_planes[component_index];
-        execute_component_plan(component_plan, band_scratch, plane)?;
+        execute_component_plan(component_plan, band_scratch, plane, workspace_budget)?;
     }
 
     let [plane0, plane1, plane2, ..] = scratch.component_planes.as_mut_slice() else {
@@ -256,6 +270,7 @@ fn execute_component_plan(
     plan: &J2kDirectGrayscalePlan,
     bands: &mut DirectComponentBandScratch,
     output: &mut DirectComponentPlane,
+    workspace_budget: DirectWorkspaceBudget,
 ) -> Result<()> {
     bands.reset();
     let mut output_written = false;
@@ -263,10 +278,10 @@ fn execute_component_plan(
     for step in &plan.steps {
         match step {
             J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => {
-                execute_classic_sub_band(sub_band, bands)?;
+                execute_classic_sub_band(sub_band, bands, workspace_budget)?;
             }
             J2kDirectGrayscaleStep::HtSubBand(sub_band) => {
-                execute_ht_sub_band(sub_band, bands)?;
+                execute_ht_sub_band(sub_band, bands, workspace_budget)?;
             }
             J2kDirectGrayscaleStep::Idwt(step) => {
                 execute_idwt_step(step, bands)?;
@@ -287,9 +302,15 @@ fn execute_component_plan(
 fn execute_classic_sub_band(
     plan: &J2kOwnedSubBandPlan,
     bands: &mut DirectComponentBandScratch,
+    workspace_budget: DirectWorkspaceBudget,
 ) -> Result<()> {
     let (output, sub_band_width) =
         prepare_sub_band_output(bands, plan.band_id, plan.rect, plan.width, plan.height)?;
+    let mut workspace = J2kCodeBlockDecodeWorkspace::default();
+    if let Some((width, height)) = max_classic_job_dimensions(plan) {
+        workspace.prepare(width, height)?;
+        workspace_budget.validate_workspace(workspace.allocated_bytes()?)?;
+    }
 
     for job in &plan.jobs {
         let output_range = checked_sub_band_job_output_range(&SubBandJobOutputRange {
@@ -319,7 +340,11 @@ fn execute_classic_sub_band(
             strict: job.strict,
             dequantization_step: job.dequantization_step,
         };
-        decode_j2k_code_block_scalar(code_block, &mut output[output_range])?;
+        decode_j2k_code_block_scalar_with_workspace(
+            code_block,
+            &mut output[output_range],
+            &mut workspace,
+        )?;
     }
     Ok(())
 }
@@ -327,9 +352,15 @@ fn execute_classic_sub_band(
 fn execute_ht_sub_band(
     plan: &HtOwnedSubBandPlan,
     bands: &mut DirectComponentBandScratch,
+    workspace_budget: DirectWorkspaceBudget,
 ) -> Result<()> {
     let (output, sub_band_width) =
         prepare_sub_band_output(bands, plan.band_id, plan.rect, plan.width, plan.height)?;
+    let mut workspace = HtCodeBlockDecodeWorkspace::default();
+    if let Some((width, height)) = max_ht_job_dimensions(plan) {
+        workspace.prepare(width, height)?;
+        workspace_budget.validate_workspace(workspace.allocated_bytes()?)?;
+    }
 
     for job in &plan.jobs {
         let output_range = checked_sub_band_job_output_range(&SubBandJobOutputRange {
@@ -359,9 +390,33 @@ fn execute_ht_sub_band(
             strict: job.strict,
             dequantization_step: job.dequantization_step,
         };
-        decode_ht_code_block_scalar(code_block, &mut output[output_range])?;
+        decode_ht_code_block_scalar_with_workspace(
+            code_block,
+            &mut output[output_range],
+            &mut workspace,
+        )?;
     }
     Ok(())
+}
+
+fn max_classic_job_dimensions(plan: &J2kOwnedSubBandPlan) -> Option<(u32, u32)> {
+    plan.jobs.iter().fold(None, |dimensions, job| {
+        Some(
+            dimensions.map_or((job.width, job.height), |(width, height)| {
+                (width.max(job.width), height.max(job.height))
+            }),
+        )
+    })
+}
+
+fn max_ht_job_dimensions(plan: &HtOwnedSubBandPlan) -> Option<(u32, u32)> {
+    plan.jobs.iter().fold(None, |dimensions, job| {
+        Some(
+            dimensions.map_or((job.width, job.height), |(width, height)| {
+                (width.max(job.width), height.max(job.height))
+            }),
+        )
+    })
 }
 
 fn prepare_sub_band_output(
@@ -372,7 +427,7 @@ fn prepare_sub_band_output(
     height: u32,
 ) -> Result<(&mut [f32], usize)> {
     let required_len = checked_area(width, height)?;
-    let band_index = bands.prepare_band(band_id, rect, required_len);
+    let band_index = bands.prepare_band(band_id, rect, required_len)?;
     let output = bands.bands[band_index].coefficients.as_mut_slice();
     let sub_band_width =
         usize::try_from(width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
@@ -383,7 +438,7 @@ fn execute_idwt_step(
     step: &J2kDirectIdwtStep,
     bands: &mut DirectComponentBandScratch,
 ) -> Result<()> {
-    let output_index = bands.prepare_band(step.output_band_id, step.rect, 0);
+    let output_index = bands.prepare_band(step.output_band_id, step.rect, 0)?;
     let (input_bands, output_bands) = bands.bands.split_at_mut(output_index);
     let output = &mut output_bands[0].coefficients;
     let ll = find_idwt_band(input_bands, step.ll_band_id)?;
@@ -420,7 +475,7 @@ fn store_component(
         plane.width = store.output_width;
         plane.height = store.output_height;
         let required_len = checked_area(store.output_width, store.output_height)?;
-        resize_and_zero(&mut plane.samples, required_len);
+        resize_and_zero(&mut plane.samples, required_len)?;
         *output_written = true;
     }
     if plane.width != store.output_width
@@ -674,9 +729,10 @@ fn checked_block_output_len(stride: usize, width: u32, height: u32) -> Result<us
         .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into())
 }
 
-fn resize_and_zero(buffer: &mut Vec<f32>, len: usize) {
-    buffer.resize(len, 0.0);
+fn resize_and_zero(buffer: &mut Vec<f32>, len: usize) -> Result<()> {
+    try_resize_decode_elements(buffer, len, 0.0)?;
     buffer.fill(0.0);
+    Ok(())
 }
 
 #[expect(
@@ -772,5 +828,75 @@ mod tests {
         assert_eq!(second.band_sample_capacity, first.band_sample_capacity);
         assert!(second.band_sample_capacity >= second.band_sample_len);
         assert!(second.component_sample_capacity >= second.component_sample_len);
+    }
+
+    #[test]
+    fn direct_cpu_scratch_clear_releases_every_retained_owner() {
+        let (plan, output_region) = direct_htj2k_rgb_plan();
+        let stride = output_region.width() as usize * 3;
+        let mut out = vec![0_u8; stride * output_region.height() as usize];
+        let mut scratch = J2kDirectCpuScratch::new();
+        execute_direct_color_plan_rgb8_into(&plan, output_region, &mut scratch, &mut out, stride)
+            .expect("populate direct scratch");
+
+        scratch.clear();
+
+        assert_eq!(
+            scratch.allocation_profile_for_tests(),
+            DirectScratchAllocationProfile {
+                component_band_sets: 0,
+                component_planes: 0,
+                band_buffers: 0,
+                band_sample_len: 0,
+                band_sample_capacity: 0,
+                component_sample_len: 0,
+                component_sample_capacity: 0,
+            }
+        );
+        assert_eq!(scratch.component_band_sets.capacity(), 0);
+        assert_eq!(scratch.component_planes.capacity(), 0);
+    }
+
+    #[test]
+    fn prepared_direct_execution_reports_its_actual_peak_allocation() {
+        let (plan, _) = direct_htj2k_rgb_plan();
+        let plan_bytes = plan.retained_allocation_bytes().expect("plan bytes");
+        let mut scratch = J2kDirectCpuScratch::new();
+
+        let peak = scratch
+            .prepare_execution_allocation_bytes(&plan)
+            .expect("prepare direct execution");
+
+        assert!(peak >= plan_bytes);
+        assert!(peak <= crate::DEFAULT_MAX_DECODE_BYTES);
+        assert_eq!(
+            scratch
+                .prepare_execution_allocation_bytes(&plan)
+                .expect("re-prepare retained direct execution"),
+            peak
+        );
+    }
+
+    #[test]
+    fn direct_cpu_rejects_aggregate_planes_before_allocating_scratch() {
+        let (mut plan, _) = direct_htj2k_rgb_plan();
+        for component in &mut plan.component_plans {
+            for step in &mut component.steps {
+                if let J2kDirectGrayscaleStep::Store(store) = step {
+                    store.output_width = 60_000;
+                    store.output_height = 60_000;
+                }
+            }
+        }
+        let mut scratch = J2kDirectCpuScratch::new();
+
+        assert_eq!(
+            prepare_direct_scratch(&plan, &mut scratch),
+            Err(crate::DecodeError::Validation(
+                crate::ValidationError::ImageTooLarge
+            ))
+        );
+        assert_eq!(scratch.component_band_sets.capacity(), 0);
+        assert_eq!(scratch.component_planes.capacity(), 0);
     }
 }

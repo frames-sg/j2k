@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::vec::Vec;
-
+use j2k_codec_math::dwt::max_decomposition_levels;
 use j2k_core::{BackendKind, Unsupported};
 #[cfg(test)]
 use j2k_native::{DecodeSettings, Image};
@@ -10,6 +9,7 @@ use crate::{
     J2kError, {J2kEncodeDispatchReport, J2kEncodeStageAccelerator},
 };
 
+mod allocation;
 mod contracts;
 use self::contracts::MAX_RAW_PIXEL_ENCODE_BIT_DEPTH;
 pub use self::contracts::{
@@ -24,6 +24,7 @@ pub use self::samples::{
     J2kRoiRegion,
 };
 mod native;
+use self::allocation::try_collect_exact;
 #[cfg(test)]
 use self::native::native_lossless_options;
 pub(crate) use self::native::native_progression_order;
@@ -42,7 +43,10 @@ use self::lossy::{
     effective_lossy_target, encode_cpu_lossy, encode_cpu_lossy_with_roi_regions,
     encode_lossy_targeted, lossy_report, validate_lossy_options,
 };
+mod resident;
 mod validation;
+#[doc(hidden)]
+pub use self::resident::encode_j2k_lossless_resident_with_accelerator;
 use self::validation::{
     validate_lossless_component_roundtrip, validate_lossless_high_bit_component_roundtrip,
     validate_lossless_roundtrip, validate_lossless_typed_component_roundtrip,
@@ -160,17 +164,19 @@ fn encode_j2k_lossless_sampled_components_high_bit(
     samples: J2kLosslessComponentSamples<'_>,
     options: &J2kLosslessEncodeOptions,
 ) -> Result<EncodedJ2k, J2kError> {
-    let typed_planes = samples
-        .planes
-        .iter()
-        .map(|plane| J2kLosslessTypedComponentPlane {
-            data: plane.data,
-            x_rsiz: plane.x_rsiz,
-            y_rsiz: plane.y_rsiz,
-            bit_depth: samples.bit_depth,
-            signed: samples.signed,
-        })
-        .collect::<Vec<_>>();
+    let typed_planes = try_collect_exact(
+        samples
+            .planes
+            .iter()
+            .map(|plane| J2kLosslessTypedComponentPlane {
+                data: plane.data,
+                x_rsiz: plane.x_rsiz,
+                y_rsiz: plane.y_rsiz,
+                bit_depth: samples.bit_depth,
+                signed: samples.signed,
+            }),
+        "high-bit typed component descriptors",
+    )?;
     let typed_samples =
         J2kLosslessTypedComponentSamples::new(&typed_planes, samples.width, samples.height)?;
     encode_j2k_lossless_typed_components(typed_samples, options)
@@ -321,23 +327,25 @@ pub fn encode_j2k_lossy_with_accelerator(
     validate_lossy_options(options)?;
     validate_lossy_high_bit_options(samples, options)?;
     let target = effective_lossy_target(options)?;
-    let before = accelerator.dispatch_report();
     let required_stages = required_lossy_encode_stages(samples, options, accelerated_backend);
+    let mut final_dispatch = J2kEncodeDispatchReport::default();
     let attempt = encode_lossy_targeted(samples, options, target, |scale| {
-        encode_lossy_with_native_accelerator(samples, options, scale, accelerator)
+        let before = accelerator.dispatch_report();
+        let result = encode_lossy_with_native_accelerator(samples, options, scale, accelerator);
+        final_dispatch = accelerator.dispatch_report().saturating_delta(before);
+        result
     })?;
-    let dispatch = accelerator.dispatch_report().saturating_delta(before);
     let backend = resolve_accelerated_encode_backend(
         options.backend,
         accelerated_backend,
-        dispatch,
+        final_dispatch,
         required_stages,
     )?;
     let report = lossy_report(samples, options, target, &attempt)?;
     Ok(EncodedLossyJ2k {
         codestream: attempt.codestream,
         backend,
-        dispatch_report: dispatch,
+        dispatch_report: final_dispatch,
         width: samples.width,
         height: samples.height,
         components: samples.components,
@@ -359,14 +367,22 @@ pub fn j2k_lossless_decomposition_levels_for_progression(
     samples: J2kLosslessSamples<'_>,
     progression: J2kProgressionOrder,
 ) -> u8 {
+    j2k_lossless_decomposition_levels_for_geometry(samples.width, samples.height, progression)
+}
+
+fn j2k_lossless_decomposition_levels_for_geometry(
+    width: u32,
+    height: u32,
+    progression: J2kProgressionOrder,
+) -> u8 {
     if matches!(
         progression,
         J2kProgressionOrder::Rpcl | J2kProgressionOrder::Pcrl | J2kProgressionOrder::Cprl
     ) {
-        return j2k_rpcl_lossless_decomposition_levels(samples);
+        return j2k_rpcl_lossless_decomposition_levels(width, height);
     }
 
-    if samples.width.min(samples.height) < MIN_LOSSLESS_DWT_DIMENSION {
+    if width.min(height) < MIN_LOSSLESS_DWT_DIMENSION {
         return 0;
     }
 
@@ -393,14 +409,7 @@ fn j2k_lossy_decomposition_levels_for_options(
 }
 
 fn j2k_lossy_position_progression_decomposition_levels(samples: J2kLossySamples<'_>) -> u8 {
-    j2k_rpcl_lossless_decomposition_levels(J2kLosslessSamples {
-        data: samples.data,
-        width: samples.width,
-        height: samples.height,
-        components: samples.components,
-        bit_depth: samples.bit_depth,
-        signed: samples.signed,
-    })
+    j2k_rpcl_lossless_decomposition_levels(samples.width, samples.height)
 }
 
 /// Return the effective lossless decomposition level policy for encode options.
@@ -408,42 +417,44 @@ pub fn j2k_lossless_decomposition_levels_for_options(
     samples: J2kLosslessSamples<'_>,
     options: J2kLosslessEncodeOptions,
 ) -> u8 {
-    let levels = j2k_lossless_decomposition_levels_for_progression(samples, options.progression);
+    j2k_lossless_decomposition_levels_for_resident_geometry(samples.width, samples.height, options)
+}
+
+pub(super) fn j2k_lossless_decomposition_levels_for_resident_geometry(
+    width: u32,
+    height: u32,
+    options: J2kLosslessEncodeOptions,
+) -> u8 {
+    let levels = j2k_lossless_decomposition_levels_for_geometry(width, height, options.progression);
     options
         .max_decomposition_levels
         .map_or(levels, |requested| {
-            if samples.width.min(samples.height) < MIN_LOSSLESS_DWT_DIMENSION {
+            if width.min(height) < MIN_LOSSLESS_DWT_DIMENSION {
                 return 0;
             }
-            requested.min(max_decomposition_levels(samples.width, samples.height))
+            requested.min(max_decomposition_levels(width, height))
         })
 }
 
-fn j2k_rpcl_lossless_decomposition_levels(samples: J2kLosslessSamples<'_>) -> u8 {
+fn j2k_rpcl_lossless_decomposition_levels(width: u32, height: u32) -> u8 {
     let mut levels = 0u8;
-    let mut width = samples.width;
-    let mut height = samples.height;
-    let max_levels = max_decomposition_levels(samples.width, samples.height);
+    let mut current_width = width;
+    let mut current_height = height;
+    let max_levels = max_decomposition_levels(width, height);
 
-    while width.min(height) > MIN_LOSSLESS_DWT_DIMENSION && levels < max_levels {
-        width = width.div_ceil(2);
-        height = height.div_ceil(2);
+    while current_width.min(current_height) > MIN_LOSSLESS_DWT_DIMENSION && levels < max_levels {
+        current_width = current_width.div_ceil(2);
+        current_height = current_height.div_ceil(2);
         levels += 1;
     }
 
     levels
 }
 
-fn max_decomposition_levels(width: u32, height: u32) -> u8 {
-    let min_dim = width.min(height);
-    if min_dim <= 1 {
-        return 0;
-    }
-    u8::try_from(min_dim.ilog2()).expect("u32 logarithm fits u8")
-}
-
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::{
         encode_j2k_lossless, j2k_lossless_decomposition_levels_for_options,
         native_lossless_options, DecodeSettings, EncodeBackendPreference, Image,

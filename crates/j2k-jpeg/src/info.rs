@@ -173,7 +173,11 @@ pub struct McuGeometry {
 }
 
 /// Restart-marker index for a single-scan JPEG stream.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The segment vector is derived from untrusted MCU geometry and can approach
+/// the shared host-allocation cap. Share this move-only owner behind `Arc`
+/// when multiple consumers need the same index.
+#[derive(Debug, PartialEq, Eq)]
 pub struct RestartIndex {
     /// Absolute byte offset of the first entropy byte after the SOS header.
     pub scan_data_offset: usize,

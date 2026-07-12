@@ -128,7 +128,7 @@ pub struct JpegBaselineGpuEncodeTilePlan {
 }
 
 /// Backend-neutral resident GPU baseline JPEG encode plan for one batch span.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct JpegBaselineGpuEncodeBatchPlan {
     /// GPU ABI parameters in input tile order.
     pub params: Vec<JpegBaselineGpuEncodeParams>,
@@ -145,22 +145,31 @@ pub struct JpegBaselineGpuEncodeBatchPlan {
 pub trait JpegBaselineGpuEncodeHostAdapter<T: Copy> {
     /// Error returned by the backend adapter.
     type Error: From<JpegEncodeError>;
-    /// Stable identity for a resident source allocation.
+    /// Stable, allocation-free identity for a resident source allocation.
     type SourceKey: PartialEq;
 
     /// Backend represented by this adapter.
     fn backend(&self) -> JpegBackend;
 
     /// Return the resident source allocation key for grouping batch spans.
+    /// This method is called during preflight and execution and must be stable
+    /// and allocation-free.
     fn source_key(&self, tile: &T) -> Self::SourceKey;
 
     /// Convert a backend tile into backend-neutral planning metadata.
+    ///
+    /// Implementations should keep this conversion allocation-free. The shared
+    /// driver retains the returned metadata for whole-batch preflight.
     fn gpu_tile(&self, tile: T) -> Result<JpegBaselineGpuEncodeTile, Self::Error>;
 
     /// Map a backend-neutral planning error into the backend's public error.
     fn map_plan_error(&self, error: JpegBaselineGpuEncodeError) -> Self::Error;
 
     /// Submit one resident tile to the backend entropy encoder.
+    ///
+    /// The returned vector's length and capacity must not exceed
+    /// `plan.entropy_capacity`. Private adapter host allocations must also stay
+    /// within the shared 512 MiB live-allocation policy.
     fn encode_tile_entropy(
         &mut self,
         tile: T,
@@ -169,6 +178,15 @@ pub trait JpegBaselineGpuEncodeHostAdapter<T: Copy> {
     ) -> Result<Vec<u8>, Self::Error>;
 
     /// Submit a contiguous same-source-buffer resident tile span.
+    ///
+    /// The returned outer vector must have exactly `tiles.len()` elements and
+    /// capacity at most `tiles.len()`. Every entropy vector's length and
+    /// capacity must not exceed its corresponding planned capacity. Private
+    /// adapter host allocations remain the adapter's responsibility under the
+    /// shared 512 MiB live-allocation policy. The shared driver assumes the
+    /// moved `plan` is dropped before this method returns; retaining any plan
+    /// allocation after return makes that storage adapter-owned live memory
+    /// that the adapter must include under the same cap.
     fn encode_batch_entropy(
         &mut self,
         tiles: &[T],

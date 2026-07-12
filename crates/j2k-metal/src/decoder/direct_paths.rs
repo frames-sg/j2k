@@ -18,7 +18,7 @@ use super::J2kDecoder;
 #[cfg(target_os = "macos")]
 use crate::direct;
 #[cfg(target_os = "macos")]
-use crate::error::{adapter_backend_error, native_decode_j2k_error};
+use crate::error::{adapter_backend_error, native_decode_error};
 #[cfg(target_os = "macos")]
 use crate::session::{
     cached_session_direct_color_plan, cached_session_direct_gray_plan, direct_gray_plan_cache_key,
@@ -39,22 +39,22 @@ macro_rules! define_ensure_prepared_direct_plan {
         cached: $cached:ident,
         store: $store:ident,
         build: $build:ident,
-        prepare: $prepare:path,
-        label: $label:literal
+        prepare: $prepare:path
     ) => {
         #[cfg(target_os = "macos")]
         fn $with_session(
             &mut self,
+            fmt: PixelFormat,
             session: &MetalBackendSession,
         ) -> Result<Option<Arc<$prepared_ty>>, Error> {
-            let cache_key = $cache_key(self.bytes);
             if self.$prepared_field.is_none() {
-                if let Some((plan, prepared)) = $cached(session, cache_key) {
+                let cache_key = $cache_key(self.bytes, fmt);
+                if let Some((plan, prepared)) = $cached(session, cache_key)? {
                     self.$plan_field = Some(plan);
                     self.$prepared_field = Some(prepared);
                 }
             }
-            self.$prepare_fresh(Some((session, cache_key)))
+            self.$prepare_fresh(Some((session, fmt)))
         }
 
         #[cfg(target_os = "macos")]
@@ -65,7 +65,7 @@ macro_rules! define_ensure_prepared_direct_plan {
         #[cfg(target_os = "macos")]
         fn $prepare_fresh(
             &mut self,
-            session_cache: Option<(&MetalBackendSession, u64)>,
+            session_cache: Option<(&MetalBackendSession, PixelFormat)>,
         ) -> Result<Option<Arc<$prepared_ty>>, Error> {
             if self.$prepared_field.is_none() {
                 self.ensure_native_image()?;
@@ -77,20 +77,16 @@ macro_rules! define_ensure_prepared_direct_plan {
                     )));
                 };
                 let plan = match image.$build(native_context) {
-                    Ok(plan) => plan,
+                    Ok(plan) => Arc::new(plan),
                     Err(error) if direct::is_unsupported_direct_plan_error(&error) => {
                         return Ok(None);
                     }
-                    Err(error) => {
-                        return Err(Error::Decode(adapter_backend_error(format!(
-                            "failed to build J2K MetalDirect {} plan: {error}",
-                            $label
-                        ))));
-                    }
+                    Err(error) => return Err(native_decode_error(error)),
                 };
-                let prepared = Arc::new($prepare(&plan)?);
-                if let Some((session, cache_key)) = session_cache {
-                    $store(session, cache_key, &plan, prepared.clone());
+                let prepared = Arc::new($prepare(plan.as_ref())?);
+                if let Some((session, fmt)) = session_cache {
+                    let cache_key = $cache_key(self.bytes, fmt);
+                    $store(session, cache_key, plan.clone(), prepared.clone())?;
                 }
                 self.$plan_field = Some(plan);
                 self.$prepared_field = Some(prepared);
@@ -111,7 +107,7 @@ impl J2kDecoder<'_> {
         if self.native_image.is_none() {
             self.native_image = Some(
                 NativeImage::new(self.bytes, &NativeDecodeSettings::default())
-                    .map_err(native_decode_j2k_error)?,
+                    .map_err(native_decode_error)?,
             );
         }
         Ok(())
@@ -128,8 +124,7 @@ impl J2kDecoder<'_> {
         cached: cached_session_direct_gray_plan,
         store: store_session_direct_gray_plan,
         build: build_direct_grayscale_plan_with_context,
-        prepare: crate::compute::prepare_direct_grayscale_plan,
-        label: "grayscale"
+        prepare: crate::compute::prepare_direct_grayscale_plan
     }
 
     define_ensure_prepared_direct_plan! {
@@ -143,8 +138,7 @@ impl J2kDecoder<'_> {
         cached: cached_session_direct_color_plan,
         store: store_session_direct_color_plan,
         build: build_direct_color_plan_with_context,
-        prepare: crate::compute::prepare_direct_color_plan,
-        label: "color"
+        prepare: crate::compute::prepare_direct_color_plan
     }
 
     #[cfg(target_os = "macos")]
@@ -168,7 +162,7 @@ impl J2kDecoder<'_> {
             let Some(plan) = self.ensure_prepared_direct_color_plan()? else {
                 return Ok(None);
             };
-            return match crate::compute::execute_prepared_direct_color_plan(&plan, fmt) {
+            return match crate::compute::execute_prepared_direct_color_plan(plan, fmt) {
                 Ok(surface) => Ok(Some(surface)),
                 Err(error) if is_direct_color_runtime_fallback_error(&error) => Ok(None),
                 Err(error) => Err(error),
@@ -185,7 +179,8 @@ impl J2kDecoder<'_> {
         session: &MetalBackendSession,
     ) -> Result<Option<Surface>, Error> {
         if matches!(fmt, PixelFormat::Gray8 | PixelFormat::Gray16) {
-            let Some(plan) = self.ensure_prepared_direct_gray_plan_with_session(session)? else {
+            let Some(plan) = self.ensure_prepared_direct_gray_plan_with_session(fmt, session)?
+            else {
                 return Ok(None);
             };
             return Ok(Some(
@@ -201,11 +196,12 @@ impl J2kDecoder<'_> {
             fmt,
             PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16
         ) {
-            let Some(plan) = self.ensure_prepared_direct_color_plan_with_session(session)? else {
+            let Some(plan) = self.ensure_prepared_direct_color_plan_with_session(fmt, session)?
+            else {
                 return Ok(None);
             };
             return match crate::compute::execute_prepared_direct_color_plan_with_device(
-                &plan,
+                plan,
                 fmt,
                 session.device_handle(),
             ) {
@@ -278,7 +274,10 @@ impl J2kDecoder<'_> {
         fmt: PixelFormat,
         count: usize,
     ) -> Result<Vec<Surface>, Error> {
-        let mut surfaces = Vec::with_capacity(count);
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal repeated CPU surface collection",
+        );
+        let mut surfaces = budget.try_vec(count, "J2K Metal repeated CPU surfaces")?;
         for _ in 0..count {
             surfaces.push(self.decode_to_cpu_surface(fmt)?);
         }
@@ -318,10 +317,14 @@ impl J2kDecoder<'_> {
                     "native image cache missing".to_string(),
                 )));
             };
-            let plan = image
-                .build_direct_grayscale_plan_with_context(native_context)
-                .map_err(native_decode_j2k_error)?;
-            let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(&plan)?);
+            let plan = Arc::new(
+                image
+                    .build_direct_grayscale_plan_with_context(native_context)
+                    .map_err(native_decode_error)?,
+            );
+            let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(
+                plan.as_ref(),
+            )?);
             self.native_direct_gray_plan = Some(plan);
             self.native_prepared_direct_gray_plan = Some(prepared);
         }
@@ -342,7 +345,10 @@ impl J2kDecoder<'_> {
             return Ok(Vec::new());
         }
         let surface = self.decode_to_surface_impl(fmt, BackendRequest::Metal)?;
-        Ok(vec![surface; count])
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal repeated color surface collection",
+        );
+        Ok(budget.try_filled(count, surface, "J2K Metal repeated color surfaces")?)
     }
 
     #[cfg(target_os = "macos")]
@@ -376,7 +382,10 @@ impl J2kDecoder<'_> {
             let Ok(plan) = image.build_direct_grayscale_plan_with_context(native_context) else {
                 return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
             };
-            let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(&plan)?);
+            let plan = Arc::new(plan);
+            let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(
+                plan.as_ref(),
+            )?);
             self.native_direct_gray_plan = Some(plan);
             self.native_prepared_direct_gray_plan = Some(prepared);
         }
@@ -418,7 +427,9 @@ pub(crate) fn decode_full_grayscale_batch_direct_to_device(
         });
     }
 
-    let mut plans = Vec::with_capacity(inputs.len());
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal direct grayscale batch plan");
+    let mut plans = budget.try_vec(inputs.len(), "J2K Metal direct grayscale plans")?;
     for input in inputs {
         let mut decoder = J2kDecoder::new(input.as_ref())?;
         let Some(plan) = decoder.ensure_prepared_direct_gray_plan()? else {
@@ -451,7 +462,9 @@ pub(crate) fn decode_full_color_batch_direct_to_device(
         });
     }
 
-    let mut plans = Vec::with_capacity(inputs.len());
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal direct color batch plan");
+    let mut plans = budget.try_vec(inputs.len(), "J2K Metal direct color plans")?;
     for input in inputs {
         let mut decoder = J2kDecoder::new(input.as_ref())?;
         let Some(plan) = decoder.ensure_prepared_direct_color_plan()? else {

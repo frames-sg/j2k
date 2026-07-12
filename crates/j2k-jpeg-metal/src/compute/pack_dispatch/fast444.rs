@@ -5,10 +5,10 @@ use super::super::{
     decode_status_buffer, dispatch_1d_pipeline, entropy_checkpoints_buffer,
     entropy_decode_thread_count, fast444_params, fast444_region_params, fast444_scaled_params,
     fast444_scaled_region_params, fast_packet_huffman_tables, mcu_range_for_rect,
-    new_decode_plane_buffer, new_private_buffer, restart_offsets_buffer,
-    restart_work_for_mcu_range, BatchedDecodeItem, CommandBufferRef, Error,
-    FastDecodeEntropyInputs, JpegFast444PacketV1, JpegFast444Params, JpegFast444ScaledParams,
-    MTLResourceOptions, MetalRuntime, PixelFormat, PlaneMode, Rect,
+    new_compute_command_encoder, new_decode_plane_buffer, new_private_buffer,
+    new_shared_buffer_with_data, restart_offsets_buffer, restart_work_for_mcu_range,
+    BatchedDecodeItem, CommandBufferRef, Error, FastDecodeEntropyInputs, JpegFast444PacketV1,
+    JpegFast444Params, JpegFast444ScaledParams, MetalRuntime, PixelFormat, PlaneMode, Rect,
 };
 use super::common::{
     encode_jpeg_pack_to_surface_in_command_buffer, Fast444ScaledRegionBatchItemRequest,
@@ -23,7 +23,6 @@ use super::common::{
 pub(in crate::compute) fn encode_fast444_region_batch_item(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
-    request_index: usize,
     packet: &JpegFast444PacketV1,
     mode: PlaneMode,
     fmt: PixelFormat,
@@ -52,30 +51,26 @@ pub(in crate::compute) fn encode_fast444_region_batch_item(
         &runtime.device,
         plane_len,
         fmt == PixelFormat::Gray8 && mode != PlaneMode::Rgb,
-    );
-    let cb_plane = new_private_buffer(&runtime.device, plane_len);
-    let cr_plane = new_private_buffer(&runtime.device, plane_len);
+    )?;
+    let cb_plane = new_private_buffer(&runtime.device, plane_len)?;
+    let cr_plane = new_private_buffer(&runtime.device, plane_len)?;
     let decode_threads = entropy_decode_thread_count(
         packet.restart_interval_mcus,
         restart_offsets.len(),
         packet.entropy_checkpoints.len(),
     );
-    let status_buffer = decode_status_buffer(&runtime.device, decode_threads);
-    let entropy_buffer = runtime.device.new_buffer_with_data(
-        packet.entropy_bytes.as_ptr().cast(),
-        packet.entropy_bytes.len() as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let status_buffer = decode_status_buffer(&runtime.device, decode_threads)?;
+    let entropy_buffer = new_shared_buffer_with_data(&runtime.device, &packet.entropy_bytes)?;
     let restart_offsets_buffer = restart_offsets_buffer(&runtime.device, restart_offsets)?;
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, &packet.entropy_checkpoints)?;
 
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
-    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    let decoder_encoder = new_compute_command_encoder(command_buffer)?;
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_region_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
-        decoder_encoder,
+        &decoder_encoder,
         &FastDecodeEntropyInputs {
             entropy_buffer: &entropy_buffer,
             planes: [&y_plane, &cb_plane, &cr_plane],
@@ -89,7 +84,7 @@ pub(in crate::compute) fn encode_fast444_region_batch_item(
         },
     );
     dispatch_1d_pipeline(
-        decoder_encoder,
+        &decoder_encoder,
         &runtime.fast444_region_decode_pipeline,
         decode_threads,
     );
@@ -109,7 +104,6 @@ pub(in crate::compute) fn encode_fast444_region_batch_item(
     )?;
 
     Ok(BatchedDecodeItem {
-        request_index,
         surface,
         status_buffer: status_buffer.clone(),
         decode_threads,
@@ -132,7 +126,6 @@ pub(in crate::compute) fn encode_fast444_region_batch_item(
 pub(in crate::compute) fn encode_fast444_scaled_batch_item(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
-    request_index: usize,
     packet: &JpegFast444PacketV1,
     mode: PlaneMode,
     fmt: PixelFormat,
@@ -149,30 +142,26 @@ pub(in crate::compute) fn encode_fast444_scaled_batch_item(
         &runtime.device,
         plane_len,
         fmt == PixelFormat::Gray8 && mode != PlaneMode::Rgb,
-    );
-    let cb_plane = new_private_buffer(&runtime.device, plane_len);
-    let cr_plane = new_private_buffer(&runtime.device, plane_len);
+    )?;
+    let cb_plane = new_private_buffer(&runtime.device, plane_len)?;
+    let cr_plane = new_private_buffer(&runtime.device, plane_len)?;
     let decode_threads = entropy_decode_thread_count(
         packet.restart_interval_mcus,
         packet.restart_offsets.len(),
         packet.entropy_checkpoints.len(),
     );
-    let status_buffer = decode_status_buffer(&runtime.device, decode_threads);
-    let entropy_buffer = runtime.device.new_buffer_with_data(
-        packet.entropy_bytes.as_ptr().cast(),
-        packet.entropy_bytes.len() as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let status_buffer = decode_status_buffer(&runtime.device, decode_threads)?;
+    let entropy_buffer = new_shared_buffer_with_data(&runtime.device, &packet.entropy_bytes)?;
     let restart_offsets_buffer = restart_offsets_buffer(&runtime.device, &packet.restart_offsets)?;
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, &packet.entropy_checkpoints)?;
 
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
-    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    let decoder_encoder = new_compute_command_encoder(command_buffer)?;
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_scaled_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444ScaledParams>(
-        decoder_encoder,
+        &decoder_encoder,
         &FastDecodeEntropyInputs {
             entropy_buffer: &entropy_buffer,
             planes: [&y_plane, &cb_plane, &cr_plane],
@@ -186,7 +175,7 @@ pub(in crate::compute) fn encode_fast444_scaled_batch_item(
         },
     );
     dispatch_1d_pipeline(
-        decoder_encoder,
+        &decoder_encoder,
         &runtime.fast444_scaled_decode_pipeline,
         decode_threads,
     );
@@ -206,7 +195,6 @@ pub(in crate::compute) fn encode_fast444_scaled_batch_item(
     )?;
 
     Ok(BatchedDecodeItem {
-        request_index,
         surface,
         status_buffer: status_buffer.clone(),
         decode_threads,
@@ -236,7 +224,6 @@ pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
         runtime,
         command_buffer,
         device_buffer_cache,
-        request_index,
         packet,
         mode,
         fmt,
@@ -283,15 +270,15 @@ pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
         &runtime.device,
         plane_len,
         fmt == PixelFormat::Gray8 && mode != PlaneMode::Rgb,
-    );
-    let cb_plane = new_private_buffer(&runtime.device, plane_len);
-    let cr_plane = new_private_buffer(&runtime.device, plane_len);
+    )?;
+    let cb_plane = new_private_buffer(&runtime.device, plane_len)?;
+    let cr_plane = new_private_buffer(&runtime.device, plane_len)?;
     let decode_threads = entropy_decode_thread_count(
         packet.restart_interval_mcus,
         restart_offsets.len(),
         packet.entropy_checkpoints.len(),
     );
-    let status_buffer = decode_status_buffer(&runtime.device, decode_threads);
+    let status_buffer = decode_status_buffer(&runtime.device, decode_threads)?;
     let restart_offsets_buffer = restart_offsets_buffer(&runtime.device, restart_offsets)?;
     let (entropy_buffer, entropy_checkpoints_buffer) = device_buffer_cache.packet_buffers(
         runtime,
@@ -301,10 +288,10 @@ pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
 
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
-    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    let decoder_encoder = new_compute_command_encoder(command_buffer)?;
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_scaled_region_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444ScaledParams>(
-        decoder_encoder,
+        &decoder_encoder,
         &FastDecodeEntropyInputs {
             entropy_buffer: &entropy_buffer,
             planes: [&y_plane, &cb_plane, &cr_plane],
@@ -318,7 +305,7 @@ pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
         },
     );
     dispatch_1d_pipeline(
-        decoder_encoder,
+        &decoder_encoder,
         &runtime.fast444_scaled_region_decode_pipeline,
         decode_threads,
     );
@@ -338,7 +325,6 @@ pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
     )?;
 
     Ok(BatchedDecodeItem {
-        request_index,
         surface,
         status_buffer: status_buffer.clone(),
         decode_threads,
@@ -362,7 +348,6 @@ pub(in crate::compute) fn encode_fast444_scaled_region_batch_item(
 pub(in crate::compute) fn encode_fast444_batch_item(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
-    request_index: usize,
     packet: &JpegFast444PacketV1,
     mode: PlaneMode,
     fmt: PixelFormat,
@@ -373,30 +358,26 @@ pub(in crate::compute) fn encode_fast444_batch_item(
         &runtime.device,
         plane_len,
         fmt == PixelFormat::Gray8 && mode != PlaneMode::Rgb,
-    );
-    let cb_plane = new_private_buffer(&runtime.device, plane_len);
-    let cr_plane = new_private_buffer(&runtime.device, plane_len);
+    )?;
+    let cb_plane = new_private_buffer(&runtime.device, plane_len)?;
+    let cr_plane = new_private_buffer(&runtime.device, plane_len)?;
     let decode_threads = entropy_decode_thread_count(
         packet.restart_interval_mcus,
         packet.restart_offsets.len(),
         packet.entropy_checkpoints.len(),
     );
-    let status_buffer = decode_status_buffer(&runtime.device, decode_threads);
-    let entropy_buffer = runtime.device.new_buffer_with_data(
-        packet.entropy_bytes.as_ptr().cast(),
-        packet.entropy_bytes.len() as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let status_buffer = decode_status_buffer(&runtime.device, decode_threads)?;
+    let entropy_buffer = new_shared_buffer_with_data(&runtime.device, &packet.entropy_bytes)?;
     let restart_offsets_buffer = restart_offsets_buffer(&runtime.device, &packet.restart_offsets)?;
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, &packet.entropy_checkpoints)?;
 
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
-    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    let decoder_encoder = new_compute_command_encoder(command_buffer)?;
     decoder_encoder.set_compute_pipeline_state(&runtime.fast444_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast444Params>(
-        decoder_encoder,
+        &decoder_encoder,
         &FastDecodeEntropyInputs {
             entropy_buffer: &entropy_buffer,
             planes: [&y_plane, &cb_plane, &cr_plane],
@@ -410,7 +391,7 @@ pub(in crate::compute) fn encode_fast444_batch_item(
         },
     );
     dispatch_1d_pipeline(
-        decoder_encoder,
+        &decoder_encoder,
         &runtime.fast444_decode_pipeline,
         decode_threads,
     );
@@ -430,7 +411,6 @@ pub(in crate::compute) fn encode_fast444_batch_item(
     )?;
 
     Ok(BatchedDecodeItem {
-        request_index,
         surface,
         status_buffer: status_buffer.clone(),
         decode_threads,

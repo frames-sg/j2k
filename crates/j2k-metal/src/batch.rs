@@ -104,29 +104,33 @@ pub fn benchmark_group_region_scaled_requests(
     backend: BackendRequest,
     roi: Rect,
     scale: Downscale,
-) -> BenchmarkGroupedRequests {
-    let queued = inputs
-        .iter()
-        .enumerate()
-        .map(|(output_slot, input)| QueuedRequest {
-            input: input.clone(),
-            fmt,
-            backend,
-            op: BatchOp::RegionScaled { roi, scale },
-            output_slot,
-            max_image_dim: OnceCell::new(),
-            input_fingerprint: OnceCell::new(),
-        })
-        .collect::<Vec<_>>();
-    let batches = group_metal_requests(queued);
-    BenchmarkGroupedRequests {
+) -> Result<BenchmarkGroupedRequests, Error> {
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal benchmark grouping requests");
+    let mut queued = budget.try_vec(inputs.len(), "J2K Metal benchmark queued requests")?;
+    queued.extend(
+        inputs
+            .iter()
+            .enumerate()
+            .map(|(output_slot, input)| QueuedRequest {
+                input: input.clone(),
+                fmt,
+                backend,
+                op: BatchOp::RegionScaled { roi, scale },
+                output_slot,
+                max_image_dim: OnceCell::new(),
+                input_fingerprint: OnceCell::new(),
+            }),
+    );
+    let batches = group_metal_requests(queued)?;
+    Ok(BenchmarkGroupedRequests {
         batch_count: batches.len(),
         max_batch_len: batches
             .iter()
             .map(|batch| batch.requests.len())
             .max()
             .unwrap_or(0),
-    }
+    })
 }
 
 #[derive(Default)]
@@ -181,7 +185,34 @@ pub(crate) fn queue_tile_request_shared(
     backend: BackendRequest,
     op: BatchOp,
 ) -> Result<MetalSubmission, Error> {
+    queue_tile_request_shared_with_retained(session, input, fmt, backend, op, 0)
+}
+
+pub(crate) fn queue_tile_request_shared_with_retained(
+    session: &mut MetalSession,
+    input: Arc<[u8]>,
+    fmt: PixelFormat,
+    backend: BackendRequest,
+    op: BatchOp,
+    retained_submission_capacity: usize,
+) -> Result<MetalSubmission, Error> {
     let mut state = session.shared.lock()?;
+    crate::batch_allocation::try_reserve_for_push(
+        &mut state.completed,
+        "J2K Metal queued completion slots",
+    )?;
+    crate::batch_allocation::try_reserve_for_push(&mut state.queued, "J2K Metal queued requests")?;
+    let aggregate =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal queued request state");
+    aggregate.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<MetalSubmission>(
+            retained_submission_capacity,
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<QueuedRequest>(state.queued.capacity()),
+        crate::batch_allocation::BatchMetadataRequest::of::<Option<Result<Surface, Error>>>(
+            state.completed.capacity(),
+        ),
+    ])?;
     let slot = state.completed.len();
     state.completed.push(None);
     state.queued.push(QueuedRequest {
@@ -207,8 +238,30 @@ fn flush_if_needed(session: &mut SessionState) {
     let profile_enabled = profile::metal_profile_stages_enabled();
     let queued = std::mem::take(&mut session.queued);
     let request_count = queued.len();
+    let mut slot_budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal grouping recovery slots");
+    let mut output_slots =
+        match slot_budget.try_vec(queued.len(), "J2K Metal grouping recovery output slots") {
+            Ok(slots) => slots,
+            Err(error) => {
+                for request in queued {
+                    session.completed[request.output_slot] = Some(Err(error.into()));
+                }
+                return;
+            }
+        };
+    output_slots.extend(queued.iter().map(|request| request.output_slot));
     let group_started = profile::profile_now(profile_enabled);
-    let batches = group_metal_requests(queued);
+    let batches = match group_metal_requests(queued) {
+        Ok(batches) => batches,
+        Err(error) => {
+            for output_slot in output_slots {
+                session.completed[output_slot] = Some(Err(error.into()));
+            }
+            return;
+        }
+    };
+    drop(output_slots);
     if profile_enabled {
         profile::emit_metal_batch_profile_row(
             "decode",
@@ -218,8 +271,8 @@ fn flush_if_needed(session: &mut SessionState) {
                 pipeline: "metal_cpu_hybrid",
                 processor: "scheduler",
                 route: "all",
-                backend: "mixed",
-                fmt: "mixed",
+                backend: profile::MetalBatchProfileValue::Mixed,
+                fmt: profile::MetalBatchProfileValue::Mixed,
                 request_count,
                 output_count: batches.len(),
                 elapsed_us: profile::elapsed_us(group_started),
@@ -300,10 +353,15 @@ fn decode_distinct_full_grayscale_batch(
 
     #[cfg(target_os = "macos")]
     {
-        let inputs = requests
-            .iter()
-            .map(|request| request.input.clone())
-            .collect::<Vec<_>>();
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal distinct grayscale batch inputs",
+        );
+        let mut inputs =
+            match budget.try_vec(requests.len(), "J2K Metal distinct grayscale input handles") {
+                Ok(inputs) => inputs,
+                Err(error) => return Some(Err(error.into())),
+            };
+        inputs.extend(requests.iter().map(|request| request.input.clone()));
         Some(crate::decoder::decode_full_grayscale_batch_direct_to_device(&inputs, first.fmt))
     }
 
@@ -327,10 +385,15 @@ fn decode_distinct_full_color_batch(
 
     #[cfg(target_os = "macos")]
     {
-        let inputs = requests
-            .iter()
-            .map(|request| request.input.clone())
-            .collect::<Vec<_>>();
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal distinct color batch inputs",
+        );
+        let mut inputs =
+            match budget.try_vec(requests.len(), "J2K Metal distinct color input handles") {
+                Ok(inputs) => inputs,
+                Err(error) => return Some(Err(error.into())),
+            };
+        inputs.extend(requests.iter().map(|request| request.input.clone()));
         Some(crate::decoder::decode_full_color_batch_direct_to_device(
             &inputs, first.fmt,
         ))
@@ -416,7 +479,16 @@ fn decode_distinct_region_scaled_direct_batch_inner(
 
     #[cfg(target_os = "macos")]
     {
-        let mut request_specs = Vec::with_capacity(requests.len());
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal direct batch request specifications",
+        );
+        let mut request_specs = match budget.try_vec(
+            requests.len(),
+            "J2K Metal direct batch request specifications",
+        ) {
+            Ok(specs) => specs,
+            Err(error) => return Some(Err(error.into())),
+        };
         for request in requests {
             match request.op {
                 BatchOp::RegionScaled { roi, scale } => {
@@ -592,7 +664,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let grouped = group_metal_requests(requests);
+        let grouped = group_metal_requests(requests).expect("group requests");
 
         assert_eq!(grouped.len(), 1);
         assert_eq!(
@@ -627,7 +699,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let grouped = group_metal_requests(requests);
+        let grouped = group_metal_requests(requests).expect("group requests");
 
         assert_eq!(grouped.len(), 1);
         assert_eq!(grouped[0].route, BatchRoute::AutoRegionScaledDirectCpu);

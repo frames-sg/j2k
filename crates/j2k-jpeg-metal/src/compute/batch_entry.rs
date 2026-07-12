@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    batch, batched_fast_packets, commit_and_wait_jpeg, decode_error_from_cpu,
-    encode_fast444_batch_item, encode_fast444_region_batch_item, encode_fast444_scaled_batch_item,
+    batch, batched_fast_packets, commit_and_wait_jpeg, encode_fast444_batch_item,
+    encode_fast444_region_batch_item, encode_fast444_scaled_batch_item,
     encode_fast444_scaled_region_batch_item, encode_fast_subsampled_op_batch_item,
-    fast_batch_decode_mode, first_decode_error_status,
-    try_decode_fast420_region_scaled_rgb_batch_to_surfaces,
+    fast_batch_decode_mode, fast_decode_status_error, first_decode_error_status,
+    new_command_buffer, try_decode_fast420_region_scaled_rgb_batch_to_surfaces,
     try_decode_fast420_region_scaled_rgb_batch_to_surfaces_into_output,
     try_decode_fast420_region_scaled_rgba_batch_to_textures,
     try_decode_fast422_region_scaled_rgb_batch_to_surfaces,
@@ -21,9 +21,9 @@ use super::{
     try_decode_fast_subsampled_full_rgb_batch_to_surfaces_into_output,
     try_decode_fast_subsampled_full_rgba_batch_to_textures,
     try_decode_repeated_region_scaled_batch_to_surfaces, with_runtime, with_runtime_for_session,
-    BatchDeviceBufferCache, BatchedFastPacket, CpuDecoder, Error,
-    Fast444ScaledRegionBatchItemRequest, FastSubsampledOpBatchItemRequest, JpegFast420PacketV1,
-    JpegFast422PacketV1, MetalRuntime, Surface, REGION_SCALED_BATCH_CHUNK,
+    BatchDeviceBufferCache, BatchedFastPacket, Error, Fast444ScaledRegionBatchItemRequest,
+    FastSubsampledOpBatchItemRequest, JpegFast420PacketV1, JpegFast422PacketV1, MetalRuntime,
+    Surface, REGION_SCALED_BATCH_CHUNK,
 };
 
 #[cfg(target_os = "macos")]
@@ -297,7 +297,12 @@ fn decode_full_batch_to_surfaces_with_runtime(
         return Ok(Some(results));
     }
 
-    let mut results = Vec::with_capacity(requests.len());
+    let mut result_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal fallback batch result collection",
+        requests,
+    )?;
+    let mut results =
+        result_budget.try_vec(requests.len(), "JPEG Metal fallback batch result slots")?;
     let has_region_scaled = requests
         .iter()
         .any(|request| matches!(request.op, batch::BatchOp::RegionScaled { .. }));
@@ -308,8 +313,15 @@ fn decode_full_batch_to_surfaces_with_runtime(
     };
     for chunk_start in (0..requests.len()).step_by(chunk_size) {
         let chunk_end = (chunk_start + chunk_size).min(requests.len());
-        let command_buffer = runtime.queue.new_command_buffer();
-        let mut encoded = Vec::with_capacity(chunk_end - chunk_start);
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let mut chunk_budget = crate::plan_owner_ledger::batch_execution_budget(
+            "JPEG Metal fallback encoded batch chunk",
+            requests,
+        )?;
+        let mut encoded = chunk_budget.try_vec(
+            chunk_end - chunk_start,
+            "JPEG Metal encoded batch chunk items",
+        )?;
         let mut device_buffer_cache = BatchDeviceBufferCache::default();
         for index in chunk_start..chunk_end {
             let request = &requests[index];
@@ -318,9 +330,8 @@ fn decode_full_batch_to_surfaces_with_runtime(
                 BatchedFastPacket::Fast420(packet) => {
                     encode_fast_subsampled_op_batch_item(FastSubsampledOpBatchItemRequest {
                         runtime,
-                        command_buffer,
+                        command_buffer: &command_buffer,
                         device_buffer_cache: &mut device_buffer_cache,
-                        request_index: index,
                         packet: *packet,
                         fmt: request.fmt,
                         op: request.op,
@@ -329,9 +340,8 @@ fn decode_full_batch_to_surfaces_with_runtime(
                 BatchedFastPacket::Fast422(packet) => {
                     encode_fast_subsampled_op_batch_item(FastSubsampledOpBatchItemRequest {
                         runtime,
-                        command_buffer,
+                        command_buffer: &command_buffer,
                         device_buffer_cache: &mut device_buffer_cache,
-                        request_index: index,
                         packet: *packet,
                         fmt: request.fmt,
                         op: request.op,
@@ -340,16 +350,14 @@ fn decode_full_batch_to_surfaces_with_runtime(
                 BatchedFastPacket::Fast444(packet, mode) => match request.op {
                     batch::BatchOp::Full => encode_fast444_batch_item(
                         runtime,
-                        command_buffer,
-                        index,
+                        &command_buffer,
                         packet,
                         *mode,
                         request.fmt,
                     )?,
                     batch::BatchOp::Region(roi) => encode_fast444_region_batch_item(
                         runtime,
-                        command_buffer,
-                        index,
+                        &command_buffer,
                         packet,
                         *mode,
                         request.fmt,
@@ -357,8 +365,7 @@ fn decode_full_batch_to_surfaces_with_runtime(
                     )?,
                     batch::BatchOp::Scaled(scale) => encode_fast444_scaled_batch_item(
                         runtime,
-                        command_buffer,
-                        index,
+                        &command_buffer,
                         packet,
                         *mode,
                         request.fmt,
@@ -368,9 +375,8 @@ fn decode_full_batch_to_surfaces_with_runtime(
                         encode_fast444_scaled_region_batch_item(
                             Fast444ScaledRegionBatchItemRequest {
                                 runtime,
-                                command_buffer,
+                                command_buffer: &command_buffer,
                                 device_buffer_cache: &mut device_buffer_cache,
-                                request_index: index,
                                 packet,
                                 mode: *mode,
                                 fmt: request.fmt,
@@ -384,15 +390,13 @@ fn decode_full_batch_to_surfaces_with_runtime(
             encoded.push(item);
         }
 
-        commit_and_wait_jpeg(command_buffer)?;
+        commit_and_wait_jpeg(&command_buffer)?;
 
         for item in encoded {
             if let Some(status) =
                 first_decode_error_status(&item.status_buffer, item.decode_threads)?
             {
-                let request = &requests[item.request_index];
-                let decoder = CpuDecoder::new(request.input.as_ref())?;
-                results.push(Err(decode_error_from_cpu(&decoder, request.fmt, status)));
+                results.push(Err(fast_decode_status_error(status)));
             } else {
                 results.push(Ok(item.surface));
             }

@@ -3,14 +3,14 @@
 use std::mem::size_of;
 
 use super::super::{
-    checked_u32, dispatch_1d_pipeline, fast420_batch_timing_enabled, pack_420_pipeline_for_format,
-    pack_420_windowed_pipeline_for_format, pack_422_pipeline_for_format,
-    pack_422_windowed_pipeline_for_format, BatchedFastPacket, ComputePipelineState, Error,
-    JpegFast420PacketV1, JpegFast420TextureBatchParams, JpegFast422PacketV1, JpegFast444PacketV1,
-    MetalRuntime, PixelFormat, PlaneMode, FAST420_TEXTURE_BOUNDARY_META_WORDS,
-    FAST420_TEXTURE_BOUNDARY_SAMPLE_BYTES, FAST420_TEXTURE_VERTICAL_META_WORDS,
-    FAST420_TEXTURE_VERTICAL_SAMPLE_BYTES, FAST422_TEXTURE_BOUNDARY_META_WORDS,
-    FAST422_TEXTURE_BOUNDARY_SAMPLE_BYTES,
+    checked_u32, dispatch_1d_pipeline, fast420_batch_timing_enabled, new_compute_command_encoder,
+    pack_420_pipeline_for_format, pack_420_windowed_pipeline_for_format,
+    pack_422_pipeline_for_format, pack_422_windowed_pipeline_for_format, BatchedFastPacket,
+    ComputePipelineState, Error, JpegFast420PacketV1, JpegFast420TextureBatchParams,
+    JpegFast422PacketV1, JpegFast444PacketV1, MetalRuntime, PixelFormat, PlaneMode,
+    FAST420_TEXTURE_BOUNDARY_META_WORDS, FAST420_TEXTURE_BOUNDARY_SAMPLE_BYTES,
+    FAST420_TEXTURE_VERTICAL_META_WORDS, FAST420_TEXTURE_VERTICAL_SAMPLE_BYTES,
+    FAST422_TEXTURE_BOUNDARY_META_WORDS, FAST422_TEXTURE_BOUNDARY_SAMPLE_BYTES,
 };
 use super::descriptors::{
     FastRegionScaledMetal, FastScratchKeys, FastSubsampledMetal, FastTextureRepairCtx,
@@ -177,7 +177,7 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
                     tile_index: checked_u32(index, ctx.tile_index_ctx)?,
                     ..ctx.decode_params
                 };
-                let boundary_encoder = ctx.command_buffer.new_compute_command_encoder();
+                let boundary_encoder = new_compute_command_encoder(ctx.command_buffer)?;
                 boundary_encoder.set_compute_pipeline_state(
                     &runtime.fast420_rgba_texture_vertical_boundary_pipeline,
                 );
@@ -190,7 +190,7 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
                 );
                 boundary_encoder.set_texture(0, Some(texture));
                 dispatch_1d_pipeline(
-                    boundary_encoder,
+                    &boundary_encoder,
                     &runtime.fast420_rgba_texture_vertical_boundary_pipeline,
                     mcu_threads,
                 );
@@ -209,7 +209,7 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
                     tile_index: checked_u32(index, ctx.tile_index_ctx)?,
                     ..ctx.decode_params
                 };
-                let corner_encoder = ctx.command_buffer.new_compute_command_encoder();
+                let corner_encoder = new_compute_command_encoder(ctx.command_buffer)?;
                 corner_encoder
                     .set_compute_pipeline_state(&runtime.fast420_rgba_texture_corner_pipeline);
                 corner_encoder.set_buffer(0, Some(ctx.boundary_meta_buffer), 0);
@@ -222,7 +222,7 @@ impl FastSubsampledMetal for JpegFast420PacketV1 {
                 );
                 corner_encoder.set_texture(0, Some(texture));
                 dispatch_1d_pipeline(
-                    corner_encoder,
+                    &corner_encoder,
                     &runtime.fast420_rgba_texture_corner_pipeline,
                     mcu_threads,
                 );

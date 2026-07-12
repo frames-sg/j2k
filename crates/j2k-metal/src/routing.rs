@@ -88,19 +88,28 @@ pub(crate) fn decide_route(backend: BackendRequest, fmt: PixelFormat) -> RouteDe
     };
     if j2k_profile::gpu_route_profile_enabled() {
         let labels = j2k_route_decision_profile(decision);
-        j2k_profile::emit_gpu_route_fields(
-            "j2k",
-            "metal",
-            &[
-                j2k_profile::ProfileField::label("request", format_args!("{backend:?}")),
-                j2k_profile::ProfileField::label("fmt", format_args!("{fmt:?}")),
-                j2k_profile::ProfileField::label("op", "full"),
-                j2k_profile::ProfileField::label("decision", labels.decision),
-                j2k_profile::ProfileField::label("reason", labels.reason),
-            ],
-        );
+        match route_profile_fields(backend, fmt, labels) {
+            Ok(fields) => j2k_profile::emit_gpu_route_fields("j2k", "metal", &fields),
+            Err(error) => {
+                j2k_profile::emit_profile_error("metal_gpu_route_fields", &error);
+            }
+        }
     }
     decision
+}
+
+fn route_profile_fields(
+    backend: BackendRequest,
+    fmt: PixelFormat,
+    labels: MetalRouteProfileLabels,
+) -> j2k_profile::ProfileResult<[j2k_profile::ProfileField; 5]> {
+    Ok([
+        j2k_profile::ProfileField::label("request", format_args!("{backend:?}"))?,
+        j2k_profile::ProfileField::label("fmt", format_args!("{fmt:?}"))?,
+        j2k_profile::ProfileField::label("op", "full")?,
+        j2k_profile::ProfileField::label("decision", labels.decision)?,
+        j2k_profile::ProfileField::label("reason", labels.reason)?,
+    ])
 }
 
 pub(crate) fn decision_error(decision: RouteDecision) -> Option<Error> {

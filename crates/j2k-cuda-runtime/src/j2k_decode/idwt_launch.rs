@@ -8,11 +8,12 @@ use crate::{
     kernels::{
         j2k_dwt53_launch_geometry, j2k_forward_rct_launch_geometry,
         j2k_idwt_multi_1d_launch_geometry, j2k_idwt_multi_coop_axis_launch_geometry,
-        j2k_idwt_multi_coop_columns_launch_geometry, j2k_idwt_multi_coop_launch_geometry,
-        CudaKernel, CudaLaunchGeometry,
+        j2k_idwt_multi_coop_launch_geometry, CudaKernel, CudaLaunchGeometry,
     },
     memory::CudaDeviceBuffer,
 };
+
+use super::idwt::launch_validation::idwt_vertical_97_multi_launch_geometry;
 
 impl CudaContext {
     pub(in crate::j2k_decode) fn launch_j2k_idwt_interleave(
@@ -257,23 +258,9 @@ impl CudaContext {
         job_count: usize,
         synchronize: bool,
     ) -> Result<(), CudaError> {
-        const COLUMNS_PER_BLOCK: usize = 4;
-        const MIN_COLS4_JOBS: usize = 64;
-        let (kernel, geometry) = if job_count >= MIN_COLS4_JOBS && max_height <= 256 {
-            let geometry = j2k_idwt_multi_coop_columns_launch_geometry(
-                max_columns,
-                max_height,
-                job_count,
-                COLUMNS_PER_BLOCK,
-            )
-            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
-            (CudaKernel::J2kIdwtVertical97MultiCols4, geometry)
-        } else {
-            let geometry =
-                j2k_idwt_multi_coop_axis_launch_geometry(max_columns, max_height, job_count)
-                    .ok_or(CudaError::LengthTooLarge { len: job_count })?;
-            (CudaKernel::J2kIdwtVertical97Multi, geometry)
-        };
+        let (kernel, geometry) =
+            idwt_vertical_97_multi_launch_geometry(max_columns, max_height, job_count)
+                .ok_or(CudaError::LengthTooLarge { len: job_count })?;
         let mut jobs_ptr = jobs_ptr;
         let mut params = cuda_kernel_params!(jobs_ptr);
         self.launch_j2k_idwt_named_kernel(kernel, geometry, &mut params, synchronize)

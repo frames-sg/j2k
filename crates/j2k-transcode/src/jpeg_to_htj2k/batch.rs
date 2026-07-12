@@ -2,32 +2,41 @@
 
 use super::{
     component_sampling_for_jpeg, dct_blocks_to_8x8_f64, decompose_97_from_first_level,
-    decomposition_levels_for_components, encode_precomputed_htj2k_53_with_accelerator,
-    encode_precomputed_htj2k_97_batch_with_accelerator,
-    encode_precomputed_htj2k_97_with_accelerator,
-    encode_preencoded_htj2k_97_compact_owned_with_accelerator,
-    encode_preencoded_htj2k_97_owned_with_accelerator,
-    encode_prequantized_htj2k_97_with_accelerator, error_metrics_i32, extract_dct_blocks,
+    decomposition_levels_for_components,
+    encode_precomputed_htj2k_53_with_accelerator_and_max_host_bytes,
+    encode_precomputed_htj2k_97_batch_owned_with_accelerator_and_max_host_bytes,
+    encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes,
+    encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
+    encoded_transcode_retained_bytes, error_metrics_i32_with_live_budget, extract_dct_blocks,
     flatten_integer_wavelet, float97_reference_coefficients,
     float_direct_97_wavelet_from_component, float_reference_coefficients,
     integer_dct_job_for_component, integer_direct_wavelet_from_component,
     integer_reference_coefficients, integer_wavelet_from_first_level, j2k_dwt97_from_wavelet,
-    j2k_dwt_from_integer_wavelet, jpeg_to_htj2k_with_scratch, rounded_wavelet97_i32,
-    transcode_path_name, validate_component_block_grid, validate_transcode_options,
-    BatchTranscodeReport, ComponentWavelet97, CpuOnlyJ2kEncodeStageAccelerator, DctExtractOptions,
+    j2k_dwt_from_integer_wavelet, jpeg_to_htj2k_with_scratch, map_encode_error,
+    rounded_wavelet97_i32, transcode_path_name, validate_component_block_grid,
+    validate_jpeg_transcode_workspace, validate_transcode_options, BatchTranscodeReport,
+    ComponentWavelet97, CpuOnlyJ2kEncodeStageAccelerator, DctExtractOptions,
     DctGridI16ToHtj2k97CodeBlockBatch, DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt97Job,
     DctGridToHtj2k97CodeBlockJob, DctToWaveletStageAccelerator, Dwt97BatchStageTimings,
-    EncodedTranscode, EncodedTranscodeBatch, Htj2k97CodeBlockOptions, IndexedParallelIterator,
-    Instant, IntegerWavelet, IntoParallelIterator, IntoParallelRefIterator,
-    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, JpegDctImage, JpegTileBatchInput,
-    JpegToHtj2kCoefficientPath, JpegToHtj2kEncodeOptions, JpegToHtj2kError, JpegToHtj2kOptions,
-    JpegToHtj2kScratch, JpegToHtj2kTranscoder, ParallelIterator, PrecomputedHtj2k53Component,
-    PrecomputedHtj2k53Image, PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
-    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage, PreencodedHtj2k97Component,
-    PreencodedHtj2k97Image, PrequantizedHtj2k97Component, PrequantizedHtj2k97Image,
-    TranscodeComponentReport, TranscodeReport, TranscodeTimingReport,
+    EncodedTranscode, EncodedTranscodeBatch, HostLiveBudget, Htj2k97CodeBlockOptions,
+    IndexedParallelIterator, Instant, IntegerWavelet, IntoParallelIterator,
+    IntoParallelRefIterator, J2kEncodeDispatchReport, J2kEncodeStageAccelerator, JpegDctImage,
+    JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kEncodeOptions, JpegToHtj2kError,
+    JpegToHtj2kOptions, JpegToHtj2kScratch, JpegToHtj2kTranscoder, ParallelIterator,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image, PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Image, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Image, TranscodeComponentReport, TranscodeReport, TranscodeTimingReport,
     TranscodeValidationClassification,
 };
+use crate::allocation::try_vec_with_capacity;
+mod group_budget;
+mod workspace;
+use self::workspace::{validate_batch_workspace, BatchWorkspaceKind};
+mod result_slots;
+use self::result_slots::BatchResultSlots;
 mod prepare;
 pub(super) use self::prepare::{
     batch_component_groups, float97_batch_component_groups, prepare_float97_batch_tile,
@@ -54,6 +63,12 @@ pub(super) use self::encode::{
     add_encode_timing_counters_from_result, encode_float97_prepared_tiles,
     encode_integer_prepared_tiles, record_encode_dispatch_delta,
 };
+mod actual_live;
+use self::actual_live::{
+    validate_float97_prepared_collection, validate_integer_prepared_collection,
+};
+mod individual;
+use self::individual::transcode_tile_batch_individually;
 
 /// Transcode many JPEG tiles into HTJ2K codestreams.
 pub fn jpeg_to_htj2k_batch(
@@ -61,6 +76,41 @@ pub fn jpeg_to_htj2k_batch(
     options: &JpegToHtj2kOptions,
 ) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
     JpegToHtj2kTranscoder::default().transcode_batch(tiles, options)
+}
+
+enum BatchExecutionRoute {
+    Integer53,
+    AcceleratedFloat97,
+    Individual,
+}
+
+fn validate_batch_route(
+    tiles: &[JpegTileBatchInput<'_>],
+    options: &JpegToHtj2kOptions,
+    accelerator: &impl DctToWaveletStageAccelerator,
+) -> Result<BatchExecutionRoute, JpegToHtj2kError> {
+    validate_transcode_options(options)?;
+    let (route, workspace_kind) = match options.coefficient_path {
+        JpegToHtj2kCoefficientPath::IntegerDirect53 => {
+            (BatchExecutionRoute::Integer53, BatchWorkspaceKind::Integer)
+        }
+        JpegToHtj2kCoefficientPath::FloatDirectLinear97
+            if accelerator.supports_dwt97_batch()
+                || accelerator.supports_htj2k97_codeblock_batch() =>
+        {
+            (
+                BatchExecutionRoute::AcceleratedFloat97,
+                BatchWorkspaceKind::AcceleratedFloat97,
+            )
+        }
+        JpegToHtj2kCoefficientPath::FloatDirectLinear53
+        | JpegToHtj2kCoefficientPath::FloatDirectLinear97 => (
+            BatchExecutionRoute::Individual,
+            BatchWorkspaceKind::Individual,
+        ),
+    };
+    validate_batch_workspace(tiles, options, workspace_kind)?;
+    Ok(route)
 }
 
 pub(super) fn jpeg_tile_batch_to_htj2k_with_scratch<
@@ -73,13 +123,9 @@ pub(super) fn jpeg_tile_batch_to_htj2k_with_scratch<
     accelerator: &mut A,
     encode_accelerator: &mut E,
 ) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
-    validate_transcode_options(options)?;
-    match options.coefficient_path {
-        JpegToHtj2kCoefficientPath::IntegerDirect53 => {}
-        JpegToHtj2kCoefficientPath::FloatDirectLinear97
-            if accelerator.supports_dwt97_batch()
-                || accelerator.supports_htj2k97_codeblock_batch() =>
-        {
+    match validate_batch_route(tiles, options, accelerator)? {
+        BatchExecutionRoute::Integer53 => {}
+        BatchExecutionRoute::AcceleratedFloat97 => {
             return jpeg_float97_tile_batch_to_htj2k_with_scratch(
                 tiles,
                 options,
@@ -88,20 +134,20 @@ pub(super) fn jpeg_tile_batch_to_htj2k_with_scratch<
                 encode_accelerator,
             );
         }
-        JpegToHtj2kCoefficientPath::FloatDirectLinear53
-        | JpegToHtj2kCoefficientPath::FloatDirectLinear97 => {
-            return Ok(transcode_tile_batch_individually(
+        BatchExecutionRoute::Individual => {
+            return transcode_tile_batch_individually(
                 tiles,
                 options,
                 scratch,
                 accelerator,
                 encode_accelerator,
-            ));
+            );
         }
     }
 
     let extract_start = Instant::now();
-    let prepared_results = tiles
+    let mut prepared_results = try_vec_with_capacity(tiles.len())?;
+    tiles
         .par_iter()
         .enumerate()
         .map(|(tile_index, tile)| {
@@ -110,15 +156,15 @@ pub(super) fn jpeg_tile_batch_to_htj2k_with_scratch<
                 prepare_integer_batch_tile(tile_index, tile.bytes, options),
             )
         })
-        .collect::<Vec<_>>();
+        .collect_into_vec(&mut prepared_results);
+    validate_integer_prepared_collection(&prepared_results, prepared_results.capacity(), scratch)?;
     let extract_us = extract_start.elapsed().as_micros();
-    let mut tile_results: Vec<Option<Result<EncodedTranscode, JpegToHtj2kError>>> =
-        (0..tiles.len()).map(|_| None).collect();
-    let mut prepared_tiles = Vec::new();
+    let mut tile_results = BatchResultSlots::try_new(tiles.len())?;
+    let mut prepared_tiles = try_vec_with_capacity(tiles.len())?;
     for (tile_index, result) in prepared_results {
         match result {
             Ok(prepared) => prepared_tiles.push(prepared),
-            Err(error) => tile_results[tile_index] = Some(Err(error)),
+            Err(error) => tile_results.insert(tile_index, Err(error))?,
         }
     }
 
@@ -137,22 +183,28 @@ pub(super) fn jpeg_tile_batch_to_htj2k_with_scratch<
     timings.tile_count = prepared_tiles.len();
 
     let encode_start = Instant::now();
-    let encoded_tiles = encode_integer_prepared_tiles(prepared_tiles, options, encode_accelerator);
+    let mut encode_external = HostLiveBudget::process_cap();
+    encode_external.add_bytes(scratch.retained_bytes()?)?;
+    encode_external.add_bytes(tile_results.retained_slot_bytes()?)?;
+    let encoded_tiles = encode_integer_prepared_tiles(
+        prepared_tiles,
+        options,
+        encode_accelerator,
+        encode_external.live_bytes(),
+    )?;
     for (tile_index, encoded) in encoded_tiles {
         add_encode_timing_counters_from_result(&mut timings, &encoded);
-        tile_results[tile_index] = Some(encoded);
+        tile_results.insert(tile_index, encoded)?;
     }
     let encode_us = encode_start.elapsed().as_micros();
     timings.htj2k_encode_us = encode_us;
 
-    let output_tiles = tile_results
-        .into_iter()
-        .map(|tile| {
-            tile.unwrap_or(Err(JpegToHtj2kError::Validation(
-                "batch transcode did not produce a tile result",
-            )))
-        })
-        .collect::<Vec<_>>();
+    let output_tiles =
+        tile_results.into_results_with_live_budget(scratch.retained_bytes()?, |result| {
+            result
+                .as_ref()
+                .map_or(Ok(0), encoded_transcode_retained_bytes)
+        })?;
     Ok(batch_output(
         output_tiles,
         BatchTranscodeReport {
@@ -182,7 +234,8 @@ pub(super) fn jpeg_float97_tile_batch_to_htj2k_with_scratch<
     encode_accelerator: &mut E,
 ) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
     let extract_start = Instant::now();
-    let prepared_results = tiles
+    let mut prepared_results = try_vec_with_capacity(tiles.len())?;
+    tiles
         .par_iter()
         .enumerate()
         .map(|(tile_index, tile)| {
@@ -191,15 +244,15 @@ pub(super) fn jpeg_float97_tile_batch_to_htj2k_with_scratch<
                 prepare_float97_batch_tile(tile_index, tile.bytes, options),
             )
         })
-        .collect::<Vec<_>>();
+        .collect_into_vec(&mut prepared_results);
+    validate_float97_prepared_collection(&prepared_results, prepared_results.capacity(), scratch)?;
     let extract_us = extract_start.elapsed().as_micros();
-    let mut tile_results: Vec<Option<Result<EncodedTranscode, JpegToHtj2kError>>> =
-        (0..tiles.len()).map(|_| None).collect();
-    let mut prepared_tiles = Vec::new();
+    let mut tile_results = BatchResultSlots::try_new(tiles.len())?;
+    let mut prepared_tiles = try_vec_with_capacity(tiles.len())?;
     for (tile_index, result) in prepared_results {
         match result {
             Ok(prepared) => prepared_tiles.push(prepared),
-            Err(error) => tile_results[tile_index] = Some(Err(error)),
+            Err(error) => tile_results.insert(tile_index, Err(error))?,
         }
     }
 
@@ -218,22 +271,28 @@ pub(super) fn jpeg_float97_tile_batch_to_htj2k_with_scratch<
     timings.tile_count = prepared_tiles.len();
 
     let encode_start = Instant::now();
-    let encoded_tiles = encode_float97_prepared_tiles(prepared_tiles, options, encode_accelerator);
+    let mut encode_external = HostLiveBudget::process_cap();
+    encode_external.add_bytes(scratch.retained_bytes()?)?;
+    encode_external.add_bytes(tile_results.retained_slot_bytes()?)?;
+    let encoded_tiles = encode_float97_prepared_tiles(
+        prepared_tiles,
+        options,
+        encode_accelerator,
+        encode_external.live_bytes(),
+    )?;
     for (tile_index, encoded) in encoded_tiles {
         add_encode_timing_counters_from_result(&mut timings, &encoded);
-        tile_results[tile_index] = Some(encoded);
+        tile_results.insert(tile_index, encoded)?;
     }
     let encode_us = encode_start.elapsed().as_micros();
     timings.htj2k_encode_us = encode_us;
 
-    let output_tiles = tile_results
-        .into_iter()
-        .map(|tile| {
-            tile.unwrap_or(Err(JpegToHtj2kError::Validation(
-                "9/7 batch transcode did not produce a tile result",
-            )))
-        })
-        .collect::<Vec<_>>();
+    let output_tiles =
+        tile_results.into_results_with_live_budget(scratch.retained_bytes()?, |result| {
+            result
+                .as_ref()
+                .map_or(Ok(0), encoded_transcode_retained_bytes)
+        })?;
     Ok(batch_output(
         output_tiles,
         BatchTranscodeReport {
@@ -250,65 +309,6 @@ pub(super) fn jpeg_float97_tile_batch_to_htj2k_with_scratch<
             coefficient_path: options.coefficient_path,
         },
     ))
-}
-
-pub(super) fn transcode_tile_batch_individually<
-    A: DctToWaveletStageAccelerator,
-    E: J2kEncodeStageAccelerator,
->(
-    tiles: &[JpegTileBatchInput<'_>],
-    options: &JpegToHtj2kOptions,
-    scratch: &mut JpegToHtj2kScratch,
-    accelerator: &mut A,
-    encode_accelerator: &mut E,
-) -> EncodedTranscodeBatch {
-    let start = Instant::now();
-    let output_tiles = tiles
-        .iter()
-        .map(|tile| {
-            jpeg_to_htj2k_with_scratch(
-                tile.bytes,
-                options,
-                scratch,
-                accelerator,
-                encode_accelerator,
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut timings = aggregate_tile_timings(&output_tiles);
-    timings.tile_count = output_tiles.iter().filter(|tile| tile.is_ok()).count();
-    let elapsed_us = start.elapsed().as_micros();
-    if timings.dct_to_wavelet_total_us == 0 {
-        timings.dct_to_wavelet_total_us = elapsed_us
-            .saturating_sub(timings.jpeg_dct_extract_us)
-            .saturating_sub(timings.htj2k_encode_us);
-    }
-    batch_output(
-        output_tiles,
-        BatchTranscodeReport {
-            tile_count: tiles.len(),
-            successful_tiles: 0,
-            failed_tiles: 0,
-            transformed_components: timings.component_count,
-            reversible_dwt53_batches: 0,
-            reversible_dwt53_batch_jobs: 0,
-            extract_us: timings.jpeg_dct_extract_us,
-            transform_us: timings.dct_to_wavelet_total_us,
-            encode_us: timings.htj2k_encode_us,
-            timings,
-            coefficient_path: options.coefficient_path,
-        },
-    )
-}
-
-pub(super) fn aggregate_tile_timings(
-    tiles: &[Result<EncodedTranscode, JpegToHtj2kError>],
-) -> TranscodeTimingReport {
-    let mut timings = TranscodeTimingReport::default();
-    for tile in tiles.iter().filter_map(|tile| tile.as_ref().ok()) {
-        timings.add_assign(tile.report.timings);
-    }
-    timings
 }
 
 pub(super) fn batch_output(

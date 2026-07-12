@@ -21,6 +21,7 @@ fn cuda_jpeg_host_abi_layouts_remain_stable() {
     assert_eq!(align_of::<CudaJpegEntropyCheckpoint>(), 8);
     assert_eq!(offset_of!(CudaJpegEntropyCheckpoint, bit_acc), 8);
     assert_eq!(offset_of!(CudaJpegEntropyCheckpoint, reserved), 32);
+    assert_eq!(offset_of!(CudaJpegEntropyCheckpoint, reserved_tail), 36);
 
     assert_eq!(size_of::<CudaJpegBaselineEncodeParams>(), 84);
     assert_eq!(

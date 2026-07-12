@@ -4,18 +4,48 @@ use j2k_core::{
     copy_tight_pixels_to_strided_output, BackendKind, DeviceMemoryRange, DeviceSurface,
     ExecutionStats, PixelFormat, SurfaceMetadata, SurfaceResidency,
 };
+#[cfg(any(feature = "cuda-runtime", test))]
+use j2k_core::{strided_output_len, validate_strided_output_buffer};
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaDeviceBuffer;
 
 #[cfg(feature = "cuda-runtime")]
 use crate::runtime::cuda_error;
+#[cfg(feature = "cuda-runtime")]
+use crate::session::HostOwnerLease;
 use crate::Error;
 
 #[derive(Debug)]
 pub(crate) enum Storage {
-    Host(Vec<u8>),
+    Host(HostStorage),
     #[cfg(feature = "cuda-runtime")]
     Cuda(CudaDeviceBuffer),
+}
+
+#[derive(Debug)]
+pub(crate) struct HostStorage {
+    bytes: Vec<u8>,
+    #[cfg(feature = "cuda-runtime")]
+    _lease: HostOwnerLease,
+}
+
+impl HostStorage {
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn new(bytes: Vec<u8>, lease: HostOwnerLease) -> Self {
+        Self {
+            bytes,
+            _lease: lease,
+        }
+    }
+
+    #[cfg(not(feature = "cuda-runtime"))]
+    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -138,7 +168,7 @@ impl Surface {
     /// Borrow host-resident bytes when this surface is not CUDA-backed.
     pub fn as_host_bytes(&self) -> Option<&[u8]> {
         match &self.storage {
-            Storage::Host(bytes) => Some(bytes),
+            Storage::Host(storage) => Some(storage.as_slice()),
             #[cfg(feature = "cuda-runtime")]
             Storage::Cuda(_) => None,
         }
@@ -147,17 +177,26 @@ impl Surface {
     /// Copy surface bytes into a caller-provided strided output buffer.
     pub fn download_into(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
         match &self.storage {
-            Storage::Host(bytes) => {
-                copy_tight_pixels_to_strided_output(bytes, self.dimensions, self.fmt, out, stride)
-                    .map_err(Error::from)
-            }
+            Storage::Host(storage) => copy_tight_pixels_to_strided_output(
+                storage.as_slice(),
+                self.dimensions,
+                self.fmt,
+                out,
+                stride,
+            )
+            .map_err(Error::from),
             #[cfg(feature = "cuda-runtime")]
-            Storage::Cuda(buffer) => {
-                let mut tight = vec![0u8; self.byte_len()];
-                buffer.copy_to_host(&mut tight).map_err(cuda_error)?;
-                copy_tight_pixels_to_strided_output(&tight, self.dimensions, self.fmt, out, stride)
-                    .map_err(Error::from)
-            }
+            Storage::Cuda(buffer) => copy_cuda_surface_to_strided_output(
+                self.dimensions,
+                self.fmt,
+                out,
+                stride,
+                |offset, destination| {
+                    buffer
+                        .copy_range_to_host(offset, destination)
+                        .map_err(cuda_error)
+                },
+            ),
         }
     }
 
@@ -177,6 +216,41 @@ impl Surface {
             None
         }
     }
+}
+
+#[cfg(any(feature = "cuda-runtime", test))]
+fn copy_cuda_surface_to_strided_output(
+    dimensions: (u32, u32),
+    fmt: PixelFormat,
+    out: &mut [u8],
+    stride: usize,
+    mut copy_range: impl FnMut(usize, &mut [u8]) -> Result<(), Error>,
+) -> Result<(), Error> {
+    validate_strided_output_buffer(dimensions, out.len(), stride, fmt)?;
+    if dimensions.0 == 0 || dimensions.1 == 0 {
+        return Ok(());
+    }
+
+    let row_bytes = usize::try_from(dimensions.0)
+        .ok()
+        .and_then(|width| width.checked_mul(fmt.bytes_per_pixel()))
+        .ok_or(j2k_core::BufferError::SizeOverflow {
+            what: "CUDA JPEG surface row byte count",
+        })?;
+    let tight_len = strided_output_len(dimensions, row_bytes, fmt)?;
+    if stride == row_bytes {
+        return copy_range(0, &mut out[..tight_len]);
+    }
+
+    for row in 0..dimensions.1 as usize {
+        let source_offset = row * row_bytes;
+        let destination_offset = row * stride;
+        copy_range(
+            source_offset,
+            &mut out[destination_offset..destination_offset + row_bytes],
+        )?;
+    }
+    Ok(())
 }
 
 #[doc(hidden)]
@@ -219,5 +293,82 @@ impl DeviceSurface for Surface {
                 self.byte_len(),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_cuda_surface_to_strided_output;
+    use j2k_core::PixelFormat;
+
+    #[test]
+    fn tight_cuda_download_uses_one_direct_copy() {
+        let source = (0_u8..12).collect::<Vec<_>>();
+        let mut out = [0_u8; 12];
+        let mut copies = Vec::new();
+
+        copy_cuda_surface_to_strided_output(
+            (2, 2),
+            PixelFormat::Rgb8,
+            &mut out,
+            6,
+            |offset, destination| {
+                copies.push((offset, destination.len()));
+                destination.copy_from_slice(&source[offset..offset + destination.len()]);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(out, source.as_slice());
+        assert_eq!(copies, [(0, 12)]);
+    }
+
+    #[test]
+    fn strided_cuda_download_copies_rows_without_frame_staging() {
+        let source = (0_u8..12).collect::<Vec<_>>();
+        let mut out = [0xee_u8; 16];
+        let mut copies = Vec::new();
+
+        copy_cuda_surface_to_strided_output(
+            (2, 2),
+            PixelFormat::Rgb8,
+            &mut out,
+            8,
+            |offset, destination| {
+                copies.push((offset, destination.len()));
+                destination.copy_from_slice(&source[offset..offset + destination.len()]);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(&out[..6], &source[..6]);
+        assert_eq!(&out[6..8], &[0xee, 0xee]);
+        assert_eq!(&out[8..14], &source[6..12]);
+        assert_eq!(&out[14..], &[0xee, 0xee]);
+        assert_eq!(copies, [(0, 6), (6, 6)]);
+    }
+
+    #[test]
+    fn invalid_cuda_download_layout_fails_before_copying() {
+        let mut out = [0_u8; 12];
+        let mut copied = false;
+
+        let error =
+            copy_cuda_surface_to_strided_output((2, 2), PixelFormat::Rgb8, &mut out, 5, |_, _| {
+                copied = true;
+                Ok(())
+            })
+            .expect_err("short stride must fail");
+
+        assert!(matches!(
+            error,
+            crate::Error::Buffer(j2k_core::BufferError::StrideTooSmall {
+                row_bytes: 6,
+                stride: 5,
+            })
+        ));
+        assert!(!copied);
     }
 }

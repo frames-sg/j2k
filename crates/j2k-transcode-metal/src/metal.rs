@@ -5,14 +5,13 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use core::f32::consts::PI;
-use core::mem::{size_of, size_of_val};
+use core::mem::size_of;
 
 use j2k_core::{BackendKind, DeviceMemoryRange};
 use j2k_metal_support::{
-    checked_buffer_read_vec, checked_buffer_write, checked_command_queue, commit_and_wait,
-    private_buffer, shared_buffer_for_len, shared_buffer_with_slice, system_default_device,
-    MetalPipelineLoader,
+    checked_buffer_read_vec, checked_buffer_write, checked_command_buffer, checked_command_queue,
+    checked_compute_command_encoder, commit_and_wait, system_default_device, MetalPipelineLoader,
+    MetalSupportError,
 };
 use j2k_transcode::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes, idct_blocks_to_signed_samples_rayon,
@@ -23,11 +22,11 @@ use j2k_transcode::{
     ResidentBufferRef, ResidentColorModel, ResidentComponentGeometry, ResidentDctCoefficientOrder,
     ResidentDctGridLayout, ResidentDwtSubband, ResidentDwtSubbandKind, ResidentDwtSubbandLayout,
     ResidentHandoffError, ResidentJpegDctGrid, ResidentSampleInfo, ResidentSampling,
-    ReversibleDwt53FirstLevel,
+    ReversibleDwt53FirstLevel, TranscodeStageError,
 };
 use metal::{
     foreign_types::ForeignType, Buffer, CommandBufferRef, CommandQueue, ComputeCommandEncoderRef,
-    ComputePipelineState, Device, MTLResourceOptions, MTLSize,
+    ComputePipelineState, Device, MTLSize,
 };
 
 use crate::weights::{SparseDwt53WeightRows, SparseDwt97WeightRows, SparseWeightRow};
@@ -39,6 +38,12 @@ use self::runtime::{
     Dct97ColumnLiftParams, Dct97IdctRowLiftParams, Dct97QuantizeCodeblocksParams,
     DctBatchProjectionParams, DctProjectionParams, MetalRuntime, MetalSparseRow, MetalSparseRows,
     MetalWeightTap, Reversible53ProjectionParams,
+};
+mod allocation;
+use self::allocation::{
+    checked_device_element_count, checked_device_workspace_bytes, checked_host_element_count,
+    checked_host_workspace_bytes, private_buffer_for_len, shared_buffer_for_len,
+    shared_buffer_with_slice, try_transcode_vec_from_slice, try_transcode_vec_with_capacity,
 };
 mod reversible;
 pub(crate) use self::reversible::{
@@ -66,42 +71,43 @@ use self::resident::{
     dwt97_codeblock_output_transfer_bytes, dwt97_codeblock_output_transfer_count,
     projection_batch_output_buffers, projection_batch_output_transfer_bytes,
     projection_batch_output_transfer_count, projection_batch_private_output_buffers,
-    projection_batch_shape, projection_batch_weight_buffers,
-    read_prequantized_97_codeblock_outputs, read_projected_batch_outputs,
+    projection_batch_shape, projection_batch_weight_buffers, read_projected_batch_outputs,
     validate_resident_dct_handoffs_for_dwt97_jobs, validate_resident_dct_handoffs_for_htj2k_jobs,
     validate_resident_dwt_handoffs_for_dwt97_jobs, validate_resident_dwt_handoffs_for_htj2k_jobs,
     Dwt97CodeBlockOutputBuffers, ProjectionBatchOutputBuffers, ProjectionBatchShape,
 };
+mod codeblock_output;
+use self::codeblock_output::{
+    read_prequantized_97_codeblock_outputs, validate_codeblock_output_host_workspace,
+};
 mod geometry;
 use self::geometry::{
     checked_batch_len, code_block_len_from_exp, dispatch_band, dispatch_band_batch,
-    dispatch_reversible_band, dwt97_quantize_inv_delta, dwt97_total_bitplanes, metal_sparse_rows,
-    reversible_band_geometry, u32_param, validate_dwt97_batch_geometry,
-    validate_dwt97_codeblock_batch_geometry, validate_grid, validate_htj2k97_codeblock_options,
-    validate_reversible_batch_geometry, BandGeometry, BatchBandGeometry,
-    ReversibleBatchKernelGeometry,
+    dispatch_reversible_band, dwt97_quantize_inv_delta, dwt97_total_bitplanes,
+    reversible_band_geometry, u32_param, upload_sparse_rows,
+    validate_codeblock_projection_allocations, validate_dwt97_batch_geometry,
+    validate_dwt97_codeblock_batch_geometry, validate_float_projection_allocations, validate_grid,
+    validate_htj2k97_codeblock_options, validate_reversible_batch_geometry, BandGeometry,
+    BatchBandGeometry, ReversibleBatchKernelGeometry,
 };
 mod buffers;
 use self::buffers::{
     buffer_with_slice, dwt97_batch_blocks_buffer, dwt97_block_value_count, dwt97_blocks_buffer,
-    dwt97_codeblock_batch_blocks_buffer, f32_slice_to_f64, idct8_basis_table, output_buffer,
-    output_i32_buffer, private_f32_buffer, read_f32_buffer, read_i32_buffer, shared_f32_slice,
-    shared_i32_slice,
+    dwt97_codeblock_batch_blocks_buffer, idct8_basis_table, output_buffer, output_i32_buffer,
+    private_f32_buffer, read_f32_buffer, read_f32_buffer_at, read_i32_buffer_at,
 };
 
 const METAL_DCT_KERNEL_FAILED: &str = "Metal DCT wavelet projection failed";
-const METAL_DCT_RUNTIME_FAILED: &str = "Metal DCT wavelet runtime setup failed";
 const METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID: &str =
     "Metal reversible DCT 5/3 job has unsupported grid geometry";
 const METAL_DCT53_UNSUPPORTED_GRID: &str = "Metal DCT 5/3 job has unsupported grid geometry";
 const METAL_DCT97_UNSUPPORTED_GRID: &str = "Metal DCT 9/7 job has unsupported grid geometry";
-const METAL_RESIDENT_HANDOFF_VALIDATION_FAILED: &str =
-    "Metal resident transcode handoff descriptor validation failed";
 const DWT97_STAGED_MAX_AXIS: usize = 1024;
 const DWT97_STAGED_ROWS_PER_GROUP: usize = 2;
 const DWT97_STAGED_COLUMNS_PER_GROUP: usize = 4;
 const DWT97_STAGED_THREADS_PER_GROUP: u64 = 256;
 const DWT97_BLOCK_COEFFICIENTS: usize = 64;
+const METAL_READBACK_CHUNK_BYTES: usize = 64 * 1024;
 
 #[cfg(test)]
 mod tests;

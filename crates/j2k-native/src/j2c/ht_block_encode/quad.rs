@@ -41,8 +41,8 @@ pub(super) struct QuadPairState<'a> {
 }
 
 pub(super) struct QuadMarkerRows<'a> {
-    pub(super) e_val: &'a mut [u8; 513],
-    pub(super) cx_val: &'a mut [u8; 513],
+    pub(super) e_val: &'a mut [u8; 514],
+    pub(super) cx_val: &'a mut [u8; 514],
 }
 
 pub(super) struct FirstQuadPairRequest<'a, C: CleanupCoefficientSource + ?Sized> {
@@ -81,8 +81,8 @@ pub(super) struct InitialQuadRow<'a> {
     pub(super) s: &'a [u32; 8],
     pub(super) lep: usize,
     pub(super) lcxp: usize,
-    pub(super) e_val: &'a mut [u8; 513],
-    pub(super) cx_val: &'a mut [u8; 513],
+    pub(super) e_val: &'a mut [u8; 514],
+    pub(super) cx_val: &'a mut [u8; 514],
 }
 
 pub(super) struct NonInitialQuadRow<'a> {

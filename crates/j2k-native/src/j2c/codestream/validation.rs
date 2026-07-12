@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::allocation::retained_header_bytes;
 use super::{Header, QuantizationStyle};
 use crate::error::{bail, Result, ValidationError};
 use crate::math::bit_width_u32;
@@ -41,6 +42,8 @@ pub(super) fn validate(header: &Header<'_>) -> Result<()> {
             }
         }
     }
+
+    retained_header_bytes(header)?;
 
     Ok(())
 }

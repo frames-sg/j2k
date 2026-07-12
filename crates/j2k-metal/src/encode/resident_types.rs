@@ -17,9 +17,23 @@ pub(super) struct ResidentLosslessBufferEncodeMetadata {
     pub(super) components: u8,
     pub(super) bit_depth: u8,
     pub(super) bytes_per_pixel: usize,
+    pub(super) code_block_count: usize,
+    pub(super) resolution_count: usize,
     pub(super) plan: LosslessDeviceEncodePlan,
     pub(super) packet_descriptors: Vec<J2kPacketizationPacketDescriptor>,
     pub(super) packetization_resolutions: Vec<compute::J2kResidentPacketizationResolution>,
+}
+
+impl ResidentLosslessBufferEncodeMetadata {
+    pub(super) fn take_packet_descriptors(&mut self) -> Vec<J2kPacketizationPacketDescriptor> {
+        std::mem::take(&mut self.packet_descriptors)
+    }
+
+    pub(super) fn take_packetization_resolutions(
+        &mut self,
+    ) -> Vec<compute::J2kResidentPacketizationResolution> {
+        std::mem::take(&mut self.packetization_resolutions)
+    }
 }
 
 pub(super) struct PreparedResidentLosslessBufferEncode {

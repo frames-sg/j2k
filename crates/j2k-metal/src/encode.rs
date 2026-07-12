@@ -20,6 +20,8 @@ mod resident_hybrid;
 #[cfg(target_os = "macos")]
 mod resident_plan;
 #[cfg(target_os = "macos")]
+mod resident_prepare;
+#[cfg(target_os = "macos")]
 mod resident_submit;
 #[cfg(target_os = "macos")]
 mod resident_types;
@@ -181,7 +183,7 @@ use self::resident_wait::wait_submitted_resident_lossless_buffer_encode_batch;
 use self::routing::should_try_auto_resident_lossless_host_format;
 #[cfg(target_os = "macos")]
 use self::routing::{
-    borrow_padded_metal_buffer_from_bytes, host_output_encode_options,
+    copy_padded_metal_buffer_from_bytes, host_output_encode_options,
     should_try_auto_resident_lossless_host_encode, should_try_resident_lossless_host_encode,
     should_try_resident_lossless_host_encode_for_tiles,
 };

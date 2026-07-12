@@ -7,7 +7,7 @@ use super::cleanup::{
 };
 use super::facade::coefficient_to_i32;
 use super::magnitude::decode_magnitude_sign_phase;
-use super::pipeline::{decode_impl, PHASE_LIMIT_MAGREF};
+use super::pipeline::{decode_impl, prepare_scratch, PHASE_LIMIT_MAGREF};
 use super::refinement::apply_magnitude_refinement_phase;
 use super::segments::{CombinedCodeBlockData, HtCodeBlockSegments};
 use super::significance::{
@@ -44,6 +44,7 @@ fn test_direct_ht_block_roundtrip_varied_4x4() {
 
     let mut decoded = vec![0u32; original.len()];
     let mut scratch = HtBlockDecodeScratch::default();
+    prepare_scratch(&mut scratch, 4, 4).expect("prepare HT scratch");
     let mut observer = NoHtDecodeStats;
     let decoded_ok = decode_impl::<PHASE_LIMIT_MAGREF, _>(
         &encoded.data,
@@ -76,6 +77,7 @@ fn test_direct_ht_block_roundtrip_positive_varied_4x4() {
 
     let mut decoded = vec![0u32; original.len()];
     let mut scratch = HtBlockDecodeScratch::default();
+    prepare_scratch(&mut scratch, 4, 4).expect("prepare HT scratch");
     let mut observer = NoHtDecodeStats;
     let decoded_ok = decode_impl::<PHASE_LIMIT_MAGREF, _>(
         &encoded.data,
@@ -126,6 +128,7 @@ fn direct_ht_block_roundtrip_31_bit_cleanup_path() {
 
     let mut decoded = vec![0u32; original.len()];
     let mut scratch = HtBlockDecodeScratch::default();
+    prepare_scratch(&mut scratch, 4, 4).expect("prepare HT scratch");
     let mut observer = NoHtDecodeStats;
     let decoded_ok = decode_impl::<PHASE_LIMIT_MAGREF, _>(
         &encoded.data,
@@ -370,12 +373,38 @@ fn borrowed_segments_decode_matches_owned_combined_decode() {
 #[test]
 fn scratch_resize_zeroes_existing_values_when_growing() {
     let mut scratch = HtBlockDecodeScratch::default();
+    scratch
+        .cleanup
+        .try_reserve_exact(8)
+        .expect("cleanup scratch");
+    scratch.v_n.try_reserve_exact(8).expect("v_n scratch");
 
-    zeroed_u16_scratch(&mut scratch.cleanup, 4).fill(7);
-    assert_eq!(zeroed_u16_scratch(&mut scratch.cleanup, 8), &[0; 8]);
+    zeroed_u16_scratch(&mut scratch.cleanup, 4)
+        .expect("reserved cleanup scratch")
+        .fill(7);
+    assert_eq!(
+        zeroed_u16_scratch(&mut scratch.cleanup, 8).expect("reserved cleanup scratch"),
+        &[0; 8]
+    );
 
-    zeroed_u32_scratch(&mut scratch.v_n, 4).fill(9);
-    assert_eq!(zeroed_u32_scratch(&mut scratch.v_n, 8), &[0; 8]);
+    zeroed_u32_scratch(&mut scratch.v_n, 4)
+        .expect("reserved v_n scratch")
+        .fill(9);
+    assert_eq!(
+        zeroed_u32_scratch(&mut scratch.v_n, 8).expect("reserved v_n scratch"),
+        &[0; 8]
+    );
+}
+
+#[test]
+fn undersized_scratch_returns_none_without_allocating() {
+    let mut cleanup = Vec::<u16>::new();
+    let mut v_n = Vec::<u32>::new();
+
+    assert!(zeroed_u16_scratch(&mut cleanup, 1).is_none());
+    assert!(zeroed_u32_scratch(&mut v_n, 1).is_none());
+    assert_eq!(cleanup.capacity(), 0);
+    assert_eq!(v_n.capacity(), 0);
 }
 
 #[test]

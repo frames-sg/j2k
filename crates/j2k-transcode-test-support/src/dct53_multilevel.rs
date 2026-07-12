@@ -16,7 +16,7 @@ use j2k_transcode::{
 };
 
 /// Multilevel 5/3 decomposition result for one component plane.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Dwt53MultiLevel<T> {
     /// Decomposition levels in order from full resolution to lowest LL.
     pub levels: Vec<Dwt53TwoDimensional<T>>,
@@ -125,7 +125,8 @@ fn decompose_from_first_level(
             &decomposition.final_ll,
             decomposition.final_ll_width,
             decomposition.final_ll_height,
-        );
+        )
+        .expect("validated test plane fits the transform workspace");
         decomposition.final_ll.clone_from(&next.ll);
         decomposition.final_ll_width = next.low_width;
         decomposition.final_ll_height = next.low_height;

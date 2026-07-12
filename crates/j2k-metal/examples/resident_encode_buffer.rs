@@ -14,7 +14,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         MetalLosslessEncodeBatchRequest, MetalLosslessEncodeConfig, MetalLosslessEncodeTile,
     };
     use j2k_native::{DecodeSettings, Image};
-    use metal::MTLResourceOptions;
 
     let width = 512_u32;
     let height = 512_u32;
@@ -25,14 +24,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     let buffers = frames
         .iter()
-        .map(|pixels| {
-            session.device().new_buffer_with_data(
-                pixels.as_ptr().cast(),
-                pixels.len() as u64,
-                MTLResourceOptions::StorageModeShared,
-            )
-        })
-        .collect::<Vec<_>>();
+        .map(|pixels| j2k_metal_support::checked_shared_buffer_with_slice(session.device(), pixels))
+        .collect::<Result<Vec<_>, _>>()?;
     let tiles = buffers
         .iter()
         .map(|buffer| {

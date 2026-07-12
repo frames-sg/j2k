@@ -52,7 +52,7 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
     if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous) {
         validate_padded_contiguous_metal_encode_tile(tile, bytes_per_pixel)?;
     }
-    let Some(plan) = lossless_device_encode_plan(
+    let Some(mut plan) = lossless_device_encode_plan(
         tile.output_width,
         tile.output_height,
         components,
@@ -67,6 +67,16 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
 
     let encode_started = Instant::now();
     let coefficient_count = lossless_device_coefficient_count(&plan.code_blocks)?;
+    let code_block_count = plan.code_blocks.len();
+    let resolution_count = plan.resolutions.len();
+    let packetization_resolutions =
+        resident_packetization_resolutions_from_lossless_device_plan(&plan)?;
+    let packet_descriptors = packet_descriptors_for_lossless_device_order(
+        resolution_count,
+        plan.components,
+        plan.progression_order,
+    )?;
+    let code_blocks = plan.take_code_blocks();
     let prepared = compute::prepare_lossless_device_code_blocks(
         session,
         compute::J2kLosslessDevicePrepareJob {
@@ -83,24 +93,17 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
             num_decomposition_levels: plan.num_decomposition_levels,
             coefficient_count,
         },
-        plan.code_blocks.clone(),
-    )?;
-    let packetization_resolutions =
-        resident_packetization_resolutions_from_lossless_device_plan(&plan)?;
-    let packet_descriptors = packet_descriptors_for_lossless_device_order(
-        plan.resolutions.len(),
-        plan.components,
-        plan.progression_order,
+        code_blocks,
     )?;
     let packetization_job = compute::J2kResidentPacketizationEncodeJob {
-        resolution_count: u32::try_from(plan.resolutions.len()).map_err(|_| {
+        resolution_count: u32::try_from(resolution_count).map_err(|_| {
             crate::Error::MetalKernel {
                 message: "J2K Metal resident encode resolution count exceeds u32".to_string(),
             }
         })?,
         num_layers: 1,
         component_count: plan.components,
-        code_block_count: u32::try_from(plan.code_blocks.len()).map_err(|_| {
+        code_block_count: u32::try_from(code_block_count).map_err(|_| {
             crate::Error::MetalKernel {
                 message: "J2K Metal resident encode code-block count exceeds u32".to_string(),
             }

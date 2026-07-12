@@ -167,7 +167,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
                 gpu_stage_command_buffers,
                 profile_stages,
                 classic_command_buffer_commit_duration,
-            );
+            )?;
         }
         readback
     } else {
@@ -209,7 +209,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
                 gpu_stage_command_buffers,
                 profile_stages,
                 classic_command_buffer_commit_duration,
-            );
+            )?;
         }
         buffer
     } else {
@@ -247,7 +247,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
                 gpu_stage_command_buffers,
                 profile_stages,
                 classic_command_buffer_commit_duration,
-            );
+            )?;
         }
         buffer
     } else {
@@ -284,7 +284,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
                 gpu_stage_command_buffers,
                 profile_stages,
                 classic_command_buffer_commit_duration,
-            );
+            )?;
         }
         readback
     } else {
@@ -317,7 +317,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
                 gpu_stage_command_buffers,
                 profile_stages,
                 classic_command_buffer_commit_duration,
-            );
+            )?;
         }
         readback
     } else {
@@ -346,7 +346,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
                 gpu_stage_command_buffers,
                 profile_stages,
                 classic_command_buffer_commit_duration,
-            );
+            )?;
         }
         readback
     } else {
@@ -369,7 +369,7 @@ pub(super) fn dispatch_classic_tier1_profiles(
                 gpu_stage_command_buffers,
                 profile_stages,
                 classic_command_buffer_commit_duration,
-            );
+            )?;
         }
         readback
     } else {

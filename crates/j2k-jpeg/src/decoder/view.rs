@@ -2,7 +2,7 @@
 
 use crate::error::JpegError;
 use crate::info::{ColorSpace, DecodeOptions, Info, RestartIndex, SofKind};
-use crate::parse::header::{parse_header, ParsedHeader};
+use crate::parse::header::{parse_header, parse_header_with_external_live, ParsedHeader};
 use j2k_core::{CompressedPayloadKind, PassthroughCandidate};
 
 use super::core_traits::jpeg_passthrough_syntax;
@@ -27,6 +27,23 @@ impl<'a> JpegView<'a> {
         Self::parse_with_options(input, DecodeOptions::default())
     }
 
+    /// Parse while charging an already-live owner baseline to parser metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the aggregate host budget is exceeded or the JPEG
+    /// header is malformed or unsupported.
+    pub(crate) fn parse_with_external_live(
+        input: &'a [u8],
+        external_live_bytes: usize,
+    ) -> Result<Self, JpegError> {
+        Self::parse_with_options_and_external_live(
+            input,
+            DecodeOptions::default(),
+            external_live_bytes,
+        )
+    }
+
     /// Parse the stream with explicit decode options.
     ///
     /// # Errors
@@ -34,14 +51,27 @@ impl<'a> JpegView<'a> {
     /// Returns an error when the JPEG header is malformed or unsupported.
     pub fn parse_with_options(input: &'a [u8], options: DecodeOptions) -> Result<Self, JpegError> {
         let header = parse_header(input)?;
+        Ok(Self::from_header(input, header, options))
+    }
+
+    fn parse_with_options_and_external_live(
+        input: &'a [u8],
+        options: DecodeOptions,
+        external_live_bytes: usize,
+    ) -> Result<Self, JpegError> {
+        let header = parse_header_with_external_live(input, external_live_bytes)?;
+        Ok(Self::from_header(input, header, options))
+    }
+
+    fn from_header(input: &'a [u8], header: ParsedHeader, options: DecodeOptions) -> Self {
         let mut info = header.info();
         options.apply_to_info(&mut info);
-        Ok(Self {
+        Self {
             bytes: input,
             header,
             info,
             options,
-        })
+        }
     }
 
     /// Header-derived metadata for the parsed stream.
@@ -54,6 +84,10 @@ impl<'a> JpegView<'a> {
     #[must_use]
     pub fn bytes(&self) -> &'a [u8] {
         self.bytes
+    }
+
+    pub(crate) fn parsed_header(&self) -> &ParsedHeader {
+        &self.header
     }
 
     /// Return a byte-preserving passthrough candidate for active DICOM/WSI

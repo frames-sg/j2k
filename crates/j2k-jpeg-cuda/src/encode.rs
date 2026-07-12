@@ -9,17 +9,26 @@ use j2k_cuda_runtime::{
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_jpeg::adapter::{
-    encode_jpeg_baseline_gpu_batch, encode_jpeg_baseline_gpu_tile, JpegBaselineEncodeTables,
-    JpegBaselineGpuEncodeBatchPlan, JpegBaselineGpuEncodeError, JpegBaselineGpuEncodeHostAdapter,
-    JpegBaselineGpuEncodeParams, JpegBaselineGpuEncodeTile, JpegBaselineGpuEncodeTilePlan,
-    JpegBaselineHuffmanTable,
+    encode_jpeg_baseline_gpu_batch_with_external_live,
+    encode_jpeg_baseline_gpu_tile_with_external_live, preflight_jpeg_baseline_gpu_encode_tile,
+    JpegBaselineEncodeTables, JpegBaselineGpuEncodeBatchPlan, JpegBaselineGpuEncodeError,
+    JpegBaselineGpuEncodeHostAdapter, JpegBaselineGpuEncodeParams, JpegBaselineGpuEncodeTile,
+    JpegBaselineGpuEncodeTilePlan, JpegBaselineHuffmanTable,
 };
-use j2k_jpeg::{EncodedJpeg, JpegEncodeOptions};
 #[cfg(feature = "cuda-runtime")]
-use j2k_jpeg::{JpegBackend, JpegEncodeError};
+use j2k_jpeg::JpegBackend;
+use j2k_jpeg::{EncodedJpeg, JpegEncodeOptions};
 
 #[cfg(feature = "cuda-runtime")]
-use crate::runtime::cuda_error;
+use crate::{
+    allocation::{checked_cuda_parameter_conversion_bytes, try_collect_exact},
+    runtime::cuda_error,
+};
+
+#[cfg(feature = "cuda-runtime")]
+mod error;
+#[cfg(feature = "cuda-runtime")]
+use self::error::cuda_gpu_encode_error;
 
 #[cfg(feature = "cuda-runtime")]
 #[derive(Debug, Clone, Copy)]
@@ -57,9 +66,27 @@ pub fn encode_jpeg_baseline_from_cuda_buffer(
     options: JpegEncodeOptions,
     session: &mut crate::CudaSession,
 ) -> Result<EncodedJpeg, crate::Error> {
-    let _ = session;
-    let mut adapter = CudaJpegBaselineEncodeAdapter;
-    encode_jpeg_baseline_gpu_tile(tile, options, &mut adapter)
+    preflight_jpeg_baseline_gpu_encode_tile(cuda_gpu_tile(tile), options, JpegBackend::Cuda)
+        .map_err(cuda_gpu_encode_error)?;
+    let operation_gate = session.jpeg_host_operation_gate();
+    let _operation = operation_gate
+        .lock()
+        .map_err(|_| crate::Error::JpegHostOperationPoisoned)?;
+    let context = session.bind_cuda_context(&tile.buffer.context())?;
+    let pinned_upload = context
+        .begin_pinned_upload_operation()
+        .map_err(cuda_error)?;
+    let _pinned_pool_lease = session.reserve_pinned_upload_retention(&pinned_upload)?;
+    let external_live_bytes = session.owned_host_live_bytes()?;
+    let mut adapter = CudaJpegBaselineEncodeAdapter {
+        external_live_bytes,
+    };
+    encode_jpeg_baseline_gpu_tile_with_external_live(
+        tile,
+        options,
+        &mut adapter,
+        external_live_bytes,
+    )
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -72,9 +99,41 @@ pub fn encode_jpeg_baseline_batch_from_cuda_buffers(
     options: JpegEncodeOptions,
     session: &mut crate::CudaSession,
 ) -> Result<Vec<EncodedJpeg>, crate::Error> {
-    let _ = session;
-    let mut adapter = CudaJpegBaselineEncodeAdapter;
-    encode_jpeg_baseline_gpu_batch(tiles, options, &mut adapter)
+    if tiles.is_empty() {
+        return Ok(Vec::new());
+    }
+    let input_context = tiles[0].buffer.context();
+    if tiles
+        .iter()
+        .any(|tile| !tile.buffer.context().is_same_context(&input_context))
+    {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "CUDA JPEG batch encode requires every input buffer to share one CUDA context",
+        });
+    }
+    for &tile in tiles {
+        preflight_jpeg_baseline_gpu_encode_tile(cuda_gpu_tile(tile), options, JpegBackend::Cuda)
+            .map_err(cuda_gpu_encode_error)?;
+    }
+    let operation_gate = session.jpeg_host_operation_gate();
+    let _operation = operation_gate
+        .lock()
+        .map_err(|_| crate::Error::JpegHostOperationPoisoned)?;
+    let context = session.bind_cuda_context(&input_context)?;
+    let pinned_upload = context
+        .begin_pinned_upload_operation()
+        .map_err(cuda_error)?;
+    let _pinned_pool_lease = session.reserve_pinned_upload_retention(&pinned_upload)?;
+    let external_live_bytes = session.owned_host_live_bytes()?;
+    let mut adapter = CudaJpegBaselineEncodeAdapter {
+        external_live_bytes,
+    };
+    encode_jpeg_baseline_gpu_batch_with_external_live(
+        tiles,
+        options,
+        &mut adapter,
+        external_live_bytes,
+    )
 }
 
 #[cfg(not(feature = "cuda-runtime"))]
@@ -108,7 +167,9 @@ fn compute_huffman_table(source: &JpegBaselineHuffmanTable) -> CudaJpegBaselineE
 }
 
 #[cfg(feature = "cuda-runtime")]
-struct CudaJpegBaselineEncodeAdapter;
+struct CudaJpegBaselineEncodeAdapter {
+    external_live_bytes: usize,
+}
 
 #[cfg(feature = "cuda-runtime")]
 impl<'a> JpegBaselineGpuEncodeHostAdapter<JpegBaselineCudaEncodeTile<'a>>
@@ -144,18 +205,21 @@ impl<'a> JpegBaselineGpuEncodeHostAdapter<JpegBaselineCudaEncodeTile<'a>>
     ) -> Result<Vec<u8>, Self::Error> {
         tile.buffer
             .context()
-            .encode_jpeg_baseline_entropy(&CudaJpegBaselineEntropyEncodeJob {
-                input: tile.buffer,
-                input_offset: tile.byte_offset,
-                params: cuda_encode_params(plan.params),
-                q_luma: tables.q_luma,
-                q_chroma: tables.q_chroma,
-                huff_dc_luma: compute_huffman_table(&tables.huff_dc_luma),
-                huff_ac_luma: compute_huffman_table(&tables.huff_ac_luma),
-                huff_dc_chroma: compute_huffman_table(&tables.huff_dc_chroma),
-                huff_ac_chroma: compute_huffman_table(&tables.huff_ac_chroma),
-                entropy_capacity: plan.entropy_capacity,
-            })
+            .encode_jpeg_baseline_entropy_with_external_live(
+                &CudaJpegBaselineEntropyEncodeJob {
+                    input: tile.buffer,
+                    input_offset: tile.byte_offset,
+                    params: cuda_encode_params(plan.params),
+                    q_luma: tables.q_luma,
+                    q_chroma: tables.q_chroma,
+                    huff_dc_luma: compute_huffman_table(&tables.huff_dc_luma),
+                    huff_ac_luma: compute_huffman_table(&tables.huff_ac_luma),
+                    huff_dc_chroma: compute_huffman_table(&tables.huff_dc_chroma),
+                    huff_ac_chroma: compute_huffman_table(&tables.huff_ac_chroma),
+                    entropy_capacity: plan.entropy_capacity,
+                },
+                self.external_live_bytes,
+            )
             .map_err(cuda_error)
     }
 
@@ -165,21 +229,37 @@ impl<'a> JpegBaselineGpuEncodeHostAdapter<JpegBaselineCudaEncodeTile<'a>>
         tables: &JpegBaselineEncodeTables,
         plan: JpegBaselineGpuEncodeBatchPlan,
     ) -> Result<Vec<Vec<u8>>, Self::Error> {
-        let params = plan.params.into_iter().map(cuda_encode_params).collect();
+        let neutral_param_capacity = plan.params.capacity();
+        let tile_count = plan.params.len();
+        checked_cuda_parameter_conversion_bytes::<
+            JpegBaselineGpuEncodeParams,
+            CudaJpegBaselineEncodeParams,
+        >(neutral_param_capacity, tile_count)?;
+        let params = try_collect_exact(
+            plan.params.into_iter().map(cuda_encode_params),
+            "CUDA JPEG encode batch parameters",
+        )?;
+        checked_cuda_parameter_conversion_bytes::<
+            JpegBaselineGpuEncodeParams,
+            CudaJpegBaselineEncodeParams,
+        >(neutral_param_capacity, params.capacity())?;
         tiles[0]
             .buffer
             .context()
-            .encode_jpeg_baseline_entropy_batch(&CudaJpegBaselineEntropyEncodeBatchJob {
-                input: tiles[0].buffer,
-                params,
-                q_luma: tables.q_luma,
-                q_chroma: tables.q_chroma,
-                huff_dc_luma: compute_huffman_table(&tables.huff_dc_luma),
-                huff_ac_luma: compute_huffman_table(&tables.huff_ac_luma),
-                huff_dc_chroma: compute_huffman_table(&tables.huff_dc_chroma),
-                huff_ac_chroma: compute_huffman_table(&tables.huff_ac_chroma),
-                entropy_capacity: plan.total_entropy_capacity,
-            })
+            .encode_jpeg_baseline_entropy_batch_with_external_live(
+                &CudaJpegBaselineEntropyEncodeBatchJob {
+                    input: tiles[0].buffer,
+                    params,
+                    q_luma: tables.q_luma,
+                    q_chroma: tables.q_chroma,
+                    huff_dc_luma: compute_huffman_table(&tables.huff_dc_luma),
+                    huff_ac_luma: compute_huffman_table(&tables.huff_ac_luma),
+                    huff_dc_chroma: compute_huffman_table(&tables.huff_dc_chroma),
+                    huff_ac_chroma: compute_huffman_table(&tables.huff_ac_chroma),
+                    entropy_capacity: plan.total_entropy_capacity,
+                },
+                self.external_live_bytes,
+            )
             .map_err(cuda_error)
     }
 }
@@ -223,75 +303,4 @@ fn cuda_encode_params(params: JpegBaselineGpuEncodeParams) -> CudaJpegBaselineEn
         entropy_offset_bytes: params.entropy_offset_bytes,
         entropy_capacity: params.entropy_capacity,
     }
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_gpu_encode_error(error: JpegBaselineGpuEncodeError) -> crate::Error {
-    match error {
-        JpegBaselineGpuEncodeError::Encode(error) => error.into(),
-        JpegBaselineGpuEncodeError::UnsupportedBackend { requested, .. } => {
-            let reason = match requested {
-                JpegBackend::Cpu => "JPEG Baseline CUDA encode does not accept Cpu backend",
-                JpegBackend::Metal => "JPEG Baseline CUDA encode does not accept Metal backend",
-                JpegBackend::Auto | JpegBackend::Cuda => {
-                    "JPEG Baseline CUDA encode backend request is inconsistent"
-                }
-            };
-            crate::Error::UnsupportedCudaRequest { reason }
-        }
-        JpegBaselineGpuEncodeError::InputExceedsOutputDimensions => {
-            crate::Error::UnsupportedCudaRequest {
-                reason: "JPEG Baseline CUDA encode input cannot exceed output dimensions",
-            }
-        }
-        JpegBaselineGpuEncodeError::UnsupportedPixelFormat { .. } => {
-            crate::Error::UnsupportedCudaRequest {
-                reason: "JPEG Baseline CUDA encode supports only Gray8 and Rgb8 input buffers",
-            }
-        }
-        JpegBaselineGpuEncodeError::IncompatibleSubsampling {
-            subsampling,
-            samples,
-        } => JpegEncodeError::IncompatibleSubsampling {
-            subsampling,
-            samples,
-        }
-        .into(),
-        JpegBaselineGpuEncodeError::RowByteCountOverflow => {
-            cuda_request_error("JPEG Baseline CUDA encode row byte count overflow")
-        }
-        JpegBaselineGpuEncodeError::PitchTooShort { .. } => crate::Error::UnsupportedCudaRequest {
-            reason: "JPEG Baseline CUDA encode pitch is shorter than one row",
-        },
-        JpegBaselineGpuEncodeError::InputRangeOverflow => {
-            cuda_request_error("JPEG Baseline CUDA encode input range overflow")
-        }
-        JpegBaselineGpuEncodeError::InputRangeExceedsBuffer { .. } => {
-            crate::Error::UnsupportedCudaRequest {
-                reason: "JPEG Baseline CUDA encode input range exceeds buffer length",
-            }
-        }
-        JpegBaselineGpuEncodeError::PitchTooLarge => crate::Error::UnsupportedCudaRequest {
-            reason: "JPEG Baseline CUDA encode pitch exceeds CUDA kernel limits",
-        },
-        JpegBaselineGpuEncodeError::InputOffsetTooLarge => crate::Error::UnsupportedCudaRequest {
-            reason: "JPEG Baseline CUDA encode input offset exceeds CUDA kernel limits",
-        },
-        JpegBaselineGpuEncodeError::EntropyOffsetTooLarge => crate::Error::UnsupportedCudaRequest {
-            reason: "JPEG Baseline CUDA encode entropy offset exceeds CUDA kernel limits",
-        },
-        JpegBaselineGpuEncodeError::EntropyCapacityTooLarge => {
-            crate::Error::UnsupportedCudaRequest {
-                reason: "JPEG Baseline CUDA encode entropy capacity exceeds CUDA kernel limits",
-            }
-        }
-        JpegBaselineGpuEncodeError::BatchEntropyCapacityOverflow => {
-            cuda_request_error("JPEG Baseline CUDA batch entropy capacity overflow")
-        }
-    }
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_request_error(reason: &'static str) -> crate::Error {
-    crate::Error::UnsupportedCudaRequest { reason }
 }

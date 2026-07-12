@@ -33,7 +33,12 @@ pub(super) fn encode_cpu_lossy(
         samples.signed,
         &options,
     )
-    .map_err(|err| J2kError::backend(format!("JPEG 2000 lossy encode failed: {err}")))
+    .map_err(|source| {
+        J2kError::from_native_encode_error_with_context(
+            source,
+            "native JPEG 2000 lossy encode failed",
+        )
+    })
 }
 
 pub(super) fn encode_cpu_lossy_with_roi_regions(
@@ -53,7 +58,12 @@ pub(super) fn encode_cpu_lossy_with_roi_regions(
         &options,
         roi_regions,
     )
-    .map_err(|err| J2kError::backend(format!("JPEG 2000 lossy ROI encode failed: {err}")))
+    .map_err(|source| {
+        J2kError::from_native_encode_error_with_context(
+            source,
+            "native JPEG 2000 lossy ROI encode failed",
+        )
+    })
 }
 
 pub(super) fn encode_lossy_targeted(
@@ -90,35 +100,41 @@ pub(super) fn encode_lossy_to_byte_target(
     mut encode_at_scale: impl FnMut(f32) -> Result<Vec<u8>, J2kError>,
 ) -> Result<LossyAttempt, J2kError> {
     let tolerance = byte_target_tolerance(target_bytes);
+    let maximum_bytes = target_bytes.saturating_add(tolerance);
     let mut low = 1.0f32;
     let mut high = 1.0f32;
-    let mut best = LossyAttempt {
-        codestream: encode_at_scale(high)?,
-        quantization_scale: high,
-    };
-    let mut best_diff = byte_target_diff(best.codestream.len() as u64, target_bytes);
+    let initial_codestream = encode_at_scale(high)?;
+    let mut best_len = initial_codestream.len() as u64;
+    let mut current_len = best_len;
+    let mut best_scale = high;
+    let mut best_diff = byte_target_diff(best_len, target_bytes);
+    // Retain only scalar search state so the next native encode is not run
+    // while an earlier output allocation escapes its phase budget.
+    drop(initial_codestream);
 
-    while best.codestream.len() as u64 > target_bytes.saturating_add(tolerance)
-        && high < 1_048_576.0
-    {
+    while current_len > maximum_bytes && high < 1_048_576.0 {
         low = high;
         high *= 2.0;
         let codestream = encode_at_scale(high)?;
-        let diff = byte_target_diff(codestream.len() as u64, target_bytes);
+        let len = codestream.len() as u64;
+        current_len = len;
+        let diff = byte_target_diff(len, target_bytes);
         if diff < best_diff {
-            best = LossyAttempt {
-                codestream,
-                quantization_scale: high,
-            };
+            best_len = len;
+            best_scale = high;
             best_diff = diff;
         }
     }
 
-    if best.codestream.len() as u64 > target_bytes.saturating_add(tolerance) {
+    if current_len > maximum_bytes {
         return Err(J2kError::RateTargetUnreachable {
             target: format!("{target_bytes} bytes"),
-            best: format!("{} bytes", best.codestream.len()),
+            best: format!("{best_len} bytes"),
         });
+    }
+    if best_len > maximum_bytes {
+        best_scale = high;
+        best_diff = byte_target_diff(current_len, target_bytes);
     }
 
     for _ in 0..options.psnr_iteration_budget.max(1) {
@@ -126,11 +142,8 @@ pub(super) fn encode_lossy_to_byte_target(
         let codestream = encode_at_scale(mid)?;
         let len = codestream.len() as u64;
         let diff = byte_target_diff(len, target_bytes);
-        if diff < best_diff {
-            best = LossyAttempt {
-                codestream,
-                quantization_scale: mid,
-            };
+        if len <= maximum_bytes && diff < best_diff {
+            best_scale = mid;
             best_diff = diff;
         }
         if len > target_bytes {
@@ -140,7 +153,18 @@ pub(super) fn encode_lossy_to_byte_target(
         }
     }
 
-    Ok(best)
+    let codestream = encode_at_scale(best_scale)?;
+    let final_len = codestream.len() as u64;
+    if final_len > maximum_bytes {
+        return Err(J2kError::RateTargetUnreachable {
+            target: format!("{target_bytes} bytes"),
+            best: format!("{final_len} bytes"),
+        });
+    }
+    Ok(LossyAttempt {
+        codestream,
+        quantization_scale: best_scale,
+    })
 }
 
 pub(super) fn encode_lossy_to_psnr_target(
@@ -152,11 +176,13 @@ pub(super) fn encode_lossy_to_psnr_target(
     let tolerance = options.psnr_tolerance_db;
     let mut low = 1.0f32;
     let mut high = 1.0f32;
-    let mut best = LossyAttempt {
-        codestream: encode_at_scale(high)?,
-        quantization_scale: high,
-    };
-    let mut best_psnr = decoded_psnr(samples, &best.codestream)?;
+    let initial_codestream = encode_at_scale(high)?;
+    let initial_psnr = decoded_psnr(samples, &initial_codestream)?;
+    // The selected scale is re-encoded once after the search. Keeping the
+    // earlier output here would undercount it during every later candidate.
+    drop(initial_codestream);
+    let mut best_scale = high;
+    let best_psnr = initial_psnr;
     if best_psnr + tolerance < target_psnr_db {
         return Err(J2kError::RateTargetUnreachable {
             target: format!("{target_psnr_db:.3} dB"),
@@ -169,11 +195,7 @@ pub(super) fn encode_lossy_to_psnr_target(
         let codestream = encode_at_scale(high)?;
         let psnr = decoded_psnr(samples, &codestream)?;
         if psnr + tolerance >= target_psnr_db {
-            best = LossyAttempt {
-                codestream,
-                quantization_scale: high,
-            };
-            best_psnr = psnr;
+            best_scale = high;
             low = high;
         } else {
             break;
@@ -185,19 +207,24 @@ pub(super) fn encode_lossy_to_psnr_target(
         let codestream = encode_at_scale(mid)?;
         let psnr = decoded_psnr(samples, &codestream)?;
         if psnr + tolerance >= target_psnr_db {
-            best = LossyAttempt {
-                codestream,
-                quantization_scale: mid,
-            };
-            best_psnr = psnr;
+            best_scale = mid;
             low = mid;
         } else {
             high = mid;
         }
     }
-
-    let _ = best_psnr;
-    Ok(best)
+    let codestream = encode_at_scale(best_scale)?;
+    let final_psnr = decoded_psnr(samples, &codestream)?;
+    if final_psnr + tolerance < target_psnr_db {
+        return Err(J2kError::RateTargetUnreachable {
+            target: format!("{target_psnr_db:.3} dB"),
+            best: format!("{final_psnr:.3} dB"),
+        });
+    }
+    Ok(LossyAttempt {
+        codestream,
+        quantization_scale: best_scale,
+    })
 }
 
 pub(super) fn lossy_quality_layer_byte_targets(
@@ -384,43 +411,4 @@ pub(super) fn u64_to_f64(value: u64) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        target_bytes_for_bpp, J2kError, J2kLossyEncodeOptions, J2kLossySamples, J2kRateTarget,
-        Unsupported,
-    };
-    use crate::encode_j2k_lossy;
-
-    const TWO_TO_THE_64: f64 = 18_446_744_073_709_551_616.0;
-
-    fn single_pixel_samples() -> J2kLossySamples<'static> {
-        J2kLossySamples::new(&[0], 1, 1, 1, 8, false).expect("valid single-pixel samples")
-    }
-
-    #[test]
-    fn bits_per_pixel_target_rejects_exactly_two_to_the_64_bytes() {
-        let bits_per_pixel = TWO_TO_THE_64 * 8.0;
-        let options = J2kLossyEncodeOptions::default()
-            .with_rate_target(Some(J2kRateTarget::BitsPerPixel(bits_per_pixel)));
-
-        let result = encode_j2k_lossy(single_pixel_samples(), &options);
-
-        assert!(matches!(
-            result,
-            Err(J2kError::Unsupported(Unsupported {
-                what: "JPEG 2000 lossy bits-per-pixel target overflows byte target"
-            }))
-        ));
-    }
-
-    #[test]
-    fn bits_per_pixel_target_accepts_largest_f64_below_two_to_the_64_bytes() {
-        let largest_representable_byte_target = TWO_TO_THE_64.next_down();
-        let bits_per_pixel = largest_representable_byte_target * 8.0;
-
-        let target = target_bytes_for_bpp(single_pixel_samples(), bits_per_pixel)
-            .expect("largest representable f64 byte target below 2^64 should fit");
-
-        assert_eq!(target, u64::MAX - 2_047);
-    }
-}
+mod tests;

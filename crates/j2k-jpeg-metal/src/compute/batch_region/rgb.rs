@@ -4,17 +4,64 @@ use super::super::{
     batch, batch_entropy_buffers, batch_output_buffer_or_new, bind_three_plane_pack, checked_u32,
     commit_and_wait_jpeg, copy_grouped_surfaces_to_output, dispatch_3d_pipeline,
     fast444_scaled_region_params, fast_subsampled_region_scaled_batch_groups,
-    fast_subsampled_region_scaled_batch_plan, region_scaled_batch_error_results,
-    surface_batch_success_results, BatchEntropyBufferKeys, BatchedFastPacket, CpuDecoder, Error,
-    FastRegionScaledMetal, JpegDecodeStatus, JpegFast420PacketV1, JpegFast422PacketV1,
-    JpegFast444PacketV1, JpegWindowedPackBatchParams, MetalRuntime, PixelFormat, PlaneMode, Rect,
-    Surface,
+    fast_subsampled_region_scaled_batch_plan, new_command_buffer, new_compute_command_encoder,
+    region_scaled_batch_error_results, surface_batch_success_results, BatchEntropyBufferKeys,
+    BatchEntropyBufferPlan, BatchedFastPacket, Error, FastRegionScaledMetal, JpegDecodeStatus,
+    JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1, JpegWindowedPackBatchParams,
+    MetalRuntime, PixelFormat, PlaneMode, Rect, RegionScaledBatchPlan, Surface,
 };
 use super::common::{
     decode_region_scaled_packet_surface, encode_subsampled_region_rgb_decode,
     first_region_scaled_op, region_plane_buffers, subsampled_region_rgb_batch_shape,
     subsampled_region_rgb_packets,
 };
+
+#[cfg(target_os = "macos")]
+fn copy_restart_region_scaled_results_to_output<P: FastRegionScaledMetal>(
+    runtime: &MetalRuntime,
+    output: &crate::MetalBatchOutputBuffer,
+    plan: RegionScaledBatchPlan,
+    group_results: Vec<Result<Surface, Error>>,
+    budget: &mut crate::batch_allocation::BatchMetadataBudget,
+) -> Result<Vec<Result<Surface, Error>>, Error> {
+    let request_count = group_results.len();
+    let mut group_indices = budget.try_vec(
+        request_count,
+        "JPEG Metal restart region-scaled output indices",
+    )?;
+    group_indices.extend(0..request_count);
+    let copied = copy_grouped_surfaces_to_output(
+        runtime,
+        output,
+        plan.out_dims,
+        plan.out_tile_len,
+        &group_indices,
+        group_results,
+        budget.live_bytes(),
+    )?;
+    let mut merged = budget.try_filled(
+        request_count,
+        None,
+        "JPEG Metal restart region-scaled merged result slots",
+    )?;
+    for (index, result) in copied {
+        merged[index] = Some(result);
+    }
+
+    let mut ordered = budget.try_vec(
+        request_count,
+        "JPEG Metal ordered restart region-scaled results",
+    )?;
+    for (index, result) in merged.into_iter().enumerate() {
+        ordered.push(result.ok_or_else(|| Error::MetalKernel {
+            message: format!(
+                "JPEG Metal restart {} region scaled buffer result for tile {index} was missing",
+                P::FAMILY_NAME
+            ),
+        })?);
+    }
+    Ok(ordered)
+}
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces(
@@ -144,13 +191,18 @@ fn try_decode_fast_subsampled_restart_region_scaled_rgb_batch_to_surfaces_with_o
         }
     }
 
-    let mut results = Vec::with_capacity(requests.len());
+    let mut result_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal restart region-scaled buffer results",
+        requests,
+    )?;
+    let mut results = result_budget.try_vec(
+        requests.len(),
+        "JPEG Metal restart region-scaled surface results",
+    )?;
     for (request, (packet, mode)) in requests.iter().zip(family_packets.iter().copied()) {
-        let decoder = CpuDecoder::new(request.input.as_ref())?;
         let batched_packet = packet.to_region_scaled_batched(mode);
         results.push(decode_region_scaled_packet_surface(
             runtime,
-            &decoder,
             request,
             &batched_packet,
         ));
@@ -162,31 +214,13 @@ fn try_decode_fast_subsampled_restart_region_scaled_rgb_batch_to_surfaces_with_o
     let Some(plan) = first_plan else {
         return Ok(Some(results));
     };
-    let group_indices = (0..requests.len()).collect::<Vec<_>>();
-    let copied = copy_grouped_surfaces_to_output(
+    Ok(Some(copy_restart_region_scaled_results_to_output::<P>(
         runtime,
         output,
-        plan.out_dims,
-        plan.out_tile_len,
-        &group_indices,
+        plan,
         results,
-    )?;
-    let mut merged_results: Vec<Option<Result<Surface, Error>>> =
-        (0..requests.len()).map(|_| None).collect();
-    for (index, result) in copied {
-        merged_results[index] = Some(result);
-    }
-
-    let mut results = Vec::with_capacity(requests.len());
-    for (index, result) in merged_results.into_iter().enumerate() {
-        results.push(result.ok_or_else(|| Error::MetalKernel {
-            message: format!(
-                "JPEG Metal restart {} region scaled buffer result for tile {index} was missing",
-                P::FAMILY_NAME
-            ),
-        })?);
-    }
-    Ok(Some(results))
+        &mut result_budget,
+    )?))
 }
 
 #[cfg(target_os = "macos")]
@@ -206,7 +240,7 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
     packets: &[BatchedFastPacket<'_>],
     output: Option<&crate::MetalBatchOutputBuffer>,
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
-    let Some(family_packets) = subsampled_region_rgb_packets::<P>(requests, packets) else {
+    let Some(family_packets) = subsampled_region_rgb_packets::<P>(requests, packets)? else {
         return Ok(None);
     };
 
@@ -260,12 +294,17 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
     let mut batch_scratch = runtime.batch_scratch()?;
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
+        requests,
         &mut batch_scratch,
-        BatchEntropyBufferKeys {
-            payload: P::REGION_SCALED_KEYS.entropy,
-            offsets: P::REGION_SCALED_KEYS.entropy_offsets,
-            lens: P::REGION_SCALED_KEYS.entropy_lens,
-            checkpoints: P::REGION_SCALED_KEYS.entropy_checkpoints,
+        BatchEntropyBufferPlan {
+            keys: BatchEntropyBufferKeys {
+                payload: P::REGION_SCALED_KEYS.entropy,
+                offsets: P::REGION_SCALED_KEYS.entropy_offsets,
+                lens: P::REGION_SCALED_KEYS.entropy_lens,
+                checkpoints: P::REGION_SCALED_KEYS.entropy_checkpoints,
+            },
+            tile_count: shape.tile_count,
+            segment_count: shape.segment_count,
         },
         family_packets
             .iter()
@@ -273,8 +312,6 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
         family_packets
             .iter()
             .map(|(packet, _)| packet.entropy_checkpoints()),
-        shape.tile_count,
-        shape.segment_count,
     )?
     else {
         return Ok(None);
@@ -286,7 +323,7 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
         &P::REGION_SCALED_KEYS,
         shape.plan,
         shape.tile_count,
-    );
+    )?;
     let out_buffer = batch_output_buffer_or_new(
         runtime,
         output,
@@ -295,34 +332,42 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
         shape.plan.pack_params.out_stride as usize,
         shape.plan.out_tile_len,
     )?;
-    let statuses = vec![JpegDecodeStatus::default(); shape.total_decode_threads as usize];
+    let mut status_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal region-scaled RGB batch statuses",
+        requests,
+    )?;
+    let statuses = status_budget.try_filled(
+        shape.total_decode_threads as usize,
+        JpegDecodeStatus::default(),
+        "JPEG Metal region-scaled RGB decode statuses",
+    )?;
     let status_buffer = batch_scratch.shared_buffer_with_slice(
         &runtime.device,
         P::REGION_SCALED_KEYS.status,
         &statuses,
-    );
+    )?;
 
-    let command_buffer = runtime.queue.new_command_buffer();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
     encode_subsampled_region_rgb_decode::<P>(
         runtime,
-        command_buffer,
+        &command_buffer,
         first,
         &entropy_buffers,
         &status_buffer,
         [&y_plane, &cb_plane, &cr_plane],
         shape,
-    );
+    )?;
 
-    let pack_encoder = command_buffer.new_compute_command_encoder();
+    let pack_encoder = new_compute_command_encoder(&command_buffer)?;
     pack_encoder.set_compute_pipeline_state(P::pack_windowed_rgb_batch_pipeline(runtime));
     bind_three_plane_pack::<JpegWindowedPackBatchParams>(
-        pack_encoder,
+        &pack_encoder,
         [Some(&y_plane), Some(&cb_plane), Some(&cr_plane)],
         &out_buffer,
         &shape.plan.pack_params,
     );
     dispatch_3d_pipeline(
-        pack_encoder,
+        &pack_encoder,
         P::pack_windowed_rgb_batch_pipeline(runtime),
         (
             shape.plan.out_dims.0,
@@ -332,7 +377,7 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
     );
     pack_encoder.end_encoding();
 
-    commit_and_wait_jpeg(command_buffer)?;
+    commit_and_wait_jpeg(&command_buffer)?;
     drop(batch_scratch);
 
     if let Some(results) =
@@ -342,13 +387,14 @@ pub(in crate::compute) fn try_decode_fast_subsampled_region_scaled_rgb_batch_to_
     }
 
     Ok(Some(surface_batch_success_results(
+        requests,
         &out_buffer,
         shape.plan.out_dims,
         PixelFormat::Rgb8,
         requests.len(),
         shape.plan.out_tile_len,
         output,
-    )))
+    )?))
 }
 
 fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
@@ -409,20 +455,34 @@ fn try_decode_grouped_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_o
         }
     }
 
-    let mut merged_results: Vec<Option<Result<Surface, Error>>> =
-        (0..requests.len()).map(|_| None).collect();
+    let mut result_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal grouped region-scaled buffer results",
+        requests,
+    )?;
+    let mut merged_results = result_budget.try_filled(
+        requests.len(),
+        None,
+        "JPEG Metal grouped region-scaled buffer result slots",
+    )?;
     for group_indices in groups {
-        let group_requests = group_indices
-            .iter()
-            .map(|&index| requests[index].clone())
-            .collect::<Vec<_>>();
-        let group_packets = group_indices
-            .iter()
-            .map(|&index| {
-                let (packet, mode) = family_packets[index];
-                packet.to_region_scaled_batched(mode)
-            })
-            .collect::<Vec<_>>();
+        let mut group_budget = crate::plan_owner_ledger::batch_execution_budget(
+            "JPEG Metal grouped region-scaled buffer sub-batch",
+            requests,
+        )?;
+        let mut group_requests = group_budget.try_vec(
+            group_indices.len(),
+            "JPEG Metal grouped region-scaled buffer requests",
+        )?;
+        group_requests.extend(group_indices.iter().map(|&index| requests[index].clone()));
+        let mut group_packets = group_budget.try_vec(
+            group_indices.len(),
+            "JPEG Metal grouped region-scaled buffer packets",
+        )?;
+        group_packets.extend(group_indices.iter().map(|&index| {
+            let (packet, mode) = family_packets[index];
+            packet.to_region_scaled_batched(mode)
+        }));
+        batch::stamp_execution_owner_baseline(&mut group_requests, 0, group_budget.live_bytes());
 
         let Some(group_results) =
             try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output::<P>(
@@ -467,6 +527,7 @@ fn try_decode_grouped_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_o
                 plan.out_tile_len,
                 &group_indices,
                 group_results,
+                result_budget.live_bytes(),
             )? {
                 merged_results[original_index] = Some(result);
             }
@@ -485,7 +546,10 @@ fn try_decode_grouped_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_o
         }
     }
 
-    let mut results = Vec::with_capacity(requests.len());
+    let mut results = result_budget.try_vec(
+        requests.len(),
+        "JPEG Metal ordered grouped region-scaled buffer results",
+    )?;
     for (index, result) in merged_results.into_iter().enumerate() {
         results.push(result.ok_or_else(|| Error::MetalKernel {
             message: format!(

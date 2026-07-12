@@ -1,27 +1,36 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    types::Dwt97BatchDeviceRequest, CudaDwt97BatchGeometry, CudaHtj2k97CodeblockBands,
-    CudaHtj2k97CodeblockBatchWithPoolRequest, Dwt97BatchInput, Dwt97CodeblockBandBuffers,
+    types::Dwt97BatchDeviceRequest, validation::validate_transcode_pool_context,
+    CudaDwt97BatchGeometry, CudaHtj2k97CodeblockBands, CudaHtj2k97CodeblockBatchWithPoolRequest,
+    Dwt97BatchInput, Dwt97CodeblockBandBuffers,
 };
 use crate::{
-    context::CudaContext, error::CudaError, j2k_encode::CudaDwt97BatchStageTimings,
-    memory::CudaDeviceBuffer,
+    allocation::HostPhaseBudget, context::CudaContext, error::CudaError,
+    j2k_encode::CudaDwt97BatchStageTimings, memory::CudaDeviceBuffer,
 };
 
 impl CudaContext {
     /// Compute a same-geometry batch directly into host-owned prequantized
     /// HTJ2K code-block coefficients while reusing transient stage buffers
     /// from `pool`.
-    #[expect(
-        clippy::similar_names,
-        reason = "LL/LH/HL/HH identifiers are the four distinct JPEG 2000 subband identities"
-    )]
+    /// The pool must belong to this context.
     #[doc(hidden)]
     pub fn j2k_transcode_htj2k97_codeblock_batch_with_pool(
         &self,
         request: CudaHtj2k97CodeblockBatchWithPoolRequest<'_>,
     ) -> Result<(CudaHtj2k97CodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        self.j2k_transcode_htj2k97_codeblock_batch_with_pool_and_live_host_bytes(request, 0)
+    }
+
+    /// Compute and read back a code-block batch while accounting caller-live staging.
+    #[doc(hidden)]
+    pub fn j2k_transcode_htj2k97_codeblock_batch_with_pool_and_live_host_bytes(
+        &self,
+        request: CudaHtj2k97CodeblockBatchWithPoolRequest<'_>,
+        live_host_bytes: usize,
+    ) -> Result<(CudaHtj2k97CodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        validate_transcode_pool_context(self, request.pool)?;
         let CudaHtj2k97CodeblockBatchWithPoolRequest {
             blocks,
             geometry,
@@ -48,24 +57,24 @@ impl CudaContext {
                 .ok_or(CudaError::LengthTooLarge { len: count })?;
             self.allocate(bytes)
         };
-        let ll_size = low_width * low_height;
-        let lh_size = low_width * high_height;
-        let hl_size = high_width * low_height;
-        let hh_size = high_width * high_height;
+        let low_low_count = low_width * low_height;
+        let low_high_count = low_width * high_height;
+        let high_low_count = high_width * low_height;
+        let high_high_count = high_width * high_height;
 
-        let ll_q = alloc_i32(item_count * ll_size)?;
-        let lh_q = alloc_i32(item_count * lh_size)?;
-        let hl_q = alloc_i32(item_count * hl_size)?;
-        let hh_q = alloc_i32(item_count * hh_size)?;
+        let quantized_low_low = alloc_i32(item_count * low_low_count)?;
+        let quantized_low_high = alloc_i32(item_count * low_high_count)?;
+        let quantized_high_low = alloc_i32(item_count * high_low_count)?;
+        let quantized_high_high = alloc_i32(item_count * high_high_count)?;
 
         let ((), quantize_codeblock_us) = self.time_default_stream_us(|| {
             self.launch_transcode_dwt97_quantize_codeblock_bands(
                 &bands,
                 Dwt97CodeblockBandBuffers {
-                    ll: &ll_q,
-                    hl: &hl_q,
-                    lh: &lh_q,
-                    hh: &hh_q,
+                    ll: &quantized_low_low,
+                    hl: &quantized_high_low,
+                    lh: &quantized_low_high,
+                    hh: &quantized_high_high,
                 },
                 params,
                 items,
@@ -73,11 +82,35 @@ impl CudaContext {
         })?;
 
         let (codeblocks, readback_us) = self.time_default_stream_us(|| {
+            let mut host_budget = HostPhaseBudget::with_live_bytes(
+                "CUDA HTJ2K 9/7 code-block readback",
+                live_host_bytes,
+            )?;
+            let ll = Self::download_i32_band(
+                &quantized_low_low,
+                item_count * low_low_count,
+                &mut host_budget,
+            )?;
+            let hl = Self::download_i32_band(
+                &quantized_high_low,
+                item_count * high_low_count,
+                &mut host_budget,
+            )?;
+            let lh = Self::download_i32_band(
+                &quantized_low_high,
+                item_count * low_high_count,
+                &mut host_budget,
+            )?;
+            let hh = Self::download_i32_band(
+                &quantized_high_high,
+                item_count * high_high_count,
+                &mut host_budget,
+            )?;
             Ok(CudaHtj2k97CodeblockBands {
-                ll: Self::download_i32_band(&ll_q, item_count * ll_size)?,
-                hl: Self::download_i32_band(&hl_q, item_count * hl_size)?,
-                lh: Self::download_i32_band(&lh_q, item_count * lh_size)?,
-                hh: Self::download_i32_band(&hh_q, item_count * hh_size)?,
+                ll,
+                hl,
+                lh,
+                hh,
                 item_count,
                 low_width,
                 low_height,

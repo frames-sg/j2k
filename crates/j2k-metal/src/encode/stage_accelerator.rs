@@ -6,17 +6,17 @@ use crate::compute;
 use j2k::{EncodeBackendPreference, J2kLosslessEncodeOptions};
 use j2k::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardDwt97Job,
-    J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
-    J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
-    J2kTier1CodeBlockEncodeJob,
+    J2kEncodeStageAccelerator, J2kEncodeStageError, J2kEncodeStageResult, J2kForwardDwt53Job,
+    J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Output, J2kForwardIctJob,
+    J2kForwardRctJob, J2kHtCodeBlockEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob,
+    J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
 
 #[cfg(target_os = "macos")]
 use super::{
-    borrow_padded_metal_buffer_from_bytes, encode_resident_ht_tile_body_with_cpu_packetization,
+    copy_padded_metal_buffer_from_bytes, encode_resident_ht_tile_body_with_cpu_packetization,
     lossless_options_for_resident_htj2k_tile_job, should_use_resident_htj2k_host_tile_for_auto,
     MetalEncodeInputStaging, MetalLosslessEncodeTile,
 };
@@ -292,25 +292,25 @@ impl MetalEncodeStageAccelerator {
 
 #[cfg(target_os = "macos")]
 fn metal_dispatch_result(
-    result: &Result<(), crate::Error>,
-    message: &'static str,
-) -> Result<bool, &'static str> {
+    result: Result<(), crate::Error>,
+    operation: &'static str,
+) -> J2kEncodeStageResult<bool> {
     match result {
         Ok(()) => Ok(true),
         Err(crate::Error::MetalUnavailable) => Ok(false),
-        Err(_) => Err(message),
+        Err(source) => Err(J2kEncodeStageError::backend("metal", operation, source)),
     }
 }
 
 #[cfg(target_os = "macos")]
 pub(super) fn metal_dispatch_option<T>(
     result: Result<T, crate::Error>,
-    message: &'static str,
-) -> Result<Option<T>, &'static str> {
+    operation: &'static str,
+) -> J2kEncodeStageResult<Option<T>> {
     match result {
         Ok(value) => Ok(Some(value)),
         Err(crate::Error::MetalUnavailable) => Ok(None),
-        Err(_) => Err(message),
+        Err(source) => Err(J2kEncodeStageError::backend("metal", operation, source)),
     }
 }
 
@@ -337,7 +337,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_deinterleave(
         &mut self,
         job: J2kDeinterleaveToF32Job<'_>,
-    ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
         self.deinterleave_attempts = self.deinterleave_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -356,10 +356,14 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                     Ok(Some(components))
                 }
                 Ok(None) | Err(crate::Error::MetalUnavailable) => Ok(None),
-                Err(crate::Error::UnsupportedMetalRequest { .. }) => {
-                    Err("Metal deinterleave encode shape is unsupported")
+                Err(crate::Error::UnsupportedMetalRequest { reason }) => {
+                    Err(J2kEncodeStageError::unsupported(reason))
                 }
-                Err(_) => Err("Metal deinterleave encode kernel failed"),
+                Err(source) => Err(J2kEncodeStageError::backend(
+                    "metal",
+                    "deinterleave encode",
+                    source,
+                )),
             }
         }
         #[cfg(not(target_os = "macos"))]
@@ -369,10 +373,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
     }
 
-    fn encode_forward_rct(
-        &mut self,
-        job: J2kForwardRctJob<'_>,
-    ) -> core::result::Result<bool, &'static str> {
+    fn encode_forward_rct(&mut self, job: J2kForwardRctJob<'_>) -> J2kEncodeStageResult<bool> {
         self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -386,8 +387,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         #[cfg(target_os = "macos")]
         {
             let result = compute::encode_forward_rct(job.plane0, job.plane1, job.plane2);
-            let dispatched =
-                metal_dispatch_result(&result, "Metal forward RCT encode kernel failed")?;
+            let dispatched = metal_dispatch_result(result, "forward RCT encode")?;
             if dispatched {
                 self.forward_rct_dispatches = self.forward_rct_dispatches.saturating_add(1);
             }
@@ -400,10 +400,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
     }
 
-    fn encode_forward_ict(
-        &mut self,
-        job: J2kForwardIctJob<'_>,
-    ) -> core::result::Result<bool, &'static str> {
+    fn encode_forward_ict(&mut self, job: J2kForwardIctJob<'_>) -> J2kEncodeStageResult<bool> {
         self.forward_ict_attempts = self.forward_ict_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -422,10 +419,14 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                     Ok(true)
                 }
                 Err(crate::Error::MetalUnavailable) => Ok(false),
-                Err(crate::Error::UnsupportedMetalRequest { .. }) => {
-                    Err("Metal forward ICT encode shape is unsupported")
+                Err(crate::Error::UnsupportedMetalRequest { reason }) => {
+                    Err(J2kEncodeStageError::unsupported(reason))
                 }
-                Err(_) => Err("Metal forward ICT encode kernel failed"),
+                Err(source) => Err(J2kEncodeStageError::backend(
+                    "metal",
+                    "forward ICT encode",
+                    source,
+                )),
             }
         }
         #[cfg(not(target_os = "macos"))]
@@ -438,7 +439,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_forward_dwt53(
         &mut self,
         job: J2kForwardDwt53Job<'_>,
-    ) -> core::result::Result<Option<J2kForwardDwt53Output>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<J2kForwardDwt53Output>> {
         self.forward_dwt53_attempts = self.forward_dwt53_attempts.saturating_add(1);
         if job.num_levels == 0 {
             return Ok(None);
@@ -463,7 +464,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         {
             let output = metal_dispatch_option(
                 compute::encode_forward_dwt53(job.samples, job.width, job.height, job.num_levels),
-                "Metal forward 5/3 DWT encode kernel failed",
+                "forward 5/3 DWT encode",
             )?;
             if output.is_some() {
                 self.forward_dwt53_dispatches = self.forward_dwt53_dispatches.saturating_add(1);
@@ -480,7 +481,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_forward_dwt97(
         &mut self,
         job: J2kForwardDwt97Job<'_>,
-    ) -> core::result::Result<Option<J2kForwardDwt97Output>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<J2kForwardDwt97Output>> {
         self.forward_dwt97_attempts = self.forward_dwt97_attempts.saturating_add(1);
         if job.num_levels == 0 || (job.width < 2 && job.height < 2) {
             return Ok(None);
@@ -505,7 +506,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         {
             let output = metal_dispatch_option(
                 compute::encode_forward_dwt97(job.samples, job.width, job.height, job.num_levels),
-                "Metal forward 9/7 DWT encode kernel failed",
+                "forward 9/7 DWT encode",
             )?;
             if output.is_some() {
                 self.forward_dwt97_dispatches = self.forward_dwt97_dispatches.saturating_add(1);
@@ -522,7 +523,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_quantize_subband(
         &mut self,
         job: J2kQuantizeSubbandJob<'_>,
-    ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<i32>>> {
         self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -544,10 +545,14 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                     Ok(Some(coefficients))
                 }
                 Err(crate::Error::MetalUnavailable) => Ok(None),
-                Err(crate::Error::UnsupportedMetalRequest { .. }) => {
-                    Err("Metal quantize_subband encode shape is unsupported")
+                Err(crate::Error::UnsupportedMetalRequest { reason }) => {
+                    Err(J2kEncodeStageError::unsupported(reason))
                 }
-                Err(_) => Err("Metal quantize_subband encode kernel failed"),
+                Err(source) => Err(J2kEncodeStageError::backend(
+                    "metal",
+                    "quantize subband encode",
+                    source,
+                )),
             }
         }
         #[cfg(not(target_os = "macos"))]
@@ -560,7 +565,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_tier1_code_block(
         &mut self,
         job: J2kTier1CodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<EncodedJ2kCodeBlock>> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -573,7 +578,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         {
             let encoded = metal_dispatch_option(
                 compute::encode_classic_tier1_code_block(job),
-                "Metal classic Tier-1 encode kernel failed",
+                "classic Tier-1 encode",
             )?;
             if encoded.is_some() {
                 self.tier1_code_block_dispatches =
@@ -591,7 +596,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_tier1_code_blocks(
         &mut self,
         jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<EncodedJ2kCodeBlock>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<EncodedJ2kCodeBlock>>> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(jobs.len());
         if !self
             .dispatch_stages
@@ -604,7 +609,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         {
             let encoded = metal_dispatch_option(
                 compute::encode_classic_tier1_code_blocks(jobs),
-                "Metal classic Tier-1 encode batch kernel failed",
+                "classic Tier-1 batch encode",
             )?;
             if encoded.is_some() && !jobs.is_empty() {
                 self.tier1_code_block_dispatches =
@@ -622,7 +627,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_ht_code_block(
         &mut self,
         job: J2kHtCodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -636,7 +641,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         {
             let encoded = metal_dispatch_option(
                 compute::encode_ht_cleanup_code_block(job),
-                "Metal HTJ2K code-block encode kernel failed",
+                "HTJ2K code-block encode",
             )?;
             if encoded.is_some() {
                 self.ht_code_block_dispatches = self.ht_code_block_dispatches.saturating_add(1);
@@ -653,7 +658,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_ht_code_blocks(
         &mut self,
         jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(jobs.len());
         if !self
             .dispatch_stages
@@ -667,7 +672,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         {
             let encoded = metal_dispatch_option(
                 compute::encode_ht_cleanup_code_blocks(jobs),
-                "Metal HTJ2K code-block encode batch kernel failed",
+                "HTJ2K code-block batch encode",
             )?;
             if encoded.is_some() && !jobs.is_empty() {
                 self.ht_code_block_dispatches = self.ht_code_block_dispatches.saturating_add(1);
@@ -684,7 +689,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_htj2k_tile(
         &mut self,
         job: J2kHtj2kTileEncodeJob<'_>,
-    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
         #[cfg(target_os = "macos")]
         {
             if self.route_profile != MetalEncodeRouteProfile::AutoHostOutput {
@@ -708,16 +713,30 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             let session = match crate::MetalBackendSession::system_default() {
                 Ok(session) => session,
                 Err(crate::Error::MetalUnavailable) => return Ok(None),
-                Err(_) => return Err("Metal HTJ2K hybrid tile encode session creation failed"),
+                Err(source) => {
+                    return Err(J2kEncodeStageError::backend(
+                        "metal",
+                        "HTJ2K hybrid session creation",
+                        source,
+                    ))
+                }
             };
-            let source_buffer = match borrow_padded_metal_buffer_from_bytes(&session, job.pixels) {
+            let source_buffer = match copy_padded_metal_buffer_from_bytes(&session, job.pixels) {
                 Ok(buffer) => buffer,
                 Err(crate::Error::MetalUnavailable) => return Ok(None),
-                Err(_) => return Err("Metal HTJ2K hybrid tile input buffer creation failed"),
+                Err(source) => {
+                    return Err(J2kEncodeStageError::backend(
+                        "metal",
+                        "HTJ2K hybrid input upload",
+                        source,
+                    ))
+                }
             };
             let pitch_bytes = (job.width as usize)
                 .checked_mul(usize::from(job.num_components))
-                .ok_or("Metal HTJ2K hybrid tile pitch overflow")?;
+                .ok_or_else(|| {
+                    J2kEncodeStageError::arithmetic_overflow("Metal HTJ2K hybrid tile pitch")
+                })?;
             let tile = MetalLosslessEncodeTile {
                 buffer: &source_buffer,
                 byte_offset: 0,
@@ -738,7 +757,13 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             ) {
                 Ok(Some(encoded)) => encoded,
                 Ok(None) | Err(crate::Error::MetalUnavailable) => return Ok(None),
-                Err(_) => return Err("Metal resident HTJ2K hybrid tile encode failed"),
+                Err(source) => {
+                    return Err(J2kEncodeStageError::backend(
+                        "metal",
+                        "resident HTJ2K hybrid tile encode",
+                        source,
+                    ))
+                }
             };
 
             self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
@@ -771,7 +796,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_packetization(
         &mut self,
         job: J2kPacketizationEncodeJob<'_>,
-    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
         self.packetization_attempts = self.packetization_attempts.saturating_add(1);
         self.auto_host_output_force_cpu_fallback = false;
         if !self
@@ -786,7 +811,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             let native_job = job;
             let encoded = metal_dispatch_option(
                 compute::encode_tier2_packetization(native_job),
-                "Metal Tier-2 packetization encode kernel failed",
+                "Tier-2 packetization encode",
             )?;
             if encoded.is_some() {
                 self.packetization_dispatches = self.packetization_dispatches.saturating_add(1);

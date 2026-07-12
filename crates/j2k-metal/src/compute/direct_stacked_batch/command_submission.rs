@@ -4,6 +4,8 @@ use std::mem::size_of;
 
 use metal::Buffer;
 
+use crate::batch_allocation::{BatchMetadataBudget, BatchMetadataRequest};
+
 use super::super::{
     decode_classic_inputs_on_cpu_with_plan_cache, decode_ht_inputs_on_cpu_with_plan_cache,
     direct_preflight_invariant,
@@ -40,13 +42,39 @@ struct SubmissionContext<'a, 'p, 'r> {
     tier1_mode: DirectTier1Mode,
     stage_timings: &'a mut DirectHybridStageTimings,
     retained_buffers: &'a mut Vec<Buffer>,
-    retained_cpu_coefficients: &'a mut Vec<Vec<f32>>,
     status_checks: &'a mut Vec<DirectStatusCheck>,
     scratch_buffers: &'a mut Vec<DirectScratchBuffer>,
     count: usize,
     broadcast_tier1_inputs: bool,
     profile_stages: bool,
     resources: &'r mut StackedComponentResources,
+}
+
+fn planned_cpu_input_count(
+    mode: DirectTier1Mode,
+    has_flattened_cache: bool,
+    broadcast: bool,
+    item_count: usize,
+) -> usize {
+    if mode != DirectTier1Mode::CpuUpload || has_flattened_cache {
+        0
+    } else if broadcast {
+        item_count.min(1)
+    } else {
+        item_count
+    }
+}
+
+fn try_collect_submission_items<T>(
+    budget: &mut BatchMetadataBudget,
+    mut items: impl ExactSizeIterator<Item = Result<T, Error>>,
+    what: &'static str,
+) -> Result<Vec<T>, Error> {
+    let mut values = budget.try_vec(items.len(), what)?;
+    for item in &mut items {
+        values.push(item?);
+    }
+    Ok(values)
 }
 
 pub(super) fn submit_stacked_component_commands<'p>(
@@ -63,7 +91,6 @@ pub(super) fn submit_stacked_component_commands<'p>(
         tier1_mode,
         stage_timings,
         retained_buffers,
-        retained_cpu_coefficients,
         status_checks,
         scratch_buffers,
     } = request;
@@ -77,7 +104,6 @@ pub(super) fn submit_stacked_component_commands<'p>(
         tier1_mode,
         stage_timings,
         retained_buffers,
-        retained_cpu_coefficients,
         status_checks,
         scratch_buffers,
         count: plan.count,
@@ -127,14 +153,29 @@ impl SubmissionContext<'_, '_, '_> {
         step_idx: usize,
         group: &PreparedClassicSubBandGroup,
     ) -> Result<(), Error> {
-        let groups = self
-            .plans
-            .iter()
-            .map(|plan| {
-                plan.classic_group_starting_at(step_idx)
-                    .expect("preflight validated classic group")
-            })
-            .collect::<Vec<_>>();
+        let input_count = planned_cpu_input_count(
+            self.tier1_mode,
+            self.flattened_cpu_tier1_cache.is_some(),
+            self.broadcast_tier1_inputs,
+            self.plans.len(),
+        );
+        let mut metadata_budget =
+            BatchMetadataBudget::new("J2K Metal stacked classic group submission metadata");
+        metadata_budget.preflight(&[
+            BatchMetadataRequest::of::<&PreparedClassicSubBandGroup>(self.plans.len()),
+            BatchMetadataRequest::of::<ClassicCpuDecodeInput<'_>>(input_count),
+        ])?;
+        let groups = try_collect_submission_items(
+            &mut metadata_budget,
+            self.plans.iter().map(|plan| {
+                plan.classic_group_starting_at(step_idx).ok_or_else(|| {
+                    direct_preflight_invariant(
+                        "classic group step mismatch in stacked component batch",
+                    )
+                })
+            }),
+            "J2K Metal stacked classic group references",
+        )?;
         let buffer = match self.tier1_mode {
             DirectTier1Mode::Metal => {
                 let output =
@@ -156,9 +197,13 @@ impl SubmissionContext<'_, '_, '_> {
                     self.scratch_buffers,
                 )
             }
-            DirectTier1Mode::CpuUpload => {
-                self.prepare_classic_group_cpu_buffer(first, step_idx, group, &groups)?
-            }
+            DirectTier1Mode::CpuUpload => self.prepare_classic_group_cpu_buffer(
+                first,
+                step_idx,
+                group,
+                &groups,
+                &mut metadata_budget,
+            )?,
         };
 
         let stride_bytes = group.total_coefficients * size_of::<f32>();
@@ -191,6 +236,7 @@ impl SubmissionContext<'_, '_, '_> {
         step_idx: usize,
         group: &PreparedClassicSubBandGroup,
         groups: &[&PreparedClassicSubBandGroup],
+        metadata_budget: &mut BatchMetadataBudget,
     ) -> Result<Buffer, Error> {
         let input_groups = if self.broadcast_tier1_inputs {
             &groups[..1]
@@ -206,15 +252,18 @@ impl SubmissionContext<'_, '_, '_> {
             );
         }
 
-        let inputs = input_groups
-            .iter()
-            .map(|group| ClassicCpuDecodeInput {
-                coded_data: &group.coded_data,
-                segments: &group.segments,
-                jobs: &group.jobs,
-                output_len: group.total_coefficients,
-            })
-            .collect::<Vec<_>>();
+        let inputs = try_collect_submission_items(
+            metadata_budget,
+            input_groups.iter().map(|group| {
+                Ok(ClassicCpuDecodeInput {
+                    coded_data: &group.coded_data,
+                    segments: &group.segments,
+                    jobs: &group.jobs,
+                    output_len: group.total_coefficients,
+                })
+            }),
+            "J2K Metal stacked classic group CPU inputs",
+        )?;
         let decode_started = self.profile_stages.then(Instant::now);
         let cpu_tier1_counters = self
             .profile_stages
@@ -232,12 +281,8 @@ impl SubmissionContext<'_, '_, '_> {
             counters.add_to_stage_timings(self.stage_timings);
         }
         let upload_started = self.profile_stages.then(Instant::now);
-        let buffer = upload_cpu_decoded_coefficients(
-            self.runtime,
-            coefficients,
-            self.retained_buffers,
-            self.retained_cpu_coefficients,
-        );
+        let buffer =
+            upload_cpu_decoded_coefficients(self.runtime, &coefficients, self.retained_buffers)?;
         if let Some(started) = upload_started {
             self.stage_timings.coefficient_upload += elapsed_us(started);
         }
@@ -250,14 +295,27 @@ impl SubmissionContext<'_, '_, '_> {
         step_idx: usize,
         group: &PreparedHtSubBandGroup,
     ) -> Result<(), Error> {
-        let groups = self
-            .plans
-            .iter()
-            .map(|plan| {
-                plan.ht_group_starting_at(step_idx)
-                    .expect("preflight validated HT group")
-            })
-            .collect::<Vec<_>>();
+        let input_count = planned_cpu_input_count(
+            self.tier1_mode,
+            self.flattened_cpu_tier1_cache.is_some(),
+            self.broadcast_tier1_inputs,
+            self.plans.len(),
+        );
+        let mut metadata_budget =
+            BatchMetadataBudget::new("J2K Metal stacked HT group submission metadata");
+        metadata_budget.preflight(&[
+            BatchMetadataRequest::of::<&PreparedHtSubBandGroup>(self.plans.len()),
+            BatchMetadataRequest::of::<HtCpuDecodeInput<'_>>(input_count),
+        ])?;
+        let groups = try_collect_submission_items(
+            &mut metadata_budget,
+            self.plans.iter().map(|plan| {
+                plan.ht_group_starting_at(step_idx).ok_or_else(|| {
+                    direct_preflight_invariant("HT group step mismatch in stacked component batch")
+                })
+            }),
+            "J2K Metal stacked HT group references",
+        )?;
         let buffer = match self.tier1_mode {
             DirectTier1Mode::Metal => {
                 let output =
@@ -278,9 +336,13 @@ impl SubmissionContext<'_, '_, '_> {
                     self.scratch_buffers,
                 )
             }
-            DirectTier1Mode::CpuUpload => {
-                self.prepare_ht_group_cpu_buffer(first, step_idx, group, &groups)?
-            }
+            DirectTier1Mode::CpuUpload => self.prepare_ht_group_cpu_buffer(
+                first,
+                step_idx,
+                group,
+                &groups,
+                &mut metadata_budget,
+            )?,
         };
 
         let stride_bytes = group.total_coefficients * size_of::<f32>();
@@ -313,6 +375,7 @@ impl SubmissionContext<'_, '_, '_> {
         step_idx: usize,
         group: &PreparedHtSubBandGroup,
         groups: &[&PreparedHtSubBandGroup],
+        metadata_budget: &mut BatchMetadataBudget,
     ) -> Result<Buffer, Error> {
         let input_groups = if self.broadcast_tier1_inputs {
             &groups[..1]
@@ -328,14 +391,17 @@ impl SubmissionContext<'_, '_, '_> {
             );
         }
 
-        let inputs = input_groups
-            .iter()
-            .map(|group| HtCpuDecodeInput {
-                coded_data: &group.coded_arena.data,
-                jobs: &group.jobs,
-                output_len: group.total_coefficients,
-            })
-            .collect::<Vec<_>>();
+        let inputs = try_collect_submission_items(
+            metadata_budget,
+            input_groups.iter().map(|group| {
+                Ok(HtCpuDecodeInput {
+                    coded_data: &group.coded_arena.data,
+                    jobs: &group.jobs,
+                    output_len: group.total_coefficients,
+                })
+            }),
+            "J2K Metal stacked HT group CPU inputs",
+        )?;
         let decode_started = self.profile_stages.then(Instant::now);
         let cpu_tier1_counters = self
             .profile_stages
@@ -353,12 +419,8 @@ impl SubmissionContext<'_, '_, '_> {
             counters.add_to_stage_timings(self.stage_timings);
         }
         let upload_started = self.profile_stages.then(Instant::now);
-        let buffer = upload_cpu_decoded_coefficients(
-            self.runtime,
-            coefficients,
-            self.retained_buffers,
-            self.retained_cpu_coefficients,
-        );
+        let buffer =
+            upload_cpu_decoded_coefficients(self.runtime, &coefficients, self.retained_buffers)?;
         if let Some(started) = upload_started {
             self.stage_timings.coefficient_upload += elapsed_us(started);
         }
@@ -371,16 +433,30 @@ impl SubmissionContext<'_, '_, '_> {
         step_idx: usize,
         sub_band: &PreparedClassicSubBand,
     ) -> Result<(), Error> {
-        let sub_bands = self
-            .plans
-            .iter()
-            .map(|plan| match &plan.steps[step_idx] {
-                PreparedDirectGrayscaleStep::ClassicSubBand(other) => Ok(other),
-                _ => Err(direct_preflight_invariant(
-                    "classic sub-band step mismatch in stacked component batch",
-                )),
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
+        let input_count = planned_cpu_input_count(
+            self.tier1_mode,
+            self.flattened_cpu_tier1_cache.is_some(),
+            self.broadcast_tier1_inputs,
+            self.plans.len(),
+        );
+        let mut metadata_budget =
+            BatchMetadataBudget::new("J2K Metal stacked classic sub-band submission metadata");
+        metadata_budget.preflight(&[
+            BatchMetadataRequest::of::<&PreparedClassicSubBand>(self.plans.len()),
+            BatchMetadataRequest::of::<ClassicCpuDecodeInput<'_>>(input_count),
+        ])?;
+        let sub_bands = try_collect_submission_items(
+            &mut metadata_budget,
+            self.plans
+                .iter()
+                .map(|plan| match plan.steps.get(step_idx) {
+                    Some(PreparedDirectGrayscaleStep::ClassicSubBand(other)) => Ok(other),
+                    _ => Err(direct_preflight_invariant(
+                        "classic sub-band step mismatch in stacked component batch",
+                    )),
+                }),
+            "J2K Metal stacked classic sub-band references",
+        )?;
         let per_instance_len = sub_band.width as usize * sub_band.height as usize;
         let buffer = match self.tier1_mode {
             DirectTier1Mode::Metal => {
@@ -407,6 +483,7 @@ impl SubmissionContext<'_, '_, '_> {
                 step_idx,
                 per_instance_len,
                 &sub_bands,
+                &mut metadata_budget,
             )?,
         };
 
@@ -438,6 +515,7 @@ impl SubmissionContext<'_, '_, '_> {
         step_idx: usize,
         per_instance_len: usize,
         sub_bands: &[&PreparedClassicSubBand],
+        metadata_budget: &mut BatchMetadataBudget,
     ) -> Result<Buffer, Error> {
         let input_sub_bands = if self.broadcast_tier1_inputs {
             &sub_bands[..1]
@@ -453,15 +531,18 @@ impl SubmissionContext<'_, '_, '_> {
             );
         }
 
-        let inputs = input_sub_bands
-            .iter()
-            .map(|sub_band| ClassicCpuDecodeInput {
-                coded_data: &sub_band.coded_data,
-                segments: &sub_band.segments,
-                jobs: &sub_band.jobs,
-                output_len: per_instance_len,
-            })
-            .collect::<Vec<_>>();
+        let inputs = try_collect_submission_items(
+            metadata_budget,
+            input_sub_bands.iter().map(|sub_band| {
+                Ok(ClassicCpuDecodeInput {
+                    coded_data: &sub_band.coded_data,
+                    segments: &sub_band.segments,
+                    jobs: &sub_band.jobs,
+                    output_len: per_instance_len,
+                })
+            }),
+            "J2K Metal stacked classic sub-band CPU inputs",
+        )?;
         let decode_started = self.profile_stages.then(Instant::now);
         let cpu_tier1_counters = self
             .profile_stages
@@ -479,12 +560,8 @@ impl SubmissionContext<'_, '_, '_> {
             counters.add_to_stage_timings(self.stage_timings);
         }
         let upload_started = self.profile_stages.then(Instant::now);
-        let buffer = upload_cpu_decoded_coefficients(
-            self.runtime,
-            coefficients,
-            self.retained_buffers,
-            self.retained_cpu_coefficients,
-        );
+        let buffer =
+            upload_cpu_decoded_coefficients(self.runtime, &coefficients, self.retained_buffers)?;
         if let Some(started) = upload_started {
             self.stage_timings.coefficient_upload += elapsed_us(started);
         }
@@ -497,16 +574,30 @@ impl SubmissionContext<'_, '_, '_> {
         step_idx: usize,
         sub_band: &PreparedHtSubBand,
     ) -> Result<(), Error> {
-        let sub_bands = self
-            .plans
-            .iter()
-            .map(|plan| match &plan.steps[step_idx] {
-                PreparedDirectGrayscaleStep::HtSubBand(other) => Ok(other),
-                _ => Err(direct_preflight_invariant(
-                    "HT sub-band step mismatch in stacked component batch",
-                )),
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
+        let input_count = planned_cpu_input_count(
+            self.tier1_mode,
+            self.flattened_cpu_tier1_cache.is_some(),
+            self.broadcast_tier1_inputs,
+            self.plans.len(),
+        );
+        let mut metadata_budget =
+            BatchMetadataBudget::new("J2K Metal stacked HT sub-band submission metadata");
+        metadata_budget.preflight(&[
+            BatchMetadataRequest::of::<&PreparedHtSubBand>(self.plans.len()),
+            BatchMetadataRequest::of::<HtCpuDecodeInput<'_>>(input_count),
+        ])?;
+        let sub_bands = try_collect_submission_items(
+            &mut metadata_budget,
+            self.plans
+                .iter()
+                .map(|plan| match plan.steps.get(step_idx) {
+                    Some(PreparedDirectGrayscaleStep::HtSubBand(other)) => Ok(other),
+                    _ => Err(direct_preflight_invariant(
+                        "HT sub-band step mismatch in stacked component batch",
+                    )),
+                }),
+            "J2K Metal stacked HT sub-band references",
+        )?;
         let per_instance_len = sub_band.width as usize * sub_band.height as usize;
         let buffer = match self.tier1_mode {
             DirectTier1Mode::Metal => {
@@ -527,9 +618,13 @@ impl SubmissionContext<'_, '_, '_> {
                     self.scratch_buffers,
                 )
             }
-            DirectTier1Mode::CpuUpload => {
-                self.prepare_ht_sub_band_cpu_buffer(first, step_idx, per_instance_len, &sub_bands)?
-            }
+            DirectTier1Mode::CpuUpload => self.prepare_ht_sub_band_cpu_buffer(
+                first,
+                step_idx,
+                per_instance_len,
+                &sub_bands,
+                &mut metadata_budget,
+            )?,
         };
 
         let stride_bytes = per_instance_len * size_of::<f32>();
@@ -560,6 +655,7 @@ impl SubmissionContext<'_, '_, '_> {
         step_idx: usize,
         per_instance_len: usize,
         sub_bands: &[&PreparedHtSubBand],
+        metadata_budget: &mut BatchMetadataBudget,
     ) -> Result<Buffer, Error> {
         let input_sub_bands = if self.broadcast_tier1_inputs {
             &sub_bands[..1]
@@ -575,14 +671,17 @@ impl SubmissionContext<'_, '_, '_> {
             );
         }
 
-        let inputs = input_sub_bands
-            .iter()
-            .map(|sub_band| HtCpuDecodeInput {
-                coded_data: &sub_band.coded_data,
-                jobs: &sub_band.jobs,
-                output_len: per_instance_len,
-            })
-            .collect::<Vec<_>>();
+        let inputs = try_collect_submission_items(
+            metadata_budget,
+            input_sub_bands.iter().map(|sub_band| {
+                Ok(HtCpuDecodeInput {
+                    coded_data: &sub_band.coded_data,
+                    jobs: &sub_band.jobs,
+                    output_len: per_instance_len,
+                })
+            }),
+            "J2K Metal stacked HT sub-band CPU inputs",
+        )?;
         let decode_started = self.profile_stages.then(Instant::now);
         let cpu_tier1_counters = self
             .profile_stages
@@ -600,12 +699,8 @@ impl SubmissionContext<'_, '_, '_> {
             counters.add_to_stage_timings(self.stage_timings);
         }
         let upload_started = self.profile_stages.then(Instant::now);
-        let buffer = upload_cpu_decoded_coefficients(
-            self.runtime,
-            coefficients,
-            self.retained_buffers,
-            self.retained_cpu_coefficients,
-        );
+        let buffer =
+            upload_cpu_decoded_coefficients(self.runtime, &coefficients, self.retained_buffers)?;
         if let Some(started) = upload_started {
             self.stage_timings.coefficient_upload += elapsed_us(started);
         }
@@ -671,7 +766,7 @@ impl SubmissionContext<'_, '_, '_> {
                         params,
                         decoded: &output.buffer,
                     },
-                );
+                )?;
             }
             J2kWaveletTransform::Irreversible97 => {
                 for (instance_idx, bands) in self.resources.band_sets.iter().enumerate() {
@@ -715,7 +810,7 @@ impl SubmissionContext<'_, '_, '_> {
                                     * per_instance_len
                                     * size_of::<f32>(),
                             },
-                        ),
+                        )?,
                     );
                 }
             }
@@ -775,7 +870,7 @@ impl SubmissionContext<'_, '_, '_> {
                     message: "J2K MetalDirect color store batch count exceeds u32".to_string(),
                 })?,
             },
-        );
+        )?;
         if let Some(started) = encode_started {
             self.stage_timings.metal_store_encode += elapsed_us(started);
         }

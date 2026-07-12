@@ -5,16 +5,18 @@
 use crate::backend::Backend;
 use crate::context::DecoderContext;
 use crate::entropy::block::{decode_block_with_activity, BlockActivity, CoefficientBlock};
-use crate::entropy::huffman::HuffmanTable;
+use crate::entropy::huffman::{HuffmanTable, PreparedHuffmanTableId, PreparedHuffmanTables};
 use crate::entropy::progressive::{
     decode_progressive, decode_progressive_dct_blocks, PreparedProgressiveComponentPlan,
     PreparedProgressivePlan, PreparedProgressiveScan, PreparedProgressiveScanComponent,
+    COMPONENT_IMAGE_METADATA_BYTES,
 };
 use crate::entropy::sequential::{
     decode_scan_baseline, decode_scan_baseline_rgb, decode_scan_fast_rgb_444,
     decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region,
     decode_scan_fast_tile_rgb_region_scaled, fast_tile_region_first_decode_mcu, finish_scan,
     stripe_region_layout, FastTileRegionScaledRequest, PreparedComponentPlan, PreparedDecodePlan,
+    ResolvedPreparedComponentPlan,
 };
 use crate::entropy::ZIGZAG;
 use crate::error::{JpegError, MarkerKind, Warning};
@@ -30,11 +32,9 @@ use crate::output::{
     validate_buffer, Gray8Writer, InterleavedRgbWriter, OutputWriter, Rgb8Writer, Rgba8Writer,
 };
 use crate::parse::header::{parse_info, ParsedHeader};
-use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
-use crate::profile::{duration_us_string, emit_jpeg_profile_row, jpeg_profile_stages_enabled};
+use crate::profile::{emit_jpeg_profile_fields, jpeg_profile_stages_enabled, ProfileField};
 use crate::segment::PreparedJpeg;
 use crate::JpegCodec;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 pub use j2k_core::TileBatchOptions;
@@ -46,7 +46,8 @@ use j2k_core::{
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-const DEFAULT_MAX_DECODE_BYTES: usize = 512 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_DECODE_BYTES: usize = 512 * 1024 * 1024;
+pub(super) const MAX_DECODE_SCAN_WARNINGS: usize = 1;
 const CPU_ROI_CHECKPOINT_CADENCE_MCUS: u32 = 1024;
 const CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS: u32 = 4096;
 
@@ -57,14 +58,17 @@ std::thread_local! {
 
 mod view;
 pub use self::view::JpegView;
+mod allocation;
 mod output_format;
 use self::output_format::{
-    allocate_output_buffer, checked_output_geometry, downscale_profile_name, jpeg_downscale,
-    output_format_from_parts, output_format_profile_name, scaled_dimensions, scaled_rect_covering,
+    allocate_output_buffer_with_live_budget, checked_output_geometry, downscale_profile_name,
+    jpeg_downscale, output_format_from_parts, output_format_profile_name, scaled_dimensions,
+    scaled_rect_covering,
 };
 mod extended12;
 use self::extended12::{lossless_color_sampling, upsample_h2v1_sample_at, upsample_h2v2_rows_at};
 mod lossless_helpers;
+pub(crate) use self::lossless_helpers::restart_index_allocation_bytes;
 use self::lossless_helpers::{
     decode_lossless_color_sample, decode_lossless_sampled_color_mcu, emit_decode_scan_profile,
     lossless_predictor_gray_rows, lossless_predictor_value, lossless_predictor_value_u16,
@@ -77,16 +81,19 @@ mod color_convert;
 use self::color_convert::{
     convert_ycbcr16_to_rgb16_in_place, convert_ycbcr8_to_rgb8_in_place, copy_gray16_scaled_rect,
     copy_gray8_scaled_rect, copy_rgb16_to_rgba16, copy_ycbcr16_row_to_rgb16,
-    copy_ycbcr8_row_to_rgb8, merged_warnings,
+    copy_ycbcr8_row_to_rgb8,
 };
+mod warning_ownership;
+use self::warning_ownership::{merged_warnings, try_clone_warnings};
 mod core_traits;
 use self::core_traits::{CroppedWriter, ProgressiveDownscaleWriter};
 mod lossless_region;
-use self::lossless_region::{LosslessRgbRegionFallback, LosslessRgbaAlpha};
+use self::lossless_region::{LosslessRegionRequest, LosslessRgbRegionFallback, LosslessRgbaAlpha};
 mod scratch;
 use self::scratch::{
-    checked_scratch_len, checked_usize_product, compute_decode_scratch_bytes,
-    compute_extended12_planes_scratch_bytes, compute_lossless_scratch_bytes,
+    additional_decode_scratch_bytes, checked_scratch_len, checked_usize_product,
+    compute_decode_scratch_bytes, compute_extended12_planes_scratch_bytes,
+    compute_lossless_scratch_bytes, lossless_sampled_plane_layout, LosslessSampledPlaneLayout,
 };
 mod sink_writer;
 pub(crate) use self::sink_writer::SinkWriter;
@@ -96,7 +103,10 @@ mod routing;
 mod rows;
 mod sequential;
 mod tile;
-pub(crate) use self::tile::decode_prepared_jpeg_tile_rgb8_in_context;
+pub(crate) use self::tile::{
+    decode_prepared_jpeg_tile_rgb8_in_context, planned_jpeg_tile_decode_live_bytes,
+    PlannedJpegTileDecode,
+};
 pub use self::tile::{
     decode_prepared_jpeg_tiles_rgb8, decode_tile_into, decode_tile_into_in_context,
     decode_tile_into_in_context_with_options, decode_tile_region_into_in_context,
@@ -235,8 +245,15 @@ pub type TileScaledDecodeJob<'i, 'o> = j2k_core::TileScaledDecodeJob<'i, 'o>;
 pub type TileRegionScaledDecodeJob<'i, 'o> = j2k_core::TileRegionScaledDecodeJob<'i, 'o>;
 
 /// Error returned by [`decode_tiles_into`], annotated with the failing tile
-/// index from the caller's input order.
-pub type TileBatchError = j2k_core::TileBatchError<JpegError>;
+/// index from the caller's input order when a codec error occurs, or carrying
+/// a typed infrastructure error when no tile index applies.
+pub type TileBatchError = j2k_core::BatchDecodeError<JpegError>;
+
+/// Allocation, scheduling, or collection failure for a prepared JPEG batch.
+///
+/// Prepared batches retain codec failures independently in their returned
+/// per-tile result vector, so only infrastructure failures use this outer type.
+pub type PreparedTileBatchError = j2k_core::BatchInfrastructureError;
 
 /// Receives decoded component rows before they are packed into the final
 /// interleaved pixel format.
@@ -281,7 +298,7 @@ pub trait ComponentRowWriter {
 pub struct Decoder<'a> {
     pub(crate) bytes: &'a [u8],
     pub(crate) info: Info,
-    pub(crate) warnings: Arc<[Warning]>,
+    pub(crate) warnings: Vec<Warning>,
     pub(crate) backend: Backend,
     pub(crate) plan: PreparedDecodePlan,
     pub(crate) progressive_plan: Option<PreparedProgressivePlan>,
@@ -289,11 +306,19 @@ pub struct Decoder<'a> {
     pub(crate) cpu_entropy_checkpoints: Mutex<CpuCheckpointCache>,
 }
 
+struct PreparedDecoderMetadata {
+    info: Info,
+    warnings: Vec<Warning>,
+    plan: PreparedDecodePlan,
+    progressive_plan: Option<PreparedProgressivePlan>,
+    lossless_plan: Option<PreparedLosslessPlan>,
+}
+
 #[derive(Debug, Clone)]
 struct PreparedLosslessPlan {
     predictor: u8,
     bit_depth: u8,
-    dc_table: Arc<HuffmanTable>,
+    dc_table: PreparedHuffmanTableId,
     dimensions: (u32, u32),
     scan_offset: usize,
 }
@@ -348,6 +373,25 @@ impl<'a> Decoder<'a> {
         DEFAULT_CONTEXT.with(|ctx| Self::from_view_in_context(view, &mut ctx.borrow_mut()))
     }
 
+    /// Build from a parsed view while charging an already-live owner baseline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the aggregate host budget is exceeded or the view
+    /// describes unsupported or invalid coding state.
+    pub(crate) fn from_view_with_external_live(
+        view: JpegView<'a>,
+        external_live_bytes: usize,
+    ) -> Result<Self, JpegError> {
+        DEFAULT_CONTEXT.with(|ctx| {
+            Self::from_view_in_context_with_external_live(
+                view,
+                &mut ctx.borrow_mut(),
+                external_live_bytes,
+            )
+        })
+    }
+
     /// Build a decoder from a previously parsed [`JpegView`], reusing shared
     /// compiled DHT/DQT state from `ctx` when table contents repeat.
     ///
@@ -359,6 +403,14 @@ impl<'a> Decoder<'a> {
         view: JpegView<'a>,
         ctx: &mut DecoderContext,
     ) -> Result<Self, JpegError> {
+        Self::from_view_in_context_with_external_live(view, ctx, 0)
+    }
+
+    fn from_view_in_context_with_external_live(
+        view: JpegView<'a>,
+        ctx: &mut DecoderContext,
+        external_live_bytes: usize,
+    ) -> Result<Self, JpegError> {
         let JpegView {
             bytes,
             header,
@@ -366,60 +418,20 @@ impl<'a> Decoder<'a> {
             options,
         } = view;
         let backend = Backend::detect();
-        let (info, warnings, plan, progressive_plan, lossless_plan) = if matches!(
-            info.sof_kind,
-            SofKind::Progressive8 | SofKind::Progressive12
-        ) {
-            let progressive_plan = Self::build_progressive_plan(&header, &info, ctx)?;
-            let plan = Self::build_progressive_host_output_plan(&header, &info, ctx)?;
-            (
-                info,
-                Arc::<[Warning]>::from(header.warnings.as_slice()),
-                plan,
-                Some(progressive_plan),
-                None,
-            )
-        } else if info.sof_kind == SofKind::Lossless {
-            let (plan, lossless_plan) = Self::build_lossless_plan(&header, &info, ctx)?;
-            (
-                info,
-                Arc::<[Warning]>::from(header.warnings.as_slice()),
-                plan,
-                None,
-                Some(lossless_plan),
-            )
-        } else if options == DecodeOptions::default() {
-            if let Some(scan_offset) = header.sos_offset {
-                let header_prefix = &bytes[..scan_offset];
-                let (info, warnings, plan) = ctx.resolve_decode_plan(header_prefix, |ctx| {
-                    let plan = Self::build_prepared_plan(&header, &info, ctx)?;
-                    Ok((
-                        info.clone(),
-                        Arc::<[Warning]>::from(header.warnings.as_slice()),
-                        plan,
-                    ))
-                })?;
-                (info, warnings, plan, None, None)
-            } else {
-                let plan = Self::build_prepared_plan(&header, &info, ctx)?;
-                (
-                    info,
-                    Arc::<[Warning]>::from(header.warnings.as_slice()),
-                    plan,
-                    None,
-                    None,
-                )
-            }
-        } else {
-            let plan = Self::build_prepared_plan(&header, &info, ctx)?;
-            (
-                info,
-                Arc::<[Warning]>::from(header.warnings.as_slice()),
-                plan,
-                None,
-                None,
-            )
-        };
+        let PreparedDecoderMetadata {
+            info,
+            warnings,
+            plan,
+            progressive_plan,
+            lossless_plan,
+        } = Self::prepare_header_with_external_live(
+            header,
+            info,
+            options,
+            bytes,
+            ctx,
+            external_live_bytes,
+        )?;
         Ok(Self {
             bytes,
             info,

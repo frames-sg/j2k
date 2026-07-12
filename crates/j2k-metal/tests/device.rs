@@ -285,7 +285,10 @@ fn full_classic_grayscale_decode_to_metal_matches_host_decode() {
         .expect("device decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), (4, 4));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -307,7 +310,10 @@ fn full_htj2k_decode_to_metal_matches_host_decode() {
         .expect("device decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), (4, 4));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -336,7 +342,10 @@ fn htj2k_direct_decode_clears_reused_classic_scratch_buffers() {
         .expect("device decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), (4, 4));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -358,7 +367,10 @@ fn full_irreversible_j2k_decode_to_metal_matches_host_decode() {
         .expect("device decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), (4, 4));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -468,7 +480,8 @@ fn metal_encoded_raw_parts_validate_ranges_and_support_consuming_handoff() {
         j2k_test_support::metal_device_unavailable_is_skip(module_path!());
         return;
     };
-    let invalid_buffer = device.new_buffer(64, metal::MTLResourceOptions::StorageModeShared);
+    let invalid_buffer =
+        j2k_metal_support::checked_shared_buffer(&device, 64).expect("test buffer allocation");
     // SAFETY: This fresh allocation has no prior or concurrent writers and is
     // retained only for this constructor call.
     let invalid = unsafe {
@@ -479,7 +492,8 @@ fn metal_encoded_raw_parts_validate_ranges_and_support_consuming_handoff() {
         Err(Error::MetalKernel { message }) if message.contains("exceeds allocation length")
     ));
 
-    let buffer = device.new_buffer(64, metal::MTLResourceOptions::StorageModeShared);
+    let buffer =
+        j2k_metal_support::checked_shared_buffer(&device, 64).expect("test buffer allocation");
     let expected_ptr = buffer.as_ptr();
     // SAFETY: This fresh allocation has no writers and stays immutable until
     // the encoded object is consumed below.
@@ -565,7 +579,10 @@ fn decode_scaled_to_device_with_session_supports_rgb8_resident_surface() {
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
     let (buffer, _) = completed_surface_metal_buffer(&surface).expect("metal buffer");
     assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
 }
@@ -597,7 +614,10 @@ fn explicit_cpu_staged_metal_api_uses_session_device_and_marks_residency() {
 
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::CpuStagedMetalUpload);
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
     let (buffer, byte_offset) = completed_surface_metal_buffer(&surface).expect("Metal buffer");
     assert_eq!(byte_offset, 0);
     assert_eq!(buffer.device().as_ptr(), session.device().as_ptr());
@@ -672,7 +692,10 @@ fn submitted_full_grayscale_tiles_flush_as_one_device_batch() {
         let surface = submission.wait().expect("surface");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
     assert_eq!(
         session.submissions().expect("session submissions"),
@@ -778,8 +801,14 @@ fn submitted_distinct_full_grayscale_tiles_flush_as_one_device_batch() {
     let reversed_surface = reversed_submission.wait().expect("reversed surface");
     assert_eq!(classic_surface.backend_kind(), BackendKind::Metal);
     assert_eq!(reversed_surface.backend_kind(), BackendKind::Metal);
-    assert_eq!(classic_surface.as_bytes(), classic_host.as_slice());
-    assert_eq!(reversed_surface.as_bytes(), reversed_host.as_slice());
+    assert_eq!(
+        classic_surface.as_bytes().expect("surface byte access"),
+        classic_host.as_slice()
+    );
+    assert_eq!(
+        reversed_surface.as_bytes().expect("surface byte access"),
+        reversed_host.as_slice()
+    );
     assert_eq!(
         session.submissions().expect("session submissions"),
         1,
@@ -827,7 +856,10 @@ fn submitted_full_rgb_tiles_flush_as_one_device_batch() {
     for submission in submissions {
         let surface = submission.wait().expect("surface");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
     assert_eq!(
         session.submissions().expect("session submissions"),
@@ -892,7 +924,10 @@ fn submitted_distinct_full_rgb_tiles_stay_resident_when_batch_route_falls_back()
         let surface = submission.wait().expect("surface");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
         surfaces.push(surface);
     }
     assert!(
@@ -955,8 +990,14 @@ fn metal_tile_batch_decodes_submitted_tiles_in_order() {
         .decode_into(&mut reversed_host, 4, PixelFormat::Gray8)
         .expect("reversed host decode");
 
-    assert_eq!(surfaces[0].as_bytes(), classic_host.as_slice());
-    assert_eq!(surfaces[1].as_bytes(), reversed_host.as_slice());
+    assert_eq!(
+        surfaces[0].as_bytes().expect("surface byte access"),
+        classic_host.as_slice()
+    );
+    assert_eq!(
+        surfaces[1].as_bytes().expect("surface byte access"),
+        reversed_host.as_slice()
+    );
 }
 
 #[test]
@@ -996,8 +1037,14 @@ fn tile_batch_decode_many_device_preserves_full_tile_order() {
     assert_eq!(surfaces.len(), 2);
     assert_eq!(surfaces[0].backend_kind(), BackendKind::Metal);
     assert_eq!(surfaces[1].backend_kind(), BackendKind::Metal);
-    assert_eq!(surfaces[0].as_bytes(), classic_host.as_slice());
-    assert_eq!(surfaces[1].as_bytes(), reversed_host.as_slice());
+    assert_eq!(
+        surfaces[0].as_bytes().expect("surface byte access"),
+        classic_host.as_slice()
+    );
+    assert_eq!(
+        surfaces[1].as_bytes().expect("surface byte access"),
+        reversed_host.as_slice()
+    );
 }
 
 #[test]
@@ -1162,8 +1209,14 @@ fn submitted_distinct_region_scaled_htj2k_grayscale_tiles_flush_as_one_device_ba
     assert_eq!(reversed_surface.backend_kind(), BackendKind::Metal);
     assert_eq!(ht_surface.dimensions(), (scaled.w, scaled.h));
     assert_eq!(reversed_surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(ht_surface.as_bytes(), expected[0].as_slice());
-    assert_eq!(reversed_surface.as_bytes(), expected[1].as_slice());
+    assert_eq!(
+        ht_surface.as_bytes().expect("surface byte access"),
+        expected[0].as_slice()
+    );
+    assert_eq!(
+        reversed_surface.as_bytes().expect("surface byte access"),
+        expected[1].as_slice()
+    );
     assert_eq!(
         session.submissions().expect("session submissions"),
         1,
@@ -1244,8 +1297,14 @@ fn submitted_distinct_region_scaled_htj2k_gray16_tiles_flush_as_one_device_batch
     assert_eq!(second_surface.backend_kind(), BackendKind::Metal);
     assert_eq!(first_surface.dimensions(), (scaled.w, scaled.h));
     assert_eq!(second_surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(first_surface.as_bytes(), expected[0].as_slice());
-    assert_eq!(second_surface.as_bytes(), expected[1].as_slice());
+    assert_eq!(
+        first_surface.as_bytes().expect("surface byte access"),
+        expected[0].as_slice()
+    );
+    assert_eq!(
+        second_surface.as_bytes().expect("surface byte access"),
+        expected[1].as_slice()
+    );
     assert_eq!(
         session.submissions().expect("session submissions"),
         1,
@@ -1339,7 +1398,10 @@ fn submitted_auto_region_scaled_rgb_tiles_flush_as_one_cpu_batch() {
         let surface = submission.wait().expect("auto RGB region-scaled surface");
         assert_eq!(surface.backend_kind(), BackendKind::Cpu);
         assert_eq!(surface.residency(), SurfaceResidency::Host);
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
     assert_eq!(
         session.submissions().expect("session submissions"),
@@ -1400,7 +1462,10 @@ fn submitted_auto_region_scaled_grayscale_batch64_uses_one_metal_batch() {
         let surface = submission.wait().expect("auto region-scaled surface");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
     assert_eq!(
         session.submissions().expect("session submissions"),
@@ -1461,7 +1526,10 @@ fn submitted_auto_region_scaled_ht_grayscale_1024_batch16_uses_one_metal_batch()
         let surface = submission.wait().expect("auto region-scaled surface");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
     assert_eq!(
         session.submissions().expect("session submissions"),
@@ -1523,7 +1591,10 @@ fn submitted_auto_region_scaled_rgb_1024_batch16_uses_hybrid_metal() {
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
     assert_eq!(
         session.submissions().expect("session submissions"),
@@ -1612,7 +1683,10 @@ fn submitted_auto_region_scaled_ht_grayscale_batch16_is_not_order_dependent() {
         "large 1024-class tiles should not be routed to CPU just because a small tile was submitted first"
     );
     assert_eq!(surfaces[1].dimensions(), (large_scaled.w, large_scaled.h));
-    assert_eq!(surfaces[1].as_bytes(), host.as_slice());
+    assert_eq!(
+        surfaces[1].as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
     assert_eq!(
         session.submissions().expect("session submissions"),
         2,
@@ -1641,7 +1715,10 @@ fn repeated_classic_grayscale_direct_decode_matches_host_decode() {
 
     for surface in surfaces {
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
 }
 
@@ -1666,7 +1743,10 @@ fn repeated_ht_grayscale_direct_decode_matches_host_decode() {
 
     for surface in surfaces {
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
 }
 
@@ -1688,7 +1768,10 @@ fn metal_gray16_matches_host_decode_for_12bit_source() {
         .decode_to_device(PixelFormat::Gray16, BackendRequest::Metal)
         .expect("device decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -1710,7 +1793,10 @@ fn explicit_metal_rgb_full_tile_matches_host_decode() {
             .expect("explicit Metal rgb8 decode");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.dimensions(), (2, 2));
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
 
     {
@@ -1725,7 +1811,10 @@ fn explicit_metal_rgb_full_tile_matches_host_decode() {
             .expect("explicit Metal rgba8 decode");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.dimensions(), (2, 2));
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
 
     let rgb12 = fixture_rgb12();
@@ -1741,7 +1830,10 @@ fn explicit_metal_rgb_full_tile_matches_host_decode() {
             .expect("explicit Metal rgb16 decode");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.dimensions(), (2, 1));
-        assert_eq!(surface.as_bytes(), host.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            host.as_slice()
+        );
     }
 }
 
@@ -1900,7 +1992,10 @@ fn explicit_metal_region_and_scaled_grayscale_match_host_decode() {
         .expect("explicit Metal region decode");
     assert_eq!(region_surface.backend_kind(), BackendKind::Metal);
     assert_eq!(region_surface.dimensions(), (2, 2));
-    assert_eq!(region_surface.as_bytes(), host_region.as_slice());
+    assert_eq!(
+        region_surface.as_bytes().expect("surface byte access"),
+        host_region.as_slice()
+    );
 
     let mut host_scaled_decoder = J2kDecoder::new(&bytes).expect("host scaled decoder");
     let mut host_scaled = [0u8; 4];
@@ -1920,7 +2015,10 @@ fn explicit_metal_region_and_scaled_grayscale_match_host_decode() {
         .expect("explicit Metal scaled decode");
     assert_eq!(scaled_surface.backend_kind(), BackendKind::Metal);
     assert_eq!(scaled_surface.dimensions(), (2, 2));
-    assert_eq!(scaled_surface.as_bytes(), host_scaled.as_slice());
+    assert_eq!(
+        scaled_surface.as_bytes().expect("surface byte access"),
+        host_scaled.as_slice()
+    );
 }
 
 #[test]
@@ -1959,7 +2057,10 @@ fn explicit_metal_scaled_rgb8_matches_host_decode() {
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -1994,7 +2095,10 @@ fn explicit_metal_region_and_scaled_htj2k_grayscale_match_host_decode() {
         .expect("explicit Metal region decode");
     assert_eq!(region_surface.backend_kind(), BackendKind::Metal);
     assert_eq!(region_surface.dimensions(), (2, 2));
-    assert_eq!(region_surface.as_bytes(), host_region.as_slice());
+    assert_eq!(
+        region_surface.as_bytes().expect("surface byte access"),
+        host_region.as_slice()
+    );
 
     let mut host_scaled_decoder = J2kDecoder::new(&bytes).expect("host scaled decoder");
     let mut host_scaled = [0u8; 4];
@@ -2014,7 +2118,10 @@ fn explicit_metal_region_and_scaled_htj2k_grayscale_match_host_decode() {
         .expect("explicit Metal scaled decode");
     assert_eq!(scaled_surface.backend_kind(), BackendKind::Metal);
     assert_eq!(scaled_surface.dimensions(), (2, 2));
-    assert_eq!(scaled_surface.as_bytes(), host_scaled.as_slice());
+    assert_eq!(
+        scaled_surface.as_bytes().expect("surface byte access"),
+        host_scaled.as_slice()
+    );
 }
 
 #[test]
@@ -2052,7 +2159,10 @@ fn explicit_metal_region_scaled_grayscale_matches_host_decode() {
         .expect("explicit Metal region scaled decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -2090,17 +2200,16 @@ fn explicit_metal_region_scaled_grayscale_large_cropped_matches_host_decode() {
             .expect("explicit Metal region scaled decode");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-        if surface.as_bytes() != host.as_slice() {
-            let mismatch = surface
-                .as_bytes()
+        let surface_bytes = surface.as_bytes().expect("surface byte access");
+        if surface_bytes.as_ref() != host.as_slice() {
+            let mismatch = surface_bytes
                 .iter()
                 .zip(&host)
                 .position(|(actual, expected)| actual != expected)
                 .expect("mismatched buffers should have a differing byte");
             panic!(
                 "scale={scale:?} first mismatch at byte {mismatch}: metal={} host={}",
-                surface.as_bytes()[mismatch],
-                host[mismatch]
+                surface_bytes[mismatch], host[mismatch]
             );
         }
     }
@@ -2141,7 +2250,10 @@ fn explicit_metal_region_scaled_htj2k_grayscale_matches_host_decode() {
         .expect("explicit Metal region scaled decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -2179,7 +2291,10 @@ fn explicit_metal_region_scaled_htj2k_falls_back_when_direct_width_is_unsupporte
         .expect("explicit Metal should fall back after unsupported direct HT geometry");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -2219,7 +2334,10 @@ fn explicit_metal_region_scaled_rgb_matches_host_decode() {
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 
     let mut host_decoder = J2kDecoder::new(&bytes).expect("rgba8 host decoder");
     let stride = scaled.w as usize * PixelFormat::Rgba8.bytes_per_pixel();
@@ -2242,7 +2360,10 @@ fn explicit_metal_region_scaled_rgb_matches_host_decode() {
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 
     let bytes = fixture_rgb12();
     let roi = Rect {
@@ -2274,7 +2395,10 @@ fn explicit_metal_region_scaled_rgb_matches_host_decode() {
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
     assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 #[test]
@@ -2315,16 +2439,16 @@ fn explicit_metal_region_scaled_rgb_large_cropped_matches_host_decode() {
             assert_eq!(surface.backend_kind(), BackendKind::Metal);
             assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
             assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-            if surface.as_bytes() != host.as_slice() {
-                let mismatch = surface
-                    .as_bytes()
+            let surface_bytes = surface.as_bytes().expect("surface byte access");
+            if surface_bytes.as_ref() != host.as_slice() {
+                let mismatch = surface_bytes
                     .iter()
                     .zip(&host)
                     .position(|(actual, expected)| actual != expected)
                     .expect("mismatched buffers should have a differing byte");
                 panic!(
                     "fmt={fmt:?} scale={scale:?} first mismatch at byte {mismatch}: metal={} host={}",
-                    surface.as_bytes()[mismatch],
+                    surface_bytes[mismatch],
                     host[mismatch]
                 );
             }
@@ -2360,7 +2484,10 @@ fn auto_region_and_scaled_fallback_to_cpu_surface_and_match_host_decode() {
             roi,
         )
         .expect("host region");
-    assert_eq!(region_surface.as_bytes(), region_host.as_slice());
+    assert_eq!(
+        region_surface.as_bytes().expect("surface byte access"),
+        region_host.as_slice()
+    );
 
     let scaled_surface = decoder
         .decode_scaled_to_device(PixelFormat::Rgb8, Downscale::Half, BackendRequest::Auto)
@@ -2378,7 +2505,10 @@ fn auto_region_and_scaled_fallback_to_cpu_surface_and_match_host_decode() {
             Downscale::Half,
         )
         .expect("host scaled");
-    assert_eq!(scaled_surface.as_bytes(), scaled_host.as_slice());
+    assert_eq!(
+        scaled_surface.as_bytes().expect("surface byte access"),
+        scaled_host.as_slice()
+    );
 }
 
 #[test]

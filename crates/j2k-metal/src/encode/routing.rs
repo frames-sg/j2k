@@ -81,7 +81,7 @@ pub(super) fn host_output_encode_options(
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn borrow_padded_metal_buffer_from_bytes(
+pub(super) fn copy_padded_metal_buffer_from_bytes(
     session: &crate::MetalBackendSession,
     bytes: &[u8],
 ) -> Result<Buffer, crate::Error> {
@@ -90,10 +90,7 @@ pub(super) fn borrow_padded_metal_buffer_from_bytes(
             message: "J2K Metal hybrid encode input is empty".to_string(),
         });
     }
-    Ok(session.device().new_buffer_with_bytes_no_copy(
-        bytes.as_ptr().cast(),
-        bytes.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-        None,
-    ))
+    j2k_metal_support::checked_shared_buffer_with_slice(session.device(), bytes).map_err(|source| {
+        crate::error::metal_kernel_support_error("J2K Metal hybrid encode input", source)
+    })
 }

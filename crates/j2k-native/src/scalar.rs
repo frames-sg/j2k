@@ -9,9 +9,8 @@ use crate::{
     EncodedJ2kCodeBlock, HtCleanupEncodeDistribution, HtCodeBlockDecodeJob,
     HtCodeBlockDecodePhaseLimit, J2kCodeBlockDecodeJob, J2kCodeBlockSegment, J2kCodeBlockStyle,
     J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
-    J2kPacketizationBlockCodingMode, J2kPacketizationEncodeJob, J2kSubBandDecodeJob,
-    J2kSubBandType, J2kTier1TokenSegment, Result, ValidationError, MAX_CLASSIC_DECODE_BITPLANES,
-    MAX_DEINTERLEAVE_REFERENCE_BIT_DEPTH,
+    J2kPacketizationEncodeJob, J2kSubBandDecodeJob, J2kSubBandType, J2kTier1TokenSegment, Result,
+    ValidationError, MAX_CLASSIC_DECODE_BITPLANES, MAX_DEINTERLEAVE_REFERENCE_BIT_DEPTH,
 };
 
 mod classic_decode;
@@ -24,7 +23,7 @@ pub use self::classic_decode::{
 };
 mod encode;
 pub use self::encode::{
-    collect_ht_cleanup_encode_distribution, deinterleave_reference, encode_ht_code_block_scalar,
+    collect_ht_cleanup_encode_distribution, encode_ht_code_block_scalar,
     encode_ht_code_block_scalar_with_passes, encode_j2k_code_block_scalar_with_style,
     encode_j2k_packetization_scalar, forward_dwt53_reference, forward_dwt97_reference,
     forward_ict_reference, forward_rct_reference, pack_j2k_code_block_scalar_from_tier1_tokens,

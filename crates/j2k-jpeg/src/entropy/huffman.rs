@@ -14,7 +14,8 @@
 use crate::error::{HuffmanFailure, JpegError};
 use crate::internal::bit_reader::BitReader;
 use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
-use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::num::NonZeroU32;
 
 /// Number of fast-lookup entries. One per possible 12-bit peek value.
 const FAST_BITS: u8 = 12;
@@ -34,8 +35,8 @@ const DC_FAST_VALUE_SHIFT: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HuffmanTable {
-    /// Fast path: `fast[peek8] = (symbol, bit_length)`. `bit_length == 0`
-    /// means "code longer than 8 bits — use slow path".
+    /// Fast path: `fast[peek12] = (symbol, bit_length)`. `bit_length == 0`
+    /// means "code longer than 12 bits — use slow path".
     fast: [(u8, u8); FAST_ENTRIES],
     /// Slow path, indexed by code length `l` ∈ `1..=16`:
     /// - `min_code[l]`: smallest `l`-bit code; `i32::MAX` if no `l`-bit code.
@@ -47,8 +48,21 @@ pub(crate) struct HuffmanTable {
     max_code: [i32; 17],
     val_offset: [i32; 17],
     values: HuffmanValues,
-    fast_dc: Box<[u32; FAST_ENTRIES]>,
-    fast_ac: Box<[u32; FAST_ENTRIES]>,
+    fast_dc: [u32; FAST_ENTRIES],
+    fast_ac: [u32; FAST_ENTRIES],
+}
+
+/// Checked handle into the one compiled-table arena retained by a decoder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PreparedHuffmanTableId(NonZeroU32);
+
+/// Heap owner for every compiled Huffman table referenced by one decoder.
+///
+/// Table values are fully inline, so this vector is the only Huffman-table
+/// allocation retained by prepared decode metadata.
+#[derive(Debug)]
+pub(crate) struct PreparedHuffmanTables {
+    entries: Vec<HuffmanTable>,
 }
 
 pub(crate) type CanonicalHuffmanDerivation = j2k_codec_math::jpeg::CanonicalHuffmanDerivation;
@@ -70,8 +84,7 @@ impl HuffmanTable {
     ///
     /// # Errors
     /// - `HuffmanDecode { CodeOverflow }` if `bits` is oversubscribed (Kraft
-    ///   inequality violated — the table claims more codes of some length than
-    ///   there is remaining code space).
+    ///   inequality violated).
     #[expect(
         clippy::cast_possible_truncation,
         reason = "canonical JPEG Huffman code lengths and symbol positions are bounded to 16 bits and 256 entries"
@@ -79,8 +92,8 @@ impl HuffmanTable {
     pub(crate) fn from_raw(raw: &RawHuffmanTable) -> Result<Self, JpegError> {
         let canonical = derive_canonical_huffman(raw)?;
         let mut fast = [(0u8, 0u8); FAST_ENTRIES];
-        let mut fast_dc = Box::new([0u32; FAST_ENTRIES]);
-        let mut fast_ac = Box::new([0u32; FAST_ENTRIES]);
+        let mut fast_dc = [0u32; FAST_ENTRIES];
+        let mut fast_ac = [0u32; FAST_ENTRIES];
 
         let mut k = 0;
         for len_minus_1 in 0..FAST_BITS as usize {
@@ -154,7 +167,7 @@ impl HuffmanTable {
         })
     }
 
-    /// Decode one symbol from the bit reader. Common case (code ≤ 8 bits) is
+    /// Decode one symbol from the bit reader. Common case (code ≤ 12 bits) is
     /// a single array lookup; long codes fall through to a per-length scan.
     ///
     /// # Errors
@@ -308,6 +321,106 @@ impl HuffmanTable {
     }
 }
 
+impl PreparedHuffmanTableId {
+    fn for_next_index(index: usize) -> Result<Self, JpegError> {
+        let one_based = index
+            .checked_add(1)
+            .and_then(|value| u32::try_from(value).ok())
+            .and_then(NonZeroU32::new)
+            .ok_or(JpegError::MemoryCapExceeded {
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            })?;
+        Ok(Self(one_based))
+    }
+
+    fn index(self) -> Option<usize> {
+        usize::try_from(self.0.get())
+            .ok()
+            .and_then(|value| value.checked_sub(1))
+    }
+}
+
+impl PreparedHuffmanTables {
+    #[cfg(test)]
+    pub(crate) fn try_with_capacity(capacity: usize) -> Result<Self, JpegError> {
+        let mut live_bytes = 0;
+        Self::try_with_capacity_and_live_budget(
+            capacity,
+            &mut live_bytes,
+            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        )
+    }
+
+    pub(crate) fn try_with_capacity_and_live_budget(
+        capacity: usize,
+        live_bytes: &mut usize,
+        cap: usize,
+    ) -> Result<Self, JpegError> {
+        let mut entries = Vec::new();
+        crate::allocation::try_reserve_for_len_with_live_budget(
+            &mut entries,
+            capacity,
+            live_bytes,
+            cap,
+        )?;
+        Ok(Self { entries })
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        table: HuffmanTable,
+    ) -> Result<PreparedHuffmanTableId, JpegError> {
+        let id = PreparedHuffmanTableId::for_next_index(self.entries.len())?;
+        if self.entries.len() == self.entries.capacity() {
+            return Err(JpegError::InternalInvariant {
+                reason: "prepared Huffman arena exceeded its reserved capacity",
+            });
+        }
+        self.entries.push(table);
+        Ok(id)
+    }
+
+    pub(crate) fn get(&self, id: PreparedHuffmanTableId) -> Option<&HuffmanTable> {
+        id.index().and_then(|index| self.entries.get(index))
+    }
+
+    pub(crate) fn id_at(&self, index: usize) -> Option<PreparedHuffmanTableId> {
+        if index >= self.entries.len() {
+            return None;
+        }
+        PreparedHuffmanTableId::for_next_index(index).ok()
+    }
+
+    pub(crate) fn retained_allocation_bytes(&self) -> Result<usize, JpegError> {
+        crate::allocation::checked_allocation_bytes::<HuffmanTable>(self.entries.capacity())
+    }
+
+    pub(crate) fn try_clone_with_live_budget(
+        &self,
+        live_bytes: &mut usize,
+        cap: usize,
+    ) -> Result<Self, JpegError> {
+        let mut entries = Vec::new();
+        crate::allocation::try_reserve_for_len_with_live_budget(
+            &mut entries,
+            self.entries.len(),
+            live_bytes,
+            cap,
+        )?;
+        entries.extend(self.entries.iter().cloned());
+        Ok(Self { entries })
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn capacity(&self) -> usize {
+        self.entries.capacity()
+    }
+}
+
 #[expect(
     clippy::inline_always,
     reason = "measured Huffman lookup hot path requires cross-helper inlining"
@@ -403,6 +516,21 @@ mod tests {
     }
 
     #[test]
+    fn prepared_arena_ids_are_checked_and_capacity_bounded() {
+        let table = HuffmanTable::from_raw(&luma_dc_raw()).expect("valid fixture");
+        let mut arena = PreparedHuffmanTables::try_with_capacity(1).expect("bounded arena");
+        let id = arena.push(table.clone()).expect("reserved slot");
+
+        assert_eq!(arena.get(id), Some(&table));
+        assert!(matches!(
+            arena.push(table),
+            Err(JpegError::InternalInvariant {
+                reason: "prepared Huffman arena exceeded its reserved capacity"
+            })
+        ));
+    }
+
+    #[test]
     fn rejects_oversubscribed_code_table() {
         let raw = RawHuffmanTable {
             bits: [1, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -416,6 +544,15 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn accepts_complete_prefix_table_for_decoder_compatibility() {
+        let raw = RawHuffmanTable {
+            bits: [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            values: HuffmanValues::from_slice(&[0, 1]),
+        };
+        HuffmanTable::from_raw(&raw).expect("CPU decoder accepts a complete prefix table");
     }
 
     #[test]

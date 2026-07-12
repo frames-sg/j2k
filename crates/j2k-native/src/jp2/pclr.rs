@@ -3,10 +3,14 @@
 use alloc::vec::Vec;
 
 use crate::error::{bail, FormatError, Result};
-use crate::jp2::ImageBoxes;
+use crate::jp2::{allocation::Jp2AllocationBudget, ImageBoxes};
 use crate::reader::BitReader;
 
-pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
+pub(super) fn parse(
+    boxes: &mut ImageBoxes,
+    data: &[u8],
+    budget: &mut Jp2AllocationBudget,
+) -> Result<()> {
     let mut reader = BitReader::new(data);
     let num_entries = usize::from(reader.read_u16().ok_or(FormatError::InvalidBox)?);
     let num_components = usize::from(reader.read_byte().ok_or(FormatError::InvalidBox)?);
@@ -15,7 +19,7 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
         bail!(FormatError::InvalidBox);
     }
 
-    let mut columns = Vec::with_capacity(num_components);
+    let mut columns = budget.try_vec(num_components, "JP2 palette columns")?;
     for _ in 0..num_components {
         let descriptor = reader.read_byte().ok_or(FormatError::InvalidBox)?;
         let bit_depth = (descriptor & 0x7F)
@@ -26,10 +30,10 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
         columns.push(PaletteColumn { bit_depth, signed });
     }
 
-    let mut entries = Vec::with_capacity(num_entries);
+    let mut entries = budget.try_vec(num_entries, "JP2 palette rows")?;
 
     for _ in 0..num_entries {
-        let mut row = Vec::with_capacity(num_components);
+        let mut row = budget.try_vec(num_components, "JP2 palette entries")?;
 
         for column in &columns {
             let num_bytes = usize::from(column.bit_depth).div_ceil(8).max(1);
@@ -47,12 +51,19 @@ pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
         entries.push(row);
     }
 
-    boxes.palette = Some(PaletteBox { entries, columns });
+    let replaced = boxes.palette.replace(PaletteBox { entries, columns });
+    if let Some(replaced) = replaced {
+        budget.release_vec(&replaced.columns)?;
+        for row in &replaced.entries {
+            budget.release_vec(row)?;
+        }
+        budget.release_vec(&replaced.entries)?;
+    }
 
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct PaletteBox {
     pub(crate) entries: Vec<Vec<u64>>,
     pub(crate) columns: Vec<PaletteColumn>,

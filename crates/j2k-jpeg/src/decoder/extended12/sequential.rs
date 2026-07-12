@@ -192,7 +192,7 @@ impl Decoder<'_> {
 
         let output_rect = scaled_rect_covering(roi, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
-        let component = &self.plan.components[0];
+        let component = self.plan.resolved_component(0)?;
         let (width, height) = self.info.dimensions;
         let mcu_cols = width.div_ceil(8);
         let mcu_rows = height.div_ceil(8);
@@ -237,7 +237,7 @@ impl Decoder<'_> {
         let scan_warnings = finish_scan(&mut br, true)?;
         Ok(DecodeOutcome {
             decoded: roi,
-            warnings: merged_warnings(&self.warnings, scan_warnings),
+            warnings: merged_warnings(&self.warnings, scan_warnings)?,
         })
     }
 }

@@ -3,10 +3,12 @@
 //! Direct progressive 12-bit 4:4:4 rendering.
 
 use super::super::super::{
-    decode_progressive_dct_blocks, scaled_rect_covering, DecodeOutcome, Decoder, DownscaleFactor,
-    JpegError, Rect,
+    decode_progressive_dct_blocks, scaled_rect_covering, try_clone_warnings, DecodeOutcome,
+    Decoder, DownscaleFactor, JpegError, Rect,
 };
-use super::super::planes::dequantize_progressive12_block;
+use super::super::planes::{
+    dequantize_progressive12_block, ensure_progressive12_coefficient_capacities,
+};
 use super::super::sampling::progressive_color_component_indices;
 use super::super::writers::{
     write_extended12_rgb_block_region, Extended12Output, Extended12RgbProjection,
@@ -46,7 +48,8 @@ impl Decoder<'_> {
         }
 
         let output_rect = scaled_rect_covering(roi, downscale)?;
-        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes, 0)?;
+        ensure_progressive12_coefficient_capacities(&dct_blocks, plan.scratch_bytes)?;
         let (width, height) = self.info.dimensions;
         let component_indices = progressive_color_component_indices(plan)?;
         let block_cols = plan.components[component_indices[0]].block_cols as usize;
@@ -96,7 +99,7 @@ impl Decoder<'_> {
 
         Ok(DecodeOutcome {
             decoded: roi,
-            warnings: self.warnings.to_vec(),
+            warnings: try_clone_warnings(&self.warnings)?,
         })
     }
 }

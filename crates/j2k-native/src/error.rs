@@ -1,6 +1,7 @@
-//! Error types for JPEG 2000 decoding.
+//! Error types for JPEG 2000 codec operations.
 
 use core::fmt;
+use j2k_types::J2kEncodeStageError;
 
 /// The main error type for JPEG 2000 decoding operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +19,22 @@ pub enum DecodeError {
     Decoding(DecodingError),
     /// Errors related to color space and component handling.
     Color(ColorError),
+    /// Simultaneously live decode/container allocations exceed the shared cap.
+    AllocationTooLarge {
+        /// Allocation family or phase being checked.
+        what: &'static str,
+        /// Requested live bytes, saturated on arithmetic overflow.
+        requested: usize,
+        /// Maximum permitted live bytes.
+        cap: usize,
+    },
+    /// The host allocator rejected a checked, cap-valid decode allocation.
+    HostAllocationFailed {
+        /// Allocation being attempted.
+        what: &'static str,
+        /// Requested allocation bytes, saturated on arithmetic overflow.
+        bytes: usize,
+    },
 }
 
 /// Backend-neutral classification used by codec adapters.
@@ -49,6 +66,65 @@ pub enum DecodeErrorClass {
     },
     /// All other native decoder failures.
     Backend,
+}
+
+/// Error returned by native JPEG 2000 and HTJ2K encode operations.
+///
+/// The variants deliberately keep resource failures distinct from malformed
+/// requests, accelerator failures, and generated-codestream validation. This
+/// lets facade and transcode callers preserve actionable failure categories
+/// without parsing display strings.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EncodeError {
+    /// Caller-provided samples, geometry, metadata, or options are invalid.
+    InvalidInput {
+        /// Stable description of the invalid condition.
+        what: &'static str,
+    },
+    /// The requested encode feature or shape is not implemented.
+    Unsupported {
+        /// Stable description of the unsupported condition.
+        what: &'static str,
+    },
+    /// Checked arithmetic overflowed while planning an encode phase.
+    ArithmeticOverflow {
+        /// Name of the value or phase whose size overflowed.
+        what: &'static str,
+    },
+    /// Simultaneously live host allocations would exceed the shared cap.
+    AllocationTooLarge {
+        /// Name of the encode phase being checked.
+        what: &'static str,
+        /// Checked requested live host bytes at the rejected allocation boundary.
+        requested: usize,
+        /// Maximum permitted live host bytes.
+        cap: usize,
+    },
+    /// The allocator could not reserve a checked, cap-valid host allocation.
+    HostAllocationFailed {
+        /// Name of the allocation that failed.
+        what: &'static str,
+        /// Requested allocation bytes, saturated on element-size overflow.
+        bytes: usize,
+    },
+    /// An optional encode-stage accelerator accepted work but failed it.
+    Accelerator {
+        /// Encode-stage operation that failed.
+        operation: &'static str,
+        /// Structured stage failure with an optional concrete backend source.
+        source: J2kEncodeStageError,
+    },
+    /// A generated codestream failed the requested validation contract.
+    CodestreamValidation {
+        /// Stable validation failure detail.
+        detail: &'static str,
+    },
+    /// Internal encode state violated an invariant.
+    InternalInvariant {
+        /// Stable description of the violated invariant.
+        what: &'static str,
+    },
 }
 
 impl DecodeError {
@@ -205,6 +281,8 @@ pub enum DecodingError {
     UnexpectedEof,
     /// Caller-provided output buffer is too small for the decoded image.
     OutputBufferTooSmall,
+    /// A bounded host decode workspace could not be allocated.
+    HostAllocationFailed,
 }
 
 /// Errors related to color space and component handling.
@@ -254,6 +332,55 @@ impl fmt::Display for DecodeError {
             Self::Validation(e) => write!(f, "{e}"),
             Self::Decoding(e) => write!(f, "{e}"),
             Self::Color(e) => write!(f, "{e}"),
+            Self::AllocationTooLarge {
+                what,
+                requested,
+                cap,
+            } => write!(
+                f,
+                "{what} requires {requested} live host bytes, exceeding the {cap}-byte cap"
+            ),
+            Self::HostAllocationFailed { what, bytes } => {
+                write!(
+                    f,
+                    "host allocation failed for {bytes} bytes while allocating {what}"
+                )
+            }
+        }
+    }
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidInput { what } => write!(f, "invalid encode input: {what}"),
+            Self::Unsupported { what } => write!(f, "unsupported encode request: {what}"),
+            Self::ArithmeticOverflow { what } => {
+                write!(f, "encode size overflow while planning {what}")
+            }
+            Self::AllocationTooLarge {
+                what,
+                requested,
+                cap,
+            } => write!(
+                f,
+                "{what} requires {requested} live host bytes, exceeding the {cap}-byte cap"
+            ),
+            Self::HostAllocationFailed { what, bytes } => {
+                write!(
+                    f,
+                    "host allocation failed for {bytes} bytes while allocating {what}"
+                )
+            }
+            Self::Accelerator { operation, source } => {
+                write!(f, "encode accelerator failed during {operation}: {source}")
+            }
+            Self::CodestreamValidation { detail } => {
+                write!(f, "generated codestream validation failed: {detail}")
+            }
+            Self::InternalInvariant { what } => {
+                write!(f, "native encode invariant failed: {what}")
+            }
         }
     }
 }
@@ -356,6 +483,7 @@ impl fmt::Display for DecodingError {
             }
             Self::UnexpectedEof => write!(f, "unexpected end of data"),
             Self::OutputBufferTooSmall => write!(f, "output buffer is too small"),
+            Self::HostAllocationFailed => write!(f, "host decode workspace allocation failed"),
         }
     }
 }
@@ -410,6 +538,14 @@ impl fmt::Display for ColorError {
 }
 
 impl core::error::Error for DecodeError {}
+impl core::error::Error for EncodeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Accelerator { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
 impl core::error::Error for FormatError {}
 impl core::error::Error for MarkerError {}
 impl core::error::Error for TileError {}
@@ -457,6 +593,9 @@ impl From<ColorError> for DecodeError {
 /// Result type for JPEG 2000 decoding operations.
 pub type Result<T> = core::result::Result<T, DecodeError>;
 
+/// Result type for JPEG 2000 and HTJ2K encoding operations.
+pub type EncodeResult<T> = core::result::Result<T, EncodeError>;
+
 macro_rules! bail {
     ($err:expr) => {
         return Err($err.into())
@@ -477,8 +616,8 @@ mod classification_tests {
     use alloc::string::ToString;
 
     use super::{
-        DecodeError, DecodeErrorClass, DecodingError, DirectPlanUnsupportedReason, FormatError,
-        MarkerError, ValidationError,
+        DecodeError, DecodeErrorClass, DecodingError, DirectPlanUnsupportedReason, EncodeError,
+        FormatError, MarkerError, ValidationError,
     };
 
     #[test]
@@ -543,5 +682,23 @@ mod classification_tests {
         };
 
         assert_eq!(what, reason.to_string());
+    }
+
+    #[test]
+    fn encode_resource_errors_keep_cap_and_allocator_failures_distinct() {
+        let cap_error = EncodeError::AllocationTooLarge {
+            what: "Tier-2 packet assembly",
+            requested: 513,
+            cap: 512,
+        };
+        let allocation_error = EncodeError::HostAllocationFailed {
+            what: "Tier-2 packet body",
+            bytes: 511,
+        };
+
+        assert!(cap_error.to_string().contains("513"));
+        assert!(cap_error.to_string().contains("512-byte cap"));
+        assert!(allocation_error.to_string().contains("511"));
+        assert_ne!(cap_error, allocation_error);
     }
 }

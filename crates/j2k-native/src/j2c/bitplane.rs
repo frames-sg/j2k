@@ -13,7 +13,8 @@ pub(crate) use facade::{
 };
 pub(crate) use observer::J2kBlockDecodeStats;
 pub(crate) use state::{
-    BitPlaneDecodeBuffers, BitPlaneDecodeContext, Coefficient, CoefficientState, BITPLANE_BIT_SIZE,
+    classic_decode_workspace_bytes, BitPlaneDecodeBuffers, BitPlaneDecodeContext, Coefficient,
+    CoefficientState, BITPLANE_BIT_SIZE,
 };
 
 #[cfg(test)]

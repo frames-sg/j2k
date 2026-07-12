@@ -479,6 +479,7 @@ name = "j2k"
 version = "0.7.0"
 dependencies = [
  "criterion",
+ "j2k-codec-math",
  "j2k-core",
  "j2k-native",
  "j2k-test-support",
@@ -617,6 +618,7 @@ version = "0.7.0"
 dependencies = [
  "j2k-core",
  "j2k-test-support",
+ "log",
  "metal",
 ]
 
@@ -667,6 +669,7 @@ dependencies = [
  "j2k-core",
  "j2k-jpeg",
  "j2k-native",
+ "j2k-profile",
  "j2k-test-support",
  "j2k-transcode-test-support",
  "proptest",
@@ -677,6 +680,7 @@ dependencies = [
 name = "j2k-transcode-cuda"
 version = "0.7.0"
 dependencies = [
+ "j2k-core",
  "j2k-cuda-runtime",
  "j2k-native",
  "j2k-test-support",
@@ -1581,8 +1585,10 @@ dependencies = [
  "j2k-native",
  "j2k-profile",
  "j2k-test-support",
+ "proc-macro2",
  "serde_json",
  "serde_yaml_ng",
+ "syn",
  "toml",
 ]
 

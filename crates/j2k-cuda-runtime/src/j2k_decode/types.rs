@@ -63,6 +63,7 @@ pub(crate) struct CudaJ2kIdwtMultiKernelJob {
     pub(crate) hh_ptr: u64,
     pub(crate) output_ptr: u64,
     pub(crate) job: CudaJ2kIdwtJob,
+    pub(crate) reserved_tail: u32,
 }
 
 /// Grayscale store dispatch from f32 component samples to tightly packed Gray8.
@@ -275,6 +276,7 @@ pub(crate) struct CudaJ2kStoreRgb8MctBatchJob {
     pub(crate) plane2_ptr: CuDevicePtr,
     pub(crate) output_ptr: CuDevicePtr,
     pub(crate) job: CudaJ2kStoreRgb8MctJob,
+    pub(crate) reserved_tail: u32,
 }
 
 /// Fused inverse RCT/ICT and packed RGB16/RGBA16 store dispatch.

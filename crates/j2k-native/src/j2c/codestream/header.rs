@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::super::DecodeSettings;
@@ -10,10 +9,19 @@ use super::size::size_marker;
 use super::validation::{skipped_levels_to_reach_target, validate};
 use super::{
     coc_marker, cod_marker, poc_marker, qcc_marker, qcd_marker, rgn_marker, skip_marker_segment,
-    ComponentInfo, Header,
+    CodingStyleComponent, ComponentSizeInfo, Header, QuantizationInfo,
 };
 use crate::error::{bail, DecodingError, MarkerError, Result, ValidationError};
 use crate::reader::BitReader;
+
+mod allocation;
+mod components;
+
+use allocation::{
+    try_extend_progression_changes, try_flatten_packet_lengths, try_flatten_ppm_packets,
+    try_none_vec, HeaderMarkerBudget,
+};
+use components::build_component_infos;
 
 #[expect(
     clippy::similar_names,
@@ -26,25 +34,30 @@ use crate::reader::BitReader;
 pub(crate) fn read_header<'a>(
     reader: &mut BitReader<'a>,
     settings: &DecodeSettings,
+    retained_baseline_bytes: usize,
 ) -> Result<Header<'a>> {
     if reader.read_marker()? != markers::SIZ {
         bail!(MarkerError::Expected("SIZ"));
     }
 
-    let mut size_data = size_marker(reader)?;
+    let mut marker_budget = HeaderMarkerBudget::with_retained_baseline(retained_baseline_bytes)?;
+    let mut size_data = size_marker(reader, marker_budget.remaining_bytes())?;
+    marker_budget.account_capacity::<ComponentSizeInfo>(size_data.component_sizes.capacity())?;
 
     let mut cod = None;
     let mut qcd = None;
 
     let num_components = u16::try_from(size_data.component_sizes.len())
         .map_err(|_| ValidationError::TooManyChannels)?;
-    let mut cod_components = vec![None; usize::from(num_components)];
-    let mut qcd_components = vec![None; usize::from(num_components)];
-    let mut rgn_components = vec![None; usize::from(num_components)];
-    let mut progression_changes = vec![];
-    let mut plm_markers = vec![];
-    let mut ppm_markers = vec![];
-
+    let mut cod_components: Vec<Option<CodingStyleComponent>> =
+        try_none_vec(usize::from(num_components), &mut marker_budget)?;
+    let mut qcd_components: Vec<Option<QuantizationInfo>> =
+        try_none_vec(usize::from(num_components), &mut marker_budget)?;
+    let mut rgn_components: Vec<Option<u8>> =
+        try_none_vec(usize::from(num_components), &mut marker_budget)?;
+    let mut progression_changes = Vec::new();
+    let mut plm_markers = Vec::new();
+    let mut ppm_markers = Vec::new();
     loop {
         match reader.peek_marker().ok_or(MarkerError::Invalid)? {
             markers::SOT => break,
@@ -54,27 +67,62 @@ pub(crate) fn read_header<'a>(
             }
             markers::COD => {
                 reader.read_marker()?;
-                cod = Some(cod_marker(reader).ok_or(MarkerError::ParseFailure("COD"))?);
+                let replacement = cod_marker(reader)?;
+                let old_count = cod
+                    .as_ref()
+                    .map_or(0, |current: &super::CodingStyleDefault| {
+                        current
+                            .component_parameters
+                            .parameters
+                            .precinct_exponents
+                            .capacity()
+                    });
+                let new_count = replacement
+                    .component_parameters
+                    .parameters
+                    .precinct_exponents
+                    .capacity();
+                marker_budget.account_capacity::<(u8, u8)>(new_count)?;
+                cod = Some(replacement);
+                marker_budget.release_capacity::<(u8, u8)>(old_count)?;
             }
             markers::COC => {
                 reader.read_marker()?;
-                let (component_index, coc) =
-                    coc_marker(reader, num_components).ok_or(MarkerError::ParseFailure("COC"))?;
-                *cod_components
+                let (component_index, coc) = coc_marker(reader, num_components)?;
+                let slot = cod_components
                     .get_mut(component_index as usize)
-                    .ok_or(MarkerError::ParseFailure("COC"))? = Some(coc);
+                    .ok_or(MarkerError::ParseFailure("COC"))?;
+                let old_count = slot.as_ref().map_or(0, |current| {
+                    current.parameters.precinct_exponents.capacity()
+                });
+                marker_budget
+                    .account_capacity::<(u8, u8)>(coc.parameters.precinct_exponents.capacity())?;
+                *slot = Some(coc);
+                marker_budget.release_capacity::<(u8, u8)>(old_count)?;
             }
             markers::QCD => {
                 reader.read_marker()?;
-                qcd = Some(qcd_marker(reader).ok_or(MarkerError::ParseFailure("QCD"))?);
+                let replacement = qcd_marker(reader)?;
+                let old_count = qcd.as_ref().map_or(0, |current: &super::QuantizationInfo| {
+                    current.step_sizes.capacity()
+                });
+                marker_budget
+                    .account_capacity::<super::StepSize>(replacement.step_sizes.capacity())?;
+                qcd = Some(replacement);
+                marker_budget.release_capacity::<super::StepSize>(old_count)?;
             }
             markers::QCC => {
                 reader.read_marker()?;
-                let (component_index, qcc) =
-                    qcc_marker(reader, num_components).ok_or(MarkerError::ParseFailure("QCC"))?;
-                *qcd_components
+                let (component_index, qcc) = qcc_marker(reader, num_components)?;
+                let slot = qcd_components
                     .get_mut(component_index as usize)
-                    .ok_or(MarkerError::ParseFailure("QCC"))? = Some(qcc);
+                    .ok_or(MarkerError::ParseFailure("QCC"))?;
+                let old_count = slot
+                    .as_ref()
+                    .map_or(0, |current| current.step_sizes.capacity());
+                marker_budget.account_capacity::<super::StepSize>(qcc.step_sizes.capacity())?;
+                *slot = Some(qcc);
+                marker_budget.release_capacity::<super::StepSize>(old_count)?;
             }
             markers::POC => {
                 reader.read_marker()?;
@@ -82,10 +130,17 @@ pub(crate) fn read_header<'a>(
                     .as_ref()
                     .ok_or(MarkerError::ParseFailure("POC"))?
                     .num_layers;
-                progression_changes.extend(
-                    poc_marker(reader, num_components, num_layers)
-                        .ok_or(MarkerError::ParseFailure("POC"))?,
-                );
+                let changes = poc_marker(
+                    reader,
+                    num_components,
+                    num_layers,
+                    marker_budget.remaining_bytes() / 2,
+                )?;
+                try_extend_progression_changes(
+                    &mut progression_changes,
+                    changes,
+                    &mut marker_budget,
+                )?;
             }
             markers::RGN => {
                 reader.read_marker()?;
@@ -104,7 +159,10 @@ pub(crate) fn read_header<'a>(
             }
             markers::PLM => {
                 reader.read_marker()?;
-                plm_markers.push(plm_marker(reader).ok_or(MarkerError::ParseFailure("PLM"))?);
+                marker_budget.try_reserve_next(&mut plm_markers)?;
+                let marker = plm_marker(reader, marker_budget.remaining_bytes())?;
+                marker_budget.account_capacity::<u32>(marker.packet_lengths.capacity())?;
+                plm_markers.push(marker);
             }
             markers::COM => {
                 reader.read_marker()?;
@@ -112,7 +170,11 @@ pub(crate) fn read_header<'a>(
             }
             markers::PPM => {
                 reader.read_marker()?;
-                ppm_markers.push(ppm_marker(reader).ok_or(MarkerError::ParseFailure("PPM"))?);
+                marker_budget.try_reserve_next(&mut ppm_markers)?;
+                let marker = ppm_marker(reader, marker_budget.remaining_bytes())?;
+                marker_budget
+                    .account_capacity::<super::PpmPacket<'_>>(marker.packets.capacity())?;
+                ppm_markers.push(marker);
             }
             markers::CRG => {
                 reader.read_marker()?;
@@ -134,24 +196,15 @@ pub(crate) fn read_header<'a>(
     let cod = cod.ok_or(MarkerError::Missing("COD"))?;
     let qcd = qcd.ok_or(MarkerError::Missing("QCD"))?;
 
-    let component_infos: Vec<ComponentInfo> = size_data
-        .component_sizes
-        .iter()
-        .enumerate()
-        .map(|(idx, csi)| ComponentInfo {
-            size_info: *csi,
-            coding_style: cod_components[idx]
-                .clone()
-                .map(|mut c| {
-                    c.flags.raw |= cod.component_parameters.flags.raw;
-
-                    c
-                })
-                .unwrap_or(cod.component_parameters.clone()),
-            quantization_info: qcd_components[idx].clone().unwrap_or(qcd.clone()),
-            roi_shift: rgn_components[idx].unwrap_or(0),
-        })
-        .collect();
+    let component_infos = build_component_infos(
+        &size_data.component_sizes,
+        &cod_components,
+        &qcd_components,
+        &rgn_components,
+        &cod,
+        &qcd,
+        &mut marker_budget,
+    )?;
 
     // Components can have different number of resolution levels. In that case, we
     // can only skip as many resolution levels as the component with the smallest
@@ -198,18 +251,11 @@ pub(crate) fn read_header<'a>(
 
     let header = Header {
         size_data,
-        global_coding_style: cod.clone(),
+        global_coding_style: cod,
         component_infos,
         progression_changes,
-        plm_packet_lengths: plm_markers
-            .into_iter()
-            .flat_map(|marker| marker.packet_lengths)
-            .collect(),
-        ppm_packets: ppm_markers
-            .into_iter()
-            .flat_map(|i| i.packets)
-            .filter_map(|p| if p.data.is_empty() { None } else { Some(p) })
-            .collect(),
+        plm_packet_lengths: try_flatten_packet_lengths(plm_markers, &mut marker_budget)?,
+        ppm_packets: try_flatten_ppm_packets(ppm_markers, &mut marker_budget)?,
         skipped_resolution_levels,
         strict: settings.strict,
     };

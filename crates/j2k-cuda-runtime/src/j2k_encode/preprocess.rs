@@ -9,7 +9,8 @@ use crate::{
 };
 
 use super::{
-    CudaJ2kDeinterleavedComponents, CudaJ2kResidentComponents, J2kStridedDeinterleaveLaunch,
+    validate_encode_buffer_context, CudaJ2kDeinterleavedComponents, CudaJ2kResidentComponents,
+    J2kStridedDeinterleaveLaunch,
 };
 
 impl CudaContext {
@@ -125,6 +126,7 @@ impl CudaContext {
             bit_depth,
             signed,
         } = image;
+        validate_encode_buffer_context(self, [pixels])?;
         if width == 0 || height == 0 {
             return Err(CudaError::InvalidArgument {
                 message: "image dimensions must be nonzero".to_string(),
@@ -226,6 +228,7 @@ impl CudaContext {
         &self,
         components: &mut CudaJ2kResidentComponents,
     ) -> Result<CudaExecutionStats, CudaError> {
+        validate_encode_buffer_context(self, [&components.buffer])?;
         if components.num_components < 3 {
             return Err(CudaError::InvalidArgument {
                 message: "forward RCT requires at least three resident component planes"
@@ -261,6 +264,7 @@ impl CudaContext {
         &self,
         components: &mut CudaJ2kResidentComponents,
     ) -> Result<CudaExecutionStats, CudaError> {
+        validate_encode_buffer_context(self, [&components.buffer])?;
         if components.num_components < 3 {
             return Err(CudaError::InvalidArgument {
                 message: "forward ICT requires at least three resident component planes"

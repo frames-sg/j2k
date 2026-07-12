@@ -6,13 +6,16 @@ use super::super::bitplane::BITPLANE_BIT_SIZE;
 use super::{ComponentSizeInfo, SizeData};
 use crate::error::{bail, MarkerError, Result, ValidationError};
 use crate::reader::BitReader;
-use crate::MAX_J2K_SPEC_COMPONENTS;
+use crate::{try_reserve_decode_elements, MAX_J2K_SPEC_COMPONENTS};
 
 const MAX_PART1_COMPONENT_PRECISION: u8 = 38;
 
 /// SIZ marker (A.5.1).
-pub(super) fn size_marker(reader: &mut BitReader<'_>) -> Result<SizeData> {
-    let size_data = size_marker_inner(reader)?;
+pub(super) fn size_marker(
+    reader: &mut BitReader<'_>,
+    max_component_bytes: usize,
+) -> Result<SizeData> {
+    let size_data = size_marker_inner(reader, max_component_bytes)?;
 
     if size_data.tile_width == 0
         || size_data.tile_height == 0
@@ -99,7 +102,7 @@ fn read_siz_u32(reader: &mut BitReader<'_>) -> Result<u32> {
     clippy::similar_names,
     reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
 )]
-fn size_marker_inner(reader: &mut BitReader<'_>) -> Result<SizeData> {
+fn size_marker_inner(reader: &mut BitReader<'_>, max_component_bytes: usize) -> Result<SizeData> {
     // Length.
     let _ = read_siz_u16(reader)?;
     // Decoder capabilities.
@@ -127,7 +130,21 @@ fn size_marker_inner(reader: &mut BitReader<'_>) -> Result<SizeData> {
         bail!(ValidationError::TooManyChannels);
     }
 
-    let mut components = Vec::with_capacity(csiz as usize);
+    let component_bytes = usize::from(csiz)
+        .checked_mul(core::mem::size_of::<ComponentSizeInfo>())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if component_bytes > max_component_bytes {
+        bail!(ValidationError::ImageTooLarge);
+    }
+    let mut components = Vec::new();
+    try_reserve_decode_elements(&mut components, usize::from(csiz))?;
+    let actual_component_bytes = components
+        .capacity()
+        .checked_mul(core::mem::size_of::<ComponentSizeInfo>())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if actual_component_bytes > max_component_bytes {
+        bail!(ValidationError::ImageTooLarge);
+    }
     for _ in 0..csiz {
         let ssiz = read_siz_byte(reader)?;
         let x_rsiz = read_siz_byte(reader)?;

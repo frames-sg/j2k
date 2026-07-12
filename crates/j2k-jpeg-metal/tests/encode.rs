@@ -61,7 +61,9 @@ fn encode_classification_cases() -> Vec<EncodeClassificationCase> {
             buffer_error: false,
         },
         EncodeClassificationCase {
-            error: JpegEncodeError::Internal("entropy overflow".to_string()),
+            error: JpegEncodeError::InternalInvariant {
+                reason: "entropy overflow",
+            },
             unsupported: false,
             buffer_error: false,
         },
@@ -129,11 +131,8 @@ fn metal_baseline_encoder_round_trips_rgb_422() {
     let rgb = j2k_test_support::patterned_rgb8(width, height);
 
     let session = MetalBackendSession::system_default().expect("Metal backend session");
-    let buffer = session.device().new_buffer_with_data(
-        rgb.as_ptr().cast(),
-        rgb.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &rgb)
+        .expect("upload test RGB pixels");
 
     // SAFETY: the buffer was initialized before tile construction and no CPU
     // or GPU writer accesses it while the tile is alive.
@@ -203,11 +202,8 @@ fn metal_baseline_encoder_round_trips_all_rgb_subsampling_modes() {
     }
 
     let session = MetalBackendSession::system_default().expect("Metal backend session");
-    let buffer = session.device().new_buffer_with_data(
-        rgb.as_ptr().cast(),
-        rgb.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &rgb)
+        .expect("upload test RGB pixels");
 
     for subsampling in [
         JpegSubsampling::Ybr444,
@@ -275,11 +271,8 @@ fn metal_baseline_encoder_round_trips_gray_with_padded_output() {
     let gray = j2k_test_support::patterned_gray8(width, height);
 
     let session = MetalBackendSession::system_default().expect("Metal backend session");
-    let buffer = session.device().new_buffer_with_data(
-        gray.as_ptr().cast(),
-        gray.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &gray)
+        .expect("upload test grayscale pixels");
 
     // SAFETY: the buffer was initialized before tile construction and no CPU
     // or GPU writer accesses it while the tile is alive.
@@ -354,11 +347,8 @@ fn metal_baseline_batch_encoder_round_trips_multiple_rgb_tiles() {
     }
 
     let session = MetalBackendSession::system_default().expect("Metal backend session");
-    let buffer = session.device().new_buffer_with_data(
-        rgb.as_ptr().cast(),
-        rgb.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &rgb)
+        .expect("upload test RGB pixels");
     let tile_bytes = width as usize * height as usize * 3;
     // SAFETY: the buffer was initialized before tile construction and no CPU
     // or GPU writer accesses any described range while the tiles are alive.

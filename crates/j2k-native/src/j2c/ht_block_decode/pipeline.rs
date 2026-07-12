@@ -13,6 +13,10 @@ use super::state::{
     HtDecodeObserver,
 };
 
+mod scratch;
+pub(crate) use self::scratch::ht_decode_workspace_bytes;
+pub(super) use self::scratch::prepare_scratch;
+
 pub(crate) const PHASE_LIMIT_CLEANUP: u8 = 0;
 pub(crate) const PHASE_LIMIT_SIGPROP: u8 = 1;
 pub(crate) const PHASE_LIMIT_MAGREF: u8 = 2;
@@ -63,12 +67,12 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
     let quad_rows = height.div_ceil(2) as usize;
     let sstr = cleanup_symbol_stride(width);
     let v_n_width = width.div_ceil(2) as usize + 2;
-    let v_n_scratch = resized_u32_scratch(&mut scratch_buffers.v_n, v_n_width);
+    let v_n_scratch = resized_u32_scratch(&mut scratch_buffers.v_n, v_n_width)?;
     let cleanup_only = PHASE_LIMIT == PHASE_LIMIT_CLEANUP || num_passes == 1;
     let scratch = if cleanup_only {
-        resized_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1))
+        resized_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1))?
     } else {
-        zeroed_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1))
+        zeroed_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1))?
     };
 
     if cleanup_only {
@@ -115,7 +119,7 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
     if num_passes > 1 {
         let sigma_rows = height.div_ceil(4) as usize + 1;
         let mstr = sigma_stride(width);
-        let sigma = zeroed_u16_scratch(&mut scratch_buffers.sigma, sigma_rows * mstr);
+        let sigma = zeroed_u16_scratch(&mut scratch_buffers.sigma, sigma_rows * mstr)?;
         let phase_start = observer.phase_start();
         build_sigma_from_cleanup_phase(scratch, sigma, width, height, sstr, mstr)?;
         observer.add_sigma_us(phase_start);
@@ -123,7 +127,7 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
         let prev_row_sig = resized_u16_scratch(
             &mut scratch_buffers.prev_row_sig,
             width.div_ceil(4) as usize + 8,
-        );
+        )?;
         let phase_start = observer.phase_start();
         apply_significance_propagation_phase(
             refinement_data,

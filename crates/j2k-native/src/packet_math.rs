@@ -5,6 +5,9 @@
 //! internally so their packet headers stay bit-identical with the CPU
 //! encoder's signaling decisions.
 
+mod error;
+pub use error::HtSegmentLengthError;
+
 /// Returns whether `value` can be signalled in `bits` bits.
 #[must_use]
 #[inline]
@@ -51,29 +54,36 @@ pub fn ht_segment_lengths(
     data_len: usize,
     ht_cleanup_length: u32,
     ht_refinement_length: u32,
-) -> Result<(u32, u32), &'static str> {
+) -> Result<(u32, u32), HtSegmentLengthError> {
     if num_coding_passes == 0 {
         if data_len == 0 && ht_cleanup_length == 0 && ht_refinement_length == 0 {
             return Ok((0, 0));
         }
-        return Err("empty HTJ2K packet contribution must not carry segment bytes");
+        return Err(HtSegmentLengthError::EmptyContributionHasSegments);
     }
 
-    let data_len =
-        u32::try_from(data_len).map_err(|_| "HTJ2K packet contribution exceeds u32 length")?;
+    let data_len = u32::try_from(data_len)
+        .map_err(|_| HtSegmentLengthError::ContributionLengthExceedsU32 { data_len })?;
     if ht_cleanup_length == 0 && ht_refinement_length != 0 {
         if ht_refinement_length != data_len {
-            return Err("refinement-only HTJ2K packet contribution length mismatch");
+            return Err(HtSegmentLengthError::RefinementOnlyLengthMismatch {
+                data_len,
+                refinement_length: ht_refinement_length,
+            });
         }
         if ht_refinement_length >= 2047 {
-            return Err("HTJ2K refinement segment length is out of range");
+            return Err(HtSegmentLengthError::RefinementLengthOutOfRange {
+                refinement_length: ht_refinement_length,
+            });
         }
         return Ok((0, ht_refinement_length));
     }
 
     if num_coding_passes == 1 {
         if ht_refinement_length != 0 {
-            return Err("single-pass HTJ2K packet contribution must not carry refinement bytes");
+            return Err(HtSegmentLengthError::SinglePassHasRefinement {
+                refinement_length: ht_refinement_length,
+            });
         }
         let cleanup_length = if ht_cleanup_length == 0 {
             data_len
@@ -81,27 +91,134 @@ pub fn ht_segment_lengths(
             ht_cleanup_length
         };
         if cleanup_length != data_len {
-            return Err("single-pass HTJ2K packet contribution length mismatch");
+            return Err(HtSegmentLengthError::SinglePassLengthMismatch {
+                data_len,
+                cleanup_length,
+            });
         }
         return Ok((cleanup_length, 0));
     }
 
     if ht_cleanup_length == 0 || ht_refinement_length == 0 {
-        return Err("multi-pass HTJ2K packet contribution requires cleanup/refinement lengths");
+        return Err(HtSegmentLengthError::MultiPassRequiresSegments {
+            cleanup_length: ht_cleanup_length,
+            refinement_length: ht_refinement_length,
+        });
     }
-    if ht_cleanup_length
-        .checked_add(ht_refinement_length)
-        .ok_or("multi-pass HTJ2K packet contribution length overflow")?
-        != data_len
+    if ht_cleanup_length.checked_add(ht_refinement_length).ok_or(
+        HtSegmentLengthError::MultiPassLengthOverflow {
+            cleanup_length: ht_cleanup_length,
+            refinement_length: ht_refinement_length,
+        },
+    )? != data_len
     {
-        return Err("multi-pass HTJ2K packet contribution length mismatch");
+        return Err(HtSegmentLengthError::MultiPassLengthMismatch {
+            data_len,
+            cleanup_length: ht_cleanup_length,
+            refinement_length: ht_refinement_length,
+        });
     }
     if !(2..65535).contains(&ht_cleanup_length) {
-        return Err("HTJ2K cleanup segment length is out of range");
+        return Err(HtSegmentLengthError::CleanupLengthOutOfRange {
+            cleanup_length: ht_cleanup_length,
+        });
     }
     if ht_refinement_length >= 2047 {
-        return Err("HTJ2K refinement segment length is out of range");
+        return Err(HtSegmentLengthError::RefinementLengthOutOfRange {
+            refinement_length: ht_refinement_length,
+        });
     }
 
     Ok((ht_cleanup_length, ht_refinement_length))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ht_segment_length_validation_returns_each_semantic_failure() {
+        let cases = [
+            (
+                (0, 1, 1, 0),
+                HtSegmentLengthError::EmptyContributionHasSegments,
+            ),
+            (
+                (2, 3, 0, 2),
+                HtSegmentLengthError::RefinementOnlyLengthMismatch {
+                    data_len: 3,
+                    refinement_length: 2,
+                },
+            ),
+            (
+                (2, 2047, 0, 2047),
+                HtSegmentLengthError::RefinementLengthOutOfRange {
+                    refinement_length: 2047,
+                },
+            ),
+            (
+                (1, 2, 1, 1),
+                HtSegmentLengthError::SinglePassHasRefinement {
+                    refinement_length: 1,
+                },
+            ),
+            (
+                (1, 3, 2, 0),
+                HtSegmentLengthError::SinglePassLengthMismatch {
+                    data_len: 3,
+                    cleanup_length: 2,
+                },
+            ),
+            (
+                (2, 2, 2, 0),
+                HtSegmentLengthError::MultiPassRequiresSegments {
+                    cleanup_length: 2,
+                    refinement_length: 0,
+                },
+            ),
+            (
+                (2, 0, u32::MAX, 1),
+                HtSegmentLengthError::MultiPassLengthOverflow {
+                    cleanup_length: u32::MAX,
+                    refinement_length: 1,
+                },
+            ),
+            (
+                (2, 5, 2, 2),
+                HtSegmentLengthError::MultiPassLengthMismatch {
+                    data_len: 5,
+                    cleanup_length: 2,
+                    refinement_length: 2,
+                },
+            ),
+            (
+                (2, 2, 1, 1),
+                HtSegmentLengthError::CleanupLengthOutOfRange { cleanup_length: 1 },
+            ),
+        ];
+
+        for ((passes, data_len, cleanup, refinement), expected) in cases {
+            assert_eq!(
+                ht_segment_lengths(passes, data_len, cleanup, refinement),
+                Err(expected)
+            );
+        }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn ht_segment_length_validation_rejects_payloads_above_u32() {
+        let data_len = usize::try_from(u64::from(u32::MAX) + 1).expect("64-bit usize");
+        assert_eq!(
+            ht_segment_lengths(1, data_len, 0, 0),
+            Err(HtSegmentLengthError::ContributionLengthExceedsU32 { data_len })
+        );
+    }
+
+    #[test]
+    fn ht_segment_length_validation_accepts_empty_single_and_multi_pass_inputs() {
+        assert_eq!(ht_segment_lengths(0, 0, 0, 0), Ok((0, 0)));
+        assert_eq!(ht_segment_lengths(1, 5, 0, 0), Ok((5, 0)));
+        assert_eq!(ht_segment_lengths(3, 7, 4, 3), Ok((4, 3)));
+    }
 }

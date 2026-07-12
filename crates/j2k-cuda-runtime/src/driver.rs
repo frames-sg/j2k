@@ -47,6 +47,8 @@ pub(crate) type CuMemcpyHtoD = unsafe extern "C" fn(CuDevicePtr, *const c_void, 
 
 pub(crate) type CuMemcpyDtoH = unsafe extern "C" fn(*mut c_void, CuDevicePtr, usize) -> CuResult;
 
+pub(crate) type CuMemsetD8 = unsafe extern "C" fn(CuDevicePtr, u8, usize) -> CuResult;
+
 pub(crate) type CuMemsetD32 = unsafe extern "C" fn(CuDevicePtr, c_uint, usize) -> CuResult;
 
 pub(crate) type CuGetErrorName = unsafe extern "C" fn(CuResult, *mut *const c_char) -> CuResult;
@@ -110,6 +112,7 @@ pub(crate) struct Driver {
     pub(crate) cu_mem_free_host: CuMemFreeHost,
     pub(crate) cu_memcpy_htod: CuMemcpyHtoD,
     pub(crate) cu_memcpy_dtoh: CuMemcpyDtoH,
+    pub(crate) cu_memset_d8: CuMemsetD8,
     pub(crate) cu_memset_d32: CuMemsetD32,
     pub(crate) cu_get_error_name: CuGetErrorName,
     #[cfg_attr(
@@ -178,6 +181,7 @@ impl Driver {
             cu_mem_free_host: load_symbol(&library, b"cuMemFreeHost\0")?,
             cu_memcpy_htod: load_symbol(&library, b"cuMemcpyHtoD_v2\0")?,
             cu_memcpy_dtoh: load_symbol(&library, b"cuMemcpyDtoH_v2\0")?,
+            cu_memset_d8: load_symbol(&library, b"cuMemsetD8_v2\0")?,
             cu_memset_d32: load_symbol(&library, b"cuMemsetD32_v2\0")?,
             cu_get_error_name: load_symbol(&library, b"cuGetErrorName\0")?,
             cu_module_load_data: load_symbol(&library, b"cuModuleLoadData\0")?,

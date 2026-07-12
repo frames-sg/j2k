@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    borrow_slice_buffer, checked_metal_buffer_len_u64, checked_metal_surface_len,
-    commit_and_wait_metal, dispatch_2d_pipeline, dispatch_3d_pipeline, hybrid_stage_signpost,
-    label_compute_encoder, size_of, with_runtime, wrap_f32_output_buffer, Buffer, CommandBufferRef,
-    ComputeCommandEncoderRef, Error, J2kGrayStoreParams, J2kRepeatedGrayStoreParams,
-    J2kRepeatedStoreParams, J2kStoreComponentJob, J2kStoreParams, MTLResourceOptions, MTLSize,
-    MetalRuntime, PixelFormat, Surface, SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE,
+    checked_buffer_slice, checked_metal_surface_len, commit_and_wait_metal, copied_slice_buffer,
+    dispatch_2d_pipeline, dispatch_3d_pipeline, hybrid_stage_signpost, label_compute_encoder,
+    new_command_buffer, new_compute_command_encoder, new_shared_buffer, size_of, with_runtime,
+    Buffer, CommandBufferRef, ComputeCommandEncoderRef, Error, J2kGrayStoreParams,
+    J2kRepeatedGrayStoreParams, J2kRepeatedStoreParams, J2kStoreComponentJob, J2kStoreParams,
+    MTLSize, MetalRuntime, PixelFormat, Surface, SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE,
 };
 
 #[cfg(target_os = "macos")]
@@ -28,7 +28,7 @@ pub(crate) fn decode_store_component_and_capture(
     } = job;
     with_runtime(|runtime| {
         if copy_width == 0 || copy_height == 0 {
-            return Ok(wrap_f32_output_buffer(&runtime.device, output));
+            return copied_slice_buffer(&runtime.device, output);
         }
 
         let required_input_height =
@@ -81,10 +81,10 @@ pub(crate) fn decode_store_component_and_capture(
             output_y,
             addend,
         };
-        let input_buffer = borrow_slice_buffer(&runtime.device, input);
-        let output_buffer = wrap_f32_output_buffer(&runtime.device, output);
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let input_buffer = copied_slice_buffer(&runtime.device, input)?;
+        let output_buffer = copied_slice_buffer(&runtime.device, output)?;
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.store_component);
         encoder.set_buffer(0, Some(&input_buffer), 0);
         encoder.set_buffer(1, Some(&output_buffer), 0);
@@ -93,9 +93,19 @@ pub(crate) fn decode_store_component_and_capture(
             size_of::<J2kStoreParams>() as u64,
             (&raw const params).cast(),
         );
-        dispatch_2d_pipeline(encoder, &runtime.store_component, (copy_width, copy_height));
+        dispatch_2d_pipeline(
+            &encoder,
+            &runtime.store_component,
+            (copy_width, copy_height),
+        );
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
+        let captured = checked_buffer_slice::<f32>(
+            &output_buffer,
+            output.len(),
+            "decode store component output",
+        )?;
+        output.copy_from_slice(&captured);
         Ok(output_buffer)
     })
 }
@@ -109,13 +119,13 @@ pub(in crate::compute) fn dispatch_store_component_buffer_in_command_buffer_with
     output: &Buffer,
     output_offset_bytes: usize,
     params: J2kStoreParams,
-) {
+) -> Result<(), Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE);
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K decode hybrid component store");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K decode hybrid component store");
     dispatch_store_component_buffer_in_encoder_with_offsets(
         runtime,
-        encoder,
+        &encoder,
         input,
         input_offset_bytes,
         output,
@@ -123,6 +133,7 @@ pub(in crate::compute) fn dispatch_store_component_buffer_in_command_buffer_with
         params,
     );
     encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -157,10 +168,10 @@ pub(in crate::compute) fn dispatch_store_component_repeated_in_command_buffer(
     input_offset_bytes: usize,
     output: &Buffer,
     params: J2kRepeatedStoreParams,
-) {
+) -> Result<(), Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE);
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K decode hybrid repeated component store");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K decode hybrid repeated component store");
     encoder.set_compute_pipeline_state(&runtime.store_component_repeated);
     encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
     encoder.set_buffer(1, Some(output), 0);
@@ -170,11 +181,12 @@ pub(in crate::compute) fn dispatch_store_component_repeated_in_command_buffer(
         (&raw const params).cast(),
     );
     dispatch_3d_pipeline(
-        encoder,
+        &encoder,
         &runtime.store_component_repeated,
         (params.copy_width, params.copy_height, params.batch_count),
     );
     encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -211,13 +223,7 @@ pub(in crate::compute) fn encode_repeated_gray_store_to_surfaces_in_command_buff
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal repeated grayscale fused store total size overflow".to_string(),
         })?;
-    let output_len = checked_metal_buffer_len_u64(
-        total_bytes,
-        "J2K Metal repeated grayscale fused store output size exceeds u64",
-    )?;
-    let out_buffer = runtime
-        .device
-        .new_buffer(output_len, MTLResourceOptions::StorageModeShared);
+    let out_buffer = new_shared_buffer(&runtime.device, total_bytes)?;
     let contiguous_full_surface = repeated_gray_store_is_contiguous_full_surface(params);
     let pipeline = match (fmt, contiguous_full_surface) {
         (PixelFormat::Gray8, true) => &runtime.store_component_repeated_gray_u8_contiguous,
@@ -233,7 +239,7 @@ pub(in crate::compute) fn encode_repeated_gray_store_to_surfaces_in_command_buff
         }
     };
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(command_buffer)?;
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(input), 0);
     encoder.set_buffer(1, Some(&out_buffer), 0);
@@ -262,14 +268,17 @@ pub(in crate::compute) fn encode_repeated_gray_store_to_surfaces_in_command_buff
         );
     } else {
         dispatch_3d_pipeline(
-            encoder,
+            &encoder,
             pipeline,
             (params.copy_width, params.copy_height, params.batch_count),
         );
     }
     encoder.end_encoding();
 
-    let mut surfaces = Vec::with_capacity(count);
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal repeated store surface collection",
+    );
+    let mut surfaces = budget.try_vec(count, "J2K Metal repeated store surface handles")?;
     for instance_idx in 0..count {
         surfaces.push(Surface::from_metal_buffer_with_offset(
             out_buffer.clone(),
@@ -296,13 +305,7 @@ pub(in crate::compute) fn encode_gray_store_to_surface_in_encoder(
         fmt.bytes_per_pixel(),
         "J2K Metal grayscale fused store size overflow",
     )?;
-    let out_buffer = runtime.device.new_buffer(
-        checked_metal_buffer_len_u64(
-            surface_bytes,
-            "J2K Metal grayscale fused store output size exceeds u64",
-        )?,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let out_buffer = new_shared_buffer(&runtime.device, surface_bytes)?;
     let pipeline = match fmt {
         PixelFormat::Gray8 => &runtime.store_component_gray_u8,
         PixelFormat::Gray16 => &runtime.store_component_gray_u16,

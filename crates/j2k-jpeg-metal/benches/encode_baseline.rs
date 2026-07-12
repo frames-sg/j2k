@@ -44,11 +44,13 @@ fn bench_single_encode(c: &mut Criterion, dim: u32, tile_bytes: usize, rgb: &[u8
 
     #[cfg(target_os = "macos")]
     if let Ok(session) = MetalBackendSession::system_default() {
-        let buffer = session.device().new_buffer_with_data(
-            rgb.as_ptr().cast(),
-            tile_bytes as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        );
+        let Ok(buffer) = j2k_metal_support::checked_shared_buffer_with_slice(
+            session.device(),
+            &rgb[..tile_bytes],
+        ) else {
+            eprintln!("skipping Metal single benchmark: buffer allocation failed");
+            return;
+        };
         // SAFETY: the benchmark buffer is initialized before construction and
         // remains immutable while the tile descriptor is alive.
         let tile = unsafe {
@@ -112,11 +114,11 @@ fn bench_batch_encode(
 
     #[cfg(target_os = "macos")]
     if let Ok(session) = MetalBackendSession::system_default() {
-        let buffer = session.device().new_buffer_with_data(
-            rgb.as_ptr().cast(),
-            rgb.len() as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        );
+        let Ok(buffer) = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), rgb)
+        else {
+            eprintln!("skipping Metal batch benchmark: buffer allocation failed");
+            return;
+        };
         // SAFETY: the benchmark buffer is initialized before construction and
         // remains immutable while all tile descriptors are alive.
         let tiles = (0..batch_size)

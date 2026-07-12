@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::BackendKind;
+use j2k_core::{BackendKind, BackendRequest, PixelFormat};
 
 use crate::{profile, Surface};
 
@@ -16,6 +16,33 @@ use super::{
     decode_repeated_full_color, decode_repeated_full_grayscale,
     decode_repeated_region_scaled_direct_batch_prechecked, QueuedRequest, SessionState,
 };
+
+struct PendingBatchProfile {
+    output_slots: Vec<usize>,
+    backend: profile::MetalBatchProfileValue<BackendRequest>,
+    fmt: profile::MetalBatchProfileValue<PixelFormat>,
+}
+
+impl PendingBatchProfile {
+    fn new(requests: &[QueuedRequest]) -> Option<Self> {
+        let mut budget =
+            crate::batch_allocation::BatchMetadataBudget::new("J2K Metal batch profile context");
+        let mut output_slots =
+            match budget.try_vec(requests.len(), "J2K Metal batch profile output slots") {
+                Ok(output_slots) => output_slots,
+                Err(error) => {
+                    j2k_profile::emit_profile_error("metal_batch_profile_context", &error);
+                    return None;
+                }
+            };
+        output_slots.extend(requests.iter().map(|request| request.output_slot));
+        Some(Self {
+            output_slots,
+            backend: uniform_profile_value(requests.iter().map(|request| request.backend)),
+            fmt: uniform_profile_value(requests.iter().map(|request| request.fmt)),
+        })
+    }
+}
 
 fn complete_cpu_host_fallback(session: &mut SessionState, requests: Vec<QueuedRequest>) {
     if requests.len() > 1 {
@@ -51,20 +78,15 @@ pub(super) fn process_batch(session: &mut SessionState, grouped: GroupedRequests
     let profile_enabled = profile::metal_profile_stages_enabled();
     let started = profile::profile_now(profile_enabled);
     let request_count = requests.len();
-    let slots = if profile_enabled {
-        requests
-            .iter()
-            .map(|request| request.output_slot)
-            .collect::<Vec<_>>()
+    let pending_profile = if profile_enabled {
+        PendingBatchProfile::new(&requests)
     } else {
-        Vec::new()
+        None
     };
-    let backend = profile_backend_label(&requests);
-    let fmt = profile_format_label(&requests);
 
     process_batch_inner(session, route, requests);
 
-    if profile_enabled {
+    if let Some(pending) = pending_profile {
         profile::emit_metal_batch_profile_row(
             "decode",
             &profile::MetalBatchProfileRow {
@@ -73,12 +95,12 @@ pub(super) fn process_batch(session: &mut SessionState, grouped: GroupedRequests
                 pipeline: "metal_cpu_hybrid",
                 processor: "hybrid",
                 route: profile_route_label(route),
-                backend: &backend,
-                fmt: &fmt,
+                backend: pending.backend,
+                fmt: pending.fmt,
                 request_count,
-                output_count: profile_completed_output_count(session, &slots),
+                output_count: profile_completed_output_count(session, &pending.output_slots),
                 elapsed_us: profile::elapsed_us(started),
-                outcome: profile_completed_outcome(session, &slots),
+                outcome: profile_completed_outcome(session, &pending.output_slots),
             },
         );
     }
@@ -167,28 +189,17 @@ fn process_batch_inner(
     }
 }
 
-fn profile_backend_label(requests: &[QueuedRequest]) -> String {
-    let Some(first) = requests.first() else {
-        return "none".to_string();
+fn uniform_profile_value<T: Copy + Eq>(
+    values: impl IntoIterator<Item = T>,
+) -> profile::MetalBatchProfileValue<T> {
+    let mut values = values.into_iter();
+    let Some(first) = values.next() else {
+        return profile::MetalBatchProfileValue::None;
     };
-    if requests
-        .iter()
-        .all(|request| request.backend == first.backend)
-    {
-        format!("{:?}", first.backend)
+    if values.all(|value| value == first) {
+        profile::MetalBatchProfileValue::Uniform(first)
     } else {
-        "mixed".to_string()
-    }
-}
-
-fn profile_format_label(requests: &[QueuedRequest]) -> String {
-    let Some(first) = requests.first() else {
-        return "none".to_string();
-    };
-    if requests.iter().all(|request| request.fmt == first.fmt) {
-        format!("{:?}", first.fmt)
-    } else {
-        "mixed".to_string()
+        profile::MetalBatchProfileValue::Mixed
     }
 }
 
@@ -235,5 +246,26 @@ fn profile_completed_outcome(session: &SessionState, slots: &[usize]) -> &'stati
         "mixed"
     } else {
         "none"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uniform_profile_values_distinguish_empty_uniform_and_mixed_inputs() {
+        assert_eq!(
+            uniform_profile_value(std::iter::empty::<u8>()),
+            profile::MetalBatchProfileValue::None
+        );
+        assert_eq!(
+            uniform_profile_value([7_u8, 7]),
+            profile::MetalBatchProfileValue::Uniform(7)
+        );
+        assert_eq!(
+            uniform_profile_value([7_u8, 8]),
+            profile::MetalBatchProfileValue::Mixed
+        );
     }
 }

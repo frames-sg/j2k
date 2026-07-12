@@ -5,27 +5,33 @@ use super::test_counters;
 use super::{
     active_forward_dwt53_buffers, copied_slice_buffer, dispatch_2d_pipeline, dispatch_3d_pipeline,
     dispatch_forward_dwt53_batched_pass, dispatch_forward_dwt53_pass, hybrid_stage_signpost,
-    label_compute_encoder, new_resident_encode_command_buffer, size_of, Buffer, CommandBuffer,
-    CommandBufferRef, Error, J2kBatchedPacketPayloadCopyDispatch, J2kForwardDwt53BatchedParams,
-    J2kForwardDwt53Params, J2kForwardRctParams, J2kLosslessCoefficientJob,
-    J2kLosslessDeinterleaveParams, J2kLosslessDevicePrepareJob, J2kPacketPayloadCopyParams,
-    MTLSize, MetalRuntime, PACKET_PAYLOAD_COPY_BYTES_PER_STRIPE,
+    label_compute_encoder, new_compute_command_encoder, new_resident_encode_command_buffer,
+    size_of, Buffer, CommandBuffer, CommandBufferRef, Error, J2kBatchedPacketPayloadCopyDispatch,
+    J2kForwardDwt53BatchedParams, J2kForwardDwt53Params, J2kForwardRctParams,
+    J2kLosslessCoefficientJob, J2kLosslessDeinterleaveParams, J2kLosslessDevicePrepareJob,
+    J2kPacketPayloadCopyParams, MTLSize, MetalRuntime, PACKET_PAYLOAD_COPY_BYTES_PER_STRIPE,
     PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
 };
+
+pub(in crate::compute) struct ForwardDwt53SplitProfile<T> {
+    pub(in crate::compute) active: T,
+    pub(in crate::compute) vertical_command_buffers: Vec<CommandBuffer>,
+    pub(in crate::compute) horizontal_command_buffers: Vec<CommandBuffer>,
+}
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn dispatch_batched_packet_payload_copy(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
     dispatch: J2kBatchedPacketPayloadCopyDispatch<'_>,
-) -> bool {
+) -> Result<bool, Error> {
     if dispatch.tile_count == 0 || dispatch.max_payload_copy_jobs_per_tile == 0 {
-        return false;
+        return Ok(false);
     }
 
     let signpost = hybrid_stage_signpost(dispatch.signpost_name);
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, dispatch.label);
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, dispatch.label);
     encoder.set_compute_pipeline_state(&runtime.packet_payload_copy_batched);
     encoder.set_buffer(0, Some(dispatch.payload_buffer), 0);
     encoder.set_buffer(1, Some(dispatch.packet_output_buffer), 0);
@@ -58,7 +64,7 @@ pub(in crate::compute) fn dispatch_batched_packet_payload_copy(
     );
     encoder.end_encoding();
     drop(signpost);
-    true
+    Ok(true)
 }
 
 #[cfg(target_os = "macos")]
@@ -96,8 +102,8 @@ pub(in crate::compute) fn dispatch_lossless_deinterleave(
         sample_offset,
         signed_samples: 0,
     };
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K coefficient prep deinterleave");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K coefficient prep deinterleave");
     encoder.set_compute_pipeline_state(&runtime.lossless_deinterleave_to_planes);
     encoder.set_buffer(0, Some(job.input), input_byte_offset);
     encoder.set_buffer(1, Some(plane0), 0);
@@ -110,7 +116,7 @@ pub(in crate::compute) fn dispatch_lossless_deinterleave(
     );
     encoder.set_buffer(5, Some(plane2), 0);
     dispatch_2d_pipeline(
-        encoder,
+        &encoder,
         &runtime.lossless_deinterleave_to_planes,
         (job.output_width, job.output_height),
     );
@@ -154,8 +160,8 @@ pub(in crate::compute) fn dispatch_lossless_deinterleave_rct_rgb8(
         sample_offset,
         signed_samples: 0,
     };
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K coefficient prep deinterleave + RCT");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K coefficient prep deinterleave + RCT");
     encoder.set_compute_pipeline_state(&runtime.lossless_deinterleave_rct_rgb8_to_planes);
     encoder.set_buffer(0, Some(job.input), input_byte_offset);
     encoder.set_buffer(1, Some(plane0), 0);
@@ -168,7 +174,7 @@ pub(in crate::compute) fn dispatch_lossless_deinterleave_rct_rgb8(
     );
     encoder.set_buffer(5, Some(status_buffer), 0);
     dispatch_2d_pipeline(
-        encoder,
+        &encoder,
         &runtime.lossless_deinterleave_rct_rgb8_to_planes,
         (job.output_width, job.output_height),
     );
@@ -206,8 +212,8 @@ pub(in crate::compute) fn dispatch_forward_rct_on_buffers(
         _reserved1: 0,
         _reserved2: 0,
     };
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K coefficient prep RCT");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K coefficient prep RCT");
     encoder.set_compute_pipeline_state(&runtime.forward_rct);
     encoder.set_buffer(0, Some(plane0), 0);
     encoder.set_buffer(1, Some(plane1), 0);
@@ -248,7 +254,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_on_buffers(
     width: u32,
     height: u32,
     num_levels: u8,
-) -> Buffer {
+) -> Result<Buffer, Error> {
     let mut current_width = width;
     let mut current_height = height;
     let mut levels_run = 0u8;
@@ -274,7 +280,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_on_buffers(
                 dst,
                 params,
                 "J2K coefficient prep DWT 5/3 vertical",
-            );
+            )?;
             active_is_input = !active_is_input;
         }
         if current_width >= 2 {
@@ -286,7 +292,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_on_buffers(
                 dst,
                 params,
                 "J2K coefficient prep DWT 5/3 horizontal",
-            );
+            )?;
             active_is_input = !active_is_input;
         }
 
@@ -296,9 +302,9 @@ pub(in crate::compute) fn dispatch_forward_dwt53_on_buffers(
     }
 
     if active_is_input {
-        input.to_owned()
+        Ok(input.to_owned())
     } else {
-        scratch.to_owned()
+        Ok(scratch.to_owned())
     }
 }
 
@@ -318,7 +324,7 @@ pub(in crate::compute) struct ForwardDwt53ComponentsDispatch<'a> {
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn dispatch_forward_dwt53_components_on_buffers(
     dispatch: ForwardDwt53ComponentsDispatch<'_>,
-) -> Vec<Buffer> {
+) -> Result<Vec<Buffer>, Error> {
     let ForwardDwt53ComponentsDispatch {
         runtime,
         command_buffer,
@@ -333,8 +339,9 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_on_buffers(
     let mut current_height = height;
     let mut levels_run = 0u8;
     let mut active_is_input = true;
-    let component_count_u32 =
-        u32::try_from(component_count).expect("JPEG 2000 component count fits u32");
+    let component_count_u32 = u32::try_from(component_count).map_err(|_| Error::MetalKernel {
+        message: "JPEG 2000 component count exceeds u32".to_string(),
+    })?;
 
     while levels_run < num_levels && (current_width >= 2 || current_height >= 2) {
         let low_width = current_width.div_ceil(2);
@@ -361,7 +368,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_on_buffers(
                 outputs,
                 params,
                 "J2K coefficient prep DWT 5/3 vertical",
-            );
+            )?;
             active_is_input = !active_is_input;
         }
         if current_width >= 2 {
@@ -377,7 +384,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_on_buffers(
                 outputs,
                 params,
                 "J2K coefficient prep DWT 5/3 horizontal",
-            );
+            )?;
             active_is_input = !active_is_input;
         }
 
@@ -391,7 +398,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_on_buffers(
     } else {
         scratch_buffers
     };
-    active_buffers[..component_count].to_vec()
+    Ok(active_buffers[..component_count].to_vec())
 }
 
 #[cfg(target_os = "macos")]
@@ -402,7 +409,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_on_buffers_split_profile(
     width: u32,
     height: u32,
     num_levels: u8,
-) -> (Buffer, Vec<CommandBuffer>, Vec<CommandBuffer>) {
+) -> Result<ForwardDwt53SplitProfile<Buffer>, Error> {
     let mut current_width = width;
     let mut current_height = height;
     let mut levels_run = 0u8;
@@ -425,7 +432,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_on_buffers_split_profile(
             let command_buffer = new_resident_encode_command_buffer(
                 runtime,
                 "j2k coefficient prep DWT 5/3 vertical",
-            );
+            )?;
             let (src, dst) = active_forward_dwt53_buffers(input, scratch, active_is_input);
             dispatch_forward_dwt53_pass(
                 &runtime.fdwt53_vertical,
@@ -434,7 +441,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_on_buffers_split_profile(
                 dst,
                 params,
                 "J2K coefficient prep DWT 5/3 vertical",
-            );
+            )?;
             command_buffer.commit();
             vertical_command_buffers.push(command_buffer);
             active_is_input = !active_is_input;
@@ -443,7 +450,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_on_buffers_split_profile(
             let command_buffer = new_resident_encode_command_buffer(
                 runtime,
                 "j2k coefficient prep DWT 5/3 horizontal",
-            );
+            )?;
             let (src, dst) = active_forward_dwt53_buffers(input, scratch, active_is_input);
             dispatch_forward_dwt53_pass(
                 &runtime.fdwt53_horizontal,
@@ -452,7 +459,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_on_buffers_split_profile(
                 dst,
                 params,
                 "J2K coefficient prep DWT 5/3 horizontal",
-            );
+            )?;
             command_buffer.commit();
             horizontal_command_buffers.push(command_buffer);
             active_is_input = !active_is_input;
@@ -468,7 +475,11 @@ pub(in crate::compute) fn dispatch_forward_dwt53_on_buffers_split_profile(
     } else {
         scratch.to_owned()
     };
-    (active, vertical_command_buffers, horizontal_command_buffers)
+    Ok(ForwardDwt53SplitProfile {
+        active,
+        vertical_command_buffers,
+        horizontal_command_buffers,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -480,15 +491,16 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_split_profile(
     height: u32,
     num_levels: u8,
     component_count: usize,
-) -> (Vec<Buffer>, Vec<CommandBuffer>, Vec<CommandBuffer>) {
+) -> Result<ForwardDwt53SplitProfile<Vec<Buffer>>, Error> {
     let mut current_width = width;
     let mut current_height = height;
     let mut levels_run = 0u8;
     let mut active_is_input = true;
     let mut vertical_command_buffers = Vec::new();
     let mut horizontal_command_buffers = Vec::new();
-    let component_count_u32 =
-        u32::try_from(component_count).expect("JPEG 2000 component count fits u32");
+    let component_count_u32 = u32::try_from(component_count).map_err(|_| Error::MetalKernel {
+        message: "JPEG 2000 component count exceeds u32".to_string(),
+    })?;
 
     while levels_run < num_levels && (current_width >= 2 || current_height >= 2) {
         let low_width = current_width.div_ceil(2);
@@ -506,7 +518,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_split_profile(
             let command_buffer = new_resident_encode_command_buffer(
                 runtime,
                 "j2k coefficient prep DWT 5/3 vertical",
-            );
+            )?;
             let (inputs, outputs) = if active_is_input {
                 (plane_buffers, scratch_buffers)
             } else {
@@ -519,7 +531,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_split_profile(
                 outputs,
                 params,
                 "J2K coefficient prep DWT 5/3 vertical",
-            );
+            )?;
             command_buffer.commit();
             vertical_command_buffers.push(command_buffer);
             active_is_input = !active_is_input;
@@ -528,7 +540,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_split_profile(
             let command_buffer = new_resident_encode_command_buffer(
                 runtime,
                 "j2k coefficient prep DWT 5/3 horizontal",
-            );
+            )?;
             let (inputs, outputs) = if active_is_input {
                 (plane_buffers, scratch_buffers)
             } else {
@@ -541,7 +553,7 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_split_profile(
                 outputs,
                 params,
                 "J2K coefficient prep DWT 5/3 horizontal",
-            );
+            )?;
             command_buffer.commit();
             horizontal_command_buffers.push(command_buffer);
             active_is_input = !active_is_input;
@@ -557,11 +569,11 @@ pub(in crate::compute) fn dispatch_forward_dwt53_components_split_profile(
     } else {
         scratch_buffers
     };
-    (
-        active_buffers[..component_count].to_vec(),
+    Ok(ForwardDwt53SplitProfile {
+        active: active_buffers[..component_count].to_vec(),
         vertical_command_buffers,
         horizontal_command_buffers,
-    )
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -573,7 +585,7 @@ pub(in crate::compute) fn dispatch_lossless_extract_coefficients(
     coefficient_jobs: &[J2kLosslessCoefficientJob],
     output_width: u32,
 ) -> Result<Buffer, Error> {
-    let coefficient_job_buffer = copied_slice_buffer(&runtime.device, coefficient_jobs);
+    let coefficient_job_buffer = copied_slice_buffer(&runtime.device, coefficient_jobs)?;
     let job_count = u32::try_from(coefficient_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal resident encode coefficient job count exceeds u32".to_string(),
     })?;
@@ -587,8 +599,8 @@ pub(in crate::compute) fn dispatch_lossless_extract_coefficients(
         .map(|job| job.block_height)
         .max()
         .unwrap_or(1);
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K coefficient prep extract");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K coefficient prep extract");
     encoder.set_compute_pipeline_state(&runtime.lossless_extract_coefficients);
     encoder.set_buffer(0, planes.first().map(|buffer| &**buffer), 0);
     encoder.set_buffer(
@@ -611,7 +623,7 @@ pub(in crate::compute) fn dispatch_lossless_extract_coefficients(
     encoder.set_buffer(4, Some(&coefficient_job_buffer), 0);
     encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
     dispatch_3d_pipeline(
-        encoder,
+        &encoder,
         &runtime.lossless_extract_coefficients,
         (max_block_width, max_block_height, job_count),
     );

@@ -329,7 +329,13 @@ pub(in crate::compute) fn finish_completed_resident_lossless_codestream_batch(
         stage_stats.result_shared_recycle_duration = started.elapsed();
     }
     let codestream_collect_started = profile_stages.then(Instant::now);
-    let mut codestreams = Vec::with_capacity(pending.capacities.len());
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal resident codestream result collection",
+    );
+    let mut codestreams = budget.try_vec(
+        pending.capacities.len(),
+        "J2K Metal resident codestream results",
+    )?;
     for (index, status) in statuses.into_iter().enumerate() {
         let packet_status = packet_statuses
             .get(index)

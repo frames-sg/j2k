@@ -3,21 +3,21 @@
 #[cfg(test)]
 use super::test_counters;
 use super::{
-    active_forward_dwt53_buffers, borrow_mut_slice_buffer, checked_buffer_read,
-    checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, decode_mct_status_error,
-    dispatch_1d_pipeline, dispatch_2d_pipeline, dispatch_3d_pipeline,
-    dispatch_forward_dwt53_batched_pass, dispatch_forward_dwt53_pass, hybrid_stage_signpost,
-    label_command_buffer, label_compute_encoder,
-    metal_profile_coefficient_prep_split_commands_enabled, new_resident_encode_command_buffer,
-    size_of, take_recyclable_private_buffer, with_runtime, with_runtime_for_session,
-    zeroed_shared_buffer, Buffer, CommandBuffer, CommandBufferRef, Error,
+    active_forward_dwt53_buffers, checked_buffer_read, checked_buffer_slice, commit_and_wait_metal,
+    copied_slice_buffer, decode_mct_status_error, dispatch_1d_pipeline, dispatch_2d_pipeline,
+    dispatch_3d_pipeline, dispatch_forward_dwt53_batched_pass, dispatch_forward_dwt53_pass,
+    hybrid_stage_signpost, label_command_buffer, label_compute_encoder,
+    metal_profile_coefficient_prep_split_commands_enabled, new_command_buffer,
+    new_compute_command_encoder, new_private_buffer, new_resident_encode_command_buffer,
+    new_shared_buffer, size_of, take_recyclable_private_buffer, with_runtime,
+    with_runtime_for_session, zeroed_shared_buffer, Buffer, CommandBuffer, CommandBufferRef, Error,
     J2kBatchedPacketPayloadCopyDispatch, J2kForwardDwt53BatchedParams, J2kForwardDwt53Params,
     J2kForwardIctParams, J2kForwardRctParams, J2kLosslessCoefficientJob,
     J2kLosslessDeinterleaveParams, J2kLosslessDeviceBatchPrepareItem, J2kLosslessDeviceCodeBlock,
     J2kLosslessDevicePrepareJob, J2kMctStatus, J2kPacketPayloadCopyParams,
-    J2kPreparedLosslessDeviceCodeBlocks, J2kQuantizeSubbandJob, J2kQuantizeSubbandParams,
-    MTLResourceOptions, MTLSize, MetalRuntime, J2K_MCT_STATUS_OK,
-    PACKET_PAYLOAD_COPY_BYTES_PER_STRIPE, PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
+    J2kPreparedLosslessDeviceCodeBlocks, J2kQuantizeSubbandJob, J2kQuantizeSubbandParams, MTLSize,
+    MetalRuntime, J2K_MCT_STATUS_OK, PACKET_PAYLOAD_COPY_BYTES_PER_STRIPE,
+    PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
 };
 
 mod batch;
@@ -35,7 +35,7 @@ pub(in crate::compute) use self::commands::{
     dispatch_forward_dwt53_on_buffers_split_profile, dispatch_forward_rct_on_buffers,
     dispatch_lossless_deinterleave, dispatch_lossless_deinterleave_rct_rgb8,
     dispatch_lossless_extract_coefficients, lossless_deinterleave_rct_rgb8_supported,
-    ForwardDwt53ComponentsDispatch,
+    ForwardDwt53ComponentsDispatch, ForwardDwt53SplitProfile,
 };
 pub(crate) use self::forward_encode::{
     encode_forward_ict, encode_forward_rct, encode_quantize_subband,

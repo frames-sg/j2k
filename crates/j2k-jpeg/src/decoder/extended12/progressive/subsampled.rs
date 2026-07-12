@@ -3,8 +3,8 @@
 //! Progressive 12-bit 4:2:2 and 4:2:0 rendering.
 
 use super::super::super::{
-    decode_progressive_dct_blocks, scaled_rect_covering, DecodeOutcome, Decoder, DownscaleFactor,
-    JpegError, Rect,
+    decode_progressive_dct_blocks, scaled_rect_covering, try_clone_warnings, DecodeOutcome,
+    Decoder, DownscaleFactor, JpegError, Rect,
 };
 use super::super::planes::render_progressive12_color_planes;
 use super::super::sampling::{progressive_color_sampling, Extended12ColorSampling};
@@ -40,8 +40,8 @@ impl Decoder<'_> {
         }
 
         let output_rect = scaled_rect_covering(roi, downscale)?;
-        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
-        let planes = render_progressive12_color_planes(plan, &dct_blocks.quantized)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes, 0)?;
+        let planes = render_progressive12_color_planes(plan, &dct_blocks)?;
         let write_region = Extended12WriteRegion {
             output_rect,
             dimensions: self.info.dimensions,
@@ -68,7 +68,7 @@ impl Decoder<'_> {
 
         Ok(DecodeOutcome {
             decoded: roi,
-            warnings: self.warnings.to_vec(),
+            warnings: try_clone_warnings(&self.warnings)?,
         })
     }
 }

@@ -2,12 +2,19 @@
 
 //! Public JPEG marker-level utilities.
 
-use crate::error::{JpegError, MarkerKind, TableKind, UnsupportedReason};
+use crate::allocation::{
+    checked_add_allocation_bytes, checked_allocation_bytes, try_vec_with_capacity,
+};
+use crate::error::{JpegError, MarkerKind, UnsupportedReason};
 use crate::info::{SamplingFactors, SofKind};
 use crate::parse::markers::next_marker_after_entropy;
 use alloc::vec::Vec;
 use core::ops::Range;
 use memchr::memchr;
+
+mod table_normalization;
+
+use table_normalization::for_each_normalized_segment;
 
 /// One marker segment in a JPEG byte stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +76,7 @@ pub struct JpegScanRanges {
 pub struct JpegTilePrepareOptions {
     /// Container-derived expected tile dimensions.
     pub expected_dimensions: Option<(u16, u16)>,
-    /// Duplicate DQT/DHT handling policy.
+    /// Duplicate DQT/DHT handling policy within supplied `JPEGTables` bytes.
     pub duplicate_table_policy: DuplicateTablePolicy,
     /// Repair zero SOF dimensions using `expected_dimensions`.
     pub repair_zero_sof_dimensions: bool,
@@ -91,34 +98,21 @@ impl Default for JpegTilePrepareOptions {
 /// Duplicate JPEG table handling policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DuplicateTablePolicy {
-    /// Accept byte-identical duplicate table definitions.
+    /// Coalesce byte-identical duplicate definitions while rejecting conflicts.
     AllowIdentical,
-    /// Reject conflicting duplicate table definitions.
+    /// Preserve byte-identical redefinitions but reject conflicting definitions.
+    ///
+    /// This mode retains the source marker bytes when no conflict is present.
     RejectConflicting,
 }
 
 /// Prepared JPEG bytes, borrowed when unchanged and owned when normalized.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PreparedJpeg<'a> {
     /// Original tile bytes can be decoded directly.
     Borrowed(&'a [u8]),
     /// Preparation changed the byte stream.
     Owned(Vec<u8>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TableKey {
-    Quant(u8),
-    HuffmanDc(u8),
-    HuffmanAc(u8),
-    Dri,
-}
-
-#[derive(Debug, Clone)]
-struct SegmentBytes {
-    offset: usize,
-    bytes: Vec<u8>,
-    key: Option<TableKey>,
 }
 
 impl PreparedJpeg<'_> {
@@ -128,6 +122,24 @@ impl PreparedJpeg<'_> {
         match self {
             Self::Borrowed(bytes) => bytes,
             Self::Owned(bytes) => bytes,
+        }
+    }
+
+    /// Fallibly duplicate this prepared JPEG.
+    ///
+    /// Borrowed inputs remain borrowed without allocation. Owned normalized
+    /// payloads are copied through the same typed, capped allocation contract
+    /// used by dimension rewrite and TIFF assembly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JpegError::MemoryCapExceeded`] when the owned payload exceeds
+    /// the JPEG host cap, or [`JpegError::HostAllocationFailed`] when a
+    /// cap-valid copy cannot be reserved.
+    pub fn try_clone(&self) -> Result<Self, JpegError> {
+        match self {
+            Self::Borrowed(bytes) => Ok(Self::Borrowed(bytes)),
+            Self::Owned(bytes) => Ok(Self::Owned(try_copy_bytes(bytes)?)),
         }
     }
 }
@@ -203,7 +215,7 @@ pub fn find_scan_ranges(input: &[u8]) -> Result<JpegScanRanges, JpegError> {
         let segment = segment?;
         if segment.marker == 0xda {
             let entropy_start = segment.payload_offset + segment.payload.len();
-            let next_marker = next_marker_after_entropy(input, entropy_start);
+            let next_marker = next_marker_after_entropy(input, entropy_start)?;
             let (entropy_end, eoi_marker_offset) = match next_marker {
                 Some((marker_offset, 0xd9)) => (marker_offset, Some(marker_offset)),
                 Some((marker_offset, _)) => (marker_offset, None),
@@ -244,7 +256,7 @@ pub fn rewrite_sof_dimensions(input: &[u8], dimensions: (u16, u16)) -> Result<Ve
                     expected: 5 - segment.payload.len(),
                 });
             }
-            let mut out = input.to_vec();
+            let mut out = try_copy_bytes(input)?;
             let width = dimensions.0.to_be_bytes();
             let height = dimensions.1.to_be_bytes();
             out[segment.payload_offset + 1] = height[0];
@@ -257,6 +269,13 @@ pub fn rewrite_sof_dimensions(input: &[u8], dimensions: (u16, u16)) -> Result<Ve
     Err(JpegError::MissingMarker {
         marker: MarkerKind::Sof,
     })
+}
+
+fn try_copy_bytes(input: &[u8]) -> Result<Vec<u8>, JpegError> {
+    checked_allocation_bytes::<u8>(input.len())?;
+    let mut out = try_vec_with_capacity(input.len())?;
+    out.extend_from_slice(input);
+    Ok(out)
 }
 
 /// Prepare a TIFF/WSI JPEG tile for decode.
@@ -308,10 +327,44 @@ fn finalize_prepared_bytes(
     Ok(repaired)
 }
 
+fn finalize_owned_prepared_bytes(
+    bytes: &mut [u8],
+    opts: JpegTilePrepareOptions,
+) -> Result<(), JpegError> {
+    if let Some(repair) = planned_dimension_repair(bytes, opts)? {
+        apply_dimension_repair(bytes, repair);
+        validate_nonzero_sof_dimensions(bytes, opts)?;
+    }
+    let _ = find_scan_ranges(bytes)?;
+    if opts.validate_restart_markers {
+        validate_restart_markers(bytes)?;
+    }
+    Ok(())
+}
+
 fn repair_or_validate_dimensions(
     bytes: &[u8],
     opts: JpegTilePrepareOptions,
 ) -> Result<Option<Vec<u8>>, JpegError> {
+    let Some(repair) = planned_dimension_repair(bytes, opts)? else {
+        return Ok(None);
+    };
+    let mut repaired = try_copy_bytes(bytes)?;
+    apply_dimension_repair(&mut repaired, repair);
+    validate_nonzero_sof_dimensions(&repaired, opts)?;
+    Ok(Some(repaired))
+}
+
+#[derive(Clone, Copy)]
+struct SofDimensionRepair {
+    payload_offset: usize,
+    dimensions: (u16, u16),
+}
+
+fn planned_dimension_repair(
+    bytes: &[u8],
+    opts: JpegTilePrepareOptions,
+) -> Result<Option<SofDimensionRepair>, JpegError> {
     let mut saw_sof = false;
     for segment in iter_segments(bytes) {
         let segment = segment?;
@@ -337,9 +390,16 @@ fn repair_or_validate_dimensions(
                         height: sof.dimensions.1,
                     });
                 }
-                let repaired = rewrite_sof_dimensions(bytes, expected)?;
-                validate_nonzero_sof_dimensions(&repaired, opts)?;
-                return Ok(Some(repaired));
+                if expected.0 == 0 || expected.1 == 0 {
+                    return Err(JpegError::ZeroDimension {
+                        width: expected.0,
+                        height: expected.1,
+                    });
+                }
+                return Ok(Some(SofDimensionRepair {
+                    payload_offset: segment.payload_offset,
+                    dimensions: expected,
+                }));
             }
             if let Some(expected) = opts.expected_dimensions {
                 if expected != sof.dimensions {
@@ -358,6 +418,15 @@ fn repair_or_validate_dimensions(
         });
     }
     Ok(None)
+}
+
+fn apply_dimension_repair(bytes: &mut [u8], repair: SofDimensionRepair) {
+    let width = repair.dimensions.0.to_be_bytes();
+    let height = repair.dimensions.1.to_be_bytes();
+    bytes[repair.payload_offset + 1] = height[0];
+    bytes[repair.payload_offset + 2] = height[1];
+    bytes[repair.payload_offset + 3] = width[0];
+    bytes[repair.payload_offset + 4] = width[1];
 }
 
 fn validate_nonzero_sof_dimensions(
@@ -447,132 +516,45 @@ fn assemble_abbreviated_tile<'a>(
             reason: "abbreviated JPEG tile requires JPEGTables",
         });
     };
-    let mut out = Vec::new();
-    out.extend_from_slice(&[0xff, 0xd8]);
-    let mut keyed_segments = Vec::<(TableKey, Vec<u8>)>::new();
-    for segment in collect_normalized_segments(tables)? {
-        push_segment_dedup(&mut out, &mut keyed_segments, segment)?;
-    }
-
     let tile_body = normalized_abbreviated_tile_body(tile)?;
+    let output_len = abbreviated_output_len(tables, tile_body.len(), opts.duplicate_table_policy)?;
+    let mut out = try_vec_with_capacity(output_len)?;
+    out.extend_from_slice(&[0xff, 0xd8]);
+    for_each_normalized_segment(tables, opts.duplicate_table_policy, |segment| {
+        segment.append_to(&mut out)
+    })?;
     out.extend_from_slice(tile_body);
-    if !out.ends_with(&[0xff, 0xd9]) {
-        out.extend_from_slice(&[0xff, 0xd9]);
+    out.extend_from_slice(&[0xff, 0xd9]);
+    if out.len() != output_len {
+        return Err(JpegError::InternalInvariant {
+            reason: "normalized TIFF JPEG output length diverged from its preflight plan",
+        });
     }
-    if let Some(repaired) = finalize_prepared_bytes(&out, opts)? {
-        out = repaired;
-    }
+    finalize_owned_prepared_bytes(&mut out, opts)?;
     Ok(PreparedJpeg::Owned(out))
 }
 
-fn collect_normalized_segments(input: &[u8]) -> Result<Vec<SegmentBytes>, JpegError> {
-    let mut segments = Vec::new();
-    for segment in iter_segments(input) {
-        let segment = segment?;
-        if matches!(segment.marker, 0xd8 | 0xd9) {
-            continue;
-        }
-        let total_end = segment.payload_offset + segment.payload.len();
-        let key = table_key(segment.marker, segment.payload)?;
-        segments.push(SegmentBytes {
-            offset: segment.marker_offset,
-            bytes: input[segment.marker_offset..total_end].to_vec(),
-            key,
-        });
-    }
-    Ok(segments)
+fn abbreviated_output_len(
+    tables: &[u8],
+    tile_body_len: usize,
+    policy: DuplicateTablePolicy,
+) -> Result<usize, JpegError> {
+    let mut table_bytes = 0usize;
+    for_each_normalized_segment(tables, policy, |segment| {
+        table_bytes = checked_add_allocation_bytes(table_bytes, segment.byte_len())?;
+        Ok(())
+    })?;
+    checked_abbreviated_output_len(table_bytes, tile_body_len)
 }
 
-fn table_key(marker: u8, payload: &[u8]) -> Result<Option<TableKey>, JpegError> {
-    match marker {
-        0xdb => {
-            let Some(first) = payload.first() else {
-                return Err(JpegError::InvalidSegmentLength {
-                    offset: 0,
-                    marker,
-                    length: 2,
-                });
-            };
-            Ok(Some(TableKey::Quant(first & 0x0f)))
-        }
-        0xc4 => {
-            let Some(first) = payload.first() else {
-                return Err(JpegError::InvalidSegmentLength {
-                    offset: 0,
-                    marker,
-                    length: 2,
-                });
-            };
-            let class = first >> 4;
-            let id = first & 0x0f;
-            Ok(Some(if class == 0 {
-                TableKey::HuffmanDc(id)
-            } else {
-                TableKey::HuffmanAc(id)
-            }))
-        }
-        0xdd => Ok(Some(TableKey::Dri)),
-        _ => Ok(None),
-    }
-}
-
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "the segment descriptor owns bytes that may be moved into the deduplicated output"
-)]
-fn push_segment_dedup(
-    out: &mut Vec<u8>,
-    keyed_segments: &mut Vec<(TableKey, Vec<u8>)>,
-    segment: SegmentBytes,
-) -> Result<(), JpegError> {
-    let Some(key) = segment.key else {
-        out.extend_from_slice(&segment.bytes);
-        return Ok(());
-    };
-    if let Some((_, existing)) = keyed_segments
-        .iter()
-        .find(|(existing_key, _)| *existing_key == key)
-    {
-        if existing == &segment.bytes {
-            return Ok(());
-        }
-        return match key {
-            TableKey::Quant(id) => Err(JpegError::ConflictingDuplicateTable {
-                offset: segment.offset,
-                table: TableKind::Quant,
-                id,
-            }),
-            TableKey::HuffmanDc(id) => Err(JpegError::ConflictingDuplicateTable {
-                offset: segment.offset,
-                table: TableKind::HuffmanDc,
-                id,
-            }),
-            TableKey::HuffmanAc(id) => Err(JpegError::ConflictingDuplicateTable {
-                offset: segment.offset,
-                table: TableKind::HuffmanAc,
-                id,
-            }),
-            TableKey::Dri => {
-                let existing = parse_dri_payload_from_segment(existing).unwrap_or(0);
-                let new = parse_dri_payload_from_segment(&segment.bytes).unwrap_or(0);
-                Err(JpegError::ConflictingDri {
-                    offset: segment.offset,
-                    existing,
-                    new,
-                })
-            }
-        };
-    }
-    keyed_segments.push((key, segment.bytes.clone()));
-    out.extend_from_slice(&segment.bytes);
-    Ok(())
-}
-
-fn parse_dri_payload_from_segment(segment: &[u8]) -> Option<u16> {
-    if segment.len() < 6 || segment[0] != 0xff || segment[1] != 0xdd {
-        return None;
-    }
-    Some(u16::from_be_bytes([segment[4], segment[5]]))
+fn checked_abbreviated_output_len(
+    normalized_table_bytes: usize,
+    tile_body_len: usize,
+) -> Result<usize, JpegError> {
+    let mut output_len = checked_allocation_bytes::<u8>(2)?;
+    output_len = checked_add_allocation_bytes(output_len, normalized_table_bytes)?;
+    output_len = checked_add_allocation_bytes(output_len, tile_body_len)?;
+    checked_add_allocation_bytes(output_len, 2)
 }
 
 fn normalized_abbreviated_tile_body(tile: &[u8]) -> Result<&[u8], JpegError> {
@@ -607,15 +589,22 @@ impl<'a> Iterator for JpegSegmentIter<'a> {
             return Some(self.read_soi());
         }
         if self.scan_entropy {
-            if let Some((marker_offset, marker)) = next_marker_after_entropy(self.input, self.pos) {
-                self.pos = marker_offset;
-                self.scan_entropy = false;
-                if marker == 0xd9 {
-                    return Some(self.read_standalone_marker());
+            match next_marker_after_entropy(self.input, self.pos) {
+                Ok(Some((marker_offset, marker))) => {
+                    self.pos = marker_offset;
+                    self.scan_entropy = false;
+                    if marker == 0xd9 {
+                        return Some(self.read_standalone_marker());
+                    }
                 }
-            } else {
-                self.finished = true;
-                return None;
+                Ok(None) => {
+                    self.finished = true;
+                    return None;
+                }
+                Err(error) => {
+                    self.finished = true;
+                    return Some(Err(error));
+                }
             }
         }
         Some(self.read_segment())
@@ -753,10 +742,6 @@ impl<'a> JpegSegmentIter<'a> {
     }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "validated SOF component indices fit the JPEG component-count byte"
-)]
 fn parse_sof_info_at(
     marker: u8,
     payload: &[u8],
@@ -835,15 +820,43 @@ fn parse_sof_info_at(
         });
     }
 
-    let mut sampling = Vec::with_capacity(usize::from(component_count));
-    let mut component_ids = Vec::with_capacity(usize::from(component_count));
-    let mut quant_table_ids = Vec::with_capacity(usize::from(component_count));
-    for i in 0..usize::from(component_count) {
+    let components = parse_sof_components(payload, component_count)?;
+
+    Ok(JpegSofInfo {
+        marker,
+        sof_kind,
+        bit_depth,
+        dimensions: (width, height),
+        component_ids: components.ids,
+        sampling: SamplingFactors::from_validated_components(
+            &components.sampling[..usize::from(component_count)],
+        ),
+        quant_table_ids: components.quant_table_ids,
+    })
+}
+
+struct ParsedSofComponents {
+    ids: Vec<u8>,
+    sampling: [(u8, u8); 4],
+    quant_table_ids: Vec<u8>,
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "validated SOF component indices fit the JPEG component-count byte"
+)]
+fn parse_sof_components(
+    payload: &[u8],
+    component_count: u8,
+) -> Result<ParsedSofComponents, JpegError> {
+    let count = usize::from(component_count);
+    let mut sampling = [(0u8, 0u8); 4];
+    let mut ids = try_vec_with_capacity(count)?;
+    let mut quant_table_ids = try_vec_with_capacity(count)?;
+    for (i, sampling_slot) in sampling.iter_mut().take(count).enumerate() {
         let base = 6 + i * 3;
-        let component_id = payload[base];
         let sampling_byte = payload[base + 1];
-        let h = sampling_byte >> 4;
-        let v = sampling_byte & 0x0f;
+        let (h, v) = (sampling_byte >> 4, sampling_byte & 0x0f);
         if !(1..=4).contains(&h) || !(1..=4).contains(&v) {
             return Err(JpegError::InvalidSampling {
                 component: i as u8,
@@ -851,18 +864,17 @@ fn parse_sof_info_at(
                 v,
             });
         }
-        component_ids.push(component_id);
-        sampling.push((h, v));
+        ids.push(payload[base]);
+        *sampling_slot = (h, v);
         quant_table_ids.push(payload[base + 2]);
     }
-
-    Ok(JpegSofInfo {
-        marker,
-        sof_kind,
-        bit_depth,
-        dimensions: (width, height),
-        component_ids,
-        sampling: SamplingFactors::from_validated_components(&sampling),
+    Ok(ParsedSofComponents {
+        ids,
+        sampling,
         quant_table_ids,
     })
 }
+
+#[cfg(test)]
+#[path = "segment/allocation_tests.rs"]
+mod allocation_tests;

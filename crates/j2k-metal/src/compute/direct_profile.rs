@@ -10,6 +10,7 @@ use j2k_native::{HtCodeBlockDecodeProfile, J2kCodeBlockDecodeProfile};
 
 use crate::profile_env::{
     decode_profile_label, elapsed_since_us, emit_metal_profile_row, metal_profile_stages_enabled,
+    MetalDirectProfileRow, MetalProfileFormat,
 };
 
 #[cfg(target_os = "macos")]
@@ -212,9 +213,13 @@ pub(super) fn emit_direct_hybrid_stage_timings(
         return;
     }
 
-    let fmt_s = format!("{fmt:?}");
-    let batch_count_s = batch_count.to_string();
-    let label = decode_profile_label();
+    let label = match decode_profile_label() {
+        Ok(label) => label,
+        Err(error) => {
+            j2k_profile::emit_profile_error("metal_direct_label", &error);
+            return;
+        }
+    };
     for (stage, elapsed_us) in [
         ("cpu_tier1", timings.cpu_tier1),
         (
@@ -271,7 +276,6 @@ pub(super) fn emit_direct_hybrid_stage_timings(
         ("metal_store_gpu", timings.metal_store_gpu),
         ("metal_mct_pack_gpu", timings.metal_mct_pack_gpu),
     ] {
-        let elapsed_us_s = elapsed_us.to_string();
         let processor = stage_processor(stage);
         let metric = stage_metric(stage);
         let metric_kind = stage_metric_kind(stage);
@@ -280,18 +284,18 @@ pub(super) fn emit_direct_hybrid_stage_timings(
             "j2k",
             "decode",
             "metal_cpu_hybrid",
-            &[
-                ("pipeline", "decode_hybrid".to_string()),
-                ("label", label.clone()),
-                ("stage", stage.to_string()),
-                ("processor", processor.to_string()),
-                ("metric", metric.to_string()),
-                ("metric_kind", metric_kind.to_string()),
-                ("aggregation", aggregation.to_string()),
-                ("fmt", fmt_s.clone()),
-                ("batch_count", batch_count_s.clone()),
-                ("elapsed_us", elapsed_us_s),
-            ],
+            &MetalDirectProfileRow {
+                pipeline: "decode_hybrid",
+                label: &label,
+                stage,
+                processor,
+                metric,
+                metric_kind,
+                aggregation,
+                fmt: MetalProfileFormat::Pixel(fmt),
+                batch_count,
+                elapsed_us,
+            },
         );
     }
 }

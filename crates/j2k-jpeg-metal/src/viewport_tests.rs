@@ -110,13 +110,14 @@ fn download_rgba8_texture(
 ) -> Vec<u8> {
     let row_bytes = dimensions.0 as usize * PixelFormat::Rgba8.bytes_per_pixel();
     let byte_len = row_bytes * dimensions.1 as usize;
-    let buffer = session.device().new_buffer(
-        byte_len as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
-    let queue = session.device().new_command_queue();
-    let command_buffer = queue.new_command_buffer();
-    let blit = command_buffer.new_blit_command_encoder();
+    let buffer = j2k_metal_support::checked_shared_buffer(session.device(), byte_len)
+        .expect("viewport texture readback buffer");
+    let queue = j2k_metal_support::checked_command_queue(session.device())
+        .expect("viewport texture readback queue");
+    let command_buffer = j2k_metal_support::checked_command_buffer(&queue)
+        .expect("viewport texture readback command buffer");
+    let blit = j2k_metal_support::checked_blit_command_encoder(&command_buffer)
+        .expect("viewport texture readback blit encoder");
     blit.copy_from_texture_to_buffer(
         texture,
         0,
@@ -130,7 +131,7 @@ fn download_rgba8_texture(
         metal::MTLBlitOption::None,
     );
     blit.end_encoding();
-    j2k_metal_support::commit_and_wait(command_buffer).expect("viewport texture readback blit");
+    j2k_metal_support::commit_and_wait(&command_buffer).expect("viewport texture readback blit");
 
     crate::buffers::checked_buffer_slice::<u8>(&buffer, byte_len, "viewport texture readback")
         .expect("viewport texture readback buffer")
@@ -262,7 +263,7 @@ fn cpu_contiguous_viewport_region_matches_direct_decode() {
         tiles: quadrant_tiles().to_vec(),
     };
 
-    let actual = decode_viewport_region_cpu(&decoder, &mut pool, PixelFormat::Rgb8, &workload)
+    let actual = decode_viewport_region_cpu(&decoder, &mut pool, PixelFormat::Rgb8, &workload, 0)
         .expect("cpu viewport region");
     let (expected, _) = decoder
         .decode_request(DecodeRequest::region_scaled(
@@ -428,10 +429,14 @@ fn hybrid_viewport_quadrants_match_cpu_viewport() {
         Downscale::None,
         (16, 16),
         &quadrant_tiles(),
+        0,
     )
     .expect("hybrid viewport");
 
-    assert_eq!(actual.as_bytes(), expected.as_slice());
+    assert_eq!(
+        actual.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -468,11 +473,20 @@ fn hybrid_viewport_misaligned_scaled_tile_matches_cpu_viewport() {
         &tiles,
     )
     .expect("cpu viewport");
-    let actual =
-        compose_viewport_hybrid(&decoder, &mut hybrid_pool, Downscale::Half, (6, 6), &tiles)
-            .expect("hybrid viewport");
+    let actual = compose_viewport_hybrid(
+        &decoder,
+        &mut hybrid_pool,
+        Downscale::Half,
+        (6, 6),
+        &tiles,
+        0,
+    )
+    .expect("hybrid viewport");
 
-    assert_eq!(actual.as_bytes(), expected.as_slice());
+    assert_eq!(
+        actual.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -550,7 +564,10 @@ fn sparse_viewport_composition_resizes_reusable_metal_output_buffer() {
     let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
     assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
     assert_eq!(offset, 0);
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -628,7 +645,10 @@ fn reusable_metal_viewport_buffer_helper_routes_sparse_workload() {
     let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
     assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
     assert_eq!(offset, 0);
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -648,12 +668,15 @@ fn hybrid_contiguous_viewport_region_matches_cpu_region() {
     };
 
     let expected =
-        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
             .expect("cpu viewport region");
-    let actual = decode_viewport_region_hybrid(&decoder, &mut hybrid_pool, &workload)
+    let actual = decode_viewport_region_hybrid(&decoder, &mut hybrid_pool, &workload, None, 0)
         .expect("hybrid viewport region");
 
-    assert_eq!(actual.as_bytes(), expected.as_slice());
+    assert_eq!(
+        actual.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -689,7 +712,7 @@ fn contiguous_viewport_region_resizes_reusable_metal_output_buffer() {
         }],
     };
     let expected =
-        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
             .expect("cpu viewport region");
 
     let surface = decode_viewport_region_to_resizable_metal_buffer_with_session(
@@ -708,7 +731,10 @@ fn contiguous_viewport_region_resizes_reusable_metal_output_buffer() {
     let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
     assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
     assert_eq!(offset, 0);
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -744,7 +770,7 @@ fn contiguous_viewport_region_resizes_reusable_metal_textures() {
         }],
     };
     let expected_rgb =
-        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
             .expect("cpu viewport region");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -806,7 +832,7 @@ fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_buffer()
     };
     assert!(is_contiguous_viewport_workload(&workload));
     let expected =
-        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
             .expect("cpu viewport region");
 
     let surface = decode_viewport_to_resizable_metal_buffer_with_decoder_session(
@@ -826,7 +852,10 @@ fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_buffer()
     let (buffer, offset) = surface.metal_buffer_trusted().expect("metal buffer");
     assert!(std::ptr::eq(buffer.as_ref(), output.buffer_trusted()));
     assert_eq!(offset, 0);
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -865,7 +894,7 @@ fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_textures
     };
     assert!(is_contiguous_viewport_workload(&workload));
     let expected_rgb =
-        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
             .expect("cpu viewport region");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -927,7 +956,7 @@ fn reusable_metal_viewport_texture_helper_routes_contiguous_workload() {
     };
     assert!(is_contiguous_viewport_workload(&workload));
     let expected_rgb =
-        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload, 0)
             .expect("cpu viewport region");
     let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
 
@@ -1048,13 +1077,16 @@ fn auto_viewport_surface_path_prefers_cpu_for_small_contiguous_workloads() {
         tiles: quadrant_tiles().to_vec(),
     };
 
-    let expected = decode_viewport_region_cpu_to_surface(&decoder, &mut direct_pool, &workload)
+    let expected = decode_viewport_region_cpu_to_surface(&decoder, &mut direct_pool, &workload, 0)
         .expect("cpu viewport surface");
     let actual =
         decode_viewport_to_surface(&decoder, &mut auto_pool, &workload, BackendRequest::Auto)
             .expect("auto viewport surface");
 
-    assert_eq!(actual.as_bytes(), expected.as_bytes());
+    assert_eq!(
+        actual.as_bytes().expect("surface byte access"),
+        expected.as_bytes().expect("surface byte access")
+    );
 }
 
 #[cfg(not(target_os = "macos"))]

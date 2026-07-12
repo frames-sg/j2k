@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::vec::Vec;
-
+use crate::allocation::try_vec_filled;
 use crate::error::JpegError;
 use crate::info::{DownscaleFactor, OutputFormat, Rect, SofKind};
 use j2k_core::{Downscale, PixelFormat};
@@ -133,8 +132,37 @@ pub(super) fn output_format_from_parts(
     }
 }
 
-pub(super) fn allocate_output_buffer(len: usize) -> Vec<u8> {
-    alloc::vec![0; len]
+pub(super) fn allocate_output_buffer(len: usize) -> Result<alloc::vec::Vec<u8>, JpegError> {
+    try_vec_filled(len, 0)
+}
+
+pub(super) fn checked_live_phase_bytes(
+    live_bytes: usize,
+    additional_bytes: usize,
+    cap: usize,
+) -> Result<usize, JpegError> {
+    let requested =
+        live_bytes
+            .checked_add(additional_bytes)
+            .ok_or(JpegError::MemoryCapExceeded {
+                requested: usize::MAX,
+                cap,
+            })?;
+    if requested > cap {
+        return Err(JpegError::MemoryCapExceeded { requested, cap });
+    }
+    Ok(requested)
+}
+
+pub(super) fn allocate_output_buffer_with_live_budget(
+    len: usize,
+    live_bytes: &mut usize,
+    cap: usize,
+) -> Result<alloc::vec::Vec<u8>, JpegError> {
+    checked_live_phase_bytes(*live_bytes, len, cap)?;
+    let output = allocate_output_buffer(len)?;
+    *live_bytes = checked_live_phase_bytes(*live_bytes, output.capacity(), cap)?;
+    Ok(output)
 }
 
 pub(super) fn scaled_dimensions(dims: (u32, u32), factor: DownscaleFactor) -> (u32, u32) {
@@ -215,4 +243,32 @@ fn checked_output_product(left: usize, right: usize) -> Result<usize, JpegError>
         return Err(output_cap_error(len));
     }
     Ok(len)
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::{checked_live_phase_bytes, JpegError};
+
+    #[test]
+    fn owned_output_and_nested_lossless_rgba_temps_share_one_boundary() {
+        let cap = 512;
+        let owned_output = 128;
+        let base_scratch = 64;
+        let rgb_temp = 96;
+        let full_temp = 224;
+        let live = checked_live_phase_bytes(owned_output, base_scratch, cap).unwrap();
+
+        assert_eq!(
+            checked_live_phase_bytes(live, rgb_temp + full_temp, cap)
+                .expect("exact nested temp boundary"),
+            cap
+        );
+        assert!(matches!(
+            checked_live_phase_bytes(live, rgb_temp + full_temp + 1, cap),
+            Err(JpegError::MemoryCapExceeded {
+                requested: 513,
+                cap: 512,
+            })
+        ));
+    }
 }

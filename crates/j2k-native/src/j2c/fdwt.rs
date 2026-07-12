@@ -6,11 +6,20 @@
 //! The forward DWT decomposes spatial-domain samples into wavelet coefficients
 //! organized in subbands (LL, HL, LH, HH) at each decomposition level.
 
+#[cfg(test)]
 use alloc::vec;
 use alloc::vec::Vec;
+use core::mem::size_of;
 
 use crate::math::floor_f32;
+use crate::{EncodeError, EncodeResult};
 use j2k_codec_math::dwt;
+
+mod packed;
+pub(crate) use packed::{
+    try_forward_dwt_packed_f32, try_forward_dwt_packed_i64, PackedDwtGeometry, PackedSubbandRect,
+    PackedSubbandView,
+};
 
 /// 9-7 filter lifting coefficients (Table F.4 in ITU-T T.800).
 const ALPHA: f32 = dwt::DWT97_ALPHA_F32;
@@ -20,13 +29,41 @@ const DELTA: f32 = dwt::DWT97_DELTA_F32;
 const KAPPA: f32 = dwt::DWT97_KAPPA_F32;
 const INV_KAPPA: f32 = dwt::DWT97_INV_KAPPA_F32;
 
-fn extract_ll<T: Copy>(buffer: &[T], row_stride: usize, width: usize, height: usize) -> Vec<T> {
-    let mut ll = Vec::with_capacity(width * height);
-    for y in 0..height {
-        let row_start = y * row_stride;
-        ll.extend_from_slice(&buffer[row_start..row_start + width]);
+fn try_extract_rect<T: Copy>(
+    buffer: &[T],
+    rect: PackedSubbandRect,
+    what: &'static str,
+) -> EncodeResult<Vec<T>> {
+    let view = PackedSubbandView::try_new(buffer, rect)?;
+    let width =
+        usize::try_from(view.width()).map_err(|_| EncodeError::ArithmeticOverflow { what })?;
+    let height =
+        usize::try_from(view.height()).map_err(|_| EncodeError::ArithmeticOverflow { what })?;
+    let capacity = width
+        .checked_mul(height)
+        .ok_or(EncodeError::ArithmeticOverflow { what })?;
+    let requested_bytes = capacity
+        .checked_mul(size_of::<T>())
+        .ok_or(EncodeError::ArithmeticOverflow { what })?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| EncodeError::HostAllocationFailed {
+            what,
+            bytes: requested_bytes,
+        })?;
+    for row in 0..view.height() {
+        let source = view.row(row).ok_or(EncodeError::InternalInvariant {
+            what: "validated forward DWT subband row is missing",
+        })?;
+        values.extend_from_slice(source);
     }
-    ll
+    if values.len() != capacity {
+        return Err(EncodeError::InternalInvariant {
+            what: "forward DWT extracted subband length mismatch",
+        });
+    }
+    Ok(values)
 }
 
 /// Result of the forward DWT: wavelet coefficients organized by subbands.
@@ -53,31 +90,107 @@ pub(crate) struct DwtLevel {
     pub(crate) high_height: u32,
 }
 
-/// Exact reversible 5-3 DWT coefficients for high-precision lossless encode.
-#[derive(Debug)]
-pub(crate) struct DwtDecompositionI64 {
-    pub(crate) ll: Vec<i64>,
-    pub(crate) ll_width: u32,
-    pub(crate) ll_height: u32,
-    pub(crate) levels: Vec<DwtLevelI64>,
-}
-
-#[derive(Debug)]
-pub(crate) struct DwtLevelI64 {
-    pub(crate) hl: Vec<i64>,
-    pub(crate) lh: Vec<i64>,
-    pub(crate) hh: Vec<i64>,
-    pub(crate) low_width: u32,
-    pub(crate) low_height: u32,
-    pub(crate) high_width: u32,
-    pub(crate) high_height: u32,
-}
-
 /// Perform multi-level forward DWT on the given image samples.
 ///
 /// `samples` are in row-major order, `width × height`.
 /// `num_levels` is the number of decomposition levels (typically 5).
 /// `reversible` selects 5-3 (true) or 9-7 (false) filter.
+pub(crate) fn try_forward_dwt(
+    samples: &[f32],
+    width: u32,
+    height: u32,
+    num_levels: u8,
+    reversible: bool,
+) -> EncodeResult<DwtDecomposition> {
+    packed::validate_packed_dwt_plane(samples.len(), width, height)?;
+    let w = usize::try_from(width).map_err(|_| EncodeError::ArithmeticOverflow {
+        what: "forward DWT width",
+    })?;
+    let h = usize::try_from(height).map_err(|_| EncodeError::ArithmeticOverflow {
+        what: "forward DWT height",
+    })?;
+
+    // Legacy decomposed output uses the same packed transform core as the
+    // allocation-aware encode path, then extracts bands for compatibility.
+    let sample_bytes =
+        samples
+            .len()
+            .checked_mul(size_of::<f32>())
+            .ok_or(EncodeError::ArithmeticOverflow {
+                what: "forward DWT sample bytes",
+            })?;
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(samples.len())
+        .map_err(|_| EncodeError::HostAllocationFailed {
+            what: "forward DWT packed coefficients",
+            bytes: sample_bytes,
+        })?;
+    buffer.extend_from_slice(samples);
+    let scratch_count = w.max(h);
+    let scratch_bytes =
+        scratch_count
+            .checked_mul(size_of::<f32>())
+            .ok_or(EncodeError::ArithmeticOverflow {
+                what: "forward DWT line scratch bytes",
+            })?;
+    let mut line_buf = Vec::new();
+    line_buf
+        .try_reserve_exact(scratch_count)
+        .map_err(|_| EncodeError::HostAllocationFailed {
+            what: "forward DWT line scratch",
+            bytes: scratch_bytes,
+        })?;
+    line_buf.resize(scratch_count, 0.0_f32);
+    let shape = try_forward_dwt_packed_f32(
+        &mut buffer,
+        width,
+        height,
+        num_levels,
+        reversible,
+        &mut line_buf,
+    )?;
+    let geometry = PackedDwtGeometry::try_new(width, height, buffer.len(), shape)?;
+    drop(line_buf);
+
+    let level_count = usize::from(geometry.num_levels());
+    let level_bytes =
+        level_count
+            .checked_mul(size_of::<DwtLevel>())
+            .ok_or(EncodeError::ArithmeticOverflow {
+                what: "forward DWT level owner bytes",
+            })?;
+    let mut levels = Vec::new();
+    levels
+        .try_reserve_exact(level_count)
+        .map_err(|_| EncodeError::HostAllocationFailed {
+            what: "forward DWT level owners",
+            bytes: level_bytes,
+        })?;
+    for resolution_index in 0..geometry.num_levels() {
+        let rects = geometry.level(resolution_index)?;
+        levels.push(DwtLevel {
+            hl: try_extract_rect(&buffer, rects.hl, "forward DWT HL coefficients")?,
+            lh: try_extract_rect(&buffer, rects.lh, "forward DWT LH coefficients")?,
+            hh: try_extract_rect(&buffer, rects.hh, "forward DWT HH coefficients")?,
+            low_width: rects.low_width,
+            low_height: rects.low_height,
+            high_width: rects.high_width,
+            high_height: rects.high_height,
+        });
+    }
+
+    let ll = geometry.ll()?;
+
+    Ok(DwtDecomposition {
+        ll: try_extract_rect(&buffer, ll, "forward DWT LL coefficients")?,
+        ll_width: shape.ll_width,
+        ll_height: shape.ll_height,
+        levels,
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn forward_dwt(
     samples: &[f32],
     width: u32,
@@ -85,249 +198,8 @@ pub(crate) fn forward_dwt(
     num_levels: u8,
     reversible: bool,
 ) -> DwtDecomposition {
-    let w = width as usize;
-    let h = height as usize;
-
-    // Working buffer: we transform in-place level by level
-    let mut buffer = samples.to_vec();
-    let mut current_width = w;
-    let mut current_height = h;
-    let mut current_width_u32 = width;
-    let mut current_height_u32 = height;
-
-    let mut levels = Vec::with_capacity(num_levels as usize);
-
-    for _ in 0..num_levels {
-        if current_width < 2 && current_height < 2 {
-            break;
-        }
-
-        // The decoder applies horizontal synthesis before vertical synthesis,
-        // so analysis must apply vertical first and horizontal second.
-        if current_height >= 2 {
-            let mut col_buf = vec![0.0f32; current_height];
-            for x in 0..current_width {
-                for y in 0..current_height {
-                    col_buf[y] = buffer[y * w + x];
-                }
-
-                if reversible {
-                    forward_lift_53(&mut col_buf[..current_height]);
-                } else {
-                    forward_lift_97(&mut col_buf[..current_height]);
-                }
-
-                // De-interleave: evens (low) then odds (high)
-                let num_low = current_height.div_ceil(2);
-                for i in 0..num_low {
-                    buffer[i * w + x] = col_buf[i * 2];
-                }
-                for i in 0..(current_height / 2) {
-                    buffer[(num_low + i) * w + x] = col_buf[i * 2 + 1];
-                }
-            }
-        }
-
-        if current_width >= 2 {
-            let mut row_buf = vec![0.0f32; current_width];
-            for y in 0..current_height {
-                let row_start = y * w;
-                row_buf[..current_width]
-                    .copy_from_slice(&buffer[row_start..row_start + current_width]);
-
-                if reversible {
-                    forward_lift_53(&mut row_buf[..current_width]);
-                } else {
-                    forward_lift_97(&mut row_buf[..current_width]);
-                }
-
-                // De-interleave: evens (low) then odds (high)
-                let num_low = current_width.div_ceil(2);
-                for i in 0..num_low {
-                    buffer[row_start + i] = row_buf[i * 2];
-                }
-                for i in 0..(current_width / 2) {
-                    buffer[row_start + num_low + i] = row_buf[i * 2 + 1];
-                }
-            }
-        }
-
-        let low_w = current_width.div_ceil(2);
-        let low_h = current_height.div_ceil(2);
-        let high_w = current_width / 2;
-        let high_h = current_height / 2;
-        let low_width_u32 = current_width_u32.div_ceil(2);
-        let low_height_u32 = current_height_u32.div_ceil(2);
-        let high_width_u32 = current_width_u32 / 2;
-        let high_height_u32 = current_height_u32 / 2;
-
-        // Extract subbands: HL (top-right), LH (bottom-left), HH (bottom-right)
-        let mut hl = vec![0.0f32; high_w * low_h];
-        let mut lh = vec![0.0f32; low_w * high_h];
-        let mut hh = vec![0.0f32; high_w * high_h];
-
-        for y in 0..low_h {
-            for x in 0..high_w {
-                hl[y * high_w + x] = buffer[y * w + low_w + x];
-            }
-        }
-        for y in 0..high_h {
-            for x in 0..low_w {
-                lh[y * low_w + x] = buffer[(low_h + y) * w + x];
-            }
-        }
-        for y in 0..high_h {
-            for x in 0..high_w {
-                hh[y * high_w + x] = buffer[(low_h + y) * w + low_w + x];
-            }
-        }
-
-        levels.push(DwtLevel {
-            hl,
-            lh,
-            hh,
-            low_width: low_width_u32,
-            low_height: low_height_u32,
-            high_width: high_width_u32,
-            high_height: high_height_u32,
-        });
-
-        current_width = low_w;
-        current_height = low_h;
-        current_width_u32 = low_width_u32;
-        current_height_u32 = low_height_u32;
-    }
-
-    // Extract final LL subband
-    let ll = extract_ll(&buffer, w, current_width, current_height);
-
-    // Levels are stored from highest resolution to lowest, but we want
-    // them in the same order the decoder expects (lowest to highest).
-    levels.reverse();
-
-    DwtDecomposition {
-        ll,
-        ll_width: current_width_u32,
-        ll_height: current_height_u32,
-        levels,
-    }
-}
-
-/// Perform exact multi-level reversible 5-3 DWT on signed integer samples.
-pub(crate) fn forward_dwt_i64(
-    samples: &[i64],
-    width: u32,
-    height: u32,
-    num_levels: u8,
-) -> DwtDecompositionI64 {
-    let w = width as usize;
-    let h = height as usize;
-
-    let mut buffer = samples.to_vec();
-    let mut current_width = w;
-    let mut current_height = h;
-    let mut current_width_u32 = width;
-    let mut current_height_u32 = height;
-    let mut levels = Vec::with_capacity(num_levels as usize);
-
-    for _ in 0..num_levels {
-        if current_width < 2 && current_height < 2 {
-            break;
-        }
-
-        if current_height >= 2 {
-            let mut col_buf = vec![0_i64; current_height];
-            for x in 0..current_width {
-                for y in 0..current_height {
-                    col_buf[y] = buffer[y * w + x];
-                }
-
-                forward_lift_53_i64(&mut col_buf[..current_height]);
-
-                let num_low = current_height.div_ceil(2);
-                for i in 0..num_low {
-                    buffer[i * w + x] = col_buf[i * 2];
-                }
-                for i in 0..(current_height / 2) {
-                    buffer[(num_low + i) * w + x] = col_buf[i * 2 + 1];
-                }
-            }
-        }
-
-        if current_width >= 2 {
-            let mut row_buf = vec![0_i64; current_width];
-            for y in 0..current_height {
-                let row_start = y * w;
-                row_buf[..current_width]
-                    .copy_from_slice(&buffer[row_start..row_start + current_width]);
-
-                forward_lift_53_i64(&mut row_buf[..current_width]);
-
-                let num_low = current_width.div_ceil(2);
-                for i in 0..num_low {
-                    buffer[row_start + i] = row_buf[i * 2];
-                }
-                for i in 0..(current_width / 2) {
-                    buffer[row_start + num_low + i] = row_buf[i * 2 + 1];
-                }
-            }
-        }
-
-        let low_w = current_width.div_ceil(2);
-        let low_h = current_height.div_ceil(2);
-        let high_w = current_width / 2;
-        let high_h = current_height / 2;
-        let low_width_u32 = current_width_u32.div_ceil(2);
-        let low_height_u32 = current_height_u32.div_ceil(2);
-        let high_width_u32 = current_width_u32 / 2;
-        let high_height_u32 = current_height_u32 / 2;
-
-        let mut hl = vec![0_i64; high_w * low_h];
-        let mut lh = vec![0_i64; low_w * high_h];
-        let mut hh = vec![0_i64; high_w * high_h];
-
-        for y in 0..low_h {
-            for x in 0..high_w {
-                hl[y * high_w + x] = buffer[y * w + low_w + x];
-            }
-        }
-        for y in 0..high_h {
-            for x in 0..low_w {
-                lh[y * low_w + x] = buffer[(low_h + y) * w + x];
-            }
-        }
-        for y in 0..high_h {
-            for x in 0..high_w {
-                hh[y * high_w + x] = buffer[(low_h + y) * w + low_w + x];
-            }
-        }
-
-        levels.push(DwtLevelI64 {
-            hl,
-            lh,
-            hh,
-            low_width: low_width_u32,
-            low_height: low_height_u32,
-            high_width: high_width_u32,
-            high_height: high_height_u32,
-        });
-
-        current_width = low_w;
-        current_height = low_h;
-        current_width_u32 = low_width_u32;
-        current_height_u32 = low_height_u32;
-    }
-
-    let ll = extract_ll(&buffer, w, current_width, current_height);
-
-    levels.reverse();
-
-    DwtDecompositionI64 {
-        ll,
-        ll_width: current_width_u32,
-        ll_height: current_height_u32,
-        levels,
-    }
+    try_forward_dwt(samples, width, height, num_levels, reversible)
+        .expect("test forward DWT geometry and allocation")
 }
 
 /// Forward 5-3 reversible lifting (integer arithmetic).
@@ -556,52 +428,31 @@ mod tests {
         reason = "i64 and f32 suffixes distinguish the two transform paths under comparison"
     )]
     fn forward_dwt_i64_matches_f32_path_for_exact_range() {
-        let samples_i64 = (0..25)
+        let mut coefficients_i64 = (0..25)
             .map(|idx| i64::from(((idx * 37 + idx / 3) & 0xffff) - 32_768))
             .collect::<Vec<_>>();
-        let samples_f32 = samples_i64
+        let mut coefficients_f32 = coefficients_i64
             .iter()
             .map(|sample| *sample as f32)
             .collect::<Vec<_>>();
+        let mut scratch_i64 = vec![0_i64; 5];
+        let mut scratch_f32 = vec![0.0_f32; 5];
 
-        let i64_decomp = forward_dwt_i64(&samples_i64, 5, 5, 2);
-        let f32_decomp = forward_dwt(&samples_f32, 5, 5, 2, true);
+        let shape_i64 =
+            try_forward_dwt_packed_i64(&mut coefficients_i64, 5, 5, 2, &mut scratch_i64)
+                .expect("valid exact packed transform");
+        let shape_f32 =
+            try_forward_dwt_packed_f32(&mut coefficients_f32, 5, 5, 2, true, &mut scratch_f32)
+                .expect("valid reversible packed transform");
 
+        assert_eq!(shape_i64, shape_f32);
         assert_eq!(
-            i64_decomp
-                .ll
+            coefficients_i64
                 .iter()
                 .map(|sample| *sample as f32)
                 .collect::<Vec<_>>(),
-            f32_decomp.ll
+            coefficients_f32
         );
-        assert_eq!(i64_decomp.levels.len(), f32_decomp.levels.len());
-        for (actual, expected) in i64_decomp.levels.iter().zip(&f32_decomp.levels) {
-            assert_eq!(
-                actual
-                    .hl
-                    .iter()
-                    .map(|sample| *sample as f32)
-                    .collect::<Vec<_>>(),
-                expected.hl
-            );
-            assert_eq!(
-                actual
-                    .lh
-                    .iter()
-                    .map(|sample| *sample as f32)
-                    .collect::<Vec<_>>(),
-                expected.lh
-            );
-            assert_eq!(
-                actual
-                    .hh
-                    .iter()
-                    .map(|sample| *sample as f32)
-                    .collect::<Vec<_>>(),
-                expected.hh
-            );
-        }
     }
 
     #[test]

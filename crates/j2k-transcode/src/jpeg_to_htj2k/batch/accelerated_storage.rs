@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// j2k-coverage: shared-accelerator-host
 
 use super::{
     add_dwt97_batch_stage_timings, dct_blocks_to_8x8_f64, htj2k97_codeblock_options,
     i16_htj2k97_jobs_for_batch_group, record_accelerator_attempt, record_batch_dispatch,
     validate_component_block_grid, BatchComponentRef, DctGridI16ToHtj2k97CodeBlockBatch,
     DctGridToHtj2k97CodeBlockJob, DctToWaveletStageAccelerator, Float97BatchTile,
-    Htj2k97CodeBlockOptions, Instant, IntoParallelRefIterator, JpegToHtj2kError,
-    JpegToHtj2kOptions, ParallelIterator, PreencodedHtj2k97CompactComponent,
+    Htj2k97CodeBlockOptions, IndexedParallelIterator, Instant, IntoParallelRefIterator,
+    JpegToHtj2kError, JpegToHtj2kOptions, ParallelIterator, PreencodedHtj2k97CompactComponent,
     PreencodedHtj2k97Component, TranscodeTimingReport,
 };
+use crate::allocation::{try_extend_from_slice, try_vec_filled, try_vec_with_capacity};
 
 pub(in super::super) fn store_compact_preencoded_component(
     tile: &mut Float97BatchTile,
@@ -33,8 +35,10 @@ pub(in super::super) fn store_compact_preencoded_component(
                     ));
                 }
                 let start = tile.preencoded_compact_payload.len();
-                tile.preencoded_compact_payload
-                    .extend_from_slice(&batch_payload[block.payload_range.clone()]);
+                try_extend_from_slice(
+                    &mut tile.preencoded_compact_payload,
+                    &batch_payload[block.payload_range.clone()],
+                )?;
                 let end = tile.preencoded_compact_payload.len();
                 block.payload_range = start..end;
             }
@@ -54,7 +58,7 @@ pub(in super::super) fn try_store_grouped_i16_preencoded_float97_batches<
     accelerator: &mut A,
     timings: &mut TranscodeTimingReport,
 ) -> Result<Vec<bool>, JpegToHtj2kError> {
-    let mut handled = vec![false; groups.len()];
+    let mut handled = try_vec_filled(groups.len(), false)?;
     if !accelerator.supports_htj2k97_i16_preencoded_batch()
         || options.validate_against_float_reference
         || groups.len() <= 1
@@ -62,16 +66,15 @@ pub(in super::super) fn try_store_grouped_i16_preencoded_float97_batches<
         return Ok(handled);
     }
 
-    let eligible_indices = groups
-        .iter()
-        .enumerate()
-        .filter_map(|(index, group)| {
-            let eligible = group
-                .iter()
-                .all(|component_ref| tiles[component_ref.tile_index].decomposition_levels == 1);
-            eligible.then_some(index)
-        })
-        .collect::<Vec<_>>();
+    let mut eligible_indices = try_vec_with_capacity(groups.len())?;
+    for (index, group) in groups.iter().enumerate() {
+        let eligible = group
+            .iter()
+            .all(|component_ref| tiles[component_ref.tile_index].decomposition_levels == 1);
+        if eligible {
+            eligible_indices.push(index);
+        }
+    }
     if eligible_indices.len() <= 1 {
         return Ok(handled);
     }
@@ -80,17 +83,17 @@ pub(in super::super) fn try_store_grouped_i16_preencoded_float97_batches<
     let total_jobs = eligible_indices
         .iter()
         .map(|&index| groups[index].len())
-        .sum::<usize>();
+        .fold(0usize, usize::saturating_add);
     record_accelerator_attempt(timings, total_jobs);
     let accelerator_start = Instant::now();
-    let jobs_by_group = eligible_indices
-        .iter()
-        .map(|&index| i16_htj2k97_jobs_for_batch_group(&groups[index], tiles))
-        .collect::<Result<Vec<_>, JpegToHtj2kError>>()?;
-    let batches = jobs_by_group
-        .iter()
-        .map(|jobs| DctGridI16ToHtj2k97CodeBlockBatch { jobs })
-        .collect::<Vec<_>>();
+    let mut jobs_by_group = try_vec_with_capacity(eligible_indices.len())?;
+    for &index in &eligible_indices {
+        jobs_by_group.push(i16_htj2k97_jobs_for_batch_group(&groups[index], tiles)?);
+    }
+    let mut batches = try_vec_with_capacity(jobs_by_group.len())?;
+    for jobs in &jobs_by_group {
+        batches.push(DctGridI16ToHtj2k97CodeBlockBatch { jobs });
+    }
 
     let compact_grouped_components = if accelerator.supports_htj2k97_compact_preencoded_batch() {
         accelerator
@@ -329,7 +332,8 @@ fn try_store_f64_prequantized_float97_batch_group<A: DctToWaveletStageAccelerato
     timings: &mut TranscodeTimingReport,
 ) -> Result<bool, JpegToHtj2kError> {
     let repack_start = Instant::now();
-    let block_storage = group
+    let mut block_results = try_vec_with_capacity(group.len())?;
+    group
         .par_iter()
         .map(|component_ref| {
             dct_blocks_to_8x8_f64(
@@ -337,30 +341,31 @@ fn try_store_f64_prequantized_float97_batch_group<A: DctToWaveletStageAccelerato
                     .dequantized_blocks,
             )
         })
-        .collect::<Vec<_>>();
+        .collect_into_vec(&mut block_results);
+    let mut block_storage = try_vec_with_capacity(block_results.len())?;
+    for blocks in block_results {
+        block_storage.push(blocks?);
+    }
     timings.jpeg_dct_repack_us = timings
         .jpeg_dct_repack_us
         .saturating_add(repack_start.elapsed().as_micros());
 
-    let jobs = group
-        .iter()
-        .zip(block_storage.iter())
-        .map(|(component_ref, blocks)| {
-            let tile = &tiles[component_ref.tile_index];
-            let component = &tile.jpeg.components[component_ref.component_index];
-            let (x_rsiz, y_rsiz) = tile.component_sampling[component_ref.component_index];
-            validate_component_block_grid(component)?;
-            Ok(DctGridToHtj2k97CodeBlockJob {
-                blocks,
-                block_cols: component.block_cols as usize,
-                block_rows: component.block_rows as usize,
-                width: component.width as usize,
-                height: component.height as usize,
-                x_rsiz,
-                y_rsiz,
-            })
-        })
-        .collect::<Result<Vec<_>, JpegToHtj2kError>>()?;
+    let mut jobs = try_vec_with_capacity(group.len())?;
+    for (component_ref, blocks) in group.iter().zip(block_storage.iter()) {
+        let tile = &tiles[component_ref.tile_index];
+        let component = &tile.jpeg.components[component_ref.component_index];
+        let (x_rsiz, y_rsiz) = tile.component_sampling[component_ref.component_index];
+        validate_component_block_grid(component)?;
+        jobs.push(DctGridToHtj2k97CodeBlockJob {
+            blocks,
+            block_cols: component.block_cols as usize,
+            block_rows: component.block_rows as usize,
+            width: component.width as usize,
+            height: component.height as usize,
+            x_rsiz,
+            y_rsiz,
+        });
+    }
 
     record_accelerator_attempt(timings, group.len());
     let accelerator_start = Instant::now();

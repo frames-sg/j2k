@@ -39,7 +39,7 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
             message: "J2K Metal resident hybrid bytes per sample exceeds u8".to_string(),
         })?;
     validate_padded_contiguous_metal_encode_tile(tile, bytes_per_pixel)?;
-    let Some(plan) = lossless_device_encode_plan(
+    let Some(mut plan) = lossless_device_encode_plan(
         tile.output_width,
         tile.output_height,
         components,
@@ -56,6 +56,9 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
     }
 
     let coefficient_count = lossless_device_coefficient_count(&plan.code_blocks)?;
+    let code_block_count = plan.code_blocks.len();
+    let resolution_count = plan.resolutions.len();
+    let code_blocks = plan.take_code_blocks();
     let prepared = compute::prepare_lossless_device_code_blocks(
         session,
         compute::J2kLosslessDevicePrepareJob {
@@ -72,7 +75,7 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
             num_decomposition_levels: plan.num_decomposition_levels,
             coefficient_count,
         },
-        plan.code_blocks.clone(),
+        code_blocks,
     )?;
     let resident_tier1 =
         compute::encode_ht_prepared_device_code_blocks_resident(session, prepared)?;
@@ -80,22 +83,25 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
         session,
         &resident_tier1,
     )?;
-    let packetization_resolutions =
-        cpu_packetization_resolutions_from_lossless_device_plan(&plan, &encoded_blocks)?;
+    let packetization_resolutions = cpu_packetization_resolutions_from_lossless_device_plan(
+        &plan,
+        code_block_count,
+        &encoded_blocks,
+    )?;
     let packet_descriptors = packet_descriptors_for_lossless_device_order(
-        plan.resolutions.len(),
+        resolution_count,
         plan.components,
         plan.progression_order,
     )?;
     let packetization_job = J2kPacketizationEncodeJob {
-        resolution_count: u32::try_from(plan.resolutions.len()).map_err(|_| {
+        resolution_count: u32::try_from(resolution_count).map_err(|_| {
             crate::Error::MetalKernel {
                 message: "J2K Metal resident hybrid resolution count exceeds u32".to_string(),
             }
         })?,
         num_layers: 1,
         num_components: u16::from(plan.components),
-        code_block_count: u32::try_from(plan.code_blocks.len()).map_err(|_| {
+        code_block_count: u32::try_from(code_block_count).map_err(|_| {
             crate::Error::MetalKernel {
                 message: "J2K Metal resident hybrid code-block count exceeds u32".to_string(),
             }
@@ -113,7 +119,7 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
 
     Ok(Some(ResidentHybridHtTileBody {
         tile_data,
-        code_block_count: plan.code_blocks.len(),
+        code_block_count,
         num_decomposition_levels: plan.num_decomposition_levels,
         used_fused_rct: plan.use_mct && tile.format == PixelFormat::Rgb8,
         forward_dwt53_dispatches: if plan.num_decomposition_levels > 0 {
@@ -121,7 +127,7 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
         } else {
             0
         },
-        ht_code_block_dispatches: usize::from(!plan.code_blocks.is_empty()),
+        ht_code_block_dispatches: usize::from(code_block_count != 0),
     }))
 }
 

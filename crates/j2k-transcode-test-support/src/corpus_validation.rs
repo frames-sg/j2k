@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use j2k_transcode::metrics::ErrorHistogram;
 use j2k_transcode::{
     jpeg_to_htj2k, JpegToHtj2kError, JpegToHtj2kOptions, TranscodeValidationClassification,
 };
@@ -233,8 +234,11 @@ pub fn validate_transcode_corpus(
         report.sample_count += validated.report.sample_count;
         report.exact_match_count += validated.report.exact_match_count;
         report.max_abs_error = report.max_abs_error.max(validated.report.max_abs_error);
-        for (error, count) in validated.histogram_buckets {
-            *report.histogram_buckets.entry(error).or_insert(0) += count;
+        for bucket in validated.histogram_buckets {
+            *report
+                .histogram_buckets
+                .entry(bucket.absolute_error())
+                .or_insert(0) += bucket.count();
         }
         report.fixtures.push(validated.report);
     }
@@ -245,7 +249,7 @@ pub fn validate_transcode_corpus(
 
 struct ValidatedFixture {
     report: CorpusFixtureReport,
-    histogram_buckets: BTreeMap<i64, usize>,
+    histogram_buckets: ErrorHistogram,
 }
 
 fn validate_fixture(
@@ -260,13 +264,11 @@ fn validate_fixture(
             source,
         }
     })?;
-    let metrics = encoded
-        .report
-        .integer_reference_metrics
-        .as_ref()
-        .ok_or_else(|| CorpusValidationError::MissingMetrics {
+    let metrics = encoded.report.integer_reference_metrics.ok_or_else(|| {
+        CorpusValidationError::MissingMetrics {
             name: fixture.name.to_string(),
-        })?;
+        }
+    })?;
 
     Ok(ValidatedFixture {
         report: CorpusFixtureReport {
@@ -276,9 +278,9 @@ fn validate_fixture(
             sample_count: metrics.total,
             exact_match_count: metrics.exact_matches,
             max_abs_error: metrics.max_abs_error,
-            classification: TranscodeValidationClassification::classify_metrics(metrics),
+            classification: TranscodeValidationClassification::classify_metrics(&metrics),
         },
-        histogram_buckets: metrics.absolute_error_histogram.clone(),
+        histogram_buckets: metrics.absolute_error_histogram,
     })
 }
 

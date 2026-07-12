@@ -12,7 +12,50 @@
 
 use crate::error::{JpegError, UnsupportedReason};
 use crate::info::{SamplingFactors, SofKind};
-use alloc::vec::Vec;
+use core::ops::{Deref, Index};
+
+const MAX_FRAME_COMPONENTS: usize = 4;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FrameComponentValues {
+    entries: [u8; MAX_FRAME_COMPONENTS],
+    len: u8,
+}
+
+impl FrameComponentValues {
+    fn push(&mut self, value: u8) -> Result<(), JpegError> {
+        let index = usize::from(self.len);
+        let slot = self
+            .entries
+            .get_mut(index)
+            .ok_or(JpegError::UnsupportedComponentCount {
+                count: self.len.saturating_add(1),
+            })?;
+        *slot = value;
+        self.len += 1;
+        Ok(())
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.entries[..usize::from(self.len)]
+    }
+}
+
+impl Deref for FrameComponentValues {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl Index<usize> for FrameComponentValues {
+    type Output = u8;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.as_slice()[index]
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct ParsedSof {
@@ -21,10 +64,10 @@ pub(crate) struct ParsedSof {
     pub(crate) width: u16,
     pub(crate) height: u16,
     pub(crate) sampling: SamplingFactors,
-    pub(crate) component_ids: Vec<u8>,
+    pub(crate) component_ids: FrameComponentValues,
     /// Quantization-table id for each component (SOF3 ignores this; kept
     /// for baseline/extended/progressive).
-    pub(crate) quant_table_ids: Vec<u8>,
+    pub(crate) quant_table_ids: FrameComponentValues,
 }
 
 #[expect(
@@ -113,11 +156,11 @@ pub(crate) fn parse_sof(
         return Err(JpegError::UnsupportedComponentCount { count: nf });
     }
 
-    let mut components = Vec::with_capacity(nf as usize);
-    let mut component_ids = Vec::with_capacity(nf as usize);
-    let mut quant_table_ids = Vec::with_capacity(nf as usize);
+    let mut components = [(0u8, 0u8); 4];
+    let mut component_ids = FrameComponentValues::default();
+    let mut quant_table_ids = FrameComponentValues::default();
 
-    for i in 0..nf as usize {
+    for (i, component_slot) in components[..usize::from(nf)].iter_mut().enumerate() {
         let base = 6 + i * 3;
         let component_id = payload[base];
         let sampling_byte = payload[base + 1];
@@ -131,9 +174,9 @@ pub(crate) fn parse_sof(
                 v,
             });
         }
-        components.push((h, v));
-        component_ids.push(component_id);
-        quant_table_ids.push(tq);
+        *component_slot = (h, v);
+        component_ids.push(component_id)?;
+        quant_table_ids.push(tq)?;
     }
 
     Ok(ParsedSof {
@@ -141,7 +184,7 @@ pub(crate) fn parse_sof(
         bit_depth: precision,
         width,
         height,
-        sampling: SamplingFactors::from_validated_components(&components),
+        sampling: SamplingFactors::from_validated_components(&components[..nf as usize]),
         component_ids,
         quant_table_ids,
     })
@@ -185,8 +228,8 @@ mod tests {
         assert_eq!(p.sampling.components(), &[(2, 2), (1, 1), (1, 1)]);
         assert_eq!(p.sampling.max_h, 2);
         assert_eq!(p.sampling.max_v, 2);
-        assert_eq!(p.component_ids, vec![1, 2, 3]);
-        assert_eq!(p.quant_table_ids, vec![0, 1, 1]);
+        assert_eq!(p.component_ids.as_slice(), [1, 2, 3]);
+        assert_eq!(p.quant_table_ids.as_slice(), [0, 1, 1]);
     }
 
     #[test]

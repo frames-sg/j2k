@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{JpegDctComponent, JpegToHtj2kCoefficientPath, JpegToHtj2kError, JpegToHtj2kOptions};
+use crate::allocation::{
+    checked_add_allocation_bytes, checked_allocation_bytes, try_vec_with_capacity,
+};
 
 pub(super) fn validate_transcode_options(
     options: &JpegToHtj2kOptions,
 ) -> Result<(), JpegToHtj2kError> {
+    validate_option_allocation(options)?;
     if !options.encode_options.use_ht_block_coding {
         return Err(JpegToHtj2kError::Unsupported(
             "jpeg_to_htj2k requires HT block coding",
@@ -36,6 +40,23 @@ pub(super) fn validate_transcode_options(
             ))
         }
     }
+}
+
+fn validate_option_allocation(options: &JpegToHtj2kOptions) -> Result<(), JpegToHtj2kError> {
+    let quality_bytes =
+        checked_allocation_bytes::<u64>(options.encode_options.quality_layer_byte_targets.len())?;
+    let sampling_bytes = checked_allocation_bytes::<(u8, u8)>(
+        options
+            .encode_options
+            .component_sampling
+            .as_ref()
+            .map_or(0, Vec::len),
+    )?;
+    let precinct_bytes =
+        checked_allocation_bytes::<(u8, u8)>(options.encode_options.precinct_exponents.len())?;
+    let option_bytes = checked_add_allocation_bytes(quality_bytes, sampling_bytes)?;
+    checked_add_allocation_bytes(option_bytes, precinct_bytes)?;
+    Ok(())
 }
 
 pub(super) fn validate_component_block_grid(
@@ -108,31 +129,29 @@ pub(super) fn component_sampling_for_jpeg(
         .max()
         .ok_or(JpegToHtj2kError::Unsupported("missing JPEG components"))?;
 
-    components
-        .iter()
-        .map(|component| {
-            if component.h_samp == 0 || component.v_samp == 0 {
-                return Err(JpegToHtj2kError::Unsupported(
-                    "JPEG component sampling factors must be non-zero",
-                ));
-            }
-            if max_h % component.h_samp != 0 || max_v % component.v_samp != 0 {
-                return Err(JpegToHtj2kError::Unsupported(
-                    "fractional JPEG component sampling is not supported",
-                ));
-            }
+    let mut sampling = try_vec_with_capacity(components.len())?;
+    for component in components {
+        if component.h_samp == 0 || component.v_samp == 0 {
+            return Err(JpegToHtj2kError::Unsupported(
+                "JPEG component sampling factors must be non-zero",
+            ));
+        }
+        if max_h % component.h_samp != 0 || max_v % component.v_samp != 0 {
+            return Err(JpegToHtj2kError::Unsupported(
+                "fractional JPEG component sampling is not supported",
+            ));
+        }
 
-            let x_rsiz = max_h / component.h_samp;
-            let y_rsiz = max_v / component.v_samp;
-            let expected_width = reference_width.div_ceil(u32::from(x_rsiz));
-            let expected_height = reference_height.div_ceil(u32::from(y_rsiz));
-            if component.width != expected_width || component.height != expected_height {
-                return Err(JpegToHtj2kError::Unsupported(
-                    "JPEG component dimensions do not match derived SIZ sampling",
-                ));
-            }
-
-            Ok((x_rsiz, y_rsiz))
-        })
-        .collect()
+        let x_rsiz = max_h / component.h_samp;
+        let y_rsiz = max_v / component.v_samp;
+        let expected_width = reference_width.div_ceil(u32::from(x_rsiz));
+        let expected_height = reference_height.div_ceil(u32::from(y_rsiz));
+        if component.width != expected_width || component.height != expected_height {
+            return Err(JpegToHtj2kError::Unsupported(
+                "JPEG component dimensions do not match derived SIZ sampling",
+            ));
+        }
+        sampling.push((x_rsiz, y_rsiz));
+    }
+    Ok(sampling)
 }

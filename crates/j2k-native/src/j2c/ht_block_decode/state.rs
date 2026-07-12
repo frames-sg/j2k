@@ -3,7 +3,16 @@
 use alloc::vec::Vec;
 
 use super::super::build::CodeBlock;
+use super::pipeline::prepare_scratch;
+use crate::error::{Result, ValidationError};
 use crate::profile;
+use crate::{checked_decode_sample_count, try_resize_decode_elements};
+use core::mem::size_of;
+
+mod scratch;
+#[cfg(test)]
+pub(super) use self::scratch::zeroed_u32_scratch;
+pub(super) use self::scratch::{resized_u16_scratch, resized_u32_scratch, zeroed_u16_scratch};
 
 #[derive(Default)]
 pub(crate) struct HtBlockDecodeContext {
@@ -14,12 +23,28 @@ pub(crate) struct HtBlockDecodeContext {
 }
 
 impl HtBlockDecodeContext {
-    pub(super) fn reset(&mut self, code_block: &CodeBlock) {
-        self.width = code_block.rect.width();
-        self.height = code_block.rect.height();
+    pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
+        self.width = width;
+        self.height = height;
+        let coefficient_count = checked_decode_sample_count(width, height)?;
         self.coefficients.clear();
-        self.coefficients
-            .resize((self.width * self.height) as usize, 0);
+        try_resize_decode_elements(&mut self.coefficients, coefficient_count, 0)?;
+        prepare_scratch(&mut self.scratch, width, height)
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> Result<usize> {
+        let coefficient_bytes = self
+            .coefficients
+            .capacity()
+            .checked_mul(size_of::<u32>())
+            .ok_or(ValidationError::ImageTooLarge)?;
+        coefficient_bytes
+            .checked_add(self.scratch.allocated_bytes()?)
+            .ok_or(ValidationError::ImageTooLarge.into())
+    }
+
+    pub(super) fn reset(&mut self, code_block: &CodeBlock) -> Result<()> {
+        self.prepare(code_block.rect.width(), code_block.rect.height())
     }
 
     pub(crate) fn coefficient_rows(&self) -> impl Iterator<Item = &[u32]> {
@@ -33,6 +58,31 @@ pub(crate) struct HtBlockDecodeScratch {
     pub(super) v_n: Vec<u32>,
     pub(super) sigma: Vec<u16>,
     pub(super) prev_row_sig: Vec<u16>,
+}
+
+impl HtBlockDecodeScratch {
+    pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
+        prepare_scratch(self, width, height)
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> Result<usize> {
+        let mut bytes = 0usize;
+        include_capacity::<u16>(&mut bytes, self.cleanup.capacity())?;
+        include_capacity::<u32>(&mut bytes, self.v_n.capacity())?;
+        include_capacity::<u16>(&mut bytes, self.sigma.capacity())?;
+        include_capacity::<u16>(&mut bytes, self.prev_row_sig.capacity())?;
+        Ok(bytes)
+    }
+}
+
+fn include_capacity<T>(bytes: &mut usize, capacity: usize) -> Result<()> {
+    let additional = capacity
+        .checked_mul(size_of::<T>())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    *bytes = bytes
+        .checked_add(additional)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    Ok(())
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,54 +231,4 @@ impl HtBlockDecodeScratch {
         self.sigma.fill(u16::MAX);
         self.prev_row_sig.fill(u16::MAX);
     }
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "fuse scratch clearing into the phase loop"
-)]
-#[inline(always)]
-pub(super) fn zeroed_u16_scratch(buffer: &mut Vec<u16>, len: usize) -> &mut [u16] {
-    if buffer.len() < len {
-        buffer.resize(len, 0);
-    }
-    buffer[..len].fill(0);
-
-    &mut buffer[..len]
-}
-
-#[cfg(test)]
-pub(super) fn zeroed_u32_scratch(buffer: &mut Vec<u32>, len: usize) -> &mut [u32] {
-    if buffer.len() < len {
-        buffer.resize(len, 0);
-    }
-    buffer[..len].fill(0);
-
-    &mut buffer[..len]
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "fuse scratch resizing into the phase loop"
-)]
-#[inline(always)]
-pub(super) fn resized_u16_scratch(buffer: &mut Vec<u16>, len: usize) -> &mut [u16] {
-    if buffer.len() < len {
-        buffer.resize(len, 0);
-    }
-
-    &mut buffer[..len]
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "fuse scratch resizing into the phase loop"
-)]
-#[inline(always)]
-pub(super) fn resized_u32_scratch(buffer: &mut Vec<u32>, len: usize) -> &mut [u32] {
-    if buffer.len() < len {
-        buffer.resize(len, 0);
-    }
-
-    &mut buffer[..len]
 }

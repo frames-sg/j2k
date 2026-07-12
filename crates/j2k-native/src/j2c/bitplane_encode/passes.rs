@@ -2,7 +2,6 @@
 
 // Classic EBCOT cleanup, significance-propagation, and refinement kernels.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::super::arithmetic_encoder::{ArithmeticEncoder, ArithmeticEncoderContext};
@@ -99,29 +98,6 @@ const SIGN_CONTEXT_LOOKUP: [(u8, u8); 256] = [
     (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
     (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
 ];
-
-pub(super) fn prepare_padded_coefficients(
-    coefficients: &[i64],
-    w: usize,
-    h: usize,
-    pw: usize,
-) -> (Vec<u64>, Vec<u8>) {
-    let mut magnitudes = vec![0u64; pw * (h + 2)];
-    let mut states = vec![0u8; magnitudes.len()];
-
-    for y in 0..h {
-        for x in 0..w {
-            let idx = (y + 1) * pw + (x + 1);
-            let coeff = coefficients[y * w + x];
-            magnitudes[idx] = coeff.unsigned_abs();
-            if coeff < 0 {
-                states[idx] = NEGATIVE;
-            }
-        }
-    }
-
-    (magnitudes, states)
-}
 
 pub(super) fn mark_coded_in_current_pass(
     idx: usize,

@@ -44,7 +44,10 @@ fn tile_device_decode_matches_host_tile_decode() {
     surface
         .download_into(&mut downloaded, surface.pitch_bytes())
         .expect("download");
-    assert_eq!(downloaded, surface.as_bytes().as_ref());
+    assert_eq!(
+        downloaded,
+        surface.as_bytes().expect("surface byte access").as_ref()
+    );
     assert_eq!(downloaded, expected);
 }
 
@@ -72,7 +75,10 @@ fn tile_scaled_device_decode_has_expected_dimensions() {
     .expect("tile scaled device decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), (4, 4));
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -114,7 +120,10 @@ fn tile_region_device_decode_has_expected_dimensions() {
     .expect("tile region device decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), (8, 8));
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -149,7 +158,10 @@ fn compatible_tile_submits_flush_once() {
     for submission in submissions {
         let surface = submission.wait().expect("surface");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 
     assert_eq!(session.submissions().expect("session submissions"), 1);
@@ -196,7 +208,10 @@ fn jpeg_tile_batch_api_decodes_full_tiles_in_submission_order() {
     for surface in surfaces {
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.dimensions(), (16, 16));
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -227,7 +242,10 @@ fn auto_small_restart_tile_batch_stays_cpu_surface() {
     for submission in submissions {
         let surface = submission.wait().expect("surface");
         assert_eq!(surface.backend_kind(), BackendKind::Cpu);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 
     assert_eq!(session.submissions().expect("session submissions"), 1);
@@ -265,7 +283,10 @@ fn auto_restart_wsi_tile_batch_uses_metal_at_threshold() {
     for submission in submissions {
         let surface = submission.wait().expect("surface");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 
     assert_eq!(session.submissions().expect("session submissions"), 1);
@@ -324,7 +345,10 @@ fn compatible_region_scaled_tile_submits_flush_once() {
         let surface = submission.wait().expect("surface");
         assert_eq!(surface.backend_kind(), BackendKind::Metal);
         assert_eq!(surface.dimensions(), (2, 2));
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 
     assert_eq!(session.submissions().expect("session submissions"), 1);

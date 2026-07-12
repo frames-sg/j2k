@@ -6,130 +6,18 @@ use core::mem::size_of;
 use super::super::arithmetic_decoder::ArithmeticDecoderContext;
 use super::super::build::{CodeBlock, SubBandType};
 use super::super::codestream::CodeBlockStyle;
-use crate::error::{bail, DecodingError, Result};
+use crate::error::{bail, DecodingError, Result, ValidationError};
+use crate::try_reserve_decode_elements;
 
-// JPEG 2000 Part 1 permits up to 38 sample bits; keep additional headroom for
-// guard bits and ROI-shifted code-block magnitudes while reserving one sign bit.
-#[expect(clippy::cast_possible_truncation, reason = "u64 is eight bytes")]
-pub(crate) const BITPLANE_BIT_SIZE: u32 = size_of::<u64>() as u32 * 8 - 1;
+mod model;
+mod workspace;
 
-pub(super) const HAS_MAGNITUDE_REFINEMENT_SHIFT: u8 = 6;
-pub(super) const HAS_ZERO_CODING_SHIFT: u8 = 5;
-pub(super) const SIGNIFICANCE_MASK: u8 = 1 << 7;
-pub(super) const HAS_MAGNITUDE_REFINEMENT_MASK: u8 = 1 << HAS_MAGNITUDE_REFINEMENT_SHIFT;
-pub(super) const HAS_ZERO_CODING_MASK: u8 = 1 << HAS_ZERO_CODING_SHIFT;
-
-/// Bit-packed coefficient state (only 3 bits used):
-/// - Bit 7: significance state (set when first non-zero bit is encountered)
-/// - Bit 6: has had magnitude refinement pass
-/// - Bit 5: zero coded in current bitplane's significance propagation pass
-#[derive(Default, Copy, Clone)]
-pub(crate) struct CoefficientState(pub(super) u8);
-
-impl CoefficientState {
-    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
-    #[inline(always)]
-    pub(super) fn set_significant(&mut self) {
-        self.0 |= SIGNIFICANCE_MASK;
-    }
-
-    #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
-    #[inline(always)]
-    pub(super) fn is_significant(self) -> bool {
-        self.0 & SIGNIFICANCE_MASK != 0
-    }
-}
-
-#[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct Coefficient(pub(super) u64);
-
-impl Coefficient {
-    #[cfg(test)]
-    #[expect(clippy::trivially_copy_pass_by_ref, reason = "stable accessor")]
-    pub(crate) fn get(&self) -> i32 {
-        i32::try_from(
-            self.get_i64()
-                .clamp(i64::from(i32::MIN), i64::from(i32::MAX)),
-        )
-        .expect("coefficient is clamped to the i32 range")
-    }
-
-    #[expect(clippy::trivially_copy_pass_by_ref, reason = "stable accessor")]
-    pub(crate) fn get_i64(&self) -> i64 {
-        let mut magnitude = (self.0 & !(1_u64 << 63)).cast_signed();
-        // Map sign (0 for positive, 1 for negative) to 1, -1.
-        magnitude *= 1 - 2 * i64::from(self.sign() != 0);
-
-        magnitude
-    }
-
-    pub(super) fn set_sign(&mut self, sign: u8) {
-        self.0 |= u64::from(sign) << 63;
-    }
-
-    pub(super) fn sign(self) -> u64 {
-        (self.0 >> 63) & 1
-    }
-
-    pub(super) fn push_bit_at(&mut self, bit: u32, position: u8) {
-        self.0 |= u64::from(bit) << position;
-    }
-}
-
-pub(super) const COEFFICIENTS_PADDING: u32 = 1;
-
-/// Store the significances of each neighbor for a specific coefficient.
-/// The order from MSB to LSB is as follows:
-///
-/// top-left, top, top-right, left, bottom-left, right, bottom-right, bottom.
-///
-/// See the `context_label_sign_coding` method for why we aren't simply using
-/// row-major order.
-#[derive(Default, Copy, Clone)]
-pub(super) struct NeighborSignificances(pub(super) u8);
-
-impl NeighborSignificances {
-    pub(super) fn set_top_left(&mut self) {
-        self.0 |= 1 << 7;
-    }
-
-    pub(super) fn set_top(&mut self) {
-        self.0 |= 1 << 6;
-    }
-
-    pub(super) fn set_top_right(&mut self) {
-        self.0 |= 1 << 5;
-    }
-
-    pub(super) fn set_left(&mut self) {
-        self.0 |= 1 << 4;
-    }
-
-    pub(super) fn set_bottom_left(&mut self) {
-        self.0 |= 1 << 3;
-    }
-
-    pub(super) fn set_right(&mut self) {
-        self.0 |= 1 << 2;
-    }
-
-    pub(super) fn set_bottom_right(&mut self) {
-        self.0 |= 1 << 1;
-    }
-
-    pub(super) fn set_bottom(&mut self) {
-        self.0 |= 1;
-    }
-
-    pub(super) fn all(self) -> u8 {
-        self.0
-    }
-
-    // Needed for vertically causal context.
-    pub(super) fn all_without_bottom(self) -> u8 {
-        self.0 & 0b1111_0100
-    }
-}
+pub(crate) use model::{Coefficient, CoefficientState, BITPLANE_BIT_SIZE};
+pub(super) use model::{
+    NeighborSignificances, COEFFICIENTS_PADDING, HAS_MAGNITUDE_REFINEMENT_MASK,
+    HAS_ZERO_CODING_MASK, SIGNIFICANCE_MASK,
+};
+pub(crate) use workspace::classic_decode_workspace_bytes;
 
 #[derive(Default)]
 pub(crate) struct BitPlaneDecodeBuffers {
@@ -139,16 +27,60 @@ pub(crate) struct BitPlaneDecodeBuffers {
 }
 
 impl BitPlaneDecodeBuffers {
-    pub(super) fn reset(&mut self) {
+    pub(crate) fn prepare(&mut self, data_len: usize, boundary_len: usize) -> Result<()> {
+        self.combined_layers.clear();
+        self.segment_ranges.clear();
+        self.segment_coding_passes.clear();
+        try_reserve_decode_elements(&mut self.combined_layers, data_len)?;
+        try_reserve_decode_elements(&mut self.segment_ranges, boundary_len)?;
+        try_reserve_decode_elements(&mut self.segment_coding_passes, boundary_len)
+    }
+
+    pub(super) fn reset(&mut self) -> Option<()> {
         self.combined_layers.clear();
         self.segment_ranges.clear();
         self.segment_coding_passes.clear();
 
         // The design of these two buffers is that the ranges are stored
         // as [idx, idx + 1), so we need to store the first 0 when resetting.
-        self.segment_ranges.push(0);
-        self.segment_coding_passes.push(0);
+        push_preallocated(&mut self.segment_ranges, 0)?;
+        push_preallocated(&mut self.segment_coding_passes, 0)
     }
+
+    pub(crate) fn allocated_bytes(&self) -> Result<usize> {
+        let mut bytes = 0usize;
+        include_capacity::<u8>(&mut bytes, self.combined_layers.capacity())?;
+        include_capacity::<usize>(&mut bytes, self.segment_ranges.capacity())?;
+        include_capacity::<u8>(&mut bytes, self.segment_coding_passes.capacity())?;
+        Ok(bytes)
+    }
+}
+
+pub(super) fn push_preallocated<T>(values: &mut Vec<T>, value: T) -> Option<()> {
+    if values.len() == values.capacity() {
+        return None;
+    }
+    values.push(value);
+    Some(())
+}
+
+pub(super) fn extend_preallocated<T: Copy>(values: &mut Vec<T>, source: &[T]) -> Option<()> {
+    let required_len = values.len().checked_add(source.len())?;
+    if required_len > values.capacity() {
+        return None;
+    }
+    values.extend_from_slice(source);
+    Some(())
+}
+
+fn include_capacity<T>(bytes: &mut usize, capacity: usize) -> Result<()> {
+    let additional = capacity
+        .checked_mul(size_of::<T>())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    *bytes = bytes
+        .checked_add(additional)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    Ok(())
 }
 
 pub(crate) struct BitPlaneDecodeContext {
@@ -208,6 +140,23 @@ impl Default for BitPlaneDecodeContext {
 }
 
 impl BitPlaneDecodeContext {
+    pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
+        workspace::reset_decode_buffers(self, width, height).map(|_| ())
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> Result<usize> {
+        let mut bytes = 0usize;
+        include_capacity::<Coefficient>(&mut bytes, self.coefficients.capacity())?;
+        include_capacity::<NeighborSignificances>(
+            &mut bytes,
+            self.neighbor_significances.capacity(),
+        )?;
+        include_capacity::<CoefficientState>(&mut bytes, self.coefficient_states.capacity())?;
+        include_capacity::<u8>(&mut bytes, self.significant_scan_masks.capacity())?;
+        include_capacity::<u8>(&mut bytes, self.zero_coding_scan_masks.capacity())?;
+        Ok(bytes)
+    }
+
     #[expect(
         clippy::too_many_arguments,
         clippy::trivially_copy_pass_by_ref,
@@ -224,27 +173,7 @@ impl BitPlaneDecodeContext {
         total_bitplanes: u8,
         strict: bool,
     ) -> Result<()> {
-        let padded_width = width + COEFFICIENTS_PADDING * 2;
-        let padded_height = height + COEFFICIENTS_PADDING * 2;
-        let num_coefficients = padded_width as usize * padded_height as usize;
-
-        self.coefficients.clear();
-        self.coefficients
-            .resize(num_coefficients, Coefficient::default());
-
-        self.neighbor_significances.clear();
-        self.neighbor_significances
-            .resize(num_coefficients, NeighborSignificances::default());
-
-        self.coefficient_states.clear();
-        self.coefficient_states
-            .resize(num_coefficients, CoefficientState::default());
-
-        let scan_units = width as usize * height.div_ceil(4) as usize;
-        self.significant_scan_masks.clear();
-        self.significant_scan_masks.resize(scan_units, 0);
-        self.zero_coding_scan_masks.clear();
-        self.zero_coding_scan_masks.resize(scan_units, 0);
+        let padded_width = workspace::reset_decode_buffers(self, width, height)?;
 
         self.width = width;
         self.padded_width = padded_width;
@@ -274,6 +203,16 @@ impl BitPlaneDecodeContext {
         self.strict = strict;
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserve_coefficients_for_test(&mut self, additional: usize) {
+        self.coefficients.reserve(additional);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coefficient_capacity_for_test(&self) -> usize {
+        self.coefficients.capacity()
     }
 
     /// Completely reset context so that it can be reused for a new code-block.

@@ -1,134 +1,97 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 
 use super::super::ht_block_decode::sigma_stride;
+use super::allocation::HtWorkerAllocation;
+use crate::j2c::coefficient_view::CoefficientBlockView;
+use crate::j2c::encode::allocation::{try_untracked_vec, try_untracked_vec_filled};
+use crate::{EncodeError, EncodeResult};
 
 const SIGPROP_SPREAD_MASKS: [u32; 16] = [
     0x33, 0x76, 0xEC, 0xC8, 0x330, 0x760, 0xEC0, 0xC80, 0x3300, 0x7600, 0xEC00, 0xC800, 0x33000,
     0x76000, 0xEC000, 0xC8000,
 ];
 
-struct ForwardRefinementBitWriter {
-    data: Vec<u8>,
-    used_bits: u8,
-    max_bits: u8,
-    tmp: u8,
-}
+mod writers;
+use writers::{ForwardRefinementBitWriter, ReverseRefinementBitWriter};
 
-impl ForwardRefinementBitWriter {
-    fn new() -> Self {
-        Self {
-            data: Vec::new(),
-            used_bits: 0,
-            max_bits: 8,
-            tmp: 0,
-        }
-    }
-
-    fn push_bit(&mut self, bit: bool) {
-        if bit {
-            self.tmp |= 1 << self.used_bits;
-        }
-        self.used_bits += 1;
-        if self.used_bits == self.max_bits {
-            self.flush_full_byte();
-        }
-    }
-
-    fn flush_full_byte(&mut self) {
-        self.data.push(self.tmp);
-        self.max_bits = if self.tmp == 0xFF { 7 } else { 8 };
-        self.tmp = 0;
-        self.used_bits = 0;
-    }
-
-    fn finish(mut self) -> Vec<u8> {
-        if self.used_bits > 0 {
-            self.data.push(self.tmp);
-        }
-        if self.data.is_empty() {
-            self.data.push(0);
-        }
-        self.data
-    }
-}
-
-struct ReverseRefinementBitWriter {
-    bits: Vec<bool>,
-}
-
-impl ReverseRefinementBitWriter {
-    fn new() -> Self {
-        Self { bits: Vec::new() }
-    }
-
-    fn push_bit(&mut self, bit: bool) {
-        self.bits.push(bit);
-    }
-
-    fn finish(self) -> Vec<u8> {
-        let mut read_order = Vec::new();
-        let mut offset = 0usize;
-        let mut unstuff = true;
-
-        while offset < self.bits.len() {
-            let remaining = self.bits.len() - offset;
-            let first_seven_are_ones =
-                remaining >= 7 && self.bits[offset..offset + 7].iter().all(|bit| *bit);
-            let capacity = if unstuff && first_seven_are_ones {
-                7
-            } else {
-                8
-            };
-            let take = capacity.min(remaining);
-            let mut byte = 0u8;
-            for bit_idx in 0..take {
-                if self.bits[offset + bit_idx] {
-                    byte |= 1 << bit_idx;
-                }
-            }
-            read_order.push(byte);
-            offset += take;
-            unstuff = byte > 0x8F;
-        }
-
-        if read_order.is_empty() {
-            read_order.push(0);
-        }
-        read_order.reverse();
-        read_order
-    }
-}
-
-pub(super) fn encode_refinement_segment(
-    coefficients: &[i32],
-    width: usize,
-    height: usize,
+pub(super) fn try_encode_refinement_segment_view(
+    coefficients: CoefficientBlockView<'_, i32>,
     cleanup_significance_threshold: i32,
     num_coding_passes: u8,
-) -> Result<Vec<u8>, &'static str> {
-    let width_u32 = u32::try_from(width).map_err(|_| "HTJ2K code-block width exceeds u32 range")?;
-    let height_u32 =
-        u32::try_from(height).map_err(|_| "HTJ2K code-block height exceeds u32 range")?;
+    allocation: HtWorkerAllocation,
+) -> EncodeResult<Vec<u8>> {
+    let width = coefficients.width();
+    let height = coefficients.height();
+    let width_u32 = u32::try_from(width).map_err(|_| EncodeError::InvalidInput {
+        what: "HTJ2K code-block width exceeds u32 range",
+    })?;
+    let height_u32 = u32::try_from(height).map_err(|_| EncodeError::InvalidInput {
+        what: "HTJ2K code-block height exceeds u32 range",
+    })?;
     let mstr = sigma_stride(width_u32);
-    let sigma_rows = height_u32.div_ceil(4) as usize + 1;
-    let mut sigma = vec![0u16; sigma_rows * mstr];
+    let sigma_rows = usize::try_from(height_u32.div_ceil(4))
+        .map_err(|_| EncodeError::ArithmeticOverflow {
+            what: "HTJ2K sigma rows",
+        })?
+        .checked_add(1)
+        .ok_or(EncodeError::ArithmeticOverflow {
+            what: "HTJ2K sigma rows",
+        })?;
+    let sigma_entries = sigma_rows
+        .checked_mul(mstr)
+        .ok_or(EncodeError::ArithmeticOverflow {
+            what: "HTJ2K sigma entries",
+        })?;
+    if sigma_entries != allocation.sigma_entries {
+        return Err(EncodeError::InternalInvariant {
+            what: "HTJ2K sigma allocation plan disagrees with geometry",
+        });
+    }
+    let mut sigma = try_untracked_vec_filled(sigma_entries, 0_u16, "HTJ2K sigma significance map")?;
     build_sigma_from_coefficients(
         coefficients,
-        width,
-        height,
         cleanup_significance_threshold,
         mstr,
         &mut sigma,
+    )
+    .map_err(ht_refinement_invariant)?;
+    let sigprop = write_sigprop_refinement_bits(
+        &sigma,
+        coefficients,
+        width_u32,
+        height_u32,
+        mstr,
+        allocation,
     )?;
-    let mut refinement =
-        write_sigprop_refinement_bits(&sigma, coefficients, width_u32, height_u32, mstr)?;
-    if num_coding_passes > 2 {
-        let magref =
-            write_magref_refinement_bits(&sigma, coefficients, width_u32, height_u32, mstr)?;
-        refinement.extend_from_slice(&magref);
+    let magref = if num_coding_passes > 2 {
+        write_magref_refinement_bits(
+            &sigma,
+            coefficients,
+            width_u32,
+            height_u32,
+            mstr,
+            allocation,
+        )?
+    } else {
+        Vec::new()
+    };
+    let combined_len =
+        sigprop
+            .len()
+            .checked_add(magref.len())
+            .ok_or(EncodeError::ArithmeticOverflow {
+                what: "HTJ2K refinement segment length",
+            })?;
+    if combined_len > allocation.refinement_bytes {
+        return Err(EncodeError::InternalInvariant {
+            what: "HTJ2K refinement exceeded its checked bound",
+        });
     }
+    let mut refinement = try_untracked_vec(combined_len, "HTJ2K refinement segment")?;
+    refinement.extend_from_slice(&sigprop);
+    refinement.extend_from_slice(&magref);
     Ok(refinement)
 }
 
@@ -137,16 +100,13 @@ pub(super) fn encode_refinement_segment(
     reason = "the cleanup significance threshold is constructed as a positive bitplane magnitude"
 )]
 fn build_sigma_from_coefficients(
-    coefficients: &[i32],
-    width: usize,
-    height: usize,
+    coefficients: CoefficientBlockView<'_, i32>,
     significance_threshold: i32,
     mstr: usize,
     sigma: &mut [u16],
 ) -> Result<(), &'static str> {
-    if coefficients.len() < width.saturating_mul(height) {
-        return Err("HTJ2K coefficient block is shorter than its dimensions");
-    }
+    let width = coefficients.width();
+    let height = coefficients.height();
 
     let group_rows = height.div_ceil(4);
     let group_cols = width.div_ceil(4);
@@ -161,15 +121,15 @@ fn build_sigma_from_coefficients(
                 if y >= height {
                     continue;
                 }
-                let row = y
-                    .checked_mul(width)
-                    .ok_or("HTJ2K coefficient row offset overflow")?;
                 for dx in 0..4 {
                     let x = group_x * 4 + dx;
                     if x >= width {
                         continue;
                     }
-                    if coefficients[row + x].unsigned_abs() >= significance_threshold as u32 {
+                    let coefficient = coefficients
+                        .get(x, y)
+                        .ok_or("HTJ2K sigma coefficient offset out of range")?;
+                    if coefficient.unsigned_abs() >= significance_threshold as u32 {
                         bits |= 1u16 << (dx * 4 + dy);
                     }
                 }
@@ -189,15 +149,18 @@ fn build_sigma_from_coefficients(
 )]
 fn write_sigprop_refinement_bits(
     sigma: &[u16],
-    coefficients: &[i32],
+    coefficients: CoefficientBlockView<'_, i32>,
     width: u32,
     height: u32,
     mstr: usize,
-) -> Result<Vec<u8>, &'static str> {
-    let mut prev_row_sig = vec![0u16; width.div_ceil(4) as usize + 8];
-    let mut writer = ForwardRefinementBitWriter::new();
-    let width_usize = width as usize;
-
+    allocation: HtWorkerAllocation,
+) -> EncodeResult<Vec<u8>> {
+    let mut prev_row_sig = try_untracked_vec_filled(
+        allocation.previous_sigma_entries,
+        0_u16,
+        "HTJ2K previous-row significance",
+    )?;
+    let mut writer = ForwardRefinementBitWriter::try_new(allocation.sigprop_bytes)?;
     for y in (0..height).step_by(4) {
         let mut pattern = 0xFFFFu32;
         if height - y < 4 {
@@ -249,9 +212,9 @@ fn write_sigprop_refinement_bits(
                     candidates &= !sample_mask;
                     processed |= sample_mask;
 
-                    let coeff = coefficient_for_sigprop_bit(coefficients, width_usize, x, y, bit)?;
+                    let coeff = coefficient_for_sigprop_bit(coefficients, x, y, bit)?;
                     let significant = coeff != 0;
-                    writer.push_bit(significant);
+                    writer.push_bit(significant)?;
                     if significant {
                         new_sig |= sample_mask;
                         candidates |= SIGPROP_SPREAD_MASKS[bit as usize] & inv_sig & !processed;
@@ -262,8 +225,8 @@ fn write_sigprop_refinement_bits(
                 while sign_bits != 0 {
                     let bit = sign_bits.trailing_zeros();
                     sign_bits &= !(1u32 << bit);
-                    let coeff = coefficient_for_sigprop_bit(coefficients, width_usize, x, y, bit)?;
-                    writer.push_bit(coeff < 0);
+                    let coeff = coefficient_for_sigprop_bit(coefficients, x, y, bit)?;
+                    writer.push_bit(coeff < 0)?;
                 }
             }
 
@@ -281,19 +244,19 @@ fn write_sigprop_refinement_bits(
         }
     }
 
-    Ok(writer.finish())
+    writer.finish()
 }
 
 fn write_magref_refinement_bits(
     sigma: &[u16],
-    coefficients: &[i32],
+    coefficients: CoefficientBlockView<'_, i32>,
     width: u32,
     height: u32,
     mstr: usize,
-) -> Result<Vec<u8>, &'static str> {
-    let mut writer = ReverseRefinementBitWriter::new();
-    let width_usize = width as usize;
-
+    allocation: HtWorkerAllocation,
+) -> EncodeResult<Vec<u8>> {
+    let mut writer =
+        ReverseRefinementBitWriter::try_new(allocation.magref_bits, allocation.magref_bytes)?;
     for y in (0..height).step_by(4) {
         let mut cur_sig_idx = (y >> 2) as usize * mstr;
 
@@ -310,14 +273,8 @@ fn write_magref_refinement_bits(
                         for _ in 0..4 {
                             if (sig & sample_mask) != 0 {
                                 let bit = sample_mask.trailing_zeros();
-                                let coeff = coefficient_for_sigprop_bit(
-                                    coefficients,
-                                    width_usize,
-                                    x,
-                                    y,
-                                    bit,
-                                )?;
-                                writer.push_bit((coeff.unsigned_abs() & 1) != 0);
+                                let coeff = coefficient_for_sigprop_bit(coefficients, x, y, bit)?;
+                                writer.push_bit((coeff.unsigned_abs() & 1) != 0)?;
                             }
                             sample_mask <<= 1;
                         }
@@ -328,60 +285,38 @@ fn write_magref_refinement_bits(
         }
     }
 
-    Ok(writer.finish())
+    writer.finish()
 }
 
 fn coefficient_for_sigprop_bit(
-    coefficients: &[i32],
-    width: usize,
+    coefficients: CoefficientBlockView<'_, i32>,
     group_x: u32,
     group_y: u32,
     bit: u32,
-) -> Result<i32, &'static str> {
+) -> EncodeResult<i32> {
     let x = group_x as usize + (bit >> 2) as usize;
     let y = group_y as usize + (bit & 3) as usize;
-    let idx = y
-        .checked_mul(width)
-        .and_then(|row| row.checked_add(x))
-        .ok_or("HTJ2K sigprop coefficient offset overflow")?;
     coefficients
-        .get(idx)
-        .copied()
-        .ok_or("HTJ2K sigprop coefficient offset out of range")
+        .get(x, y)
+        .ok_or(EncodeError::InternalInvariant {
+            what: "HTJ2K sigprop coefficient offset is out of range",
+        })
 }
 
-fn read_sigma_pair(values: &[u16], index: usize) -> Result<u32, &'static str> {
+fn read_sigma_pair(values: &[u16], index: usize) -> EncodeResult<u32> {
     let high_index = index
         .checked_add(1)
-        .ok_or("HTJ2K sigma pair offset overflow")?;
+        .ok_or(EncodeError::ArithmeticOverflow {
+            what: "HTJ2K sigma pair offset",
+        })?;
     if high_index >= values.len() {
-        return Err("HTJ2K sigma pair is out of range");
+        return Err(EncodeError::InternalInvariant {
+            what: "HTJ2K sigma pair is out of range",
+        });
     }
     Ok(u32::from(values[index]) | (u32::from(values[high_index]) << 16))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{ForwardRefinementBitWriter, ReverseRefinementBitWriter};
-
-    #[test]
-    fn refinement_writer_stuffing_matches_pre_split_goldens() {
-        let mut forward = ForwardRefinementBitWriter::new();
-        for bit in [
-            true, true, true, true, true, true, true, true, true, false, true, false, true, false,
-            true, true, false,
-        ] {
-            forward.push_bit(bit);
-        }
-        assert_eq!(forward.finish(), [0xFF, 0x55, 0x01]);
-
-        let mut reverse = ReverseRefinementBitWriter::new();
-        for bit in [
-            true, true, true, true, true, true, true, true, false, true, false, true, false, true,
-            true, false,
-        ] {
-            reverse.push_bit(bit);
-        }
-        assert_eq!(reverse.finish(), [0x00, 0xD5, 0x7F]);
-    }
+fn ht_refinement_invariant(what: &'static str) -> EncodeError {
+    EncodeError::InternalInvariant { what }
 }

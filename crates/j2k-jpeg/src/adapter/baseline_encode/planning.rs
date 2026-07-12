@@ -2,19 +2,26 @@
 
 //! Entropy capacity and backend-neutral GPU tile/batch planning.
 
-use alloc::vec::Vec;
+mod batch;
+
+#[cfg(test)]
+pub(super) use batch::jpeg_baseline_gpu_encode_batch_plan;
+pub(super) use batch::{
+    jpeg_baseline_gpu_encode_batch_plan_with_live_bytes, same_source_buffer_batch_end,
+};
 
 use super::types::{
-    JpegBaselineGpuEncodeBatchPlan, JpegBaselineGpuEncodeError, JpegBaselineGpuEncodeParams,
-    JpegBaselineGpuEncodeTile, JpegBaselineGpuEncodeTilePlan, JpegBaselineSampling,
+    JpegBaselineGpuEncodeError, JpegBaselineGpuEncodeParams, JpegBaselineGpuEncodeTile,
+    JpegBaselineGpuEncodeTilePlan, JpegBaselineSampling,
 };
 use super::validation::{
     jpeg_baseline_gpu_encode_format_abi, validate_jpeg_baseline_gpu_encode_tile,
 };
+use crate::encoded_output::checked_jpeg_baseline_frame_capacity;
 use crate::encoder::{JpegBackend, JpegEncodeError, JpegEncodeOptions};
 
 /// Conservative upper bound for entropy bytes produced by the CPU encoder.
-fn jpeg_baseline_entropy_capacity_bytes(
+pub(crate) fn jpeg_baseline_entropy_capacity_bytes(
     width: u32,
     height: u32,
     sampling: JpegBaselineSampling,
@@ -24,25 +31,56 @@ fn jpeg_baseline_entropy_capacity_bytes(
     let mcu_height = u32::from(sampling.max_v) * 8;
     let mcus_per_row = u64::from(width.div_ceil(mcu_width));
     let mcu_rows = u64::from(height.div_ceil(mcu_height));
-    let total_mcus = mcus_per_row
-        .checked_mul(mcu_rows)
-        .ok_or_else(|| JpegEncodeError::Internal("JPEG MCU count overflow".into()))?;
-    let blocks_per_mcu = u64::from(
-        sampling.h[0] * sampling.v[0]
-            + sampling.h[1] * sampling.v[1]
-            + sampling.h[2] * sampling.v[2],
-    );
+    let total_mcus =
+        mcus_per_row
+            .checked_mul(mcu_rows)
+            .ok_or(JpegEncodeError::InternalInvariant {
+                reason: "JPEG MCU count overflow",
+            })?;
     let restart_markers = restart_interval.map_or(0, |interval| {
         total_mcus.saturating_sub(1) / u64::from(interval)
     });
+    jpeg_baseline_entropy_capacity_for_mcus(total_mcus, sampling, restart_markers)?
+        .checked_add(16)
+        .ok_or_else(entropy_capacity_overflow)
+}
+
+/// Conservative bound for a known MCU span and its emitted restart markers.
+pub(crate) fn jpeg_baseline_entropy_capacity_for_mcus(
+    total_mcus: u64,
+    sampling: JpegBaselineSampling,
+    restart_markers: u64,
+) -> Result<usize, JpegEncodeError> {
+    let blocks_per_mcu = sampling
+        .h
+        .iter()
+        .copied()
+        .zip(sampling.v.iter().copied())
+        .take(usize::from(sampling.components))
+        .try_fold(0u64, |total, (h, v)| {
+            u64::from(h)
+                .checked_mul(u64::from(v))
+                .and_then(|blocks| total.checked_add(blocks))
+        })
+        .ok_or_else(entropy_capacity_overflow)?;
     let capacity = total_mcus
         .checked_mul(blocks_per_mcu)
         .and_then(|blocks| blocks.checked_mul(512))
-        .and_then(|bytes| bytes.checked_add(restart_markers.saturating_mul(2)))
-        .and_then(|bytes| bytes.checked_add(16))
-        .ok_or_else(|| JpegEncodeError::Internal("JPEG entropy capacity overflow".into()))?;
-    usize::try_from(capacity)
-        .map_err(|_| JpegEncodeError::Internal("JPEG entropy capacity exceeds usize".into()))
+        .and_then(|bytes| {
+            restart_markers
+                .checked_mul(2)
+                .and_then(|markers| bytes.checked_add(markers))
+        })
+        .ok_or_else(entropy_capacity_overflow)?;
+    usize::try_from(capacity).map_err(|_| JpegEncodeError::InternalInvariant {
+        reason: "JPEG entropy capacity exceeds usize",
+    })
+}
+
+fn entropy_capacity_overflow() -> JpegEncodeError {
+    JpegEncodeError::InternalInvariant {
+        reason: "JPEG entropy capacity overflow",
+    }
 }
 
 /// Return a GPU ABI-safe entropy capacity for resident baseline encode.
@@ -53,10 +91,34 @@ fn jpeg_baseline_gpu_entropy_capacity_bytes(
     restart_interval: Option<u16>,
 ) -> Result<usize, JpegBaselineGpuEncodeError> {
     let capacity = jpeg_baseline_entropy_capacity_bytes(width, height, sampling, restart_interval)?;
+    checked_jpeg_baseline_frame_capacity(capacity)?;
     if capacity > u32::MAX as usize {
         return Err(JpegBaselineGpuEncodeError::EntropyCapacityTooLarge);
     }
     Ok(capacity)
+}
+
+/// Validate one resident GPU tile and all backend-neutral planning bounds.
+///
+/// # Errors
+///
+/// Returns a typed option, geometry, buffer-range, or GPU ABI planning error.
+#[doc(hidden)]
+pub fn preflight_jpeg_baseline_gpu_encode_tile(
+    tile: JpegBaselineGpuEncodeTile,
+    options: JpegEncodeOptions,
+    expected_backend: JpegBackend,
+) -> Result<(), JpegBaselineGpuEncodeError> {
+    let sampling = super::tables::baseline_encode_tables(options)?.sampling;
+    jpeg_baseline_gpu_encode_tile_plan(
+        tile,
+        options,
+        expected_backend,
+        sampling,
+        tile.byte_offset,
+        0,
+    )?;
+    Ok(())
 }
 
 /// Build backend-neutral GPU baseline JPEG encode parameters.
@@ -134,55 +196,4 @@ pub(super) fn jpeg_baseline_gpu_encode_tile_plan(
         params,
         entropy_capacity,
     })
-}
-
-/// Build validated backend-neutral GPU baseline JPEG encode parameters for a batch span.
-///
-/// The caller is responsible for passing only tiles that share the same backend
-/// input allocation. This helper validates each tile, computes per-tile entropy
-/// offsets, and returns the combined entropy capacity for the backend batch job.
-pub(super) fn jpeg_baseline_gpu_encode_batch_plan(
-    tiles: &[JpegBaselineGpuEncodeTile],
-    options: JpegEncodeOptions,
-    expected_backend: JpegBackend,
-    sampling: JpegBaselineSampling,
-) -> Result<JpegBaselineGpuEncodeBatchPlan, JpegBaselineGpuEncodeError> {
-    let mut params = Vec::with_capacity(tiles.len());
-    let mut total_entropy_capacity = 0usize;
-    for tile in tiles {
-        let tile_plan = jpeg_baseline_gpu_encode_tile_plan(
-            *tile,
-            options,
-            expected_backend,
-            sampling,
-            tile.byte_offset,
-            total_entropy_capacity,
-        )?;
-        total_entropy_capacity = total_entropy_capacity
-            .checked_add(tile_plan.entropy_capacity)
-            .ok_or(JpegBaselineGpuEncodeError::BatchEntropyCapacityOverflow)?;
-        params.push(tile_plan.params);
-    }
-
-    Ok(JpegBaselineGpuEncodeBatchPlan {
-        params,
-        total_entropy_capacity,
-    })
-}
-
-/// Return the end index of a contiguous same-source-buffer batch span.
-pub(super) fn same_source_buffer_batch_end<T, K>(
-    tiles: &[T],
-    start: usize,
-    mut source_key: impl FnMut(&T) -> K,
-) -> usize
-where
-    K: PartialEq,
-{
-    let key = source_key(&tiles[start]);
-    let mut end = start + 1;
-    while end < tiles.len() && source_key(&tiles[end]) == key {
-        end += 1;
-    }
-    end
 }

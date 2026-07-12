@@ -2,7 +2,6 @@
 
 #[cfg(target_os = "macos")]
 use std::{
-    collections::HashMap,
     mem::{size_of, size_of_val},
     sync::Arc,
     time::{Duration, Instant},
@@ -13,6 +12,7 @@ use j2k_core::checked_surface_len;
 use j2k_core::{PixelFormat, Rect};
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{
+    checked_blit_command_encoder, checked_command_buffer, checked_compute_command_encoder,
     dispatch_1d_pipeline, dispatch_2d_pipeline, dispatch_3d_pipeline, dispatch_single_thread,
 };
 #[cfg(target_os = "macos")]
@@ -31,8 +31,9 @@ use j2k_native::{
 };
 #[cfg(target_os = "macos")]
 use metal::{
-    foreign_types::ForeignType, Buffer, CommandBuffer, CommandBufferRef, ComputeCommandEncoderRef,
-    ComputePipelineState, Device, MTLResourceOptions, MTLSize,
+    foreign_types::ForeignType, BlitCommandEncoder, Buffer, CommandBuffer, CommandBufferRef,
+    CommandQueueRef, ComputeCommandEncoder, ComputeCommandEncoderRef, ComputePipelineState, Device,
+    MTLSize,
 };
 #[cfg(target_os = "macos")]
 use rayon::prelude::*;
@@ -68,7 +69,34 @@ use crate::profile_env::{
     SIGNPOST_ENCODE_HYBRID_HT_TIER1_COMMAND_ENCODE, SIGNPOST_ENCODE_HYBRID_HT_TIER1_SETUP,
     SIGNPOST_ENCODE_HYBRID_RESULT_HARVEST,
 };
-use crate::{Error, Surface};
+use crate::{error::metal_kernel_support_error, Error, Surface};
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) fn new_command_buffer(
+    queue: &CommandQueueRef,
+) -> Result<CommandBuffer, Error> {
+    checked_command_buffer(queue).map_err(|source| {
+        metal_kernel_support_error("J2K Metal command buffer creation failed", source)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) fn new_compute_command_encoder(
+    command_buffer: &CommandBufferRef,
+) -> Result<ComputeCommandEncoder, Error> {
+    checked_compute_command_encoder(command_buffer).map_err(|source| {
+        metal_kernel_support_error("J2K Metal compute encoder creation failed", source)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) fn new_blit_command_encoder(
+    command_buffer: &CommandBufferRef,
+) -> Result<BlitCommandEncoder, Error> {
+    checked_blit_command_encoder(command_buffer).map_err(|source| {
+        metal_kernel_support_error("J2K Metal blit encoder creation failed", source)
+    })
+}
 
 mod abi;
 #[cfg(target_os = "macos")]
@@ -101,15 +129,14 @@ use self::direct_cache::CpuTier1CoefficientCache;
 #[cfg(target_os = "macos")]
 mod direct_buffers;
 #[cfg(target_os = "macos")]
-use self::direct_buffers::{
-    borrow_mut_slice_buffer, borrow_slice_buffer, copied_recyclable_shared_slice_buffer,
-    copied_slice_buffer, owned_slice_buffer, take_classic_coefficients_scratch_buffer,
-    take_classic_states_scratch_buffer, wrap_f32_output_buffer, zeroed_recyclable_shared_buffer,
-    zeroed_shared_buffer,
-};
-#[cfg(target_os = "macos")]
 pub(crate) use self::direct_buffers::{
     buffer_is_cpu_visible, checked_buffer_read, checked_buffer_slice, checked_buffer_slice_at,
+};
+#[cfg(target_os = "macos")]
+use self::direct_buffers::{
+    copied_recyclable_shared_slice_buffer, copied_slice_buffer, new_private_buffer,
+    new_shared_buffer, new_shared_buffer_with_slice, take_classic_coefficients_scratch_buffer,
+    take_classic_states_scratch_buffer, zeroed_recyclable_shared_buffer, zeroed_shared_buffer,
 };
 #[cfg(target_os = "macos")]
 mod direct_commands;
@@ -283,13 +310,6 @@ fn checked_metal_surface_len(
         Error::MetalKernel {
             message: format!("{context}: {error}"),
         }
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn checked_metal_buffer_len_u64(len: usize, context: &'static str) -> Result<u64, Error> {
-    u64::try_from(len).map_err(|_| Error::MetalKernel {
-        message: context.to_string(),
     })
 }
 

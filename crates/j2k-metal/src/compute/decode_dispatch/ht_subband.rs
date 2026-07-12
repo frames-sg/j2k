@@ -2,9 +2,9 @@
 
 use super::{
     dispatch_1d_pipeline, dispatch_ht_cleanup_batched_in_encoder,
-    dispatch_ht_cleanup_repeated_batched_in_command_buffer, prepared_ht_buffer, size_of, Buffer,
-    CommandBufferRef, ComputeCommandEncoderRef, DirectStatusCheck, Error, HtCodeBlockDecodeJob,
-    HtRepeatedCleanupDispatch, J2kHtCleanupBatchJob, MTLResourceOptions, MetalRuntime,
+    dispatch_ht_cleanup_repeated_batched_in_command_buffer, new_shared_buffer, prepared_ht_buffer,
+    size_of, Buffer, CommandBufferRef, ComputeCommandEncoderRef, DirectStatusCheck, Error,
+    HtCodeBlockDecodeJob, HtRepeatedCleanupDispatch, J2kHtCleanupBatchJob, MetalRuntime,
     PreparedHtSubBand, PreparedHtSubBandGroup,
 };
 
@@ -33,9 +33,7 @@ pub(in crate::compute) fn encode_repeated_ht_sub_band_to_buffer_in_command_buffe
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     if count == 0 || job.jobs.is_empty() {
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Ht {
@@ -77,9 +75,7 @@ pub(in crate::compute) fn encode_repeated_ht_sub_band_group_to_buffer_in_command
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     if count == 0 || group.jobs.is_empty() {
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Ht {
@@ -126,9 +122,7 @@ pub(in crate::compute) fn encode_prepared_ht_sub_band_to_buffer_in_encoder(
             output,
             job.width as usize * job.height as usize,
         )?;
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Ht {
@@ -161,9 +155,7 @@ pub(in crate::compute) fn encode_prepared_ht_sub_band_group_to_buffer_in_encoder
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     if group.jobs.is_empty() {
         dispatch_zero_u32_buffer_in_encoder(runtime, encoder, output, group.total_coefficients)?;
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Ht {

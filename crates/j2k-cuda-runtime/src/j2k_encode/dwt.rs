@@ -1,15 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(test)]
+mod tests;
+mod validation;
+
 use crate::{
-    bytes::f32_slice_as_bytes, context::CudaContext, error::CudaError,
-    execution::CudaExecutionStats, j2k_decode::active_dwt53_buffers, kernels::CudaKernel,
+    allocation::{try_vec_from_slice, try_vec_with_capacity, HostPhaseBudget},
+    bytes::f32_slice_as_bytes,
+    context::CudaContext,
+    error::CudaError,
+    execution::CudaExecutionStats,
+    j2k_decode::active_dwt53_buffers,
+    kernels::CudaKernel,
     memory::CudaDeviceBuffer,
 };
 
 use super::{
-    CudaDwt53LevelPass, CudaDwt53LevelShape, CudaDwt53Output, CudaDwt53Pass, CudaDwt97Output,
-    CudaJ2kResidentComponents, CudaResidentDwt53Output, CudaResidentDwt97Output,
+    validate_encode_buffer_context, CudaDwt53LevelPass, CudaDwt53LevelShape, CudaDwt53Output,
+    CudaDwt53Pass, CudaDwt97Output, CudaJ2kResidentComponents, CudaResidentDwt53Output,
+    CudaResidentDwt97Output,
 };
+use validation::validate_forward_dwt_request;
 
 impl CudaContext {
     /// Run the reversible 5/3 forward DWT stage on one component plane.
@@ -36,9 +47,10 @@ impl CudaContext {
                 channels: 1,
             });
         }
+        validate_forward_dwt_request(width, height, num_levels)?;
         if samples.is_empty() || num_levels == 0 {
             return Ok(CudaDwt53Output {
-                transformed: samples.to_vec(),
+                transformed: try_vec_from_slice(samples)?,
                 levels: Vec::new(),
                 ll_width: width,
                 ll_height: height,
@@ -56,10 +68,13 @@ impl CudaContext {
             num_levels,
             0,
         )?;
-        let transformed = resident.download_transformed()?;
+        let mut host_budget = HostPhaseBudget::new("CUDA forward 5/3 DWT host output");
+        host_budget.account_vec(&resident.levels)?;
+        let transformed = resident.download_transformed_with_budget(&mut host_budget)?;
+        let levels = host_budget.try_vec_from_slice(resident.levels())?;
         Ok(CudaDwt53Output {
             transformed,
-            levels: resident.levels().to_vec(),
+            levels,
             ll_width: resident.ll_dimensions().0,
             ll_height: resident.ll_dimensions().1,
             execution: resident.execution(),
@@ -76,6 +91,7 @@ impl CudaContext {
         height: u32,
         num_levels: u8,
     ) -> Result<CudaResidentDwt53Output, CudaError> {
+        validate_encode_buffer_context(self, [&components.buffer])?;
         let expected_len =
             (width as usize)
                 .checked_mul(height as usize)
@@ -91,13 +107,12 @@ impl CudaContext {
                 channels: 1,
             });
         }
+        validate_forward_dwt_request(width, height, num_levels)?;
 
-        self.inner.set_current()?;
-        let plane_ptr = components.component_plane_device_ptr(component)?;
-        let byte_len = expected_len
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or(CudaError::LengthTooLarge { len: expected_len })?;
-        let buffer_a = self.copy_device_ptr_to_device_with_kernel(plane_ptr, byte_len)?;
+        let plane_range = components.component_plane_byte_range(component)?;
+        let byte_len = plane_range.len();
+        let buffer_a =
+            self.copy_device_range_to_device_with_kernel(&components.buffer, plane_range)?;
         let copy_dispatches = usize::from(byte_len != 0);
         self.j2k_forward_dwt53_resident_buffer(
             buffer_a,
@@ -141,7 +156,7 @@ impl CudaContext {
         )?;
         let mut current_width = width;
         let mut current_height = height;
-        let mut levels = Vec::new();
+        let mut levels = try_vec_with_capacity(usize::from(num_levels))?;
         let mut dispatches = 0usize;
         let mut active_is_a = true;
 
@@ -205,9 +220,10 @@ impl CudaContext {
                 channels: 1,
             });
         }
+        validate_forward_dwt_request(width, height, num_levels)?;
         if samples.is_empty() || num_levels == 0 {
             return Ok(CudaDwt97Output {
-                transformed: samples.to_vec(),
+                transformed: try_vec_from_slice(samples)?,
                 levels: Vec::new(),
                 ll_width: width,
                 ll_height: height,
@@ -225,10 +241,13 @@ impl CudaContext {
             num_levels,
             0,
         )?;
-        let transformed = resident.download_transformed()?;
+        let mut host_budget = HostPhaseBudget::new("CUDA forward 9/7 DWT host output");
+        host_budget.account_vec(&resident.levels)?;
+        let transformed = resident.download_transformed_with_budget(&mut host_budget)?;
+        let levels = host_budget.try_vec_from_slice(resident.levels())?;
         Ok(CudaDwt97Output {
             transformed,
-            levels: resident.levels().to_vec(),
+            levels,
             ll_width: resident.ll_dimensions().0,
             ll_height: resident.ll_dimensions().1,
             execution: resident.execution(),
@@ -245,6 +264,7 @@ impl CudaContext {
         height: u32,
         num_levels: u8,
     ) -> Result<CudaResidentDwt97Output, CudaError> {
+        validate_encode_buffer_context(self, [&components.buffer])?;
         let expected_len =
             (width as usize)
                 .checked_mul(height as usize)
@@ -260,13 +280,12 @@ impl CudaContext {
                 channels: 1,
             });
         }
+        validate_forward_dwt_request(width, height, num_levels)?;
 
-        self.inner.set_current()?;
-        let plane_ptr = components.component_plane_device_ptr(component)?;
-        let byte_len = expected_len
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or(CudaError::LengthTooLarge { len: expected_len })?;
-        let buffer_a = self.copy_device_ptr_to_device_with_kernel(plane_ptr, byte_len)?;
+        let plane_range = components.component_plane_byte_range(component)?;
+        let byte_len = plane_range.len();
+        let buffer_a =
+            self.copy_device_range_to_device_with_kernel(&components.buffer, plane_range)?;
         let copy_dispatches = usize::from(byte_len != 0);
         self.j2k_forward_dwt97_resident_buffer(
             buffer_a,
@@ -310,7 +329,7 @@ impl CudaContext {
         )?;
         let mut current_width = width;
         let mut current_height = height;
-        let mut levels = Vec::new();
+        let mut levels = try_vec_with_capacity(usize::from(num_levels))?;
         let mut dispatches = 0usize;
         let mut active_is_a = true;
 

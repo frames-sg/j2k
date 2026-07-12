@@ -3,11 +3,14 @@
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::{
     CudaBufferPool, CudaContext, CudaHtj2kDecodeTableResources, CudaHtj2kDecodeTables,
+    CudaHtj2kEncodeResources,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1};
 #[cfg(all(test, feature = "cuda-runtime"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "cuda-runtime")]
+use std::sync::Arc;
 
 #[cfg(feature = "cuda-runtime")]
 use crate::runtime::cuda_error;
@@ -17,6 +20,12 @@ use crate::Error;
 #[cfg(all(test, feature = "cuda-runtime"))]
 static HTJ2K_DECODE_TABLE_UPLOADS: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(feature = "cuda-runtime")]
+mod encode_resources;
+
+#[cfg(feature = "cuda-runtime")]
+use self::encode_resources::get_or_try_init_context_bound;
+
 /// Mutable CUDA adapter session reused across submissions.
 #[derive(Clone, Default)]
 pub struct CudaSession {
@@ -25,6 +34,10 @@ pub struct CudaSession {
     context: Option<CudaContext>,
     #[cfg(feature = "cuda-runtime")]
     htj2k_decode_tables: Option<CudaHtj2kDecodeTableResources>,
+    #[cfg(feature = "cuda-runtime")]
+    htj2k_encode_resources: Option<Arc<CudaHtj2kEncodeResources>>,
+    #[cfg(all(test, feature = "cuda-runtime"))]
+    htj2k_encode_resource_uploads: usize,
     #[cfg(feature = "cuda-runtime")]
     decode_buffer_pool: Option<CudaBufferPool>,
     #[cfg(feature = "cuda-runtime")]
@@ -73,6 +86,40 @@ impl CudaSession {
         HTJ2K_DECODE_TABLE_UPLOADS.fetch_add(1, Ordering::Relaxed);
         self.htj2k_decode_tables = Some(resources.clone());
         Ok(resources)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn htj2k_encode_resources(
+        &mut self,
+        requested_context: &CudaContext,
+    ) -> Result<Arc<CudaHtj2kEncodeResources>, Error> {
+        let (resources, initialized) = get_or_try_init_context_bound(
+            &mut self.context,
+            &mut self.htj2k_encode_resources,
+            requested_context,
+            CudaContext::is_same_context,
+            || Error::UnsupportedCudaRequest {
+                reason: "J2K CUDA encode tile belongs to a different context than the session",
+            },
+            |context| {
+                context
+                    .upload_htj2k_encode_resources(crate::encode::cuda_htj2k_encode_tables())
+                    .map_err(cuda_error)
+            },
+        )?;
+        #[cfg(test)]
+        if initialized {
+            self.htj2k_encode_resource_uploads =
+                self.htj2k_encode_resource_uploads.saturating_add(1);
+        }
+        #[cfg(not(test))]
+        let _ = initialized;
+        Ok(resources)
+    }
+
+    #[cfg(all(test, feature = "cuda-runtime"))]
+    pub(crate) fn htj2k_encode_resource_uploads_for_test(&self) -> usize {
+        self.htj2k_encode_resource_uploads
     }
 
     #[cfg(feature = "cuda-runtime")]
@@ -138,6 +185,11 @@ impl std::fmt::Debug for CudaSession {
         debug.field(
             "htj2k_decode_tables_cached",
             &self.htj2k_decode_tables.is_some(),
+        );
+        #[cfg(feature = "cuda-runtime")]
+        debug.field(
+            "htj2k_encode_resources_cached",
+            &self.htj2k_encode_resources.is_some(),
         );
         #[cfg(feature = "cuda-runtime")]
         debug.field(

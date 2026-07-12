@@ -5,6 +5,7 @@ use crate::error::Warning;
 use crate::output::OutputWriter;
 use alloc::vec;
 use alloc::vec::Vec;
+use j2k_core::CodecContext;
 
 fn minimal_baseline_jpeg() -> Vec<u8> {
     let mut v = Vec::new();
@@ -107,6 +108,24 @@ fn decoder_new_succeeds_on_baseline_stream() {
 }
 
 #[test]
+fn decoder_context_cache_preserves_current_header_warnings() {
+    let mut bytes = minimal_baseline_jpeg();
+    bytes.splice(2..2, [0xFF, 0xED, 0x00, 0x02]);
+    let mut ctx = DecoderContext::new();
+
+    let first = Decoder::from_view_in_context(JpegView::parse(&bytes).unwrap(), &mut ctx).unwrap();
+    let second = Decoder::from_view_in_context(JpegView::parse(&bytes).unwrap(), &mut ctx).unwrap();
+
+    let expected = [Warning::UnknownAppMarker {
+        marker: 0xED,
+        size: 0,
+    }];
+    assert_eq!(first.warnings.as_slice(), expected);
+    assert_eq!(second.warnings.as_slice(), expected);
+    assert!(ctx.cache_stats().hits >= 1);
+}
+
+#[test]
 fn owned_baseline_decode_with_huge_dimensions_errors_before_allocating() {
     let bytes = baseline_jpeg_with_dimensions(65_500, 65_500);
     let dec = Decoder::new(&bytes).expect("huge baseline header should parse");
@@ -137,6 +156,28 @@ fn owned_baseline_region_decode_with_huge_dimensions_errors_before_allocating() 
         matches!(err, JpegError::MemoryCapExceeded { .. }),
         "expected MemoryCapExceeded before region output allocation, got {err:?}"
     );
+}
+
+#[test]
+fn owned_decode_external_live_boundary_counts_output_and_scratch_exactly() {
+    let dec = Decoder::new(j2k_test_support::JPEG_BASELINE_420_16X16).expect("fixture decoder");
+    let request = DecodeRequest::full(PixelFormat::Rgb8);
+    let output_bytes = 16 * 16 * 3;
+    let scratch_bytes = dec.plan.scratch_bytes;
+    let workspace_cap = dec.decode_workspace_cap().expect("workspace cap");
+    let external_live = workspace_cap - output_bytes - scratch_bytes;
+
+    let (decoded, outcome) = dec
+        .decode_request_with_external_live(request, external_live)
+        .expect("exact external + output + scratch boundary");
+    assert_eq!(decoded.len(), output_bytes);
+    assert_eq!(outcome.decoded, Rect::full((16, 16)));
+
+    assert!(matches!(
+        dec.decode_request_with_external_live(request, external_live + 1),
+        Err(JpegError::MemoryCapExceeded { requested, cap })
+            if requested == workspace_cap + 1 && cap == workspace_cap
+    ));
 }
 
 fn minimal_lossless_jpeg(width: u16, height: u16, precision: u8, sampling_420: bool) -> Vec<u8> {
@@ -445,11 +486,85 @@ fn cropped_writer_honors_source_window_origin() {
         w: 2,
         h: 1,
     };
-    let mut writer = CroppedWriter::new(inner, rect, 4, 4);
+    let mut writer = CroppedWriter::new(inner, rect, 4, 4).unwrap();
 
     writer
         .write_gray_row(1, &[10, 20, 30, 40])
         .expect("crop write must succeed");
 
     assert_eq!(writer.inner.rows, vec![(0, vec![30, 40])]);
+}
+
+fn decode_generic_region_with_mode(
+    decoder: &Decoder<'_>,
+    scan_bytes: &[u8],
+    output_rect: Rect,
+    source_x0: u32,
+    source_width: u32,
+    interleaved: bool,
+) -> (Vec<u8>, Vec<Warning>) {
+    let stride = output_rect.w as usize * 3;
+    let mut output = vec![0u8; stride * output_rect.h as usize];
+    let warnings = {
+        let base = Rgb8Writer::new(&mut output, stride, output_rect.w);
+        let mut writer = CroppedWriter::new(base, output_rect, source_x0, source_width)
+            .expect("bounded crop writer");
+        let mut pool = ScratchPool::new();
+        if interleaved {
+            decode_scan_baseline_rgb(
+                &decoder.plan,
+                decoder.backend,
+                scan_bytes,
+                &mut pool,
+                &mut writer,
+                DownscaleFactor::Full,
+                output_rect,
+            )
+        } else {
+            decode_scan_baseline(
+                &decoder.plan,
+                decoder.backend,
+                scan_bytes,
+                &mut pool,
+                &mut writer,
+                DownscaleFactor::Full,
+                output_rect,
+            )
+        }
+        .expect("generic region decode")
+    };
+    (output, warnings)
+}
+
+#[test]
+fn shared_generic_scan_driver_preserves_restart_region_output_mode_parity() {
+    let bytes = j2k_test_support::JPEG_BASELINE_420_RESTART_32X16;
+    let decoder = Decoder::new(bytes).expect("restart-coded fixture must parse");
+    let output_rect = Rect {
+        x: 3,
+        y: 2,
+        w: 23,
+        h: 13,
+    };
+    let scan_bytes = &decoder.bytes[decoder.plan.scan_offset..];
+    let region = stripe_region_layout(&decoder.plan, DownscaleFactor::Full, output_rect);
+
+    let component_rows = decode_generic_region_with_mode(
+        &decoder,
+        scan_bytes,
+        output_rect,
+        region.source_x0,
+        region.source_width,
+        false,
+    );
+    let interleaved = decode_generic_region_with_mode(
+        &decoder,
+        scan_bytes,
+        output_rect,
+        region.source_x0,
+        region.source_width,
+        true,
+    );
+
+    assert_eq!(component_rows, interleaved);
 }

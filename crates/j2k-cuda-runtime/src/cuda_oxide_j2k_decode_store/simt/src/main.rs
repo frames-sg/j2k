@@ -114,6 +114,7 @@ struct CudaJ2kStoreRgb8MctBatchJob {
     plane2_ptr: u64,
     output_ptr: u64,
     job: CudaJ2kStoreRgb8MctJob,
+    reserved_tail: u32,
 }
 
 #[repr(C)]

@@ -6,7 +6,7 @@
 //! adapters around internal scratch storage and shared transform primitives so
 //! dev-only consumers do not compile whole production modules by path.
 
-use crate::{DctGridError, Dwt53TwoDimensional, Dwt97TwoDimensional};
+use crate::{DctTransformError, Dwt53TwoDimensional, Dwt97TwoDimensional};
 
 /// Opaque caller-owned scratch for repeated direct 5/3 grid projections.
 #[derive(Debug, Default)]
@@ -25,7 +25,7 @@ pub fn dct8x8_blocks_to_dwt53_float_linear_with_scratch(
     width: usize,
     height: usize,
     scratch: &mut Dct53GridScratch,
-) -> Result<Dwt53TwoDimensional<f64>, DctGridError> {
+) -> Result<Dwt53TwoDimensional<f64>, DctTransformError> {
     crate::dct53_2d::dct8x8_blocks_to_dwt53_float_linear_with_scratch(
         blocks,
         block_cols,
@@ -45,7 +45,7 @@ pub fn dct8x8_blocks_then_dwt97_float_with_scratch(
     width: usize,
     height: usize,
     scratch: &mut Dct97GridScratch,
-) -> Result<Dwt97TwoDimensional<f64>, DctGridError> {
+) -> Result<Dwt97TwoDimensional<f64>, DctTransformError> {
     crate::dct97_2d::dct8x8_blocks_then_dwt97_float_with_scratch(
         blocks,
         block_cols,
@@ -80,12 +80,11 @@ pub fn reversible_lift_53_i32(values: &mut [i32]) {
 }
 
 /// Apply a conventional linearized 5/3 transform to a sample plane.
-#[must_use]
 pub fn linearized_53_2d_from_plane(
     samples: &[f64],
     width: usize,
     height: usize,
-) -> Dwt53TwoDimensional<f64> {
+) -> Result<Dwt53TwoDimensional<f64>, DctTransformError> {
     crate::dct53_2d::linearized_53_2d_from_plane(samples, width, height)
 }
 

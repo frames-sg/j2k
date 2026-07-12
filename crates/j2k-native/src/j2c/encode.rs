@@ -5,10 +5,10 @@
 //!
 //! Supports both lossless (5-3 reversible) and lossy (9-7 irreversible) encoding.
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::ops::Range;
+use j2k_codec_math::dwt::max_decomposition_levels;
 
 use super::bitplane_encode;
 use super::build::SubBandType;
@@ -25,12 +25,12 @@ use crate::profile;
 pub(crate) use crate::J2kSubBandType;
 use crate::{
     CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
-    IrreversibleQuantizationSubbandScales, J2kDeinterleaveToF32Job, J2kEncodeStageAccelerator,
-    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
-    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
-    J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode,
-    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
-    J2kPacketizationResolution, J2kPacketizationSubband, J2kQuantizeSubbandJob,
+    J2kDeinterleaveToF32Job, J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Level,
+    J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Level, J2kForwardDwt97Output,
+    J2kForwardIctJob, J2kForwardRctJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
+    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
+    J2kPacketizationPacketDescriptor, J2kPacketizationResolution, J2kPacketizationSubband,
+    J2kQuantizeSubbandJob, J2kResidentEncodeInput, J2kResidentHtj2kTileEncodeJob,
     J2kTier1CodeBlockEncodeJob, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
     PrecomputedHtj2k97Component, PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock,
     PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
@@ -40,11 +40,10 @@ use crate::{
     PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
     MAX_J2K_SPEC_COMPONENTS,
 };
-use crate::{DecodeSettings, Image};
 
 const HT_CPU_PARALLEL_FALLBACK_MIN_JOBS: usize = 4;
 const MAX_RAW_PIXEL_ENCODE_BIT_DEPTH: u8 = 24;
-const MAX_PART1_SAMPLE_BIT_DEPTH: u8 = 38;
+const MAX_PART1_SAMPLE_BIT_DEPTH: u8 = j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH;
 const MAX_REVERSIBLE_NO_QUANT_EXPONENT: u16 = 31;
 const MAX_REVERSIBLE_NO_QUANT_GUARD_BITS: u8 = 7;
 const MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES: u16 =
@@ -56,114 +55,146 @@ const MAX_CLASSIC_ROI_CODED_BITPLANES: u8 = 55;
 const MAX_HT_ROI_CODED_BITPLANES: u8 = 31;
 
 mod api_helpers;
-#[cfg(test)]
-use self::api_helpers::deinterleave_rgb8_unsigned_to_f32;
-pub(crate) use self::api_helpers::deinterleave_to_f32;
+pub(crate) use self::api_helpers::try_deinterleave_to_f32;
 use self::api_helpers::{
-    default_public_code_block_style, internal_sub_band_type, max_decomposition_levels,
-    public_sub_band_type,
+    default_public_code_block_style, internal_sub_band_type, public_sub_band_type,
+};
+#[cfg(test)]
+pub(crate) use self::api_helpers::{deinterleave_rgb8_unsigned_to_f32, deinterleave_to_f32};
+pub(crate) mod allocation;
+mod code_block_metadata;
+use self::allocation::{checked_add_bytes, checked_element_bytes, host_allocation_failed};
+mod retained_api;
+pub(crate) use self::retained_api::encode_with_accelerator_and_retained_input;
+mod retained_input;
+pub(crate) use self::retained_input::NativeEncodeRetainedInput;
+use self::retained_input::{
+    NativeEncodePhase, NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession,
 };
 mod options;
-use self::options::{precinct_exponents_for_options, validate_irreversible_quantization_profile};
+use self::options::{
+    validate_code_block_geometry, validate_irreversible_quantization_profile,
+    validate_precinct_exponents_for_options, CodeBlockGeometry,
+};
 pub use self::options::{
     EncodeComponentPlane, EncodeOptions, EncodeProgressionOrder, EncodeRoiRegion,
     EncodeTypedComponentPlane,
 };
+mod resident_contract;
+#[doc(hidden)]
+pub use self::resident_contract::ResidentHtj2kEncodeError;
 mod exact;
 use self::exact::{
-    deinterleave_to_i64, forward_rct_i64, validate_htj2k_codestream,
-    validate_reversible_i64_encode_options,
+    forward_rct_i64, validate_htj2k_codestream, validate_reversible_i64_encode_options,
 };
 mod i64_packetize;
-use self::i64_packetize::{
-    encode_i64_component_resolution_packets, packetize_i64_component_resolution_packets,
-    I64CodestreamPacketRequest, I64PacketizeRequest,
-};
+use self::i64_packetize::{packetize_i64_component_resolution_packets, I64PacketizeRequest};
 mod multitile;
-use self::multitile::{encode_multitile_impl, extract_component_plane_tile};
 mod tile_parts;
 use self::tile_parts::{
-    split_packetized_tile_into_tile_parts, validate_packet_header_marker_payloads,
-    write_single_tile_packetized_codestream,
+    validate_packet_header_marker_payloads, write_single_tile_packetized_codestream_for_session,
 };
 mod precomputed;
-use self::precomputed::encode_precomputed_53_with_component_sample_info_and_accelerator;
+use self::precomputed::encode_precomputed_53_with_component_sample_info_for_session;
+pub(in crate::j2c) use self::precomputed::encode_precomputed_htj2k_53_with_mct_and_retained_owner;
 #[cfg(test)]
 use self::precomputed::prepared_subband_from_preencoded_owned_for_tests as prepared_subband_from_preencoded_owned;
 pub use self::precomputed::{
     encode_precomputed_htj2k_53, encode_precomputed_htj2k_53_with_accelerator,
+    encode_precomputed_htj2k_53_with_accelerator_and_max_host_bytes,
     encode_precomputed_htj2k_53_with_mct, encode_precomputed_htj2k_53_with_mct_and_accelerator,
-    encode_precomputed_htj2k_97, encode_precomputed_htj2k_97_batch_with_accelerator,
-    encode_precomputed_htj2k_97_with_accelerator, encode_precomputed_j2k_53,
+    encode_precomputed_htj2k_97, encode_precomputed_htj2k_97_batch_owned_with_accelerator,
+    encode_precomputed_htj2k_97_batch_owned_with_accelerator_and_max_host_bytes,
+    encode_precomputed_htj2k_97_batch_with_accelerator,
+    encode_precomputed_htj2k_97_with_accelerator,
+    encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes, encode_precomputed_j2k_53,
     encode_precomputed_j2k_53_with_accelerator, encode_precomputed_j2k_53_with_mct,
     encode_precomputed_j2k_53_with_mct_and_accelerator, encode_preencoded_htj2k_97,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator,
-    encode_preencoded_htj2k_97_owned_with_accelerator, encode_preencoded_htj2k_97_with_accelerator,
-    encode_prequantized_htj2k_97, encode_prequantized_htj2k_97_with_accelerator,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_owned_with_accelerator,
+    encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_with_accelerator, encode_prequantized_htj2k_97,
+    encode_prequantized_htj2k_97_with_accelerator,
+    encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
 };
 #[cfg(test)]
 use self::precomputed::{validate_precomputed_dwt97_geometry, validate_precomputed_dwt_geometry};
 mod precomputed_batch;
-use self::precomputed_batch::{
-    coefficients_fit_i32, copy_code_block_coefficients, copy_code_block_coefficients_i64,
-    downcast_i64_coefficients_to_i32, prepare_precomputed_htj2k97_image_for_batch,
-};
+use self::precomputed_batch::prepare_precomputed_htj2k97_image_for_batch;
+#[cfg(test)]
+use self::precomputed_batch::{copy_code_block_coefficients, downcast_i64_coefficients_to_i32};
 mod prepared_packets;
 use self::prepared_packets::{
-    encode_prepared_resolution_packets, encode_prepared_resolution_packets_layered,
+    encode_prepared_resolution_packets_for_session,
+    encode_prepared_resolution_packets_layered_for_session,
 };
 mod packet_plan;
 use self::packet_plan::{
-    count_compact_code_blocks, ordered_prepared_compact_resolution_packets,
-    ordered_prepared_resolution_packets, packet_descriptors_for_compact_order,
-    packet_descriptors_for_order, packetization_requires_scalar,
-    packetize_resolution_packets_with_options, public_packetization_progression_order,
-    public_packetization_resolutions_from_compact, scalar_packet_descriptors,
-    split_component_resolution_packets_by_precinct,
+    count_compact_code_blocks, ordered_prepared_resolution_packets_for_session,
+    packet_descriptors_for_order_for_session, packetization_requires_scalar,
+    packetize_resolution_packets_with_options_for_session, public_packetization_progression_order,
+    split_component_resolution_packets_by_precinct_for_session,
 };
 mod rate_control;
+#[cfg(test)]
 use self::rate_control::{
     assign_classic_segment_layers_by_slope, assign_ht_segment_layers_by_budget,
-    classic_layer_contributions, classic_multilayer_code_block_style,
-    classic_unbudgeted_segment_layers, enforce_classic_segment_layer_monotonicity,
-    enforce_ht_segment_layer_monotonicity, ht_layer_contributions, ht_segment_count,
-    ht_segment_rate, ht_unbudgeted_segment_layers, ClassicSegmentAssignmentCandidate,
+    ht_layer_contributions,
+};
+use self::rate_control::{
+    assign_classic_segment_layers_by_slope_accounted, assign_ht_segment_layers_by_budget_accounted,
+    classic_layer_contributions_accounted, classic_multilayer_code_block_style,
+    classic_unbudgeted_segment_layers_accounted, enforce_classic_segment_layer_monotonicity,
+    enforce_ht_segment_layer_monotonicity, ht_layer_contributions_accounted, ht_segment_count,
+    ht_segment_rate, ht_unbudgeted_segment_layers_accounted, ClassicSegmentAssignmentCandidate,
     ClassicSegmentLocation, HtSegmentAssignmentCandidate, HtSegmentLocation, LayeredPreparedBlock,
     LayeredPreparedPacket, LayeredPreparedSubband,
 };
 mod roi_plan;
 use self::roi_plan::{
-    component_sampling_for_options, max_total_bitplanes_for_components,
-    roi_encode_plans_for_options, roi_subband_scale, ComponentRoiEncodePlan,
-    ComponentRoiEncodeRegion,
+    max_total_bitplanes_for_components, roi_subband_scale,
+    validate_roi_encode_options_nonallocating, ComponentRoiEncodePlan, ComponentRoiEncodeRegion,
 };
 mod samples;
 use self::samples::{
     native_samples_equal, raw_pixel_bytes_per_sample, read_le_sample_value, sign_extend_sample,
 };
 mod single_tile;
-use self::single_tile::encode_impl;
-mod subband;
-use self::subband::{
-    prepare_subband, prepare_subband_cpu_quantized, prepare_subband_i64, I64SubbandEncodeSettings,
+use self::single_tile::ownership::{cpu_dwt_transient_bytes, dwt_decompositions_retained_bytes};
+use self::single_tile::{
+    encode_impl, encode_precomputed_53_single_tile, encode_precomputed_97_single_tile,
+    encode_resident_impl,
 };
+mod subband;
+#[cfg(test)]
+use self::subband::prepare_subband;
+use self::subband::{
+    prepare_subband_for_session, F32SubbandEncodeRequest, I64SubbandEncodeSettings,
+};
+mod tier1_allocation;
 mod tier1_driver;
-use self::tier1_driver::{encode_all_ht_code_blocks, encode_prepared_subbands};
+use self::tier1_driver::encode_prepared_subbands_for_session;
 #[cfg(test)]
 use self::tier1_driver::{
     encode_all_ht_code_blocks_parallel, encode_all_ht_code_blocks_serial_cpu,
+    encode_prepared_subbands,
 };
 mod transform;
+#[cfg(test)]
+use self::transform::forward_dwt53_output_from_decomposition;
 use self::transform::{
     adjust_component_step_sizes_for_guard_delta, adjust_reversible_step_sizes_for_guard_delta,
-    component_plane_to_f32, component_step_sizes, encode_forward_dwt,
-    forward_dwt53_output_from_decomposition, reversible_guard_bits_for_marker_limit,
-    try_encode_forward_ict, try_encode_forward_rct, validate_band_len,
-    validate_component_sample_info, validate_component_sampling_dwt_geometry,
-    validate_deinterleaved_components,
+    encode_forward_dwt, forward_dwt53_output_retained_bytes,
+    reversible_guard_bits_for_marker_limit, try_component_plane_to_f32_for_session,
+    try_encode_forward_ict, try_encode_forward_rct, try_forward_dwt53_output_from_decomposition,
+    validate_band_len, validate_component_sample_info, validate_deinterleaved_components,
+    ForwardDwtRequest,
 };
 mod typed_i64;
 use self::typed_i64::encode_typed_component_planes_53_i64;
+mod typed_components;
+use self::typed_components::encode_typed_component_planes_53_for_session;
 
 /// Encode pixel data into a JPEG 2000 codestream.
 ///
@@ -191,7 +222,7 @@ pub fn encode(
     bit_depth: u8,
     signed: bool,
     options: &EncodeOptions,
-) -> Result<Vec<u8>, &'static str> {
+) -> crate::EncodeResult<Vec<u8>> {
     let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
     encode_with_accelerator(
         pixels,
@@ -224,8 +255,8 @@ pub fn encode_with_accelerator(
     signed: bool,
     options: &EncodeOptions,
     accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> Result<Vec<u8>, &'static str> {
-    encode_with_accelerator_and_component_sample_info(
+) -> crate::EncodeResult<Vec<u8>> {
+    encode_with_accelerator_and_retained_input(
         pixels,
         width,
         height,
@@ -233,16 +264,30 @@ pub fn encode_with_accelerator(
         bit_depth,
         signed,
         options,
-        &[],
+        NativeEncodeRetainedInput::none(),
         accelerator,
     )
+}
+
+/// Encode a complete HTJ2K tile whose input pixels remain backend-resident.
+///
+/// This implementation-facing entry point reuses native request planning and
+/// codestream finalization, but has no CPU fallback because no host samples are
+/// present. A declined resident hook is returned as an explicit error.
+#[doc(hidden)]
+pub fn encode_resident_htj2k_with_accelerator(
+    input: J2kResidentEncodeInput,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, ResidentHtj2kEncodeError> {
+    encode_resident_impl(input, options, block_coding_mode(options), accelerator)
 }
 
 #[expect(
     clippy::too_many_arguments,
     reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
 )]
-fn encode_with_accelerator_and_component_sample_info(
+fn encode_with_accelerator_and_component_sample_info_for_session(
     pixels: &[u8],
     width: u32,
     height: u32,
@@ -251,9 +296,42 @@ fn encode_with_accelerator_and_component_sample_info(
     signed: bool,
     options: &EncodeOptions,
     component_sample_info: &[EncodeComponentSampleInfo],
+    session: &NativeEncodeSession<'_>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> Result<Vec<u8>, &'static str> {
+) -> crate::EncodeResult<Vec<u8>> {
     let block_coding_mode = block_coding_mode(options);
+    encode_with_accelerator_and_mode_for_session(
+        pixels,
+        width,
+        height,
+        num_components,
+        bit_depth,
+        signed,
+        options,
+        component_sample_info,
+        block_coding_mode,
+        session,
+        accelerator,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this internal mode boundary keeps caller geometry and validated coding policy explicit"
+)]
+fn encode_with_accelerator_and_mode_for_session(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    num_components: u16,
+    bit_depth: u8,
+    signed: bool,
+    options: &EncodeOptions,
+    component_sample_info: &[EncodeComponentSampleInfo],
+    block_coding_mode: BlockCodingMode,
+    session: &NativeEncodeSession<'_>,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> crate::EncodeResult<Vec<u8>> {
     let codestream = encode_impl(
         pixels,
         width,
@@ -265,14 +343,17 @@ fn encode_with_accelerator_and_component_sample_info(
         block_coding_mode,
         &[],
         component_sample_info,
+        session,
         accelerator,
-    )?;
+    )
+    .map_err(NativeEncodePipelineError::into_encode_error)?;
 
     if block_coding_mode == BlockCodingMode::HighThroughput
         && options.validate_high_throughput_codestream
     {
         validate_htj2k_codestream(
             &codestream,
+            codestream.capacity(),
             pixels,
             width,
             height,
@@ -309,7 +390,7 @@ pub fn encode_with_roi_regions(
     signed: bool,
     options: &EncodeOptions,
     roi_regions: &[EncodeRoiRegion],
-) -> Result<Vec<u8>, &'static str> {
+) -> crate::EncodeResult<Vec<u8>> {
     let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
     encode_with_accelerator_and_roi_regions(
         pixels,
@@ -340,7 +421,8 @@ pub fn encode_with_accelerator_and_roi_regions(
     options: &EncodeOptions,
     roi_regions: &[EncodeRoiRegion],
     accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> Result<Vec<u8>, &'static str> {
+) -> crate::EncodeResult<Vec<u8>> {
+    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
     let block_coding_mode = block_coding_mode(options);
     let codestream = encode_impl(
         pixels,
@@ -353,14 +435,17 @@ pub fn encode_with_accelerator_and_roi_regions(
         block_coding_mode,
         roi_regions,
         &[],
+        &session,
         accelerator,
-    )?;
+    )
+    .map_err(NativeEncodePipelineError::into_encode_error)?;
 
     if block_coding_mode == BlockCodingMode::HighThroughput
         && options.validate_high_throughput_codestream
     {
         validate_htj2k_codestream(
             &codestream,
+            codestream.capacity(),
             pixels,
             width,
             height,
@@ -390,17 +475,21 @@ pub fn encode_htj2k(
     bit_depth: u8,
     signed: bool,
     options: &EncodeOptions,
-) -> Result<Vec<u8>, &'static str> {
-    let mut options = options.clone();
-    options.use_ht_block_coding = true;
-    encode(
+) -> crate::EncodeResult<Vec<u8>> {
+    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
+    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+    encode_with_accelerator_and_mode_for_session(
         pixels,
         width,
         height,
         num_components,
         bit_depth,
         signed,
-        &options,
+        options,
+        &[],
+        BlockCodingMode::HighThroughput,
+        &session,
+        &mut accelerator,
     )
 }
 
@@ -422,18 +511,41 @@ pub fn encode_component_planes_53(
     bit_depth: u8,
     signed: bool,
     options: &EncodeOptions,
-) -> Result<Vec<u8>, &'static str> {
-    let typed_planes = planes
-        .iter()
-        .map(|plane| EncodeTypedComponentPlane {
-            data: plane.data,
-            x_rsiz: plane.x_rsiz,
-            y_rsiz: plane.y_rsiz,
-            bit_depth,
-            signed,
-        })
-        .collect::<Vec<_>>();
-    encode_typed_component_planes_53(&typed_planes, width, height, options)
+) -> crate::EncodeResult<Vec<u8>> {
+    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
+    let requested_bytes = checked_element_bytes::<EncodeTypedComponentPlane<'_>>(
+        planes.len(),
+        "component-plane typed descriptor owners",
+    )?;
+    session.checked_phase(requested_bytes, "component-plane typed descriptor owners")?;
+    let mut typed_planes = Vec::new();
+    typed_planes.try_reserve_exact(planes.len()).map_err(|_| {
+        host_allocation_failed("component-plane typed descriptor owners", requested_bytes)
+    })?;
+    typed_planes.extend(planes.iter().map(|plane| EncodeTypedComponentPlane {
+        data: plane.data,
+        x_rsiz: plane.x_rsiz,
+        y_rsiz: plane.y_rsiz,
+        bit_depth,
+        signed,
+    }));
+    let actual_bytes = checked_element_bytes::<EncodeTypedComponentPlane<'_>>(
+        typed_planes.capacity(),
+        "component-plane typed descriptor owners",
+    )?;
+    let typed_session = session.checked_child_session(
+        &typed_planes,
+        actual_bytes,
+        "component-plane typed descriptor owners",
+    )?;
+    encode_typed_component_planes_53_for_session(
+        &typed_planes,
+        width,
+        height,
+        options,
+        &typed_session,
+    )
+    .map_err(NativeEncodePipelineError::into_encode_error)
 }
 
 /// Encode reversible 5/3 typed component planes into a classic J2K or HTJ2K
@@ -448,121 +560,15 @@ pub fn encode_component_planes_53(
 ///
 /// Returns an error for invalid component count, dimensions, sampling,
 /// precision, sample buffers, or options, or when a codec stage fails.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
-)]
 pub fn encode_typed_component_planes_53(
     planes: &[EncodeTypedComponentPlane<'_>],
     width: u32,
     height: u32,
     options: &EncodeOptions,
-) -> Result<Vec<u8>, &'static str> {
-    if width == 0 || height == 0 {
-        return Err("invalid dimensions");
-    }
-    if planes.is_empty() || planes.len() > usize::from(MAX_J2K_SPEC_COMPONENTS) {
-        return Err("unsupported component count");
-    }
-    if planes
-        .iter()
-        .any(|plane| plane.x_rsiz == 0 || plane.y_rsiz == 0)
-    {
-        return Err("component sampling factors must be non-zero");
-    }
-    if planes.iter().any(|plane| plane.bit_depth == 0) {
-        return Err("unsupported bit depth");
-    }
-    if planes
-        .iter()
-        .any(|plane| plane.bit_depth > MAX_PART1_SAMPLE_BIT_DEPTH)
-    {
-        return Err("unsupported bit depth");
-    }
-    if planes
-        .iter()
-        .any(|plane| plane.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH)
-    {
-        return encode_typed_component_planes_53_i64(planes, width, height, options);
-    }
-
-    let max_levels = planes
-        .iter()
-        .map(|plane| {
-            let component_width = width.div_ceil(u32::from(plane.x_rsiz));
-            let component_height = height.div_ceil(u32::from(plane.y_rsiz));
-            max_decomposition_levels(component_width, component_height)
-        })
-        .min()
-        .unwrap_or(0);
-    let num_levels = options.num_decomposition_levels.min(max_levels);
-    let components = planes
-        .iter()
-        .map(|plane| {
-            let component_width = width.div_ceil(u32::from(plane.x_rsiz));
-            let component_height = height.div_ceil(u32::from(plane.y_rsiz));
-            let samples = component_plane_to_f32(
-                plane.data,
-                component_width,
-                component_height,
-                plane.bit_depth,
-                plane.signed,
-            )?;
-            let dwt = fdwt::forward_dwt(
-                &samples,
-                component_width,
-                component_height,
-                num_levels,
-                true,
-            );
-            Ok(PrecomputedHtj2k53Component {
-                x_rsiz: plane.x_rsiz,
-                y_rsiz: plane.y_rsiz,
-                dwt: forward_dwt53_output_from_decomposition(dwt),
-            })
-        })
-        .collect::<Result<Vec<_>, &'static str>>()?;
-    let max_bit_depth = planes
-        .iter()
-        .map(|plane| plane.bit_depth)
-        .max()
-        .ok_or("unsupported component count")?;
-    let component_sample_info = planes
-        .iter()
-        .map(|plane| EncodeComponentSampleInfo {
-            bit_depth: plane.bit_depth,
-            signed: plane.signed,
-        })
-        .collect::<Vec<_>>();
-    let image = PrecomputedHtj2k53Image {
-        width,
-        height,
-        bit_depth: max_bit_depth,
-        signed: planes.iter().all(|plane| plane.signed),
-        components,
-    };
-
-    if options.use_ht_block_coding {
-        let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
-        encode_precomputed_53_with_component_sample_info_and_accelerator(
-            &image,
-            options,
-            false,
-            true,
-            &component_sample_info,
-            &mut accelerator,
-        )
-    } else {
-        let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
-        encode_precomputed_53_with_component_sample_info_and_accelerator(
-            &image,
-            options,
-            false,
-            false,
-            &component_sample_info,
-            &mut accelerator,
-        )
-    }
+) -> crate::EncodeResult<Vec<u8>> {
+    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
+    encode_typed_component_planes_53_for_session(planes, width, height, options, &session)
+        .map_err(NativeEncodePipelineError::into_encode_error)
 }
 
 /// Encode precomputed reversible 5/3 wavelet coefficients into a classic
@@ -576,22 +582,40 @@ fn block_coding_mode(options: &EncodeOptions) -> BlockCodingMode {
     }
 }
 
-fn ht_target_coding_passes_for_options(options: &EncodeOptions) -> u8 {
-    if options.use_ht_block_coding && options.num_layers > 1 {
+fn ht_target_coding_passes_for_options(
+    options: &EncodeOptions,
+    block_coding_mode: BlockCodingMode,
+) -> u8 {
+    if block_coding_mode == BlockCodingMode::HighThroughput && options.num_layers > 1 {
         options.num_layers.min(3)
     } else {
         1
     }
 }
 
-#[derive(Clone)]
+enum PreparedCodeBlockCoefficients {
+    I32(Vec<i32>),
+    I64(Vec<i64>),
+    Empty,
+}
+
+#[cfg(test)]
+impl PreparedCodeBlockCoefficients {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::I32(values) => values.is_empty(),
+            Self::I64(values) => values.is_empty(),
+            Self::Empty => true,
+        }
+    }
+}
+
 struct PreparedEncodeCodeBlock {
-    coefficients: Vec<i64>,
+    coefficients: PreparedCodeBlockCoefficients,
     width: u32,
     height: u32,
 }
 
-#[derive(Clone)]
 struct PreparedEncodeSubband {
     code_blocks: Vec<PreparedEncodeCodeBlock>,
     preencoded_ht_code_blocks: Option<Vec<EncodedHtJ2kCodeBlock>>,
@@ -633,14 +657,6 @@ struct PreparedCompactResolutionPacket<'a> {
     resolution: u32,
     precinct: u64,
     subbands: Vec<PreparedCompactSubband<'a>>,
-}
-
-struct PreparedPrecomputedHtj2k97Image {
-    params: EncodeParams,
-    quant_params: Vec<(u16, u16)>,
-    packet_descriptors: Vec<J2kPacketizationPacketDescriptor>,
-    packet_count: usize,
-    prepared_packets: Vec<PreparedResolutionPacket>,
 }
 
 #[cfg(test)]

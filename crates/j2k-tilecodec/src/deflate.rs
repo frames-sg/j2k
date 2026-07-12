@@ -33,12 +33,9 @@ impl TileDecompress for DeflateCodec {
                 match read_to_output_bounded(DeflateDecoder::new(input), &mut pool.scratch, out) {
                     Ok(written) => Ok(written),
                     Err(BoundedReadError::OutputTooSmall(error)) => Err(error.into()),
-                    Err(BoundedReadError::Io(raw_error)) => {
-                        Err(crate::error::input_or_backend_io_error(
-                            &raw_error,
-                            "deflate decode failed",
-                        ))
-                    }
+                    Err(BoundedReadError::Io(raw_error)) => Err(
+                        crate::error::input_or_backend_io_error(raw_error, "deflate decode failed"),
+                    ),
                 }
             }
         }

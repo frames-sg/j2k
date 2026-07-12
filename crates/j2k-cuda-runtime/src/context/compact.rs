@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
+    allocation::HostPhaseBudget,
     error::CudaError,
     execution::CudaExecutionStats,
     htj2k_encode::{
@@ -78,38 +79,46 @@ impl CudaHtj2kCompactEncodedCodeBlocks {
         self.stage_timings
     }
 
-    pub(crate) fn into_owned_code_blocks(self) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
+    pub(crate) fn into_owned_code_blocks_with_live_host_bytes(
+        self,
+        live_host_bytes: usize,
+    ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
         let Self {
             payload,
             code_blocks,
             execution,
             stage_timings,
         } = self;
-        let code_blocks = code_blocks
-            .into_iter()
-            .map(|block| {
-                let CudaHtj2kCompactEncodedCodeBlock {
-                    payload_range,
-                    status,
-                    execution,
-                    stage_timings,
-                } = block;
-                if payload_range.start > payload_range.end || payload_range.end > payload.len() {
-                    return Err(CudaError::LengthTooLarge {
-                        len: payload_range.end,
-                    });
-                }
-                Ok(CudaHtj2kEncodedCodeBlock {
-                    data: payload[payload_range].to_vec(),
-                    status,
-                    execution,
-                    stage_timings,
-                })
-            })
-            .collect::<Result<Vec<_>, CudaError>>()?;
+        let mut host_budget = HostPhaseBudget::with_live_bytes(
+            "CUDA compact HTJ2K code-block expansion",
+            live_host_bytes,
+        )?;
+        host_budget.account_vec(&payload)?;
+        host_budget.account_vec(&code_blocks)?;
+        let mut owned_code_blocks = host_budget.try_vec_with_capacity(code_blocks.len())?;
+        for block in code_blocks {
+            let CudaHtj2kCompactEncodedCodeBlock {
+                payload_range,
+                status,
+                execution,
+                stage_timings,
+            } = block;
+            if payload_range.start > payload_range.end || payload_range.end > payload.len() {
+                return Err(CudaError::LengthTooLarge {
+                    len: payload_range.end,
+                });
+            }
+            let data = host_budget.try_vec_from_slice(&payload[payload_range])?;
+            owned_code_blocks.push(CudaHtj2kEncodedCodeBlock {
+                data,
+                status,
+                execution,
+                stage_timings,
+            });
+        }
 
         Ok(CudaHtj2kEncodedCodeBlocks {
-            code_blocks,
+            code_blocks: owned_code_blocks,
             execution,
             stage_timings,
         })

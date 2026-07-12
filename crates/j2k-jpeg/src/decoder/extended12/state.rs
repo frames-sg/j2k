@@ -5,22 +5,22 @@
 pub(super) use super::super::lossless_helpers::Extended12RestartTracker;
 use super::super::{
     decode_block_with_activity, BitReader, BlockActivity, CoefficientBlock, JpegError,
-    PreparedComponentPlan,
+    ResolvedPreparedComponentPlan,
 };
 
 pub(super) fn decode_extended12_block_pixels(
     br: &mut BitReader<'_>,
-    component: &PreparedComponentPlan,
+    component: ResolvedPreparedComponentPlan<'_>,
     prev_dc: &mut i32,
     coeff: &mut CoefficientBlock,
     pixels: &mut [u16; 64],
 ) -> Result<(), JpegError> {
     let activity = decode_block_with_activity(
         br,
-        &component.dc_table,
-        &component.ac_table,
+        component.dc_table,
+        component.ac_table,
         prev_dc,
-        component.quant.as_ref(),
+        component.quant,
         coeff,
     )?;
     match activity {

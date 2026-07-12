@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use crate::j2c::ComponentData;
 
 #[test]
 fn direct_grayscale_plan_rejects_rgb_image_with_typed_reason() {
@@ -222,6 +223,57 @@ fn classic_scalar_token_pack_matches_scalar_single_cleanup_block() {
     assert_eq!(packed.missing_bit_planes, scalar.missing_bit_planes);
 }
 
+#[test]
+fn scalar_encode_adapters_preserve_typed_input_and_cap_categories() {
+    let style = J2kCodeBlockStyle {
+        selective_arithmetic_coding_bypass: false,
+        reset_context_probabilities: false,
+        termination_on_each_pass: false,
+        vertically_causal_context: false,
+        segmentation_symbols: false,
+    };
+    assert!(matches!(
+        encode_j2k_code_block_scalar_with_style(&[1], 2, 2, J2kSubBandType::LowLow, 1, style,),
+        Err(EncodeError::InvalidInput {
+            what: "contiguous coefficient block length mismatch",
+        })
+    ));
+    assert!(matches!(
+        encode_ht_code_block_scalar(&[0], 1, 1, 0),
+        Err(EncodeError::InvalidInput {
+            what: "HTJ2K scalar encoder currently supports 1..=31 bitplanes",
+        })
+    ));
+    assert!(matches!(
+        encode_ht_code_block_scalar_with_passes(&[0], 1, 1, 1, 4),
+        Err(EncodeError::InvalidInput {
+            what: "HTJ2K scalar encoder currently supports cleanup, sigprop, and one magref refinement pass",
+        })
+    ));
+
+    let error = pack_j2k_code_block_scalar_from_tier1_tokens(
+        &[],
+        &[J2kTier1TokenSegment {
+            token_bit_offset: 0,
+            token_bit_count: u32::MAX - 3,
+            start_coding_pass: 0,
+            end_coding_pass: 1,
+            use_arithmetic: true,
+        }],
+        1,
+        0,
+    )
+    .expect_err("oversized token payload must fail before reading token bytes");
+    assert!(matches!(
+        error,
+        EncodeError::AllocationTooLarge {
+            what: "classic Tier-1 token worker allocation",
+            requested,
+            cap: DEFAULT_MAX_CODEC_BYTES,
+        } if requested > DEFAULT_MAX_CODEC_BYTES
+    ));
+}
+
 fn pack_mq_test_tokens(tokens: &[(u8, u8)]) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut current = 0u8;
@@ -394,7 +446,12 @@ fn scalar_packetization_rejects_overflowing_ht_refinement_lengths_without_panic(
     let err = encode_j2k_packetization_scalar(job)
         .expect_err("overflowing HT packetization segment lengths rejected");
 
-    assert_eq!(err, "multi-pass HTJ2K packet contribution length overflow");
+    assert_eq!(
+        err,
+        EncodeError::ArithmeticOverflow {
+            what: "multi-pass HTJ2K packet contribution length overflow",
+        }
+    );
 }
 
 #[derive(Default)]
@@ -674,6 +731,92 @@ fn fixture_gray() -> Vec<u8> {
 }
 
 #[test]
+fn reversible_coefficient_handoff_is_complete_and_releases_decode_storage() {
+    let bytes = fixture_gray();
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let mut context = DecoderContext::default();
+
+    let coefficients = image
+        .decode_reversible_53_coefficients_with_context(&mut context)
+        .expect("extract reversible coefficients");
+
+    assert_eq!(coefficients.image.components.len(), 1);
+    let component = &coefficients.image.components[0].dwt;
+    let coefficient_count = component.ll.len()
+        + component
+            .levels
+            .iter()
+            .map(|level| level.hl.len() + level.lh.len() + level.hh.len())
+            .sum::<usize>();
+    assert_eq!(coefficient_count, 16);
+    assert_eq!(context.storage.retained_capacity_bytes().unwrap(), 0);
+    assert_eq!(
+        context.tile_decode_context.tier1_capacity_bytes().unwrap(),
+        0
+    );
+}
+
+#[test]
+fn repeated_decode_and_recode_reuse_immutable_tile_part_metadata() {
+    let bytes = fixture_gray();
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let mut context = DecoderContext::default();
+    let ht_options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        use_ht_block_coding: true,
+        ..EncodeOptions::default()
+    };
+
+    let initial_pixels = image
+        .decode_native_with_context(&mut context)
+        .expect("first decode");
+    let initial_coefficients = image
+        .decode_reversible_53_coefficients_with_context(&mut context)
+        .expect("first coefficient extraction");
+    let initial_codestream = initial_coefficients
+        .encode_htj2k(&ht_options)
+        .expect("first coefficient recode");
+
+    let repeated_pixels = image
+        .decode_native_with_context(&mut context)
+        .expect("second decode");
+    let repeated_coefficients = image
+        .decode_reversible_53_coefficients_with_context(&mut context)
+        .expect("second coefficient extraction");
+    let repeated_codestream = repeated_coefficients
+        .encode_htj2k(&ht_options)
+        .expect("second coefficient recode");
+
+    assert_eq!(repeated_pixels.data, initial_pixels.data);
+    assert_eq!(repeated_codestream, initial_codestream);
+}
+
+#[test]
+fn repeated_direct_plan_build_reuses_immutable_tile_part_metadata() {
+    let bytes = fixture_gray();
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let mut context = DecoderContext::default();
+
+    let first = image
+        .build_direct_grayscale_plan_with_context(&mut context)
+        .expect("first direct plan");
+    let second = image
+        .build_direct_grayscale_plan_with_context(&mut context)
+        .expect("second direct plan");
+
+    assert_eq!(second.dimensions, first.dimensions);
+    assert_eq!(second.bit_depth, first.bit_depth);
+    assert_eq!(second.steps.len(), first.steps.len());
+    for (second_step, first_step) in second.steps.iter().zip(&first.steps) {
+        assert_eq!(
+            core::mem::discriminant(second_step),
+            core::mem::discriminant(first_step)
+        );
+    }
+}
+
+#[test]
 fn native_bytes_per_sample_tracks_high_bit_depths() {
     for (bit_depth, expected) in [
         (1_u8, 1_usize),
@@ -777,6 +920,21 @@ fn inspect_rejects_component_count_above_j2k_spec_cap() {
 }
 
 #[test]
+fn inspect_fallibly_materializes_the_maximum_component_metadata() {
+    let mut bytes = fixture_gray();
+    rewrite_siz_component_count(&mut bytes, MAX_J2K_SPEC_COMPONENTS);
+
+    let metadata = inspect_j2k_codestream_header(&bytes)
+        .expect("maximum JPEG 2000 component metadata remains inspectable");
+
+    assert_eq!(metadata.components, MAX_J2K_SPEC_COMPONENTS);
+    assert_eq!(
+        metadata.component_info.len(),
+        usize::from(MAX_J2K_SPEC_COMPONENTS)
+    );
+}
+
+#[test]
 fn native_parse_accepts_spec_component_count_above_u8() {
     let mut bytes = fixture_gray();
     rewrite_siz_component_count(&mut bytes, MAX_J2K_SPEC_COMPONENTS + 1);
@@ -804,10 +962,38 @@ fn tile_parse_rejects_component_tile_structural_bomb_before_allocation() {
     let mut context = j2c::DecoderContext::default();
     let mut ht_decoder: Option<&mut dyn HtCodeBlockDecoder> = None;
 
-    let err = j2c::decode(parsed.data, &parsed.header, &mut context, &mut ht_decoder)
-        .expect_err("tile structural budget must reject before tile allocation");
+    let retained_header_bytes = j2c::codestream::allocation::retained_header_bytes(&parsed.header)
+        .expect("parsed header capacity");
+    let err = j2c::decode(
+        parsed.data,
+        &parsed.header,
+        retained_header_bytes,
+        &mut context,
+        &mut ht_decoder,
+    )
+    .expect_err("tile structural budget must reject before tile allocation");
 
     assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
+}
+
+#[test]
+fn retained_container_metadata_rejects_header_parse_before_decode_growth() {
+    let bytes = fixture_gray();
+    let Err(error) = j2c::parse_raw_with_retained_baseline(
+        &bytes,
+        &DecodeSettings::default(),
+        DEFAULT_MAX_DECODE_BYTES,
+    ) else {
+        panic!("a full retained-container baseline must leave no room for the header");
+    };
+    assert!(matches!(
+        error,
+        DecodeError::AllocationTooLarge {
+            what: "native codestream header metadata",
+            requested,
+            cap: DEFAULT_MAX_DECODE_BYTES,
+        } if requested > DEFAULT_MAX_DECODE_BYTES
+    ));
 }
 
 #[test]
@@ -820,7 +1006,7 @@ fn owned_decode_rejects_large_siz_before_allocating_output() {
         panic!("large owned decode must be capped");
     };
 
-    assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
+    assert_large_siz_component_budget(&err);
 }
 
 #[test]
@@ -833,6 +1019,66 @@ fn decode_into_rejects_large_siz_before_allocating_component_storage() {
 
     let Err(err) = image.decode_into(&mut out, &mut context) else {
         panic!("component storage must be capped before allocation");
+    };
+
+    assert_large_siz_component_budget(&err);
+    assert!(
+        context
+            .tile_decode_context
+            .channel_data
+            .iter()
+            .all(|component| component.container.capacity() == 0
+                && component.integer_container.is_none()),
+        "the cap must reject before component sample owners are allocated"
+    );
+}
+
+fn assert_large_siz_component_budget(error: &DecodeError) {
+    match error {
+        DecodeError::AllocationTooLarge {
+            what,
+            requested,
+            cap,
+        } => {
+            assert_eq!(*what, "native decoder context retained components");
+            assert!(*requested > *cap);
+            assert_eq!(*cap, DEFAULT_MAX_DECODE_BYTES);
+        }
+        other => panic!("unexpected large-SIZ rejection category: {other:?}"),
+    }
+}
+
+#[test]
+fn decode_region_rejects_large_full_tile_workspace_before_allocation() {
+    let mut codestream = fixture_gray();
+    rewrite_siz_to_single_large_tile(&mut codestream, 60_000);
+    let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
+
+    let Err(err) = image.decode_region((0, 0, 1, 1)) else {
+        panic!("tiny ROI must not bypass the full-tile coefficient budget");
+    };
+
+    assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
+}
+
+#[test]
+fn decode_region_rejects_code_block_layer_metadata_amplification() {
+    let pixels: Vec<u8> = (0..64).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 0,
+        code_block_width_exp: 0,
+        code_block_height_exp: 0,
+        num_layers: 32,
+        ..EncodeOptions::default()
+    };
+    let mut bytes =
+        encode(&pixels, 8, 8, 1, 8, false, &options).expect("encode many-layer classic fixture");
+    rewrite_siz_to_single_large_tile(&mut bytes, 4_096);
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("large SIZ parses");
+
+    let Err(err) = image.decode_region((0, 0, 1, 1)) else {
+        panic!("tiny ROI must not bypass the structural metadata budget");
     };
 
     assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
@@ -1075,6 +1321,7 @@ fn region_decode_reuses_region_sized_component_storage() {
         .expect("region decode");
 
     assert_eq!((bitmap.width, bitmap.height), (1, 2));
+    assert_eq!(context.tile_decode_context.channel_data.len(), 3);
     assert!(context
         .tile_decode_context
         .channel_data
@@ -1093,11 +1340,130 @@ fn native_region_decode_reuses_region_sized_component_storage() {
         .expect("native region decode");
 
     assert_eq!((bitmap.width, bitmap.height), (1, 2));
+    assert_eq!(context.tile_decode_context.channel_data.len(), 3);
     assert!(context
         .tile_decode_context
         .channel_data
         .iter()
         .all(|component| component.container.truncated().len() == 2));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ChannelCapacitySnapshot {
+    outer_ptr: *const ComponentData,
+    outer_capacity: usize,
+    components: Vec<ComponentCapacitySnapshot>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ComponentCapacitySnapshot {
+    sample_ptr: *const f32,
+    sample_capacity: usize,
+    integer_owner: Option<(*const i64, usize)>,
+}
+
+fn channel_capacity_snapshot(context: &DecoderContext<'_>) -> ChannelCapacitySnapshot {
+    let components = &context.tile_decode_context.channel_data;
+    ChannelCapacitySnapshot {
+        outer_ptr: components.as_ptr(),
+        outer_capacity: components.capacity(),
+        components: components
+            .iter()
+            .map(|component| ComponentCapacitySnapshot {
+                sample_ptr: component.container.as_ptr(),
+                sample_capacity: component.container.capacity(),
+                integer_owner: component
+                    .integer_container
+                    .as_ref()
+                    .map(|samples| (samples.as_ptr(), samples.capacity())),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn decoder_context_reuses_component_owners_across_packed_and_component_outputs() {
+    let bytes = fixture();
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let mut context = DecoderContext::default();
+
+    let first = image
+        .decode_with_context(&mut context)
+        .expect("first packed decode");
+    assert_eq!(context.tile_decode_context.channel_data.len(), 3);
+    let expected = first.data.clone();
+    let owners = channel_capacity_snapshot(&context);
+    context.tile_decode_context.channel_data[0].container[0] = f32::INFINITY;
+    drop(first);
+
+    let second = image
+        .decode_with_context(&mut context)
+        .expect("second packed decode");
+    assert_eq!(second.data, expected);
+    assert_eq!(channel_capacity_snapshot(&context), owners);
+    drop(second);
+
+    let component_output = image
+        .decode_native_components_with_context(&mut context)
+        .expect("owned component decode");
+    assert_eq!(component_output.planes().len(), 3);
+    assert_eq!(channel_capacity_snapshot(&context), owners);
+    drop(component_output);
+
+    let native = image
+        .decode_native_with_context(&mut context)
+        .expect("native packed decode");
+    assert_eq!(native.data, expected);
+    assert_eq!(channel_capacity_snapshot(&context), owners);
+}
+
+#[test]
+fn exact_integer_decoder_context_reuses_and_resets_i64_samples() {
+    let samples = [0_u32, 1, (1_u32 << 28) + 7, (1_u32 << 29) - 1];
+    let pixels = samples
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    let planes = [EncodeTypedComponentPlane {
+        data: &pixels,
+        x_rsiz: 1,
+        y_rsiz: 1,
+        bit_depth: 29,
+        signed: false,
+    }];
+    let bytes = encode_typed_component_planes_53(
+        &planes,
+        2,
+        2,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            use_mct: false,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode exact integer fixture");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let mut context = DecoderContext::default();
+
+    let first = image
+        .decode_native_with_context(&mut context)
+        .expect("first exact decode");
+    assert_eq!(first.data, pixels);
+    let owners = channel_capacity_snapshot(&context);
+    let integer_samples = context.tile_decode_context.channel_data[0]
+        .integer_container
+        .as_mut()
+        .expect("29-bit decode uses exact integer samples");
+    assert_eq!(integer_samples.len(), 4);
+    integer_samples.fill(i64::MIN);
+    drop(first);
+
+    let second = image
+        .decode_native_with_context(&mut context)
+        .expect("second exact decode");
+    assert_eq!(second.data, pixels);
+    assert_eq!(channel_capacity_snapshot(&context), owners);
 }
 
 #[test]
@@ -1196,6 +1562,11 @@ fn grayscale_direct_plan_is_built_without_materializing_channel_data() {
     assert!(
         context.tile_decode_context.channel_data.is_empty(),
         "building a direct plan must not materialize host component planes"
+    );
+    assert_eq!(
+        context.storage.retained_capacity_bytes().unwrap(),
+        0,
+        "all source graph owners must be released after the owned plan handoff"
     );
 }
 
@@ -1769,7 +2140,7 @@ fn classic_sub_band_decoder_hook_is_used_for_j2k_codeblocks() {
 fn forward_dwt53_reference_matches_internal_path() {
     // 4×4 constant-ramp input; 1 decomposition level.
     let samples: Vec<f32> = (0_u8..16).map(f32::from).collect();
-    let out = forward_dwt53_reference(&samples, 4, 4, 1);
+    let out = forward_dwt53_reference(&samples, 4, 4, 1).expect("fallible 5/3 reference DWT");
 
     // Internal path
     let internal = j2c::fdwt::forward_dwt(&samples, 4, 4, 1, true);
@@ -1783,6 +2154,27 @@ fn forward_dwt53_reference_matches_internal_path() {
         assert_eq!(pub_lvl.lh, int_lvl.lh, "LH mismatch");
         assert_eq!(pub_lvl.hh, int_lvl.hh, "HH mismatch");
     }
+}
+
+#[test]
+fn scalar_forward_dwt_rejects_caller_geometry_with_typed_errors() {
+    let short = forward_dwt53_reference(&[0.0; 3], 2, 2, 1)
+        .expect_err("short 5/3 reference plane must fail");
+    assert_eq!(
+        short,
+        EncodeError::InvalidInput {
+            what: "packed forward DWT coefficient length mismatch",
+        }
+    );
+
+    let zero = forward_dwt97_reference(&[], 0, 1, 1)
+        .expect_err("zero-width 9/7 reference plane must fail");
+    assert_eq!(
+        zero,
+        EncodeError::InvalidInput {
+            what: "packed forward DWT dimensions must be non-zero",
+        }
+    );
 }
 
 #[test]
@@ -1825,7 +2217,7 @@ fn forward_dwt97_reference_matches_internal_path() {
                 - 128.0
         })
         .collect::<Vec<_>>();
-    let result = forward_dwt97_reference(&samples, 8, 8, 2);
+    let result = forward_dwt97_reference(&samples, 8, 8, 2).expect("fallible 9/7 reference DWT");
     let internal = j2c::fdwt::forward_dwt(&samples, 8, 8, 2, false);
 
     assert_eq!(result.ll, internal.ll, "DWT 9/7 LL mismatch");

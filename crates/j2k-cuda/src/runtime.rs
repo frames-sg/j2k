@@ -78,19 +78,27 @@ fn wrap_cuda_surface(
     let context = session.cuda_context()?;
     let output = context.copy_with_kernel(bytes).map_err(cuda_error)?;
     let (buffer, stats) = output.into_parts();
-    j2k_profile::emit_gpu_route_surface_profile(
-        ("j2k", "cuda"),
-        (
-            "wrap_surface",
-            "Cuda",
-            format_args!("{fmt:?}"),
-            "cuda_upload",
-        ),
-        dimensions,
-        [j2k_profile::ProfileField::metric(
-            "kernel_dispatches",
-            stats.kernel_dispatches(),
-        )],
+    crate::profile::emit_optional_gpu_route_fields(
+        "j2k_cuda_wrap_surface_fields",
+        || {
+            Ok([j2k_profile::ProfileField::metric(
+                "kernel_dispatches",
+                stats.kernel_dispatches(),
+            )?])
+        },
+        |fields| {
+            j2k_profile::emit_gpu_route_surface_profile(
+                ("j2k", "cuda"),
+                (
+                    "wrap_surface",
+                    "Cuda",
+                    format_args!("{fmt:?}"),
+                    "cuda_upload",
+                ),
+                dimensions,
+                fields,
+            );
+        },
     );
     Ok(Surface {
         backend: BackendKind::Cuda,
@@ -130,16 +138,56 @@ fn wrap_cuda_surface(
 }
 
 #[cfg(feature = "cuda-runtime")]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "adapter consumes the runtime error while translating its owned message"
-)]
 pub(crate) fn cuda_error(error: CudaError) -> Error {
     if error.is_unavailable() {
-        Error::CudaUnavailable
-    } else {
-        Error::CudaRuntime {
-            message: error.to_string(),
-        }
+        return Error::CudaUnavailable;
+    }
+    match error {
+        CudaError::HostAllocationFailed { bytes } => Error::HostAllocationFailed {
+            bytes,
+            what: "CUDA runtime operation",
+        },
+        source => Error::CudaRuntime { source },
+    }
+}
+
+#[cfg(all(test, feature = "cuda-runtime"))]
+mod tests {
+    use super::cuda_error;
+    use crate::Error;
+    use j2k_cuda_runtime::CudaError;
+
+    #[test]
+    fn runtime_allocation_failure_keeps_adapter_classification_and_size() {
+        assert!(matches!(
+            cuda_error(CudaError::HostAllocationFailed { bytes: 8192 }),
+            Error::HostAllocationFailed {
+                bytes: 8192,
+                what: "CUDA runtime operation"
+            }
+        ));
+    }
+
+    #[test]
+    fn nested_runtime_failure_keeps_typed_error_tree() {
+        let error = cuda_error(CudaError::CompletionFailed {
+            primary: Box::new(CudaError::KernelStatus {
+                kernel: "test_kernel",
+                code: 7,
+                detail: 11,
+            }),
+            completion: Box::new(CudaError::Driver {
+                operation: "cuCtxSynchronize",
+                code: 719,
+                name: "CUDA_ERROR_LAUNCH_FAILED".to_string(),
+            }),
+        });
+
+        assert!(matches!(
+            error,
+            Error::CudaRuntime {
+                source: CudaError::CompletionFailed { .. }
+            }
+        ));
     }
 }

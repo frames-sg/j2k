@@ -52,6 +52,7 @@ impl Decoder<'_> {
                 }
                 for component in &self.plan.components {
                     let output_index = component.output_index;
+                    let component = self.plan.resolve_component(component)?;
                     decode_extended12_block_pixels(
                         &mut br,
                         component,
@@ -75,7 +76,7 @@ impl Decoder<'_> {
         let scan_warnings = finish_scan(&mut br, true)?;
         Ok(DecodeOutcome {
             decoded: roi,
-            warnings: merged_warnings(&self.warnings, scan_warnings),
+            warnings: merged_warnings(&self.warnings, scan_warnings)?,
         })
     }
 }

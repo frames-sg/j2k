@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::group_budget::{batch_component_count, next_group_len, validate_group_workspace};
 use super::{
     component_sampling_for_jpeg, decomposition_levels_for_components, extract_dct_blocks,
-    DctExtractOptions, Instant, JpegDctImage, JpegToHtj2kError, JpegToHtj2kOptions,
-    PrecomputedHtj2k53Component, PrecomputedHtj2k97Component, PreencodedHtj2k97CompactComponent,
-    PreencodedHtj2k97Component, PrequantizedHtj2k97Component, TranscodeComponentReport,
-    TranscodeTimingReport,
+    validate_jpeg_transcode_workspace, DctExtractOptions, Instant, JpegDctImage, JpegToHtj2kError,
+    JpegToHtj2kOptions, PrecomputedHtj2k53Component, PrecomputedHtj2k97Component,
+    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97Component, PrequantizedHtj2k97Component,
+    TranscodeComponentReport, TranscodeTimingReport,
 };
+use crate::allocation::{try_vec_reserve_len, try_vec_with_capacity};
 
 pub(in super::super) struct IntegerBatchTile {
     pub(in super::super) tile_index: usize,
@@ -43,7 +45,9 @@ pub(in super::super) struct Float97BatchTile {
 
 pub(in super::super) struct Float97PrecomputedBatchRecord {
     pub(in super::super) tile_index: usize,
-    pub(in super::super) jpeg: JpegDctImage,
+    pub(in super::super) width: u32,
+    pub(in super::super) height: u32,
+    pub(in super::super) component_count: usize,
     pub(in super::super) decomposition_levels: u8,
     pub(in super::super) all_unit_sampled: bool,
     pub(in super::super) component_reports: Vec<TranscodeComponentReport>,
@@ -63,8 +67,9 @@ pub(in super::super) fn prepare_integer_batch_tile(
     bytes: &[u8],
     options: &JpegToHtj2kOptions,
 ) -> Result<IntegerBatchTile, JpegToHtj2kError> {
+    validate_jpeg_transcode_workspace(bytes, options)?;
     let extract_start = Instant::now();
-    let jpeg = extract_dct_blocks(bytes, DctExtractOptions::default())?;
+    let jpeg = extract_dct_blocks(bytes, DctExtractOptions::dequantized_only())?;
     let timings = TranscodeTimingReport {
         jpeg_dct_extract_us: extract_start.elapsed().as_micros(),
         tile_count: 1,
@@ -84,11 +89,13 @@ pub(in super::super) fn prepare_integer_batch_tile(
     let all_unit_sampled = component_sampling
         .iter()
         .all(|&(x_rsiz, y_rsiz)| x_rsiz == 1 && y_rsiz == 1);
-    let component_reports = jpeg
+    let mut component_reports = try_vec_with_capacity(jpeg.components.len())?;
+    for (component, (x_rsiz, y_rsiz)) in jpeg
         .components
         .iter()
         .zip(component_sampling.iter().copied())
-        .map(|(component, (x_rsiz, y_rsiz))| TranscodeComponentReport {
+    {
+        component_reports.push(TranscodeComponentReport {
             component_index: component.component_index,
             width: component.width,
             height: component.height,
@@ -96,9 +103,9 @@ pub(in super::super) fn prepare_integer_batch_tile(
             block_rows: component.block_rows,
             x_rsiz,
             y_rsiz,
-        })
-        .collect::<Vec<_>>();
-    let precomputed_components = (0..jpeg.components.len()).map(|_| None).collect();
+        });
+    }
+    let precomputed_components = empty_component_slots(jpeg.components.len())?;
 
     Ok(IntegerBatchTile {
         tile_index,
@@ -121,6 +128,7 @@ pub(in super::super) fn prepare_float97_batch_tile(
     bytes: &[u8],
     options: &JpegToHtj2kOptions,
 ) -> Result<Float97BatchTile, JpegToHtj2kError> {
+    validate_jpeg_transcode_workspace(bytes, options)?;
     let extract_start = Instant::now();
     let jpeg = extract_dct_blocks(bytes, DctExtractOptions::dequantized_only())?;
     let timings = TranscodeTimingReport {
@@ -142,11 +150,13 @@ pub(in super::super) fn prepare_float97_batch_tile(
     let all_unit_sampled = component_sampling
         .iter()
         .all(|&(x_rsiz, y_rsiz)| x_rsiz == 1 && y_rsiz == 1);
-    let component_reports = jpeg
+    let mut component_reports = try_vec_with_capacity(jpeg.components.len())?;
+    for (component, (x_rsiz, y_rsiz)) in jpeg
         .components
         .iter()
         .zip(component_sampling.iter().copied())
-        .map(|(component, (x_rsiz, y_rsiz))| TranscodeComponentReport {
+    {
+        component_reports.push(TranscodeComponentReport {
             component_index: component.component_index,
             width: component.width,
             height: component.height,
@@ -154,12 +164,12 @@ pub(in super::super) fn prepare_float97_batch_tile(
             block_rows: component.block_rows,
             x_rsiz,
             y_rsiz,
-        })
-        .collect::<Vec<_>>();
-    let precomputed_components = (0..jpeg.components.len()).map(|_| None).collect();
-    let preencoded_compact_components = (0..jpeg.components.len()).map(|_| None).collect();
-    let preencoded_components = (0..jpeg.components.len()).map(|_| None).collect();
-    let prequantized_components = (0..jpeg.components.len()).map(|_| None).collect();
+        });
+    }
+    let precomputed_components = empty_component_slots(jpeg.components.len())?;
+    let preencoded_compact_components = empty_component_slots(jpeg.components.len())?;
+    let preencoded_components = empty_component_slots(jpeg.components.len())?;
+    let prequantized_components = empty_component_slots(jpeg.components.len())?;
 
     Ok(Float97BatchTile {
         tile_index,
@@ -179,10 +189,19 @@ pub(in super::super) fn prepare_float97_batch_tile(
     })
 }
 
+fn empty_component_slots<T>(len: usize) -> Result<Vec<Option<T>>, JpegToHtj2kError> {
+    let mut slots = try_vec_with_capacity(len)?;
+    slots.resize_with(len, || None);
+    Ok(slots)
+}
+
 pub(in super::super) fn batch_component_groups(
     tiles: &[IntegerBatchTile],
-) -> Vec<Vec<BatchComponentRef>> {
-    let mut groups: Vec<Vec<BatchComponentRef>> = Vec::new();
+) -> Result<Vec<Vec<BatchComponentRef>>, JpegToHtj2kError> {
+    let component_count =
+        batch_component_count(tiles.iter().map(|tile| tile.jpeg.components.len()))?;
+    validate_group_workspace(component_count)?;
+    let mut groups: Vec<Vec<BatchComponentRef>> = try_vec_with_capacity(component_count)?;
 
     for (tile_index, tile) in tiles.iter().enumerate() {
         for (component_index, component) in tile.jpeg.components.iter().enumerate() {
@@ -199,21 +218,27 @@ pub(in super::super) fn batch_component_groups(
                     component_index,
                 )
             }) {
+                try_vec_reserve_len(group, next_group_len(group.len())?)?;
                 group.push(component_ref);
             } else {
                 let _ = component;
-                groups.push(vec![component_ref]);
+                let mut group = try_vec_with_capacity(1)?;
+                group.push(component_ref);
+                groups.push(group);
             }
         }
     }
 
-    groups
+    Ok(groups)
 }
 
 pub(in super::super) fn float97_batch_component_groups(
     tiles: &[Float97BatchTile],
-) -> Vec<Vec<BatchComponentRef>> {
-    let mut groups: Vec<Vec<BatchComponentRef>> = Vec::new();
+) -> Result<Vec<Vec<BatchComponentRef>>, JpegToHtj2kError> {
+    let component_count =
+        batch_component_count(tiles.iter().map(|tile| tile.jpeg.components.len()))?;
+    validate_group_workspace(component_count)?;
+    let mut groups: Vec<Vec<BatchComponentRef>> = try_vec_with_capacity(component_count)?;
 
     for (tile_index, tile) in tiles.iter().enumerate() {
         for component_index in 0..tile.jpeg.components.len() {
@@ -230,14 +255,17 @@ pub(in super::super) fn float97_batch_component_groups(
                     component_index,
                 )
             }) {
+                try_vec_reserve_len(group, next_group_len(group.len())?)?;
                 group.push(component_ref);
             } else {
-                groups.push(vec![component_ref]);
+                let mut group = try_vec_with_capacity(1)?;
+                group.push(component_ref);
+                groups.push(group);
             }
         }
     }
 
-    groups
+    Ok(groups)
 }
 
 pub(in super::super) fn same_batch_component_key(

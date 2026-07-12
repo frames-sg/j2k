@@ -624,7 +624,7 @@ fn run_resident_host_batch(
                 .checked_add(outcome.encoded.codestream.len())
                 .ok_or("resident host encoded byte count overflow")
         })
-        .map_err(str::to_string)?;
+        .map_err(ToString::to_string)?;
     Ok(ResidentBatchOutput {
         encoded_bytes,
         metrics: ResidentBatchMetrics::from_host_outcomes(&outcomes),
@@ -657,7 +657,7 @@ fn run_resident_buffer_batch(
                 .checked_add(outcome.encoded.byte_len())
                 .ok_or("resident buffer encoded byte count overflow")
         })
-        .map_err(str::to_string)?;
+        .map_err(ToString::to_string)?;
     Ok(ResidentBatchOutput {
         encoded_bytes,
         metrics: ResidentBatchMetrics::from_buffer_outcomes(&outcome.outcomes),
@@ -1101,7 +1101,8 @@ fn run_forward_ict_stage_benchmark(dim: u32) {
 fn run_forward_dwt53_stage_benchmark(dim: u32) {
     let samples = stage_samples(dim);
     let cpu = measure(|| {
-        let output = forward_dwt53_reference(std::hint::black_box(samples.as_slice()), dim, dim, 1);
+        let output = forward_dwt53_reference(std::hint::black_box(samples.as_slice()), dim, dim, 1)
+            .expect("native forward DWT 5/3 benchmark reference");
         dwt53_len(&output)
     });
     let metal = probe_forward_dwt53_stage(&samples, dim).map(|dispatch| {
@@ -1126,7 +1127,8 @@ fn run_forward_dwt53_stage_benchmark(dim: u32) {
 fn run_forward_dwt97_stage_benchmark(dim: u32) {
     let samples = stage_samples(dim);
     let cpu = measure(|| {
-        let output = forward_dwt97_reference(std::hint::black_box(samples.as_slice()), dim, dim, 1);
+        let output = forward_dwt97_reference(std::hint::black_box(samples.as_slice()), dim, dim, 1)
+            .expect("native forward DWT 9/7 benchmark reference");
         dwt97_len(&output)
     });
     let metal = probe_forward_dwt97_stage(&samples, dim).map(|dispatch| {
@@ -1334,7 +1336,7 @@ fn probe_deinterleave_stage(
             bit_depth: 8,
             signed: false,
         })
-        .map_err(str::to_string)?;
+        .map_err(|error| error.to_string())?;
     if components.is_none() {
         return Err("Metal deinterleave stage did not dispatch".to_string());
     }
@@ -1355,7 +1357,7 @@ fn probe_forward_rct_stage(planes: &[Vec<f32>]) -> Result<J2kEncodeDispatchRepor
             plane1,
             plane2,
         })
-        .map_err(str::to_string)?;
+        .map_err(|error| error.to_string())?;
     if !dispatched {
         return Err("Metal forward RCT stage did not dispatch".to_string());
     }
@@ -1376,7 +1378,7 @@ fn probe_forward_ict_stage(planes: &[Vec<f32>]) -> Result<J2kEncodeDispatchRepor
             plane1,
             plane2,
         })
-        .map_err(str::to_string)?;
+        .map_err(|error| error.to_string())?;
     if !dispatched {
         return Err("Metal forward ICT stage did not dispatch".to_string());
     }
@@ -1392,7 +1394,7 @@ fn probe_forward_dwt53_stage(samples: &[f32], dim: u32) -> Result<J2kEncodeDispa
             height: dim,
             num_levels: 1,
         })
-        .map_err(str::to_string)?;
+        .map_err(|error| error.to_string())?;
     if output.is_none() {
         return Err("Metal forward DWT 5/3 stage did not dispatch".to_string());
     }
@@ -1408,7 +1410,7 @@ fn probe_forward_dwt97_stage(samples: &[f32], dim: u32) -> Result<J2kEncodeDispa
             height: dim,
             num_levels: 1,
         })
-        .map_err(str::to_string)?;
+        .map_err(|error| error.to_string())?;
     if output.is_none() {
         return Err("Metal forward DWT 9/7 stage did not dispatch".to_string());
     }
@@ -1425,7 +1427,7 @@ fn probe_quantize_subband_stage(coefficients: &[f32]) -> Result<J2kEncodeDispatc
             range_bits: 8,
             reversible: false,
         })
-        .map_err(str::to_string)?;
+        .map_err(|error| error.to_string())?;
     if quantized.is_none() {
         return Err("Metal quantize_subband stage did not dispatch".to_string());
     }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod allocation;
 mod boxes;
 mod codestream;
 
@@ -19,12 +20,11 @@ pub(crate) fn parse_image_info(input: &[u8]) -> Result<ParsedImageInfo, J2kError
         return parse_jp2(input);
     }
     if codestream::looks_like_codestream(input) {
-        let parsed = parse_codestream(input)?;
-        let info = parsed.clone().into_info(None);
-        let components = parsed.siz.component_info.clone();
+        let parsed = parse_codestream(input, 0)?;
+        let (info, transfer_syntax, components) = parsed.into_parts(None);
         return Ok(ParsedImageInfo {
             info,
-            transfer_syntax: parsed.transfer_syntax(),
+            transfer_syntax,
             payload_kind: CompressedPayloadKind::Jpeg2000Codestream,
             components,
             file_metadata: None,
@@ -89,7 +89,7 @@ pub fn extract_j2k_codestream_payload(input: &[u8]) -> Result<J2kCodestreamPaylo
     }))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ParsedImageInfo {
     pub(crate) info: Info,
     pub(crate) transfer_syntax: CompressedTransferSyntax,
@@ -108,6 +108,21 @@ impl ParsedImageInfo {
             file_metadata: self.file_metadata,
         }
     }
+
+    pub(crate) fn allocated_bytes(&self) -> Result<usize, J2kError> {
+        let mut bytes = allocation::capacity_bytes::<J2kComponentInfo>(
+            self.components.capacity(),
+            "codestream component metadata",
+        )?;
+        if let Some(metadata) = &self.file_metadata {
+            allocation::checked_add_bytes(
+                &mut bytes,
+                boxes::metadata_allocated_bytes(metadata)?,
+                "JPEG 2000 inspection metadata",
+            )?;
+        }
+        Ok(bytes)
+    }
 }
 
 fn infer_colorspace(components: u16, has_mct: bool, reversible: bool) -> Colorspace {
@@ -120,7 +135,7 @@ fn infer_colorspace(components: u16, has_mct: bool, reversible: bool) -> Colorsp
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ParsedSiz {
     dimensions: (u32, u32),
     components: u16,
@@ -138,27 +153,118 @@ struct ParsedCod {
 }
 
 impl CodestreamInfo {
-    fn into_info(self, colorspace: Option<Colorspace>) -> Info {
-        Info {
-            dimensions: self.siz.dimensions,
-            components: self.siz.components,
-            colorspace: colorspace.unwrap_or_else(|| {
-                infer_colorspace(self.siz.components, self.cod.has_mct, self.cod.reversible)
-            }),
-            bit_depth: self.siz.bit_depth,
-            tile_layout: Some(self.siz.tile_layout),
+    fn into_parts(
+        self,
+        colorspace: Option<Colorspace>,
+    ) -> (Info, CompressedTransferSyntax, Vec<J2kComponentInfo>) {
+        let Self { siz, cod } = self;
+        let ParsedSiz {
+            dimensions,
+            components,
+            bit_depth,
+            tile_layout,
+            component_info,
+        } = siz;
+        let info = Info {
+            dimensions,
+            components,
+            colorspace: colorspace
+                .unwrap_or_else(|| infer_colorspace(components, cod.has_mct, cod.reversible)),
+            bit_depth,
+            tile_layout: Some(tile_layout),
             coded_unit_layout: None,
             restart_interval: None,
-            resolution_levels: self.cod.resolution_levels,
-        }
-    }
-
-    fn transfer_syntax(self) -> CompressedTransferSyntax {
-        match (self.cod.high_throughput, self.cod.reversible) {
+            resolution_levels: cod.resolution_levels,
+        };
+        let transfer_syntax = match (cod.high_throughput, cod.reversible) {
             (false, true) => CompressedTransferSyntax::Jpeg2000Lossless,
             (false, false) => CompressedTransferSyntax::Jpeg2000Lossy,
             (true, true) => CompressedTransferSyntax::HtJpeg2000Lossless,
             (true, false) => CompressedTransferSyntax::HtJpeg2000Lossy,
-        }
+        };
+        (info, transfer_syntax, component_info)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{J2kColorSpec, J2kPaletteColumn, J2kPaletteMetadata};
+    use core::mem::size_of;
+
+    #[test]
+    fn parsed_metadata_retained_bytes_count_nested_actual_capacities_exactly() {
+        let mut components = Vec::new();
+        components
+            .try_reserve_exact(2)
+            .expect("test component metadata");
+        components.push(J2kComponentInfo {
+            bit_depth: 8,
+            signed: false,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        });
+
+        let mut profile = Vec::new();
+        profile.try_reserve_exact(5).expect("test ICC owner");
+        profile.push(1);
+        let mut color_specs = Vec::new();
+        color_specs
+            .try_reserve_exact(2)
+            .expect("test COLR metadata");
+        color_specs.push(J2kColorSpec::IccProfile { profile });
+
+        let mut columns = Vec::new();
+        columns.try_reserve_exact(2).expect("test palette columns");
+        columns.push(J2kPaletteColumn {
+            bit_depth: 8,
+            signed: false,
+        });
+        let mut row = Vec::new();
+        row.try_reserve_exact(3).expect("test palette row");
+        row.push(7);
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(2).expect("test palette rows");
+        entries.push(row);
+
+        let parsed = ParsedImageInfo {
+            info: Info {
+                dimensions: (1, 1),
+                components: 1,
+                colorspace: Colorspace::IccTagged,
+                bit_depth: 8,
+                tile_layout: None,
+                coded_unit_layout: None,
+                restart_interval: None,
+                resolution_levels: 1,
+            },
+            transfer_syntax: CompressedTransferSyntax::Jpeg2000Lossless,
+            payload_kind: CompressedPayloadKind::Jp2File,
+            components,
+            file_metadata: Some(J2kFileMetadata {
+                bits_per_component: Vec::new(),
+                color_specs,
+                palette: Some(J2kPaletteMetadata { columns, entries }),
+                component_mappings: Vec::new(),
+                channel_definitions: Vec::new(),
+                has_palette: true,
+                has_component_mapping: false,
+                has_channel_definition: false,
+            }),
+        };
+
+        let metadata = parsed.file_metadata.as_ref().expect("metadata");
+        let palette = metadata.palette.as_ref().expect("palette");
+        let profile_capacity = match &metadata.color_specs[0] {
+            J2kColorSpec::IccProfile { profile } => profile.capacity(),
+            _ => 0,
+        };
+        let expected = parsed.components.capacity() * size_of::<J2kComponentInfo>()
+            + metadata.color_specs.capacity() * size_of::<J2kColorSpec>()
+            + profile_capacity
+            + palette.columns.capacity() * size_of::<J2kPaletteColumn>()
+            + palette.entries.capacity() * size_of::<Vec<u64>>()
+            + palette.entries[0].capacity() * size_of::<u64>();
+        assert_eq!(parsed.allocated_bytes().expect("retained bytes"), expected);
     }
 }

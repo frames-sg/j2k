@@ -98,12 +98,18 @@ pub(crate) fn jpeg_buffer_error(error: BufferError, provided_len: usize) -> Jpeg
         BufferError::AllocationTooLarge { requested, cap, .. } => {
             JpegError::MemoryCapExceeded { requested, cap }
         }
+        BufferError::HostAllocationFailed { bytes, .. } => {
+            JpegError::HostAllocationFailed { bytes }
+        }
         BufferError::SizeOverflow { .. }
         | BufferError::InputTooSmall { .. }
         | BufferError::StrideNotAligned { .. }
         | BufferError::SampleTypeMismatch { .. } => JpegError::OutputBufferTooSmall {
             required: usize::MAX,
             provided: provided_len,
+        },
+        _ => JpegError::InternalInvariant {
+            reason: "unrecognized shared buffer error",
         },
     }
 }

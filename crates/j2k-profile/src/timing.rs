@@ -1,9 +1,4 @@
 #[cfg(feature = "std")]
-use alloc::string::String;
-#[cfg(feature = "std")]
-use core::fmt::Write as _;
-
-#[cfg(feature = "std")]
 /// Instant type used by profile timing helpers.
 pub type ProfileInstant = std::time::Instant;
 
@@ -33,12 +28,4 @@ pub fn elapsed_us(start: Option<ProfileInstant>) -> u128 {
 /// Returns zero when profiling timers are unavailable.
 pub fn elapsed_us(_start: Option<ProfileInstant>) -> u128 {
     0
-}
-
-#[cfg(feature = "std")]
-/// Formats a duration as whole microseconds.
-pub fn duration_us_string(duration: std::time::Duration) -> String {
-    let mut value = String::new();
-    write!(value, "{}", duration.as_micros()).expect("writing to String failed");
-    value
 }

@@ -61,6 +61,8 @@ fn supports_metal_store(job: &J2kStoreComponentJob<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::MetalStoreDecoder;
+    #[cfg(target_os = "macos")]
+    use crate::compute;
     use j2k_native::{
         encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder, Image,
     };
@@ -187,5 +189,56 @@ mod tests {
             1,
             "full grayscale decode should capture one Metal-backed plane"
         );
+    }
+
+    #[test]
+    fn captured_store_plane_owns_storage_after_caller_output_is_reused() {
+        #[cfg(target_os = "macos")]
+        {
+            if !should_run_metal_runtime() {
+                return;
+            }
+
+            let input = [1.0f32, 2.0, 3.0, 4.0];
+            let input_width = u32::try_from(input.len()).expect("test input width fits u32");
+            let mut caller_output = vec![0.0f32; input.len()];
+            let captured =
+                compute::decode_store_component_and_capture(j2k_native::J2kStoreComponentJob {
+                    input: &input,
+                    input_width,
+                    source_x: 0,
+                    source_y: 0,
+                    copy_width: input_width,
+                    copy_height: 1,
+                    output: &mut caller_output,
+                    output_width: input_width,
+                    output_x: 0,
+                    output_y: 0,
+                    addend: 0.0,
+                })
+                .expect("dispatch Metal component store");
+            assert_eq!(
+                caller_output, input,
+                "host readback must preserve output parity"
+            );
+
+            caller_output.fill(-99.0);
+            let captured_after_mutation = compute::checked_buffer_slice::<f32>(
+                &captured,
+                input.len(),
+                "captured store ownership regression",
+            )
+            .expect("read Metal-owned capture after caller mutation");
+            assert_eq!(captured_after_mutation, input);
+
+            drop(caller_output);
+            let captured_after_drop = compute::checked_buffer_slice::<f32>(
+                &captured,
+                input.len(),
+                "captured store ownership regression after caller drop",
+            )
+            .expect("read Metal-owned capture after caller drop");
+            assert_eq!(captured_after_drop, input);
+        }
     }
 }

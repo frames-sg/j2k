@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::mem::size_of_val;
-
-use j2k_core::PixelFormat;
-use j2k_jpeg::{DecodeRequest, Decoder as CpuDecoder};
 use metal::{Buffer, Device};
 
 use crate::{
@@ -12,7 +8,7 @@ use crate::{
         FAST420_STATUS_TRUNCATED, JPEG_BASELINE_ENCODE_STATUS_INVALID_PARAMS,
         JPEG_BASELINE_ENCODE_STATUS_MISSING_HUFFMAN, JPEG_BASELINE_ENCODE_STATUS_OVERFLOW,
     },
-    buffers::{checked_buffer_slice, new_shared_buffer_with_data},
+    buffers::{checked_buffer_slice, checked_fill_buffer_u8, new_shared_buffer},
     Error,
 };
 
@@ -33,36 +29,26 @@ pub(super) fn jpeg_baseline_encode_status_error(status: JpegBaselineEncodeStatus
     Error::MetalKernel { message }
 }
 
-pub(super) fn decode_error_from_cpu(
-    decoder: &CpuDecoder<'_>,
-    fmt: PixelFormat,
-    status: JpegDecodeStatus,
-) -> Error {
-    if let Err(err) = decoder.decode_request(DecodeRequest::full(fmt)) {
-        Error::Decode(err)
-    } else {
-        let reason = match status.code {
-            FAST420_STATUS_TRUNCATED => "truncated entropy stream",
-            FAST420_STATUS_HUFFMAN => "invalid Huffman stream",
-            _ => "unexpected Metal fast420 failure",
-        };
-        Error::MetalKernel {
-            message: format!("{reason} at entropy byte {}", status.position),
-        }
+pub(super) fn fast_decode_status_error(status: JpegDecodeStatus) -> Error {
+    let reason = match status.code {
+        FAST420_STATUS_TRUNCATED => "truncated entropy stream",
+        FAST420_STATUS_HUFFMAN => "invalid Huffman stream",
+        _ => "unexpected Metal JPEG failure",
+    };
+    Error::MetalKernel {
+        message: format!("{reason} at entropy byte {}", status.position),
     }
 }
 
-pub(super) fn decode_status_buffer(device: &Device, count: u32) -> Buffer {
-    let statuses = vec![JpegDecodeStatus::default(); count as usize];
-    // SAFETY: The status Vec is initialized and viewed as immutable bytes for an immediate Metal
-    // buffer upload with the exact slice byte length.
-    let bytes = unsafe {
-        core::slice::from_raw_parts(
-            statuses.as_ptr().cast::<u8>(),
-            size_of_val(statuses.as_slice()),
-        )
-    };
-    new_shared_buffer_with_data(device, bytes)
+pub(super) fn decode_status_buffer(device: &Device, count: u32) -> Result<Buffer, Error> {
+    let bytes = crate::batch_allocation::checked_count_product(
+        count as usize,
+        core::mem::size_of::<JpegDecodeStatus>(),
+        "JPEG Metal decode status bytes",
+    )?;
+    let buffer = new_shared_buffer(device, bytes)?;
+    checked_fill_buffer_u8(&buffer, bytes, 0, "initialize JPEG Metal decode statuses")?;
+    Ok(buffer)
 }
 
 pub(super) fn first_decode_error_status(

@@ -12,6 +12,7 @@ use j2k_native::{
 };
 
 use super::plan::LosslessDeviceEncodePlan;
+use crate::batch_allocation::{checked_count_sum, BatchMetadataBudget, BatchMetadataRequest};
 use crate::compute;
 
 const AUTO_HTJ2K_HOST_RESIDENT_MIN_PIXELS: usize = 512 * 512;
@@ -90,37 +91,30 @@ pub(super) fn packet_descriptors_for_lossless_device_order(
     progression_order: EncodeProgressionOrder,
 ) -> Result<Vec<J2kPacketizationPacketDescriptor>, crate::Error> {
     let component_count = usize::from(num_components).max(1);
-    let mut descriptors = (0..packet_count)
-        .map(|packet_index| {
-            Ok(J2kPacketizationPacketDescriptor {
-                packet_index: u32::try_from(packet_index).map_err(|_| {
-                    crate::Error::MetalKernel {
-                        message: "J2K Metal resident encode packet index exceeds u32".to_string(),
-                    }
-                })?,
-                state_index: u32::try_from(packet_index).map_err(|_| {
-                    crate::Error::MetalKernel {
-                        message: "J2K Metal resident encode packet state index exceeds u32"
-                            .to_string(),
-                    }
-                })?,
-                layer: 0,
-                resolution: u32::try_from(packet_index / component_count).map_err(|_| {
-                    crate::Error::MetalKernel {
-                        message: "J2K Metal resident encode packet resolution exceeds u32"
-                            .to_string(),
-                    }
-                })?,
-                component: u16::try_from(packet_index % component_count).map_err(|_| {
-                    crate::Error::MetalKernel {
-                        message: "J2K Metal resident encode packet component exceeds u16"
-                            .to_string(),
-                    }
-                })?,
-                precinct: 0,
-            })
-        })
-        .collect::<Result<Vec<_>, crate::Error>>()?;
+    let mut budget = BatchMetadataBudget::new("J2K Metal packet descriptor metadata");
+    let mut descriptors = budget.try_vec(packet_count, "J2K Metal packet descriptors")?;
+    for packet_index in 0..packet_count {
+        descriptors.push(J2kPacketizationPacketDescriptor {
+            packet_index: u32::try_from(packet_index).map_err(|_| crate::Error::MetalKernel {
+                message: "J2K Metal resident encode packet index exceeds u32".to_string(),
+            })?,
+            state_index: u32::try_from(packet_index).map_err(|_| crate::Error::MetalKernel {
+                message: "J2K Metal resident encode packet state index exceeds u32".to_string(),
+            })?,
+            layer: 0,
+            resolution: u32::try_from(packet_index / component_count).map_err(|_| {
+                crate::Error::MetalKernel {
+                    message: "J2K Metal resident encode packet resolution exceeds u32".to_string(),
+                }
+            })?,
+            component: u16::try_from(packet_index % component_count).map_err(|_| {
+                crate::Error::MetalKernel {
+                    message: "J2K Metal resident encode packet component exceeds u16".to_string(),
+                }
+            })?,
+            precinct: 0,
+        });
+    }
     sort_packet_descriptors_for_progression(
         &mut descriptors,
         packetization_progression_order(progression_order),
@@ -131,47 +125,67 @@ pub(super) fn packet_descriptors_for_lossless_device_order(
 pub(super) fn resident_packetization_resolutions_from_lossless_device_plan(
     plan: &LosslessDeviceEncodePlan,
 ) -> Result<Vec<compute::J2kResidentPacketizationResolution>, crate::Error> {
-    plan.resolutions
+    let subband_count = checked_count_sum(
+        plan.resolutions
+            .iter()
+            .map(|resolution| resolution.subbands.len()),
+        "J2K Metal resident packetization subband count",
+    )?;
+    for subband in plan
+        .resolutions
         .iter()
-        .map(|resolution| {
-            let subbands = resolution
-                .subbands
-                .iter()
-                .map(|subband| {
-                    let code_block_end = subband
-                        .code_block_start
-                        .checked_add(subband.code_block_count)
-                        .ok_or_else(|| crate::Error::MetalKernel {
-                            message: "J2K Metal resident encode code-block range overflow"
-                                .to_string(),
-                        })?;
-                    if code_block_end > plan.code_blocks.len() {
-                        return Err(crate::Error::MetalKernel {
-                            message: "J2K Metal resident encode code-block range out of bounds"
-                                .to_string(),
-                        });
+        .flat_map(|resolution| &resolution.subbands)
+    {
+        let code_block_end = subband
+            .code_block_start
+            .checked_add(subband.code_block_count)
+            .ok_or_else(|| crate::Error::MetalKernel {
+                message: "J2K Metal resident encode code-block range overflow".to_string(),
+            })?;
+        if code_block_end > plan.code_blocks.len() {
+            return Err(crate::Error::MetalKernel {
+                message: "J2K Metal resident encode code-block range out of bounds".to_string(),
+            });
+        }
+    }
+
+    let mut budget = BatchMetadataBudget::new("J2K Metal resident packetization metadata");
+    budget.preflight(&[
+        BatchMetadataRequest::of::<compute::J2kResidentPacketizationResolution>(
+            plan.resolutions.len(),
+        ),
+        BatchMetadataRequest::of::<compute::J2kResidentPacketizationSubband>(subband_count),
+    ])?;
+    let mut resolutions = budget.try_vec(
+        plan.resolutions.len(),
+        "J2K Metal resident packetization resolutions",
+    )?;
+    for resolution in &plan.resolutions {
+        let mut subbands = budget.try_vec(
+            resolution.subbands.len(),
+            "J2K Metal resident packetization subbands",
+        )?;
+        for subband in &resolution.subbands {
+            subbands.push(compute::J2kResidentPacketizationSubband {
+                code_block_start: u32::try_from(subband.code_block_start).map_err(|_| {
+                    crate::Error::MetalKernel {
+                        message: "J2K Metal resident encode code-block offset exceeds u32"
+                            .to_string(),
                     }
-                    Ok(compute::J2kResidentPacketizationSubband {
-                        code_block_start: u32::try_from(subband.code_block_start).map_err(
-                            |_| crate::Error::MetalKernel {
-                                message: "J2K Metal resident encode code-block offset exceeds u32"
-                                    .to_string(),
-                            },
-                        )?,
-                        code_block_count: u32::try_from(subband.code_block_count).map_err(
-                            |_| crate::Error::MetalKernel {
-                                message: "J2K Metal resident encode code-block count exceeds u32"
-                                    .to_string(),
-                            },
-                        )?,
-                        num_cbs_x: subband.num_cbs_x,
-                        num_cbs_y: subband.num_cbs_y,
-                    })
-                })
-                .collect::<Result<Vec<_>, crate::Error>>()?;
-            Ok(compute::J2kResidentPacketizationResolution { subbands })
-        })
-        .collect()
+                })?,
+                code_block_count: u32::try_from(subband.code_block_count).map_err(|_| {
+                    crate::Error::MetalKernel {
+                        message: "J2K Metal resident encode code-block count exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+                num_cbs_x: subband.num_cbs_x,
+                num_cbs_y: subband.num_cbs_y,
+            });
+        }
+        resolutions.push(compute::J2kResidentPacketizationResolution { subbands });
+    }
+    Ok(resolutions)
 }
 
 pub(super) fn packetization_progression_order(
@@ -188,54 +202,93 @@ pub(super) fn packetization_progression_order(
 
 pub(super) fn cpu_packetization_resolutions_from_lossless_device_plan<'a>(
     plan: &LosslessDeviceEncodePlan,
+    expected_code_block_count: usize,
     encoded_blocks: &'a [EncodedHtJ2kCodeBlock],
 ) -> Result<Vec<J2kPacketizationResolution<'a>>, crate::Error> {
-    if encoded_blocks.len() != plan.code_blocks.len() {
+    if encoded_blocks.len() != expected_code_block_count {
         return Err(crate::Error::MetalKernel {
             message: "J2K Metal resident hybrid HT block count mismatch".to_string(),
         });
     }
-    plan.resolutions
+    let subband_count = checked_count_sum(
+        plan.resolutions
+            .iter()
+            .map(|resolution| resolution.subbands.len()),
+        "J2K Metal CPU packetization subband count",
+    )?;
+    let code_block_count = checked_count_sum(
+        plan.resolutions
+            .iter()
+            .flat_map(|resolution| &resolution.subbands)
+            .map(|subband| subband.code_block_count),
+        "J2K Metal CPU packetization code-block count",
+    )?;
+    for subband in plan
+        .resolutions
         .iter()
-        .map(|resolution| {
-            let subbands = resolution
-                .subbands
-                .iter()
-                .map(|subband| {
-                    let code_block_end = subband
-                        .code_block_start
-                        .checked_add(subband.code_block_count)
-                        .ok_or_else(|| crate::Error::MetalKernel {
-                            message: "J2K Metal resident hybrid code-block range overflow"
-                                .to_string(),
-                        })?;
-                    let encoded = encoded_blocks
-                        .get(subband.code_block_start..code_block_end)
-                        .ok_or_else(|| crate::Error::MetalKernel {
-                            message: "J2K Metal resident hybrid code-block range out of bounds"
-                                .to_string(),
-                        })?;
-                    let code_blocks = encoded
-                        .iter()
-                        .map(|block| J2kPacketizationCodeBlock {
-                            data: block.data.as_slice(),
-                            ht_cleanup_length: block.cleanup_length,
-                            ht_refinement_length: block.refinement_length,
-                            num_coding_passes: block.num_coding_passes,
-                            num_zero_bitplanes: block.num_zero_bitplanes,
-                            previously_included: false,
-                            l_block: 3,
-                            block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-                        })
-                        .collect();
-                    Ok(J2kPacketizationSubband {
-                        code_blocks,
-                        num_cbs_x: subband.num_cbs_x,
-                        num_cbs_y: subband.num_cbs_y,
-                    })
-                })
-                .collect::<Result<Vec<_>, crate::Error>>()?;
-            Ok(J2kPacketizationResolution { subbands })
-        })
-        .collect()
+        .flat_map(|resolution| &resolution.subbands)
+    {
+        let code_block_end = subband
+            .code_block_start
+            .checked_add(subband.code_block_count)
+            .ok_or_else(|| crate::Error::MetalKernel {
+                message: "J2K Metal resident hybrid code-block range overflow".to_string(),
+            })?;
+        if code_block_end > encoded_blocks.len() {
+            return Err(crate::Error::MetalKernel {
+                message: "J2K Metal resident hybrid code-block range out of bounds".to_string(),
+            });
+        }
+    }
+
+    let mut budget = BatchMetadataBudget::new("J2K Metal CPU packetization metadata");
+    budget.preflight(&[
+        BatchMetadataRequest::of::<J2kPacketizationResolution<'a>>(plan.resolutions.len()),
+        BatchMetadataRequest::of::<J2kPacketizationSubband<'a>>(subband_count),
+        BatchMetadataRequest::of::<J2kPacketizationCodeBlock<'a>>(code_block_count),
+    ])?;
+    let mut resolutions = budget.try_vec(
+        plan.resolutions.len(),
+        "J2K Metal CPU packetization resolutions",
+    )?;
+    for resolution in &plan.resolutions {
+        let mut subbands = budget.try_vec(
+            resolution.subbands.len(),
+            "J2K Metal CPU packetization subbands",
+        )?;
+        for subband in &resolution.subbands {
+            let code_block_end = subband
+                .code_block_start
+                .checked_add(subband.code_block_count)
+                .ok_or_else(|| crate::Error::MetalKernel {
+                    message: "J2K Metal resident hybrid code-block range overflow".to_string(),
+                })?;
+            let encoded = encoded_blocks
+                .get(subband.code_block_start..code_block_end)
+                .ok_or_else(|| crate::Error::MetalKernel {
+                    message: "J2K Metal resident hybrid code-block range out of bounds".to_string(),
+                })?;
+            let mut code_blocks =
+                budget.try_vec(encoded.len(), "J2K Metal CPU packetization code blocks")?;
+            for block in encoded {
+                code_blocks.push(J2kPacketizationCodeBlock {
+                    data: block.data.as_slice(),
+                    ht_cleanup_length: block.cleanup_length,
+                    ht_refinement_length: block.refinement_length,
+                    num_coding_passes: block.num_coding_passes,
+                    num_zero_bitplanes: block.num_zero_bitplanes,
+                    previously_included: false,
+                    l_block: 3,
+                    block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
+                });
+            }
+            subbands.push(J2kPacketizationSubband {
+                code_blocks,
+                num_cbs_x: subband.num_cbs_x,
+                num_cbs_y: subband.num_cbs_y,
+            });
+        }
+        resolutions.push(J2kPacketizationResolution { subbands });
+    }
+    Ok(resolutions)
 }

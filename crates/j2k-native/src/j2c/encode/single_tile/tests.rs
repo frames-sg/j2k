@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use alloc::{vec, vec::Vec};
+use std::panic::catch_unwind;
+
 use super::super::*;
+
+mod resident_errors;
+mod whole_tile;
 
 fn codestream_fingerprint(codestream: &[u8]) -> (usize, u64) {
     let hash = codestream
@@ -9,6 +15,138 @@ fn codestream_fingerprint(codestream: &[u8]) -> (usize, u64) {
             (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
         });
     (codestream.len(), hash)
+}
+
+#[test]
+fn public_encode_distinguishes_malformed_and_unsupported_requests() {
+    let malformed = encode(&[], 0, 1, 1, 8, false, &EncodeOptions::default())
+        .expect_err("zero-width encode must fail");
+    assert_eq!(
+        malformed,
+        crate::EncodeError::InvalidInput {
+            what: "invalid dimensions"
+        }
+    );
+
+    let sampled_multitile = encode(
+        &[0; 16],
+        4,
+        4,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            component_sampling: Some(vec![(2, 1)]),
+            tile_size: Some((2, 2)),
+            ..EncodeOptions::default()
+        },
+    )
+    .expect_err("sampled multi-tile encode is not implemented");
+    assert_eq!(
+        sampled_multitile,
+        crate::EncodeError::Unsupported {
+            what: "multi-tile encode with component sampling is not implemented"
+        }
+    );
+
+    let high_bit_sampled = encode(
+        &[0; 4],
+        1,
+        1,
+        1,
+        25,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            component_sampling: Some(vec![(2, 1)]),
+            ..EncodeOptions::default()
+        },
+    )
+    .expect_err("exact high-bit raw encode requires full-resolution components");
+    assert_eq!(
+        high_bit_sampled,
+        crate::EncodeError::Unsupported {
+            what: "25-38 bit encode currently requires full-resolution components"
+        }
+    );
+}
+
+#[test]
+fn public_code_block_exponents_fail_typed_without_panicking() {
+    let oversized_width = catch_unwind(|| {
+        encode(
+            &[0; 4],
+            2,
+            2,
+            1,
+            8,
+            false,
+            &EncodeOptions {
+                code_block_width_exp: u8::MAX,
+                ..EncodeOptions::default()
+            },
+        )
+    })
+    .expect("u8::MAX code-block exponent must not panic")
+    .expect_err("u8::MAX code-block exponent must fail");
+    assert_eq!(
+        oversized_width,
+        crate::EncodeError::InvalidInput {
+            what: "code-block width exponent exceeds supported range"
+        }
+    );
+
+    let high_bit_data = [0_u8; 4];
+    let high_bit_planes = [EncodeTypedComponentPlane {
+        data: &high_bit_data,
+        x_rsiz: 1,
+        y_rsiz: 1,
+        bit_depth: 25,
+        signed: false,
+    }];
+    let oversized_height = catch_unwind(|| {
+        encode_typed_component_planes_53(
+            &high_bit_planes,
+            1,
+            1,
+            &EncodeOptions {
+                code_block_height_exp: 30,
+                ..EncodeOptions::default()
+            },
+        )
+    })
+    .expect("large typed code-block exponent must not panic")
+    .expect_err("large typed code-block exponent must fail");
+    assert_eq!(
+        oversized_height,
+        crate::EncodeError::InvalidInput {
+            what: "code-block height exponent exceeds supported range"
+        }
+    );
+
+    let oversized_area = catch_unwind(|| {
+        encode(
+            &[0; 4],
+            2,
+            2,
+            1,
+            8,
+            false,
+            &EncodeOptions {
+                code_block_width_exp: 5,
+                code_block_height_exp: 4,
+                ..EncodeOptions::default()
+            },
+        )
+    })
+    .expect("oversized code-block area must not panic")
+    .expect_err("oversized code-block area must fail");
+    assert_eq!(
+        oversized_area,
+        crate::EncodeError::InvalidInput {
+            what: "code-block dimensions exceed JPEG 2000 Part 1 area limit"
+        }
+    );
 }
 
 #[test]
@@ -103,7 +241,7 @@ fn ht_accelerator_hooks_keep_pipeline_order() {
         fn encode_htj2k_tile(
             &mut self,
             _job: crate::J2kHtj2kTileEncodeJob<'_>,
-        ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<Vec<u8>>> {
             self.stages.push(Stage::WholeTile);
             Ok(None)
         }
@@ -111,7 +249,7 @@ fn ht_accelerator_hooks_keep_pipeline_order() {
         fn encode_deinterleave(
             &mut self,
             _job: crate::J2kDeinterleaveToF32Job<'_>,
-        ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
             self.stages.push(Stage::Deinterleave);
             Ok(None)
         }
@@ -119,7 +257,7 @@ fn ht_accelerator_hooks_keep_pipeline_order() {
         fn encode_forward_dwt53(
             &mut self,
             _job: crate::J2kForwardDwt53Job<'_>,
-        ) -> core::result::Result<Option<crate::J2kForwardDwt53Output>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<crate::J2kForwardDwt53Output>> {
             self.stages.push(Stage::ForwardDwt);
             Ok(None)
         }
@@ -127,7 +265,7 @@ fn ht_accelerator_hooks_keep_pipeline_order() {
         fn encode_packetization(
             &mut self,
             _job: crate::J2kPacketizationEncodeJob<'_>,
-        ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<Vec<u8>>> {
             self.stages.push(Stage::Packetization);
             Ok(None)
         }

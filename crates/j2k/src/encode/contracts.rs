@@ -6,9 +6,11 @@ use j2k_core::BackendKind;
 
 use crate::J2kEncodeDispatchReport;
 
-pub(super) const MAX_JPEG2000_PART1_COMPONENTS: u16 = 16_384;
+pub(super) use j2k_types::{
+    MAX_JPEG2000_PART1_COMPONENTS,
+    MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH as MAX_PART1_SAMPLE_BIT_DEPTH,
+};
 pub(super) const MAX_RAW_PIXEL_ENCODE_BIT_DEPTH: u8 = 24;
-pub(super) const MAX_PART1_SAMPLE_BIT_DEPTH: u8 = 38;
 pub(super) const MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES: u16 = 37;
 pub(super) const MAX_HTJ2K_ENCODE_BITPLANES: u16 = 31;
 

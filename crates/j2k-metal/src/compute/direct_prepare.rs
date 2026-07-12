@@ -10,13 +10,59 @@ use super::{
 };
 
 #[cfg(target_os = "macos")]
+struct ClassicGroupOwners {
+    members: Vec<PreparedClassicSubBandGroupMember>,
+    jobs: Vec<J2kClassicCleanupBatchJob>,
+    segments: Vec<J2kClassicSegment>,
+    coded_data: Vec<u8>,
+}
+
+#[cfg(target_os = "macos")]
+fn allocate_classic_group_owners(
+    sub_bands: &[&PreparedClassicSubBand],
+) -> Result<ClassicGroupOwners, Error> {
+    let job_count = crate::batch_allocation::checked_count_sum(
+        sub_bands.iter().map(|sub_band| sub_band.jobs.len()),
+        "classic J2K MetalDirect grouped jobs",
+    )?;
+    let segment_count = crate::batch_allocation::checked_count_sum(
+        sub_bands.iter().map(|sub_band| sub_band.segments.len()),
+        "classic J2K MetalDirect grouped segment table",
+    )?;
+    let coded_len = crate::batch_allocation::checked_count_sum(
+        sub_bands.iter().map(|sub_band| sub_band.coded_data.len()),
+        "classic J2K MetalDirect grouped coded payload",
+    )?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "classic J2K MetalDirect prepared sub-band group",
+    );
+    Ok(ClassicGroupOwners {
+        members: budget.try_vec(sub_bands.len(), "classic J2K MetalDirect grouped members")?,
+        jobs: budget.try_vec(job_count, "classic J2K MetalDirect grouped jobs")?,
+        segments: budget.try_vec(segment_count, "classic J2K MetalDirect grouped segments")?,
+        coded_data: budget.try_vec(coded_len, "classic J2K MetalDirect grouped coded payload")?,
+    })
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn prepare_classic_sub_band(
     job: &j2k_native::J2kOwnedSubBandPlan,
     tier1_prepare_mode: DirectTier1Mode,
 ) -> Result<PreparedClassicSubBand, Error> {
-    let mut jobs = Vec::with_capacity(job.jobs.len());
-    let mut coded_data = Vec::new();
-    let mut segments = Vec::new();
+    let coded_len = crate::batch_allocation::checked_count_sum(
+        job.jobs.iter().map(|block| block.data.len()),
+        "classic J2K MetalDirect coded payload",
+    )?;
+    let segment_count = crate::batch_allocation::checked_count_sum(
+        job.jobs.iter().map(|block| block.segments.len()),
+        "classic J2K MetalDirect segment table",
+    )?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "classic J2K MetalDirect prepared sub-band",
+    );
+    let mut jobs = budget.try_vec(job.jobs.len(), "classic J2K MetalDirect jobs")?;
+    let mut coded_data = budget.try_vec(coded_len, "classic J2K MetalDirect coded payload")?;
+    let mut segments = budget.try_vec(segment_count, "classic J2K MetalDirect segment table")?;
 
     for block in &job.jobs {
         let coded_offset = u32::try_from(coded_data.len()).map_err(|_| Error::MetalKernel {
@@ -77,10 +123,10 @@ pub(super) fn prepare_classic_sub_band(
 
     with_runtime(|runtime| {
         let coded_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &coded_data, tier1_prepare_mode);
-        let jobs_buffer = prepare_direct_tier1_input_buffer(runtime, &jobs, tier1_prepare_mode);
+            prepare_direct_tier1_input_buffer(runtime, &coded_data, tier1_prepare_mode)?;
+        let jobs_buffer = prepare_direct_tier1_input_buffer(runtime, &jobs, tier1_prepare_mode)?;
         let segments_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &segments, tier1_prepare_mode);
+            prepare_direct_tier1_input_buffer(runtime, &segments, tier1_prepare_mode)?;
         Ok(PreparedClassicSubBand {
             band_id: job.band_id,
             width: job.width,
@@ -103,11 +149,19 @@ pub(super) fn prepare_sub_band_groups<'a, SubBand: 'a, Group>(
     mut sub_band_for_step: impl FnMut(&'a PreparedDirectGrayscaleStep) -> Option<&'a SubBand>,
     mut prepare_group: impl FnMut(usize, usize, &[&'a SubBand], DirectTier1Mode) -> Result<Group, Error>,
 ) -> Result<Vec<Group>, Error> {
-    let mut groups = Vec::new();
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K MetalDirect prepared sub-band groups",
+    );
+    let mut groups = budget.try_vec(
+        steps.len(),
+        "J2K MetalDirect prepared sub-band group results",
+    )?;
+    let mut sub_bands =
+        budget.try_vec(steps.len(), "J2K MetalDirect grouped sub-band references")?;
     let mut step_idx = 0;
     while step_idx < steps.len() {
         let start_step = step_idx;
-        let mut sub_bands = Vec::new();
+        sub_bands.clear();
         while let Some(sub_band) = steps.get(step_idx).and_then(&mut sub_band_for_step) {
             sub_bands.push(sub_band);
             step_idx += 1;
@@ -150,10 +204,12 @@ pub(super) fn prepare_classic_sub_band_group(
     sub_bands: &[&PreparedClassicSubBand],
     tier1_prepare_mode: DirectTier1Mode,
 ) -> Result<PreparedClassicSubBandGroup, Error> {
-    let mut members = Vec::with_capacity(sub_bands.len());
-    let mut jobs = Vec::new();
-    let mut segments = Vec::new();
-    let mut coded_data = Vec::new();
+    let ClassicGroupOwners {
+        mut members,
+        mut jobs,
+        mut segments,
+        mut coded_data,
+    } = allocate_classic_group_owners(sub_bands)?;
     let mut output_base = 0usize;
 
     for sub_band in sub_bands {
@@ -228,10 +284,10 @@ pub(super) fn prepare_classic_sub_band_group(
 
     with_runtime(|runtime| {
         let coded_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &coded_data, tier1_prepare_mode);
-        let jobs_buffer = prepare_direct_tier1_input_buffer(runtime, &jobs, tier1_prepare_mode);
+            prepare_direct_tier1_input_buffer(runtime, &coded_data, tier1_prepare_mode)?;
+        let jobs_buffer = prepare_direct_tier1_input_buffer(runtime, &jobs, tier1_prepare_mode)?;
         let segments_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &segments, tier1_prepare_mode);
+            prepare_direct_tier1_input_buffer(runtime, &segments, tier1_prepare_mode)?;
         Ok(PreparedClassicSubBandGroup {
             start_step,
             end_step,
@@ -253,8 +309,14 @@ pub(super) fn prepare_ht_sub_band(
     job: &j2k_native::HtOwnedSubBandPlan,
     _tier1_prepare_mode: DirectTier1Mode,
 ) -> Result<PreparedHtSubBand, Error> {
-    let mut jobs = Vec::with_capacity(job.jobs.len());
-    let mut coded_data = Vec::new();
+    let coded_len = crate::batch_allocation::checked_count_sum(
+        job.jobs.iter().map(|block| block.data.len()),
+        "HTJ2K MetalDirect coded payload",
+    )?;
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("HTJ2K MetalDirect prepared sub-band");
+    let mut jobs = budget.try_vec(job.jobs.len(), "HTJ2K MetalDirect jobs")?;
+    let mut coded_data = budget.try_vec(coded_len, "HTJ2K MetalDirect coded payload")?;
     for block in &job.jobs {
         let coded_offset = u32::try_from(coded_data.len()).map_err(|_| Error::MetalKernel {
             message: "HTJ2K MetalDirect coded payload exceeds u32".to_string(),
@@ -320,9 +382,20 @@ pub(super) fn prepare_ht_sub_band_group(
     sub_bands: &[&PreparedHtSubBand],
     tier1_prepare_mode: DirectTier1Mode,
 ) -> Result<PreparedHtSubBandGroup, Error> {
-    let mut members = Vec::with_capacity(sub_bands.len());
-    let mut jobs = Vec::new();
-    let mut coded_data = Vec::new();
+    let job_count = crate::batch_allocation::checked_count_sum(
+        sub_bands.iter().map(|sub_band| sub_band.jobs.len()),
+        "HTJ2K MetalDirect grouped jobs",
+    )?;
+    let coded_len = crate::batch_allocation::checked_count_sum(
+        sub_bands.iter().map(|sub_band| sub_band.coded_data.len()),
+        "HTJ2K MetalDirect grouped coded payload",
+    )?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "HTJ2K MetalDirect prepared sub-band group",
+    );
+    let mut members = budget.try_vec(sub_bands.len(), "HTJ2K MetalDirect grouped members")?;
+    let mut jobs = budget.try_vec(job_count, "HTJ2K MetalDirect grouped jobs")?;
+    let mut coded_data = budget.try_vec(coded_len, "HTJ2K MetalDirect grouped coded payload")?;
     let mut output_base = 0usize;
 
     for sub_band in sub_bands {
@@ -371,8 +444,8 @@ pub(super) fn prepare_ht_sub_band_group(
 
     with_runtime(|runtime| {
         let coded_buffer =
-            prepare_direct_tier1_input_buffer(runtime, &coded_data, tier1_prepare_mode);
-        let jobs_buffer = prepare_direct_tier1_input_buffer(runtime, &jobs, tier1_prepare_mode);
+            prepare_direct_tier1_input_buffer(runtime, &coded_data, tier1_prepare_mode)?;
+        let jobs_buffer = prepare_direct_tier1_input_buffer(runtime, &jobs, tier1_prepare_mode)?;
         Ok(PreparedHtSubBandGroup {
             start_step,
             end_step,
@@ -415,12 +488,12 @@ pub(super) fn prepare_ungrouped_ht_sub_band_buffers(
                 runtime,
                 &sub_band.coded_data,
                 tier1_prepare_mode,
-            ));
+            )?);
             sub_band.jobs_buffer = Some(prepare_direct_tier1_input_buffer(
                 runtime,
                 &sub_band.jobs,
                 tier1_prepare_mode,
-            ));
+            )?);
             Ok(())
         })?;
     }
@@ -457,7 +530,10 @@ pub(super) fn prepare_direct_grayscale_plan_with_tier1_mode(
     plan: &J2kDirectGrayscalePlan,
     tier1_prepare_mode: DirectTier1Mode,
 ) -> Result<PreparedDirectGrayscalePlan, Error> {
-    let mut steps = Vec::with_capacity(plan.steps.len());
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K MetalDirect prepared grayscale plan",
+    );
+    let mut steps = budget.try_vec(plan.steps.len(), "J2K MetalDirect prepared grayscale steps")?;
     for step in &plan.steps {
         match step {
             J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => {

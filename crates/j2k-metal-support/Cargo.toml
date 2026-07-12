@@ -1,6 +1,6 @@
 [package]
 name = "j2k-metal-support"
-description = "Shared Metal runtime setup helpers for J2K adapters"
+description = "Checked Metal resource and runtime helpers for J2K adapters"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,6 +20,7 @@ path = "src/lib.rs"
 
 [dependencies]
 j2k-core = { path = "../j2k-core", version = "=0.7.0" }
+log = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = { workspace = true }

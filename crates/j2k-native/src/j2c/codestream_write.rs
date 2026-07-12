@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! JPEG 2000 codestream writer (ITU-T T.800 Annex A).
 //!
 //! Writes the complete codestream including all required markers:
@@ -7,6 +9,18 @@ use alloc::vec::Vec;
 
 use super::codestream::markers;
 use super::encode::EncodeProgressionOrder;
+
+mod accounting;
+pub(crate) use self::accounting::AccountedCodestream;
+use self::accounting::{codestream_tiles_output_len, tile_part_len};
+mod packet_markers;
+use self::packet_markers::{
+    write_plm_markers, write_plt_markers, write_ppm_markers, write_ppt_markers,
+};
+#[cfg(test)]
+use self::packet_markers::{PACKET_HEADER_MARKER_PAYLOAD_LIMIT, PPM_PACKET_HEADER_LIMIT};
+use super::encode::allocation::host_allocation_failed;
+use crate::{EncodeError, EncodeResult};
 
 const HT_RSIZ_CAPABILITY: u16 = 0x4000;
 
@@ -27,7 +41,7 @@ pub(crate) enum BlockCodingMode {
 }
 
 /// Parameters for encoding a JPEG 2000 codestream.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent codestream marker and coding switches remain explicit in the assembly job"
@@ -128,7 +142,8 @@ pub(crate) struct TilePartData<'a> {
     pub(crate) packet_headers: &'a [Vec<u8>],
 }
 
-/// Write the complete JPEG 2000 codestream.
+/// Test oracle for writing a complete single-tile JPEG 2000 codestream.
+#[cfg(test)]
 pub(crate) fn write_codestream(
     params: &EncodeParams,
     tile_data: &[u8],
@@ -137,6 +152,34 @@ pub(crate) fn write_codestream(
     write_codestream_with_packet_lengths(params, tile_data, quantization_step_sizes, &[])
 }
 
+/// Write one tile while reporting the peak of writer-owned heap capacities.
+/// Borrowed parameters, quantization values, and tile bytes are intentionally
+/// excluded so the calling encode session can count each retained owner once.
+/// The peak check runs before reservation and again with allocator-returned
+/// capacity before marker writing starts.
+pub(crate) fn write_codestream_accounted_with_peak_check(
+    params: &EncodeParams,
+    tile_data: &[u8],
+    quantization_step_sizes: &[(u16, u16)],
+    check_writer_peak: impl FnMut(usize) -> EncodeResult<()>,
+) -> EncodeResult<AccountedCodestream> {
+    let tile = TilePartData {
+        tile_index: 0,
+        tile_part_index: 0,
+        num_tile_parts: 1,
+        data: tile_data,
+        packet_lengths: &[],
+        packet_headers: &[],
+    };
+    write_codestream_tiles_accounted_with_peak_check(
+        params,
+        &[tile],
+        quantization_step_sizes,
+        check_writer_peak,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn write_codestream_with_packet_lengths(
     params: &EncodeParams,
     tile_data: &[u8],
@@ -151,115 +194,104 @@ pub(crate) fn write_codestream_with_packet_lengths(
         packet_lengths,
         packet_headers: &[],
     };
-    write_codestream_tiles(params, &[tile], quantization_step_sizes)
+    write_codestream_tiles_accounted_with_peak_check(
+        params,
+        &[tile],
+        quantization_step_sizes,
+        |_| Ok(()),
+    )
+    .map(|accounted| accounted.codestream)
+    .map_err(legacy_writer_error)
 }
 
-pub(crate) fn write_codestream_tiles(
+/// Write any number of tile-parts under one pre-allocation and
+/// allocator-returned writer peak contract.
+pub(crate) fn write_codestream_tiles_accounted_with_peak_check(
     params: &EncodeParams,
     tiles: &[TilePartData<'_>],
-    quantization_step_sizes: &[(u16, u16)], // (exponent, mantissa)
-) -> Result<Vec<u8>, &'static str> {
-    struct PreparedTilePart<'a> {
-        tile_index: u16,
-        tile_part_index: u8,
-        num_tile_parts: u8,
-        data: &'a [u8],
-        markers: Vec<u8>,
-        tile_part_len: u32,
+    quantization_step_sizes: &[(u16, u16)],
+    mut check_writer_peak: impl FnMut(usize) -> EncodeResult<()>,
+) -> EncodeResult<AccountedCodestream> {
+    let output_len = codestream_tiles_output_len(params, tiles, quantization_step_sizes)?;
+    check_writer_peak(output_len)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(output_len)
+        .map_err(|_| host_allocation_failed("codestream output", output_len))?;
+    let output_capacity = out.capacity();
+    check_writer_peak(output_capacity)?;
+
+    write_main_header_prefix(&mut out, params, quantization_step_sizes)
+        .map_err(|what| EncodeError::InvalidInput { what })?;
+    if params.write_plm {
+        write_plm_markers(&mut out, tiles)?;
     }
-
-    let mut prepared_tiles = Vec::with_capacity(tiles.len());
-    let mut main_header_packet_lengths = Vec::new();
-    let mut main_header_packet_headers = Vec::new();
-    let mut total_tile_bytes = 0usize;
-    for tile in tiles {
-        let mut markers = Vec::new();
-        if params.write_plt && !tile.packet_lengths.is_empty() {
-            write_plt_markers(&mut markers, tile.packet_lengths)?;
-        }
-        if params.write_ppt && !tile.packet_headers.is_empty() {
-            write_ppt_markers(&mut markers, tile.packet_headers);
-        }
-        if params.write_plm {
-            main_header_packet_lengths.extend_from_slice(tile.packet_lengths);
-        }
-        if params.write_ppm {
-            main_header_packet_headers.extend_from_slice(tile.packet_headers);
-        }
-        let marker_len =
-            u32::try_from(markers.len()).map_err(|_| "tile-part markers exceed u32")?;
-        let data_len = u32::try_from(tile.data.len()).map_err(|_| "tile-part data exceeds u32")?;
-        let tile_part_len = 14_u32
-            .checked_add(marker_len)
-            .and_then(|length| length.checked_add(data_len))
-            .ok_or("tile-part length exceeds u32")?;
-        total_tile_bytes = total_tile_bytes
-            .checked_add(markers.len())
-            .and_then(|length| length.checked_add(tile.data.len()))
-            .and_then(|length| length.checked_add(14))
-            .ok_or("codestream output length exceeds usize")?;
-        prepared_tiles.push(PreparedTilePart {
-            tile_index: tile.tile_index,
-            tile_part_index: tile.tile_part_index,
-            num_tile_parts: tile.num_tile_parts,
-            data: tile.data,
-            markers,
-            tile_part_len,
-        });
+    if params.write_ppm {
+        write_ppm_markers(&mut out, tiles)?;
     }
-
-    let mut out = Vec::with_capacity(total_tile_bytes + 256);
-
-    // SOC (Start of codestream)
-    write_marker(&mut out, markers::SOC);
-
-    // SIZ (Image and tile sizes)
-    write_siz_marker(&mut out, params);
-
-    if params.block_coding_mode == BlockCodingMode::HighThroughput {
-        write_cap_marker(&mut out, params);
-    }
-
-    // COD (Coding style defaults)
-    write_cod_marker(&mut out, params);
-
-    // QCD (Quantization defaults)
-    write_qcd_marker(&mut out, params, quantization_step_sizes)?;
-    write_qcc_markers(&mut out, params)?;
-
-    write_rgn_markers(&mut out, params);
-
-    if params.write_plm && !main_header_packet_lengths.is_empty() {
-        write_plm_markers(&mut out, &main_header_packet_lengths)?;
-    }
-
-    if params.write_ppm && !main_header_packet_headers.is_empty() {
-        write_ppm_markers(&mut out, &main_header_packet_headers);
-    }
-
     if params.write_tlm {
-        for tile in &prepared_tiles {
-            write_tlm_marker(&mut out, tile.tile_index, tile.tile_part_len);
+        for tile in tiles {
+            write_tlm_marker(&mut out, tile.tile_index, tile_part_len(params, tile)?);
         }
     }
-
-    for tile in prepared_tiles {
+    for tile in tiles {
+        let tile_part_len = tile_part_len(params, tile)?;
         write_sot_marker(
             &mut out,
             tile.tile_index,
-            tile.tile_part_len - 2,
+            tile_part_len - 2,
             tile.tile_part_index,
             tile.num_tile_parts,
         );
-        out.extend_from_slice(&tile.markers);
+        if params.write_plt {
+            write_plt_markers(&mut out, tile.packet_lengths)?;
+        }
+        if params.write_ppt {
+            write_ppt_markers(&mut out, tile.packet_headers)?;
+        }
         write_marker(&mut out, markers::SOD);
         out.extend_from_slice(tile.data);
     }
-
-    // EOC (End of codestream)
     write_marker(&mut out, markers::EOC);
+    if out.len() != output_len || out.capacity() != output_capacity {
+        return Err(EncodeError::InternalInvariant {
+            what: "accounted codestream length changed after exact preflight",
+        });
+    }
+    Ok(AccountedCodestream {
+        codestream: out,
+        writer_peak_bytes: output_capacity,
+    })
+}
 
-    Ok(out)
+#[cfg(test)]
+fn legacy_writer_error(error: EncodeError) -> &'static str {
+    match error {
+        EncodeError::InvalidInput { what }
+        | EncodeError::Unsupported { what }
+        | EncodeError::ArithmeticOverflow { what }
+        | EncodeError::InternalInvariant { what } => what,
+        EncodeError::HostAllocationFailed { .. } => "codestream output allocation failed",
+        EncodeError::AllocationTooLarge { .. } => "codestream output exceeds allocation cap",
+        EncodeError::Accelerator { source, .. } => source.reason(),
+        EncodeError::CodestreamValidation { detail } => detail,
+    }
+}
+
+fn write_main_header_prefix(
+    out: &mut Vec<u8>,
+    params: &EncodeParams,
+    quantization_step_sizes: &[(u16, u16)],
+) -> Result<(), &'static str> {
+    write_marker(out, markers::SOC);
+    write_siz_marker(out, params);
+    if params.block_coding_mode == BlockCodingMode::HighThroughput {
+        write_cap_marker(out, params);
+    }
+    write_cod_marker(out, params);
+    write_qcd_marker(out, params, quantization_step_sizes)?;
+    write_qcc_markers(out, params)?;
+    write_rgn_markers(out, params);
+    Ok(())
 }
 
 fn write_marker(out: &mut Vec<u8>, marker: u8) {
@@ -444,151 +476,6 @@ fn write_tlm_marker(out: &mut Vec<u8>, tile_index: u16, tile_part_length: u32) {
     out.push(0x22);
     out.extend_from_slice(&tile_index.to_be_bytes());
     out.extend_from_slice(&tile_part_length.to_be_bytes());
-}
-
-fn write_plt_markers(out: &mut Vec<u8>, packet_lengths: &[u32]) -> Result<(), &'static str> {
-    let data = packet_length_bytes(packet_lengths);
-    let chunk_size = usize::from(u16::MAX) - 3;
-    if data.len().div_ceil(chunk_size) > usize::from(u8::MAX) + 1 {
-        return Err("PLT packet lengths require more than 256 marker segments");
-    }
-    for (sequence_idx, chunk) in data.chunks(chunk_size).enumerate() {
-        write_marker(out, markers::PLT);
-        let marker_len = chunk
-            .len()
-            .checked_add(3)
-            .and_then(|length| u16::try_from(length).ok())
-            .ok_or("PLT marker chunk length exceeds u16")?;
-        out.extend_from_slice(&marker_len.to_be_bytes());
-        out.push(u8::try_from(sequence_idx).map_err(|_| "PLT sequence index exceeds u8")?);
-        out.extend_from_slice(chunk);
-    }
-    Ok(())
-}
-
-fn write_plm_markers(out: &mut Vec<u8>, packet_lengths: &[u32]) -> Result<(), &'static str> {
-    let data = packet_length_bytes(packet_lengths);
-    let chunk_size = usize::from(u16::MAX) - 7;
-    if data.len().div_ceil(chunk_size) > usize::from(u8::MAX) + 1 {
-        return Err("PLM packet lengths require more than 256 marker segments");
-    }
-    for (sequence_idx, chunk) in data.chunks(chunk_size).enumerate() {
-        write_marker(out, markers::PLM);
-        let marker_len = chunk
-            .len()
-            .checked_add(7)
-            .and_then(|length| u16::try_from(length).ok())
-            .ok_or("PLM marker chunk length exceeds u16")?;
-        out.extend_from_slice(&marker_len.to_be_bytes());
-        out.push(u8::try_from(sequence_idx).map_err(|_| "PLM sequence index exceeds u8")?);
-        let chunk_len =
-            u32::try_from(chunk.len()).map_err(|_| "PLM marker chunk length exceeds u32")?;
-        out.extend_from_slice(&chunk_len.to_be_bytes());
-        out.extend_from_slice(chunk);
-    }
-    Ok(())
-}
-
-const PACKET_HEADER_MARKER_PAYLOAD_LIMIT: usize = u16::MAX as usize - 3;
-const PPM_PACKET_HEADER_LIMIT: usize = PACKET_HEADER_MARKER_PAYLOAD_LIMIT - 2;
-
-fn write_ppm_markers(out: &mut Vec<u8>, packet_headers: &[Vec<u8>]) {
-    let mut sequence_idx = 0usize;
-    let mut start = 0usize;
-    let mut payload_len = 0usize;
-
-    for (idx, header) in packet_headers.iter().enumerate() {
-        let entry_len = 2usize
-            .checked_add(header.len())
-            .expect("PPM packet header length fits usize");
-        assert!(
-            header.len() <= PPM_PACKET_HEADER_LIMIT,
-            "PPM packet header length fits marker payload"
-        );
-        if payload_len > 0 && payload_len + entry_len > PACKET_HEADER_MARKER_PAYLOAD_LIMIT {
-            write_ppm_marker_chunk(out, sequence_idx, &packet_headers[start..idx], payload_len);
-            sequence_idx += 1;
-            start = idx;
-            payload_len = 0;
-        }
-        payload_len += entry_len;
-    }
-
-    if payload_len > 0 {
-        write_ppm_marker_chunk(out, sequence_idx, &packet_headers[start..], payload_len);
-    }
-}
-
-fn write_ppm_marker_chunk(
-    out: &mut Vec<u8>,
-    sequence_idx: usize,
-    packet_headers: &[Vec<u8>],
-    payload_len: usize,
-) {
-    write_marker(out, markers::PPM);
-    let marker_len = u16::try_from(3 + payload_len).expect("PPM marker length fits");
-    out.extend_from_slice(&marker_len.to_be_bytes());
-    out.push(u8::try_from(sequence_idx).expect("PPM marker sequence index fits u8"));
-    for header in packet_headers {
-        let header_len = u16::try_from(header.len()).expect("PPM packet header length fits");
-        out.extend_from_slice(&header_len.to_be_bytes());
-        out.extend_from_slice(header);
-    }
-}
-
-fn write_ppt_markers(out: &mut Vec<u8>, packet_headers: &[Vec<u8>]) {
-    let mut chunk = Vec::new();
-    let mut sequence_idx = 0usize;
-
-    for header in packet_headers {
-        let mut remaining = header.as_slice();
-        while !remaining.is_empty() {
-            let available = PACKET_HEADER_MARKER_PAYLOAD_LIMIT - chunk.len();
-            let take = available.min(remaining.len());
-            chunk.extend_from_slice(&remaining[..take]);
-            remaining = &remaining[take..];
-            if chunk.len() == PACKET_HEADER_MARKER_PAYLOAD_LIMIT {
-                write_ppt_marker_chunk(out, sequence_idx, &chunk);
-                sequence_idx += 1;
-                chunk.clear();
-            }
-        }
-    }
-
-    if !chunk.is_empty() {
-        write_ppt_marker_chunk(out, sequence_idx, &chunk);
-    }
-}
-
-fn write_ppt_marker_chunk(out: &mut Vec<u8>, sequence_idx: usize, payload: &[u8]) {
-    write_marker(out, markers::PPT);
-    let marker_len = u16::try_from(3 + payload.len()).expect("PPT marker length fits");
-    out.extend_from_slice(&marker_len.to_be_bytes());
-    out.push(u8::try_from(sequence_idx).expect("PPT marker sequence index fits u8"));
-    out.extend_from_slice(payload);
-}
-
-fn packet_length_bytes(packet_lengths: &[u32]) -> Vec<u8> {
-    let mut out = Vec::new();
-
-    for &packet_length in packet_lengths {
-        let mut value = packet_length;
-        let mut groups = Vec::new();
-        groups.push((value & 0x7F) as u8);
-        value >>= 7;
-
-        while value > 0 {
-            groups.push((value & 0x7F) as u8);
-            value >>= 7;
-        }
-
-        for (idx, group) in groups.iter().rev().enumerate() {
-            let continuation = idx + 1 != groups.len();
-            out.push(if continuation { *group | 0x80 } else { *group });
-        }
-    }
-
-    out
 }
 
 /// Write QCD marker segment (A.6.4).
@@ -959,8 +846,16 @@ mod tests {
             vec![0x33; 4],
         ];
         let mut out = Vec::new();
+        let tile = TilePartData {
+            tile_index: 0,
+            tile_part_index: 0,
+            num_tile_parts: 1,
+            data: &[],
+            packet_lengths: &[],
+            packet_headers: &headers,
+        };
 
-        write_ppm_markers(&mut out, &headers);
+        write_ppm_markers(&mut out, &[tile]).expect("valid PPM markers");
 
         let offsets = marker_offsets(&out, markers::PPM);
         assert_eq!(offsets.len(), 2);
@@ -979,7 +874,7 @@ mod tests {
         let headers = vec![vec![0x44; PACKET_HEADER_MARKER_PAYLOAD_LIMIT + 10]];
         let mut out = Vec::new();
 
-        write_ppt_markers(&mut out, &headers);
+        write_ppt_markers(&mut out, &headers).expect("valid PPT markers");
 
         let offsets = marker_offsets(&out, markers::PPT);
         assert_eq!(offsets.len(), 2);

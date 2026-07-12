@@ -673,6 +673,56 @@ pub(crate) struct J2kClassicTier1TokenSegment {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub(crate) struct J2kHtUvlcEncodeTableEntry {
+    pub(crate) pre: u8,
+    pub(crate) pre_len: u8,
+    pub(crate) suf: u8,
+    pub(crate) suf_len: u8,
+    pub(crate) ext: u8,
+    pub(crate) ext_len: u8,
+}
+
+#[cfg(target_os = "macos")]
+impl From<j2k_native::HtUvlcTableEntry> for J2kHtUvlcEncodeTableEntry {
+    fn from(entry: j2k_native::HtUvlcTableEntry) -> Self {
+        Self {
+            pre: entry.pre,
+            pre_len: entry.pre_len,
+            suf: entry.suf,
+            suf_len: entry.suf_len,
+            ext: entry.ext,
+            ext_len: entry.ext_len,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+const _: [(); 0] = [(); core::mem::offset_of!(J2kHtUvlcEncodeTableEntry, pre)];
+#[cfg(target_os = "macos")]
+const _: [(); 1] = [(); core::mem::offset_of!(J2kHtUvlcEncodeTableEntry, pre_len)];
+#[cfg(target_os = "macos")]
+const _: [(); 2] = [(); core::mem::offset_of!(J2kHtUvlcEncodeTableEntry, suf)];
+#[cfg(target_os = "macos")]
+const _: [(); 3] = [(); core::mem::offset_of!(J2kHtUvlcEncodeTableEntry, suf_len)];
+#[cfg(target_os = "macos")]
+const _: [(); 4] = [(); core::mem::offset_of!(J2kHtUvlcEncodeTableEntry, ext)];
+#[cfg(target_os = "macos")]
+const _: [(); 5] = [(); core::mem::offset_of!(J2kHtUvlcEncodeTableEntry, ext_len)];
+#[cfg(target_os = "macos")]
+const _: [(); core::mem::size_of::<J2kHtUvlcEncodeTableEntry>()] =
+    [(); core::mem::offset_of!(J2kHtUvlcEncodeTableEntry, ext_len) + core::mem::size_of::<u8>()];
+
+#[cfg(target_os = "macos")]
+// SAFETY: The compile-time field-offset and final-field-end equalities above
+// prove this six-u8 upload row has no internal or tail padding. Every u8 bit
+// pattern is valid, and the Metal kernel indexes the table as six bytes/row.
+unsafe impl j2k_core::accelerator::GpuAbi for J2kHtUvlcEncodeTableEntry {
+    const NAME: &'static str = "J2kHtUvlcEncodeTableEntry";
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct J2kHtEncodeParams {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -1033,5 +1083,16 @@ mod gpu_readback_abi_tests {
             28
         );
         assert_eq!(offset_of!(J2kCodestreamAssemblyStatus, reserved0), 12);
+    }
+
+    #[test]
+    fn ht_uvlc_upload_rows_match_the_canonical_packed_table() {
+        let rows = (*j2k_native::ht_uvlc_encode_table()).map(J2kHtUvlcEncodeTableEntry::from);
+        let bytes =
+            <J2kHtUvlcEncodeTableEntry as j2k_core::accelerator::GpuAbi>::slice_as_bytes(&rows);
+
+        assert_eq!(size_of::<J2kHtUvlcEncodeTableEntry>(), 6);
+        assert_eq!(align_of::<J2kHtUvlcEncodeTableEntry>(), 1);
+        assert_eq!(bytes, j2k_native::ht_uvlc_encode_table_bytes());
     }
 }

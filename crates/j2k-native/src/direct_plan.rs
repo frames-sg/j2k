@@ -2,11 +2,13 @@ use alloc::vec::Vec;
 
 use crate::{J2kRect, J2kWaveletTransform};
 
+mod allocation;
+
 /// Adapter identifier for one device-owned grayscale coefficient band.
 pub type J2kDirectBandId = u32;
 
 /// Adapter grayscale-only direct device-plan step for backend experimentation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum J2kDirectGrayscaleStep {
     /// Decode one classic J2K sub-band into a device-owned coefficient buffer.
     ClassicSubBand(J2kOwnedSubBandPlan),
@@ -19,7 +21,7 @@ pub enum J2kDirectGrayscaleStep {
 }
 
 /// Adapter grayscale-only direct device plan for backend experimentation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct J2kDirectGrayscalePlan {
     /// Final output dimensions.
     pub dimensions: (u32, u32),
@@ -30,7 +32,7 @@ pub struct J2kDirectGrayscalePlan {
 }
 
 /// Adapter RGB direct device plan for backend experimentation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct J2kDirectColorPlan {
     /// Final output dimensions.
     pub dimensions: (u32, u32),
@@ -45,7 +47,7 @@ pub struct J2kDirectColorPlan {
 }
 
 /// Adapter owned classic J2K sub-band decode job.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct J2kOwnedSubBandPlan {
     /// Stable identifier for the decoded coefficient band produced by this step.
     pub band_id: J2kDirectBandId,
@@ -60,7 +62,7 @@ pub struct J2kOwnedSubBandPlan {
 }
 
 /// Adapter owned HTJ2K sub-band decode job.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HtOwnedSubBandPlan {
     /// Stable identifier for the decoded coefficient band produced by this step.
     pub band_id: J2kDirectBandId,
@@ -75,7 +77,7 @@ pub struct HtOwnedSubBandPlan {
 }
 
 /// Adapter owned classic J2K batched code-block decode job.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct J2kOwnedCodeBlockBatchJob {
     /// X offset within the target sub-band coefficient buffer.
     pub output_x: u32,
@@ -111,7 +113,7 @@ pub struct J2kOwnedCodeBlockBatchJob {
 
 define_ht_code_block_job! {
     /// Adapter owned HTJ2K batched code-block decode job.
-    #[derive(Debug, Clone)]
+    #[derive(Debug)]
     pub struct HtOwnedCodeBlockBatchJob {
         /// X offset within the target sub-band coefficient buffer.
         pub output_x: u32,

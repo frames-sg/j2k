@@ -1,35 +1,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    checked_buffer_read_vec, checked_buffer_write, private_buffer, shared_buffer_for_len,
-    shared_buffer_with_slice, size_of, Buffer, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
-    Device, MetalTranscodeError, DWT97_BLOCK_COEFFICIENTS, METAL_DCT97_UNSUPPORTED_GRID,
-    METAL_DCT_KERNEL_FAILED, PI,
+    checked_buffer_read_vec, checked_buffer_write, size_of, try_transcode_vec_with_capacity,
+    Buffer, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, Device, MetalSupportError,
+    MetalTranscodeError, DWT97_BLOCK_COEFFICIENTS, METAL_DCT97_UNSUPPORTED_GRID,
+    METAL_READBACK_CHUNK_BYTES,
 };
 
-pub(super) fn buffer_with_slice<T: j2k_core::accelerator::GpuAbi>(
-    device: &Device,
-    values: &[T],
-) -> Buffer {
-    shared_buffer_with_slice(device, values)
-}
+mod basis;
+mod storage;
+pub(super) use storage::{
+    buffer_with_slice, dwt97_block_value_count, dwt97_blocks_buffer, dwt97_jobs_value_count,
+    output_buffer, output_i32_buffer, private_f32_buffer,
+};
 
-pub(super) fn dwt97_blocks_buffer(
-    device: &Device,
-    blocks: &[[[f64; 8]; 8]],
-) -> Result<Buffer, MetalTranscodeError> {
-    let value_count = dwt97_block_value_count(blocks.len())?;
-    let mut buffer = output_buffer(device, value_count);
-    write_dwt97_blocks_to_buffer(&mut buffer, blocks)?;
-    Ok(buffer)
-}
+const READBACK_CHUNK_VALUES: usize = METAL_READBACK_CHUNK_BYTES / size_of::<u32>();
+const DWT97_UPLOAD_CHUNK_BLOCKS: usize = 64;
+const DWT97_UPLOAD_CHUNK_VALUES: usize = DWT97_UPLOAD_CHUNK_BLOCKS * DWT97_BLOCK_COEFFICIENTS;
 
 pub(super) fn dwt97_batch_blocks_buffer(
     device: &Device,
     jobs: &[DctGridToDwt97Job<'_>],
 ) -> Result<Buffer, MetalTranscodeError> {
     let value_count = dwt97_jobs_value_count(jobs.iter().map(|job| job.blocks.len()))?;
-    let mut buffer = output_buffer(device, value_count);
+    let mut buffer = output_buffer(device, value_count)?;
     let mut offset = 0;
     for job in jobs {
         offset += write_dwt97_blocks_to_buffer_at(&mut buffer, offset, job.blocks)?;
@@ -43,38 +37,13 @@ pub(super) fn dwt97_codeblock_batch_blocks_buffer(
     jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
 ) -> Result<Buffer, MetalTranscodeError> {
     let value_count = dwt97_jobs_value_count(jobs.iter().map(|job| job.blocks.len()))?;
-    let mut buffer = output_buffer(device, value_count);
+    let mut buffer = output_buffer(device, value_count)?;
     let mut offset = 0;
     for job in jobs {
         offset += write_dwt97_blocks_to_buffer_at(&mut buffer, offset, job.blocks)?;
     }
     debug_assert_eq!(offset, value_count);
     Ok(buffer)
-}
-
-pub(super) fn dwt97_jobs_value_count(
-    mut block_counts: impl Iterator<Item = usize>,
-) -> Result<usize, MetalTranscodeError> {
-    block_counts.try_fold(0_usize, |total, block_count| {
-        let block_values = dwt97_block_value_count(block_count)?;
-        total
-            .checked_add(block_values)
-            .ok_or(MetalTranscodeError::UnsupportedJob(
-                METAL_DCT97_UNSUPPORTED_GRID,
-            ))
-    })
-}
-
-pub(super) fn dwt97_block_value_count(block_count: usize) -> Result<usize, MetalTranscodeError> {
-    let value_count = block_count.checked_mul(DWT97_BLOCK_COEFFICIENTS).ok_or(
-        MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID),
-    )?;
-    value_count
-        .checked_mul(size_of::<f32>())
-        .ok_or(MetalTranscodeError::UnsupportedJob(
-            METAL_DCT97_UNSUPPORTED_GRID,
-        ))?;
-    Ok(value_count)
 }
 
 pub(super) fn write_dwt97_blocks_to_buffer(
@@ -111,25 +80,40 @@ pub(super) fn write_dwt97_blocks_to_buffer_at(
         ));
     }
 
-    let byte_offset =
-        start
-            .checked_mul(size_of::<f32>())
+    let mut written = start;
+    for block_chunk in blocks.chunks(DWT97_UPLOAD_CHUNK_BLOCKS) {
+        let mut values = [0.0_f32; DWT97_UPLOAD_CHUNK_VALUES];
+        let mut value_idx = 0usize;
+        for block in block_chunk {
+            for row in block {
+                for &coefficient in row {
+                    values[value_idx] = coefficient as f32;
+                    value_idx += 1;
+                }
+            }
+        }
+        let byte_offset =
+            written
+                .checked_mul(size_of::<f32>())
+                .ok_or(MetalTranscodeError::UnsupportedJob(
+                    METAL_DCT97_UNSUPPORTED_GRID,
+                ))?;
+        // SAFETY: DWT input buffers are populated before they are submitted to
+        // a Metal command buffer, and this function has exclusive staging access.
+        unsafe { checked_buffer_write::<f32>(buffer, byte_offset, &values[..value_idx]) }
+            .map_err(|error| MetalTranscodeError::support("Metal DCT block upload", error))?;
+        written = written
+            .checked_add(value_idx)
             .ok_or(MetalTranscodeError::UnsupportedJob(
                 METAL_DCT97_UNSUPPORTED_GRID,
             ))?;
-    let mut values = Vec::with_capacity(value_count);
-    for block in blocks {
-        for row in block {
-            for &coefficient in row {
-                values.push(coefficient as f32);
-            }
-        }
     }
-    // SAFETY: DWT input buffers are populated before they are submitted to a
-    // Metal command buffer, and this function has exclusive staging access.
-    unsafe { checked_buffer_write::<f32>(buffer, byte_offset, &values) }
-        .map_err(|_| MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID))?;
-    Ok(values.len())
+    if written != end {
+        return Err(MetalTranscodeError::Kernel(
+            "Metal DCT upload length disagrees with validated workspace",
+        ));
+    }
+    Ok(value_count)
 }
 
 pub(super) fn buffer_f32_capacity(buffer: &Buffer) -> usize {
@@ -137,83 +121,89 @@ pub(super) fn buffer_f32_capacity(buffer: &Buffer) -> usize {
     usize::try_from(buffer.length() / element_size).unwrap_or(usize::MAX)
 }
 
-pub(super) fn output_buffer(device: &Device, value_count: usize) -> Buffer {
-    shared_buffer_for_len::<f32>(device, value_count)
-}
-
-pub(super) fn private_f32_buffer(device: &Device, value_count: usize) -> Buffer {
-    private_buffer(device, value_count.saturating_mul(size_of::<f32>()))
-}
-
-pub(super) fn output_i32_buffer(device: &Device, value_count: usize) -> Buffer {
-    shared_buffer_for_len::<i32>(device, value_count)
-}
-
 pub(super) fn read_f32_buffer(
     buffer: &Buffer,
     value_count: usize,
 ) -> Result<Vec<f64>, MetalTranscodeError> {
-    shared_f32_slice(buffer, value_count).map(|values| f32_slice_to_f64(&values))
+    read_f32_buffer_at(buffer, 0, value_count)
 }
 
-pub(super) fn read_i32_buffer(
+pub(super) fn read_f32_buffer_at(
     buffer: &Buffer,
+    start: usize,
+    value_count: usize,
+) -> Result<Vec<f64>, MetalTranscodeError> {
+    let mut output =
+        try_transcode_vec_with_capacity(value_count, "Metal f32-to-f64 output materialization")?;
+    read_buffer_chunks::<f32>(buffer, start, value_count, |values| {
+        output.extend(values.iter().copied().map(f64::from));
+    })?;
+    Ok(output)
+}
+
+pub(super) fn read_i32_buffer_at(
+    buffer: &Buffer,
+    start: usize,
     value_count: usize,
 ) -> Result<Vec<i32>, MetalTranscodeError> {
-    shared_i32_slice(buffer, value_count)
+    let mut output =
+        try_transcode_vec_with_capacity(value_count, "Metal i32 output materialization")?;
+    read_buffer_chunks::<i32>(buffer, start, value_count, |values| {
+        output.extend_from_slice(values);
+    })?;
+    Ok(output)
 }
 
 #[expect(
     unsafe_code,
     reason = "the checked Metal buffer helper requires one audited post-completion read boundary"
 )]
-pub(super) fn shared_f32_slice(
+fn read_buffer_chunks<T: j2k_core::accelerator::GpuAbi>(
     buffer: &Buffer,
+    start: usize,
     value_count: usize,
-) -> Result<Vec<f32>, MetalTranscodeError> {
-    // SAFETY: Every caller waits for the producing command buffer before
-    // materializing these owned values.
-    unsafe { checked_buffer_read_vec(buffer, 0, value_count) }
-        .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))
+    mut consume: impl FnMut(&[T]),
+) -> Result<(), MetalTranscodeError> {
+    let end =
+        start
+            .checked_add(value_count)
+            .ok_or(MetalTranscodeError::HostAllocationTooLarge {
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                what: "Metal output readback range",
+            })?;
+    let mut position = start;
+    while position < end {
+        let chunk_len = (end - position).min(READBACK_CHUNK_VALUES);
+        let byte_offset = position.checked_mul(size_of::<T>()).ok_or(
+            MetalTranscodeError::HostAllocationTooLarge {
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                what: "Metal output readback range",
+            },
+        )?;
+        // SAFETY: Every caller waits for the producing command buffer before
+        // materializing these owned values. The checked helper validates the
+        // byte range and creates an owned, bounded chunk.
+        let values = unsafe { checked_buffer_read_vec(buffer, byte_offset, chunk_len) }
+            .map_err(|error| map_readback_error::<T>(error, chunk_len))?;
+        consume(&values);
+        position += chunk_len;
+    }
+    Ok(())
 }
 
-#[expect(
-    unsafe_code,
-    reason = "the checked Metal buffer helper requires one audited post-completion read boundary"
-)]
-pub(super) fn shared_i32_slice(
-    buffer: &Buffer,
-    value_count: usize,
-) -> Result<Vec<i32>, MetalTranscodeError> {
-    // SAFETY: Every caller waits for the producing command buffer before
-    // materializing these owned values.
-    unsafe { checked_buffer_read_vec(buffer, 0, value_count) }
-        .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))
-}
-
-pub(super) fn f32_slice_to_f64(values: &[f32]) -> Vec<f64> {
-    values.iter().map(|&value| f64::from(value)).collect()
+fn map_readback_error<T>(error: MetalSupportError, element_count: usize) -> MetalTranscodeError {
+    if matches!(error, MetalSupportError::BufferReadbackAllocation { .. }) {
+        MetalTranscodeError::HostAllocationFailed {
+            requested: element_count.saturating_mul(size_of::<T>()),
+            what: "Metal output readback chunk",
+        }
+    } else {
+        MetalTranscodeError::support("Metal output readback", error)
+    }
 }
 
 pub(super) fn idct8_basis_table() -> [f32; 64] {
-    let mut table = [0.0; 64];
-    for sample_idx in 0..8 {
-        for freq in 0..8 {
-            table[sample_idx * 8 + freq] = idct8_basis(sample_idx, freq);
-        }
-    }
-    table
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "IDCT basis indices are bounded to 0..8 and exactly represented by f32"
-)]
-pub(super) fn idct8_basis(sample_idx: usize, freq: usize) -> f32 {
-    let scale = if freq == 0 {
-        (1.0_f32 / 8.0).sqrt()
-    } else {
-        (2.0_f32 / 8.0).sqrt()
-    };
-    scale * (((sample_idx as f32 + 0.5) * freq as f32 * PI) / 8.0).cos()
+    basis::idct8_basis_table()
 }

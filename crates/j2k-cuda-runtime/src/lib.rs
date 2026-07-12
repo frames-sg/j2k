@@ -51,6 +51,7 @@ macro_rules! impl_cuda_htj2k_encoded_status_accessors {
     };
 }
 
+mod allocation;
 mod build_flags;
 mod bytes;
 mod context;
@@ -118,8 +119,11 @@ pub use jpeg::{
     CudaJpegHuffmanTable, CudaJpegRgb8DecodePlan, CudaJpegRgb8Sampling,
 };
 pub use memory::{
-    CudaBufferPool, CudaBufferPoolTakeTrace, CudaDeviceBuffer, CudaDeviceBufferRange,
-    CudaDeviceBufferView, CudaDeviceBufferViewMut, CudaPooledDeviceBuffer,
+    CudaBufferPool, CudaBufferPoolDiagnostics, CudaBufferPoolLimits, CudaBufferPoolTakeTrace,
+    CudaDeviceBuffer, CudaDeviceBufferRange, CudaDeviceBufferView, CudaDeviceBufferViewMut,
+    CudaPinnedUploadOperationGuard, CudaPinnedUploadStagingCheckout,
+    CudaPinnedUploadStagingPoolDiagnostics, CudaPinnedUploadStagingPoolLimits,
+    CudaPooledDeviceBuffer,
 };
 pub use transcode::{
     CudaDwt97BatchGeometry, CudaDwt97BatchWithPoolRequest, CudaHtj2k97CodeblockBands,

@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use j2k_metal_support::FallibleSubmissionQueue;
+
 use super::{
     checked_buffer_read, completed_command_buffers_gpu_duration, encode_status_error,
-    finish_completed_resident_lossless_codestream_batch, size_of,
-    wait_resident_codestream_command_buffer, Buffer, CommandBufferRef, Error,
-    J2kClassicEncodeBatchJob, J2kClassicEncodeStatus, J2kCodestreamAssemblyStatus,
+    finish_completed_resident_lossless_codestream_batch, new_blit_command_encoder,
+    new_shared_buffer, size_of, wait_resident_codestream_command_buffer, Buffer, CommandBufferRef,
+    Error, J2kClassicEncodeBatchJob, J2kClassicEncodeStatus, J2kCodestreamAssemblyStatus,
     J2kHtEncodeStatus, J2kPendingResidentLosslessCodestream,
     J2kPendingResidentLosslessCodestreamBatch, J2kResidentLosslessCodestream,
     J2kResidentLosslessCodestreamBatchResult, J2kResidentTier1StatusKind,
-    J2kResidentTier1StatusReadback, MTLResourceOptions, MetalRuntime, J2K_ENCODE_STATUS_OK,
+    J2kResidentTier1StatusReadback, MetalRuntime, J2K_ENCODE_STATUS_OK,
 };
 
 #[cfg(target_os = "macos")]
@@ -65,10 +67,11 @@ pub(crate) fn wait_resident_lossless_codestream_batches(
         // harvest, so completing the final one implies earlier chunks are done.
         wait_resident_codestream_command_buffer(&last.command_buffer)?;
     }
-    pending_batches
-        .into_iter()
-        .map(finish_completed_resident_lossless_codestream_batch)
-        .collect()
+    FallibleSubmissionQueue::from_retained(pending_batches).try_finish(
+        "J2K Metal resident batch submission and result metadata",
+        "J2K Metal resident batch results",
+        finish_completed_resident_lossless_codestream_batch,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -152,18 +155,28 @@ pub(in crate::compute) fn schedule_resident_tier1_status_readback(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal resident Tier-1 status readback size overflow".to_string(),
         })?;
-    let readback = runtime.device.new_buffer(
-        byte_len.max(1) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-    let blit = command_buffer.new_blit_command_encoder();
+    let readback = new_shared_buffer(&runtime.device, byte_len.max(1))?;
+    let blit = new_blit_command_encoder(command_buffer)?;
     blit.copy_from_buffer(status_buffer, 0, &readback, 0, byte_len as u64);
     blit.end_encoding();
+    let classic_jobs = if let Some(classic_jobs) = classic_jobs {
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal resident Tier-1 status readback",
+        );
+        let mut owned_jobs = budget.try_vec(
+            classic_jobs.len(),
+            "J2K Metal resident Tier-1 readback classic jobs",
+        )?;
+        owned_jobs.extend_from_slice(classic_jobs);
+        Some(owned_jobs)
+    } else {
+        None
+    };
     Ok(Some(J2kResidentTier1StatusReadback {
         buffer: readback,
         kind,
         classic_style_flags,
-        classic_jobs: classic_jobs.map(<[J2kClassicEncodeBatchJob]>::to_vec),
+        classic_jobs,
         count,
     }))
 }

@@ -9,7 +9,7 @@ use super::super::deposit::{
     ReducedIdctScratch,
 };
 use super::super::profile::Fast420Profiler;
-use super::super::{PreparedComponentPlan, StripeBuffer};
+use super::super::{ResolvedPreparedComponentPlan, StripeBuffer};
 use crate::backend::Backend;
 use crate::entropy::block::{decode_block_with_activity, skip_block};
 use crate::error::JpegError;
@@ -24,19 +24,19 @@ use crate::internal::bit_reader::BitReader;
 )]
 #[inline(always)]
 pub(super) fn skip_mcu_fast_tile_420(
-    y_comp: &PreparedComponentPlan,
-    cb_comp: &PreparedComponentPlan,
-    cr_comp: &PreparedComponentPlan,
+    y_comp: ResolvedPreparedComponentPlan<'_>,
+    cb_comp: ResolvedPreparedComponentPlan<'_>,
+    cr_comp: ResolvedPreparedComponentPlan<'_>,
     br: &mut BitReader<'_>,
     y_dc: &mut i32,
     cb_dc: &mut i32,
     cr_dc: &mut i32,
 ) -> Result<(), JpegError> {
     for _ in 0..4 {
-        skip_block(br, &y_comp.dc_table, &y_comp.ac_table, y_dc)?;
+        skip_block(br, y_comp.dc_table, y_comp.ac_table, y_dc)?;
     }
-    skip_block(br, &cb_comp.dc_table, &cb_comp.ac_table, cb_dc)?;
-    skip_block(br, &cr_comp.dc_table, &cr_comp.ac_table, cr_dc)?;
+    skip_block(br, cb_comp.dc_table, cb_comp.ac_table, cb_dc)?;
+    skip_block(br, cr_comp.dc_table, cr_comp.ac_table, cr_dc)?;
     Ok(())
 }
 
@@ -230,21 +230,21 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
             for _ in 0..4 {
                 skip_block(
                     &mut *state.br,
-                    &components.y.dc_table,
-                    &components.y.ac_table,
+                    components.y.dc_table,
+                    components.y.ac_table,
                     &mut *state.dc.y,
                 )?;
             }
             skip_block(
                 &mut *state.br,
-                &components.cb.dc_table,
-                &components.cb.ac_table,
+                components.cb.dc_table,
+                components.cb.ac_table,
                 &mut *state.dc.cb,
             )?;
             skip_block(
                 &mut *state.br,
-                &components.cr.dc_table,
-                &components.cr.ac_table,
+                components.cr.dc_table,
+                components.cr.ac_table,
                 &mut *state.dc.cr,
             )?;
             continue;
@@ -256,10 +256,10 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
 
         let y0_activity = decode_block_with_activity(
             &mut *state.br,
-            &components.y.dc_table,
-            &components.y.ac_table,
+            components.y.dc_table,
+            components.y.ac_table,
             &mut *state.dc.y,
-            components.y.quant.as_ref(),
+            components.y.quant,
             &mut *state.coeff,
         )?;
         profiler.record_activity(y0_activity);
@@ -278,10 +278,10 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
 
         let y1_activity = decode_block_with_activity(
             &mut *state.br,
-            &components.y.dc_table,
-            &components.y.ac_table,
+            components.y.dc_table,
+            components.y.ac_table,
             &mut *state.dc.y,
-            components.y.quant.as_ref(),
+            components.y.quant,
             &mut *state.coeff,
         )?;
         profiler.record_activity(y1_activity);
@@ -300,10 +300,10 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
 
         let y2_activity = decode_block_with_activity(
             &mut *state.br,
-            &components.y.dc_table,
-            &components.y.ac_table,
+            components.y.dc_table,
+            components.y.ac_table,
             &mut *state.dc.y,
-            components.y.quant.as_ref(),
+            components.y.quant,
             &mut *state.coeff,
         )?;
         profiler.record_activity(y2_activity);
@@ -322,10 +322,10 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
 
         let y3_activity = decode_block_with_activity(
             &mut *state.br,
-            &components.y.dc_table,
-            &components.y.ac_table,
+            components.y.dc_table,
+            components.y.ac_table,
             &mut *state.dc.y,
-            components.y.quant.as_ref(),
+            components.y.quant,
             &mut *state.coeff,
         )?;
         profiler.record_activity(y3_activity);
@@ -344,10 +344,10 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
 
         let cb_activity = decode_block_with_activity(
             &mut *state.br,
-            &components.cb.dc_table,
-            &components.cb.ac_table,
+            components.cb.dc_table,
+            components.cb.ac_table,
             &mut *state.dc.cb,
-            components.cb.quant.as_ref(),
+            components.cb.quant,
             &mut *state.coeff,
         )?;
         profiler.record_activity(cb_activity);
@@ -366,10 +366,10 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420(
 
         let cr_activity = decode_block_with_activity(
             &mut *state.br,
-            &components.cr.dc_table,
-            &components.cr.ac_table,
+            components.cr.dc_table,
+            components.cr.ac_table,
             &mut *state.dc.cr,
-            components.cr.quant.as_ref(),
+            components.cr.quant,
             &mut *state.coeff,
         )?;
         profiler.record_activity(cr_activity);

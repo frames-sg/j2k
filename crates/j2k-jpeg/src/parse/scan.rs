@@ -13,11 +13,13 @@
 //! ```
 
 use crate::error::JpegError;
-use alloc::vec::Vec;
+use core::ops::{Deref, Index};
+
+const MAX_SCAN_COMPONENTS: usize = 4;
 
 /// One entry in a scan's component list: which of the parsed components (by
 /// `component_id` from SOF) participates, and which Huffman tables it uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ScanComponent {
     /// `Cs_i` from the SOS payload — must match a component id from SOF.
     pub(crate) id: u8,
@@ -27,10 +29,74 @@ pub(crate) struct ScanComponent {
     pub(crate) ac_table: u8,
 }
 
+/// Inline SOS component selectors. The decoder accepts at most four frame
+/// components, so a heap owner per scan only adds allocator failure surface.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ScanComponents {
+    entries: [ScanComponent; MAX_SCAN_COMPONENTS],
+    len: u8,
+}
+
+impl ScanComponents {
+    fn push(&mut self, component: ScanComponent) -> Result<(), JpegError> {
+        let index = usize::from(self.len);
+        let slot = self
+            .entries
+            .get_mut(index)
+            .ok_or(JpegError::UnsupportedComponentCount {
+                count: self.len.saturating_add(1),
+            })?;
+        *slot = component;
+        self.len += 1;
+        Ok(())
+    }
+
+    pub(crate) fn as_slice(&self) -> &[ScanComponent] {
+        &self.entries[..usize::from(self.len)]
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        usize::from(self.len)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub(crate) fn iter(&self) -> core::slice::Iter<'_, ScanComponent> {
+        self.as_slice().iter()
+    }
+}
+
+impl Deref for ScanComponents {
+    type Target = [ScanComponent];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl Index<usize> for ScanComponents {
+    type Output = ScanComponent;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.as_slice()[index]
+    }
+}
+
+impl<'a> IntoIterator for &'a ScanComponents {
+    type Item = &'a ScanComponent;
+    type IntoIter = core::slice::Iter<'a, ScanComponent>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Parsed SOS header (not including the entropy-coded scan bytes that follow).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedScan {
-    pub(crate) components: Vec<ScanComponent>,
+    pub(crate) components: ScanComponents,
     /// Spectral start. Baseline sequential always has `ss == 0`.
     pub(crate) ss: u8,
     /// Spectral end. Baseline sequential always has `se == 63`.
@@ -65,7 +131,10 @@ pub(crate) fn parse_scan_header(payload: &[u8], offset: usize) -> Result<ParsedS
             length: (payload.len() + 2) as u16,
         });
     }
-    let mut components = Vec::with_capacity(ns);
+    if ns > MAX_SCAN_COMPONENTS {
+        return Err(JpegError::UnsupportedComponentCount { count: payload[0] });
+    }
+    let mut components = ScanComponents::default();
     for i in 0..ns {
         let base = 1 + i * 2;
         let id = payload[base];
@@ -83,7 +152,7 @@ pub(crate) fn parse_scan_header(payload: &[u8], offset: usize) -> Result<ParsedS
             id,
             dc_table,
             ac_table,
-        });
+        })?;
     }
     let last = 1 + ns * 2;
     let ss = payload[last];
@@ -164,5 +233,14 @@ mod tests {
         let payload = vec![1u8, 1, 0x05, 0, 63, 0];
         let err = parse_scan_header(&payload, 0).unwrap_err();
         assert!(matches!(err, JpegError::InvalidSegmentLength { .. }));
+    }
+
+    #[test]
+    fn rejects_more_than_four_scan_components_without_allocating() {
+        let payload = vec![5u8, 1, 0x00, 2, 0x00, 3, 0x00, 4, 0x00, 5, 0x00, 0, 63, 0];
+        assert_eq!(
+            parse_scan_header(&payload, 0),
+            Err(JpegError::UnsupportedComponentCount { count: 5 })
+        );
     }
 }

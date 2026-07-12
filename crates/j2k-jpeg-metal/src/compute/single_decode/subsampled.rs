@@ -2,19 +2,22 @@
 
 use std::mem::size_of;
 
+use crate::buffers::new_shared_buffer;
+
 use super::super::{
     bind_fast_decode_entropy_inputs, bind_three_plane_pack, checked_entropy_segment_count,
-    commit_and_wait_jpeg, decode_error_from_cpu, decode_status_buffer, dispatch_1d_pipeline,
-    dispatch_2d_pipeline, encode_fast_subsampled_region_batch_item,
-    encode_fast_subsampled_scaled_batch_item, entropy_checkpoints_buffer,
-    entropy_decode_thread_count, fast422_status_error, fast_packet_huffman_tables,
-    fast_subsampled_full_mcu_scaled_window, fast_subsampled_params, fast_subsampled_scaled_params,
-    fast_subsampled_scaled_region_params, fast_subsampled_windowed_pack_params_for_dims,
-    first_decode_error_status, mcu_range_for_rect, new_decode_plane_buffer, new_private_buffer,
-    pixel_format_to_out_format, restart_offsets_buffer, restart_work_for_mcu_range, CpuDecoder,
-    Error, FastDecodeEntropyInputs, FastRgbDecodeBuffer, FastSubsampledMetal, JpegDecodeStatus,
-    JpegFast420PacketV1, JpegFast420Params, JpegFast420ScaledParams, JpegFast420WindowedPackParams,
-    JpegFast422PacketV1, MTLResourceOptions, MetalRuntime, PixelFormat, Rect, Surface,
+    commit_and_wait_jpeg, decode_status_buffer, dispatch_1d_pipeline, dispatch_2d_pipeline,
+    encode_fast_subsampled_region_batch_item, encode_fast_subsampled_scaled_batch_item,
+    entropy_checkpoints_buffer, entropy_decode_thread_count, fast422_status_error,
+    fast_decode_status_error, fast_packet_huffman_tables, fast_subsampled_full_mcu_scaled_window,
+    fast_subsampled_params, fast_subsampled_scaled_params, fast_subsampled_scaled_region_params,
+    fast_subsampled_windowed_pack_params_for_dims, first_decode_error_status, mcu_range_for_rect,
+    new_command_buffer, new_compute_command_encoder, new_decode_plane_buffer, new_private_buffer,
+    new_shared_buffer_with_data, pixel_format_to_out_format, restart_offsets_buffer,
+    restart_work_for_mcu_range, CpuDecoder, Error, FastDecodeEntropyInputs, FastRgbDecodeBuffer,
+    FastSubsampledMetal, JpegDecodeStatus, JpegFast420PacketV1, JpegFast420Params,
+    JpegFast420ScaledParams, JpegFast420WindowedPackParams, JpegFast422PacketV1,
+    MTLResourceOptions, MetalRuntime, PixelFormat, Rect, Surface,
 };
 
 #[cfg(target_os = "macos")]
@@ -82,39 +85,45 @@ fn decode_fast_subsampled_to_rgb_buffer<P: FastSubsampledMetal>(
     let params = fast_subsampled_params(packet, fmt)?;
     let y_len = params.width as usize * params.height as usize;
     let chroma_len = params.chroma_width as usize * params.chroma_height as usize;
-    let y_plane = new_decode_plane_buffer(&runtime.device, y_len, fmt == PixelFormat::Gray8);
-    let cb_plane = new_private_buffer(&runtime.device, chroma_len);
-    let cr_plane = new_private_buffer(&runtime.device, chroma_len);
+    let y_plane = new_decode_plane_buffer(&runtime.device, y_len, fmt == PixelFormat::Gray8)?;
+    let cb_plane = new_private_buffer(&runtime.device, chroma_len)?;
+    let cr_plane = new_private_buffer(&runtime.device, chroma_len)?;
     let decode_threads = entropy_decode_thread_count(
         packet.restart_interval_mcus(),
         packet.restart_offsets().len(),
         packet.entropy_checkpoints().len(),
     );
-    let status_buffer = decode_status_buffer(&runtime.device, decode_threads);
-    let entropy_buffer = runtime.device.new_buffer_with_data(
-        packet.entropy_bytes().as_ptr().cast(),
-        packet.entropy_bytes().len() as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let status_buffer = decode_status_buffer(&runtime.device, decode_threads)?;
+    let entropy_buffer = new_shared_buffer_with_data(&runtime.device, packet.entropy_bytes())?;
     let restart_offsets_buffer = restart_offsets_buffer(&runtime.device, packet.restart_offsets())?;
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, packet.entropy_checkpoints())?;
 
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
-    let out_buffer = (fmt != PixelFormat::Gray8).then(|| {
-        runtime.device.new_buffer(
-            (params.out_stride as usize * params.height as usize) as u64,
-            output_storage,
+    let out_buffer = if fmt == PixelFormat::Gray8 {
+        None
+    } else {
+        let out_len = crate::batch_allocation::checked_count_product(
+            params.out_stride as usize,
+            params.height as usize,
+            "JPEG Metal subsampled output bytes",
+        )?;
+        Some(
+            if output_storage == MTLResourceOptions::StorageModePrivate {
+                new_private_buffer(&runtime.device, out_len)?
+            } else {
+                new_shared_buffer(&runtime.device, out_len)?
+            },
         )
-    });
+    };
 
     let decode_pipeline = P::decode_pipeline(runtime);
-    let command_buffer = runtime.queue.new_command_buffer();
-    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
+    let decoder_encoder = new_compute_command_encoder(&command_buffer)?;
     decoder_encoder.set_compute_pipeline_state(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420Params>(
-        decoder_encoder,
+        &decoder_encoder,
         &FastDecodeEntropyInputs {
             entropy_buffer: &entropy_buffer,
             planes: [&y_plane, &cb_plane, &cr_plane],
@@ -127,14 +136,14 @@ fn decode_fast_subsampled_to_rgb_buffer<P: FastSubsampledMetal>(
             slot16_buffer: &entropy_checkpoints_buffer,
         },
     );
-    dispatch_1d_pipeline(decoder_encoder, decode_pipeline, decode_threads);
+    dispatch_1d_pipeline(&decoder_encoder, decode_pipeline, decode_threads);
     decoder_encoder.end_encoding();
 
     if let Some(out_buffer) = out_buffer.as_ref() {
         let Some(pack_pipeline) = P::pack_pipeline_for_format(runtime, fmt) else {
             return Ok(None);
         };
-        let pack_encoder = command_buffer.new_compute_command_encoder();
+        let pack_encoder = new_compute_command_encoder(&command_buffer)?;
         pack_encoder.set_compute_pipeline_state(pack_pipeline);
         pack_encoder.set_buffer(0, Some(&y_plane), 0);
         pack_encoder.set_buffer(1, Some(&cb_plane), 0);
@@ -145,12 +154,12 @@ fn decode_fast_subsampled_to_rgb_buffer<P: FastSubsampledMetal>(
             size_of::<JpegFast420Params>() as u64,
             (&raw const params).cast(),
         );
-        dispatch_2d_pipeline(pack_encoder, pack_pipeline, packet.dimensions());
+        dispatch_2d_pipeline(&pack_encoder, pack_pipeline, packet.dimensions());
         pack_encoder.end_encoding();
     }
 
-    commit_and_wait_jpeg(command_buffer)?;
-    let command_buffer = command_buffer.to_owned();
+    commit_and_wait_jpeg(&command_buffer)?;
+    let command_buffer = command_buffer.clone();
 
     if let Some(status) = first_decode_error_status(&status_buffer, decode_threads)? {
         return Err(map_status(status));
@@ -179,11 +188,10 @@ fn try_decode_fast_subsampled_region_to_surface<P: FastSubsampledMetal>(
         return Ok(None);
     };
 
-    let command_buffer = runtime.queue.new_command_buffer();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
     let item = encode_fast_subsampled_region_batch_item(
         runtime,
-        command_buffer,
-        0,
+        &command_buffer,
         packet,
         fmt,
         Rect {
@@ -193,7 +201,7 @@ fn try_decode_fast_subsampled_region_to_surface<P: FastSubsampledMetal>(
             h: roi.h,
         },
     )?;
-    commit_and_wait_jpeg(command_buffer)?;
+    commit_and_wait_jpeg(&command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&item.status_buffer, item.decode_threads)? {
         return Err(map_status(status));
@@ -220,10 +228,10 @@ fn try_decode_fast_subsampled_scaled_to_surface<P: FastSubsampledMetal>(
         return Ok(None);
     }
 
-    let command_buffer = runtime.queue.new_command_buffer();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
     let item =
-        encode_fast_subsampled_scaled_batch_item(runtime, command_buffer, 0, packet, fmt, scale)?;
-    commit_and_wait_jpeg(command_buffer)?;
+        encode_fast_subsampled_scaled_batch_item(runtime, &command_buffer, packet, fmt, scale)?;
+    commit_and_wait_jpeg(&command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&item.status_buffer, item.decode_threads)? {
         return Err(map_status(status));
@@ -266,7 +274,7 @@ pub(in crate::compute) fn try_decode_fast422_scaled_region_to_surface(
         fmt,
         scaled_roi,
         scale,
-        fast422_status_error,
+        |status| Ok(fast422_status_error(status)),
     )
 }
 
@@ -285,7 +293,7 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
     fmt: PixelFormat,
     scaled_roi: j2k_jpeg::Rect,
     scale: j2k_core::Downscale,
-    map_status: impl Fn(JpegDecodeStatus) -> Error,
+    map_status: impl FnOnce(JpegDecodeStatus) -> Result<Error, Error>,
 ) -> Result<Option<Surface>, Error> {
     let Some(packet) = packet else {
         return Ok(None);
@@ -343,37 +351,35 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
     let y_len = source_window.w as usize * source_window.h as usize;
     let chroma_len =
         source_window.w.div_ceil(2) as usize * P::chroma_height(source_window.h) as usize;
-    let y_plane = new_decode_plane_buffer(&runtime.device, y_len, false);
-    let cb_plane = new_private_buffer(&runtime.device, chroma_len);
-    let cr_plane = new_private_buffer(&runtime.device, chroma_len);
+    let y_plane = new_decode_plane_buffer(&runtime.device, y_len, false)?;
+    let cb_plane = new_private_buffer(&runtime.device, chroma_len)?;
+    let cr_plane = new_private_buffer(&runtime.device, chroma_len)?;
     let decode_threads = entropy_decode_thread_count(
         packet.restart_interval_mcus(),
         restart_offsets.len(),
         packet.entropy_checkpoints().len(),
     );
-    let status_buffer = decode_status_buffer(&runtime.device, decode_threads);
-    let entropy_buffer = runtime.device.new_buffer_with_data(
-        packet.entropy_bytes().as_ptr().cast(),
-        packet.entropy_bytes().len() as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let status_buffer = decode_status_buffer(&runtime.device, decode_threads)?;
+    let entropy_buffer = new_shared_buffer_with_data(&runtime.device, packet.entropy_bytes())?;
     let restart_offsets_buffer = restart_offsets_buffer(&runtime.device, restart_offsets)?;
     let entropy_checkpoints_buffer =
         entropy_checkpoints_buffer(&runtime.device, packet.entropy_checkpoints())?;
 
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(packet);
 
-    let out_buffer = runtime.device.new_buffer(
-        (pack_params.out_stride as usize * scaled_roi.h as usize) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let out_len = crate::batch_allocation::checked_count_product(
+        pack_params.out_stride as usize,
+        scaled_roi.h as usize,
+        "JPEG Metal subsampled region output bytes",
+    )?;
+    let out_buffer = new_shared_buffer(&runtime.device, out_len)?;
 
     let decode_pipeline = P::scaled_region_decode_pipeline(runtime);
-    let command_buffer = runtime.queue.new_command_buffer();
-    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
+    let decoder_encoder = new_compute_command_encoder(&command_buffer)?;
     decoder_encoder.set_compute_pipeline_state(decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFast420ScaledParams>(
-        decoder_encoder,
+        &decoder_encoder,
         &FastDecodeEntropyInputs {
             entropy_buffer: &entropy_buffer,
             planes: [&y_plane, &cb_plane, &cr_plane],
@@ -386,25 +392,25 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
             slot16_buffer: &entropy_checkpoints_buffer,
         },
     );
-    dispatch_1d_pipeline(decoder_encoder, decode_pipeline, decode_threads);
+    dispatch_1d_pipeline(&decoder_encoder, decode_pipeline, decode_threads);
     decoder_encoder.end_encoding();
 
-    let pack_encoder = command_buffer.new_compute_command_encoder();
+    let pack_encoder = new_compute_command_encoder(&command_buffer)?;
     let pack_pipeline = P::pack_windowed_pipeline_for_format(runtime, fmt);
     pack_encoder.set_compute_pipeline_state(pack_pipeline);
     bind_three_plane_pack::<JpegFast420WindowedPackParams>(
-        pack_encoder,
+        &pack_encoder,
         [Some(&y_plane), Some(&cb_plane), Some(&cr_plane)],
         &out_buffer,
         &pack_params,
     );
-    dispatch_2d_pipeline(pack_encoder, pack_pipeline, (scaled_roi.w, scaled_roi.h));
+    dispatch_2d_pipeline(&pack_encoder, pack_pipeline, (scaled_roi.w, scaled_roi.h));
     pack_encoder.end_encoding();
 
-    commit_and_wait_jpeg(command_buffer)?;
+    commit_and_wait_jpeg(&command_buffer)?;
 
     if let Some(status) = first_decode_error_status(&status_buffer, decode_threads)? {
-        return Err(map_status(status));
+        return Err(map_status(status)?);
     }
 
     Ok(Some(Surface::from_metal_buffer(
@@ -417,69 +423,93 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn try_decode_fast420_to_surface(
     runtime: &MetalRuntime,
-    decoder: &CpuDecoder<'_>,
+    _decoder: &CpuDecoder<'_>,
     packet: Option<&JpegFast420PacketV1>,
     fmt: PixelFormat,
 ) -> Result<Option<Surface>, Error> {
-    try_decode_fast_subsampled_to_surface(runtime, packet, fmt, |status| {
-        decode_error_from_cpu(decoder, fmt, status)
-    })
+    try_decode_fast_subsampled_to_surface(runtime, packet, fmt, fast_decode_status_error)
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn decode_fast420_to_rgb_buffer(
     runtime: &MetalRuntime,
-    decoder: &CpuDecoder<'_>,
+    _decoder: &CpuDecoder<'_>,
     packet: Option<&JpegFast420PacketV1>,
     fmt: PixelFormat,
     output_storage: MTLResourceOptions,
 ) -> Result<Option<FastRgbDecodeBuffer>, Error> {
-    decode_fast_subsampled_to_rgb_buffer(runtime, packet, fmt, output_storage, |status| {
-        decode_error_from_cpu(decoder, fmt, status)
-    })
+    decode_fast_subsampled_to_rgb_buffer(
+        runtime,
+        packet,
+        fmt,
+        output_storage,
+        fast_decode_status_error,
+    )
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn try_decode_fast420_region_to_surface(
     runtime: &MetalRuntime,
-    decoder: &CpuDecoder<'_>,
+    _decoder: &CpuDecoder<'_>,
     packet: Option<&JpegFast420PacketV1>,
     fmt: PixelFormat,
     roi: j2k_jpeg::Rect,
 ) -> Result<Option<Surface>, Error> {
-    try_decode_fast_subsampled_region_to_surface(runtime, packet, fmt, roi, |status| {
-        decode_error_from_cpu(decoder, fmt, status)
-    })
+    try_decode_fast_subsampled_region_to_surface(
+        runtime,
+        packet,
+        fmt,
+        roi,
+        fast_decode_status_error,
+    )
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn try_decode_fast420_scaled_to_surface(
     runtime: &MetalRuntime,
-    decoder: &CpuDecoder<'_>,
+    _decoder: &CpuDecoder<'_>,
     packet: Option<&JpegFast420PacketV1>,
     fmt: PixelFormat,
     scale: j2k_core::Downscale,
 ) -> Result<Option<Surface>, Error> {
-    try_decode_fast_subsampled_scaled_to_surface(runtime, packet, fmt, scale, |status| {
-        decode_error_from_cpu(decoder, fmt, status)
-    })
+    try_decode_fast_subsampled_scaled_to_surface(
+        runtime,
+        packet,
+        fmt,
+        scale,
+        fast_decode_status_error,
+    )
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn try_decode_fast420_scaled_region_to_surface(
     runtime: &MetalRuntime,
-    decoder: &CpuDecoder<'_>,
+    _decoder: &CpuDecoder<'_>,
     packet: Option<&JpegFast420PacketV1>,
     fmt: PixelFormat,
     scaled_roi: j2k_jpeg::Rect,
     scale: j2k_core::Downscale,
 ) -> Result<Option<Surface>, Error> {
-    try_decode_fast_subsampled_scaled_region_to_surface(
+    try_decode_fast420_scaled_region_to_surface_with_status(
         runtime,
         packet,
         fmt,
         scaled_roi,
         scale,
-        |status| decode_error_from_cpu(decoder, fmt, status),
+        |status| Ok(fast_decode_status_error(status)),
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) fn try_decode_fast420_scaled_region_to_surface_with_status(
+    runtime: &MetalRuntime,
+    packet: Option<&JpegFast420PacketV1>,
+    fmt: PixelFormat,
+    scaled_roi: j2k_jpeg::Rect,
+    scale: j2k_core::Downscale,
+    map_status: impl FnOnce(JpegDecodeStatus) -> Result<Error, Error>,
+) -> Result<Option<Surface>, Error> {
+    try_decode_fast_subsampled_scaled_region_to_surface(
+        runtime, packet, fmt, scaled_roi, scale, map_status,
     )
 }

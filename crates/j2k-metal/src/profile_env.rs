@@ -2,17 +2,21 @@
 
 #[cfg(test)]
 use std::cell::Cell;
-use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use j2k_profile::{env_flag_from_env, same_summary_labels, ProfileStageMode, StageModeCache};
+use j2k_profile::{env_flag_from_env, ProfileStageMode, StageModeCache};
 use metal::{CommandBufferRef, ComputeCommandEncoderRef};
+
+mod direct;
+
+pub(crate) use direct::{
+    decode_profile_label, emit_metal_profile_row, MetalDirectProfileRow, MetalProfileFormat,
+};
 
 const CLASSIC_SELECTIVE_BYPASS_ENV: &str = "J2K_METAL_CLASSIC_SELECTIVE_BYPASS";
 const METAL_PROFILE_STAGES_ENV: &str = "J2K_METAL_PROFILE_STAGES";
 const METAL_PROFILE_SIGNPOSTS_ENV: &str = "J2K_METAL_PROFILE_SIGNPOSTS";
-const METAL_PROFILE_DECODE_LABEL_ENV: &str = "J2K_METAL_PROFILE_DECODE_LABEL";
 const METAL_PROFILE_DECODE_SPLIT_COMMANDS_ENV: &str = "J2K_METAL_PROFILE_DECODE_SPLIT_COMMANDS";
 const METAL_PROFILE_COEFFICIENT_PREP_SPLIT_COMMANDS_ENV: &str =
     "J2K_METAL_PROFILE_COEFFICIENT_PREP_SPLIT_COMMANDS";
@@ -69,21 +73,6 @@ pub(crate) const SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE: H
 std::thread_local! {
     static CLASSIC_GPU_TOKEN_PACK_ROUTE_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
     static METAL_PROFILE_STAGES_OVERRIDE: Cell<Option<ProfileStageMode>> = const { Cell::new(None) };
-}
-
-thread_local! {
-    static METAL_DIRECT_PROFILE_SUMMARY: RefCell<j2k_profile::ProfileSummary> =
-        RefCell::new(j2k_profile::ProfileSummary::new(same_summary_labels(&[
-            "pipeline",
-            "label",
-            "stage",
-            "processor",
-            "metric",
-            "metric_kind",
-            "aggregation",
-            "fmt",
-            "batch_count",
-        ])).emit_on_drop());
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -190,21 +179,6 @@ pub(crate) fn elapsed_since_us(started: Instant) -> u128 {
     j2k_profile::elapsed_us(Some(started))
 }
 
-pub(crate) fn emit_metal_profile_row<K, V>(codec: &str, op: &str, path: &str, fields: &[(K, V)])
-where
-    K: AsRef<str>,
-    V: AsRef<str>,
-{
-    j2k_profile::emit_profile_row(
-        metal_profile_stage_mode(),
-        &METAL_DIRECT_PROFILE_SUMMARY,
-        codec,
-        op,
-        path,
-        fields,
-    );
-}
-
 fn metal_profile_signposts_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_SIGNPOSTS_ENV))
@@ -279,29 +253,6 @@ pub(crate) fn metal_profile_classic_tier1_token_pack_enabled() -> bool {
         && *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_TOKEN_PACK_ENV))
 }
 
-pub(crate) fn decode_profile_label() -> String {
-    std::env::var(METAL_PROFILE_DECODE_LABEL_ENV)
-        .ok()
-        .filter(|label| !label.is_empty())
-        .map_or_else(
-            || "unlabeled".to_string(),
-            |label| sanitize_profile_label(&label),
-        )
-}
-
-fn sanitize_profile_label(label: &str) -> String {
-    label
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 pub(crate) fn label_command_buffer(command_buffer: &CommandBufferRef, label: &str) {
     if metal_profile_stages_enabled() {
         command_buffer.set_label(label);
@@ -347,45 +298,5 @@ pub(crate) fn hybrid_stage_signpost(name: HybridSignpostName) -> Option<HybridSt
 pub(crate) fn label_compute_encoder(encoder: &ComputeCommandEncoderRef, label: &str) {
     if metal_profile_stages_enabled() {
         encoder.set_label(label);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn direct_profile_emitter_records_summary_rows_in_summary_mode() {
-        let _guard = force_metal_profile_stage_mode_for_test(ProfileStageMode::Summary);
-        METAL_DIRECT_PROFILE_SUMMARY.with(|summary| {
-            let _ = summary.borrow_mut().take_formatted_rows();
-        });
-
-        emit_metal_profile_row(
-            "j2k-metal",
-            "direct",
-            "decode",
-            &[
-                ("pipeline", "direct"),
-                ("label", "unit"),
-                ("stage", "hybrid"),
-                ("processor", "cpu"),
-                ("metric", "elapsed"),
-                ("metric_kind", "timing"),
-                ("aggregation", "sum"),
-                ("fmt", "rgb8"),
-                ("batch_count", "1"),
-                ("elapsed_us", "7"),
-            ],
-        );
-
-        let rows =
-            METAL_DIRECT_PROFILE_SUMMARY.with(|summary| summary.borrow_mut().take_formatted_rows());
-        assert_eq!(
-            rows,
-            vec![
-                "j2k_profile_summary codec=j2k-metal op=direct path=decode pipeline=direct label=unit stage=hybrid processor=cpu metric=elapsed metric_kind=timing aggregation=sum fmt=rgb8 batch_count=1 count=1 elapsed_us_sum=7 elapsed_us_avg=7"
-            ]
-        );
     }
 }

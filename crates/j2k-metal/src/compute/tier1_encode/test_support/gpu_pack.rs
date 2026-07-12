@@ -97,28 +97,31 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test(
             });
         }
 
-        let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
-        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
-        let output = runtime.device.new_buffer(
-            output_capacity_total.max(1) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let coefficient_buffer = copied_slice_buffer(&runtime.device, &coefficients)?;
+        let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
+        let output = new_shared_buffer(&runtime.device, output_capacity_total.max(1))?;
         let status_buffer = zeroed_shared_buffer(
             &runtime.device,
-            jobs.len() * size_of::<J2kClassicEncodeStatus>(),
-        );
-        let segment_buffer = runtime.device.new_buffer(
-            (segment_capacity_total * size_of::<J2kClassicSegment>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+            checked_type_buffer_bytes::<J2kClassicEncodeStatus>(
+                jobs.len(),
+                "classic J2K Metal token-pack status buffer",
+            )?,
+        )?;
+        let segment_buffer = new_shared_buffer(
+            &runtime.device,
+            checked_type_buffer_bytes::<J2kClassicSegment>(
+                segment_capacity_total,
+                "classic J2K Metal token-pack segment buffer",
+            )?,
+        )?;
         let job_count = u32::try_from(batch_jobs.len()).map_err(|_| Error::MetalKernel {
             message: "classic J2K Metal token-pack job count exceeds u32".to_string(),
         })?;
-        let command_buffer = runtime.queue.new_command_buffer();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
         let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
         let token_buffers = dispatch_classic_tier1_token_emit_for_gpu_pack(
             runtime,
-            command_buffer,
+            &command_buffer,
             &coefficient_buffer,
             &job_buffer,
             &batch_jobs,
@@ -127,14 +130,14 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test(
         debug_assert_eq!(token_buffers.job_count, job_count);
         dispatch_classic_tier1_token_pack_from_gpu_tokens(
             runtime,
-            command_buffer,
+            &command_buffer,
             &job_buffer,
             &token_buffers,
             &output,
             &status_buffer,
             &segment_buffer,
-        );
-        commit_and_wait_metal(command_buffer)?;
+        )?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let statuses = checked_buffer_slice::<J2kClassicEncodeStatus>(
             &status_buffer,
@@ -292,25 +295,28 @@ pub(super) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_
             });
         }
 
-        let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
-        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
-        let output = runtime.device.new_buffer(
-            output_capacity_total.max(1) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let coefficient_buffer = copied_slice_buffer(&runtime.device, &coefficients)?;
+        let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
+        let output = new_shared_buffer(&runtime.device, output_capacity_total.max(1))?;
         let status_buffer = zeroed_shared_buffer(
             &runtime.device,
-            jobs.len() * size_of::<J2kClassicEncodeStatus>(),
-        );
-        let segment_buffer = runtime.device.new_buffer(
-            (segment_capacity_total * size_of::<J2kClassicSegment>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let command_buffer = runtime.queue.new_command_buffer();
+            checked_type_buffer_bytes::<J2kClassicEncodeStatus>(
+                jobs.len(),
+                "classic J2K Metal split token-pack status buffer",
+            )?,
+        )?;
+        let segment_buffer = new_shared_buffer(
+            &runtime.device,
+            checked_type_buffer_bytes::<J2kClassicSegment>(
+                segment_capacity_total,
+                "classic J2K Metal split token-pack segment buffer",
+            )?,
+        )?;
+        let command_buffer = new_command_buffer(&runtime.queue)?;
         let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
         let split_buffers = dispatch_classic_tier1_split_token_emit_for_gpu_pack(
             runtime,
-            command_buffer,
+            &command_buffer,
             &coefficient_buffer,
             &job_buffer,
             &batch_jobs,
@@ -319,14 +325,14 @@ pub(super) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_
         )?;
         dispatch_classic_tier1_split_token_pack_from_gpu_tokens(
             runtime,
-            command_buffer,
+            &command_buffer,
             &job_buffer,
             &split_buffers,
             &output,
             &status_buffer,
             &segment_buffer,
-        );
-        commit_and_wait_metal(command_buffer)?;
+        )?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let statuses = checked_buffer_slice::<J2kClassicEncodeStatus>(
             &status_buffer,

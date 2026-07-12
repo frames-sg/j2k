@@ -107,6 +107,11 @@ pub enum J2kCodestreamHeaderError {
         /// Description of the unsupported feature.
         what: &'static str,
     },
+    /// The host allocator rejected bounded per-component header metadata.
+    HostAllocationFailed {
+        /// Requested metadata byte count.
+        bytes: usize,
+    },
 }
 
 impl fmt::Display for J2kCodestreamHeaderError {
@@ -131,9 +136,14 @@ impl fmt::Display for J2kCodestreamHeaderError {
             Self::InvalidSiz { what } => write!(f, "invalid SIZ segment: {what}"),
             Self::InvalidCod { what } => write!(f, "invalid COD segment: {what}"),
             Self::Unsupported { what } => write!(f, "unsupported codestream header: {what}"),
+            Self::HostAllocationFailed { bytes } => {
+                write!(f, "codestream header allocation failed for {bytes} bytes")
+            }
         }
     }
 }
+
+impl core::error::Error for J2kCodestreamHeaderError {}
 
 /// Inspect a raw JPEG 2000 codestream main header without decoding tile data.
 ///
@@ -341,8 +351,17 @@ fn parse_siz(payload: &[u8]) -> Result<ParsedSiz, J2kCodestreamHeaderError> {
     let ((width, height), (tiles_x, tiles_y)) = validate_siz_geometry(&geometry, component_count)?;
 
     let mut bit_depth = 0u8;
-    let mut component_info = Vec::with_capacity(usize::from(component_count));
-    for idx in 0..usize::from(component_count) {
+    let component_len = usize::from(component_count);
+    let component_bytes = component_len
+        .checked_mul(core::mem::size_of::<J2kCodestreamComponentHeader>())
+        .ok_or(J2kCodestreamHeaderError::HostAllocationFailed { bytes: usize::MAX })?;
+    let mut component_info = Vec::new();
+    component_info
+        .try_reserve_exact(component_len)
+        .map_err(|_| J2kCodestreamHeaderError::HostAllocationFailed {
+            bytes: component_bytes,
+        })?;
+    for idx in 0..component_len {
         let ssiz = payload[36 + idx * 3];
         let precision = (ssiz & 0x7F) + 1;
         let x_rsiz = payload[36 + idx * 3 + 1];

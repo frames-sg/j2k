@@ -1,22 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{Rect, Vec, Warning};
-
-pub(super) fn merged_warnings(
-    header_warnings: &[Warning],
-    scan_warnings: Vec<Warning>,
-) -> Vec<Warning> {
-    if header_warnings.is_empty() {
-        return scan_warnings;
-    }
-    if scan_warnings.is_empty() {
-        return header_warnings.to_vec();
-    }
-    let mut warnings = Vec::with_capacity(header_warnings.len() + scan_warnings.len());
-    warnings.extend_from_slice(header_warnings);
-    warnings.extend(scan_warnings);
-    warnings
-}
+use super::Rect;
 
 pub(super) fn copy_gray8_scaled_rect(
     full: &[u8],

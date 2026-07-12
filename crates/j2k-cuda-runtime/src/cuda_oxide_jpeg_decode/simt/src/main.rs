@@ -6,6 +6,14 @@ include!("../../../cuda_oxide_simt_prelude.rs");
 const JPEG_STATUS_OK: u32 = 0;
 const JPEG_STATUS_TRUNCATED: u32 = 1;
 const JPEG_STATUS_HUFFMAN: u32 = 2;
+const JPEG_STATUS_INVALID: u32 = 3;
+
+const JPEG_INVALID_DIMENSIONS: u32 = 1;
+const JPEG_INVALID_MCU_GRID: u32 = 2;
+const JPEG_INVALID_OUTPUT_LAYOUT: u32 = 3;
+const JPEG_INVALID_CHECKPOINT_RANGE: u32 = 4;
+const JPEG_INVALID_CHECKPOINT_BITS: u32 = 5;
+const JPEG_HUFFMAN_VALUE_CAPACITY: u32 = 256;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -40,6 +48,7 @@ struct J2kJpegEntropyCheckpoint {
     cb_prev_dc: i32,
     cr_prev_dc: i32,
     reserved: u32,
+    reserved_tail: u32,
 }
 
 #[repr(C)]
@@ -222,10 +231,7 @@ fn store_u8(ptr: *mut u8, index: u32, value: u8) {
 }
 
 #[inline(always)]
-fn load_checkpoint(
-    ptr: *const J2kJpegEntropyCheckpoint,
-    index: u32,
-) -> J2kJpegEntropyCheckpoint {
+fn load_checkpoint(ptr: *const J2kJpegEntropyCheckpoint, index: u32) -> J2kJpegEntropyCheckpoint {
     simt_load(ptr, index as usize)
 }
 
@@ -235,11 +241,7 @@ fn load_state(ptr: *const J2kJpegEntropySyncState, index: u32) -> J2kJpegEntropy
 }
 
 #[inline(always)]
-fn store_state(
-    ptr: *mut J2kJpegEntropySyncState,
-    index: u32,
-    value: J2kJpegEntropySyncState,
-) {
+fn store_state(ptr: *mut J2kJpegEntropySyncState, index: u32, value: J2kJpegEntropySyncState) {
     simt_store(ptr, index as usize, value);
 }
 
@@ -266,7 +268,7 @@ fn set_error(status: &mut J2kJpegDecodeStatus, code: u32, detail: u32, position:
 
 #[inline(always)]
 fn refill_one(reader: &mut J2kJpegBitReader, entropy: *const u8, entropy_len: u32) -> bool {
-    if reader.pos >= entropy_len {
+    if reader.pos >= entropy_len || reader.bits > 56 {
         return false;
     }
     let shift = 64 - 8 - reader.bits;
@@ -283,6 +285,9 @@ fn ensure_bits(
     entropy_len: u32,
     wanted: u32,
 ) -> bool {
+    if wanted > 64 || reader.bits > 64 {
+        return false;
+    }
     while reader.bits < wanted {
         if !refill_one(reader, entropy, entropy_len) {
             return false;
@@ -297,13 +302,20 @@ fn ensure_bits_padded(
     entropy: *const u8,
     entropy_len: u32,
     wanted: u32,
-) {
+) -> bool {
+    if wanted > 64 || reader.bits > 64 {
+        return false;
+    }
     while reader.bits < wanted {
         if !refill_one(reader, entropy, entropy_len) {
+            if reader.bits >= 64 {
+                return false;
+            }
             reader.acc |= 1u64 << (63 - reader.bits);
             reader.bits += 1;
         }
     }
+    true
 }
 
 #[inline(always)]
@@ -372,6 +384,10 @@ fn receive_extend(
         *out = 0;
         return true;
     }
+    if ssss > 15 {
+        set_error(status, JPEG_STATUS_HUFFMAN, ssss, reader.pos);
+        return false;
+    }
     if !ensure_bits(reader, entropy, entropy_len, ssss) {
         set_error(status, JPEG_STATUS_TRUNCATED, ssss, reader.pos);
         return false;
@@ -388,6 +404,21 @@ fn receive_extend(
 }
 
 #[inline(always)]
+fn checked_huffman_value_index(code: i32, val_offset: i32, values_len: u32) -> Option<usize> {
+    if values_len > JPEG_HUFFMAN_VALUE_CAPACITY {
+        return None;
+    }
+    let index = match code.checked_add(val_offset) {
+        Some(index) if index >= 0 => index as u32,
+        _ => return None,
+    };
+    if index >= values_len || index >= JPEG_HUFFMAN_VALUE_CAPACITY {
+        return None;
+    }
+    Some(index as usize)
+}
+
+#[inline(always)]
 fn decode_symbol(
     reader: &mut J2kJpegBitReader,
     entropy: *const u8,
@@ -396,7 +427,13 @@ fn decode_symbol(
     status: &mut J2kJpegDecodeStatus,
     symbol: &mut u8,
 ) -> bool {
-    ensure_bits_padded(reader, entropy, entropy_len, 16);
+    let values_len = unsafe { (*table).values_len };
+    if values_len > JPEG_HUFFMAN_VALUE_CAPACITY
+        || !ensure_bits_padded(reader, entropy, entropy_len, 16)
+    {
+        set_error(status, JPEG_STATUS_HUFFMAN, values_len, reader.pos);
+        return false;
+    }
     let code16 = peek_bits(*reader, 16) as i32;
     let mut len = 1;
     while len <= 16 {
@@ -405,14 +442,15 @@ fn decode_symbol(
             let code = code16 >> (16 - len);
             if code <= max_code {
                 let val_offset = unsafe { (*table).val_offset[len as usize] };
-                let idx = code + val_offset;
-                let values_len = unsafe { (*table).values_len };
-                if idx < 0 || idx as u32 >= values_len {
-                    set_error(status, JPEG_STATUS_HUFFMAN, len, reader.pos);
-                    return false;
-                }
+                let idx = match checked_huffman_value_index(code, val_offset, values_len) {
+                    Some(index) => index,
+                    None => {
+                        set_error(status, JPEG_STATUS_HUFFMAN, len, reader.pos);
+                        return false;
+                    }
+                };
                 consume_bits(reader, len);
-                *symbol = unsafe { (*table).values[idx as usize] };
+                *symbol = unsafe { (*table).values[idx] };
                 return true;
             }
         }
@@ -431,6 +469,11 @@ fn decode_symbol_real(
     status: &mut J2kJpegDecodeStatus,
     symbol: &mut u8,
 ) -> bool {
+    let values_len = unsafe { (*table).values_len };
+    if values_len > JPEG_HUFFMAN_VALUE_CAPACITY || reader.bits > 64 {
+        set_error(status, JPEG_STATUS_HUFFMAN, values_len, reader.pos);
+        return false;
+    }
     let mut len = 1;
     while len <= 16 {
         if !ensure_bits(reader, entropy, entropy_len, len) {
@@ -442,14 +485,15 @@ fn decode_symbol_real(
             let code = peek_bits(*reader, len) as i32;
             if code <= max_code {
                 let val_offset = unsafe { (*table).val_offset[len as usize] };
-                let idx = code + val_offset;
-                let values_len = unsafe { (*table).values_len };
-                if idx < 0 || idx as u32 >= values_len {
-                    set_error(status, JPEG_STATUS_HUFFMAN, len, reader.pos);
-                    return false;
-                }
+                let idx = match checked_huffman_value_index(code, val_offset, values_len) {
+                    Some(index) => index,
+                    None => {
+                        set_error(status, JPEG_STATUS_HUFFMAN, len, reader.pos);
+                        return false;
+                    }
+                };
                 consume_bits(reader, len);
-                *symbol = unsafe { (*table).values[idx as usize] };
+                *symbol = unsafe { (*table).values[idx] };
                 return true;
             }
         }
@@ -512,7 +556,7 @@ fn decode_block(
     ) {
         return false;
     }
-    if ssss > 15 {
+    if ssss > 11 {
         set_error(status, JPEG_STATUS_HUFFMAN, ssss as u32, reader.pos);
         return false;
     }
@@ -527,8 +571,20 @@ fn decode_block(
     ) {
         return false;
     }
-    *prev_dc += diff;
-    coeffs[0] = *prev_dc * load_u16(context.quant, 0) as i32;
+    *prev_dc = match (*prev_dc).checked_add(diff) {
+        Some(value) => value,
+        None => {
+            set_error(status, JPEG_STATUS_HUFFMAN, ssss as u32, reader.pos);
+            return false;
+        }
+    };
+    coeffs[0] = match (*prev_dc).checked_mul(load_u16(context.quant, 0) as i32) {
+        Some(value) => value,
+        None => {
+            set_error(status, JPEG_STATUS_HUFFMAN, 0, reader.pos);
+            return false;
+        }
+    };
 
     let mut k = 1;
     while k < 64 {
@@ -547,10 +603,22 @@ fn decode_block(
         ssss = packed & 0x0f;
         if ssss == 0 {
             if run == 15 {
+                if k > 48 {
+                    set_error(status, JPEG_STATUS_HUFFMAN, k, reader.pos);
+                    return false;
+                }
                 k += 16;
                 continue;
             }
-            break;
+            if run == 0 {
+                break;
+            }
+            set_error(status, JPEG_STATUS_HUFFMAN, packed as u32, reader.pos);
+            return false;
+        }
+        if ssss > 10 {
+            set_error(status, JPEG_STATUS_HUFFMAN, ssss as u32, reader.pos);
+            return false;
         }
         k += run;
         if k >= 64 {
@@ -568,7 +636,13 @@ fn decode_block(
         ) {
             return false;
         }
-        coeffs[zigzag(k) as usize] = value * load_u16(context.quant, k) as i32;
+        coeffs[zigzag(k) as usize] = match value.checked_mul(load_u16(context.quant, k) as i32) {
+            Some(value) => value,
+            None => {
+                set_error(status, JPEG_STATUS_HUFFMAN, k, reader.pos);
+                return false;
+            }
+        };
         k += 1;
     }
     true
@@ -875,8 +949,8 @@ fn store_rgb420_mcu(
     } else {
         0
     };
-    let chroma_cols = min_u32(8, (remaining_x + 1) / 2);
-    let chroma_rows = min_u32(8, (remaining_y + 1) / 2);
+    let chroma_cols = min_u32(8, remaining_x / 2 + remaining_x % 2);
+    let chroma_rows = min_u32(8, remaining_y / 2 + remaining_y % 2);
     let mut yy = 0;
     while yy < 16 {
         let py = base_y + yy;
@@ -899,22 +973,10 @@ fn store_rgb420_mcu(
                     let y_idx = (yy & 7) * 8 + (xx & 7);
                     let chroma_y = min_u32(yy / 2, chroma_rows - 1);
                     let bottom = (yy & 1) != 0;
-                    let cbv = h2v2_sample(
-                        blocks.cb,
-                        chroma_cols,
-                        chroma_rows,
-                        xx,
-                        chroma_y,
-                        bottom,
-                    );
-                    let crv = h2v2_sample(
-                        blocks.cr,
-                        chroma_cols,
-                        chroma_rows,
-                        xx,
-                        chroma_y,
-                        bottom,
-                    );
+                    let cbv =
+                        h2v2_sample(blocks.cb, chroma_cols, chroma_rows, xx, chroma_y, bottom);
+                    let crv =
+                        h2v2_sample(blocks.cr, chroma_cols, chroma_rows, xx, chroma_y, bottom);
                     let dst = py * params.out_stride + px * 3;
                     let mut r = 0;
                     let mut g = 0;
@@ -951,7 +1013,7 @@ fn store_rgb422_mcu(
     } else {
         0
     };
-    let chroma_cols = min_u32(8, (remaining_x + 1) / 2);
+    let chroma_cols = min_u32(8, remaining_x / 2 + remaining_x % 2);
     let chroma_rows = min_u32(8, remaining_y);
     let mut yy = 0;
     while yy < 8 {
@@ -1024,6 +1086,192 @@ fn store_rgb444_mcu(
         }
         yy += 1;
     }
+}
+
+#[derive(Clone, Copy)]
+struct JpegDecodeThreadRange {
+    checkpoint: J2kJpegEntropyCheckpoint,
+    start_mcu: u32,
+    end_mcu: u32,
+}
+
+#[inline(always)]
+fn checkpoint_bit_position(checkpoint: J2kJpegEntropyCheckpoint, entropy_len: u32) -> Option<u64> {
+    if checkpoint.reserved != 0 || checkpoint.entropy_pos > entropy_len || checkpoint.bit_count > 63
+    {
+        return None;
+    }
+
+    let loaded_bits = (checkpoint.entropy_pos as u64) * 8;
+    if loaded_bits < checkpoint.bit_count as u64 {
+        return None;
+    }
+
+    if checkpoint.bit_count == 0 {
+        if checkpoint.bit_acc != 0 {
+            return None;
+        }
+    } else if checkpoint.bit_count < 64 {
+        let unused_bits = 64 - checkpoint.bit_count;
+        let unused_mask = (1u64 << unused_bits) - 1;
+        if checkpoint.bit_acc & unused_mask != 0 {
+            return None;
+        }
+    }
+
+    Some(loaded_bits - checkpoint.bit_count as u64)
+}
+
+#[inline(always)]
+fn validate_decode_thread_range(
+    params: J2kJpeg420Params,
+    checkpoints: *const J2kJpegEntropyCheckpoint,
+    gid: u32,
+    mcu_width: u32,
+    mcu_height: u32,
+    status: &mut J2kJpegDecodeStatus,
+) -> Option<JpegDecodeThreadRange> {
+    if params.width == 0 || params.height == 0 || params.reserved != 0 {
+        set_error(status, JPEG_STATUS_INVALID, JPEG_INVALID_DIMENSIONS, gid);
+        return None;
+    }
+
+    if params.width > u32::MAX / 3 {
+        set_error(status, JPEG_STATUS_INVALID, JPEG_INVALID_OUTPUT_LAYOUT, gid);
+        return None;
+    }
+    let row_bytes = params.width * 3;
+    let last_output_offset = (params.height as u64 - 1)
+        .checked_mul(params.out_stride as u64)
+        .and_then(|row_offset| row_offset.checked_add(row_bytes as u64 - 1));
+    if params.out_stride < row_bytes
+        || !matches!(last_output_offset, Some(offset) if offset <= u32::MAX as u64)
+    {
+        set_error(status, JPEG_STATUS_INVALID, JPEG_INVALID_OUTPUT_LAYOUT, gid);
+        return None;
+    }
+
+    let expected_mcus_per_row = (params.width - 1) / mcu_width + 1;
+    let expected_mcu_rows = (params.height - 1) / mcu_height + 1;
+    if params.mcus_per_row != expected_mcus_per_row
+        || params.mcu_rows != expected_mcu_rows
+        || params.mcus_per_row > u32::MAX / params.mcu_rows
+    {
+        set_error(status, JPEG_STATUS_INVALID, JPEG_INVALID_MCU_GRID, gid);
+        return None;
+    }
+    let total_mcus = params.mcus_per_row * params.mcu_rows;
+
+    let first_checkpoint = load_checkpoint(checkpoints, 0);
+    if first_checkpoint.mcu_index != 0 {
+        set_error(
+            status,
+            JPEG_STATUS_INVALID,
+            JPEG_INVALID_CHECKPOINT_RANGE,
+            gid,
+        );
+        return None;
+    }
+
+    let checkpoint = load_checkpoint(checkpoints, gid);
+    let current_bit_position = match checkpoint_bit_position(checkpoint, params.entropy_len) {
+        Some(position) => position,
+        None => {
+            set_error(
+                status,
+                JPEG_STATUS_INVALID,
+                JPEG_INVALID_CHECKPOINT_BITS,
+                checkpoint.entropy_pos,
+            );
+            return None;
+        }
+    };
+    let start_mcu = checkpoint.mcu_index;
+    if start_mcu >= total_mcus {
+        set_error(
+            status,
+            JPEG_STATUS_INVALID,
+            JPEG_INVALID_CHECKPOINT_RANGE,
+            start_mcu,
+        );
+        return None;
+    }
+
+    if gid == 0 {
+        if current_bit_position != 0
+            || checkpoint.y_prev_dc != 0
+            || checkpoint.cb_prev_dc != 0
+            || checkpoint.cr_prev_dc != 0
+        {
+            set_error(
+                status,
+                JPEG_STATUS_INVALID,
+                JPEG_INVALID_CHECKPOINT_BITS,
+                checkpoint.entropy_pos,
+            );
+            return None;
+        }
+    } else {
+        let previous = load_checkpoint(checkpoints, gid - 1);
+        let previous_bit_position = match checkpoint_bit_position(previous, params.entropy_len) {
+            Some(position) => position,
+            None => {
+                set_error(
+                    status,
+                    JPEG_STATUS_INVALID,
+                    JPEG_INVALID_CHECKPOINT_BITS,
+                    previous.entropy_pos,
+                );
+                return None;
+            }
+        };
+        if previous.mcu_index >= start_mcu || previous_bit_position >= current_bit_position {
+            set_error(
+                status,
+                JPEG_STATUS_INVALID,
+                JPEG_INVALID_CHECKPOINT_RANGE,
+                start_mcu,
+            );
+            return None;
+        }
+    }
+
+    let end_mcu = if gid + 1 < params.checkpoint_count {
+        let next = load_checkpoint(checkpoints, gid + 1);
+        let next_bit_position = match checkpoint_bit_position(next, params.entropy_len) {
+            Some(position) => position,
+            None => {
+                set_error(
+                    status,
+                    JPEG_STATUS_INVALID,
+                    JPEG_INVALID_CHECKPOINT_BITS,
+                    next.entropy_pos,
+                );
+                return None;
+            }
+        };
+        if next.mcu_index <= start_mcu
+            || next.mcu_index > total_mcus
+            || next_bit_position <= current_bit_position
+        {
+            set_error(
+                status,
+                JPEG_STATUS_INVALID,
+                JPEG_INVALID_CHECKPOINT_RANGE,
+                next.mcu_index,
+            );
+            return None;
+        }
+        next.mcu_index
+    } else {
+        total_mcus
+    };
+
+    Some(JpegDecodeThreadRange {
+        checkpoint,
+        start_mcu,
+        end_mcu,
+    })
 }
 
 #[inline(always)]
@@ -1290,22 +1538,23 @@ mod kernels {
         };
         store_decode_status(status, gid, thread_status);
 
-        let total_mcus = params.mcus_per_row * params.mcu_rows;
-        let checkpoint = load_checkpoint(checkpoints, gid);
-        let start_mcu = checkpoint.mcu_index;
-        if start_mcu >= total_mcus {
-            return;
-        }
-        let mut end_mcu = total_mcus;
-        if gid + 1 < params.checkpoint_count {
-            end_mcu = load_checkpoint(checkpoints, gid + 1).mcu_index;
-            if end_mcu > total_mcus {
-                end_mcu = total_mcus;
+        let thread_range = match validate_decode_thread_range(
+            params,
+            checkpoints,
+            gid,
+            16,
+            16,
+            &mut thread_status,
+        ) {
+            Some(range) => range,
+            None => {
+                store_decode_status(status, gid, thread_status);
+                return;
             }
-        }
-        if end_mcu <= start_mcu {
-            return;
-        }
+        };
+        let checkpoint = thread_range.checkpoint;
+        let start_mcu = thread_range.start_mcu;
+        let end_mcu = thread_range.end_mcu;
 
         let mut reader = J2kJpegBitReader {
             pos: checkpoint.entropy_pos,
@@ -1457,22 +1706,18 @@ mod kernels {
         };
         store_decode_status(status, gid, thread_status);
 
-        let total_mcus = params.mcus_per_row * params.mcu_rows;
-        let checkpoint = load_checkpoint(checkpoints, gid);
-        let start_mcu = checkpoint.mcu_index;
-        if start_mcu >= total_mcus {
-            return;
-        }
-        let mut end_mcu = total_mcus;
-        if gid + 1 < params.checkpoint_count {
-            end_mcu = load_checkpoint(checkpoints, gid + 1).mcu_index;
-            if end_mcu > total_mcus {
-                end_mcu = total_mcus;
-            }
-        }
-        if end_mcu <= start_mcu {
-            return;
-        }
+        let thread_range =
+            match validate_decode_thread_range(params, checkpoints, gid, 16, 8, &mut thread_status)
+            {
+                Some(range) => range,
+                None => {
+                    store_decode_status(status, gid, thread_status);
+                    return;
+                }
+            };
+        let checkpoint = thread_range.checkpoint;
+        let start_mcu = thread_range.start_mcu;
+        let end_mcu = thread_range.end_mcu;
 
         let mut reader = J2kJpegBitReader {
             pos: checkpoint.entropy_pos,
@@ -1598,22 +1843,23 @@ mod kernels {
         };
         store_decode_status(status, gid, thread_status);
 
-        let total_mcus = params.mcus_per_row * params.mcu_rows;
-        let checkpoint = load_checkpoint(checkpoints, gid);
-        let start_mcu = checkpoint.mcu_index;
-        if start_mcu >= total_mcus {
-            return;
-        }
-        let mut end_mcu = total_mcus;
-        if gid + 1 < params.checkpoint_count {
-            end_mcu = load_checkpoint(checkpoints, gid + 1).mcu_index;
-            if end_mcu > total_mcus {
-                end_mcu = total_mcus;
+        let thread_range = match validate_decode_thread_range(
+            params,
+            checkpoints,
+            gid,
+            8,
+            8,
+            &mut thread_status,
+        ) {
+            Some(range) => range,
+            None => {
+                store_decode_status(status, gid, thread_status);
+                return;
             }
-        }
-        if end_mcu <= start_mcu {
-            return;
-        }
+        };
+        let checkpoint = thread_range.checkpoint;
+        let start_mcu = thread_range.start_mcu;
+        let end_mcu = thread_range.end_mcu;
 
         let mut reader = J2kJpegBitReader {
             pos: checkpoint.entropy_pos,

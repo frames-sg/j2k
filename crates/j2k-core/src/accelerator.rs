@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// j2k-coverage: shared-accelerator-host
 
 use core::mem::{size_of, size_of_val};
 use core::slice;
@@ -172,32 +173,41 @@ pub trait AcceleratorSession {
 /// Marker trait for host-side values whose memory layout is part of a GPU ABI.
 ///
 /// # Safety
-/// Implementers must guarantee that `Self` has a stable host/shader layout for
-/// every backend that consumes it. In practice this means using `#[repr(C)]` or
-/// an equivalent explicit layout, avoiding padding-sensitive interpretation
-/// unless tests cover the exact byte layout, and keeping all fields plain data.
-/// Every possible bit pattern must be a valid value of the implementing type;
-/// types with validity invariants such as `bool`, references, and enums with a
-/// restricted discriminant set must not implement this trait.
+/// Implementers must guarantee all of the following:
+///
+/// - `Self` has a stable host/shader layout for every backend that consumes it,
+///   normally through `#[repr(C)]` or an equivalent explicit representation.
+/// - The object representation contains no internal or tail padding. Safe byte
+///   views read every byte, while Rust may leave padding uninitialized. A
+///   compile-time field-offset/end proof or a sound plain-data derive must
+///   enforce this property; size-only tests and comments are insufficient.
+/// - Every field, including explicit reserved fields that occupy ABI gaps, is
+///   initialized before a value is passed to any byte-view method.
+/// - Every possible bit pattern is a valid value. Types with validity
+///   invariants such as `bool`, references, and restricted enums must not
+///   implement this trait.
 pub unsafe trait GpuAbi: Copy + 'static {
     /// Human-readable ABI name used in layout-test failures.
     const NAME: &'static str;
 
     /// View one value as bytes.
     fn as_bytes(value: &Self) -> &[u8] {
-        // SAFETY: The trait contract requires `Self` to be plain GPU ABI data.
+        // SAFETY: The trait contract requires a padding-free, fully initialized
+        // object representation whose bytes are all valid to read.
         unsafe { slice::from_raw_parts(core::ptr::from_ref(value).cast::<u8>(), size_of::<Self>()) }
     }
 
     /// View a slice of values as bytes.
     fn slice_as_bytes(values: &[Self]) -> &[u8] {
-        // SAFETY: The trait contract requires `Self` to be plain GPU ABI data.
+        // SAFETY: The trait contract requires each contiguous array element to
+        // have a padding-free, fully initialized object representation.
         unsafe { slice::from_raw_parts(values.as_ptr().cast::<u8>(), size_of_val(values)) }
     }
 
     /// Mutably view a slice of values as bytes.
     fn slice_as_bytes_mut(values: &mut [Self]) -> &mut [u8] {
-        // SAFETY: The trait contract requires `Self` to be plain GPU ABI data.
+        // SAFETY: In addition to being padding-free, the trait contract requires
+        // every possible bit pattern written through this view to be valid.
         unsafe { slice::from_raw_parts_mut(values.as_mut_ptr().cast::<u8>(), size_of_val(values)) }
     }
 }

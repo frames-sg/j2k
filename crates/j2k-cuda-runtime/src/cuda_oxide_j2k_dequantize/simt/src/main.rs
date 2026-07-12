@@ -32,6 +32,7 @@ struct J2kHtDequantizeJob {
     num_bitplanes: u32,
     reserved: u32,
     dequantization_step: f32,
+    reserved_tail: u32,
 }
 
 #[repr(C)]
@@ -51,6 +52,7 @@ struct J2kHtCleanupMultiBatchJob {
     output_offset: u32,
     dequantization_step: f32,
     stripe_causal: u32,
+    reserved_tail: u32,
 }
 
 #[inline(always)]

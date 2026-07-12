@@ -7,10 +7,53 @@ use crate::accelerator::{
     PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
     PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
 };
-use j2k::{EncodedHtJ2kCodeBlock, J2kHtCodeBlockEncodeJob};
+use j2k::{EncodedHtJ2kCodeBlock, J2kEncodeStageResult, J2kHtCodeBlockEncodeJob};
+use j2k_jpeg::rewrite_sof_dimensions;
 use j2k_jpeg::transcode::JpegDctCodingMode;
 use j2k_jpeg::ColorSpace;
 use j2k_test_support::{JPEG_BASELINE_420_16X16, JPEG_GRAYSCALE_8X8};
+
+#[test]
+fn public_transcode_rejects_huge_header_geometry_before_entropy_allocation() {
+    let jpeg = rewrite_sof_dimensions(JPEG_GRAYSCALE_8X8, (65_500, 65_500))
+        .expect("fixture contains a valid SOF marker");
+    assert!(matches!(
+        jpeg_to_htj2k(&jpeg, &JpegToHtj2kOptions::lossless_53()),
+        Err(JpegToHtj2kError::MemoryCapExceeded { requested, cap })
+            if requested > cap
+    ));
+}
+
+#[test]
+fn batch_preserves_an_individually_oversized_header_as_a_tile_error() {
+    let jpeg = rewrite_sof_dimensions(JPEG_GRAYSCALE_8X8, (65_500, 65_500))
+        .expect("fixture contains a valid SOF marker");
+    let inputs = [JpegTileBatchInput { bytes: &jpeg }];
+    let batch = jpeg_to_htj2k_batch(&inputs, &JpegToHtj2kOptions::lossless_53())
+        .expect("an oversized tile remains a per-tile failure");
+
+    assert!(matches!(
+        batch.tiles.as_slice(),
+        [Err(JpegToHtj2kError::MemoryCapExceeded { requested, cap })]
+            if requested > cap
+    ));
+}
+
+#[test]
+fn batch_rejects_valid_header_plans_that_exceed_the_aggregate_cap() {
+    let jpeg = rewrite_sof_dimensions(JPEG_GRAYSCALE_8X8, (4096, 4096))
+        .expect("fixture contains a valid SOF marker");
+    let inputs = [
+        JpegTileBatchInput { bytes: &jpeg },
+        JpegTileBatchInput { bytes: &jpeg },
+    ];
+
+    assert!(matches!(
+        jpeg_to_htj2k_batch(&inputs, &JpegToHtj2kOptions::lossless_53()),
+        Err(JpegToHtj2kError::MemoryCapExceeded { requested, cap })
+            if requested > cap
+    ));
+}
 
 #[test]
 fn timing_report_add_assign_saturates_and_adds_all_counter_kinds() {
@@ -153,7 +196,9 @@ fn transcode_batch_profile_row_preserves_labels_and_metric_rollups() {
         coefficient_path: JpegToHtj2kCoefficientPath::IntegerDirect53,
     };
 
-    let row = report.profile_row("fixture batch", TranscodeBatchProfileRequest::MetalAuto);
+    let row = report
+        .profile_row("fixture batch", TranscodeBatchProfileRequest::MetalAuto)
+        .expect("bounded profile row should build");
     let fields = row.fields();
     let get = |key: &str| {
         fields
@@ -162,6 +207,7 @@ fn transcode_batch_profile_row_preserves_labels_and_metric_rollups() {
             .unwrap_or_else(|| panic!("missing profile field {key}"))
     };
 
+    assert_eq!(fields.len(), 65);
     assert_eq!(fields[0].0, "codec");
     assert_eq!(fields[1].0, "op");
     assert_eq!(fields[2].0, "request");
@@ -202,6 +248,32 @@ fn transcode_batch_profile_row_preserves_labels_and_metric_rollups() {
     assert_eq!(
         TranscodeBatchProfileRequest::Cpu.profile_path(&report.timings),
         "cpu"
+    );
+}
+
+#[test]
+fn transcode_batch_profile_row_rejects_counter_overflow() {
+    let report = BatchTranscodeReport {
+        tile_count: 1,
+        successful_tiles: 1,
+        failed_tiles: 0,
+        transformed_components: 1,
+        reversible_dwt53_batches: 0,
+        reversible_dwt53_batch_jobs: 0,
+        extract_us: u128::MAX,
+        transform_us: 1,
+        encode_us: 0,
+        timings: TranscodeTimingReport::default(),
+        coefficient_path: JpegToHtj2kCoefficientPath::IntegerDirect53,
+    };
+
+    assert_eq!(
+        j2k_profile::ProfileError::SizeOverflow {
+            what: "transcode batch total profile time",
+        },
+        report
+            .profile_row("overflow", TranscodeBatchProfileRequest::Cpu)
+            .expect_err("profile totals must not saturate")
     );
 }
 
@@ -289,7 +361,7 @@ impl J2kEncodeStageAccelerator for CountingHtBatchEncodeAccelerator {
     fn encode_ht_code_blocks(
         &mut self,
         jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-    ) -> Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
         self.batches = self.batches.saturating_add(1);
         self.jobs = self.jobs.saturating_add(jobs.len());
         Ok(None)
@@ -298,7 +370,7 @@ impl J2kEncodeStageAccelerator for CountingHtBatchEncodeAccelerator {
     fn encode_ht_code_block(
         &mut self,
         _job: J2kHtCodeBlockEncodeJob<'_>,
-    ) -> Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
         self.single_blocks = self.single_blocks.saturating_add(1);
         Ok(None)
     }
@@ -315,7 +387,8 @@ fn float97_precomputed_prepared_tiles_offer_all_tiles_to_one_ht_batch() {
     options.encode_options.code_block_height_exp = 2;
     let mut accelerator = CountingHtBatchEncodeAccelerator::default();
 
-    let encoded_tiles = encode_float97_prepared_tiles(tiles, &options, &mut accelerator);
+    let encoded_tiles = encode_float97_prepared_tiles(tiles, &options, &mut accelerator, 0)
+        .expect("batch result allocation succeeds");
 
     assert_eq!(encoded_tiles.len(), 2);
     for (expected_tile_index, (actual_tile_index, encoded)) in encoded_tiles.into_iter().enumerate()

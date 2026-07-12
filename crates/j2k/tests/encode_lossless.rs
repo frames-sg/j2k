@@ -13,8 +13,8 @@ use j2k::{
     J2kRoiRegion, ReversibleTransform,
 };
 use j2k::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kCodeBlockSegment, J2kCodeBlockStyle,
-    J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kCodeBlockStyle, J2kDeinterleaveToF32Job,
+    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kEncodeStageError, J2kEncodeStageResult,
     J2kHtCodeBlockEncodeJob, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob, J2kSubBandType,
     J2kTier1CodeBlockEncodeJob,
 };
@@ -882,12 +882,17 @@ fn cpu_lossless_classic_high_bit_rectangular_roi_rejects_56_coded_bitplanes_expl
     )
     .expect_err("classic ROI maxshift must report the coded-bitplane limit");
 
-    assert!(matches!(err, j2k::J2kError::Unsupported(_)));
-    assert!(
-        err.to_string()
-            .contains("ROI maxshift exceeds supported coded bitplane count"),
-        "unexpected error: {err}"
-    );
+    let j2k::J2kError::NativeEncode { context, source } = err else {
+        panic!("expected typed native unsupported error, got {err:?}");
+    };
+    assert_eq!(context, "native JPEG 2000 lossless ROI encode failed");
+    assert!(matches!(
+        std::error::Error::source(&source)
+            .and_then(|source| source.downcast_ref::<j2k_native::EncodeError>()),
+        Some(j2k_native::EncodeError::Unsupported {
+            what: "ROI maxshift exceeds supported coded bitplane count",
+        })
+    ));
 }
 
 fn deinterleave_to_f32_for_test(job: J2kDeinterleaveToF32Job<'_>) -> Vec<Vec<f32>> {
@@ -941,42 +946,15 @@ fn native_subband(subband: J2kSubBandType) -> j2k_native::J2kSubBandType {
 }
 
 fn native_code_block_style(style: J2kCodeBlockStyle) -> j2k_native::J2kCodeBlockStyle {
-    j2k_native::J2kCodeBlockStyle {
-        selective_arithmetic_coding_bypass: style.selective_arithmetic_coding_bypass,
-        reset_context_probabilities: style.reset_context_probabilities,
-        termination_on_each_pass: style.termination_on_each_pass,
-        vertically_causal_context: style.vertically_causal_context,
-        segmentation_symbols: style.segmentation_symbols,
-    }
+    style
 }
 
 fn public_encoded_j2k(block: j2k_native::EncodedJ2kCodeBlock) -> EncodedJ2kCodeBlock {
-    EncodedJ2kCodeBlock {
-        data: block.data,
-        segments: block
-            .segments
-            .into_iter()
-            .map(|segment| J2kCodeBlockSegment {
-                data_offset: segment.data_offset,
-                data_length: segment.data_length,
-                start_coding_pass: segment.start_coding_pass,
-                end_coding_pass: segment.end_coding_pass,
-                use_arithmetic: segment.use_arithmetic,
-            })
-            .collect(),
-        number_of_coding_passes: block.number_of_coding_passes,
-        missing_bit_planes: block.missing_bit_planes,
-    }
+    block
 }
 
 fn public_encoded_ht(block: j2k_native::EncodedHtJ2kCodeBlock) -> EncodedHtJ2kCodeBlock {
-    EncodedHtJ2kCodeBlock {
-        data: block.data,
-        cleanup_length: block.cleanup_length,
-        refinement_length: block.refinement_length,
-        num_coding_passes: block.num_coding_passes,
-        num_zero_bitplanes: block.num_zero_bitplanes,
-    }
+    block
 }
 
 #[test]
@@ -2187,6 +2165,51 @@ fn accelerator_facade_auto_falls_back_when_no_stage_dispatches() {
 }
 
 #[test]
+fn accelerator_facade_preserves_native_stage_error() {
+    struct FailingDeinterleaveAccelerator;
+
+    impl J2kEncodeStageAccelerator for FailingDeinterleaveAccelerator {
+        fn encode_deinterleave(
+            &mut self,
+            _job: J2kDeinterleaveToF32Job<'_>,
+        ) -> J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
+            Err(J2kEncodeStageError::internal_invariant(
+                "facade accelerator fixture",
+            ))
+        }
+    }
+
+    let pixels = vec![0_u8; 8 * 8];
+    let samples = J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).unwrap();
+    let error = encode_j2k_lossless_with_accelerator(
+        samples,
+        &auto_options(),
+        BackendKind::Metal,
+        &mut FailingDeinterleaveAccelerator,
+    )
+    .expect_err("accepted accelerator failure must surface");
+
+    let j2k::J2kError::NativeEncode { context, source } = error else {
+        panic!("expected native encode failure");
+    };
+    assert_eq!(
+        context,
+        "accelerated native JPEG 2000 lossless encode failed"
+    );
+    let Some(j2k_native::EncodeError::Accelerator { operation, source }) =
+        std::error::Error::source(&source)
+            .and_then(|source| source.downcast_ref::<j2k_native::EncodeError>())
+    else {
+        panic!("expected accelerator failure");
+    };
+    assert_eq!(*operation, "pixel deinterleave");
+    assert_eq!(
+        *source,
+        J2kEncodeStageError::internal_invariant("facade accelerator fixture")
+    );
+}
+
+#[test]
 fn accelerator_facade_require_device_errors_when_no_stage_dispatches() {
     #[derive(Default)]
     struct NoDispatchAccelerator;
@@ -2231,7 +2254,7 @@ fn accelerator_facade_reports_partial_auto_dispatch_and_strictly_rejects_it() {
         fn encode_deinterleave(
             &mut self,
             job: J2kDeinterleaveToF32Job<'_>,
-        ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
             self.deinterleave = self.deinterleave.saturating_add(1);
             Ok(Some(deinterleave_to_f32_for_test(job)))
         }
@@ -2243,7 +2266,7 @@ fn accelerator_facade_reports_partial_auto_dispatch_and_strictly_rejects_it() {
         fn encode_quantize_subband(
             &mut self,
             job: J2kQuantizeSubbandJob<'_>,
-        ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<i32>>> {
             self.quantize_subband = self.quantize_subband.saturating_add(1);
             Ok(Some(
                 job.coefficients
@@ -2256,7 +2279,7 @@ fn accelerator_facade_reports_partial_auto_dispatch_and_strictly_rejects_it() {
         fn encode_packetization(
             &mut self,
             _job: J2kPacketizationEncodeJob<'_>,
-        ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
             self.packetization = self.packetization.saturating_add(1);
             Ok(None)
         }
@@ -2319,7 +2342,7 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
         fn encode_deinterleave(
             &mut self,
             job: J2kDeinterleaveToF32Job<'_>,
-        ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
             self.deinterleave = self.deinterleave.saturating_add(1);
             Ok(Some(deinterleave_to_f32_for_test(job)))
         }
@@ -2331,7 +2354,7 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
         fn encode_quantize_subband(
             &mut self,
             job: J2kQuantizeSubbandJob<'_>,
-        ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<i32>>> {
             self.quantize_subband = self.quantize_subband.saturating_add(1);
             Ok(Some(
                 job.coefficients
@@ -2344,7 +2367,7 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
         fn encode_tier1_code_block(
             &mut self,
             job: J2kTier1CodeBlockEncodeJob<'_>,
-        ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<EncodedJ2kCodeBlock>> {
             self.tier1_code_block = self.tier1_code_block.saturating_add(1);
             j2k_native::encode_j2k_code_block_scalar_with_style(
                 job.coefficients,
@@ -2356,12 +2379,19 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
             )
             .map(public_encoded_j2k)
             .map(Some)
+            .map_err(|source| {
+                J2kEncodeStageError::backend(
+                    "native scalar",
+                    "classic Tier-1 code-block encode",
+                    source,
+                )
+            })
         }
 
         fn encode_packetization(
             &mut self,
             _job: J2kPacketizationEncodeJob<'_>,
-        ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
             self.packetization = self.packetization.saturating_add(1);
             Ok(None)
         }
@@ -2412,7 +2442,7 @@ fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
         fn encode_deinterleave(
             &mut self,
             job: J2kDeinterleaveToF32Job<'_>,
-        ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
             self.deinterleave = self.deinterleave.saturating_add(1);
             Ok(Some(deinterleave_to_f32_for_test(job)))
         }
@@ -2424,7 +2454,7 @@ fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
         fn encode_quantize_subband(
             &mut self,
             job: J2kQuantizeSubbandJob<'_>,
-        ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<i32>>> {
             self.quantize_subband = self.quantize_subband.saturating_add(1);
             Ok(Some(
                 job.coefficients
@@ -2437,7 +2467,7 @@ fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
         fn encode_ht_code_block(
             &mut self,
             job: J2kHtCodeBlockEncodeJob<'_>,
-        ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
             self.ht_code_block = self.ht_code_block.saturating_add(1);
             j2k_native::encode_ht_code_block_scalar(
                 job.coefficients,
@@ -2447,12 +2477,15 @@ fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
             )
             .map(public_encoded_ht)
             .map(Some)
+            .map_err(|source| {
+                J2kEncodeStageError::backend("native scalar", "HT Tier-1 code-block encode", source)
+            })
         }
 
         fn encode_packetization(
             &mut self,
             _job: J2kPacketizationEncodeJob<'_>,
-        ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
             self.packetization = self.packetization.saturating_add(1);
             Ok(None)
         }
@@ -2493,7 +2526,7 @@ fn accelerator_facade_ht_lossless_quality_layers_request_refinement_passes() {
         fn encode_ht_code_block(
             &mut self,
             job: J2kHtCodeBlockEncodeJob<'_>,
-        ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+        ) -> J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
             self.ht_code_block = self.ht_code_block.saturating_add(1);
             self.max_target_coding_passes =
                 self.max_target_coding_passes.max(job.target_coding_passes);
@@ -2506,6 +2539,9 @@ fn accelerator_facade_ht_lossless_quality_layers_request_refinement_passes() {
             )
             .map(public_encoded_ht)
             .map(Some)
+            .map_err(|source| {
+                J2kEncodeStageError::backend("native scalar", "HT Tier-1 refinement encode", source)
+            })
         }
     }
 

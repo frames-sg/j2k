@@ -15,6 +15,7 @@ use super::{
     J2kDecodeWarning, J2kDecoder, J2kView, PixelFormat, ReadySubmission, Rect, Surface,
     DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
+use crate::allocation::try_vec_filled;
 
 impl<'a> J2kDecoder<'a> {
     /// Create a CUDA-facing decoder from compressed bytes.
@@ -333,7 +334,10 @@ fn allocate_cpu_surface(dims: (u32, u32), fmt: PixelFormat) -> Result<(Vec<u8>, 
         DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         "j2k CUDA CPU-staged surface",
     )?;
-    Ok((vec![0u8; len], stride))
+    Ok((
+        try_vec_filled(len, 0u8, "j2k CUDA CPU-staged surface")?,
+        stride,
+    ))
 }
 
 #[cfg(not(feature = "cuda-runtime"))]

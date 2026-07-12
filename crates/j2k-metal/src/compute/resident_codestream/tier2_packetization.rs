@@ -2,11 +2,11 @@
 
 use super::{
     checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
-    dispatch_single_thread, encode_status_error, packet_tree_node_count, size_of, with_runtime,
-    zeroed_shared_buffer, Error, HashMap, J2kPacketBlock, J2kPacketDescriptor,
-    J2kPacketEncodeParams, J2kPacketEncodeStatus, J2kPacketResolution, J2kPacketStateBlock,
-    J2kPacketSubband, J2kPacketizationBlockCodingMode, J2kPacketizationEncodeJob,
-    MTLResourceOptions, MetalRuntime, J2K_ENCODE_STATUS_OK,
+    dispatch_single_thread, encode_status_error, new_command_buffer, new_compute_command_encoder,
+    new_private_buffer, new_shared_buffer, packet_tree_node_count, size_of, with_runtime,
+    zeroed_shared_buffer, Error, J2kPacketBlock, J2kPacketDescriptor, J2kPacketEncodeParams,
+    J2kPacketEncodeStatus, J2kPacketResolution, J2kPacketStateBlock, J2kPacketSubband,
+    J2kPacketizationBlockCodingMode, J2kPacketizationEncodeJob, MetalRuntime, J2K_ENCODE_STATUS_OK,
 };
 
 #[cfg(target_os = "macos")]
@@ -32,6 +32,120 @@ struct Tier2PacketizationPlan {
     params: J2kPacketEncodeParams,
 }
 
+struct Tier2PacketAllocationCounts {
+    resolutions: usize,
+    subbands: usize,
+    blocks: usize,
+    payload_bytes: usize,
+    unique_states: usize,
+    state_blocks: usize,
+    descriptors: usize,
+}
+
+#[cfg(target_os = "macos")]
+fn tier2_packet_block_count(
+    job: J2kPacketizationEncodeJob<'_>,
+    packet_index: u32,
+) -> Result<usize, Error> {
+    let packet_index = usize::try_from(packet_index).map_err(|_| Error::MetalKernel {
+        message: "Tier-2 Metal packet descriptor packet index exceeds usize".to_string(),
+    })?;
+    let resolution = job
+        .resolutions
+        .get(packet_index)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "Tier-2 Metal packet descriptor packet index out of range".to_string(),
+        })?;
+    crate::batch_allocation::checked_count_sum(
+        resolution
+            .subbands
+            .iter()
+            .map(|subband| subband.code_blocks.len()),
+        "J2K Metal Tier-2 packet state blocks",
+    )
+    .map_err(Error::from)
+}
+
+#[cfg(target_os = "macos")]
+fn tier2_packet_allocation_counts(
+    job: J2kPacketizationEncodeJob<'_>,
+) -> Result<Tier2PacketAllocationCounts, Error> {
+    let subbands = crate::batch_allocation::checked_count_sum(
+        job.resolutions
+            .iter()
+            .map(|resolution| resolution.subbands.len()),
+        "J2K Metal Tier-2 packet subbands",
+    )?;
+    let blocks = crate::batch_allocation::checked_count_sum(
+        job.resolutions
+            .iter()
+            .flat_map(|resolution| &resolution.subbands)
+            .map(|subband| subband.code_blocks.len()),
+        "J2K Metal Tier-2 packet blocks",
+    )?;
+    let payload_bytes = crate::batch_allocation::checked_count_sum(
+        job.resolutions
+            .iter()
+            .flat_map(|resolution| &resolution.subbands)
+            .flat_map(|subband| &subband.code_blocks)
+            .map(|block| block.data.len()),
+        "J2K Metal Tier-2 packet payload",
+    )?;
+    let mut unique_states = 0usize;
+    let mut state_blocks = 0usize;
+    for (index, descriptor) in job.packet_descriptors.iter().enumerate() {
+        if job.packet_descriptors[..index]
+            .iter()
+            .any(|previous| previous.state_index == descriptor.state_index)
+        {
+            continue;
+        }
+        unique_states = crate::batch_allocation::checked_count_sum(
+            [unique_states, 1],
+            "J2K Metal Tier-2 packet states",
+        )?;
+        state_blocks = crate::batch_allocation::checked_count_sum(
+            [
+                state_blocks,
+                tier2_packet_block_count(job, descriptor.packet_index)?,
+            ],
+            "J2K Metal Tier-2 packet state blocks",
+        )?;
+    }
+    Ok(Tier2PacketAllocationCounts {
+        resolutions: job.resolutions.len(),
+        subbands,
+        blocks,
+        payload_bytes,
+        unique_states,
+        state_blocks,
+        descriptors: job.packet_descriptors.len(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn tier2_packet_allocation_requests(
+    counts: &Tier2PacketAllocationCounts,
+) -> [crate::batch_allocation::BatchMetadataRequest; 7] {
+    [
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketResolution>(
+            counts.resolutions,
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketSubband>(counts.subbands),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketBlock>(counts.blocks),
+        crate::batch_allocation::BatchMetadataRequest::of::<u8>(counts.payload_bytes),
+        crate::batch_allocation::BatchMetadataRequest::of::<(u32, u32, usize)>(
+            counts.unique_states,
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketStateBlock>(
+            counts.state_blocks,
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketDescriptor>(
+            counts.descriptors,
+        ),
+    ]
+}
+
 #[cfg(target_os = "macos")]
 #[expect(
     clippy::too_many_lines,
@@ -40,10 +154,15 @@ struct Tier2PacketizationPlan {
 fn plan_tier2_packetization(
     job: J2kPacketizationEncodeJob<'_>,
 ) -> Result<Tier2PacketizationPlan, Error> {
-    let mut resolutions = Vec::<J2kPacketResolution>::new();
-    let mut subbands = Vec::<J2kPacketSubband>::new();
-    let mut blocks = Vec::<J2kPacketBlock>::new();
-    let mut payload = Vec::<u8>::new();
+    let counts = tier2_packet_allocation_counts(job)?;
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal Tier-2 packet metadata");
+    budget.preflight(&tier2_packet_allocation_requests(&counts))?;
+    let mut resolutions =
+        budget.try_vec(counts.resolutions, "J2K Metal Tier-2 packet resolutions")?;
+    let mut subbands = budget.try_vec(counts.subbands, "J2K Metal Tier-2 packet subbands")?;
+    let mut blocks = budget.try_vec(counts.blocks, "J2K Metal Tier-2 packet blocks")?;
+    let mut payload = budget.try_vec(counts.payload_bytes, "J2K Metal Tier-2 packet payload")?;
     let mut max_tree_nodes = 1usize;
 
     for resolution in job.resolutions {
@@ -102,9 +221,14 @@ fn plan_tier2_packetization(
         });
     }
 
-    let mut state_block_offsets = HashMap::<u32, (u32, usize)>::new();
-    let mut state_blocks = Vec::<J2kPacketStateBlock>::new();
-    let mut descriptors = Vec::<J2kPacketDescriptor>::with_capacity(job.packet_descriptors.len());
+    let mut state_block_offsets = budget.try_vec(
+        counts.unique_states,
+        "J2K Metal Tier-2 packet state offsets",
+    )?;
+    let mut state_blocks =
+        budget.try_vec(counts.state_blocks, "J2K Metal Tier-2 packet state blocks")?;
+    let mut descriptors =
+        budget.try_vec(counts.descriptors, "J2K Metal Tier-2 packet descriptors")?;
     for descriptor in job.packet_descriptors {
         let packet_index =
             usize::try_from(descriptor.packet_index).map_err(|_| Error::MetalKernel {
@@ -148,8 +272,10 @@ fn plan_tier2_packetization(
                 })?;
         }
 
-        let (state_block_offset, existing_count) = if let Some(&(offset, count)) =
-            state_block_offsets.get(&descriptor.state_index)
+        let (state_block_offset, existing_count) = if let Some(&(_, offset, count)) =
+            state_block_offsets
+                .iter()
+                .find(|(state_index, _, _)| *state_index == descriptor.state_index)
         {
             (offset, count)
         } else {
@@ -183,7 +309,7 @@ fn plan_tier2_packetization(
                     });
                 }
             }
-            state_block_offsets.insert(descriptor.state_index, (offset, packet_block_count));
+            state_block_offsets.push((descriptor.state_index, offset, packet_block_count));
             (offset, packet_block_count)
         };
         if existing_count != packet_block_count {
@@ -285,33 +411,30 @@ fn execute_tier2_packetization(
         output_capacity,
         params,
     } = plan;
-    let resolution_buffer = copied_slice_buffer(&runtime.device, &resolutions);
-    let subband_buffer = copied_slice_buffer(&runtime.device, &subbands);
-    let block_buffer = copied_slice_buffer(&runtime.device, &blocks);
-    let payload_buffer = copied_slice_buffer(&runtime.device, &payload);
-    let descriptor_buffer = copied_slice_buffer(&runtime.device, &descriptors);
-    let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks);
-    let output_buffer = runtime.device.new_buffer(
-        output_capacity as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-    let header_buffer = runtime.device.new_buffer(
-        header_capacity as u64,
-        MTLResourceOptions::StorageModePrivate,
-    );
+    let resolution_buffer = copied_slice_buffer(&runtime.device, &resolutions)?;
+    let subband_buffer = copied_slice_buffer(&runtime.device, &subbands)?;
+    let block_buffer = copied_slice_buffer(&runtime.device, &blocks)?;
+    let payload_buffer = copied_slice_buffer(&runtime.device, &payload)?;
+    let descriptor_buffer = copied_slice_buffer(&runtime.device, &descriptors)?;
+    let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks)?;
+    let output_buffer = new_shared_buffer(&runtime.device, output_capacity)?;
+    let header_buffer = new_private_buffer(&runtime.device, header_capacity)?;
     let scratch_words = max_tree_nodes
         .checked_mul(6)
         .ok_or_else(|| Error::MetalKernel {
             message: "Tier-2 Metal packet scratch size overflow".to_string(),
         })?;
-    let scratch_buffer = runtime.device.new_buffer(
-        (scratch_words * size_of::<u32>()) as u64,
-        MTLResourceOptions::StorageModePrivate,
-    );
-    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kPacketEncodeStatus>());
+    let scratch_bytes =
+        scratch_words
+            .checked_mul(size_of::<u32>())
+            .ok_or_else(|| Error::MetalKernel {
+                message: "Tier-2 Metal packet scratch byte size overflow".to_string(),
+            })?;
+    let scratch_buffer = new_private_buffer(&runtime.device, scratch_bytes)?;
+    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kPacketEncodeStatus>())?;
 
-    let command_buffer = runtime.queue.new_command_buffer();
-    let encoder = command_buffer.new_compute_command_encoder();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
+    let encoder = new_compute_command_encoder(&command_buffer)?;
     encoder.set_compute_pipeline_state(&runtime.packet_encode);
     encoder.set_buffer(0, Some(&resolution_buffer), 0);
     encoder.set_buffer(1, Some(&subband_buffer), 0);
@@ -328,9 +451,9 @@ fn execute_tier2_packetization(
     encoder.set_buffer(8, Some(&status_buffer), 0);
     encoder.set_buffer(9, Some(&descriptor_buffer), 0);
     encoder.set_buffer(10, Some(&state_block_buffer), 0);
-    dispatch_single_thread(encoder);
+    dispatch_single_thread(&encoder);
     encoder.end_encoding();
-    commit_and_wait_metal(command_buffer)?;
+    commit_and_wait_metal(&command_buffer)?;
 
     let status =
         checked_buffer_read::<J2kPacketEncodeStatus>(&status_buffer, "Tier-2 packet status")?;
@@ -357,91 +480,4 @@ fn execute_tier2_packetization(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn descriptor(
-        packet_index: u32,
-        state_index: u32,
-    ) -> j2k_native::J2kPacketizationPacketDescriptor {
-        j2k_native::J2kPacketizationPacketDescriptor {
-            packet_index,
-            state_index,
-            layer: 0,
-            resolution: packet_index,
-            component: 0,
-            precinct: 0,
-        }
-    }
-
-    #[test]
-    fn plan_rejects_descriptor_packet_index_before_metal_dispatch() {
-        let resolutions = [j2k_native::J2kPacketizationResolution {
-            subbands: Vec::new(),
-        }];
-        let packet_descriptors = [descriptor(1, 0)];
-        let job = J2kPacketizationEncodeJob {
-            resolution_count: 1,
-            num_layers: 1,
-            num_components: 1,
-            code_block_count: 0,
-            progression_order: j2k_native::J2kPacketizationProgressionOrder::Lrcp,
-            packet_descriptors: &packet_descriptors,
-            resolutions: &resolutions,
-        };
-
-        let Err(error) = plan_tier2_packetization(job) else {
-            panic!("out-of-range descriptor unexpectedly planned");
-        };
-        assert!(matches!(
-            error,
-            Error::MetalKernel { ref message }
-                if message == "Tier-2 Metal packet descriptor packet index out of range"
-        ));
-    }
-
-    #[test]
-    fn plan_rejects_reused_state_with_a_different_block_layout() {
-        let payload = [0x2a];
-        let resolutions = [
-            j2k_native::J2kPacketizationResolution {
-                subbands: Vec::new(),
-            },
-            j2k_native::J2kPacketizationResolution {
-                subbands: vec![j2k_native::J2kPacketizationSubband {
-                    code_blocks: vec![j2k_native::J2kPacketizationCodeBlock {
-                        data: &payload,
-                        ht_cleanup_length: 0,
-                        ht_refinement_length: 0,
-                        num_coding_passes: 1,
-                        num_zero_bitplanes: 0,
-                        previously_included: false,
-                        l_block: 3,
-                        block_coding_mode: J2kPacketizationBlockCodingMode::Classic,
-                    }],
-                    num_cbs_x: 1,
-                    num_cbs_y: 1,
-                }],
-            },
-        ];
-        let packet_descriptors = [descriptor(0, 7), descriptor(1, 7)];
-        let job = J2kPacketizationEncodeJob {
-            resolution_count: 2,
-            num_layers: 1,
-            num_components: 1,
-            code_block_count: 1,
-            progression_order: j2k_native::J2kPacketizationProgressionOrder::Lrcp,
-            packet_descriptors: &packet_descriptors,
-            resolutions: &resolutions,
-        };
-
-        let Err(error) = plan_tier2_packetization(job) else {
-            panic!("mismatched reused state unexpectedly planned");
-        };
-        assert!(matches!(
-            error,
-            Error::MetalKernel { ref message }
-                if message == "Tier-2 Metal packet descriptor state layout mismatch"
-        ));
-    }
-}
+mod tests;

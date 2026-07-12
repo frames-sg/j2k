@@ -95,16 +95,12 @@ fn metal_buffer_lossless_batch_encodes_padded_contiguous_inputs() {
         .map(|i| ((i * 13 + 5) & 0xFF) as u8)
         .collect();
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
-    let first_buffer = session.device().new_buffer_with_data(
-        first.as_ptr().cast(),
-        first.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
-    let second_buffer = session.device().new_buffer_with_data(
-        second.as_ptr().cast(),
-        second.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
+    let first_buffer =
+        j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &first)
+            .expect("upload first test tile");
+    let second_buffer =
+        j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &second)
+            .expect("upload second test tile");
     let tiles = [
         super::super::MetalLosslessEncodeTile {
             buffer: &first_buffer,

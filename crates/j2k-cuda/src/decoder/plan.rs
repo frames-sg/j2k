@@ -5,6 +5,10 @@ use super::{
     CudaHtj2kDecodeProfileDetail, CudaHtj2kProfileReport, CudaHtj2kTransform, DecodeSettings,
     Error, J2kDecoder, NativeDecoderContext, NativeImage, PixelFormat, Rect,
 };
+#[cfg(feature = "cuda-runtime")]
+mod color_owners;
+#[cfg(feature = "cuda-runtime")]
+use self::color_owners::flatten_cuda_color_components;
 
 impl J2kDecoder<'_> {
     /// Build a flat CUDA HTJ2K grayscale decode plan and return stage timings.
@@ -234,14 +238,12 @@ impl J2kDecoder<'_> {
         let plan_us = profile::elapsed_us(plan_start);
 
         let flatten_start = profile::profile_now(true);
-        let mut payload = Vec::new();
-        let mut components = Vec::with_capacity(native_plan.component_plans.len());
-        for component_plan in &native_plan.component_plans {
-            let mut component =
-                CudaHtj2kDecodePlan::from_grayscale_direct_plan(component_plan, fmt, (0, 0))?;
-            component.append_payload_to_shared(&mut payload)?;
-            components.push(component);
-        }
+        let (payload, components) = flatten_cuda_color_components(
+            &native_plan,
+            fmt,
+            None,
+            "j2k CUDA scaled color decode plans",
+        )?;
         let flatten_us = profile::elapsed_us(flatten_start);
         let block_count = components
             .iter()
@@ -295,18 +297,12 @@ impl J2kDecoder<'_> {
         let plan_us = profile::elapsed_us(plan_start);
 
         let flatten_start = profile::profile_now(true);
-        let mut payload = Vec::new();
-        let mut components = Vec::with_capacity(native_plan.component_plans.len());
-        for component_plan in &native_plan.component_plans {
-            let mut component = CudaHtj2kDecodePlan::from_grayscale_direct_plan_region(
-                component_plan,
-                fmt,
-                (roi.x, roi.y),
-                (roi.w, roi.h),
-            )?;
-            component.append_payload_to_shared(&mut payload)?;
-            components.push(component);
-        }
+        let (payload, components) = flatten_cuda_color_components(
+            &native_plan,
+            fmt,
+            Some(((roi.x, roi.y), (roi.w, roi.h))),
+            "j2k CUDA region color decode plans",
+        )?;
         let flatten_us = profile::elapsed_us(flatten_start);
         let block_count = components
             .iter()
@@ -367,18 +363,12 @@ impl J2kDecoder<'_> {
         let plan_us = profile::elapsed_us(plan_start);
 
         let flatten_start = profile::profile_now(true);
-        let mut payload = Vec::new();
-        let mut components = Vec::with_capacity(native_plan.component_plans.len());
-        for component_plan in &native_plan.component_plans {
-            let mut component = CudaHtj2kDecodePlan::from_grayscale_direct_plan_region(
-                component_plan,
-                fmt,
-                (scaled_roi.x, scaled_roi.y),
-                (scaled_roi.w, scaled_roi.h),
-            )?;
-            component.append_payload_to_shared(&mut payload)?;
-            components.push(component);
-        }
+        let (payload, components) = flatten_cuda_color_components(
+            &native_plan,
+            fmt,
+            Some(((scaled_roi.x, scaled_roi.y), (scaled_roi.w, scaled_roi.h))),
+            "j2k CUDA scaled region color decode plans",
+        )?;
         let flatten_us = profile::elapsed_us(flatten_start);
         let block_count = components
             .iter()
@@ -431,14 +421,8 @@ pub(super) fn build_cuda_htj2k_color_plans_from_bytes_with_profile<'a>(
     let plan_us = profile::elapsed_us(plan_start);
 
     let flatten_start = profile::profile_now(true);
-    let mut payload = Vec::new();
-    let mut components = Vec::with_capacity(native_plan.component_plans.len());
-    for component_plan in &native_plan.component_plans {
-        let mut component =
-            CudaHtj2kDecodePlan::from_grayscale_direct_plan(component_plan, fmt, (0, 0))?;
-        component.append_payload_to_shared(&mut payload)?;
-        components.push(component);
-    }
+    let (payload, components) =
+        flatten_cuda_color_components(&native_plan, fmt, None, "j2k CUDA color decode plans")?;
     let flatten_us = profile::elapsed_us(flatten_start);
     let block_count = components
         .iter()

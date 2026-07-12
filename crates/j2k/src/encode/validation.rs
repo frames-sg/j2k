@@ -1,61 +1,82 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::{format, string::ToString, vec::Vec};
+use alloc::{format, vec::Vec};
 
-use j2k_native::{DecodeSettings, Image};
+use j2k_native::RawBitmap;
 
-use super::contracts::{J2kEncodeValidation, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH};
+use super::contracts::J2kEncodeValidation;
 use super::lossy::usize_to_f64;
-use super::samples::{
-    raw_pixel_bytes_per_sample, J2kLosslessComponentPlane, J2kLosslessComponentSamples,
-    J2kLosslessSamples, J2kLosslessTypedComponentPlane, J2kLosslessTypedComponentSamples,
-    J2kLossySamples,
-};
+use super::samples::{raw_pixel_bytes_per_sample, J2kLosslessSamples, J2kLossySamples};
 use crate::J2kError;
 
+mod component;
+pub(super) use component::{
+    validate_lossless_component_roundtrip, validate_lossless_high_bit_component_roundtrip,
+    validate_lossless_typed_component_roundtrip,
+};
+mod decode;
+use self::decode::{
+    decode_native_components_for_validation, decode_native_for_validation, output_validation_error,
+    raw_bitmap_metadata_matches,
+};
+#[cfg(test)]
+use self::decode::{validation_decode_error, validation_retained_capacity};
+
+// This intentionally receives the `Vec`: validation budgets its retained
+// allocation capacity, not only the initialized codestream bytes.
 pub(super) fn validate_lossy_roundtrip(
     samples: J2kLossySamples<'_>,
-    codestream: &[u8],
+    codestream: &Vec<u8>,
     validation: J2kEncodeValidation,
 ) -> Result<Option<f64>, J2kError> {
     if validation == J2kEncodeValidation::External {
         return Ok(None);
     }
 
-    let decoded = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|err| {
-            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-        })?
-        .decode_native()
-        .map_err(|err| {
-            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-        })?;
-
-    if decoded.width != samples.width
-        || decoded.height != samples.height
-        || decoded.num_components != samples.components
-        || decoded.bit_depth != samples.bit_depth
-    {
-        return Err(J2kError::InvalidSamples {
-            what: "JPEG 2000 lossy encode failed round-trip geometry validation".to_string(),
-        });
+    let decoded =
+        decode_native_for_validation(codestream, "encoded JPEG 2000 lossy validation failed")?;
+    if !raw_bitmap_metadata_matches(
+        &decoded,
+        samples.width,
+        samples.height,
+        samples.components,
+        samples.bit_depth,
+        samples.signed,
+    ) {
+        return Err(output_validation_error(
+            "JPEG 2000 lossy encode failed round-trip geometry validation",
+        ));
     }
 
     Ok(Some(psnr_from_decoded(samples, &decoded.data)?))
 }
 
+// See `validate_lossy_roundtrip` for the `Vec` ownership contract.
 pub(super) fn decoded_psnr(
     samples: J2kLossySamples<'_>,
-    codestream: &[u8],
+    codestream: &Vec<u8>,
 ) -> Result<f64, J2kError> {
-    let decoded = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|err| {
-            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-        })?
-        .decode_native()
-        .map_err(|err| {
-            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-        })?;
+    let decoded =
+        decode_native_for_validation(codestream, "encoded JPEG 2000 PSNR validation failed")?;
+    psnr_from_validated_bitmap(samples, &decoded)
+}
+
+fn psnr_from_validated_bitmap(
+    samples: J2kLossySamples<'_>,
+    decoded: &RawBitmap,
+) -> Result<f64, J2kError> {
+    if !raw_bitmap_metadata_matches(
+        decoded,
+        samples.width,
+        samples.height,
+        samples.components,
+        samples.bit_depth,
+        samples.signed,
+    ) {
+        return Err(output_validation_error(
+            "JPEG 2000 PSNR validation metadata mismatch",
+        ));
+    }
     psnr_from_decoded(samples, &decoded.data)
 }
 
@@ -68,13 +89,11 @@ pub(super) fn psnr_from_decoded(
     decoded: &[u8],
 ) -> Result<f64, J2kError> {
     if decoded.len() != samples.data.len() {
-        return Err(J2kError::InvalidSamples {
-            what: format!(
-                "JPEG 2000 lossy encode validation length mismatch: expected {} bytes, got {} bytes",
-                samples.data.len(),
-                decoded.len()
-            ),
-        });
+        return Err(output_validation_error(format!(
+            "JPEG 2000 lossy encode validation length mismatch: expected {} bytes, got {} bytes",
+            samples.data.len(),
+            decoded.len()
+        )));
     }
     let bytes_per_sample = raw_pixel_bytes_per_sample(samples.bit_depth);
     let sample_count = samples.data.len() / bytes_per_sample;
@@ -126,430 +145,72 @@ pub(super) fn sign_extend_sample(raw: u64, bit_depth: u8) -> i64 {
     ((raw << shift) as i64) >> shift
 }
 
+// See `validate_lossy_roundtrip` for the `Vec` ownership contract.
 pub(super) fn validate_lossless_roundtrip(
     samples: J2kLosslessSamples<'_>,
-    codestream: &[u8],
+    codestream: &Vec<u8>,
     validation: J2kEncodeValidation,
 ) -> Result<(), J2kError> {
     if validation == J2kEncodeValidation::External {
         return Ok(());
     }
-    if samples.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
-        let header = j2k_native::inspect_j2k_codestream_header(codestream).map_err(|err| {
-            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-        })?;
-        if header.dimensions != (samples.width, samples.height)
-            || header.components != samples.components
-            || header.bit_depth != samples.bit_depth
-            || header
-                .component_info
-                .iter()
-                .any(|component| component.signed != samples.signed)
-        {
-            return Err(J2kError::InvalidSamples {
-                what: "JPEG 2000 high-bit lossless encode failed metadata validation".to_string(),
-            });
-        }
-        return Ok(());
+    let decoded =
+        decode_native_for_validation(codestream, "encoded JPEG 2000 lossless validation failed")?;
+    if !raw_bitmap_metadata_matches(
+        &decoded,
+        samples.width,
+        samples.height,
+        samples.components,
+        samples.bit_depth,
+        samples.signed,
+    ) {
+        return Err(output_validation_error(
+            "JPEG 2000 lossless encode failed round-trip geometry validation",
+        ));
     }
-
-    let decoded = Image::new(codestream, &DecodeSettings::default())
-        .map_err(|err| {
-            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-        })?
-        .decode_native()
-        .map_err(|err| {
-            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-        })?;
-
-    if decoded.width != samples.width
-        || decoded.height != samples.height
-        || decoded.num_components != samples.components
-        || decoded.bit_depth != samples.bit_depth
-    {
-        return Err(J2kError::InvalidSamples {
-            what: "JPEG 2000 lossless encode failed round-trip geometry validation".to_string(),
-        });
-    }
-    if decoded.data != samples.data {
-        let mismatch = decoded
-            .data
-            .iter()
-            .zip(samples.data.iter())
-            .position(|(actual, expected)| actual != expected);
-        return Err(J2kError::InvalidSamples {
-            what: match mismatch {
-            Some(index) => format!(
-                "JPEG 2000 lossless encode failed round-trip validation at byte {index}: expected {}, got {}",
-                samples.data[index], decoded.data[index]
-            ),
-            None => format!(
-                "JPEG 2000 lossless encode failed round-trip validation: expected {} bytes, got {} bytes",
-                samples.data.len(),
-                decoded.data.len()
-            ),
-        }});
+    if let Some(mismatch) = first_native_sample_mismatch(
+        samples.data,
+        &decoded.data,
+        samples.bit_depth,
+        samples.signed,
+    ) {
+        return Err(output_validation_error(format!(
+            "JPEG 2000 lossless encode failed round-trip validation at sample {mismatch}"
+        )));
     }
     Ok(())
 }
 
-pub(super) fn validate_lossless_component_roundtrip(
-    samples: J2kLosslessComponentSamples<'_>,
-    codestream: &[u8],
-    validation: J2kEncodeValidation,
-) -> Result<(), J2kError> {
-    if validation == J2kEncodeValidation::External {
-        return Ok(());
-    }
-
-    let image = Image::new(codestream, &DecodeSettings::default()).map_err(|err| {
-        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-    })?;
-    let mut context = j2k_native::DecoderContext::default();
-    let decoded = image
-        .decode_components_with_context(&mut context)
-        .map_err(|err| {
-            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-        })?;
-
-    if decoded.dimensions() != (samples.width, samples.height)
-        || decoded.planes().len() != samples.planes.len()
+fn first_native_sample_mismatch(
+    expected: &[u8],
+    actual: &[u8],
+    bit_depth: u8,
+    signed: bool,
+) -> Option<usize> {
+    let bytes_per_sample = raw_pixel_bytes_per_sample(bit_depth);
+    if expected.len() != actual.len()
+        || !expected.len().is_multiple_of(bytes_per_sample)
+        || !actual.len().is_multiple_of(bytes_per_sample)
     {
-        return Err(J2kError::InvalidSamples {
-            what: "JPEG 2000 lossless component-plane encode failed round-trip geometry validation"
-                .to_string(),
-        });
+        return Some(expected.len().min(actual.len()) / bytes_per_sample);
     }
-
-    for (index, (expected, actual)) in samples
-        .planes
-        .iter()
-        .zip(decoded.planes().iter())
-        .enumerate()
-    {
-        let expected_sampling = (expected.x_rsiz, expected.y_rsiz);
-        if actual.bit_depth() != samples.bit_depth
-            || actual.signed() != samples.signed
-            || actual.sampling() != expected_sampling
-        {
-            return Err(J2kError::InvalidSamples {
-                what: format!(
-                    "JPEG 2000 lossless component-plane encode failed metadata validation for component {index}"
-                ),
-            });
-        }
-        if expected_sampling == (1, 1) {
-            validate_full_resolution_component_samples(samples, expected, actual.samples(), index)?;
-        }
-    }
-    Ok(())
+    expected
+        .chunks_exact(bytes_per_sample)
+        .zip(actual.chunks_exact(bytes_per_sample))
+        .position(|(expected, actual)| {
+            let canonical = canonical_native_sample_bytes(expected, bit_depth, signed);
+            actual != &canonical[..bytes_per_sample]
+        })
 }
 
-pub(super) fn validate_lossless_high_bit_component_roundtrip(
-    samples: J2kLosslessComponentSamples<'_>,
-    codestream: &[u8],
-    validation: J2kEncodeValidation,
-) -> Result<(), J2kError> {
-    if validation == J2kEncodeValidation::External {
-        return Ok(());
+pub(super) fn canonical_native_sample_bytes(sample: &[u8], bit_depth: u8, signed: bool) -> [u8; 8] {
+    let raw = read_le_sample_value(sample, bit_depth);
+    if signed {
+        sign_extend_sample(raw, bit_depth).to_le_bytes()
+    } else {
+        raw.to_le_bytes()
     }
-
-    let image = Image::new(codestream, &DecodeSettings::default()).map_err(|err| {
-        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-    })?;
-    let decoded = image.decode_native_components().map_err(|err| {
-        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-    })?;
-
-    if decoded.dimensions() != (samples.width, samples.height)
-        || decoded.planes().len() != samples.planes.len()
-    {
-        return Err(J2kError::InvalidSamples {
-            what: "JPEG 2000 lossless high-bit component-plane encode failed round-trip geometry validation"
-                .to_string(),
-        });
-    }
-
-    for (index, (expected, actual)) in samples
-        .planes
-        .iter()
-        .zip(decoded.planes().iter())
-        .enumerate()
-    {
-        if actual.bit_depth() != samples.bit_depth
-            || actual.signed() != samples.signed
-            || actual.sampling() != (expected.x_rsiz, expected.y_rsiz)
-            || actual.data() != expected.data
-        {
-            return Err(J2kError::InvalidSamples {
-                what: format!(
-                    "JPEG 2000 lossless high-bit component-plane encode failed validation for component {index}"
-                ),
-            });
-        }
-    }
-    Ok(())
 }
 
-pub(super) fn validate_lossless_typed_component_roundtrip(
-    samples: J2kLosslessTypedComponentSamples<'_>,
-    codestream: &[u8],
-    validation: J2kEncodeValidation,
-) -> Result<(), J2kError> {
-    if validation == J2kEncodeValidation::External {
-        return Ok(());
-    }
-    if samples.max_bit_depth() > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
-        return validate_lossless_high_bit_typed_component_roundtrip(
-            samples, codestream, validation,
-        );
-    }
-
-    let image = Image::new(codestream, &DecodeSettings::default()).map_err(|err| {
-        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-    })?;
-    let mut context = j2k_native::DecoderContext::default();
-    let decoded = image
-        .decode_components_with_context(&mut context)
-        .map_err(|err| {
-            J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-        })?;
-
-    if decoded.dimensions() != (samples.width, samples.height)
-        || decoded.planes().len() != samples.planes.len()
-    {
-        return Err(J2kError::InvalidSamples {
-            what: "JPEG 2000 lossless typed component-plane encode failed round-trip geometry validation"
-                .to_string(),
-        });
-    }
-
-    for (index, (expected, actual)) in samples
-        .planes
-        .iter()
-        .zip(decoded.planes().iter())
-        .enumerate()
-    {
-        let expected_sampling = (expected.x_rsiz, expected.y_rsiz);
-        if actual.bit_depth() != expected.bit_depth
-            || actual.signed() != expected.signed
-            || actual.sampling() != expected_sampling
-        {
-            return Err(J2kError::InvalidSamples {
-                what: format!(
-                    "JPEG 2000 lossless typed component-plane encode failed metadata validation for component {index}"
-                ),
-            });
-        }
-        if expected_sampling == (1, 1) {
-            validate_full_resolution_typed_component_samples(expected, actual.samples(), index)?;
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn validate_lossless_high_bit_typed_component_roundtrip(
-    samples: J2kLosslessTypedComponentSamples<'_>,
-    codestream: &[u8],
-    validation: J2kEncodeValidation,
-) -> Result<(), J2kError> {
-    if validation == J2kEncodeValidation::External {
-        return Ok(());
-    }
-
-    let image = Image::new(codestream, &DecodeSettings::default()).map_err(|err| {
-        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-    })?;
-    let decoded = image.decode_native_components().map_err(|err| {
-        J2kError::validation_backend(format!("encoded codestream validation failed: {err}"))
-    })?;
-
-    if decoded.dimensions() != (samples.width, samples.height)
-        || decoded.planes().len() != samples.planes.len()
-    {
-        return Err(J2kError::InvalidSamples {
-            what: "JPEG 2000 lossless high-bit typed component-plane encode failed round-trip geometry validation"
-                .to_string(),
-        });
-    }
-
-    for (index, (expected, actual)) in samples
-        .planes
-        .iter()
-        .zip(decoded.planes().iter())
-        .enumerate()
-    {
-        let expected_data = canonical_native_typed_component_bytes_for_reference_grid(
-            expected,
-            samples.width,
-            samples.height,
-        )?;
-        if actual.bit_depth() != expected.bit_depth
-            || actual.signed() != expected.signed
-            || actual.sampling() != (expected.x_rsiz, expected.y_rsiz)
-            || actual.data() != expected_data.as_slice()
-        {
-            return Err(J2kError::InvalidSamples {
-                what: format!(
-                    "JPEG 2000 lossless high-bit typed component-plane encode failed validation for component {index}"
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn canonical_native_typed_component_bytes_for_reference_grid(
-    plane: &J2kLosslessTypedComponentPlane<'_>,
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, J2kError> {
-    let component_bytes = canonical_native_typed_component_bytes(plane)?;
-    if (plane.x_rsiz, plane.y_rsiz) == (1, 1) {
-        return Ok(component_bytes);
-    }
-
-    let bytes_per_sample = raw_pixel_bytes_per_sample(plane.bit_depth);
-    let component_width = width.div_ceil(u32::from(plane.x_rsiz)) as usize;
-    let component_height = height.div_ceil(u32::from(plane.y_rsiz)) as usize;
-    let output_len = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|sample_count| sample_count.checked_mul(bytes_per_sample))
-        .ok_or(J2kError::DimensionOverflow { width, height })?;
-    let mut out = Vec::with_capacity(output_len);
-
-    for y in 0..height as usize {
-        let component_y = (y / usize::from(plane.y_rsiz)).min(component_height.saturating_sub(1));
-        for x in 0..width as usize {
-            let component_x =
-                (x / usize::from(plane.x_rsiz)).min(component_width.saturating_sub(1));
-            let component_idx = component_y
-                .checked_mul(component_width)
-                .and_then(|offset| offset.checked_add(component_x))
-                .ok_or(J2kError::DimensionOverflow { width, height })?;
-            let start = component_idx
-                .checked_mul(bytes_per_sample)
-                .ok_or(J2kError::DimensionOverflow { width, height })?;
-            let end = start
-                .checked_add(bytes_per_sample)
-                .ok_or(J2kError::DimensionOverflow { width, height })?;
-            out.extend_from_slice(component_bytes.get(start..end).ok_or_else(|| {
-                J2kError::InvalidSamples {
-                    what: "JPEG 2000 typed component-plane canonicalization length mismatch"
-                        .to_string(),
-                }
-            })?);
-        }
-    }
-
-    Ok(out)
-}
-
-pub(super) fn canonical_native_typed_component_bytes(
-    plane: &J2kLosslessTypedComponentPlane<'_>,
-) -> Result<Vec<u8>, J2kError> {
-    let bytes_per_sample = raw_pixel_bytes_per_sample(plane.bit_depth);
-    let mut out = Vec::with_capacity(plane.data.len());
-    for sample in plane.data.chunks_exact(bytes_per_sample) {
-        let raw = read_le_sample_value(sample, plane.bit_depth);
-        if plane.signed {
-            let value = sign_extend_sample(raw, plane.bit_depth);
-            if plane.bit_depth <= 8 {
-                let signed = i8::try_from(value).expect("signed 8-bit sample fits i8");
-                out.push(signed.to_le_bytes()[0]);
-            } else if plane.bit_depth <= 16 {
-                let signed = i16::try_from(value).expect("signed 16-bit sample fits i16");
-                out.extend_from_slice(&signed.to_le_bytes());
-            } else {
-                let bytes = value.to_le_bytes();
-                out.extend_from_slice(&bytes[..bytes_per_sample]);
-            }
-        } else if plane.bit_depth <= 8 {
-            out.push(u8::try_from(raw).expect("unsigned 8-bit sample fits u8"));
-        } else if plane.bit_depth <= 16 {
-            let unsigned = u16::try_from(raw).expect("unsigned 16-bit sample fits u16");
-            out.extend_from_slice(&unsigned.to_le_bytes());
-        } else {
-            let bytes = raw.to_le_bytes();
-            out.extend_from_slice(&bytes[..bytes_per_sample]);
-        }
-    }
-    if out.len() != plane.data.len() {
-        return Err(J2kError::InvalidSamples {
-            what: "JPEG 2000 typed component-plane canonicalization length mismatch".to_string(),
-        });
-    }
-    Ok(out)
-}
-
-pub(super) fn validate_full_resolution_component_samples(
-    samples: J2kLosslessComponentSamples<'_>,
-    expected: &J2kLosslessComponentPlane<'_>,
-    actual: &[f32],
-    component_index: usize,
-) -> Result<(), J2kError> {
-    let expected_samples = (samples.width as usize)
-        .checked_mul(samples.height as usize)
-        .ok_or(J2kError::DimensionOverflow {
-            width: samples.width,
-            height: samples.height,
-        })?;
-    if actual.len() < expected_samples {
-        return Err(J2kError::InvalidSamples {
-            what: format!(
-                "JPEG 2000 lossless component-plane encode failed validation for component {component_index}: expected {expected_samples} samples, got {}",
-                actual.len()
-            ),
-        });
-    }
-    for (sample_index, actual_sample) in actual.iter().take(expected_samples).enumerate() {
-        let expected_sample = sample_value(
-            expected.data,
-            sample_index,
-            samples.bit_depth,
-            samples.signed,
-        );
-        if (f64::from(actual_sample.round()) - expected_sample).abs() > f64::EPSILON {
-            return Err(J2kError::InvalidSamples {
-                what: format!(
-                    "JPEG 2000 lossless component-plane encode failed validation for component {component_index} sample {sample_index}: expected {expected_sample}, got {}",
-                    actual_sample.round()
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn validate_full_resolution_typed_component_samples(
-    expected: &J2kLosslessTypedComponentPlane<'_>,
-    actual: &[f32],
-    component_index: usize,
-) -> Result<(), J2kError> {
-    let expected_samples = expected.data.len() / raw_pixel_bytes_per_sample(expected.bit_depth);
-    if actual.len() < expected_samples {
-        return Err(J2kError::InvalidSamples {
-            what: format!(
-                "JPEG 2000 lossless typed component-plane encode failed validation for component {component_index}: expected {expected_samples} samples, got {}",
-                actual.len()
-            ),
-        });
-    }
-    for (sample_index, actual_sample) in actual.iter().take(expected_samples).enumerate() {
-        let expected_sample = sample_value(
-            expected.data,
-            sample_index,
-            expected.bit_depth,
-            expected.signed,
-        );
-        if (f64::from(actual_sample.round()) - expected_sample).abs() > f64::EPSILON {
-            return Err(J2kError::InvalidSamples {
-                what: format!(
-                    "JPEG 2000 lossless typed component-plane encode failed validation for component {component_index} sample {sample_index}: expected {expected_sample}, got {}",
-                    actual_sample.round()
-                ),
-            });
-        }
-    }
-    Ok(())
-}
+#[cfg(test)]
+mod tests;

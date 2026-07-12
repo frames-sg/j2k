@@ -25,7 +25,7 @@ mod context;
 pub use context::J2kContext;
 
 mod error;
-pub use error::{BackendError, BackendErrorKind, J2kError};
+pub use error::{BackendError, BackendErrorKind, J2kError, NativeBackendError};
 
 mod scratch;
 pub use scratch::J2kScratchPool;
@@ -38,12 +38,14 @@ pub use adapter::encode_stage::{
     CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
     IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales, J2kCodeBlockSegment,
     J2kCodeBlockStyle, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
-    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
-    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
-    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
-    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
-    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
-    J2kPacketizationSubband, J2kQuantizeSubbandJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    J2kEncodeStageError, J2kEncodeStageErrorKind, J2kEncodeStageResult, J2kForwardDwt53Job,
+    J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Level,
+    J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
+    J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+    J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
+    J2kQuantizeSubbandJob, J2kResidentEncodeInput, J2kResidentEncodeInputError,
+    J2kResidentHtj2kTileEncodeJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
     PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
     PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
     PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
@@ -78,7 +80,8 @@ pub use metadata::{
 };
 
 pub use encode::{
-    encode_j2k_lossless, encode_j2k_lossless_components, encode_j2k_lossless_typed_components,
+    encode_j2k_lossless, encode_j2k_lossless_components,
+    encode_j2k_lossless_resident_with_accelerator, encode_j2k_lossless_typed_components,
     encode_j2k_lossless_with_accelerator, encode_j2k_lossless_with_roi_regions, encode_j2k_lossy,
     encode_j2k_lossy_with_accelerator, encode_j2k_lossy_with_roi_regions,
     j2k_lossless_decomposition_levels, j2k_lossless_decomposition_levels_for_options,

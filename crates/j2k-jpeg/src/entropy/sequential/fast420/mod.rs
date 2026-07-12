@@ -15,7 +15,7 @@ use super::layout::{
 };
 use super::profile::{Fast420ScanProfiler, NoopFast420Profiler, NoopFast420ScanProfile};
 use super::restart::{finish_scan, reader_from_checkpoint};
-use super::{PreparedComponentPlan, PreparedDecodePlan, RgbOutputScratch, StripeBuffer};
+use super::{PreparedDecodePlan, ResolvedPreparedComponentPlan, RgbOutputScratch, StripeBuffer};
 use crate::backend::Backend;
 #[cfg(feature = "bench-internals")]
 use crate::bench_support::BenchFast420Profile;
@@ -35,17 +35,20 @@ use self::rows::{decode_mcu_row_fast_tile_420_scaled, skip_mcu_fast_tile_420};
 
 fn fast_tile_components(
     plan: &PreparedDecodePlan,
-) -> (
-    &PreparedComponentPlan,
-    &PreparedComponentPlan,
-    &PreparedComponentPlan,
-) {
-    debug_assert!(plan.matches_fast_tile_shape());
+) -> Result<
     (
-        &plan.components[0],
-        &plan.components[1],
-        &plan.components[2],
-    )
+        ResolvedPreparedComponentPlan<'_>,
+        ResolvedPreparedComponentPlan<'_>,
+        ResolvedPreparedComponentPlan<'_>,
+    ),
+    JpegError,
+> {
+    debug_assert!(plan.matches_fast_tile_shape());
+    Ok((
+        plan.resolved_component(0)?,
+        plan.resolved_component(1)?,
+        plan.resolved_component(2)?,
+    ))
 }
 
 pub(crate) fn decode_scan_fast_tile_rgb<W: OutputWriter + InterleavedRgbWriter>(
@@ -89,12 +92,13 @@ where
         plan,
         mcus_per_row,
         DownscaleFactor::Full.output_block_size(),
-    );
+        plan.scratch_bytes,
+    )?;
 
     let mut br = BitReader::new(scan_bytes);
     let mut coeff = CoefficientBlock::default();
     let mut pixels = [0u8; 64];
-    let (y_comp, cb_comp, cr_comp) = fast_tile_components(plan);
+    let (y_comp, cb_comp, cr_comp) = fast_tile_components(plan)?;
     let components = FastTile420Components {
         y: y_comp,
         cb: cb_comp,
@@ -201,7 +205,7 @@ where
     profile.finish_rgb_emit(emit_timer);
 
     let finish_timer = profile.begin_finish_scan();
-    let result = finish_fast_tile_scan(&mut br);
+    let result = finish_scan(&mut br, true);
     profile.finish_finish_scan(finish_timer);
     result
 }
@@ -216,22 +220,6 @@ pub(crate) fn decode_scan_fast_tile_rgb_profiled<W: OutputWriter + InterleavedRg
     profile: &mut BenchFast420Profile,
 ) -> Result<Vec<Warning>, JpegError> {
     decode_scan_fast_tile_rgb_impl(plan, backend, scan_bytes, pool, writer, profile)
-}
-
-fn finish_fast_tile_scan(br: &mut BitReader<'_>) -> Result<Vec<Warning>, JpegError> {
-    let mut warnings = Vec::new();
-    match br.take_marker() {
-        Some(0xD9) => Ok(warnings),
-        Some(found) => Err(JpegError::UnexpectedMarker {
-            offset: br.position().saturating_sub(2),
-            expected: crate::error::MarkerKind::Eoi,
-            found,
-        }),
-        None => {
-            warnings.push(Warning::MissingEoi);
-            Ok(warnings)
-        }
-    }
 }
 
 #[expect(
@@ -262,17 +250,23 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
 
     let region_layout = Fast420RegionLayout::new(width as usize, roi);
 
-    pool.prepare_for(
+    let mut crop_rows = pool.take_sink_rows(
+        region_layout.row_width().saturating_mul(3),
+        plan.scratch_bytes,
+    )?;
+    if let Err(error) = pool.prepare_for(
         plan,
         region_layout.stripe_mcus_per_row,
         DownscaleFactor::Full.output_block_size(),
-    );
-
-    let mut crop_rows = pool.take_sink_rows(region_layout.row_width());
+        plan.scratch_bytes,
+    ) {
+        pool.restore_sink_rows(crop_rows);
+        return Err(error);
+    }
     let result = (|| {
         let mut coeff = CoefficientBlock::default();
         let mut pixels = [0u8; 64];
-        let (y_comp, cb_comp, cr_comp) = fast_tile_components(plan);
+        let (y_comp, cb_comp, cr_comp) = fast_tile_components(plan)?;
         let components = FastTile420Components {
             y: y_comp,
             cb: cb_comp,
@@ -436,9 +430,19 @@ pub(crate) fn decode_scan_fast_tile_rgb_region_scaled<W: OutputWriter + Interlea
 
     let region_layout = Fast420RegionLayout::new_for_mcu_width(width as usize, roi, mcu_width_px);
 
-    pool.prepare_for(plan, region_layout.stripe_mcus_per_row, block_size);
-
-    let mut crop_rows = pool.take_sink_rows(region_layout.row_width());
+    let mut crop_rows = pool.take_sink_rows(
+        region_layout.row_width().saturating_mul(3),
+        plan.scratch_bytes,
+    )?;
+    if let Err(error) = pool.prepare_for(
+        plan,
+        region_layout.stripe_mcus_per_row,
+        block_size,
+        plan.scratch_bytes,
+    ) {
+        pool.restore_sink_rows(crop_rows);
+        return Err(error);
+    }
     let result = (|| {
         let mut coeff = CoefficientBlock::default();
         let ScratchPool {
@@ -461,11 +465,8 @@ pub(crate) fn decode_scan_fast_tile_rgb_region_scaled<W: OutputWriter + Interlea
         *y_dc = checkpoint_dc[0];
         *cb_dc = checkpoint_dc[1];
         *cr_dc = checkpoint_dc[2];
-        let components = FastTile420Components {
-            y: &plan.components[0],
-            cb: &plan.components[1],
-            cr: &plan.components[2],
-        };
+        let (y, cb, cr) = fast_tile_components(plan)?;
+        let components = FastTile420Components { y, cb, cr };
         let window = FastTile420Window {
             mcus_per_row,
             stripe_mcu_start: region_layout.stripe_mcu_start,

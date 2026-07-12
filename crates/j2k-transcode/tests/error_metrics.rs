@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_transcode::metrics::error_metrics_i32;
+use j2k_transcode::metrics::{error_metrics_i32, MetricsError};
 use j2k_transcode::TranscodeValidationClassification;
 
 #[test]
@@ -60,6 +60,11 @@ fn transcode_validation_classification_applies_thresholds() {
 fn error_metrics_reject_mismatched_lengths() {
     let err = error_metrics_i32(&[1, 2, 3], &[1, 2]).unwrap_err();
 
-    assert_eq!(err.actual_len(), 3);
-    assert_eq!(err.expected_len(), 2);
+    assert_eq!(
+        err,
+        MetricsError::LengthMismatch {
+            actual: 3,
+            expected: 2,
+        }
+    );
 }

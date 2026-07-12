@@ -9,6 +9,7 @@ const MODULE_LIMITS: &[(&str, usize)] = &[
     ("host_fallback.rs", 190),
     ("resident_hybrid.rs", 200),
     ("resident_plan.rs", 110),
+    ("resident_prepare.rs", 130),
     ("resident_submit.rs", 350),
     ("resident_validation.rs", 130),
     ("resident_wait.rs", 310),
@@ -49,10 +50,13 @@ const FUNCTION_OWNERS: &[(&str, &[&str])] = &[
         &["plan_resident_lossless_buffer_encode"],
     ),
     (
+        "resident_prepare.rs",
+        &["prepare_planned_resident_lossless_tiles_batch"],
+    ),
+    (
         "resident_submit.rs",
         &[
             "submit_planned_resident_lossless_tiles",
-            "prepare_planned_resident_lossless_tiles_batch",
             "submit_planned_resident_lossless_tiles_chunked",
             "duration_share",
         ],
@@ -81,7 +85,7 @@ const FUNCTION_OWNERS: &[(&str, &[&str])] = &[
             "should_try_auto_resident_lossless_host_encode",
             "should_try_auto_resident_lossless_host_format",
             "host_output_encode_options",
-            "borrow_padded_metal_buffer_from_bytes",
+            "copy_padded_metal_buffer_from_bytes",
         ],
     ),
 ];
@@ -177,9 +181,9 @@ fn encode_responsibilities_have_single_module_owners() {
     );
     let hybrid = read_source(&root.join("resident_hybrid.rs"));
     assert_eq!(hybrid.matches("struct ResidentHybridHtTileBody").count(), 1);
-    let submit = read_source(&root.join("resident_submit.rs"));
+    let prepare = read_source(&root.join("resident_prepare.rs"));
     assert_eq!(
-        submit
+        prepare
             .matches("struct PreparedResidentLosslessBatchItem")
             .count(),
         1

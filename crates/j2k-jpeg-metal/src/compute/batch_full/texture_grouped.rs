@@ -29,18 +29,36 @@ pub(super) fn try_decode_grouped_fast_subsampled_full_rgba_batch_to_textures<
         )?;
     }
 
-    let mut merged_results: Vec<Option<Result<crate::MetalTextureTile, Error>>> =
-        (0..requests.len()).map(|_| None).collect();
+    let mut result_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal grouped full texture results",
+        requests,
+    )?;
+    let mut merged_results = result_budget.try_filled(
+        requests.len(),
+        None,
+        "JPEG Metal grouped full texture result slots",
+    )?;
     for group_indices in groups {
         let group_output = output.clone_slots(&group_indices)?;
-        let group_requests = group_indices
-            .iter()
-            .map(|&index| requests[index].clone())
-            .collect::<Vec<_>>();
-        let group_packets = group_indices
-            .iter()
-            .map(|&index| family_packets[index].to_batched_with_texture_mode(family_modes[index]))
-            .collect::<Vec<_>>();
+        let mut group_budget = crate::plan_owner_ledger::batch_execution_budget(
+            "JPEG Metal grouped full texture sub-batch",
+            requests,
+        )?;
+        let mut group_requests = group_budget.try_vec(
+            group_indices.len(),
+            "JPEG Metal grouped full texture requests",
+        )?;
+        group_requests.extend(group_indices.iter().map(|&index| requests[index].clone()));
+        let mut group_packets = group_budget.try_vec(
+            group_indices.len(),
+            "JPEG Metal grouped full texture packets",
+        )?;
+        group_packets.extend(
+            group_indices.iter().map(|&index| {
+                family_packets[index].to_batched_with_texture_mode(family_modes[index])
+            }),
+        );
+        batch::stamp_execution_owner_baseline(&mut group_requests, 0, group_budget.live_bytes());
 
         let Some(group_results) = try_decode_fast_subsampled_full_rgba_batch_to_textures::<P>(
             runtime,
@@ -65,7 +83,10 @@ pub(super) fn try_decode_grouped_fast_subsampled_full_rgba_batch_to_textures<
         }
     }
 
-    let mut results = Vec::with_capacity(requests.len());
+    let mut results = result_budget.try_vec(
+        requests.len(),
+        "JPEG Metal ordered grouped full texture results",
+    )?;
     for (index, result) in merged_results.into_iter().enumerate() {
         results.push(result.ok_or_else(|| Error::MetalKernel {
             message: format!(

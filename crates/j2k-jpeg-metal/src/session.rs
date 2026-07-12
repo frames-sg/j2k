@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use j2k_core::{BackendKind, BackendRequest};
 use j2k_jpeg::adapter::{
-    build_fast420_packet, build_fast422_packet, build_fast444_packet, JpegFast420PacketV1,
-    JpegFast422PacketV1, JpegFast444PacketV1,
+    JpegCachedPlan, JpegPlanCache, JpegPlanCacheDiagnostics, SharedJpegFastPacket, SharedJpegInput,
 };
+use j2k_jpeg::Decoder as CpuDecoder;
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{MetalRuntimeSession, MetalSupportError};
 #[cfg(target_os = "macos")]
@@ -15,17 +14,13 @@ use metal::Device;
 
 #[cfg(target_os = "macos")]
 use crate::compute;
-use crate::{batch, Error};
+use crate::{batch, plan_owner_ledger::PlanOwnerLedger, Error};
 
-const BATCH_SHAPE_CACHE_SLOTS: usize = 8;
-const FAST_PACKET_CACHE_SLOTS: usize = 8;
-const INPUT_ALIAS_CACHE_SLOTS: usize = 8;
+mod allocation;
+mod completions;
 
-pub(crate) type SharedFastPackets = (
-    Option<Arc<JpegFast444PacketV1>>,
-    Option<Arc<JpegFast422PacketV1>>,
-    Option<Arc<JpegFast420PacketV1>>,
-);
+pub(crate) use allocation::submission_capacity_bytes;
+use allocation::{capacity_bytes, prepare_queue_growth, projected_push_capacity};
 
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
@@ -110,28 +105,30 @@ impl MetalBackendSession {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct CachedBatchShape {
-    digest: u64,
-    input: Arc<[u8]>,
-    shape: batch::BatchShape,
+#[derive(Debug)]
+pub(crate) struct ResolvedJpegPlan {
+    pub(crate) input: SharedJpegInput,
+    pub(crate) fast_packet: Option<SharedJpegFastPacket>,
+    pub(crate) shape: batch::BatchShape,
 }
 
-#[derive(Clone)]
-pub(crate) struct CachedFastPackets {
-    digest: u64,
-    input: Arc<[u8]>,
-    fast444_packet: Option<Arc<JpegFast444PacketV1>>,
-    fast422_packet: Option<Arc<JpegFast422PacketV1>>,
-    fast420_packet: Option<Arc<JpegFast420PacketV1>>,
-}
+impl ResolvedJpegPlan {
+    fn from_cached(plan: &JpegCachedPlan) -> Self {
+        let shape = batch::BatchShape::from_summary(plan.batch_summary(), plan.color_space());
+        Self {
+            input: plan.input().clone(),
+            fast_packet: plan.fast_packet().cloned(),
+            shape,
+        }
+    }
 
-#[derive(Clone)]
-struct CachedInputAlias {
-    source_ptr: usize,
-    source_len: usize,
-    digest: u64,
-    input: Arc<[u8]>,
+    fn uninspected(input: SharedJpegInput) -> Self {
+        Self {
+            input,
+            fast_packet: None,
+            shape: batch::BatchShape::unknown(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -141,9 +138,13 @@ pub(crate) struct SessionState {
     pub(crate) completed: Vec<Option<Result<crate::Surface, crate::Error>>>,
     #[cfg(target_os = "macos")]
     pub(crate) backend_session: Option<MetalBackendSession>,
-    batch_shapes: VecDeque<CachedBatchShape>,
-    fast_packets: VecDeque<CachedFastPackets>,
-    input_aliases: VecDeque<CachedInputAlias>,
+    jpeg_plans: JpegPlanCache,
+    queued_plan_ledger: PlanOwnerLedger,
+    retained_execution_metadata_bytes: usize,
+    completed_host_bytes: usize,
+    peak_collective_host_bytes: usize,
+    #[cfg(test)]
+    queue_growth_capacity_override: Option<(usize, usize)>,
 }
 
 impl SessionState {
@@ -155,168 +156,336 @@ impl SessionState {
         }
     }
 
-    pub(crate) fn queue_request(&mut self, request: crate::batch::QueuedRequest) -> usize {
+    pub(crate) fn queue_request(
+        &mut self,
+        request: crate::batch::QueuedRequest,
+    ) -> Result<usize, Error> {
+        self.queue_request_with_retained_metadata(request, 0)
+    }
+
+    pub(crate) fn queue_request_with_retained(
+        &mut self,
+        request: crate::batch::QueuedRequest,
+        retained_submission_capacity: usize,
+    ) -> Result<usize, Error> {
+        let submission_metadata_bytes = submission_capacity_bytes(retained_submission_capacity)?;
+        self.queue_request_with_retained_metadata(request, submission_metadata_bytes)
+    }
+
+    pub(crate) fn queue_request_with_retained_metadata(
+        &mut self,
+        request: crate::batch::QueuedRequest,
+        retained_metadata_bytes: usize,
+    ) -> Result<usize, Error> {
+        let execution_metadata_bytes = self
+            .retained_execution_metadata_bytes
+            .max(retained_metadata_bytes);
+        let owner_admission = self.queued_plan_ledger.preflight(
+            &self.queued,
+            &request,
+            self.jpeg_plans.diagnostics().retained_bytes,
+        )?;
+        let projected_completed_capacity = projected_push_capacity(
+            self.completed.len(),
+            self.completed.capacity(),
+            "JPEG Metal queued completion capacity",
+        )?;
+        let projected_queued_capacity = projected_push_capacity(
+            self.queued.len(),
+            self.queued.capacity(),
+            "JPEG Metal queued request capacity",
+        )?;
+        let mut growth = prepare_queue_growth(
+            self,
+            owner_admission.retained_bytes(),
+            execution_metadata_bytes,
+            projected_queued_capacity,
+            projected_completed_capacity,
+        )?;
+        let final_queued_capacity = growth.queued_capacity(self.queued.capacity());
+        let final_completed_capacity = growth.completed_capacity(self.completed.capacity());
+        self.preflight_collective_queue_state(
+            owner_admission.retained_bytes(),
+            execution_metadata_bytes,
+            final_queued_capacity,
+            final_completed_capacity,
+        )?;
+        let collective_host_bytes = self.collective_queue_state_bytes(
+            owner_admission.retained_bytes(),
+            execution_metadata_bytes,
+            final_queued_capacity,
+            final_completed_capacity,
+        )?;
+
+        // All fallible work is complete. Moving elements into admitted
+        // replacements and pushing one slot cannot allocate at these capacities.
+        if let Some(mut queued) = growth.queued.take() {
+            debug_assert!(queued.capacity() > self.queued.len());
+            queued.append(&mut self.queued);
+            self.queued = queued;
+        }
+        if let Some(mut completed) = growth.completed.take() {
+            debug_assert!(completed.capacity() > self.completed.len());
+            completed.append(&mut self.completed);
+            self.completed = completed;
+        }
         let slot = self.completed.len();
         self.completed.push(None);
         self.queued.push(request.with_output_slot(slot));
-        slot
+        self.queued_plan_ledger.commit(owner_admission);
+        self.retained_execution_metadata_bytes = execution_metadata_bytes;
+        self.peak_collective_host_bytes =
+            self.peak_collective_host_bytes.max(collective_host_bytes);
+        Ok(slot)
     }
 
-    pub(crate) fn intern_input_slice(&mut self, input: &[u8]) -> Arc<[u8]> {
-        let source_ptr = input.as_ptr() as usize;
-        let source_len = input.len();
-        // Pointer identity alone is unsound: a caller may reuse one allocation
-        // for different payloads, so every hit is verified by digest plus byte
-        // equality, mirroring resolve_batch_shape/resolve_fast_packets.
-        let digest = digest_bytes(input);
-        if let Some(entry) = self
-            .input_aliases
-            .iter_mut()
-            .find(|entry| entry.source_ptr == source_ptr && entry.source_len == source_len)
-        {
-            if entry.digest == digest && entry.input.as_ref() == input {
-                return Arc::clone(&entry.input);
-            }
-            let refreshed = Arc::<[u8]>::from(input);
-            entry.digest = digest;
-            entry.input = Arc::clone(&refreshed);
-            return refreshed;
-        }
-
-        let input = Arc::<[u8]>::from(input);
-        if self.input_aliases.len() == INPUT_ALIAS_CACHE_SLOTS {
-            self.input_aliases.pop_front();
-        }
-        self.input_aliases.push_back(CachedInputAlias {
-            source_ptr,
-            source_len,
-            digest,
-            input: Arc::clone(&input),
-        });
-        input
-    }
-
-    pub(crate) fn resolve_batch_shape(
+    pub(crate) fn take_queued_requests(
         &mut self,
-        input: &Arc<[u8]>,
-        backend: BackendRequest,
-    ) -> Result<batch::BatchShape, Error> {
-        #[cfg(not(target_os = "macos"))]
-        {
-            if matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
-                return Ok(batch::BatchShape {
-                    restart_interval: None,
-                    checkpoint_count: 0,
-                    sampling_family: batch::SamplingFamily::Unknown,
-                });
-            }
-        }
-
-        match backend {
-            BackendRequest::Auto | BackendRequest::Metal => {}
-            BackendRequest::Cpu | BackendRequest::Cuda => {
-                return Ok(batch::BatchShape {
-                    restart_interval: None,
-                    checkpoint_count: 0,
-                    sampling_family: batch::SamplingFamily::Unknown,
-                });
-            }
-        }
-
-        if let Some(entry) = self
-            .batch_shapes
-            .iter()
-            .find(|entry| Arc::ptr_eq(&entry.input, input))
-        {
-            return Ok(entry.shape);
-        }
-
-        let digest = digest_bytes(input.as_ref());
-        if let Some(entry) = self
-            .batch_shapes
-            .iter()
-            .find(|entry| entry.digest == digest && entry.input.as_ref() == input.as_ref())
-        {
-            return Ok(entry.shape);
-        }
-
-        let decoder = j2k_jpeg::Decoder::new(input.as_ref())?;
-        let summary = j2k_jpeg::adapter::summarize_device_batch(&decoder, 4);
-        let shape = batch::BatchShape {
-            restart_interval: summary.restart_interval,
-            checkpoint_count: summary.checkpoint_count,
-            sampling_family: if summary.matches_fast_420 {
-                batch::SamplingFamily::Fast420
-            } else if summary.matches_fast_422 {
-                batch::SamplingFamily::Fast422
-            } else if summary.matches_fast_444 {
-                batch::SamplingFamily::Fast444
-            } else {
-                batch::SamplingFamily::Other
-            },
-        };
-
-        if self.batch_shapes.len() == BATCH_SHAPE_CACHE_SLOTS {
-            self.batch_shapes.pop_front();
-        }
-        self.batch_shapes.push_back(CachedBatchShape {
-            digest,
-            input: Arc::clone(input),
-            shape,
-        });
-
-        Ok(shape)
+    ) -> Result<Vec<crate::batch::QueuedRequest>, Error> {
+        let cache_retained_bytes = self.jpeg_plans.diagnostics().retained_bytes;
+        let metadata_live_bytes = self
+            .session_metadata_live_bytes()?
+            .checked_add(self.retained_execution_metadata_bytes)
+            .ok_or(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                "JPEG Metal executing metadata owner baseline overflow",
+            ))?;
+        self.queued_plan_ledger.reset();
+        let mut queued = std::mem::take(&mut self.queued);
+        crate::batch::stamp_execution_owner_baseline(
+            &mut queued,
+            cache_retained_bytes,
+            metadata_live_bytes,
+        );
+        self.retained_execution_metadata_bytes = 0;
+        Ok(queued)
     }
 
-    pub(crate) fn resolve_fast_packets(
+    pub(crate) fn complete_queued_with_error(&mut self, error: &Error) {
+        self.queued_plan_ledger.reset();
+        self.retained_execution_metadata_bytes = 0;
+        for request in std::mem::take(&mut self.queued) {
+            if let Some(slot) = self.completed.get_mut(request.output_slot) {
+                *slot = Some(Err(error.clone()));
+            }
+        }
+    }
+
+    pub(crate) fn resolve_jpeg_plan(
         &mut self,
-        input: &Arc<[u8]>,
+        input: &[u8],
         backend: BackendRequest,
-    ) -> SharedFastPackets {
-        if !matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
-            return (None, None, None);
+    ) -> Result<ResolvedJpegPlan, Error> {
+        self.resolve_jpeg_plan_with_external_live(input, backend, 0)
+    }
+
+    pub(crate) fn resolve_jpeg_plan_with_external_live(
+        &mut self,
+        input: &[u8],
+        backend: BackendRequest,
+        additional_external_live_bytes: usize,
+    ) -> Result<ResolvedJpegPlan, Error> {
+        let adapter_live_bytes =
+            self.plan_operation_external_live_bytes(additional_external_live_bytes)?;
+        if !uses_inspected_metal_plan(backend) {
+            let all_external_live_bytes = adapter_live_bytes
+                .checked_add(self.jpeg_plans.diagnostics().retained_bytes)
+                .ok_or(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                    "JPEG Metal session plan owner baseline overflow",
+                ))?;
+            return SharedJpegInput::try_copy_from_slice_with_external_live(
+                input,
+                all_external_live_bytes,
+            )
+            .map(ResolvedJpegPlan::uninspected)
+            .map_err(Error::from);
         }
 
-        if let Some(entry) = self
-            .fast_packets
-            .iter()
-            .find(|entry| Arc::ptr_eq(&entry.input, input))
-        {
-            return (
-                entry.fast444_packet.clone(),
-                entry.fast422_packet.clone(),
-                entry.fast420_packet.clone(),
-            );
+        self.jpeg_plans
+            .resolve_with_external_live(input, adapter_live_bytes)
+            .map(|plan| ResolvedJpegPlan::from_cached(&plan))
+            .map_err(Error::from)
+    }
+
+    pub(crate) fn resolve_jpeg_plan_with_decoder_and_external_live<'a>(
+        &mut self,
+        input: &'a [u8],
+        additional_external_live_bytes: usize,
+    ) -> Result<(ResolvedJpegPlan, CpuDecoder<'a>), Error> {
+        let adapter_live_bytes =
+            self.plan_operation_external_live_bytes(additional_external_live_bytes)?;
+        self.jpeg_plans
+            .resolve_with_decoder_and_external_live(input, adapter_live_bytes)
+            .map(|(plan, decoder)| (ResolvedJpegPlan::from_cached(&plan), decoder))
+            .map_err(Error::from)
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn resolve_shared_jpeg_plan(
+        &mut self,
+        input: SharedJpegInput,
+        backend: BackendRequest,
+    ) -> Result<ResolvedJpegPlan, Error> {
+        self.resolve_shared_jpeg_plan_with_external_live(input, backend, 0)
+    }
+
+    pub(crate) fn resolve_shared_jpeg_plan_with_external_live(
+        &mut self,
+        input: SharedJpegInput,
+        backend: BackendRequest,
+        additional_external_live_bytes: usize,
+    ) -> Result<ResolvedJpegPlan, Error> {
+        let adapter_live_bytes =
+            self.plan_operation_external_live_bytes(additional_external_live_bytes)?;
+        if !uses_inspected_metal_plan(backend) {
+            return Ok(ResolvedJpegPlan::uninspected(input));
         }
 
-        let digest = digest_bytes(input.as_ref());
-        if let Some(entry) = self
-            .fast_packets
-            .iter()
-            .find(|entry| entry.digest == digest && entry.input.as_ref() == input.as_ref())
-        {
-            return (
-                entry.fast444_packet.clone(),
-                entry.fast422_packet.clone(),
-                entry.fast420_packet.clone(),
-            );
-        }
+        self.jpeg_plans
+            .resolve_shared_with_external_live(input, adapter_live_bytes)
+            .map(|plan| ResolvedJpegPlan::from_cached(&plan))
+            .map_err(Error::from)
+    }
 
-        let fast444_packet = build_fast444_packet(input.as_ref()).ok().map(Arc::new);
-        let fast422_packet = build_fast422_packet(input.as_ref()).ok().map(Arc::new);
-        let fast420_packet = build_fast420_packet(input.as_ref()).ok().map(Arc::new);
-        if self.fast_packets.len() == FAST_PACKET_CACHE_SLOTS {
-            self.fast_packets.pop_front();
-        }
-        self.fast_packets.push_back(CachedFastPackets {
-            digest,
-            input: Arc::clone(input),
-            fast444_packet: fast444_packet.clone(),
-            fast422_packet: fast422_packet.clone(),
-            fast420_packet: fast420_packet.clone(),
-        });
+    pub(crate) fn resolve_arc_jpeg_plan_with_external_live(
+        &mut self,
+        input: Arc<[u8]>,
+        backend: BackendRequest,
+        additional_external_live_bytes: usize,
+    ) -> Result<ResolvedJpegPlan, Error> {
+        let adapter_live_bytes =
+            self.plan_operation_external_live_bytes(additional_external_live_bytes)?;
+        let all_external_live_bytes = adapter_live_bytes
+            .checked_add(self.jpeg_plans.diagnostics().retained_bytes)
+            .ok_or(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                "JPEG Metal shared-input owner baseline overflow",
+            ))?;
+        let input =
+            SharedJpegInput::try_from_arc_with_external_live(input, all_external_live_bytes)?;
+        self.resolve_shared_jpeg_plan_with_external_live(
+            input,
+            backend,
+            additional_external_live_bytes,
+        )
+    }
 
-        (fast444_packet, fast422_packet, fast420_packet)
+    fn plan_operation_external_live_bytes(
+        &self,
+        additional_external_live_bytes: usize,
+    ) -> Result<usize, Error> {
+        let metadata_live_bytes = self.session_metadata_live_bytes()?;
+        let all_additional = additional_external_live_bytes
+            .checked_add(metadata_live_bytes)
+            .ok_or(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                "JPEG Metal plan and metadata owner baseline overflow",
+            ))?;
+        let adapter_live_bytes = self
+            .queued_plan_ledger
+            .external_live_bytes(all_additional)?;
+        let complete_live_bytes = adapter_live_bytes
+            .checked_add(self.jpeg_plans.diagnostics().retained_bytes)
+            .ok_or(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                "JPEG Metal complete plan-operation baseline overflow",
+            ))?;
+        if complete_live_bytes > j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES {
+            return Err(j2k_jpeg::adapter::JpegPlanCacheError::Limit {
+                what: "JPEG Metal plan operation owner graph",
+                requested: complete_live_bytes,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            }
+            .into());
+        }
+        Ok(adapter_live_bytes)
+    }
+
+    fn session_metadata_live_bytes(&self) -> Result<usize, Error> {
+        let queued_bytes = capacity_bytes::<crate::batch::QueuedRequest>(
+            self.queued.capacity(),
+            "JPEG Metal queued request metadata",
+        )?;
+        let completed_bytes = capacity_bytes::<Option<Result<crate::Surface, crate::Error>>>(
+            self.completed.capacity(),
+            "JPEG Metal completion metadata",
+        )?;
+        queued_bytes
+            .checked_add(completed_bytes)
+            .and_then(|bytes| bytes.checked_add(self.completed_host_bytes))
+            .ok_or_else(|| {
+                j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                    "JPEG Metal session metadata owner baseline overflow",
+                )
+                .into()
+            })
+    }
+
+    fn preflight_collective_queue_state(
+        &self,
+        queued_owner_bytes: usize,
+        retained_execution_metadata_bytes: usize,
+        queued_capacity: usize,
+        completed_capacity: usize,
+    ) -> Result<(), Error> {
+        let owner_and_cache_bytes = queued_owner_bytes
+            .checked_add(self.jpeg_plans.diagnostics().retained_bytes)
+            .ok_or(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                "JPEG Metal collective queue owner baseline overflow",
+            ))?;
+        let aggregate = crate::batch_allocation::BatchMetadataBudget::with_external_live(
+            "JPEG Metal collective queued request state",
+            owner_and_cache_bytes,
+        );
+        aggregate
+            .preflight(&[
+                crate::batch_allocation::BatchMetadataRequest::of::<u8>(
+                    retained_execution_metadata_bytes,
+                ),
+                crate::batch_allocation::BatchMetadataRequest::of::<u8>(self.completed_host_bytes),
+                crate::batch_allocation::BatchMetadataRequest::of::<crate::batch::QueuedRequest>(
+                    queued_capacity,
+                ),
+                crate::batch_allocation::BatchMetadataRequest::of::<
+                    Option<Result<crate::Surface, crate::Error>>,
+                >(completed_capacity),
+            ])
+            .map_err(Error::from)
+    }
+
+    fn collective_queue_state_bytes(
+        &self,
+        queued_owner_bytes: usize,
+        retained_execution_metadata_bytes: usize,
+        queued_capacity: usize,
+        completed_capacity: usize,
+    ) -> Result<usize, Error> {
+        let queued_metadata_bytes = capacity_bytes::<crate::batch::QueuedRequest>(
+            queued_capacity,
+            "JPEG Metal queued request metadata",
+        )?;
+        let completed_metadata_bytes = capacity_bytes::<
+            Option<Result<crate::Surface, crate::Error>>,
+        >(
+            completed_capacity, "JPEG Metal completion metadata"
+        )?;
+        queued_owner_bytes
+            .checked_add(self.jpeg_plans.diagnostics().retained_bytes)
+            .and_then(|bytes| bytes.checked_add(retained_execution_metadata_bytes))
+            .and_then(|bytes| bytes.checked_add(self.completed_host_bytes))
+            .and_then(|bytes| bytes.checked_add(queued_metadata_bytes))
+            .and_then(|bytes| bytes.checked_add(completed_metadata_bytes))
+            .ok_or_else(|| {
+                j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                    "JPEG Metal collective queue byte count overflow",
+                )
+                .into()
+            })
+    }
+
+    pub(crate) const fn jpeg_plan_cache_diagnostics(&self) -> JpegPlanCacheDiagnostics {
+        self.jpeg_plans.diagnostics()
+    }
+
+    pub(crate) fn peak_collective_host_bytes(&self) -> usize {
+        self.peak_collective_host_bytes
+            .max(self.jpeg_plans.diagnostics().peak_bytes)
     }
 
     #[cfg(target_os = "macos")]
@@ -324,10 +493,24 @@ impl SessionState {
         if self.backend_session.is_none() {
             self.backend_session = Some(MetalBackendSession::system_default()?);
         }
-        Ok(self
-            .backend_session
-            .as_ref()
-            .expect("backend session initialized"))
+        self.backend_session.as_ref().ok_or_else(|| {
+            j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                "JPEG Metal backend session is missing after initialization",
+            )
+            .into()
+        })
+    }
+}
+
+const fn uses_inspected_metal_plan(backend: BackendRequest) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        matches!(backend, BackendRequest::Auto | BackendRequest::Metal)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = backend;
+        false
     }
 }
 
@@ -363,116 +546,33 @@ impl MetalSession {
     pub fn submissions(&self) -> Result<u64, Error> {
         Ok(self.shared.lock()?.submissions)
     }
+
+    /// Current JPEG input-plan cache retention and admission diagnostics.
+    #[doc(hidden)]
+    pub fn jpeg_plan_cache_diagnostics(&self) -> Result<JpegPlanCacheDiagnostics, Error> {
+        Ok(self.shared.lock()?.jpeg_plan_cache_diagnostics())
+    }
+
+    /// Peak collectively retained JPEG cache, queue-owner, and queue-metadata bytes.
+    #[doc(hidden)]
+    pub fn peak_collective_host_bytes(&self) -> Result<usize, Error> {
+        Ok(self.shared.lock()?.peak_collective_host_bytes())
+    }
 }
 
 impl core::fmt::Debug for MetalSession {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MetalSession")
             .field("submissions", &self.submissions())
+            .field("jpeg_plan_cache", &self.jpeg_plan_cache_diagnostics())
+            .field(
+                "peak_collective_host_bytes",
+                &self.peak_collective_host_bytes(),
+            )
             .finish()
     }
 }
 
-fn digest_bytes(bytes: &[u8]) -> u64 {
-    j2k_core::__j2k_fnv1a64_bytes!(bytes)
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn batch_shape_cache_hits_for_repeated_input() {
-        let mut session = SessionState::default();
-        let input =
-            Arc::<[u8]>::from(include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg").as_slice());
-
-        let first = session
-            .resolve_batch_shape(&input, BackendRequest::Metal)
-            .expect("first shape");
-        let second = session
-            .resolve_batch_shape(&input, BackendRequest::Metal)
-            .expect("second shape");
-
-        assert_eq!(first, second);
-        assert_eq!(session.batch_shapes.len(), 1);
-    }
-
-    #[test]
-    fn fast_packet_cache_hits_for_repeated_input() {
-        let mut session = SessionState::default();
-        let input =
-            Arc::<[u8]>::from(include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg").as_slice());
-
-        let first = session.resolve_fast_packets(&input, BackendRequest::Metal);
-        let second = session.resolve_fast_packets(&input, BackendRequest::Metal);
-
-        assert!(first.2.is_some());
-        assert_eq!(first, second);
-        assert_eq!(session.fast_packets.len(), 1);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn batch_shape_tracks_fast422_sampling_family() {
-        let mut session = SessionState::default();
-        let input =
-            Arc::<[u8]>::from(include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg").as_slice());
-
-        let shape = session
-            .resolve_batch_shape(&input, BackendRequest::Metal)
-            .expect("fast422 shape");
-
-        assert_eq!(shape.sampling_family, batch::SamplingFamily::Fast422);
-    }
-
-    #[test]
-    fn intern_input_slice_refreshes_when_buffer_is_overwritten() {
-        let mut session = SessionState::default();
-        let mut buffer = vec![0xAAu8; 64];
-
-        let first = session.intern_input_slice(&buffer);
-        assert_eq!(first.as_ref(), [0xAAu8; 64].as_slice());
-
-        // Reuse the same allocation (same pointer, same length) with new contents.
-        buffer.fill(0xBB);
-        let second = session.intern_input_slice(&buffer);
-        assert_eq!(
-            second.as_ref(),
-            [0xBBu8; 64].as_slice(),
-            "input-alias cache returned stale bytes for a reused buffer"
-        );
-        assert_eq!(session.input_aliases.len(), 1);
-    }
-
-    #[test]
-    fn intern_input_slice_reuses_interned_arc_for_unchanged_buffer() {
-        let mut session = SessionState::default();
-        let buffer = vec![0x42u8; 64];
-
-        let first = session.intern_input_slice(&buffer);
-        let second = session.intern_input_slice(&buffer);
-
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(session.input_aliases.len(), 1);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn non_macos_auto_and_metal_shape_resolution_stays_unparsed() {
-        let mut session = SessionState::default();
-        let invalid = Arc::<[u8]>::from(&b"not a jpeg"[..]);
-
-        let auto = session
-            .resolve_batch_shape(&invalid, BackendRequest::Auto)
-            .expect("auto shape");
-        let metal = session
-            .resolve_batch_shape(&invalid, BackendRequest::Metal)
-            .expect("metal shape");
-
-        assert_eq!(auto.sampling_family, batch::SamplingFamily::Unknown);
-        assert_eq!(metal.sampling_family, batch::SamplingFamily::Unknown);
-        assert!(session.batch_shapes.is_empty());
-    }
-}
+#[path = "session/tests.rs"]
+mod tests;

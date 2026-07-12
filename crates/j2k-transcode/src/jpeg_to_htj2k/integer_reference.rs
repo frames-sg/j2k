@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::integer_storage::{
+    checked_product, checked_sum, idct_component_samples_i32, validate_band_len,
+};
 use super::{
     idct_islow_block, integer_dct_job_for_component, record_accelerator_attempt,
     record_accelerator_dispatch, record_cpu_fallback, reversible_lift_53_high_at_fallible,
-    reversible_lift_53_i32, reversible_lift_53_low_at_fallible, validate_component_block_grid,
-    DctToWaveletStageAccelerator, Instant, JpegDctComponent, JpegToHtj2kError, JpegToHtj2kScratch,
-    ReversibleDwt53FirstLevel, TranscodeTimingReport,
+    reversible_lift_53_i32, reversible_lift_53_low_at_fallible, DctToWaveletStageAccelerator,
+    Instant, JpegDctComponent, JpegToHtj2kError, JpegToHtj2kScratch, ReversibleDwt53FirstLevel,
+    TranscodeTimingReport,
 };
+use crate::allocation::{try_vec_reserve_len, try_vec_resize_with, try_vec_with_capacity};
 
 pub(super) struct IntegerWaveletLevel {
     pub(super) width: usize,
@@ -47,7 +51,7 @@ pub(super) fn integer_direct_wavelet_from_component(
     if let Some(first_level) = accelerated_first_level {
         record_accelerator_dispatch(timings, 1);
         let decompose_start = Instant::now();
-        let wavelet = integer_wavelet_from_first_level(first_level, decomposition_levels);
+        let wavelet = integer_wavelet_from_first_level(first_level, decomposition_levels)?;
         timings.dwt_decompose_us = timings
             .dwt_decompose_us
             .saturating_add(decompose_start.elapsed().as_micros());
@@ -55,9 +59,11 @@ pub(super) fn integer_direct_wavelet_from_component(
     }
 
     scratch.integer_idct_blocks.clear();
-    scratch
-        .integer_idct_blocks
-        .resize_with(component.dequantized_blocks.len(), || None);
+    try_vec_resize_with(
+        &mut scratch.integer_idct_blocks,
+        component.dequantized_blocks.len(),
+        || None,
+    )?;
     record_cpu_fallback(timings, 1);
     let fallback_start = Instant::now();
     let (final_ll, final_ll_width, final_ll_height, first_level) =
@@ -76,7 +82,7 @@ pub(super) fn integer_direct_wavelet_from_component(
         final_ll_height,
         first_level,
         decomposition_levels,
-    );
+    )?;
     timings.dwt_decompose_us = timings
         .dwt_decompose_us
         .saturating_add(decompose_start.elapsed().as_micros());
@@ -86,9 +92,9 @@ pub(super) fn integer_direct_wavelet_from_component(
 pub(super) fn integer_wavelet_from_first_level(
     first_level: ReversibleDwt53FirstLevel,
     decomposition_levels: u8,
-) -> IntegerWavelet {
+) -> Result<IntegerWavelet, JpegToHtj2kError> {
     let (final_ll, final_ll_width, final_ll_height, first_level) =
-        integer_wavelet_first_level_from_accelerated(first_level);
+        integer_wavelet_first_level_from_accelerated(first_level)?;
     integer_wavelet_from_first_parts(
         final_ll,
         final_ll_width,
@@ -104,33 +110,56 @@ pub(super) fn integer_wavelet_from_first_parts(
     mut final_ll_height: usize,
     first_level: IntegerWaveletLevel,
     decomposition_levels: u8,
-) -> IntegerWavelet {
-    let mut levels = vec![first_level];
+) -> Result<IntegerWavelet, JpegToHtj2kError> {
+    let mut levels = try_vec_with_capacity(usize::from(decomposition_levels.max(1)))?;
+    levels.push(first_level);
 
     let remaining_levels = usize::from(decomposition_levels.saturating_sub(1));
     if remaining_levels > 0 {
         let tail =
-            reversible_dwt53_i32(final_ll, final_ll_width, final_ll_height, remaining_levels);
+            reversible_dwt53_i32(final_ll, final_ll_width, final_ll_height, remaining_levels)?;
         final_ll = tail.final_ll;
         final_ll_width = tail.final_ll_width;
         final_ll_height = tail.final_ll_height;
         levels.extend(tail.levels);
     }
 
-    IntegerWavelet {
+    Ok(IntegerWavelet {
         final_ll,
         final_ll_width,
         final_ll_height,
         levels,
-    }
+    })
 }
 
 pub(super) fn integer_wavelet_first_level_from_accelerated(
     first_level: ReversibleDwt53FirstLevel,
-) -> (Vec<i32>, usize, usize, IntegerWaveletLevel) {
+) -> Result<(Vec<i32>, usize, usize, IntegerWaveletLevel), JpegToHtj2kError> {
+    let width = checked_sum(first_level.low_width, first_level.high_width)?;
+    let height = checked_sum(first_level.low_height, first_level.high_height)?;
+    validate_band_len(
+        &first_level.ll,
+        first_level.low_width,
+        first_level.low_height,
+    )?;
+    validate_band_len(
+        &first_level.hl,
+        first_level.high_width,
+        first_level.low_height,
+    )?;
+    validate_band_len(
+        &first_level.lh,
+        first_level.low_width,
+        first_level.high_height,
+    )?;
+    validate_band_len(
+        &first_level.hh,
+        first_level.high_width,
+        first_level.high_height,
+    )?;
     let level = IntegerWaveletLevel {
-        width: first_level.low_width + first_level.high_width,
-        height: first_level.low_height + first_level.high_height,
+        width,
+        height,
         low_width: first_level.low_width,
         low_height: first_level.low_height,
         high_width: first_level.high_width,
@@ -139,12 +168,12 @@ pub(super) fn integer_wavelet_first_level_from_accelerated(
         lh: first_level.lh,
         hh: first_level.hh,
     };
-    (
+    Ok((
         first_level.ll,
         first_level.low_width,
         first_level.low_height,
         level,
-    )
+    ))
 }
 
 pub(super) fn integer_direct_first_level_from_component(
@@ -159,14 +188,12 @@ pub(super) fn integer_direct_first_level_from_component(
     let high_width = width / 2;
     let high_height = height / 2;
 
-    let mut ll = Vec::with_capacity(low_width * low_height);
-    let mut hl = Vec::with_capacity(high_width * low_height);
-    let mut lh = Vec::with_capacity(low_width * high_height);
-    let mut hh = Vec::with_capacity(high_width * high_height);
+    let mut ll = try_vec_with_capacity(checked_product(low_width, low_height)?)?;
+    let mut hl = try_vec_with_capacity(checked_product(high_width, low_height)?)?;
+    let mut lh = try_vec_with_capacity(checked_product(low_width, high_height)?)?;
+    let mut hh = try_vec_with_capacity(checked_product(high_width, high_height)?)?;
     row.clear();
-    if row.capacity() < width {
-        row.reserve(width - row.capacity());
-    }
+    try_vec_reserve_len(row, width)?;
 
     for output_y in 0..low_height {
         row.clear();
@@ -297,41 +324,8 @@ pub(super) fn integer_reference_coefficients(
         component.width as usize,
         component.height as usize,
         usize::from(decomposition_levels),
-    );
-    Ok(flatten_integer_wavelet(&wavelet))
-}
-
-pub(super) fn idct_component_samples_i32(
-    component: &JpegDctComponent,
-) -> Result<Vec<i32>, JpegToHtj2kError> {
-    validate_component_block_grid(component)?;
-
-    let width = component.width as usize;
-    let height = component.height as usize;
-    let block_cols = component.block_cols as usize;
-    let block_rows = component.block_rows as usize;
-    let mut samples = vec![0; width * height];
-    for block_y in 0..block_rows {
-        for block_x in 0..block_cols {
-            let block = &component.dequantized_blocks[block_y * block_cols + block_x];
-            let block_samples = idct_islow_block(block);
-            for local_y in 0..8 {
-                let y = block_y * 8 + local_y;
-                if y >= height {
-                    continue;
-                }
-                for local_x in 0..8 {
-                    let x = block_x * 8 + local_x;
-                    if x >= width {
-                        continue;
-                    }
-                    samples[y * width + x] = i32::from(block_samples[local_y * 8 + local_x]) - 128;
-                }
-            }
-        }
-    }
-
-    Ok(samples)
+    )?;
+    flatten_integer_wavelet(&wavelet)
 }
 
 pub(super) fn reversible_dwt53_i32(
@@ -339,14 +333,22 @@ pub(super) fn reversible_dwt53_i32(
     width: usize,
     height: usize,
     decomposition_levels: usize,
-) -> IntegerWavelet {
+) -> Result<IntegerWavelet, JpegToHtj2kError> {
+    let sample_count = checked_product(width, height)?;
+    if buffer.len() != sample_count {
+        return Err(JpegToHtj2kError::Validation(
+            "integer DWT sample count does not match dimensions",
+        ));
+    }
     let mut current_width = width;
     let mut current_height = height;
-    let mut levels = Vec::with_capacity(decomposition_levels);
+    let mut levels = try_vec_with_capacity(decomposition_levels)?;
+    let mut column = try_vec_with_capacity(height)?;
+    let mut row = try_vec_with_capacity(width)?;
 
     for _ in 0..decomposition_levels {
         for x in 0..current_width {
-            let mut column = Vec::with_capacity(current_height);
+            column.clear();
             for y in 0..current_height {
                 column.push(buffer[y * width + x]);
             }
@@ -362,7 +364,8 @@ pub(super) fn reversible_dwt53_i32(
 
         for y in 0..current_height {
             let row_start = y * width;
-            let mut row = buffer[row_start..row_start + current_width].to_vec();
+            row.clear();
+            row.extend_from_slice(&buffer[row_start..row_start + current_width]);
             reversible_lift_53_i32(&mut row);
             let low_len = current_width.div_ceil(2);
             for (idx, value) in row.iter().step_by(2).copied().enumerate() {
@@ -377,9 +380,9 @@ pub(super) fn reversible_dwt53_i32(
         let low_height = current_height.div_ceil(2);
         let high_width = current_width / 2;
         let high_height = current_height / 2;
-        let mut hl = Vec::with_capacity(high_width * low_height);
-        let mut lh = Vec::with_capacity(low_width * high_height);
-        let mut hh = Vec::with_capacity(high_width * high_height);
+        let mut hl = try_vec_with_capacity(checked_product(high_width, low_height)?)?;
+        let mut lh = try_vec_with_capacity(checked_product(low_width, high_height)?)?;
+        let mut hh = try_vec_with_capacity(checked_product(high_width, high_height)?)?;
 
         for y in 0..low_height {
             for x in 0..high_width {
@@ -412,34 +415,36 @@ pub(super) fn reversible_dwt53_i32(
         current_height = low_height;
     }
 
-    let mut final_ll = Vec::with_capacity(current_width * current_height);
+    let mut final_ll = try_vec_with_capacity(checked_product(current_width, current_height)?)?;
     for y in 0..current_height {
         for x in 0..current_width {
             final_ll.push(buffer[y * width + x]);
         }
     }
 
-    IntegerWavelet {
+    Ok(IntegerWavelet {
         final_ll,
         final_ll_width: current_width,
         final_ll_height: current_height,
         levels,
-    }
+    })
 }
 
-pub(super) fn flatten_integer_wavelet(wavelet: &IntegerWavelet) -> Vec<i32> {
-    let coefficient_count = wavelet.final_ll.len()
-        + wavelet
-            .levels
-            .iter()
-            .map(|level| level.hl.len() + level.lh.len() + level.hh.len())
-            .sum::<usize>();
-    let mut output = Vec::with_capacity(coefficient_count);
+pub(super) fn flatten_integer_wavelet(
+    wavelet: &IntegerWavelet,
+) -> Result<Vec<i32>, JpegToHtj2kError> {
+    let mut coefficient_count = wavelet.final_ll.len();
+    for level in &wavelet.levels {
+        coefficient_count = checked_sum(coefficient_count, level.hl.len())?;
+        coefficient_count = checked_sum(coefficient_count, level.lh.len())?;
+        coefficient_count = checked_sum(coefficient_count, level.hh.len())?;
+    }
+    let mut output = try_vec_with_capacity(coefficient_count)?;
     output.extend_from_slice(&wavelet.final_ll);
     for level in wavelet.levels.iter().rev() {
         output.extend_from_slice(&level.hl);
         output.extend_from_slice(&level.lh);
         output.extend_from_slice(&level.hh);
     }
-    output
+    Ok(output)
 }

@@ -207,16 +207,58 @@ pub(super) fn validate_irreversible_quantization_profile(
     }
 }
 
-#[expect(
-    clippy::similar_names,
-    reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
-)]
-pub(super) fn precinct_exponents_for_options(
+/// Validated Part 1 code-block dimensions derived from COD's stored
+/// exponent-minus-two fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CodeBlockGeometry {
+    pub(super) width: u32,
+    pub(super) height: u32,
+}
+
+/// Validate the JPEG 2000 Part 1 code-block exponent and area constraints
+/// without allocating or shifting by an unchecked public value.
+pub(super) fn validate_code_block_geometry(
+    options: &EncodeOptions,
+) -> Result<CodeBlockGeometry, &'static str> {
+    const MAX_STORED_EXPONENT: u8 = 8;
+    const MAX_COMBINED_ACTUAL_EXPONENT: u8 = 12;
+
+    if options.code_block_width_exp > MAX_STORED_EXPONENT {
+        return Err("code-block width exponent exceeds supported range");
+    }
+    if options.code_block_height_exp > MAX_STORED_EXPONENT {
+        return Err("code-block height exponent exceeds supported range");
+    }
+    let width_exponent = options
+        .code_block_width_exp
+        .checked_add(2)
+        .ok_or("code-block width exponent exceeds supported range")?;
+    let height_exponent = options
+        .code_block_height_exp
+        .checked_add(2)
+        .ok_or("code-block height exponent exceeds supported range")?;
+    let combined_exponent = width_exponent
+        .checked_add(height_exponent)
+        .ok_or("code-block combined exponent exceeds supported range")?;
+    if combined_exponent > MAX_COMBINED_ACTUAL_EXPONENT {
+        return Err("code-block dimensions exceed JPEG 2000 Part 1 area limit");
+    }
+    let width = 1_u32
+        .checked_shl(u32::from(width_exponent))
+        .ok_or("code-block width exponent exceeds supported range")?;
+    let height = 1_u32
+        .checked_shl(u32::from(height_exponent))
+        .ok_or("code-block height exponent exceeds supported range")?;
+    Ok(CodeBlockGeometry { width, height })
+}
+
+pub(super) fn validate_precinct_exponents_for_options(
     options: &EncodeOptions,
     num_decomposition_levels: u8,
-) -> Result<Vec<(u8, u8)>, &'static str> {
+) -> Result<(), &'static str> {
+    validate_code_block_geometry(options)?;
     if options.precinct_exponents.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let expected = usize::from(num_decomposition_levels) + 1;
@@ -226,26 +268,42 @@ pub(super) fn precinct_exponents_for_options(
     if options
         .precinct_exponents
         .iter()
-        .any(|&(ppx, ppy)| ppx > 15 || ppy > 15)
+        .any(|&(horizontal_exponent, vertical_exponent)| {
+            horizontal_exponent > 15 || vertical_exponent > 15
+        })
     {
         return Err("precinct exponents must fit in COD marker nybbles");
     }
-    let code_block_width_exp = options.code_block_width_exp + 2;
-    let code_block_height_exp = options.code_block_height_exp + 2;
-    for (resolution, &(ppx, ppy)) in options.precinct_exponents.iter().enumerate() {
-        let min_ppx = if resolution == 0 {
-            code_block_width_exp
+    let code_block_horizontal_exponent = options
+        .code_block_width_exp
+        .checked_add(2)
+        .ok_or("code-block width exponent exceeds supported range")?;
+    let code_block_vertical_exponent = options
+        .code_block_height_exp
+        .checked_add(2)
+        .ok_or("code-block height exponent exceeds supported range")?;
+    for (resolution, &(horizontal_exponent, vertical_exponent)) in
+        options.precinct_exponents.iter().enumerate()
+    {
+        let minimum_horizontal_exponent = if resolution == 0 {
+            code_block_horizontal_exponent
         } else {
-            code_block_width_exp + 1
+            code_block_horizontal_exponent
+                .checked_add(1)
+                .ok_or("code-block width exponent exceeds supported range")?
         };
-        let min_ppy = if resolution == 0 {
-            code_block_height_exp
+        let minimum_vertical_exponent = if resolution == 0 {
+            code_block_vertical_exponent
         } else {
-            code_block_height_exp + 1
+            code_block_vertical_exponent
+                .checked_add(1)
+                .ok_or("code-block height exponent exceeds supported range")?
         };
-        if ppx < min_ppx || ppy < min_ppy {
+        if horizontal_exponent < minimum_horizontal_exponent
+            || vertical_exponent < minimum_vertical_exponent
+        {
             return Err("precinct exponents must not reduce encoder code-block dimensions");
         }
     }
-    Ok(options.precinct_exponents.clone())
+    Ok(())
 }

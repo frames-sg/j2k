@@ -572,7 +572,12 @@ fn classic_reversible_i64_encode_rejects_38_bit_beyond_no_quant_bitplane_limit()
 
     let err = encode(&pixels, 3, 3, 1, 38, false, &options)
         .expect_err("gray38 encode must not emit a truncated-bitplane codestream");
-    assert!(err.contains("no-quantization guard/exponent signaling limit"));
+    assert!(matches!(
+        err,
+        j2k_native::EncodeError::Unsupported {
+            what: "25-38 bit reversible encode exceeds the current no-quantization guard/exponent signaling limit"
+        }
+    ));
 }
 
 #[test]

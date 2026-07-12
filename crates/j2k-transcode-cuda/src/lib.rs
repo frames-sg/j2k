@@ -17,8 +17,9 @@
 
 #[cfg(feature = "cuda-runtime")]
 mod cuda;
+mod error;
 
-use core::fmt;
+pub use error::{CudaRuntimeFailure, CudaTranscodeError, CUDA_UNAVAILABLE};
 
 use j2k_transcode::{
     DctGridI16ToHtj2k97CodeBlockBatch, DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt53Job,
@@ -30,10 +31,6 @@ use j2k_transcode::{
     TranscodeStageDispatchMode, TranscodeStageError,
 };
 
-/// Stable message returned when the CUDA runtime is unavailable (feature not
-/// compiled, no device, or the transcode kernels were not built).
-pub const CUDA_UNAVAILABLE: &str = "CUDA is unavailable on this host";
-
 /// Default minimum component sample count before Auto mode offers a single
 /// transform job to CUDA. Batch thresholds below intentionally match Metal's
 /// same-geometry batch gates so WSI tile-component queues are offered
@@ -44,47 +41,6 @@ const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
 const DEFAULT_AUTO_DWT97_BATCH_MIN_JOBS: usize = 32;
 const DEFAULT_AUTO_DWT97_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
 const DISABLE_COMPACT_PREENCODED_ENV: &str = "J2K_CUDA_DISABLE_COMPACT_PREENCODED";
-
-/// Error returned by the CUDA transcode accelerator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CudaTranscodeError {
-    /// CUDA is unavailable on this host or the kernels were not built.
-    CudaUnavailable,
-    /// The request is outside the current CUDA implementation.
-    UnsupportedJob(&'static str),
-    /// CUDA runtime or kernel execution failed.
-    Kernel(&'static str),
-}
-
-impl CudaTranscodeError {
-    /// Whether Auto mode may recover from this error by using the scalar
-    /// fallback (`Ok(None)`). Hard kernel failures propagate as `Err`.
-    #[cfg(feature = "cuda-runtime")]
-    const fn is_recoverable(self) -> bool {
-        matches!(self, Self::CudaUnavailable | Self::UnsupportedJob(_))
-    }
-}
-
-impl fmt::Display for CudaTranscodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CudaUnavailable => f.write_str(CUDA_UNAVAILABLE),
-            Self::UnsupportedJob(reason) | Self::Kernel(reason) => f.write_str(reason),
-        }
-    }
-}
-
-impl From<CudaTranscodeError> for TranscodeStageError {
-    fn from(error: CudaTranscodeError) -> Self {
-        match error {
-            CudaTranscodeError::CudaUnavailable => Self::DeviceUnavailable,
-            CudaTranscodeError::UnsupportedJob(reason) => Self::Unsupported(reason),
-            CudaTranscodeError::Kernel(reason) => Self::Backend(reason.to_string()),
-        }
-    }
-}
-
-impl std::error::Error for CudaTranscodeError {}
 
 /// Optional CUDA accelerator for `j2k-transcode` transform stages.
 #[derive(Debug, Clone)]
@@ -258,7 +214,7 @@ impl CudaDctToWaveletStageAccelerator {
     /// kernel failures propagate as `Err`.
     #[cfg(feature = "cuda-runtime")]
     fn recover<T>(&self, error: CudaTranscodeError) -> Result<Option<T>, TranscodeStageError> {
-        self.mode.recover(error, |error| error.is_recoverable())
+        self.mode.recover(error, CudaTranscodeError::is_recoverable)
     }
 }
 
@@ -820,7 +776,10 @@ mod tests {
         };
         let result = accelerator.dct_grid_to_reversible_dwt53(job);
         #[cfg(not(feature = "cuda-runtime"))]
-        assert_eq!(result, Err(TranscodeStageError::DeviceUnavailable));
+        assert!(matches!(
+            result,
+            Err(TranscodeStageError::DeviceUnavailable)
+        ));
         let _ = result;
         assert_eq!(accelerator.reversible_dwt53_attempts(), 1);
     }
@@ -838,20 +797,23 @@ mod tests {
             width: 8,
             height: 8,
         };
-        assert_eq!(accelerator.dct_grid_to_reversible_dwt53(job), Ok(None));
+        assert!(matches!(
+            accelerator.dct_grid_to_reversible_dwt53(job),
+            Ok(None)
+        ));
     }
 
     #[test]
     fn empty_batches_return_empty_without_dispatch() {
         let mut accelerator = CudaDctToWaveletStageAccelerator::new_explicit();
-        assert_eq!(
+        assert!(matches!(
             accelerator.dct_grid_to_reversible_dwt53_batch(&[]),
-            Ok(Some(Vec::new()))
-        );
-        assert_eq!(
+            Ok(Some(values)) if values.is_empty()
+        ));
+        assert!(matches!(
             accelerator.dct_grid_to_dwt97_batch(&[]),
-            Ok(Some(Vec::new()))
-        );
+            Ok(Some(values)) if values.is_empty()
+        ));
     }
 
     #[test]
@@ -888,10 +850,10 @@ mod tests {
             height: 256,
         };
 
-        assert_eq!(
+        assert!(matches!(
             accelerator.dct_grid_to_reversible_dwt53_batch(&[job]),
             Ok(None)
-        );
+        ));
         assert_eq!(accelerator.reversible_dwt53_batch_attempts(), 1);
         assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 0);
     }
@@ -909,7 +871,10 @@ mod tests {
             height: 256,
         };
 
-        assert_eq!(accelerator.dct_grid_to_dwt97_batch(&[job]), Ok(None));
+        assert!(matches!(
+            accelerator.dct_grid_to_dwt97_batch(&[job]),
+            Ok(None)
+        ));
         assert_eq!(accelerator.dwt97_batch_attempts(), 1);
         assert_eq!(accelerator.dwt97_batch_dispatches(), 0);
     }

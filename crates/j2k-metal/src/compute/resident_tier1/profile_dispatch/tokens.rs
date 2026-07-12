@@ -5,12 +5,13 @@ use super::super::test_counters;
 use super::super::{
     classic_tier1_gpu_token_pack_supported, dispatch_1d_pipeline, label_compute_encoder,
     metal_profile_classic_tier1_split_token_emit_enabled,
-    metal_profile_classic_tier1_token_pack_enabled, size_of, take_recyclable_private_buffer,
+    metal_profile_classic_tier1_token_pack_enabled, new_blit_command_encoder,
+    new_compute_command_encoder, new_shared_buffer, size_of, take_recyclable_private_buffer,
     Buffer, CommandBufferRef, Error, J2kClassicEncodeBatchJob, J2kClassicTier1SymbolPlanCounters,
     J2kClassicTier1TokenSegment, J2kResidentClassicTier1GpuTokenBuffers,
-    J2kResidentClassicTier1SplitTokenBuffers, J2kResidentClassicTier1TokenEmitReadback,
-    MTLResourceOptions, MTLSize, MetalRuntime, CLASSIC_TIER1_MQ_BYTE_TOKEN_ARENA_BYTES,
-    CLASSIC_TIER1_TOKEN_ARENA_BYTES, CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY,
+    J2kResidentClassicTier1SplitTokenBuffers, J2kResidentClassicTier1TokenEmitReadback, MTLSize,
+    MetalRuntime, CLASSIC_TIER1_MQ_BYTE_TOKEN_ARENA_BYTES, CLASSIC_TIER1_TOKEN_ARENA_BYTES,
+    CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY,
 };
 
 #[cfg(target_os = "macos")]
@@ -31,10 +32,14 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
         });
     }
 
-    let counter_buffer = runtime.device.new_buffer(
-        (tier1_jobs.len().max(1) * size_of::<J2kClassicTier1SymbolPlanCounters>()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let counter_bytes = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(size_of::<J2kClassicTier1SymbolPlanCounters>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic split-token counter size overflow".to_string(),
+        })?;
+    let counter_buffer = new_shared_buffer(&runtime.device, counter_bytes)?;
     let mq_token_buffer_len = tier1_jobs
         .len()
         .max(1)
@@ -42,10 +47,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal classic split-token MQ buffer size overflow".to_string(),
         })?;
-    let mq_token_buffer = runtime.device.new_buffer(
-        mq_token_buffer_len as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let mq_token_buffer = new_shared_buffer(&runtime.device, mq_token_buffer_len)?;
     let raw_token_buffer_len = tier1_jobs
         .len()
         .max(1)
@@ -53,10 +55,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal classic split-token raw buffer size overflow".to_string(),
         })?;
-    let raw_token_buffer = runtime.device.new_buffer(
-        raw_token_buffer_len as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let raw_token_buffer = new_shared_buffer(&runtime.device, raw_token_buffer_len)?;
     let segment_buffer_len = tier1_jobs
         .len()
         .max(1)
@@ -65,10 +64,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal classic split-token segment buffer size overflow".to_string(),
         })?;
-    let segment_buffer = runtime.device.new_buffer(
-        segment_buffer_len as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let segment_buffer = new_shared_buffer(&runtime.device, segment_buffer_len)?;
     let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal classic split-token job count exceeds u32".to_string(),
     })?;
@@ -85,8 +81,8 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
             message: "J2K Metal classic split-token segment stride exceeds u32".to_string(),
         })?;
 
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K classic Tier-1 split token emit");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K classic Tier-1 split token emit");
     encoder.set_compute_pipeline_state(&runtime.classic_tier1_split_token_emit_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
@@ -251,11 +247,11 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_gpu_pack(
         &runtime.classic_tier1_split_token_emit_bypass_u16_32
     };
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(command_buffer)?;
     if use_mq_byte_emit {
-        label_compute_encoder(encoder, "J2K classic Tier-1 split MQ-byte token emit");
+        label_compute_encoder(&encoder, "J2K classic Tier-1 split MQ-byte token emit");
     } else {
-        label_compute_encoder(encoder, "J2K classic Tier-1 split token emit");
+        label_compute_encoder(&encoder, "J2K classic Tier-1 split token emit");
     }
     encoder.set_compute_pipeline_state(emit_pipeline);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
@@ -280,7 +276,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_emit_for_gpu_pack(
         (&raw const token_segment_stride).cast(),
     );
     encoder.set_bytes(9, size_of::<u32>() as u64, (&raw const job_count).cast());
-    dispatch_1d_pipeline(encoder, emit_pipeline, u64::from(job_count));
+    dispatch_1d_pipeline(&encoder, emit_pipeline, u64::from(job_count));
     encoder.end_encoding();
 
     Ok(J2kResidentClassicTier1SplitTokenBuffers {
@@ -352,8 +348,8 @@ pub(in crate::compute) fn dispatch_classic_tier1_token_emit_for_gpu_pack(
             message: "J2K Metal classic Tier-1 token segment stride exceeds u32".to_string(),
         })?;
 
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K classic Tier-1 token emit");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K classic Tier-1 token emit");
     encoder.set_compute_pipeline_state(&runtime.classic_tier1_token_emit_bypass_u16_32);
     encoder.set_buffer(0, Some(coefficient_buffer), 0);
     encoder.set_buffer(1, Some(tier1_job_buffer), 0);
@@ -414,15 +410,15 @@ fn dispatch_classic_tier1_token_pack_from_buffers(
     tier1_output_buffer: &Buffer,
     tier1_status_buffer: &Buffer,
     tier1_segment_buffer: &Buffer,
-) {
+) -> Result<(), Error> {
     #[cfg(test)]
     test_counters::record_classic_gpu_token_pack_dispatch();
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = new_compute_command_encoder(command_buffer)?;
     let (pipeline, job_count) = match token_buffers {
         ClassicTier1TokenPackBuffers::Combined(token_buffers) => {
             let pipeline = &runtime.classic_tier1_token_pack_bypass_u16_32;
-            label_compute_encoder(encoder, "J2K classic Tier-1 token pack");
+            label_compute_encoder(&encoder, "J2K classic Tier-1 token pack");
             encoder.set_compute_pipeline_state(pipeline);
             encoder.set_buffer(0, Some(tier1_job_buffer), 0);
             encoder.set_buffer(1, Some(&token_buffers.counter_buffer), 0);
@@ -450,7 +446,7 @@ fn dispatch_classic_tier1_token_pack_from_buffers(
         }
         ClassicTier1TokenPackBuffers::Split(token_buffers) => {
             let pipeline = &runtime.classic_tier1_split_token_pack_bypass_u16_32;
-            label_compute_encoder(encoder, "J2K classic Tier-1 split token pack");
+            label_compute_encoder(&encoder, "J2K classic Tier-1 split token pack");
             encoder.set_compute_pipeline_state(pipeline);
             encoder.set_buffer(0, Some(tier1_job_buffer), 0);
             encoder.set_buffer(1, Some(&token_buffers.counter_buffer), 0);
@@ -496,6 +492,7 @@ fn dispatch_classic_tier1_token_pack_from_buffers(
         },
     );
     encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -507,7 +504,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_token_pack_from_gpu_tokens(
     tier1_output_buffer: &Buffer,
     tier1_status_buffer: &Buffer,
     tier1_segment_buffer: &Buffer,
-) {
+) -> Result<(), Error> {
     dispatch_classic_tier1_token_pack_from_buffers(
         runtime,
         command_buffer,
@@ -516,7 +513,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_token_pack_from_gpu_tokens(
         tier1_output_buffer,
         tier1_status_buffer,
         tier1_segment_buffer,
-    );
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -528,7 +525,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_pack_from_gpu_token
     tier1_output_buffer: &Buffer,
     tier1_status_buffer: &Buffer,
     tier1_segment_buffer: &Buffer,
-) {
+) -> Result<(), Error> {
     dispatch_classic_tier1_token_pack_from_buffers(
         runtime,
         command_buffer,
@@ -537,7 +534,7 @@ pub(in crate::compute) fn dispatch_classic_tier1_split_token_pack_from_gpu_token
         tier1_output_buffer,
         tier1_status_buffer,
         tier1_segment_buffer,
-    );
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -567,10 +564,7 @@ pub(in crate::compute) fn schedule_classic_tier1_gpu_token_pack_readback(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal classic GPU token-pack counter readback size overflow".to_string(),
         })?;
-    let counter_readback = runtime.device.new_buffer(
-        counter_byte_len.max(1) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let counter_readback = new_shared_buffer(&runtime.device, counter_byte_len.max(1))?;
 
     let copy_token_payloads = metal_profile_classic_tier1_token_pack_enabled();
     let (token_readback, token_byte_len) = if copy_token_payloads {
@@ -581,10 +575,7 @@ pub(in crate::compute) fn schedule_classic_tier1_gpu_token_pack_readback(
                     .to_string(),
             })?;
         (
-            Some(runtime.device.new_buffer(
-                byte_len.max(1) as u64,
-                MTLResourceOptions::StorageModeShared,
-            )),
+            Some(new_shared_buffer(&runtime.device, byte_len.max(1))?),
             byte_len,
         )
     } else {
@@ -601,17 +592,14 @@ pub(in crate::compute) fn schedule_classic_tier1_gpu_token_pack_readback(
                     .to_string(),
             })?;
         (
-            Some(runtime.device.new_buffer(
-                byte_len.max(1) as u64,
-                MTLResourceOptions::StorageModeShared,
-            )),
+            Some(new_shared_buffer(&runtime.device, byte_len.max(1))?),
             byte_len,
         )
     } else {
         (None, 0)
     };
 
-    let blit = command_buffer.new_blit_command_encoder();
+    let blit = new_blit_command_encoder(command_buffer)?;
     blit.copy_from_buffer(
         &token_buffers.counter_buffer,
         0,

@@ -13,6 +13,7 @@ use crate::color::upsample::{
 };
 use crate::color::ycbcr::{FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200, ROUND};
 
+use super::row_pair::{normalize_simd_row_pair, normalize_ycbcr_row};
 use super::{scalar, Rgb420ChromaRows, Rgb420CroppedRowPair, Rgb420RowPair};
 
 const LANES: usize = 8;
@@ -102,15 +103,7 @@ pub(crate) fn fill_rgb_row_from_rgb(r_row: &[u8], g_row: &[u8], b_row: &[u8], ds
 }
 
 pub(crate) fn fill_rgb_row_from_ycbcr(y_row: &[u8], cb_row: &[u8], cr_row: &[u8], dst: &mut [u8]) {
-    let width = y_row
-        .len()
-        .min(cb_row.len())
-        .min(cr_row.len())
-        .min(dst.len() / 3);
-    let y_row = &y_row[..width];
-    let cb_row = &cb_row[..width];
-    let cr_row = &cr_row[..width];
-    let dst = &mut dst[..width * 3];
+    let (y_row, cb_row, cr_row, dst) = normalize_ycbcr_row(y_row, cb_row, cr_row, dst);
     debug_assert_eq!(y_row.len(), cb_row.len());
     debug_assert_eq!(y_row.len(), cr_row.len());
     debug_assert_eq!(dst.len(), y_row.len() * 3);
@@ -122,63 +115,19 @@ pub(crate) fn fill_rgb_row_from_ycbcr(y_row: &[u8], cb_row: &[u8], cr_row: &[u8]
 }
 
 pub(crate) fn fill_rgb_row_pair_from_420(request: Rgb420RowPair<'_>) {
-    let Rgb420RowPair {
-        y_top,
-        y_bottom,
-        chroma,
-        dst_top,
-        dst_bottom,
-    } = request;
-    let chroma_width = chroma.min_width();
-    let bottom_width = match (y_bottom.as_ref(), dst_bottom.as_ref()) {
-        (Some(row), Some(dst)) => row.len().min(dst.len() / 3),
-        _ => usize::MAX,
-    };
-    let width = y_top
-        .len()
-        .min(dst_top.len() / 3)
-        .min(bottom_width)
-        .min(chroma_width.saturating_mul(2));
-    if width == 0 {
+    let Some(request) = normalize_simd_row_pair(request) else {
         return;
-    }
-    let y_top = &y_top[..width];
-    let y_bottom = y_bottom.and_then(|row| row.get(..width));
-    let prev_cb = &chroma.prev_cb[..chroma_width];
-    let curr_cb = &chroma.curr_cb[..chroma_width];
-    let next_cb = &chroma.next_cb[..chroma_width];
-    let prev_cr = &chroma.prev_cr[..chroma_width];
-    let curr_cr = &chroma.curr_cr[..chroma_width];
-    let next_cr = &chroma.next_cr[..chroma_width];
-    let dst_top = &mut dst_top[..width * 3];
-    let dst_bottom = dst_bottom.and_then(|row| row.get_mut(..width * 3));
-    debug_assert_eq!(dst_top.len(), y_top.len() * 3);
-    debug_assert!(y_bottom.is_none_or(|row| row.len() == y_top.len()));
-    debug_assert!(dst_bottom
-        .as_ref()
-        .is_none_or(|row| row.len() == y_top.len() * 3));
-    debug_assert_eq!(prev_cb.len(), curr_cb.len());
-    debug_assert_eq!(prev_cb.len(), next_cb.len());
-    debug_assert_eq!(prev_cr.len(), curr_cr.len());
-    debug_assert_eq!(prev_cr.len(), next_cr.len());
+    };
+    let width = request.y_top.len();
 
     ROW_PAIR_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
-        scratch.ensure_width(y_top.len());
+        scratch.ensure_width(width);
         // SAFETY: Backend dispatch selects this path only when AVX2 is
         // available. The wrapper clamps luma, chroma, and destination rows so
         // all upsampled reads and RGB writes fit the passed slices.
         unsafe {
-            fill_rgb_row_pair_from_420_avx2(
-                Rgb420RowPair::new(
-                    y_top,
-                    y_bottom,
-                    Rgb420ChromaRows::new(prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr),
-                    dst_top,
-                    dst_bottom,
-                ),
-                &mut scratch,
-            );
+            fill_rgb_row_pair_from_420_avx2(request, &mut scratch);
         }
     });
 }

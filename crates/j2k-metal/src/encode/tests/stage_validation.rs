@@ -18,7 +18,12 @@ fn metal_encode_deinterleave_invalid_component_count_errors_without_dispatch() {
         })
         .unwrap_err();
 
-    assert_eq!(err, "Metal deinterleave encode shape is unsupported");
+    assert_eq!(
+        err,
+        j2k::J2kEncodeStageError::unsupported(
+            "J2K Metal encode deinterleave supports 1-4 component samples",
+        )
+    );
     assert_eq!(accelerator.deinterleave_attempts(), 1);
     assert_eq!(accelerator.deinterleave_dispatches(), 0);
     assert_eq!(accelerator.dispatch_report().deinterleave, 0);
@@ -163,7 +168,12 @@ fn metal_quantize_subband_invalid_shape_errors_without_dispatch() {
         })
         .unwrap_err();
 
-    assert_eq!(err, "Metal quantize_subband encode shape is unsupported");
+    assert_eq!(
+        err,
+        j2k::J2kEncodeStageError::unsupported(
+            "J2K Metal encode quantize_subband supports step mantissas <= 2047",
+        )
+    );
     assert_eq!(accelerator.quantize_subband_attempts(), 1);
     assert_eq!(accelerator.quantize_subband_dispatches(), 0);
     assert_eq!(accelerator.dispatch_report().quantize_subband, 0);
@@ -223,23 +233,30 @@ fn auto_encode_deinterleave_disabled_fallback_still_encodes() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_dispatch_option_treats_unavailable_as_no_dispatch() {
-    let result: Result<Option<u8>, &'static str> =
+    let result: j2k::J2kEncodeStageResult<Option<u8>> =
         super::super::metal_dispatch_option(Err(crate::Error::MetalUnavailable), "kernel failed");
 
-    assert_eq!(result, Ok(None));
+    assert!(matches!(result, Ok(None)));
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_dispatch_option_preserves_kernel_errors() {
-    let result: Result<Option<u8>, &'static str> = super::super::metal_dispatch_option(
+    let result: j2k::J2kEncodeStageResult<Option<u8>> = super::super::metal_dispatch_option(
         Err(crate::Error::MetalKernel {
             message: "bad status".to_string(),
         }),
         "kernel failed",
     );
 
-    assert_eq!(result, Err("kernel failed"));
+    let error = result.expect_err("kernel failure must not be downgraded");
+    assert_eq!(error.kind(), j2k::J2kEncodeStageErrorKind::Backend);
+    assert_eq!(error.reason(), "kernel failed");
+    assert!(matches!(
+        error,
+        j2k::J2kEncodeStageError::Backend { source, .. }
+            if source.to_string().contains("bad status")
+    ));
 }
 
 #[test]
@@ -377,7 +394,10 @@ fn metal_forward_ict_invalid_plane_lengths_error_without_dispatch() {
         })
         .unwrap_err();
 
-    assert_eq!(err, "Metal forward ICT encode shape is unsupported");
+    assert_eq!(
+        err,
+        j2k::J2kEncodeStageError::unsupported("J2K Metal forward ICT plane lengths must match")
+    );
     assert_eq!(accelerator.forward_ict_attempts(), 1);
     assert_eq!(accelerator.forward_ict_dispatches(), 0);
     assert_eq!(accelerator.dispatch_report().forward_ict, 0);

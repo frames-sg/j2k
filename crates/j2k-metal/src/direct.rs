@@ -449,12 +449,12 @@ mod tests {
             .steps
             .iter()
             .find_map(|step| match step {
-                J2kDirectGrayscaleStep::ClassicSubBand(plan) => Some(plan.clone()),
+                J2kDirectGrayscaleStep::ClassicSubBand(plan) => Some(plan),
                 _ => None,
             })
             .expect("classic sub-band step");
         let mut output = vec![0.0f32; sub_band.width as usize * sub_band.height as usize];
-        decode_classic_sub_band(&sub_band, &mut output).expect("decode classic sub-band");
+        decode_classic_sub_band(sub_band, &mut output).expect("decode classic sub-band");
         assert!(
             output.iter().any(|sample| *sample != 0.0),
             "classic direct sub-band decode must produce nonzero coefficients for the fixture"
@@ -469,12 +469,12 @@ mod tests {
             .steps
             .iter()
             .find_map(|step| match step {
-                J2kDirectGrayscaleStep::HtSubBand(plan) => Some(plan.clone()),
+                J2kDirectGrayscaleStep::HtSubBand(plan) => Some(plan),
                 _ => None,
             })
             .expect("ht sub-band step");
         let mut output = vec![0.0f32; sub_band.width as usize * sub_band.height as usize];
-        decode_ht_sub_band(&sub_band, &mut output).expect("decode ht sub-band");
+        decode_ht_sub_band(sub_band, &mut output).expect("decode ht sub-band");
         assert!(
             output.iter().any(|sample| *sample != 0.0),
             "HT direct sub-band decode must produce nonzero coefficients for the fixture"

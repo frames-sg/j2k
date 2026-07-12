@@ -3,8 +3,6 @@
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
-    hash::{Hash, Hasher},
     sync::{Arc, Mutex, OnceLock},
     time::Instant,
 };
@@ -15,18 +13,20 @@ use j2k_native::{
     Image as NativeImage,
 };
 use metal::Device;
-use rayon::prelude::*;
 
-use crate::error::{adapter_backend_error, native_decode_j2k_error};
-use crate::profile_env::{decode_profile_label, elapsed_since_us};
+use crate::error::native_decode_error;
+use crate::profile_env::{
+    decode_profile_label, elapsed_since_us, MetalDirectProfileRow, MetalProfileFormat,
+};
+use crate::session::{prepared_plan_cache_error, PreparedPlanCache, PreparedPlanCacheKey};
 use crate::{direct, Error, J2kDecoder, Surface};
 
 pub(crate) const RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED: &str =
     "J2K Metal ROI+scaled hybrid decode currently supports single-tile RGB direct plans for Rgb8/Rgba8/Rgb16";
-const REGION_SCALED_COLOR_PLAN_CACHE_CAP: usize = 128;
+pub(crate) const REGION_SCALED_COLOR_PLAN_CACHE_CAP: usize = 128;
 
 static REGION_SCALED_COLOR_PLAN_CACHE: OnceLock<
-    Mutex<HashMap<u64, Arc<crate::compute::PreparedDirectColorPlan>>>,
+    Mutex<PreparedPlanCache<Arc<crate::compute::PreparedDirectColorPlan>>>,
 > = OnceLock::new();
 
 #[cfg(test)]
@@ -71,7 +71,7 @@ pub(crate) fn reset_region_scaled_color_plan_cache_for_test() {
 
 enum PreparedRegionScaledDirectPlan {
     Gray(crate::compute::PreparedDirectGrayscalePlan),
-    Color(crate::compute::PreparedDirectColorPlan),
+    Color(Arc<crate::compute::PreparedDirectColorPlan>),
 }
 
 #[derive(Clone, Copy)]
@@ -82,9 +82,12 @@ enum RegionScaledColorPlanCache<'a> {
 }
 
 impl RegionScaledColorPlanCache<'_> {
-    fn get(self, key: u64) -> Option<Arc<crate::compute::PreparedDirectColorPlan>> {
+    fn get(
+        self,
+        key: PreparedPlanCacheKey<'_>,
+    ) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
         match self {
-            Self::Uncached => None,
+            Self::Uncached => Ok(None),
             Self::Global => cached_region_scaled_direct_color_plan(key),
             Self::Session(session) => {
                 cached_region_scaled_direct_color_plan_with_session(session, key)
@@ -92,14 +95,20 @@ impl RegionScaledColorPlanCache<'_> {
         }
     }
 
-    fn store(self, key: u64, plan: Arc<crate::compute::PreparedDirectColorPlan>) {
+    fn store(
+        self,
+        key: PreparedPlanCacheKey<'_>,
+        plan: Arc<crate::compute::PreparedDirectColorPlan>,
+    ) -> Result<(), Error> {
         match self {
-            Self::Uncached => {
-                let _ = (key, plan);
+            Self::Uncached => Ok(()),
+            Self::Global => {
+                plan.disable_dynamic_cpu_tier1_retention()?;
+                store_region_scaled_direct_color_plan(key, plan)
             }
-            Self::Global => store_region_scaled_direct_color_plan(key, plan),
             Self::Session(session) => {
-                store_region_scaled_direct_color_plan_with_session(session, key, plan);
+                plan.disable_dynamic_cpu_tier1_retention()?;
+                store_region_scaled_direct_color_plan_with_session(session, key, plan)
             }
         }
     }
@@ -179,10 +188,9 @@ fn build_region_scaled_direct_plan_with_cache(
         }
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 => {
             Ok(Some(PreparedRegionScaledDirectPlan::Color(
-                (*build_region_scaled_direct_color_plan_cached_with_cache(
-                    input, roi, scale, cache,
-                )?)
-                .clone(),
+                build_region_scaled_direct_color_plan_cached_with_cache(
+                    input, fmt, roi, scale, cache,
+                )?,
             )))
         }
         _ => Ok(None),
@@ -218,7 +226,7 @@ fn execute_region_scaled_direct_plan(
             }
         }
         PreparedRegionScaledDirectPlan::Color(plan) => {
-            match crate::compute::execute_hybrid_cpu_tier1_direct_color_plan(&plan, fmt) {
+            match crate::compute::execute_hybrid_cpu_tier1_direct_color_plan(plan, fmt) {
                 Ok(surface) => Ok(Some(surface)),
                 Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => {
                     Err(Error::UnsupportedMetalRequest {
@@ -248,7 +256,7 @@ fn execute_region_scaled_direct_plan_with_device(
         }
         PreparedRegionScaledDirectPlan::Color(plan) => {
             match crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_with_device(
-                &plan, fmt, device,
+                plan, fmt, device,
             ) {
                 Ok(surface) => Ok(Some(surface)),
                 Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => {
@@ -277,7 +285,10 @@ pub(crate) fn decode_region_scaled_grayscale_batch_direct_to_device(
         });
     }
 
-    let mut plans = Vec::with_capacity(requests.len());
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal region-scaled grayscale batch plan",
+    );
+    let mut plans = budget.try_vec(requests.len(), "J2K Metal region-scaled grayscale plans")?;
     for (input, roi, scale) in requests {
         let plan = build_region_scaled_direct_gray_plan(input.as_ref(), *roi, *scale)?;
         plans.push(Arc::new(plan));
@@ -302,17 +313,30 @@ pub(crate) fn decode_region_scaled_color_batch_direct_to_device(
     }
 
     if let Some((input, roi, scale)) = repeated_region_scaled_request(requests) {
-        let plan = build_region_scaled_direct_color_plan_cached(input.as_ref(), roi, scale)?;
-        let plans = vec![plan; requests.len()];
+        let plan = build_region_scaled_direct_color_plan_cached(input.as_ref(), fmt, roi, scale)?;
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal repeated region-scaled color batch plan",
+        );
+        let plans = budget.try_filled(
+            requests.len(),
+            plan,
+            "J2K Metal repeated region-scaled color plans",
+        )?;
         return crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt);
     }
 
-    let plans = requests
-        .par_iter()
-        .map(|(input, roi, scale)| {
-            build_region_scaled_direct_color_plan_cached(input.as_ref(), *roi, *scale)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal region-scaled color batch plan",
+    );
+    let mut plans = budget.try_vec(requests.len(), "J2K Metal region-scaled color plans")?;
+    for (input, roi, scale) in requests {
+        plans.push(build_region_scaled_direct_color_plan_cached(
+            input.as_ref(),
+            fmt,
+            *roi,
+            *scale,
+        )?);
+    }
     crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
 }
 
@@ -338,8 +362,11 @@ pub(crate) fn decode_repeated_region_scaled_color_batch_direct_to_device(
         });
     }
 
-    let plan = build_region_scaled_direct_color_plan_cached(input, roi, scale)?;
-    let plans = vec![plan; count];
+    let plan = build_region_scaled_direct_color_plan_cached(input, fmt, roi, scale)?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal repeated region-scaled color batch plan",
+    );
+    let plans = budget.try_filled(count, plan, "J2K Metal repeated region-scaled color plans")?;
     crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
 }
 
@@ -383,11 +410,7 @@ fn build_region_scaled_direct_gray_plan(
                 reason: crate::MetalDirectFallbackReason::UnsupportedPlan,
             });
         }
-        Err(error) => {
-            return Err(Error::Decode(adapter_backend_error(format!(
-                "failed to build J2K MetalDirect region-scaled grayscale plan: {error}"
-            ))));
-        }
+        Err(error) => return Err(native_decode_error(error)),
     };
     let mut prepared = crate::compute::prepare_direct_grayscale_plan(&plan)?;
     crate::compute::crop_prepared_direct_grayscale_plan_to_output_region(
@@ -430,11 +453,7 @@ fn build_region_scaled_direct_color_plan(
                 reason: RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
             });
         }
-        Err(error) => {
-            return Err(Error::Decode(adapter_backend_error(format!(
-                "failed to build J2K MetalDirect region-scaled color plan: {error}"
-            ))));
-        }
+        Err(error) => return Err(native_decode_error(error)),
     };
     let direct_plan_us = direct_plan_started
         .map(elapsed_since_us)
@@ -459,11 +478,13 @@ fn build_region_scaled_direct_color_plan(
 
 fn build_region_scaled_direct_color_plan_cached(
     input: &[u8],
+    fmt: PixelFormat,
     roi: Rect,
     scale: Downscale,
 ) -> Result<Arc<crate::compute::PreparedDirectColorPlan>, Error> {
     build_region_scaled_direct_color_plan_cached_with_cache(
         input,
+        fmt,
         roi,
         scale,
         RegionScaledColorPlanCache::Global,
@@ -472,74 +493,93 @@ fn build_region_scaled_direct_color_plan_cached(
 
 fn build_region_scaled_direct_color_plan_cached_with_cache(
     input: &[u8],
+    fmt: PixelFormat,
     roi: Rect,
     scale: Downscale,
     cache: RegionScaledColorPlanCache<'_>,
 ) -> Result<Arc<crate::compute::PreparedDirectColorPlan>, Error> {
-    let cache_key = region_scaled_color_plan_cache_key(input, roi, scale);
-    if let Some(plan) = cache.get(cache_key) {
+    let cache_key = region_scaled_color_plan_cache_key(input, fmt, roi, scale);
+    if let Some(plan) = cache.get(cache_key)? {
         return Ok(plan);
     }
 
     let plan = Arc::new(build_region_scaled_direct_color_plan(input, roi, scale)?);
-    cache.store(cache_key, plan.clone());
+    cache.store(cache_key, plan.clone())?;
     Ok(plan)
 }
 
 fn cached_region_scaled_direct_color_plan_with_session(
     session: &crate::MetalBackendSession,
-    key: u64,
-) -> Option<Arc<crate::compute::PreparedDirectColorPlan>> {
-    let guard = session.region_scaled_color_plan_cache.lock().ok()?;
-    guard.get(&key).cloned()
+    key: PreparedPlanCacheKey<'_>,
+) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
+    let mut guard =
+        session
+            .region_scaled_color_plan_cache
+            .lock()
+            .map_err(|_| Error::MetalStatePoisoned {
+                state: "session region-scaled color prepared-plan cache",
+            })?;
+    Ok(guard.get(key).cloned())
 }
 
 fn store_region_scaled_direct_color_plan_with_session(
     session: &crate::MetalBackendSession,
-    key: u64,
+    key: PreparedPlanCacheKey<'_>,
     plan: Arc<crate::compute::PreparedDirectColorPlan>,
-) {
-    if let Ok(mut guard) = session.region_scaled_color_plan_cache.lock() {
-        evict_one_region_scaled_color_plan_if_needed(&mut guard);
-        guard.insert(key, plan);
-    }
+) -> Result<(), Error> {
+    let mut guard =
+        session
+            .region_scaled_color_plan_cache
+            .lock()
+            .map_err(|_| Error::MetalStatePoisoned {
+                state: "session region-scaled color prepared-plan cache",
+            })?;
+    evict_one_region_scaled_color_plan_if_needed(&mut guard, key, plan)
 }
 
-fn region_scaled_color_plan_cache_key(input: &[u8], roi: Rect, scale: Downscale) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    input.len().hash(&mut hasher);
-    input.hash(&mut hasher);
-    roi.hash(&mut hasher);
-    scale.hash(&mut hasher);
-    hasher.finish()
+fn region_scaled_color_plan_cache_key(
+    input: &[u8],
+    fmt: PixelFormat,
+    roi: Rect,
+    scale: Downscale,
+) -> PreparedPlanCacheKey<'_> {
+    PreparedPlanCacheKey::region_scaled_color(input, fmt, roi, scale)
 }
 
 fn cached_region_scaled_direct_color_plan(
-    key: u64,
-) -> Option<Arc<crate::compute::PreparedDirectColorPlan>> {
-    let cache = REGION_SCALED_COLOR_PLAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let guard = cache.lock().ok()?;
-    guard.get(&key).cloned()
+    key: PreparedPlanCacheKey<'_>,
+) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
+    let cache = REGION_SCALED_COLOR_PLAN_CACHE
+        .get_or_init(|| Mutex::new(PreparedPlanCache::new(REGION_SCALED_COLOR_PLAN_CACHE_CAP)));
+    let mut guard = cache.lock().map_err(|_| Error::MetalStatePoisoned {
+        state: "global region-scaled color prepared-plan cache",
+    })?;
+    Ok(guard.get(key).cloned())
 }
 
 fn store_region_scaled_direct_color_plan(
-    key: u64,
+    key: PreparedPlanCacheKey<'_>,
     plan: Arc<crate::compute::PreparedDirectColorPlan>,
-) {
-    let cache = REGION_SCALED_COLOR_PLAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut guard) = cache.lock() {
-        evict_one_region_scaled_color_plan_if_needed(&mut guard);
-        guard.insert(key, plan);
-    }
+) -> Result<(), Error> {
+    let cache = REGION_SCALED_COLOR_PLAN_CACHE
+        .get_or_init(|| Mutex::new(PreparedPlanCache::new(REGION_SCALED_COLOR_PLAN_CACHE_CAP)));
+    let mut guard = cache.lock().map_err(|_| Error::MetalStatePoisoned {
+        state: "global region-scaled color prepared-plan cache",
+    })?;
+    evict_one_region_scaled_color_plan_if_needed(&mut guard, key, plan)
 }
 
-fn evict_one_region_scaled_color_plan_if_needed<T>(cache: &mut HashMap<u64, T>) {
-    if cache.len() < REGION_SCALED_COLOR_PLAN_CACHE_CAP {
-        return;
-    }
-    if let Some(key) = cache.keys().next().copied() {
-        cache.remove(&key);
-    }
+fn evict_one_region_scaled_color_plan_if_needed<T: crate::session::PreparedPlanCacheValue>(
+    cache: &mut PreparedPlanCache<T>,
+    key: PreparedPlanCacheKey<'_>,
+    value: T,
+) -> Result<(), Error> {
+    cache.insert(key, value).map(|_| ()).map_err(|error| {
+        prepared_plan_cache_error(
+            "Metal region-scaled prepared-plan cache update failed",
+            error,
+        )
+    })
 }
 
 fn emit_region_scaled_color_plan_build_timings(
@@ -553,7 +593,13 @@ fn emit_region_scaled_color_plan_build_timings(
         return;
     }
 
-    let label = decode_profile_label();
+    let label = match decode_profile_label() {
+        Ok(label) => label,
+        Err(error) => {
+            j2k_profile::emit_profile_error("metal_hybrid_plan_label", &error);
+            return;
+        }
+    };
     for (stage, elapsed_us) in [
         ("native_image", native_image_us),
         ("direct_color_plan", direct_plan_us),
@@ -569,18 +615,18 @@ fn emit_region_scaled_color_plan_build_timings(
             "j2k",
             "decode",
             "metal_cpu_hybrid_plan",
-            &[
-                ("pipeline", "decode_hybrid".to_string()),
-                ("label", label.clone()),
-                ("stage", stage.to_string()),
-                ("processor", processor.to_string()),
-                ("metric", metric.to_string()),
-                ("metric_kind", metric_kind.to_string()),
-                ("aggregation", aggregation.to_string()),
-                ("fmt", "Rgb".to_string()),
-                ("batch_count", "1".to_string()),
-                ("elapsed_us", elapsed_us.to_string()),
-            ],
+            &MetalDirectProfileRow {
+                pipeline: "decode_hybrid",
+                label: &label,
+                stage,
+                processor,
+                metric,
+                metric_kind,
+                aggregation,
+                fmt: MetalProfileFormat::Family("Rgb"),
+                batch_count: 1,
+                elapsed_us,
+            },
         );
     }
 }
@@ -628,7 +674,7 @@ fn build_region_scaled_native_image(
         target_resolution: Some(target_dims),
         ..NativeDecodeSettings::default()
     };
-    let image = NativeImage::new(input, &settings).map_err(native_decode_j2k_error)?;
+    let image = NativeImage::new(input, &settings).map_err(native_decode_error)?;
     Ok(image)
 }
 

@@ -6,6 +6,22 @@ use alloc::vec::Vec;
 use super::super::build::SubBand;
 use super::super::decode::DecompositionStorage;
 use super::super::rect::IntRect;
+use crate::{checked_decode_usize_product2, Result, ValidationError};
+
+pub(crate) fn idwt_buffer_size(rect: IntRect) -> Result<(usize, usize)> {
+    let width = rect.width() as usize;
+    let height = rect.height() as usize;
+    let min = checked_decode_usize_product2(width, height)?;
+
+    // Different sub-bands can be shifted by one sample, so include the
+    // maximum padding that the interleave stage can require.
+    let padded_width = width.checked_add(1).ok_or(ValidationError::ImageTooLarge)?;
+    let padded_height = height
+        .checked_add(1)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let max = checked_decode_usize_product2(padded_width, padded_height)?;
+    Ok((min, max))
+}
 
 /// The output from performing the IDWT operation.
 pub(crate) struct IDWTOutput {

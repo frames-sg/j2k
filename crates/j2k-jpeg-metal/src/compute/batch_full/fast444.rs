@@ -35,18 +35,23 @@ pub(in crate::compute) fn try_decode_fast444_full_rgb_batch_to_surfaces_into_out
 fn fast444_full_region_scaled_requests(
     requests: &[batch::QueuedRequest],
     packets: &[BatchedFastPacket<'_>],
-) -> Option<Vec<batch::QueuedRequest>> {
+) -> Result<Option<Vec<batch::QueuedRequest>>, Error> {
     if requests.is_empty() || requests.len() != packets.len() {
-        return None;
+        return Ok(None);
     }
 
-    let mut region_requests = Vec::with_capacity(requests.len());
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal fast444 full request conversion",
+        requests,
+    )?;
+    let mut region_requests =
+        budget.try_vec(requests.len(), "JPEG Metal fast444 region-scaled requests")?;
     for (request, packet) in requests.iter().zip(packets) {
         if request.op != batch::BatchOp::Full || request.fmt != PixelFormat::Rgb8 {
-            return None;
+            return Ok(None);
         }
         let BatchedFastPacket::Fast444(packet, _) = packet else {
-            return None;
+            return Ok(None);
         };
         let mut request = request.clone();
         request.op = batch::BatchOp::RegionScaled {
@@ -55,7 +60,7 @@ fn fast444_full_region_scaled_requests(
         };
         region_requests.push(request);
     }
-    Some(region_requests)
+    Ok(Some(region_requests))
 }
 
 #[cfg(target_os = "macos")]
@@ -65,7 +70,7 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
     packets: &[BatchedFastPacket<'_>],
     output: Option<&crate::MetalBatchOutputBuffer>,
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
-    let Some(region_requests) = fast444_full_region_scaled_requests(requests, packets) else {
+    let Some(region_requests) = fast444_full_region_scaled_requests(requests, packets)? else {
         return Ok(None);
     };
     try_decode_fast_subsampled_region_scaled_rgb_batch_to_surfaces_with_output::<JpegFast444PacketV1>(
@@ -93,7 +98,7 @@ pub(in crate::compute) fn try_decode_fast444_full_rgba_batch_to_textures(
         }
     }
 
-    let Some(region_requests) = fast444_full_region_scaled_requests(requests, packets) else {
+    let Some(region_requests) = fast444_full_region_scaled_requests(requests, packets)? else {
         return Ok(None);
     };
     try_decode_fast444_region_scaled_rgba_batch_to_textures(

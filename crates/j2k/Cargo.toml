@@ -19,6 +19,7 @@ name = "j2k"
 path = "src/lib.rs"
 
 [dependencies]
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.0" }
 j2k-core = { path = "../j2k-core", version = "=0.7.0" }
 j2k-native = { path = "../j2k-native", version = "=0.7.0" }
 j2k-types = { path = "../j2k-types", version = "=0.7.0" }

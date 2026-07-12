@@ -2,18 +2,15 @@
 
 use super::{
     add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, apply_roi_maxshift_inverse_i64,
-    code_block_required_by_index, count_ht_code_blocks, ht_block_decode,
+    code_block_required_by_index, collect_pending_ht_blocks, count_ht_code_blocks, ht_block_decode,
     ht_code_block_has_decodable_passes, should_decode_ht_sub_band_in_parallel, ComponentInfo,
-    CpuDecodeParallelism, DecompositionStorage, Header, HtCodeBlockBatchJob, HtCodeBlockDecodeJob,
-    HtCodeBlockDecoder, HtSubBandDecodeJob, PendingHtBlock, Result, SubBand, TileDecodeContext,
-    Vec,
+    CpuDecodeParallelism, DecodeAllocationBudget, DecodingError, DecompositionStorage, Header,
+    HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtSubBandDecodeJob, Result,
+    SubBand, TileDecodeContext, Vec,
 };
 
 #[cfg(feature = "parallel")]
-use super::{
-    collect_pending_ht_blocks, copy_decoded_ht_blocks_to_sub_band,
-    decode_ht_sub_band_blocks_parallel,
-};
+use super::{copy_decoded_ht_blocks_to_sub_band, decode_ht_sub_band_blocks_parallel};
 
 #[expect(
     clippy::too_many_arguments,
@@ -125,40 +122,21 @@ pub(super) fn decode_sub_band_ht_blocks(
         .vertically_causal_context;
 
     if let Some(ht_decoder) = ht_decoder.as_deref_mut() {
-        let mut pending_blocks = Vec::new();
-        for precinct in sub_band
-            .precincts
-            .clone()
-            .map(|idx| &storage.precincts[idx])
-        {
-            for code_block in precinct
-                .code_blocks
-                .clone()
-                .map(|idx| &storage.code_blocks[idx])
-            {
-                if !code_block_required_by_index(storage, sub_band_idx, code_block) {
-                    continue;
-                }
-                if !ht_code_block_has_decodable_passes(code_block, coded_bitplanes, header.strict)?
-                {
-                    continue;
-                }
+        let mut budget = DecodeAllocationBudget::for_storage(storage)?;
+        let pending_blocks = collect_pending_ht_blocks(
+            sub_band_idx,
+            sub_band,
+            storage,
+            header,
+            num_bitplanes,
+            component_info.roi_shift,
+            &mut budget,
+        )?;
 
-                pending_blocks.push(PendingHtBlock {
-                    combined: ht_block_decode::collect_code_block_data(code_block, storage)?,
-                    output_x: code_block.rect.x0 - sub_band.rect.x0,
-                    output_y: code_block.rect.y0 - sub_band.rect.y0,
-                    width: code_block.rect.width(),
-                    height: code_block.rect.height(),
-                    missing_bit_planes: code_block.missing_bit_planes,
-                    number_of_coding_passes: code_block.number_of_coding_passes,
-                });
-            }
-        }
-
-        let batch_jobs: Vec<_> = pending_blocks
-            .iter()
-            .map(|pending| HtCodeBlockBatchJob {
+        let mut batch_jobs = Vec::new();
+        budget.reserve_new(&mut batch_jobs, pending_blocks.len())?;
+        for pending in &pending_blocks {
+            batch_jobs.push(HtCodeBlockBatchJob {
                 output_x: pending.output_x,
                 output_y: pending.output_y,
                 code_block: HtCodeBlockDecodeJob {
@@ -176,8 +154,8 @@ pub(super) fn decode_sub_band_ht_blocks(
                     strict: header.strict,
                     dequantization_step,
                 },
-            })
-            .collect();
+            });
+        }
 
         let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
         if ht_decoder.decode_sub_band(
@@ -199,7 +177,10 @@ pub(super) fn decode_sub_band_ht_blocks(
             let output_len = if job.code_block.height == 0 {
                 0
             } else {
-                output_stride * (job.code_block.height as usize - 1) + job.code_block.width as usize
+                output_stride
+                    .checked_mul(job.code_block.height as usize - 1)
+                    .and_then(|prefix| prefix.checked_add(job.code_block.width as usize))
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?
             };
             ht_decoder.decode_code_block(
                 job.code_block,
@@ -210,12 +191,13 @@ pub(super) fn decode_sub_band_ht_blocks(
         return Ok(());
     }
 
-    let code_block_count = count_ht_code_blocks(sub_band_idx, sub_band, storage);
+    let code_block_count = count_ht_code_blocks(sub_band_idx, sub_band, storage)?;
     if !profile_enabled
         && should_decode_ht_sub_band_in_parallel(cpu_decode_parallelism, code_block_count)
     {
         #[cfg(feature = "parallel")]
         {
+            let mut budget = DecodeAllocationBudget::for_storage(storage)?;
             let pending_blocks = collect_pending_ht_blocks(
                 sub_band_idx,
                 sub_band,
@@ -223,6 +205,7 @@ pub(super) fn decode_sub_band_ht_blocks(
                 header,
                 num_bitplanes,
                 component_info.roi_shift,
+                &mut budget,
             )?;
             let decoded_blocks = decode_ht_sub_band_blocks_parallel(
                 &pending_blocks,
@@ -231,6 +214,7 @@ pub(super) fn decode_sub_band_ht_blocks(
                 component_info.roi_shift,
                 stripe_causal,
                 dequantization_step,
+                &mut budget,
             )?;
             tile_ctx.debug_counters.decoded_code_blocks += decoded_blocks.len();
             copy_decoded_ht_blocks_to_sub_band(&decoded_blocks, sub_band, storage)?;

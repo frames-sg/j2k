@@ -16,18 +16,17 @@ use j2k_core::{
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::{
-    CudaBufferPool, CudaBufferPoolTakeTrace, CudaDeviceBuffer, CudaError, CudaHtj2kCleanupTarget,
-    CudaHtj2kCodeBlockJob, CudaHtj2kDecodeResources, CudaHtj2kDecodeTableResources,
-    CudaHtj2kDequantizeTarget, CudaJ2kIdwtJob, CudaJ2kIdwtTarget, CudaJ2kInverseMctJob,
-    CudaJ2kRect, CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaJ2kStoreRgb16Job,
-    CudaJ2kStoreRgb16MctJob, CudaJ2kStoreRgb8Job, CudaJ2kStoreRgb8MctJob,
-    CudaJ2kStoreRgb8MctTarget, CudaPooledDeviceBuffer, CudaQueuedExecution, CudaQueuedHtj2kCleanup,
+    CudaBufferPool, CudaBufferPoolTakeTrace, CudaContext, CudaDeviceBuffer, CudaError,
+    CudaExecutionStats, CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeResources,
+    CudaHtj2kDecodeTableResources, CudaHtj2kDequantizeTarget, CudaJ2kIdwtJob, CudaJ2kIdwtTarget,
+    CudaJ2kRect, CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaPooledDeviceBuffer,
+    CudaQueuedExecution, CudaQueuedHtj2kCleanup,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{DecodeSettings, DecoderContext as NativeDecoderContext, Image as NativeImage};
 
 #[cfg(feature = "cuda-runtime")]
-use crate::error::native_decode_error;
+use crate::error::{combine_cuda_cleanup_errors, native_decode_error};
 #[cfg(feature = "cuda-runtime")]
 use crate::runtime::cuda_error;
 use crate::runtime::{validate_surface_request, wrap_cpu_staged_cuda_surface, wrap_surface};
@@ -125,9 +124,66 @@ struct CudaComponentDecodeWork {
 
 #[cfg(feature = "cuda-runtime")]
 struct CudaQueuedIdwtBatch {
+    context: CudaContext,
     queued: Vec<CudaQueuedExecution>,
     kernel_dispatches: usize,
     decode_dispatches: usize,
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl CudaQueuedIdwtBatch {
+    fn resources_pending(&self) -> bool {
+        self.kernel_dispatches != 0 && !self.queued.is_empty()
+    }
+
+    fn release_after_completion(&mut self) -> Result<(), Error> {
+        // The decode pools are private to an exclusively borrowed session.
+        // MCT/store helpers use completion-synchronizing runtime launches, so
+        // reaching this path proves every IDWT reference has completed.
+        for queued in &mut self.queued {
+            // SAFETY: `CudaSession` owns this pool privately behind an
+            // exclusive mutable borrow. Callers reach this method only after
+            // context synchronization or a completion-synchronizing MCT/store
+            // dispatch on the same context.
+            unsafe { queued.release_pool_reuse_after_completion() }.map_err(cuda_error)?;
+        }
+        self.queued.clear();
+        Ok(())
+    }
+
+    fn synchronize_and_release(&mut self) -> Result<(), Error> {
+        if self.resources_pending() {
+            self.context.synchronize().map_err(cuda_error)?;
+        }
+        self.release_after_completion()
+    }
+
+    fn finish(mut self) -> Result<(), Error> {
+        self.synchronize_and_release()
+    }
+
+    fn resolve_optional_after_completed_work<T>(
+        pending: Option<Self>,
+        result: Result<(T, bool), Error>,
+    ) -> Result<T, Error> {
+        let Some(mut pending) = pending else {
+            return result.map(|(output, _completion_established)| output);
+        };
+        match result {
+            Ok((output, completion_established)) => {
+                if pending.resources_pending() && !completion_established {
+                    pending.synchronize_and_release()?;
+                } else {
+                    pending.release_after_completion()?;
+                }
+                Ok(output)
+            }
+            Err(error) => match pending.synchronize_and_release() {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(combine_cuda_cleanup_errors(error, cleanup_error)),
+            },
+        }
+    }
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -137,15 +193,6 @@ struct CudaDecodedComponent {
     dispatches: usize,
     decode_dispatches: usize,
     timings: CudaDecodeStageTimings,
-}
-
-#[cfg(feature = "cuda-runtime")]
-struct CudaPreparedRgb8MctBatchStore {
-    color: CudaHtj2kColorDecodePlans,
-    decoded_components: Vec<CudaDecodedComponent>,
-    dispatches: usize,
-    decode_dispatches: usize,
-    job: CudaJ2kStoreRgb8MctJob,
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -490,6 +537,28 @@ mod tests {
             "batched color IDWT should keep queued resources live and let the following store synchronize"
         );
     }
+
+    #[test]
+    fn batched_color_idwt_preflights_each_output_before_pool_take() {
+        let source = include_str!("decoder/resident/idwt.rs");
+        let function = source
+            .split("fn enqueue_color_component_idwt_batches")
+            .nth(1)
+            .expect("batched IDWT enqueue function");
+        let preflight = function
+            .find("j2k_inverse_dwt_single_output_bytes")
+            .expect("runtime IDWT output preflight");
+        for pool_take in [
+            "pool.take_with_trace(output_bytes)",
+            "pool.take(output_bytes)",
+        ] {
+            let pool_take = function.find(pool_take).expect("IDWT output pool take");
+            assert!(
+                preflight < pool_take,
+                "IDWT job semantics and launch geometry must be validated before output allocation"
+            );
+        }
+    }
 }
 
 #[cfg(all(test, feature = "cuda-runtime"))]
@@ -535,7 +604,7 @@ mod dispatch_tests {
         };
 
         assert_eq!(
-            format_cuda_idwt_batch_host_trace_row(row),
+            format_cuda_idwt_batch_host_trace_row(row).expect("bounded host trace row"),
             "j2k_profile codec=j2k op=cuda_idwt_batch_host path=decode component_count=327 step_count=5 output_alloc_us=11 target_build_us=22 enqueue_us=33 output_take_count=1635 output_pool_reuse_count=1600 output_pool_alloc_count=35 output_pool_scanned_count=2400 output_pool_max_free_count=1700 output_requested_bytes=28"
         );
     }

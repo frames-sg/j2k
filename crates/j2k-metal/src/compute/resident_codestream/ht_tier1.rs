@@ -7,11 +7,11 @@ use super::super::test_counters;
 
 use super::super::resident_packet_plan::PreparedLosslessBatchTile;
 use super::{
-    dispatch_1d_pipeline, finish_resident_encode_split_command_buffer, ht_encode_output_capacity,
-    hybrid_stage_signpost, label_command_buffer, label_compute_encoder,
-    metal_profile_stages_enabled, new_resident_encode_command_buffer, owned_slice_buffer, size_of,
-    take_recyclable_private_buffer, Buffer, Duration, Error, ForeignType, Instant,
-    J2kHtEncodeBatchJob, J2kHtEncodeStatus, J2kResidentEncodeGpuStage,
+    copied_slice_buffer, dispatch_1d_pipeline, finish_resident_encode_split_command_buffer,
+    ht_encode_output_capacity, hybrid_stage_signpost, label_command_buffer, label_compute_encoder,
+    metal_profile_stages_enabled, new_blit_command_encoder, new_compute_command_encoder,
+    new_resident_encode_command_buffer, size_of, take_recyclable_private_buffer, Buffer, Duration,
+    Error, ForeignType, Instant, J2kHtEncodeBatchJob, J2kHtEncodeStatus, J2kResidentEncodeGpuStage,
     J2kResidentEncodeGpuStageCommandBuffer, MetalRuntime,
     SIGNPOST_ENCODE_HYBRID_HT_TIER1_COMMAND_ENCODE, SIGNPOST_ENCODE_HYBRID_HT_TIER1_SETUP,
 };
@@ -70,18 +70,30 @@ pub(super) fn prepare_ht_tier1(
         "j2k htj2k resident encode batch"
     };
     let mut command_buffer =
-        new_resident_encode_command_buffer(runtime, initial_command_buffer_label);
+        new_resident_encode_command_buffer(runtime, initial_command_buffer_label)?;
     let (coefficient_buffer, coefficient_offsets) =
         if let Some(coefficient_buffer) = shared_coefficient_buffer {
-            (
-                coefficient_buffer,
+            let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+                "J2K Metal resident HT coefficient offsets",
+            );
+            let mut coefficient_offsets = budget.try_vec(
+                prepared_tiles.len(),
+                "J2K Metal resident HT coefficient offsets",
+            )?;
+            coefficient_offsets.extend(
                 prepared_tiles
                     .iter()
-                    .map(|tile| tile.coefficient_byte_offset)
-                    .collect::<Vec<_>>(),
-            )
+                    .map(|tile| tile.coefficient_byte_offset),
+            );
+            (coefficient_buffer, coefficient_offsets)
         } else {
-            let mut coefficient_offsets = Vec::<usize>::with_capacity(prepared_tiles.len());
+            let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+                "J2K Metal resident HT coefficient offsets",
+            );
+            let mut coefficient_offsets = budget.try_vec(
+                prepared_tiles.len(),
+                "J2K Metal resident HT coefficient offsets",
+            )?;
             let mut total_coefficient_bytes = 0usize;
             for tile in prepared_tiles {
                 coefficient_offsets.push(total_coefficient_bytes);
@@ -96,7 +108,7 @@ pub(super) fn prepare_ht_tier1(
                 total_coefficient_bytes.max(1),
                 &mut recyclable_private_buffers,
             )?;
-            let blit = command_buffer.new_blit_command_encoder();
+            let blit = new_blit_command_encoder(&command_buffer)?;
             if metal_profile_stages_enabled() {
                 blit.set_label("HTJ2K coefficient prep");
             }
@@ -121,15 +133,26 @@ pub(super) fn prepare_ht_tier1(
                     J2kResidentEncodeGpuStage::CoefficientCopy,
                     "j2k htj2k resident tier1 encode",
                     &mut gpu_stage_command_buffers,
-                );
+                )?;
             }
             (coefficient_buffer, coefficient_offsets)
         };
 
-    let mut tier1_jobs = Vec::<J2kHtEncodeBatchJob>::new();
+    let tier1_job_count = crate::batch_allocation::checked_count_sum(
+        prepared_tiles.iter().map(|tile| tile.code_blocks.len()),
+        "J2K Metal resident HT Tier-1 jobs",
+    )?;
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident HT Tier-1 job plan");
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kHtEncodeBatchJob>(tier1_job_count),
+        crate::batch_allocation::BatchMetadataRequest::of::<usize>(prepared_tiles.len()),
+    ])?;
+    let mut tier1_jobs = budget.try_vec(tier1_job_count, "J2K Metal resident HT Tier-1 jobs")?;
     let mut tier1_output_capacity_total = 0usize;
     let mut max_tier1_output_capacity = 0usize;
-    let mut tile_tier1_job_bases = Vec::<usize>::with_capacity(prepared_tiles.len());
+    let mut tile_tier1_job_bases =
+        budget.try_vec(prepared_tiles.len(), "J2K Metal resident HT tile job bases")?;
     for (tile, &coefficient_byte_offset) in prepared_tiles.iter().zip(coefficient_offsets.iter()) {
         tile_tier1_job_bases.push(tier1_jobs.len());
         let coefficient_word_offset = coefficient_byte_offset
@@ -174,7 +197,7 @@ pub(super) fn prepare_ht_tier1(
         }
     }
 
-    let tier1_job_buffer = owned_slice_buffer(&runtime.device, &tier1_jobs);
+    let tier1_job_buffer = copied_slice_buffer(&runtime.device, &tier1_jobs)?;
     let tier1_output_buffer = take_recyclable_private_buffer(
         runtime,
         tier1_output_capacity_total.max(1),
@@ -195,8 +218,8 @@ pub(super) fn prepare_ht_tier1(
     if tier1_job_count > 0 {
         let command_encode_started = profile_stages.then(Instant::now);
         let signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_TIER1_COMMAND_ENCODE);
-        let encoder = command_buffer.new_compute_command_encoder();
-        label_compute_encoder(encoder, "HTJ2K Tier-1 encode");
+        let encoder = new_compute_command_encoder(&command_buffer)?;
+        label_compute_encoder(&encoder, "HTJ2K Tier-1 encode");
         let pipeline = &runtime.ht_encode_code_blocks;
         encoder.set_compute_pipeline_state(pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
@@ -211,7 +234,7 @@ pub(super) fn prepare_ht_tier1(
             size_of::<u32>() as u64,
             (&raw const tier1_job_count).cast(),
         );
-        dispatch_1d_pipeline(encoder, pipeline, u64::from(tier1_job_count));
+        dispatch_1d_pipeline(&encoder, pipeline, u64::from(tier1_job_count));
         encoder.end_encoding();
         drop(signpost);
         if let Some(started) = command_encode_started {
@@ -224,7 +247,7 @@ pub(super) fn prepare_ht_tier1(
                 J2kResidentEncodeGpuStage::HtBlock,
                 "j2k htj2k resident packetization",
                 &mut gpu_stage_command_buffers,
-            );
+            )?;
         }
     } else if split_profile_commands {
         label_command_buffer(&command_buffer, "j2k htj2k resident packetization");

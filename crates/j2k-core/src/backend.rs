@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// j2k-coverage: shared-accelerator-host
 
 use core::sync::atomic::{AtomicU8, Ordering};
 

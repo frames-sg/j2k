@@ -170,9 +170,7 @@ pub(crate) fn decision_error(decision: RouteDecision) -> Option<Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use j2k_jpeg::adapter::{
-        build_fast420_packet, build_fast422_packet, build_fast444_packet, decoder_bytes,
-    };
+    use crate::JpegFastPackets;
 
     const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
     const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
@@ -180,19 +178,19 @@ mod tests {
     const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
 
     fn capabilities_for(bytes: &[u8], fmt: PixelFormat) -> JpegMetalCapabilities {
-        let decoder = CpuDecoder::new(bytes).expect("decoder");
-        let decoder_bytes = decoder_bytes(&decoder);
-        let fast444_packet = build_fast444_packet(decoder_bytes).ok();
-        let fast422_packet = build_fast422_packet(decoder_bytes).ok();
-        let fast420_packet = build_fast420_packet(decoder_bytes).ok();
+        let mut plans = j2k_jpeg::adapter::JpegPlanCache::default();
+        let (plan, decoder) = plans
+            .resolve_with_decoder_and_external_live(bytes, 0)
+            .expect("cached decoder plan");
+        let packets = JpegFastPackets::from_shared(plan.fast_packet());
 
         JpegMetalCapabilities::for_request(
             &decoder,
             fmt,
             BatchOp::Full,
-            fast444_packet.as_ref(),
-            fast422_packet.as_ref(),
-            fast420_packet.as_ref(),
+            packets.fast444,
+            packets.fast422,
+            packets.fast420,
         )
     }
 

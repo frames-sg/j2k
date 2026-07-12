@@ -359,6 +359,35 @@ fn explicit_cuda_rgb8_request_returns_resident_surface_when_cuda_runtime_require
     assert_eq!(downloaded, expected);
 }
 
+#[test]
+fn explicit_cuda_rgb8_profile_keeps_fused_mct_store_accounting_when_runtime_required() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+
+    let (bytes, pixels) = fixture_ht_rgb8();
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let mut session = CudaSession::default();
+    let (surface, report) = decoder
+        .decode_to_device_with_session_and_profile(PixelFormat::Rgb8, &mut session)
+        .expect("profiled strict CUDA HTJ2K RGB surface");
+
+    let mut downloaded = vec![0u8; surface.byte_len()];
+    surface
+        .download_into(&mut downloaded, surface.pitch_bytes())
+        .expect("download profiled CUDA RGB surface");
+    let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
+    let mut expected = vec![0u8; pixels.len()];
+    host_decoder
+        .decode_into(&mut expected, 4 * 3, PixelFormat::Rgb8)
+        .expect("host RGB decode");
+
+    assert_eq!(downloaded, expected);
+    assert_eq!(report.mct_us, 0);
+    assert_eq!(report.detail.mct_dispatch_count, 0);
+    assert_eq!(report.detail.store_dispatch_count, 1);
+}
+
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn explicit_cuda_rgb8_region_request_reaches_runtime_boundary() {

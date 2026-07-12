@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// j2k-coverage: shared-accelerator-host
 
 // Optional acceleration hooks for coefficient-domain transform stages.
 //
@@ -6,8 +7,9 @@
 // direct DCT-grid to one-level wavelet projection, while the scalar path
 // remains the default oracle and fallback.
 
-use core::fmt;
-
+use crate::allocation::{
+    checked_add_allocation_bytes, checked_allocation_bytes, try_vec_filled, try_vec_with_capacity,
+};
 use crate::dct_grid::validate_dct_block_grid;
 use crate::reversible53::{
     reversible_lift_53_high_at, reversible_lift_53_i32, reversible_lift_53_low_at,
@@ -26,7 +28,10 @@ pub use j2k::{
     PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 use j2k_jpeg::transcode::idct_islow_block;
-use rayon::prelude::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::prelude::{
+    IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+    ParallelSliceMut,
+};
 
 const REVERSIBLE_DWT53_UNSUPPORTED_GRID: &str =
     "reversible DCT 5/3 job has unsupported grid geometry";
@@ -110,7 +115,7 @@ pub struct DctGridI16ToHtj2k97CodeBlockBatch<'a, 'j> {
 }
 
 /// Compact preencoded HTJ2K components backed by one payload buffer.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97CompactBatch {
     /// Contiguous encoded code-block payload bytes for every component.
     pub payload: Vec<u8>,
@@ -119,7 +124,7 @@ pub struct PreencodedHtj2k97CompactBatch {
 }
 
 /// Compact preencoded HTJ2K grouped-batch output backed by one payload buffer.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97CompactBatchGroups {
     /// Contiguous encoded code-block payload bytes for every returned group.
     pub payload: Vec<u8>,
@@ -331,24 +336,6 @@ impl DctToWaveletStageCounters {
                     .saturating_add(count);
             }
         }
-    }
-}
-
-impl fmt::Display for TranscodeStageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unsupported(reason) => f.write_str(reason),
-            Self::Backend(reason) => f.write_str(reason),
-            Self::DeviceUnavailable => f.write_str("accelerator device is unavailable"),
-        }
-    }
-}
-
-impl std::error::Error for TranscodeStageError {}
-
-impl From<&'static str> for TranscodeStageError {
-    fn from(reason: &'static str) -> Self {
-        Self::Unsupported(reason)
     }
 }
 
@@ -642,7 +629,8 @@ impl DctToWaveletStageAccelerator for RayonReversibleDwt53Accelerator {
         jobs: &[DctGridToReversibleDwt53Job<'_>],
     ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, TranscodeStageError> {
         self.batch_attempts = self.batch_attempts.saturating_add(1);
-        let mut output = Vec::with_capacity(jobs.len());
+        validate_reversible_batch_workspace(jobs)?;
+        let mut output = try_vec_with_capacity(jobs.len()).map_err(TranscodeStageError::from)?;
         for job in jobs {
             output.push(reversible_dwt53_first_level_rayon(*job)?);
         }
@@ -657,14 +645,18 @@ impl DctToWaveletStageAccelerator for RayonReversibleDwt53Accelerator {
 /// This is source-visible so hybrid GPU backends can keep JPEG parsing and
 /// exact IDCT on CPU while offloading the reversible 5/3 projection.
 #[doc(hidden)]
-pub fn idct_blocks_to_signed_samples_rayon(blocks: &[[i16; 64]]) -> Vec<[i32; 64]> {
-    blocks
-        .par_iter()
-        .map(|block| {
+pub fn idct_blocks_to_signed_samples_rayon(
+    blocks: &[[i16; 64]],
+) -> Result<Vec<[i32; 64]>, TranscodeStageError> {
+    let mut output = try_vec_filled(blocks.len(), [0i32; 64]).map_err(TranscodeStageError::from)?;
+    output
+        .par_iter_mut()
+        .zip(blocks.par_iter())
+        .for_each(|(output, block)| {
             let decoded = idct_islow_block(block);
-            decoded.map(|sample| i32::from(sample) - 128)
-        })
-        .collect()
+            *output = decoded.map(|sample| i32::from(sample) - 128);
+        });
+    Ok(output)
 }
 
 /// Compute one exact reversible integer 5/3 level from already decoded
@@ -675,69 +667,56 @@ pub(crate) fn reversible_dwt53_first_level_from_block_samples(
     block_rows: usize,
     width: usize,
     height: usize,
-) -> Result<ReversibleDwt53FirstLevel, &'static str> {
+) -> Result<ReversibleDwt53FirstLevel, TranscodeStageError> {
     validate_reversible_grid(block_samples.len(), block_cols, block_rows, width, height)?;
+    validate_reversible_output_workspace(width, height)?;
 
     let low_width = width.div_ceil(2);
     let low_height = height.div_ceil(2);
     let high_width = width / 2;
     let high_height = height / 2;
 
-    let low_rows: Vec<(Vec<i32>, Vec<i32>)> = (0..low_height)
-        .into_par_iter()
-        .map(|output_y| {
-            let mut row = Vec::with_capacity(width);
-            for x in 0..width {
-                row.push(vertical_low_53_i32_at(
-                    block_samples,
-                    block_cols,
-                    width,
-                    height,
-                    x,
-                    output_y,
-                ));
+    let low_row_count = checked_stage_product(width, low_height)?;
+    let mut low_rows = try_vec_filled(low_row_count, 0i32).map_err(TranscodeStageError::from)?;
+    low_rows
+        .par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(output_y, row)| {
+            for (x, sample) in row.iter_mut().enumerate() {
+                *sample =
+                    vertical_low_53_i32_at(block_samples, block_cols, width, height, x, output_y);
             }
-            reversible_lift_53_i32(&mut row);
-            (
-                row.iter().step_by(2).copied().collect(),
-                row.iter().skip(1).step_by(2).copied().collect(),
-            )
-        })
-        .collect();
-    let high_rows: Vec<(Vec<i32>, Vec<i32>)> = (0..high_height)
-        .into_par_iter()
-        .map(|output_y| {
-            let mut row = Vec::with_capacity(width);
-            for x in 0..width {
-                row.push(vertical_high_53_i32_at(
-                    block_samples,
-                    block_cols,
-                    width,
-                    height,
-                    x,
-                    output_y,
-                ));
+            reversible_lift_53_i32(row);
+        });
+    let high_row_count = checked_stage_product(width, high_height)?;
+    let mut high_rows = try_vec_filled(high_row_count, 0i32).map_err(TranscodeStageError::from)?;
+    high_rows
+        .par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(output_y, row)| {
+            for (x, sample) in row.iter_mut().enumerate() {
+                *sample =
+                    vertical_high_53_i32_at(block_samples, block_cols, width, height, x, output_y);
             }
-            reversible_lift_53_i32(&mut row);
-            (
-                row.iter().step_by(2).copied().collect(),
-                row.iter().skip(1).step_by(2).copied().collect(),
-            )
-        })
-        .collect();
+            reversible_lift_53_i32(row);
+        });
 
-    let mut ll = Vec::with_capacity(low_width * low_height);
-    let mut hl = Vec::with_capacity(high_width * low_height);
-    for (low, high) in low_rows {
-        ll.extend(low);
-        hl.extend(high);
+    let mut ll = try_vec_with_capacity(checked_stage_product(low_width, low_height)?)
+        .map_err(TranscodeStageError::from)?;
+    let mut hl = try_vec_with_capacity(checked_stage_product(high_width, low_height)?)
+        .map_err(TranscodeStageError::from)?;
+    for row in low_rows.chunks_exact(width) {
+        ll.extend(row.iter().step_by(2).copied());
+        hl.extend(row.iter().skip(1).step_by(2).copied());
     }
 
-    let mut lh = Vec::with_capacity(low_width * high_height);
-    let mut hh = Vec::with_capacity(high_width * high_height);
-    for (low, high) in high_rows {
-        lh.extend(low);
-        hh.extend(high);
+    let mut lh = try_vec_with_capacity(checked_stage_product(low_width, high_height)?)
+        .map_err(TranscodeStageError::from)?;
+    let mut hh = try_vec_with_capacity(checked_stage_product(high_width, high_height)?)
+        .map_err(TranscodeStageError::from)?;
+    for row in high_rows.chunks_exact(width) {
+        lh.extend(row.iter().step_by(2).copied());
+        hh.extend(row.iter().skip(1).step_by(2).copied());
     }
 
     Ok(ReversibleDwt53FirstLevel {
@@ -754,7 +733,7 @@ pub(crate) fn reversible_dwt53_first_level_from_block_samples(
 
 fn reversible_dwt53_first_level_rayon(
     job: DctGridToReversibleDwt53Job<'_>,
-) -> Result<ReversibleDwt53FirstLevel, &'static str> {
+) -> Result<ReversibleDwt53FirstLevel, TranscodeStageError> {
     validate_reversible_grid(
         job.dequantized_blocks.len(),
         job.block_cols,
@@ -762,7 +741,8 @@ fn reversible_dwt53_first_level_rayon(
         job.width,
         job.height,
     )?;
-    let block_samples = idct_blocks_to_signed_samples_rayon(job.dequantized_blocks);
+    validate_reversible_job_workspace(job)?;
+    let block_samples = idct_blocks_to_signed_samples_rayon(job.dequantized_blocks)?;
     reversible_dwt53_first_level_from_block_samples(
         &block_samples,
         job.block_cols,
@@ -772,15 +752,72 @@ fn reversible_dwt53_first_level_rayon(
     )
 }
 
+fn validate_reversible_output_workspace(
+    width: usize,
+    height: usize,
+) -> Result<(), TranscodeStageError> {
+    let sample_count = checked_stage_product(width, height)?;
+    let row_bytes = checked_allocation_bytes::<i32>(sample_count)?;
+    let band_bytes = checked_allocation_bytes::<i32>(sample_count)?;
+    checked_add_allocation_bytes(row_bytes, band_bytes)
+        .map(|_| ())
+        .map_err(TranscodeStageError::from)
+}
+
+fn validate_reversible_job_workspace(
+    job: DctGridToReversibleDwt53Job<'_>,
+) -> Result<(), TranscodeStageError> {
+    let block_bytes = checked_allocation_bytes::<[i32; 64]>(job.dequantized_blocks.len())?;
+    let sample_count = checked_stage_product(job.width, job.height)?;
+    let row_bytes = checked_allocation_bytes::<i32>(sample_count)?;
+    let band_bytes = checked_allocation_bytes::<i32>(sample_count)?;
+    let workspace = checked_add_allocation_bytes(block_bytes, row_bytes)?;
+    checked_add_allocation_bytes(workspace, band_bytes)?;
+    Ok(())
+}
+
+fn validate_reversible_batch_workspace(
+    jobs: &[DctGridToReversibleDwt53Job<'_>],
+) -> Result<(), TranscodeStageError> {
+    let mut retained_output_bytes = 0usize;
+    let mut max_transient_bytes = 0usize;
+    for job in jobs {
+        validate_reversible_grid(
+            job.dequantized_blocks.len(),
+            job.block_cols,
+            job.block_rows,
+            job.width,
+            job.height,
+        )?;
+        let sample_count = checked_stage_product(job.width, job.height)?;
+        let output_bytes = checked_allocation_bytes::<i32>(sample_count)?;
+        retained_output_bytes = checked_add_allocation_bytes(retained_output_bytes, output_bytes)?;
+        let block_bytes = checked_allocation_bytes::<[i32; 64]>(job.dequantized_blocks.len())?;
+        let row_bytes = checked_allocation_bytes::<i32>(sample_count)?;
+        max_transient_bytes =
+            max_transient_bytes.max(checked_add_allocation_bytes(block_bytes, row_bytes)?);
+    }
+    checked_add_allocation_bytes(retained_output_bytes, max_transient_bytes)?;
+    Ok(())
+}
+
+fn checked_stage_product(left: usize, right: usize) -> Result<usize, TranscodeStageError> {
+    left.checked_mul(right)
+        .ok_or(TranscodeStageError::MemoryCapExceeded {
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        })
+}
+
 fn validate_reversible_grid(
     block_count: usize,
     block_cols: usize,
     block_rows: usize,
     width: usize,
     height: usize,
-) -> Result<(), &'static str> {
+) -> Result<(), TranscodeStageError> {
     validate_dct_block_grid(block_count, block_cols, block_rows, width, height)
-        .map_err(|_| REVERSIBLE_DWT53_UNSUPPORTED_GRID)
+        .map_err(|_| TranscodeStageError::Unsupported(REVERSIBLE_DWT53_UNSUPPORTED_GRID))
 }
 
 fn vertical_low_53_i32_at(
@@ -824,6 +861,44 @@ fn component_sample_i32(
     let block_idx = block_y * block_cols + block_x;
     let local_idx = (y % 8) * 8 + (x % 8);
     block_samples[block_idx][local_idx]
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::{
+        idct_blocks_to_signed_samples_rayon, validate_reversible_grid,
+        validate_reversible_output_workspace, TranscodeStageError,
+        REVERSIBLE_DWT53_UNSUPPORTED_GRID,
+    };
+
+    #[test]
+    fn malformed_reversible_grid_is_explicitly_unsupported() {
+        assert!(matches!(
+            validate_reversible_grid(0, 1, 1, 8, 8),
+            Err(TranscodeStageError::Unsupported(
+                REVERSIBLE_DWT53_UNSUPPORTED_GRID
+            ))
+        ));
+    }
+
+    #[test]
+    fn reversible_workspace_overflow_is_typed() {
+        assert!(matches!(
+            validate_reversible_output_workspace(usize::MAX, 2),
+            Err(TranscodeStageError::MemoryCapExceeded {
+                requested: usize::MAX,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn fallible_parallel_idct_preserves_signed_samples() {
+        let blocks = [[0i16; 64]; 2];
+        let samples = idct_blocks_to_signed_samples_rayon(&blocks)
+            .expect("two block outputs fit the host cap");
+        assert_eq!(samples, [[0i32; 64]; 2]);
+    }
 }
 
 #[cfg(test)]

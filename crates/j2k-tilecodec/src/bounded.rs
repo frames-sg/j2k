@@ -23,7 +23,7 @@ impl From<BoundedReadError> for crate::TileCodecError {
         match error {
             BoundedReadError::OutputTooSmall(error) => Self::Buffer(error),
             BoundedReadError::Io(error) => {
-                crate::error::input_or_backend_io_error(&error, "bounded decode")
+                crate::error::input_or_backend_io_error(error, "bounded decode")
             }
         }
     }

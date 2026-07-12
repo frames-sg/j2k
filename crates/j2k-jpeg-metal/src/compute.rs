@@ -14,20 +14,20 @@ use j2k_jpeg::{
 use j2k_metal_support::system_default_device;
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{
-    checked_command_queue, commit_and_wait, wait_for_completion, MetalPipelineLoader,
+    checked_blit_command_encoder, checked_command_buffer, checked_command_queue,
+    checked_compute_command_encoder, commit_and_wait, wait_for_completion, MetalPipelineLoader,
     MetalSupportError,
 };
 #[cfg(all(target_os = "macos", test))]
 use metal::foreign_types::ForeignType;
 #[cfg(target_os = "macos")]
 use metal::{
-    Buffer, CommandBuffer, CommandBufferRef, CommandQueue, ComputePipelineState, Device,
-    MTLPixelFormat, MTLResourceOptions, MTLSize,
+    BlitCommandEncoder, Buffer, CommandBuffer, CommandBufferRef, CommandQueue, CommandQueueRef,
+    ComputeCommandEncoder, ComputePipelineState, Device, MTLPixelFormat, MTLResourceOptions,
 };
 #[cfg(target_os = "macos")]
 use std::{
     cell::RefCell,
-    mem::{size_of, size_of_val},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -42,16 +42,44 @@ pub(crate) use crate::abi::{
     JpegWindowedPackBatchParams, JpegWindowedTexturePackBatchParams, PreparedHuffmanHost,
     FAST420_TEXTURE_BOUNDARY_META_WORDS, FAST420_TEXTURE_BOUNDARY_SAMPLE_BYTES,
     FAST420_TEXTURE_VERTICAL_META_WORDS, FAST420_TEXTURE_VERTICAL_SAMPLE_BYTES,
-    FAST422_TEXTURE_BOUNDARY_META_WORDS, FAST422_TEXTURE_BOUNDARY_SAMPLE_BYTES,
-    JPEG_BASELINE_ENCODE_STATUS_OK, MODE_GRAY, MODE_RGB, MODE_YCBCR, OUT_GRAY, OUT_RGB, OUT_RGBA,
+    FAST422_TEXTURE_BOUNDARY_META_WORDS, FAST422_TEXTURE_BOUNDARY_SAMPLE_BYTES, MODE_GRAY,
+    MODE_RGB, MODE_YCBCR, OUT_GRAY, OUT_RGB, OUT_RGBA,
 };
 
 #[cfg(target_os = "macos")]
 use crate::buffers::{
-    checked_buffer_read, checked_buffer_slice, new_decode_plane_buffer, new_private_buffer,
-    new_shared_buffer_with_data, MetalBatchScratch,
+    new_decode_plane_buffer, new_private_buffer, new_shared_buffer_with_data, MetalBatchScratch,
 };
+#[cfg(target_os = "macos")]
+use crate::error::{metal_kernel_support_error, metal_runtime_support_error};
 use crate::{batch, Error, JpegFastPackets, Surface};
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) fn new_command_buffer(
+    queue: &CommandQueueRef,
+) -> Result<CommandBuffer, Error> {
+    checked_command_buffer(queue).map_err(|source| {
+        metal_kernel_support_error("JPEG Metal command buffer creation failed", source)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) fn new_compute_command_encoder(
+    command_buffer: &CommandBufferRef,
+) -> Result<ComputeCommandEncoder, Error> {
+    checked_compute_command_encoder(command_buffer).map_err(|source| {
+        metal_kernel_support_error("JPEG Metal compute encoder creation failed", source)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::compute) fn new_blit_command_encoder(
+    command_buffer: &CommandBufferRef,
+) -> Result<BlitCommandEncoder, Error> {
+    checked_blit_command_encoder(command_buffer).map_err(|source| {
+        metal_kernel_support_error("JPEG Metal blit encoder creation failed", source)
+    })
+}
 
 #[cfg(target_os = "macos")]
 mod batch_entry;
@@ -62,6 +90,8 @@ mod batch_plan;
 mod batch_region;
 #[cfg(target_os = "macos")]
 mod batch_support;
+#[cfg(target_os = "macos")]
+mod encode;
 mod fast_packets;
 #[cfg(target_os = "macos")]
 mod kernel_helpers;
@@ -120,20 +150,23 @@ use self::batch_support::{
     batch_entropy_buffers, batch_entropy_host_data, fast420_batch_timing_enabled,
     fast_batch_decode_mode, region_scaled_batch_error_results, surface_batch_error_results,
     surface_batch_success_results, texture_batch_error_results, BatchEntropyBufferKeys,
-    BatchEntropyBuffers, BatchEntropyHostData, BatchEntropyLabels, FastBatchDecodeMode,
-    FastBatchTiming,
+    BatchEntropyBufferPlan, BatchEntropyBuffers, BatchEntropyHostData, BatchEntropyLabels,
+    FastBatchDecodeMode, FastBatchTiming,
 };
 #[cfg(all(test, target_os = "macos"))]
 use self::batch_support::{fast420_batch_timing_value_enabled, fast420_batch_timing_value_mode};
+#[cfg(target_os = "macos")]
+pub(crate) use self::encode::{
+    encode_jpeg_baseline_entropy_batch_with_session, encode_jpeg_baseline_entropy_with_session,
+};
 use self::fast_packets::{
-    checked_entropy_segment_count, entropy_checkpoint_hosts, entropy_checkpoints_buffer,
-    entropy_decode_thread_count, fast444_params, fast444_region_params, fast444_scaled_params,
-    fast444_scaled_region_params, fast_subsampled_full_mcu_scaled_window,
-    fast_subsampled_full_mcu_window, fast_subsampled_params, fast_subsampled_region_params,
-    fast_subsampled_scaled_params, fast_subsampled_scaled_region_params,
-    fast_subsampled_windowed_pack_params_for_dims, mcu_range_for_rect, restart_offsets_buffer,
-    restart_work_for_mcu_range, FastRegionScaledMetal, FastScratchKeys, FastSubsampledMetal,
-    FastSubsampledPacket, FastTextureRepairCtx,
+    checked_entropy_segment_count, entropy_checkpoints_buffer, entropy_decode_thread_count,
+    fast444_params, fast444_region_params, fast444_scaled_params, fast444_scaled_region_params,
+    fast_subsampled_full_mcu_scaled_window, fast_subsampled_full_mcu_window,
+    fast_subsampled_params, fast_subsampled_region_params, fast_subsampled_scaled_params,
+    fast_subsampled_scaled_region_params, fast_subsampled_windowed_pack_params_for_dims,
+    mcu_range_for_rect, restart_offsets_buffer, restart_work_for_mcu_range, FastRegionScaledMetal,
+    FastScratchKeys, FastSubsampledMetal, FastSubsampledPacket, FastTextureRepairCtx,
 };
 #[cfg(all(test, target_os = "macos"))]
 use self::kernel_helpers::choose_1d_threadgroup_width;
@@ -169,22 +202,23 @@ pub(crate) use self::single_decode::{
     decode_region_to_surface, decode_scaled_to_surface, decode_to_surface,
     decode_to_surface_with_session,
 };
-#[cfg(target_os = "macos")]
-use self::single_decode::{
-    fast444_plane_mode, try_decode_fast420_scaled_region_to_surface,
-    try_decode_fast422_scaled_region_to_surface, try_decode_fast444_scaled_region_to_surface,
-};
 #[cfg(all(target_os = "macos", test))]
 use self::single_decode::{
-    try_decode_fast420_region_to_surface, try_decode_fast420_scaled_to_surface,
-    try_decode_fast422_region_to_surface, try_decode_fast422_scaled_to_surface,
-    try_decode_fast422_to_surface, try_decode_fast444_region_to_surface,
+    try_decode_fast420_region_to_surface, try_decode_fast420_scaled_region_to_surface,
+    try_decode_fast420_scaled_to_surface, try_decode_fast422_region_to_surface,
+    try_decode_fast422_scaled_to_surface, try_decode_fast422_to_surface,
+    try_decode_fast444_region_to_surface, try_decode_fast444_scaled_region_to_surface,
     try_decode_fast444_scaled_to_surface, try_decode_fast444_to_surface,
 };
 #[cfg(target_os = "macos")]
+use self::single_decode::{
+    try_decode_fast420_scaled_region_to_surface_with_status,
+    try_decode_fast422_scaled_region_to_surface,
+    try_decode_fast444_scaled_region_to_surface_with_mode_and_status,
+};
+#[cfg(target_os = "macos")]
 use self::status::{
-    decode_error_from_cpu, decode_status_buffer, fast422_status_error, first_decode_error_status,
-    jpeg_baseline_encode_status_error,
+    decode_status_buffer, fast422_status_error, fast_decode_status_error, first_decode_error_status,
 };
 use self::viewport_cache::{
     cached_plane_stage, CachedViewportPlanes, PlaneMode, PlaneStage, ViewportPlaneCacheGate,
@@ -515,257 +549,19 @@ fn with_runtime_for_session<R>(
 
 #[cfg(target_os = "macos")]
 pub(crate) fn runtime_initialization_error(error: &MetalSupportError) -> Error {
-    if error.is_unavailable() {
-        Error::MetalUnavailable
-    } else {
-        Error::MetalRuntime {
-            message: error.to_string(),
-        }
-    }
+    metal_runtime_support_error(error)
 }
 
 #[cfg(target_os = "macos")]
 pub(super) fn commit_and_wait_jpeg(command_buffer: &CommandBufferRef) -> Result<(), Error> {
-    commit_and_wait(command_buffer).map_err(|error| Error::MetalKernel {
-        message: error.to_string(),
-    })
+    commit_and_wait(command_buffer)
+        .map_err(|error| metal_kernel_support_error(error.to_string(), error))
 }
 
 #[cfg(target_os = "macos")]
 fn wait_for_completion_jpeg(command_buffer: &CommandBufferRef) -> Result<(), Error> {
-    wait_for_completion(command_buffer).map_err(|error| Error::MetalKernel {
-        message: error.to_string(),
-    })
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn encode_jpeg_baseline_entropy_with_session(
-    session: &crate::MetalBackendSession,
-    job: &JpegBaselineEntropyEncodeJob<'_>,
-) -> Result<Vec<u8>, Error> {
-    with_runtime_for_session(session, |runtime| {
-        let entropy_buffer = runtime.device.new_buffer(
-            job.entropy_capacity as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let status = JpegBaselineEncodeStatus::default();
-        let status_buffer = runtime.device.new_buffer_with_data(
-            (&raw const status).cast(),
-            size_of::<JpegBaselineEncodeStatus>() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&runtime.jpeg_baseline_encode_pipeline);
-        encoder.set_buffer(0, Some(job.input), job.input_offset as u64);
-        encoder.set_buffer(1, Some(&entropy_buffer), 0);
-        encoder.set_buffer(2, Some(&status_buffer), 0);
-        encoder.set_bytes(
-            3,
-            size_of::<JpegBaselineEncodeParams>() as u64,
-            (&raw const job.params).cast(),
-        );
-        encoder.set_bytes(
-            4,
-            size_of_val(&job.q_luma) as u64,
-            job.q_luma.as_ptr().cast(),
-        );
-        encoder.set_bytes(
-            5,
-            size_of_val(&job.q_chroma) as u64,
-            job.q_chroma.as_ptr().cast(),
-        );
-        encoder.set_bytes(
-            6,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_dc_luma).cast(),
-        );
-        encoder.set_bytes(
-            7,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_ac_luma).cast(),
-        );
-        encoder.set_bytes(
-            8,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_dc_chroma).cast(),
-        );
-        encoder.set_bytes(
-            9,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_ac_chroma).cast(),
-        );
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
-        encoder.end_encoding();
-        commit_and_wait_jpeg(command_buffer)?;
-
-        let status = checked_buffer_read::<JpegBaselineEncodeStatus>(
-            &status_buffer,
-            "baseline encode status",
-        )?;
-        if status.code != JPEG_BASELINE_ENCODE_STATUS_OK {
-            return Err(jpeg_baseline_encode_status_error(status));
-        }
-        let entropy_len = usize::try_from(status.entropy_len).map_err(|_| Error::MetalKernel {
-            message: "JPEG Baseline Metal encode entropy length exceeds usize".to_string(),
-        })?;
-        if entropy_len > job.entropy_capacity {
-            return Err(Error::MetalKernel {
-                message: "JPEG Baseline Metal encode reported length exceeds output capacity"
-                    .to_string(),
-            });
-        }
-        let entropy =
-            checked_buffer_slice::<u8>(&entropy_buffer, entropy_len, "baseline encode entropy")?;
-        Ok(entropy)
-    })
-}
-
-#[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the entropy batch path keeps shared Metal buffers, per-tile descriptors, command submission, and readback in one lifetime scope"
-)]
-pub(crate) fn encode_jpeg_baseline_entropy_batch_with_session(
-    session: &crate::MetalBackendSession,
-    job: &JpegBaselineEntropyEncodeBatchJob<'_>,
-) -> Result<Vec<Vec<u8>>, Error> {
-    if job.params.is_empty() {
-        return Ok(Vec::new());
-    }
-    with_runtime_for_session(session, |runtime| {
-        let entropy_buffer = runtime.device.new_buffer(
-            job.entropy_capacity as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let statuses = vec![JpegBaselineEncodeStatus::default(); job.params.len()];
-        let status_buffer = runtime.device.new_buffer_with_data(
-            statuses.as_ptr().cast(),
-            size_of::<JpegBaselineEncodeStatus>() as u64 * statuses.len() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let params_buffer = runtime.device.new_buffer_with_data(
-            job.params.as_ptr().cast(),
-            size_of::<JpegBaselineEncodeParams>() as u64 * job.params.len() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let tile_count = u32::try_from(job.params.len()).map_err(|_| Error::MetalKernel {
-            message: "JPEG Baseline Metal batch tile count exceeds u32".to_string(),
-        })?;
-
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&runtime.jpeg_baseline_encode_batch_pipeline);
-        encoder.set_buffer(0, Some(job.input), 0);
-        encoder.set_buffer(1, Some(&entropy_buffer), 0);
-        encoder.set_buffer(2, Some(&status_buffer), 0);
-        encoder.set_buffer(3, Some(&params_buffer), 0);
-        encoder.set_bytes(
-            4,
-            size_of_val(&job.q_luma) as u64,
-            job.q_luma.as_ptr().cast(),
-        );
-        encoder.set_bytes(
-            5,
-            size_of_val(&job.q_chroma) as u64,
-            job.q_chroma.as_ptr().cast(),
-        );
-        encoder.set_bytes(
-            6,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_dc_luma).cast(),
-        );
-        encoder.set_bytes(
-            7,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_ac_luma).cast(),
-        );
-        encoder.set_bytes(
-            8,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_dc_chroma).cast(),
-        );
-        encoder.set_bytes(
-            9,
-            size_of::<JpegBaselineEncodeHuffmanTable>() as u64,
-            (&raw const job.huff_ac_chroma).cast(),
-        );
-        encoder.set_bytes(10, size_of::<u32>() as u64, (&raw const tile_count).cast());
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(tile_count),
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
-        encoder.end_encoding();
-        commit_and_wait_jpeg(command_buffer)?;
-
-        let status_slice = checked_buffer_slice::<JpegBaselineEncodeStatus>(
-            &status_buffer,
-            job.params.len(),
-            "baseline batch encode statuses",
-        )?;
-        let entropy_bytes = checked_buffer_slice::<u8>(
-            &entropy_buffer,
-            job.entropy_capacity,
-            "baseline batch encode entropy",
-        )?;
-        let mut out = Vec::with_capacity(job.params.len());
-        for (status, params) in status_slice.iter().copied().zip(job.params.iter()) {
-            if status.code != JPEG_BASELINE_ENCODE_STATUS_OK {
-                return Err(jpeg_baseline_encode_status_error(status));
-            }
-            let entropy_len =
-                usize::try_from(status.entropy_len).map_err(|_| Error::MetalKernel {
-                    message: "JPEG Baseline Metal encode entropy length exceeds usize".to_string(),
-                })?;
-            let offset =
-                usize::try_from(params.entropy_offset_bytes).map_err(|_| Error::MetalKernel {
-                    message: "JPEG Baseline Metal batch entropy offset exceeds usize".to_string(),
-                })?;
-            let capacity =
-                usize::try_from(params.entropy_capacity).map_err(|_| Error::MetalKernel {
-                    message: "JPEG Baseline Metal batch entropy capacity exceeds usize".to_string(),
-                })?;
-            if entropy_len > capacity {
-                return Err(Error::MetalKernel {
-                    message:
-                        "JPEG Baseline Metal encode reported length exceeds tile output capacity"
-                            .to_string(),
-                });
-            }
-            let end = offset
-                .checked_add(entropy_len)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "JPEG Baseline Metal batch entropy range overflow".to_string(),
-                })?;
-            if end > entropy_bytes.len() {
-                return Err(Error::MetalKernel {
-                    message: "JPEG Baseline Metal batch entropy range exceeds buffer".to_string(),
-                });
-            }
-            out.push(entropy_bytes[offset..end].to_vec());
-        }
-        Ok(out)
-    })
+    wait_for_completion(command_buffer)
+        .map_err(|error| metal_kernel_support_error(error.to_string(), error))
 }
 
 #[cfg(all(test, target_os = "macos"))]

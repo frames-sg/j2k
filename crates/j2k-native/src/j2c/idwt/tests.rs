@@ -7,7 +7,7 @@ use super::super::codestream::WaveletTransform;
 use super::super::rect::IntRect;
 use super::direct::apply_single_decomposition_idwt_job;
 use super::horizontal::{filter_horizontal, filter_horizontal_i64};
-use super::model::CoefficientSource;
+use super::model::{idwt_buffer_size, CoefficientSource};
 use super::roi::interleave_samples_roi;
 use super::vertical::{filter_vertical, filter_vertical_i64};
 use crate::error::{DecodeError, DecodingError};
@@ -15,6 +15,13 @@ use crate::{J2kIdwtBand, J2kRect, J2kSingleDecompositionIdwtJob, J2kWaveletTrans
 
 fn bits(values: &[f32]) -> Vec<u32> {
     values.iter().map(|value| value.to_bits()).collect()
+}
+
+#[test]
+fn idwt_workspace_includes_shift_padding_for_degenerate_rectangles() {
+    let rect = IntRect::from_xywh(0, 0, 1, 7);
+
+    assert_eq!(idwt_buffer_size(rect).expect("bounded geometry"), (7, 16));
 }
 
 fn direct_job<'a>(

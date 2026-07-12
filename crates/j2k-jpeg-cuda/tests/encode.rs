@@ -68,7 +68,9 @@ fn encode_classification_cases() -> Vec<EncodeClassificationCase> {
             buffer_error: false,
         },
         EncodeClassificationCase {
-            error: JpegEncodeError::Internal("entropy overflow".to_string()),
+            error: JpegEncodeError::InternalInvariant {
+                reason: "entropy overflow",
+            },
             unsupported: false,
             buffer_error: false,
         },
@@ -151,6 +153,53 @@ fn cuda_resident_rgb8_encode_round_trips_when_required() {
         .expect("decode CUDA JPEG")
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("decode CUDA JPEG RGB8");
+    assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
+    assert_rgb_close(&decoded, &pixels, 40);
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn cuda_resident_single_encode_honors_prefixed_buffer_offset_when_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+
+    let width = 16;
+    let height = 16;
+    let pixels = patterned_rgb(width, height);
+    let mut prefixed = vec![0xa5; 37];
+    let byte_offset = prefixed.len();
+    prefixed.extend_from_slice(&pixels);
+    let context = j2k_cuda_runtime::CudaContext::system_default().expect("CUDA context");
+    let buffer = context
+        .upload(&prefixed)
+        .expect("upload prefixed rgb pixels");
+    let mut session = j2k_jpeg_cuda::CudaSession::default();
+    let encoded = j2k_jpeg_cuda::encode_jpeg_baseline_from_cuda_buffer(
+        j2k_jpeg_cuda::JpegBaselineCudaEncodeTile {
+            buffer: &buffer,
+            byte_offset,
+            width,
+            height,
+            pitch_bytes: width as usize * 3,
+            output_width: width,
+            output_height: height,
+            format: PixelFormat::Rgb8,
+        },
+        JpegEncodeOptions {
+            quality: 90,
+            subsampling: JpegSubsampling::Ybr444,
+            restart_interval: None,
+            backend: JpegBackend::Cuda,
+        },
+        &mut session,
+    )
+    .expect("CUDA resident JPEG encode from prefixed input");
+
+    let (decoded, outcome) = Decoder::new(&encoded.data)
+        .expect("decode prefixed-input CUDA JPEG")
+        .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("decode prefixed-input CUDA JPEG RGB8");
     assert_eq!((outcome.decoded.w, outcome.decoded.h), (width, height));
     assert_rgb_close(&decoded, &pixels, 40);
 }
@@ -253,6 +302,63 @@ fn cuda_resident_encode_rejects_cpu_backend_without_fallback() {
     .expect_err("explicit CPU backend must not fall back from CUDA resident encode");
     assert!(error.is_unsupported());
     assert!(!matches!(error, j2k_jpeg_cuda::Error::CudaUnavailable));
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn invalid_encode_preflight_does_not_bind_session_context_when_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+
+    let width = 8;
+    let height = 8;
+    let pixels = patterned_rgb(width, height);
+    let rejected_context = j2k_cuda_runtime::CudaContext::system_default().expect("first context");
+    let rejected_buffer = rejected_context.upload(&pixels).expect("first input");
+    let mut session = j2k_jpeg_cuda::CudaSession::default();
+    let options = JpegEncodeOptions {
+        quality: 90,
+        subsampling: JpegSubsampling::Ybr444,
+        restart_interval: None,
+        backend: JpegBackend::Cuda,
+    };
+    j2k_jpeg_cuda::encode_jpeg_baseline_from_cuda_buffer(
+        j2k_jpeg_cuda::JpegBaselineCudaEncodeTile {
+            buffer: &rejected_buffer,
+            byte_offset: 0,
+            width,
+            height,
+            pitch_bytes: 1,
+            output_width: width,
+            output_height: height,
+            format: PixelFormat::Rgb8,
+        },
+        options,
+        &mut session,
+    )
+    .expect_err("short pitch must fail neutral preflight");
+    assert!(!session.is_runtime_initialized());
+
+    let adopted_context = j2k_cuda_runtime::CudaContext::system_default().expect("second context");
+    assert!(!rejected_context.is_same_context(&adopted_context));
+    let adopted_buffer = adopted_context.upload(&pixels).expect("second input");
+    j2k_jpeg_cuda::encode_jpeg_baseline_from_cuda_buffer(
+        j2k_jpeg_cuda::JpegBaselineCudaEncodeTile {
+            buffer: &adopted_buffer,
+            byte_offset: 0,
+            width,
+            height,
+            pitch_bytes: width as usize * 3,
+            output_width: width,
+            output_height: height,
+            format: PixelFormat::Rgb8,
+        },
+        options,
+        &mut session,
+    )
+    .expect("session remains able to adopt the second context");
+    assert!(session.is_runtime_initialized());
 }
 
 fn patterned_rgb(width: u32, height: u32) -> Vec<u8> {

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// j2k-coverage: shared-accelerator-host
 
 use crate::error::J2kError;
 use j2k_core::{Downscale, Rect};

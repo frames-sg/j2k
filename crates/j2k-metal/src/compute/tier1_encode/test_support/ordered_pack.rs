@@ -98,13 +98,13 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_t
             });
         }
 
-        let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
-        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
-        let command_buffer = runtime.queue.new_command_buffer();
+        let coefficient_buffer = copied_slice_buffer(&runtime.device, &coefficients)?;
+        let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
+        let command_buffer = new_command_buffer(&runtime.queue)?;
         let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
         let token_buffers = dispatch_classic_tier1_token_emit_for_gpu_pack(
             runtime,
-            command_buffer,
+            &command_buffer,
             &coefficient_buffer,
             &job_buffer,
             &batch_jobs,
@@ -142,20 +142,12 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_t
             .ok_or_else(|| Error::MetalKernel {
                 message: "classic J2K Metal ordered-token segment readback overflow".to_string(),
             })?;
-        let counter_readback = runtime.device.new_buffer(
-            counter_byte_len.max(1) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let token_readback = runtime.device.new_buffer(
-            token_byte_len.max(1) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let token_segment_readback = runtime.device.new_buffer(
-            token_segment_byte_len.max(1) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let counter_readback = new_shared_buffer(&runtime.device, counter_byte_len.max(1))?;
+        let token_readback = new_shared_buffer(&runtime.device, token_byte_len.max(1))?;
+        let token_segment_readback =
+            new_shared_buffer(&runtime.device, token_segment_byte_len.max(1))?;
 
-        let blit = command_buffer.new_blit_command_encoder();
+        let blit = new_blit_command_encoder(&command_buffer)?;
         blit.copy_from_buffer(
             &token_buffers.counter_buffer,
             0,
@@ -178,7 +170,7 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_t
             token_segment_byte_len as u64,
         );
         blit.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let counters = checked_buffer_slice::<J2kClassicTier1SymbolPlanCounters>(
             &counter_readback,
@@ -257,8 +249,8 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_t
                         .to_string(),
                 })?,
             )
-            .map_err(|message| Error::MetalKernel {
-                message: format!("classic J2K Metal ordered-token CPU pack failed: {message}"),
+            .map_err(|source| {
+                crate::error::native_encode_error("classic Tier-1 ordered-token CPU pack", source)
             })?;
             results.push(packed);
         }

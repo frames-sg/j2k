@@ -63,18 +63,17 @@ via a crate-level attribute.
 The crate is `no_std` compatible but requires an allocator to be available.
 */
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 #![forbid(unsafe_code)]
 #![forbid(missing_docs)]
 
 extern crate alloc;
 
 #[cfg(test)]
-use alloc::{vec, vec::Vec};
+use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::error::bail;
-#[cfg(test)]
-use crate::j2c::ComponentData;
 #[cfg(test)]
 use crate::jp2::colr::CieLab;
 
@@ -169,13 +168,15 @@ use crate::math::{dispatch, Level};
 use color::cielab_to_rgb;
 pub(crate) use color::{
     convert_color_space, interleave_and_convert, interleave_and_convert_region,
-    native_component_plane_dimensions, resolve_alpha_and_color_space, resolve_palette_indices,
-    validate_channel_definition, validate_interleaved_output_buffer,
+    resolve_alpha_and_color_space, resolve_palette_indices, validate_and_reorder_channels,
+    validate_interleaved_output_buffer,
 };
 pub use color::{
     Bitmap, ColorSpace, ComponentPlane, DecodedComponents, DecodedNativeComponents,
     NativeComponentPlane, RawBitmap,
 };
+#[doc(hidden)]
+pub use color::{ComponentPlaneParts, NativeComponentPlaneParts};
 #[doc(hidden)]
 pub use direct_cpu::{
     execute_direct_color_plan_rgb8_into, execute_direct_color_plan_rgba8_into, J2kDirectCpuScratch,
@@ -211,23 +212,33 @@ pub(crate) use roi::{
 
 pub use error::{
     ColorError, DecodeError, DecodeErrorClass, DecodingError, DirectPlanUnsupportedReason,
-    FormatError, MarkerError, Result, TileError, ValidationError,
+    EncodeError, EncodeResult, FormatError, MarkerError, Result, TileError, ValidationError,
 };
+#[cfg(test)]
+pub(crate) use j2c::encode::NativeEncodeRetainedInput;
 pub use j2c::encode::{
     encode, encode_component_planes_53, encode_htj2k, encode_precomputed_htj2k_53,
-    encode_precomputed_htj2k_53_with_accelerator, encode_precomputed_htj2k_53_with_mct,
-    encode_precomputed_htj2k_53_with_mct_and_accelerator, encode_precomputed_htj2k_97,
+    encode_precomputed_htj2k_53_with_accelerator,
+    encode_precomputed_htj2k_53_with_accelerator_and_max_host_bytes,
+    encode_precomputed_htj2k_53_with_mct, encode_precomputed_htj2k_53_with_mct_and_accelerator,
+    encode_precomputed_htj2k_97, encode_precomputed_htj2k_97_batch_owned_with_accelerator,
+    encode_precomputed_htj2k_97_batch_owned_with_accelerator_and_max_host_bytes,
     encode_precomputed_htj2k_97_batch_with_accelerator,
-    encode_precomputed_htj2k_97_with_accelerator, encode_precomputed_j2k_53,
+    encode_precomputed_htj2k_97_with_accelerator,
+    encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes, encode_precomputed_j2k_53,
     encode_precomputed_j2k_53_with_accelerator, encode_precomputed_j2k_53_with_mct,
     encode_precomputed_j2k_53_with_mct_and_accelerator, encode_preencoded_htj2k_97,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator,
-    encode_preencoded_htj2k_97_owned_with_accelerator, encode_preencoded_htj2k_97_with_accelerator,
-    encode_prequantized_htj2k_97, encode_prequantized_htj2k_97_with_accelerator,
-    encode_typed_component_planes_53, encode_with_accelerator,
-    encode_with_accelerator_and_roi_regions, encode_with_roi_regions,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_owned_with_accelerator,
+    encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes,
+    encode_preencoded_htj2k_97_with_accelerator, encode_prequantized_htj2k_97,
+    encode_prequantized_htj2k_97_with_accelerator,
+    encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
+    encode_resident_htj2k_with_accelerator, encode_typed_component_planes_53,
+    encode_with_accelerator, encode_with_accelerator_and_roi_regions, encode_with_roi_regions,
     irreversible_quantization_step_for_subband, EncodeComponentPlane, EncodeOptions,
-    EncodeProgressionOrder, EncodeRoiRegion, EncodeTypedComponentPlane,
+    EncodeProgressionOrder, EncodeRoiRegion, EncodeTypedComponentPlane, ResidentHtj2kEncodeError,
 };
 pub use j2c::{CpuDecodeParallelism, DecoderContext, Reversible53CoefficientImage};
 #[doc(hidden)]
@@ -236,12 +247,14 @@ pub use j2k_types::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, IrreversibleQuantizationStep,
     IrreversibleQuantizationSubbandScales, J2kCodeBlockSegment, J2kCodeBlockStyle,
     J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
-    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
-    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
-    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
-    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
-    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
-    J2kPacketizationSubband, J2kQuantizeSubbandJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    J2kEncodeStageError, J2kEncodeStageErrorKind, J2kEncodeStageResult, J2kForwardDwt53Job,
+    J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Level,
+    J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
+    J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+    J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
+    J2kQuantizeSubbandJob, J2kResidentEncodeInput, J2kResidentEncodeInputError,
+    J2kResidentHtj2kTileEncodeJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
     PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
     PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
     PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
@@ -258,11 +271,16 @@ pub(crate) mod reader;
 pub use j2c::ht_encode_tables::HtUvlcTableEntry;
 
 const MAX_CLASSIC_DECODE_BITPLANES: u8 = j2c::MAX_BITPLANE_COUNT;
-const MAX_DEINTERLEAVE_REFERENCE_BIT_DEPTH: u8 = 38;
-pub(crate) const MAX_J2K_SPEC_COMPONENTS: u16 = 16_384;
+const MAX_DEINTERLEAVE_REFERENCE_BIT_DEPTH: u8 = j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH;
+pub(crate) use j2k_types::MAX_JPEG2000_PART1_COMPONENTS as MAX_J2K_SPEC_COMPONENTS;
 pub(crate) const MAX_J2K_IMAGE_DIMENSION: u32 = 60_000;
 pub(crate) const MAX_J2K_TILE_COUNT: u64 = u16::MAX as u64 + 1;
-pub(crate) const DEFAULT_MAX_DECODE_BYTES: usize = 512 * 1024 * 1024;
+/// Authoritative worst-case host allocation allowance for one native codec operation.
+#[doc(hidden)]
+pub const DEFAULT_MAX_CODEC_BYTES: usize = 512 * 1024 * 1024;
+/// Backward-compatible decode name for the authoritative native codec allowance.
+#[doc(hidden)]
+pub const DEFAULT_MAX_DECODE_BYTES: usize = DEFAULT_MAX_CODEC_BYTES;
 
 #[inline]
 pub(crate) fn checked_decode_usize_product2(left: usize, right: usize) -> Result<usize> {
@@ -299,6 +317,28 @@ pub(crate) fn checked_decode_byte_len4(
     let partial = checked_decode_usize_product2(first, second)?;
     let partial = checked_decode_usize_product2(partial, third)?;
     checked_decode_byte_cap(checked_decode_usize_product2(partial, fourth)?)
+}
+
+#[inline]
+pub(crate) fn try_reserve_decode_elements<T>(values: &mut Vec<T>, target_len: usize) -> Result<()> {
+    checked_decode_byte_len2(target_len, core::mem::size_of::<T>())?;
+    if target_len > values.capacity() {
+        values
+            .try_reserve_exact(target_len - values.len())
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+    }
+    Ok(())
+}
+
+#[inline]
+pub(crate) fn try_resize_decode_elements<T: Clone>(
+    values: &mut Vec<T>,
+    target_len: usize,
+    value: T,
+) -> Result<()> {
+    try_reserve_decode_elements(values, target_len)?;
+    values.resize(target_len, value);
+    Ok(())
 }
 
 #[inline]
@@ -345,7 +385,7 @@ pub use scalar::{
     decode_ht_code_block_scalar_with_workspace_profiled, decode_j2k_code_block_scalar,
     decode_j2k_code_block_scalar_profiled, decode_j2k_code_block_scalar_with_workspace,
     decode_j2k_code_block_scalar_with_workspace_profiled, decode_j2k_sub_band_scalar,
-    deinterleave_reference, encode_ht_code_block_scalar, encode_ht_code_block_scalar_with_passes,
+    encode_ht_code_block_scalar, encode_ht_code_block_scalar_with_passes,
     encode_j2k_code_block_scalar_with_style, encode_j2k_packetization_scalar,
     forward_dwt53_reference, forward_dwt97_reference, forward_ict_reference, forward_rct_reference,
     pack_j2k_code_block_scalar_from_tier1_tokens, quantize_reversible_reference,

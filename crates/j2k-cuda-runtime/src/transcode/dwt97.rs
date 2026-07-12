@@ -1,116 +1,44 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod single;
+
 use super::{
     checked_i32,
     types::{Dwt97BatchDeviceRequest, Dwt97ColumnLiftBatchLaunch},
     validate_dct_block_grid,
-    validation::ensure_transcode_runtime_ptx_available,
+    validation::{ensure_transcode_runtime_ptx_available, validate_transcode_pool_context},
     CudaDwt97BatchGeometry, CudaDwt97BatchWithPoolRequest, CudaTranscodeDwt97Bands, DctBlockGrid,
     Dwt97BatchDeviceBands, Dwt97BatchInput,
 };
 use crate::{
+    allocation::HostPhaseBudget,
     context::CudaContext,
     error::CudaError,
     j2k_encode::CudaDwt97BatchStageTimings,
     kernels::CudaKernel,
-    memory::{pooled_device_buffer, CudaDeviceBuffer, CudaPooledDeviceBuffer},
+    memory::{pooled_device_buffer, CudaPooledDeviceBuffer},
 };
 
 impl CudaContext {
-    /// Compute one irreversible single-level 9/7 transform directly from
-    /// dequantized 8x8 DCT blocks (`block_cols * block_rows` blocks of 64 `f32`
-    /// natural-order coefficients), matching the `j2k-transcode` scalar
-    /// oracle within f32 tolerance.
-    #[doc(hidden)]
-    pub fn j2k_transcode_dwt97(
-        &self,
-        blocks: &[f32],
-        block_cols: usize,
-        block_rows: usize,
-        width: usize,
-        height: usize,
-    ) -> Result<CudaTranscodeDwt97Bands, CudaError> {
-        ensure_transcode_runtime_ptx_available()?;
-        let grid = validate_dct_block_grid(
-            block_cols,
-            block_rows,
-            width,
-            height,
-            1,
-            blocks.len(),
-            "9/7 transcode job has unsupported grid geometry",
-        )?;
-        let DctBlockGrid {
-            expected_coeffs: _,
-            low_width,
-            low_height,
-            high_width,
-            high_height,
-            dims,
-            ..
-        } = grid;
-
-        self.inner.set_current()?;
-
-        let alloc_f32 = |count: usize| -> Result<CudaDeviceBuffer, CudaError> {
-            let bytes = count
-                .checked_mul(std::mem::size_of::<f32>())
-                .ok_or(CudaError::LengthTooLarge { len: count })?;
-            self.allocate(bytes)
-        };
-        let spatial = alloc_f32(width * height)?;
-        let row_low = alloc_f32(height * low_width)?;
-        let row_high = alloc_f32(height * high_width)?;
-        let ll = alloc_f32(low_width * low_height)?;
-        let lh = alloc_f32(low_width * high_height)?;
-        let hl = alloc_f32(high_width * low_height)?;
-        let hh = alloc_f32(high_width * high_height)?;
-
-        let blocks_dev = self.upload_f32(blocks)?;
-
-        self.launch_transcode_dwt97_idct(dims, &blocks_dev, &spatial)?;
-        self.launch_transcode_dwt97_row_lift(dims, &spatial, &row_low, &row_high)?;
-        if dims.low_width > 0 {
-            self.launch_transcode_dwt97_column_lift(
-                &row_low,
-                dims.low_width,
-                dims.height,
-                &ll,
-                &lh,
-            )?;
-        }
-        if dims.high_width > 0 {
-            self.launch_transcode_dwt97_column_lift(
-                &row_high,
-                dims.high_width,
-                dims.height,
-                &hl,
-                &hh,
-            )?;
-        }
-
-        Ok(CudaTranscodeDwt97Bands {
-            ll: Self::download_f32_band(&ll, low_width * low_height)?,
-            hl: Self::download_f32_band(&hl, high_width * low_height)?,
-            lh: Self::download_f32_band(&lh, low_width * high_height)?,
-            hh: Self::download_f32_band(&hh, high_width * high_height)?,
-            low_width,
-            low_height,
-            high_width,
-            high_height,
-        })
-    }
     /// Compute a same-geometry batch of irreversible single-level 9/7 transforms
     /// while reusing device buffers from `pool` for transient stage storage.
-    #[expect(
-        clippy::similar_names,
-        reason = "LL/LH/HL/HH identifiers are the four distinct JPEG 2000 subband identities"
-    )]
+    /// The pool must belong to this context.
     #[doc(hidden)]
     pub fn j2k_transcode_dwt97_batch_with_pool(
         &self,
         request: CudaDwt97BatchWithPoolRequest<'_>,
     ) -> Result<(Vec<CudaTranscodeDwt97Bands>, CudaDwt97BatchStageTimings), CudaError> {
+        self.j2k_transcode_dwt97_batch_with_pool_and_live_host_bytes(request, 0)
+    }
+
+    /// Compute a 9/7 batch while accounting caller-live host staging.
+    #[doc(hidden)]
+    pub fn j2k_transcode_dwt97_batch_with_pool_and_live_host_bytes(
+        &self,
+        request: CudaDwt97BatchWithPoolRequest<'_>,
+        live_host_bytes: usize,
+    ) -> Result<(Vec<CudaTranscodeDwt97Bands>, CudaDwt97BatchStageTimings), CudaError> {
+        validate_transcode_pool_context(self, request.pool)?;
         let CudaDwt97BatchWithPoolRequest {
             blocks,
             geometry,
@@ -134,23 +62,40 @@ impl CudaContext {
             high_height,
         } = bands;
 
-        let ll_size = low_width * low_height;
-        let lh_size = low_width * high_height;
-        let hl_size = high_width * low_height;
-        let hh_size = high_width * high_height;
+        let low_low_count = low_width * low_height;
+        let low_high_count = low_width * high_height;
+        let high_low_count = high_width * low_height;
+        let high_high_count = high_width * high_height;
 
         let (outputs, readback_us) = self.time_default_stream_us(|| {
-            let ll_all = Self::download_pooled_f32_band(&ll, item_count * ll_size)?;
-            let lh_all = Self::download_pooled_f32_band(&lh, item_count * lh_size)?;
-            let hl_all = Self::download_pooled_f32_band(&hl, item_count * hl_size)?;
-            let hh_all = Self::download_pooled_f32_band(&hh, item_count * hh_size)?;
-            let mut outputs = Vec::with_capacity(item_count);
+            let mut host_budget =
+                HostPhaseBudget::with_live_bytes("CUDA 9/7 batch readback", live_host_bytes)?;
+            let low_low_values =
+                Self::download_pooled_f32_band(&ll, item_count * low_low_count, &mut host_budget)?;
+            let low_high_values =
+                Self::download_pooled_f32_band(&lh, item_count * low_high_count, &mut host_budget)?;
+            let high_low_values =
+                Self::download_pooled_f32_band(&hl, item_count * high_low_count, &mut host_budget)?;
+            let high_high_values = Self::download_pooled_f32_band(
+                &hh,
+                item_count * high_high_count,
+                &mut host_budget,
+            )?;
+            let mut outputs = host_budget.try_vec_with_capacity(item_count)?;
             for item in 0..item_count {
                 outputs.push(CudaTranscodeDwt97Bands {
-                    ll: ll_all[item * ll_size..(item + 1) * ll_size].to_vec(),
-                    hl: hl_all[item * hl_size..(item + 1) * hl_size].to_vec(),
-                    lh: lh_all[item * lh_size..(item + 1) * lh_size].to_vec(),
-                    hh: hh_all[item * hh_size..(item + 1) * hh_size].to_vec(),
+                    ll: host_budget.try_vec_from_slice(
+                        &low_low_values[item * low_low_count..(item + 1) * low_low_count],
+                    )?,
+                    hl: host_budget.try_vec_from_slice(
+                        &high_low_values[item * high_low_count..(item + 1) * high_low_count],
+                    )?,
+                    lh: host_budget.try_vec_from_slice(
+                        &low_high_values[item * low_high_count..(item + 1) * low_high_count],
+                    )?,
+                    hh: host_budget.try_vec_from_slice(
+                        &high_high_values[item * high_high_count..(item + 1) * high_high_count],
+                    )?,
                     low_width,
                     low_height,
                     high_width,

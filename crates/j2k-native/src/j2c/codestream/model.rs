@@ -18,7 +18,7 @@ pub(crate) struct Header<'a> {
     pub(crate) strict: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct PpmMarkerData<'a> {
     pub(crate) sequence_idx: u8,
     pub(crate) packets: Vec<PpmPacket<'a>>,
@@ -29,7 +29,7 @@ pub(crate) struct PpmPacket<'a> {
     pub(crate) data: &'a [u8],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct PacketLengthMarker {
     pub(crate) sequence_idx: u8,
     pub(crate) packet_lengths: Vec<u32>,
@@ -42,7 +42,7 @@ pub(crate) struct RgnMarkerData {
     pub(crate) shift: u8,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ComponentInfo {
     pub(crate) size_info: ComponentSizeInfo,
     pub(crate) coding_style: CodingStyleComponent,
@@ -283,7 +283,7 @@ pub(crate) struct StepSize {
 }
 
 /// Quantization properties, from the QCD and QCC markers (A.6.4 and A.6.5).
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct QuantizationInfo {
     pub(crate) quantization_style: QuantizationStyle,
     pub(crate) guard_bits: u8,
@@ -291,7 +291,7 @@ pub(crate) struct QuantizationInfo {
 }
 
 /// Default values for coding style, from the COD marker (A.6.1).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct CodingStyleDefault {
     pub(crate) progression_order: ProgressionOrder,
     pub(crate) num_layers: u8,
@@ -301,14 +301,14 @@ pub(crate) struct CodingStyleDefault {
 }
 
 /// Values of coding style for each component, from the COC marker (A.6.2).
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct CodingStyleComponent {
     pub(crate) flags: CodingStyleFlags,
     pub(crate) parameters: CodingStyleParameters,
 }
 
 /// Shared parameters between the COC and COD marker (A.6.1 and A.6.2).
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct CodingStyleParameters {
     pub(crate) num_decomposition_levels: u8,
     pub(crate) num_resolution_levels: u8,

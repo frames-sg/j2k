@@ -3,7 +3,7 @@
     reason = "CUDA shared-memory statics are accessed through device-scoped references"
 )]
 
-use cuda_device::{SharedArray, kernel, thread};
+use cuda_device::{kernel, thread, SharedArray};
 use cuda_host::cuda_module;
 
 include!("../../../cuda_oxide_simt_prelude.rs");
@@ -47,6 +47,7 @@ struct CudaJ2kIdwtMultiJob {
     hh_ptr: u64,
     output_ptr: u64,
     job: CudaJ2kIdwtJob,
+    reserved_tail: u32,
 }
 
 #[derive(Clone, Copy)]

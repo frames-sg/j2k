@@ -12,7 +12,7 @@ use super::model::{CoefficientSource, IDWTOutput};
 use super::vertical::filter_vertical;
 use crate::error::DecodingError;
 use crate::j2c::Header;
-use crate::Result;
+use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 
 pub(super) fn apply_roi(
     storage: &DecompositionStorage<'_>,
@@ -43,7 +43,7 @@ pub(super) fn apply_roi(
             output.rect = IntRect::from_xywh(0, 0, 0, 0);
             return Ok(());
         };
-        copy_sub_band_window_to_output(ll_sub_band, storage, window, output);
+        copy_sub_band_window_to_output(ll_sub_band, storage, window, output)?;
         return Ok(());
     }
 
@@ -74,7 +74,7 @@ pub(super) fn apply_roi(
             transform,
             storage,
             &mut tile_ctx.debug_counters.idwt_output_samples,
-        );
+        )?;
         current_coefficients = next;
         current_rect = output_window;
         have_current = true;
@@ -90,11 +90,11 @@ fn copy_sub_band_window_to_output(
     storage: &DecompositionStorage<'_>,
     window: IntRect,
     output: &mut IDWTOutput,
-) {
+) -> Result<()> {
     output.coefficients.clear();
-    output
-        .coefficients
-        .resize(window.width() as usize * window.height() as usize, 0.0);
+    let required_len =
+        checked_decode_usize_product2(window.width() as usize, window.height() as usize)?;
+    try_resize_decode_elements(&mut output.coefficients, required_len, 0.0)?;
     let source = CoefficientSource::from_sub_band(sub_band, storage);
     for y in window.y0..window.y1 {
         for x in window.x0..window.x1 {
@@ -103,6 +103,7 @@ fn copy_sub_band_window_to_output(
         }
     }
     output.rect = window;
+    Ok(())
 }
 
 fn apply_level_roi(
@@ -113,7 +114,7 @@ fn apply_level_roi(
     transform: WaveletTransform,
     storage: &DecompositionStorage<'_>,
     idwt_output_samples: &mut usize,
-) {
+) -> Result<()> {
     let hl =
         CoefficientSource::from_sub_band(&storage.sub_bands[decomposition.sub_bands[0]], storage);
     let lh =
@@ -122,8 +123,11 @@ fn apply_level_roi(
         CoefficientSource::from_sub_band(&storage.sub_bands[decomposition.sub_bands[2]], storage);
 
     target.clear();
-    let required_len = output_window.width() as usize * output_window.height() as usize;
-    target.resize(required_len, 0.0);
+    let required_len = checked_decode_usize_product2(
+        output_window.width() as usize,
+        output_window.height() as usize,
+    )?;
+    try_resize_decode_elements(target, required_len, 0.0)?;
     *idwt_output_samples = idwt_output_samples.saturating_add(required_len);
 
     interleave_samples_roi(ll, hl, lh, hh, target, output_window, decomposition.rect);
@@ -131,6 +135,7 @@ fn apply_level_roi(
         filter_horizontal(target, output_window, transform);
         filter_vertical(target, output_window, transform);
     }
+    Ok(())
 }
 
 pub(super) fn interleave_samples_roi(

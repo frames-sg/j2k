@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use j2k_core::{DeviceSubmission, PixelFormat, ReadySubmission};
+use j2k_core::{BackendKind, DeviceSubmission, PixelFormat, ReadySubmission};
 use j2k_cuda_runtime::CudaDeviceBuffer;
 
 use crate::runtime::cuda_error;
@@ -65,7 +65,7 @@ pub struct CudaLosslessEncodeOutcome {
     pub stage_timings: CudaEncodeStageTimings,
 }
 
-/// CUDA-resident codestream bytes produced by a CUDA lossless encode.
+/// CUDA-resident copy of codestream bytes returned by a CUDA lossless encode.
 #[derive(Debug)]
 pub struct CudaResidentCodestreamBuffer {
     pub(super) buffer: CudaDeviceBuffer,
@@ -85,7 +85,11 @@ impl CudaResidentCodestreamBuffer {
 
     /// Download the resident codestream bytes.
     pub fn download(&self) -> Result<Vec<u8>, crate::Error> {
-        let mut bytes = vec![0u8; self.byte_len];
+        let mut bytes = crate::allocation::try_vec_filled(
+            self.byte_len,
+            0u8,
+            "CUDA-resident j2k codestream download",
+        )?;
         self.buffer.copy_to_host(&mut bytes).map_err(cuda_error)?;
         Ok(bytes)
     }
@@ -96,19 +100,58 @@ impl CudaResidentCodestreamBuffer {
     }
 }
 
+/// Host-visible metadata for a CUDA-resident encoded J2K codestream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CudaEncodedJ2kMetadata {
+    /// Backend that satisfied the encode contract.
+    pub backend: BackendKind,
+    /// Encode-stage dispatches observed while producing the codestream.
+    pub dispatch_report: j2k::J2kEncodeDispatchReport,
+    /// Encoded image width in pixels.
+    pub width: u32,
+    /// Encoded image height in pixels.
+    pub height: u32,
+    /// Encoded component count.
+    pub components: u16,
+    /// Encoded significant bits per sample.
+    pub bit_depth: u8,
+    /// Whether encoded samples are signed.
+    pub signed: bool,
+}
+
+impl CudaEncodedJ2kMetadata {
+    pub(super) fn from_host_encoded(encoded: &j2k::EncodedJ2k) -> Self {
+        Self {
+            backend: encoded.backend,
+            dispatch_report: encoded.dispatch_report,
+            width: encoded.width,
+            height: encoded.height,
+            components: encoded.components,
+            bit_depth: encoded.bit_depth,
+            signed: encoded.signed,
+        }
+    }
+}
+
 /// CUDA lossless encode output with host metadata and CUDA-resident codestream bytes.
+///
+/// The final codestream is assembled in host memory today, copied to this
+/// device buffer, and then released from host memory before this value is
+/// returned. `CudaEncodedJ2k` therefore does not retain a duplicate host
+/// codestream. This is a device-resident output contract, not a claim that
+/// final codestream assembly itself ran on CUDA.
 #[derive(Debug)]
 pub struct CudaEncodedJ2k {
-    /// Host-visible encode metadata and codestream bytes.
-    pub encoded: j2k::EncodedJ2k,
-    /// CUDA-resident codestream bytes.
+    /// Host-visible encode metadata without codestream bytes.
+    pub metadata: CudaEncodedJ2kMetadata,
+    /// CUDA-resident copy of the codestream bytes.
     pub codestream: CudaResidentCodestreamBuffer,
 }
 
 impl CudaEncodedJ2k {
-    /// Borrow the host-visible encoded J2K metadata and bytes.
-    pub fn encoded(&self) -> &j2k::EncodedJ2k {
-        &self.encoded
+    /// Borrow the host-visible encoded J2K metadata.
+    pub fn metadata(&self) -> &CudaEncodedJ2kMetadata {
+        &self.metadata
     }
 
     /// Borrow the CUDA-resident codestream buffer.
@@ -117,8 +160,8 @@ impl CudaEncodedJ2k {
     }
 
     /// Consume this value and return host metadata plus the CUDA-resident buffer.
-    pub fn into_parts(self) -> (j2k::EncodedJ2k, CudaResidentCodestreamBuffer) {
-        (self.encoded, self.codestream)
+    pub fn into_parts(self) -> (CudaEncodedJ2kMetadata, CudaResidentCodestreamBuffer) {
+        (self.metadata, self.codestream)
     }
 }
 
@@ -128,8 +171,22 @@ impl CudaEncodedJ2k {
 pub struct CudaLosslessBufferEncodeOutcome {
     /// CUDA-resident encoded J2K output.
     pub encoded: CudaEncodedJ2k,
-    /// Host-codestream encode outcome used to assemble and validate metadata.
-    pub host_outcome: CudaLosslessEncodeOutcome,
+    /// Whether the input buffer had to be copied or padded.
+    pub input_copy_used: bool,
+    /// Residency decisions for encode stages.
+    pub resident: CudaLosslessEncodeResidency,
+    /// Time spent copying or padding input.
+    pub input_copy_duration: Duration,
+    /// End-to-end encode duration for this tile.
+    pub encode_duration: Duration,
+    /// GPU-only duration when timestamp data is available.
+    pub gpu_duration: Option<Duration>,
+    /// Time spent validating encoded output.
+    pub validation_duration: Duration,
+    /// Time spent materializing CUDA output into host codestream bytes.
+    pub host_readback_duration: Duration,
+    /// CUDA encode stage timing buckets collected for this tile.
+    pub stage_timings: CudaEncodeStageTimings,
     /// Time spent uploading codestream bytes into the resident CUDA buffer.
     pub codestream_upload_duration: Duration,
 }

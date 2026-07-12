@@ -1,7 +1,5 @@
 //! Parsing a JP2 box, as specified in I.4.
 
-use alloc::string::{String, ToString};
-
 use crate::error::{FormatError, Result};
 use crate::reader::BitReader;
 
@@ -29,14 +27,6 @@ pub(crate) const CONTIGUOUS_CODESTREAM: u32 = 0x6A70_3263;
 pub(crate) struct Jp2Box<'a> {
     pub(crate) data: &'a [u8],
     pub(crate) box_type: u32,
-}
-
-/// Converts a box tag to its string representation.
-///
-/// Box tags are stored as 4-byte ASCII codes in big-endian format.
-pub(crate) fn tag_to_string(tag: u32) -> String {
-    let bytes = tag.to_be_bytes();
-    String::from_utf8_lossy(&bytes).to_string()
 }
 
 #[cfg(test)]
@@ -83,7 +73,8 @@ pub(crate) fn read_checked<'a>(reader: &mut BitReader<'a>) -> Result<Jp2Box<'a>>
         // This value includes all of the fields of the box, including the length and type.
         _ => {
             let length = l_box.checked_sub(8).ok_or(FormatError::InvalidBox)?;
-            read_box_payload(reader, length as usize)?
+            let length = usize::try_from(length).map_err(|_| FormatError::InvalidBox)?;
+            read_box_payload(reader, length)?
         }
     };
 
@@ -115,8 +106,11 @@ fn box_header_truncated(reader: &BitReader<'_>, offset: usize) -> FormatError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
+
+    use crate::reader::BitReader;
+
+    use super::{read, FILE_TYPE};
 
     #[test]
     fn read_extended_length_box() {

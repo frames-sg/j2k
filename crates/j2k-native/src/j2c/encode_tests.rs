@@ -4,29 +4,30 @@ use super::{
     assign_classic_segment_layers_by_slope, assign_ht_segment_layers_by_budget, bitplane_encode,
     copy_code_block_coefficients, deinterleave_rgb8_unsigned_to_f32, deinterleave_to_f32,
     downcast_i64_coefficients_to_i32, encode, encode_all_ht_code_blocks_parallel,
-    encode_all_ht_code_blocks_serial_cpu, encode_htj2k,
+    encode_all_ht_code_blocks_serial_cpu, encode_htj2k, encode_precomputed_htj2k_53,
     encode_precomputed_htj2k_53_with_accelerator, encode_precomputed_htj2k_97,
     encode_precomputed_htj2k_97_batch_with_accelerator,
     encode_precomputed_htj2k_97_with_accelerator, encode_preencoded_htj2k_97,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator, encode_prepared_subbands,
     encode_prequantized_htj2k_97, encode_prequantized_htj2k_97_with_accelerator,
-    encode_with_accelerator, ht_block_encode, ht_layer_contributions,
-    ht_target_coding_passes_for_options, prepare_subband, prepared_subband_from_preencoded_owned,
-    public_sub_band_type, quantize, validate_packet_header_marker_payloads,
-    validate_precomputed_dwt97_geometry, validate_precomputed_dwt_geometry, BlockCodingMode,
-    ClassicSegmentAssignmentCandidate, CpuOnlyJ2kEncodeStageAccelerator, DecodeSettings,
-    EncodeOptions, EncodedHtJ2kCodeBlock, HtSegmentAssignmentCandidate, Image,
-    J2kEncodeStageAccelerator, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level,
-    J2kForwardDwt97Output, J2kSubBandType, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
-    PrecomputedHtj2k97Component, PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock,
-    PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
-    PreencodedHtj2k97CompactImage, PreencodedHtj2k97CompactResolution,
-    PreencodedHtj2k97CompactSubband, PreencodedHtj2k97Component, PreencodedHtj2k97Image,
-    PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband, PrequantizedHtj2k97Component,
+    encode_with_accelerator, forward_dwt53_output_from_decomposition, ht_block_encode,
+    ht_layer_contributions, ht_target_coding_passes_for_options, prepare_subband,
+    prepared_subband_from_preencoded_owned, public_sub_band_type, quantize,
+    validate_packet_header_marker_payloads, validate_precomputed_dwt97_geometry,
+    validate_precomputed_dwt_geometry, BlockCodingMode, ClassicSegmentAssignmentCandidate,
+    CpuOnlyJ2kEncodeStageAccelerator, EncodeOptions, EncodedHtJ2kCodeBlock,
+    HtSegmentAssignmentCandidate, J2kEncodeStageAccelerator, J2kForwardDwt53Level,
+    J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output, J2kSubBandType,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
+    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Image, PreencodedHtj2k97Resolution,
+    PreencodedHtj2k97Subband, PreparedCodeBlockCoefficients, PrequantizedHtj2k97Component,
     PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
     QuantStepSize, SubBandType, HT_CPU_PARALLEL_FALLBACK_MIN_JOBS,
 };
-use crate::PrequantizedHtj2k97CodeBlock;
+use crate::{DecodeSettings, EncodeError, Image, PrequantizedHtj2k97CodeBlock};
 use alloc::{vec, vec::Vec};
 
 fn test_preencoded_subband_payload(marker: u8) -> PreencodedHtj2k97Subband {
@@ -63,35 +64,43 @@ fn prepared_subband_from_owned_preencoded_moves_payload_without_clone() {
     assert!(prepared.code_blocks[0].coefficients.is_empty());
 }
 
+#[derive(Default)]
+struct RecordingPacketizationAccelerator {
+    payload_base: usize,
+    observed_offsets: Vec<usize>,
+    observed_lengths: Vec<usize>,
+}
+
+impl crate::J2kEncodeStageAccelerator for RecordingPacketizationAccelerator {
+    fn encode_packetization(
+        &mut self,
+        job: crate::J2kPacketizationEncodeJob<'_>,
+    ) -> crate::J2kEncodeStageResult<Option<Vec<u8>>> {
+        for code_block in job
+            .resolutions
+            .iter()
+            .flat_map(|resolution| resolution.subbands.iter())
+            .flat_map(|subband| subband.code_blocks.iter())
+            .filter(|code_block| !code_block.data.is_empty())
+        {
+            self.observed_offsets
+                .push((code_block.data.as_ptr() as usize) - self.payload_base);
+            self.observed_lengths.push(code_block.data.len());
+        }
+        Ok(Some(crate::encode_j2k_packetization_scalar(job).map_err(
+            |source| {
+                crate::J2kEncodeStageError::backend(
+                    "scalar test accelerator",
+                    "packetization",
+                    source,
+                )
+            },
+        )?))
+    }
+}
+
 #[test]
 fn compact_preencoded_packetization_borrows_payload_ranges() {
-    #[derive(Default)]
-    struct RecordingPacketizationAccelerator {
-        payload_base: usize,
-        observed_offsets: Vec<usize>,
-        observed_lengths: Vec<usize>,
-    }
-
-    impl crate::J2kEncodeStageAccelerator for RecordingPacketizationAccelerator {
-        fn encode_packetization(
-            &mut self,
-            job: crate::J2kPacketizationEncodeJob<'_>,
-        ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
-            for code_block in job
-                .resolutions
-                .iter()
-                .flat_map(|resolution| resolution.subbands.iter())
-                .flat_map(|subband| subband.code_blocks.iter())
-                .filter(|code_block| !code_block.data.is_empty())
-            {
-                self.observed_offsets
-                    .push((code_block.data.as_ptr() as usize) - self.payload_base);
-                self.observed_lengths.push(code_block.data.len());
-            }
-            Ok(Some(crate::encode_j2k_packetization_scalar(job)?))
-        }
-    }
-
     let (preencoded, options) = sample_preencoded_htj2k97_for_test();
     let expected = encode_preencoded_htj2k_97(&preencoded, &options).expect("owned preencoded");
     let mut payload = Vec::new();
@@ -265,7 +274,7 @@ fn encode_with_accelerator_calls_lossless_stage_hooks() {
         fn encode_forward_rct(
             &mut self,
             _job: crate::J2kForwardRctJob<'_>,
-        ) -> core::result::Result<bool, &'static str> {
+        ) -> crate::J2kEncodeStageResult<bool> {
             self.forward_rct += 1;
             Ok(false)
         }
@@ -273,7 +282,7 @@ fn encode_with_accelerator_calls_lossless_stage_hooks() {
         fn encode_forward_dwt53(
             &mut self,
             _job: crate::J2kForwardDwt53Job<'_>,
-        ) -> core::result::Result<Option<crate::J2kForwardDwt53Output>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<crate::J2kForwardDwt53Output>> {
             self.forward_dwt53 += 1;
             Ok(None)
         }
@@ -281,7 +290,7 @@ fn encode_with_accelerator_calls_lossless_stage_hooks() {
         fn encode_tier1_code_block(
             &mut self,
             _job: crate::J2kTier1CodeBlockEncodeJob<'_>,
-        ) -> core::result::Result<Option<crate::EncodedJ2kCodeBlock>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<crate::EncodedJ2kCodeBlock>> {
             self.tier1_code_blocks += 1;
             Ok(None)
         }
@@ -289,7 +298,7 @@ fn encode_with_accelerator_calls_lossless_stage_hooks() {
         fn encode_tier1_code_blocks(
             &mut self,
             jobs: &[crate::J2kTier1CodeBlockEncodeJob<'_>],
-        ) -> core::result::Result<Option<Vec<crate::EncodedJ2kCodeBlock>>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<Vec<crate::EncodedJ2kCodeBlock>>> {
             self.tier1_code_block_batches += 1;
             self.tier1_batched_jobs += jobs.len();
             Ok(None)
@@ -298,7 +307,7 @@ fn encode_with_accelerator_calls_lossless_stage_hooks() {
         fn encode_packetization(
             &mut self,
             job: crate::J2kPacketizationEncodeJob<'_>,
-        ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<Vec<u8>>> {
             self.packetization += 1;
             self.packetization_resolution_count = job.resolution_count;
             self.packetization_code_block_count = job.code_block_count;
@@ -409,11 +418,58 @@ fn precomputed_htj2k53_offers_ht_code_blocks_to_encode_accelerator() {
         .expect("precomputed 5/3 encode accepts encode accelerator");
 
     assert!(encoded.starts_with(&[0xff, 0x4f]));
+    assert_eq!(accelerator.deinterleave, 0);
     assert_eq!(accelerator.forward_dwt53, 0);
     assert_eq!(accelerator.forward_dwt97, 0);
     assert_eq!(accelerator.ht_batches, 1);
     assert!(accelerator.ht_jobs > 0);
     assert_eq!(accelerator.ht_single_blocks, accelerator.ht_jobs);
+}
+
+#[test]
+fn precomputed_htj2k53_borrowed_coefficients_match_pixel_pipeline_codestream() {
+    let width = 17_u32;
+    let height = 13_u32;
+    let num_pixels = usize::try_from(
+        width
+            .checked_mul(height)
+            .expect("test image dimensions fit u32"),
+    )
+    .expect("test image dimensions fit usize");
+    let pixels = (0..num_pixels)
+        .map(|index| {
+            u8::try_from((index * 37 + index / 5) & 0xff).expect("masked test sample fits u8")
+        })
+        .collect::<Vec<_>>();
+    let options = EncodeOptions {
+        num_decomposition_levels: 1,
+        reversible: true,
+        guard_bits: 2,
+        code_block_width_exp: 2,
+        code_block_height_exp: 2,
+        ..EncodeOptions::default()
+    };
+
+    let expected = encode_htj2k(&pixels, width, height, 1, 8, false, &options)
+        .expect("pixel-pipeline HTJ2K encode");
+    let samples = deinterleave_to_f32(&pixels, num_pixels, 1, 8, false);
+    let decomposition = crate::j2c::fdwt::forward_dwt(&samples[0], width, height, 1, true);
+    let image = PrecomputedHtj2k53Image {
+        width,
+        height,
+        bit_depth: 8,
+        signed: false,
+        components: vec![PrecomputedHtj2k53Component {
+            x_rsiz: 1,
+            y_rsiz: 1,
+            dwt: forward_dwt53_output_from_decomposition(decomposition),
+        }],
+    };
+
+    let actual =
+        encode_precomputed_htj2k_53(&image, &options).expect("borrowed precomputed HTJ2K encode");
+
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -486,7 +542,10 @@ fn prequantized_htj2k97_offers_ht_code_blocks_to_encode_accelerator() {
 
 #[test]
 fn precomputed_htj2k97_batch_offers_all_ht_code_blocks_in_one_accelerator_call() {
-    let image = sample_precomputed_htj2k97_image();
+    let images = [
+        sample_precomputed_htj2k97_image(),
+        sample_precomputed_htj2k97_image(),
+    ];
     let options = EncodeOptions {
         num_decomposition_levels: 1,
         reversible: false,
@@ -497,12 +556,9 @@ fn precomputed_htj2k97_batch_offers_all_ht_code_blocks_in_one_accelerator_call()
     };
     let mut accelerator = CountingHtEncodeAccelerator::default();
 
-    let encoded = encode_precomputed_htj2k_97_batch_with_accelerator(
-        &[image.clone(), image],
-        &options,
-        &mut accelerator,
-    )
-    .expect("batch precomputed 9/7 encode accepts encode accelerator");
+    let encoded =
+        encode_precomputed_htj2k_97_batch_with_accelerator(&images, &options, &mut accelerator)
+            .expect("batch precomputed 9/7 encode accepts encode accelerator");
 
     assert_eq!(encoded.len(), 2);
     assert!(encoded
@@ -517,6 +573,7 @@ fn precomputed_htj2k97_batch_offers_all_ht_code_blocks_in_one_accelerator_call()
 
 #[derive(Default)]
 struct CountingHtEncodeAccelerator {
+    deinterleave: usize,
     forward_dwt53: usize,
     forward_dwt97: usize,
     ht_batches: usize,
@@ -525,10 +582,18 @@ struct CountingHtEncodeAccelerator {
 }
 
 impl crate::J2kEncodeStageAccelerator for CountingHtEncodeAccelerator {
+    fn encode_deinterleave(
+        &mut self,
+        _job: crate::J2kDeinterleaveToF32Job<'_>,
+    ) -> crate::J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
+        self.deinterleave += 1;
+        Ok(None)
+    }
+
     fn encode_forward_dwt53(
         &mut self,
         _job: crate::J2kForwardDwt53Job<'_>,
-    ) -> core::result::Result<Option<crate::J2kForwardDwt53Output>, &'static str> {
+    ) -> crate::J2kEncodeStageResult<Option<crate::J2kForwardDwt53Output>> {
         self.forward_dwt53 += 1;
         Ok(None)
     }
@@ -536,7 +601,7 @@ impl crate::J2kEncodeStageAccelerator for CountingHtEncodeAccelerator {
     fn encode_forward_dwt97(
         &mut self,
         _job: crate::J2kForwardDwt97Job<'_>,
-    ) -> core::result::Result<Option<crate::J2kForwardDwt97Output>, &'static str> {
+    ) -> crate::J2kEncodeStageResult<Option<crate::J2kForwardDwt97Output>> {
         self.forward_dwt97 += 1;
         Ok(None)
     }
@@ -544,7 +609,7 @@ impl crate::J2kEncodeStageAccelerator for CountingHtEncodeAccelerator {
     fn encode_ht_code_blocks(
         &mut self,
         jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<crate::EncodedHtJ2kCodeBlock>>, &'static str> {
+    ) -> crate::J2kEncodeStageResult<Option<Vec<crate::EncodedHtJ2kCodeBlock>>> {
         self.ht_batches += 1;
         self.ht_jobs += jobs.len();
         Ok(None)
@@ -553,7 +618,7 @@ impl crate::J2kEncodeStageAccelerator for CountingHtEncodeAccelerator {
     fn encode_ht_code_block(
         &mut self,
         _job: crate::J2kHtCodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<crate::EncodedHtJ2kCodeBlock>, &'static str> {
+    ) -> crate::J2kEncodeStageResult<Option<crate::EncodedHtJ2kCodeBlock>> {
         self.ht_single_blocks += 1;
         Ok(None)
     }
@@ -576,11 +641,13 @@ fn prepare_subband_uses_fused_ht_subband_without_host_quantized_codeblocks() {
         fn encode_ht_subband(
             &mut self,
             job: crate::J2kHtSubbandEncodeJob<'_>,
-        ) -> core::result::Result<Option<Vec<crate::EncodedHtJ2kCodeBlock>>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<Vec<crate::EncodedHtJ2kCodeBlock>>> {
             self.subband_calls += 1;
             let count = (job.width.div_ceil(job.code_block_width) as usize)
                 .checked_mul(job.height.div_ceil(job.code_block_height) as usize)
-                .ok_or("test code-block count overflow")?;
+                .ok_or_else(|| {
+                    crate::J2kEncodeStageError::arithmetic_overflow("test code-block count")
+                })?;
             Ok(Some(
                 (0..count)
                     .map(|idx| crate::EncodedHtJ2kCodeBlock {
@@ -597,7 +664,7 @@ fn prepare_subband_uses_fused_ht_subband_without_host_quantized_codeblocks() {
         fn encode_quantize_subband(
             &mut self,
             _job: crate::J2kQuantizeSubbandJob<'_>,
-        ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<Vec<i32>>> {
             self.quantize_calls += 1;
             Ok(None)
         }
@@ -605,7 +672,7 @@ fn prepare_subband_uses_fused_ht_subband_without_host_quantized_codeblocks() {
         fn encode_ht_code_blocks(
             &mut self,
             _jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
-        ) -> core::result::Result<Option<Vec<crate::EncodedHtJ2kCodeBlock>>, &'static str> {
+        ) -> crate::J2kEncodeStageResult<Option<Vec<crate::EncodedHtJ2kCodeBlock>>> {
             self.ht_batch_calls += 1;
             Ok(None)
         }
@@ -661,23 +728,41 @@ fn ht_target_coding_passes_tracks_ht_quality_layers() {
         ..EncodeOptions::default()
     };
 
-    assert_eq!(ht_target_coding_passes_for_options(&options), 1);
+    assert_eq!(
+        ht_target_coding_passes_for_options(&options, BlockCodingMode::HighThroughput),
+        1
+    );
 
     options.num_layers = 2;
-    assert_eq!(ht_target_coding_passes_for_options(&options), 2);
+    assert_eq!(
+        ht_target_coding_passes_for_options(&options, BlockCodingMode::HighThroughput),
+        2
+    );
 
     options.num_layers = 3;
-    assert_eq!(ht_target_coding_passes_for_options(&options), 3);
+    assert_eq!(
+        ht_target_coding_passes_for_options(&options, BlockCodingMode::HighThroughput),
+        3
+    );
 
     options.num_layers = 4;
-    assert_eq!(ht_target_coding_passes_for_options(&options), 3);
+    assert_eq!(
+        ht_target_coding_passes_for_options(&options, BlockCodingMode::HighThroughput),
+        3
+    );
 
     options.reversible = true;
-    assert_eq!(ht_target_coding_passes_for_options(&options), 3);
+    assert_eq!(
+        ht_target_coding_passes_for_options(&options, BlockCodingMode::HighThroughput),
+        3
+    );
 
     options.reversible = false;
     options.use_ht_block_coding = false;
-    assert_eq!(ht_target_coding_passes_for_options(&options), 1);
+    assert_eq!(
+        ht_target_coding_passes_for_options(&options, BlockCodingMode::Classic),
+        1
+    );
 }
 
 #[test]
@@ -1099,7 +1184,12 @@ fn preencoded_htj2k97_rejects_empty_block_with_wrong_zero_bitplanes() {
     let error = encode_preencoded_htj2k_97(&image, &options)
         .expect_err("invalid all-zero block metadata must be rejected");
 
-    assert_eq!(error, "empty HTJ2K code-block zero-bitplane count mismatch");
+    assert_eq!(
+        error,
+        EncodeError::InvalidInput {
+            what: "empty HTJ2K code-block zero-bitplane count mismatch",
+        }
+    );
 }
 
 #[test]
@@ -1111,7 +1201,12 @@ fn preencoded_htj2k97_rejects_coded_block_with_too_many_zero_bitplanes() {
     let error = encode_preencoded_htj2k_97(&image, &options)
         .expect_err("coded block with no coded bitplanes must be rejected");
 
-    assert_eq!(error, "HTJ2K code-block zero-bitplane count out of range");
+    assert_eq!(
+        error,
+        EncodeError::InvalidInput {
+            what: "HTJ2K code-block zero-bitplane count out of range",
+        }
+    );
 }
 
 #[cfg(feature = "std")]
@@ -1127,7 +1222,9 @@ fn preencoded_htj2k97_rejects_too_many_coding_passes_without_panic() {
     assert!(result.is_ok(), "invalid coding pass count must not panic");
     assert_eq!(
         result.expect("catch_unwind returned checked result"),
-        Err("HTJ2K code-block coding pass count out of range")
+        Err(EncodeError::InvalidInput {
+            what: "HTJ2K code-block coding pass count out of range",
+        })
     );
 }
 
@@ -1274,7 +1371,7 @@ fn sample_f32_coefficients(len: u32, offset: f32) -> Vec<f32> {
 fn prequantized_htj2k97_image_from_precomputed_for_test(
     image: &PrecomputedHtj2k97Image,
     options: &EncodeOptions,
-) -> Result<PrequantizedHtj2k97Image, &'static str> {
+) -> crate::EncodeResult<PrequantizedHtj2k97Image> {
     let guard_bits = options.guard_bits.max(2);
     let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
         image.bit_depth,
@@ -1350,7 +1447,7 @@ fn prequantized_htj2k97_image_from_precomputed_for_test(
                 resolutions,
             })
         })
-        .collect::<Result<Vec<_>, &'static str>>()?;
+        .collect::<crate::EncodeResult<Vec<_>>>()?;
 
     Ok(PrequantizedHtj2k97Image {
         width: image.width,
@@ -1376,7 +1473,7 @@ struct PrequantizedSubbandForTest<'a> {
 
 fn prequantized_subband_for_test(
     request: PrequantizedSubbandForTest<'_>,
-) -> Result<PrequantizedHtj2k97Subband, &'static str> {
+) -> crate::EncodeResult<PrequantizedHtj2k97Subband> {
     let PrequantizedSubbandForTest {
         coefficients,
         width,
@@ -1417,13 +1514,21 @@ fn prequantized_subband_for_test(
             .code_blocks
             .into_iter()
             .map(|block| {
+                let coefficients = match block.coefficients {
+                    PreparedCodeBlockCoefficients::I32(values) => values,
+                    PreparedCodeBlockCoefficients::I64(values) => {
+                        downcast_i64_coefficients_to_i32(&values)
+                            .map_err(|what| EncodeError::Unsupported { what })?
+                    }
+                    PreparedCodeBlockCoefficients::Empty => Vec::new(),
+                };
                 Ok(PrequantizedHtj2k97CodeBlock {
-                    coefficients: downcast_i64_coefficients_to_i32(&block.coefficients)?,
+                    coefficients,
                     width: block.width,
                     height: block.height,
                 })
             })
-            .collect::<Result<Vec<_>, &'static str>>()?,
+            .collect::<crate::EncodeResult<Vec<_>>>()?,
     })
 }
 

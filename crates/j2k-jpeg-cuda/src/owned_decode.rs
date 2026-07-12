@@ -1,26 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(feature = "cuda-runtime")]
-use std::sync::Arc;
-
-#[cfg(feature = "cuda-runtime")]
 use j2k_core::{BackendKind, PixelFormat};
 
 use crate::{CudaSession, Error, Surface};
 
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{
-    CudaDeviceBuffer, CudaError, CudaJpegEntropyCheckpoint, CudaJpegHuffmanTable,
-    CudaJpegRgb8DecodePlan, CudaJpegRgb8Sampling,
-};
+use j2k_cuda_runtime::{CudaDeviceBuffer, CudaError};
+#[cfg(all(test, feature = "cuda-runtime"))]
+use j2k_cuda_runtime::{CudaJpegEntropyCheckpoint, CudaJpegRgb8Sampling};
 #[cfg(feature = "cuda-runtime")]
-use j2k_jpeg::adapter::{
-    JpegEntropyCheckpointV1, JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1,
-    JpegHuffmanTable,
-};
-#[cfg(feature = "cuda-runtime")]
-use j2k_jpeg::{JpegCapabilityReport, JpegCapabilityRequest, JpegDecodeOp};
+use j2k_jpeg::ColorSpace;
+use j2k_jpeg::Decoder as CpuDecoder;
 
+#[cfg(feature = "cuda-runtime")]
+use crate::session::LeasedOwnedPacket;
 #[cfg(feature = "cuda-runtime")]
 use crate::surface::{CudaJpegDecodePath, CudaSurfaceStats, Storage};
 
@@ -31,118 +25,56 @@ pub(crate) fn unsupported_owned_cuda_output_format() -> Error {
 }
 
 #[cfg(feature = "cuda-runtime")]
-const UNSUPPORTED_CHUNKED_ENTROPY_DIAGNOSTIC_INPUT: &str =
-    "J2K CUDA JPEG chunked entropy diagnostic currently supports baseline 8-bit YCbCr 4:2:0 RGB8 inputs only";
-
-#[cfg(feature = "cuda-runtime")]
 const INVALID_CHUNKED_ENTROPY_DIAGNOSTIC_ARGUMENT: &str =
     "J2K CUDA JPEG chunked entropy diagnostic config or input is invalid";
 
 #[cfg(feature = "cuda-runtime")]
-#[derive(Clone, Copy)]
-struct FastRgb8PacketParts<'a> {
-    sampling: CudaJpegRgb8Sampling,
-    dimensions: (u32, u32),
-    mcus_per_row: u32,
-    mcu_rows: u32,
-    entropy_bytes: &'a [u8],
-    entropy_checkpoints: &'a [JpegEntropyCheckpointV1],
-    y_quant: &'a [u16; 64],
-    cb_quant: &'a [u16; 64],
-    cr_quant: &'a [u16; 64],
-    y_dc_table: &'a JpegHuffmanTable,
-    y_ac_table: &'a JpegHuffmanTable,
-    cb_dc_table: &'a JpegHuffmanTable,
-    cb_ac_table: &'a JpegHuffmanTable,
-    cr_dc_table: &'a JpegHuffmanTable,
-    cr_ac_table: &'a JpegHuffmanTable,
-}
+mod plan;
+#[cfg(all(test, feature = "cuda-runtime"))]
+use plan::cuda_entropy_checkpoints_with_cap;
+#[cfg(feature = "cuda-runtime")]
+use plan::{build_cuda_rgb8_plan_data, fast_rgb8_packet_parts};
 
 #[cfg(feature = "cuda-runtime")]
-#[derive(Debug)]
-struct CudaRgb8PlanData<'a> {
-    sampling: CudaJpegRgb8Sampling,
-    dimensions: (u32, u32),
-    mcus_per_row: u32,
-    mcu_rows: u32,
-    entropy_bytes: &'a [u8],
-    entropy_checkpoints: Vec<CudaJpegEntropyCheckpoint>,
-    y_quant: [u16; 64],
-    cb_quant: [u16; 64],
-    cr_quant: [u16; 64],
-    y_dc_table: CudaJpegHuffmanTable,
-    y_ac_table: CudaJpegHuffmanTable,
-    cb_dc_table: CudaJpegHuffmanTable,
-    cb_ac_table: CudaJpegHuffmanTable,
-    cr_dc_table: CudaJpegHuffmanTable,
-    cr_ac_table: CudaJpegHuffmanTable,
-}
+mod diagnostic;
+#[cfg(feature = "cuda-runtime")]
+pub(crate) use diagnostic::diagnose_owned_cuda_420_entropy;
+#[cfg(feature = "cuda-runtime")]
+pub use diagnostic::CudaJpegChunkedEntropyReport;
 
 #[cfg(feature = "cuda-runtime")]
-impl CudaRgb8PlanData<'_> {
-    fn as_plan(&self) -> CudaJpegRgb8DecodePlan<'_> {
-        CudaJpegRgb8DecodePlan {
-            sampling: self.sampling,
-            dimensions: self.dimensions,
-            mcus_per_row: self.mcus_per_row,
-            mcu_rows: self.mcu_rows,
-            entropy_bytes: self.entropy_bytes,
-            entropy_checkpoints: &self.entropy_checkpoints,
-            y_quant: self.y_quant,
-            cb_quant: self.cb_quant,
-            cr_quant: self.cr_quant,
-            y_dc_table: self.y_dc_table,
-            y_ac_table: self.y_ac_table,
-            cb_dc_table: self.cb_dc_table,
-            cb_ac_table: self.cb_ac_table,
-            cr_dc_table: self.cr_dc_table,
-            cr_ac_table: self.cr_ac_table,
-        }
-    }
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn build_cuda_rgb8_plan_data<'a>(
-    packet: &FastRgb8PacketParts<'a>,
-    dimensions: (u32, u32),
-) -> Result<CudaRgb8PlanData<'a>, Error> {
-    if packet.dimensions != dimensions {
-        return Err(Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA JPEG packet dimensions do not match decoder metadata",
-        });
-    }
-    Ok(CudaRgb8PlanData {
-        sampling: packet.sampling,
-        dimensions,
-        mcus_per_row: packet.mcus_per_row,
-        mcu_rows: packet.mcu_rows,
-        entropy_bytes: packet.entropy_bytes,
-        entropy_checkpoints: cuda_entropy_checkpoints(packet.entropy_checkpoints),
-        y_quant: *packet.y_quant,
-        cb_quant: *packet.cb_quant,
-        cr_quant: *packet.cr_quant,
-        y_dc_table: cuda_huffman_table(packet.y_dc_table)?,
-        y_ac_table: cuda_huffman_table(packet.y_ac_table)?,
-        cb_dc_table: cuda_huffman_table(packet.cb_dc_table)?,
-        cb_ac_table: cuda_huffman_table(packet.cb_ac_table)?,
-        cr_dc_table: cuda_huffman_table(packet.cr_dc_table)?,
-        cr_ac_table: cuda_huffman_table(packet.cr_ac_table)?,
-    })
-}
-
-#[cfg(feature = "cuda-runtime")]
-pub(crate) fn decode_owned_cuda_rgb8(
-    bytes: &[u8],
-    dimensions: (u32, u32),
+pub(crate) fn decode_owned_cuda_rgb8_from_decoder(
+    decoder: &CpuDecoder<'_>,
     session: &mut CudaSession,
 ) -> Result<Surface, Error> {
-    let packet = resolve_owned_rgb8_packet(bytes, session)?;
-    let packet_parts = packet.parts();
-    let plan_data = build_cuda_rgb8_plan_data(&packet_parts, dimensions)?;
-    let plan = plan_data.as_plan();
+    let info = decoder.info();
+    validate_owned_cuda_rgb8_preflight(info.dimensions, info.color_space)?;
+    let operation_gate = session.jpeg_host_operation_gate();
+    let _operation = operation_gate
+        .lock()
+        .map_err(|_| Error::JpegHostOperationPoisoned)?;
     let context = session.cuda_context()?;
+    let pinned_upload = context
+        .begin_pinned_upload_operation()
+        .map_err(crate::runtime::cuda_error)?;
+    let _pinned_pool_lease = session.reserve_pinned_upload_retention(&pinned_upload)?;
+    let packet = resolve_owned_rgb8_packet_from_decoder(decoder, session)?;
+    decode_owned_cuda_rgb8_from_packet(&packet, info.dimensions, session, &context)
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn decode_owned_cuda_rgb8_from_packet(
+    packet: &LeasedOwnedPacket,
+    dimensions: (u32, u32),
+    session: &mut CudaSession,
+    context: &j2k_cuda_runtime::CudaContext,
+) -> Result<Surface, Error> {
+    let packet_parts = fast_rgb8_packet_parts(&packet.packet);
+    let plan_data = build_cuda_rgb8_plan_data(&packet_parts, dimensions, session)?;
+    let plan = plan_data.as_plan();
+    let runtime_external_live = session.owned_host_live_bytes()?;
     let output = context
-        .decode_jpeg_rgb8_owned(&plan)
+        .decode_jpeg_rgb8_owned_with_external_live(&plan, runtime_external_live)
         .map_err(cuda_owned_decode_error)?;
     let (buffer, stats) = output.into_parts();
     Ok(Surface {
@@ -162,20 +94,38 @@ pub(crate) fn decode_owned_cuda_rgb8(
 }
 
 #[cfg(feature = "cuda-runtime")]
-pub(crate) fn decode_owned_cuda_rgb8_into(
-    bytes: &[u8],
-    dimensions: (u32, u32),
+pub(crate) fn decode_owned_cuda_rgb8_from_decoder_into(
+    decoder: &CpuDecoder<'_>,
     session: &mut CudaSession,
     output: &CudaDeviceBuffer,
     pitch_bytes: usize,
 ) -> Result<CudaSurfaceStats, Error> {
-    let packet = resolve_owned_rgb8_packet(bytes, session)?;
-    let packet_parts = packet.parts();
-    let plan_data = build_cuda_rgb8_plan_data(&packet_parts, dimensions)?;
-    let plan = plan_data.as_plan();
+    let info = decoder.info();
+    validate_owned_cuda_rgb8_preflight(info.dimensions, info.color_space)?;
+    validate_owned_cuda_output_layout(info.dimensions, output, pitch_bytes)?;
+    let operation_gate = session.jpeg_host_operation_gate();
+    let _operation = operation_gate
+        .lock()
+        .map_err(|_| Error::JpegHostOperationPoisoned)?;
     let context = session.cuda_context()?;
+    let pinned_upload = context
+        .begin_pinned_upload_operation()
+        .map_err(crate::runtime::cuda_error)?;
+    let _pinned_pool_lease = session.reserve_pinned_upload_retention(&pinned_upload)?;
+    context
+        .validate_jpeg_output_buffer_context(output)
+        .map_err(cuda_owned_decode_error)?;
+    let packet = resolve_owned_rgb8_packet_from_decoder(decoder, session)?;
+    let packet_parts = fast_rgb8_packet_parts(&packet.packet);
+    let plan_data = build_cuda_rgb8_plan_data(&packet_parts, info.dimensions, session)?;
+    let runtime_external_live = session.owned_host_live_bytes()?;
     let stats = context
-        .decode_jpeg_rgb8_owned_into(&plan, output, pitch_bytes)
+        .decode_jpeg_rgb8_owned_into_with_external_live(
+            &plan_data.as_plan(),
+            output,
+            pitch_bytes,
+            runtime_external_live,
+        )
         .map_err(cuda_owned_decode_error)?;
     Ok(CudaSurfaceStats {
         kernel_dispatches: stats.kernel_dispatches(),
@@ -186,161 +136,100 @@ pub(crate) fn decode_owned_cuda_rgb8_into(
     })
 }
 
-#[cfg(feature = "cuda-runtime")]
-pub(crate) fn diagnose_owned_cuda_420_entropy(
-    bytes: &[u8],
-    config: j2k_cuda_runtime::CudaJpegChunkedEntropyConfig,
-    session: &mut CudaSession,
-) -> Result<j2k_cuda_runtime::CudaJpegChunkedEntropyReport, Error> {
-    validate_chunked_entropy_diagnostic_input(bytes)?;
-    config
-        .validate()
-        .map_err(cuda_chunked_entropy_diagnostic_error)?;
-    let packet = session.resolve_owned_fast420_packet(bytes)?;
-    let plan = j2k_cuda_runtime::CudaJpegChunkedEntropyPlan {
-        config,
-        entropy_bytes: &packet.entropy_bytes,
-        y_dc_table: cuda_huffman_table(&packet.y_dc_table)?,
-        y_ac_table: cuda_huffman_table(&packet.y_ac_table)?,
-        cb_dc_table: cuda_huffman_table(&packet.cb_dc_table)?,
-        cb_ac_table: cuda_huffman_table(&packet.cb_ac_table)?,
-        cr_dc_table: cuda_huffman_table(&packet.cr_dc_table)?,
-        cr_ac_table: cuda_huffman_table(&packet.cr_ac_table)?,
-    };
-    session
-        .cuda_context()?
-        .diagnose_jpeg_420_entropy_self_sync(&plan)
-        .map_err(cuda_chunked_entropy_diagnostic_error)
-}
-
 #[cfg(not(feature = "cuda-runtime"))]
-pub(crate) fn decode_owned_cuda_rgb8(
-    _bytes: &[u8],
-    _dimensions: (u32, u32),
+pub(crate) fn decode_owned_cuda_rgb8_from_decoder(
+    _decoder: &CpuDecoder<'_>,
     _session: &mut CudaSession,
 ) -> Result<Surface, Error> {
     Err(Error::CudaUnavailable)
 }
 
 #[cfg(feature = "cuda-runtime")]
-enum OwnedFastRgb8Packet {
-    Fast420(Arc<JpegFast420PacketV1>),
-    Fast422(Arc<JpegFast422PacketV1>),
-    Fast444(Arc<JpegFast444PacketV1>),
-}
-
-#[cfg(feature = "cuda-runtime")]
-macro_rules! fast_rgb8_packet_parts {
-    ($sampling:expr, $packet:expr $(,)?) => {{
-        let packet = $packet;
-        FastRgb8PacketParts {
-            sampling: $sampling,
-            dimensions: packet.dimensions,
-            mcus_per_row: packet.mcus_per_row,
-            mcu_rows: packet.mcu_rows,
-            entropy_bytes: &packet.entropy_bytes,
-            entropy_checkpoints: &packet.entropy_checkpoints,
-            y_quant: &packet.y_quant,
-            cb_quant: &packet.cb_quant,
-            cr_quant: &packet.cr_quant,
-            y_dc_table: &packet.y_dc_table,
-            y_ac_table: &packet.y_ac_table,
-            cb_dc_table: &packet.cb_dc_table,
-            cb_ac_table: &packet.cb_ac_table,
-            cr_dc_table: &packet.cr_dc_table,
-            cr_ac_table: &packet.cr_ac_table,
-        }
-    }};
-}
-
-#[cfg(feature = "cuda-runtime")]
-impl OwnedFastRgb8Packet {
-    fn parts(&self) -> FastRgb8PacketParts<'_> {
-        match self {
-            Self::Fast420(packet) => {
-                fast_rgb8_packet_parts!(CudaJpegRgb8Sampling::Fast420, packet)
-            }
-            Self::Fast422(packet) => {
-                fast_rgb8_packet_parts!(CudaJpegRgb8Sampling::Fast422, packet)
-            }
-            Self::Fast444(packet) => {
-                fast_rgb8_packet_parts!(CudaJpegRgb8Sampling::Fast444, packet)
-            }
-        }
-    }
-}
-
-#[cfg(feature = "cuda-runtime")]
 fn resolve_owned_rgb8_packet(
     bytes: &[u8],
     session: &mut CudaSession,
-) -> Result<OwnedFastRgb8Packet, Error> {
-    let report = JpegCapabilityReport::inspect(
-        bytes,
-        JpegCapabilityRequest {
-            op: JpegDecodeOp::Full,
-            fmt: PixelFormat::Rgb8,
-        },
-    )?;
-    if !report.owned_cuda.eligible {
+) -> Result<LeasedOwnedPacket, Error> {
+    require_ready_packet(session.resolve_owned_packet(bytes)?)
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn resolve_owned_rgb8_packet_from_decoder(
+    decoder: &CpuDecoder<'_>,
+    session: &mut CudaSession,
+) -> Result<LeasedOwnedPacket, Error> {
+    require_ready_packet(session.resolve_owned_packet_from_decoder(decoder)?)
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn require_ready_packet(packet: Option<LeasedOwnedPacket>) -> Result<LeasedOwnedPacket, Error> {
+    packet.ok_or(Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA JPEG decode currently supports baseline 8-bit YCbCr 4:2:0, 4:2:2, or 4:4:4 RGB8 output",
+        })
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn validate_owned_cuda_rgb8_preflight(
+    dimensions: (u32, u32),
+    color_space: ColorSpace,
+) -> Result<(), Error> {
+    if color_space != ColorSpace::YCbCr {
         return Err(Error::UnsupportedCudaRequest {
-            reason: report.owned_cuda.reason.unwrap_or(
-                "J2K CUDA JPEG decode currently supports baseline 8-bit YCbCr 4:2:0, 4:2:2, or 4:4:4 RGB8 output",
-            ),
+            reason: "J2K-owned CUDA JPEG decode currently requires a YCbCr 4:2:0, 4:2:2, or 4:4:4 fast packet shape",
         });
     }
-    if report.device.matches_fast_420 {
-        return session
-            .resolve_owned_fast420_packet(bytes)
-            .map(OwnedFastRgb8Packet::Fast420);
+    let addressable = u64::from(dimensions.0)
+        .checked_mul(u64::from(dimensions.1))
+        .and_then(|pixels| pixels.checked_mul(3))
+        .is_some_and(|bytes| bytes <= u64::from(u32::MAX) + 1);
+    if !addressable {
+        return Err(Error::UnsupportedCudaRequest {
+            reason:
+                "J2K-owned CUDA JPEG decode requires RGB8 output addressable by u32 byte offsets",
+        });
     }
-    if report.device.matches_fast_422 {
-        return session
-            .resolve_owned_fast422_packet(bytes)
-            .map(OwnedFastRgb8Packet::Fast422);
-    }
-    if report.device.matches_fast_444 {
-        return session
-            .resolve_owned_fast444_packet(bytes)
-            .map(OwnedFastRgb8Packet::Fast444);
-    }
-    Err(Error::UnsupportedCudaRequest {
-        reason: "J2K CUDA JPEG decode currently supports baseline 8-bit YCbCr 4:2:0, 4:2:2, or 4:4:4 RGB8 output",
-    })
+    Ok(())
 }
 
 #[cfg(feature = "cuda-runtime")]
-fn validate_chunked_entropy_diagnostic_input(bytes: &[u8]) -> Result<(), Error> {
-    let report = JpegCapabilityReport::inspect(
-        bytes,
-        JpegCapabilityRequest {
-            op: JpegDecodeOp::Full,
-            fmt: PixelFormat::Rgb8,
-        },
-    )?;
-    if report.owned_cuda.eligible && report.device.matches_fast_420 {
-        return Ok(());
+fn validate_owned_cuda_output_layout(
+    dimensions: (u32, u32),
+    output: &CudaDeviceBuffer,
+    pitch_bytes: usize,
+) -> Result<(), Error> {
+    let row_bytes = usize::try_from(dimensions.0)
+        .ok()
+        .and_then(|width| width.checked_mul(PixelFormat::Rgb8.bytes_per_pixel()))
+        .ok_or(Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA JPEG RGB8 output row size overflows host addressability",
+        })?;
+    if pitch_bytes < row_bytes {
+        return Err(Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA JPEG RGB8 output pitch is smaller than one packed row",
+        });
     }
-    Err(Error::UnsupportedCudaRequest {
-        reason: UNSUPPORTED_CHUNKED_ENTROPY_DIAGNOSTIC_INPUT,
-    })
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_entropy_checkpoints(
-    checkpoints: &[JpegEntropyCheckpointV1],
-) -> Vec<CudaJpegEntropyCheckpoint> {
-    checkpoints
-        .iter()
-        .copied()
-        .map(cuda_entropy_checkpoint)
-        .collect()
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_huffman_table(table: &JpegHuffmanTable) -> Result<CudaJpegHuffmanTable, Error> {
-    CudaJpegHuffmanTable::from_jpeg_bits_values(table.bits, table.values_len, table.values)
-        .map_err(cuda_owned_decode_error)
+    if pitch_bytes > u32::MAX as usize {
+        return Err(Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA JPEG RGB8 output pitch exceeds kernel u32 addressing",
+        });
+    }
+    let required = usize::try_from(dimensions.1.saturating_sub(1))
+        .ok()
+        .and_then(|rows| rows.checked_mul(pitch_bytes))
+        .and_then(|prefix| prefix.checked_add(row_bytes))
+        .ok_or(Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA JPEG RGB8 output extent overflows host addressability",
+        })?;
+    if required > (u32::MAX as usize).saturating_add(1) {
+        return Err(Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA JPEG RGB8 pitched output exceeds kernel u32 addressing",
+        });
+    }
+    if output.byte_len() < required {
+        return Err(Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA JPEG RGB8 output buffer is too small for the requested pitch",
+        });
+    }
+    Ok(())
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -350,9 +239,7 @@ fn cuda_owned_decode_error(error: CudaError) -> Error {
         CudaError::InvalidArgument { .. } => Error::UnsupportedCudaRequest {
             reason: "J2K CUDA JPEG owned decode cannot handle this image or runtime build",
         },
-        other => Error::CudaRuntime {
-            message: other.to_string(),
-        },
+        other => crate::runtime::cuda_error(other),
     }
 }
 
@@ -363,88 +250,9 @@ fn cuda_chunked_entropy_diagnostic_error(error: CudaError) -> Error {
         CudaError::InvalidArgument { .. } => Error::UnsupportedCudaRequest {
             reason: INVALID_CHUNKED_ENTROPY_DIAGNOSTIC_ARGUMENT,
         },
-        other => Error::CudaRuntime {
-            message: other.to_string(),
-        },
-    }
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_entropy_checkpoint(value: JpegEntropyCheckpointV1) -> CudaJpegEntropyCheckpoint {
-    CudaJpegEntropyCheckpoint {
-        mcu_index: value.mcu_index,
-        entropy_pos: value.entropy_pos,
-        bit_acc: value.bit_acc,
-        bit_count: value.bit_count,
-        y_prev_dc: value.y_prev_dc,
-        cb_prev_dc: value.cb_prev_dc,
-        cr_prev_dc: value.cr_prev_dc,
-        reserved: value.reserved,
+        other => crate::runtime::cuda_error(other),
     }
 }
 
 #[cfg(all(test, feature = "cuda-runtime"))]
-mod tests {
-    use super::{
-        build_cuda_rgb8_plan_data, resolve_owned_rgb8_packet, CudaJpegRgb8Sampling, CudaSession,
-        Error,
-    };
-
-    const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
-    const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
-    const BASELINE_444: &[u8] = include_bytes!("../fixtures/jpeg/baseline_444_8x8.jpg");
-
-    #[test]
-    fn packet_plan_helper_preserves_sampling_entropy_and_checkpoints() {
-        for (input, dimensions, expected_sampling) in [
-            (BASELINE_420, (16, 16), CudaJpegRgb8Sampling::Fast420),
-            (BASELINE_422, (16, 8), CudaJpegRgb8Sampling::Fast422),
-            (BASELINE_444, (8, 8), CudaJpegRgb8Sampling::Fast444),
-        ] {
-            let mut session = CudaSession::default();
-            let packet = resolve_owned_rgb8_packet(input, &mut session).expect("owned packet");
-            let parts = packet.parts();
-            let expected_checkpoint = parts.entropy_checkpoints[0];
-            let expected_entropy = parts.entropy_bytes;
-            let plan_data = build_cuda_rgb8_plan_data(&parts, dimensions).expect("CUDA plan data");
-            let plan = plan_data.as_plan();
-
-            assert_eq!(plan.sampling, expected_sampling);
-            assert_eq!(plan.dimensions, dimensions);
-            assert_eq!(plan.entropy_bytes, expected_entropy);
-            assert_eq!(
-                plan.entropy_checkpoints.len(),
-                packet.parts().entropy_checkpoints.len()
-            );
-            let actual_checkpoint = plan.entropy_checkpoints[0];
-            assert_eq!(actual_checkpoint.mcu_index, expected_checkpoint.mcu_index);
-            assert_eq!(
-                actual_checkpoint.entropy_pos,
-                expected_checkpoint.entropy_pos
-            );
-            assert_eq!(actual_checkpoint.bit_acc, expected_checkpoint.bit_acc);
-            assert_eq!(actual_checkpoint.bit_count, expected_checkpoint.bit_count);
-            assert_eq!(actual_checkpoint.y_prev_dc, expected_checkpoint.y_prev_dc);
-            assert_eq!(actual_checkpoint.cb_prev_dc, expected_checkpoint.cb_prev_dc);
-            assert_eq!(actual_checkpoint.cr_prev_dc, expected_checkpoint.cr_prev_dc);
-            assert_eq!(actual_checkpoint.reserved, expected_checkpoint.reserved);
-        }
-    }
-
-    #[test]
-    fn packet_plan_helper_rejects_decoder_dimension_mismatch() {
-        let mut session = CudaSession::default();
-        let packet =
-            resolve_owned_rgb8_packet(BASELINE_420, &mut session).expect("owned fast420 packet");
-        let packet_parts = packet.parts();
-        let error = build_cuda_rgb8_plan_data(&packet_parts, (15, 16))
-            .expect_err("metadata mismatch must fail closed");
-
-        assert!(matches!(
-            error,
-            Error::UnsupportedCudaRequest {
-                reason: "J2K CUDA JPEG packet dimensions do not match decoder metadata"
-            }
-        ));
-    }
-}
+mod tests;

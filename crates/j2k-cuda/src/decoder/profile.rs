@@ -22,24 +22,47 @@ pub(super) struct CudaIdwtBatchHostTraceRow {
 }
 
 #[cfg(feature = "cuda-runtime")]
-pub(super) fn format_cuda_idwt_batch_host_trace_row(row: CudaIdwtBatchHostTraceRow) -> String {
-    format!(
-        "j2k_profile codec=j2k op=cuda_idwt_batch_host path=decode \
-         component_count={} step_count={} output_alloc_us={} target_build_us={} enqueue_us={} \
-         output_take_count={} output_pool_reuse_count={} output_pool_alloc_count={} \
-         output_pool_scanned_count={} output_pool_max_free_count={} output_requested_bytes={}",
-        row.component_count,
-        row.step_count,
-        row.output_alloc_us,
-        row.target_build_us,
-        row.enqueue_us,
-        row.output_take_count,
-        row.output_pool_reuse_count,
-        row.output_pool_alloc_count,
-        row.output_pool_scanned_count,
-        row.output_pool_max_free_count,
-        row.output_requested_bytes
+pub(super) fn format_cuda_idwt_batch_host_trace_row(
+    row: CudaIdwtBatchHostTraceRow,
+) -> j2k_profile::ProfileResult<String> {
+    j2k_profile::format_profile_row_u128(
+        "j2k",
+        "cuda_idwt_batch_host",
+        "decode",
+        &[
+            ("component_count", row.component_count as u128),
+            ("step_count", row.step_count as u128),
+            ("output_alloc_us", row.output_alloc_us),
+            ("target_build_us", row.target_build_us),
+            ("enqueue_us", row.enqueue_us),
+            ("output_take_count", row.output_take_count as u128),
+            (
+                "output_pool_reuse_count",
+                row.output_pool_reuse_count as u128,
+            ),
+            (
+                "output_pool_alloc_count",
+                row.output_pool_alloc_count as u128,
+            ),
+            (
+                "output_pool_scanned_count",
+                row.output_pool_scanned_count as u128,
+            ),
+            (
+                "output_pool_max_free_count",
+                row.output_pool_max_free_count as u128,
+            ),
+            ("output_requested_bytes", row.output_requested_bytes as u128),
+        ],
     )
+}
+
+#[cfg(feature = "cuda-runtime")]
+pub(super) fn emit_cuda_idwt_batch_host_trace_row(row: CudaIdwtBatchHostTraceRow) {
+    match format_cuda_idwt_batch_host_trace_row(row) {
+        Ok(row) => j2k_profile::emit_profile_line(row),
+        Err(error) => j2k_profile::emit_profile_error("cuda_idwt_batch_host_trace", &error),
+    }
 }
 
 #[cfg(feature = "cuda-runtime")]

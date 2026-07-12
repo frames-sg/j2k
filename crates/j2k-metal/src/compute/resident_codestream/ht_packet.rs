@@ -7,14 +7,14 @@ use super::{
     copied_recyclable_shared_slice_buffer, dispatch_batched_packet_payload_copy,
     finish_resident_encode_split_command_buffer, ht_packet_output_capacity_for_mode,
     hybrid_stage_signpost, label_command_buffer, label_compute_encoder,
-    metal_profile_stages_enabled, prepare_ht_tier1, prepared_lossless_batch_tiles,
-    schedule_resident_tier1_status_readback, size_of, take_recyclable_private_buffer,
-    with_runtime_for_session, zeroed_recyclable_shared_buffer, Buffer, Duration, Error,
-    HtTier1Prepared, Instant, J2kBatchedPacketPayloadCopyDispatch, J2kCodestreamAssemblyStatus,
-    J2kHtPacketOutputCapacityMode, J2kPacketBlock, J2kPacketEncodeStatus, J2kPacketPayloadCopyJob,
-    J2kPendingResidentLosslessCodestreamBatch, J2kResidentBatchEncodeItem,
-    J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer, J2kResidentEncodeStageStats,
-    J2kResidentPacketBlockParams, MTLResourceOptions, MTLSize, MetalRuntime,
+    metal_profile_stages_enabled, new_compute_command_encoder, new_shared_buffer, prepare_ht_tier1,
+    prepared_lossless_batch_tiles, schedule_resident_tier1_status_readback, size_of,
+    take_recyclable_private_buffer, with_runtime_for_session, zeroed_recyclable_shared_buffer,
+    Buffer, Duration, Error, HtTier1Prepared, Instant, J2kBatchedPacketPayloadCopyDispatch,
+    J2kCodestreamAssemblyStatus, J2kHtPacketOutputCapacityMode, J2kPacketBlock,
+    J2kPacketEncodeStatus, J2kPacketPayloadCopyJob, J2kPendingResidentLosslessCodestreamBatch,
+    J2kResidentBatchEncodeItem, J2kResidentEncodeGpuStage, J2kResidentEncodeGpuStageCommandBuffer,
+    J2kResidentEncodeStageStats, J2kResidentPacketBlockParams, MTLSize, MetalRuntime,
     ResidentBatchPacketPlan, ResidentBatchPacketPlanParams, ResidentTier1StatusReadbackRequest,
     PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
     SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE,
@@ -211,10 +211,7 @@ fn submit_ht_packet_stages(
         &assembly_jobs,
         &mut recyclable_shared_buffers,
     )?;
-    let codestream_buffer = runtime.device.new_buffer(
-        codestream_capacity_total.max(1) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let codestream_buffer = new_shared_buffer(&runtime.device, codestream_capacity_total.max(1))?;
     let codestream_status_buffer = zeroed_recyclable_shared_buffer(
         runtime,
         assembly_jobs.len() * size_of::<J2kCodestreamAssemblyStatus>(),
@@ -239,8 +236,8 @@ fn submit_ht_packet_stages(
         let command_encode_started = profile_stages.then(Instant::now);
         let signpost =
             hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKET_BLOCK_PREP_COMMAND_ENCODE);
-        let encoder = command_buffer.new_compute_command_encoder();
-        label_compute_encoder(encoder, "HTJ2K packet block prep");
+        let encoder = new_compute_command_encoder(&command_buffer)?;
+        label_compute_encoder(&encoder, "HTJ2K packet block prep");
         encoder.set_compute_pipeline_state(&runtime.packet_block_prepare_resident_ht);
         encoder.set_buffer(0, Some(&resident_block_buffer), 0);
         encoder.set_buffer(1, Some(&tier1_job_buffer), 0);
@@ -279,15 +276,15 @@ fn submit_ht_packet_stages(
                 J2kResidentEncodeGpuStage::PacketBlockPrep,
                 "j2k htj2k resident packetization",
                 &mut gpu_stage_command_buffers,
-            );
+            )?;
         }
     } else if split_profile_commands {
         label_command_buffer(&command_buffer, "j2k htj2k resident packetization");
     }
     let command_encode_started = profile_stages.then(Instant::now);
     let signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKETIZATION_COMMAND_ENCODE);
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "HTJ2K packetization");
+    let encoder = new_compute_command_encoder(&command_buffer)?;
+    label_compute_encoder(&encoder, "HTJ2K packetization");
     encoder.set_compute_pipeline_state(&runtime.packet_encode_batched);
     encoder.set_buffer(0, Some(&packet_resolution_buffer), 0);
     encoder.set_buffer(1, Some(&packet_subband_buffer), 0);
@@ -328,7 +325,7 @@ fn submit_ht_packet_stages(
             J2kResidentEncodeGpuStage::Packetization,
             "j2k htj2k resident packet payload copy",
             &mut gpu_stage_command_buffers,
-        );
+        )?;
     }
     let packet_payload_copy_dispatched = dispatch_batched_packet_payload_copy(
         runtime,
@@ -344,7 +341,7 @@ fn submit_ht_packet_stages(
             label: "HTJ2K packetization payload copy",
             signpost_name: SIGNPOST_ENCODE_HYBRID_HT_PAYLOAD_COPY_COMMAND_ENCODE,
         },
-    );
+    )?;
     if split_profile_commands {
         if packet_payload_copy_dispatched {
             command_buffer = finish_resident_encode_split_command_buffer(
@@ -353,7 +350,7 @@ fn submit_ht_packet_stages(
                 J2kResidentEncodeGpuStage::PacketPayloadCopy,
                 "j2k htj2k resident codestream assembly",
                 &mut gpu_stage_command_buffers,
-            );
+            )?;
         } else {
             label_command_buffer(&command_buffer, "j2k htj2k resident codestream assembly");
         }
@@ -362,8 +359,8 @@ fn submit_ht_packet_stages(
     let command_encode_started = profile_stages.then(Instant::now);
     let signpost =
         hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE);
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "HTJ2K codestream assembly");
+    let encoder = new_compute_command_encoder(&command_buffer)?;
+    label_compute_encoder(&encoder, "HTJ2K codestream assembly");
     encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble_batched);
     encoder.set_buffer(0, Some(&codestream_buffer), 0);
     encoder.set_buffer(1, Some(&packet_status_buffer), 0);
@@ -403,7 +400,7 @@ fn submit_ht_packet_stages(
             J2kResidentEncodeGpuStage::CodestreamAssembly,
             "j2k htj2k resident result readback",
             &mut gpu_stage_command_buffers,
-        );
+        )?;
     }
     let codestream_payload_copy_dispatched = false;
     if let Some(started) = command_encode_started {
@@ -538,7 +535,7 @@ fn finish_ht_batch(
         prepared_tiles,
         &mut gpu_stage_command_buffers,
         &mut recyclable_private_buffers,
-    );
+    )?;
     retained_buffers.push(coefficient_buffer);
     retained_buffers.push(tier1_job_buffer);
     retained_buffers.push(tier1_output_buffer);
@@ -585,7 +582,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         });
     }
 
-    let prepared_tiles = prepared_lossless_batch_tiles(items);
+    let prepared_tiles = prepared_lossless_batch_tiles(items)?;
     with_runtime_for_session(session, |runtime| {
         let profile_stages = metal_profile_stages_enabled();
         let submitted = submit_ht_packet_stages(

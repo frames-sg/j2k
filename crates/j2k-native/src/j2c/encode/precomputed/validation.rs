@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::super::code_block_metadata::{validate_ht_code_block, validate_ht_code_block_metadata};
 use super::{
     validate_band_len, EncodedHtJ2kCodeBlock, J2kForwardDwt53Output, J2kForwardDwt97Output,
     J2kSubBandType, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
@@ -519,30 +520,7 @@ pub(in crate::j2c::encode) fn validate_preencoded_code_block_payload(
     block: &EncodedHtJ2kCodeBlock,
     total_bitplanes: u8,
 ) -> Result<(), &'static str> {
-    let data_len = u32::try_from(block.data.len()).map_err(|_| "HTJ2K payload too large")?;
-    if block.num_coding_passes == 0 {
-        if data_len != 0 || block.cleanup_length != 0 || block.refinement_length != 0 {
-            return Err("empty HTJ2K code-block payload metadata mismatch");
-        }
-        if block.num_zero_bitplanes != total_bitplanes {
-            return Err("empty HTJ2K code-block zero-bitplane count mismatch");
-        }
-        return Ok(());
-    }
-    if block.num_coding_passes > 164 {
-        return Err("HTJ2K code-block coding pass count out of range");
-    }
-    if block.num_zero_bitplanes >= total_bitplanes {
-        return Err("HTJ2K code-block zero-bitplane count out of range");
-    }
-    let segment_len = block
-        .cleanup_length
-        .checked_add(block.refinement_length)
-        .ok_or("HTJ2K payload segment length overflow")?;
-    if segment_len != data_len {
-        return Err("HTJ2K payload segment length mismatch");
-    }
-    Ok(())
+    validate_ht_code_block(block, total_bitplanes)
 }
 
 pub(in crate::j2c::encode) fn validate_preencoded_compact_code_block_payload(
@@ -554,29 +532,12 @@ pub(in crate::j2c::encode) fn validate_preencoded_compact_code_block_payload(
     {
         return Err("HTJ2K payload range out of bounds");
     }
-    let data_len = u32::try_from(block.payload_range.end - block.payload_range.start)
-        .map_err(|_| "HTJ2K payload too large")?;
-    if block.num_coding_passes == 0 {
-        if data_len != 0 || block.cleanup_length != 0 || block.refinement_length != 0 {
-            return Err("empty HTJ2K code-block payload metadata mismatch");
-        }
-        if block.num_zero_bitplanes != total_bitplanes {
-            return Err("empty HTJ2K code-block zero-bitplane count mismatch");
-        }
-        return Ok(());
-    }
-    if block.num_coding_passes > 164 {
-        return Err("HTJ2K code-block coding pass count out of range");
-    }
-    if block.num_zero_bitplanes >= total_bitplanes {
-        return Err("HTJ2K code-block zero-bitplane count out of range");
-    }
-    let segment_len = block
-        .cleanup_length
-        .checked_add(block.refinement_length)
-        .ok_or("HTJ2K payload segment length overflow")?;
-    if segment_len != data_len {
-        return Err("HTJ2K payload segment length mismatch");
-    }
-    Ok(())
+    validate_ht_code_block_metadata(
+        block.payload_range.end - block.payload_range.start,
+        block.cleanup_length,
+        block.refinement_length,
+        block.num_coding_passes,
+        block.num_zero_bitplanes,
+        total_bitplanes,
+    )
 }

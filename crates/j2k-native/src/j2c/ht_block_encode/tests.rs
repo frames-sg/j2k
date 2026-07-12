@@ -2,12 +2,57 @@
 
 use alloc::{vec, vec::Vec};
 
+use crate::j2c::coefficient_view::CoefficientBlockView;
+
 use super::cleanup::{
     convert_nonzero_to_aligned_sign_magnitude_and_max, encode_cleanup_segment,
     encode_cleanup_segment_from_coefficients,
 };
 use super::distribution::collect_encode_distribution;
-use super::facade::encode_code_block;
+use super::facade::{encode_code_block, encode_code_block_view, encode_code_block_with_passes};
+
+#[test]
+fn ht_strided_block_is_byte_exact_for_cleanup_and_refinement_passes() {
+    const WIDTH: usize = 7;
+    const HEIGHT: usize = 5;
+    const STRIDE: usize = 12;
+    const OFFSET: usize = 14;
+    let contiguous = (0_i32..i32::try_from(WIDTH * HEIGHT).expect("test size fits i32"))
+        .map(|index| match index % 6 {
+            0 => 0,
+            1 => index * 5,
+            2 => -(index * 3),
+            3 => 31 - index,
+            4 => -17 + index,
+            _ => index / 2,
+        })
+        .collect::<Vec<_>>();
+    let mut padded = vec![i32::MIN; OFFSET + STRIDE * HEIGHT + 7];
+    for y in 0..HEIGHT {
+        padded[OFFSET + y * STRIDE..OFFSET + y * STRIDE + WIDTH]
+            .copy_from_slice(&contiguous[y * WIDTH..(y + 1) * WIDTH]);
+    }
+    let view = CoefficientBlockView::try_new(&padded, OFFSET, WIDTH, HEIGHT, STRIDE)
+        .expect("valid strided HT block");
+
+    for coding_passes in [1, 3] {
+        let expected = encode_code_block_with_passes(
+            &contiguous,
+            u32::try_from(WIDTH).expect("test width fits u32"),
+            u32::try_from(HEIGHT).expect("test height fits u32"),
+            10,
+            coding_passes,
+        )
+        .expect("contiguous HT encode");
+        let actual = encode_code_block_view(view, 10, coding_passes).expect("strided HT encode");
+
+        assert_eq!(actual.data, expected.data);
+        assert_eq!(actual.num_coding_passes, expected.num_coding_passes);
+        assert_eq!(actual.num_zero_bitplanes, expected.num_zero_bitplanes);
+        assert_eq!(actual.ht_cleanup_length, expected.ht_cleanup_length);
+        assert_eq!(actual.ht_refinement_length, expected.ht_refinement_length);
+    }
+}
 
 #[test]
 fn test_convert_to_aligned_sign_magnitude() {
@@ -25,6 +70,31 @@ fn aligned_sign_magnitude_conversion_reports_max_and_skips_all_zero_blocks() {
             .expect("non-zero block");
     assert_eq!(max_magnitude, 3);
     assert_eq!(aligned, vec![0, 0x2000_0000, 0xC000_0000, 0x6000_0000]);
+}
+
+#[test]
+fn all_zero_distribution_input_remains_a_zero_distribution() {
+    let distribution =
+        collect_encode_distribution(&[0], 1, 1, 1).expect("all-zero distribution input is valid");
+
+    assert_eq!(distribution.total_quads, 0);
+    assert_eq!(distribution.mag_sign_calls, 0);
+    assert_eq!(distribution.mag_sign_encoded_samples, 0);
+}
+
+#[test]
+fn maximum_axis_code_blocks_encode_without_marker_row_overflow() {
+    for (width, height) in [(1024_u32, 4_u32), (4, 1024)] {
+        let mut coefficients = vec![0_i32; width as usize * height as usize];
+        coefficients[0] = 3;
+        let last = coefficients.len() - 1;
+        coefficients[last] = -2;
+        let encoded = encode_code_block_with_passes(&coefficients, width, height, 2, 3)
+            .expect("maximum-axis HT block encodes");
+        assert_eq!(encoded.num_coding_passes, 3);
+        assert!(encoded.ht_cleanup_length > 0);
+        assert!(encoded.data.len() <= encoded.data.capacity());
+    }
 }
 
 #[test]

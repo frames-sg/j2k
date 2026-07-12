@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use j2k_core::{BackendRequest, PixelFormat};
+use j2k_core::{BackendRequest, BatchInfrastructureError, PixelFormat};
 
 use super::{BatchOp, QueuedRequest};
 
@@ -53,34 +53,60 @@ impl GroupedRequests {
     }
 }
 
-pub(super) fn group_metal_requests(queued: Vec<QueuedRequest>) -> Vec<GroupedRequests> {
-    coalesce_cpu_host_batches(coalesce_distinct_region_scaled_direct_metal_requests(
-        coalesce_distinct_full_color_metal_requests(
-            coalesce_distinct_full_grayscale_metal_requests(group_repeated_full_metal_requests(
-                queued,
-            )),
-        ),
-    ))
+pub(super) fn group_metal_requests(
+    queued: Vec<QueuedRequest>,
+) -> Result<Vec<GroupedRequests>, BatchInfrastructureError> {
+    let request_count = queued.len();
+    let budget = crate::batch_allocation::BatchMetadataBudget::new("J2K Metal request grouping");
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<QueuedRequest>(queued.capacity()),
+        crate::batch_allocation::BatchMetadataRequest::of::<QueuedRequest>(queued.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<usize>(queued.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<GroupedRequests>(queued.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<GroupedRequests>(queued.len()),
+    ])?;
+    let repeated = group_repeated_full_metal_requests(queued)?;
+    let grayscale = coalesce_distinct_full_grayscale_metal_requests(repeated)?;
+    let color = coalesce_distinct_full_color_metal_requests(grayscale)?;
+    let region_scaled = coalesce_distinct_region_scaled_direct_metal_requests(color)?;
+    let grouped = coalesce_cpu_host_batches(region_scaled)?;
+    let mut actual =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal grouped request ownership");
+    actual.account_capacity::<usize>(request_count)?;
+    actual.account_capacity::<GroupedRequests>(grouped.capacity())?;
+    for group in &grouped {
+        actual.account_capacity::<QueuedRequest>(group.requests.capacity())?;
+    }
+    Ok(grouped)
 }
 
-fn group_repeated_full_metal_requests(queued: Vec<QueuedRequest>) -> Vec<GroupedRequests> {
+fn group_repeated_full_metal_requests(
+    queued: Vec<QueuedRequest>,
+) -> Result<Vec<GroupedRequests>, BatchInfrastructureError> {
     let mut batches: Vec<GroupedRequests> = Vec::new();
     for request in queued {
         if let Some(batch) = batches.iter_mut().find(|batch| {
             batch.route == BatchRoute::Generic
                 && can_decode_as_repeated_full_metal_batch(&batch.requests[0], &request)
         }) {
+            crate::batch_allocation::try_reserve_for_push(
+                &mut batch.requests,
+                "J2K Metal repeated request group",
+            )?;
             batch.requests.push(request);
         } else {
-            batches.push(GroupedRequests::generic(vec![request]));
+            push_group(
+                &mut batches,
+                GroupedRequests::generic(singleton_request(request)?),
+            )?;
         }
     }
-    batches
+    Ok(batches)
 }
 
 fn coalesce_distinct_full_grayscale_metal_requests(
     repeated_batches: Vec<GroupedRequests>,
-) -> Vec<GroupedRequests> {
+) -> Result<Vec<GroupedRequests>, BatchInfrastructureError> {
     let mut batches = Vec::new();
     let mut gray8 = Vec::new();
     let mut gray16 = Vec::new();
@@ -96,23 +122,26 @@ fn coalesce_distinct_full_grayscale_metal_requests(
                 .next()
                 .expect("single-entry batch has request");
             match request.fmt {
-                PixelFormat::Gray8 => gray8.push(request),
-                PixelFormat::Gray16 => gray16.push(request),
-                _ => batches.push(GroupedRequests::generic(vec![request])),
+                PixelFormat::Gray8 => push_request(&mut gray8, request)?,
+                PixelFormat::Gray16 => push_request(&mut gray16, request)?,
+                _ => push_group(
+                    &mut batches,
+                    GroupedRequests::generic(singleton_request(request)?),
+                )?,
             }
         } else {
-            batches.push(batch);
+            push_group(&mut batches, batch)?;
         }
     }
 
-    push_coalesced_or_single(&mut batches, gray8);
-    push_coalesced_or_single(&mut batches, gray16);
-    batches
+    push_coalesced_or_single(&mut batches, gray8)?;
+    push_coalesced_or_single(&mut batches, gray16)?;
+    Ok(batches)
 }
 
 fn coalesce_distinct_region_scaled_direct_metal_requests(
     repeated_batches: Vec<GroupedRequests>,
-) -> Vec<GroupedRequests> {
+) -> Result<Vec<GroupedRequests>, BatchInfrastructureError> {
     let mut batches = Vec::new();
     let mut metal_by_format: [Vec<QueuedRequest>; REGION_SCALED_DIRECT_FORMATS.len()] =
         std::array::from_fn(|_| Vec::new());
@@ -130,61 +159,80 @@ fn coalesce_distinct_region_scaled_direct_metal_requests(
                 .next()
                 .expect("single-entry batch has request");
             let Some(format_idx) = region_scaled_direct_format_index(request.fmt) else {
-                batches.push(GroupedRequests::generic(vec![request]));
+                push_group(
+                    &mut batches,
+                    GroupedRequests::generic(singleton_request(request)?),
+                )?;
                 continue;
             };
             match request.backend {
-                BackendRequest::Metal => metal_by_format[format_idx].push(request),
-                BackendRequest::Auto => auto_by_format[format_idx].push(request),
-                _ => batches.push(GroupedRequests::generic(vec![request])),
+                BackendRequest::Metal => {
+                    push_request(&mut metal_by_format[format_idx], request)?;
+                }
+                BackendRequest::Auto => {
+                    push_request(&mut auto_by_format[format_idx], request)?;
+                }
+                _ => push_group(
+                    &mut batches,
+                    GroupedRequests::generic(singleton_request(request)?),
+                )?,
             }
         } else {
-            batches.push(batch);
+            push_group(&mut batches, batch)?;
         }
     }
 
     for requests in metal_by_format {
-        push_coalesced_or_single(&mut batches, requests);
+        push_coalesced_or_single(&mut batches, requests)?;
     }
     for requests in auto_by_format {
-        push_auto_region_scaled_direct_batches(&mut batches, requests);
+        push_auto_region_scaled_direct_batches(&mut batches, requests)?;
     }
-    batches
+    Ok(batches)
 }
 
-fn push_coalesced_or_single(batches: &mut Vec<GroupedRequests>, requests: Vec<QueuedRequest>) {
-    push_coalesced_or_single_with_route(batches, requests, BatchRoute::Generic);
+fn push_coalesced_or_single(
+    batches: &mut Vec<GroupedRequests>,
+    requests: Vec<QueuedRequest>,
+) -> Result<(), BatchInfrastructureError> {
+    push_coalesced_or_single_with_route(batches, requests, BatchRoute::Generic)
 }
 
 fn push_coalesced_or_single_with_route(
     batches: &mut Vec<GroupedRequests>,
     requests: Vec<QueuedRequest>,
     route: BatchRoute,
-) {
+) -> Result<(), BatchInfrastructureError> {
     if requests.is_empty() {
-        return;
+        return Ok(());
     }
     if requests.len() == 1 {
-        batches.extend(requests.into_iter().map(|request| GroupedRequests {
-            route,
-            requests: vec![request],
-        }));
+        for request in requests {
+            push_group(
+                batches,
+                GroupedRequests {
+                    route,
+                    requests: singleton_request(request)?,
+                },
+            )?;
+        }
     } else {
-        batches.push(GroupedRequests { route, requests });
+        push_group(batches, GroupedRequests { route, requests })?;
     }
+    Ok(())
 }
 
 fn push_auto_region_scaled_direct_batches(
     batches: &mut Vec<GroupedRequests>,
     requests: Vec<QueuedRequest>,
-) {
+) -> Result<(), BatchInfrastructureError> {
     let Some(classification) = auto_region_scaled_direct_metal_classification(&requests) else {
         push_coalesced_or_single_with_route(
             batches,
             requests,
             BatchRoute::AutoRegionScaledDirectCpu,
-        );
-        return;
+        )?;
+        return Ok(());
     };
 
     let mut metal_requests = Vec::new();
@@ -194,17 +242,18 @@ fn push_auto_region_scaled_direct_batches(
             .max_image_dim()
             .is_some_and(|max_dim| max_dim >= classification.min_dim)
         {
-            metal_requests.push(request);
+            push_request(&mut metal_requests, request)?;
         } else {
-            cpu_requests.push(request);
+            push_request(&mut cpu_requests, request)?;
         }
     }
-    push_coalesced_or_single_with_route(batches, metal_requests, classification.route);
+    push_coalesced_or_single_with_route(batches, metal_requests, classification.route)?;
     push_coalesced_or_single_with_route(
         batches,
         cpu_requests,
         BatchRoute::AutoRegionScaledDirectCpu,
-    );
+    )?;
+    Ok(())
 }
 
 #[expect(
@@ -213,7 +262,7 @@ fn push_auto_region_scaled_direct_batches(
 )]
 fn coalesce_distinct_full_color_metal_requests(
     repeated_batches: Vec<GroupedRequests>,
-) -> Vec<GroupedRequests> {
+) -> Result<Vec<GroupedRequests>, BatchInfrastructureError> {
     let mut batches = Vec::new();
     let mut rgb8 = Vec::new();
     let mut rgba8 = Vec::new();
@@ -230,23 +279,28 @@ fn coalesce_distinct_full_color_metal_requests(
                 .next()
                 .expect("single-entry batch has request");
             match request.fmt {
-                PixelFormat::Rgb8 => rgb8.push(request),
-                PixelFormat::Rgba8 => rgba8.push(request),
-                PixelFormat::Rgb16 => rgb16.push(request),
-                _ => batches.push(GroupedRequests::generic(vec![request])),
+                PixelFormat::Rgb8 => push_request(&mut rgb8, request)?,
+                PixelFormat::Rgba8 => push_request(&mut rgba8, request)?,
+                PixelFormat::Rgb16 => push_request(&mut rgb16, request)?,
+                _ => push_group(
+                    &mut batches,
+                    GroupedRequests::generic(singleton_request(request)?),
+                )?,
             }
         } else {
-            batches.push(batch);
+            push_group(&mut batches, batch)?;
         }
     }
 
-    push_coalesced_or_single(&mut batches, rgb8);
-    push_coalesced_or_single(&mut batches, rgba8);
-    push_coalesced_or_single(&mut batches, rgb16);
-    batches
+    push_coalesced_or_single(&mut batches, rgb8)?;
+    push_coalesced_or_single(&mut batches, rgba8)?;
+    push_coalesced_or_single(&mut batches, rgb16)?;
+    Ok(batches)
 }
 
-fn coalesce_cpu_host_batches(batches: Vec<GroupedRequests>) -> Vec<GroupedRequests> {
+fn coalesce_cpu_host_batches(
+    batches: Vec<GroupedRequests>,
+) -> Result<Vec<GroupedRequests>, BatchInfrastructureError> {
     let mut coalesced: Vec<GroupedRequests> = Vec::new();
     let mut cpu_groups: Vec<Vec<QueuedRequest>> = Vec::new();
     for batch in batches {
@@ -263,16 +317,50 @@ fn coalesce_cpu_host_batches(batches: Vec<GroupedRequests>) -> Vec<GroupedReques
                 .iter_mut()
                 .find(|existing| can_coalesce_cpu_host_batch(&existing[0], &request))
             {
-                existing.push(request);
+                push_request(existing, request)?;
             } else {
-                cpu_groups.push(vec![request]);
+                crate::batch_allocation::try_reserve_for_push(
+                    &mut cpu_groups,
+                    "J2K Metal CPU request groups",
+                )?;
+                cpu_groups.push(singleton_request(request)?);
             }
         } else {
-            coalesced.push(batch);
+            push_group(&mut coalesced, batch)?;
         }
     }
-    coalesced.extend(cpu_groups.into_iter().map(GroupedRequests::generic));
-    coalesced
+    for requests in cpu_groups {
+        push_group(&mut coalesced, GroupedRequests::generic(requests))?;
+    }
+    Ok(coalesced)
+}
+
+fn singleton_request(
+    request: QueuedRequest,
+) -> Result<Vec<QueuedRequest>, BatchInfrastructureError> {
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal singleton request group");
+    let mut requests = budget.try_vec(1, "J2K Metal singleton request")?;
+    requests.push(request);
+    Ok(requests)
+}
+
+fn push_request(
+    requests: &mut Vec<QueuedRequest>,
+    request: QueuedRequest,
+) -> Result<(), BatchInfrastructureError> {
+    crate::batch_allocation::try_reserve_for_push(requests, "J2K Metal grouped requests")?;
+    requests.push(request);
+    Ok(())
+}
+
+fn push_group(
+    batches: &mut Vec<GroupedRequests>,
+    batch: GroupedRequests,
+) -> Result<(), BatchInfrastructureError> {
+    crate::batch_allocation::try_reserve_for_push(batches, "J2K Metal request groups")?;
+    batches.push(batch);
+    Ok(())
 }
 
 fn is_cpu_host_batch_candidate(request: &QueuedRequest) -> bool {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::PreparedDecodePlan;
+use crate::allocation::try_vec_with_capacity;
 use crate::entropy::block::skip_block;
 use crate::error::{JpegError, Warning};
 use crate::internal::bit_reader::{BitReader, BitReaderSnapshot};
@@ -15,15 +16,15 @@ pub(crate) fn finish_scan(
         return Ok(Vec::new());
     }
 
-    let mut warnings = Vec::new();
     match br.take_marker() {
-        Some(0xD9) => Ok(warnings),
+        Some(0xD9) => Ok(Vec::new()),
         Some(found) => Err(JpegError::UnexpectedMarker {
             offset: br.position().saturating_sub(2),
             expected: crate::error::MarkerKind::Eoi,
             found,
         }),
         None => {
+            let mut warnings = try_vec_with_capacity(1)?;
             warnings.push(Warning::MissingEoi);
             Ok(warnings)
         }
@@ -117,8 +118,10 @@ pub(super) fn skip_mcu(
 ) -> Result<(), JpegError> {
     for comp in &plan.components {
         let plane_idx = comp.output_index;
+        let dc_table = plan.dc_table(comp)?;
+        let ac_table = plan.ac_table(comp)?;
         for _ in 0..u32::from(comp.h) * u32::from(comp.v) {
-            skip_block(br, &comp.dc_table, &comp.ac_table, &mut prev_dc[plane_idx])?;
+            skip_block(br, dc_table, ac_table, &mut prev_dc[plane_idx])?;
         }
     }
     Ok(())
@@ -156,21 +159,7 @@ pub(super) fn consume_restart_marker_if_due(
         return Ok(false);
     }
 
-    let _ = br.ensure_bits(1);
-    let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
-        mcu_at: position.current,
-        mcu_total: position.total,
-    })?;
-    let expected = 0xD0 | *expected_rst;
-    if marker != expected {
-        return Err(JpegError::RestartMismatch {
-            offset: br.position(),
-            expected: *expected_rst,
-            found: marker,
-        });
-    }
-    *expected_rst = (*expected_rst + 1) & 0x07;
-    br.reset_at_restart();
+    *expected_rst = br.consume_restart_marker(*expected_rst, position.current, position.total)?;
     Ok(true)
 }
 

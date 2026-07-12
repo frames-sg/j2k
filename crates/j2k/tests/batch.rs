@@ -69,6 +69,13 @@ fn ht_rgb_fixture() -> Vec<u8> {
     encode_ht_codestream(&pixels, 16, 16, 3, 8)
 }
 
+fn classic_rgb16_fixture() -> Vec<u8> {
+    let pixels = (0..16 * 16 * 3)
+        .map(|idx| u8::try_from((idx * 7 + idx / 5) & 0xff).expect("masked fixture byte"))
+        .collect::<Vec<_>>();
+    encode_codestream(&pixels, 16, 16, 3, 8)
+}
+
 fn ht_rgb_jph_fixture() -> Vec<u8> {
     wrap_j2k_codestream(&ht_rgb_fixture(), J2kFileWrapOptions::jph()).expect("wrap JPH")
 }
@@ -371,7 +378,7 @@ fn production_batch_scaled_decode_parallel_preserves_order_and_output() {
 
 #[test]
 fn production_batch_region_scaled_htj2k_rgb_matches_single_decode() {
-    const JOBS: usize = 8;
+    const JOBS: usize = 12;
     let codestream = ht_rgb_fixture();
     let roi = Rect {
         x: 4,
@@ -400,7 +407,7 @@ fn production_batch_region_scaled_htj2k_rgb_matches_single_decode() {
     let mut outputs = (0..JOBS)
         .map(|_| vec![0_u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions::new(NonZeroUsize::new(4));
+    let options = TileBatchOptions::new(NonZeroUsize::new(8));
 
     let outcomes = {
         let mut jobs = outputs
@@ -423,6 +430,67 @@ fn production_batch_region_scaled_htj2k_rgb_matches_single_decode() {
     }
     for (index, out) in outputs.iter().enumerate() {
         assert_eq!(out, &expected, "tile {index} output diverged");
+    }
+}
+
+#[test]
+fn region_scaled_batch_mixes_direct_and_full_claim_fallback_without_deadlock() {
+    const JOBS: usize = 12;
+    let direct = ht_rgb_fixture();
+    let fallback = classic_rgb16_fixture();
+    let roi = Rect {
+        x: 4,
+        y: 4,
+        w: 8,
+        h: 8,
+    };
+    let scale = Downscale::Half;
+    let scaled_roi = roi.scaled_covering(scale);
+    let stride = scaled_roi.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+
+    let expected = [&direct, &fallback].map(|input| {
+        let mut decoder = J2kDecoder::new(input).expect("decoder");
+        let mut pool = j2k::J2kScratchPool::new();
+        let mut out = vec![0_u8; stride * scaled_roi.h as usize];
+        decoder
+            .decode_region_scaled_into(&mut pool, &mut out, stride, PixelFormat::Rgb8, roi, scale)
+            .expect("reference decode");
+        out
+    });
+    let inputs = (0..JOBS)
+        .map(|index| {
+            if index % 2 == 0 {
+                direct.as_slice()
+            } else {
+                fallback.as_slice()
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut outputs = (0..JOBS)
+        .map(|_| vec![0_u8; stride * scaled_roi.h as usize])
+        .collect::<Vec<_>>();
+    let mut jobs = inputs
+        .iter()
+        .zip(&mut outputs)
+        .map(|(input, out)| TileRegionScaledDecodeJob {
+            input,
+            out,
+            stride,
+            roi,
+            scale,
+        })
+        .collect::<Vec<_>>();
+
+    let outcomes = decode_tiles_region_scaled_into(
+        &mut jobs,
+        PixelFormat::Rgb8,
+        TileBatchOptions::new(NonZeroUsize::new(8)),
+    )
+    .expect("mixed direct/fallback batch");
+
+    assert_eq!(outcomes.len(), JOBS);
+    for (index, output) in outputs.iter().enumerate() {
+        assert_eq!(output, &expected[index % 2], "tile {index} output diverged");
     }
 }
 
@@ -463,5 +531,14 @@ fn production_batch_decode_reports_first_failing_tile_index() {
         decode_tiles_into(&mut jobs, PixelFormat::Rgb8, options).expect_err("bad tile fails")
     };
 
-    assert_eq!(err.index, 1);
+    match &err {
+        j2k::TileBatchError::Tile(indexed) => assert_eq!(indexed.index, 1),
+        j2k::TileBatchError::Infrastructure(error) => {
+            panic!("codec failure became infrastructure error: {error}")
+        }
+        _ => panic!("codec failure returned an unknown batch error variant"),
+    }
+    assert!(err.infrastructure_error().is_none());
+
+    let _: &j2k_core::BatchDecodeError<j2k::J2kError> = &err;
 }

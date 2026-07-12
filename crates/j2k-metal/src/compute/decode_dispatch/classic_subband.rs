@@ -6,11 +6,11 @@ use super::{
     dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer,
     dispatch_classic_cleanup_repeated_batched_in_command_buffer,
     dispatch_classic_store_repeated_batched_in_command_buffer, dispatch_zero_u32_buffer_in_encoder,
-    take_classic_coefficients_scratch_buffer, take_classic_states_scratch_buffer, Buffer,
-    ClassicCleanupBatchDispatch, ClassicPlainDevRepeatedCleanupDispatch,
-    ClassicRepeatedCleanupDispatch, ClassicRepeatedStoreDispatch, CommandBufferRef,
-    ComputeCommandEncoderRef, DirectScratchBuffer, DirectStatusCheck, Error, MTLResourceOptions,
-    MetalRuntime, PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    new_shared_buffer, take_classic_coefficients_scratch_buffer,
+    take_classic_states_scratch_buffer, Buffer, ClassicCleanupBatchDispatch,
+    ClassicPlainDevRepeatedCleanupDispatch, ClassicRepeatedCleanupDispatch,
+    ClassicRepeatedStoreDispatch, CommandBufferRef, ComputeCommandEncoderRef, DirectScratchBuffer,
+    DirectStatusCheck, Error, MetalRuntime, PreparedClassicSubBand, PreparedClassicSubBandGroup,
 };
 
 #[cfg(target_os = "macos")]
@@ -27,9 +27,7 @@ pub(in crate::compute) fn encode_repeated_classic_sub_band_to_buffer_in_command_
     scratch_buffers: &mut Vec<DirectScratchBuffer>,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     if count == 0 {
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Classic {
@@ -40,9 +38,7 @@ pub(in crate::compute) fn encode_repeated_classic_sub_band_to_buffer_in_command_
     }
 
     if job.jobs.is_empty() {
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Classic {
@@ -160,9 +156,7 @@ pub(in crate::compute) fn encode_repeated_classic_sub_band_group_to_buffer_in_co
     scratch_buffers: &mut Vec<DirectScratchBuffer>,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     if count == 0 || group.jobs.is_empty() {
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Classic {
@@ -281,9 +275,7 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_to_buffer_in_encoder(
             output,
             job.width as usize * job.height as usize,
         )?;
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Classic {
@@ -322,7 +314,7 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_to_buffer_in_encoder(
             decoded: output,
             coefficients_scratch: &coefficients_scratch.buffer,
         },
-    );
+    )?;
     let mut retained_buffers = vec![coded_buffer, jobs_buffer, segments_buffer];
     scratch_buffers.push(coefficients_scratch);
     if let Some(states_scratch) = states_scratch {
@@ -341,9 +333,7 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_group_to_buffer_in_en
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     if group.jobs.is_empty() {
         dispatch_zero_u32_buffer_in_encoder(runtime, encoder, output, group.total_coefficients)?;
-        let empty = runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        let empty = new_shared_buffer(&runtime.device, 1)?;
         return Ok((
             vec![empty.clone()],
             DirectStatusCheck::Classic {
@@ -377,7 +367,7 @@ pub(in crate::compute) fn encode_prepared_classic_sub_band_group_to_buffer_in_en
             decoded: output,
             coefficients_scratch: &coefficients_scratch.buffer,
         },
-    );
+    )?;
     let mut retained_buffers = vec![coded_buffer, jobs_buffer, segments_buffer];
     scratch_buffers.push(coefficients_scratch);
     if let Some(states_scratch) = states_scratch {

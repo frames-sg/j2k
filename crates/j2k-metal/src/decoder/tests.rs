@@ -12,7 +12,7 @@ use metal::Device;
 #[cfg(target_os = "macos")]
 use super::is_direct_runtime_fallback_error;
 use super::surface::upload_surface;
-use super::{DecodeOperation, MetalDecodeRequest};
+use super::{DecodeOperation, J2kDecoder, MetalDecodeRequest};
 use crate::{batch, Error, Storage, Surface, SurfaceResidency};
 #[cfg(target_os = "macos")]
 use crate::{hybrid, MetalBackendSession, MetalDirectFallbackReason};
@@ -124,7 +124,7 @@ fn download_into_reports_inconsistent_surface_storage_range() {
         fmt: PixelFormat::Gray8,
         pitch_bytes: 2,
         byte_offset: 0,
-        storage: Storage::Host(vec![7]),
+        storage: Storage::from_host(vec![7]),
     };
     let mut out = [0_u8; 2];
 
@@ -158,6 +158,67 @@ fn metal_backend_sessions_own_distinct_direct_plan_caches() {
         first.direct_cache_ids_for_test(),
         second.direct_cache_ids_for_test()
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn repeated_session_hits_share_native_and_prepared_plan_owners() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let Some(device) = Device::system_default() else {
+        j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+        return;
+    };
+    let pixels = j2k_test_support::gradient_u8(32, 32, 3);
+    let bytes = j2k_native::encode(
+        &pixels,
+        32,
+        32,
+        3,
+        8,
+        false,
+        &j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..j2k_native::EncodeOptions::default()
+        },
+    )
+    .expect("encode RGB cache fixture");
+    let session = MetalBackendSession::new(device);
+    let request = MetalDecodeRequest::full(PixelFormat::Rgb8, BackendRequest::Metal);
+
+    let mut first = J2kDecoder::new(&bytes).expect("first decoder");
+    first
+        .decode_request_to_device_with_session(request, &session)
+        .expect("first session decode");
+    let first_native = first
+        .native_direct_color_plan
+        .as_ref()
+        .expect("first native plan")
+        .clone();
+    let first_prepared = first
+        .native_prepared_direct_color_plan
+        .as_ref()
+        .expect("first prepared plan")
+        .clone();
+
+    let mut second = J2kDecoder::new(&bytes).expect("second decoder");
+    second
+        .decode_request_to_device_with_session(request, &session)
+        .expect("cached session decode");
+    let second_native = second
+        .native_direct_color_plan
+        .as_ref()
+        .expect("cached native plan");
+    let second_prepared = second
+        .native_prepared_direct_color_plan
+        .as_ref()
+        .expect("cached prepared plan");
+
+    assert!(Arc::ptr_eq(&first_native, second_native));
+    assert!(Arc::ptr_eq(&first_prepared, second_prepared));
 }
 
 #[cfg(target_os = "macos")]

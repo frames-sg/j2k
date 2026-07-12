@@ -10,7 +10,9 @@ use crate::{batch, session, Codec, Error, MetalDecodeRequest, MetalSession};
 
 #[cfg(target_os = "macos")]
 use crate::{
-    compute, scaled_dims, Decoder, JpegMetalResidentBatchReport, MetalBackendSession,
+    compute,
+    plan_owner_ledger::{preflight_collective_metadata, PlanOwnerLedger},
+    scaled_dims, Decoder, JpegMetalResidentBatchReport, MetalBackendSession,
     MetalBatchOutputBuffer, MetalBatchTextureOutput, MetalTextureTile, Surface,
 };
 
@@ -133,6 +135,27 @@ fn decoder_resident_restart_interval_mcus(decoder: &Decoder<'_>) -> u32 {
     } else {
         0
     }
+}
+
+#[cfg(target_os = "macos")]
+fn distinct_decoder_retained_bytes(decoders: &[&Decoder<'_>]) -> Result<usize, Error> {
+    let mut retained_bytes = 0_usize;
+    for (index, decoder) in decoders.iter().enumerate() {
+        if decoders[..index]
+            .iter()
+            .any(|prior| std::ptr::eq::<Decoder<'_>>(*prior, *decoder))
+        {
+            continue;
+        }
+        retained_bytes = retained_bytes
+            .checked_add(j2k_jpeg::adapter::decoder_retained_allocation_bytes(
+                decoder.inner(),
+            )?)
+            .ok_or(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                "JPEG Metal decoder batch retained-byte count overflow",
+            ))?;
+    }
+    Ok(retained_bytes)
 }
 
 impl Codec {
@@ -312,28 +335,44 @@ impl Codec {
         mut op_and_dimensions_for_decoder: impl FnMut(&CpuDecoder<'_>) -> (batch::BatchOp, (u32, u32)),
     ) -> Result<Rgb8MetalBatchPlan, Error> {
         let mut state = session::SessionState::default();
-        let mut requests = Vec::with_capacity(inputs.len());
+        let mut budget =
+            crate::batch_allocation::BatchMetadataBudget::new("JPEG Metal RGB8 batch request plan");
+        let mut requests = budget.try_vec(inputs.len(), "JPEG Metal RGB8 batch requests")?;
+        let mut plan_owners = PlanOwnerLedger::default();
         let mut first_output_dimensions = None;
         for input in inputs {
-            let decoder = CpuDecoder::new(input)?;
+            let external_live_bytes = plan_owners.external_live_bytes(budget.live_bytes())?;
+            let (resolved, decoder) = state
+                .resolve_jpeg_plan_with_decoder_and_external_live(input, external_live_bytes)?;
             let (op, output_dimensions) = op_and_dimensions_for_decoder(&decoder);
             Self::observe_rgb8_batch_output_dimensions(
                 &mut first_output_dimensions,
                 output_dimensions,
             )?;
-            let input = state.intern_input_slice(input);
-            let (fast444_packet, fast422_packet, fast420_packet) =
-                state.resolve_fast_packets(&input, BackendRequest::Metal);
-            requests.push(batch::QueuedRequest::new_shared(
-                input,
+            drop(decoder);
+            let request = batch::QueuedRequest::new_shared(
+                resolved.input,
                 PixelFormat::Rgb8,
                 BackendRequest::Metal,
                 op,
-                fast444_packet,
-                fast422_packet,
-                fast420_packet,
-            ));
+                resolved.fast_packet,
+                resolved.shape,
+            );
+            let admission = plan_owners.preflight(
+                &requests,
+                &request,
+                state.jpeg_plan_cache_diagnostics().retained_bytes,
+            )?;
+            preflight_collective_metadata(
+                "JPEG Metal RGB8 raw request owners and metadata",
+                admission.retained_bytes(),
+                state.jpeg_plan_cache_diagnostics().retained_bytes,
+                budget.live_bytes(),
+            )?;
+            requests.push(request);
+            plan_owners.commit(admission);
         }
+        batch::stamp_execution_owner_baseline(&mut requests, 0, budget.live_bytes());
         Ok(Rgb8MetalBatchPlan {
             requests,
             output_dimensions: first_output_dimensions,
@@ -345,7 +384,19 @@ impl Codec {
         decoders: &[&Decoder<'_>],
         mut op_and_dimensions_for_decoder: impl FnMut(&Decoder<'_>) -> (batch::BatchOp, (u32, u32)),
     ) -> Result<Rgb8MetalBatchPlan, Error> {
-        let mut requests = Vec::with_capacity(decoders.len());
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "JPEG Metal RGB8 decoder batch request plan",
+        );
+        let mut requests =
+            budget.try_vec(decoders.len(), "JPEG Metal RGB8 decoder batch requests")?;
+        let mut plan_owners = PlanOwnerLedger::default();
+        let decoder_owner_bytes = distinct_decoder_retained_bytes(decoders)?;
+        let execution_external_live_bytes = budget
+            .live_bytes()
+            .checked_add(decoder_owner_bytes)
+            .ok_or(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                "JPEG Metal decoder request metadata baseline overflow",
+            ))?;
         let mut first_output_dimensions = None;
         for decoder in decoders {
             let (op, output_dimensions) = op_and_dimensions_for_decoder(decoder);
@@ -353,8 +404,18 @@ impl Codec {
                 &mut first_output_dimensions,
                 output_dimensions,
             )?;
-            requests.push(decoder.rgb8_metal_request(op));
+            let request = decoder.rgb8_metal_request(op);
+            let admission = plan_owners.preflight(&requests, &request, 0)?;
+            preflight_collective_metadata(
+                "JPEG Metal RGB8 decoder request owners and metadata",
+                admission.retained_bytes(),
+                0,
+                execution_external_live_bytes,
+            )?;
+            requests.push(request);
+            plan_owners.commit(admission);
         }
+        batch::stamp_execution_owner_baseline(&mut requests, 0, execution_external_live_bytes);
         Ok(Rgb8MetalBatchPlan {
             requests,
             output_dimensions: first_output_dimensions,
@@ -661,22 +722,76 @@ impl Codec {
         let _ = (ctx, pool);
         let slot = {
             let mut state = session.shared.lock()?;
-            let input = state.intern_input_slice(input);
-            let (fast444_packet, fast422_packet, fast420_packet) =
-                state.resolve_fast_packets(&input, request.backend);
+            let resolved = state.resolve_jpeg_plan(input, request.backend)?;
             state.queue_request(batch::QueuedRequest::new_shared(
-                input,
+                resolved.input,
                 request.fmt,
                 request.backend,
                 request.op.batch_op(),
-                fast444_packet,
-                fast422_packet,
-                fast420_packet,
-            ))
+                resolved.fast_packet,
+                resolved.shape,
+            ))?
         };
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
             slot,
         })
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod owner_tests {
+    use super::*;
+    use j2k_core::{
+        BatchAllocationRequest, BatchInfrastructureError, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+    };
+
+    const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
+
+    #[test]
+    fn decoder_owner_accounting_deduplicates_identity_not_equal_bytes() {
+        let first = Decoder::new(BASELINE_420).expect("first decoder");
+        let second = Decoder::new(BASELINE_420).expect("second decoder");
+        let first_bytes = distinct_decoder_retained_bytes(&[&first]).expect("first bytes");
+
+        assert_eq!(
+            distinct_decoder_retained_bytes(&[&first, &first]).expect("repeated identity"),
+            first_bytes
+        );
+        assert_eq!(
+            distinct_decoder_retained_bytes(&[&first, &second]).expect("distinct identities"),
+            first_bytes + distinct_decoder_retained_bytes(&[&second]).expect("second bytes")
+        );
+    }
+
+    #[test]
+    fn distinct_decoder_owners_compose_with_metadata_at_exact_and_one_over() {
+        let first = Decoder::new(BASELINE_420).expect("first decoder");
+        let second = Decoder::new(BASELINE_420).expect("second decoder");
+        let decoder_bytes =
+            distinct_decoder_retained_bytes(&[&first, &second]).expect("decoder owners");
+        let exact_metadata = DEFAULT_MAX_HOST_ALLOCATION_BYTES
+            .checked_sub(decoder_bytes)
+            .expect("decoder owners fit below cap");
+
+        j2k_core::BatchAllocationBudget::with_external_live(
+            "JPEG Metal decoder owner composition",
+            decoder_bytes,
+        )
+        .preflight(&[BatchAllocationRequest::of::<u8>(exact_metadata)])
+        .expect("exact decoder and metadata cap");
+        assert_eq!(
+            j2k_core::BatchAllocationBudget::with_external_live(
+                "JPEG Metal decoder owner composition",
+                decoder_bytes,
+            )
+            .preflight(&[BatchAllocationRequest::of::<u8>(exact_metadata + 1)])
+            .expect_err("one byte over decoder and metadata cap"),
+            BatchInfrastructureError::AllocationTooLarge {
+                what: "JPEG Metal decoder owner composition",
+                requested: DEFAULT_MAX_HOST_ALLOCATION_BYTES + 1,
+                cap: DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            }
+        );
     }
 }

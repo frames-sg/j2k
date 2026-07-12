@@ -18,8 +18,8 @@ const HT_MAX_SIGMA: usize = 528;
 const HT_MAX_PREV_ROW_SIG: usize = 72;
 
 const SIGPROP_SPREAD_MASKS: [u32; 16] = [
-    0x33, 0x76, 0xEC, 0xC8, 0x330, 0x760, 0xEC0, 0xC80, 0x3300, 0x7600, 0xEC00, 0xC800,
-    0x33000, 0x76000, 0xEC000, 0xC8000,
+    0x33, 0x76, 0xEC, 0xC8, 0x330, 0x760, 0xEC0, 0xC80, 0x3300, 0x7600, 0xEC00, 0xC800, 0x33000,
+    0x76000, 0xEC000, 0xC8000,
 ];
 
 #[repr(C)]
@@ -74,6 +74,7 @@ struct J2kHtCleanupMultiBatchJob {
     output_offset: u32,
     dequantization_step: f32,
     stripe_causal: u32,
+    reserved_tail: u32,
 }
 
 #[repr(C)]
@@ -121,7 +122,11 @@ struct ReverseBitReader {
 
 #[inline(always)]
 fn min_u32(a: u32, b: u32) -> u32 {
-    if a < b { a } else { b }
+    if a < b {
+        a
+    } else {
+        b
+    }
 }
 
 #[inline(always)]
@@ -528,8 +533,7 @@ fn decode_cleanup_symbols_first_row(
         uvlc_entry >>= 4;
         len = uvlc_entry & 0x7;
         uvlc_entry >>= 3;
-        scratch[row_offset as usize + 1] =
-            (1 + (uvlc_entry & 0x7) + (tmp & !(0xff << len))) as u16;
+        scratch[row_offset as usize + 1] = (1 + (uvlc_entry & 0x7) + (tmp & !(0xff << len))) as u16;
         scratch[row_offset as usize + 3] = (1 + (uvlc_entry >> 3) + (tmp >> len)) as u16;
         row_offset += 4;
     }
@@ -629,8 +633,7 @@ fn decode_cleanup_symbols_remaining_rows(
             uvlc_entry >>= 4;
             len = uvlc_entry & 0x7;
             uvlc_entry >>= 3;
-            scratch[row_offset as usize + 1] =
-                ((uvlc_entry & 0x7) + (tmp & !(0xff << len))) as u16;
+            scratch[row_offset as usize + 1] = ((uvlc_entry & 0x7) + (tmp & !(0xff << len))) as u16;
             scratch[row_offset as usize + 3] = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
             row_offset += 4;
         }
@@ -777,9 +780,9 @@ fn decode_magnitude_sign_phase(
             let u_q = scratch[local_sp as usize + 1] as u32;
             let mut gamma = inf & 0xf0;
             gamma &= gamma.wrapping_sub(0x10);
-            let emax = floor_log2_nonzero((v_n_scratch[local_vp as usize]
-                | v_n_scratch[local_vp as usize + 1])
-                | 2);
+            let emax = floor_log2_nonzero(
+                (v_n_scratch[local_vp as usize] | v_n_scratch[local_vp as usize + 1]) | 2,
+            );
             let kappa = if gamma != 0 { emax } else { 1 };
             let uq = u_q + kappa;
             if !decode_magnitude_sign_pair(
@@ -901,8 +904,8 @@ fn apply_significance_propagation(
             col_pattern >>= s * 4;
 
             let idx = x >> 2;
-            let ps = prev_row_sig[idx as usize] as u32
-                | ((prev_row_sig[idx as usize + 1] as u32) << 16);
+            let ps =
+                prev_row_sig[idx as usize] as u32 | ((prev_row_sig[idx as usize + 1] as u32) << 16);
             let ns = read_u32_pair(sigma, next_row + idx);
             let mut u = (ps & 0x8888_8888) >> 3;
             if params.stripe_causal == 0 {
@@ -949,7 +952,13 @@ fn apply_significance_propagation(
                         let sample = 1 << bit;
                         sign_bits &= !sample;
                         let offset = (bit >> 2) + ((bit & 3) * params.output_stride);
-                        store_decoded_sample(decoded_data, block_base + offset, (cwd << 31) | value, params, false);
+                        store_decoded_sample(
+                            decoded_data,
+                            block_base + offset,
+                            (cwd << 31) | value,
+                            params,
+                            false,
+                        );
                         cwd >>= 1;
                         cnt += 1;
                     }
@@ -982,7 +991,8 @@ fn apply_magnitude_refinement(
     mstr: u32,
     p: u32,
 ) {
-    let mut magref = reverse_reader_new_mrp(coded_data, params.cleanup_length, params.refinement_length);
+    let mut magref =
+        reverse_reader_new_mrp(coded_data, params.cleanup_length, params.refinement_length);
     let half_value = 1 << (p - 2);
     let mut y = 0;
     while y < params.height {
@@ -1048,7 +1058,9 @@ fn decode_ht_cleanup_impl(
         store_status(status, HT_STATUS_UNSUPPORTED, 17);
         return;
     }
-    if dequantize && (!cleanup_only || params.number_of_coding_passes > 1 || params.refinement_length != 0) {
+    if dequantize
+        && (!cleanup_only || params.number_of_coding_passes > 1 || params.refinement_length != 0)
+    {
         store_status(status, HT_STATUS_UNSUPPORTED, 18);
         return;
     }
@@ -1079,7 +1091,8 @@ fn decode_ht_cleanup_impl(
         store_status(status, HT_STATUS_FAIL, 4);
         return;
     }
-    let scup = ((load_u8(coded_data, lcup - 1) as u32) << 4) + (load_u8(coded_data, lcup - 2) as u32 & 0x0f);
+    let scup = ((load_u8(coded_data, lcup - 1) as u32) << 4)
+        + (load_u8(coded_data, lcup - 2) as u32 & 0x0f);
     if scup < 2 || scup > lcup || scup > 4079 {
         store_status(status, HT_STATUS_FAIL, 5);
         return;
@@ -1139,7 +1152,14 @@ fn decode_ht_cleanup_impl(
     }
     let p = 30 - params.missing_msbs;
     let mut sigma = [0u16; HT_MAX_SIGMA];
-    build_sigma_from_cleanup(&scratch, &mut sigma, params.width, params.height, sstr, mstr);
+    build_sigma_from_cleanup(
+        &scratch,
+        &mut sigma,
+        params.width,
+        params.height,
+        sstr,
+        mstr,
+    );
 
     let mut prev_row_sig = [0u16; HT_MAX_PREV_ROW_SIG];
     let sigprop_detail = apply_significance_propagation(

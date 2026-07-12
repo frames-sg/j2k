@@ -4,6 +4,7 @@ use super::{
     add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, checked_code_block_output_layout,
     j2c, CodeBlockOutputLayout, HtCodeBlockDecodeJob, HtCodeBlockDecodePhaseLimit, Result, Vec,
 };
+use crate::try_reserve_decode_elements;
 
 /// Adapter scalar HTJ2K decoder helper for backend experimentation.
 #[doc(hidden)]
@@ -53,6 +54,44 @@ impl HtCodeBlockDecodeWorkspace {
     #[must_use]
     pub fn coefficient_capacity(&self) -> usize {
         self.coefficients.capacity()
+    }
+
+    // Keep fallible allocation and actual-capacity reconciliation on the
+    // caller thread; parallel decode may initialize this owner only afterward.
+    pub(crate) fn reserve(&mut self, width: u32, height: u32) -> Result<()> {
+        let coefficient_count = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or(crate::ValidationError::ImageTooLarge)?;
+        try_reserve_decode_elements(&mut self.coefficients, coefficient_count)?;
+        self.scratch.prepare(width, height)
+    }
+
+    pub(crate) fn initialize_reserved(&mut self, width: u32, height: u32) -> Result<()> {
+        let coefficient_count = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or(crate::ValidationError::ImageTooLarge)?;
+        if self.coefficients.capacity() < coefficient_count {
+            return Err(crate::DecodingError::CodeBlockDecodeFailure.into());
+        }
+        self.coefficients.clear();
+        self.coefficients.resize(coefficient_count, 0);
+        Ok(())
+    }
+
+    pub(crate) fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
+        self.reserve(width, height)?;
+        self.initialize_reserved(width, height)
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> Result<usize> {
+        let coefficient_bytes = self
+            .coefficients
+            .capacity()
+            .checked_mul(core::mem::size_of::<u32>())
+            .ok_or(crate::ValidationError::ImageTooLarge)?;
+        coefficient_bytes
+            .checked_add(self.scratch.allocated_bytes()?)
+            .ok_or(crate::ValidationError::ImageTooLarge.into())
     }
 }
 
@@ -147,8 +186,7 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace<const PHASE_LIMIT: u8>(
         job.refinement_length,
     )?;
     let coded_bitplanes = add_roi_shift_to_bitplanes(job.num_bitplanes, job.roi_shift, 31)?;
-    workspace.coefficients.clear();
-    workspace.coefficients.resize(layout.len, 0);
+    workspace.prepare(job.width, job.height)?;
     j2c::ht_block_decode::decode_segments_validated_with_scratch_for_phase::<PHASE_LIMIT>(
         &segments,
         job.missing_bit_planes,
@@ -190,8 +228,7 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace_profiled<const PHASE_LIM
         job.refinement_length,
     )?;
     let coded_bitplanes = add_roi_shift_to_bitplanes(job.num_bitplanes, job.roi_shift, 31)?;
-    workspace.coefficients.clear();
-    workspace.coefficients.resize(layout.len, 0);
+    workspace.prepare(job.width, job.height)?;
     let mut stats = j2c::ht_block_decode::HtBlockDecodeStats::default();
     j2c::ht_block_decode::decode_segments_validated_with_scratch_for_phase::<PHASE_LIMIT>(
         &segments,
@@ -245,5 +282,47 @@ fn write_ht_code_block_output(
             let coefficient = apply_roi_maxshift_inverse_i32(coefficient, job.roi_shift);
             *sample = coefficient as f32 * job.dequantization_step;
         }
+    }
+}
+
+#[cfg(test)]
+mod reservation_tests {
+    use super::HtCodeBlockDecodeWorkspace;
+
+    #[test]
+    fn reserved_workspace_initialization_does_not_grow_allocations() {
+        let mut workspace = HtCodeBlockDecodeWorkspace::default();
+        workspace
+            .reserve(64, 64)
+            .expect("workspace reservation should succeed");
+        assert_eq!(workspace.coefficients.len(), 0);
+        let reserved_bytes = workspace
+            .allocated_bytes()
+            .expect("reserved workspace bytes should be measurable");
+
+        workspace
+            .initialize_reserved(64, 64)
+            .expect("reserved workspace should initialize");
+
+        assert_eq!(workspace.coefficients.len(), 64 * 64);
+        assert_eq!(
+            workspace
+                .allocated_bytes()
+                .expect("initialized workspace bytes should be measurable"),
+            reserved_bytes,
+            "parallel initialization must not grow beyond serially accounted capacity"
+        );
+    }
+
+    #[test]
+    fn unreserved_workspace_initialization_fails_without_allocating() {
+        let mut workspace = HtCodeBlockDecodeWorkspace::default();
+
+        workspace
+            .initialize_reserved(64, 64)
+            .expect_err("initialization must not allocate an unreserved workspace");
+
+        assert_eq!(workspace.coefficient_capacity(), 0);
+        assert_eq!(workspace.coefficients.len(), 0);
     }
 }

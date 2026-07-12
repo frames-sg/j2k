@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{cell::RefCell, mem::size_of_val, sync::Arc};
+use std::{cell::RefCell, sync::Arc};
 
 use j2k_metal_support::{
-    checked_command_queue, commit_and_wait, wait_for_completion, MetalPipelineLoader,
-    MetalSupportError,
+    checked_command_queue, checked_shared_buffer, checked_shared_buffer_with_slice,
+    commit_and_wait, wait_for_completion, MetalPipelineLoader, MetalSupportError,
 };
 use j2k_native::{
     ht_uvlc_encode_table, ht_uvlc_table0, ht_uvlc_table1, ht_vlc_encode_table0,
@@ -12,12 +12,16 @@ use j2k_native::{
 };
 use metal::{
     foreign_types::ForeignType, Buffer, CommandBufferRef, CommandQueue, ComputePipelineState,
-    Device, MTLResourceOptions,
+    Device,
 };
 
-use crate::{buffer_pool::MetalBufferPools, Error};
+use crate::{
+    buffer_pool::MetalBufferPools,
+    error::{metal_kernel_support_error, metal_runtime_support_error},
+    Error,
+};
 
-use super::shader_source::shader_source;
+use super::{abi::J2kHtUvlcEncodeTableEntry, shader_source::shader_source};
 
 #[cfg(test)]
 use j2k_metal_support::system_default_device;
@@ -136,6 +140,7 @@ impl MetalRuntime {
         let loader = MetalPipelineLoader::new(device, &shader_source)?;
         let pipeline = |name: &str| loader.pipeline(name);
         let queue = checked_command_queue(device)?;
+        let ht_uvlc_encode_rows = (*ht_uvlc_encode_table()).map(J2kHtUvlcEncodeTableEntry::from);
         Ok(Self {
             device: device.clone(),
             queue,
@@ -268,43 +273,15 @@ impl MetalRuntime {
             lossless_codestream_assemble_batched: pipeline(
                 "j2k_assemble_lossless_codestream_batched",
             )?,
-            ht_vlc_table0: device.new_buffer_with_data(
-                ht_vlc_table0().as_ptr().cast(),
-                size_of_val(ht_vlc_table0()) as u64,
-                MTLResourceOptions::StorageModeShared,
-            ),
-            ht_vlc_table1: device.new_buffer_with_data(
-                ht_vlc_table1().as_ptr().cast(),
-                size_of_val(ht_vlc_table1()) as u64,
-                MTLResourceOptions::StorageModeShared,
-            ),
-            ht_uvlc_table0: device.new_buffer_with_data(
-                ht_uvlc_table0().as_ptr().cast(),
-                size_of_val(ht_uvlc_table0()) as u64,
-                MTLResourceOptions::StorageModeShared,
-            ),
-            ht_uvlc_table1: device.new_buffer_with_data(
-                ht_uvlc_table1().as_ptr().cast(),
-                size_of_val(ht_uvlc_table1()) as u64,
-                MTLResourceOptions::StorageModeShared,
-            ),
-            ht_vlc_encode_table0: device.new_buffer_with_data(
-                ht_vlc_encode_table0().as_ptr().cast(),
-                size_of_val(ht_vlc_encode_table0()) as u64,
-                MTLResourceOptions::StorageModeShared,
-            ),
-            ht_vlc_encode_table1: device.new_buffer_with_data(
-                ht_vlc_encode_table1().as_ptr().cast(),
-                size_of_val(ht_vlc_encode_table1()) as u64,
-                MTLResourceOptions::StorageModeShared,
-            ),
-            ht_uvlc_encode_table: device.new_buffer_with_data(
-                ht_uvlc_encode_table().as_ptr().cast(),
-                size_of_val(ht_uvlc_encode_table()) as u64,
-                MTLResourceOptions::StorageModeShared,
-            ),
-            tier1_dummy_buffer: device.new_buffer(1, MTLResourceOptions::StorageModeShared),
-            buffer_pools: MetalBufferPools::new(),
+            ht_vlc_table0: checked_shared_buffer_with_slice(device, ht_vlc_table0())?,
+            ht_vlc_table1: checked_shared_buffer_with_slice(device, ht_vlc_table1())?,
+            ht_uvlc_table0: checked_shared_buffer_with_slice(device, ht_uvlc_table0())?,
+            ht_uvlc_table1: checked_shared_buffer_with_slice(device, ht_uvlc_table1())?,
+            ht_vlc_encode_table0: checked_shared_buffer_with_slice(device, ht_vlc_encode_table0())?,
+            ht_vlc_encode_table1: checked_shared_buffer_with_slice(device, ht_vlc_encode_table1())?,
+            ht_uvlc_encode_table: checked_shared_buffer_with_slice(device, &ht_uvlc_encode_rows)?,
+            tier1_dummy_buffer: checked_shared_buffer(device, 1)?,
+            buffer_pools: MetalBufferPools::new(device),
         })
     }
 
@@ -326,6 +303,12 @@ impl MetalRuntime {
 
     pub(super) fn recycle_shared_buffer(&self, bytes: usize, buffer: Buffer) -> Result<(), Error> {
         self.buffer_pools.recycle_shared(bytes, buffer)
+    }
+
+    pub(crate) fn buffer_pool_diagnostics(
+        &self,
+    ) -> Result<crate::MetalBufferPoolsDiagnostics, Error> {
+        self.buffer_pools.diagnostics()
     }
 }
 
@@ -357,25 +340,17 @@ pub(super) fn with_runtime<R>(
 }
 
 pub(crate) fn runtime_initialization_error(error: &MetalSupportError) -> Error {
-    if error.is_unavailable() {
-        Error::MetalUnavailable
-    } else {
-        Error::MetalRuntime {
-            message: error.to_string(),
-        }
-    }
+    metal_runtime_support_error(error)
 }
 
 pub(super) fn commit_and_wait_metal(command_buffer: &CommandBufferRef) -> Result<(), Error> {
-    commit_and_wait(command_buffer).map_err(|error| Error::MetalKernel {
-        message: error.to_string(),
-    })
+    commit_and_wait(command_buffer)
+        .map_err(|error| metal_kernel_support_error(error.to_string(), error))
 }
 
 pub(super) fn wait_for_completion_metal(command_buffer: &CommandBufferRef) -> Result<(), Error> {
-    wait_for_completion(command_buffer).map_err(|error| Error::MetalKernel {
-        message: error.to_string(),
-    })
+    wait_for_completion(command_buffer)
+        .map_err(|error| metal_kernel_support_error(error.to_string(), error))
 }
 
 struct RuntimeOverrideGuard {

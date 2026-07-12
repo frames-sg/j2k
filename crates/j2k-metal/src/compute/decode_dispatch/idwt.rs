@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    borrow_slice_buffer, checked_buffer_read, commit_and_wait_metal, decode_idwt_status_error,
-    dispatch_2d_pipeline, dispatch_3d_pipeline, dispatch_single_thread, hybrid_stage_signpost,
-    label_compute_encoder, size_of, with_runtime, wrap_f32_output_buffer, zeroed_shared_buffer,
-    Buffer, CommandBufferRef, ComputeCommandEncoderRef, DirectIdwtCommandBuffers,
-    DirectStatusCheck, Error, J2kIdwtSingleDecompositionParams, J2kIdwtStatus,
-    J2kRepeatedIdwtSingleDecompositionParams, J2kSingleDecompositionIdwtJob, MTLSize, MetalRuntime,
-    J2K_IDWT_STATUS_OK, SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
+    checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
+    decode_idwt_status_error, dispatch_2d_pipeline, dispatch_3d_pipeline, dispatch_single_thread,
+    hybrid_stage_signpost, label_compute_encoder, new_command_buffer, new_compute_command_encoder,
+    size_of, with_runtime, zeroed_shared_buffer, Buffer, CommandBufferRef,
+    ComputeCommandEncoderRef, DirectIdwtCommandBuffers, DirectStatusCheck, Error,
+    J2kIdwtSingleDecompositionParams, J2kIdwtStatus, J2kRepeatedIdwtSingleDecompositionParams,
+    J2kSingleDecompositionIdwtJob, MTLSize, MetalRuntime, J2K_IDWT_STATUS_OK,
+    SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE,
 };
 
 #[cfg(target_os = "macos")]
@@ -52,15 +53,15 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
             hh_height: job.hh.rect.height(),
         };
 
-        let ll = borrow_slice_buffer(&runtime.device, job.ll.coefficients);
-        let hl = borrow_slice_buffer(&runtime.device, job.hl.coefficients);
-        let lh = borrow_slice_buffer(&runtime.device, job.lh.coefficients);
-        let hh = borrow_slice_buffer(&runtime.device, job.hh.coefficients);
-        let decoded = wrap_f32_output_buffer(&runtime.device, output);
+        let ll = copied_slice_buffer(&runtime.device, job.ll.coefficients)?;
+        let hl = copied_slice_buffer(&runtime.device, job.hl.coefficients)?;
+        let lh = copied_slice_buffer(&runtime.device, job.lh.coefficients)?;
+        let hh = copied_slice_buffer(&runtime.device, job.hh.coefficients)?;
+        let decoded = copied_slice_buffer(&runtime.device, output)?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
 
-        let encoder = command_buffer.new_compute_command_encoder();
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.idwt_interleave);
         encoder.set_buffer(0, Some(&ll), 0);
         encoder.set_buffer(1, Some(&hl), 0);
@@ -73,13 +74,13 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
             (&raw const params).cast(),
         );
         dispatch_2d_pipeline(
-            encoder,
+            &encoder,
             &runtime.idwt_interleave,
             (params.width, params.height),
         );
         encoder.end_encoding();
 
-        let encoder = command_buffer.new_compute_command_encoder();
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_horizontal);
         encoder.set_buffer(0, Some(&decoded), 0);
         encoder.set_bytes(
@@ -105,7 +106,7 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
         );
         encoder.end_encoding();
 
-        let encoder = command_buffer.new_compute_command_encoder();
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_vertical);
         encoder.set_buffer(0, Some(&decoded), 0);
         encoder.set_bytes(
@@ -130,7 +131,9 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
             },
         );
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
+        let decoded_host = checked_buffer_slice::<f32>(&decoded, output.len(), "IDWT output")?;
+        output.copy_from_slice(&decoded_host);
         Ok(())
     })
 }
@@ -171,12 +174,13 @@ pub(in crate::compute) struct RepeatedIdwtDispatch<'a> {
 pub(in crate::compute) fn dispatch_reversible53_single_decomposition_buffers_in_command_buffer_with_offsets(
     command_buffer: &CommandBufferRef,
     dispatch: SingleIdwtDispatch<'_>,
-) {
+) -> Result<(), Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE);
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K decode hybrid reversible53 IDWT");
-    dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets(encoder, dispatch);
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K decode hybrid reversible53 IDWT");
+    dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets(&encoder, dispatch);
     encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -271,7 +275,7 @@ pub(in crate::compute) fn dispatch_reversible53_single_decomposition_buffers_in_
 pub(in crate::compute) fn dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
     command_buffers: DirectIdwtCommandBuffers<'_>,
     dispatch: RepeatedIdwtDispatch<'_>,
-) {
+) -> Result<(), Error> {
     let RepeatedIdwtDispatch {
         runtime,
         sub_bands,
@@ -289,8 +293,8 @@ pub(in crate::compute) fn dispatch_reversible53_repeated_buffers_in_command_buff
         hh_offset,
     } = sub_bands;
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE);
-    let encoder = command_buffers.interleave.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K decode hybrid repeated IDWT interleave");
+    let encoder = new_compute_command_encoder(command_buffers.interleave)?;
+    label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT interleave");
     encoder.set_compute_pipeline_state(&runtime.idwt_interleave_batched);
     encoder.set_buffer(0, Some(ll), ll_offset as u64);
     encoder.set_buffer(1, Some(hl), hl_offset as u64);
@@ -303,14 +307,14 @@ pub(in crate::compute) fn dispatch_reversible53_repeated_buffers_in_command_buff
         (&raw const params).cast(),
     );
     dispatch_3d_pipeline(
-        encoder,
+        &encoder,
         &runtime.idwt_interleave_batched,
         (params.width, params.height, params.batch_count),
     );
     encoder.end_encoding();
 
-    let encoder = command_buffers.horizontal.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K decode hybrid repeated IDWT horizontal");
+    let encoder = new_compute_command_encoder(command_buffers.horizontal)?;
+    label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT horizontal");
     encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_horizontal_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_bytes(
@@ -336,8 +340,8 @@ pub(in crate::compute) fn dispatch_reversible53_repeated_buffers_in_command_buff
     );
     encoder.end_encoding();
 
-    let encoder = command_buffers.vertical.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K decode hybrid repeated IDWT vertical");
+    let encoder = new_compute_command_encoder(command_buffers.vertical)?;
+    label_compute_encoder(&encoder, "J2K decode hybrid repeated IDWT vertical");
     encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_vertical_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_bytes(
@@ -362,6 +366,7 @@ pub(in crate::compute) fn dispatch_reversible53_repeated_buffers_in_command_buff
         },
     );
     encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -402,15 +407,15 @@ pub(crate) fn decode_irreversible97_single_decomposition_idwt(
             hh_height: job.hh.rect.height(),
         };
 
-        let ll = borrow_slice_buffer(&runtime.device, job.ll.coefficients);
-        let hl = borrow_slice_buffer(&runtime.device, job.hl.coefficients);
-        let lh = borrow_slice_buffer(&runtime.device, job.lh.coefficients);
-        let hh = borrow_slice_buffer(&runtime.device, job.hh.coefficients);
-        let decoded = wrap_f32_output_buffer(&runtime.device, output);
-        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kIdwtStatus>());
+        let ll = copied_slice_buffer(&runtime.device, job.ll.coefficients)?;
+        let hl = copied_slice_buffer(&runtime.device, job.hl.coefficients)?;
+        let lh = copied_slice_buffer(&runtime.device, job.lh.coefficients)?;
+        let hh = copied_slice_buffer(&runtime.device, job.hh.coefficients)?;
+        let decoded = copied_slice_buffer(&runtime.device, output)?;
+        let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kIdwtStatus>())?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = new_command_buffer(&runtime.queue)?;
+        let encoder = new_compute_command_encoder(&command_buffer)?;
         encoder.set_compute_pipeline_state(&runtime.idwt_irreversible97_single_decomposition);
         encoder.set_buffer(0, Some(&ll), 0);
         encoder.set_buffer(1, Some(&hl), 0);
@@ -423,14 +428,16 @@ pub(crate) fn decode_irreversible97_single_decomposition_idwt(
             (&raw const params).cast(),
         );
         encoder.set_buffer(6, Some(&status_buffer), 0);
-        dispatch_single_thread(encoder);
+        dispatch_single_thread(&encoder);
         encoder.end_encoding();
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let status = checked_buffer_read::<J2kIdwtStatus>(&status_buffer, "IDWT status")?;
         if status.code != J2K_IDWT_STATUS_OK {
             return Err(decode_idwt_status_error(status));
         }
+        let decoded_host = checked_buffer_slice::<f32>(&decoded, output.len(), "IDWT output")?;
+        output.copy_from_slice(&decoded_host);
         Ok(())
     })
 }
@@ -439,35 +446,35 @@ pub(crate) fn decode_irreversible97_single_decomposition_idwt(
 pub(in crate::compute) fn dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets(
     command_buffer: &CommandBufferRef,
     dispatch: SingleIdwtDispatch<'_>,
-) -> DirectStatusCheck {
+) -> Result<DirectStatusCheck, Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE);
-    let status_buffer = zeroed_shared_buffer(&dispatch.runtime.device, size_of::<J2kIdwtStatus>());
+    let status_buffer = zeroed_shared_buffer(&dispatch.runtime.device, size_of::<J2kIdwtStatus>())?;
 
-    let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K decode hybrid irreversible97 IDWT");
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K decode hybrid irreversible97 IDWT");
     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_status(
-        encoder,
+        &encoder,
         dispatch,
         &status_buffer,
     );
     encoder.end_encoding();
 
-    DirectStatusCheck::Idwt(status_buffer)
+    Ok(DirectStatusCheck::Idwt(status_buffer))
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
     encoder: &ComputeCommandEncoderRef,
     dispatch: SingleIdwtDispatch<'_>,
-) -> DirectStatusCheck {
-    let status_buffer = zeroed_shared_buffer(&dispatch.runtime.device, size_of::<J2kIdwtStatus>());
+) -> Result<DirectStatusCheck, Error> {
+    let status_buffer = zeroed_shared_buffer(&dispatch.runtime.device, size_of::<J2kIdwtStatus>())?;
     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_status(
         encoder,
         dispatch,
         &status_buffer,
     );
 
-    DirectStatusCheck::Idwt(status_buffer)
+    Ok(DirectStatusCheck::Idwt(status_buffer))
 }
 
 #[cfg(target_os = "macos")]

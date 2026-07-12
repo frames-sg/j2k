@@ -4,12 +4,10 @@ use j2k_core::{
     submit_ready_device, BackendRequest, CpuBackedImageDecode, DecodeOutcome, Downscale,
     ImageCodec, ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, ReadySubmission, Rect,
 };
-#[cfg(feature = "cuda-runtime")]
-use j2k_jpeg::adapter::decoder_bytes;
 use j2k_jpeg::{DecodeRequest, Decoder as CpuDecoder, JpegView, Warning as CpuWarning};
 
 #[cfg(feature = "cuda-runtime")]
-use crate::owned_decode::decode_owned_cuda_rgb8;
+use crate::owned_decode::decode_owned_cuda_rgb8_from_decoder;
 use crate::owned_decode::unsupported_owned_cuda_output_format;
 use crate::runtime::{validate_surface_request, wrap_surface};
 use crate::{CudaSession, Error, Surface};
@@ -68,7 +66,7 @@ impl<'a> Decoder<'a> {
     #[cfg(feature = "cuda-runtime")]
     fn decode_cuda_rgb8(&mut self, session: &mut CudaSession) -> Result<Surface, Error> {
         let dimensions = self.inner.info().dimensions;
-        let surface = decode_owned_cuda_rgb8(decoder_bytes(&self.inner), dimensions, session)?;
+        let surface = decode_owned_cuda_rgb8_from_decoder(&self.inner, session)?;
         j2k_profile::emit_gpu_route_surface_profile(
             ("jpeg", "cuda"),
             ("full", "Cuda", "Rgb8", "owned_cuda"),
@@ -84,13 +82,21 @@ impl<'a> Decoder<'a> {
         reason = "feature-disabled shim preserves the runtime-enabled method signature"
     )]
     fn decode_cuda_rgb8(&mut self, _session: &mut CudaSession) -> Result<Surface, Error> {
-        j2k_profile::emit_gpu_route_decision_profile(
-            ("jpeg", "cuda"),
-            ("full", "Cuda", "Rgb8", "owned_cuda_unavailable"),
-            [j2k_profile::ProfileField::label(
-                "reason",
-                "cuda_runtime_feature_disabled",
-            )],
+        crate::profile::emit_optional_gpu_route_fields(
+            "jpeg_cuda_unavailable_fields",
+            || {
+                Ok([j2k_profile::ProfileField::label(
+                    "reason",
+                    "cuda_runtime_feature_disabled",
+                )?])
+            },
+            |fields| {
+                j2k_profile::emit_gpu_route_decision_profile(
+                    ("jpeg", "cuda"),
+                    ("full", "Cuda", "Rgb8", "owned_cuda_unavailable"),
+                    fields,
+                );
+            },
         );
         Err(Error::CudaUnavailable)
     }

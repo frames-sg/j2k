@@ -10,6 +10,9 @@ use j2k_core::{
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaDeviceBuffer;
 
+use crate::allocation::try_vec_filled;
+#[cfg(feature = "cuda-runtime")]
+use crate::allocation::try_vec_with_capacity;
 #[cfg(feature = "cuda-runtime")]
 use crate::runtime::cuda_error;
 use crate::Error;
@@ -70,10 +73,18 @@ pub struct CudaSurface<'a> {
 
 impl CudaSurface<'_> {
     /// Raw CUDA device pointer value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internally validated surface range no longer fits in the
+    /// CUDA `u64` address space, which indicates a construction invariant bug.
     pub fn device_ptr(&self) -> u64 {
         #[cfg(feature = "cuda-runtime")]
         {
-            self.buffer.device_ptr().saturating_add(self.offset as u64)
+            self.buffer
+                .device_ptr()
+                .checked_add(self.offset as u64)
+                .expect("validated CUDA surface range pointer must fit in u64")
         }
         #[cfg(not(feature = "cuda-runtime"))]
         {
@@ -145,7 +156,7 @@ impl Surface {
                 {
                     return buffer.copy_to_host(&mut out[..len]).map_err(cuda_error);
                 }
-                let mut tight = vec![0u8; byte_len];
+                let mut tight = try_vec_filled(byte_len, 0u8, "j2k CUDA surface download staging")?;
                 buffer.copy_to_host(&mut tight).map_err(cuda_error)?;
                 copy_tight_pixels_to_strided_output(&tight, self.dimensions, self.fmt, out, stride)
                     .map_err(Error::from)
@@ -165,7 +176,7 @@ impl Surface {
                         .copy_range_to_host(*offset, &mut out[..len])
                         .map_err(cuda_error);
                 }
-                let mut tight = vec![0u8; byte_len];
+                let mut tight = try_vec_filled(byte_len, 0u8, "j2k CUDA range download staging")?;
                 buffer
                     .copy_range_to_host(*offset, &mut tight)
                     .map_err(cuda_error)?;
@@ -211,9 +222,9 @@ impl Surface {
 
         #[cfg(feature = "cuda-runtime")]
         if let Some((buffer, offset)) = contiguous_cuda_batch_range(surfaces) {
-            let mut out = Vec::with_capacity(required);
+            let mut out = try_vec_with_capacity(required, "j2k CUDA contiguous batch download")?;
             buffer
-                .copy_range_to_host_uninit(offset, out.spare_capacity_mut())
+                .copy_range_to_host_uninit(offset, &mut out.spare_capacity_mut()[..required])
                 .map_err(cuda_error)?;
             // SAFETY: the CUDA copy above initialized exactly `required`
             // bytes in this Vec's spare capacity and returned success.
@@ -223,7 +234,7 @@ impl Surface {
             return Ok(out);
         }
 
-        let mut out = vec![0u8; required];
+        let mut out = try_vec_filled(required, 0u8, "j2k CUDA batch download")?;
         Self::download_batch_tight_into(surfaces, &mut out)?;
         Ok(out)
     }

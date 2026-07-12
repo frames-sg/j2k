@@ -1,4 +1,5 @@
 use crate::{
+    allocation::HostPhaseBudget,
     bytes::{
         htj2k_packetization_blocks_as_bytes, htj2k_packetization_packets_as_bytes,
         htj2k_packetization_statuses_as_bytes, htj2k_packetization_statuses_as_bytes_mut,
@@ -156,6 +157,11 @@ impl CudaHtj2kPacketizedTile {
         &self.data
     }
 
+    /// Consume the packetized tile and return its payload bytes.
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
+    }
+
     /// Per-packet kernel status rows downloaded after dispatch.
     pub fn statuses(&self) -> &[CudaHtj2kPacketizationStatus] {
         &self.statuses
@@ -200,9 +206,45 @@ impl CudaContext {
         subband_tag_states: &[CudaHtj2kPacketizationSubbandTagState],
         tag_nodes: &[CudaHtj2kPacketizationTagNodeState],
     ) -> Result<CudaHtj2kPacketizedTile, CudaError> {
+        self.packetize_htj2k_cleanup_packets_with_tag_state_and_live_host_bytes(
+            payload,
+            packets,
+            subbands,
+            blocks,
+            subband_tag_states,
+            tag_nodes,
+            0,
+        )
+    }
+
+    /// Packetize HTJ2K blocks while accounting caller-live host metadata.
+    #[doc(hidden)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the compatibility boundary mirrors the six existing packetization input slices plus the caller-live byte seed"
+    )]
+    pub fn packetize_htj2k_cleanup_packets_with_tag_state_and_live_host_bytes(
+        &self,
+        payload: &[u8],
+        packets: &[CudaHtj2kPacketizationPacket],
+        subbands: &[CudaHtj2kPacketizationSubband],
+        blocks: &[CudaHtj2kPacketizationBlock],
+        subband_tag_states: &[CudaHtj2kPacketizationSubbandTagState],
+        tag_nodes: &[CudaHtj2kPacketizationTagNodeState],
+        live_host_bytes: usize,
+    ) -> Result<CudaHtj2kPacketizedTile, CudaError> {
         self.inner.set_current()?;
-        let kernel_packets =
-            htj2k_packetization_kernel_packets(packets, subbands, blocks, payload.len())?;
+        let mut launch_budget = HostPhaseBudget::with_live_bytes(
+            "CUDA HTJ2K packetization launch metadata",
+            live_host_bytes,
+        )?;
+        let kernel_packets = htj2k_packetization_kernel_packets(
+            packets,
+            subbands,
+            blocks,
+            payload.len(),
+            &mut launch_budget,
+        )?;
         validate_htj2k_packetization_tag_state(subbands, subband_tag_states, tag_nodes)?;
         let total_output = kernel_packets.iter().try_fold(0usize, |acc, packet| {
             let end = usize::try_from(packet.output_offset)
@@ -229,15 +271,16 @@ impl CudaContext {
             htj2k_packetization_subband_tag_states_as_bytes(subband_tag_states),
         )?;
         let tag_node_buffer = self.upload(htj2k_packetization_tag_nodes_as_bytes(tag_nodes))?;
-        let initial_statuses = vec![
+        let initial_statuses = launch_budget.try_vec_filled(
+            packets.len(),
             CudaHtj2kPacketizationStatus {
                 code: HTJ2K_STATUS_UNSUPPORTED,
                 ..CudaHtj2kPacketizationStatus::default()
-            };
-            packets.len()
-        ];
+            },
+        )?;
         let status_buffer =
             self.upload(htj2k_packetization_statuses_as_bytes(&initial_statuses))?;
+        drop(initial_statuses);
 
         let ((), packetize_us) =
             self.time_default_stream_named_us("j2k.htj2k.encode.packetize", || {
@@ -257,45 +300,12 @@ impl CudaContext {
                 })
             })?;
         let stage_timings = CudaHtj2kPacketizationStageTimings { packetize_us };
-
-        let mut statuses = vec![CudaHtj2kPacketizationStatus::default(); packets.len()];
-        status_buffer.copy_to_host(htj2k_packetization_statuses_as_bytes_mut(&mut statuses))?;
-        if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
-            return Err(CudaError::KernelStatus {
-                kernel: "j2k_htj2k_packetize_cleanup",
-                code: status.code,
-                detail: status.detail,
-            });
-        }
-
-        let mut data = Vec::new();
-        for (packet, status) in kernel_packets.iter().zip(&statuses) {
-            if status.output_len > packet.output_capacity {
-                return Err(CudaError::LengthTooLarge {
-                    len: status.output_len as usize,
-                });
-            }
-            let start = packet.output_offset as usize;
-            let end = start
-                .checked_add(status.output_len as usize)
-                .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-            if end > output_buffer.byte_len() {
-                return Err(CudaError::LengthTooLarge { len: end });
-            }
-            let previous_len = data.len();
-            data.resize(previous_len + status.output_len as usize, 0);
-            output_buffer.copy_range_to_host(start, &mut data[previous_len..])?;
-        }
-
-        Ok(CudaHtj2kPacketizedTile {
-            data,
-            statuses,
-            execution: CudaExecutionStats {
-                kernel_dispatches: 1,
-                copy_kernel_dispatches: 0,
-                decode_kernel_dispatches: 0,
-                hardware_decode: false,
-            },
+        complete_htj2k_packetization(CompleteHtj2kPacketization {
+            kernel_packets,
+            output_buffer: &output_buffer,
+            status_buffer: &status_buffer,
+            packet_count: packets.len(),
+            live_host_bytes,
             stage_timings,
         })
     }
@@ -356,14 +366,104 @@ impl CudaContext {
     }
 }
 
+struct CompleteHtj2kPacketization<'a> {
+    kernel_packets: Vec<CudaHtj2kPacketizationKernelPacket>,
+    output_buffer: &'a CudaDeviceBuffer,
+    status_buffer: &'a CudaDeviceBuffer,
+    packet_count: usize,
+    live_host_bytes: usize,
+    stage_timings: CudaHtj2kPacketizationStageTimings,
+}
+
+fn complete_htj2k_packetization(
+    request: CompleteHtj2kPacketization<'_>,
+) -> Result<CudaHtj2kPacketizedTile, CudaError> {
+    let CompleteHtj2kPacketization {
+        kernel_packets,
+        output_buffer,
+        status_buffer,
+        packet_count,
+        live_host_bytes,
+        stage_timings,
+    } = request;
+    let mut completion_budget =
+        HostPhaseBudget::with_live_bytes("CUDA HTJ2K packetization host outputs", live_host_bytes)?;
+    completion_budget.account_vec(&kernel_packets)?;
+    let mut statuses =
+        completion_budget.try_vec_filled(packet_count, CudaHtj2kPacketizationStatus::default())?;
+    status_buffer.copy_to_host(htj2k_packetization_statuses_as_bytes_mut(&mut statuses))?;
+    if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
+        return Err(CudaError::KernelStatus {
+            kernel: "j2k_htj2k_packetize_cleanup",
+            code: status.code,
+            detail: status.detail,
+        });
+    }
+
+    let data_len =
+        kernel_packets
+            .iter()
+            .zip(&statuses)
+            .try_fold(0usize, |data_len, (packet, status)| {
+                validate_htj2k_packet_output(packet, *status, output_buffer.byte_len())?;
+                data_len
+                    .checked_add(status.output_len as usize)
+                    .ok_or(CudaError::LengthTooLarge { len: usize::MAX })
+            })?;
+    let mut data = completion_budget.try_vec_filled(data_len, 0u8)?;
+    let mut data_offset = 0usize;
+    for (packet, status) in kernel_packets.iter().zip(&statuses) {
+        let output_len = status.output_len as usize;
+        let next_data_offset = data_offset
+            .checked_add(output_len)
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        let start = packet.output_offset as usize;
+        output_buffer.copy_range_to_host(start, &mut data[data_offset..next_data_offset])?;
+        data_offset = next_data_offset;
+    }
+
+    Ok(CudaHtj2kPacketizedTile {
+        data,
+        statuses,
+        execution: CudaExecutionStats {
+            kernel_dispatches: 1,
+            copy_kernel_dispatches: 0,
+            decode_kernel_dispatches: 0,
+            hardware_decode: false,
+        },
+        stage_timings,
+    })
+}
+
+fn validate_htj2k_packet_output(
+    packet: &CudaHtj2kPacketizationKernelPacket,
+    status: CudaHtj2kPacketizationStatus,
+    output_buffer_len: usize,
+) -> Result<(), CudaError> {
+    if status.output_len > packet.output_capacity {
+        return Err(CudaError::LengthTooLarge {
+            len: status.output_len as usize,
+        });
+    }
+    let start = packet.output_offset as usize;
+    let end = start
+        .checked_add(status.output_len as usize)
+        .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+    if end > output_buffer_len {
+        return Err(CudaError::LengthTooLarge { len: end });
+    }
+    Ok(())
+}
+
 pub(crate) fn htj2k_packetization_kernel_packets(
     packets: &[CudaHtj2kPacketizationPacket],
     subbands: &[CudaHtj2kPacketizationSubband],
     blocks: &[CudaHtj2kPacketizationBlock],
     payload_len: usize,
+    host_budget: &mut HostPhaseBudget,
 ) -> Result<Vec<CudaHtj2kPacketizationKernelPacket>, CudaError> {
     let mut output_offset = 0usize;
-    let mut kernel_packets = Vec::with_capacity(packets.len());
+    let mut kernel_packets = host_budget.try_vec_with_capacity(packets.len())?;
     for packet in packets {
         let block_start = packet.block_start as usize;
         let block_count = packet.block_count as usize;

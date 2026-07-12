@@ -40,7 +40,7 @@ fn poc_marker_preserves_wide_component_bounds() {
     marker.extend_from_slice(&512_u16.to_be_bytes()); // CEpoc
     marker.push(0); // LRCP
 
-    let changes = poc_marker(&mut BitReader::new(&marker), 600, 1).expect("POC parses");
+    let changes = poc_marker(&mut BitReader::new(&marker), 600, 1, usize::MAX).expect("POC parses");
 
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].component_start, 300);
@@ -62,7 +62,7 @@ fn poc_marker_accepts_wide_all_components_sentinel() {
     marker.extend_from_slice(&u16::MAX.to_be_bytes()); // CEpoc sentinel
     marker.push(4); // CPRL
 
-    let changes = poc_marker(&mut BitReader::new(&marker), 600, 1).expect("POC parses");
+    let changes = poc_marker(&mut BitReader::new(&marker), 600, 1, usize::MAX).expect("POC parses");
 
     assert_eq!(changes[0].component_end, u16::MAX);
     assert!(matches!(
@@ -102,7 +102,7 @@ fn truncated_siz_keeps_parse_error_and_cursor_boundary() {
     let mut reader = BitReader::new(&data);
 
     assert!(matches!(
-        size_marker(&mut reader),
+        size_marker(&mut reader, usize::MAX),
         Err(DecodeError::Marker(MarkerError::ParseFailure("SIZ")))
     ));
     assert_eq!(reader.offset(), 4);
@@ -114,7 +114,7 @@ fn invalid_cod_layer_count_stops_before_mct_byte() {
     let data = [0, 12, 0, 0, 0, 0, 0xA5];
     let mut reader = BitReader::new(&data);
 
-    assert!(cod_marker(&mut reader).is_none());
+    assert!(cod_marker(&mut reader).is_err());
     assert_eq!(reader.offset(), 6);
     assert_eq!(reader.tail(), Some(&data[6..]));
 }
@@ -124,7 +124,7 @@ fn undersized_qcd_stops_after_style_byte() {
     let data = [0, 2, 0, 0xA5];
     let mut reader = BitReader::new(&data);
 
-    assert!(qcd_marker(&mut reader).is_none());
+    assert!(qcd_marker(&mut reader).is_err());
     assert_eq!(reader.offset(), 3);
     assert_eq!(reader.tail(), Some(&data[3..]));
 }
@@ -134,7 +134,7 @@ fn invalid_poc_geometry_consumes_the_complete_change() {
     let data = [0, 9, 1, 0, 0, 1, 1, 2, 0, 0xA5];
     let mut reader = BitReader::new(&data);
 
-    assert!(poc_marker(&mut reader, 3, 1).is_none());
+    assert!(poc_marker(&mut reader, 3, 1, usize::MAX).is_err());
     assert_eq!(reader.offset(), 9);
     assert_eq!(reader.tail(), Some(&data[9..]));
 }
@@ -151,31 +151,79 @@ fn invalid_rgn_length_only_consumes_the_length_field() {
 
 #[test]
 fn incomplete_packet_length_varint_is_rejected() {
-    assert_eq!(decode_packet_lengths(&[0x81]), None);
-    assert_eq!(decode_packet_lengths(&[0x81, 0x01]), Some(vec![129]));
+    assert_eq!(
+        decode_packet_lengths(&[0x81]),
+        Err(crate::DecodeError::Marker(MarkerError::ParseFailure(
+            "packet lengths"
+        )))
+    );
+    assert_eq!(decode_packet_lengths(&[0x81, 0x01]), Ok(vec![129]));
 }
 
 #[test]
 fn public_marker_function_signatures_stay_stable() {
-    let _: for<'a> fn(&mut BitReader<'a>, &DecodeSettings) -> Result<Header<'a>> = read_header;
-    let _: fn(&mut BitReader<'_>) -> Option<CodingStyleDefault> = cod_marker;
-    let _: fn(&mut BitReader<'_>, u16) -> Option<(u16, CodingStyleComponent)> = coc_marker;
-    let _: fn(&mut BitReader<'_>) -> Option<QuantizationInfo> = qcd_marker;
-    let _: fn(&mut BitReader<'_>, u16) -> Option<(u16, QuantizationInfo)> = qcc_marker;
-    let _: fn(&mut BitReader<'_>, u16, u8) -> Option<Vec<ProgressionChange>> = poc_marker;
-    let _: fn(&mut BitReader<'_>) -> Option<PacketLengthMarker> = plt_marker;
+    let _: for<'a> fn(&mut BitReader<'a>, &DecodeSettings, usize) -> Result<Header<'a>> =
+        read_header;
+    let _: fn(&mut BitReader<'_>) -> Result<CodingStyleDefault> = cod_marker;
+    let _: fn(&mut BitReader<'_>, u16) -> Result<(u16, CodingStyleComponent)> = coc_marker;
+    let _: fn(&mut BitReader<'_>) -> Result<QuantizationInfo> = qcd_marker;
+    let _: fn(&mut BitReader<'_>, u16) -> Result<(u16, QuantizationInfo)> = qcc_marker;
+    let _: fn(&mut BitReader<'_>, u16, u8, usize) -> Result<Vec<ProgressionChange>> = poc_marker;
+    let _: fn(&mut BitReader<'_>, usize) -> Result<PacketLengthMarker> = plt_marker;
     let _: fn(&mut BitReader<'_>, u16) -> Option<RgnMarkerData> = rgn_marker;
     let _: fn(&mut BitReader<'_>) -> Option<()> = skip_marker_segment;
-    let _: fn(&[u8]) -> Option<Vec<u32>> = decode_packet_lengths;
+    let _: fn(&[u8]) -> Result<Vec<u32>> = decode_packet_lengths;
+}
+
+#[test]
+fn marker_owned_vectors_require_fallible_reservation() {
+    const OWNERS: &[(&str, &str)] = &[
+        ("coding", include_str!("coding.rs")),
+        ("progression", include_str!("progression.rs")),
+        ("quantization", include_str!("quantization.rs")),
+        ("size", include_str!("size.rs")),
+    ];
+
+    for &(name, source) in OWNERS {
+        assert!(
+            source.contains("try_reserve_decode_elements"),
+            "{name} must reserve untrusted marker-owned vectors fallibly"
+        );
+        assert!(
+            !source.contains("Vec::with_capacity"),
+            "{name} must not allocate marker-owned vectors infallibly"
+        );
+    }
 }
 
 #[test]
 fn codestream_module_boundaries_stay_focused() {
     const MODULES: &[(&str, &str, usize)] = &[
         ("coordinator", include_str!("../codestream.rs"), 50),
+        ("allocation", include_str!("allocation.rs"), 100),
         ("auxiliary", include_str!("auxiliary.rs"), 190),
+        (
+            "packet-length allocation",
+            include_str!("auxiliary/packet_lengths.rs"),
+            190,
+        ),
         ("coding", include_str!("coding.rs"), 150),
         ("header", include_str!("header.rs"), 280),
+        (
+            "header allocation",
+            include_str!("header/allocation.rs"),
+            280,
+        ),
+        (
+            "header allocation tests",
+            include_str!("header/allocation/tests.rs"),
+            120,
+        ),
+        (
+            "header components",
+            include_str!("header/components.rs"),
+            120,
+        ),
         ("markers", include_str!("markers.rs"), 120),
         ("model", include_str!("model.rs"), 460),
         ("progression", include_str!("progression.rs"), 90),

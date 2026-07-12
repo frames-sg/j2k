@@ -18,11 +18,16 @@ mod device;
 mod inner;
 mod kernel_cache;
 mod kernel_dispatch;
+mod lifecycle;
+mod operations;
 mod pinned_host;
+mod resource_creation;
 #[cfg(test)]
 mod test_kernels;
 
 pub use self::compact::{CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kCompactEncodedCodeBlocks};
+#[cfg(test)]
+pub(crate) use self::pinned_host::validate_non_null_pinned_host_allocation;
 #[cfg(test)]
 pub(crate) use self::test_kernels::{CudaKernelModule, CudaKernelName};
 pub(crate) use self::{
@@ -30,7 +35,10 @@ pub(crate) use self::{
     compact::HTJ2K_UVLC_ENCODE_TABLE_BYTES,
     inner::ContextInner,
     kernel_cache::{CompiledKernel, CompiledKernelKey},
+    lifecycle::ContextResourceLifecycle,
+    operations::ensure_context_ownership,
     pinned_host::PinnedUploadStaging,
+    resource_creation::{validate_device_allocation, validate_resource_handle},
 };
 
 /// CUDA driver context shared by J2K CUDA adapter crates.
@@ -40,6 +48,13 @@ pub struct CudaContext {
 }
 
 impl CudaContext {
+    /// Returns whether both handles own the same CUDA driver context.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_same_context(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Dequantize HTJ2K cleanup outputs using the metadata buffer already held
     /// live by a queued cleanup launch.
     #[doc(hidden)]
@@ -47,6 +62,11 @@ impl CudaContext {
         &self,
         cleanup: &CudaQueuedHtj2kCleanup,
     ) -> Result<CudaExecutionStats, CudaError> {
+        if !self.is_same_context(&cleanup.context) {
+            return Err(CudaError::InvalidArgument {
+                message: "queued HTJ2K cleanup belongs to a different CUDA context".to_string(),
+            });
+        }
         self.inner.set_current()?;
         if cleanup.status_count == 0 {
             return Ok(CudaExecutionStats::default());
@@ -81,6 +101,7 @@ impl CudaContext {
         let coefficients = self.allocate(output_bytes)?;
         if htj2k_decode_needs_zero_fill(jobs, output_words)? {
             self.memset_d32(&coefficients, 0, output_words)?;
+            self.synchronize()?;
         }
         Ok(CudaHtj2kDecodeOutput {
             coefficients,
@@ -98,77 +119,4 @@ impl std::fmt::Debug for CudaContext {
 }
 
 #[cfg(test)]
-mod structure_tests {
-    const CONTEXT: &str = include_str!("context.rs");
-    const MODULES: &[(&str, &str, usize)] = &[
-        (
-            "context/band_transfer.rs",
-            include_str!("context/band_transfer.rs"),
-            75,
-        ),
-        (
-            "context/compact.rs",
-            include_str!("context/compact.rs"),
-            150,
-        ),
-        ("context/device.rs", include_str!("context/device.rs"), 80),
-        ("context/inner.rs", include_str!("context/inner.rs"), 100),
-        (
-            "context/kernel_cache.rs",
-            include_str!("context/kernel_cache.rs"),
-            250,
-        ),
-        (
-            "context/kernel_dispatch.rs",
-            include_str!("context/kernel_dispatch.rs"),
-            425,
-        ),
-        (
-            "context/pinned_host.rs",
-            include_str!("context/pinned_host.rs"),
-            75,
-        ),
-        (
-            "context/test_kernels.rs",
-            include_str!("context/test_kernels.rs"),
-            180,
-        ),
-    ];
-
-    #[test]
-    fn cuda_context_uses_focused_real_modules() {
-        let include_macro = ["include", "!("].concat();
-        let wildcard_import = ["use super::", "*"].concat();
-        assert!(
-            CONTEXT.lines().count() < 200,
-            "context.rs must remain a focused module shell"
-        );
-        for module in [
-            "mod band_transfer;",
-            "mod compact;",
-            "mod device;",
-            "mod inner;",
-            "mod kernel_cache;",
-            "mod kernel_dispatch;",
-            "mod pinned_host;",
-        ] {
-            assert!(CONTEXT.contains(module), "context.rs must contain {module}");
-        }
-        assert!(!CONTEXT.contains(&include_macro));
-
-        for (path, source, max_lines) in MODULES {
-            assert!(
-                source.lines().count() < *max_lines,
-                "{path} must stay below its focused-module line-count ratchet"
-            );
-            assert!(
-                !source.contains(&include_macro),
-                "{path} must be a real module"
-            );
-            assert!(
-                !source.contains(&wildcard_import),
-                "{path} must use explicit imports"
-            );
-        }
-    }
-}
+mod structure_tests;

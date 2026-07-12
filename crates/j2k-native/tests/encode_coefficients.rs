@@ -1,7 +1,7 @@
 use j2k_native::{
     encode, encode_component_planes_53, encode_precomputed_htj2k_53, encode_precomputed_htj2k_97,
-    encode_precomputed_j2k_53, DecodeSettings, DecoderContext, EncodeComponentPlane, EncodeOptions,
-    Image, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level,
+    encode_precomputed_j2k_53, DecodeSettings, DecoderContext, EncodeComponentPlane, EncodeError,
+    EncodeOptions, Image, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level,
     J2kForwardDwt97Output, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
     PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
 };
@@ -19,7 +19,12 @@ fn native_encode_rejects_dimension_overflow_before_length_check() {
     )
     .expect_err("dimension overflow should be rejected");
 
-    assert_eq!(err, "image dimensions overflow");
+    assert_eq!(
+        err,
+        EncodeError::ArithmeticOverflow {
+            what: "raw encode byte length"
+        }
+    );
 }
 
 #[test]
@@ -159,12 +164,22 @@ fn precomputed_encode_writes_component_sampling_in_siz() {
     let components = image
         .decode_components_with_context(&mut context)
         .expect("decode sampled component planes");
-    let sampling = components
+    let borrowed_sampling = components
         .planes()
         .iter()
         .map(j2k_native::ComponentPlane::sampling)
         .collect::<Vec<_>>();
-    assert_eq!(sampling, [(1, 1), (2, 2), (2, 2)]);
+    assert_eq!(borrowed_sampling, [(1, 1), (2, 2), (2, 2)]);
+
+    let owned_components = image
+        .decode_native_components()
+        .expect("decode owned native sampled component planes");
+    let owned_sampling = owned_components
+        .planes()
+        .iter()
+        .map(j2k_native::NativeComponentPlane::sampling)
+        .collect::<Vec<_>>();
+    assert_eq!(owned_sampling, borrowed_sampling);
 }
 
 #[test]
@@ -281,7 +296,9 @@ fn raw_pixel_encode_rejects_component_sampling_without_component_sized_dwt() {
 
     assert_eq!(
         err,
-        "component sampling requires component-sized DWT geometry"
+        EncodeError::InternalInvariant {
+            what: "component sampling requires component-sized DWT geometry"
+        }
     );
 }
 
@@ -302,7 +319,12 @@ fn precomputed_encode_rejects_component_sampling_geometry_mismatch() {
     let err = encode_precomputed_htj2k_53(&image, &precomputed_options())
         .expect_err("component DWT geometry must match SIZ sampling");
 
-    assert_eq!(err, "precomputed DWT component dimensions mismatch");
+    assert_eq!(
+        err,
+        EncodeError::InvalidInput {
+            what: "precomputed DWT component dimensions mismatch",
+        }
+    );
 }
 
 #[test]
@@ -324,7 +346,12 @@ fn precomputed_encode_rejects_recursive_level_geometry_mismatch() {
     let err = encode_precomputed_htj2k_53(&image, &precomputed_options())
         .expect_err("level geometry must match recursive 5/3 expectations");
 
-    assert_eq!(err, "precomputed DWT recursive geometry mismatch");
+    assert_eq!(
+        err,
+        EncodeError::InvalidInput {
+            what: "precomputed DWT recursive geometry mismatch",
+        }
+    );
 }
 
 #[test]
@@ -397,7 +424,12 @@ fn precomputed_97_encode_rejects_component_sampling_geometry_mismatch() {
     let err = encode_precomputed_htj2k_97(&image, &precomputed_lossy_options())
         .expect_err("component DWT geometry must match SIZ sampling");
 
-    assert_eq!(err, "precomputed DWT component dimensions mismatch");
+    assert_eq!(
+        err,
+        EncodeError::InvalidInput {
+            what: "precomputed DWT component dimensions mismatch",
+        }
+    );
 }
 
 fn precomputed_options() -> EncodeOptions {

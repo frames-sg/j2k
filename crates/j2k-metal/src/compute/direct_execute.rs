@@ -35,21 +35,26 @@ fn prepare_direct_color_plan_with_tier1_mode(
     plan: &J2kDirectColorPlan,
     tier1_prepare_mode: DirectTier1Mode,
 ) -> Result<PreparedDirectColorPlan, Error> {
-    let component_plans = plan
-        .component_plans
-        .iter()
-        .map(|component| match tier1_prepare_mode {
-            DirectTier1Mode::Metal => prepare_direct_grayscale_plan(component),
-            DirectTier1Mode::CpuUpload => prepare_direct_grayscale_plan_for_cpu_upload(component),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if component_plans.len() != 3 {
+    if plan.component_plans.len() != 3 {
         return Err(Error::MetalKernel {
             message: format!(
                 "J2K MetalDirect color plan expected 3 component plans, got {}",
-                component_plans.len()
+                plan.component_plans.len()
             ),
         });
+    }
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K MetalDirect prepared color component plans",
+    );
+    let mut component_plans = budget.try_vec(
+        plan.component_plans.len(),
+        "J2K MetalDirect prepared color component plans",
+    )?;
+    for component in &plan.component_plans {
+        component_plans.push(match tier1_prepare_mode {
+            DirectTier1Mode::Metal => prepare_direct_grayscale_plan(component),
+            DirectTier1Mode::CpuUpload => prepare_direct_grayscale_plan_for_cpu_upload(component),
+        }?);
     }
     Ok(PreparedDirectColorPlan {
         dimensions: plan.dimensions,

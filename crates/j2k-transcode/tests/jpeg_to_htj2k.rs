@@ -2,7 +2,7 @@
 
 use j2k::{
     EncodedHtJ2kCodeBlock, IrreversibleQuantizationSubbandScales, J2kEncodeStageAccelerator,
-    J2kHtCodeBlockEncodeJob,
+    J2kEncodeStageResult, J2kHtCodeBlockEncodeJob,
 };
 use j2k_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
@@ -1238,7 +1238,7 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
             job.width,
             job.height,
         )
-        .map_err(|_| "test DCT 5/3 grid failed")?;
+        .map_err(|_| TranscodeStageError::Unsupported("test DCT 5/3 grid failed"))?;
         Ok(Some(dwt))
     }
 
@@ -1254,7 +1254,7 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
             job.width,
             job.height,
         )
-        .map_err(|_| "test DCT 9/7 grid failed")?;
+        .map_err(|_| TranscodeStageError::Unsupported("test DCT 9/7 grid failed"))?;
         Ok(Some(dwt))
     }
 
@@ -1274,7 +1274,9 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
                     job.width,
                     job.height,
                 )
-                .map_err(|_| "test batched DCT 9/7 grid failed")?,
+                .map_err(|_| {
+                    TranscodeStageError::Unsupported("test batched DCT 9/7 grid failed")
+                })?,
             );
         }
         Ok(Some(output))
@@ -1312,7 +1314,7 @@ impl J2kEncodeStageAccelerator for CountingHtEncodeAccelerator {
     fn encode_ht_code_blocks(
         &mut self,
         jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-    ) -> Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
         self.batches += 1;
         self.jobs += jobs.len();
         Ok(None)
@@ -1321,7 +1323,7 @@ impl J2kEncodeStageAccelerator for CountingHtEncodeAccelerator {
     fn encode_ht_code_block(
         &mut self,
         _job: J2kHtCodeBlockEncodeJob<'_>,
-    ) -> Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
         self.single_blocks += 1;
         Ok(None)
     }

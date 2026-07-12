@@ -4,6 +4,8 @@ use j2k_core::PixelFormat;
 use j2k_jpeg::Decoder as CpuDecoder;
 
 use crate::viewport::ViewportTile;
+#[cfg(test)]
+use crate::viewport::ViewportWorkload;
 use crate::{Error, Surface};
 
 use super::viewport_cache::{cached_plane_stage, PlaneStage, ViewportPlaneWriter};
@@ -17,9 +19,18 @@ pub(crate) fn compose_rgb_viewport_from_regions(
     scale: j2k_core::Downscale,
     viewport_dims: (u32, u32),
     tiles: &[ViewportTile],
+    external_live_bytes: usize,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
-        let stage = populate_viewport_stage(runtime, decoder, pool, scale, viewport_dims, tiles)?;
+        let stage = populate_viewport_stage(
+            runtime,
+            decoder,
+            pool,
+            scale,
+            viewport_dims,
+            tiles,
+            external_live_bytes,
+        )?;
         stage.finish_with_runtime(runtime, PixelFormat::Rgb8)
     })
 }
@@ -28,14 +39,21 @@ pub(crate) fn compose_rgb_viewport_from_regions(
 pub(crate) fn compose_rgb_viewport_from_regions_into_output_with_session(
     decoder: &CpuDecoder<'_>,
     pool: &mut j2k_jpeg::ScratchPool,
-    scale: j2k_core::Downscale,
-    viewport_dims: (u32, u32),
-    tiles: &[ViewportTile],
+    workload: &ViewportWorkload,
     output: &crate::MetalBatchOutputBuffer,
     session: &crate::MetalBackendSession,
+    external_live_bytes: usize,
 ) -> Result<Surface, Error> {
     with_runtime_for_session(session, |runtime| {
-        let stage = populate_viewport_stage(runtime, decoder, pool, scale, viewport_dims, tiles)?;
+        let stage = populate_viewport_stage(
+            runtime,
+            decoder,
+            pool,
+            workload.scale,
+            workload.viewport_dims,
+            &workload.tiles,
+            external_live_bytes,
+        )?;
         stage.finish_rgb8_into_output_with_runtime(runtime, output)
     })
 }
@@ -44,15 +62,22 @@ pub(crate) fn compose_rgb_viewport_from_regions_into_output_with_session(
 pub(crate) fn compose_rgb_viewport_from_regions_into_textures_with_session(
     decoder: &CpuDecoder<'_>,
     pool: &mut j2k_jpeg::ScratchPool,
-    scale: j2k_core::Downscale,
-    viewport_dims: (u32, u32),
-    tiles: &[ViewportTile],
+    workload: &ViewportWorkload,
     output: &crate::MetalBatchTextureOutput,
     session: &crate::MetalBackendSession,
+    external_live_bytes: usize,
 ) -> Result<crate::MetalTextureTile, Error> {
     let _texture_output_access = output.lock_for_safe_access()?;
     with_runtime_for_session(session, |runtime| {
-        let stage = populate_viewport_stage(runtime, decoder, pool, scale, viewport_dims, tiles)?;
+        let stage = populate_viewport_stage(
+            runtime,
+            decoder,
+            pool,
+            workload.scale,
+            workload.viewport_dims,
+            &workload.tiles,
+            external_live_bytes,
+        )?;
         stage.finish_rgba8_into_texture_output_with_runtime(runtime, output)
     })
 }
@@ -64,8 +89,15 @@ fn populate_viewport_stage(
     scale: j2k_core::Downscale,
     viewport_dims: (u32, u32),
     tiles: &[ViewportTile],
+    external_live_bytes: usize,
 ) -> Result<PlaneStage, Error> {
-    let mut stage = cached_plane_stage(runtime, decoder.info().color_space, viewport_dims)?;
+    crate::viewport::validate_viewport_tile_count(tiles, external_live_bytes)?;
+    let mut stage = cached_plane_stage(
+        runtime,
+        decoder.info().color_space,
+        viewport_dims,
+        external_live_bytes,
+    )?;
     for tile in tiles {
         validate_viewport_tile_shape(tile, scale)?;
         let mut writer = ViewportPlaneWriter {

@@ -98,8 +98,12 @@ fn malformed_payloads_are_not_truncated_for_codec_error_classifier() {
         ZstdCodec::decompress_into(&mut zstd_pool, &[0, 1, 2, 3], &mut out)
             .expect_err("malformed zstd must fail"),
     ] {
-        assert!(matches!(err, TileCodecError::Malformed { .. }), "{err:?}");
+        assert!(matches!(&err, TileCodecError::Malformed { .. }), "{err:?}");
         assert!(!CodecError::is_truncated(&err), "{err:?}");
+        let source = std::error::Error::source(&err)
+            .and_then(|source| source.downcast_ref::<std::io::Error>())
+            .expect("malformed backend error must retain its I/O source");
+        assert_ne!(source.kind(), std::io::ErrorKind::UnexpectedEof);
     }
 }
 

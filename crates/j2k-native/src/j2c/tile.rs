@@ -1,18 +1,22 @@
 //! Creating tiles and parsing their constituent tile parts.
 
-use alloc::vec;
 use alloc::vec::Vec;
-use core::mem::size_of;
 
 use super::build::{PrecinctData, SubBandType};
-use super::codestream::{
-    markers, skip_marker_segment, ComponentInfo, Header, ProgressionChange, ProgressionOrder,
-};
+use super::codestream::{markers, ComponentInfo, Header, ProgressionChange, ProgressionOrder};
 use super::rect::IntRect;
-use crate::error::{bail, err, DecodingError, MarkerError, Result, TileError, ValidationError};
-use crate::j2c::codestream;
+use crate::error::{bail, MarkerError, Result, ValidationError};
 use crate::reader::BitReader;
-use crate::DEFAULT_MAX_DECODE_BYTES;
+
+mod cursor;
+mod metadata;
+mod parsed;
+mod tile_part;
+
+pub(crate) use cursor::TilePartCursor;
+use metadata::{inherit_tile_metadata, TileMetadataBudget};
+pub(crate) use parsed::ParsedTiles;
+use tile_part::parse_tile_part;
 
 fn ceil_div_by_power_of_two(value: u32, exponent: u8) -> u32 {
     if exponent == 0 {
@@ -37,7 +41,7 @@ fn subband_coordinate(value: u32, decomposition_level: u8, high_pass: bool) -> u
 }
 
 /// A single tile in the image.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 #[expect(
     clippy::struct_field_names,
     reason = "tile_parts is the JPEG 2000 specification term for a tile's ordered parts"
@@ -62,126 +66,35 @@ pub(crate) struct Tile<'a> {
 }
 
 /// A tile part where packet headers and packet data are interleaved.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct MergedTilePart<'a> {
     pub(crate) data: BitReader<'a>,
     packet_lengths: PacketLengthMetadata,
 }
 
 /// A tile part where packet headers and packet data are separated.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct SeparatedTilePart<'a> {
     pub(crate) headers: Vec<BitReader<'a>>,
-    pub(crate) active_header_reader: usize,
     pub(crate) body: BitReader<'a>,
     packet_lengths: PacketLengthMetadata,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) enum TilePart<'a> {
     Merged(MergedTilePart<'a>),
     Separated(SeparatedTilePart<'a>),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct PacketLengthMetadata {
     present: bool,
     lengths: Vec<u32>,
-    next: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PacketLengthExpectation {
-    NotTracked,
-    Length(u32),
 }
 
 impl PacketLengthMetadata {
     fn new(present: bool, lengths: Vec<u32>) -> Self {
-        Self {
-            present,
-            lengths,
-            next: 0,
-        }
-    }
-
-    fn is_present(&self) -> bool {
-        self.present
-    }
-
-    fn next(&mut self) -> Option<PacketLengthExpectation> {
-        if !self.present {
-            return Some(PacketLengthExpectation::NotTracked);
-        }
-
-        let packet_length = self.lengths.get(self.next).copied()?;
-        self.next += 1;
-        Some(PacketLengthExpectation::Length(packet_length))
-    }
-
-    fn fully_consumed(&self) -> bool {
-        !self.present || self.next == self.lengths.len()
-    }
-}
-
-impl<'a> TilePart<'a> {
-    pub(crate) fn header(&mut self) -> &mut BitReader<'a> {
-        match self {
-            TilePart::Merged(m) => &mut m.data,
-            TilePart::Separated(s) => {
-                if s.headers[s.active_header_reader].at_end()
-                    && s.headers.len() - 1 > s.active_header_reader
-                {
-                    s.active_header_reader += 1;
-                }
-
-                &mut s.headers[s.active_header_reader]
-            }
-        }
-    }
-
-    pub(crate) fn body(&mut self) -> &mut BitReader<'a> {
-        match self {
-            TilePart::Merged(m) => &mut m.data,
-            TilePart::Separated(s) => &mut s.body,
-        }
-    }
-
-    pub(crate) fn packet_start_offset(&self) -> Option<usize> {
-        match self {
-            TilePart::Merged(m) if m.packet_lengths.is_present() => Some(m.data.offset()),
-            TilePart::Separated(_) | TilePart::Merged(_) => None,
-        }
-    }
-
-    pub(crate) fn validate_packet_length(&mut self, packet_start: Option<usize>) -> Option<()> {
-        let expected = match self {
-            TilePart::Merged(m) => m.packet_lengths.next()?,
-            TilePart::Separated(s) => s.packet_lengths.next()?,
-        };
-
-        let expected = match expected {
-            PacketLengthExpectation::NotTracked => return Some(()),
-            PacketLengthExpectation::Length(expected) => expected,
-        };
-
-        let packet_start = packet_start?;
-        let actual = match self {
-            TilePart::Merged(m) => m.data.offset().checked_sub(packet_start)?,
-            TilePart::Separated(_) => return Some(()),
-        };
-
-        if actual != expected as usize {
-            return None;
-        }
-        Some(())
-    }
-
-    pub(crate) fn validate_all_packet_lengths_consumed(&self) -> Option<()> {
-        match self {
-            TilePart::Merged(m) => m.packet_lengths.fully_consumed().then_some(()),
-            TilePart::Separated(s) => s.packet_lengths.fully_consumed().then_some(()),
-        }
+        Self { present, lengths }
     }
 }
 
@@ -231,14 +144,14 @@ impl Tile<'_> {
         Tile {
             idx,
             // Will be filled once we start parsing.
-            tile_parts: vec![],
+            tile_parts: Vec::new(),
             rect,
             // By default, each tile inherits the settings from the main
             // header. When parsing the tile parts, some of these settings
             // might be overridden.
-            component_infos: header.component_infos.clone(),
+            component_infos: Vec::new(),
             progression_order: header.global_coding_style.progression_order,
-            progression_changes: header.progression_changes.clone(),
+            progression_changes: Vec::new(),
             mct: header.global_coding_style.mct,
             num_layers: header.global_coding_style.num_layers,
         }
@@ -255,261 +168,46 @@ impl Tile<'_> {
 pub(crate) fn parse<'a>(
     reader: &mut BitReader<'a>,
     main_header: &Header<'a>,
-) -> Result<Vec<Tile<'a>>> {
-    validate_tile_structural_budget(main_header)?;
+    retained_image_bytes: usize,
+) -> Result<ParsedTiles<'a>> {
+    let mut metadata_budget = TileMetadataBudget::for_image(main_header, retained_image_bytes)?;
+    let num_tiles = usize::try_from(main_header.size_data.num_tiles())
+        .map_err(|_| ValidationError::ImageTooLarge)?;
 
-    let mut tiles = (0..main_header.size_data.num_tiles())
-        .map(|idx| Tile::new(idx, main_header))
-        .collect::<Vec<_>>();
+    let mut tiles = Vec::new();
+    metadata_budget.try_reserve_retained(&mut tiles, num_tiles)?;
+    for idx in 0..main_header.size_data.num_tiles() {
+        tiles.push(Tile::new(idx, main_header));
+        let tile = tiles.last_mut().ok_or(ValidationError::ImageTooLarge)?;
+        inherit_tile_metadata(tile, main_header, &mut metadata_budget)?;
+    }
 
-    let mut tile_part_idx = 0;
+    let mut ppm_packet_idx = 0;
 
-    parse_tile_part(reader, main_header, &mut tiles, tile_part_idx)?;
-    tile_part_idx += 1;
+    parse_tile_part(
+        reader,
+        main_header,
+        &mut tiles,
+        &mut ppm_packet_idx,
+        &mut metadata_budget,
+    )?;
 
     while reader.peek_marker() == Some(markers::SOT) {
-        parse_tile_part(reader, main_header, &mut tiles, tile_part_idx)?;
-        tile_part_idx += 1;
+        parse_tile_part(
+            reader,
+            main_header,
+            &mut tiles,
+            &mut ppm_packet_idx,
+            &mut metadata_budget,
+        )?;
     }
 
     if main_header.strict && reader.read_marker()? != markers::EOC {
         bail!(MarkerError::Expected("EOC"));
     }
 
-    Ok(tiles)
-}
-
-fn validate_tile_structural_budget(main_header: &Header<'_>) -> Result<()> {
-    let num_tiles = usize::try_from(main_header.size_data.num_tiles())
-        .map_err(|_| ValidationError::ImageTooLarge)?;
-    let component_count = main_header.component_infos.len();
-    let progression_change_count = main_header.progression_changes.len();
-
-    let per_tile_components = size_of::<ComponentInfo>()
-        .checked_mul(component_count)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let per_tile_progression_changes = size_of::<ProgressionChange>()
-        .checked_mul(progression_change_count)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let per_tile_bytes = size_of::<Tile<'static>>()
-        .checked_add(per_tile_components)
-        .and_then(|bytes| bytes.checked_add(per_tile_progression_changes))
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let total_bytes = per_tile_bytes
-        .checked_mul(num_tiles)
-        .ok_or(ValidationError::ImageTooLarge)?;
-
-    if total_bytes > DEFAULT_MAX_DECODE_BYTES {
-        bail!(ValidationError::ImageTooLarge);
-    }
-    Ok(())
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
-)]
-fn parse_tile_part<'a>(
-    reader: &mut BitReader<'a>,
-    main_header: &Header<'a>,
-    tiles: &mut [Tile<'a>],
-    tile_part_idx: usize,
-) -> Result<()> {
-    if reader.read_marker()? != markers::SOT {
-        bail!(MarkerError::Expected("SOT"));
-    }
-
-    let tile_part_header = sot_marker(reader).ok_or(MarkerError::ParseFailure("SOT"))?;
-
-    if u32::from(tile_part_header.tile_index) >= main_header.size_data.num_tiles() {
-        bail!(TileError::InvalidIndex);
-    }
-
-    let data_len = if tile_part_header.tile_part_length == 0 {
-        reader.tail().map_or(0, <[u8]>::len)
-    } else {
-        // Subtract 12 to account for the marker length.
-
-        (tile_part_header.tile_part_length as usize)
-            .checked_sub(12)
-            .ok_or(TileError::Invalid)?
-    };
-
-    let start = reader.offset();
-
-    let tile = &mut tiles[tile_part_header.tile_index as usize];
-    let num_components =
-        u16::try_from(tile.component_infos.len()).map_err(|_| ValidationError::TooManyChannels)?;
-
-    let mut packet_length_markers = vec![];
-    let mut packet_lengths_present = false;
-    let mut ppt_headers = vec![];
-
-    loop {
-        let Some(marker) = reader.peek_marker() else {
-            return if main_header.strict {
-                err!(MarkerError::Invalid)
-            } else {
-                Ok(())
-            };
-        };
-
-        match marker {
-            markers::SOD => {
-                reader.read_marker()?;
-                break;
-            }
-            // COD, COC, QCD and QCC should only be used in the _first_
-            // tile-part header, if they appear at all.
-            markers::COD => {
-                reader.read_marker()?;
-                let cod = codestream::cod_marker(reader).ok_or(MarkerError::ParseFailure("COD"))?;
-
-                tile.mct = cod.mct;
-                tile.num_layers = cod.num_layers;
-                tile.progression_order = cod.progression_order;
-
-                for component in &mut tile.component_infos {
-                    component.coding_style.flags.raw |= cod.component_parameters.flags.raw;
-                    component.coding_style.parameters = cod.component_parameters.clone().parameters;
-                }
-            }
-            markers::COC => {
-                reader.read_marker()?;
-
-                let (component_index, coc) = codestream::coc_marker(reader, num_components)
-                    .ok_or(MarkerError::ParseFailure("COC"))?;
-
-                let old = tile
-                    .component_infos
-                    .get_mut(component_index as usize)
-                    .ok_or(ValidationError::InvalidComponentMetadata)?;
-
-                old.coding_style.parameters = coc.parameters;
-                old.coding_style.flags.raw |= coc.flags.raw;
-            }
-            markers::QCD => {
-                reader.read_marker()?;
-                let qcd = codestream::qcd_marker(reader).ok_or(MarkerError::ParseFailure("QCD"))?;
-
-                for component_info in &mut tile.component_infos {
-                    component_info.quantization_info = qcd.clone();
-                }
-            }
-            markers::QCC => {
-                reader.read_marker()?;
-                let (component_index, qcc) = codestream::qcc_marker(reader, num_components)
-                    .ok_or(MarkerError::ParseFailure("QCC"))?;
-
-                tile.component_infos
-                    .get_mut(component_index as usize)
-                    .ok_or(ValidationError::InvalidComponentMetadata)?
-                    .quantization_info = qcc.clone();
-            }
-            markers::POC => {
-                reader.read_marker()?;
-                tile.progression_changes.extend(
-                    codestream::poc_marker(reader, num_components, tile.num_layers)
-                        .ok_or(MarkerError::ParseFailure("POC"))?,
-                );
-            }
-            markers::RGN => {
-                reader.read_marker()?;
-                let rgn = codestream::rgn_marker(reader, num_components)
-                    .ok_or(MarkerError::ParseFailure("RGN"))?;
-                if rgn.style != 0 {
-                    bail!(DecodingError::UnsupportedFeature("explicit ROI coding"));
-                }
-                tile.component_infos
-                    .get_mut(rgn.component_index as usize)
-                    .ok_or(ValidationError::InvalidComponentMetadata)?
-                    .roi_shift = rgn.shift;
-            }
-            markers::EOC => break,
-            markers::PPT => {
-                if !main_header.ppm_packets.is_empty() {
-                    bail!(TileError::PpmPptConflict);
-                }
-
-                reader.read_marker()?;
-                ppt_headers.push(ppt_marker(reader).ok_or(MarkerError::ParseFailure("PPT"))?);
-            }
-            markers::PLT => {
-                reader.read_marker()?;
-                packet_lengths_present = true;
-                packet_length_markers
-                    .push(codestream::plt_marker(reader).ok_or(MarkerError::ParseFailure("PLT"))?);
-            }
-            markers::COM => {
-                reader.read_marker()?;
-                skip_marker_segment(reader).ok_or(MarkerError::ParseFailure("COM"))?;
-            }
-            (0x30..=0x3F) => {
-                // "All markers with the marker code between 0xFF30 and 0xFF3F
-                // have no marker segment parameters. They shall be skipped by
-                // the decoder."
-                reader.read_marker()?;
-                // skip_marker_segment(reader);
-            }
-            _ => {
-                bail!(MarkerError::Unsupported);
-            }
-        }
-    }
-
-    let Some(remaining_bytes) = data_len.checked_sub(reader.offset() - start) else {
-        return if main_header.strict {
-            err!(TileError::Invalid)
-        } else {
-            Ok(())
-        };
-    };
-
-    ppt_headers.sort_by_key(|ppt_header| ppt_header.sequence_idx);
-    let mut headers: Vec<_> = ppt_headers.iter().map(|i| BitReader::new(i.data)).collect();
-    packet_length_markers.sort_by_key(|marker| marker.sequence_idx);
-    let use_main_header_packet_lengths = !packet_lengths_present
-        && !main_header.plm_packet_lengths.is_empty()
-        && main_header.size_data.num_tiles() == 1
-        && tile_part_header.tile_part_index == 0
-        && tile_part_header.num_tile_parts == 1;
-    let packet_lengths = if use_main_header_packet_lengths {
-        PacketLengthMetadata::new(true, main_header.plm_packet_lengths.clone())
-    } else {
-        PacketLengthMetadata::new(
-            packet_lengths_present,
-            packet_length_markers
-                .into_iter()
-                .flat_map(|marker| marker.packet_lengths)
-                .collect(),
-        )
-    };
-
-    if let Some(ppm_marker) = main_header.ppm_packets.get(tile_part_idx) {
-        headers.push(BitReader::new(ppm_marker.data));
-    }
-
-    let data = reader
-        .read_bytes(remaining_bytes)
-        .ok_or(TileError::Invalid)?;
-
-    let tile_part = if headers.is_empty() {
-        TilePart::Merged(MergedTilePart {
-            data: BitReader::new(data),
-            packet_lengths,
-        })
-    } else {
-        TilePart::Separated(SeparatedTilePart {
-            headers,
-            active_header_reader: 0,
-            body: BitReader::new(data),
-            packet_lengths,
-        })
-    };
-
-    tile.tile_parts.push(tile_part);
-
-    Ok(())
+    metadata_budget.validate_owner_graph(&tiles)?;
+    Ok(ParsedTiles::new(tiles, metadata_budget.retained_bytes()))
 }
 
 /// A tile, instantiated to a specific component.
@@ -882,51 +580,10 @@ impl<'a> ResolutionTile<'a> {
     }
 }
 
-struct TilePartHeader {
-    tile_index: u16,
-    tile_part_length: u32,
-    tile_part_index: u8,
-    num_tile_parts: u8,
-}
-
-struct PptMarkerData<'a> {
-    data: &'a [u8],
-    sequence_idx: u8,
-}
-
-/// PPT marker (A.7.5).
-fn ppt_marker<'a>(reader: &mut BitReader<'a>) -> Option<PptMarkerData<'a>> {
-    let length = reader.read_u16()?.checked_sub(2)?;
-    let header_len = length.checked_sub(1)?;
-    let sequence_idx = reader.read_byte()?;
-    Some(PptMarkerData {
-        data: reader.read_bytes(header_len as usize)?,
-        sequence_idx,
-    })
-}
-
-/// SOT marker (A.4.2).
-fn sot_marker(reader: &mut BitReader<'_>) -> Option<TilePartHeader> {
-    // Length.
-    let _ = reader.read_u16()?;
-
-    let tile_index = reader.read_u16()?;
-    let tile_part_length = reader.read_u32()?;
-
-    // We infer those ourselves.
-    let tile_part_index = reader.read_byte()?;
-    let num_tile_parts = reader.read_byte()?;
-
-    Some(TilePartHeader {
-        tile_index,
-        tile_part_length,
-        tile_part_index,
-        num_tile_parts,
-    })
-}
-
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use crate::j2c::codestream::{
         CodeBlockStyle, CodingStyleComponent, CodingStyleDefault, CodingStyleFlags,
@@ -958,7 +615,7 @@ mod tests {
             vertical_resolution: 1,
         };
 
-        let dummy_component_coding_style = CodingStyleComponent {
+        let dummy_component_coding_style = || CodingStyleComponent {
             flags: CodingStyleFlags::default(),
             parameters: CodingStyleParameters {
                 num_decomposition_levels: 0,
@@ -971,7 +628,7 @@ mod tests {
             },
         };
 
-        let dummy_quantization_info = QuantizationInfo {
+        let dummy_quantization_info = || QuantizationInfo {
             quantization_style: QuantizationStyle::NoQuantization,
             guard_bits: 0,
             step_sizes: vec![],
@@ -979,8 +636,8 @@ mod tests {
 
         let component_info_0 = ComponentInfo {
             size_info: component_size_info_0,
-            coding_style: dummy_component_coding_style.clone(),
-            quantization_info: dummy_quantization_info.clone(),
+            coding_style: dummy_component_coding_style(),
+            quantization_info: dummy_quantization_info(),
             roi_shift: 0,
         };
 
@@ -993,8 +650,8 @@ mod tests {
 
         let component_info_1 = ComponentInfo {
             size_info: component_size_info_1,
-            coding_style: dummy_component_coding_style.clone(),
-            quantization_info: dummy_quantization_info.clone(),
+            coding_style: dummy_component_coding_style(),
+            quantization_info: dummy_quantization_info(),
             roi_shift: 0,
         };
 

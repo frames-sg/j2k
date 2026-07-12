@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use j2k_core::DeviceSubmission;
+use j2k_metal_support::FallibleSubmissionQueue;
 
 use crate::{batch, Error, MetalDecodeRequest, MetalSession, Surface};
 
@@ -15,7 +16,7 @@ use crate::{batch, Error, MetalDecodeRequest, MetalSession, Surface};
 #[derive(Default)]
 pub struct MetalTileBatch {
     session: MetalSession,
-    submissions: Vec<batch::MetalSubmission>,
+    queue: FallibleSubmissionQueue<batch::MetalSubmission>,
 }
 
 impl MetalTileBatch {
@@ -26,20 +27,22 @@ impl MetalTileBatch {
 
     /// Create an empty tile batch with capacity for `capacity` submissions.
     pub fn with_capacity(capacity: usize) -> Self {
+        // Capacity is a hint only: reserving is deferred to the fallible push
+        // boundary because this constructor cannot report allocation failure.
         Self {
-            submissions: Vec::with_capacity(capacity),
+            queue: FallibleSubmissionQueue::with_capacity_hint(capacity),
             ..Self::default()
         }
     }
 
     /// Number of queued tile requests.
     pub fn len(&self) -> usize {
-        self.submissions.len()
+        self.queue.len()
     }
 
     /// Whether the batch has no queued tile requests.
     pub fn is_empty(&self) -> bool {
-        self.submissions.is_empty()
+        self.queue.is_empty()
     }
 
     /// Number of Metal session submissions already flushed.
@@ -65,25 +68,29 @@ impl MetalTileBatch {
         input: Arc<[u8]>,
         request: MetalDecodeRequest,
     ) -> Result<usize, Error> {
-        let slot = self.submissions.len();
-        let submission = batch::queue_tile_request_shared(
-            &mut self.session,
-            input,
-            request.fmt,
-            request.backend,
-            request.op.batch_op(),
-        )?;
-        self.submissions.push(submission);
-        Ok(slot)
+        let Self { session, queue } = self;
+        queue.try_push_with(
+            "J2K Metal tile batch submissions",
+            |_, retained_capacity| {
+                batch::queue_tile_request_shared_with_retained(
+                    session,
+                    input,
+                    request.fmt,
+                    request.backend,
+                    request.op.batch_op(),
+                    retained_capacity,
+                )
+            },
+        )
     }
 
     /// Decode all queued tile requests and return surfaces in submission order.
     pub fn decode_all(self) -> Result<Vec<Surface>, Error> {
-        let mut surfaces = Vec::with_capacity(self.submissions.len());
-        for submission in self.submissions {
-            surfaces.push(submission.wait()?);
-        }
-        Ok(surfaces)
+        self.queue.try_finish(
+            "J2K Metal tile batch surface collection",
+            "J2K Metal tile batch surface results",
+            DeviceSubmission::wait,
+        )
     }
 }
 
@@ -125,5 +132,26 @@ mod tests {
         assert_eq!(second, 1);
         assert_eq!(batch.len(), 2);
         assert!(!batch.is_empty());
+    }
+
+    #[test]
+    fn oversized_capacity_hint_fails_before_queue_mutation() {
+        let mut batch = MetalTileBatch::with_capacity(usize::MAX);
+        let error = batch
+            .push_tile_request(
+                &[0xff, 0x4f],
+                MetalDecodeRequest::full(PixelFormat::Gray8, BackendRequest::Cpu),
+            )
+            .expect_err("oversized capacity hint");
+
+        assert!(matches!(
+            error,
+            Error::BatchInfrastructure(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                what: "J2K Metal tile batch submissions",
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            })
+        ));
+        assert!(batch.is_empty());
     }
 }

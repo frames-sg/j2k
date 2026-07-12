@@ -372,8 +372,9 @@ fn metal_parallel_batch_returns_indexed_injected_failure() {
     };
     super::super::set_test_resident_encode_failure_index(None);
 
-    assert!(
-        err.to_string().contains("tile 1"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err,
+        crate::Error::MetalKernel { message }
+            if message == "injected J2K Metal resident encode failure at tile 1"
+    ));
 }

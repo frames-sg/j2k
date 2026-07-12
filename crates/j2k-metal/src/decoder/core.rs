@@ -30,12 +30,12 @@ pub struct J2kDecoder<'a> {
     #[cfg(target_os = "macos")]
     pub(super) native_context: NativeDecoderContext<'a>,
     #[cfg(target_os = "macos")]
-    pub(super) native_direct_gray_plan: Option<J2kDirectGrayscalePlan>,
+    pub(super) native_direct_gray_plan: Option<Arc<J2kDirectGrayscalePlan>>,
     #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_gray_plan:
         Option<Arc<crate::compute::PreparedDirectGrayscalePlan>>,
     #[cfg(target_os = "macos")]
-    pub(super) native_direct_color_plan: Option<J2kDirectColorPlan>,
+    pub(super) native_direct_color_plan: Option<Arc<J2kDirectColorPlan>>,
     #[cfg(target_os = "macos")]
     pub(super) native_prepared_direct_color_plan:
         Option<Arc<crate::compute::PreparedDirectColorPlan>>,
@@ -253,12 +253,7 @@ impl<'a> J2kDecoder<'a> {
                         stride,
                         request.fmt,
                     )?;
-                    Ok(upload_surface_to_metal_with_device(
-                        &out,
-                        dims,
-                        request.fmt,
-                        session.device(),
-                    ))
+                    upload_surface_to_metal_with_device(&out, dims, request.fmt, session.device())
                 }
                 MetalDecodeOp::Region(roi) => {
                     let plan = DeviceDecodePlan::for_image(
@@ -274,12 +269,7 @@ impl<'a> J2kDecoder<'a> {
                         request.fmt,
                         plan.source_rect(),
                     )?;
-                    Ok(upload_surface_to_metal_with_device(
-                        &out,
-                        dims,
-                        request.fmt,
-                        session.device(),
-                    ))
+                    upload_surface_to_metal_with_device(&out, dims, request.fmt, session.device())
                 }
                 MetalDecodeOp::Scaled(scale) => {
                     let plan = DeviceDecodePlan::for_image(
@@ -295,12 +285,7 @@ impl<'a> J2kDecoder<'a> {
                         request.fmt,
                         scale,
                     )?;
-                    Ok(upload_surface_to_metal_with_device(
-                        &out,
-                        dims,
-                        request.fmt,
-                        session.device(),
-                    ))
+                    upload_surface_to_metal_with_device(&out, dims, request.fmt, session.device())
                 }
                 MetalDecodeOp::RegionScaled { roi, scale } => {
                     let plan = DeviceDecodePlan::for_image(
@@ -317,12 +302,7 @@ impl<'a> J2kDecoder<'a> {
                         roi,
                         scale,
                     )?;
-                    Ok(upload_surface_to_metal_with_device(
-                        &out,
-                        dims,
-                        request.fmt,
-                        session.device(),
-                    ))
+                    upload_surface_to_metal_with_device(&out, dims, request.fmt, session.device())
                 }
             }
         }

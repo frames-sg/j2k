@@ -1,4 +1,3 @@
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::build::Decomposition;
@@ -6,9 +5,11 @@ use super::codestream::{Header, WaveletTransform};
 use super::decode::{DecompositionStorage, OutputRegion};
 use super::rect::IntRect;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
-use crate::{idwt_required_input_window_for_rects, J2kRequiredBandRegion};
+use crate::{
+    idwt_required_input_window_for_rects, try_resize_decode_elements, J2kRequiredBandRegion, Result,
+};
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 #[expect(
     clippy::struct_field_names,
     reason = "the repeated _windows suffix distinguishes the three ROI planning stages"
@@ -29,18 +30,24 @@ impl RoiPlan {
         header: &Header<'_>,
         storage: &DecompositionStorage<'_>,
         output_region: OutputRegion,
-    ) -> Option<Self> {
+    ) -> Result<Option<Self>> {
         if tile.component_infos.iter().any(|component_info| {
             component_info.size_info.horizontal_resolution != 1
                 || component_info.size_info.vertical_resolution != 1
         }) {
-            return None;
+            return Ok(None);
         }
 
+        let mut sub_band_windows = Vec::new();
+        try_resize_decode_elements(&mut sub_band_windows, storage.sub_bands.len(), None)?;
+        let mut idwt_windows = Vec::new();
+        try_resize_decode_elements(&mut idwt_windows, storage.decompositions.len(), None)?;
+        let mut final_windows = Vec::new();
+        try_resize_decode_elements(&mut final_windows, tile.component_infos.len(), None)?;
         let mut plan = Self {
-            sub_band_windows: vec![None; storage.sub_bands.len()],
-            idwt_windows: vec![None; storage.decompositions.len()],
-            final_windows: vec![None; tile.component_infos.len()],
+            sub_band_windows,
+            idwt_windows,
+            final_windows,
         };
 
         for (component_idx, component_info) in tile.component_infos.iter().enumerate() {
@@ -73,7 +80,7 @@ impl RoiPlan {
             if final_window.x1 == resolution_tile.rect.x1
                 || final_window.y1 == resolution_tile.rect.y1
             {
-                return None;
+                return Ok(None);
             }
             plan.final_windows[component_idx] = Some(final_window);
 
@@ -109,7 +116,7 @@ impl RoiPlan {
             }
         }
 
-        Some(plan)
+        Ok(Some(plan))
     }
 
     pub(crate) fn code_block_required(&self, sub_band_idx: usize, rect: IntRect) -> bool {

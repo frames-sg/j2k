@@ -43,6 +43,7 @@ fn idwt_cooperative_53_selection_requires_large_reversible_batches() {
             },
             irreversible97: 0,
         },
+        reserved_tail: 0,
     };
 
     assert!(!idwt_batch_uses_cooperative_53(&[kernel_job], 127, 128));
@@ -95,6 +96,7 @@ fn idwt_cooperative_97_selection_requires_large_irreversible_batches() {
             },
             irreversible97: 1,
         },
+        reserved_tail: 0,
     };
 
     assert_eq!(
@@ -146,6 +148,7 @@ fn idwt_batch_trace_row_reports_stage_shape_and_mode() {
                 hh_rect: CudaJ2kRect::default(),
                 irreversible97: 1,
             },
+            reserved_tail: 0,
         },
         CudaJ2kIdwtMultiKernelJob {
             ll_ptr: 0,
@@ -166,6 +169,7 @@ fn idwt_batch_trace_row_reports_stage_shape_and_mode() {
                 hh_rect: CudaJ2kRect::default(),
                 irreversible97: 1,
             },
+            reserved_tail: 0,
         },
     ];
 
@@ -757,8 +761,10 @@ fn j2k_inverse_dwt_batch_enqueue_matches_expected_outputs_when_runtime_required(
         irreversible97: 0,
     };
 
-    let queued = context
-        .j2k_inverse_dwt_batch_device_enqueue_with_pool(
+    // SAFETY: every target buffer remains live and untouched through the
+    // queued handle's explicit `finish` completion below.
+    let queued = unsafe {
+        context.j2k_inverse_dwt_batch_device_enqueue_with_pool(
             &[CudaJ2kIdwtTarget {
                 ll: &ll,
                 hl: &hl,
@@ -769,10 +775,11 @@ fn j2k_inverse_dwt_batch_enqueue_matches_expected_outputs_when_runtime_required(
             }],
             &pool,
         )
-        .expect("enqueue batched CUDA inverse DWT");
+    }
+    .expect("enqueue batched CUDA inverse DWT");
     assert_eq!(queued.execution().kernel_dispatches(), 2);
-    context.synchronize().expect("queued IDWT completion");
-    drop(queued);
+    let completed = queued.finish().expect("queued IDWT completion");
+    assert_eq!(completed.kernel_dispatches(), 2);
 
     let mut actual = vec![0.0f32; 4];
     output
@@ -949,18 +956,19 @@ fn j2k_inverse_dwt_batch_sequence_enqueue_matches_two_stage_path_when_runtime_re
             .expect("sequence stage2 device buffer"),
         job: stage2_job,
     }];
-    let queued = context
-        .j2k_inverse_dwt_batch_sequence_enqueue_with_pool(
+    // SAFETY: both stages' buffers remain live and untouched through the
+    // queued handle's explicit `finish` completion below.
+    let queued = unsafe {
+        context.j2k_inverse_dwt_batch_sequence_enqueue_with_pool(
             &[&sequence_stage1_targets, &sequence_stage2_targets],
             &pool,
         )
-        .expect("queued IDWT sequence");
+    }
+    .expect("queued IDWT sequence");
     assert_eq!(queued.execution().kernel_dispatches(), 4);
     assert_eq!(queued.resource_count(), 1);
-    context
-        .synchronize()
-        .expect("queued IDWT sequence completion");
-    drop(queued);
+    let completed = queued.finish().expect("queued IDWT sequence completion");
+    assert_eq!(completed.kernel_dispatches(), 4);
 
     let mut legacy_actual = vec![0.0f32; 16];
     legacy_stage2
@@ -1501,6 +1509,7 @@ fn queued_cleanup_metadata_dequantizes_without_second_job_upload_when_runtime_re
             output_offset: 0,
             dequantization_step: 0.5,
             stripe_causal: 0,
+            reserved_tail: 0,
         },
         CudaHtj2kCleanupMultiKernelJob {
             output_ptr: second.device_ptr(),
@@ -1517,17 +1526,21 @@ fn queued_cleanup_metadata_dequantizes_without_second_job_upload_when_runtime_re
             output_offset: 0,
             dequantization_step: 0.25,
             stripe_causal: 0,
+            reserved_tail: 0,
         },
     ];
     let jobs_buffer = pool
         .upload(super::super::htj2k_cleanup_multi_jobs_as_bytes(&jobs))
         .expect("upload cleanup metadata");
     let queued = CudaQueuedHtj2kCleanup {
+        context: context.clone(),
         resources: vec![jobs_buffer],
         status_buffer: None,
         status_count: jobs.len(),
         kernel_name: "j2k_htj2k_decode_codeblocks_multi",
         execution: CudaExecutionStats::default(),
+        pool_reuse_guard: None,
+        finish_host_live_bytes: 0,
     };
 
     let execution = context
@@ -1564,6 +1577,7 @@ fn htj2k_decode_multi_kernel_routes_cleanup_only_jobs() {
         output_offset: 0,
         dequantization_step: 1.0,
         stripe_causal: 0,
+        reserved_tail: 0,
     };
     let (_, cleanup_kernel_name) = super::super::htj2k_decode_multi_kernel_for_jobs(&[cleanup_job]);
     assert_eq!(
@@ -1596,6 +1610,7 @@ fn htj2k_decode_multi_cleanup_dequant_kernel_accepts_cleanup_only_jobs() {
         output_offset: 0,
         dequantization_step: 1.0,
         stripe_causal: 0,
+        reserved_tail: 0,
     };
     let (_, cleanup_dequant_kernel_name) =
         super::super::htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&[cleanup_job])
@@ -1623,6 +1638,7 @@ fn htj2k_decode_multi_cleanup_dequant_kernel_rejects_refinement_jobs() {
         output_offset: 0,
         dequantization_step: 1.0,
         stripe_causal: 0,
+        reserved_tail: 0,
     };
     assert!(
         super::super::htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&[refinement_job])
@@ -1706,13 +1722,16 @@ fn htj2k_cleanup_multi_enqueue_empty_targets_finish_with_no_dispatch_when_runtim
         .upload_htj2k_decode_resources_with_tables(&[], &tables)
         .expect("decode resources");
 
-    let queued = context
-        .decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool(
+    // SAFETY: the target set is empty, so no borrowed device allocation can
+    // outlive the queued cleanup handle.
+    let queued = unsafe {
+        context.decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool(
             &resources,
             &[] as &[CudaHtj2kCleanupTarget<'_>],
             &pool,
         )
-        .expect("empty queued cleanup batch");
+    }
+    .expect("empty queued cleanup batch");
     assert_eq!(queued.execution().kernel_dispatches(), 0);
     assert_eq!(queued.execution().decode_kernel_dispatches(), 0);
     assert_eq!(queued.resource_count(), 0);

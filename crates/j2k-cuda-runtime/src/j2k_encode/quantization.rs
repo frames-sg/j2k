@@ -9,8 +9,8 @@ use crate::{
 };
 
 use super::{
-    validate_quantize_region, CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob,
-    CudaJ2kQuantizedSubband, CudaJ2kResidentQuantizedSubband,
+    validate_encode_buffer_context, validate_quantize_region, CudaJ2kQuantizeJob,
+    CudaJ2kQuantizeSubbandRegionJob, CudaJ2kQuantizedSubband, CudaJ2kResidentQuantizedSubband,
 };
 
 impl CudaContext {
@@ -38,6 +38,7 @@ impl CudaContext {
         sample_count: usize,
         job: CudaJ2kQuantizeJob,
     ) -> Result<CudaJ2kResidentQuantizedSubband, CudaError> {
+        validate_encode_buffer_context(self, [samples])?;
         if sample_count == 0 {
             return Ok(CudaJ2kResidentQuantizedSubband {
                 coefficients: self.allocate(0)?,
@@ -83,6 +84,7 @@ impl CudaContext {
         samples: &CudaDeviceBuffer,
         job: CudaJ2kQuantizeSubbandRegionJob,
     ) -> Result<CudaJ2kResidentQuantizedSubband, CudaError> {
+        validate_encode_buffer_context(self, [samples])?;
         let coefficient_count = checked_image_words(job.width, job.height, 1)?;
         if coefficient_count == 0 {
             return Ok(CudaJ2kResidentQuantizedSubband {

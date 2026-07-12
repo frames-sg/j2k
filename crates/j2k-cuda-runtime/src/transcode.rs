@@ -45,6 +45,11 @@ mod structure_tests {
             350,
         ),
         (
+            "transcode/dwt97/single.rs",
+            include_str!("transcode/dwt97/single.rs"),
+            125,
+        ),
+        (
             "transcode/htj2k97.rs",
             include_str!("transcode/htj2k97.rs"),
             450,

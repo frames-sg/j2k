@@ -557,7 +557,19 @@ fn owned_cuda_eligibility(
             "J2K-owned CUDA JPEG decode currently requires a YCbCr 4:2:0, 4:2:2, or 4:4:4 fast packet shape",
         );
     }
+    if !owned_cuda_rgb8_output_is_addressable(info.dimensions) {
+        return JpegBackendEligibility::rejected(
+            "J2K-owned CUDA JPEG decode requires RGB8 output addressable by u32 byte offsets",
+        );
+    }
     JpegBackendEligibility::eligible()
+}
+
+fn owned_cuda_rgb8_output_is_addressable((width, height): (u32, u32)) -> bool {
+    u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(3))
+        .is_some_and(|bytes| bytes <= u64::from(u32::MAX) + 1)
 }
 
 fn metal_fast_eligibility(

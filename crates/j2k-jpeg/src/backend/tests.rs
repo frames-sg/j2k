@@ -65,6 +65,11 @@ macro_rules! rgb420_cropped_pair {
     };
 }
 
+#[cfg(target_arch = "x86_64")]
+fn x86_fixture_byte(index: usize) -> u8 {
+    u8::try_from(index).expect("x86 fixture index must fit in u8")
+}
+
 #[test]
 fn gray_rows_expand_to_equal_rgb_channels() {
     let gray = [10u8, 40, 90, 200];
@@ -499,13 +504,13 @@ fn avx2_ycbcr_rows_match_scalar_reference_across_multiple_chunks() {
 
     let len = 31usize;
     let y: Vec<u8> = (0..len)
-        .map(|i| ((i as u8).wrapping_mul(37)).wrapping_add(11))
+        .map(|i| (x86_fixture_byte(i).wrapping_mul(37)).wrapping_add(11))
         .collect();
     let cb: Vec<u8> = (0..len)
-        .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(29)))
+        .map(|i| 255u8.wrapping_sub(x86_fixture_byte(i).wrapping_mul(29)))
         .collect();
     let cr: Vec<u8> = (0..len)
-        .map(|i| ((i as u8).wrapping_mul(53)).wrapping_add(97))
+        .map(|i| (x86_fixture_byte(i).wrapping_mul(53)).wrapping_add(97))
         .collect();
     let mut expected = vec![0u8; len * 3];
     let mut actual = vec![0u8; len * 3];
@@ -686,28 +691,28 @@ fn avx2_420_cropped_row_pair_matches_scalar_reference() {
     let crop_width = 53usize;
     let chroma_width = width.div_ceil(2);
     let y_top: Vec<u8> = (0..width)
-        .map(|i| ((i as u8).wrapping_mul(37)).wrapping_add(11))
+        .map(|i| (x86_fixture_byte(i).wrapping_mul(37)).wrapping_add(11))
         .collect();
     let y_bot: Vec<u8> = (0..width)
-        .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(19)))
+        .map(|i| 255u8.wrapping_sub(x86_fixture_byte(i).wrapping_mul(19)))
         .collect();
     let prev_cb: Vec<u8> = (0..chroma_width)
-        .map(|i| ((i as u8).wrapping_mul(17)).wrapping_add(41))
+        .map(|i| (x86_fixture_byte(i).wrapping_mul(17)).wrapping_add(41))
         .collect();
     let curr_cb: Vec<u8> = (0..chroma_width)
-        .map(|i| ((i as u8).wrapping_mul(29)).wrapping_add(13))
+        .map(|i| (x86_fixture_byte(i).wrapping_mul(29)).wrapping_add(13))
         .collect();
     let next_cb: Vec<u8> = (0..chroma_width)
-        .map(|i| ((i as u8).wrapping_mul(43)).wrapping_add(7))
+        .map(|i| (x86_fixture_byte(i).wrapping_mul(43)).wrapping_add(7))
         .collect();
     let prev_cr: Vec<u8> = (0..chroma_width)
-        .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(11)))
+        .map(|i| 255u8.wrapping_sub(x86_fixture_byte(i).wrapping_mul(11)))
         .collect();
     let curr_cr: Vec<u8> = (0..chroma_width)
-        .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(23)))
+        .map(|i| 255u8.wrapping_sub(x86_fixture_byte(i).wrapping_mul(23)))
         .collect();
     let next_cr: Vec<u8> = (0..chroma_width)
-        .map(|i| 255u8.wrapping_sub((i as u8).wrapping_mul(31)))
+        .map(|i| 255u8.wrapping_sub(x86_fixture_byte(i).wrapping_mul(31)))
         .collect();
     let mut expected_top = vec![0u8; crop_width * 3];
     let mut expected_bot = vec![0u8; crop_width * 3];

@@ -4,6 +4,7 @@ use crate::{pixel::PixelFormat, sample::SampleType};
 
 /// Buffer validation and copy errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum BufferError {
     /// Destination buffer is too small for the requested output.
     #[error("output buffer too small: required {required} bytes, have {have}")]
@@ -35,6 +36,14 @@ pub enum BufferError {
         /// Configured byte cap.
         cap: usize,
         /// Name of the allocation being checked.
+        what: &'static str,
+    },
+    /// The host allocator could not reserve a cap-valid buffer.
+    #[error("host allocation failed for {bytes} bytes while allocating {what}")]
+    HostAllocationFailed {
+        /// Requested host byte count.
+        bytes: usize,
+        /// Name of the allocation that failed.
         what: &'static str,
     },
     /// Output stride cannot hold one decoded row.

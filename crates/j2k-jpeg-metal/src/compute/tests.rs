@@ -44,12 +44,15 @@ fn runtime_initialization_error_classifies_device_unavailable() {
         runtime_initialization_error(&MetalSupportError::MetalUnavailable),
         Error::MetalUnavailable
     ));
+    let source = MetalSupportError::ShaderLibrary {
+        message: "failed to compile Metal library".to_string(),
+    };
+    let error = runtime_initialization_error(&source);
     assert!(matches!(
-        runtime_initialization_error(&MetalSupportError::ShaderLibrary {
-            message: "failed to compile Metal library".to_string()
-        }),
-        Error::MetalRuntime { .. }
+        &error,
+        Error::MetalSupport { source: stored, .. } if stored == &source
     ));
+    assert!(std::error::Error::source(&error).is_some());
 }
 
 #[test]
@@ -109,8 +112,8 @@ fn viewport_plane_cache_is_runtime_local() {
     let runtime_a = MetalRuntime::new().expect("Metal runtime");
     let runtime_b = MetalRuntime::new_with_device(runtime_a.device.clone()).expect("Metal runtime");
 
-    let stage_a = cached_plane_stage(&runtime_a, JpegColorSpace::YCbCr, (8, 8)).expect("stage");
-    let stage_b = cached_plane_stage(&runtime_b, JpegColorSpace::YCbCr, (8, 8)).expect("stage");
+    let stage_a = cached_plane_stage(&runtime_a, JpegColorSpace::YCbCr, (8, 8), 0).expect("stage");
+    let stage_b = cached_plane_stage(&runtime_b, JpegColorSpace::YCbCr, (8, 8), 0).expect("stage");
     drop((stage_a, stage_b));
 
     assert_ne!(
@@ -134,7 +137,7 @@ fn viewport_plane_cache_lease_serializes_cloned_sessions() {
     let session = crate::MetalBackendSession::system_default().expect("Metal backend session");
     let session_alias = session.clone();
     let runtime = session.runtime_result().as_ref().expect("Metal runtime");
-    let first = cached_plane_stage(runtime, JpegColorSpace::YCbCr, (8, 8)).expect("first stage");
+    let first = cached_plane_stage(runtime, JpegColorSpace::YCbCr, (8, 8), 0).expect("first stage");
     let first_buffer = first.plane0.as_ptr() as usize;
     assert_eq!(
         session.runtime_ptr_for_test(),
@@ -151,7 +154,7 @@ fn viewport_plane_cache_lease_serializes_cloned_sessions() {
             .expect("aliased Metal runtime");
         started_tx.send(()).expect("signal cache wait start");
         let second =
-            cached_plane_stage(runtime, JpegColorSpace::YCbCr, (8, 8)).expect("second stage");
+            cached_plane_stage(runtime, JpegColorSpace::YCbCr, (8, 8), 0).expect("second stage");
         acquired_tx
             .send(second.plane0.as_ptr() as usize)
             .expect("signal cache lease acquisition");
@@ -183,7 +186,7 @@ fn cached_gray_stage_returns_fresh_public_surface() {
     }
 
     let runtime = MetalRuntime::new().expect("Metal runtime");
-    let stage = cached_plane_stage(&runtime, JpegColorSpace::Grayscale, (8, 8)).expect("stage");
+    let stage = cached_plane_stage(&runtime, JpegColorSpace::Grayscale, (8, 8), 0).expect("stage");
     let cached_buffer = stage.plane0.as_ptr();
     let surface = stage
         .finish_with_runtime(&runtime, PixelFormat::Gray8)
@@ -198,10 +201,13 @@ fn cached_gray_stage_returns_fresh_public_surface() {
         cached_buffer,
         "safe-readable Gray8 output must not alias the reusable plane cache"
     );
-    assert_eq!(surface.as_bytes().len(), 8 * 8);
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access").len(),
+        8 * 8
+    );
 
     let reused =
-        cached_plane_stage(&runtime, JpegColorSpace::Grayscale, (8, 8)).expect("reused stage");
+        cached_plane_stage(&runtime, JpegColorSpace::Grayscale, (8, 8), 0).expect("reused stage");
     assert_eq!(
         reused.plane0.as_ptr(),
         cached_buffer,
@@ -280,7 +286,8 @@ fn one_dimensional_dispatch_width_tracks_work_without_full_threadgroup_waste() {
 
 #[test]
 fn auto_batched_packets_skip_distinct_region_scaled_requests() {
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420_RESTART).expect("packet");
+    let packet =
+        Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420_RESTART).expect("packet"));
     let roi = Rect {
         x: 0,
         y: 0,
@@ -298,7 +305,7 @@ fn auto_batched_packets_skip_distinct_region_scaled_requests() {
             },
             None,
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
         ),
         batch::QueuedRequest::new(
             Arc::<[u8]>::from(BASELINE_420_RESTART),
@@ -322,7 +329,7 @@ fn auto_batched_packets_skip_distinct_region_scaled_requests() {
 #[test]
 fn auto_batched_packets_keep_large_repeated_region_scaled_requests_off_metal() {
     let input = Arc::<[u8]>::from(BASELINE_420);
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet"));
     let roi = Rect {
         x: 0,
         y: 0,
@@ -341,7 +348,7 @@ fn auto_batched_packets_keep_large_repeated_region_scaled_requests_off_metal() {
                 },
                 None,
                 None,
-                Some(packet.clone()),
+                Some(Arc::clone(&packet)),
             )
         })
         .collect::<Vec<_>>();
@@ -354,7 +361,8 @@ fn auto_batched_packets_keep_large_repeated_region_scaled_requests_off_metal() {
 #[test]
 fn auto_batched_packets_require_wsi_batch_threshold() {
     let input = Arc::<[u8]>::from(BASELINE_420_RESTART);
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420_RESTART).expect("packet");
+    let packet =
+        Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420_RESTART).expect("packet"));
     let requests = (0..7)
         .map(|_| {
             batch::QueuedRequest::new(
@@ -364,7 +372,7 @@ fn auto_batched_packets_require_wsi_batch_threshold() {
                 batch::BatchOp::Full,
                 None,
                 None,
-                Some(packet.clone()),
+                Some(Arc::clone(&packet)),
             )
         })
         .collect::<Vec<_>>();
@@ -377,7 +385,8 @@ fn auto_batched_packets_require_wsi_batch_threshold() {
 #[test]
 fn auto_batched_packets_accept_restart_wsi_batch_at_threshold() {
     let input = Arc::<[u8]>::from(BASELINE_420_RESTART);
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420_RESTART).expect("packet");
+    let packet =
+        Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420_RESTART).expect("packet"));
     let requests = (0..8)
         .map(|_| {
             batch::QueuedRequest::new(
@@ -387,7 +396,7 @@ fn auto_batched_packets_accept_restart_wsi_batch_at_threshold() {
                 batch::BatchOp::Full,
                 None,
                 None,
-                Some(packet.clone()),
+                Some(Arc::clone(&packet)),
             )
         })
         .collect::<Vec<_>>();
@@ -400,9 +409,15 @@ fn auto_batched_packets_accept_restart_wsi_batch_at_threshold() {
 #[test]
 fn auto_batched_packets_accept_large_nonrestart_wsi_batch_at_threshold() {
     let input = Arc::<[u8]>::from(generated_rgb_jpeg(512));
-    let fast444_packet = j2k_jpeg::adapter::build_fast444_packet(input.as_ref()).ok();
-    let fast422_packet = j2k_jpeg::adapter::build_fast422_packet(input.as_ref()).ok();
-    let fast420_packet = j2k_jpeg::adapter::build_fast420_packet(input.as_ref()).ok();
+    let fast444_packet = j2k_jpeg::adapter::build_fast444_packet(input.as_ref())
+        .ok()
+        .map(Arc::new);
+    let fast422_packet = j2k_jpeg::adapter::build_fast422_packet(input.as_ref())
+        .ok()
+        .map(Arc::new);
+    let fast420_packet = j2k_jpeg::adapter::build_fast420_packet(input.as_ref())
+        .ok()
+        .map(Arc::new);
     assert!(
         fast444_packet.is_some() || fast422_packet.is_some() || fast420_packet.is_some(),
         "generated JPEG must be packet-decodable"
@@ -414,9 +429,9 @@ fn auto_batched_packets_accept_large_nonrestart_wsi_batch_at_threshold() {
                 PixelFormat::Rgb8,
                 BackendRequest::Auto,
                 batch::BatchOp::Full,
-                fast444_packet.clone(),
-                fast422_packet.clone(),
-                fast420_packet.clone(),
+                fast444_packet.as_ref().map(Arc::clone),
+                fast422_packet.as_ref().map(Arc::clone),
+                fast420_packet.as_ref().map(Arc::clone),
             )
         })
         .collect::<Vec<_>>();
@@ -454,7 +469,7 @@ fn fast420_packet_scaled_decode_matches_cpu_scaled_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet"));
     for scale in [j2k_core::Downscale::Half, j2k_core::Downscale::Quarter] {
         let (expected, _) = decoder
             .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
@@ -473,7 +488,10 @@ fn fast420_packet_scaled_decode_matches_cpu_scaled_bytes() {
         })
         .expect("metal scaled");
 
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -484,7 +502,7 @@ fn fast420_packet_region_decode_matches_cpu_region_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet"));
     let roi = j2k_jpeg::Rect {
         x: 3,
         y: 2,
@@ -510,7 +528,10 @@ fn fast420_packet_region_decode_matches_cpu_region_bytes() {
 
     assert_eq!(surface.dimensions, (roi.w, roi.h));
     assert_eq!(surface.fmt, PixelFormat::Rgb8);
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[test]
@@ -520,7 +541,7 @@ fn fast420_region_batch_decode_matches_cpu_region_bytes() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_420);
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet"));
     let roi = Rect {
         x: 4,
         y: 4,
@@ -535,7 +556,7 @@ fn fast420_region_batch_decode_matches_cpu_region_bytes() {
             batch::BatchOp::Region(roi),
             None,
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
         ),
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -569,7 +590,10 @@ fn fast420_region_batch_decode_matches_cpu_region_bytes() {
         let surface = result.expect("surface");
         assert_eq!(surface.dimensions, (roi.w, roi.h));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -580,7 +604,7 @@ fn fast420_full_batch_decode_uses_shared_surface_offsets() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_420);
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet"));
     let requests = vec![
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -589,7 +613,7 @@ fn fast420_full_batch_decode_uses_shared_surface_offsets() {
             batch::BatchOp::Full,
             None,
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
         ),
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -615,7 +639,10 @@ fn fast420_full_batch_decode_uses_shared_surface_offsets() {
         let surface = result.as_ref().expect("surface");
         assert_eq!(surface.dimensions, (16, 16));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
         let Storage::Metal { offset, .. } = &surface.storage else {
             panic!("expected Metal storage");
         };
@@ -631,7 +658,7 @@ fn fast420_split_full_batch_decode_matches_cpu_bytes() {
 
     let jpeg = generated_rgb_jpeg(32);
     let input = Arc::<[u8]>::from(jpeg.into_boxed_slice());
-    let packet = j2k_jpeg::adapter::build_fast420_packet(input.as_ref()).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(input.as_ref()).expect("packet"));
     let requests = vec![
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -640,7 +667,7 @@ fn fast420_split_full_batch_decode_matches_cpu_bytes() {
             batch::BatchOp::Full,
             None,
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
         ),
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -679,7 +706,10 @@ fn fast420_split_full_batch_decode_matches_cpu_bytes() {
         let surface = result.expect("surface");
         assert_eq!(surface.dimensions, (32, 32));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -690,7 +720,7 @@ fn fast420_batch_clears_high_ac_before_dc_only_blocks() {
     }
 
     let input = Arc::<[u8]>::from(fast420_high_ac_then_dc_only_jpeg(1));
-    let packet = j2k_jpeg::adapter::build_fast420_packet(input.as_ref()).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(input.as_ref()).expect("packet"));
     let requests = vec![
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -699,7 +729,7 @@ fn fast420_batch_clears_high_ac_before_dc_only_blocks() {
             batch::BatchOp::Full,
             None,
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
         ),
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -725,7 +755,10 @@ fn fast420_batch_clears_high_ac_before_dc_only_blocks() {
         let surface = result.expect("surface");
         assert_eq!(surface.dimensions, (16, 16));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -736,7 +769,7 @@ fn fast420_batch_matches_cpu_for_high_ac_overflow_coefficients() {
     }
 
     let input = Arc::<[u8]>::from(fast420_high_ac_then_dc_only_jpeg(u8::MAX));
-    let packet = j2k_jpeg::adapter::build_fast420_packet(input.as_ref()).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(input.as_ref()).expect("packet"));
     let requests = vec![
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -745,7 +778,7 @@ fn fast420_batch_matches_cpu_for_high_ac_overflow_coefficients() {
             batch::BatchOp::Full,
             None,
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
         ),
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -771,7 +804,10 @@ fn fast420_batch_matches_cpu_for_high_ac_overflow_coefficients() {
         let surface = result.expect("surface");
         assert_eq!(surface.dimensions, (16, 16));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -782,7 +818,7 @@ fn fast420_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet"));
     let roi = j2k_jpeg::Rect {
         x: 3,
         y: 2,
@@ -816,7 +852,10 @@ fn fast420_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
 
     assert_eq!(surface.dimensions, (scaled_roi.w, scaled_roi.h));
     assert_eq!(surface.fmt, PixelFormat::Rgb8);
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[test]
@@ -826,7 +865,7 @@ fn fast420_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_420);
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet"));
     let roi = Rect {
         x: 3,
         y: 2,
@@ -842,7 +881,7 @@ fn fast420_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
             batch::BatchOp::RegionScaled { roi, scale },
             None,
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
         ),
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -878,7 +917,10 @@ fn fast420_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
         let surface = result.expect("surface");
         assert_eq!(surface.dimensions, (scaled.w, scaled.h));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -889,7 +931,7 @@ fn fast420_scaled_batch_decode_matches_cpu_scaled_bytes() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_420);
-    let packet = j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast420_packet(BASELINE_420).expect("packet"));
     let scale = j2k_core::Downscale::Quarter;
     let requests = vec![
         batch::QueuedRequest::new(
@@ -899,7 +941,7 @@ fn fast420_scaled_batch_decode_matches_cpu_scaled_bytes() {
             batch::BatchOp::Scaled(scale),
             None,
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
         ),
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -925,7 +967,10 @@ fn fast420_scaled_batch_decode_matches_cpu_scaled_bytes() {
         let surface = result.expect("surface");
         assert_eq!(surface.dimensions, (4, 4));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -936,7 +981,7 @@ fn fast422_packet_full_decode_matches_cpu_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet"));
     let (expected, _) = decoder
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu full decode");
@@ -948,7 +993,10 @@ fn fast422_packet_full_decode_matches_cpu_bytes() {
     })
     .expect("metal full decode");
 
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[test]
@@ -958,7 +1006,7 @@ fn fast422_full_batch_decode_matches_cpu_bytes() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_422);
-    let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet"));
     let requests = vec![
         batch::QueuedRequest::new(
             Arc::clone(&input),
@@ -966,7 +1014,7 @@ fn fast422_full_batch_decode_matches_cpu_bytes() {
             BackendRequest::Metal,
             batch::BatchOp::Full,
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
             None,
         ),
         batch::QueuedRequest::new(
@@ -993,7 +1041,10 @@ fn fast422_full_batch_decode_matches_cpu_bytes() {
         let surface = result.as_ref().expect("surface");
         assert_eq!(surface.dimensions, (16, 8));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
         let Storage::Metal { offset, .. } = &surface.storage else {
             panic!("expected Metal storage");
         };
@@ -1008,7 +1059,7 @@ fn fast422_packet_region_decode_matches_cpu_region_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet"));
     let roi = j2k_jpeg::Rect {
         x: 3,
         y: 1,
@@ -1029,7 +1080,10 @@ fn fast422_packet_region_decode_matches_cpu_region_bytes() {
 
     assert_eq!(surface.dimensions, (roi.w, roi.h));
     assert_eq!(surface.fmt, PixelFormat::Rgb8);
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[test]
@@ -1039,7 +1093,7 @@ fn fast422_region_batch_decode_matches_cpu_region_bytes() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_422);
-    let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet"));
     let roi = Rect {
         x: 3,
         y: 1,
@@ -1053,7 +1107,7 @@ fn fast422_region_batch_decode_matches_cpu_region_bytes() {
             BackendRequest::Metal,
             batch::BatchOp::Region(roi),
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
             None,
         ),
         batch::QueuedRequest::new(
@@ -1088,7 +1142,10 @@ fn fast422_region_batch_decode_matches_cpu_region_bytes() {
         let surface = result.expect("surface");
         assert_eq!(surface.dimensions, (roi.w, roi.h));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1099,7 +1156,7 @@ fn fast422_packet_scaled_decode_matches_cpu_scaled_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet"));
     for (scale, dims) in [
         (j2k_core::Downscale::Half, (8, 4)),
         (j2k_core::Downscale::Quarter, (4, 2)),
@@ -1122,7 +1179,10 @@ fn fast422_packet_scaled_decode_matches_cpu_scaled_bytes() {
 
         assert_eq!(surface.dimensions, dims);
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1133,7 +1193,7 @@ fn fast422_scaled_batch_decode_matches_cpu_scaled_bytes() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_422);
-    let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet"));
     let scale = j2k_core::Downscale::Quarter;
     let requests = vec![
         batch::QueuedRequest::new(
@@ -1142,7 +1202,7 @@ fn fast422_scaled_batch_decode_matches_cpu_scaled_bytes() {
             BackendRequest::Metal,
             batch::BatchOp::Scaled(scale),
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
             None,
         ),
         batch::QueuedRequest::new(
@@ -1169,7 +1229,10 @@ fn fast422_scaled_batch_decode_matches_cpu_scaled_bytes() {
         let surface = result.expect("surface");
         assert_eq!(surface.dimensions, (4, 2));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1180,7 +1243,7 @@ fn fast422_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_422).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet"));
     let roi = j2k_jpeg::Rect {
         x: 3,
         y: 1,
@@ -1213,7 +1276,10 @@ fn fast422_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
 
     assert_eq!(surface.dimensions, (scaled_roi.w, scaled_roi.h));
     assert_eq!(surface.fmt, PixelFormat::Rgb8);
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[test]
@@ -1223,7 +1289,7 @@ fn fast422_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_422);
-    let packet = j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast422_packet(BASELINE_422).expect("packet"));
     let roi = Rect {
         x: 3,
         y: 1,
@@ -1238,7 +1304,7 @@ fn fast422_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
             BackendRequest::Metal,
             batch::BatchOp::RegionScaled { roi, scale },
             None,
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
             None,
         ),
         batch::QueuedRequest::new(
@@ -1275,7 +1341,10 @@ fn fast422_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
         let surface = result.expect("surface");
         assert_eq!(surface.dimensions, (scaled.w, scaled.h));
         assert_eq!(surface.fmt, PixelFormat::Rgb8);
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1286,7 +1355,7 @@ fn fast444_packet_full_decode_matches_cpu_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet"));
     let (expected, _) = decoder
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("cpu full decode");
@@ -1303,7 +1372,10 @@ fn fast444_packet_full_decode_matches_cpu_bytes() {
         surface.residency(),
         crate::SurfaceResidency::MetalResidentDecode
     );
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[test]
@@ -1313,7 +1385,7 @@ fn fast444_packet_scaled_decode_matches_cpu_scaled_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet"));
     for scale in [j2k_core::Downscale::Half, j2k_core::Downscale::Quarter] {
         let (expected, _) = decoder
             .decode_request(DecodeRequest::scaled(PixelFormat::Rgb8, scale))
@@ -1336,7 +1408,10 @@ fn fast444_packet_scaled_decode_matches_cpu_scaled_bytes() {
             surface.residency(),
             crate::SurfaceResidency::MetalResidentDecode
         );
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1347,7 +1422,7 @@ fn fast444_packet_region_decode_matches_cpu_region_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet"));
     let roi = j2k_jpeg::Rect {
         x: 1,
         y: 2,
@@ -1377,7 +1452,10 @@ fn fast444_packet_region_decode_matches_cpu_region_bytes() {
         surface.residency(),
         crate::SurfaceResidency::MetalResidentDecode
     );
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[test]
@@ -1387,7 +1465,7 @@ fn fast444_region_batch_decode_matches_cpu_region_bytes() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_444);
-    let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet"));
     let roi = Rect {
         x: 1,
         y: 2,
@@ -1400,7 +1478,7 @@ fn fast444_region_batch_decode_matches_cpu_region_bytes() {
             PixelFormat::Rgb8,
             BackendRequest::Metal,
             batch::BatchOp::Region(roi),
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
             None,
             None,
         ),
@@ -1440,7 +1518,10 @@ fn fast444_region_batch_decode_matches_cpu_region_bytes() {
             surface.residency(),
             crate::SurfaceResidency::MetalResidentDecode
         );
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1451,7 +1532,7 @@ fn fast444_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
     }
 
     let decoder = CpuDecoder::new(BASELINE_444).expect("decoder");
-    let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet"));
     let roi = j2k_jpeg::Rect {
         x: 1,
         y: 2,
@@ -1489,7 +1570,10 @@ fn fast444_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
         surface.residency(),
         crate::SurfaceResidency::MetalResidentDecode
     );
-    assert_eq!(surface.as_bytes(), expected.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        expected.as_slice()
+    );
 }
 
 #[test]
@@ -1499,7 +1583,7 @@ fn fast444_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_444);
-    let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet"));
     let roi = Rect {
         x: 1,
         y: 2,
@@ -1513,7 +1597,7 @@ fn fast444_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
             PixelFormat::Rgb8,
             BackendRequest::Metal,
             batch::BatchOp::RegionScaled { roi, scale },
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
             None,
             None,
         ),
@@ -1555,7 +1639,10 @@ fn fast444_region_scaled_batch_decode_matches_cpu_region_scaled_bytes() {
             surface.residency(),
             crate::SurfaceResidency::MetalResidentDecode
         );
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 
@@ -1566,7 +1653,7 @@ fn fast444_scaled_batch_decode_matches_cpu_scaled_bytes() {
     }
 
     let input = Arc::<[u8]>::from(BASELINE_444);
-    let packet = j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet");
+    let packet = Arc::new(j2k_jpeg::adapter::build_fast444_packet(BASELINE_444).expect("packet"));
     let scale = j2k_core::Downscale::Quarter;
     let requests = vec![
         batch::QueuedRequest::new(
@@ -1574,7 +1661,7 @@ fn fast444_scaled_batch_decode_matches_cpu_scaled_bytes() {
             PixelFormat::Rgb8,
             BackendRequest::Metal,
             batch::BatchOp::Scaled(scale),
-            Some(packet.clone()),
+            Some(Arc::clone(&packet)),
             None,
             None,
         ),
@@ -1606,7 +1693,10 @@ fn fast444_scaled_batch_decode_matches_cpu_scaled_bytes() {
             surface.residency(),
             crate::SurfaceResidency::MetalResidentDecode
         );
-        assert_eq!(surface.as_bytes(), expected.as_slice());
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice()
+        );
     }
 }
 

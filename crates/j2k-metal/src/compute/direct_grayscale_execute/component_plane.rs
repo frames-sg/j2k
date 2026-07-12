@@ -4,7 +4,7 @@ use j2k_native::J2kDirectStoreStep;
 use metal::ComputeCommandEncoderRef;
 
 use super::{
-    borrow_mut_slice_buffer, decode_prepared_classic_sub_band_group_on_cpu_profile,
+    copied_slice_buffer, decode_prepared_classic_sub_band_group_on_cpu_profile,
     decode_prepared_classic_sub_band_on_cpu_profile,
     decode_prepared_ht_sub_band_group_on_cpu_profile, decode_prepared_ht_sub_band_on_cpu_profile,
     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets,
@@ -15,12 +15,12 @@ use super::{
     encode_prepared_ht_sub_band_group_to_buffer_in_encoder,
     encode_prepared_ht_sub_band_to_buffer_in_encoder, hybrid_stage_signpost,
     idwt_input_windows_from_slices, lookup_direct_band_slice, lookup_direct_band_slice_entry,
-    metal_profile_stages_enabled, prepared_idwt_output_len, prepared_idwt_params, size_of,
-    take_f32_scratch_buffer, BandRequiredRegion, Buffer, CommandBufferRef,
-    CpuTier1DecodeSubstageCounters, DirectBandSlice, DirectHybridStageTimings, DirectScratchBuffer,
-    DirectStatusCheck, DirectTier1Mode, Error, IdwtSubBandBuffers, Instant, J2kStoreParams,
-    J2kWaveletTransform, MetalRuntime, PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
-    SingleIdwtDispatch, SIGNPOST_DECODE_HYBRID_COEFFICIENT_UPLOAD,
+    metal_profile_stages_enabled, new_compute_command_encoder, prepared_idwt_output_len,
+    prepared_idwt_params, size_of, take_f32_scratch_buffer, BandRequiredRegion, Buffer,
+    CommandBufferRef, CpuTier1DecodeSubstageCounters, DirectBandSlice, DirectHybridStageTimings,
+    DirectScratchBuffer, DirectStatusCheck, DirectTier1Mode, Error, IdwtSubBandBuffers, Instant,
+    J2kStoreParams, J2kWaveletTransform, MetalRuntime, PreparedDirectGrayscalePlan,
+    PreparedDirectGrayscaleStep, SingleIdwtDispatch, SIGNPOST_DECODE_HYBRID_COEFFICIENT_UPLOAD,
 };
 use crate::compute::{
     PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedDirectIdwt, PreparedHtSubBand,
@@ -43,15 +43,13 @@ pub(in crate::compute) fn checked_coefficient_len(
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn upload_cpu_decoded_coefficients(
     runtime: &MetalRuntime,
-    mut coefficients: Vec<f32>,
+    coefficients: &[f32],
     retained_buffers: &mut Vec<Buffer>,
-    retained_cpu_coefficients: &mut Vec<Vec<f32>>,
-) -> Buffer {
+) -> Result<Buffer, Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_COEFFICIENT_UPLOAD);
-    let buffer = borrow_mut_slice_buffer(&runtime.device, &mut coefficients);
+    let buffer = copied_slice_buffer(&runtime.device, coefficients)?;
     retained_buffers.push(buffer.clone());
-    retained_cpu_coefficients.push(coefficients);
-    buffer
+    Ok(buffer)
 }
 
 #[cfg(target_os = "macos")]
@@ -62,7 +60,6 @@ pub(in crate::compute) struct DirectComponentPlaneRequest<'a> {
     pub(in crate::compute) tier1_mode: DirectTier1Mode,
     pub(in crate::compute) stage_timings: &'a mut DirectHybridStageTimings,
     pub(in crate::compute) retained_buffers: &'a mut Vec<Buffer>,
-    pub(in crate::compute) retained_cpu_coefficients: &'a mut Vec<Vec<f32>>,
     pub(in crate::compute) status_checks: &'a mut Vec<DirectStatusCheck>,
     pub(in crate::compute) scratch_buffers: &'a mut Vec<DirectScratchBuffer>,
 }
@@ -74,7 +71,6 @@ struct ComponentPlaneExecution<'a> {
     profile_stages: bool,
     stage_timings: &'a mut DirectHybridStageTimings,
     retained_buffers: &'a mut Vec<Buffer>,
-    retained_cpu_coefficients: &'a mut Vec<Vec<f32>>,
     status_checks: &'a mut Vec<DirectStatusCheck>,
     scratch_buffers: &'a mut Vec<DirectScratchBuffer>,
     bands: Vec<DirectBandSlice>,
@@ -98,12 +94,8 @@ impl ComponentPlaneExecution<'_> {
             counters.add_to_stage_timings(self.stage_timings);
         }
         let upload_started = self.profile_stages.then(Instant::now);
-        let buffer = upload_cpu_decoded_coefficients(
-            self.runtime,
-            coefficients,
-            self.retained_buffers,
-            self.retained_cpu_coefficients,
-        );
+        let buffer =
+            upload_cpu_decoded_coefficients(self.runtime, &coefficients, self.retained_buffers)?;
         if let Some(started) = upload_started {
             self.stage_timings.coefficient_upload += elapsed_us(started);
         }
@@ -277,7 +269,7 @@ impl ComponentPlaneExecution<'_> {
                     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets(
                         self.encoder,
                         dispatch,
-                    ),
+                    )?,
                 );
             }
         }
@@ -358,22 +350,24 @@ pub(in crate::compute) fn encode_prepared_direct_component_plane_in_command_buff
         tier1_mode,
         stage_timings,
         retained_buffers,
-        retained_cpu_coefficients,
         status_checks,
         scratch_buffers,
     } = request;
-    let encoder = command_buffer.new_compute_command_encoder();
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K MetalDirect component band metadata",
+    );
+    let bands = budget.try_vec(plan.steps.len(), "J2K MetalDirect component band metadata")?;
+    let encoder = new_compute_command_encoder(command_buffer)?;
     let mut execution = ComponentPlaneExecution {
         runtime,
-        encoder,
+        encoder: &encoder,
         tier1_mode,
         profile_stages: metal_profile_stages_enabled(),
         stage_timings,
         retained_buffers,
-        retained_cpu_coefficients,
         status_checks,
         scratch_buffers,
-        bands: Vec::new(),
+        bands,
         final_plane: None,
     };
     let result = (|| {

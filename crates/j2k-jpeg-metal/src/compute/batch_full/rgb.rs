@@ -6,18 +6,19 @@ use std::{sync::MutexGuard, time::Instant};
 
 use super::super::{
     batch, batch_entropy_host_data, batch_output_buffer_or_new, bind_fast_decode_entropy_inputs,
-    bind_three_plane_pack, checked_u32, copy_grouped_surfaces_to_output, dispatch_1d_pipeline,
-    dispatch_3d_pipeline, entropy_checkpoint_hosts, fast_batch_decode_mode,
-    fast_packet_huffman_tables, fast_subsampled_full_rgb_batch_groups,
-    fast_subsampled_packets_share_full_rgb_batch_shape, packed_pair_extent,
-    surface_batch_error_results, surface_batch_success_results, wait_for_completion_jpeg,
-    BatchEntropyHostData, BatchEntropyLabels, BatchedFastPacket, Buffer, CommandBufferRef, Error,
-    FastBatchDecodeMode, FastBatchTiming, FastDecodeEntropyInputs, FastSubsampledMetal,
-    JpegDecodeStatus, JpegFast420BatchParams, MetalBatchScratch, MetalRuntime, PixelFormat,
-    PreparedHuffmanHost, Surface,
+    bind_three_plane_pack, checked_u32, dispatch_1d_pipeline, dispatch_3d_pipeline,
+    fast_batch_decode_mode, fast_packet_huffman_tables, fast_subsampled_full_rgb_batch_groups,
+    fast_subsampled_packets_share_full_rgb_batch_shape, new_command_buffer,
+    new_compute_command_encoder, packed_pair_extent, surface_batch_error_results,
+    surface_batch_success_results, wait_for_completion_jpeg, BatchEntropyHostData,
+    BatchEntropyLabels, BatchedFastPacket, Buffer, CommandBufferRef, Error, FastBatchDecodeMode,
+    FastBatchTiming, FastDecodeEntropyInputs, FastSubsampledMetal, JpegDecodeStatus,
+    JpegEntropyCheckpointHost, JpegFast420BatchParams, MetalBatchScratch, MetalRuntime,
+    PixelFormat, PreparedHuffmanHost, Surface,
 };
 #[cfg(test)]
-use super::super::{encode_split_coeff_idct_passes, MTLResourceOptions, SplitCoeffIdctPasses};
+use super::super::{encode_split_coeff_idct_passes, new_private_buffer, SplitCoeffIdctPasses};
+use super::rgb_grouped::try_decode_grouped_fast_subsampled_full_rgb_batch_to_surfaces_with_output;
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces<
@@ -81,7 +82,14 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
         return Ok(None);
     }
 
-    let mut family_packets = Vec::with_capacity(packets.len());
+    let mut packet_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal full RGB family packet plan",
+        requests,
+    )?;
+    let mut family_packets = packet_budget.try_vec(
+        packets.len(),
+        "JPEG Metal full RGB family packet references",
+    )?;
     for packet in packets {
         let Some(packet) = P::from_batched(packet) else {
             return Ok(None);
@@ -98,7 +106,7 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
         return Ok(None);
     }
 
-    let Some(groups) = fast_subsampled_full_rgb_batch_groups(&family_packets) else {
+    let Some(groups) = fast_subsampled_full_rgb_batch_groups(requests, &family_packets)? else {
         return Ok(None);
     };
     if groups.len() > 1 {
@@ -128,6 +136,10 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
     }
 
     let timing_entropy_start = timing_enabled.then(Instant::now);
+    let entropy_owner_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal full RGB entropy owners",
+        requests,
+    )?;
     let Some(entropy_data) = batch_entropy_host_data(
         family_packets.iter().map(|packet| packet.entropy_bytes()),
         family_packets
@@ -135,8 +147,8 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
             .map(|packet| packet.entropy_checkpoints()),
         tile_count,
         segment_count,
+        entropy_owner_budget.live_bytes(),
         BatchEntropyLabels {
-            total_len_overflow: "JPEG Metal batch entropy length overflowed",
             offset: "batch entropy offset",
             len: "batch entropy length",
         },
@@ -154,6 +166,7 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
     let mut batch_scratch = runtime.batch_scratch()?;
     let buffers = full_rgb_surface_batch_buffers::<P>(
         runtime,
+        requests,
         &mut batch_scratch,
         output,
         first,
@@ -167,7 +180,7 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
     }
 
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
-    let mut command_buffer = runtime.queue.new_command_buffer();
+    let mut command_buffer = new_command_buffer(&runtime.queue)?;
     let decode_pass = FullRgbDecodePass {
         runtime,
         first,
@@ -187,7 +200,7 @@ pub(in crate::compute) fn try_decode_fast_subsampled_full_rgb_batch_to_surfaces_
             runtime,
             requests,
             first,
-            command_buffer,
+            command_buffer: &command_buffer,
             batch_scratch,
             buffers: &buffers,
             shape,
@@ -355,6 +368,7 @@ fn full_rgb_surface_total_blocks<P: FastSubsampledMetal>(
 )]
 fn full_rgb_surface_batch_buffers<P: FastSubsampledMetal>(
     runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
     batch_scratch: &mut MetalBatchScratch,
     output: Option<&crate::MetalBatchOutputBuffer>,
     first: &P,
@@ -365,17 +379,17 @@ fn full_rgb_surface_batch_buffers<P: FastSubsampledMetal>(
         &runtime.device,
         P::FULL_BATCH_KEYS.y,
         shape.y_len * shape.tile_count,
-    );
+    )?;
     let cb_plane = batch_scratch.private_buffer(
         &runtime.device,
         P::FULL_BATCH_KEYS.cb,
         shape.chroma_len * shape.tile_count,
-    );
+    )?;
     let cr_plane = batch_scratch.private_buffer(
         &runtime.device,
         P::FULL_BATCH_KEYS.cr,
         shape.chroma_len * shape.tile_count,
-    );
+    )?;
     let out_buffer = batch_output_buffer_or_new(
         runtime,
         output,
@@ -384,8 +398,20 @@ fn full_rgb_surface_batch_buffers<P: FastSubsampledMetal>(
         shape.out_stride,
         shape.out_tile_len,
     )?;
-    let statuses = vec![JpegDecodeStatus::default(); shape.total_decode_threads as usize];
-    let checkpoint_hosts = entropy_checkpoint_hosts(&entropy_data.checkpoints)?;
+    let mut metadata_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal full RGB entropy and status metadata",
+        requests,
+    )?;
+    metadata_budget.account_capacity::<u8>(entropy_data.bytes.capacity())?;
+    metadata_budget.account_capacity::<u32>(entropy_data.offsets.capacity())?;
+    metadata_budget.account_capacity::<u32>(entropy_data.lens.capacity())?;
+    metadata_budget
+        .account_capacity::<JpegEntropyCheckpointHost>(entropy_data.checkpoints.capacity())?;
+    let statuses = metadata_budget.try_filled(
+        shape.total_decode_threads as usize,
+        JpegDecodeStatus::default(),
+        "JPEG Metal full RGB decode statuses",
+    )?;
     Ok(FullRgbSurfaceBatchBuffers {
         y_plane,
         cb_plane,
@@ -395,34 +421,34 @@ fn full_rgb_surface_batch_buffers<P: FastSubsampledMetal>(
             &runtime.device,
             P::FULL_BATCH_KEYS.status,
             &statuses,
-        ),
+        )?,
         entropy_buffer: batch_scratch.shared_buffer_with_bytes(
             &runtime.device,
             P::FULL_BATCH_KEYS.entropy,
             &entropy_data.bytes,
-        ),
+        )?,
         entropy_offsets_buffer: batch_scratch.shared_buffer_with_slice(
             &runtime.device,
             P::FULL_BATCH_KEYS.entropy_offsets,
             &entropy_data.offsets,
-        ),
+        )?,
         entropy_lens_buffer: batch_scratch.shared_buffer_with_slice(
             &runtime.device,
             P::FULL_BATCH_KEYS.entropy_lens,
             &entropy_data.lens,
-        ),
+        )?,
         entropy_checkpoints_buffer: batch_scratch.shared_buffer_with_slice(
             &runtime.device,
             P::FULL_BATCH_KEYS.entropy_checkpoints,
-            &checkpoint_hosts,
-        ),
+            &entropy_data.checkpoints,
+        )?,
     })
 }
 
 #[cfg(target_os = "macos")]
-fn encode_fast_subsampled_full_rgb_decode<'a, P: FastSubsampledMetal>(
-    pass: &FullRgbDecodePass<'a, P>,
-    command_buffer: &mut &'a CommandBufferRef,
+fn encode_fast_subsampled_full_rgb_decode<P: FastSubsampledMetal>(
+    pass: &FullRgbDecodePass<'_, P>,
+    command_buffer: &mut super::super::CommandBuffer,
     timing_enabled: bool,
     timing: &mut FastBatchTiming,
 ) -> Result<Option<(Buffer, Buffer)>, Error> {
@@ -430,10 +456,10 @@ fn encode_fast_subsampled_full_rgb_decode<'a, P: FastSubsampledMetal>(
         FastBatchDecodeMode::Fused => {
             let timing_encode_start = timing_enabled.then(Instant::now);
             let decode_pipeline = P::full_rgb_batch_decode_pipeline(pass.runtime);
-            let decoder_encoder = command_buffer.new_compute_command_encoder();
+            let decoder_encoder = new_compute_command_encoder(command_buffer)?;
             decoder_encoder.set_compute_pipeline_state(decode_pipeline);
             bind_fast_decode_entropy_inputs::<JpegFast420BatchParams>(
-                decoder_encoder,
+                &decoder_encoder,
                 &FastDecodeEntropyInputs {
                     entropy_buffer: &pass.buffers.entropy_buffer,
                     planes: [
@@ -456,7 +482,7 @@ fn encode_fast_subsampled_full_rgb_decode<'a, P: FastSubsampledMetal>(
             );
             decoder_encoder.set_buffer(17, Some(&pass.buffers.entropy_checkpoints_buffer), 0);
             dispatch_1d_pipeline(
-                decoder_encoder,
+                &decoder_encoder,
                 decode_pipeline,
                 pass.shape.total_decode_threads,
             );
@@ -468,8 +494,8 @@ fn encode_fast_subsampled_full_rgb_decode<'a, P: FastSubsampledMetal>(
                 command_buffer.commit();
                 let timing_wait_start = Instant::now();
                 let completed =
-                    std::mem::replace(command_buffer, pass.runtime.queue.new_command_buffer());
-                wait_for_completion_jpeg(completed)?;
+                    std::mem::replace(command_buffer, new_command_buffer(&pass.runtime.queue)?);
+                wait_for_completion_jpeg(&completed)?;
                 timing.wait_decode = timing_wait_start.elapsed();
             }
             Ok(None)
@@ -524,12 +550,8 @@ fn encode_fast_subsampled_full_rgb_split_decode<P: FastSubsampledMetal>(
                     P::FAMILY_NAME
                 ),
             })?;
-    let coeff_blocks = runtime
-        .device
-        .new_buffer(coeff_bytes as u64, MTLResourceOptions::StorageModePrivate);
-    let dc_only_flags = runtime
-        .device
-        .new_buffer(total_blocks as u64, MTLResourceOptions::StorageModePrivate);
+    let coeff_blocks = new_private_buffer(&runtime.device, coeff_bytes)?;
+    let dc_only_flags = new_private_buffer(&runtime.device, total_blocks)?;
 
     encode_split_coeff_idct_passes(SplitCoeffIdctPasses {
         command_buffer,
@@ -549,7 +571,7 @@ fn encode_fast_subsampled_full_rgb_split_decode<P: FastSubsampledMetal>(
         scratch: (&coeff_blocks, &dc_only_flags),
         total_decode_threads: shape.total_decode_threads,
         idct_grid: (first.mcus_per_row(), first.mcu_rows(), idct_component_depth),
-    });
+    })?;
     Ok(Some((coeff_blocks, dc_only_flags)))
 }
 
@@ -571,10 +593,10 @@ fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
     } = state;
     let timing_pack_encode_start = timing.enabled.then(Instant::now);
     let pack_pipeline = P::pack_full_rgb_batch_pipeline(runtime);
-    let pack_encoder = command_buffer.new_compute_command_encoder();
+    let pack_encoder = new_compute_command_encoder(command_buffer)?;
     pack_encoder.set_compute_pipeline_state(pack_pipeline);
     bind_three_plane_pack::<JpegFast420BatchParams>(
-        pack_encoder,
+        &pack_encoder,
         [
             Some(&buffers.y_plane),
             Some(&buffers.cb_plane),
@@ -584,7 +606,7 @@ fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
         &shape.params,
     );
     dispatch_3d_pipeline(
-        pack_encoder,
+        &pack_encoder,
         pack_pipeline,
         (
             packed_pair_extent(shape.width),
@@ -626,106 +648,13 @@ fn finish_fast_subsampled_full_rgb_batch<P: FastSubsampledMetal>(
     {
         return Ok(results);
     }
-    Ok(surface_batch_success_results(
+    surface_batch_success_results(
+        requests,
         &buffers.out_buffer,
         first.dimensions(),
         PixelFormat::Rgb8,
         requests.len(),
         shape.out_tile_len,
         output,
-    ))
-}
-
-#[cfg(target_os = "macos")]
-fn try_decode_grouped_fast_subsampled_full_rgb_batch_to_surfaces_with_output<
-    P: FastSubsampledMetal,
->(
-    runtime: &MetalRuntime,
-    requests: &[batch::QueuedRequest],
-    family_packets: &[&P],
-    decode_mode: FastBatchDecodeMode,
-    output: Option<&crate::MetalBatchOutputBuffer>,
-    groups: Vec<Vec<usize>>,
-) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
-    if let Some(output) = output {
-        for packet in family_packets {
-            let out_stride = packet.dimensions().0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
-            let out_tile_len = out_stride * packet.dimensions().1 as usize;
-            batch_output_buffer_or_new(
-                runtime,
-                Some(output),
-                packet.dimensions(),
-                requests.len(),
-                out_stride,
-                out_tile_len,
-            )?;
-        }
-    }
-
-    let mut merged_results: Vec<Option<Result<Surface, Error>>> =
-        (0..requests.len()).map(|_| None).collect();
-    for group_indices in groups {
-        let group_requests = group_indices
-            .iter()
-            .map(|&index| requests[index].clone())
-            .collect::<Vec<_>>();
-        let group_packets = group_indices
-            .iter()
-            .map(|&index| family_packets[index].to_batched())
-            .collect::<Vec<_>>();
-
-        let Some(group_results) =
-            try_decode_fast_subsampled_full_rgb_batch_to_surfaces_with_mode_and_output::<P>(
-                runtime,
-                &group_requests,
-                &group_packets,
-                decode_mode,
-                None,
-            )?
-        else {
-            return Ok(None);
-        };
-
-        if let Some(output) = output {
-            let Some(&first_group_index) = group_indices.first() else {
-                continue;
-            };
-            let packet = family_packets[first_group_index];
-            let out_stride = packet.dimensions().0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
-            let out_tile_len = out_stride * packet.dimensions().1 as usize;
-            for (original_index, result) in copy_grouped_surfaces_to_output(
-                runtime,
-                output,
-                packet.dimensions(),
-                out_tile_len,
-                &group_indices,
-                group_results,
-            )? {
-                merged_results[original_index] = Some(result);
-            }
-        } else {
-            if group_results.len() != group_indices.len() {
-                return Err(Error::MetalKernel {
-                    message: format!(
-                        "JPEG Metal grouped {} buffer result count mismatch",
-                        P::FAMILY_NAME
-                    ),
-                });
-            }
-            for (original_index, result) in group_indices.into_iter().zip(group_results) {
-                merged_results[original_index] = Some(result);
-            }
-        }
-    }
-
-    let mut results = Vec::with_capacity(requests.len());
-    for (index, result) in merged_results.into_iter().enumerate() {
-        results.push(result.ok_or_else(|| Error::MetalKernel {
-            message: format!(
-                "JPEG Metal grouped {} buffer result for tile {index} was missing",
-                P::FAMILY_NAME
-            ),
-        })?);
-    }
-    Ok(Some(results))
+    )
 }

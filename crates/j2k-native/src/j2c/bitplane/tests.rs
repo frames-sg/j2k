@@ -86,7 +86,7 @@ fn classic_tier1_round_trips_38_bit_coefficients() {
         4,
         SubBandType::LowLow,
         38,
-        &style,
+        style,
     );
     let segments = encoded
         .segments
@@ -138,7 +138,7 @@ fn assert_code_block_round_trip(
         height,
         sub_band_type,
         total_bitplanes,
-        &style,
+        style,
     );
     let segments = encoded
         .segments
@@ -194,7 +194,7 @@ fn classic_bitplane_round_trips_seed_130_cb_block() {
         64,
         SubBandType::LowLow,
         8,
-        &style,
+        style,
     );
     let segments = encoded
         .segments

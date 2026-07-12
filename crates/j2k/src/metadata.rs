@@ -20,7 +20,7 @@ pub struct J2kComponentInfo {
 ///
 /// This preserves the existing compact [`Info`] summary while exposing fields
 /// needed to reason about full Part 1 / Part 15 support surfaces.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct J2kSupportInfo {
     /// Backward-compatible metadata summary used by shared codec traits.
     pub info: Info,
@@ -68,7 +68,7 @@ impl J2kSupportInfo {
 }
 
 /// JP2/JPH file-wrapper metadata preserved by public inspection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct J2kFileMetadata {
     /// Bits-per-component box entries, when BPCC is present.
     pub bits_per_component: Vec<J2kComponentInfo>,
@@ -99,7 +99,7 @@ impl J2kFileMetadata {
 }
 
 /// Parsed JP2/JPH Palette box.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct J2kPaletteMetadata {
     /// Palette column descriptors in box order.
     pub columns: Vec<J2kPaletteColumn>,
@@ -188,7 +188,7 @@ pub enum J2kChannelAssociation {
 }
 
 /// Parsed JP2/JPH Colour Specification box.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum J2kColorSpec {
     /// Enumerated color space value from a method-1 COLR box.
     Enumerated {

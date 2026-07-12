@@ -2,12 +2,12 @@
 
 #[cfg(target_os = "macos")]
 use super::{
-    borrow_slice_buffer, checked_buffer_read, checked_buffer_slice, commit_and_wait_metal,
+    checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
     decode_ht_status_error, dispatch_single_thread, dispatch_zero_u32_buffer_in_encoder,
-    ht_batch_output_word_count, ht_output_word_count, size_of, zeroed_shared_buffer, Buffer,
-    CommandBufferRef, ComputeCommandEncoderRef, DirectStatusCheck, Error, J2kHtCleanupBatchJob,
-    J2kHtCleanupParams, J2kHtRepeatedBatchParams, J2kHtStatus, MTLSize, MetalRuntime,
-    J2K_HT_STATUS_OK,
+    ht_batch_output_word_count, ht_output_word_count, new_command_buffer,
+    new_compute_command_encoder, size_of, zeroed_shared_buffer, Buffer, CommandBufferRef,
+    ComputeCommandEncoderRef, DirectStatusCheck, Error, J2kHtCleanupBatchJob, J2kHtCleanupParams,
+    J2kHtRepeatedBatchParams, J2kHtStatus, MTLSize, MetalRuntime, J2K_HT_STATUS_OK,
 };
 
 #[cfg(target_os = "macos")]
@@ -17,14 +17,14 @@ pub(in crate::compute) fn dispatch_ht_cleanup(
     params: J2kHtCleanupParams,
     decoded: &Buffer,
 ) -> Result<(), Error> {
-    let input = borrow_slice_buffer(&runtime.device, coded_data);
-    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kHtStatus>());
+    let input = copied_slice_buffer(&runtime.device, coded_data)?;
+    let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kHtStatus>())?;
 
-    let command_buffer = runtime.queue.new_command_buffer();
-    let encoder = command_buffer.new_compute_command_encoder();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
+    let encoder = new_compute_command_encoder(&command_buffer)?;
     dispatch_zero_u32_buffer_in_encoder(
         runtime,
-        encoder,
+        &encoder,
         decoded,
         ht_output_word_count(
             params.output_offset,
@@ -46,9 +46,9 @@ pub(in crate::compute) fn dispatch_ht_cleanup(
     encoder.set_buffer(5, Some(&runtime.ht_uvlc_table0), 0);
     encoder.set_buffer(6, Some(&runtime.ht_uvlc_table1), 0);
     encoder.set_buffer(7, Some(&status_buffer), 0);
-    dispatch_single_thread(encoder);
+    dispatch_single_thread(&encoder);
     encoder.end_encoding();
-    commit_and_wait_metal(command_buffer)?;
+    commit_and_wait_metal(&command_buffer)?;
 
     let status = checked_buffer_read::<J2kHtStatus>(&status_buffer, "HT cleanup status")?;
     if status.code != J2K_HT_STATUS_OK {
@@ -65,18 +65,18 @@ pub(in crate::compute) fn dispatch_ht_cleanup_batched(
     jobs: &[J2kHtCleanupBatchJob],
     decoded: &Buffer,
 ) -> Result<(), Error> {
-    let input = borrow_slice_buffer(&runtime.device, coded_data);
-    let jobs_buffer = borrow_slice_buffer(&runtime.device, jobs);
+    let input = copied_slice_buffer(&runtime.device, coded_data)?;
+    let jobs_buffer = copied_slice_buffer(&runtime.device, jobs)?;
     let status_buffer = zeroed_shared_buffer(
         &runtime.device,
         jobs.len().max(1) * size_of::<J2kHtStatus>(),
-    );
+    )?;
 
-    let command_buffer = runtime.queue.new_command_buffer();
-    let encoder = command_buffer.new_compute_command_encoder();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
+    let encoder = new_compute_command_encoder(&command_buffer)?;
     dispatch_zero_u32_buffer_in_encoder(
         runtime,
-        encoder,
+        &encoder,
         decoded,
         ht_batch_output_word_count(jobs)?,
     )?;
@@ -107,7 +107,7 @@ pub(in crate::compute) fn dispatch_ht_cleanup_batched(
         },
     );
     encoder.end_encoding();
-    commit_and_wait_metal(command_buffer)?;
+    commit_and_wait_metal(&command_buffer)?;
 
     let statuses =
         checked_buffer_slice::<J2kHtStatus>(&status_buffer, jobs.len(), "HT cleanup statuses")?;
@@ -133,13 +133,13 @@ pub(in crate::compute) fn dispatch_ht_cleanup_batched_in_command_buffer(
     decoded_word_count: usize,
 ) -> Result<DirectStatusCheck, Error> {
     let status_buffer =
-        zeroed_shared_buffer(&runtime.device, job_count.max(1) * size_of::<J2kHtStatus>());
+        zeroed_shared_buffer(&runtime.device, job_count.max(1) * size_of::<J2kHtStatus>())?;
 
-    let encoder = command_buffer.new_compute_command_encoder();
-    dispatch_zero_u32_buffer_in_encoder(runtime, encoder, decoded, decoded_word_count)?;
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    dispatch_zero_u32_buffer_in_encoder(runtime, &encoder, decoded, decoded_word_count)?;
     dispatch_ht_cleanup_batched_in_encoder_with_status(
         runtime,
-        encoder,
+        &encoder,
         coded_data,
         jobs,
         job_count,
@@ -165,7 +165,7 @@ pub(in crate::compute) fn dispatch_ht_cleanup_batched_in_encoder(
     decoded_word_count: usize,
 ) -> Result<DirectStatusCheck, Error> {
     let status_buffer =
-        zeroed_shared_buffer(&runtime.device, job_count.max(1) * size_of::<J2kHtStatus>());
+        zeroed_shared_buffer(&runtime.device, job_count.max(1) * size_of::<J2kHtStatus>())?;
     dispatch_zero_u32_buffer_in_encoder(runtime, encoder, decoded, decoded_word_count)?;
     dispatch_ht_cleanup_batched_in_encoder_with_status(
         runtime,
@@ -251,7 +251,7 @@ pub(in crate::compute) fn dispatch_ht_cleanup_repeated_batched_in_command_buffer
     let status_buffer = zeroed_shared_buffer(
         &runtime.device,
         total_job_count.max(1) * size_of::<J2kHtStatus>(),
-    );
+    )?;
     let batch_count =
         total_job_count
             .checked_div(base_job_count)
@@ -276,8 +276,8 @@ pub(in crate::compute) fn dispatch_ht_cleanup_repeated_batched_in_command_buffer
         })?,
     };
 
-    let encoder = command_buffer.new_compute_command_encoder();
-    dispatch_zero_u32_buffer_in_encoder(runtime, encoder, decoded, decoded_word_count)?;
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    dispatch_zero_u32_buffer_in_encoder(runtime, &encoder, decoded, decoded_word_count)?;
     encoder.set_compute_pipeline_state(&runtime.ht_cleanup_repeated_batched);
     encoder.set_buffer(0, Some(coded_data), 0);
     encoder.set_buffer(1, Some(decoded), 0);

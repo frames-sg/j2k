@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    borrow_slice_buffer, idwt_required_input_windows, idwt_required_output_margin,
+    copied_slice_buffer, idwt_required_input_windows, idwt_required_output_margin,
     prepare_classic_sub_band_groups, prepare_ht_sub_band_groups,
     prepare_ungrouped_ht_sub_band_buffers, with_runtime, DirectBandSlice, DirectTier1Mode, Error,
-    HashMap, J2kClassicCleanupBatchJob, J2kDirectBandId, J2kDirectIdwtStep, J2kDirectStoreStep,
+    J2kClassicCleanupBatchJob, J2kDirectBandId, J2kDirectIdwtStep, J2kDirectStoreStep,
     J2kHtCleanupBatchJob, J2kIdwtSingleDecompositionParams,
     J2kRepeatedIdwtSingleDecompositionParams, J2kRequiredBandRegion, PreparedDirectGrayscalePlan,
     PreparedDirectGrayscaleStep, PreparedDirectIdwt, PreparedHtSubBand, Rect,
@@ -53,10 +53,66 @@ pub(crate) fn crop_prepared_direct_grayscale_plan_to_output_region(
 pub(super) type BandRequiredRegion = J2kRequiredBandRegion;
 
 #[cfg(target_os = "macos")]
+pub(super) type BandRequiredRegions = Vec<(J2kDirectBandId, BandRequiredRegion)>;
+
+#[cfg(target_os = "macos")]
+struct RoiBandMaps {
+    required: BandRequiredRegions,
+    idwt_outputs: BandRequiredRegions,
+}
+
+#[cfg(target_os = "macos")]
+fn required_region(
+    regions: &BandRequiredRegions,
+    band_id: J2kDirectBandId,
+) -> Option<BandRequiredRegion> {
+    regions
+        .iter()
+        .find_map(|(candidate, region)| (*candidate == band_id).then_some(*region))
+}
+
+#[cfg(target_os = "macos")]
+fn allocate_roi_band_maps(steps: &[PreparedDirectGrayscaleStep]) -> Result<RoiBandMaps, Error> {
+    let required_capacity = steps.iter().try_fold(0usize, |total, step| {
+        let added = match step {
+            PreparedDirectGrayscaleStep::Idwt(_) => 4,
+            PreparedDirectGrayscaleStep::Store(_) => 1,
+            PreparedDirectGrayscaleStep::ClassicSubBand(_)
+            | PreparedDirectGrayscaleStep::HtSubBand(_) => 0,
+        };
+        crate::batch_allocation::checked_count_sum(
+            [total, added],
+            "J2K MetalDirect ROI required bands",
+        )
+    })?;
+    let idwt_capacity = steps
+        .iter()
+        .filter(|step| matches!(step, PreparedDirectGrayscaleStep::Idwt(_)))
+        .count();
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K MetalDirect ROI band maps");
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<(J2kDirectBandId, BandRequiredRegion)>(
+            required_capacity,
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<(J2kDirectBandId, BandRequiredRegion)>(
+            idwt_capacity,
+        ),
+    ])?;
+    Ok(RoiBandMaps {
+        required: budget.try_vec(required_capacity, "J2K MetalDirect ROI required bands")?,
+        idwt_outputs: budget.try_vec(idwt_capacity, "J2K MetalDirect ROI IDWT output windows")?,
+    })
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn prune_prepared_direct_grayscale_plan_to_store_windows(
     plan: &mut PreparedDirectGrayscalePlan,
 ) -> Result<(), Error> {
-    let mut required = HashMap::<J2kDirectBandId, BandRequiredRegion>::new();
+    let RoiBandMaps {
+        mut required,
+        mut idwt_outputs,
+    } = allocate_roi_band_maps(&plan.steps)?;
     for step in &plan.steps {
         if let PreparedDirectGrayscaleStep::Store(store) = step {
             let source_right = store
@@ -74,15 +130,14 @@ pub(super) fn prune_prepared_direct_grayscale_plan_to_store_windows(
             if let Some(region) =
                 BandRequiredRegion::new(store.source_x, store.source_y, source_right, source_bottom)
             {
-                add_required_region(&mut required, store.input_band_id, region);
+                add_required_region(&mut required, store.input_band_id, region)?;
             }
         }
     }
 
-    let mut idwt_output_windows = HashMap::<J2kDirectBandId, BandRequiredRegion>::new();
     for step in plan.steps.iter().rev() {
         if let PreparedDirectGrayscaleStep::Idwt(idwt) = step {
-            let Some(output_region) = required.get(&idwt.step.output_band_id).copied() else {
+            let Some(output_region) = required_region(&required, idwt.step.output_band_id) else {
                 continue;
             };
             // Native ROI uses conservative synthesis-support margins: 16 samples
@@ -94,8 +149,8 @@ pub(super) fn prune_prepared_direct_grayscale_plan_to_store_windows(
                 idwt.step.rect.width(),
                 idwt.step.rect.height(),
             );
-            idwt_output_windows.insert(idwt.step.output_band_id, expanded);
-            add_idwt_input_required_regions(&mut required, &idwt.step, expanded);
+            set_required_region(&mut idwt_outputs, idwt.step.output_band_id, expanded)?;
+            add_idwt_input_required_regions(&mut required, &idwt.step, expanded)?;
         }
     }
 
@@ -105,14 +160,14 @@ pub(super) fn prune_prepared_direct_grayscale_plan_to_store_windows(
                 let before = sub_band.jobs.len();
                 retain_classic_jobs_for_required_region(
                     &mut sub_band.jobs,
-                    required.get(&sub_band.band_id).copied(),
+                    required_region(&required, sub_band.band_id),
                 );
                 if sub_band.jobs.len() != before {
                     sub_band.zero_fill = true;
                     if plan.tier1_prepare_mode == DirectTier1Mode::Metal {
                         with_runtime(|runtime| {
                             sub_band.jobs_buffer =
-                                borrow_slice_buffer(&runtime.device, &sub_band.jobs);
+                                copied_slice_buffer(&runtime.device, &sub_band.jobs)?;
                             Ok(())
                         })?;
                     }
@@ -122,7 +177,7 @@ pub(super) fn prune_prepared_direct_grayscale_plan_to_store_windows(
                 let before = sub_band.jobs.len();
                 retain_ht_jobs_for_required_region(
                     &mut sub_band.jobs,
-                    required.get(&sub_band.band_id).copied(),
+                    required_region(&required, sub_band.band_id),
                 );
                 if sub_band.jobs.len() != before {
                     compact_ht_sub_band_coded_data(sub_band, plan.tier1_prepare_mode)?;
@@ -132,7 +187,7 @@ pub(super) fn prune_prepared_direct_grayscale_plan_to_store_windows(
         }
     }
 
-    apply_prepared_direct_idwt_output_windows(plan, &idwt_output_windows)?;
+    apply_prepared_direct_idwt_output_windows(plan, &idwt_outputs)?;
     plan.classic_groups = prepare_classic_sub_band_groups(&plan.steps, plan.tier1_prepare_mode)?;
     plan.ht_groups = prepare_ht_sub_band_groups(&plan.steps, plan.tier1_prepare_mode)?;
     prepare_ungrouped_ht_sub_band_buffers(
@@ -146,14 +201,12 @@ pub(super) fn prune_prepared_direct_grayscale_plan_to_store_windows(
 #[cfg(target_os = "macos")]
 pub(super) fn apply_prepared_direct_idwt_output_windows(
     plan: &mut PreparedDirectGrayscalePlan,
-    windows: &HashMap<J2kDirectBandId, BandRequiredRegion>,
+    windows: &BandRequiredRegions,
 ) -> Result<(), Error> {
     for step in &mut plan.steps {
         if let PreparedDirectGrayscaleStep::Idwt(idwt) = step {
-            idwt.output_window = windows
-                .get(&idwt.step.output_band_id)
-                .copied()
-                .unwrap_or_else(|| {
+            idwt.output_window =
+                required_region(windows, idwt.step.output_band_id).unwrap_or_else(|| {
                     BandRequiredRegion::full(idwt.step.rect.width(), idwt.step.rect.height())
                 });
         }
@@ -163,7 +216,7 @@ pub(super) fn apply_prepared_direct_idwt_output_windows(
         let PreparedDirectGrayscaleStep::Store(store) = step else {
             continue;
         };
-        let Some(window) = windows.get(&store.input_band_id).copied() else {
+        let Some(window) = required_region(windows, store.input_band_id) else {
             continue;
         };
 
@@ -303,27 +356,54 @@ pub(super) fn prepared_idwt_output_len(idwt: &PreparedDirectIdwt) -> usize {
 
 #[cfg(target_os = "macos")]
 pub(super) fn add_required_region(
-    required: &mut HashMap<J2kDirectBandId, BandRequiredRegion>,
+    required: &mut BandRequiredRegions,
     band_id: J2kDirectBandId,
     region: BandRequiredRegion,
-) {
-    required
-        .entry(band_id)
-        .and_modify(|existing| *existing = existing.union(region))
-        .or_insert(region);
+) -> Result<(), Error> {
+    if let Some((_, existing)) = required
+        .iter_mut()
+        .find(|(candidate, _)| *candidate == band_id)
+    {
+        *existing = existing.union(region);
+        return Ok(());
+    }
+    crate::batch_allocation::try_reserve_for_push(required, "J2K MetalDirect ROI required bands")?;
+    required.push((band_id, region));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn set_required_region(
+    regions: &mut BandRequiredRegions,
+    band_id: J2kDirectBandId,
+    region: BandRequiredRegion,
+) -> Result<(), Error> {
+    if let Some((_, existing)) = regions
+        .iter_mut()
+        .find(|(candidate, _)| *candidate == band_id)
+    {
+        *existing = region;
+        return Ok(());
+    }
+    crate::batch_allocation::try_reserve_for_push(
+        regions,
+        "J2K MetalDirect ROI IDWT output windows",
+    )?;
+    regions.push((band_id, region));
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
 pub(super) fn add_idwt_input_required_regions(
-    required: &mut HashMap<J2kDirectBandId, BandRequiredRegion>,
+    required: &mut BandRequiredRegions,
     idwt: &J2kDirectIdwtStep,
     output_region: BandRequiredRegion,
-) {
+) -> Result<(), Error> {
     let windows = idwt_required_input_windows(idwt, output_region);
-    add_required_region(required, idwt.ll_band_id, windows.ll);
-    add_required_region(required, idwt.hl_band_id, windows.hl);
-    add_required_region(required, idwt.lh_band_id, windows.lh);
-    add_required_region(required, idwt.hh_band_id, windows.hh);
+    add_required_region(required, idwt.ll_band_id, windows.ll)?;
+    add_required_region(required, idwt.hl_band_id, windows.hl)?;
+    add_required_region(required, idwt.lh_band_id, windows.lh)?;
+    add_required_region(required, idwt.hh_band_id, windows.hh)
 }
 
 #[cfg(target_os = "macos")]
@@ -409,20 +489,36 @@ pub(super) fn compact_ht_sub_band_coded_data(
     sub_band: &mut PreparedHtSubBand,
     _tier1_prepare_mode: DirectTier1Mode,
 ) -> Result<(), Error> {
-    let previous = std::mem::take(&mut sub_band.coded_data);
-    let mut compacted = Vec::new();
-
-    for job in &mut sub_band.jobs {
+    let compacted_len = crate::batch_allocation::checked_count_sum(
+        sub_band.jobs.iter().map(|job| job.coded_len as usize),
+        "HTJ2K MetalDirect cropped coded payload",
+    )?;
+    u32::try_from(compacted_len).map_err(|_| Error::MetalKernel {
+        message: "HTJ2K MetalDirect cropped coded payload exceeds u32".to_string(),
+    })?;
+    for job in &sub_band.jobs {
         let start = job.coded_offset as usize;
-        let len = job.coded_len as usize;
-        let end = start.checked_add(len).ok_or_else(|| Error::MetalKernel {
-            message: "HTJ2K MetalDirect cropped coded payload range overflow".to_string(),
-        })?;
-        if end > previous.len() {
+        let end = start
+            .checked_add(job.coded_len as usize)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K MetalDirect cropped coded payload range overflow".to_string(),
+            })?;
+        if end > sub_band.coded_data.len() {
             return Err(Error::MetalKernel {
                 message: "HTJ2K MetalDirect cropped coded payload range out of bounds".to_string(),
             });
         }
+    }
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "HTJ2K MetalDirect cropped coded payload",
+    );
+    let mut compacted = budget.try_vec(compacted_len, "HTJ2K MetalDirect cropped coded payload")?;
+    let previous = std::mem::take(&mut sub_band.coded_data);
+
+    for job in &mut sub_band.jobs {
+        let start = job.coded_offset as usize;
+        let len = job.coded_len as usize;
+        let end = start + len;
         job.coded_offset = u32::try_from(compacted.len()).map_err(|_| Error::MetalKernel {
             message: "HTJ2K MetalDirect cropped coded payload exceeds u32".to_string(),
         })?;

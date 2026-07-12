@@ -263,7 +263,7 @@ pub fn bench_profile_fast420_tile_batch(
         }
 
         let width = dec.info.dimensions.0 as usize;
-        let rows = pool.take_sink_rows(width);
+        let rows = pool.take_sink_rows(width.saturating_mul(3), dec.plan.scratch_bytes)?;
         let mut sink = BlackBoxRowSink;
         let mut writer = SinkWriter::new(&mut sink, rows, dec.backend);
         decode_scan_fast_tile_rgb_profiled(
@@ -350,23 +350,61 @@ pub fn bench_idct_reduced_2x2_block_with(input: &[i16; 64], output: &mut [u8; 4]
     idct_islow_2x2_scalar(input, output);
 }
 
-/// Run the NEON IDCT on a caller-provided block. Panics if the host CPU
-/// does not support NEON — on aarch64 NEON is architecturally mandatory,
-/// so the feature check is a formality. Used by `tests/idct_parity.rs`.
+/// Run the NEON IDCT on a caller-provided block. NEON is part of the AArch64
+/// architectural baseline. Used by `tests/idct_parity.rs`.
 #[cfg(target_arch = "aarch64")]
 #[doc(hidden)]
 pub fn bench_idct_neon_block(input: &[i16; 64], output: &mut [u8; 64]) {
-    // SAFETY: Benchmark helpers preserve production buffer sizing and backend feature checks.
+    // SAFETY: Every supported AArch64 target provides NEON, and the fixed-size
+    // references satisfy the kernel's input and output length requirements.
     unsafe { crate::idct::neon::idct_islow(input, output) };
 }
 
-/// Run the AVX2 IDCT on a caller-provided block. Requires runtime AVX2
-/// support — call `std::is_x86_feature_detected!("avx2")` first.
+#[cfg(any(target_arch = "x86_64", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchAvx2Dispatch {
+    Scalar,
+    Avx2,
+}
+
+#[cfg(any(target_arch = "x86_64", test))]
+const fn select_bench_avx2_dispatch(avx2_available: bool) -> BenchAvx2Dispatch {
+    if avx2_available {
+        BenchAvx2Dispatch::Avx2
+    } else {
+        BenchAvx2Dispatch::Scalar
+    }
+}
+
+/// Run the AVX2 IDCT when the host supports it, otherwise use the scalar
+/// reference implementation. The safe wrapper performs its own runtime
+/// feature detection and is valid on every supported x86-64 CPU.
 #[cfg(target_arch = "x86_64")]
 #[doc(hidden)]
 pub fn bench_idct_avx2_block(input: &[i16; 64], output: &mut [u8; 64]) {
-    // SAFETY: Benchmark helpers preserve production buffer sizing and backend feature checks.
-    unsafe { crate::idct::avx2::idct_islow(input, output) };
+    match select_bench_avx2_dispatch(std::is_x86_feature_detected!("avx2")) {
+        BenchAvx2Dispatch::Scalar => idct_islow(input, output),
+        BenchAvx2Dispatch::Avx2 => {
+            // SAFETY: This arm is reachable only after runtime AVX2 detection;
+            // fixed-size references satisfy the kernel's length requirements.
+            unsafe { crate::idct::avx2::idct_islow(input, output) };
+        }
+    }
+}
+
+#[cfg(test)]
+mod avx2_dispatch_tests {
+    use super::{select_bench_avx2_dispatch, BenchAvx2Dispatch};
+
+    #[test]
+    fn avx2_dispatch_selects_scalar_when_feature_is_absent() {
+        assert_eq!(select_bench_avx2_dispatch(false), BenchAvx2Dispatch::Scalar);
+    }
+
+    #[test]
+    fn avx2_dispatch_selects_avx2_when_feature_is_present() {
+        assert_eq!(select_bench_avx2_dispatch(true), BenchAvx2Dispatch::Avx2);
+    }
 }
 
 /// Pre-allocated scratch for the 4:2:0 RGB row-pair microbench. Stores two

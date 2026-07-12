@@ -5,8 +5,8 @@ use j2k::{
     TileRegionScaledDecodeJob,
 };
 use j2k_core::{
-    checked_surface_len, BackendKind, BackendRequest, PixelFormat,
-    DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+    checked_surface_len, BackendKind, BackendRequest, BatchDecodeError, BatchInfrastructureError,
+    BufferError, PixelFormat, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
 
 use crate::{Error, J2kDecoder, Storage, Surface, SurfaceResidency};
@@ -41,8 +41,19 @@ fn decode_cpu_full_batch_inner(
     requests: &[QueuedRequest],
     fmt: PixelFormat,
 ) -> Result<Vec<Surface>, Error> {
-    let mut dims = Vec::with_capacity(requests.len());
-    let mut allocations = Vec::with_capacity(requests.len());
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal CPU full batch fallback");
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<(u32, u32)>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<(usize, usize)>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<Vec<u8>>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<TileDecodeJob<'_, '_>>(requests.len()),
+    ])?;
+    let mut dims = budget.try_vec(requests.len(), "J2K Metal CPU full batch dimensions")?;
+    let mut allocations = budget.try_vec(
+        requests.len(),
+        "J2K Metal CPU full batch surface allocations",
+    )?;
     for request in requests {
         let decoder = J2kDecoder::new(request.input.as_ref())?;
         let tile_dims = decoder.inner.info().dimensions;
@@ -50,32 +61,34 @@ fn decode_cpu_full_batch_inner(
         dims.push(tile_dims);
         allocations.push(allocation);
     }
-    let mut outputs = allocations
-        .iter()
-        .map(|(_, len)| vec![0_u8; *len])
-        .collect::<Vec<_>>();
+    let mut outputs =
+        budget.try_vec(allocations.len(), "J2K Metal CPU full batch output owners")?;
+    for (_, len) in &allocations {
+        outputs.push(budget.try_filled(*len, 0_u8, "J2K Metal CPU full batch output")?);
+    }
 
     {
-        let mut jobs = requests
+        let mut jobs = budget.try_vec(requests.len(), "J2K Metal CPU full batch jobs")?;
+        for (((request, _dims), (stride, _len)), out) in requests
             .iter()
             .zip(dims.iter())
             .zip(allocations.iter())
             .zip(outputs.iter_mut())
-            .map(|(((request, _dims), (stride, _len)), out)| TileDecodeJob {
+        {
+            jobs.push(TileDecodeJob {
                 input: request.input.as_ref(),
                 out: out.as_mut_slice(),
                 stride: *stride,
-            })
-            .collect::<Vec<_>>();
-        decode_tiles_into(&mut jobs, fmt, TileBatchOptions::default())
-            .map_err(|err| Error::Decode(err.source))?;
+            });
+        }
+        decode_tiles_into(&mut jobs, fmt, TileBatchOptions::default()).map_err(cpu_batch_error)?;
     }
 
-    Ok(outputs
-        .into_iter()
-        .zip(dims)
-        .map(|(bytes, dimensions)| host_surface(bytes, dimensions, fmt))
-        .collect())
+    let mut surfaces = budget.try_vec(requests.len(), "J2K Metal CPU full batch surfaces")?;
+    for (bytes, dimensions) in outputs.into_iter().zip(dims) {
+        surfaces.push(host_surface(bytes, dimensions, fmt));
+    }
+    Ok(surfaces)
 }
 
 fn decode_cpu_region_scaled_batch(
@@ -102,8 +115,25 @@ fn decode_cpu_region_scaled_batch_inner(
     requests: &[QueuedRequest],
     fmt: PixelFormat,
 ) -> Result<Vec<Surface>, Error> {
-    let mut dims = Vec::with_capacity(requests.len());
-    let mut allocations = Vec::with_capacity(requests.len());
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal CPU region-scaled batch fallback",
+    );
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<(u32, u32)>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<(usize, usize)>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<Vec<u8>>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<TileRegionScaledDecodeJob<'_, '_>>(
+            requests.len(),
+        ),
+    ])?;
+    let mut dims = budget.try_vec(
+        requests.len(),
+        "J2K Metal CPU region-scaled batch dimensions",
+    )?;
+    let mut allocations = budget.try_vec(
+        requests.len(),
+        "J2K Metal CPU region-scaled surface allocations",
+    )?;
     for request in requests {
         let BatchOp::RegionScaled { roi, scale } = request.op else {
             return Err(batch_scheduler_invariant(
@@ -116,13 +146,16 @@ fn decode_cpu_region_scaled_batch_inner(
         dims.push(dims_tuple);
         allocations.push(allocation);
     }
-    let mut outputs = allocations
-        .iter()
-        .map(|(_, len)| vec![0_u8; *len])
-        .collect::<Vec<_>>();
+    let mut outputs = budget.try_vec(
+        allocations.len(),
+        "J2K Metal CPU region-scaled output owners",
+    )?;
+    for (_, len) in &allocations {
+        outputs.push(budget.try_filled(*len, 0_u8, "J2K Metal CPU region-scaled output")?);
+    }
 
     {
-        let mut jobs = Vec::with_capacity(requests.len());
+        let mut jobs = budget.try_vec(requests.len(), "J2K Metal CPU region-scaled batch jobs")?;
         for ((request, (stride, _len)), out) in requests
             .iter()
             .zip(allocations.iter())
@@ -142,14 +175,14 @@ fn decode_cpu_region_scaled_batch_inner(
             });
         }
         decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::default())
-            .map_err(|err| Error::Decode(err.source))?;
+            .map_err(cpu_batch_error)?;
     }
 
-    Ok(outputs
-        .into_iter()
-        .zip(dims)
-        .map(|(bytes, dimensions)| host_surface(bytes, dimensions, fmt))
-        .collect())
+    let mut surfaces = budget.try_vec(requests.len(), "J2K Metal CPU region-scaled surfaces")?;
+    for (bytes, dimensions) in outputs.into_iter().zip(dims) {
+        surfaces.push(host_surface(bytes, dimensions, fmt));
+    }
+    Ok(surfaces)
 }
 
 fn checked_cpu_batch_surface(dims: (u32, u32), fmt: PixelFormat) -> Result<(usize, usize), Error> {
@@ -162,6 +195,34 @@ fn checked_cpu_batch_surface(dims: (u32, u32), fmt: PixelFormat) -> Result<(usiz
     .map_err(Error::from)
 }
 
+fn cpu_batch_error(error: j2k::TileBatchError) -> Error {
+    match error {
+        BatchDecodeError::Tile(error) => Error::Decode(error.source),
+        BatchDecodeError::Infrastructure(error) => cpu_batch_infrastructure_error(error),
+        other => Error::MetalKernel {
+            message: format!("J2K CPU batch failed: {other}"),
+        },
+    }
+}
+
+fn cpu_batch_infrastructure_error(error: BatchInfrastructureError) -> Error {
+    match error {
+        BatchInfrastructureError::AllocationTooLarge {
+            what,
+            requested,
+            cap,
+        } => Error::Buffer(BufferError::AllocationTooLarge {
+            requested,
+            cap,
+            what,
+        }),
+        BatchInfrastructureError::HostAllocationFailed { what, bytes } => {
+            Error::Buffer(BufferError::HostAllocationFailed { bytes, what })
+        }
+        other => Error::BatchInfrastructure(other),
+    }
+}
+
 fn host_surface(bytes: Vec<u8>, dimensions: (u32, u32), fmt: PixelFormat) -> Surface {
     Surface {
         backend: BackendKind::Cpu,
@@ -170,6 +231,52 @@ fn host_surface(bytes: Vec<u8>, dimensions: (u32, u32), fmt: PixelFormat) -> Sur
         fmt,
         pitch_bytes: dimensions.0 as usize * fmt.bytes_per_pixel(),
         byte_offset: 0,
-        storage: Storage::Host(bytes),
+        storage: Storage::from_host(bytes),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use j2k_core::CodecError;
+
+    #[test]
+    fn cpu_batch_infrastructure_preserves_resource_categories() {
+        let allocation =
+            cpu_batch_infrastructure_error(BatchInfrastructureError::AllocationTooLarge {
+                what: "test batch owner",
+                requested: 9,
+                cap: 8,
+            });
+        assert!(matches!(
+            &allocation,
+            Error::Buffer(BufferError::AllocationTooLarge {
+                what: "test batch owner",
+                requested: 9,
+                cap: 8,
+            })
+        ));
+        assert!(allocation.is_buffer_error());
+
+        let host = cpu_batch_infrastructure_error(BatchInfrastructureError::HostAllocationFailed {
+            what: "test batch owner",
+            bytes: 7,
+        });
+        assert!(matches!(
+            &host,
+            Error::Buffer(BufferError::HostAllocationFailed {
+                what: "test batch owner",
+                bytes: 7,
+            })
+        ));
+        assert!(host.is_buffer_error());
+
+        let source = BatchInfrastructureError::MissingResult { index: 3 };
+        let scheduler = cpu_batch_infrastructure_error(source);
+        assert!(matches!(
+            &scheduler,
+            Error::BatchInfrastructure(stored) if *stored == source
+        ));
+        assert!(!scheduler.is_buffer_error());
     }
 }

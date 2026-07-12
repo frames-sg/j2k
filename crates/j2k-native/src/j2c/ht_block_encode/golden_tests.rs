@@ -287,13 +287,26 @@ fn validation_error_text_and_empty_block_result_remain_exact() {
 #[test]
 fn encoder_modules_remain_focused_without_broad_suppressions() {
     const ROOT: &str = include_str!("../ht_block_encode.rs");
-    const MODULES: [(&str, &str, usize); 7] = [
+    const MODULES: [(&str, &str, usize); 12] = [
+        ("allocation", include_str!("allocation.rs"), 220),
+        (
+            "allocation/refinement",
+            include_str!("allocation/refinement.rs"),
+            140,
+        ),
         ("cleanup", include_str!("cleanup.rs"), 260),
+        ("cleanup/source", include_str!("cleanup/source.rs"), 160),
         ("distribution", include_str!("distribution.rs"), 390),
         ("emit", include_str!("emit.rs"), 270),
-        ("facade", include_str!("facade.rs"), 110),
+        ("facade", include_str!("facade.rs"), 150),
+        ("facade/legacy", include_str!("facade/legacy.rs"), 60),
         ("quad", include_str!("quad.rs"), 500),
         ("refinement", include_str!("refinement.rs"), 420),
+        (
+            "refinement/writers",
+            include_str!("refinement/writers.rs"),
+            200,
+        ),
         ("writers", include_str!("writers.rs"), 340),
     ];
 

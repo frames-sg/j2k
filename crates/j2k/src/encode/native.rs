@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::{format, vec::Vec};
+use alloc::vec::Vec;
 
 use j2k_core::Unsupported;
 use j2k_native::{
@@ -9,6 +9,7 @@ use j2k_native::{
     EncodeTypedComponentPlane as NativeEncodeTypedComponentPlane,
 };
 
+use super::allocation::{try_collect_exact, try_collect_results_exact, try_vec};
 use super::contracts::{
     EncodeBackendPreference, J2kBlockCodingMode, J2kLosslessEncodeOptions, J2kLossyEncodeOptions,
     J2kMarkerSegment, J2kProgressionOrder, ReversibleTransform,
@@ -21,9 +22,11 @@ use super::samples::{
     J2kLosslessTypedComponentSamples, J2kLossySamples, J2kRoiRegion,
 };
 use super::{
-    j2k_lossless_decomposition_levels_for_options, j2k_lossy_decomposition_levels_for_options,
+    j2k_lossless_decomposition_levels_for_options,
+    j2k_lossless_decomposition_levels_for_resident_geometry,
+    j2k_lossy_decomposition_levels_for_options,
 };
-use crate::J2kError;
+use crate::{J2kEncodeStageAccelerator, J2kError, J2kResidentEncodeInput};
 
 pub(super) fn validate_lossless_high_bit_options(
     samples: J2kLosslessSamples<'_>,
@@ -104,7 +107,12 @@ pub(super) fn encode_cpu(
         samples.signed,
         &options,
     )
-    .map_err(|err| J2kError::backend(format!("JPEG 2000 lossless encode failed: {err}")))
+    .map_err(|source| {
+        J2kError::from_native_encode_error_with_context(
+            source,
+            "native JPEG 2000 lossless encode failed",
+        )
+    })
 }
 
 pub(super) fn encode_cpu_with_roi_regions(
@@ -124,16 +132,12 @@ pub(super) fn encode_cpu_with_roi_regions(
         &options,
         &native_roi_regions,
     )
-    .map_err(map_native_lossless_roi_encode_error)
-}
-
-pub(super) fn map_native_lossless_roi_encode_error(err: &'static str) -> J2kError {
-    match err {
-        "ROI maxshift exceeds supported coded bitplane count" => {
-            J2kError::Unsupported(Unsupported { what: err })
-        }
-        _ => J2kError::backend(format!("JPEG 2000 lossless ROI encode failed: {err}")),
-    }
+    .map_err(|source| {
+        J2kError::from_native_encode_error_with_context(
+            source,
+            "native JPEG 2000 lossless ROI encode failed",
+        )
+    })
 }
 
 pub(super) fn native_roi_regions_for_lossless_samples(
@@ -154,9 +158,8 @@ pub(super) fn native_roi_regions_for_samples(
     components: u16,
     roi_regions: &[J2kRoiRegion],
 ) -> Result<Vec<NativeEncodeRoiRegion>, J2kError> {
-    roi_regions
-        .iter()
-        .map(|region| {
+    try_collect_results_exact(
+        roi_regions.iter().map(|region| {
             if region.component >= components {
                 return Err(J2kError::InvalidSamples {
                     what: "ROI region component index out of range".to_string(),
@@ -199,8 +202,9 @@ pub(super) fn native_roi_regions_for_samples(
                 height: region.height,
                 shift: region.shift,
             })
-        })
-        .collect()
+        }),
+        "native ROI descriptors",
+    )
 }
 
 pub(super) fn encode_cpu_components(
@@ -208,15 +212,17 @@ pub(super) fn encode_cpu_components(
     options: J2kLosslessEncodeOptions,
 ) -> Result<Vec<u8>, J2kError> {
     let native_options = native_lossless_component_options(samples, options);
-    let planes = samples
-        .planes
-        .iter()
-        .map(|plane| NativeEncodeComponentPlane {
-            data: plane.data,
-            x_rsiz: plane.x_rsiz,
-            y_rsiz: plane.y_rsiz,
-        })
-        .collect::<Vec<_>>();
+    let planes = try_collect_exact(
+        samples
+            .planes
+            .iter()
+            .map(|plane| NativeEncodeComponentPlane {
+                data: plane.data,
+                x_rsiz: plane.x_rsiz,
+                y_rsiz: plane.y_rsiz,
+            }),
+        "native component-plane descriptors",
+    )?;
     j2k_native::encode_component_planes_53(
         &planes,
         samples.width,
@@ -225,10 +231,11 @@ pub(super) fn encode_cpu_components(
         samples.signed,
         &native_options,
     )
-    .map_err(|err| {
-        J2kError::backend(format!(
-            "JPEG 2000 lossless component-plane encode failed: {err}"
-        ))
+    .map_err(|source| {
+        J2kError::from_native_encode_error_with_context(
+            source,
+            "native JPEG 2000 lossless component-plane encode failed",
+        )
     })
 }
 
@@ -249,7 +256,7 @@ pub(super) fn interleave_component_planes(
             width: samples.width,
             height: samples.height,
         })?;
-    let mut interleaved = Vec::with_capacity(capacity);
+    let mut interleaved = try_vec(capacity, "high-bit interleaved component samples")?;
     for sample_idx in 0..pixel_count {
         let start =
             sample_idx
@@ -258,10 +265,26 @@ pub(super) fn interleave_component_planes(
                     width: samples.width,
                     height: samples.height,
                 })?;
-        let end = start + bytes_per_sample;
+        let end = start
+            .checked_add(bytes_per_sample)
+            .ok_or(J2kError::DimensionOverflow {
+                width: samples.width,
+                height: samples.height,
+            })?;
         for plane in samples.planes {
-            interleaved.extend_from_slice(&plane.data[start..end]);
+            let sample = plane
+                .data
+                .get(start..end)
+                .ok_or(J2kError::InternalInvariant {
+                    what: "validated component plane is shorter than its interleave geometry",
+                })?;
+            interleaved.extend_from_slice(sample);
         }
+    }
+    if interleaved.len() != capacity {
+        return Err(J2kError::InternalInvariant {
+            what: "high-bit component interleave length mismatch",
+        });
     }
     Ok(interleaved)
 }
@@ -271,27 +294,30 @@ pub(super) fn encode_cpu_typed_components(
     options: J2kLosslessEncodeOptions,
 ) -> Result<Vec<u8>, J2kError> {
     let native_options = native_lossless_typed_component_options(samples, options);
-    let planes = samples
-        .planes
-        .iter()
-        .map(|plane| NativeEncodeTypedComponentPlane {
-            data: plane.data,
-            x_rsiz: plane.x_rsiz,
-            y_rsiz: plane.y_rsiz,
-            bit_depth: plane.bit_depth,
-            signed: plane.signed,
-        })
-        .collect::<Vec<_>>();
+    let planes = try_collect_exact(
+        samples
+            .planes
+            .iter()
+            .map(|plane| NativeEncodeTypedComponentPlane {
+                data: plane.data,
+                x_rsiz: plane.x_rsiz,
+                y_rsiz: plane.y_rsiz,
+                bit_depth: plane.bit_depth,
+                signed: plane.signed,
+            }),
+        "native typed component-plane descriptors",
+    )?;
     j2k_native::encode_typed_component_planes_53(
         &planes,
         samples.width,
         samples.height,
         &native_options,
     )
-    .map_err(|err| {
-        J2kError::backend(format!(
-            "JPEG 2000 lossless typed component-plane encode failed: {err}"
-        ))
+    .map_err(|source| {
+        J2kError::from_native_encode_error_with_context(
+            source,
+            "native JPEG 2000 lossless typed component-plane encode failed",
+        )
     })
 }
 
@@ -299,10 +325,33 @@ pub(super) fn native_lossless_options(
     samples: J2kLosslessSamples<'_>,
     options: J2kLosslessEncodeOptions,
 ) -> EncodeOptions {
+    native_lossless_options_for_geometry(samples.width, samples.height, samples.components, options)
+}
+
+pub(super) fn native_lossless_resident_options(
+    input: J2kResidentEncodeInput,
+    options: J2kLosslessEncodeOptions,
+) -> EncodeOptions {
+    native_lossless_options_for_geometry(
+        input.width(),
+        input.height(),
+        input.num_components(),
+        options,
+    )
+}
+
+fn native_lossless_options_for_geometry(
+    width: u32,
+    height: u32,
+    components: u16,
+    options: J2kLosslessEncodeOptions,
+) -> EncodeOptions {
     let progression_order = native_progression_order(options.progression);
     EncodeOptions {
         reversible: true,
-        num_decomposition_levels: j2k_lossless_decomposition_levels_for_options(samples, options),
+        num_decomposition_levels: j2k_lossless_decomposition_levels_for_resident_geometry(
+            width, height, options,
+        ),
         use_ht_block_coding: options.block_coding_mode == J2kBlockCodingMode::HighThroughput,
         progression_order,
         write_tlm: options.write_tlm || options.progression == J2kProgressionOrder::Rpcl,
@@ -313,12 +362,62 @@ pub(super) fn native_lossless_options(
         write_sop: options.write_sop,
         write_eph: options.write_eph,
         use_mct: options.reversible_transform == ReversibleTransform::Rct53
-            && matches!(samples.components, 3 | 4),
+            && matches!(components, 3 | 4),
         tile_size: options.tile_size,
         tile_part_packet_limit: options.tile_part_packet_limit,
         num_layers: options.quality_layers,
         validate_high_throughput_codestream: false,
         ..EncodeOptions::default()
+    }
+}
+
+pub(super) fn encode_resident_with_native_accelerator(
+    input: J2kResidentEncodeInput,
+    options: J2kLosslessEncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, J2kError> {
+    let native_options = native_lossless_resident_options(input, options);
+    j2k_native::encode_resident_htj2k_with_accelerator(input, &native_options, accelerator)
+        .map_err(map_native_resident_encode_error)
+}
+
+pub(super) fn map_native_resident_encode_error(
+    err: j2k_native::ResidentHtj2kEncodeError,
+) -> J2kError {
+    use j2k_native::ResidentHtj2kEncodeError;
+
+    match err {
+        ResidentHtj2kEncodeError::InvalidInput(what) => {
+            J2kError::from_native_encode_error_with_context(
+                j2k_native::EncodeError::InvalidInput { what },
+                "native JPEG 2000 resident lossless encode failed",
+            )
+        }
+        ResidentHtj2kEncodeError::Unsupported(reason) => {
+            J2kError::Unsupported(Unsupported { what: reason })
+        }
+        ResidentHtj2kEncodeError::Declined => J2kError::Unsupported(Unsupported {
+            what: "resident HTJ2K tile accelerator declined encode",
+        }),
+        ResidentHtj2kEncodeError::Accelerator(source) => {
+            J2kError::from_native_encode_error_with_context(
+                j2k_native::EncodeError::Accelerator {
+                    operation: "resident HTJ2K tile encode",
+                    source,
+                },
+                "native JPEG 2000 resident lossless encode failed",
+            )
+        }
+        ResidentHtj2kEncodeError::Resource(source) | ResidentHtj2kEncodeError::Backend(source) => {
+            J2kError::from_native_encode_error_with_context(
+                source,
+                "native JPEG 2000 resident lossless encode failed",
+            )
+        }
+        _ => J2kError::NativeResidentEncode {
+            context: "native JPEG 2000 resident lossless encode failed",
+            source: crate::NativeBackendError::resident_encode(err),
+        },
     }
 }
 
@@ -379,7 +478,10 @@ pub(super) fn native_lossy_options(
         quality_layer_byte_targets: lossy_quality_layer_byte_targets(samples, options)?,
         tile_size: options.tile_size,
         tile_part_packet_limit: options.tile_part_packet_limit,
-        precinct_exponents: options.precinct_exponents.clone(),
+        precinct_exponents: try_collect_exact(
+            options.precinct_exponents.iter().copied(),
+            "lossy precinct exponent options",
+        )?,
         validate_high_throughput_codestream: false,
         irreversible_quantization_scale: quantization_scale,
         ..EncodeOptions::default()

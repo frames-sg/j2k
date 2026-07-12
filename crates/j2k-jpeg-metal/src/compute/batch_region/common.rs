@@ -2,13 +2,15 @@
 
 use super::super::{
     batch, bind_fast_decode_entropy_inputs, checked_u32, dispatch_1d_pipeline,
-    fast_packet_huffman_tables, fast_subsampled_packets_share_full_rgb_batch_shape,
-    fast_subsampled_region_scaled_batch_plan, try_decode_fast420_scaled_region_to_surface,
-    try_decode_fast422_scaled_region_to_surface, try_decode_fast444_scaled_region_to_surface,
-    BatchEntropyBuffers, BatchedFastPacket, Buffer, CommandBufferRef, CpuDecoder, Device, Error,
-    FastDecodeEntropyInputs, FastRegionScaledMetal, FastScratchKeys, FastSubsampledMetal,
-    JpegFast444PacketV1, JpegFastRegionScaledBatchParams, MetalBatchScratch, MetalRuntime,
-    PixelFormat, PlaneMode, Rect, RegionScaledBatchPlan, Surface,
+    fast_decode_status_error, fast_packet_huffman_tables,
+    fast_subsampled_packets_share_full_rgb_batch_shape, fast_subsampled_region_scaled_batch_plan,
+    new_compute_command_encoder, try_decode_fast420_scaled_region_to_surface_with_status,
+    try_decode_fast422_scaled_region_to_surface,
+    try_decode_fast444_scaled_region_to_surface_with_mode_and_status, BatchEntropyBuffers,
+    BatchedFastPacket, Buffer, CommandBufferRef, Device, Error, FastDecodeEntropyInputs,
+    FastRegionScaledMetal, FastScratchKeys, FastSubsampledMetal, JpegFast444PacketV1,
+    JpegFastRegionScaledBatchParams, MetalBatchScratch, MetalRuntime, PixelFormat, PlaneMode, Rect,
+    RegionScaledBatchPlan, Surface,
 };
 
 #[cfg(target_os = "macos")]
@@ -25,62 +27,85 @@ pub(in crate::compute) fn first_region_scaled_op(
 pub(in crate::compute) fn fast444_region_packets<'a>(
     requests: &[batch::QueuedRequest],
     packets: &[BatchedFastPacket<'a>],
-) -> Option<Vec<(&'a JpegFast444PacketV1, PlaneMode)>> {
+) -> Result<Option<Vec<(&'a JpegFast444PacketV1, PlaneMode)>>, Error> {
     if requests.is_empty()
         || requests
             .iter()
             .any(|request| request.fmt != PixelFormat::Rgb8)
     {
-        return None;
+        return Ok(None);
     }
-    let mut fast444_packets = Vec::with_capacity(packets.len());
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal fast444 region packet plan",
+        requests,
+    )?;
+    let mut fast444_packets =
+        budget.try_vec(packets.len(), "JPEG Metal fast444 region packet references")?;
     for packet in packets {
         let BatchedFastPacket::Fast444(packet, mode) = packet else {
-            return None;
+            return Ok(None);
         };
         fast444_packets.push((*packet, *mode));
     }
-    Some(fast444_packets)
+    Ok(Some(fast444_packets))
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn subsampled_region_rgb_packets<'a, P: FastRegionScaledMetal>(
     requests: &[batch::QueuedRequest],
     packets: &[BatchedFastPacket<'a>],
-) -> Option<Vec<(&'a P, PlaneMode)>> {
+) -> Result<Option<Vec<(&'a P, PlaneMode)>>, Error> {
     if requests.is_empty()
         || requests
             .iter()
             .any(|request| request.fmt != PixelFormat::Rgb8)
     {
-        return None;
+        return Ok(None);
     }
-    let mut family_packets = Vec::with_capacity(packets.len());
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal subsampled region RGB packet plan",
+        requests,
+    )?;
+    let mut family_packets = budget.try_vec(
+        packets.len(),
+        "JPEG Metal subsampled region RGB packet references",
+    )?;
     for packet in packets {
-        let packet = P::from_region_scaled_batched(packet)?;
+        let Some(packet) = P::from_region_scaled_batched(packet) else {
+            return Ok(None);
+        };
         family_packets.push(packet);
     }
-    Some(family_packets)
+    Ok(Some(family_packets))
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn subsampled_region_texture_packets<'a, P: FastSubsampledMetal>(
     requests: &[batch::QueuedRequest],
     packets: &[BatchedFastPacket<'a>],
-) -> Option<Vec<&'a P>> {
+) -> Result<Option<Vec<&'a P>>, Error> {
     if requests.is_empty()
         || requests
             .iter()
             .any(|request| request.fmt != PixelFormat::Rgb8)
     {
-        return None;
+        return Ok(None);
     }
-    let mut family_packets = Vec::with_capacity(packets.len());
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal subsampled region texture packet plan",
+        requests,
+    )?;
+    let mut family_packets = budget.try_vec(
+        packets.len(),
+        "JPEG Metal subsampled region texture packet references",
+    )?;
     for packet in packets {
-        let packet = P::from_batched(packet)?;
+        let Some(packet) = P::from_batched(packet) else {
+            return Ok(None);
+        };
         family_packets.push(packet);
     }
-    Some(family_packets)
+    Ok(Some(family_packets))
 }
 
 #[cfg(target_os = "macos")]
@@ -230,14 +255,14 @@ pub(in crate::compute) fn encode_subsampled_region_rgb_decode<P: FastRegionScale
     status_buffer: &Buffer,
     planes: [&Buffer; 3],
     shape: SubsampledRegionBatchShape,
-) {
+) -> Result<(), Error> {
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
-    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    let decoder_encoder = new_compute_command_encoder(command_buffer)?;
     decoder_encoder.set_compute_pipeline_state(
         <P as FastRegionScaledMetal>::scaled_region_batch_decode_pipeline(runtime),
     );
     bind_fast_decode_entropy_inputs::<JpegFastRegionScaledBatchParams>(
-        decoder_encoder,
+        &decoder_encoder,
         &FastDecodeEntropyInputs {
             entropy_buffer: &entropy_buffers.payload,
             planes,
@@ -252,11 +277,12 @@ pub(in crate::compute) fn encode_subsampled_region_rgb_decode<P: FastRegionScale
     );
     decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
     dispatch_1d_pipeline(
-        decoder_encoder,
+        &decoder_encoder,
         <P as FastRegionScaledMetal>::scaled_region_batch_decode_pipeline(runtime),
         shape.total_decode_threads,
     );
     decoder_encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -270,14 +296,14 @@ pub(in crate::compute) fn encode_subsampled_region_texture_decode<
     status_buffer: &Buffer,
     planes: [&Buffer; 3],
     shape: SubsampledRegionBatchShape,
-) {
+) -> Result<(), Error> {
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
-    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    let decoder_encoder = new_compute_command_encoder(command_buffer)?;
     decoder_encoder.set_compute_pipeline_state(
         <P as FastSubsampledMetal>::scaled_region_batch_decode_pipeline(runtime),
     );
     bind_fast_decode_entropy_inputs::<JpegFastRegionScaledBatchParams>(
-        decoder_encoder,
+        &decoder_encoder,
         &FastDecodeEntropyInputs {
             entropy_buffer: &entropy_buffers.payload,
             planes,
@@ -292,11 +318,12 @@ pub(in crate::compute) fn encode_subsampled_region_texture_decode<
     );
     decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
     dispatch_1d_pipeline(
-        decoder_encoder,
+        &decoder_encoder,
         <P as FastSubsampledMetal>::scaled_region_batch_decode_pipeline(runtime),
         shape.total_decode_threads,
     );
     decoder_encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -306,18 +333,17 @@ pub(in crate::compute) fn region_plane_buffers(
     keys: &FastScratchKeys,
     plan: RegionScaledBatchPlan,
     tile_count: usize,
-) -> (Buffer, Buffer, Buffer) {
-    (
-        batch_scratch.private_buffer(device, keys.y, plan.y_len * tile_count),
-        batch_scratch.private_buffer(device, keys.cb, plan.chroma_len * tile_count),
-        batch_scratch.private_buffer(device, keys.cr, plan.chroma_len * tile_count),
-    )
+) -> Result<(Buffer, Buffer, Buffer), Error> {
+    Ok((
+        batch_scratch.private_buffer(device, keys.y, plan.y_len * tile_count)?,
+        batch_scratch.private_buffer(device, keys.cb, plan.chroma_len * tile_count)?,
+        batch_scratch.private_buffer(device, keys.cr, plan.chroma_len * tile_count)?,
+    ))
 }
 
 #[cfg(target_os = "macos")]
 pub(in crate::compute) fn decode_region_scaled_packet_surface(
     runtime: &MetalRuntime,
-    decoder: &CpuDecoder<'_>,
     request: &batch::QueuedRequest,
     packet: &BatchedFastPacket<'_>,
 ) -> Result<Surface, Error> {
@@ -334,14 +360,16 @@ pub(in crate::compute) fn decode_region_scaled_packet_surface(
         h: scaled.h,
     };
     match packet {
-        BatchedFastPacket::Fast420(packet) => try_decode_fast420_scaled_region_to_surface(
-            runtime,
-            decoder,
-            Some(packet),
-            request.fmt,
-            scaled_roi,
-            scale,
-        ),
+        BatchedFastPacket::Fast420(packet) => {
+            try_decode_fast420_scaled_region_to_surface_with_status(
+                runtime,
+                Some(packet),
+                request.fmt,
+                scaled_roi,
+                scale,
+                |status| Ok(fast_decode_status_error(status)),
+            )
+        }
         BatchedFastPacket::Fast422(packet) => try_decode_fast422_scaled_region_to_surface(
             runtime,
             Some(packet),
@@ -349,14 +377,17 @@ pub(in crate::compute) fn decode_region_scaled_packet_surface(
             scaled_roi,
             scale,
         ),
-        BatchedFastPacket::Fast444(packet, _) => try_decode_fast444_scaled_region_to_surface(
-            runtime,
-            decoder,
-            Some(packet),
-            request.fmt,
-            scaled_roi,
-            scale,
-        ),
+        BatchedFastPacket::Fast444(packet, mode) => {
+            try_decode_fast444_scaled_region_to_surface_with_mode_and_status(
+                runtime,
+                Some(packet),
+                request.fmt,
+                scaled_roi,
+                scale,
+                *mode,
+                |status| Ok(fast_decode_status_error(status)),
+            )
+        }
     }
     .and_then(|surface| {
         surface.ok_or_else(|| Error::MetalKernel {

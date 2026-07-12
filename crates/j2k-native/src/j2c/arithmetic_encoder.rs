@@ -5,7 +5,9 @@
 
 use alloc::vec::Vec;
 
+use super::encode::allocation::{try_reserve_untracked_bounded, try_untracked_vec};
 use super::mq::QE_TABLE;
+use crate::{EncodeError, EncodeResult};
 
 /// MQ arithmetic encoder context (identical layout to decoder context).
 ///
@@ -74,23 +76,47 @@ pub(crate) struct ArithmeticEncoder {
     c: u32,
     /// Bit shift counter (12 initially, then 7 after 0xFF, 8 otherwise).
     ct: u32,
+    byte_limit: Option<usize>,
+    allocation_error: Option<EncodeError>,
 }
 
 impl ArithmeticEncoder {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::with_capacity(1)
     }
 
+    #[cfg(test)]
     pub(crate) fn with_capacity(capacity: usize) -> Self {
-        let mut data = Vec::with_capacity(capacity.max(1));
+        Self::try_with_capacity(capacity).expect("legacy MQ encoder allocation")
+    }
+
+    pub(crate) fn try_with_capacity(capacity: usize) -> EncodeResult<Self> {
+        let mut data = try_untracked_vec(capacity.max(1), "MQ encoder output")?;
         data.push(0x00);
 
-        Self {
+        Ok(Self {
             data, // Sentinel byte at index 0
             a: 0x8000,
             c: 0,
             ct: 12,
-        }
+            byte_limit: None,
+            allocation_error: None,
+        })
+    }
+
+    /// Construct an MQ encoder that cannot grow beyond the checked payload
+    /// plan. The internal sentinel is included in the allocated limit but not
+    /// in `payload_bytes` returned to the caller.
+    pub(crate) fn try_with_byte_limit(payload_bytes: usize) -> EncodeResult<Self> {
+        let byte_limit = payload_bytes
+            .checked_add(1)
+            .ok_or(EncodeError::ArithmeticOverflow {
+                what: "MQ encoder payload plus sentinel",
+            })?;
+        let mut encoder = Self::try_with_capacity(byte_limit.clamp(1, 256))?;
+        encoder.byte_limit = Some(byte_limit);
+        Ok(encoder)
     }
 
     /// Encode a single symbol (0 or 1) with the given context (C.2.6 ENCODE).
@@ -100,6 +126,9 @@ impl ArithmeticEncoder {
     )]
     #[inline(always)]
     pub(crate) fn encode(&mut self, bit: u32, context: &mut ArithmeticEncoderContext) {
+        if self.allocation_error.is_some() {
+            return;
+        }
         let qe_entry = &QE_TABLE[context.index() as usize];
         self.a -= qe_entry.qe;
 
@@ -140,11 +169,17 @@ impl ArithmeticEncoder {
     /// Renormalize the encoder (C.2.7 RENORME).
     fn renormalize(&mut self) {
         loop {
+            if self.allocation_error.is_some() {
+                return;
+            }
             self.a <<= 1;
             self.c <<= 1;
             self.ct -= 1;
             if self.ct == 0 {
                 self.byte_out();
+                if self.allocation_error.is_some() {
+                    return;
+                }
             }
             if self.a & 0x8000 != 0 {
                 break;
@@ -161,17 +196,20 @@ impl ArithmeticEncoder {
         reason = "MQ register masks bound every emitted chunk to one byte"
     )]
     fn byte_out(&mut self) {
+        if self.allocation_error.is_some() {
+            return;
+        }
         let last_byte = *self.data.last().unwrap();
         if last_byte == 0xFF {
             // 7-bit mode after 0xFF (bit stuffing)
             let b = (self.c >> 20) as u8;
-            self.data.push(b);
+            self.try_push_byte(b);
             self.c &= 0x000F_FFFF;
             self.ct = 7;
         } else if self.c & 0x0800_0000 == 0 {
             // No carry: normal 8-bit output
             let b = (self.c >> 19) as u8;
-            self.data.push(b);
+            self.try_push_byte(b);
             self.c &= 0x0007_FFFF;
             self.ct = 8;
         } else {
@@ -182,12 +220,12 @@ impl ArithmeticEncoder {
             if *last == 0xFF {
                 // Carry made last byte 0xFF: switch to 7-bit mode
                 let b = (self.c >> 20) as u8;
-                self.data.push(b);
+                self.try_push_byte(b);
                 self.c &= 0x000F_FFFF;
                 self.ct = 7;
             } else {
                 let b = (self.c >> 19) as u8;
-                self.data.push(b);
+                self.try_push_byte(b);
                 self.c &= 0x0007_FFFF;
                 self.ct = 8;
             }
@@ -213,200 +251,41 @@ impl ArithmeticEncoder {
     }
 
     /// Return the encoded data (excluding sentinel), consuming the encoder.
-    pub(crate) fn finish(mut self) -> Vec<u8> {
+    #[cfg(test)]
+    pub(crate) fn finish(self) -> Vec<u8> {
+        self.finish_checked().expect("legacy MQ encoder output")
+    }
+
+    pub(crate) fn finish_checked(mut self) -> EncodeResult<Vec<u8>> {
         self.flush();
+        if let Some(error) = self.allocation_error.take() {
+            return Err(error);
+        }
         // Remove sentinel byte at index 0
         self.data.drain(..1);
-        self.data
+        Ok(self.data)
+    }
+
+    fn try_push_byte(&mut self, byte: u8) {
+        if self
+            .byte_limit
+            .is_some_and(|limit| self.data.len() >= limit)
+        {
+            self.allocation_error = Some(EncodeError::InternalInvariant {
+                what: "MQ encoder exceeded its checked payload plan",
+            });
+            return;
+        }
+        let byte_limit = self.byte_limit.unwrap_or(usize::MAX);
+        if let Err(error) =
+            try_reserve_untracked_bounded(&mut self.data, 1, byte_limit, "MQ encoder output")
+        {
+            self.allocation_error = Some(error);
+            return;
+        }
+        self.data.push(byte);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{ArithmeticEncoder, ArithmeticEncoderContext};
-    use crate::j2c::arithmetic_decoder::{ArithmeticDecoder, ArithmeticDecoderContext};
-    use alloc::{vec, vec::Vec};
-
-    #[test]
-    #[cfg_attr(
-        test,
-        expect(clippy::similar_names, reason = "paired encoder/decoder state")
-    )]
-    fn test_encode_decode_round_trip() {
-        let symbols: Vec<u32> = vec![0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-        let mut encoder = ArithmeticEncoder::new();
-        let mut enc_ctx = ArithmeticEncoderContext::default();
-
-        for &s in &symbols {
-            encoder.encode(s, &mut enc_ctx);
-        }
-        let encoded = encoder.finish();
-
-        // Decode and verify (new() already calls initialize())
-        let mut decoder = ArithmeticDecoder::new(&encoded);
-        let mut dec_ctx = ArithmeticDecoderContext::default();
-
-        let mut decoded = Vec::new();
-        for _ in 0..symbols.len() {
-            decoded.push(decoder.decode(&mut dec_ctx));
-        }
-
-        assert_eq!(symbols, decoded);
-    }
-
-    #[test]
-    #[cfg_attr(
-        test,
-        expect(clippy::similar_names, reason = "paired encoder/decoder state")
-    )]
-    fn test_encode_all_mps() {
-        let mut encoder = ArithmeticEncoder::new();
-        let mut ctx = ArithmeticEncoderContext::default();
-        for _ in 0..100 {
-            encoder.encode(0, &mut ctx);
-        }
-        let encoded = encoder.finish();
-
-        let mut decoder = ArithmeticDecoder::new(&encoded);
-        let mut dec_ctx = ArithmeticDecoderContext::default();
-        for _ in 0..100 {
-            assert_eq!(decoder.decode(&mut dec_ctx), 0);
-        }
-    }
-
-    #[test]
-    #[cfg_attr(
-        test,
-        expect(clippy::similar_names, reason = "paired encoder/decoder state")
-    )]
-    fn with_capacity_preserves_round_trip_encoding() {
-        let mut encoder = ArithmeticEncoder::with_capacity(128);
-        let mut enc_ctx = ArithmeticEncoderContext::default();
-        let symbols = [0u32, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 1];
-
-        for &symbol in &symbols {
-            encoder.encode(symbol, &mut enc_ctx);
-        }
-        let encoded = encoder.finish();
-
-        let mut decoder = ArithmeticDecoder::new(&encoded);
-        let mut dec_ctx = ArithmeticDecoderContext::default();
-        for &symbol in &symbols {
-            assert_eq!(decoder.decode(&mut dec_ctx), symbol);
-        }
-    }
-
-    #[test]
-    #[cfg_attr(
-        test,
-        expect(clippy::similar_names, reason = "paired encoder/decoder state")
-    )]
-    fn test_encode_all_lps() {
-        let mut encoder = ArithmeticEncoder::new();
-        let mut ctx = ArithmeticEncoderContext::default();
-        for _ in 0..50 {
-            encoder.encode(1, &mut ctx);
-        }
-        let encoded = encoder.finish();
-
-        let mut decoder = ArithmeticDecoder::new(&encoded);
-        let mut dec_ctx = ArithmeticDecoderContext::default();
-        for _ in 0..50 {
-            assert_eq!(decoder.decode(&mut dec_ctx), 1);
-        }
-    }
-
-    #[test]
-    #[cfg_attr(
-        test,
-        expect(clippy::similar_names, reason = "paired encoder/decoder state")
-    )]
-    fn test_multiple_contexts() {
-        let symbols_a = [0u32, 1, 0, 0, 1, 1, 0, 1];
-        let symbols_b = [1u32, 1, 0, 1, 0, 0, 1, 0];
-
-        let mut encoder = ArithmeticEncoder::new();
-        let mut ctx_a = ArithmeticEncoderContext::default();
-        let mut ctx_b = ArithmeticEncoderContext::default();
-
-        for i in 0..8 {
-            encoder.encode(symbols_a[i], &mut ctx_a);
-            encoder.encode(symbols_b[i], &mut ctx_b);
-        }
-        let encoded = encoder.finish();
-
-        let mut decoder = ArithmeticDecoder::new(&encoded);
-        let mut dec_ctx_a = ArithmeticDecoderContext::default();
-        let mut dec_ctx_b = ArithmeticDecoderContext::default();
-
-        for i in 0..8 {
-            assert_eq!(decoder.decode(&mut dec_ctx_a), symbols_a[i]);
-            assert_eq!(decoder.decode(&mut dec_ctx_b), symbols_b[i]);
-        }
-    }
-
-    #[test]
-    #[cfg_attr(
-        test,
-        expect(clippy::similar_names, reason = "paired encoder/decoder state")
-    )]
-    fn test_many_context_round_trip() {
-        let mut state = 0x1234_5678u32;
-        let mut symbols = Vec::new();
-        let mut labels = Vec::new();
-        let mut encoder = ArithmeticEncoder::new();
-        let mut enc_contexts = [ArithmeticEncoderContext::default(); 19];
-        enc_contexts[0].reset_with_index(4);
-        enc_contexts[17].reset_with_index(3);
-        enc_contexts[18].reset_with_index(46);
-
-        for _ in 0..100_000 {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let label = (state % 19) as usize;
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let bit = (state >> 31) & 1;
-            encoder.encode(bit, &mut enc_contexts[label]);
-            labels.push(label);
-            symbols.push(bit);
-        }
-
-        let encoded = encoder.finish();
-        let mut decoder = ArithmeticDecoder::new(&encoded);
-        let mut dec_contexts = [ArithmeticDecoderContext::default(); 19];
-        dec_contexts[0].reset_with_index(4);
-        dec_contexts[17].reset_with_index(3);
-        dec_contexts[18].reset_with_index(46);
-
-        for (index, (&label, &symbol)) in labels.iter().zip(symbols.iter()).enumerate() {
-            let decoded = decoder.decode(&mut dec_contexts[label]);
-            assert_eq!(decoded, symbol, "mismatch at symbol {index}");
-        }
-    }
-
-    #[test]
-    #[cfg_attr(
-        test,
-        expect(clippy::similar_names, reason = "paired encoder/decoder state")
-    )]
-    fn test_context_state_identical() {
-        let mut enc_ctx = ArithmeticEncoderContext::default();
-        let mut dec_ctx = ArithmeticDecoderContext::default();
-
-        let bits = [0u32, 0, 1, 0, 1, 1, 0, 0];
-        let mut encoder = ArithmeticEncoder::new();
-        for &b in &bits {
-            encoder.encode(b, &mut enc_ctx);
-        }
-        let encoded = encoder.finish();
-
-        let mut decoder = ArithmeticDecoder::new(&encoded);
-        for &b in &bits {
-            let decoded = decoder.decode(&mut dec_ctx);
-            assert_eq!(decoded, b);
-        }
-
-        // Both contexts should be in same state
-        assert_eq!(enc_ctx.index(), dec_ctx.index());
-        assert_eq!(enc_ctx.mps(), dec_ctx.mps());
-    }
-}
+mod tests;

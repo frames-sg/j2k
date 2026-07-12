@@ -145,8 +145,8 @@ pub(super) fn pack_classic_split_mq_raw_tokens_for_test(
             message: "classic J2K Metal split-token missing bitplanes exceed u8".to_string(),
         })?,
     )
-    .map_err(|message| Error::MetalKernel {
-        message: format!("classic J2K Metal split-token CPU pack failed: {message}"),
+    .map_err(|source| {
+        crate::error::native_encode_error("classic Tier-1 split-token CPU pack", source)
     })
 }
 
@@ -244,17 +244,17 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_cpu_pack_
             });
         }
 
-        let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
-        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
-        let command_buffer = runtime.queue.new_command_buffer();
+        let coefficient_buffer = copied_slice_buffer(&runtime.device, &coefficients)?;
+        let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
+        let command_buffer = new_command_buffer(&runtime.queue)?;
         let split_buffers = dispatch_classic_tier1_split_token_emit_for_cpu_pack(
             runtime,
-            command_buffer,
+            &command_buffer,
             &coefficient_buffer,
             &job_buffer,
             &batch_jobs,
         )?;
-        commit_and_wait_metal(command_buffer)?;
+        commit_and_wait_metal(&command_buffer)?;
 
         let job_count =
             usize::try_from(split_buffers.job_count).map_err(|_| Error::MetalKernel {

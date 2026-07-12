@@ -1,11 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::vec;
 use alloc::vec::Vec;
+use core::mem::size_of;
 
 use super::progression::read_component_index;
-use super::{PacketLengthMarker, PpmMarkerData, PpmPacket, RgnMarkerData};
+use super::{PpmMarkerData, PpmPacket, RgnMarkerData};
+use crate::error::{MarkerError, Result, ValidationError};
 use crate::reader::BitReader;
+use crate::try_reserve_decode_elements;
+
+mod packet_lengths;
+
+#[cfg(test)]
+pub(crate) use packet_lengths::decode_packet_lengths;
+pub(super) use packet_lengths::plm_marker;
+pub(crate) use packet_lengths::plt_marker;
 
 /// COM Marker (A.9.2).
 pub(super) fn com_marker(reader: &mut BitReader<'_>) -> Option<()> {
@@ -17,88 +26,59 @@ pub(super) fn tlm_marker(reader: &mut BitReader<'_>) -> Option<()> {
     skip_marker_segment(reader)
 }
 
-/// PLM marker (A.7.2).
-pub(super) fn plm_marker(reader: &mut BitReader<'_>) -> Option<PacketLengthMarker> {
-    let segment_len = reader.read_u16()?.checked_sub(2)? as usize;
-    let segment = reader.read_bytes(segment_len)?;
-    let mut reader = BitReader::new(segment);
-
-    let sequence_idx = reader.read_byte()?;
-    let mut packet_lengths = vec![];
-
-    while !reader.at_end() {
-        let length_data_len = reader.read_u32()? as usize;
-        let length_data = reader.read_bytes(length_data_len)?;
-        packet_lengths.extend(decode_packet_lengths(length_data)?);
-    }
-
-    Some(PacketLengthMarker {
-        sequence_idx,
-        packet_lengths,
-    })
-}
-
-/// PLT marker (A.7.3).
-pub(crate) fn plt_marker(reader: &mut BitReader<'_>) -> Option<PacketLengthMarker> {
-    let segment_len = reader.read_u16()?.checked_sub(2)? as usize;
-    let segment = reader.read_bytes(segment_len)?;
-    let mut reader = BitReader::new(segment);
-
-    let sequence_idx = reader.read_byte()?;
-    let packet_lengths = decode_packet_lengths(reader.tail()?)?;
-
-    Some(PacketLengthMarker {
-        sequence_idx,
-        packet_lengths,
-    })
-}
-
-pub(crate) fn decode_packet_lengths(data: &[u8]) -> Option<Vec<u32>> {
-    let mut packet_lengths = vec![];
-    let mut value = 0_u32;
-    let mut in_progress = false;
-
-    for byte in data {
-        value = value.checked_shl(7)?.checked_add(u32::from(byte & 0x7F))?;
-        in_progress = true;
-
-        if byte & 0x80 == 0 {
-            packet_lengths.push(value);
-            value = 0;
-            in_progress = false;
-        }
-    }
-
-    if in_progress {
-        return None;
-    }
-
-    Some(packet_lengths)
-}
-
 /// PPM marker (A.7.4).
-pub(super) fn ppm_marker<'a>(reader: &mut BitReader<'a>) -> Option<PpmMarkerData<'a>> {
-    let segment_len = reader.read_u16()?.checked_sub(2)? as usize;
-    let ppm_data = reader.read_bytes(segment_len)?;
-    let mut packets = vec![];
+pub(super) fn ppm_marker<'a>(
+    reader: &mut BitReader<'a>,
+    max_owned_bytes: usize,
+) -> Result<PpmMarkerData<'a>> {
+    let segment_len = reader
+        .read_u16()
+        .and_then(|length| length.checked_sub(2))
+        .ok_or(MarkerError::ParseFailure("PPM"))? as usize;
+    let ppm_data = reader
+        .read_bytes(segment_len)
+        .ok_or(MarkerError::ParseFailure("PPM"))?;
+    let sequence_idx = ppm_data
+        .first()
+        .copied()
+        .ok_or(MarkerError::ParseFailure("PPM"))?;
+    let payload = &ppm_data[1..];
 
-    let mut reader = BitReader::new(ppm_data);
-    let sequence_idx = reader.read_byte()?;
+    let packet_count = visit_ppm_packets(payload, |_| {})?;
+    let packet_bytes = packet_count
+        .checked_mul(size_of::<PpmPacket<'_>>())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if packet_bytes > max_owned_bytes {
+        return Err(ValidationError::ImageTooLarge.into());
+    }
 
+    let mut packets = Vec::new();
+    try_reserve_decode_elements(&mut packets, packet_count)?;
+    visit_ppm_packets(payload, |data| packets.push(PpmPacket { data }))?;
+
+    Ok(PpmMarkerData {
+        sequence_idx,
+        packets,
+    })
+}
+
+fn visit_ppm_packets<'a>(payload: &'a [u8], mut visit: impl FnMut(&'a [u8])) -> Result<usize> {
+    let mut packet_count = 0_usize;
+    let mut reader = BitReader::new(payload);
     // This parser handles complete packet payloads carried by the current PPM
     // marker. Continuations across multiple PPM markers are rejected by normal
     // length parsing until a multi-marker accumulator is added.
     while !reader.at_end() {
-        let packet_len = reader.read_u16()? as usize;
-        let data = reader.read_bytes(packet_len)?;
-
-        packets.push(PpmPacket { data });
+        let packet_len = reader.read_u16().ok_or(MarkerError::ParseFailure("PPM"))? as usize;
+        let data = reader
+            .read_bytes(packet_len)
+            .ok_or(MarkerError::ParseFailure("PPM"))?;
+        visit(data);
+        packet_count = packet_count
+            .checked_add(1)
+            .ok_or(ValidationError::ImageTooLarge)?;
     }
-
-    Some(PpmMarkerData {
-        sequence_idx,
-        packets,
-    })
+    Ok(packet_count)
 }
 
 /// RGN marker (A.6.3).
@@ -129,4 +109,23 @@ pub(crate) fn skip_marker_segment(reader: &mut BitReader<'_>) -> Option<()> {
     reader.skip_bytes(length as usize)?;
 
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::DecodeError;
+
+    #[test]
+    fn ppm_output_limit_is_checked_before_reservation() {
+        // Lppm=9: one sequence byte followed by three empty packet records.
+        let data = [0, 9, 0, 0, 0, 0, 0, 0, 0];
+        let mut reader = BitReader::new(&data);
+
+        assert_eq!(
+            ppm_marker(&mut reader, 2 * size_of::<PpmPacket<'_>>()).unwrap_err(),
+            DecodeError::Validation(ValidationError::ImageTooLarge)
+        );
+        assert_eq!(reader.offset(), data.len());
+    }
 }

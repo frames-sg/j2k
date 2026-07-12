@@ -17,6 +17,20 @@ fn cuda_runtime_gate() -> bool {
     j2k_test_support::cuda_runtime_gate(module_path!())
 }
 
+#[test]
+fn cuda_context_identity_distinguishes_clones_from_independent_contexts_when_required() {
+    if !cuda_runtime_gate() {
+        return;
+    }
+
+    let context = CudaContext::system_default().expect("CUDA context");
+    let cloned = context.clone();
+    let independent = CudaContext::system_default().expect("independent CUDA context");
+
+    assert!(context.is_same_context(&cloned));
+    assert!(!context.is_same_context(&independent));
+}
+
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
 fn cuda_transcode_kernel_gate() -> bool {
     if super::transcode_kernels_built() {
@@ -976,8 +990,14 @@ fn assert_compact_jobs_match_for_single_and_multi_input(
         .copied()
         .map(htj2k_multi_input_compact_job)
         .collect::<Vec<_>>();
-    let single = super::htj2k_encode_compact_jobs(statuses, kernel_jobs);
-    let multi = super::htj2k_encode_compact_jobs_multi_input(statuses, &multi_input_jobs);
+    let mut single_budget = super::allocation::HostPhaseBudget::new("test compact jobs");
+    let mut multi_budget = super::allocation::HostPhaseBudget::new("test compact jobs");
+    let single = super::htj2k_encode_compact_jobs(statuses, kernel_jobs, &mut single_budget);
+    let multi = super::htj2k_encode_compact_jobs_multi_input(
+        statuses,
+        &multi_input_jobs,
+        &mut multi_budget,
+    );
     match (single, multi) {
         (Ok(single), Ok(multi)) => {
             assert_eq!(single, multi);

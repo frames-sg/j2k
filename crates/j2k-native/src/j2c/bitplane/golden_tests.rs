@@ -211,7 +211,7 @@ fn classic_style_pass_and_segment_goldens_are_bit_exact() {
             height,
             subband,
             total_bitplanes,
-            &style,
+            style,
         );
         let segments = encoded
             .segments
@@ -309,7 +309,7 @@ fn disabled_profile_counters_and_output_match_unprofiled_decode() {
         height,
         SubBandType::LowLow,
         total_bitplanes,
-        &style,
+        style,
     );
     let segments = encoded
         .segments
@@ -427,7 +427,7 @@ fn strict_metadata_and_segment_failures_keep_exact_error_classes() {
 #[test]
 fn bitplane_modules_remain_focused_without_suppression_shortcuts() {
     const ROOT: &str = include_str!("../bitplane.rs");
-    const MODULES: [(&str, &str, usize); 7] = [
+    const MODULES: [(&str, &str, usize); 8] = [
         ("arithmetic", include_str!("arithmetic.rs"), 320),
         ("bypass", include_str!("bypass.rs"), 280),
         ("context", include_str!("context.rs"), 210),
@@ -435,6 +435,7 @@ fn bitplane_modules_remain_focused_without_suppression_shortcuts() {
         ("observer", include_str!("observer.rs"), 100),
         ("schedule", include_str!("schedule.rs"), 350),
         ("state", include_str!("state.rs"), 500),
+        ("state/model", include_str!("state/model.rs"), 150),
     ];
 
     assert!(ROOT.lines().count() <= 35, "bitplane root regrew");

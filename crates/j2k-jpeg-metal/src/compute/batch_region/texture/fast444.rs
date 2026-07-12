@@ -5,11 +5,12 @@ use super::super::super::{
     commit_and_wait_jpeg, copy_rgb8_surfaces_to_rgba_textures, dispatch_1d_pipeline,
     dispatch_rgba_texture_pack, fast444_packets_share_region_scaled_batch_shape,
     fast444_region_scaled_batch_groups, fast444_scaled_region_params, fast_packet_huffman_tables,
-    plane_mode_to_u32, texture_batch_error_results, texture_batch_success_results,
-    validate_rgba_texture_batch_output, BatchEntropyBufferKeys, BatchEntropyBuffers,
-    BatchedFastPacket, Buffer, CommandBufferRef, CpuDecoder, Error, FastDecodeEntropyInputs,
-    JpegDecodeStatus, JpegFast444PacketV1, JpegFastRegionScaledBatchParams,
-    JpegTexturePackBatchParams, MetalRuntime, PixelFormat, PlaneMode, Rect,
+    new_command_buffer, new_compute_command_encoder, plane_mode_to_u32,
+    texture_batch_error_results, texture_batch_success_results, validate_rgba_texture_batch_output,
+    BatchEntropyBufferKeys, BatchEntropyBufferPlan, BatchEntropyBuffers, BatchedFastPacket, Buffer,
+    CommandBufferRef, Error, FastDecodeEntropyInputs, JpegDecodeStatus, JpegFast444PacketV1,
+    JpegFastRegionScaledBatchParams, JpegTexturePackBatchParams, MetalRuntime, PixelFormat,
+    PlaneMode, Rect,
 };
 use super::super::common::{
     decode_region_scaled_packet_surface, fast444_region_packets, first_region_scaled_op,
@@ -54,19 +55,26 @@ fn try_decode_fast444_restart_region_scaled_rgba_batch_to_textures(
     let Some(out_dims) = first_shape else {
         return Ok(Some(Vec::new()));
     };
-    let mut surfaces = Vec::with_capacity(requests.len());
+    let mut result_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal restart fast444 texture results",
+        requests,
+    )?;
+    let mut surfaces = result_budget.try_vec(
+        requests.len(),
+        "JPEG Metal restart fast444 texture source surfaces",
+    )?;
     for (request, (packet, mode)) in requests.iter().zip(fast444_packets.iter().copied()) {
-        let decoder = CpuDecoder::new(request.input.as_ref())?;
         let batched_packet = BatchedFastPacket::Fast444(packet, mode);
         surfaces.push(decode_region_scaled_packet_surface(
             runtime,
-            &decoder,
             request,
             &batched_packet,
         ));
     }
 
-    let group_indices = (0..requests.len()).collect::<Vec<_>>();
+    let mut group_indices =
+        result_budget.try_vec(requests.len(), "JPEG Metal restart fast444 texture indices")?;
+    group_indices.extend(0..requests.len());
     let copied = copy_rgb8_surfaces_to_rgba_textures(
         runtime,
         output,
@@ -74,14 +82,21 @@ fn try_decode_fast444_restart_region_scaled_rgba_batch_to_textures(
         requests.len(),
         &group_indices,
         surfaces,
+        result_budget.live_bytes(),
     )?;
-    let mut merged_results: Vec<Option<Result<crate::MetalTextureTile, Error>>> =
-        (0..requests.len()).map(|_| None).collect();
+    let mut merged_results = result_budget.try_filled(
+        requests.len(),
+        None,
+        "JPEG Metal restart fast444 texture merged results",
+    )?;
     for (index, result) in copied {
         merged_results[index] = Some(result);
     }
 
-    let mut results = Vec::with_capacity(requests.len());
+    let mut results = result_budget.try_vec(
+        requests.len(),
+        "JPEG Metal ordered restart fast444 texture results",
+    )?;
     for (index, result) in merged_results.into_iter().enumerate() {
         results.push(result.ok_or_else(|| Error::MetalKernel {
             message: format!(
@@ -211,13 +226,13 @@ fn encode_fast444_region_texture_decode(
     status_buffer: &Buffer,
     planes: [&Buffer; 3],
     shape: Fast444RegionTextureShape,
-) {
+) -> Result<(), Error> {
     let (dc_tables, ac_tables) = fast_packet_huffman_tables(first);
-    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    let decoder_encoder = new_compute_command_encoder(command_buffer)?;
     decoder_encoder
         .set_compute_pipeline_state(&runtime.fast444_scaled_region_batch_decode_pipeline);
     bind_fast_decode_entropy_inputs::<JpegFastRegionScaledBatchParams>(
-        decoder_encoder,
+        &decoder_encoder,
         &FastDecodeEntropyInputs {
             entropy_buffer: &entropy_buffers.payload,
             planes,
@@ -232,11 +247,12 @@ fn encode_fast444_region_texture_decode(
     );
     decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
     dispatch_1d_pipeline(
-        decoder_encoder,
+        &decoder_encoder,
         &runtime.fast444_scaled_region_batch_decode_pipeline,
         shape.total_decode_threads,
     );
     decoder_encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -254,7 +270,7 @@ pub(in crate::compute) fn try_decode_fast444_region_scaled_rgba_batch_to_texture
     packets: &[BatchedFastPacket<'_>],
     output: &crate::MetalBatchTextureOutput,
 ) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
-    let Some(fast444_packets) = fast444_region_packets(requests, packets) else {
+    let Some(fast444_packets) = fast444_region_packets(requests, packets)? else {
         return Ok(None);
     };
 
@@ -279,7 +295,7 @@ pub(in crate::compute) fn try_decode_fast444_region_scaled_rgba_batch_to_texture
         return Ok(None);
     }
 
-    let Some(groups) = fast444_region_scaled_batch_groups(requests, &fast444_packets) else {
+    let Some(groups) = fast444_region_scaled_batch_groups(requests, &fast444_packets)? else {
         return Ok(None);
     };
     if groups.len() > 1 {
@@ -313,12 +329,17 @@ pub(in crate::compute) fn try_decode_fast444_region_scaled_rgba_batch_to_texture
     let mut batch_scratch = runtime.batch_scratch()?;
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
+        requests,
         &mut batch_scratch,
-        BatchEntropyBufferKeys {
-            payload: "fast444_region_scaled_texture_entropy",
-            offsets: "fast444_region_scaled_texture_entropy_offsets",
-            lens: "fast444_region_scaled_texture_entropy_lens",
-            checkpoints: "fast444_region_scaled_texture_entropy_checkpoints",
+        BatchEntropyBufferPlan {
+            keys: BatchEntropyBufferKeys {
+                payload: "fast444_region_scaled_texture_entropy",
+                offsets: "fast444_region_scaled_texture_entropy_offsets",
+                lens: "fast444_region_scaled_texture_entropy_lens",
+                checkpoints: "fast444_region_scaled_texture_entropy_checkpoints",
+            },
+            tile_count: shape.tile_count,
+            segment_count: shape.segment_count,
         },
         fast444_packets
             .iter()
@@ -326,8 +347,6 @@ pub(in crate::compute) fn try_decode_fast444_region_scaled_rgba_batch_to_texture
         fast444_packets
             .iter()
             .map(|(packet, _)| packet.entropy_checkpoints.as_slice()),
-        shape.tile_count,
-        shape.segment_count,
     )?
     else {
         return Ok(None);
@@ -337,36 +356,44 @@ pub(in crate::compute) fn try_decode_fast444_region_scaled_rgba_batch_to_texture
         &runtime.device,
         "fast444_region_scaled_texture_y",
         shape.plane_len * shape.tile_count,
-    );
+    )?;
     let cb_plane = batch_scratch.private_buffer(
         &runtime.device,
         "fast444_region_scaled_texture_cb",
         shape.plane_len * shape.tile_count,
-    );
+    )?;
     let cr_plane = batch_scratch.private_buffer(
         &runtime.device,
         "fast444_region_scaled_texture_cr",
         shape.plane_len * shape.tile_count,
-    );
-    let statuses = vec![JpegDecodeStatus::default(); shape.total_decode_threads as usize];
+    )?;
+    let mut status_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal fast444 region texture statuses",
+        requests,
+    )?;
+    let statuses = status_budget.try_filled(
+        shape.total_decode_threads as usize,
+        JpegDecodeStatus::default(),
+        "JPEG Metal fast444 region texture decode statuses",
+    )?;
     let status_buffer = batch_scratch.shared_buffer_with_slice(
         &runtime.device,
         "fast444_region_scaled_texture_status",
         &statuses,
-    );
+    )?;
 
-    let command_buffer = runtime.queue.new_command_buffer();
+    let command_buffer = new_command_buffer(&runtime.queue)?;
     encode_fast444_region_texture_decode(
         runtime,
-        command_buffer,
+        &command_buffer,
         first,
         &entropy_buffers,
         &status_buffer,
         [&y_plane, &cb_plane, &cr_plane],
         shape,
-    );
+    )?;
     dispatch_rgba_texture_pack(
-        command_buffer,
+        &command_buffer,
         &runtime.pack_444_rgba_texture_pipeline,
         (&y_plane, &cb_plane, &cr_plane),
         output,
@@ -375,7 +402,7 @@ pub(in crate::compute) fn try_decode_fast444_region_scaled_rgba_batch_to_texture
         shape.out_dims,
     )?;
 
-    commit_and_wait_jpeg(command_buffer)?;
+    commit_and_wait_jpeg(&command_buffer)?;
     drop(batch_scratch);
 
     if let Some(results) =
@@ -385,6 +412,7 @@ pub(in crate::compute) fn try_decode_fast444_region_scaled_rgba_batch_to_texture
     }
 
     Ok(Some(texture_batch_success_results(
+        requests,
         output,
         shape.out_dims,
         requests.len(),
@@ -419,21 +447,35 @@ fn try_decode_grouped_fast444_region_scaled_rgba_batch_to_textures(
         validate_rgba_texture_batch_output(output, out_dims, requests.len(), out_tile_len)?;
     }
 
-    let mut merged_results: Vec<Option<Result<crate::MetalTextureTile, Error>>> =
-        (0..requests.len()).map(|_| None).collect();
+    let mut result_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal grouped fast444 texture results",
+        requests,
+    )?;
+    let mut merged_results = result_budget.try_filled(
+        requests.len(),
+        None,
+        "JPEG Metal grouped fast444 texture result slots",
+    )?;
     for group_indices in groups {
         let group_output = output.clone_slots(&group_indices)?;
-        let group_requests = group_indices
-            .iter()
-            .map(|&index| requests[index].clone())
-            .collect::<Vec<_>>();
-        let group_packets = group_indices
-            .iter()
-            .map(|&index| {
-                let (packet, mode) = fast444_packets[index];
-                BatchedFastPacket::Fast444(packet, mode)
-            })
-            .collect::<Vec<_>>();
+        let mut group_budget = crate::plan_owner_ledger::batch_execution_budget(
+            "JPEG Metal grouped fast444 texture sub-batch",
+            requests,
+        )?;
+        let mut group_requests = group_budget.try_vec(
+            group_indices.len(),
+            "JPEG Metal grouped fast444 texture requests",
+        )?;
+        group_requests.extend(group_indices.iter().map(|&index| requests[index].clone()));
+        let mut group_packets = group_budget.try_vec(
+            group_indices.len(),
+            "JPEG Metal grouped fast444 texture packets",
+        )?;
+        group_packets.extend(group_indices.iter().map(|&index| {
+            let (packet, mode) = fast444_packets[index];
+            BatchedFastPacket::Fast444(packet, mode)
+        }));
+        batch::stamp_execution_owner_baseline(&mut group_requests, 0, group_budget.live_bytes());
 
         let Some(group_results) = try_decode_fast444_region_scaled_rgba_batch_to_textures(
             runtime,
@@ -455,7 +497,10 @@ fn try_decode_grouped_fast444_region_scaled_rgba_batch_to_textures(
         }
     }
 
-    let mut results = Vec::with_capacity(requests.len());
+    let mut results = result_budget.try_vec(
+        requests.len(),
+        "JPEG Metal ordered grouped fast444 texture results",
+    )?;
     for (index, result) in merged_results.into_iter().enumerate() {
         results.push(result.ok_or_else(|| Error::MetalKernel {
             message: format!(

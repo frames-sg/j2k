@@ -10,6 +10,8 @@ use super::{
     MetalEncodeInputStaging, MetalEncodeStageAccelerator, MetalLosslessEncodeOutcome,
     MetalLosslessEncodeResidency, MetalLosslessEncodeTile,
 };
+#[cfg(target_os = "macos")]
+use crate::error::metal_kernel_support_error;
 
 #[cfg(target_os = "macos")]
 #[expect(
@@ -105,9 +107,10 @@ pub(super) fn encode_lossless_tile_with_report(
             });
         }
         Err(error) => {
-            return Err(crate::Error::MetalKernel {
-                message: format!("J2K Metal encode input buffer view invalid: {error}"),
-            });
+            return Err(metal_kernel_support_error(
+                format!("J2K Metal encode input buffer view invalid: {error}"),
+                error,
+            ));
         }
     };
     let samples = J2kLosslessSamples::new(

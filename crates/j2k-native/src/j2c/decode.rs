@@ -5,7 +5,6 @@
 //! component channels.
 
 use alloc::boxed::Box;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::bitplane::{BitPlaneDecodeBuffers, BitPlaneDecodeContext};
@@ -19,36 +18,36 @@ use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
 use super::{bitplane, build, idwt, mct, segment, tile, ComponentData};
 use crate::error::{
-    bail, ColorError, DecodingError, DirectPlanUnsupportedReason, Result, TileError,
+    bail, ColorError, DecodeError, DecodingError, DirectPlanUnsupportedReason, Result, TileError,
+    ValidationError,
 };
 use crate::j2c::segment::MAX_BITPLANE_COUNT;
-use crate::math::SimdBuffer;
 use crate::profile;
 use crate::reader::BitReader;
 use crate::{
     add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, apply_roi_maxshift_inverse_i64,
-    checked_decode_byte_len3, checked_decode_sample_count, decode_j2k_code_block_scalar,
-    HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob,
-    HtOwnedSubBandPlan, HtSubBandDecodeJob, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob,
-    J2kCodeBlockSegment, J2kCodeBlockStyle, J2kDirectBandId, J2kDirectColorPlan,
-    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
-    J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect, J2kStoreComponentJob,
-    J2kSubBandDecodeJob, J2kSubBandType, J2kWaveletTransform,
+    decode_j2k_code_block_scalar_with_workspace, HtCodeBlockBatchJob, HtCodeBlockDecodeJob,
+    HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, HtSubBandDecodeJob,
+    J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kCodeBlockStyle,
+    J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
+    J2kDirectIdwtStep, J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect,
+    J2kStoreComponentJob, J2kSubBandDecodeJob, J2kSubBandType, J2kWaveletTransform,
 };
-#[cfg(feature = "parallel")]
-use crate::{decode_ht_code_block_scalar_with_workspace, HtCodeBlockDecodeWorkspace};
 use core::mem::size_of;
 use core::ops::Range;
 
+mod allocation;
 mod direct_plan;
+mod reuse;
 mod store;
 mod subband;
 mod subband_params;
+mod tier1;
+pub(crate) use self::allocation::DecodeAllocationBudget;
 use self::direct_plan::collect_classic_code_block_data;
 pub(crate) use self::direct_plan::{build_direct_color_plan, build_direct_grayscale_plan};
 use self::store::{apply_sign_shift, component_unsigned_level_shift, store};
-use self::subband::code_block_required_by_index;
-pub(crate) use self::subband::decode_component_tile_bit_planes;
+use self::subband::{code_block_required_by_index, decode_component_tile_bit_planes};
 #[cfg(all(test, feature = "parallel"))]
 use self::subband::{
     copy_decoded_classic_blocks_to_sub_band, copy_decoded_ht_blocks_to_sub_band,
@@ -66,26 +65,50 @@ use self::subband_params::{
 pub(crate) fn decode<'a>(
     data: &'a [u8],
     header: &Header<'a>,
+    retained_image_bytes: usize,
     ctx: &mut DecoderContext<'a>,
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
 ) -> Result<()> {
-    let mut reader = BitReader::new(data);
+    let mut reused_baseline = ctx.prepare_reused_decode_baseline(retained_image_bytes)?;
     let profile_enabled = profile::profile_stages_enabled();
     let total_start = profile::profile_now(profile_enabled);
     let mut profile_timings = DecodeProfileTimings::default();
     let stage_start = profile::profile_now(profile_enabled);
-    let tiles = tile::parse(&mut reader, header)?;
+    let mut reader = BitReader::new(data);
+    let mut parsed_tiles = tile::parse(&mut reader, header, reused_baseline.parser_bytes);
+    if reused_baseline.retained_channel_bytes != 0
+        && matches!(
+            parsed_tiles.as_ref(),
+            Err(error) if reuse::is_capacity_error(error)
+        )
+    {
+        // Retained component buffers are an optimization, not a reason for an
+        // otherwise valid decode to fail its aggregate allocation cap.
+        ctx.discard_reused_channels();
+        reused_baseline = reuse::ReusedDecodeBaseline {
+            parser_bytes: retained_image_bytes,
+            retained_channel_bytes: 0,
+        };
+        reader = BitReader::new(data);
+        parsed_tiles = tile::parse(&mut reader, header, reused_baseline.parser_bytes);
+    }
+    let tiles = parsed_tiles?;
     profile_timings.parse_tiles_us += profile::elapsed_us(stage_start);
 
     if tiles.is_empty() {
         bail!(TileError::Invalid);
     }
 
-    ctx.reset(header, &tiles[0])?;
+    let retained_decode_baseline = ctx.reset(
+        header,
+        &tiles[0],
+        tiles.structural_workspace_bytes(),
+        reused_baseline.retained_channel_bytes,
+    )?;
     let cpu_decode_parallelism = ctx.cpu_decode_parallelism;
     let (tile_ctx, storage) = (&mut ctx.tile_decode_context, &mut ctx.storage);
 
-    for tile in &tiles {
+    for tile in tiles.iter() {
         ltrace!(
             "tile {} rect [{},{} {}x{}]",
             tile.idx,
@@ -105,6 +128,7 @@ pub(crate) fn decode<'a>(
             cpu_decode_parallelism,
             profile_enabled,
             &mut profile_timings,
+            retained_decode_baseline,
         )?;
     }
 
@@ -121,6 +145,12 @@ pub(crate) fn decode<'a>(
     if profile_enabled {
         emit_decode_profile_row(tile_ctx, &profile_timings, total_start);
     }
+
+    // The returned image only borrows channel data. Release tile graph,
+    // packet, Tier-1, and IDWT owners before callers allocate packed output so
+    // output conversion does not overlap a completed decode workspace.
+    storage.release_all_allocations();
+    tile_ctx.release_tile_scratch_allocations();
 
     Ok(())
 }
@@ -185,10 +215,9 @@ impl Default for DecoderContext<'_> {
 }
 
 impl DecoderContext<'_> {
-    fn reset(&mut self, header: &Header<'_>, initial_tile: &Tile<'_>) -> Result<()> {
-        self.tile_decode_context.reset(header, initial_tile)?;
-        self.storage.reset();
-        Ok(())
+    pub(crate) fn release_reusable_allocations(&mut self) {
+        self.tile_decode_context.release_all_allocations();
+        self.storage.release_all_allocations();
     }
 
     pub(crate) fn set_output_region(&mut self, output_region: Option<(u32, u32, u32, u32)>) {
@@ -221,8 +250,10 @@ fn decode_tile<'a, 'b>(
     cpu_decode_parallelism: CpuDecodeParallelism,
     profile_enabled: bool,
     profile_timings: &mut DecodeProfileTimings,
+    retained_decode_baseline: usize,
 ) -> Result<()> {
-    storage.reset();
+    storage.reset_for_next_tile();
+    tile_ctx.release_tile_scratch_allocations();
     storage.exact_integer_decode = tile_requires_exact_integer_decode(tile);
     if storage.exact_integer_decode {
         validate_exact_integer_decode_tile(tile)?;
@@ -238,14 +269,24 @@ fn decode_tile<'a, 'b>(
     // First, we build the decompositions, including their sub-bands, precincts
     // and code blocks.
     let stage_start = profile::profile_now(profile_enabled);
-    build::build(tile, storage)?;
+    build::build(
+        tile,
+        storage,
+        retained_decode_baseline,
+        tile_ctx.output_region.is_some(),
+        build::BuildWorkspace::DecodePixels {
+            skipped_resolution_levels: header.skipped_resolution_levels,
+        },
+    )?;
     if let Some(output_region) = tile_ctx.output_region {
-        storage.roi_plan = RoiPlan::build(tile, header, storage, output_region);
+        storage.roi_plan = RoiPlan::build(tile, header, storage, output_region)?;
         if storage.roi_plan.is_some() {
             storage.coefficients.fill(0.0);
             if storage.exact_integer_decode {
                 storage.coefficients_i64.fill(0);
             }
+        } else {
+            build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
         }
     }
     profile_timings.build_us += profile::elapsed_us(stage_start);
@@ -256,7 +297,7 @@ fn decode_tile<'a, 'b>(
     // We then decode the bitplanes of each code block, yielding the
     // (possibly dequantized) coefficients of each code block.
     let stage_start = profile::profile_now(profile_enabled);
-    decode_component_tile_bit_planes(
+    decode_component_tile_bit_planes_budgeted(
         tile,
         tile_ctx,
         storage,
@@ -272,6 +313,7 @@ fn decode_tile<'a, 'b>(
     for (idx, component_info) in header.component_infos.iter().enumerate() {
         // Next, we apply the inverse discrete wavelet transform.
         let stage_start = profile::profile_now(profile_enabled);
+        tile_ctx.release_idwt_allocations();
         idwt::apply(
             storage,
             tile_ctx,
@@ -297,6 +339,29 @@ fn decode_tile<'a, 'b>(
     }
 
     Ok(())
+}
+
+pub(crate) fn decode_component_tile_bit_planes_budgeted<'a>(
+    tile: &Tile<'a>,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    header: &Header<'_>,
+    ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    cpu_decode_parallelism: CpuDecodeParallelism,
+    profile_enabled: bool,
+) -> Result<()> {
+    let tier1_workspace_bytes = tier1::prepare_tier1_workspace(tile, header, tile_ctx, storage)?;
+    let decode_result = decode_component_tile_bit_planes(
+        tile,
+        tile_ctx,
+        storage,
+        header,
+        ht_decoder,
+        cpu_decode_parallelism,
+        profile_enabled,
+    );
+    tier1::release_tier1_workspace(tile_ctx, storage, tier1_workspace_bytes)?;
+    decode_result
 }
 
 fn tile_requires_exact_integer_decode(tile: &Tile<'_>) -> bool {
@@ -457,8 +522,10 @@ impl Iterator for SubBandIter {
     }
 }
 
-/// A buffer so that we can reuse allocations for layers/code blocks/etc.
-/// across different tiles.
+/// Owned decomposition workspace for one active tile.
+///
+/// Within an image, reset retains capacities and the next build counts them in
+/// its live baseline. Crossing to a new image drops every retained allocation.
 #[derive(Default)]
 pub(crate) struct DecompositionStorage<'a> {
     pub(crate) segments: Vec<Segment<'a>>,
@@ -473,24 +540,61 @@ pub(crate) struct DecompositionStorage<'a> {
     pub(crate) tile_decompositions: Vec<TileDecompositions>,
     pub(crate) roi_plan: Option<RoiPlan>,
     pub(crate) exact_integer_decode: bool,
+    /// Planned non-segment live bytes for the active tile and future decode scratch.
+    pub(crate) structural_workspace_bytes: usize,
+    /// Allocation/cap failure raised from the option-based packet parser.
+    pub(crate) packet_workspace_error: Option<DecodeError>,
 }
 
 impl DecompositionStorage<'_> {
-    pub(crate) fn reset(&mut self) {
+    pub(crate) fn reset_for_next_tile(&mut self) {
         self.segments.clear();
         self.layers.clear();
         self.code_blocks.clear();
-        // No need to clear the coefficients, as they will be resized
-        // and then overridden.
-        // self.coefficients.clear();
         self.precincts.clear();
+        self.tag_tree_nodes.clear();
+        self.coefficients.clear();
+        self.coefficients_i64.clear();
         self.sub_bands.clear();
         self.decompositions.clear();
         self.tile_decompositions.clear();
-        self.tag_tree_nodes.clear();
         self.roi_plan = None;
         self.exact_integer_decode = false;
+        self.structural_workspace_bytes = 0;
+        self.packet_workspace_error = None;
     }
+
+    pub(crate) fn release_all_allocations(&mut self) {
+        *self = Self::default();
+    }
+
+    pub(crate) fn retained_capacity_bytes(&self) -> Result<usize> {
+        let mut bytes = 0_usize;
+        include_capacity::<Segment<'_>>(&mut bytes, self.segments.capacity())?;
+        include_capacity::<Layer>(&mut bytes, self.layers.capacity())?;
+        include_capacity::<CodeBlock>(&mut bytes, self.code_blocks.capacity())?;
+        include_capacity::<Precinct>(&mut bytes, self.precincts.capacity())?;
+        include_capacity::<TagNode>(&mut bytes, self.tag_tree_nodes.capacity())?;
+        include_capacity::<f32>(&mut bytes, self.coefficients.capacity())?;
+        include_capacity::<i64>(&mut bytes, self.coefficients_i64.capacity())?;
+        include_capacity::<SubBand>(&mut bytes, self.sub_bands.capacity())?;
+        include_capacity::<Decomposition>(&mut bytes, self.decompositions.capacity())?;
+        include_capacity::<TileDecompositions>(&mut bytes, self.tile_decompositions.capacity())?;
+        Ok(bytes)
+    }
+}
+
+fn include_capacity<T>(bytes: &mut usize, capacity: usize) -> Result<()> {
+    let additional = capacity
+        .checked_mul(size_of::<T>())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    *bytes = bytes
+        .checked_add(additional)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if *bytes > crate::DEFAULT_MAX_DECODE_BYTES {
+        return Err(ValidationError::ImageTooLarge.into());
+    }
+    Ok(())
 }
 
 /// A reusable context used during the decoding of a single tile.
@@ -520,57 +624,46 @@ pub(crate) struct TileDecodeContext {
 }
 
 impl TileDecodeContext {
-    /// Reset the context for processing a new image.
-    fn reset(&mut self, header: &Header<'_>, initial_tile: &Tile<'_>) -> Result<()> {
-        // Bitplane decode context and buffers will be reset in the
-        // corresponding methods. IDWT output and scratch buffer will be
-        // overridden on demand, so those don't need to be reset either.
-        self.channel_data.clear();
-        self.debug_counters = DecodeDebugCounters::default();
+    fn release_all_allocations(&mut self) {
+        let output_region = self.output_region;
+        *self = Self::default();
+        self.output_region = output_region;
+    }
 
-        let (output_width, output_height) = self.output_region.map_or(
-            (
-                header.size_data.image_width(),
-                header.size_data.image_height(),
-            ),
-            OutputRegion::dimensions,
-        );
+    fn release_tile_scratch_allocations(&mut self) {
+        self.release_idwt_allocations();
+        self.release_tier1_allocations();
+    }
 
-        let sample_count = checked_decode_sample_count(output_width, output_height)?;
-        checked_decode_byte_len3(
-            sample_count,
-            initial_tile.component_infos.len(),
-            size_of::<f32>(),
-        )?;
-        let exact_integer_decode = initial_tile
-            .component_infos
-            .iter()
-            .any(ComponentInfo::requires_exact_integer_decode);
-        if exact_integer_decode {
-            checked_decode_byte_len3(
-                sample_count,
-                initial_tile.component_infos.len(),
-                size_of::<i64>(),
-            )?;
-        }
+    fn release_tier1_allocations(&mut self) {
+        self.bit_plane_decode_context = BitPlaneDecodeContext::default();
+        self.bit_plane_decode_buffers = BitPlaneDecodeBuffers::default();
+        self.ht_block_decode_context = HtBlockDecodeContext::default();
+    }
 
-        // Allocate per component here; the surrounding context reuses the
-        // higher-level vectors while `SimdBuffer` owns its initialized storage.
-        for info in &initial_tile.component_infos {
-            self.channel_data.push(ComponentData {
-                container: SimdBuffer::zeros(sample_count),
-                integer_container: exact_integer_decode.then(|| vec![0; sample_count]),
-                bit_depth: info.size_info.precision,
-                signed: info.size_info.signed,
-            });
-        }
-        Ok(())
+    pub(crate) fn tier1_capacity_bytes(&self) -> Result<usize> {
+        let classic_bytes = self.bit_plane_decode_context.allocated_bytes()?;
+        let buffer_bytes = self.bit_plane_decode_buffers.allocated_bytes()?;
+        let ht_bytes = self.ht_block_decode_context.allocated_bytes()?;
+        classic_bytes
+            .checked_add(buffer_bytes)
+            .and_then(|bytes| bytes.checked_add(ht_bytes))
+            .ok_or(ValidationError::ImageTooLarge.into())
+    }
+
+    fn release_idwt_allocations(&mut self) {
+        self.idwt_output = IDWTOutput::default();
+        self.idwt_scratch_buffer = Vec::new();
+        self.idwt_scratch_buffer_i64 = Vec::new();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_classic_code_block_data, CodeBlock, DecompositionStorage, Layer, Segment};
+    use super::{
+        collect_classic_code_block_data, CodeBlock, DecodeAllocationBudget, DecoderContext,
+        DecompositionStorage, Layer, Segment,
+    };
     use crate::error::DecodingError;
     #[cfg(feature = "parallel")]
     use crate::j2c::build::{SubBand, SubBandType};
@@ -604,6 +697,43 @@ mod tests {
     }
 
     #[test]
+    fn cross_image_release_drops_reusable_decode_capacities() {
+        let mut ctx = DecoderContext::default();
+        ctx.storage.coefficients.reserve(64);
+        ctx.storage.segments.reserve(16);
+        ctx.tile_decode_context.idwt_scratch_buffer.reserve(64);
+        ctx.tile_decode_context
+            .bit_plane_decode_context
+            .reserve_coefficients_for_test(64);
+
+        ctx.release_reusable_allocations();
+
+        assert_eq!(ctx.storage.coefficients.capacity(), 0);
+        assert_eq!(ctx.storage.segments.capacity(), 0);
+        assert_eq!(ctx.tile_decode_context.idwt_scratch_buffer.capacity(), 0);
+        assert_eq!(
+            ctx.tile_decode_context
+                .bit_plane_decode_context
+                .coefficient_capacity_for_test(),
+            0
+        );
+    }
+
+    #[test]
+    fn next_tile_reset_preserves_storage_capacity_for_accounted_reuse() {
+        let mut storage = DecompositionStorage::default();
+        storage.coefficients.reserve(64);
+        storage.layers.reserve(16);
+        let coefficient_capacity = storage.coefficients.capacity();
+        let layer_capacity = storage.layers.capacity();
+
+        storage.reset_for_next_tile();
+
+        assert_eq!(storage.coefficients.capacity(), coefficient_capacity);
+        assert_eq!(storage.layers.capacity(), layer_capacity);
+    }
+
+    #[test]
     fn collect_classic_code_block_data_preserves_zero_length_segments() {
         let mut storage = DecompositionStorage::default();
         storage.layers.push(Layer {
@@ -628,10 +758,12 @@ mod tests {
             data: &[0xBB],
         });
 
+        let mut budget = DecodeAllocationBudget::for_storage(&storage).expect("budget baseline");
         let (combined_data, segments) = collect_classic_code_block_data(
             &classic_test_code_block(),
             &classic_test_style(),
             &storage,
+            &mut budget,
         )
         .expect("collect classic segments");
 
@@ -670,10 +802,12 @@ mod tests {
             data: &[0xBB],
         });
 
+        let mut budget = DecodeAllocationBudget::for_storage(&storage).expect("budget baseline");
         let error = collect_classic_code_block_data(
             &classic_test_code_block(),
             &classic_test_style(),
             &storage,
+            &mut budget,
         )
         .expect_err("non-contiguous segment indices must fail");
 

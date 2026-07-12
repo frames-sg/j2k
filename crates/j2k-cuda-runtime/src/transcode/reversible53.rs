@@ -5,7 +5,8 @@ use super::{
     CudaTranscodeReversible53Bands, DctBlockGrid,
 };
 use crate::{
-    context::CudaContext, error::CudaError, kernels::CudaKernel, memory::CudaDeviceBuffer,
+    allocation::HostPhaseBudget, bytes::i16_slice_as_bytes, context::CudaContext, error::CudaError,
+    kernels::CudaKernel, memory::CudaDeviceBuffer,
 };
 
 impl CudaContext {
@@ -23,6 +24,27 @@ impl CudaContext {
         block_rows: usize,
         width: usize,
         height: usize,
+    ) -> Result<CudaTranscodeReversible53Bands, CudaError> {
+        self.j2k_transcode_reversible_dwt53_and_live_host_bytes(
+            dequantized_blocks,
+            block_cols,
+            block_rows,
+            width,
+            height,
+            0,
+        )
+    }
+
+    /// Compute one reversible level while accounting caller-live host owners.
+    #[doc(hidden)]
+    pub fn j2k_transcode_reversible_dwt53_and_live_host_bytes(
+        &self,
+        dequantized_blocks: &[i16],
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+        live_host_bytes: usize,
     ) -> Result<CudaTranscodeReversible53Bands, CudaError> {
         ensure_transcode_runtime_ptx_available()?;
         let grid = validate_dct_block_grid(
@@ -60,16 +82,7 @@ impl CudaContext {
         let lh = alloc_i32(low_width * high_height)?;
         let hh = alloc_i32(high_width * high_height)?;
 
-        // SAFETY: `dequantized_blocks` is a live `&[i16]`; reinterpreting it as a
-        // byte slice of `len * 2` bytes for upload is a read-only view with the
-        // same lifetime and no alignment requirement on the destination.
-        let block_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                dequantized_blocks.as_ptr().cast::<u8>(),
-                std::mem::size_of_val(dequantized_blocks),
-            )
-        };
-        let blocks_dev = self.upload(block_bytes)?;
+        let blocks_dev = self.upload(i16_slice_as_bytes(dequantized_blocks))?;
 
         self.launch_transcode_reversible53_idct(&blocks_dev, &samples, block_count)?;
         if low_height > 0 {
@@ -107,11 +120,15 @@ impl CudaContext {
             )?;
         }
 
+        let mut host_budget = HostPhaseBudget::with_live_bytes(
+            "CUDA reversible 5/3 subband readback",
+            live_host_bytes,
+        )?;
         Ok(CudaTranscodeReversible53Bands {
-            ll: Self::download_i32_band(&ll, low_width * low_height)?,
-            hl: Self::download_i32_band(&hl, high_width * low_height)?,
-            lh: Self::download_i32_band(&lh, low_width * high_height)?,
-            hh: Self::download_i32_band(&hh, high_width * high_height)?,
+            ll: Self::download_i32_band(&ll, low_width * low_height, &mut host_budget)?,
+            hl: Self::download_i32_band(&hl, high_width * low_height, &mut host_budget)?,
+            lh: Self::download_i32_band(&lh, low_width * high_height, &mut host_budget)?,
+            hh: Self::download_i32_band(&hh, high_width * high_height, &mut host_budget)?,
             low_width,
             low_height,
             high_width,

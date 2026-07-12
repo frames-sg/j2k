@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{PreparedComponentPlan, StripeBuffer};
+use super::{ResolvedPreparedComponentPlan, StripeBuffer};
 use crate::backend::Backend;
 use crate::entropy::block::{
     decode_block_for_1x1_idct, decode_block_for_reduced_idct, BlockActivity, CoefficientBlock,
@@ -152,9 +152,9 @@ pub(super) struct PlaneBlockTarget<'a> {
 
 #[derive(Clone, Copy)]
 pub(super) struct FastTile420Components<'a> {
-    pub(super) y: &'a PreparedComponentPlan,
-    pub(super) cb: &'a PreparedComponentPlan,
-    pub(super) cr: &'a PreparedComponentPlan,
+    pub(super) y: ResolvedPreparedComponentPlan<'a>,
+    pub(super) cb: ResolvedPreparedComponentPlan<'a>,
+    pub(super) cr: ResolvedPreparedComponentPlan<'a>,
 }
 
 pub(super) struct FastTile420DcState<'a> {
@@ -198,7 +198,7 @@ impl FastTile420Window {
     reason = "entropy state, scratch, and plane target are compact borrowing descriptors consumed as one hot-path operation"
 )]
 pub(super) fn decode_scaled_block_to_plane(
-    comp: &PreparedComponentPlan,
+    comp: ResolvedPreparedComponentPlan<'_>,
     downscale: DownscaleFactor,
     state: EntropyBlockState<'_, '_>,
     scratch: ReducedIdctScratch<'_>,
@@ -211,10 +211,10 @@ pub(super) fn decode_scaled_block_to_plane(
         DownscaleFactor::Eighth => {
             decode_block_for_1x1_idct(
                 state.br,
-                &comp.dc_table,
-                &comp.ac_table,
+                comp.dc_table,
+                comp.ac_table,
                 state.prev_dc,
-                comp.quant.as_ref(),
+                comp.quant,
                 state.coeff,
             )?;
             let pixel = downscale::idct_islow_1x1(state.coeff.coefficients());
@@ -224,10 +224,10 @@ pub(super) fn decode_scaled_block_to_plane(
     };
     let dc_only = decode_block_for_reduced_idct(
         state.br,
-        &comp.dc_table,
-        &comp.ac_table,
+        comp.dc_table,
+        comp.ac_table,
         state.prev_dc,
-        comp.quant.as_ref(),
+        comp.quant,
         state.coeff,
         keep,
     )?;
@@ -274,17 +274,17 @@ pub(super) fn decode_scaled_block_to_plane(
     reason = "entropy state and plane target are compact borrowing descriptors used as one reduced-IDCT operation"
 )]
 pub(super) fn decode_quarter_block_to_plane(
-    comp: &PreparedComponentPlan,
+    comp: ResolvedPreparedComponentPlan<'_>,
     pixels_2x2: &mut [u8; 4],
     state: EntropyBlockState<'_, '_>,
     target: PlaneBlockTarget<'_>,
 ) -> Result<(), JpegError> {
     let dc_only = decode_block_for_reduced_idct(
         state.br,
-        &comp.dc_table,
-        &comp.ac_table,
+        comp.dc_table,
+        comp.ac_table,
         state.prev_dc,
-        comp.quant.as_ref(),
+        comp.quant,
         state.coeff,
         ReducedIdctCoefficients::Quarter,
     )?;
@@ -302,16 +302,16 @@ pub(super) fn decode_quarter_block_to_plane(
     reason = "entropy state and plane target are compact borrowing descriptors used as one reduced-IDCT operation"
 )]
 pub(super) fn decode_eighth_block_to_plane(
-    comp: &PreparedComponentPlan,
+    comp: ResolvedPreparedComponentPlan<'_>,
     state: EntropyBlockState<'_, '_>,
     target: PlaneBlockTarget<'_>,
 ) -> Result<(), JpegError> {
     decode_block_for_1x1_idct(
         state.br,
-        &comp.dc_table,
-        &comp.ac_table,
+        comp.dc_table,
+        comp.ac_table,
         state.prev_dc,
-        comp.quant.as_ref(),
+        comp.quant,
         state.coeff,
     )?;
     let pixel = downscale::idct_islow_1x1(state.coeff.coefficients());

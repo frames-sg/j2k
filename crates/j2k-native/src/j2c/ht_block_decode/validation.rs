@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::pipeline::decode_impl;
 #[cfg(test)]
 use super::pipeline::PHASE_LIMIT_MAGREF;
+use super::pipeline::{decode_impl, prepare_scratch};
 #[cfg(test)]
 use super::segments::CombinedCodeBlockData;
 use super::segments::HtCodeBlockSegments;
@@ -30,6 +30,7 @@ fn decode_segments_with_scratch_for_phase<const PHASE_LIMIT: u8>(
     stats: Option<&mut HtBlockDecodeStats>,
     profile_enabled: bool,
 ) -> Result<()> {
+    prepare_scratch(scratch, width, height)?;
     let decoded = if let Some(stats) = stats {
         let mut observer = RecordingHtDecodeStats {
             stats,

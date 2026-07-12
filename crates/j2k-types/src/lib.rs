@@ -1,3 +1,4 @@
+// j2k-coverage: shared-accelerator-host
 //! Shared JPEG 2000 and HTJ2K encode-stage contracts and helpers for j2k.
 //!
 //! This crate is the neutral public contract between the `j2k` facade, the
@@ -13,6 +14,17 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::ops::Range;
+
+mod limits;
+#[doc(hidden)]
+pub use limits::{MAX_JPEG2000_PART1_COMPONENTS, MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH};
+mod resident;
+#[doc(hidden)]
+pub use resident::{
+    J2kResidentEncodeInput, J2kResidentEncodeInputError, J2kResidentHtj2kTileEncodeJob,
+};
+mod stage_error;
+pub use stage_error::{J2kEncodeStageError, J2kEncodeStageErrorKind, J2kEncodeStageResult};
 
 /// Adapter classic J2K sub-band kind for backend experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +74,7 @@ pub struct J2kCodeBlockSegment {
 }
 
 /// Adapter encoded classic J2K code-block payload for backend experimentation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EncodedJ2kCodeBlock {
     /// Combined payload bytes for all coded segments in this code block.
     pub data: Vec<u8>,
@@ -75,7 +87,7 @@ pub struct EncodedJ2kCodeBlock {
 }
 
 /// Adapter encoded HTJ2K cleanup/refinement code-block payload for backend experimentation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EncodedHtJ2kCodeBlock {
     /// Combined cleanup/refinement bytes for this code block.
     pub data: Vec<u8>,
@@ -140,7 +152,7 @@ pub struct J2kForwardDwt53Job<'a> {
 }
 
 /// Adapter forward 5/3 DWT output for backend experimentation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct J2kForwardDwt53Output {
     /// LL subband coefficients from the lowest decomposition level.
     pub ll: Vec<f32>,
@@ -153,7 +165,7 @@ pub struct J2kForwardDwt53Output {
 }
 
 /// Adapter forward 5/3 DWT detail level for backend experimentation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct J2kForwardDwt53Level {
     /// HL subband coefficients.
     pub hl: Vec<f32>,
@@ -189,7 +201,7 @@ pub struct J2kForwardDwt97Job<'a> {
 }
 
 /// Adapter forward 9/7 DWT output for backend experimentation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct J2kForwardDwt97Output {
     /// LL subband coefficients from the lowest decomposition level.
     pub ll: Vec<f32>,
@@ -202,7 +214,7 @@ pub struct J2kForwardDwt97Output {
 }
 
 /// Adapter forward 9/7 DWT detail level for backend experimentation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct J2kForwardDwt97Level {
     /// HL subband coefficients.
     pub hl: Vec<f32>,
@@ -395,7 +407,7 @@ impl J2kPacketizationProgressionOrder {
 }
 
 /// Adapter LRCP packetization subband precinct for backend experimentation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct J2kPacketizationSubband<'a> {
     /// Code-block contributions in row-major order.
     pub code_blocks: Vec<J2kPacketizationCodeBlock<'a>>,
@@ -406,7 +418,7 @@ pub struct J2kPacketizationSubband<'a> {
 }
 
 /// Adapter LRCP packetization resolution packet for backend experimentation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct J2kPacketizationResolution<'a> {
     /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
     pub subbands: Vec<J2kPacketizationSubband<'a>>,
@@ -652,7 +664,7 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_deinterleave(
         &mut self,
         _job: J2kDeinterleaveToF32Job<'_>,
-    ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
         Ok(None)
     }
 
@@ -660,10 +672,7 @@ pub trait J2kEncodeStageAccelerator {
     ///
     /// Return `Ok(true)` after writing transformed planes. Return `Ok(false)`
     /// to use the CPU fallback.
-    fn encode_forward_rct(
-        &mut self,
-        _job: J2kForwardRctJob<'_>,
-    ) -> core::result::Result<bool, &'static str> {
+    fn encode_forward_rct(&mut self, _job: J2kForwardRctJob<'_>) -> J2kEncodeStageResult<bool> {
         Ok(false)
     }
 
@@ -671,10 +680,7 @@ pub trait J2kEncodeStageAccelerator {
     ///
     /// Return `Ok(true)` after writing transformed planes. Return `Ok(false)`
     /// to use the CPU fallback.
-    fn encode_forward_ict(
-        &mut self,
-        _job: J2kForwardIctJob<'_>,
-    ) -> core::result::Result<bool, &'static str> {
+    fn encode_forward_ict(&mut self, _job: J2kForwardIctJob<'_>) -> J2kEncodeStageResult<bool> {
         Ok(false)
     }
 
@@ -685,7 +691,7 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_forward_dwt53(
         &mut self,
         _job: J2kForwardDwt53Job<'_>,
-    ) -> core::result::Result<Option<J2kForwardDwt53Output>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<J2kForwardDwt53Output>> {
         Ok(None)
     }
 
@@ -696,7 +702,7 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_forward_dwt97(
         &mut self,
         _job: J2kForwardDwt97Job<'_>,
-    ) -> core::result::Result<Option<J2kForwardDwt97Output>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<J2kForwardDwt97Output>> {
         Ok(None)
     }
 
@@ -707,7 +713,7 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_quantize_subband(
         &mut self,
         _job: J2kQuantizeSubbandJob<'_>,
-    ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<i32>>> {
         Ok(None)
     }
 
@@ -718,7 +724,7 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_tier1_code_block(
         &mut self,
         _job: J2kTier1CodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<EncodedJ2kCodeBlock>> {
         Ok(None)
     }
 
@@ -729,7 +735,7 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_tier1_code_blocks(
         &mut self,
         _jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<EncodedJ2kCodeBlock>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<EncodedJ2kCodeBlock>>> {
         Ok(None)
     }
 
@@ -740,7 +746,7 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_ht_code_block(
         &mut self,
         _job: J2kHtCodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
         Ok(None)
     }
 
@@ -751,7 +757,7 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_ht_code_blocks(
         &mut self,
         _jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
         Ok(None)
     }
 
@@ -763,7 +769,7 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_ht_subband(
         &mut self,
         _job: J2kHtSubbandEncodeJob<'_>,
-    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
         Ok(None)
     }
 
@@ -775,7 +781,19 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_htj2k_tile(
         &mut self,
         _job: J2kHtj2kTileEncodeJob<'_>,
-    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    /// Optionally encode a complete HTJ2K tile whose pixels remain backend-resident.
+    ///
+    /// Unlike [`Self::encode_htj2k_tile`], this hook has no host sample slice.
+    /// A resident-input facade must treat `Ok(None)` as a hard decline because
+    /// there are no host pixels from which to run the CPU fallback pipeline.
+    fn encode_resident_htj2k_tile(
+        &mut self,
+        _job: J2kResidentHtj2kTileEncodeJob<'_>,
+    ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
         Ok(None)
     }
 
@@ -803,7 +821,7 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_packetization(
         &mut self,
         _job: J2kPacketizationEncodeJob<'_>,
-    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+    ) -> J2kEncodeStageResult<Option<Vec<u8>>> {
         Ok(None)
     }
 }
@@ -853,7 +871,7 @@ impl Default for IrreversibleQuantizationSubbandScales {
 }
 
 /// Precomputed reversible 5/3 wavelet coefficients for one component.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PrecomputedHtj2k53Component {
     /// Horizontal SIZ sampling factor (`XRsiz`).
     pub x_rsiz: u8,
@@ -864,7 +882,7 @@ pub struct PrecomputedHtj2k53Component {
 }
 
 /// Precomputed reversible 5/3 wavelet image.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PrecomputedHtj2k53Image {
     /// Reference-grid image width.
     pub width: u32,
@@ -879,7 +897,7 @@ pub struct PrecomputedHtj2k53Image {
 }
 
 /// Precomputed irreversible 9/7 wavelet coefficients for one component.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PrecomputedHtj2k97Component {
     /// Horizontal SIZ sampling factor (`XRsiz`).
     pub x_rsiz: u8,
@@ -890,7 +908,7 @@ pub struct PrecomputedHtj2k97Component {
 }
 
 /// Precomputed irreversible 9/7 wavelet image.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PrecomputedHtj2k97Image {
     /// Reference-grid image width.
     pub width: u32,
@@ -905,7 +923,7 @@ pub struct PrecomputedHtj2k97Image {
 }
 
 /// Prequantized irreversible 9/7 HTJ2K code-block image.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PrequantizedHtj2k97Image {
     /// Reference-grid image width.
     pub width: u32,
@@ -920,7 +938,7 @@ pub struct PrequantizedHtj2k97Image {
 }
 
 /// Prequantized irreversible 9/7 HTJ2K component.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PrequantizedHtj2k97Component {
     /// Horizontal SIZ sampling factor (`XRsiz`).
     pub x_rsiz: u8,
@@ -931,14 +949,14 @@ pub struct PrequantizedHtj2k97Component {
 }
 
 /// One component resolution's prequantized HTJ2K subbands.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PrequantizedHtj2k97Resolution {
     /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
     pub subbands: Vec<PrequantizedHtj2k97Subband>,
 }
 
 /// One prequantized HTJ2K subband split into code-blocks.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PrequantizedHtj2k97Subband {
     /// Subband kind.
     pub sub_band_type: J2kSubBandType,
@@ -953,7 +971,7 @@ pub struct PrequantizedHtj2k97Subband {
 }
 
 /// One prequantized HTJ2K code-block.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PrequantizedHtj2k97CodeBlock {
     /// Quantized coefficients in row-major order.
     pub coefficients: Vec<i32>,
@@ -964,7 +982,7 @@ pub struct PrequantizedHtj2k97CodeBlock {
 }
 
 /// Preencoded irreversible 9/7 HTJ2K code-block image.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97Image {
     /// Reference-grid image width.
     pub width: u32,
@@ -979,7 +997,7 @@ pub struct PreencodedHtj2k97Image {
 }
 
 /// Preencoded irreversible 9/7 HTJ2K component.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97Component {
     /// Horizontal SIZ sampling factor (`XRsiz`).
     pub x_rsiz: u8,
@@ -990,14 +1008,14 @@ pub struct PreencodedHtj2k97Component {
 }
 
 /// One component resolution's preencoded HTJ2K subbands.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97Resolution {
     /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
     pub subbands: Vec<PreencodedHtj2k97Subband>,
 }
 
 /// One preencoded HTJ2K subband split into code-blocks.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97Subband {
     /// Subband kind.
     pub sub_band_type: J2kSubBandType,
@@ -1012,7 +1030,7 @@ pub struct PreencodedHtj2k97Subband {
 }
 
 /// One preencoded HTJ2K code-block.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97CodeBlock {
     /// Code-block width in coefficients.
     pub width: u32,
@@ -1024,7 +1042,7 @@ pub struct PreencodedHtj2k97CodeBlock {
 
 /// Preencoded irreversible 9/7 HTJ2K code-block image backed by one compact
 /// payload buffer.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97CompactImage {
     /// Reference-grid image width.
     pub width: u32,
@@ -1041,7 +1059,7 @@ pub struct PreencodedHtj2k97CompactImage {
 }
 
 /// Preencoded compact irreversible 9/7 HTJ2K component.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97CompactComponent {
     /// Horizontal SIZ sampling factor (`XRsiz`).
     pub x_rsiz: u8,
@@ -1052,14 +1070,14 @@ pub struct PreencodedHtj2k97CompactComponent {
 }
 
 /// One component resolution's compact preencoded HTJ2K subbands.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97CompactResolution {
     /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
     pub subbands: Vec<PreencodedHtj2k97CompactSubband>,
 }
 
 /// One compact preencoded HTJ2K subband split into code-blocks.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97CompactSubband {
     /// Subband kind.
     pub sub_band_type: J2kSubBandType,
@@ -1074,7 +1092,7 @@ pub struct PreencodedHtj2k97CompactSubband {
 }
 
 /// One compact preencoded HTJ2K code-block.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreencodedHtj2k97CompactCodeBlock {
     /// Code-block width in coefficients.
     pub width: u32,

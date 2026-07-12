@@ -1,8 +1,32 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::error::CudaError;
+use crate::{
+    context::{ensure_context_ownership, CudaContext},
+    error::CudaError,
+    memory::CudaDeviceBuffer,
+};
 
 use super::CudaJ2kQuantizeSubbandRegionJob;
+
+pub(super) const ENCODE_CONTEXT_MISMATCH: &str =
+    "J2K encode input buffers must belong to the launch context";
+
+pub(super) fn validate_encode_context_matches(
+    matches_context: impl IntoIterator<Item = bool>,
+) -> Result<(), CudaError> {
+    ensure_context_ownership(matches_context, ENCODE_CONTEXT_MISMATCH)
+}
+
+pub(crate) fn validate_encode_buffer_context<'a>(
+    context: &CudaContext,
+    buffers: impl IntoIterator<Item = &'a CudaDeviceBuffer>,
+) -> Result<(), CudaError> {
+    validate_encode_context_matches(
+        buffers
+            .into_iter()
+            .map(|buffer| buffer.is_owned_by(context)),
+    )
+}
 
 pub(crate) fn validate_quantize_region(
     job: CudaJ2kQuantizeSubbandRegionJob,

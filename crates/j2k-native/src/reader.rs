@@ -170,7 +170,7 @@ impl<'a> BitReader<'a> {
             bail!(MarkerError::Invalid);
         }
 
-        self.read_byte().unwrap();
+        let _marker_prefix = self.read_byte().ok_or(MarkerError::Invalid)?;
         Ok(self.read_byte().ok_or(MarkerError::Invalid)?)
     }
 
@@ -183,6 +183,7 @@ impl<'a> BitReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::BitReader;
+    use crate::{DecodeError, MarkerError};
 
     #[test]
     fn stuffing_check_at_eof_returns_none_instead_of_panicking() {
@@ -192,5 +193,15 @@ mod tests {
         };
 
         assert_eq!(reader.read_bits_with_stuffing(1), None);
+    }
+
+    #[test]
+    fn truncated_marker_returns_error_instead_of_panicking() {
+        let mut reader = BitReader::new(&[0xff]);
+
+        assert_eq!(
+            reader.read_marker(),
+            Err(DecodeError::Marker(MarkerError::Invalid))
+        );
     }
 }

@@ -20,10 +20,10 @@ pub use info::{
     RestartSegment, SamplingFactors, SamplingFactorsError, SofKind,
 };
 pub use j2k_core::{
-    CacheStats, CodecContext, CompressedPayloadKind, CompressedTransferSyntax, DecodeRowsError,
-    Downscale, ImageCodec, ImageDecode, ImageDecodeRows, PassthroughCandidate, PassthroughDecision,
-    PassthroughRejectReason, PassthroughRequirements, PixelFormat, PixelLayout, RowSink, Sample,
-    SampleType, TileBatchDecode, TileDecompress,
+    BatchDecodeError, BatchInfrastructureError, CacheStats, CodecContext, CompressedPayloadKind,
+    CompressedTransferSyntax, DecodeRowsError, Downscale, ImageCodec, ImageDecode, ImageDecodeRows,
+    PassthroughCandidate, PassthroughDecision, PassthroughRejectReason, PassthroughRequirements,
+    PixelFormat, PixelLayout, RowSink, Sample, SampleType, TileBatchDecode, TileDecompress,
 };
 
 mod context;
@@ -54,9 +54,11 @@ pub use adapter::DeviceBatchSummary;
 
 mod error;
 pub use error::{
-    BuilderConflictReason, HuffmanFailure, JpegError, MarkerKind, TableKind, UnsupportedReason,
-    Warning,
+    BuilderConflictReason, HuffmanFailure, JpegError, MarkerKind, ProgressiveScanStateError,
+    ProgressiveScanTerminationError, TableKind, UnsupportedReason, Warning,
 };
+
+mod allocation;
 
 pub(crate) mod parse;
 
@@ -75,6 +77,8 @@ pub(crate) mod backend;
 pub(crate) mod output;
 
 pub(crate) mod profile;
+
+pub(crate) mod encoded_output;
 
 /// Baseline JPEG encoder API.
 mod encoder;
@@ -96,8 +100,9 @@ pub use decoder::{
     decode_tiles_into_with_options, decode_tiles_region_scaled_into,
     decode_tiles_region_scaled_into_with_options, decode_tiles_scaled_into,
     decode_tiles_scaled_into_with_options, ComponentRowWriter, DecodeOutcome, DecodeRequest,
-    DecodedTile, Decoder, JpegView, PreparedJpegTileJob, TileBatchError, TileBatchOptions,
-    TileDecodeJob, TileDecodeOutput, TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    DecodedTile, Decoder, JpegView, PreparedJpegTileJob, PreparedTileBatchError, TileBatchError,
+    TileBatchOptions, TileDecodeJob, TileDecodeOutput, TileRegionScaledDecodeJob,
+    TileScaledDecodeJob,
 };
 
 pub use internal::scratch::ScratchPool;

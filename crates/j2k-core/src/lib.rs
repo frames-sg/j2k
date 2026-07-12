@@ -51,6 +51,7 @@ mod context;
 mod device;
 /// Common error classifications and helper error types.
 mod error;
+mod host_allocation;
 mod passthrough;
 /// Pixel layout and format descriptors.
 mod pixel;
@@ -70,9 +71,13 @@ pub use accelerator::{
 };
 pub use backend::{BackendCapabilities, BackendKind, BackendRequest, CpuFeatures};
 pub use batch::{
-    collect_indexed_batch_results, tile_batch_worker_count, IndexedBatchResult, TileBatchError,
-    TileBatchOptions, TileDecodeJob, TileRegionDecodeJob, TileRegionScaledDecodeJob,
-    TileRegionScaledDeviceDecodeRequest, TileScaledDecodeJob,
+    checked_batch_count_product, checked_batch_count_sum, tile_batch_worker_count,
+    try_batch_reserve_for_push, try_batch_reserve_to, try_collect_indexed_batch_results,
+    try_collect_ordered_batch_results, try_collect_ordered_batch_results_with_limits,
+    BatchAllocationBudget, BatchAllocationRequest, BatchDecodeError, BatchInfrastructureError,
+    BatchResultSlot, IndexedBatchResult, TileBatchError, TileBatchOptions, TileDecodeJob,
+    TileRegionDecodeJob, TileRegionScaledDecodeJob, TileRegionScaledDeviceDecodeRequest,
+    TileScaledDecodeJob,
 };
 pub use buffer::{
     checked_surface_len, copy_tight_pixels_to_strided_output, ensure_allocation_within_cap,
@@ -85,6 +90,12 @@ pub use error::{
     adapter_error_is_buffer_error, adapter_error_is_not_implemented, adapter_error_is_truncated,
     adapter_error_is_unsupported, AdapterErrorKind, AdapterErrorParts, BufferError, CodecError,
     InputError, NotImplemented, Unsupported,
+};
+#[doc(hidden)]
+pub use host_allocation::{
+    host_capacity_bytes, try_host_vec_filled, try_host_vec_from_slice, try_host_vec_resize,
+    try_host_vec_with_capacity, HostAllocationBudget, HostAllocationError,
+    HostAllocationLimitError,
 };
 pub use passthrough::{
     CompressedPayloadKind, CompressedTransferSyntax, PassthroughCandidate, PassthroughDecision,

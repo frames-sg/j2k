@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 use j2k_native::HtCodeBlockDecodeWorkspace;
 use metal::Buffer;
@@ -60,7 +60,7 @@ struct FlattenedCpuTier1Bucket {
 
 #[cfg(target_os = "macos")]
 pub(super) struct FlattenedCpuTier1Cache {
-    buckets: HashMap<FlattenedCpuTier1Key, FlattenedCpuTier1Bucket>,
+    buckets: Vec<(FlattenedCpuTier1Key, FlattenedCpuTier1Bucket)>,
 }
 
 #[cfg(target_os = "macos")]
@@ -76,7 +76,11 @@ impl FlattenedCpuTier1Cache {
             component_idx,
             step_idx,
         };
-        let bucket = self.buckets.get(&key).ok_or_else(|| Error::MetalKernel {
+        let bucket = self
+            .buckets
+            .iter()
+            .find_map(|(candidate, bucket)| (*candidate == key).then_some(bucket))
+            .ok_or_else(|| Error::MetalKernel {
             message: format!(
                 "J2K MetalDirect flattened hybrid cache is missing component {component_idx} step {step_idx}"
             ),
@@ -135,7 +139,6 @@ pub(super) fn build_flattened_cpu_tier1_cache(
     plans: &[Arc<PreparedDirectColorPlan>],
     stage_timings: &mut DirectHybridStageTimings,
     retained_buffers: &mut Vec<Buffer>,
-    retained_cpu_coefficients: &mut Vec<Vec<f32>>,
 ) -> Result<FlattenedCpuTier1Cache, Error> {
     let specs = collect_flattened_cpu_tier1_bucket_specs(plans)?;
     stage_timings.cpu_tier1_flattened_batches =
@@ -152,23 +155,23 @@ pub(super) fn build_flattened_cpu_tier1_cache(
     }
 
     let upload_started = metal_profile_stages_enabled().then(Instant::now);
-    let mut buckets = HashMap::with_capacity(specs.len());
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K MetalDirect flattened Tier-1 cache");
+    let mut buckets = budget.try_vec(
+        specs.len(),
+        "J2K MetalDirect flattened Tier-1 cache buckets",
+    )?;
     for (spec, coefficients) in specs.iter().zip(decoded_buckets) {
         let input_count = spec.inputs.len();
-        let buffer = upload_cpu_decoded_coefficients(
-            runtime,
-            coefficients,
-            retained_buffers,
-            retained_cpu_coefficients,
-        );
-        buckets.insert(
+        let buffer = upload_cpu_decoded_coefficients(runtime, &coefficients, retained_buffers)?;
+        buckets.push((
             spec.key,
             FlattenedCpuTier1Bucket {
                 buffer,
                 output_len: spec.output_len,
                 input_count,
             },
-        );
+        ));
     }
     if let Some(started) = upload_started {
         stage_timings.coefficient_upload += elapsed_us(started);
@@ -188,13 +191,31 @@ fn collect_flattened_cpu_tier1_bucket_specs(
     let Some(first) = plans.first() else {
         return Ok(Vec::new());
     };
-    let mut specs = Vec::new();
+    let spec_capacity = crate::batch_allocation::checked_count_sum(
+        first
+            .component_plans
+            .iter()
+            .map(|component| component.steps.len()),
+        "J2K MetalDirect flattened bucket specifications",
+    )?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K MetalDirect flattened bucket planning",
+    );
+    let mut specs = budget.try_vec(
+        spec_capacity,
+        "J2K MetalDirect flattened bucket specifications",
+    )?;
 
     for component_idx in 0..3 {
-        let component_plans = plans
-            .iter()
-            .map(|plan| &plan.component_plans[component_idx])
-            .collect::<Vec<_>>();
+        let mut component_plans = budget.try_vec(
+            plans.len(),
+            "J2K MetalDirect flattened component plan references",
+        )?;
+        component_plans.extend(
+            plans
+                .iter()
+                .map(|plan| &plan.component_plans[component_idx]),
+        );
         let Some(first_component) = component_plans.first().copied() else {
             continue;
         };
@@ -204,27 +225,28 @@ fn collect_flattened_cpu_tier1_bucket_specs(
         let mut step_idx = 0;
         while step_idx < first.component_plans[component_idx].steps.len() {
             if let Some(group) = first_component.classic_group_starting_at(step_idx) {
-                let inputs = component_plans
-                    .iter()
-                    .take(if broadcast_tier1_inputs {
-                        1
-                    } else {
-                        component_plans.len()
-                    })
-                    .map(|plan| {
-                        let group = plan.classic_group_starting_at(step_idx).ok_or_else(|| {
-                            Error::MetalKernel {
-                                message: "J2K MetalDirect flattened hybrid missing classic group"
-                                    .to_string(),
-                            }
-                        })?;
-                        Ok(FlattenedCpuTier1Source::Classic {
-                            coded_data: &group.coded_data,
-                            segments: &group.segments,
-                            jobs: &group.jobs,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, Error>>()?;
+                let input_count = if broadcast_tier1_inputs {
+                    1
+                } else {
+                    component_plans.len()
+                };
+                let mut inputs = budget.try_vec(
+                    input_count,
+                    "J2K MetalDirect flattened classic group inputs",
+                )?;
+                for plan in component_plans.iter().take(input_count) {
+                    let group = plan.classic_group_starting_at(step_idx).ok_or_else(|| {
+                        Error::MetalKernel {
+                            message: "J2K MetalDirect flattened hybrid missing classic group"
+                                .to_string(),
+                        }
+                    })?;
+                    inputs.push(FlattenedCpuTier1Source::Classic {
+                        coded_data: &group.coded_data,
+                        segments: &group.segments,
+                        jobs: &group.jobs,
+                    });
+                }
                 specs.push(FlattenedCpuTier1BucketSpec {
                     key: FlattenedCpuTier1Key {
                         component_idx,
@@ -239,26 +261,25 @@ fn collect_flattened_cpu_tier1_bucket_specs(
             }
 
             if let Some(group) = first_component.ht_group_starting_at(step_idx) {
-                let inputs = component_plans
-                    .iter()
-                    .take(if broadcast_tier1_inputs {
-                        1
-                    } else {
-                        component_plans.len()
-                    })
-                    .map(|plan| {
-                        let group = plan.ht_group_starting_at(step_idx).ok_or_else(|| {
-                            Error::MetalKernel {
+                let input_count = if broadcast_tier1_inputs {
+                    1
+                } else {
+                    component_plans.len()
+                };
+                let mut inputs =
+                    budget.try_vec(input_count, "J2K MetalDirect flattened HT group inputs")?;
+                for plan in component_plans.iter().take(input_count) {
+                    let group =
+                        plan.ht_group_starting_at(step_idx)
+                            .ok_or_else(|| Error::MetalKernel {
                                 message: "J2K MetalDirect flattened hybrid missing HT group"
                                     .to_string(),
-                            }
-                        })?;
-                        Ok(FlattenedCpuTier1Source::Ht {
-                            coded_data: &group.coded_arena.data,
-                            jobs: &group.jobs,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, Error>>()?;
+                            })?;
+                    inputs.push(FlattenedCpuTier1Source::Ht {
+                        coded_data: &group.coded_arena.data,
+                        jobs: &group.jobs,
+                    });
+                }
                 specs.push(FlattenedCpuTier1BucketSpec {
                     key: FlattenedCpuTier1Key {
                         component_idx,
@@ -279,28 +300,33 @@ fn collect_flattened_cpu_tier1_bucket_specs(
                         sub_band.height,
                         "classic J2K MetalDirect flattened hybrid sub-band size overflow",
                     )?;
-                    let inputs = component_plans
-                        .iter()
-                        .take(if broadcast_tier1_inputs {
-                            1
-                        } else {
-                            component_plans.len()
-                        })
-                        .map(|plan| match &plan.steps[step_idx] {
+                    let input_count = if broadcast_tier1_inputs {
+                        1
+                    } else {
+                        component_plans.len()
+                    };
+                    let mut inputs = budget.try_vec(
+                        input_count,
+                        "J2K MetalDirect flattened classic sub-band inputs",
+                    )?;
+                    for plan in component_plans.iter().take(input_count) {
+                        match &plan.steps[step_idx] {
                             PreparedDirectGrayscaleStep::ClassicSubBand(other) => {
-                                Ok(FlattenedCpuTier1Source::Classic {
+                                inputs.push(FlattenedCpuTier1Source::Classic {
                                     coded_data: &other.coded_data,
                                     segments: &other.segments,
                                     jobs: &other.jobs,
-                                })
+                                });
                             }
-                            _ => Err(Error::MetalKernel {
-                                message:
-                                    "J2K MetalDirect flattened hybrid missing classic sub-band"
-                                        .to_string(),
-                            }),
-                        })
-                        .collect::<Result<Vec<_>, Error>>()?;
+                            _ => {
+                                return Err(Error::MetalKernel {
+                                    message:
+                                        "J2K MetalDirect flattened hybrid missing classic sub-band"
+                                            .to_string(),
+                                });
+                            }
+                        }
+                    }
                     specs.push(FlattenedCpuTier1BucketSpec {
                         key: FlattenedCpuTier1Key {
                             component_idx,
@@ -317,26 +343,29 @@ fn collect_flattened_cpu_tier1_bucket_specs(
                         sub_band.height,
                         "HTJ2K MetalDirect flattened hybrid sub-band size overflow",
                     )?;
-                    let inputs = component_plans
-                        .iter()
-                        .take(if broadcast_tier1_inputs {
-                            1
-                        } else {
-                            component_plans.len()
-                        })
-                        .map(|plan| match &plan.steps[step_idx] {
+                    let input_count = if broadcast_tier1_inputs {
+                        1
+                    } else {
+                        component_plans.len()
+                    };
+                    let mut inputs = budget
+                        .try_vec(input_count, "J2K MetalDirect flattened HT sub-band inputs")?;
+                    for plan in component_plans.iter().take(input_count) {
+                        match &plan.steps[step_idx] {
                             PreparedDirectGrayscaleStep::HtSubBand(other) => {
-                                Ok(FlattenedCpuTier1Source::Ht {
+                                inputs.push(FlattenedCpuTier1Source::Ht {
                                     coded_data: &other.coded_data,
                                     jobs: &other.jobs,
-                                })
+                                });
                             }
-                            _ => Err(Error::MetalKernel {
-                                message: "J2K MetalDirect flattened hybrid missing HT sub-band"
-                                    .to_string(),
-                            }),
-                        })
-                        .collect::<Result<Vec<_>, Error>>()?;
+                            _ => {
+                                return Err(Error::MetalKernel {
+                                    message: "J2K MetalDirect flattened hybrid missing HT sub-band"
+                                        .to_string(),
+                                });
+                            }
+                        }
+                    }
                     specs.push(FlattenedCpuTier1BucketSpec {
                         key: FlattenedCpuTier1Key {
                             component_idx,
@@ -362,8 +391,11 @@ fn decode_flattened_cpu_tier1_buckets(
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<Vec<Vec<f32>>, Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
-    let mut buckets = Vec::with_capacity(specs.len());
-    let mut cache_targets = Vec::with_capacity(specs.len());
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal flattened CPU Tier-1 batch");
+    let mut buckets = budget.try_vec(specs.len(), "J2K Metal flattened Tier-1 buckets")?;
+    let mut cache_targets =
+        budget.try_vec(specs.len(), "J2K Metal flattened Tier-1 cache targets")?;
     for spec in specs {
         if let Some(cache_plan) = spec.cache_plan {
             if let Some(coefficients) =
@@ -382,7 +414,17 @@ fn decode_flattened_cpu_tier1_buckets(
             spec.output_len,
         )?);
     }
-    let mut work_items = Vec::new();
+    let work_item_count = specs.iter().try_fold(0usize, |total, spec| {
+        total.checked_add(spec.inputs.len()).ok_or(
+            j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                what: "J2K Metal flattened Tier-1 work items",
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            },
+        )
+    })?;
+    let mut work_items =
+        budget.try_vec(work_item_count, "J2K Metal flattened Tier-1 work items")?;
     for (bucket_idx, spec) in specs.iter().enumerate() {
         if cache_targets[bucket_idx].is_none() && spec.cache_plan.is_some() {
             continue;
@@ -446,8 +488,12 @@ fn decode_flattened_cpu_tier1_work_items_chunked(
 
     let worker_count = hybrid_cpu_decode_worker_count(work_items.len());
     let chunk_size = work_items.len().div_ceil(worker_count);
-    std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(worker_count);
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal flattened Tier-1 worker handles",
+    );
+    std::thread::scope(|scope| -> Result<(), Error> {
+        let mut handles =
+            budget.try_vec(worker_count, "J2K Metal flattened Tier-1 worker handles")?;
         for chunk in work_items.chunks(chunk_size) {
             handles.push(scope.spawn(move || {
                 record_hybrid_cpu_decode_worker_init();
@@ -558,10 +604,19 @@ pub(super) fn packed_cpu_decode_coefficients(
     count: usize,
     output_len: usize,
 ) -> Result<Vec<f32>, Error> {
-    let total_len = count
-        .checked_mul(output_len)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "J2K MetalDirect hybrid packed coefficient length overflows usize".to_string(),
-        })?;
-    Ok(vec![0.0_f32; total_len])
+    let total_len = count.checked_mul(output_len).ok_or(
+        j2k_core::BatchInfrastructureError::AllocationTooLarge {
+            what: "J2K MetalDirect hybrid packed coefficients",
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        },
+    )?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K MetalDirect hybrid packed coefficients",
+    );
+    Ok(budget.try_filled(
+        total_len,
+        0.0_f32,
+        "J2K MetalDirect hybrid packed coefficient values",
+    )?)
 }

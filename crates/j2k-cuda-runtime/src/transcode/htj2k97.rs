@@ -7,7 +7,7 @@ use super::{
         Dwt97ColumnLiftQuantizeCodeblocksBatchLaunch, Htj2k97I16ResidentFusedRequest,
     },
     validate_dct_block_grid,
-    validation::ensure_transcode_runtime_ptx_available,
+    validation::{ensure_transcode_runtime_ptx_available, validate_transcode_pool_context},
     CudaDwt97BatchGeometry, CudaHtj2k97CodeblockBatchWithPoolRequest,
     CudaHtj2k97DeviceCodeblockBands, CudaHtj2k97I16CodeblockBatchWithPoolRequest, DctBlockGrid,
     Dwt97BatchInput, Dwt97CodeblockBandBuffers,
@@ -25,6 +25,7 @@ impl CudaContext {
     /// Compute a same-geometry batch directly into device-resident
     /// prequantized HTJ2K code-block coefficients while reusing transient stage
     /// buffers from `pool`.
+    /// The pool must belong to this context.
     #[expect(
         clippy::similar_names,
         reason = "LL/LH/HL/HH identifiers are the four distinct JPEG 2000 subband identities"
@@ -34,6 +35,7 @@ impl CudaContext {
         &self,
         request: CudaHtj2k97CodeblockBatchWithPoolRequest<'_>,
     ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        validate_transcode_pool_context(self, request.pool)?;
         let CudaHtj2k97CodeblockBatchWithPoolRequest {
             blocks,
             geometry,
@@ -111,6 +113,7 @@ impl CudaContext {
     /// Compute a same-geometry i16 batch directly into device-resident
     /// prequantized HTJ2K code-block coefficients while reusing transient stage
     /// buffers from `pool`.
+    /// The pool must belong to this context.
     #[expect(
         clippy::similar_names,
         reason = "LL/LH/HL/HH identifiers are the four distinct JPEG 2000 subband identities"
@@ -120,6 +123,9 @@ impl CudaContext {
         &self,
         request: CudaHtj2k97I16CodeblockBatchWithPoolRequest<'_>,
     ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        // Validate before selecting the fused path: both implementations allocate
+        // from and launch work against the caller-provided pool.
+        validate_transcode_pool_context(self, request.pool)?;
         let CudaHtj2k97I16CodeblockBatchWithPoolRequest {
             blocks,
             geometry,

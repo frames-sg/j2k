@@ -5,89 +5,22 @@ use alloc::vec::Vec;
 use super::emit::{encode_first_quad_pair, encode_non_initial_quad_pair};
 use super::quad::{FirstQuadPairRequest, NonInitialQuadPairRequest, QuadMarkerRows, QuadPairState};
 use super::writers::{terminate_mel_vlc, MagSgnEncoder, MelEncoder, VlcEncoder};
+#[cfg(test)]
+use crate::j2c::coefficient_view::legacy_coefficient_view_error;
+use crate::j2c::coefficient_view::CoefficientBlockView;
+use crate::j2c::encode::allocation::try_untracked_vec;
+use crate::{EncodeError, EncodeResult};
+
+mod source;
 
 #[cfg(test)]
-pub(super) fn convert_nonzero_to_aligned_sign_magnitude_and_max(
-    coefficients: &[i32],
-    k_max: u8,
-) -> Option<(Vec<u32>, u32)> {
-    let first_nonzero = coefficients
-        .iter()
-        .position(|&coefficient| coefficient != 0)?;
-    let shift = u32::from(31_u8.saturating_sub(k_max));
-    let mut aligned = Vec::with_capacity(coefficients.len());
-    aligned.resize(first_nonzero, 0);
-    let mut max_magnitude = 0u32;
+pub(super) use source::convert_nonzero_to_aligned_sign_magnitude_and_max;
+use source::I32CleanupBlockView;
+pub(super) use source::{
+    max_nonzero_magnitude_view, CleanupCoefficientSource, I32CleanupCoefficients,
+};
 
-    for &coefficient in &coefficients[first_nonzero..] {
-        let magnitude = coefficient.unsigned_abs();
-        max_magnitude = max_magnitude.max(magnitude);
-
-        if magnitude == 0 {
-            aligned.push(0);
-        } else {
-            let sign = if coefficient < 0 { 0x8000_0000 } else { 0 };
-            aligned.push(sign | (magnitude << shift));
-        }
-    }
-
-    Some((aligned, max_magnitude))
-}
-
-pub(super) fn max_nonzero_magnitude(coefficients: &[i32]) -> Option<u32> {
-    let mut max_magnitude = 0u32;
-    for &coefficient in coefficients {
-        max_magnitude = max_magnitude.max(coefficient.unsigned_abs());
-    }
-    (max_magnitude != 0).then_some(max_magnitude)
-}
-
-pub(super) trait CleanupCoefficientSource {
-    fn aligned_value(&self, index: usize) -> u32;
-}
-
-impl CleanupCoefficientSource for [u32] {
-    #[expect(
-        clippy::inline_always,
-        reason = "coefficient loads are fused into the per-sample cleanup hot path"
-    )]
-    #[inline(always)]
-    fn aligned_value(&self, index: usize) -> u32 {
-        self[index]
-    }
-}
-
-pub(super) struct I32CleanupCoefficients<'a> {
-    pub(super) coefficients: &'a [i32],
-    pub(super) shift: u32,
-}
-
-impl CleanupCoefficientSource for I32CleanupCoefficients<'_> {
-    #[expect(
-        clippy::inline_always,
-        reason = "coefficient conversion is fused into the per-sample cleanup hot path"
-    )]
-    #[inline(always)]
-    fn aligned_value(&self, index: usize) -> u32 {
-        aligned_sign_magnitude(self.coefficients[index], self.shift)
-    }
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "sign-magnitude conversion runs once per sample in the cleanup hot path"
-)]
-#[inline(always)]
-fn aligned_sign_magnitude(coefficient: i32, shift: u32) -> u32 {
-    let magnitude = coefficient.unsigned_abs();
-    if magnitude == 0 {
-        0
-    } else {
-        let sign = if coefficient < 0 { 0x8000_0000 } else { 0 };
-        sign | (magnitude << shift)
-    }
-}
-
+#[cfg(test)]
 pub(super) fn encode_cleanup_segment_from_coefficients(
     coefficients: &[i32],
     missing_msbs: u8,
@@ -95,11 +28,27 @@ pub(super) fn encode_cleanup_segment_from_coefficients(
     height: usize,
     total_bitplanes: u8,
 ) -> Result<Vec<u8>, &'static str> {
-    let source = I32CleanupCoefficients {
+    let coefficients = CoefficientBlockView::try_contiguous(coefficients, width, height)
+        .map_err(legacy_coefficient_view_error)?;
+    try_encode_cleanup_segment_from_view(coefficients, missing_msbs, total_bitplanes)
+        .map_err(legacy_coefficient_view_error)
+}
+
+pub(super) fn try_encode_cleanup_segment_from_view(
+    coefficients: CoefficientBlockView<'_, i32>,
+    missing_msbs: u8,
+    total_bitplanes: u8,
+) -> EncodeResult<Vec<u8>> {
+    let source = I32CleanupBlockView::new(
         coefficients,
-        shift: u32::from(31_u8.saturating_sub(total_bitplanes)),
-    };
-    encode_cleanup_segment_from_source(&source, missing_msbs, width, height)
+        u32::from(31_u8.saturating_sub(total_bitplanes)),
+    );
+    try_encode_cleanup_segment_from_source(
+        &source,
+        missing_msbs,
+        coefficients.width(),
+        coefficients.height(),
+    )
 }
 
 #[cfg(test)]
@@ -109,7 +58,8 @@ pub(super) fn encode_cleanup_segment(
     width: usize,
     height: usize,
 ) -> Result<Vec<u8>, &'static str> {
-    encode_cleanup_segment_from_source(coefficients, missing_msbs, width, height)
+    try_encode_cleanup_segment_from_source(coefficients, missing_msbs, width, height)
+        .map_err(legacy_coefficient_view_error)
 }
 
 #[expect(
@@ -117,21 +67,21 @@ pub(super) fn encode_cleanup_segment(
     clippy::too_many_lines,
     reason = "locator fields are normatively bounded to 12 bits and this function preserves cleanup pass order"
 )]
-fn encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
+fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
     coefficients: &S,
     missing_msbs: u8,
     width: usize,
     height: usize,
-) -> Result<Vec<u8>, &'static str> {
-    let mut mel = MelEncoder::new();
-    let mut vlc = VlcEncoder::new();
-    let mut ms = MagSgnEncoder::new();
+) -> EncodeResult<Vec<u8>> {
+    let mut mel = MelEncoder::try_new()?;
+    let mut vlc = VlcEncoder::try_new()?;
+    let mut ms = MagSgnEncoder::try_new()?;
 
     let p = 30_u32.saturating_sub(u32::from(missing_msbs));
     let stride = width;
 
-    let mut e_val = [0u8; 513];
-    let mut cx_val = [0u8; 513];
+    let mut e_val = [0u8; 514];
+    let mut cx_val = [0u8; 514];
 
     let mut e_qmax = [0i32; 2];
     let mut e_q = [0i32; 8];
@@ -165,7 +115,8 @@ fn encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
             &mut mel,
             &mut vlc,
             &mut ms,
-        )?;
+        )
+        .map_err(ht_cleanup_invariant)?;
         x += 4;
     }
 
@@ -213,22 +164,25 @@ fn encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
                 &mut mel,
                 &mut vlc,
                 &mut ms,
-            )?;
+            )
+            .map_err(ht_cleanup_invariant)?;
             x += 4;
         }
 
         y += 2;
     }
 
-    terminate_mel_vlc(&mut mel, &mut vlc)?;
-    ms.terminate()?;
+    terminate_mel_vlc(&mut mel, &mut vlc).map_err(ht_cleanup_invariant)?;
+    ms.terminate().map_err(ht_cleanup_invariant)?;
 
     let total_len = ms.pos + mel.pos + vlc.pos;
     if total_len < 2 {
-        return Err("HTJ2K cleanup segment is too short");
+        return Err(EncodeError::InternalInvariant {
+            what: "HTJ2K cleanup segment is too short",
+        });
     }
 
-    let mut data = Vec::with_capacity(total_len);
+    let mut data = try_untracked_vec(total_len, "HTJ2K cleanup segment")?;
     data.extend_from_slice(&ms.buffer[..ms.pos]);
     data.extend_from_slice(&mel.buffer[..mel.pos]);
     let vlc_start = vlc.buffer.len() - vlc.pos;
@@ -241,4 +195,8 @@ fn encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
     data[prev] = (data[prev] & 0xF0) | ((locator_bytes as u8) & 0x0F);
 
     Ok(data)
+}
+
+fn ht_cleanup_invariant(what: &'static str) -> EncodeError {
+    EncodeError::InternalInvariant { what }
 }

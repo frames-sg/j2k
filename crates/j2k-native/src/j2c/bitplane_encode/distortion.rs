@@ -2,8 +2,22 @@
 
 // Per-segment distortion reduction used by PCRD allocation.
 
+use super::super::coefficient_view::{CoefficientBlockView, SignedCoefficient};
+
+#[cfg(test)]
 pub(super) fn segment_distortion_delta(
     coefficients: &[i64],
+    start_coding_pass: u8,
+    end_coding_pass: u8,
+    num_bitplanes: u8,
+) -> f64 {
+    let view = CoefficientBlockView::try_contiguous(coefficients, coefficients.len(), 1)
+        .expect("test distortion coefficients are contiguous");
+    segment_distortion_delta_view(view, start_coding_pass, end_coding_pass, num_bitplanes)
+}
+
+pub(super) fn segment_distortion_delta_view<T: SignedCoefficient>(
+    coefficients: CoefficientBlockView<'_, T>,
     start_coding_pass: u8,
     end_coding_pass: u8,
     num_bitplanes: u8,
@@ -18,15 +32,16 @@ pub(super) fn segment_distortion_delta(
     clippy::cast_precision_loss,
     reason = "PCRD distortion is intentionally accumulated in f64 after integer reconstruction"
 )]
-fn coefficient_distortion_after_passes(
-    coefficients: &[i64],
+fn coefficient_distortion_after_passes<T: SignedCoefficient>(
+    coefficients: CoefficientBlockView<'_, T>,
     completed_passes: u8,
     num_bitplanes: u8,
 ) -> f64 {
     coefficients
-        .iter()
-        .map(|coefficient| {
-            let magnitude = coefficient.unsigned_abs();
+        .rows()
+        .flatten()
+        .map(|&coefficient| {
+            let magnitude = coefficient.unsigned_magnitude();
             let reconstructed =
                 reconstructed_magnitude_after_passes(magnitude, completed_passes, num_bitplanes);
             let error = magnitude.saturating_sub(reconstructed) as f64;

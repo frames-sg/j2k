@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::HashMap;
-
 use j2k_native::J2kPacketizationPacketDescriptor;
 use metal::{Buffer, CommandBuffer};
 
@@ -47,8 +45,11 @@ pub(super) struct PreparedLosslessBatchTile {
 /// shared by the classic and HT batch drivers.
 pub(super) fn prepared_lossless_batch_tiles(
     items: Vec<J2kResidentBatchEncodeItem>,
-) -> Vec<PreparedLosslessBatchTile> {
-    let mut prepared_tiles = Vec::with_capacity(items.len());
+) -> Result<Vec<PreparedLosslessBatchTile>, Error> {
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident packet batch plan");
+    let mut prepared_tiles =
+        budget.try_vec(items.len(), "J2K Metal resident packet prepared tiles")?;
     for item in items {
         let J2kPreparedLosslessDeviceCodeBlocks {
             coefficient_buffer,
@@ -94,7 +95,7 @@ pub(super) fn prepared_lossless_batch_tiles(
             codestream: item.codestream,
         });
     }
-    prepared_tiles
+    Ok(prepared_tiles)
 }
 
 /// Per-family constants for the shared resident batch packet planner; values
@@ -147,22 +148,110 @@ pub(super) fn build_resident_batch_packet_plan(
     let batch_err = |suffix: &str| Error::MetalKernel {
         message: format!("{} Metal batch {}", params.family_name, suffix),
     };
-    let mut packet_resolutions = Vec::<J2kPacketResolution>::new();
-    let mut packet_subbands = Vec::<J2kPacketSubband>::new();
-    let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
-    let mut packet_descriptors = Vec::<J2kPacketDescriptor>::new();
-    let mut state_blocks = Vec::<J2kPacketStateBlock>::new();
-    let mut packet_jobs = Vec::<J2kBatchedPacketEncodeJob>::with_capacity(prepared_tiles.len());
-    let mut assembly_jobs =
-        Vec::<J2kBatchedCodestreamAssemblyJob>::with_capacity(prepared_tiles.len());
+    let resolution_count = crate::batch_allocation::checked_count_sum(
+        prepared_tiles.iter().map(|tile| tile.resolutions.len()),
+        "J2K Metal resident packet resolutions",
+    )?;
+    let subband_count = crate::batch_allocation::checked_count_sum(
+        prepared_tiles.iter().flat_map(|tile| {
+            tile.resolutions
+                .iter()
+                .map(|resolution| resolution.subbands.len())
+        }),
+        "J2K Metal resident packet subbands",
+    )?;
+    let block_count = crate::batch_allocation::checked_count_sum(
+        prepared_tiles.iter().map(|tile| tile.code_blocks.len()),
+        "J2K Metal resident packet blocks",
+    )?;
+    let descriptor_count = crate::batch_allocation::checked_count_sum(
+        prepared_tiles
+            .iter()
+            .map(|tile| tile.packet_descriptors.len()),
+        "J2K Metal resident packet descriptors",
+    )?;
+    let mut state_block_count = 0usize;
+    for tile in prepared_tiles {
+        for (descriptor_index, descriptor) in tile.packet_descriptors.iter().enumerate() {
+            if tile.packet_descriptors[..descriptor_index]
+                .iter()
+                .any(|existing| existing.state_index == descriptor.state_index)
+            {
+                continue;
+            }
+            let resolution_index = usize::try_from(descriptor.packet_index)
+                .map_err(|_| batch_err("descriptor packet index exceeds usize"))?;
+            let resolution = tile
+                .resolutions
+                .get(resolution_index)
+                .ok_or_else(|| batch_err("descriptor packet index out of range"))?;
+            let state_blocks_for_descriptor =
+                resolution
+                    .subbands
+                    .iter()
+                    .try_fold(0usize, |total, subband| {
+                        total
+                            .checked_add(
+                                usize::try_from(subband.code_block_count).map_err(|_| {
+                                    batch_err("descriptor block count exceeds usize")
+                                })?,
+                            )
+                            .ok_or_else(|| batch_err("state block count overflow"))
+                    })?;
+            state_block_count = state_block_count
+                .checked_add(state_blocks_for_descriptor)
+                .ok_or_else(|| batch_err("state block count overflow"))?;
+        }
+    }
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident packet batch plan");
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketResolution>(resolution_count),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketSubband>(subband_count),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kResidentPacketBlock>(block_count),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketDescriptor>(descriptor_count),
+        crate::batch_allocation::BatchMetadataRequest::of::<(u32, u32, usize)>(descriptor_count),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kPacketStateBlock>(state_block_count),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kBatchedPacketEncodeJob>(
+            prepared_tiles.len(),
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<J2kBatchedCodestreamAssemblyJob>(
+            prepared_tiles.len(),
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<usize>(prepared_tiles.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<usize>(prepared_tiles.len()),
+    ])?;
+    let mut packet_resolutions =
+        budget.try_vec(resolution_count, "J2K Metal resident packet resolutions")?;
+    let mut packet_subbands =
+        budget.try_vec(subband_count, "J2K Metal resident packet subbands")?;
+    let mut resident_blocks = budget.try_vec(block_count, "J2K Metal resident packet blocks")?;
+    let mut packet_descriptors =
+        budget.try_vec(descriptor_count, "J2K Metal resident packet descriptors")?;
+    let mut state_blocks =
+        budget.try_vec(state_block_count, "J2K Metal resident packet state blocks")?;
+    let mut packet_jobs = budget.try_vec(
+        prepared_tiles.len(),
+        "J2K Metal resident packet encode jobs",
+    )?;
+    let mut assembly_jobs = budget.try_vec(
+        prepared_tiles.len(),
+        "J2K Metal resident codestream assembly jobs",
+    )?;
     let mut packet_output_capacity_total = 0usize;
     let mut packet_payload_copy_job_capacity_total = 0usize;
     let mut max_payload_copy_jobs_per_tile = 0usize;
     let mut header_capacity_total = 0usize;
     let mut scratch_words_total = 0usize;
     let mut codestream_capacity_total = 0usize;
-    let mut codestream_offsets = Vec::<usize>::with_capacity(prepared_tiles.len());
-    let mut codestream_capacities = Vec::<usize>::with_capacity(prepared_tiles.len());
+    let mut codestream_offsets = budget.try_vec(
+        prepared_tiles.len(),
+        "J2K Metal resident codestream offsets",
+    )?;
+    let mut codestream_capacities = budget.try_vec(
+        prepared_tiles.len(),
+        "J2K Metal resident codestream capacities",
+    )?;
 
     for (tile_index, tile) in prepared_tiles.iter().enumerate() {
         let local_resolution_offset = packet_resolutions.len();
@@ -242,7 +331,10 @@ pub(super) fn build_resident_batch_packet_plan(
             return Err(batch_err("code-block count mismatch"));
         }
 
-        let mut state_block_offsets = HashMap::<u32, (u32, usize)>::new();
+        let mut state_block_offsets = budget.try_vec(
+            tile.packet_descriptors.len(),
+            "J2K Metal resident packet state index map",
+        )?;
         for descriptor in &tile.packet_descriptors {
             let packet_index = usize::try_from(descriptor.packet_index)
                 .map_err(|_| batch_err("descriptor packet index exceeds usize"))?;
@@ -263,10 +355,13 @@ pub(super) fn build_resident_batch_packet_plan(
                     .checked_add(subband_block_count)
                     .ok_or_else(|| batch_err("descriptor block count overflow"))?;
             }
-            let (state_block_offset, existing_count) = if let Some(&(offset, count)) =
-                state_block_offsets.get(&descriptor.state_index)
+            let (state_block_offset, existing_count) = if let Some((offset, count)) =
+                state_block_offsets
+                    .iter()
+                    .find(|(state_index, _, _)| *state_index == descriptor.state_index)
+                    .map(|(_, offset, count)| (offset, count))
             {
-                (offset, count)
+                (*offset, *count)
             } else {
                 let offset = u32::try_from(state_blocks.len() - local_state_block_offset)
                     .map_err(|_| batch_err("state block offset exceeds u32"))?;
@@ -280,7 +375,7 @@ pub(super) fn build_resident_batch_packet_plan(
                         });
                     }
                 }
-                state_block_offsets.insert(descriptor.state_index, (offset, packet_block_count));
+                state_block_offsets.push((descriptor.state_index, offset, packet_block_count));
                 (offset, packet_block_count)
             };
             if existing_count != packet_block_count {

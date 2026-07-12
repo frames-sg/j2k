@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
-use crate::entropy::huffman::HuffmanTable;
+use crate::entropy::huffman::{HuffmanTable, PreparedHuffmanTables};
+use crate::info::{ColorSpace, SamplingFactors};
 use crate::output::Rgb8Writer;
 use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
 use crate::Decoder;
-use alloc::sync::Arc;
 use alloc::vec;
 use j2k_test_support::JPEG_BASELINE_420_16X16;
 
@@ -13,16 +13,30 @@ use j2k_test_support::JPEG_BASELINE_420_16X16;
 fn sequential_decode_modules_stay_focused_and_fragment_free() {
     const ROOT: &str = include_str!("../sequential.rs");
     const GENERIC: &str = include_str!("generic.rs");
+    const GENERIC_DRIVER: &str = include_str!("generic/driver.rs");
+    const GENERIC_ROW: &str = include_str!("generic/row.rs");
     const DCT: &str = include_str!("dct.rs");
+    const DCT_ALLOCATION: &str = include_str!("dct/allocation.rs");
+    const OUTPUT_SCRATCH: &str = include_str!("output_scratch.rs");
+    const PLAN: &str = include_str!("plan.rs");
+    const PLAN_RESOLVED: &str = include_str!("plan/resolved.rs");
     const RGB444: &str = include_str!("rgb444.rs");
+    const STRIPE: &str = include_str!("stripe.rs");
     const FAST420: &str = include_str!("fast420/mod.rs");
     const FAST420_ROWS: &str = include_str!("fast420/rows.rs");
 
     let modules = [
         ("sequential.rs", ROOT, 240usize),
-        ("sequential/generic.rs", GENERIC, 600),
+        ("sequential/generic.rs", GENERIC, 180),
+        ("sequential/generic/driver.rs", GENERIC_DRIVER, 260),
+        ("sequential/generic/row.rs", GENERIC_ROW, 230),
         ("sequential/dct.rs", DCT, 200),
+        ("sequential/dct/allocation.rs", DCT_ALLOCATION, 320),
+        ("sequential/output_scratch.rs", OUTPUT_SCRATCH, 60),
+        ("sequential/plan.rs", PLAN, 120),
+        ("sequential/plan/resolved.rs", PLAN_RESOLVED, 80),
         ("sequential/rgb444.rs", RGB444, 300),
+        ("sequential/stripe.rs", STRIPE, 240),
         ("sequential/fast420/mod.rs", FAST420, 650),
         ("sequential/fast420/rows.rs", FAST420_ROWS, 700),
     ];
@@ -39,12 +53,43 @@ fn sequential_decode_modules_stay_focused_and_fragment_free() {
         );
     }
 
-    for declaration in ["mod dct;", "mod fast420;", "mod generic;", "mod rgb444;"] {
+    for declaration in [
+        "mod dct;",
+        "mod fast420;",
+        "mod generic;",
+        "mod output_scratch;",
+        "mod plan;",
+        "mod rgb444;",
+        "mod stripe;",
+    ] {
         assert!(
             ROOT.contains(declaration),
             "sequential facade lost required module boundary {declaration}"
         );
     }
+    assert!(
+        DCT.contains("mod allocation;"),
+        "sequential DCT execution lost its allocation boundary"
+    );
+    for declaration in ["mod driver;", "mod row;"] {
+        assert!(
+            GENERIC.contains(declaration),
+            "generic sequential owner lost required boundary {declaration}"
+        );
+    }
+    for shared_owner in [
+        "struct ScanSetup",
+        "struct ScanBuffers",
+        "trait StripeEmitter",
+        "fn decode_scan_rows",
+    ] {
+        assert!(
+            GENERIC_DRIVER.contains(shared_owner),
+            "generic scan driver lost typed shared owner {shared_owner}"
+        );
+    }
+    assert!(!GENERIC.contains("clippy::too_many_lines"));
+    assert!(!GENERIC_DRIVER.contains("macro_rules!"));
 }
 
 #[test]
@@ -137,32 +182,52 @@ fn fast_tile_profiled_rgb_matches_unprofiled_decode() {
 
 #[test]
 fn fast_tile_row_decoder_uses_stripe_local_y_offsets() {
-    let dc = trivial_dc_table();
-    let ac = eob_ac_table();
-    let quant = Arc::new([1u16; 64]);
+    let mut huffman_tables =
+        PreparedHuffmanTables::try_with_capacity(2).expect("bounded test arena");
+    let dc = huffman_tables
+        .push(trivial_dc_table())
+        .expect("reserved DC slot");
+    let ac = huffman_tables
+        .push(eob_ac_table())
+        .expect("reserved AC slot");
     let y_comp = PreparedComponentPlan {
         h: 2,
         v: 2,
         output_index: 0,
-        quant: Arc::clone(&quant),
-        dc_table: Arc::clone(&dc),
-        ac_table: Arc::clone(&ac),
+        quant: [1u16; 64],
+        dc_table: Some(dc),
+        ac_table: Some(ac),
     };
     let cb_comp = PreparedComponentPlan {
         h: 1,
         v: 1,
         output_index: 1,
-        quant: Arc::clone(&quant),
-        dc_table: Arc::clone(&dc),
-        ac_table: Arc::clone(&ac),
+        quant: [1u16; 64],
+        dc_table: Some(dc),
+        ac_table: Some(ac),
     };
     let cr_comp = PreparedComponentPlan {
         h: 1,
         v: 1,
         output_index: 2,
-        quant,
-        dc_table: dc,
-        ac_table: ac,
+        quant: [1u16; 64],
+        dc_table: Some(dc),
+        ac_table: Some(ac),
+    };
+    let plan = PreparedDecodePlan {
+        components: vec![y_comp, cb_comp, cr_comp],
+        huffman_tables,
+        sampling: SamplingFactors::from_validated_components(&[(2, 2), (1, 1), (1, 1)]),
+        color_space: ColorSpace::YCbCr,
+        restart_interval: None,
+        dimensions: (16, 16),
+        scan_offset: 0,
+        scratch_bytes: 0,
+    };
+    let components = FastTile420Components {
+        y: plan.resolved_component(0).expect("Y component"),
+        cb: plan.resolved_component(1).expect("Cb component"),
+        cr: plan.resolved_component(2).expect("Cr component"),
     };
     let mut stripe = StripeBuffer {
         planes: vec![vec![0u8; 16 * 16], vec![0u8; 8 * 8], vec![0u8; 8 * 8]],
@@ -178,11 +243,7 @@ fn fast_tile_row_decoder_uses_stripe_local_y_offsets() {
     let mut profiler = NoopFast420Profiler;
 
     decode_mcu_row_fast_tile_420(
-        FastTile420Components {
-            y: &y_comp,
-            cb: &cb_comp,
-            cr: &cr_comp,
-        },
+        components,
         Backend::detect(),
         &mut FastTile420EntropyState {
             br: &mut br,
@@ -412,6 +473,7 @@ fn emit_stripe_rgb_444_matches_direct_ycbcr_conversion_with_trailing_row() {
 
     let plan = PreparedDecodePlan {
         components: vec![],
+        huffman_tables: PreparedHuffmanTables::try_with_capacity(0).expect("empty test arena"),
         sampling: SamplingFactors::from_validated_components(&[(1, 1), (1, 1), (1, 1)]),
         color_space: ColorSpace::YCbCr,
         restart_interval: None,
@@ -449,22 +511,18 @@ fn emit_stripe_rgb_444_matches_direct_ycbcr_conversion_with_trailing_row() {
     assert_eq!(actual, expected);
 }
 
-fn trivial_dc_table() -> Arc<HuffmanTable> {
-    Arc::new(
-        HuffmanTable::from_raw(&RawHuffmanTable {
-            bits: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            values: HuffmanValues::from_slice(&[0]),
-        })
-        .expect("trivial DC table must be valid"),
-    )
+fn trivial_dc_table() -> HuffmanTable {
+    HuffmanTable::from_raw(&RawHuffmanTable {
+        bits: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        values: HuffmanValues::from_slice(&[0]),
+    })
+    .expect("trivial DC table must be valid")
 }
 
-fn eob_ac_table() -> Arc<HuffmanTable> {
-    Arc::new(
-        HuffmanTable::from_raw(&RawHuffmanTable {
-            bits: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            values: HuffmanValues::from_slice(&[0x00]),
-        })
-        .expect("trivial AC table must be valid"),
-    )
+fn eob_ac_table() -> HuffmanTable {
+    HuffmanTable::from_raw(&RawHuffmanTable {
+        bits: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        values: HuffmanValues::from_slice(&[0x00]),
+    })
+    .expect("trivial AC table must be valid")
 }

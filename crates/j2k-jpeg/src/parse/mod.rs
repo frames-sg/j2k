@@ -5,6 +5,7 @@
 //! parsed DQT / DHT / DRI / APP14 / SOS state. See spec Section 3 phase 1.
 
 pub(crate) mod adobe_app14;
+pub(crate) mod allocation;
 pub(crate) mod header;
 pub(crate) mod markers;
 pub(crate) mod scan;

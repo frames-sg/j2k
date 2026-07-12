@@ -37,7 +37,7 @@ pub(crate) fn decode_with_stats(
     stats: Option<&mut HtBlockDecodeStats>,
     profile_enabled: bool,
 ) -> Result<()> {
-    ctx.reset(code_block);
+    ctx.reset(code_block)?;
 
     if total_bitplanes == 0 {
         return Ok(());

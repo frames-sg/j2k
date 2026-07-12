@@ -18,8 +18,8 @@ use j2k_native::{
 
 #[cfg(feature = "cuda-runtime")]
 use j2k::{
-    encode_j2k_lossless, EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation,
-    J2kLosslessEncodeOptions, J2kLosslessSamples,
+    encode_j2k_lossless, EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeStageError,
+    J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda::encode_j2k_lossless_with_cuda;
@@ -636,10 +636,12 @@ fn cuda_htj2k_tile_encode_hook_rejects_subsampling_with_typed_err_when_cuda_runt
     let err = result.expect_err(
         "encode_htj2k_tile must return Err for subsampling != (1,1) when CUDA is available",
     );
-    assert!(
-        err.contains("subsampling"),
-        "typed rejection must mention subsampling, got: {err}"
-    );
+    assert!(matches!(
+        err,
+        J2kEncodeStageError::Unsupported {
+            what: "CUDA HTJ2K tile encode does not support component subsampling != (1, 1)"
+        }
+    ));
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use rayon::iter::IndexedParallelIterator;
+
 use super::super::{
     checked_buffer_slice, encode_status_error, metal_profile_classic_tier1_token_pack_enabled,
     pack_j2k_code_block_scalar_from_tier1_tokens, Error, Instant, IntoParallelIterator,
@@ -314,6 +316,82 @@ pub(in crate::compute) fn compare_classic_tier1_symbol_plan_and_split_token_emit
 }
 
 #[cfg(target_os = "macos")]
+fn classic_tier1_token_pack_output_len(
+    block_idx: usize,
+    counter: &J2kClassicTier1SymbolPlanCounters,
+    token_bytes: &[u8],
+    token_segments: &[J2kClassicTier1TokenSegment],
+    token_stride_bytes: usize,
+    token_segment_stride: usize,
+) -> Result<usize, Error> {
+    if counter.code != J2K_ENCODE_STATUS_OK {
+        return Err(Error::MetalKernel {
+            message: format!(
+                "classic Tier-1 token pack input failed at block {block_idx}: code={} detail={}",
+                counter.code, counter.detail
+            ),
+        });
+    }
+    let segment_count = usize::try_from(counter.segment_count).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic Tier-1 token-pack segment count exceeds usize".to_string(),
+    })?;
+    if segment_count > CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token-pack segment count exceeds capacity"
+                .to_string(),
+        });
+    }
+    let token_start =
+        block_idx
+            .checked_mul(token_stride_bytes)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 token-pack byte offset overflow".to_string(),
+            })?;
+    let segment_start =
+        block_idx
+            .checked_mul(token_segment_stride)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 token-pack segment offset overflow".to_string(),
+            })?;
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal classic Tier-1 token-pack segment metadata",
+    );
+    let mut native_segments = budget.try_vec(
+        segment_count,
+        "J2K Metal classic Tier-1 token-pack segments",
+    )?;
+    for segment in &token_segments[segment_start..segment_start + segment_count] {
+        let start_coding_pass =
+            u8::try_from(segment.pass_range & 0xFFFF).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 token-pack start pass exceeds u8".to_string(),
+            })?;
+        let end_coding_pass =
+            u8::try_from(segment.pass_range >> 16).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 token-pack end pass exceeds u8".to_string(),
+            })?;
+        native_segments.push(J2kTier1TokenSegment {
+            token_bit_offset: segment.token_bit_offset,
+            token_bit_count: segment.token_bit_count,
+            start_coding_pass,
+            end_coding_pass,
+            use_arithmetic: (segment.flags & 1) != 0,
+        });
+    }
+    let packed = pack_j2k_code_block_scalar_from_tier1_tokens(
+        &token_bytes[token_start..token_start + token_stride_bytes],
+        &native_segments,
+        u8::try_from(counter.coding_passes).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token-pack coding-pass count exceeds u8".to_string(),
+        })?,
+        u8::try_from(counter.missing_bit_planes).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token-pack missing bitplanes exceed u8".to_string(),
+        })?,
+    )
+    .map_err(|source| crate::error::native_encode_error("classic Tier-1 token pack", source))?;
+    Ok(packed.data.len())
+}
+
+#[cfg(target_os = "macos")]
 pub(in crate::compute) fn profile_classic_tier1_token_pack(
     stage_stats: &mut J2kResidentEncodeStageStats,
     readback: &J2kResidentClassicTier1TokenEmitReadback,
@@ -356,60 +434,28 @@ pub(in crate::compute) fn profile_classic_tier1_token_pack(
     let token_segment_stride = readback.token_segment_stride;
 
     let started = Instant::now();
-    let packed_lengths = (0..readback.count)
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal classic Tier-1 token-pack length metadata",
+    );
+    let mut packed_lengths = budget.try_vec(
+        readback.count,
+        "J2K Metal classic Tier-1 token-pack lengths",
+    )?;
+    (0..readback.count)
         .into_par_iter()
-        .map(|block_idx| -> Result<usize, String> {
-            let counter = &counters[block_idx];
-            if counter.code != J2K_ENCODE_STATUS_OK {
-                return Err(format!(
-                "classic Tier-1 token pack input failed at block {block_idx}: code={} detail={}",
-                counter.code, counter.detail
-            ));
-            }
-            let segment_count = usize::try_from(counter.segment_count)
-                .map_err(|_| "J2K Metal classic Tier-1 token-pack segment count exceeds usize")?;
-            if segment_count > CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY {
-                return Err(
-                    "J2K Metal classic Tier-1 token-pack segment count exceeds capacity"
-                        .to_string(),
-                );
-            }
-            let token_start = block_idx
-                .checked_mul(token_stride_bytes)
-                .ok_or("J2K Metal classic Tier-1 token-pack byte offset overflow")?;
-            let segment_start = block_idx
-                .checked_mul(token_segment_stride)
-                .ok_or("J2K Metal classic Tier-1 token-pack segment offset overflow")?;
-            let mut native_segments = Vec::with_capacity(segment_count);
-            for segment in &token_segments[segment_start..segment_start + segment_count] {
-                let start_coding_pass = u8::try_from(segment.pass_range & 0xFFFF)
-                    .map_err(|_| "J2K Metal classic Tier-1 token-pack start pass exceeds u8")?;
-                let end_coding_pass = u8::try_from(segment.pass_range >> 16)
-                    .map_err(|_| "J2K Metal classic Tier-1 token-pack end pass exceeds u8")?;
-                native_segments.push(J2kTier1TokenSegment {
-                    token_bit_offset: segment.token_bit_offset,
-                    token_bit_count: segment.token_bit_count,
-                    start_coding_pass,
-                    end_coding_pass,
-                    use_arithmetic: (segment.flags & 1) != 0,
-                });
-            }
-            let packed = pack_j2k_code_block_scalar_from_tier1_tokens(
-                &token_bytes[token_start..token_start + token_stride_bytes],
-                &native_segments,
-                u8::try_from(counter.coding_passes).map_err(|_| {
-                    "J2K Metal classic Tier-1 token-pack coding-pass count exceeds u8"
-                })?,
-                u8::try_from(counter.missing_bit_planes).map_err(|_| {
-                    "J2K Metal classic Tier-1 token-pack missing bitplanes exceed u8"
-                })?,
+        .map(|block_idx| {
+            classic_tier1_token_pack_output_len(
+                block_idx,
+                &counters[block_idx],
+                &token_bytes,
+                &token_segments,
+                token_stride_bytes,
+                token_segment_stride,
             )
-            .map_err(|message| format!("J2K Metal classic Tier-1 token-pack failed: {message}"))?;
-            Ok(packed.data.len())
         })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|message| Error::MetalKernel { message })?;
+        .collect_into_vec(&mut packed_lengths);
     for output_len in packed_lengths {
+        let output_len = output_len?;
         stage_stats.tier1_token_pack_output_bytes_total = stage_stats
             .tier1_token_pack_output_bytes_total
             .saturating_add(output_len);

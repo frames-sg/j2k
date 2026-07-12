@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(feature = "cuda-runtime")]
-use std::collections::VecDeque;
-#[cfg(feature = "cuda-runtime")]
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{CudaBufferPool, CudaContext, CudaDeviceBuffer};
+use j2k_cuda_runtime::{CudaContext, CudaDeviceBuffer};
 #[cfg(feature = "cuda-runtime")]
-use j2k_jpeg::adapter::{
-    build_fast420_packet, build_fast422_packet, build_fast444_packet, FastPacketError,
-    JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1,
-};
+use j2k_jpeg::adapter::JpegPlanCacheDiagnostics;
+#[cfg(feature = "cuda-runtime")]
+use j2k_jpeg::Decoder as CpuDecoder;
 
 #[cfg(feature = "cuda-runtime")]
 use crate::runtime::cuda_error;
@@ -19,14 +16,42 @@ use crate::runtime::cuda_error;
 use crate::Error;
 
 #[cfg(feature = "cuda-runtime")]
-const OWNED_PACKET_CACHE_SLOTS: usize = 8;
+mod host_ledger;
+#[cfg(feature = "cuda-runtime")]
+mod packet_cache;
+#[cfg(feature = "cuda-runtime")]
+mod runtime_state;
+#[cfg(feature = "cuda-runtime")]
+pub(crate) use host_ledger::HostOwnerLease;
+#[cfg(feature = "cuda-runtime")]
+pub(crate) use packet_cache::LeasedOwnedPacket;
+#[cfg(feature = "cuda-runtime")]
+use packet_cache::OwnedPacketPlanCache;
+#[cfg(feature = "cuda-runtime")]
+use runtime_state::SharedCudaRuntimeState;
 
 #[cfg(feature = "cuda-runtime")]
-#[derive(Clone)]
-struct CachedOwnedFastPacket<T> {
-    digest: u64,
-    input: Arc<[u8]>,
-    packet: Arc<T>,
+#[doc(hidden)]
+/// Clone-shared host-memory ownership diagnostics for CUDA JPEG operations.
+///
+/// The current fields are sampled while the session JPEG-host operation gate,
+/// context pinned-upload gate, cache mutex, and host-ledger allocation gate are
+/// held in their normal acquisition order. Peak fields are monotonic owner
+/// high-water marks shared by every clone of the session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CudaJpegHostMemoryDiagnostics {
+    /// Neutral JPEG plans retained by the session cache.
+    pub cache_retained_bytes: usize,
+    /// Packet, decoder, checkpoint, report, and pinned-pool leases currently active.
+    pub active_owner_bytes: usize,
+    /// Pinned upload staging retained by the session's one bound CUDA context.
+    pub pinned_upload_retained_bytes: usize,
+    /// Current cache, active-owner, and pinned-staging total.
+    pub current_combined_bytes: usize,
+    /// Highest active-owner lease total observed by the session.
+    pub peak_active_owner_bytes: usize,
+    /// Highest combined host-owner total observed by the session.
+    pub peak_combined_bytes: usize,
 }
 
 #[derive(Clone, Default)]
@@ -34,15 +59,11 @@ struct CachedOwnedFastPacket<T> {
 pub struct CudaSession {
     submissions: u64,
     #[cfg(feature = "cuda-runtime")]
-    owned_fast420_packets: VecDeque<CachedOwnedFastPacket<JpegFast420PacketV1>>,
+    owned_packet_cache: Arc<OwnedPacketPlanCache>,
     #[cfg(feature = "cuda-runtime")]
-    owned_fast422_packets: VecDeque<CachedOwnedFastPacket<JpegFast422PacketV1>>,
+    jpeg_host_operation_gate: Arc<Mutex<()>>,
     #[cfg(feature = "cuda-runtime")]
-    owned_fast444_packets: VecDeque<CachedOwnedFastPacket<JpegFast444PacketV1>>,
-    #[cfg(feature = "cuda-runtime")]
-    context: Option<CudaContext>,
-    #[cfg(feature = "cuda-runtime")]
-    owned_output_pool: Option<CudaBufferPool>,
+    runtime_state: Arc<SharedCudaRuntimeState>,
 }
 
 impl CudaSession {
@@ -51,14 +72,18 @@ impl CudaSession {
         self.submissions
     }
 
-    /// Number of cached J2K-owned CUDA fast JPEG packets.
+    /// Number of neutral JPEG plans retained by the shared CUDA cache.
+    ///
+    /// This count includes an explicit unsupported plan even when it has no
+    /// fast packet. If the cache mutex is poisoned, the method returns the
+    /// last coherent atomic entry-count snapshot; use
+    /// [`owned_cuda_packet_cache_diagnostics`](Self::owned_cuda_packet_cache_diagnostics)
+    /// to observe the typed poison error.
     #[doc(hidden)]
     pub fn owned_cuda_packet_cache_len(&self) -> usize {
         #[cfg(feature = "cuda-runtime")]
         {
-            self.owned_fast420_packets.len()
-                + self.owned_fast422_packets.len()
-                + self.owned_fast444_packets.len()
+            self.owned_packet_cache.last_coherent_entries()
         }
         #[cfg(not(feature = "cuda-runtime"))]
         {
@@ -67,9 +92,59 @@ impl CudaSession {
     }
 
     #[cfg(feature = "cuda-runtime")]
+    /// Detailed retained-byte and admission diagnostics for the shared packet-plan cache.
+    ///
+    /// # Errors
+    /// Returns [`Error::OwnedPacketCachePoisoned`] if a prior panic poisoned
+    /// the synchronized cache state.
+    #[doc(hidden)]
+    pub fn owned_cuda_packet_cache_diagnostics(&self) -> Result<JpegPlanCacheDiagnostics, Error> {
+        self.owned_packet_cache.diagnostics()
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    /// Snapshot clone-shared CUDA JPEG host ownership and high-water marks.
+    ///
+    /// # Errors
+    /// Returns a typed error if the operation gate, lazy runtime state, pinned
+    /// staging pool, plan cache, or exact owner ledger is poisoned.
+    #[doc(hidden)]
+    pub fn owned_cuda_host_memory_diagnostics(
+        &self,
+    ) -> Result<CudaJpegHostMemoryDiagnostics, Error> {
+        let operation_gate = self.jpeg_host_operation_gate();
+        let _operation = operation_gate
+            .lock()
+            .map_err(|_| Error::JpegHostOperationPoisoned)?;
+        let context = self.runtime_state.existing_context()?;
+        let pinned_operation = context
+            .as_ref()
+            .map(j2k_cuda_runtime::CudaContext::begin_pinned_upload_operation)
+            .transpose()
+            .map_err(cuda_error)?;
+        let pinned_upload_retained_bytes = pinned_operation
+            .as_ref()
+            .map(j2k_cuda_runtime::CudaPinnedUploadOperationGuard::diagnostics)
+            .transpose()
+            .map_err(cuda_error)?
+            .map_or(0, |diagnostics| diagnostics.retained_bytes);
+        let diagnostics = self
+            .owned_packet_cache
+            .host_memory_diagnostics(pinned_upload_retained_bytes)?;
+        Ok(CudaJpegHostMemoryDiagnostics {
+            cache_retained_bytes: diagnostics.cache_retained_bytes,
+            active_owner_bytes: diagnostics.active_owner_bytes,
+            pinned_upload_retained_bytes,
+            current_combined_bytes: diagnostics.current_combined_bytes,
+            peak_active_owner_bytes: diagnostics.peak_active_owner_bytes,
+            peak_combined_bytes: diagnostics.peak_combined_bytes,
+        })
+    }
+
+    #[cfg(feature = "cuda-runtime")]
     /// Whether a CUDA runtime context has been initialized successfully.
     pub fn is_runtime_initialized(&self) -> bool {
-        self.context.is_some()
+        self.runtime_state.is_initialized()
     }
 
     #[cfg(feature = "cuda-runtime")]
@@ -112,51 +187,84 @@ impl CudaSession {
     /// Number of reusable owned CUDA output buffers retained by this session.
     #[doc(hidden)]
     pub fn retained_owned_cuda_output_buffers(&self) -> Result<usize, Error> {
-        self.owned_output_pool
-            .as_ref()
-            .map_or(Ok(0), |pool| pool.cached_count().map_err(cuda_error))
+        self.runtime_state.retained_output_buffers()
     }
 
     #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn resolve_owned_fast420_packet(
-        &mut self,
+    pub(crate) fn resolve_owned_packet(
+        &self,
         input: &[u8],
-    ) -> Result<Arc<JpegFast420PacketV1>, Error> {
-        resolve_owned_packet(&mut self.owned_fast420_packets, input, build_fast420_packet)
+    ) -> Result<Option<LeasedOwnedPacket>, Error> {
+        self.owned_packet_cache.resolve_packet(input)
     }
 
     #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn resolve_owned_fast422_packet(
-        &mut self,
-        input: &[u8],
-    ) -> Result<Arc<JpegFast422PacketV1>, Error> {
-        resolve_owned_packet(&mut self.owned_fast422_packets, input, build_fast422_packet)
+    pub(crate) fn resolve_owned_packet_from_decoder(
+        &self,
+        decoder: &CpuDecoder<'_>,
+    ) -> Result<Option<LeasedOwnedPacket>, Error> {
+        self.owned_packet_cache.resolve_packet_from_decoder(decoder)
     }
 
     #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn resolve_owned_fast444_packet(
-        &mut self,
-        input: &[u8],
-    ) -> Result<Arc<JpegFast444PacketV1>, Error> {
-        resolve_owned_packet(&mut self.owned_fast444_packets, input, build_fast444_packet)
+    pub(crate) fn jpeg_host_operation_gate(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.jpeg_host_operation_gate)
     }
 
     #[cfg(feature = "cuda-runtime")]
-    pub(crate) fn cuda_context(&mut self) -> Result<CudaContext, Error> {
-        if self.context.is_none() {
-            self.context = Some(CudaContext::system_default().map_err(cuda_error)?);
+    pub(crate) fn allocate_owned_host_owner<T>(
+        &self,
+        allocate: impl FnOnce(usize) -> Result<(T, usize), Error>,
+    ) -> Result<(T, HostOwnerLease), Error> {
+        self.owned_packet_cache.allocate_host_owner(allocate)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn reserve_existing_host_owner(
+        &self,
+        bytes: usize,
+    ) -> Result<HostOwnerLease, Error> {
+        self.owned_packet_cache.reserve_existing_host_owner(bytes)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn reserve_pinned_upload_retention(
+        &self,
+        operation: &j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'_>,
+    ) -> Result<HostOwnerLease, Error> {
+        let retained_bytes = operation.diagnostics().map_err(cuda_error)?.retained_bytes;
+        self.reserve_existing_host_owner(retained_bytes)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn owned_host_live_bytes(&self) -> Result<usize, Error> {
+        self.owned_packet_cache.host_live_bytes()
+    }
+
+    #[cfg(all(test, feature = "cuda-runtime"))]
+    fn with_owned_packet_cache_limits(entry_limit: usize, host_byte_limit: usize) -> Self {
+        Self {
+            owned_packet_cache: Arc::new(OwnedPacketPlanCache::with_limits(
+                entry_limit,
+                host_byte_limit,
+            )),
+            ..Self::default()
         }
-        self.context.clone().ok_or(Error::CudaUnavailable)
     }
 
     #[cfg(feature = "cuda-runtime")]
-    fn owned_output_pool(&mut self) -> Result<CudaBufferPool, Error> {
-        if let Some(pool) = &self.owned_output_pool {
-            return Ok(pool.clone());
-        }
-        let pool = self.cuda_context()?.buffer_pool();
-        self.owned_output_pool = Some(pool.clone());
-        Ok(pool)
+    pub(crate) fn cuda_context(&self) -> Result<CudaContext, Error> {
+        self.runtime_state.context()
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn bind_cuda_context(&self, context: &CudaContext) -> Result<CudaContext, Error> {
+        self.runtime_state.bind_context(context)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    fn owned_output_pool(&self) -> Result<j2k_cuda_runtime::CudaBufferPool, Error> {
+        self.runtime_state.owned_output_pool()
     }
 }
 
@@ -192,52 +300,17 @@ impl std::fmt::Debug for CudaSession {
         debug.field("runtime_initialized", &self.is_runtime_initialized());
         #[cfg(feature = "cuda-runtime")]
         debug.field(
+            "owned_cuda_packet_cache_diagnostics",
+            &self.owned_packet_cache.try_diagnostics(),
+        );
+        #[cfg(feature = "cuda-runtime")]
+        debug.field(
             "retained_owned_cuda_output_buffers",
-            &self.retained_owned_cuda_output_buffers().ok(),
+            &self.runtime_state.try_retained_output_buffers(),
         );
         debug.finish_non_exhaustive()
     }
 }
 
-#[cfg(feature = "cuda-runtime")]
-fn owned_packet_error(error: FastPacketError) -> Error {
-    match error {
-        FastPacketError::Decode(error) => Error::Decode(error),
-        _ => Error::UnsupportedCudaRequest {
-            reason: "J2K CUDA JPEG decode currently supports baseline 8-bit YCbCr 4:2:0, 4:2:2, or 4:4:4 RGB8 output",
-        },
-    }
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn resolve_owned_packet<T>(
-    cache: &mut VecDeque<CachedOwnedFastPacket<T>>,
-    input: &[u8],
-    build: fn(&[u8]) -> Result<T, FastPacketError>,
-) -> Result<Arc<T>, Error> {
-    let digest = digest_bytes(input);
-    if let Some(entry) = cache
-        .iter()
-        .find(|entry| entry.digest == digest && entry.input.as_ref() == input)
-    {
-        return Ok(Arc::clone(&entry.packet));
-    }
-
-    let packet = build(input).map_err(owned_packet_error)?;
-    let input = Arc::<[u8]>::from(input);
-    let packet = Arc::new(packet);
-    if cache.len() == OWNED_PACKET_CACHE_SLOTS {
-        cache.pop_front();
-    }
-    cache.push_back(CachedOwnedFastPacket {
-        digest,
-        input,
-        packet: Arc::clone(&packet),
-    });
-    Ok(packet)
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn digest_bytes(bytes: &[u8]) -> u64 {
-    j2k_core::__j2k_fnv1a64_bytes!(bytes)
-}
+#[cfg(all(test, feature = "cuda-runtime"))]
+mod tests;

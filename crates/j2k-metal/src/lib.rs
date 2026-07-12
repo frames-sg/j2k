@@ -11,6 +11,7 @@
 #![warn(unreachable_pub)]
 
 mod batch;
+mod batch_allocation;
 #[cfg(target_os = "macos")]
 mod buffer_pool;
 #[cfg(any(test, target_os = "macos"))]
@@ -43,9 +44,12 @@ mod tile_batch;
 use j2k_core::{Downscale, PixelFormat, Rect};
 
 #[cfg(target_os = "macos")]
-use j2k_metal_support::commit_and_wait;
+use j2k_metal_support::{
+    checked_blit_command_encoder, checked_command_buffer, checked_private_buffer,
+    checked_shared_buffer_with_bytes, commit_and_wait,
+};
 #[cfg(target_os = "macos")]
-use metal::{Buffer, MTLResourceOptions};
+use metal::Buffer;
 
 pub use j2k_core::SurfaceResidency;
 
@@ -53,11 +57,15 @@ pub use self::decoder::{
     Codec, DecodeOperation, DecodeRouteReport, DecodeSurfaceWithReport, J2kDecoder, MetalDecodeOp,
     MetalDecodeRequest,
 };
-pub use self::error::{Error, MetalDirectFallbackReason, MetalKernelRetryClass};
+pub use self::error::{
+    Error, MetalDirectFallbackReason, MetalKernelRetryClass, NativeBackendError,
+};
 pub use self::session::{MetalBackendSession, MetalSession};
 pub(crate) use self::surface::Storage;
 pub use self::surface::Surface;
 pub use self::tile_batch::MetalTileBatch;
+#[cfg(target_os = "macos")]
+pub use buffer_pool::{MetalBufferPoolDiagnostics, MetalBufferPoolsDiagnostics};
 
 #[doc(hidden)]
 pub use batch::{benchmark_group_region_scaled_requests, BenchmarkGroupedRequests};
@@ -111,21 +119,21 @@ pub fn benchmark_private_buffer_with_bytes(
     let byte_len = u64::try_from(bytes.len()).map_err(|_| Error::MetalKernel {
         message: "J2K Metal benchmark private input length exceeds u64".to_string(),
     })?;
-    let upload = session.device().new_buffer_with_data(
-        bytes.as_ptr().cast(),
-        byte_len,
-        MTLResourceOptions::StorageModeShared,
-    );
-    let private = session
-        .device()
-        .new_buffer(byte_len, MTLResourceOptions::StorageModePrivate);
+    let map_allocation =
+        |source| error::metal_kernel_support_error("J2K Metal benchmark buffer allocation", source);
+    let upload =
+        checked_shared_buffer_with_bytes(session.device(), bytes).map_err(map_allocation)?;
+    let private = checked_private_buffer(session.device(), bytes.len()).map_err(map_allocation)?;
     let runtime = session.runtime()?;
-    let command_buffer = runtime.command_queue().new_command_buffer();
-    let blit = command_buffer.new_blit_command_encoder();
+    let command_buffer = checked_command_buffer(runtime.command_queue()).map_err(map_allocation)?;
+    let blit = checked_blit_command_encoder(&command_buffer).map_err(map_allocation)?;
     blit.copy_from_buffer(&upload, 0, &private, 0, byte_len);
     blit.end_encoding();
-    commit_and_wait(command_buffer).map_err(|error| Error::MetalKernel {
-        message: format!("J2K Metal benchmark private input upload failed: {error}"),
+    commit_and_wait(&command_buffer).map_err(|error| {
+        error::metal_kernel_support_error(
+            format!("J2K Metal benchmark private input upload failed: {error}"),
+            error,
+        )
     })?;
     Ok(private)
 }
@@ -151,18 +159,20 @@ pub fn benchmark_overwrite_private_buffer_with_bytes(
                 .to_string(),
         });
     }
-    let upload = session.device().new_buffer_with_data(
-        bytes.as_ptr().cast(),
-        byte_len,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let map_allocation =
+        |source| error::metal_kernel_support_error("J2K Metal benchmark buffer allocation", source);
+    let upload =
+        checked_shared_buffer_with_bytes(session.device(), bytes).map_err(map_allocation)?;
     let runtime = session.runtime()?;
-    let command_buffer = runtime.command_queue().new_command_buffer();
-    let blit = command_buffer.new_blit_command_encoder();
+    let command_buffer = checked_command_buffer(runtime.command_queue()).map_err(map_allocation)?;
+    let blit = checked_blit_command_encoder(&command_buffer).map_err(map_allocation)?;
     blit.copy_from_buffer(&upload, 0, dst, 0, byte_len);
     blit.end_encoding();
-    commit_and_wait(command_buffer).map_err(|error| Error::MetalKernel {
-        message: format!("J2K Metal benchmark private input overwrite failed: {error}"),
+    commit_and_wait(&command_buffer).map_err(|error| {
+        error::metal_kernel_support_error(
+            format!("J2K Metal benchmark private input overwrite failed: {error}"),
+            error,
+        )
     })?;
     Ok(())
 }

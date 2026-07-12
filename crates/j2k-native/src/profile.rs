@@ -73,31 +73,35 @@ mod tests {
     #[test]
     fn profile_summary_groups_rows_and_averages_timing_fields() {
         let mut summary = ProfileSummary::default();
-        summary.record_u128(
-            "j2k",
-            "encode",
-            "cpu",
-            &[
-                ("deinterleave_us", 10),
-                ("dwt_us", 30),
-                ("block_encode_us", 60),
-                ("total_us", 100),
-            ],
-        );
-        summary.record_u128(
-            "j2k",
-            "encode",
-            "cpu",
-            &[
-                ("deinterleave_us", 14),
-                ("dwt_us", 42),
-                ("block_encode_us", 72),
-                ("total_us", 128),
-            ],
-        );
+        summary
+            .record_u128(
+                "j2k",
+                "encode",
+                "cpu",
+                &[
+                    ("deinterleave_us", 10),
+                    ("dwt_us", 30),
+                    ("block_encode_us", 60),
+                    ("total_us", 100),
+                ],
+            )
+            .expect("first profile row should record");
+        summary
+            .record_u128(
+                "j2k",
+                "encode",
+                "cpu",
+                &[
+                    ("deinterleave_us", 14),
+                    ("dwt_us", 42),
+                    ("block_encode_us", 72),
+                    ("total_us", 128),
+                ],
+            )
+            .expect("second profile row should record");
 
         assert_eq!(
-            summary.format_rows(),
+            summary.format_rows().expect("summary should format"),
             vec![
                 "j2k_profile_summary codec=j2k op=encode path=cpu count=2 block_encode_us_sum=132 block_encode_us_avg=66 deinterleave_us_sum=24 deinterleave_us_avg=12 dwt_us_sum=72 dwt_us_avg=36 total_us_sum=228 total_us_avg=114"
             ]

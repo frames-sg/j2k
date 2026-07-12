@@ -1,13 +1,13 @@
-use std::collections::HashMap;
-
 use j2k_core::PixelFormat;
 use j2k_native::{
-    idwt_required_input_windows, idwt_required_output_margin, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kRect,
-    J2kRequiredBandRegion as RequiredBandRegion, J2kWaveletTransform,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kRect,
+    J2kWaveletTransform,
 };
 
-use crate::Error;
+use crate::{allocation::HostPhaseBudget, Error};
+
+mod required_regions;
+use self::required_regions::required_regions_for_direct_plan;
 
 const CLASSIC_J2K_NOT_CUDA_HTJ2K: &str =
     "strict CUDA codestream decode only accepts HTJ2K direct-plan subbands";
@@ -174,7 +174,10 @@ pub(crate) struct CudaHtj2kRect {
 }
 
 /// Flat CUDA HTJ2K decode plan.
-#[derive(Debug, Clone)]
+///
+/// The plan is move-only because its payload and descriptor vectors can
+/// approach the shared host-allocation cap. Borrow it after construction.
+#[derive(Debug)]
 pub(crate) struct CudaHtj2kDecodePlan {
     #[cfg_attr(
         not(feature = "cuda-runtime"),
@@ -264,17 +267,22 @@ impl CudaHtj2kDecodePlan {
         output_dimensions: (u32, u32),
     ) -> Result<Self, Error> {
         let capacity_hint = cuda_plan_capacity_hint(plan)?;
-        let mut payload = Vec::with_capacity(capacity_hint.payload_bytes);
-        let mut code_blocks = Vec::with_capacity(capacity_hint.code_blocks);
-        let mut subbands = Vec::with_capacity(capacity_hint.subbands);
-        let mut idwt_steps = Vec::with_capacity(capacity_hint.idwt_steps);
-        let mut store_steps = Vec::with_capacity(capacity_hint.store_steps);
+        let mut host_budget = HostPhaseBudget::new("CUDA direct-plan owner graph");
+        let mut payload = host_budget.try_vec_with_capacity(capacity_hint.payload_bytes)?;
+        let mut code_blocks = host_budget.try_vec_with_capacity(capacity_hint.code_blocks)?;
+        let mut subbands = host_budget.try_vec_with_capacity(capacity_hint.subbands)?;
+        let mut idwt_steps = host_budget.try_vec_with_capacity(capacity_hint.idwt_steps)?;
+        let mut store_steps = host_budget.try_vec_with_capacity(capacity_hint.store_steps)?;
+        let retained_plan_capacity = host_budget.live_bytes();
         let mut transform = None;
         let mut saw_classic = false;
         let required_regions = if output_origin == (0, 0) && output_dimensions == plan.dimensions {
             None
         } else {
-            Some(required_regions_for_direct_plan(plan)?)
+            Some(required_regions_for_direct_plan(
+                plan,
+                retained_plan_capacity,
+            )?)
         };
 
         for step in &plan.steps {
@@ -319,7 +327,7 @@ impl CudaHtj2kDecodePlan {
                         })?;
                         if let Some(required_regions) = &required_regions {
                             if !required_regions
-                                .get(&subband.band_id)
+                                .get(subband.band_id)
                                 .is_some_and(|required| {
                                     required.intersects(
                                         job.output_x,
@@ -473,26 +481,35 @@ impl CudaHtj2kDecodePlan {
         &self.payload
     }
 
-    #[cfg_attr(
-        all(not(feature = "cuda-runtime"), not(test)),
-        expect(
-            dead_code,
-            reason = "shared payload assembly is used only by CUDA batch decode"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn append_payload_to_shared(
         &mut self,
         shared_payload: &mut Vec<u8>,
+    ) -> Result<(), Error> {
+        let mut host_budget = HostPhaseBudget::new("CUDA direct-plan shared payload");
+        host_budget.account_vec(shared_payload)?;
+        host_budget.account_vec(&self.payload)?;
+        self.append_payload_to_shared_with_budget(shared_payload, &mut host_budget)
+    }
+
+    #[cfg(any(feature = "cuda-runtime", test))]
+    pub(crate) fn append_payload_to_shared_with_budget(
+        &mut self,
+        shared_payload: &mut Vec<u8>,
+        host_budget: &mut HostPhaseBudget,
     ) -> Result<(), Error> {
         let base =
             u64::try_from(shared_payload.len()).map_err(|_| Error::UnsupportedCudaRequest {
                 reason: PLAN_PAYLOAD_TOO_LARGE,
             })?;
-        shared_payload
-            .try_reserve(self.payload.len())
-            .map_err(|_| Error::UnsupportedCudaRequest {
+        shared_payload.len().checked_add(self.payload.len()).ok_or(
+            Error::UnsupportedCudaRequest {
                 reason: PLAN_PAYLOAD_TOO_LARGE,
-            })?;
+            },
+        )?;
+        if !shared_payload.is_empty() {
+            host_budget.try_vec_reserve(shared_payload, self.payload.len())?;
+        }
         for block in &mut self.code_blocks {
             block.payload_offset =
                 block
@@ -502,7 +519,22 @@ impl CudaHtj2kDecodePlan {
                         reason: PLAN_PAYLOAD_TOO_LARGE,
                     })?;
         }
-        shared_payload.append(&mut self.payload);
+        if shared_payload.is_empty() {
+            *shared_payload = core::mem::take(&mut self.payload);
+        } else {
+            let mut payload = core::mem::take(&mut self.payload);
+            shared_payload.append(&mut payload);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn account_host_owners(&self, budget: &mut HostPhaseBudget) -> Result<(), Error> {
+        budget.account_vec(&self.payload)?;
+        budget.account_vec(&self.code_blocks)?;
+        budget.account_vec(&self.subbands)?;
+        budget.account_vec(&self.idwt_steps)?;
+        budget.account_vec(&self.store_steps)?;
         Ok(())
     }
 
@@ -614,75 +646,6 @@ fn convert_idwt_step(step: J2kDirectIdwtStep) -> CudaHtj2kIdwtStep {
         hh_band_id: step.hh_band_id,
         hh_rect: convert_rect(step.hh),
     }
-}
-
-fn required_regions_for_direct_plan(
-    plan: &J2kDirectGrayscalePlan,
-) -> Result<HashMap<CudaHtj2kBandId, RequiredBandRegion>, Error> {
-    let mut required = HashMap::<CudaHtj2kBandId, RequiredBandRegion>::new();
-    for step in &plan.steps {
-        let J2kDirectGrayscaleStep::Store(store) = step else {
-            continue;
-        };
-        let source_right =
-            store
-                .source_x
-                .checked_add(store.copy_width)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: PLAN_OUTPUT_RECT_MISMATCH,
-                })?;
-        let source_bottom =
-            store
-                .source_y
-                .checked_add(store.copy_height)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: PLAN_OUTPUT_RECT_MISMATCH,
-                })?;
-        if let Some(region) =
-            RequiredBandRegion::new(store.source_x, store.source_y, source_right, source_bottom)
-        {
-            add_required_region(&mut required, store.input_band_id, region);
-        }
-    }
-
-    for step in plan.steps.iter().rev() {
-        let J2kDirectGrayscaleStep::Idwt(idwt) = step else {
-            continue;
-        };
-        let Some(output_region) = required.get(&idwt.output_band_id).copied() else {
-            continue;
-        };
-        let expanded = output_region.expanded_within_band(
-            idwt_required_output_margin(idwt.transform),
-            idwt.rect.width(),
-            idwt.rect.height(),
-        );
-        add_idwt_input_required_regions(&mut required, idwt, expanded);
-    }
-    Ok(required)
-}
-
-fn add_required_region(
-    required: &mut HashMap<CudaHtj2kBandId, RequiredBandRegion>,
-    band_id: CudaHtj2kBandId,
-    region: RequiredBandRegion,
-) {
-    required
-        .entry(band_id)
-        .and_modify(|existing| *existing = existing.union(region))
-        .or_insert(region);
-}
-
-fn add_idwt_input_required_regions(
-    required: &mut HashMap<CudaHtj2kBandId, RequiredBandRegion>,
-    idwt: &J2kDirectIdwtStep,
-    output_region: RequiredBandRegion,
-) {
-    let windows = idwt_required_input_windows(idwt, output_region);
-    add_required_region(required, idwt.ll_band_id, windows.ll);
-    add_required_region(required, idwt.hl_band_id, windows.hl);
-    add_required_region(required, idwt.lh_band_id, windows.lh);
-    add_required_region(required, idwt.hh_band_id, windows.hh);
 }
 
 fn convert_store_step(
@@ -929,6 +892,8 @@ mod tests {
         assert_eq!(shared, vec![1, 2, 3, 4, 5]);
         assert!(first.payload().is_empty());
         assert!(second.payload().is_empty());
+        assert_eq!(first.payload.capacity(), 0);
+        assert_eq!(second.payload.capacity(), 0);
         assert_eq!(first.code_blocks()[0].payload_offset, 0);
         assert_eq!(second.code_blocks()[0].payload_offset, 2);
     }

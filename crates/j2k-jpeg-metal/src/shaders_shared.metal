@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 #include <metal_stdlib>
 using namespace metal;
 
@@ -252,6 +254,7 @@ struct JpegEntropyCheckpoint {
     int cb_prev_dc;
     int cr_prev_dc;
     uint reserved;
+    uint reserved_tail;
 };
 
 struct JpegHuffmanTable {

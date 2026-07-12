@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::sync::Arc;
-
 use j2k_core::{
     BackendRequest, CpuBackedImageDecode, DecodeOutcome, ImageCodec, ImageDecodeDevice, PixelFormat,
 };
@@ -9,15 +7,15 @@ use j2k_core::{
 use j2k_core::{Downscale, Rect};
 use j2k_jpeg::{
     adapter::{
-        build_fast420_packet, build_fast422_packet, build_fast444_packet, decoder_bytes,
-        JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1,
+        JpegCachedPlan, JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1,
+        JpegPlanCache,
     },
     Decoder as CpuDecoder, JpegView, ScratchPool as CpuScratchPool, Warning as CpuWarning,
 };
 
 use crate::{
     batch, decode_surface_from_decoder, routing, Error, JpegFastPackets, MetalBackendSession,
-    MetalDecodeRequest, ResidentPrivateJpegTile, Surface,
+    MetalDecodeRequest, ResidentPrivateJpegTile, SharedJpegFastPacket, SharedJpegInput, Surface,
 };
 #[cfg(target_os = "macos")]
 use crate::{compute, reject_cpu_staged_metal_upload};
@@ -25,39 +23,38 @@ use crate::{compute, reject_cpu_staged_metal_upload};
 /// JPEG decoder that can return host or Metal-resident surfaces.
 pub struct Decoder<'a> {
     pub(crate) inner: CpuDecoder<'a>,
-    pub(crate) source: Arc<[u8]>,
-    pub(crate) fast444_packet: Option<Arc<JpegFast444PacketV1>>,
-    pub(crate) fast422_packet: Option<Arc<JpegFast422PacketV1>>,
-    pub(crate) fast420_packet: Option<Arc<JpegFast420PacketV1>>,
+    pub(crate) source: SharedJpegInput,
+    pub(crate) fast_packet: Option<SharedJpegFastPacket>,
+    pub(crate) batch_shape: batch::BatchShape,
 }
 
 impl<'a> Decoder<'a> {
     /// Parse a JPEG byte slice into a decoder with any available Metal packets.
     pub fn new(input: &'a [u8]) -> Result<Self, Error> {
-        let inner = CpuDecoder::new(input)?;
+        let mut cache = JpegPlanCache::default();
+        let (plan, inner) = cache.resolve_with_decoder_and_external_live(input, 0)?;
+        let source = plan.input().clone();
+        let fast_packet = plan.fast_packet().cloned();
+        let batch_shape = batch::BatchShape::from_summary(plan.batch_summary(), plan.color_space());
         Ok(Self {
-            fast444_packet: build_fast444_packet(input).ok().map(Arc::new),
-            fast422_packet: build_fast422_packet(input).ok().map(Arc::new),
-            fast420_packet: build_fast420_packet(input).ok().map(Arc::new),
             inner,
-            source: Arc::<[u8]>::from(input),
+            source,
+            fast_packet,
+            batch_shape,
         })
     }
 
     /// Create a decoder from an already parsed JPEG view.
     pub fn from_view(view: JpegView<'a>) -> Result<Self, Error> {
-        let inner = CpuDecoder::from_view(view)?;
-        let source_bytes = decoder_bytes(&inner);
-        let source = Arc::<[u8]>::from(source_bytes);
-        let fast444_packet = build_fast444_packet(source_bytes).ok().map(Arc::new);
-        let fast422_packet = build_fast422_packet(source_bytes).ok().map(Arc::new);
-        let fast420_packet = build_fast420_packet(source_bytes).ok().map(Arc::new);
+        let (plan, inner) = JpegCachedPlan::build_from_view_with_decoder(view, 0)?;
+        let source = plan.input().clone();
+        let fast_packet = plan.fast_packet().cloned();
+        let batch_shape = batch::BatchShape::from_summary(plan.batch_summary(), plan.color_space());
         Ok(Self {
             inner,
             source,
-            fast444_packet,
-            fast422_packet,
-            fast420_packet,
+            fast_packet,
+            batch_shape,
         })
     }
 
@@ -68,25 +65,70 @@ impl<'a> Decoder<'a> {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn fast444_packet(&self) -> Option<&JpegFast444PacketV1> {
-        self.fast444_packet.as_deref()
+        self.fast_packet
+            .as_ref()
+            .and_then(SharedJpegFastPacket::fast444)
     }
 
     #[cfg(target_os = "macos")]
     pub(crate) fn fast422_packet(&self) -> Option<&JpegFast422PacketV1> {
-        self.fast422_packet.as_deref()
+        self.fast_packet
+            .as_ref()
+            .and_then(SharedJpegFastPacket::fast422)
     }
 
     #[cfg(target_os = "macos")]
     pub(crate) fn fast420_packet(&self) -> Option<&JpegFast420PacketV1> {
-        self.fast420_packet.as_deref()
+        self.fast_packet
+            .as_ref()
+            .and_then(SharedJpegFastPacket::fast420)
     }
 
     pub(crate) fn fast_packets(&self) -> JpegFastPackets<'_> {
-        JpegFastPackets::new(
-            self.fast444_packet.as_deref(),
-            self.fast422_packet.as_deref(),
-            self.fast420_packet.as_deref(),
-        )
+        JpegFastPackets::from_shared(self.fast_packet.as_ref())
+    }
+
+    pub(crate) fn retained_host_bytes(&self) -> Result<usize, Error> {
+        let decoder_bytes = j2k_jpeg::adapter::decoder_retained_allocation_bytes(&self.inner)?;
+        let input_bytes = self.source.retained_cache_bytes()?;
+        let packet_bytes = self
+            .fast_packet
+            .as_ref()
+            .map_or(Ok(0), SharedJpegFastPacket::retained_cache_bytes)?;
+        decoder_bytes
+            .checked_add(input_bytes)
+            .and_then(|bytes| bytes.checked_add(packet_bytes))
+            .ok_or_else(|| {
+                j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                    "JPEG Metal decoder retained host-byte count overflow",
+                )
+                .into()
+            })
+    }
+
+    pub(crate) fn fast_packet_for_backend(
+        &self,
+        backend: BackendRequest,
+    ) -> Option<SharedJpegFastPacket> {
+        if matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
+            self.fast_packet.clone()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn batch_shape_for_backend(
+        &self,
+        backend: BackendRequest,
+    ) -> batch::BatchShape {
+        #[cfg(target_os = "macos")]
+        {
+            if matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
+                return self.batch_shape;
+            }
+        }
+        let _ = backend;
+        batch::BatchShape::unknown()
     }
 
     #[cfg(all(target_os = "macos", test))]
@@ -101,13 +143,12 @@ impl<'a> Decoder<'a> {
     #[cfg(target_os = "macos")]
     pub(crate) fn rgb8_metal_request(&self, op: batch::BatchOp) -> batch::QueuedRequest {
         batch::QueuedRequest::new_shared(
-            Arc::clone(&self.source),
+            self.source.clone(),
             PixelFormat::Rgb8,
             BackendRequest::Metal,
             op,
-            self.fast444_packet.clone(),
-            self.fast422_packet.clone(),
-            self.fast420_packet.clone(),
+            self.fast_packet.clone(),
+            self.batch_shape,
         )
     }
 
@@ -122,6 +163,7 @@ impl<'a> Decoder<'a> {
         &mut self,
         request: MetalDecodeRequest,
     ) -> Result<Surface, Error> {
+        let external_live_bytes = self.retained_host_bytes()?;
         let mut pool = CpuScratchPool::new();
         decode_surface_from_decoder(
             &self.inner,
@@ -130,6 +172,7 @@ impl<'a> Decoder<'a> {
             request.backend,
             request.op.batch_op(),
             self.fast_packets(),
+            external_live_bytes,
         )
     }
 
@@ -141,6 +184,7 @@ impl<'a> Decoder<'a> {
     ) -> Result<Surface, Error> {
         #[cfg(target_os = "macos")]
         {
+            let external_live_bytes = self.retained_host_bytes()?;
             let mut pool = CpuScratchPool::new();
             let decision = crate::choose_route(
                 &self.inner,
@@ -158,9 +202,8 @@ impl<'a> Decoder<'a> {
                         &self.inner,
                         &mut pool,
                         fmt,
-                        self.fast444_packet.as_deref(),
-                        self.fast422_packet.as_deref(),
-                        self.fast420_packet.as_deref(),
+                        self.fast_packets(),
+                        external_live_bytes,
                         session,
                     )?)
                 }
@@ -193,6 +236,11 @@ impl<'a> Decoder<'a> {
         &mut self,
         session: &MetalBackendSession,
     ) -> Result<ResidentPrivateJpegTile, Error> {
+        crate::batch_allocation::BatchMetadataBudget::with_external_live(
+            "JPEG Metal private tile decoder owners",
+            self.retained_host_bytes()?,
+        )
+        .preflight(&[])?;
         let decision = crate::choose_route(
             &self.inner,
             BackendRequest::Metal,
@@ -206,9 +254,9 @@ impl<'a> Decoder<'a> {
         match decision {
             routing::RouteDecision::MetalKernel => compute::decode_private_rgb8_tile_with_session(
                 &self.inner,
-                self.fast444_packet.as_deref(),
-                self.fast422_packet.as_deref(),
-                self.fast420_packet.as_deref(),
+                self.fast444_packet(),
+                self.fast422_packet(),
+                self.fast420_packet(),
                 session,
             ),
             routing::RouteDecision::CpuHost

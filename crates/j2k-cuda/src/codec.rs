@@ -11,7 +11,10 @@ use j2k_core::{
     DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
 
-use crate::runtime::{validate_surface_request, wrap_surface};
+use crate::{
+    allocation::{try_collect_results_exact, try_vec_filled},
+    runtime::{validate_surface_request, wrap_surface},
+};
 use crate::{CudaSession, Error, J2kDecoder, Surface};
 
 /// Marker type implementing tile-batch CUDA surface decode traits.
@@ -176,7 +179,10 @@ fn allocate_cpu_surface(dims: (u32, u32), fmt: PixelFormat) -> Result<(Vec<u8>, 
         DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         "j2k CUDA CPU fallback surface",
     )?;
-    Ok((vec![0u8; len], stride))
+    Ok((
+        try_vec_filled(len, 0u8, "j2k CUDA CPU fallback surface")?,
+        stride,
+    ))
 }
 
 #[doc(hidden)]
@@ -287,12 +293,12 @@ impl TileBatchDecodeManyDevice for Codec {
             return Self::decode_tiles_to_cuda_batch(inputs, fmt, &mut session);
         }
 
-        inputs
-            .iter()
-            .map(|input| {
+        try_collect_results_exact(
+            inputs.iter().map(|input| {
                 Self::decode_tile_to_surface_impl(ctx, &mut session, pool, input, fmt, backend)
-            })
-            .collect()
+            }),
+            "j2k CUDA decode batch surfaces",
+        )
     }
 }
 

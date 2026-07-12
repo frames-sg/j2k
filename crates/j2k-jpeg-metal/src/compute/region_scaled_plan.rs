@@ -76,17 +76,27 @@ pub(super) fn fast_subsampled_packets_share_full_rgb_batch_shape<P: FastSubsampl
 }
 
 fn fast_full_rgb_batch_groups<P, K>(
+    requests: &[batch::QueuedRequest],
     packets: &[(&P, K)],
     restart_packets_supported: bool,
-) -> Option<Vec<Vec<usize>>>
+) -> Result<Option<Vec<Vec<usize>>>, Error>
 where
     P: FastSubsampledPacket,
     K: Copy + Eq,
 {
-    let mut groups = Vec::<Vec<usize>>::new();
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal full RGB batch grouping",
+        requests,
+    )?;
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<Vec<usize>>(packets.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<usize>(packets.len()),
+    ])?;
+    let mut groups: Vec<Vec<usize>> =
+        budget.try_vec(packets.len(), "JPEG Metal full RGB batch groups")?;
     'packet: for (index, (packet, key)) in packets.iter().copied().enumerate() {
         if packet.entropy_bytes().is_empty() || packet.entropy_checkpoints().is_empty() {
-            return None;
+            return Ok(None);
         }
 
         for group in &mut groups {
@@ -99,20 +109,41 @@ where
                     restart_packets_supported,
                 )
             {
+                crate::batch_allocation::try_reserve_for_push(
+                    group,
+                    "JPEG Metal full RGB grouped indices",
+                )?;
                 group.push(index);
                 continue 'packet;
             }
         }
-        groups.push(vec![index]);
+        let mut indices = budget.try_vec(1, "JPEG Metal full RGB grouped indices")?;
+        indices.push(index);
+        groups.push(indices);
     }
-    Some(groups)
+    let mut actual = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal full RGB batch grouping",
+        requests,
+    )?;
+    actual.account_capacity::<Vec<usize>>(groups.capacity())?;
+    for group in &groups {
+        actual.account_capacity::<usize>(group.capacity())?;
+    }
+    Ok(Some(groups))
 }
 
 pub(super) fn fast_subsampled_full_rgb_batch_groups<P: FastSubsampledPacket>(
+    requests: &[batch::QueuedRequest],
     packets: &[&P],
-) -> Option<Vec<Vec<usize>>> {
-    let keyed_packets: Vec<(&P, ())> = packets.iter().copied().map(|packet| (packet, ())).collect();
-    fast_full_rgb_batch_groups(&keyed_packets, P::FULL_RGB_BATCH_SUPPORTS_RESTART)
+) -> Result<Option<Vec<Vec<usize>>>, Error> {
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal full RGB keyed packet plan",
+        requests,
+    )?;
+    let mut keyed_packets =
+        budget.try_vec(packets.len(), "JPEG Metal full RGB keyed packet references")?;
+    keyed_packets.extend(packets.iter().copied().map(|packet| (packet, ())));
+    fast_full_rgb_batch_groups(requests, &keyed_packets, P::FULL_RGB_BATCH_SUPPORTS_RESTART)
 }
 
 pub(super) fn fast_subsampled_region_scaled_batch_plan<P: FastSubsampledPacket>(
@@ -197,7 +228,18 @@ pub(super) fn fast_subsampled_region_scaled_batch_groups<P: FastRegionScaledMeta
     requests: &[batch::QueuedRequest],
     packets: &[(&P, PlaneMode)],
 ) -> Result<Option<Vec<Vec<usize>>>, Error> {
-    let mut groups = Vec::<FastRegionScaledGroup>::new();
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal region-scaled batch grouping",
+        requests,
+    )?;
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<FastRegionScaledGroup>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<Vec<usize>>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<usize>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<Vec<usize>>(requests.len()),
+    ])?;
+    let mut groups: Vec<FastRegionScaledGroup> =
+        budget.try_vec(requests.len(), "JPEG Metal region-scaled batch groups")?;
     'packet: for (index, (request, (packet, mode))) in
         requests.iter().zip(packets.iter().copied()).enumerate()
     {
@@ -241,19 +283,36 @@ pub(super) fn fast_subsampled_region_scaled_batch_groups<P: FastRegionScaledMeta
                     first_segment_count,
                 )
             {
+                crate::batch_allocation::try_reserve_for_push(
+                    &mut group.indices,
+                    "JPEG Metal region-scaled grouped indices",
+                )?;
                 group.indices.push(index);
                 continue 'packet;
             }
         }
+        let mut indices = budget.try_vec(1, "JPEG Metal region-scaled grouped indices")?;
+        indices.push(index);
         groups.push(FastRegionScaledGroup {
-            indices: vec![index],
+            indices,
             scale,
             plan,
         });
     }
-    Ok(Some(
-        groups.into_iter().map(|group| group.indices).collect(),
-    ))
+    let mut output_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal region-scaled batch grouping",
+        requests,
+    )?;
+    output_budget.account_capacity::<FastRegionScaledGroup>(groups.capacity())?;
+    for group in &groups {
+        output_budget.account_capacity::<usize>(group.indices.capacity())?;
+    }
+    let mut indices = output_budget.try_vec(
+        groups.len(),
+        "JPEG Metal ordered region-scaled index groups",
+    )?;
+    indices.extend(groups.into_iter().map(|group| group.indices));
+    Ok(Some(indices))
 }
 
 pub(super) fn fast444_packets_share_region_scaled_batch_shape(
@@ -274,8 +333,23 @@ struct Fast444RegionScaledGroup {
 pub(super) fn fast444_region_scaled_batch_groups(
     requests: &[batch::QueuedRequest],
     packets: &[(&JpegFast444PacketV1, PlaneMode)],
-) -> Option<Vec<Vec<usize>>> {
-    let mut groups = Vec::<Fast444RegionScaledGroup>::new();
+) -> Result<Option<Vec<Vec<usize>>>, Error> {
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal fast444 region-scaled batch grouping",
+        requests,
+    )?;
+    budget.preflight(&[
+        crate::batch_allocation::BatchMetadataRequest::of::<Fast444RegionScaledGroup>(
+            requests.len(),
+        ),
+        crate::batch_allocation::BatchMetadataRequest::of::<Vec<usize>>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<usize>(requests.len()),
+        crate::batch_allocation::BatchMetadataRequest::of::<Vec<usize>>(requests.len()),
+    ])?;
+    let mut groups: Vec<Fast444RegionScaledGroup> = budget.try_vec(
+        requests.len(),
+        "JPEG Metal fast444 region-scaled batch groups",
+    )?;
     'packet: for (index, (request, (packet, mode))) in
         requests.iter().zip(packets.iter().copied()).enumerate()
     {
@@ -283,10 +357,10 @@ pub(super) fn fast444_region_scaled_batch_groups(
             || packet.entropy_bytes.is_empty()
             || packet.entropy_checkpoints.is_empty()
         {
-            return None;
+            return Ok(None);
         }
         let batch::BatchOp::RegionScaled { roi, scale } = request.op else {
-            return None;
+            return Ok(None);
         };
         let scaled = roi.scaled_covering(scale);
         let scaled_roi = j2k_jpeg::Rect {
@@ -295,7 +369,9 @@ pub(super) fn fast444_region_scaled_batch_groups(
             w: scaled.w,
             h: scaled.h,
         };
-        let params = fast444_scaled_region_params(packet, scale, scaled_roi)?;
+        let Some(params) = fast444_scaled_region_params(packet, scale, scaled_roi) else {
+            return Ok(None);
+        };
 
         for group in &mut groups {
             let (first, _) = packets[group.indices[0]];
@@ -308,16 +384,35 @@ pub(super) fn fast444_region_scaled_batch_groups(
                     first.entropy_checkpoints.len(),
                 )
             {
+                crate::batch_allocation::try_reserve_for_push(
+                    &mut group.indices,
+                    "JPEG Metal fast444 region-scaled grouped indices",
+                )?;
                 group.indices.push(index);
                 continue 'packet;
             }
         }
+        let mut indices = budget.try_vec(1, "JPEG Metal fast444 region-scaled grouped indices")?;
+        indices.push(index);
         groups.push(Fast444RegionScaledGroup {
-            indices: vec![index],
+            indices,
             mode,
             scale,
             params,
         });
     }
-    Some(groups.into_iter().map(|group| group.indices).collect())
+    let mut output_budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal fast444 region-scaled batch grouping",
+        requests,
+    )?;
+    output_budget.account_capacity::<Fast444RegionScaledGroup>(groups.capacity())?;
+    for group in &groups {
+        output_budget.account_capacity::<usize>(group.indices.capacity())?;
+    }
+    let mut indices = output_budget.try_vec(
+        groups.len(),
+        "JPEG Metal ordered fast444 region-scaled index groups",
+    )?;
+    indices.extend(groups.into_iter().map(|group| group.indices));
+    Ok(Some(indices))
 }

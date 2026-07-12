@@ -436,7 +436,10 @@ fn scaled_htj2k_decode_runs_through_metal_compute_path() {
         j2k_core::Downscale::Half,
     )
     .expect("metal scaled decode");
-    assert_eq!(surface.as_bytes(), host.as_slice());
+    assert_eq!(
+        surface.as_bytes().expect("surface byte access"),
+        host.as_slice()
+    );
 }
 
 fn test_ht_job(output_x: u32, output_y: u32, width: u32, height: u32) -> J2kHtCleanupBatchJob {
@@ -1108,7 +1111,7 @@ fn hybrid_rgb8_repeated_batch_decodes_once_and_blits_distinct_outputs() {
     .expect("hybrid repeated RGB8 batch");
 
     assert_eq!(surfaces.len(), 4);
-    let surface_bytes = surfaces[0].as_bytes().len();
+    let surface_bytes = surfaces[0].as_bytes().expect("surface byte access").len();
     let offsets = surfaces
         .iter()
         .map(|surface| {
@@ -1127,8 +1130,8 @@ fn hybrid_rgb8_repeated_batch_decodes_once_and_blits_distinct_outputs() {
     );
     for surface in &surfaces[1..] {
         assert_eq!(
-            surface.as_bytes(),
-            surfaces[0].as_bytes(),
+            surface.as_bytes().expect("surface byte access"),
+            surfaces[0].as_bytes().expect("surface byte access"),
             "repeated outputs should remain byte-identical"
         );
     }
@@ -1197,8 +1200,8 @@ fn hybrid_rgb8_distinct_batch_keeps_tier1_inputs_separate() {
 
     assert_eq!(surfaces.len(), 2);
     assert_ne!(
-        surfaces[0].as_bytes(),
-        surfaces[1].as_bytes(),
+        surfaces[0].as_bytes().expect("surface byte access"),
+        surfaces[1].as_bytes().expect("surface byte access"),
         "distinct RGB inputs must not reuse the first tile's decoded coefficients"
     );
     assert_eq!(
@@ -1251,8 +1254,8 @@ fn hybrid_rgb8_flattened_cpu_tier1_batch_uses_one_decode_queue() {
 
     assert_eq!(surfaces.len(), 2);
     assert_ne!(
-        surfaces[0].as_bytes(),
-        surfaces[1].as_bytes(),
+        surfaces[0].as_bytes().expect("surface byte access"),
+        surfaces[1].as_bytes().expect("surface byte access"),
         "flattened distinct RGB hybrid batches must keep each tile's coefficients separate"
     );
     assert!(

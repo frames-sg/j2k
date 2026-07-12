@@ -3,9 +3,26 @@
 use super::{should_use_pinned_pooled_i16_upload, DctBlockGrid, Dwt97BatchInput, Reversible53Dims};
 use crate::{
     bytes::i16_slice_as_bytes,
+    context::{ensure_context_ownership, CudaContext},
     error::CudaError,
     memory::{CudaBufferPool, CudaPooledDeviceBuffer},
 };
+
+pub(super) const TRANSCODE_POOL_CONTEXT_MISMATCH: &str =
+    "CUDA transcode buffer pool must belong to the launch context";
+
+pub(super) fn validate_transcode_pool_context_match(
+    matches_context: bool,
+) -> Result<(), CudaError> {
+    ensure_context_ownership([matches_context], TRANSCODE_POOL_CONTEXT_MISMATCH)
+}
+
+pub(super) fn validate_transcode_pool_context(
+    context: &CudaContext,
+    pool: &CudaBufferPool,
+) -> Result<(), CudaError> {
+    validate_transcode_pool_context_match(pool.is_owned_by(context))
+}
 
 fn transcode_runtime_ptx_available() -> bool {
     crate::build_flags::transcode_kernels_built()
@@ -108,3 +125,6 @@ pub(crate) fn validate_dct_block_grid(
 pub(crate) fn checked_i32(value: usize) -> Result<i32, CudaError> {
     i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
 }
+
+#[cfg(test)]
+mod tests;

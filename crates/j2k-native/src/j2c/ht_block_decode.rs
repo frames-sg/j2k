@@ -16,7 +16,9 @@ pub(crate) use benchmark::{
     decode_sigprop_benchmark_state, prepare_sigprop_benchmark_state, HtSigPropBenchmarkState,
 };
 pub(crate) use facade::{coefficient_to_i32, decode_with_stats};
-pub(crate) use pipeline::{PHASE_LIMIT_CLEANUP, PHASE_LIMIT_MAGREF, PHASE_LIMIT_SIGPROP};
+pub(crate) use pipeline::{
+    ht_decode_workspace_bytes, PHASE_LIMIT_CLEANUP, PHASE_LIMIT_MAGREF, PHASE_LIMIT_SIGPROP,
+};
 pub(crate) use segments::{
     collect_code_block_data, collect_code_block_segments, CombinedCodeBlockData,
     HtCodeBlockSegments,

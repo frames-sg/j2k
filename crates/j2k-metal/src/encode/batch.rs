@@ -99,21 +99,34 @@ fn encode_lossless_tiles_with_report(
             tiles, options, session, staging, config,
         )?;
         if let Some(outcomes) = batch {
-            return outcomes
-                .outcomes
-                .into_iter()
-                .map(host_outcome_from_buffer_outcome)
-                .collect();
+            let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+                "J2K Metal resident host encode outcomes",
+            );
+            let mut results = budget.try_vec(
+                outcomes.outcomes.len(),
+                "J2K Metal resident host encode outcome slots",
+            )?;
+            for outcome in outcomes.outcomes {
+                results.push(host_outcome_from_buffer_outcome(outcome)?);
+            }
+            return Ok(results);
         }
     }
 
     let mut accelerator = MetalEncodeStageAccelerator::for_host_output(options);
-    tiles
-        .iter()
-        .map(|&tile| {
-            encode_lossless_tile_with_report(tile, options, session, staging, &mut accelerator)
-        })
-        .collect()
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal host encode outcomes");
+    let mut results = budget.try_vec(tiles.len(), "J2K Metal host encode outcome slots")?;
+    for &tile in tiles {
+        results.push(encode_lossless_tile_with_report(
+            tile,
+            options,
+            session,
+            staging,
+            &mut accelerator,
+        )?);
+    }
+    Ok(results)
 }
 
 #[cfg(target_os = "macos")]
@@ -124,30 +137,39 @@ pub(super) fn encode_lossless_owned_tiles_with_report(
     staging: MetalEncodeInputStaging,
     config: MetalLosslessEncodeConfig,
 ) -> Result<Vec<MetalLosslessEncodeOutcome>, crate::Error> {
-    let borrowed = tiles
-        .iter()
-        .map(OwnedMetalLosslessEncodeTile::as_tile)
-        .collect::<Vec<_>>();
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal owned host encode batch");
+    let mut borrowed = budget.try_vec(tiles.len(), "J2K Metal borrowed owned encode tiles")?;
+    borrowed.extend(tiles.iter().map(OwnedMetalLosslessEncodeTile::as_tile));
     if should_try_resident_lossless_host_encode_for_tiles(&borrowed, options, staging) {
         let batch = try_encode_resident_lossless_tiles_to_metal_buffer_batch(
             &borrowed, options, session, staging, config,
         )?;
         if let Some(outcomes) = batch {
-            return outcomes
-                .outcomes
-                .into_iter()
-                .map(host_outcome_from_buffer_outcome)
-                .collect();
+            let mut results = budget.try_vec(
+                outcomes.outcomes.len(),
+                "J2K Metal owned resident host encode outcomes",
+            )?;
+            for outcome in outcomes.outcomes {
+                results.push(host_outcome_from_buffer_outcome(outcome)?);
+            }
+            return Ok(results);
         }
     }
 
     let mut accelerator = MetalEncodeStageAccelerator::for_host_output(options);
-    borrowed
-        .iter()
-        .map(|&tile| {
-            encode_lossless_tile_with_report(tile, options, session, staging, &mut accelerator)
-        })
-        .collect()
+    let mut results =
+        budget.try_vec(borrowed.len(), "J2K Metal owned host encode outcome slots")?;
+    for &tile in &borrowed {
+        results.push(encode_lossless_tile_with_report(
+            tile,
+            options,
+            session,
+            staging,
+            &mut accelerator,
+        )?);
+    }
+    Ok(results)
 }
 
 #[cfg(target_os = "macos")]
@@ -170,7 +192,9 @@ fn submit_lossless_tiles_to_metal_buffer_batch(
         }
     }
 
-    let mut owned = Vec::with_capacity(tiles.len());
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal deferred buffer encode batch");
+    let mut owned = budget.try_vec(tiles.len(), "J2K Metal owned deferred buffer encode tiles")?;
     for &tile in tiles {
         validate_metal_encode_tile(tile)?;
         if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous) {
@@ -196,7 +220,13 @@ pub(super) fn encode_owned_lossless_tiles_to_metal_buffer_fallback_batch(
     session: &crate::MetalBackendSession,
     staging: MetalEncodeInputStaging,
 ) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
-    let mut outcomes = Vec::with_capacity(tiles.len());
+    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "J2K Metal fallback buffer encode outcomes",
+    );
+    let mut outcomes = budget.try_vec(
+        tiles.len(),
+        "J2K Metal fallback buffer encode outcome slots",
+    )?;
     for tile in tiles {
         outcomes.push(encode_lossless_tile_to_metal_buffer_with_report(
             tile.as_tile(),
@@ -233,7 +263,9 @@ fn try_submit_resident_lossless_tiles_to_metal_buffer_batch(
     }
 
     let plan_started = profile_stages.then(Instant::now);
-    let mut planned = Vec::with_capacity(tiles.len());
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident encode batch plan");
+    let mut planned = budget.try_vec(tiles.len(), "J2K Metal resident encode planned tiles")?;
     for (index, &tile) in tiles.iter().enumerate() {
         let Some(item) = plan_resident_lossless_buffer_encode(index, tile, options, staging)?
         else {
@@ -272,16 +304,19 @@ fn try_submit_resident_lossless_tiles_to_metal_buffer_batch(
         stats.effective_inflight_tiles,
         &mut stats,
     )?;
-    let tiles = tiles
-        .iter()
-        .map(|&tile| OwnedMetalLosslessEncodeTile::from_tile(tile))
-        .collect();
+    let mut owned_tiles =
+        budget.try_vec(tiles.len(), "J2K Metal retained resident encode tiles")?;
+    owned_tiles.extend(
+        tiles
+            .iter()
+            .map(|&tile| OwnedMetalLosslessEncodeTile::from_tile(tile)),
+    );
     Ok(Some(SubmittedResidentLosslessMetalBufferEncodeBatch {
         options,
         session: session.clone(),
         stats,
         encode_started,
-        tiles,
+        tiles: owned_tiles,
         staging,
         kind,
     }))
@@ -315,7 +350,10 @@ fn submit_lossless_tiles(
     if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous)
         && should_try_resident_lossless_host_encode(options)
     {
-        let mut ready = Vec::with_capacity(tiles.len());
+        let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+            "J2K Metal ready resident encode batch",
+        );
+        let mut ready = budget.try_vec(tiles.len(), "J2K Metal ready resident encode results")?;
         let mut all_ready = true;
         for &tile in tiles {
             validate_metal_encode_tile(tile)?;
@@ -342,7 +380,9 @@ fn submit_lossless_tiles(
         }
     }
 
-    let mut owned = Vec::with_capacity(tiles.len());
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal deferred encode batch");
+    let mut owned = budget.try_vec(tiles.len(), "J2K Metal owned deferred encode tiles")?;
     for &tile in tiles {
         validate_metal_encode_tile(tile)?;
         if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous) {

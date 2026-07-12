@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! x86_64 SIMD integer ISLOW IDCT. Bit-exact with `super::scalar::idct_islow`.
+//! `x86_64` SIMD integer ISLOW IDCT. Bit-exact with `super::scalar::idct_islow`.
 //!
 //! Uses 128-bit SSE4.1 intrinsics (a subset of AVX2) so the arithmetic
 //! matches the NEON port 1:1 — same 4-lane i32 SIMD-ISLOW structure,
@@ -16,7 +16,17 @@ use core::arch::x86_64::{
 };
 use j2k_codec_math::jpeg::idct;
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "shared IDCT shift constants are small positive compile-time values"
+)]
 const CONST_BITS: i32 = idct::CONST_BITS as i32;
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "shared IDCT shift constants are small positive compile-time values"
+)]
 const PASS1_BITS: i32 = idct::PASS1_BITS as i32;
 
 const FIX_0_298631336: i32 = idct::FIX_0_298631336;

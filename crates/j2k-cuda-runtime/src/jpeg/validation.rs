@@ -1,86 +1,53 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(feature = "cuda-oxide-jpeg-decode")]
-use super::{
-    CudaJpeg420Params, CudaJpegChunkedEntropyPlan, CudaJpegEntropyChunkParams,
-    CudaJpegRgb8DecodePlan, CudaJpegRgb8Sampling, CudaJpegRgb8ValidatedPlan,
-};
+use super::{CudaJpegChunkedEntropyPlan, CudaJpegEntropyChunkParams, CudaJpegRgb8Sampling};
 #[cfg(feature = "cuda-oxide-jpeg-decode")]
-use crate::{error::CudaError, kernels::CudaKernel};
+use crate::kernels::{CudaKernel, CudaLaunchGeometry};
+use crate::{
+    context::{ensure_context_ownership, CudaContext},
+    error::CudaError,
+    memory::CudaDeviceBuffer,
+};
 
 #[cfg(feature = "cuda-oxide-jpeg-decode")]
-pub(crate) fn validate_jpeg_rgb8_plan(
-    plan: &CudaJpegRgb8DecodePlan<'_>,
-) -> Result<CudaJpegRgb8ValidatedPlan, CudaError> {
-    let (width, _) = plan.dimensions;
-    let out_stride = width.checked_mul(3).ok_or(CudaError::ImageTooLarge {
-        width,
-        height: plan.dimensions.1,
-        channels: 3,
-    })?;
-    validate_jpeg_rgb8_plan_with_pitch(plan, out_stride as usize)
+mod decode_plan;
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
+mod huffman;
+
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
+pub(crate) use decode_plan::{validate_jpeg_rgb8_plan, validate_jpeg_rgb8_plan_with_pitch};
+
+pub(super) const JPEG_CONTEXT_MISMATCH: &str =
+    "JPEG CUDA input and output buffers must belong to the launch context";
+
+pub(super) fn validate_jpeg_context_matches(
+    matches_context: impl IntoIterator<Item = bool>,
+) -> Result<(), CudaError> {
+    // An empty buffer set represents an API-level no-op and is valid.
+    ensure_context_ownership(matches_context, JPEG_CONTEXT_MISMATCH)
 }
 
-#[cfg(feature = "cuda-oxide-jpeg-decode")]
-pub(crate) fn validate_jpeg_rgb8_plan_with_pitch(
-    plan: &CudaJpegRgb8DecodePlan<'_>,
-    pitch_bytes: usize,
-) -> Result<CudaJpegRgb8ValidatedPlan, CudaError> {
-    let (width, height) = plan.dimensions;
-    if width == 0 || height == 0 {
-        return Err(CudaError::InvalidArgument {
-            message: "JPEG CUDA decode dimensions must be nonzero".to_string(),
-        });
-    }
-    if plan.entropy_checkpoints.is_empty() {
-        return Err(CudaError::InvalidArgument {
-            message: "JPEG CUDA decode requires at least one entropy checkpoint".to_string(),
-        });
-    }
-    let entropy_len =
-        u32::try_from(plan.entropy_bytes.len()).map_err(|_| CudaError::LengthTooLarge {
-            len: plan.entropy_bytes.len(),
-        })?;
-    let checkpoint_count =
-        u32::try_from(plan.entropy_checkpoints.len()).map_err(|_| CudaError::LengthTooLarge {
-            len: plan.entropy_checkpoints.len(),
-        })?;
-    let row_bytes = width.checked_mul(3).ok_or(CudaError::ImageTooLarge {
-        width,
-        height,
-        channels: 3,
-    })?;
-    if pitch_bytes < row_bytes as usize {
-        return Err(CudaError::InvalidArgument {
-            message: format!(
-                "JPEG CUDA decode pitch {pitch_bytes} is smaller than row byte count {row_bytes}"
-            ),
-        });
-    }
-    let out_stride =
-        u32::try_from(pitch_bytes).map_err(|_| CudaError::LengthTooLarge { len: pitch_bytes })?;
-    let output_len = pitch_bytes
-        .checked_mul(height as usize - 1)
-        .and_then(|prefix| prefix.checked_add(row_bytes as usize))
-        .ok_or(CudaError::ImageTooLarge {
-            width,
-            height,
-            channels: 3,
-        })?;
+pub(super) fn validate_jpeg_buffer_context<'a>(
+    context: &CudaContext,
+    buffers: impl IntoIterator<Item = &'a CudaDeviceBuffer>,
+) -> Result<(), CudaError> {
+    validate_jpeg_context_matches(
+        buffers
+            .into_iter()
+            .map(|buffer| buffer.is_owned_by(context)),
+    )
+}
 
-    Ok(CudaJpegRgb8ValidatedPlan {
-        params: CudaJpeg420Params {
-            width,
-            height,
-            mcus_per_row: plan.mcus_per_row,
-            mcu_rows: plan.mcu_rows,
-            entropy_len,
-            checkpoint_count,
-            out_stride,
-            reserved: 0,
-        },
-        output_len,
-    })
+impl CudaContext {
+    /// Validate that a caller-owned JPEG output buffer belongs to this context.
+    #[doc(hidden)]
+    pub fn validate_jpeg_output_buffer_context(
+        &self,
+        output: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        validate_jpeg_buffer_context(self, [output])
+    }
 }
 
 #[cfg(feature = "cuda-oxide-jpeg-decode")]
@@ -88,6 +55,7 @@ pub(crate) fn validate_jpeg_entropy_chunk_plan(
     plan: &CudaJpegChunkedEntropyPlan<'_>,
     subsequences: usize,
 ) -> Result<CudaJpegEntropyChunkParams, CudaError> {
+    huffman::validate_entropy_huffman_tables(plan)?;
     let entropy_len =
         u32::try_from(plan.entropy_bytes.len()).map_err(|_| CudaError::LengthTooLarge {
             len: plan.entropy_bytes.len(),
@@ -99,6 +67,16 @@ pub(crate) fn validate_jpeg_entropy_chunk_plan(
         })?;
     let subsequence_count =
         u32::try_from(subsequences).map_err(|_| CudaError::LengthTooLarge { len: subsequences })?;
+    if subsequence_count == 0 {
+        return Err(CudaError::InvalidArgument {
+            message: "JPEG CUDA entropy diagnostic requires at least one subsequence".to_string(),
+        });
+    }
+    CudaLaunchGeometry::new((subsequence_count.div_ceil(128), 1, 1), (128, 1, 1)).ok_or(
+        CudaError::InvalidArgument {
+            message: "JPEG entropy sync launch exceeds static CUDA limits".to_string(),
+        },
+    )?;
 
     Ok(CudaJpegEntropyChunkParams {
         entropy_len,
@@ -129,3 +107,6 @@ pub(crate) fn jpeg_rgb8_kernel(sampling: CudaJpegRgb8Sampling) -> (CudaKernel, &
         ),
     }
 }
+
+#[cfg(test)]
+mod tests;

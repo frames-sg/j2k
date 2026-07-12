@@ -1,53 +1,44 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    device_bands_to_preencoded_components, htj2k97_code_block_dim, htj2k97_quantize_params,
-    htj2k97_subband_delta, htj2k97_subband_total_bitplanes, to_u32, transcode_kernels_built,
-    validate_band_len, validate_htj2k97_codeblock_options, CudaContext, CudaDwt97BatchGeometry,
-    CudaDwt97BatchStageTimings, CudaDwt97BatchWithPoolRequest, CudaHtj2k97CodeblockBands,
+    device_bands_to_preencoded_components, htj2k97_quantize_params, htj2k97_subband_delta,
+    transcode_kernels_built, try_transcode_vec_for_product, validate_htj2k97_codeblock_options,
+    CudaContext, CudaDwt97BatchGeometry, CudaDwt97BatchStageTimings, CudaDwt97BatchWithPoolRequest,
     CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2k97QuantizeParams,
-    CudaHtj2kEncodeStageTimings, CudaTranscodeDwt97Bands, CudaTranscodeError,
-    CudaTranscodeReversible53Bands, CudaTranscodeSession, DctGridToDwt53Job, DctGridToDwt97Job,
-    DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job, Dwt53TwoDimensional,
-    Dwt97BatchStageTimings, Dwt97TwoDimensional, Htj2k97CodeBlockOptions, J2kSubBandType,
-    PreencodedHtj2k97Component, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
-    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband, ReversibleDwt53FirstLevel,
-    NOT_WIRED,
+    CudaHtj2kEncodeStageTimings, CudaTranscodeError, CudaTranscodeSession, DctGridToDwt53Job,
+    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job,
+    Dwt53TwoDimensional, Dwt97BatchStageTimings, Dwt97TwoDimensional, HostPhaseBudget,
+    Htj2k97CodeBlockOptions, J2kSubBandType, PreencodedHtj2k97Component,
+    PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel, NOT_WIRED,
 };
-
-/// Flatten `&[[i16; 64]]` into the contiguous `&[i16]` the runtime job expects.
-pub(super) fn flatten_blocks(blocks: &[[i16; 64]]) -> &[i16] {
-    blocks.as_flattened()
-}
-
-pub(super) fn bands_to_first_level(
-    bands: CudaTranscodeReversible53Bands,
-) -> ReversibleDwt53FirstLevel {
-    ReversibleDwt53FirstLevel {
-        ll: bands.ll,
-        hl: bands.hl,
-        lh: bands.lh,
-        hh: bands.hh,
-        low_width: bands.low_width,
-        low_height: bands.low_height,
-        high_width: bands.high_width,
-        high_height: bands.high_height,
-    }
-}
+mod components;
+use self::components::codeblock_bands_to_components;
+mod staging;
+pub(super) use self::staging::append_i16_blocks;
+use self::staging::{
+    account_dwt97_output, account_reversible_output, append_f64_blocks_to_f32,
+    bands_to_first_level, dwt97_bands_to_f64_with_live_host_bytes, dwt97_batch_bands_to_f64,
+    flatten_blocks, flatten_f64_blocks_to_f32, validate_block_grid,
+    validate_staging_and_readback_workspace,
+};
 
 pub(super) fn run_reversible(
     context: &CudaContext,
     job: DctGridToReversibleDwt53Job<'_>,
+    live_host_bytes: usize,
 ) -> Result<ReversibleDwt53FirstLevel, CudaTranscodeError> {
     let bands = context
-        .j2k_transcode_reversible_dwt53(
+        .j2k_transcode_reversible_dwt53_and_live_host_bytes(
             flatten_blocks(job.dequantized_blocks),
             job.block_cols,
             job.block_rows,
             job.width,
             job.height,
+            live_host_bytes,
         )
-        .map_err(|_| CudaTranscodeError::Kernel("CUDA reversible 5/3 transcode dispatch failed"))?;
+        .map_err(|error| {
+            CudaTranscodeError::runtime("CUDA reversible 5/3 transcode dispatch", error)
+        })?;
     Ok(bands_to_first_level(bands))
 }
 
@@ -59,7 +50,7 @@ pub(crate) fn dispatch_reversible_dwt53(
         return Err(CudaTranscodeError::CudaUnavailable);
     }
     let context = session.context()?;
-    run_reversible(&context, job)
+    run_reversible(&context, job, 0)
 }
 
 pub(crate) fn dispatch_reversible_dwt53_batch(
@@ -70,9 +61,13 @@ pub(crate) fn dispatch_reversible_dwt53_batch(
         return Err(CudaTranscodeError::CudaUnavailable);
     }
     let context = session.context()?;
-    let mut outputs = Vec::with_capacity(jobs.len());
+    let mut budget = HostPhaseBudget::new("CUDA reversible 5/3 batch outputs");
+    let mut outputs =
+        budget.try_vec_with_capacity(jobs.len(), "CUDA reversible 5/3 batch outputs")?;
     for job in jobs {
-        outputs.push(run_reversible(&context, *job)?);
+        let output = run_reversible(&context, *job, budget.live_bytes())?;
+        account_reversible_output(&mut budget, &output)?;
+        outputs.push(output);
     }
     Ok(outputs)
 }
@@ -81,35 +76,6 @@ pub(crate) fn dispatch_dwt53(
     _job: DctGridToDwt53Job<'_>,
 ) -> Result<Dwt53TwoDimensional<f64>, CudaTranscodeError> {
     Err(NOT_WIRED)
-}
-
-/// Append the job's `[[f64; 8]; 8]` natural-order DCT blocks to a contiguous
-/// `f32` coefficient buffer (row-major within block) the runtime kernels consume.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the CUDA kernel ABI intentionally consumes f32 DCT coefficients"
-)]
-pub(super) fn append_f64_blocks_to_f32(blocks: &[[[f64; 8]; 8]], out: &mut Vec<f32>) {
-    for block in blocks {
-        for row in block {
-            for &coeff in row {
-                out.push(coeff as f32);
-            }
-        }
-    }
-}
-
-/// Append natural-order dequantized i16 DCT blocks directly to the contiguous
-/// i16 coefficient buffer the runtime kernels consume.
-pub(super) fn append_i16_blocks(blocks: &[[i16; 64]], out: &mut Vec<i16>) {
-    out.extend_from_slice(flatten_blocks(blocks));
-}
-
-/// Flatten one job's DCT blocks into a fresh contiguous `f32` buffer.
-pub(super) fn flatten_f64_blocks_to_f32(blocks: &[[[f64; 8]; 8]]) -> Vec<f32> {
-    let mut out = Vec::with_capacity(blocks.len() * 64);
-    append_f64_blocks_to_f32(blocks, &mut out);
-    out
 }
 
 /// Map the runtime's local batch timings onto the transcode accelerator type.
@@ -230,35 +196,40 @@ pub(super) fn accumulate_batch_timings(
     total.readback_bytes = total.readback_bytes.saturating_add(next.readback_bytes);
 }
 
-pub(super) fn dwt97_bands_to_f64(bands: CudaTranscodeDwt97Bands) -> Dwt97TwoDimensional<f64> {
-    let widen = |band: Vec<f32>| -> Vec<f64> { band.into_iter().map(f64::from).collect() };
-    Dwt97TwoDimensional {
-        ll: widen(bands.ll),
-        hl: widen(bands.hl),
-        lh: widen(bands.lh),
-        hh: widen(bands.hh),
-        low_width: bands.low_width,
-        low_height: bands.low_height,
-        high_width: bands.high_width,
-        high_height: bands.high_height,
-    }
-}
-
 pub(super) fn run_dwt97(
     context: &CudaContext,
     job: DctGridToDwt97Job<'_>,
+    live_host_bytes: usize,
 ) -> Result<Dwt97TwoDimensional<f64>, CudaTranscodeError> {
-    let coeffs = flatten_f64_blocks_to_f32(job.blocks);
+    validate_block_grid(
+        job.blocks.len(),
+        job.block_cols,
+        job.block_rows,
+        "CUDA 9/7 DCT block slice does not match its grid",
+    )?;
+    validate_staging_and_readback_workspace(
+        1,
+        job.block_cols,
+        job.block_rows,
+        job.width,
+        job.height,
+        "CUDA 9/7 single-dispatch host workspace",
+    )?;
+    let mut staging_budget =
+        HostPhaseBudget::with_live_bytes("CUDA 9/7 single staging", live_host_bytes)?;
+    let coeffs = flatten_f64_blocks_to_f32(job.blocks, &mut staging_budget)?;
     let bands = context
-        .j2k_transcode_dwt97(
+        .j2k_transcode_dwt97_and_live_host_bytes(
             &coeffs,
             job.block_cols,
             job.block_rows,
             job.width,
             job.height,
+            staging_budget.live_bytes(),
         )
-        .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 transcode dispatch failed"))?;
-    Ok(dwt97_bands_to_f64(bands))
+        .map_err(|error| CudaTranscodeError::runtime("CUDA 9/7 transcode dispatch", error))?;
+    drop(coeffs);
+    dwt97_bands_to_f64_with_live_host_bytes(bands, live_host_bytes)
 }
 
 pub(crate) fn dispatch_dwt97(
@@ -269,7 +240,7 @@ pub(crate) fn dispatch_dwt97(
         return Err(CudaTranscodeError::CudaUnavailable);
     }
     let context = session.context()?;
-    run_dwt97(&context, job)
+    run_dwt97(&context, job, 0)
 }
 
 pub(crate) fn dispatch_dwt97_batch(
@@ -294,159 +265,61 @@ pub(crate) fn dispatch_dwt97_batch(
             && job.height == first.height
     });
     if !uniform {
-        let mut outputs = Vec::with_capacity(jobs.len());
+        let mut budget = HostPhaseBudget::new("nonuniform CUDA 9/7 batch outputs");
+        let mut outputs =
+            budget.try_vec_with_capacity(jobs.len(), "nonuniform CUDA 9/7 batch outputs")?;
         for job in jobs {
-            outputs.push(run_dwt97(&context, *job)?);
+            let output = run_dwt97(&context, *job, budget.live_bytes())?;
+            account_dwt97_output(&mut budget, &output)?;
+            outputs.push(output);
         }
         return Ok((outputs, Dwt97BatchStageTimings::default()));
     }
 
-    let mut blocks = Vec::with_capacity(jobs.len() * first.block_cols * first.block_rows * 64);
+    for job in jobs {
+        validate_block_grid(
+            job.blocks.len(),
+            job.block_cols,
+            job.block_rows,
+            "CUDA 9/7 batch DCT block slice does not match its grid",
+        )?;
+    }
+    validate_staging_and_readback_workspace(
+        jobs.len(),
+        first.block_cols,
+        first.block_rows,
+        first.width,
+        first.height,
+        "CUDA 9/7 batch-dispatch host workspace",
+    )?;
+    let mut staging_budget = HostPhaseBudget::new("CUDA 9/7 batch staging");
+    let mut blocks = staging_budget.try_vec_for_product::<f32>(
+        &[jobs.len(), first.block_cols, first.block_rows, 64],
+        "CUDA 9/7 batch f32 DCT staging",
+    )?;
     for job in jobs {
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
     let pool = session.buffer_pool(&context);
     let (bands, timings) = context
-        .j2k_transcode_dwt97_batch_with_pool(CudaDwt97BatchWithPoolRequest {
-            blocks: &blocks,
-            geometry: CudaDwt97BatchGeometry {
-                item_count: jobs.len(),
-                block_cols: first.block_cols,
-                block_rows: first.block_rows,
-                width: first.width,
-                height: first.height,
+        .j2k_transcode_dwt97_batch_with_pool_and_live_host_bytes(
+            CudaDwt97BatchWithPoolRequest {
+                blocks: &blocks,
+                geometry: CudaDwt97BatchGeometry {
+                    item_count: jobs.len(),
+                    block_cols: first.block_cols,
+                    block_rows: first.block_rows,
+                    width: first.width,
+                    height: first.height,
+                },
+                pool: &pool,
             },
-            pool: &pool,
-        })
-        .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 batch transcode dispatch failed"))?;
-    let outputs = bands.into_iter().map(dwt97_bands_to_f64).collect();
+            staging_budget.live_bytes(),
+        )
+        .map_err(|error| CudaTranscodeError::runtime("CUDA 9/7 batch transcode dispatch", error))?;
+    drop(blocks);
+    let outputs = dwt97_batch_bands_to_f64(bands)?;
     Ok((outputs, map_batch_timings(timings)))
-}
-
-/// Reslice one subband's code-block-major `i32` buffer (one item) into a
-/// prequantized HTJ2K subband, mirroring the shared code-block oracle layout
-/// (outer code-block row, inner code-block column, each block row-major).
-pub(super) fn subband_from_codeblock_slice(
-    data: &[i32],
-    width: usize,
-    height: usize,
-    sub_band_type: J2kSubBandType,
-    options: Htj2k97CodeBlockOptions,
-) -> Result<PrequantizedHtj2k97Subband, CudaTranscodeError> {
-    let cb_width = htj2k97_code_block_dim(options.code_block_width_exp)?;
-    let cb_height = htj2k97_code_block_dim(options.code_block_height_exp)?;
-    let num_cbs_x = width.div_ceil(cb_width);
-    let num_cbs_y = height.div_ceil(cb_height);
-    let mut code_blocks = Vec::with_capacity(num_cbs_x * num_cbs_y);
-    let mut offset = 0usize;
-    for cby in 0..num_cbs_y {
-        for cbx in 0..num_cbs_x {
-            let block_width = (width - cbx * cb_width).min(cb_width);
-            let block_height = (height - cby * cb_height).min(cb_height);
-            let len = block_width * block_height;
-            let end = offset.checked_add(len).ok_or(CudaTranscodeError::Kernel(
-                "CUDA 9/7 code-block band length overflow",
-            ))?;
-            if end > data.len() {
-                return Err(CudaTranscodeError::Kernel(
-                    "CUDA 9/7 code-block band output is shorter than expected",
-                ));
-            }
-            code_blocks.push(PrequantizedHtj2k97CodeBlock {
-                coefficients: data[offset..end].to_vec(),
-                width: to_u32(block_width)?,
-                height: to_u32(block_height)?,
-            });
-            offset = end;
-        }
-    }
-    if offset != data.len() {
-        return Err(CudaTranscodeError::Kernel(
-            "CUDA 9/7 code-block band output has trailing data",
-        ));
-    }
-    Ok(PrequantizedHtj2k97Subband {
-        sub_band_type,
-        num_cbs_x: to_u32(num_cbs_x)?,
-        num_cbs_y: to_u32(num_cbs_y)?,
-        total_bitplanes: htj2k97_subband_total_bitplanes(options, sub_band_type),
-        code_blocks,
-    })
-}
-
-/// Reslice the per-item code-block bands into prequantized HTJ2K components,
-/// one per job (resolution nesting `[[LL], [HL, LH, HH]]`).
-#[expect(
-    clippy::similar_names,
-    reason = "LL, HL, LH, and HH are standard wavelet subband names"
-)]
-pub(super) fn codeblock_bands_to_components(
-    bands: &CudaHtj2k97CodeblockBands,
-    jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
-    options: Htj2k97CodeBlockOptions,
-) -> Result<Vec<PrequantizedHtj2k97Component>, CudaTranscodeError> {
-    if bands.item_count != jobs.len() {
-        return Err(CudaTranscodeError::Kernel(
-            "CUDA 9/7 code-block band item count mismatch",
-        ));
-    }
-    let ll_size = bands.low_width * bands.low_height;
-    let hl_size = bands.high_width * bands.low_height;
-    let lh_size = bands.low_width * bands.high_height;
-    let hh_size = bands.high_width * bands.high_height;
-    validate_band_len(&bands.ll, bands.item_count, ll_size)?;
-    validate_band_len(&bands.hl, bands.item_count, hl_size)?;
-    validate_band_len(&bands.lh, bands.item_count, lh_size)?;
-    validate_band_len(&bands.hh, bands.item_count, hh_size)?;
-    jobs.iter()
-        .enumerate()
-        .map(|(item, job)| {
-            let ll = &bands.ll[item * ll_size..(item + 1) * ll_size];
-            let hl = &bands.hl[item * hl_size..(item + 1) * hl_size];
-            let lh = &bands.lh[item * lh_size..(item + 1) * lh_size];
-            let hh = &bands.hh[item * hh_size..(item + 1) * hh_size];
-            Ok(PrequantizedHtj2k97Component {
-                x_rsiz: job.x_rsiz,
-                y_rsiz: job.y_rsiz,
-                resolutions: vec![
-                    PrequantizedHtj2k97Resolution {
-                        subbands: vec![subband_from_codeblock_slice(
-                            ll,
-                            bands.low_width,
-                            bands.low_height,
-                            J2kSubBandType::LowLow,
-                            options,
-                        )?],
-                    },
-                    PrequantizedHtj2k97Resolution {
-                        subbands: vec![
-                            subband_from_codeblock_slice(
-                                hl,
-                                bands.high_width,
-                                bands.low_height,
-                                J2kSubBandType::HighLow,
-                                options,
-                            )?,
-                            subband_from_codeblock_slice(
-                                lh,
-                                bands.low_width,
-                                bands.high_height,
-                                J2kSubBandType::LowHigh,
-                                options,
-                            )?,
-                            subband_from_codeblock_slice(
-                                hh,
-                                bands.high_width,
-                                bands.high_height,
-                                J2kSubBandType::HighHigh,
-                                options,
-                            )?,
-                        ],
-                    },
-                ],
-            })
-        })
-        .collect()
 }
 
 #[expect(
@@ -494,25 +367,51 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
         cb_height,
     };
 
-    let mut blocks = Vec::with_capacity(jobs.len() * first.block_cols * first.block_rows * 64);
+    for job in jobs {
+        validate_block_grid(
+            job.blocks.len(),
+            job.block_cols,
+            job.block_rows,
+            "CUDA 9/7 code-block DCT slice does not match its grid",
+        )?;
+    }
+    validate_staging_and_readback_workspace(
+        jobs.len(),
+        first.block_cols,
+        first.block_rows,
+        first.width,
+        first.height,
+        "CUDA 9/7 code-block host workspace",
+    )?;
+    let mut staging_budget = HostPhaseBudget::new("CUDA 9/7 code-block batch staging");
+    let mut blocks = staging_budget.try_vec_for_product::<f32>(
+        &[jobs.len(), first.block_cols, first.block_rows, 64],
+        "CUDA 9/7 code-block batch f32 DCT staging",
+    )?;
     for job in jobs {
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
     let pool = session.buffer_pool(&context);
     let (codeblock_bands, timings) = context
-        .j2k_transcode_htj2k97_codeblock_batch_with_pool(CudaHtj2k97CodeblockBatchWithPoolRequest {
-            blocks: &blocks,
-            geometry: CudaDwt97BatchGeometry {
-                item_count: jobs.len(),
-                block_cols: first.block_cols,
-                block_rows: first.block_rows,
-                width: first.width,
-                height: first.height,
+        .j2k_transcode_htj2k97_codeblock_batch_with_pool_and_live_host_bytes(
+            CudaHtj2k97CodeblockBatchWithPoolRequest {
+                blocks: &blocks,
+                geometry: CudaDwt97BatchGeometry {
+                    item_count: jobs.len(),
+                    block_cols: first.block_cols,
+                    block_rows: first.block_rows,
+                    width: first.width,
+                    height: first.height,
+                },
+                params,
+                pool: &pool,
             },
-            params,
-            pool: &pool,
-        })
-        .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 code-block batch dispatch failed"))?;
+            staging_budget.live_bytes(),
+        )
+        .map_err(|error| {
+            CudaTranscodeError::runtime("CUDA 9/7 code-block batch dispatch", error)
+        })?;
+    drop(blocks);
 
     let components = codeblock_bands_to_components(&codeblock_bands, jobs, options)?;
     Ok((components, map_batch_timings(timings)))
@@ -546,7 +445,18 @@ pub(crate) fn dispatch_htj2k97_preencoded_batch(
     }
 
     let params = htj2k97_quantize_params(options)?;
-    let mut blocks = Vec::with_capacity(jobs.len() * first.block_cols * first.block_rows * 64);
+    for job in jobs {
+        validate_block_grid(
+            job.blocks.len(),
+            job.block_cols,
+            job.block_rows,
+            "CUDA 9/7 resident DCT slice does not match its grid",
+        )?;
+    }
+    let mut blocks = try_transcode_vec_for_product::<f32>(
+        &[jobs.len(), first.block_cols, first.block_rows, 64],
+        "CUDA 9/7 resident batch f32 DCT staging",
+    )?;
     for job in jobs {
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
@@ -566,7 +476,8 @@ pub(crate) fn dispatch_htj2k97_preencoded_batch(
                 pool: &pool,
             },
         )
-        .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 resident batch dispatch failed"))?;
+        .map_err(|error| CudaTranscodeError::runtime("CUDA 9/7 resident batch dispatch", error))?;
+    drop(blocks);
     let mut timings = map_batch_timings(cuda_timings);
 
     let resources = session.encode_resources(&context)?;

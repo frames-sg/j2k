@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{BackendRequest, Rect};
-use j2k_jpeg::{
-    adapter::{
-        JpegEntropyCheckpointV1, JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1,
-    },
-    Decoder as CpuDecoder,
+use j2k_jpeg::adapter::{
+    JpegEntropyCheckpointV1, JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1,
 };
-use metal::{Buffer, MTLResourceOptions};
+use metal::Buffer;
 
-use super::{entropy_checkpoints_buffer, fast444_plane_mode, pixel_format_to_out_format};
+use super::{entropy_checkpoints_buffer, new_shared_buffer_with_data, pixel_format_to_out_format};
 use super::{MetalRuntime, PlaneMode};
 use crate::{batch, Error, Surface};
 
@@ -23,7 +20,6 @@ pub(super) enum BatchedFastPacket<'a> {
 }
 
 pub(super) struct BatchedDecodeItem {
-    pub(super) request_index: usize,
     pub(super) surface: Surface,
     pub(super) status_buffer: Buffer,
     pub(super) decode_threads: u32,
@@ -67,13 +63,13 @@ impl BatchDeviceBufferCache {
             ));
         }
 
-        let entropy_buffer = runtime.device.new_buffer_with_data(
-            entropy_bytes.as_ptr().cast(),
-            entropy_bytes.len() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let entropy_buffer = new_shared_buffer_with_data(&runtime.device, entropy_bytes)?;
         let entropy_checkpoints_buffer =
             entropy_checkpoints_buffer(&runtime.device, entropy_checkpoints)?;
+        crate::batch_allocation::try_reserve_for_push(
+            &mut self.packet_buffers,
+            "JPEG Metal batch device-buffer cache",
+        )?;
         self.packet_buffers.push(SharedPacketDeviceBuffers {
             entropy_ptr,
             entropy_len,
@@ -122,7 +118,11 @@ pub(super) fn batched_fast_packets(
         return Ok(None);
     }
 
-    let mut packets = Vec::with_capacity(requests.len());
+    let mut budget = crate::plan_owner_ledger::batch_execution_budget(
+        "JPEG Metal fast packet batch plan",
+        requests,
+    )?;
+    let mut packets = budget.try_vec(requests.len(), "JPEG Metal fast packet plan items")?;
     for request in requests {
         let batchable_op = match request.op {
             batch::BatchOp::Full
@@ -151,7 +151,11 @@ pub(super) fn batched_fast_packets(
             return Ok(None);
         }
 
-        if let Some(packet) = request.fast420_packet.as_deref() {
+        if let Some(packet) = request
+            .fast_packet
+            .as_ref()
+            .and_then(crate::SharedJpegFastPacket::fast420)
+        {
             if !request_allows_batched_packet(
                 requests,
                 request,
@@ -164,7 +168,11 @@ pub(super) fn batched_fast_packets(
             continue;
         }
 
-        if let Some(packet) = request.fast422_packet.as_deref() {
+        if let Some(packet) = request
+            .fast_packet
+            .as_ref()
+            .and_then(crate::SharedJpegFastPacket::fast422)
+        {
             if !request_allows_batched_packet(
                 requests,
                 request,
@@ -177,7 +185,11 @@ pub(super) fn batched_fast_packets(
             continue;
         }
 
-        if let Some(packet) = request.fast444_packet.as_deref() {
+        if let Some(packet) = request
+            .fast_packet
+            .as_ref()
+            .and_then(crate::SharedJpegFastPacket::fast444)
+        {
             if !request_allows_batched_packet(
                 requests,
                 request,
@@ -186,11 +198,17 @@ pub(super) fn batched_fast_packets(
             ) {
                 return Ok(None);
             }
-            let decoder = CpuDecoder::new(request.input.as_ref())?;
-            packets.push(BatchedFastPacket::Fast444(
-                packet,
-                fast444_plane_mode(&decoder),
-            ));
+            let mode = match request.plane_mode_hint() {
+                batch::PlaneModeHint::YCbCr => PlaneMode::YCbCr,
+                batch::PlaneModeHint::Rgb => PlaneMode::Rgb,
+                batch::PlaneModeHint::Unknown => {
+                    return Err(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                        "fast444 queued plan is missing its inspected plane mode",
+                    )
+                    .into());
+                }
+            };
+            packets.push(BatchedFastPacket::Fast444(packet, mode));
             continue;
         }
 

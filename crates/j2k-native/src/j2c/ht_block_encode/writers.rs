@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
+
+use crate::j2c::encode::allocation::try_untracked_vec_filled;
+use crate::EncodeResult;
 
 const MEL_EXP: [usize; 13] = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 5];
-const MEL_SIZE: usize = 192;
-const VLC_SIZE: usize = 3072 - MEL_SIZE;
-const MS_SIZE: usize = (16384usize * 16).div_ceil(15);
+pub(super) const MEL_SIZE: usize = 192;
+pub(super) const VLC_SIZE: usize = 3072 - MEL_SIZE;
+pub(super) const MS_SIZE: usize = (16384usize * 16).div_ceil(15);
 
 pub(super) struct MelEncoder {
     pub(super) buffer: Vec<u8>,
@@ -18,16 +21,21 @@ pub(super) struct MelEncoder {
 }
 
 impl MelEncoder {
+    #[cfg(test)]
     pub(super) fn new() -> Self {
-        Self {
-            buffer: vec![0; MEL_SIZE],
+        Self::try_new().expect("test HTJ2K MEL allocation")
+    }
+
+    pub(super) fn try_new() -> EncodeResult<Self> {
+        Ok(Self {
+            buffer: try_untracked_vec_filled(MEL_SIZE, 0_u8, "HTJ2K MEL reservoir")?,
             pos: 0,
             remaining_bits: 8,
             tmp: 0,
             run: 0,
             k: 0,
             threshold: 1,
-        }
+        })
     }
 
     pub(super) fn emit_bit(&mut self, bit: bool) -> Result<(), &'static str> {
@@ -82,18 +90,23 @@ pub(super) struct VlcEncoder {
 }
 
 impl VlcEncoder {
+    #[cfg(test)]
     pub(super) fn new() -> Self {
-        let mut buffer = vec![0; VLC_SIZE];
+        Self::try_new().expect("test HTJ2K VLC allocation")
+    }
+
+    pub(super) fn try_new() -> EncodeResult<Self> {
+        let mut buffer = try_untracked_vec_filled(VLC_SIZE, 0_u8, "HTJ2K VLC reservoir")?;
         let last = buffer.len() - 1;
         buffer[last] = 0xFF;
 
-        Self {
+        Ok(Self {
             buffer,
             pos: 1,
             used_bits: 4,
             tmp: 0x0F,
             last_greater_than_8f: true,
-        }
+        })
     }
 
     #[expect(
@@ -151,14 +164,19 @@ pub(super) struct MagSgnEncoder {
 }
 
 impl MagSgnEncoder {
+    #[cfg(test)]
     pub(super) fn new() -> Self {
-        Self {
-            buffer: vec![0; MS_SIZE],
+        Self::try_new().expect("test HTJ2K magnitude/sign allocation")
+    }
+
+    pub(super) fn try_new() -> EncodeResult<Self> {
+        Ok(Self {
+            buffer: try_untracked_vec_filled(MS_SIZE, 0_u8, "HTJ2K magnitude/sign reservoir")?,
             pos: 0,
             max_bits: 8,
             used_bits: 0,
             tmp: 0,
-        }
+        })
     }
 
     #[expect(
@@ -280,53 +298,4 @@ pub(super) fn terminate_mel_vlc(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{terminate_mel_vlc, MagSgnEncoder, MelEncoder, VlcEncoder};
-
-    #[test]
-    fn writer_state_and_termination_match_pre_split_goldens() {
-        let mut mel = MelEncoder::new();
-        for bit in [
-            false, false, true, false, true, true, false, false, false, true,
-        ] {
-            mel.encode(bit).expect("MEL bit");
-        }
-        let mut vlc = VlcEncoder::new();
-        vlc.encode(0b10_1101, 6).expect("VLC bits");
-        vlc.encode(0x1ff, 9).expect("VLC bits");
-        terminate_mel_vlc(&mut mel, &mut vlc).expect("terminate MEL/VLC");
-
-        assert_eq!(
-            (
-                mel.pos,
-                mel.remaining_bits,
-                mel.tmp,
-                mel.run,
-                mel.k,
-                mel.threshold,
-            ),
-            (2, 5, 0x80, 0, 2, 1)
-        );
-        assert_eq!(&mel.buffer[..mel.pos], &[0xD3, 0x87]);
-        assert_eq!(
-            (vlc.pos, vlc.used_bits, vlc.tmp, vlc.last_greater_than_8f),
-            (3, 3, 0x07, true)
-        );
-        assert_eq!(
-            &vlc.buffer[vlc.buffer.len() - vlc.pos..],
-            &[0xFE, 0xDF, 0xFF]
-        );
-
-        let mut magsgn = MagSgnEncoder::new();
-        magsgn.encode(0xff, 8).expect("MagSgn bits");
-        magsgn.encode(0x55, 7).expect("MagSgn bits");
-        magsgn.encode(0x3, 2).expect("MagSgn bits");
-        magsgn.terminate().expect("terminate MagSgn");
-
-        assert_eq!(
-            (magsgn.pos, magsgn.max_bits, magsgn.used_bits, magsgn.tmp),
-            (2, 8, 8, 0xFF)
-        );
-        assert_eq!(&magsgn.buffer[..magsgn.pos], &[0xFF, 0x55]);
-    }
-}
+mod tests;

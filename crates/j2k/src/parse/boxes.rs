@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{codestream::parse_codestream, ParsedImageInfo};
+use super::{
+    allocation::{capacity_bytes, checked_add_bytes, ParseAllocationBudget},
+    codestream::parse_codestream,
+    ParsedImageInfo,
+};
 use crate::{
     J2kChannelAssociation, J2kChannelDefinition, J2kChannelType, J2kColorSpec, J2kComponentInfo,
     J2kComponentMapping, J2kComponentMappingType, J2kError, J2kFileMetadata, J2kPaletteColumn,
@@ -41,8 +45,8 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
     let container = inspect_jp2_container(input).map_err(map_native_jp2_error)?;
     let payload_kind = payload_kind_from_native(container.file_kind);
     let image_header = image_header_from_native(container.image_header);
-    let file_metadata = file_metadata_from_native(&container.metadata);
-    let parsed = parse_codestream(container.codestream)?;
+    let (file_metadata, metadata_bytes) = file_metadata_from_native(container.metadata)?;
+    let parsed = parse_codestream(container.codestream, metadata_bytes)?;
 
     validate_ihdr_matches_codestream(image_header, &parsed.siz)?;
     validate_component_metadata(image_header, &file_metadata, &parsed.siz)?;
@@ -60,11 +64,10 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
     }
 
     let colorspace = primary_colorspace_from_file_metadata(&file_metadata);
-    let info = parsed.clone().into_info(colorspace);
-    let components = parsed.siz.component_info.clone();
+    let (info, transfer_syntax, components) = parsed.into_parts(colorspace);
     Ok(ParsedImageInfo {
         info,
-        transfer_syntax: parsed.transfer_syntax(),
+        transfer_syntax,
         payload_kind,
         components,
         file_metadata: Some(file_metadata),
@@ -97,36 +100,39 @@ fn image_header_from_native(header: Jp2ImageHeaderMetadata) -> Jp2ImageHeader {
     }
 }
 
-fn file_metadata_from_native(metadata: &Jp2FileMetadata) -> J2kFileMetadata {
-    J2kFileMetadata {
-        bits_per_component: metadata
-            .bits_per_component
-            .iter()
-            .copied()
-            .map(component_from_native)
-            .collect(),
-        color_specs: metadata
-            .color_specs
-            .iter()
-            .map(color_spec_from_native)
-            .collect(),
-        palette: metadata.palette.as_ref().map(palette_from_native),
-        component_mappings: metadata
-            .component_mappings
-            .iter()
-            .copied()
-            .map(component_mapping_from_native)
-            .collect(),
-        channel_definitions: metadata
-            .channel_definitions
-            .iter()
-            .copied()
-            .map(channel_definition_from_native)
-            .collect(),
-        has_palette: metadata.has_palette,
-        has_component_mapping: metadata.has_component_mapping,
-        has_channel_definition: metadata.has_channel_definition,
+fn file_metadata_from_native(
+    metadata: Jp2FileMetadata,
+) -> Result<(J2kFileMetadata, usize), J2kError> {
+    let mut budget =
+        ParseAllocationBudget::from_live_bytes(native_metadata_allocated_bytes(&metadata)?)?;
+    let Jp2FileMetadata {
+        bits_per_component,
+        color_specs,
+        palette,
+        component_mappings,
+        channel_definitions,
+        has_palette,
+        has_component_mapping,
+        has_channel_definition,
+    } = metadata;
+
+    let metadata = J2kFileMetadata {
+        bits_per_component: components_from_native(bits_per_component, &mut budget)?,
+        color_specs: color_specs_from_native(color_specs, &mut budget)?,
+        palette: palette_from_native(palette, &mut budget)?,
+        component_mappings: component_mappings_from_native(component_mappings, &mut budget)?,
+        channel_definitions: channel_definitions_from_native(channel_definitions, &mut budget)?,
+        has_palette,
+        has_component_mapping,
+        has_channel_definition,
+    };
+    let allocated_bytes = metadata_allocated_bytes(&metadata)?;
+    if allocated_bytes != budget.live_bytes() {
+        return Err(J2kError::InternalInvariant {
+            what: "JP2 facade metadata allocation accounting mismatch",
+        });
     }
+    Ok((metadata, allocated_bytes))
 }
 
 fn component_from_native(component: NativeComponentMetadata) -> J2kComponentInfo {
@@ -138,26 +144,57 @@ fn component_from_native(component: NativeComponentMetadata) -> J2kComponentInfo
     }
 }
 
-fn color_spec_from_native(color_spec: &NativeColorSpec) -> J2kColorSpec {
+fn components_from_native(
+    components: Vec<NativeComponentMetadata>,
+    budget: &mut ParseAllocationBudget,
+) -> Result<Vec<J2kComponentInfo>, J2kError> {
+    let source_capacity = components.capacity();
+    let mut facade = budget.try_vec(components.len(), "JP2 facade BPCC metadata")?;
+    for component in components {
+        facade.push(component_from_native(component));
+    }
+    budget.release_capacity::<NativeComponentMetadata>(source_capacity)?;
+    Ok(facade)
+}
+
+fn color_specs_from_native(
+    color_specs: Vec<NativeColorSpec>,
+    budget: &mut ParseAllocationBudget,
+) -> Result<Vec<J2kColorSpec>, J2kError> {
+    let source_capacity = color_specs.capacity();
+    let mut facade = budget.try_vec(color_specs.len(), "JP2 facade COLR metadata")?;
+    for color_spec in color_specs {
+        facade.push(color_spec_from_native(color_spec));
+    }
+    budget.release_capacity::<NativeColorSpec>(source_capacity)?;
+    Ok(facade)
+}
+
+fn color_spec_from_native(color_spec: NativeColorSpec) -> J2kColorSpec {
     match color_spec {
-        NativeColorSpec::Enumerated { value } => J2kColorSpec::Enumerated { value: *value },
-        NativeColorSpec::IccProfile { profile } => J2kColorSpec::IccProfile {
-            profile: profile.clone(),
-        },
-        NativeColorSpec::Unknown { method } => J2kColorSpec::Unknown { method: *method },
+        NativeColorSpec::Enumerated { value } => J2kColorSpec::Enumerated { value },
+        NativeColorSpec::IccProfile { profile } => J2kColorSpec::IccProfile { profile },
+        NativeColorSpec::Unknown { method } => J2kColorSpec::Unknown { method },
     }
 }
 
-fn palette_from_native(palette: &NativePaletteMetadata) -> J2kPaletteMetadata {
-    J2kPaletteMetadata {
-        columns: palette
-            .columns
-            .iter()
-            .copied()
-            .map(palette_column_from_native)
-            .collect(),
-        entries: palette.entries.clone(),
+fn palette_from_native(
+    palette: Option<NativePaletteMetadata>,
+    budget: &mut ParseAllocationBudget,
+) -> Result<Option<J2kPaletteMetadata>, J2kError> {
+    let Some(NativePaletteMetadata { columns, entries }) = palette else {
+        return Ok(None);
+    };
+    let source_capacity = columns.capacity();
+    let mut facade_columns = budget.try_vec(columns.len(), "JP2 facade palette columns")?;
+    for column in columns {
+        facade_columns.push(palette_column_from_native(column));
     }
+    budget.release_capacity::<NativePaletteColumn>(source_capacity)?;
+    Ok(Some(J2kPaletteMetadata {
+        columns: facade_columns,
+        entries,
+    }))
 }
 
 fn palette_column_from_native(column: NativePaletteColumn) -> J2kPaletteColumn {
@@ -182,6 +219,19 @@ fn component_mapping_from_native(mapping: NativeComponentMapping) -> J2kComponen
     }
 }
 
+fn component_mappings_from_native(
+    mappings: Vec<NativeComponentMapping>,
+    budget: &mut ParseAllocationBudget,
+) -> Result<Vec<J2kComponentMapping>, J2kError> {
+    let source_capacity = mappings.capacity();
+    let mut facade = budget.try_vec(mappings.len(), "JP2 facade component mappings")?;
+    for mapping in mappings {
+        facade.push(component_mapping_from_native(mapping));
+    }
+    budget.release_capacity::<NativeComponentMapping>(source_capacity)?;
+    Ok(facade)
+}
+
 fn channel_definition_from_native(definition: NativeChannelDefinition) -> J2kChannelDefinition {
     J2kChannelDefinition {
         channel_index: definition.channel_index,
@@ -198,6 +248,131 @@ fn channel_definition_from_native(definition: NativeChannelDefinition) -> J2kCha
             NativeChannelAssociation::Unspecified => J2kChannelAssociation::Unspecified,
         },
     }
+}
+
+fn channel_definitions_from_native(
+    definitions: Vec<NativeChannelDefinition>,
+    budget: &mut ParseAllocationBudget,
+) -> Result<Vec<J2kChannelDefinition>, J2kError> {
+    let source_capacity = definitions.capacity();
+    let mut facade = budget.try_vec(definitions.len(), "JP2 facade channel definitions")?;
+    for definition in definitions {
+        facade.push(channel_definition_from_native(definition));
+    }
+    budget.release_capacity::<NativeChannelDefinition>(source_capacity)?;
+    Ok(facade)
+}
+
+fn native_metadata_allocated_bytes(metadata: &Jp2FileMetadata) -> Result<usize, J2kError> {
+    let mut bytes = capacity_bytes::<NativeComponentMetadata>(
+        metadata.bits_per_component.capacity(),
+        "native JP2 BPCC metadata",
+    )?;
+    checked_add_bytes(
+        &mut bytes,
+        capacity_bytes::<NativeColorSpec>(
+            metadata.color_specs.capacity(),
+            "native JP2 COLR metadata",
+        )?,
+        "native JP2 metadata",
+    )?;
+    for color_spec in &metadata.color_specs {
+        if let NativeColorSpec::IccProfile { profile } = color_spec {
+            checked_add_bytes(&mut bytes, profile.capacity(), "native JP2 ICC profile")?;
+        }
+    }
+    if let Some(palette) = &metadata.palette {
+        checked_add_bytes(
+            &mut bytes,
+            capacity_bytes::<NativePaletteColumn>(
+                palette.columns.capacity(),
+                "native JP2 palette columns",
+            )?,
+            "native JP2 metadata",
+        )?;
+        checked_add_bytes(
+            &mut bytes,
+            capacity_bytes::<Vec<u64>>(palette.entries.capacity(), "native JP2 palette rows")?,
+            "native JP2 metadata",
+        )?;
+        for row in &palette.entries {
+            checked_add_bytes(
+                &mut bytes,
+                capacity_bytes::<u64>(row.capacity(), "native JP2 palette entries")?,
+                "native JP2 metadata",
+            )?;
+        }
+    }
+    checked_add_bytes(
+        &mut bytes,
+        capacity_bytes::<NativeComponentMapping>(
+            metadata.component_mappings.capacity(),
+            "native JP2 component mappings",
+        )?,
+        "native JP2 metadata",
+    )?;
+    checked_add_bytes(
+        &mut bytes,
+        capacity_bytes::<NativeChannelDefinition>(
+            metadata.channel_definitions.capacity(),
+            "native JP2 channel definitions",
+        )?,
+        "native JP2 metadata",
+    )?;
+    Ok(bytes)
+}
+
+pub(super) fn metadata_allocated_bytes(metadata: &J2kFileMetadata) -> Result<usize, J2kError> {
+    let mut bytes = capacity_bytes::<J2kComponentInfo>(
+        metadata.bits_per_component.capacity(),
+        "JP2 BPCC metadata",
+    )?;
+    checked_add_bytes(
+        &mut bytes,
+        capacity_bytes::<J2kColorSpec>(metadata.color_specs.capacity(), "JP2 COLR metadata")?,
+        "JP2 facade metadata",
+    )?;
+    for color_spec in &metadata.color_specs {
+        if let J2kColorSpec::IccProfile { profile } = color_spec {
+            checked_add_bytes(&mut bytes, profile.capacity(), "JP2 ICC profile")?;
+        }
+    }
+    if let Some(palette) = &metadata.palette {
+        checked_add_bytes(
+            &mut bytes,
+            capacity_bytes::<J2kPaletteColumn>(palette.columns.capacity(), "JP2 palette columns")?,
+            "JP2 facade metadata",
+        )?;
+        checked_add_bytes(
+            &mut bytes,
+            capacity_bytes::<Vec<u64>>(palette.entries.capacity(), "JP2 palette rows")?,
+            "JP2 facade metadata",
+        )?;
+        for row in &palette.entries {
+            checked_add_bytes(
+                &mut bytes,
+                capacity_bytes::<u64>(row.capacity(), "JP2 palette entries")?,
+                "JP2 facade metadata",
+            )?;
+        }
+    }
+    checked_add_bytes(
+        &mut bytes,
+        capacity_bytes::<J2kComponentMapping>(
+            metadata.component_mappings.capacity(),
+            "JP2 component mappings",
+        )?,
+        "JP2 facade metadata",
+    )?;
+    checked_add_bytes(
+        &mut bytes,
+        capacity_bytes::<J2kChannelDefinition>(
+            metadata.channel_definitions.capacity(),
+            "JP2 channel definitions",
+        )?,
+        "JP2 facade metadata",
+    )?;
+    Ok(bytes)
 }
 
 fn primary_colorspace_from_file_metadata(metadata: &J2kFileMetadata) -> Option<Colorspace> {
@@ -233,9 +408,9 @@ fn validate_component_metadata(
     metadata: &J2kFileMetadata,
     siz: &super::ParsedSiz,
 ) -> Result<(), J2kError> {
-    let resolved = resolved_image_component_metadata(metadata, siz);
-    let resolved = resolved.as_deref().unwrap_or(&siz.component_info);
-    if resolved.len() != ihdr.components as usize {
+    let source = resolved_component_source(metadata, siz);
+    let resolved_count = resolved_component_count(source, metadata, siz);
+    if resolved_count != usize::from(ihdr.components) {
         return Err(J2kError::InvalidBox {
             offset: ihdr.offset,
             what: "ihdr component count must match resolved JP2 image components",
@@ -249,24 +424,35 @@ fn validate_component_metadata(
                 what: "bpcc must not be present when ihdr bpc is explicit",
             });
         }
-        if !resolved
-            .iter()
-            .all(|component| same_component_precision(*component, descriptor))
-        {
-            return Err(J2kError::InvalidBox {
-                offset: ihdr.offset,
-                what: "ihdr bpc must match resolved JP2 image component precision",
-            });
+        for index in 0..resolved_count {
+            let component = resolved_component_at(source, metadata, siz, index).ok_or(
+                J2kError::InvalidBox {
+                    offset: ihdr.offset,
+                    what: "JP2 component metadata could not be resolved",
+                },
+            )?;
+            if !same_component_precision(component, descriptor) {
+                return Err(J2kError::InvalidBox {
+                    offset: ihdr.offset,
+                    what: "ihdr bpc must match resolved JP2 image component precision",
+                });
+            }
         }
     } else {
-        if metadata.bits_per_component.len() != ihdr.components as usize {
+        if metadata.bits_per_component.len() != usize::from(ihdr.components) {
             return Err(J2kError::InvalidBox {
                 offset: ihdr.offset,
                 what: "bpcc component count must match ihdr component count",
             });
         }
-        for (component, descriptor) in resolved.iter().zip(metadata.bits_per_component.iter()) {
-            if !same_component_precision(*component, *descriptor) {
+        for (index, descriptor) in metadata.bits_per_component.iter().enumerate() {
+            let component = resolved_component_at(source, metadata, siz, index).ok_or(
+                J2kError::InvalidBox {
+                    offset: ihdr.offset,
+                    what: "JP2 component metadata could not be resolved",
+                },
+            )?;
+            if !same_component_precision(component, *descriptor) {
                 return Err(J2kError::InvalidBox {
                     offset: ihdr.offset,
                     what: "bpcc entries must match resolved JP2 image component precision",
@@ -278,41 +464,94 @@ fn validate_component_metadata(
     Ok(())
 }
 
-fn resolved_image_component_metadata(
+#[derive(Clone, Copy)]
+enum ResolvedComponentSource {
+    Codestream,
+    Palette,
+    Mappings,
+}
+
+fn resolved_component_source(
     metadata: &J2kFileMetadata,
     siz: &super::ParsedSiz,
-) -> Option<Vec<J2kComponentInfo>> {
+) -> ResolvedComponentSource {
     if metadata.component_mappings.is_empty() {
-        if let Some(palette) = metadata.palette.as_ref() {
-            return Some(
-                palette
+        if metadata.palette.is_some() {
+            return ResolvedComponentSource::Palette;
+        }
+        return ResolvedComponentSource::Codestream;
+    }
+
+    let resolvable = metadata
+        .component_mappings
+        .iter()
+        .all(|mapping| match mapping.mapping_type {
+            J2kComponentMappingType::Direct => siz
+                .component_info
+                .get(usize::from(mapping.component_index))
+                .is_some(),
+            J2kComponentMappingType::Palette { column } => metadata
+                .palette
+                .as_ref()
+                .and_then(|palette| palette.columns.get(usize::from(column)))
+                .is_some(),
+            J2kComponentMappingType::Unknown { .. } => false,
+        });
+    if resolvable {
+        ResolvedComponentSource::Mappings
+    } else {
+        ResolvedComponentSource::Codestream
+    }
+}
+
+fn resolved_component_count(
+    source: ResolvedComponentSource,
+    metadata: &J2kFileMetadata,
+    siz: &super::ParsedSiz,
+) -> usize {
+    match source {
+        ResolvedComponentSource::Codestream => siz.component_info.len(),
+        ResolvedComponentSource::Palette => metadata
+            .palette
+            .as_ref()
+            .map_or(0, |palette| palette.columns.len()),
+        ResolvedComponentSource::Mappings => metadata.component_mappings.len(),
+    }
+}
+
+fn resolved_component_at(
+    source: ResolvedComponentSource,
+    metadata: &J2kFileMetadata,
+    siz: &super::ParsedSiz,
+    index: usize,
+) -> Option<J2kComponentInfo> {
+    match source {
+        ResolvedComponentSource::Codestream => siz.component_info.get(index).copied(),
+        ResolvedComponentSource::Palette => metadata
+            .palette
+            .as_ref()?
+            .columns
+            .get(index)
+            .copied()
+            .map(component_from_palette_column),
+        ResolvedComponentSource::Mappings => {
+            let mapping = metadata.component_mappings.get(index)?;
+            match mapping.mapping_type {
+                J2kComponentMappingType::Direct => siz
+                    .component_info
+                    .get(usize::from(mapping.component_index))
+                    .copied(),
+                J2kComponentMappingType::Palette { column } => metadata
+                    .palette
+                    .as_ref()?
                     .columns
-                    .iter()
+                    .get(usize::from(column))
                     .copied()
-                    .map(component_from_palette_column)
-                    .collect(),
-            );
-        }
-        return Some(siz.component_info.clone());
-    }
-
-    let mut resolved = Vec::with_capacity(metadata.component_mappings.len());
-    for mapping in &metadata.component_mappings {
-        match mapping.mapping_type {
-            J2kComponentMappingType::Direct => {
-                let component = siz.component_info.get(mapping.component_index as usize)?;
-                resolved.push(*component);
+                    .map(component_from_palette_column),
+                J2kComponentMappingType::Unknown { .. } => None,
             }
-            J2kComponentMappingType::Palette { column } => {
-                let palette = metadata.palette.as_ref()?;
-                let column = palette.columns.get(column as usize)?;
-                resolved.push(component_from_palette_column(*column));
-            }
-            J2kComponentMappingType::Unknown { .. } => return None,
         }
     }
-
-    Some(resolved)
 }
 
 fn component_from_palette_column(column: J2kPaletteColumn) -> J2kComponentInfo {
@@ -357,6 +596,11 @@ fn map_native_jp2_error(error: NativeDecodeError) -> J2kError {
         NativeDecodeError::Format(NativeFormatError::Unsupported) => J2kError::InvalidBox {
             offset: 0,
             what: "unsupported JP2/JPH box metadata",
+        },
+        source @ (NativeDecodeError::AllocationTooLarge { .. }
+        | NativeDecodeError::HostAllocationFailed { .. }) => J2kError::NativeDecode {
+            context: "JP2/JPH metadata inspection failed",
+            source: crate::NativeBackendError::decode(source),
         },
         _ => J2kError::InvalidBox {
             offset: 0,

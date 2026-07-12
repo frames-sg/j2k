@@ -3,8 +3,9 @@
 use alloc::vec::Vec;
 
 use super::super::build::CodeBlock;
-use super::super::decode::DecompositionStorage;
+use super::super::decode::{DecodeAllocationBudget, DecompositionStorage};
 use crate::error::{bail, DecodingError, Result};
+use crate::try_reserve_decode_elements;
 
 pub(crate) struct CombinedCodeBlockData {
     pub(crate) data: Vec<u8>,
@@ -90,13 +91,22 @@ pub(crate) fn collect_code_block_segments<'a>(
 pub(crate) fn collect_code_block_data<'a>(
     code_block: &CodeBlock,
     storage: &'a DecompositionStorage<'a>,
+    budget: &mut DecodeAllocationBudget,
 ) -> Result<CombinedCodeBlockData> {
     let segments = collect_code_block_segments(code_block, storage)?;
     let cleanup_length =
         u32::try_from(segments.cleanup.len()).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
     let refinement_length = u32::try_from(segments.refinement.len())
         .map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
-    let mut data = Vec::with_capacity(segments.cleanup.len() + segments.refinement.len());
+    let data_len = segments
+        .cleanup
+        .len()
+        .checked_add(segments.refinement.len())
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    budget.include_elements::<u8>(data_len)?;
+    let mut data = Vec::new();
+    try_reserve_decode_elements(&mut data, data_len)?;
+    budget.include_capacity_overage::<u8>(data_len, data.capacity())?;
     data.extend_from_slice(segments.cleanup);
     data.extend_from_slice(segments.refinement);
 
