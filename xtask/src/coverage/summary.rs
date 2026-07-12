@@ -14,6 +14,7 @@ pub(super) struct CoverageSummaryInput<'a> {
     pub(super) lane: CoverageLane,
     pub(super) base: &'a str,
     pub(super) merge_base: &'a str,
+    pub(super) head_sha: &'a str,
     pub(super) lcov_path: &'a Path,
     pub(super) cargo_llvm_cov_version: &'a str,
     pub(super) result: &'a ChangedCoverageResult,
@@ -21,6 +22,14 @@ pub(super) struct CoverageSummaryInput<'a> {
 }
 
 pub(super) fn write_summary(input: &CoverageSummaryInput<'_>) -> Result<(), String> {
+    let document = summary_document(input);
+    let rendered = serde_json::to_string_pretty(&document)
+        .map_err(|err| format!("failed to render coverage summary: {err}"))?;
+    fs::write(input.path, format!("{rendered}\n"))
+        .map_err(|err| format!("failed to write {}: {err}", input.path.display()))
+}
+
+fn summary_document(input: &CoverageSummaryInput<'_>) -> serde_json::Value {
     let result = input.result;
     let exclusions = COVERAGE_EXCLUSIONS
         .iter()
@@ -49,11 +58,13 @@ pub(super) fn write_summary(input: &CoverageSummaryInput<'_>) -> Result<(), Stri
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     let document = json!({
-        "schema": "j2k-changed-line-coverage-v2",
+        "schema": "j2k-changed-line-coverage-v3",
         "lane": input.lane.name(),
+        "lane_scope": input.lane.scope_name(),
         "status": if input.violations.is_empty() { "passed" } else { "failed" },
         "base": input.base,
         "merge_base": input.merge_base,
+        "head_sha": input.head_sha,
         "threshold_percent": CHANGED_LINE_THRESHOLD_PERCENT,
         "cargo_llvm_cov_version": input.cargo_llvm_cov_version,
         "lcov_artifact": input.lcov_path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
@@ -80,10 +91,7 @@ pub(super) fn write_summary(input: &CoverageSummaryInput<'_>) -> Result<(), Stri
         "narrow_exclusions": exclusions,
         "violations": input.violations,
     });
-    let rendered = serde_json::to_string_pretty(&document)
-        .map_err(|err| format!("failed to render coverage summary: {err}"))?;
-    fs::write(input.path, format!("{rendered}\n"))
-        .map_err(|err| format!("failed to write {}: {err}", input.path.display()))
+    document
 }
 
 pub(super) fn print_summary(
@@ -110,4 +118,53 @@ pub(super) fn print_summary(
         result.accelerator.measurable
     );
     eprintln!("coverage evidence: {}", summary_path.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::Path;
+
+    use super::{summary_document, CoverageSummaryInput};
+    use crate::coverage::model::{ChangedCoverageResult, CoverageCounts, CoverageLane};
+
+    #[test]
+    fn summary_records_partitioned_schema_and_exact_source_sha() {
+        let result = ChangedCoverageResult {
+            overall: CoverageCounts {
+                measurable: 5,
+                covered: 4,
+            },
+            accelerator: CoverageCounts::default(),
+            changed_files: BTreeSet::new(),
+            uncovered: Vec::new(),
+            unmeasured: Vec::new(),
+            exclusions: BTreeMap::new(),
+            source_dispositions: BTreeMap::new(),
+            absent_instrumentable_files: Vec::new(),
+            changed_functions_without_covered_body: Vec::new(),
+            changed_executable_bodies_without_covered_body: Vec::new(),
+            changed_deferred_bodies_without_distinct_line_evidence: Vec::new(),
+            mixed_test_production_lines: Vec::new(),
+            changed_opaque_macros: Vec::new(),
+        };
+        let document = summary_document(&CoverageSummaryInput {
+            path: Path::new("coverage-host-summary.json"),
+            lane: CoverageLane::Host,
+            base: "v0.6.2",
+            merge_base: "1111111111111111111111111111111111111111",
+            head_sha: "2222222222222222222222222222222222222222",
+            lcov_path: Path::new("lcov-host.info"),
+            cargo_llvm_cov_version: "0.8.7",
+            result: &result,
+            violations: &[],
+        });
+
+        assert_eq!(document["schema"], "j2k-changed-line-coverage-v3");
+        assert_eq!(
+            document["head_sha"],
+            "2222222222222222222222222222222222222222"
+        );
+        assert_eq!(document["lane_scope"], "non-accelerator-production");
+    }
 }

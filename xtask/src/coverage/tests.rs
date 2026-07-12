@@ -118,13 +118,23 @@ fn accelerator_threshold_cannot_be_masked_by_cpu_coverage() {
 }
 
 #[test]
-fn hosted_changed_line_gate_includes_all_production_rust() {
+fn coverage_lanes_partition_host_and_accelerator_production_rust() {
     assert!(
-        CoverageLane::Host.includes_source("crates/j2k-cuda/src/error.rs", SourceRole::Production)
+        !CoverageLane::Host.includes_source("crates/j2k-cuda/src/error.rs", SourceRole::Production)
     );
+    assert!(!CoverageLane::Host
+        .includes_source("crates/j2k-metal/src/error.rs", SourceRole::Production));
+    assert!(!CoverageLane::Host
+        .includes_source("crates/j2k-core/src/accelerator.rs", SourceRole::Production));
     assert!(
-        CoverageLane::Host.includes_source("crates/j2k-metal/src/error.rs", SourceRole::Production)
+        CoverageLane::Cuda.includes_source("crates/j2k-cuda/src/error.rs", SourceRole::Production)
     );
+    assert!(CoverageLane::Metal
+        .includes_source("crates/j2k-metal/src/error.rs", SourceRole::Production));
+    assert!(CoverageLane::Cuda
+        .includes_source("crates/j2k-core/src/accelerator.rs", SourceRole::Production));
+    assert!(CoverageLane::Metal
+        .includes_source("crates/j2k-core/src/accelerator.rs", SourceRole::Production));
     assert!(CoverageLane::Host.includes_source("crates/j2k/src/error.rs", SourceRole::Production));
     assert!(CoverageLane::Host.includes_source("xtask/src/coverage.rs", SourceRole::Production));
     assert!(

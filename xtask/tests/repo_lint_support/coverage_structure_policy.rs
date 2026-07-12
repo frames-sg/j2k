@@ -365,7 +365,9 @@ fn coverage_tooling_stays_split_by_responsibility() {
         PatternCheck::new("coverage summary ownership", &summary).required(&[
             "pub(super) fn write_summary(",
             "pub(super) fn print_summary(",
-            "j2k-changed-line-coverage-v2",
+            "j2k-changed-line-coverage-v3",
+            "head_sha",
+            "lane_scope",
             "cargo_llvm_cov_version",
             "residual_unmeasured_lines",
             "changed_functions_without_covered_body",

@@ -252,7 +252,7 @@ fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() 
         PatternCheck::new("changed accelerator coverage policy", &coverage)
             .required(&[
                 "CHANGED_LINE_THRESHOLD_PERCENT: u64 = 80",
-                "Self::Host => true",
+                "Self::Host => !is_accelerator_path(path)",
                 "AcceleratorLaneSpec",
                 "SHARED_ACCELERATOR_SOURCES",
                 "shared_accelerator_packages",
@@ -262,7 +262,9 @@ fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() 
                 "enclosing_cfg_is_conditional",
                 "accelerator host lines",
                 "--include-build-script",
-                "j2k-changed-line-coverage-v2",
+                "j2k-changed-line-coverage-v3",
+                "head_sha",
+                "lane_scope",
                 "changed_functions_without_covered_body",
                 "changed_deferred_bodies_without_distinct_line_evidence",
                 "mixed_test_production_lines",

@@ -85,9 +85,17 @@ impl CoverageLane {
         }
     }
 
+    pub(super) const fn scope_name(self) -> &'static str {
+        match self {
+            Self::Host => "non-accelerator-production",
+            Self::Metal => "metal-and-shared-accelerator-production",
+            Self::Cuda => "cuda-and-shared-accelerator-production",
+        }
+    }
+
     pub(super) fn owns_path(self, path: &str) -> bool {
         match self {
-            Self::Host => true,
+            Self::Host => !is_accelerator_path(path),
             Self::Metal => {
                 METAL_ACCELERATOR_LANE.owns_path(path)
                     || is_shared_accelerator_path(path)

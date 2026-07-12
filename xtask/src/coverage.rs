@@ -37,6 +37,7 @@ pub(crate) fn coverage(args: impl Iterator<Item = String>) -> Result<(), String>
     validate_exclusion_policy(&root)?;
 
     let base = resolve_diff_base(options.base.as_deref())?;
+    let head_sha = git_output(&["rev-parse", "HEAD"])?;
     let merge_base = git_output(&["merge-base", "HEAD", &base])?;
     let diff = git_output(&[
         "diff",
@@ -79,6 +80,7 @@ pub(crate) fn coverage(args: impl Iterator<Item = String>) -> Result<(), String>
         lane: options.lane,
         base: &base,
         merge_base: &merge_base,
+        head_sha: &head_sha,
         lcov_path: &lcov_path,
         cargo_llvm_cov_version: &lane_run.cargo_llvm_cov_version,
         result: &result,
