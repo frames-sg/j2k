@@ -165,8 +165,8 @@ mod direct_flattened;
 use self::direct_flattened::hybrid_cpu_decode_worker_count;
 #[cfg(target_os = "macos")]
 use self::direct_flattened::{
-    build_flattened_cpu_tier1_cache, packed_cpu_decode_coefficients, packed_cpu_decode_output_len,
-    FlattenedCpuTier1Cache,
+    build_flattened_cpu_tier1_cache, packed_cpu_decode_coefficients,
+    packed_cpu_decode_coefficients_in, packed_cpu_decode_output_len, FlattenedCpuTier1Cache,
 };
 mod direct_profile;
 #[cfg(target_os = "macos")]
