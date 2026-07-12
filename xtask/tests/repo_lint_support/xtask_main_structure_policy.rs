@@ -6,6 +6,7 @@ use std::fs;
 
 use super::{assert_pattern_checks, repo_root, PatternCheck};
 
+mod codegen;
 mod lint_policy;
 mod release_integrity;
 
@@ -17,8 +18,6 @@ fn read(relative_path: &str) -> String {
 struct XtaskSources {
     main: String,
     benchmark: String,
-    codegen: String,
-    codegen_transaction: String,
     support: String,
     panic_surface: String,
     quality: String,
@@ -41,8 +40,6 @@ impl XtaskSources {
         Self {
             main: read("xtask/src/main.rs"),
             benchmark: read("xtask/src/benchmark_commands.rs"),
-            codegen: read("xtask/src/codegen_commands.rs"),
-            codegen_transaction: read("xtask/src/codegen_commands/transaction.rs"),
             support: read("xtask/src/command_support.rs"),
             panic_surface: read("xtask/src/panic_surface.rs"),
             quality: read("xtask/src/quality_commands.rs"),
@@ -154,12 +151,6 @@ fn assert_modules_stay_focused(sources: &XtaskSources) {
     ] {
         assert_module_stays_focused(relative_path, source, max_lines);
     }
-    assert_module_stays_focused("xtask/src/codegen_commands.rs", &sources.codegen, 400);
-    assert_module_stays_focused(
-        "xtask/src/codegen_commands/transaction.rs",
-        &sources.codegen_transaction,
-        350,
-    );
 }
 
 fn assert_module_stays_focused(relative_path: &str, source: &str, max_lines: usize) {
@@ -183,7 +174,6 @@ fn assert_module_stays_focused(relative_path: &str, source: &str, max_lines: usi
 }
 
 fn assert_dispatcher_and_command_ownership(sources: &XtaskSources) {
-    assert_codegen_ownership(sources);
     assert_pattern_checks(&[
         PatternCheck::new("xtask root dispatcher", &sources.main)
             .required(&[
@@ -270,37 +260,12 @@ fn assert_dispatcher_and_command_ownership(sources: &XtaskSources) {
     ]);
 }
 
-fn assert_codegen_ownership(sources: &XtaskSources) {
-    assert_pattern_checks(&[
-        PatternCheck::new("xtask codegen command ownership", &sources.codegen).required(&[
-            "mod transaction;",
-            "pub(super) fn stable_api(",
-            "pub(super) fn codec_math_codegen(",
-            "fn render_codec_math_dwt97_metal_fragment()",
-            "fn render_stable_api_snapshots()",
-            "write_generated_pair_transactionally(&snapshots)",
-            "write_generated_pair_transactionally(&fragments)",
-        ]),
-        PatternCheck::new(
-            "xtask generated-pair transaction ownership",
-            &sources.codegen_transaction,
-        )
-        .required(&[
-            "pub(super) fn write_generated_pair_transactionally(",
-            "fn stage_generated_entries(",
-            "fn stage_generated_file(",
-            "fn restore_originals(",
-            "pub(super) fn rollback_generated_pair_install(",
-            "fn sync_generated_directories(",
-        ]),
-    ]);
-}
-
 #[test]
 fn xtask_dispatcher_stays_split_by_command_family() {
     let sources = XtaskSources::read();
     assert_modules_stay_focused(&sources);
     assert_dispatcher_and_command_ownership(&sources);
+    codegen::assert_ownership_and_focus();
     release_integrity::assert_ownership(&sources);
     release_integrity::assert_regressions(&sources);
 }

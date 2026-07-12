@@ -255,6 +255,10 @@ const REPO_LINT_POLICY_LINE_LIMITS: &[(&str, usize)] = &[
             300,
         ),
         (
+            "xtask/tests/repo_lint_support/xtask_main_structure_policy/codegen.rs",
+            100,
+        ),
+        (
             "xtask/tests/repo_lint_support/xtask_main_structure_policy/lint_policy.rs",
             50,
         ),
