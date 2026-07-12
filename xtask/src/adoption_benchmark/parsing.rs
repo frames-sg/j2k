@@ -5,6 +5,9 @@ use crate::perf_guard::{discover_estimates, BenchEstimate};
 use super::runner::METAL_TRANSCODE_BENCH_FILTER;
 use super::summary::{AdoptionStep, StepStatus};
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn criterion_estimate_json(estimate: &BenchEstimate) -> serde_json::Value {
     serde_json::json!({
         "id": estimate.id,

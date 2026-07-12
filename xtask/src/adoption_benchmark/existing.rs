@@ -5,6 +5,9 @@ use super::runner::skipped_step;
 use super::summary::{AdoptionStep, StepStatus};
 use super::support::criterion_target_dir;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn existing_steps(
     options: &AdoptionBenchmarkOptions,
 ) -> Result<Vec<AdoptionStep>, String> {
@@ -107,7 +110,7 @@ pub(super) fn existing_ran_step(
             stdout.display()
         ));
     }
-    if !stderr.exists() {
+    if !stderr.is_file() {
         return Err(format!(
             "--finalize-existing requires {name} stderr at {}",
             stderr.display()
