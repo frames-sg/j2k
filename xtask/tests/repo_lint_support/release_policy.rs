@@ -268,7 +268,45 @@ fn j2k_compare_stays_unpublished_and_out_of_j2k_package_deps() {
 fn package_preflight_is_staged_dependency_aware() {
     let root = repo_root();
     let xtask = xtask_sources(root);
+    assert_package_gate_file_contracts(root);
+    let package_gate = fs::read_to_string(root.join("xtask/src/release_commands/package_gate.rs"))
+        .expect("read package-gate module");
+    assert!(
+        package_gate.lines().count() <= 175,
+        "package-gate module must stay within its focused 175-line ownership ceiling"
+    );
+    let publishable_packages =
+        const_array_entries(const_array_block(&xtask, "PUBLISHABLE_PACKAGES"));
+    let strict_packages = const_array_block(&xtask, "REGISTRY_INDEPENDENT_PACKAGES");
+    let staged_packages = const_array_block(&xtask, "STAGED_DEPENDENCY_PACKAGES");
+    for package in &publishable_packages {
+        let strict = strict_packages.contains(&format!("\"{package}\""));
+        let staged = staged_packages.contains(&format!("\"{package}\""));
+        assert_ne!(
+            strict, staged,
+            "publishable package `{package}` must appear in exactly one package-gate partition"
+        );
+    }
+    assert_package_gate_dependency_order(root, &publishable_packages, strict_packages);
+    assert!(
+        staged_packages.contains("\"j2k-cuda-runtime\""),
+        "j2k-cuda-runtime depends on staged j2k-core and must not run strict package verification before publication"
+    );
+    let codec_math = publishable_packages
+        .iter()
+        .position(|package| *package == "j2k-codec-math")
+        .expect("j2k-codec-math publish position");
+    let cuda_runtime = publishable_packages
+        .iter()
+        .position(|package| *package == "j2k-cuda-runtime")
+        .expect("j2k-cuda-runtime publish position");
+    assert!(
+        codec_math < cuda_runtime,
+        "j2k-codec-math must be staged before dependent j2k-cuda-runtime"
+    );
+}
 
+fn assert_package_gate_file_contracts(root: &std::path::Path) {
     assert_file_pattern_checks(
         root,
         &[
@@ -278,9 +316,20 @@ fn package_preflight_is_staged_dependency_aware() {
                     "PUBLISHABLE_PACKAGES",
                     "REGISTRY_INDEPENDENT_PACKAGES",
                     "STAGED_DEPENDENCY_PACKAGES",
+                    "mod package_gate;",
+                    "package_gate::run(&metadata)",
                     "\"--list\"",
-                    "[\"package\", \"-p\", package, \"--no-verify\"]",
-                    "[\"publish\", \"-p\", package, \"--dry-run\"]",
+                ]),
+            FilePatternCheck::new("xtask/src/release_commands/package_gate.rs")
+                .named("dependency-aware package construction")
+                .required(&[
+                    "package_gate_plan(metadata)?",
+                    "dependency_closure",
+                    "processed.contains(dependency_name.as_str())",
+                    "--config",
+                    "patch.crates-io.",
+                    "\"--no-verify\"",
+                    "\"--dry-run\"",
                 ]),
             FilePatternCheck::new("scripts/publish-crate.sh")
                 .named("publish script")
@@ -331,27 +380,37 @@ fn package_preflight_is_staged_dependency_aware() {
                 ]),
         ],
     );
-    let publishable_packages =
-        const_array_entries(const_array_block(&xtask, "PUBLISHABLE_PACKAGES"));
-    let strict_packages = const_array_block(&xtask, "REGISTRY_INDEPENDENT_PACKAGES");
-    let staged_packages = const_array_block(&xtask, "STAGED_DEPENDENCY_PACKAGES");
-    for package in publishable_packages {
-        let strict = strict_packages.contains(&format!("\"{package}\""));
-        let staged = staged_packages.contains(&format!("\"{package}\""));
-        assert_ne!(
-            strict, staged,
-            "publishable package `{package}` must appear in exactly one package-gate partition"
-        );
-    }
-    for (package, dependency) in cargo_metadata_workspace_edges(root) {
+}
+
+fn assert_package_gate_dependency_order(
+    root: &std::path::Path,
+    publishable_packages: &[&str],
+    strict_packages: &str,
+) {
+    let workspace_edges = cargo_metadata_workspace_edges(root);
+    for (package, dependency) in &workspace_edges {
         assert!(
             !strict_packages.contains(&format!("\"{package}\"")),
             "strict package preflight must not include `{package}` while it depends on staged workspace crate `{dependency}`"
         );
+        let package_position = publishable_packages
+            .iter()
+            .position(|candidate| candidate == package);
+        let dependency_position = publishable_packages
+            .iter()
+            .position(|candidate| candidate == dependency);
+        if let (Some(package_position), Some(dependency_position)) =
+            (package_position, dependency_position)
+        {
+            assert!(
+                dependency_position < package_position,
+                "publish package `{package}` must be processed after unpublished workspace dependency `{dependency}`"
+            );
+        }
     }
     assert!(
-        staged_packages.contains("\"j2k-cuda-runtime\""),
-        "j2k-cuda-runtime depends on staged j2k-core and must not run strict package verification before publication"
+        workspace_edges.contains(&("j2k-cuda-runtime".to_string(), "j2k-codec-math".to_string())),
+        "package policy regression must exercise the j2k-codec-math -> j2k-cuda-runtime edge"
     );
 }
 

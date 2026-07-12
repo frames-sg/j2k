@@ -7,6 +7,7 @@ use crate::command_support::{
 };
 use crate::process::cargo;
 
+mod package_gate;
 mod release_integrity_policy;
 
 use release_integrity_policy::{
@@ -682,14 +683,9 @@ pub(super) fn release_cpu() -> Result<(), String> {
 
 pub(super) fn package() -> Result<(), String> {
     ensure_clean_worktree()?;
+    let metadata = cargo_metadata()?;
     for package in PUBLISHABLE_PACKAGES {
         run_cargo(&["package", "-p", package, "--list"])?;
     }
-    for package in STAGED_DEPENDENCY_PACKAGES {
-        run_cargo(&["package", "-p", package, "--no-verify"])?;
-    }
-    for package in REGISTRY_INDEPENDENT_PACKAGES {
-        run_cargo(&["publish", "-p", package, "--dry-run"])?;
-    }
-    Ok(())
+    package_gate::run(&metadata)
 }
