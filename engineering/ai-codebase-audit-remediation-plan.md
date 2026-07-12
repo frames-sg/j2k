@@ -62,7 +62,7 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `35beb9b4`. No push, release tag, crate
+  before this ledger refresh is `00983dd9`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -91,20 +91,24 @@ the issue sections below; this capsule is only the current continuation state.
   compiler-mapped documentation or attributes as runtime statements
   (`7e0efdc8`). The adoption ownership policy was then split at a cohesive
   policy boundary rather than raising its 500-line ratchet (`35beb9b4`). The
-  clean exact-SHA host run at `35beb9b4` completed the full host matrix and
-  411-test repository policy suite, generated schema-v4 LCOV and LLVM region
-  artifacts, and failed the real gate at 76.8146% (64,227 / 83,613). Reaching
-  the exact 80% boundary of 66,891 requires 2,664 additional covered executable
-  lines. The report has 289 uncovered functions, 429 uncovered executable
-  bodies, 481 compiler-instrumented same-line deferred bodies with zero counts,
-  172 compiler-noninstrumentable deferred bodies recorded without false
-  failure, and 640 uncovered opaque macros. All subagents are stopped; root
+  release-critical xtask command orchestration, semver inputs, and transactional
+  snapshot rollback are now covered through `00983dd9`. Its clean exact-SHA
+  host run completed the full host matrix and 411-test repository policy suite,
+  generated schema-v4 LCOV and LLVM region artifacts, and failed the real gate
+  at 77.4569% (64,764 / 83,613). Reaching the exact 80% boundary of 66,891
+  requires 2,127 additional covered executable lines. The report has 259
+  uncovered functions, 424 uncovered executable bodies, 472
+  compiler-instrumented same-line deferred bodies with zero counts, 172
+  compiler-noninstrumentable deferred bodies recorded without false failure,
+  and 605 uncovered opaque macros. The first attempt at this SHA was correctly
+  discarded after stale ignored coverage JSON caused two repository-text
+  policies to fail; the generated artifacts were verified ignored and moved to
+  Trash before the successful exact rerun. All subagents are stopped; root
   alone owns the remaining coverage proof, settled aggregate gates, ledger,
-  and exact-SHA handoff. The next focused tranche is release-critical xtask
-  behavior in semver, codegen rollback, release/package validation, benchmark
-  command construction, and quality-gate dispatch. Do not run another full
-  coverage matrix until that tranche compiles, passes focused tests, and is
-  committed.
+  and exact-SHA handoff. The next focused tranche owns the remaining external
+  release-tool seams in stable API generation, semver report/check dispatch,
+  quality commands, and package preflight. Do not run another full coverage
+  matrix until that tranche compiles, passes focused tests, and is committed.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -417,7 +421,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `35beb9b4` is 76.8146% (64,227 / 83,613); close the 2,664-line numeric gap plus 289 function, 429 body, 481 zero-count deferred-region, and 640 opaque-macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `00983dd9` is 77.4569% (64,764 / 83,613); close the 2,127-line numeric gap plus 259 function, 424 body, 472 zero-count deferred-region, and 605 opaque-macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -980,6 +984,38 @@ files are `xtask/src/semver.rs` (295 lines), `codegen_commands.rs` (265),
 benchmark provenance, and quality gates, so the next tranche must add
 behavioral failure-path coverage there rather than chase incidental lines.
 Another full coverage run is deferred until that focused tranche is committed.
+
+The exact release-tooling checkpoint at
+`00983dd900d0c47b53be5cfa10a34dfb4e8062be` retains schema
+`j2k-changed-line-coverage-v4` and the 83,613-line executable denominator.
+`00983dd9` added a workspace-root child-process harness with fake build commands
+but real read-only Cargo metadata, exercised aggregate CI, benchmark
+build/signoff/report, pre-candidate release integrity, release CPU planning,
+fail-closed stable-API/semver dispatch, pinned semver snapshots and metadata,
+and transaction rollback after a partial two-file install. It also consolidated
+duplicated unit-test command recorders behind one test-only owner. The focused
+239-test xtask binary, orchestration integration, structural policy, strict
+all-target/all-feature Clippy, formatting, and diff checks passed before the
+commit.
+
+The first exact attempt at this SHA did not reach evaluation because the prior
+ignored `coverage-host-regions.json` remained in the repository root and was
+correctly caught by two public-text policies for its machine-local paths and
+historical symbol strings. The ignored LCOV, summary, and region artifacts were
+verified as generated evidence and moved to Trash. The clean rerun completed
+the full host matrix and all 411 policies with one established ignore, then
+failed only the genuine coverage gates at 64,764 of 83,613 executable lines
+(77.4569%). The tranche gained 537 covered lines without changing the
+denominator. The exact 80% requirement remains 66,891, so the numeric gap is
+2,127 lines.
+
+The updated report records 259 changed functions without a covered body, 424
+multiline executable bodies without a covered body, 472 zero-count deferred
+compiler regions, 172 compiler-noninstrumentable deferred bodies, 605 opaque
+macros, four absent instrumentable files, and no mixed production/test lines.
+The remaining release-tooling misses are concentrated in stable API rendering,
+semver report/check dispatch, external quality commands, and package preflight;
+the next tranche owns those seams and must remain hermetic and fail closed.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
