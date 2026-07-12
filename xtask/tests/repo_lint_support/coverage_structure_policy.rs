@@ -47,6 +47,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
     let source_graph = read("xtask/src/coverage/source_analysis/graph.rs");
     let module_resolver = read("xtask/src/coverage/source_analysis/module_resolver.rs");
     let node_attrs = read("xtask/src/coverage/source_analysis/node_attrs.rs");
+    let source_test_constructors = read("xtask/src/coverage/source_analysis/test_constructors.rs");
     let test_lines = read("xtask/src/coverage/source_analysis/test_lines.rs");
     let test_spans = read("xtask/src/coverage/source_analysis/ast/test_spans.rs");
     let source_workspace = read("xtask/src/coverage/source_analysis/workspace.rs");
@@ -153,6 +154,11 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "xtask/src/coverage/source_analysis/node_attrs.rs",
             node_attrs.as_str(),
             200,
+        ),
+        (
+            "xtask/src/coverage/source_analysis/test_constructors.rs",
+            source_test_constructors.as_str(),
+            150,
         ),
         (
             "xtask/src/coverage/source_analysis/test_lines.rs",
@@ -395,6 +401,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "mod graph;",
             "mod module_resolver;",
             "mod node_attrs;",
+            "mod test_constructors;",
             "mod workspace;",
             "pub(super) struct FunctionSpan",
             "pub(super) struct ExecutableBodySpan",
@@ -457,6 +464,12 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "fs::canonicalize(root)",
             "resolves outside repository root",
             "more than one path attribute",
+        ]),
+        PatternCheck::new("coverage test constructors", &source_test_constructors).required(&[
+            "impl SourceIndex",
+            "pub(in crate::coverage) fn single(",
+            "pub(in crate::coverage) fn repository_subset(",
+            "pub(in crate::coverage) fn repository_manifest_fuzz_subset(",
         ]),
         PatternCheck::new("coverage attribute-bearing node accessors", &node_attrs).required(&[
             "pub(super) fn expression(",
@@ -527,6 +540,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
         PatternCheck::new("coverage source-analysis regressions", &source_tests).required(&[
             "fn body_bearing_function_forms_have_item_and_body_spans()",
             "fn nested_inline_module_uses_its_real_module_directory()",
+            "fn nonterminal_external_module_in_named_crate_root_uses_sibling_source()",
             "fn module_path_cannot_escape_the_repository_root()",
             "fn unknown_custom_cfg_is_conservatively_required()",
             "fn unknown_cfg_in_either_polarity_is_conservatively_required()",
