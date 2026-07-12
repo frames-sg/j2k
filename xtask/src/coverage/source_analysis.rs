@@ -101,7 +101,14 @@ pub(super) struct OpaqueMacroSpan {
     pub(super) label: String,
     pub(super) start: usize,
     pub(super) end: usize,
+    pub(super) kind: OpaqueMacroKind,
     pub(super) required_on_host: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OpaqueMacroKind {
+    Definition,
+    Invocation,
 }
 
 #[derive(Clone, Debug)]

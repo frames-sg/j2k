@@ -4,7 +4,7 @@ use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::{Attribute, Expr};
 
-use super::super::{DeferredBodyEvidence, ExecutableBodySpan, OpaqueMacroSpan};
+use super::super::{DeferredBodyEvidence, ExecutableBodySpan, OpaqueMacroKind, OpaqueMacroSpan};
 use super::{span_lines, AstCollector};
 
 impl AstCollector<'_> {
@@ -94,6 +94,11 @@ impl AstCollector<'_> {
             label: format!("{label}@{start}"),
             start,
             end,
+            kind: if label.starts_with("opaque-macro-invocation") {
+                OpaqueMacroKind::Invocation
+            } else {
+                OpaqueMacroKind::Definition
+            },
             required_on_host: required,
         });
         if required {

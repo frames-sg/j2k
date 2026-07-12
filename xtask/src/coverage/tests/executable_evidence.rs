@@ -91,6 +91,30 @@ fn changed_opaque_macro_definition_and_invocation_fail_closed() {
 }
 
 #[test]
+fn covered_opaque_macro_invocation_has_positive_execution_evidence() {
+    let repository = TestRepository::new();
+    let path = "crates/example/src/lib.rs";
+    let source = "pub fn invoke() {\n    generated!(changed);\n}\n";
+    repository.write(path, source);
+    let index = SourceIndex::single(path, source).unwrap();
+    let report = LcovReport {
+        lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(2, 1)]))]),
+    };
+
+    let result = evaluate_changed_coverage(
+        CoverageLane::Host,
+        repository.root(),
+        &changed(path, 2),
+        &report,
+        &index,
+    )
+    .unwrap();
+
+    assert!(result.changed_opaque_macros.is_empty());
+    assert!(coverage_violations(CoverageLane::Host, &result).is_empty());
+}
+
+#[test]
 fn cfg_test_macro_remains_test_only() {
     let repository = TestRepository::new();
     let path = "crates/example/src/lib.rs";

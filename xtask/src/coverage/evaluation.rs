@@ -10,7 +10,8 @@ use super::model::{
     CHANGED_LINE_THRESHOLD_PERCENT,
 };
 use super::source_analysis::{
-    DeferredBodyEvidence, SourceFileAnalysis, SourceIndex, SourceRole, TestOnlyLineDisposition,
+    DeferredBodyEvidence, OpaqueMacroKind, SourceFileAnalysis, SourceIndex, SourceRole,
+    TestOnlyLineDisposition,
 };
 
 struct EvaluationInputs<'a> {
@@ -219,6 +220,8 @@ impl ChangedFileEvidence<'_> {
         for opaque in &self.analysis.opaque_macros {
             if !opaque.required_on_host
                 || !changed_span(instrumentable_lines, opaque.start, opaque.end)
+                || (opaque.kind == OpaqueMacroKind::Invocation
+                    && self.body_is_covered(opaque.start, opaque.end))
             {
                 continue;
             }
