@@ -579,3 +579,6 @@ pub(super) fn pixel_format_label(format: PixelFormat) -> &'static str {
         _ => "unsupported",
     }
 }
+
+#[cfg(test)]
+mod tests;
