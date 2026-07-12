@@ -61,44 +61,45 @@ NVIDIA and exact-candidate proof rather than additional unowned source edits.
 Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
-- Release state: **blocked**, unfrozen, dirty working tree on `main` at
-  `e741d10243ed`. Approved local commits preserve the reconciled implementation
-  (`7853075f`), quality/release tooling (`3fcb2e88`), API snapshot newline
-  contract (`cb39da75`), and documentation/evidence (`e741d102`). Verification
-  treats that chain cumulatively: the broad source commit depends on the
-  following policy commit for its moved-path repo-lint assertions. No push,
-  tag, release, or publication has been made. The approved plan authorizes
-  later exact-SHA movement through the reviewed workflow; it does not authorize
-  a release tag or publication.
-- Current objective: commit the final review-driven architecture/accounting
-  follow-up, rerun changed-line coverage, clean-tree clone/package and both
-  Metal performance protocols, complete maintainer-owned release evidence, and
-  then freeze one exact candidate SHA.
+- Release state: **blocked** and unfrozen. The source baseline is
+  `3fd23cf2f39f`; HEAD is the documentation-only handoff commit immediately
+  above it. The current local chain includes architecture closeout
+  (`5c161599`), coverage/module and clone-classification repairs
+  (`b86d6b12`, `192b1118`, `ee39a681`, `d5a9a2fa`), staged unpublished-package
+  dependency repair (`4c947c2b`), and typed Metal pool ownership/performance
+  closure (`3fd23cf2`). No push, tag, release, or publication has been made.
+  The approved plan authorizes later exact-SHA movement through the reviewed
+  workflow; it does not authorize a release tag or publication.
+- Current objective: close the remaining direct-CPU fallible allocation and
+  resident in-flight scheduling contracts, repair the coverage evidence model
+  without exclusions or threshold changes, rerun clean-tree clone/package and
+  Metal gates, complete maintainer-owned release evidence, and then freeze one
+  exact candidate SHA.
   Preserve idiomatic Rust ownership, typed errors, fallible allocation, and
   actual allocator-capacity accounting.
-- Immediate continuation point (2026-07-12): all implementation and independent
-  review owners have stopped editing. Workspace formatting, diff checks, panic
-  and unsafe audits, ordinary plus strict Clippy, all affected package suites,
-  all 411 ordinary repository
-  policies, the strict rendered-public-API scan, bounded fuzzing, Miri, Metal
-  compile/runtime validation, stable API, ordinary release integrity, and the
-  pinned Gitleaks scan are green. Ordinary and
-  rustdoc-hidden API snapshots plus the reviewed diff report were regenerated
-  from the pinned nightly/target. The authoritative quick performance guard is
-  green after preserving actual-capacity accounting while restoring bounded
-  work stealing and weighted direct-plan admission. Stable-API regeneration
-  now also emits exactly one terminal newline, so generated evidence passes
-  both freshness and whitespace checks. The source-aware clone audit passes at
-  1.97% duplicated production lines across 1,187 staged Rust sources. `cargo
-  xtask semver` reaches the deliberate
+- Immediate continuation point (2026-07-12): no owner is editing. Commit
+  `3fd23cf2` replaces repeated Metal `Buffer::length` probes and stringly
+  `(usize, Buffer)` recycling with a move-only, once-validated `PooledBuffer`;
+  private retention covers the 3,083-buffer default resident working set,
+  shared retention keeps its independent 64-record bound, and FIFO metadata is
+  a fallible `VecDeque`. Serial fallible region-plan resolution preserves
+  same-batch cache deduplication. Full Metal validation passes 265 library tests
+  (18 intentional release-lane ignores), 54 device tests, all integrations and
+  docs, 22 support tests, strict Clippy, all 411 ordinary repository policies,
+  stable API, unsafe audit, and the unchanged panic ratchets. Alternating
+  three-process evidence against `0e78229a` passes: direct 8.199 versus 8.458
+  ms, resident buffer 7.952 versus 8.520 ms, and resident host 8.083 versus
+  9.607 ms. The last source-aware clone audit before `3fd23cf2` passed at 1.97%
+  duplicated production lines across 1,187 staged Rust sources and must be
+  rerun for the new committed Rust files. `cargo xtask semver` reaches the deliberate
   fail-closed maintainer-review blocker; do not replace any `PENDING` rationale
   with an inferred approval. The tooling phase's 162 unit tests, 411 ordinary
   policies, and strict rendered-API policy are green. The follow-up tree adds a
   context-wide CUDA host authority with pre-allocation pinned admission and
   unlocked RAII replacement reservations; independent-session/context-clone
   races, wrong-context guards, owner-drop, rollback, and compound-error tests
-  pass locally. Root owns the follow-up commit, changed-line coverage,
-  clean-tree clone/package gates, Metal performance runs, and exact-SHA handoff.
+  pass locally. Root owns direct-CPU allocation, resident scheduling,
+  changed-line coverage, clean-tree clone/package gates, and exact-SHA handoff.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -283,18 +284,19 @@ the issue sections below; this capsule is only the current continuation state.
   identifier and narrowly excluding generated `fnv1a64:` fingerprints. The
   combined panic and typo gates rerun on settled source.
 - Next serialized gates after the source and tooling phase commits:
-  1. commit the reconciled documentation/evidence phase, then run full 0.7
-     changed-line coverage against `v0.6.2`, the final clone report, and
-     staged dependency-aware packaging without threshold relaxation;
-  2. run the two remaining Metal structural performance guards and repeat the
-     settled-source local aggregate gates after any correction;
+  1. implement direct-CPU fallible allocation and true resident in-flight
+     scheduling, then rerun their focused Metal gates;
+  2. repair multi-lane coverage evidence and add missing tests until the real
+     80% gate passes; rerun clone, packaging, and the paired Metal guards after
+     every resulting source commit;
   3. obtain maintainer API/provenance/security approval, date the changelog,
      run publish-mode offline integrity, and commit a clean candidate SHA;
   4. run exact-SHA hosted CI plus Metal and CUDA hardware validation.
 - External release blockers: GitHub private vulnerability reporting is disabled
   (CONTACT-001); patched `block 0.1.6` provenance reviewer/date is pending
-  (PROV-001); release date, candidate SHA, and approved public-API review do not
-  yet exist. A tag is deliberately outside this verified-RC endpoint.
+  (PROV-001); all 33 `PENDING` API rationales still require real maintainer
+  review; release date and candidate SHA do not yet exist. A tag is deliberately
+  outside this verified-RC endpoint.
 - CUDA handoff: the maintainer supplied a private WSL/NVIDIA host with RTX 4070
   SUPER, CUDA 13.2, Rust 1.96, and libclang 18. Keep login/address out of tracked
   files. The repaired GPU ABI source passed a supporting `sm_89` build and
@@ -410,7 +412,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Source-aware roles and changed-function enforcement are verified structurally, including the nonterminal external test-module regression; the final review follow-up Rust sources must be committed before measurement |
+| COV-001 | P2 | in progress | METAL-001 | Clean host measurement reaches the real gate and fails at 52.36% overall/20.46% accelerator; lane evidence aggregation and missing host tests must close 47,258/42,016 covered-line gaps without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -431,7 +433,7 @@ The rubric was checked against current primary or first-party sources on
 | ALLOC-018 | P1 | in progress | ALLOC-001, ALLOC-011, ALLOC-014 | JPEG Metal cache/queue/execution metadata and retained host-surface ownership are transactionally reconciled; full package, strict Clippy, and combined policies pass, with the final matrix/hardware evidence remaining |
 | METALCACHE-001 | P1 | complete | SEC-009, ALLOC-018 | Move-only Arc-shared direct plans, actual host/device cache weights, deterministic flat LRU, fallible metadata, and typed optional admission are verified |
 | JPEGCACHE-001 | P1 | in progress | ALLOC-001, ALLOC-008, ALLOC-018, ERR-015 | One neutral 8-entry/64-MiB inspect-once cache is integrated under clone-shared cache, queue, pinned-staging, result, and CPU-fallback ledgers; package/policy gates pass and frozen hardware evidence remains |
-| METALPOOL-001 | P1 | complete | ALLOC-018, SAFE-001 | Separate flat private/shared pools enforce actual-byte and buffer-count limits, fallible metadata admission, deterministic completed-buffer eviction, typed ledger failures, and stable diagnostics; full local Metal package gates pass |
+| METALPOOL-001 | P1 | complete | ALLOC-018, SAFE-001 | Commit `3fd23cf2` uses separate flat private/shared `VecDeque` pools and move-only once-validated capacity owners; default private working-set reuse, full Metal gates, and alternating direct/resident performance comparisons pass |
 | CUDAPOOL-001 | P1 | complete | ALLOC-001, CUDAERR-001 | CUDA buffer pools apply shared actual-byte/count/bucket limits, deterministic completed-buffer eviction, deferred safety accounting, and clone-shared high-water diagnostics; strict RTX 4070 SUPER retention tests passed |
 | CUDAPIN-001 | P1 | in progress | ALLOC-001, CUDAPOOL-001, CUDAERR-001 | Context-authoritative page-locked staging pre-reserves growth, external owners use unlocked full-headroom RAII replacement transactions, and exact retention/quarantine/compound errors pass local race and package gates; frozen NVIDIA evidence remains |
 | CUDAHANDLE-001 | P2 | complete | CUDAPIN-001, CUDAERR-001 | One typed boundary validates device allocations and every context/module/function/event/stream out-parameter; successful-null function lookup unloads its module |
@@ -503,10 +505,10 @@ The rubric was checked against current primary or first-party sources on
 | JPEGCOR-003 | P2 | complete | ALLOC-012 | TIFF `JPEGTables` normalization enforces duplicate policy over every DQT/DHT definition, preserves default byte parity, and rejects malformed/conflicting later tables |
 | TOOL-001 | P3 | complete | DUP-001 | Adoption report model/render split |
 | CUDA-002 | P1 | complete | SEC-001 | One exact named release-cuda gate with zero skip markers |
-| PKG-001 | P1 | complete | SEC-001 | Construct all packages and verify independent packages |
-| CLONE-001 | P2 | in progress | STR-008 through STR-015 | Repository-owned source-aware scanner/config/CI gate passes the settled follow-up tree at 1.97% duplicated production lines; rerun once after the follow-up commit to record clean-tree evidence |
+| PKG-001 | P1 | in progress | SEC-001 | Staged unpublished dependency closure is repaired and the clean package gate passed at `4c947c2b`; rerun after `3fd23cf2` and every later source commit |
+| CLONE-001 | P2 | in progress | STR-008 through STR-015 | Repository-owned source-aware scanner passed at 1.97% duplicated production lines before `3fd23cf2`; rerun after the latest committed Rust files and at candidate freeze |
 | AUDIT-001 | P2 | complete | STR-010, COV-001 | Clone and panic quality gates use shared production-source classification, explicit reviewed ratchets, fixtures, and fail-closed repository policy |
-| PERF-001 | P1 | in progress | STR-004 through STR-015 | Quick guard against `29143c8e` is green after HT decode parallel initialization, conservative full-wave HT encode, weighted direct-batch admission, and bounded restart work stealing; thresholds are unchanged and exact candidate repetition remains |
+| PERF-001 | P1 | in progress | STR-004 through STR-015 | Alternating `0e78229a`/candidate process medians pass on the source committed as `3fd23cf2`: direct -3.1%, resident buffer -6.7%, resident host -15.9%; exact committed-candidate repetition remains |
 | PUB-002 | P1 | complete | PKG-001, CUDA-002 | Fail-closed canonical origin, exact remote annotated tag, Release, and crates.io preflight |
 | DOC-002 | P2 | in progress | SEC-001 | Reconcile public claims and keep this as the only plan |
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
@@ -878,6 +880,20 @@ module declaration; the reported line was the actual `#[cfg(test)]` attribute.
 The analyzer required no production change. The regression now locates unique
 production markers, and its focused check, all 63 coverage tests, coverage
 structure policy, and strict xtask Clippy pass.
+
+The first clean-tree measurement after the module-root and clone-fixture
+repairs ran `cargo xtask coverage host --base v0.6.2` through all prerequisite
+tests and policies, then failed the real 80% gate: 89,519 of 170,971 changed
+executable lines (52.36%) overall and 14,436 of 70,565 accelerator lines
+(20.46%). It reported 81,452 uncovered lines, 70,291 residual unmeasured lines,
+2,485 functions without a covered body, 1,508 executable bodies, 2,240
+one-line deferred bodies, and 2,433 opaque macros across 1,820 changed Rust
+files. Reaching 80% requires 47,258 additional covered lines overall and
+42,016 accelerator lines. This is a genuine release blocker, not permission to
+exclude accelerator crates, macros, or deferred bodies. The next correction
+must partition and aggregate authoritative host, Metal, and CUDA lane evidence
+while preserving fail-closed function/body accounting, then add missing host
+tests where the host lane itself remains below threshold.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
@@ -3625,18 +3641,39 @@ source policy forbidding infallible map/vector growth in pool recycle; strict
 Metal checks/Clippy; and exact-source hardware stress proving the pool reaches
 a stable retained high-water rather than monotonic growth.
 
+The original 64-record private retention checkpoint below was insufficient for
+the real 16-by-512 RGB8 resident working set and caused repeated Metal
+allocation. Commit `3fd23cf2` supersedes it: the private record ceiling is
+4,096, derived above the default 3,083-record resident chunk (three components,
+per-component DWT scratch, base batch owners, and four classic split-token
+owners), while the independently derived shared ceiling remains 64. A flat
+fallible `VecDeque` preserves deterministic oldest eviction. More importantly,
+the old `(usize, Buffer)` convention is replaced by a move-only
+`PooledBuffer`: allocator-reported capacity is validated once when the Metal
+allocation enters the typed lifecycle and cannot disagree when that owner is
+later recycled. This preserves actual-capacity accounting without an
+Objective-C length query for every warm recycle.
+
+The committed source passes 265 Metal library tests with the established 18
+release-lane ignores, 54 device tests, all integration/doc targets, 22 support
+tests, warning-denied all-target/all-feature Clippy, all 411 ordinary policies,
+stable API, unsafe audit, and the unchanged panic ratchets. Alternating
+three-process comparison against the benchmark harness at `0e78229a` records
+candidate versus baseline medians of 8.199/8.458 ms for direct decode,
+7.952/8.520 ms for resident-buffer encode, and 8.083/9.607 ms for resident-host
+encode. All deltas are improvements and pass the unchanged 5% limit.
+
 Product remediation is source-complete on the local Apple host. The two nested
 `HashMap<usize, Vec<Buffer>>` owners are replaced by separate mutex-protected
-flat private/shared ledgers with a 256 MiB and 64-buffer limit per pool, each
-clamped by the device's maximum buffer length. Admission reconciles
-`Buffer::length`, reserves metadata fallibly, evicts the oldest completed
+flat private/shared ledgers with independent 256 MiB byte limits and the 4,096
+private/64 shared record limits described above, each clamped by the device's
+maximum buffer length. Admission starts from the once-validated capacity held
+by `PooledBuffer`, reserves metadata fallibly, evicts the oldest completed
 buffers deterministically, and treats an oversized buffer or cache-only
-metadata failure as a safe non-retention decision. A recorded/actual length
-contradiction is a typed `MetalStateInvariant`; poisoned state and a requested
-new Metal allocation retain their existing typed hard-error paths. Public
-session diagnostics expose current allocator-capacity ownership, peaks,
-evictions, rejections, metadata failures, and size mismatches without exposing
-the buffers themselves.
+metadata failure as a safe non-retention decision. Poisoned state and a
+requested new Metal allocation retain their existing typed hard-error paths.
+Public session diagnostics expose current allocator-capacity ownership, peaks,
+evictions, rejections, and metadata failures without exposing buffers.
 
 Focused evidence is six serialized real-Metal tests covering completed command
 work before exact-size reuse, actual-byte take/recycle accounting, unique-size
