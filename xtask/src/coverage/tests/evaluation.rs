@@ -31,6 +31,7 @@ pub fn calculate() -> u32 {
     let changed = changed(path, [1]);
     let signature_only = LcovReport {
         lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(1, 1)]))]),
+        ..LcovReport::default()
     };
 
     let without_covered_body = evaluate_changed_coverage(
@@ -49,6 +50,7 @@ pub fn calculate() -> u32 {
 
     let body_covered = LcovReport {
         lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(1, 1), (3, 1)]))]),
+        ..LcovReport::default()
     };
     let present = evaluate_changed_coverage(
         CoverageLane::Host,
@@ -99,6 +101,7 @@ pub fn production() {
     let index = SourceIndex::single(path, source).unwrap();
     let report = LcovReport {
         lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(6, 1)]))]),
+        ..LcovReport::default()
     };
     let result = evaluate_changed_coverage(
         CoverageLane::Host,
@@ -127,6 +130,7 @@ fn same_line_cfg_test_and_production_code_fails_closed_even_with_positive_da() {
     let index = SourceIndex::single(path, source).unwrap();
     let report = LcovReport {
         lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(1, 1)]))]),
+        ..LcovReport::default()
     };
     let result = evaluate_changed_coverage(
         CoverageLane::Host,
@@ -175,6 +179,7 @@ fn registered_shared_accelerator_sources_reach_both_gpu_denominators() {
             let index = SourceIndex::single(path, source).unwrap();
             let report = LcovReport {
                 lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(1, 1)]))]),
+                ..LcovReport::default()
             };
             let result = evaluate_changed_coverage(
                 lane,

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
+use super::compiler_regions::{CompilerRegionEvidence, CompilerRegionReport};
 use super::exclusion_policy::matching_exclusion;
 use super::model::{
     is_accelerator_path, ChangedCoverageResult, CoverageCounts, CoverageLane, LcovReport,
@@ -25,6 +26,7 @@ struct ChangedFileEvidence<'a> {
     path: &'a str,
     source_lines: &'a [&'a str],
     coverage: Option<&'a BTreeMap<usize, u64>>,
+    compiler_regions: &'a CompilerRegionReport,
     analysis: &'a SourceFileAnalysis,
     measurable_source: bool,
 }
@@ -47,7 +49,8 @@ pub(super) fn evaluate_changed_coverage(
         absent_instrumentable_files: Vec::new(),
         changed_functions_without_covered_body: Vec::new(),
         changed_executable_bodies_without_covered_body: Vec::new(),
-        changed_deferred_bodies_without_distinct_line_evidence: Vec::new(),
+        changed_deferred_bodies_without_covered_compiler_region: Vec::new(),
+        compiler_noninstrumentable_deferred_bodies: Vec::new(),
         mixed_test_production_lines: Vec::new(),
         changed_opaque_macros: Vec::new(),
     };
@@ -67,8 +70,9 @@ pub(super) fn evaluate_changed_coverage(
     result.changed_functions_without_covered_body.sort();
     result.changed_executable_bodies_without_covered_body.sort();
     result
-        .changed_deferred_bodies_without_distinct_line_evidence
+        .changed_deferred_bodies_without_covered_compiler_region
         .sort();
+    result.compiler_noninstrumentable_deferred_bodies.sort();
     result.mixed_test_production_lines.sort();
     result.changed_opaque_macros.sort();
     Ok(result)
@@ -98,13 +102,14 @@ impl EvaluationInputs<'_> {
             path,
             source_lines: &source_lines,
             coverage: self.report.lines.get(path),
+            compiler_regions: &self.report.compiler_regions,
             analysis,
             measurable_source: self.lane.includes_source(path, analysis.role),
         };
 
         result.changed_files.insert(path.to_string());
         let instrumentable_lines = evidence.evaluate_changed_lines(lines, result)?;
-        evidence.record_missing_body_evidence(&instrumentable_lines, result, absent_files);
+        evidence.record_missing_body_evidence(&instrumentable_lines, result, absent_files)?;
         Ok(())
     }
 }
@@ -181,7 +186,7 @@ impl ChangedFileEvidence<'_> {
         instrumentable_lines: &BTreeSet<usize>,
         result: &mut ChangedCoverageResult,
         absent_files: &mut BTreeSet<String>,
-    ) {
+    ) -> Result<(), String> {
         for function in &self.analysis.functions {
             if !function.required_on_host
                 || !changed_span(instrumentable_lines, function.start, function.end)
@@ -209,10 +214,16 @@ impl ChangedFileEvidence<'_> {
                         .changed_executable_bodies_without_covered_body
                         .push(format!("{}::{}", self.path, body.label));
                 }
-                DeferredBodyEvidence::SharedCreationLine => {
-                    result
-                        .changed_deferred_bodies_without_distinct_line_evidence
-                        .push(format!("{}::{}", self.path, body.label));
+                DeferredBodyEvidence::CompilerRegion(span) => {
+                    match self.compiler_regions.evidence_for(self.path, span)? {
+                        CompilerRegionEvidence::Covered => {}
+                        CompilerRegionEvidence::Uncovered => result
+                            .changed_deferred_bodies_without_covered_compiler_region
+                            .push(format!("{}::{}", self.path, body.label)),
+                        CompilerRegionEvidence::NonInstrumentable => result
+                            .compiler_noninstrumentable_deferred_bodies
+                            .push(format!("{}::{}", self.path, body.label)),
+                    }
                 }
             }
         }
@@ -230,6 +241,7 @@ impl ChangedFileEvidence<'_> {
                 .changed_opaque_macros
                 .push(format!("{}::{}", self.path, opaque.label));
         }
+        Ok(())
     }
 
     fn body_is_covered(&self, start: usize, end: usize) -> bool {
@@ -326,14 +338,14 @@ pub(super) fn coverage_violations(
         ));
     }
     if !result
-        .changed_deferred_bodies_without_distinct_line_evidence
+        .changed_deferred_bodies_without_covered_compiler_region
         .is_empty()
     {
         violations.push(format!(
-            "changed deferred bodies share their only LCOV line with the creation site in the {} lane; line coverage cannot prove that the body ran. Put the deferred body on a distinct source line or move the changed behavior into a covered named function: {}",
+            "changed deferred bodies have compiler-instrumented regions but no covered region in the {} lane: {}",
             lane.name(),
             result
-                .changed_deferred_bodies_without_distinct_line_evidence
+                .changed_deferred_bodies_without_covered_compiler_region
                 .join(", ")
         ));
     }

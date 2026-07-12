@@ -3,6 +3,7 @@ target/
 lcov.info
 lcov-*.info
 coverage-*-summary.json
+coverage-*-regions.json
 **/*.rs.bk
 Cargo.lock.bak
 .vscode/

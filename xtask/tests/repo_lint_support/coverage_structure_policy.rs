@@ -22,6 +22,8 @@ fn coverage_tooling_stays_split_by_responsibility() {
     let build_outputs = read("xtask/src/coverage/build_outputs.rs");
     let build_output_target = read("xtask/src/coverage/build_outputs/target.rs");
     let build_output_tests = read("xtask/src/coverage/build_outputs/tests.rs");
+    let compiler_regions = read("xtask/src/coverage/compiler_regions.rs");
+    let compiler_region_tests = read("xtask/src/coverage/compiler_regions/tests.rs");
     let model = read("xtask/src/coverage/model.rs");
     let lane = read("xtask/src/coverage/lane.rs");
     let parsing = read("xtask/src/coverage/parsing.rs");
@@ -84,6 +86,16 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "xtask/src/coverage/build_outputs/tests.rs",
             build_output_tests.as_str(),
             200,
+        ),
+        (
+            "xtask/src/coverage/compiler_regions.rs",
+            compiler_regions.as_str(),
+            350,
+        ),
+        (
+            "xtask/src/coverage/compiler_regions/tests.rs",
+            compiler_region_tests.as_str(),
+            180,
         ),
         ("xtask/src/coverage/model.rs", model.as_str(), 600),
         ("xtask/src/coverage/lane.rs", lane.as_str(), 600),
@@ -251,6 +263,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
             .required(&[
                 "mod accelerator_ownership;",
                 "mod build_outputs;",
+                "mod compiler_regions;",
                 "mod evaluation;",
                 "mod exclusion_policy;",
                 "mod lane;",
@@ -261,6 +274,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
                 "pub(crate) fn coverage(",
                 "ensure_no_untracked_rust_sources()?;",
                 "validate_shared_accelerator_registry(&root)?;",
+                "parse_compiler_regions(&compiler_regions, &root)?",
             ])
             .forbidden(&[
                 "enum CoverageLane",
@@ -321,6 +335,8 @@ fn coverage_tooling_stays_split_by_responsibility() {
                 "fn run_host_coverage(",
                 "fn run_metal_coverage(",
                 "fn run_cuda_coverage(",
+                "fn report_compiler_regions(",
+                "fn report_compiler_regions_args(",
                 "fn coverage_tool_version(",
                 "fn parse_coverage_tool_version(",
                 "fn package_coverage_args(",
@@ -342,6 +358,25 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "pub(super) fn parse_lcov(",
             "fn normalize_lcov_path(",
         ]),
+        PatternCheck::new("compiler region evidence ownership", &compiler_regions).required(&[
+            "llvm.coverage.json.export",
+            "pub(super) struct CompilerRegionReport",
+            "pub(super) fn evidence_for(",
+            "CompilerRegionEvidence::NonInstrumentable",
+            "pub(super) fn parse_compiler_regions(",
+            "must contain exactly 8 integer fields",
+            "mod tests;",
+        ]),
+        PatternCheck::new(
+            "compiler region evidence regressions",
+            &compiler_region_tests,
+        )
+        .required(&[
+            "fn parser_aggregates_code_regions_by_normalized_repository_path()",
+            "fn body_without_a_nested_code_region_is_compiler_noninstrumentable()",
+            "fn nested_zero_count_code_region_is_uncovered()",
+            "fn malformed_or_unrelated_reports_fail_closed()",
+        ]),
         PatternCheck::new("coverage changed-line evaluation ownership", &evaluation)
             .required(&[
                 "pub(super) fn evaluate_changed_coverage(",
@@ -351,7 +386,8 @@ fn coverage_tooling_stays_split_by_responsibility() {
                 "self.body_is_covered(function.body_start, function.body_end)",
                 "changed_functions_without_covered_body",
                 "changed_executable_bodies_without_covered_body",
-                "changed_deferred_bodies_without_distinct_line_evidence",
+                "changed_deferred_bodies_without_covered_compiler_region",
+                "compiler_noninstrumentable_deferred_bodies",
                 "mixed_test_production_lines",
                 "changed_opaque_macros",
                 "source_dispositions",
@@ -365,14 +401,16 @@ fn coverage_tooling_stays_split_by_responsibility() {
         PatternCheck::new("coverage summary ownership", &summary).required(&[
             "pub(super) fn write_summary(",
             "pub(super) fn print_summary(",
-            "j2k-changed-line-coverage-v3",
+            "j2k-changed-line-coverage-v4",
             "head_sha",
             "lane_scope",
             "cargo_llvm_cov_version",
             "residual_unmeasured_lines",
             "changed_functions_without_covered_body",
             "changed_executable_bodies_without_covered_body",
-            "changed_deferred_bodies_without_distinct_line_evidence",
+            "changed_deferred_bodies_without_covered_compiler_region",
+            "compiler_noninstrumentable_deferred_bodies",
+            "compiler_regions_artifact",
             "mixed_test_production_lines",
             "changed_opaque_macros",
             "accelerator_host_rust",
@@ -581,6 +619,11 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "fn changed_uncalled_closure_requires_coverage_in_its_own_body()",
             "fn changed_opaque_macro_definition_and_invocation_fail_closed()",
             "fn cfg_test_macro_remains_test_only()",
+        ]),
+        PatternCheck::new("coverage deferred-body regressions", &deferred_body_tests).required(&[
+            "fn executed_one_line_closure_accepts_its_own_compiler_region()",
+            "fn unpolled_one_line_async_rejects_its_zero_count_compiler_region()",
+            "fn body_without_a_compiler_region_is_recorded_as_noninstrumentable()",
         ]),
         PatternCheck::new("coverage presence regressions", &presence_tests).required(&[
             "fn partial_file_lcov_does_not_mask_second_changed_function_without_covered_body()",

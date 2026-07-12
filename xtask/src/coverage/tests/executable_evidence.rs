@@ -27,6 +27,7 @@ pub fn build_callback() {
     let index = SourceIndex::single(path, source).unwrap();
     let report = LcovReport {
         lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(5, 1)]))]),
+        ..LcovReport::default()
     };
 
     let result = evaluate_changed_coverage(
@@ -99,6 +100,7 @@ fn covered_opaque_macro_invocation_has_positive_execution_evidence() {
     let index = SourceIndex::single(path, source).unwrap();
     let report = LcovReport {
         lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(2, 1)]))]),
+        ..LcovReport::default()
     };
 
     let result = evaluate_changed_coverage(

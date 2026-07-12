@@ -16,6 +16,7 @@ pub(super) struct CoverageSummaryInput<'a> {
     pub(super) merge_base: &'a str,
     pub(super) head_sha: &'a str,
     pub(super) lcov_path: &'a Path,
+    pub(super) compiler_regions_path: &'a Path,
     pub(super) cargo_llvm_cov_version: &'a str,
     pub(super) result: &'a ChangedCoverageResult,
     pub(super) violations: &'a [String],
@@ -58,7 +59,7 @@ fn summary_document(input: &CoverageSummaryInput<'_>) -> serde_json::Value {
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     let document = json!({
-        "schema": "j2k-changed-line-coverage-v3",
+        "schema": "j2k-changed-line-coverage-v4",
         "lane": input.lane.name(),
         "lane_scope": input.lane.scope_name(),
         "status": if input.violations.is_empty() { "passed" } else { "failed" },
@@ -68,6 +69,7 @@ fn summary_document(input: &CoverageSummaryInput<'_>) -> serde_json::Value {
         "threshold_percent": CHANGED_LINE_THRESHOLD_PERCENT,
         "cargo_llvm_cov_version": input.cargo_llvm_cov_version,
         "lcov_artifact": input.lcov_path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+        "compiler_regions_artifact": input.compiler_regions_path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
         "changed_files": result.changed_files,
         "overall": {
             "measurable_lines": result.overall.measurable,
@@ -84,7 +86,8 @@ fn summary_document(input: &CoverageSummaryInput<'_>) -> serde_json::Value {
         "absent_instrumentable_files": result.absent_instrumentable_files,
         "changed_functions_without_covered_body": result.changed_functions_without_covered_body,
         "changed_executable_bodies_without_covered_body": result.changed_executable_bodies_without_covered_body,
-        "changed_deferred_bodies_without_distinct_line_evidence": result.changed_deferred_bodies_without_distinct_line_evidence,
+        "changed_deferred_bodies_without_covered_compiler_region": result.changed_deferred_bodies_without_covered_compiler_region,
+        "compiler_noninstrumentable_deferred_bodies": result.compiler_noninstrumentable_deferred_bodies,
         "mixed_test_production_lines": result.mixed_test_production_lines,
         "changed_opaque_macros": result.changed_opaque_macros,
         "source_dispositions": source_dispositions,
@@ -144,7 +147,8 @@ mod tests {
             absent_instrumentable_files: Vec::new(),
             changed_functions_without_covered_body: Vec::new(),
             changed_executable_bodies_without_covered_body: Vec::new(),
-            changed_deferred_bodies_without_distinct_line_evidence: Vec::new(),
+            changed_deferred_bodies_without_covered_compiler_region: Vec::new(),
+            compiler_noninstrumentable_deferred_bodies: Vec::new(),
             mixed_test_production_lines: Vec::new(),
             changed_opaque_macros: Vec::new(),
         };
@@ -155,12 +159,13 @@ mod tests {
             merge_base: "1111111111111111111111111111111111111111",
             head_sha: "2222222222222222222222222222222222222222",
             lcov_path: Path::new("lcov-host.info"),
+            compiler_regions_path: Path::new("coverage-host-regions.json"),
             cargo_llvm_cov_version: "0.8.7",
             result: &result,
             violations: &[],
         });
 
-        assert_eq!(document["schema"], "j2k-changed-line-coverage-v3");
+        assert_eq!(document["schema"], "j2k-changed-line-coverage-v4");
         assert_eq!(
             document["head_sha"],
             "2222222222222222222222222222222222222222"

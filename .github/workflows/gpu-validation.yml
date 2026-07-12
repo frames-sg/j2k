@@ -107,6 +107,7 @@ jobs:
           path: |
             lcov-metal.info
             coverage-metal-summary.json
+            coverage-metal-regions.json
           if-no-files-found: error
       - run: cargo bench -p j2k-jpeg-metal --no-run
       - if: ${{ inputs.run-timed-benchmarks }}
@@ -200,6 +201,7 @@ jobs:
           path: |
             lcov-cuda.info
             coverage-cuda-summary.json
+            coverage-cuda-regions.json
           if-no-files-found: error
       - run: cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime --no-run
       - run: cargo bench -p j2k-cuda --bench encode_stages --features cuda-runtime --no-run

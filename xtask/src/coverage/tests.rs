@@ -40,7 +40,8 @@ fn synthetic_result(measurable: usize, covered: usize) -> ChangedCoverageResult 
         absent_instrumentable_files: Vec::new(),
         changed_functions_without_covered_body: Vec::new(),
         changed_executable_bodies_without_covered_body: Vec::new(),
-        changed_deferred_bodies_without_distinct_line_evidence: Vec::new(),
+        changed_deferred_bodies_without_covered_compiler_region: Vec::new(),
+        compiler_noninstrumentable_deferred_bodies: Vec::new(),
         mixed_test_production_lines: Vec::new(),
         changed_opaque_macros: Vec::new(),
     }

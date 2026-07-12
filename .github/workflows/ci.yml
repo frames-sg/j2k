@@ -425,6 +425,7 @@ jobs:
           path: |
             lcov-host.info
             coverage-host-summary.json
+            coverage-host-regions.json
           if-no-files-found: error
 
   deny:

@@ -24,6 +24,7 @@ pub fn absent() {
     let changed = BTreeMap::from([(path.to_string(), BTreeSet::from([1, 4]))]);
     let report = LcovReport {
         lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(2, 1)]))]),
+        ..LcovReport::default()
     };
 
     let result = evaluate_changed_coverage(
@@ -77,6 +78,7 @@ fn zero_count_body_record_does_not_prove_changed_signature_coverage() {
     let changed = BTreeMap::from([(path.to_string(), BTreeSet::from([1]))]);
     let report = LcovReport {
         lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(2, 0)]))]),
+        ..LcovReport::default()
     };
 
     let result = evaluate_changed_coverage(
@@ -105,6 +107,7 @@ fn changed_executable_body_line_without_da_is_uncovered() {
     let changed = BTreeMap::from([(path.to_string(), BTreeSet::from([2]))]);
     let report = LcovReport {
         lines: BTreeMap::from([(path.to_string(), BTreeMap::from([(3, 1)]))]),
+        ..LcovReport::default()
     };
 
     let result = evaluate_changed_coverage(

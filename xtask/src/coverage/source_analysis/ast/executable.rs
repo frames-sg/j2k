@@ -4,6 +4,8 @@ use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::{Attribute, Expr};
 
+use crate::coverage::compiler_regions::SourceSpan;
+
 use super::super::{DeferredBodyEvidence, ExecutableBodySpan, OpaqueMacroKind, OpaqueMacroSpan};
 use super::{span_lines, AstCollector};
 
@@ -70,7 +72,16 @@ impl AstCollector<'_> {
                 end: evidence_end,
             }
         } else {
-            DeferredBodyEvidence::SharedCreationLine
+            match SourceSpan::from_proc_macro(body_span) {
+                Ok(span) => DeferredBodyEvidence::CompilerRegion(span),
+                Err(error) => {
+                    self.record_error(format!(
+                        "failed to classify same-line {kind} body in `{}`: {error}",
+                        self.path
+                    ));
+                    return;
+                }
+            }
         };
         self.executable_bodies.push(ExecutableBodySpan {
             label: format!("{kind}@{start}"),

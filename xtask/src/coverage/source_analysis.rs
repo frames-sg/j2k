@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::build_outputs::BuildOutputEvidence;
+use super::compiler_regions::SourceSpan;
 use super::model::CoverageLane;
 
 mod ast;
@@ -78,7 +79,7 @@ pub(super) struct ExecutableBodySpan {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DeferredBodyEvidence {
     DistinctLines { start: usize, end: usize },
-    SharedCreationLine,
+    CompilerRegion(SourceSpan),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

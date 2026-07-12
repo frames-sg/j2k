@@ -33,6 +33,7 @@ pub(super) fn run_lane(
     root: &Path,
     lane: CoverageLane,
     lcov_path: &Path,
+    compiler_regions_path: &Path,
 ) -> Result<CoverageLaneRun, String> {
     let cargo_llvm_cov_version = coverage_tool_version()?;
     // A unique empty target gives every scanned build-script output current-run
@@ -41,9 +42,9 @@ pub(super) fn run_lane(
     let current_build_target = CurrentBuildTarget::create(root)?;
     let target_dir = current_build_target.path()?;
     match lane {
-        CoverageLane::Host => run_host_coverage(lcov_path, target_dir),
-        CoverageLane::Metal => run_metal_coverage(lcov_path, target_dir),
-        CoverageLane::Cuda => run_cuda_coverage(lcov_path, target_dir),
+        CoverageLane::Host => run_host_coverage(lcov_path, compiler_regions_path, target_dir),
+        CoverageLane::Metal => run_metal_coverage(lcov_path, compiler_regions_path, target_dir),
+        CoverageLane::Cuda => run_cuda_coverage(lcov_path, compiler_regions_path, target_dir),
     }?;
     let build_output_evidence = BuildOutputEvidence::capture(current_build_target)?;
     Ok(CoverageLaneRun {
@@ -52,12 +53,21 @@ pub(super) fn run_lane(
     })
 }
 
-fn run_host_coverage(lcov_path: &Path, target_dir: &Path) -> Result<(), String> {
+fn run_host_coverage(
+    lcov_path: &Path,
+    compiler_regions_path: &Path,
+    target_dir: &Path,
+) -> Result<(), String> {
     let output = path_arg(lcov_path)?;
-    run_llvm_cov(&host_coverage_args(&output), &[], target_dir)
+    run_llvm_cov(&host_coverage_args(&output), &[], target_dir)?;
+    report_compiler_regions(compiler_regions_path, &[], target_dir)
 }
 
-fn run_metal_coverage(lcov_path: &Path, target_dir: &Path) -> Result<(), String> {
+fn run_metal_coverage(
+    lcov_path: &Path,
+    compiler_regions_path: &Path,
+    target_dir: &Path,
+) -> Result<(), String> {
     let args = accelerator_coverage_args(CoverageLane::Metal)?;
     run_llvm_cov(&args, METAL_COVERAGE_ENV, target_dir)?;
     run_llvm_cov(
@@ -65,13 +75,19 @@ fn run_metal_coverage(lcov_path: &Path, target_dir: &Path) -> Result<(), String>
         METAL_COVERAGE_ENV,
         target_dir,
     )?;
-    report_lcov(lcov_path, METAL_COVERAGE_ENV, target_dir)
+    report_lcov(lcov_path, METAL_COVERAGE_ENV, target_dir)?;
+    report_compiler_regions(compiler_regions_path, METAL_COVERAGE_ENV, target_dir)
 }
 
-fn run_cuda_coverage(lcov_path: &Path, target_dir: &Path) -> Result<(), String> {
+fn run_cuda_coverage(
+    lcov_path: &Path,
+    compiler_regions_path: &Path,
+    target_dir: &Path,
+) -> Result<(), String> {
     let args = accelerator_coverage_args(CoverageLane::Cuda)?;
     run_llvm_cov(&args, CUDA_COVERAGE_ENV, target_dir)?;
-    report_lcov(lcov_path, CUDA_COVERAGE_ENV, target_dir)
+    report_lcov(lcov_path, CUDA_COVERAGE_ENV, target_dir)?;
+    report_compiler_regions(compiler_regions_path, CUDA_COVERAGE_ENV, target_dir)
 }
 
 fn host_coverage_args(output: &str) -> Vec<&str> {
@@ -156,6 +172,26 @@ fn report_lcov_args(output: &str) -> Vec<&str> {
     ]
 }
 
+fn report_compiler_regions(
+    compiler_regions_path: &Path,
+    envs: &[(&str, &str)],
+    target_dir: &Path,
+) -> Result<(), String> {
+    let output = path_arg(compiler_regions_path)?;
+    run_llvm_cov(&report_compiler_regions_args(&output), envs, target_dir)
+}
+
+fn report_compiler_regions_args(output: &str) -> Vec<&str> {
+    vec![
+        "llvm-cov",
+        "report",
+        "--include-build-script",
+        "--json",
+        "--output-path",
+        output,
+    ]
+}
+
 fn coverage_tool_version() -> Result<String, String> {
     let output =
         process::command_output(cargo(), &["llvm-cov", "--version"], CommandContext::new())?;
@@ -233,7 +269,8 @@ mod tests {
     use super::{
         accelerator_coverage_args, current_build_env, host_coverage_args,
         metal_hardware_coverage_args, package_coverage_args, parse_coverage_tool_version,
-        report_lcov_args, CoverageLane, CUDA_COVERAGE_ENV, METAL_COVERAGE_ENV,
+        report_compiler_regions_args, report_lcov_args, CoverageLane, CUDA_COVERAGE_ENV,
+        METAL_COVERAGE_ENV,
     };
 
     #[test]
@@ -363,6 +400,17 @@ mod tests {
                 "--lcov",
                 "--output-path",
                 "lane.info",
+            ]
+        );
+        assert_eq!(
+            report_compiler_regions_args("lane-regions.json"),
+            [
+                "llvm-cov",
+                "report",
+                "--include-build-script",
+                "--json",
+                "--output-path",
+                "lane-regions.json",
             ]
         );
     }

@@ -166,7 +166,7 @@ pub(super) fn parse_lcov(input: &str, root: &Path) -> Result<LcovReport, String>
     Ok(report)
 }
 
-fn normalize_lcov_path(path: &str, root: &Path) -> Result<String, String> {
+pub(super) fn normalize_coverage_path(path: &str, root: &Path) -> Result<String, String> {
     let path = Path::new(path);
     let relative = if path.is_absolute() {
         path.strip_prefix(root).map_err(|_| {
@@ -184,4 +184,8 @@ fn normalize_lcov_path(path: &str, root: &Path) -> Result<String, String> {
         .map(|part| part.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/"))
+}
+
+fn normalize_lcov_path(path: &str, root: &Path) -> Result<String, String> {
+    normalize_coverage_path(path, root)
 }

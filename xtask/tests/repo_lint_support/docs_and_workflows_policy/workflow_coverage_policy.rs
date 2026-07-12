@@ -245,7 +245,17 @@ fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() 
                 .forbidden(&["GPU_COVERAGE_EXCLUSION_REGEX", "--ignore-filename-regex"]),
             FilePatternCheck::new(".gitignore")
                 .named("generated coverage evidence")
-                .required(&["lcov-*.info", "coverage-*-summary.json"]),
+                .required(&[
+                    "lcov-*.info",
+                    "coverage-*-summary.json",
+                    "coverage-*-regions.json",
+                ]),
+            FilePatternCheck::new(".github/workflows/ci.yml")
+                .named("host coverage artifacts")
+                .required(&["coverage-host-regions.json"]),
+            FilePatternCheck::new(".github/workflows/gpu-validation.yml")
+                .named("accelerator coverage artifacts")
+                .required(&["coverage-metal-regions.json", "coverage-cuda-regions.json"]),
         ],
     );
     assert_pattern_checks(&[
@@ -262,11 +272,13 @@ fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() 
                 "enclosing_cfg_is_conditional",
                 "accelerator host lines",
                 "--include-build-script",
-                "j2k-changed-line-coverage-v3",
+                "j2k-changed-line-coverage-v4",
                 "head_sha",
                 "lane_scope",
                 "changed_functions_without_covered_body",
-                "changed_deferred_bodies_without_distinct_line_evidence",
+                "changed_deferred_bodies_without_covered_compiler_region",
+                "compiler_noninstrumentable_deferred_bodies",
+                "coverage-host-regions.json",
                 "mixed_test_production_lines",
                 "cuda-simt-device-rust",
                 "cuda-generated-host-scaffold",

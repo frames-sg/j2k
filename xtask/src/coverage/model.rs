@@ -4,12 +4,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use super::accelerator_ownership::is_shared_accelerator_path;
+use super::compiler_regions::CompilerRegionReport;
 use super::source_analysis::SourceRole;
 
 pub(super) const CHANGED_LINE_THRESHOLD_PERCENT: u64 = 80;
 const HOST_LCOV_PATH: &str = "lcov-host.info";
 const METAL_LCOV_PATH: &str = "lcov-metal.info";
 const CUDA_LCOV_PATH: &str = "lcov-cuda.info";
+const HOST_COMPILER_REGIONS_PATH: &str = "coverage-host-regions.json";
+const METAL_COMPILER_REGIONS_PATH: &str = "coverage-metal-regions.json";
+const CUDA_COMPILER_REGIONS_PATH: &str = "coverage-cuda-regions.json";
 const HOST_SUMMARY_PATH: &str = "coverage-host-summary.json";
 const METAL_SUMMARY_PATH: &str = "coverage-metal-summary.json";
 const CUDA_SUMMARY_PATH: &str = "coverage-cuda-summary.json";
@@ -85,6 +89,14 @@ impl CoverageLane {
         }
     }
 
+    pub(super) const fn compiler_regions_path(self) -> &'static str {
+        match self {
+            Self::Host => HOST_COMPILER_REGIONS_PATH,
+            Self::Metal => METAL_COMPILER_REGIONS_PATH,
+            Self::Cuda => CUDA_COMPILER_REGIONS_PATH,
+        }
+    }
+
     pub(super) const fn scope_name(self) -> &'static str {
         match self {
             Self::Host => "non-accelerator-production",
@@ -127,6 +139,7 @@ impl CoverageLane {
 #[derive(Debug, Default)]
 pub(super) struct LcovReport {
     pub(super) lines: BTreeMap<String, BTreeMap<usize, u64>>,
+    pub(super) compiler_regions: CompilerRegionReport,
 }
 
 #[derive(Debug)]
@@ -160,7 +173,8 @@ pub(super) struct ChangedCoverageResult {
     pub(super) absent_instrumentable_files: Vec<String>,
     pub(super) changed_functions_without_covered_body: Vec<String>,
     pub(super) changed_executable_bodies_without_covered_body: Vec<String>,
-    pub(super) changed_deferred_bodies_without_distinct_line_evidence: Vec<String>,
+    pub(super) changed_deferred_bodies_without_covered_compiler_region: Vec<String>,
+    pub(super) compiler_noninstrumentable_deferred_bodies: Vec<String>,
     pub(super) mixed_test_production_lines: Vec<String>,
     pub(super) changed_opaque_macros: Vec<String>,
 }
