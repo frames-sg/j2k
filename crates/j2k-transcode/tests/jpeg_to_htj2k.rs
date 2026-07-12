@@ -877,6 +877,52 @@ fn integer_direct_batch_transcode_groups_components_across_tiles() {
 }
 
 #[test]
+fn float53_individual_batch_preserves_order_errors_and_scalar_output() {
+    let jpeg = JPEG_GRAYSCALE_8X8;
+    let options = JpegToHtj2kOptions {
+        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
+        validate_against_float_reference: true,
+        ..JpegToHtj2kOptions::default()
+    };
+    let inputs = [
+        JpegTileBatchInput { bytes: jpeg },
+        JpegTileBatchInput {
+            bytes: b"not a jpeg",
+        },
+        JpegTileBatchInput { bytes: jpeg },
+    ];
+    let expected = jpeg_to_htj2k(jpeg, &options).expect("scalar float 5/3 transcode succeeds");
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut accelerator = CountingAccelerator::default();
+
+    let batch = transcoder
+        .transcode_batch_with_accelerator(&inputs, &options, &mut accelerator)
+        .expect("individual float 5/3 route accepts valid batch options");
+
+    assert_eq!(batch.report.tile_count, inputs.len());
+    assert_eq!(batch.report.successful_tiles, 2);
+    assert_eq!(batch.report.failed_tiles, 1);
+    assert_eq!(batch.report.timings.tile_count, 2);
+    assert_eq!(batch.report.timings.component_count, 2);
+    assert_eq!(accelerator.dwt53_calls, 2);
+    assert_eq!(
+        batch.tiles[0]
+            .as_ref()
+            .expect("first tile succeeds")
+            .codestream,
+        expected.codestream
+    );
+    assert!(batch.tiles[1].is_err());
+    assert_eq!(
+        batch.tiles[2]
+            .as_ref()
+            .expect("third tile succeeds")
+            .codestream,
+        expected.codestream
+    );
+}
+
+#[test]
 fn float97_batch_transcode_groups_components_across_tiles() {
     for fixture in [
         BatchFixture {
