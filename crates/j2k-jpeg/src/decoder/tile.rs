@@ -462,3 +462,6 @@ pub fn decode_tile_region_scaled_into_in_context_with_options(
     let dec = Decoder::from_view_in_context(JpegView::parse_with_options(bytes, options)?, ctx)?;
     dec.decode_region_scaled_into_with_scratch(pool, out, stride, fmt, roi, scale)
 }
+
+#[cfg(test)]
+mod tests;
