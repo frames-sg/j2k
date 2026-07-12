@@ -589,3 +589,6 @@ mod tests {
             .contains("record after build-finished on line 2"));
     }
 }
+
+#[cfg(test)]
+mod edge_tests;

@@ -624,3 +624,6 @@ mod unsafe_audit_tests {
         assert!(!error.to_string().is_empty());
     }
 }
+
+#[cfg(all(test, unix))]
+mod command_tests;
