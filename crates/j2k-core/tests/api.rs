@@ -2,11 +2,12 @@ use j2k_core::{
     copy_tight_pixels_to_strided_output, strided_output_len, submit_ready_device,
     validate_cuda_surface_backend_request, validate_strided_output_buffer, BackendCapabilities,
     BackendKind, BackendRequest, BufferError, CodecContext, CodecError, CpuFeatures,
-    DecoderContext, DeviceSubmission, DeviceSubmitSession, DeviceSurface, Downscale, ImageCodec,
-    ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PassthroughCandidate, PassthroughDecision,
-    PassthroughRejectReason, PassthroughRequirements, PixelFormat, PixelLayout, ReadySubmission,
-    Rect, SampleType, ScratchPool, TileBatchDecodeDevice, TileBatchDecodeManyDevice,
-    TileBatchDecodeSubmit, TileBatchOptions, TileRegionScaledDeviceDecodeRequest,
+    DecoderContext, DeviceSubmission, DeviceSubmitSession, DeviceSurface, Downscale,
+    HostAllocationBudget, ImageCodec, ImageDecode, ImageDecodeDevice, ImageDecodeSubmit,
+    PassthroughCandidate, PassthroughDecision, PassthroughRejectReason, PassthroughRequirements,
+    PixelFormat, PixelLayout, ReadySubmission, Rect, SampleType, ScratchPool,
+    TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit, TileBatchOptions,
+    TileRegionScaledDeviceDecodeRequest,
 };
 use j2k_core::{
     CodedUnitLayout, Colorspace, CompressedPayloadKind, CompressedTransferSyntax, Info, TileLayout,
@@ -90,6 +91,61 @@ fn downscale_reports_expected_denominators() {
     assert_eq!(Downscale::Half.denominator(), 2);
     assert_eq!(Downscale::Quarter.denominator(), 4);
     assert_eq!(Downscale::Eighth.denominator(), 8);
+    assert_eq!(Downscale::None.output_block_size(), 8);
+    assert_eq!(Downscale::Half.output_block_size(), 4);
+    assert_eq!(Downscale::Quarter.output_block_size(), 2);
+    assert_eq!(Downscale::Eighth.output_block_size(), 1);
+}
+
+#[test]
+fn small_geometry_and_host_budget_accessors_preserve_saturating_contracts() {
+    let layout = CodedUnitLayout {
+        unit_width: 8,
+        unit_height: 8,
+        units_x: u32::MAX,
+        units_y: 2,
+    };
+    assert_eq!(layout.unit_count(), u32::MAX);
+
+    let mut budget = HostAllocationBudget::new(7);
+    assert_eq!(budget.cap_bytes(), 7);
+    budget.account_bytes(7).expect("exact host budget");
+    let error = budget.account_bytes(1).expect_err("one byte over cap");
+    assert_eq!(error.requested_bytes(), 8);
+    assert_eq!(error.cap_bytes(), 7);
+}
+
+#[test]
+fn batch_decode_error_conversions_preserve_display_and_error_sources() {
+    let tile_source = std::io::Error::other("fixture failure");
+    let tile: j2k_core::BatchDecodeError<std::io::Error> = j2k_core::TileBatchError {
+        index: 3,
+        source: tile_source,
+    }
+    .into();
+    assert_eq!(tile.to_string(), "tile 3 decode failed: fixture failure");
+    let tile_wrapper = std::error::Error::source(&tile).expect("tile wrapper source");
+    let tile_error = tile_wrapper
+        .downcast_ref::<j2k_core::TileBatchError<std::io::Error>>()
+        .expect("typed tile source");
+    assert_eq!(tile_error.index, 3);
+    assert_eq!(
+        std::error::Error::source(tile_error)
+            .expect("codec source")
+            .to_string(),
+        "fixture failure"
+    );
+
+    let infrastructure: j2k_core::BatchDecodeError<std::io::Error> =
+        j2k_core::BatchInfrastructureError::SchedulerPoisoned.into();
+    assert_eq!(
+        infrastructure.to_string(),
+        "batch scheduler state was poisoned"
+    );
+    assert!(std::error::Error::source(&infrastructure)
+        .expect("infrastructure source")
+        .downcast_ref::<j2k_core::BatchInfrastructureError>()
+        .is_some());
 }
 
 #[test]
