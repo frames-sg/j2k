@@ -608,3 +608,6 @@ fn map_native_jp2_error(error: NativeDecodeError) -> J2kError {
         },
     }
 }
+
+#[cfg(test)]
+mod tests;
