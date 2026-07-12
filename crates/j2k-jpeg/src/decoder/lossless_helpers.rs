@@ -745,21 +745,4 @@ pub(super) fn read_gray16_sample(out: &[u8], offset: usize) -> u16 {
 }
 
 #[cfg(test)]
-mod restart_allocation_tests {
-    use super::{restart_segment_capacity, JpegError, RestartSegment};
-
-    #[test]
-    fn restart_segment_capacity_has_an_exact_shared_cap_boundary() {
-        let max_segments =
-            j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES / core::mem::size_of::<RestartSegment>();
-        let max_mcus = u32::try_from(max_segments).expect("restart boundary fits u32");
-        assert_eq!(
-            restart_segment_capacity(max_mcus, 1).expect("exact restart boundary"),
-            max_segments
-        );
-        assert!(matches!(
-            restart_segment_capacity(max_mcus + 1, 1),
-            Err(JpegError::MemoryCapExceeded { requested, cap }) if requested > cap
-        ));
-    }
-}
+mod tests;

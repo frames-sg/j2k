@@ -13,6 +13,9 @@ mod dispatch;
 mod owned_output;
 mod profile;
 
+#[cfg(test)]
+mod tests;
+
 use self::dispatch::OutputRoute;
 use self::profile::DecodeProfileRecord;
 

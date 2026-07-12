@@ -5,6 +5,9 @@
 mod construction;
 mod progressive_quant;
 
+#[cfg(test)]
+mod tests;
+
 use construction::PreparedConstructionBudget;
 use progressive_quant::latch_progressive_quant_tables;
 

@@ -2,7 +2,10 @@
 
 use j2k_core::{Downscale, PixelFormat};
 
-use super::{Decoder, Rect};
+use crate::decoder::OutputFormat;
+use crate::ScratchPool;
+
+use super::{Decoder, DownscaleFactor, Rect};
 
 fn valid_lossless_gray_jpeg(width: u16, height: u16, precision: u8) -> Vec<u8> {
     let [height_hi, height_lo] = height.to_be_bytes();
@@ -168,4 +171,51 @@ fn lossless_color16_scaled_region_preserves_source_roi_for_rgb_and_rgba() {
         .chunks_exact(8)
         .all(|pixel| { pixel == [0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0xFF, 0xFF] }));
     assert_eq!(rgba_outcome.decoded, source_roi());
+}
+
+#[test]
+fn lossless_output_format_routing_preserves_custom_alpha() {
+    let bytes = valid_lossless_color_jpeg(2, 2, 8);
+    let decoder = Decoder::new(&bytes).expect("valid lossless color8 fixture");
+    let mut rgba = vec![0; 2 * 2 * 4];
+    let mut pool = ScratchPool::new();
+
+    decoder
+        .decode_into_output_format_with_scratch(
+            &mut pool,
+            &mut rgba,
+            2 * 4,
+            OutputFormat::Rgba8 { alpha: 17 },
+        )
+        .expect("lossless custom-alpha RGBA decode");
+
+    assert!(rgba
+        .chunks_exact(4)
+        .all(|pixel| pixel == [128, 128, 128, 17]));
+}
+
+#[test]
+fn lossless_scaled_region_output_format_preserves_custom_alpha16() {
+    let bytes = valid_lossless_color_jpeg(16, 16, 16);
+    let decoder = Decoder::new(&bytes).expect("valid lossless color16 fixture");
+    let mut rgba = vec![0; 4 * 4 * 8];
+    let mut pool = ScratchPool::new();
+
+    let outcome = decoder
+        .decode_region_into_output_format_with_scratch(
+            &mut pool,
+            &mut rgba,
+            4 * 8,
+            OutputFormat::Rgba16Scaled {
+                alpha: 0x1234,
+                factor: DownscaleFactor::Half,
+            },
+            source_roi(),
+        )
+        .expect("lossless custom-alpha RGBA16 region decode");
+
+    assert!(rgba
+        .chunks_exact(8)
+        .all(|pixel| { pixel == [0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x34, 0x12] }));
+    assert_eq!(outcome.decoded, source_roi());
 }
