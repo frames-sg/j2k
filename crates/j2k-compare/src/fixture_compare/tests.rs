@@ -7,8 +7,8 @@ use super::metadata::{
 };
 use super::{
     canonicalize_manifest_row_path, publication_blockers, unique_input_count, BenchmarkMode, Codec,
-    Container, FixtureCase, MixedFixtureBatch, Operation, OperationClass, DEFAULT_CASE_BATCH_SIZES,
-    DEFAULT_MIXED_BATCH_SIZES,
+    Container, DecoderKind, FixtureCase, MixedFixtureBatch, Operation, OperationClass,
+    DEFAULT_CASE_BATCH_SIZES, DEFAULT_MIXED_BATCH_SIZES,
 };
 use crate::common;
 use j2k_core::{Downscale, PixelFormat, Rect};
@@ -191,6 +191,125 @@ fn mixed_labels_skip_labels_blockers_and_rows_have_direct_owners() {
         "openjpeg-htj2k-roi-scaled-noncomparable",
     );
     assert_eq!(row.split('\t').count(), 29);
+}
+
+#[test]
+fn decode_helpers_cover_crop_labels_flattening_and_mixed_rotation() {
+    let gray = (0_u8..16).collect::<Vec<_>>();
+    let cropped = super::decode::crop_interleaved(
+        &gray,
+        (4, 4),
+        Rect {
+            x: 1,
+            y: 1,
+            w: 2,
+            h: 2,
+        },
+        PixelFormat::Gray8,
+    )
+    .expect("gray crop");
+    assert_eq!(cropped, [5, 6, 9, 10]);
+
+    let rgb = (0_u8..24).collect::<Vec<_>>();
+    let cropped = super::decode::crop_interleaved(
+        &rgb,
+        (4, 2),
+        Rect {
+            x: 2,
+            y: 0,
+            w: 2,
+            h: 2,
+        },
+        PixelFormat::Rgb8,
+    )
+    .expect("RGB crop");
+    assert_eq!(cropped, [6, 7, 8, 9, 10, 11, 18, 19, 20, 21, 22, 23]);
+
+    assert!(super::decode::crop_interleaved(
+        &gray,
+        (4, 4),
+        Rect {
+            x: 3,
+            y: 3,
+            w: 2,
+            h: 2,
+        },
+        PixelFormat::Gray8,
+    )
+    .unwrap_err()
+    .contains("exceeds"));
+    assert!(super::decode::crop_interleaved(
+        &gray[..15],
+        (4, 4),
+        Rect {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+        },
+        PixelFormat::Gray8,
+    )
+    .unwrap_err()
+    .contains("scaled source length"));
+
+    assert_eq!(
+        super::decode::flatten_outputs(vec![vec![1, 2], vec![], vec![3]]),
+        [1, 2, 3]
+    );
+    assert_eq!(
+        super::decode::pixel_format_label(PixelFormat::Gray8),
+        "gray8"
+    );
+    assert_eq!(super::decode::pixel_format_label(PixelFormat::Rgb8), "rgb8");
+    assert_eq!(
+        super::decode::pixel_format_label(PixelFormat::Rgba8),
+        "unsupported"
+    );
+
+    let first = fixture_case("first", "test", None, Container::RawCodestream);
+    let second = fixture_case("second", "test", None, Container::RawCodestream);
+    let mixed = MixedFixtureBatch {
+        name: "rotation".to_string(),
+        cases: vec![first, second],
+        format: PixelFormat::Rgb8,
+        operation_class: OperationClass::Full,
+    };
+    assert_eq!(super::decode::mixed_case_at(&mixed, 0).name, "first");
+    assert_eq!(super::decode::mixed_case_at(&mixed, 3).name, "second");
+}
+
+#[test]
+fn decode_routing_helpers_fail_before_external_processes_for_unsupported_shapes() {
+    let mut case = fixture_case("unsupported", "test", None, Container::RawCodestream);
+    case.format = PixelFormat::Rgba8;
+    let error = super::decode::decode_external_once(
+        BenchmarkMode::Capability,
+        &case,
+        DecoderKind::OpenJpeg,
+        &case.bytes,
+    )
+    .expect_err("unsupported output format");
+    assert!(error.contains("does not support Rgba8"));
+
+    assert_eq!(
+        super::decode::decode_method_label(BenchmarkMode::Capability, DecoderKind::OpenJph, &case,),
+        "openjph-cli-process-output-pnm"
+    );
+    assert_eq!(
+        super::decode::decode_method_label(BenchmarkMode::Capability, DecoderKind::Kakadu, &case,),
+        "kakadu-cli-process-output-pnm"
+    );
+    assert_eq!(
+        super::decode::decode_method_label(BenchmarkMode::Capability, DecoderKind::OpenJpeg, &case,),
+        "native"
+    );
+    assert!(super::decode::decode_external_region_scaled_emulated_once(
+        &case,
+        DecoderKind::OpenJpeg,
+        &case.bytes,
+    )
+    .unwrap_err()
+    .contains("non-ROI+scaled"));
 }
 
 fn fixture_case(
