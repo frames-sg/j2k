@@ -62,7 +62,7 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `0d3139b5`. No push, release tag, crate
+  before this ledger refresh is `35beb9b4`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -86,18 +86,25 @@ the issue sections below; this capsule is only the current continuation state.
   behavior tests through `53c101f4`. Compiler-region coverage evidence landed
   in `f1d4b6fa`; `0d3139b5` then made dependency-macro expansion records an
   explicit out-of-repository disposition without hiding repository regions.
-  The exact detached host run at `0d3139b5` completed the full host matrix and
+  Adoption artifact reuse now requires regular files and has focused parser
+  regressions (`592529b2`). Executable-line evaluation no longer treats
+  compiler-mapped documentation or attributes as runtime statements
+  (`7e0efdc8`). The adoption ownership policy was then split at a cohesive
+  policy boundary rather than raising its 500-line ratchet (`35beb9b4`). The
+  clean exact-SHA host run at `35beb9b4` completed the full host matrix and
   411-test repository policy suite, generated schema-v4 LCOV and LLVM region
-  artifacts, and failed the real gate at 78.3307% (79,009 / 100,866). Reaching
-  80% requires 1,684 additional covered lines. The report has 292 uncovered
-  functions, 429 uncovered executable bodies, 485 compiler-instrumented
-  same-line deferred bodies with zero counts, 172 compiler-noninstrumentable
-  deferred bodies recorded without false failure, and 660 uncovered opaque
-  macros. This replaces the former 1,490-body line-only ambiguity with
-  compiler-grounded outcomes. All subagents are stopped; root alone owns the
-  remaining coverage proof, settled aggregate gates, ledger, and exact-SHA
-  handoff. Interrupted adoption-test work remains preserved and unstaged and
-  is not part of this exact checkpoint.
+  artifacts, and failed the real gate at 76.8146% (64,227 / 83,613). Reaching
+  the exact 80% boundary of 66,891 requires 2,664 additional covered executable
+  lines. The report has 289 uncovered functions, 429 uncovered executable
+  bodies, 481 compiler-instrumented same-line deferred bodies with zero counts,
+  172 compiler-noninstrumentable deferred bodies recorded without false
+  failure, and 640 uncovered opaque macros. All subagents are stopped; root
+  alone owns the remaining coverage proof, settled aggregate gates, ledger,
+  and exact-SHA handoff. The next focused tranche is release-critical xtask
+  behavior in semver, codegen rollback, release/package validation, benchmark
+  command construction, and quality-gate dispatch. Do not run another full
+  coverage matrix until that tranche compiles, passes focused tests, and is
+  committed.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -410,7 +417,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `0d3139b5` is 78.3307% (79,009 / 100,866); close the 1,684-line numeric gap plus 292 function, 429 body, 485 zero-count deferred-region, and 660 opaque-macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `35beb9b4` is 76.8146% (64,227 / 83,613); close the 2,664-line numeric gap plus 289 function, 429 body, 481 zero-count deferred-region, and 640 opaque-macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -948,6 +955,31 @@ source paths in LLVM function expansion metadata; `0d3139b5` regression-tests
 the narrow disposition that ignores only out-of-repository expansion regions,
 still requires repository file evidence, and rejects relative path escapes.
 No threshold, exclusion, or line-count ratchet was changed.
+
+The next exact compiler-region checkpoint at
+`35beb9b41a2fc557c8f861c8913af4b2b7131a93` uses schema
+`j2k-changed-line-coverage-v4` with the same fail-closed lane and paired LCOV
+and LLVM-region evidence. Before this run, `7e0efdc8` corrected a semantic
+measurement defect: compiler line mappings on documentation and attributes no
+longer inflate the executable denominator, while empty function bodies remain
+measurable. `35beb9b4` then split adoption policy ownership after the first
+attempt exposed a real 500-line structural-ratchet failure. The clean exact-SHA
+run completed the host test/parity matrix and all 411 repository policies with
+one established ignore. It failed the genuine coverage gates at 64,227 of
+83,613 executable lines (76.8146%). The exact integer requirement is 66,891,
+leaving a 2,664-line numeric gap.
+
+The same report records 289 changed functions without a covered body, 429
+multiline executable bodies without a covered body, 481 same-line deferred
+bodies with zero-count compiler regions, 172 compiler-noninstrumentable
+deferred bodies, 640 opaque macros, four absent instrumentable files, and no
+mixed production/test lines. The largest actionable uncovered release-tooling
+files are `xtask/src/semver.rs` (295 lines), `codegen_commands.rs` (265),
+`release_commands.rs` (260), `benchmark_commands.rs` (218), and
+`quality_commands.rs` (206). These control API evidence, rollback, packaging,
+benchmark provenance, and quality gates, so the next tranche must add
+behavioral failure-path coverage there rather than chase incidental lines.
+Another full coverage run is deferred until that focused tranche is committed.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
