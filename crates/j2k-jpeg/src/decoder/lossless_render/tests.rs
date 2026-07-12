@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::*;
 use j2k_core::{Downscale, PixelFormat};
+
+use super::{Decoder, Rect};
 
 fn valid_lossless_gray_jpeg(width: u16, height: u16, precision: u8) -> Vec<u8> {
     let [height_hi, height_lo] = height.to_be_bytes();
