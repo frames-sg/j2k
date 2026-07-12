@@ -414,6 +414,14 @@ fn validate_publish_workflow(errors: &mut Vec<String>) -> Result<(), String> {
     let workflow_path = Path::new(".github/workflows/publish.yml");
     let workflow_source = fs::read_to_string(workflow_path)
         .map_err(|err| format!("failed to read {}: {err}", workflow_path.display()))?;
+    validate_publish_workflow_source(&workflow_source, errors)
+}
+
+fn validate_publish_workflow_source(
+    workflow_source: &str,
+    errors: &mut Vec<String>,
+) -> Result<(), String> {
+    let workflow_path = Path::new(".github/workflows/publish.yml");
     for required in [
         "--origin-url \"${origin_url}\"",
         "--server-url \"${GITHUB_SERVER_URL}\"",
@@ -427,7 +435,7 @@ fn validate_publish_workflow(errors: &mut Vec<String>) -> Result<(), String> {
             ));
         }
     }
-    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow_source)
+    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(workflow_source)
         .map_err(|err| format!("failed to parse {}: {err}", workflow_path.display()))?;
     let mut crates = Vec::new();
     collect_publish_workflow_crates(&workflow, &mut crates);
@@ -507,7 +515,12 @@ fn validate_publish_script(errors: &mut Vec<String>) -> Result<(), String> {
     let script_path = Path::new("scripts/publish-crate.sh");
     let script = fs::read_to_string(script_path)
         .map_err(|err| format!("failed to read {}: {err}", script_path.display()))?;
-    let crates = shell_array_values(&script, "publishable_crates").ok_or_else(|| {
+    validate_publish_script_source(&script, errors)
+}
+
+fn validate_publish_script_source(script: &str, errors: &mut Vec<String>) -> Result<(), String> {
+    let script_path = Path::new("scripts/publish-crate.sh");
+    let crates = shell_array_values(script, "publishable_crates").ok_or_else(|| {
         format!(
             "{} does not define the publishable_crates shell array",
             script_path.display()
@@ -527,7 +540,7 @@ fn validate_publish_script(errors: &mut Vec<String>) -> Result<(), String> {
     }
 
     let independent =
-        shell_array_values(&script, "registry_independent_crates").ok_or_else(|| {
+        shell_array_values(script, "registry_independent_crates").ok_or_else(|| {
             format!(
                 "{} does not define the registry_independent_crates shell array",
                 script_path.display()
@@ -610,6 +623,12 @@ fn validate_release_docs(errors: &mut Vec<String>) -> Result<(), String> {
     let release_doc_path = Path::new("docs/release.md");
     let release_doc = fs::read_to_string(release_doc_path)
         .map_err(|err| format!("failed to read {}: {err}", release_doc_path.display()))?;
+    validate_release_docs_source(&release_doc, errors);
+    Ok(())
+}
+
+fn validate_release_docs_source(release_doc: &str, errors: &mut Vec<String>) {
+    let release_doc_path = Path::new("docs/release.md");
     for package in PUBLISHABLE_PACKAGES {
         if !release_doc.contains(&format!("`{package}`")) {
             errors.push(format!(
@@ -634,7 +653,6 @@ fn validate_release_docs(errors: &mut Vec<String>) -> Result<(), String> {
             ));
         }
     }
-    Ok(())
 }
 
 fn str_set(values: &[&'static str]) -> BTreeSet<&'static str> {
