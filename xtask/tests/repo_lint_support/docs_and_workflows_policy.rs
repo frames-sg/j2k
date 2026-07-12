@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod adoption_benchmark_policy;
 mod decoder_fixture_policy;
 mod documentation_api_evidence;
 mod duplication_policy;

@@ -324,6 +324,7 @@ fn docs_and_workflows_policy_children_stay_split_by_responsibility() {
     );
     assert_pattern_checks(&[
         PatternCheck::new("docs/workflows policy module shell", &shell).required(&[
+            "mod adoption_benchmark_policy;",
             "mod decoder_fixture_policy;",
             "mod documentation_api_evidence;",
             "mod duplication_policy;",
@@ -337,6 +338,7 @@ fn docs_and_workflows_policy_children_stay_split_by_responsibility() {
 
     let policy_dir = "xtask/tests/repo_lint_support/docs_and_workflows_policy";
     for (leaf, max_lines) in [
+        ("adoption_benchmark_policy.rs", 225),
         ("documentation_api_evidence.rs", 100),
         ("stable_api_evidence.rs", 175),
         ("stable_api_governance.rs", 225),
