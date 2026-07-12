@@ -61,8 +61,8 @@ NVIDIA and exact-candidate proof rather than additional unowned source edits.
 Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
-- Release state: **blocked** and unfrozen. The latest settled source SHA is
-  `114275ebdfe07f2bc3b99b130035b63c00f1efd4`. No push, release tag, crate
+- Release state: **blocked** and unfrozen. The latest settled source commit
+  before this ledger refresh is `cef2ba40`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -79,16 +79,20 @@ the issue sections below; this capsule is only the current continuation state.
   validation and failure stop (`3c2d1793`). Host/Metal/CUDA coverage ownership
   is partitioned with schema v3 and exact-SHA/lane provenance (`f3823de9`), and
   covered macro invocations no longer fail merely because the AST treats the
-  invocation as opaque (`d717f7c8`). Release/semver, adoption runner,
-  benchmark/codegen, compare, transcode, JP2 metadata, typed stage-error, and
-  JPEG decoder boundaries now have focused behavior tests through `114275eb`.
-  The exact detached host run at that SHA completed the full host matrix and
-  failed the real gate at 76.0476% (76,459 / 100,541), leaving a 3,974-line
-  numeric gap plus 390 uncovered functions, 462 uncovered executable bodies,
-  1,490 one-line deferred closure bodies, and 791 uncovered opaque macros.
-  Root owns the coverage proof, settled aggregate gates, ledger, and exact-SHA
-  handoff; delegated owners are bounded to native tests, xtask command tests,
-  and compiler-region evidence for deferred closures.
+  invocation as opaque (`d717f7c8`). Release/semver, adoption runner/artifact
+  generation, benchmark/codegen, compare, transcode, JP2 metadata, typed
+  stage-error, native SOT parsing, and JPEG decoder boundaries now have focused
+  behavior tests through `cef2ba40`. The exact detached host run at
+  `b34ab401` completed the full host matrix and failed the real gate at
+  77.7123% (78,149 / 100,562), leaving a 2,301-line numeric gap plus 306
+  uncovered functions, 433 uncovered executable bodies, 1,490 one-line
+  deferred closure bodies, and 666 uncovered opaque macros. That exact run
+  passed repo-lint 411/411 with one established ignore. The later `cef2ba40`
+  JPEG tile tranche is not included in those aggregate numbers; its focused
+  LLVM evidence reached 99.29% for `decoder/tile.rs` and 94.63% for the
+  implicated fast-420 row source. Root owns the coverage proof, settled
+  aggregate gates, ledger, and exact-SHA handoff; delegated owners are bounded
+  to facade, JPEG planning/rendering, and coverage-tool behavior tests.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -401,7 +405,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v3 host evidence at `114275eb` is 76.0476% (76,459 / 100,541); close the 3,974-line numeric gap and compiler-grounded function/body/deferred/macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v3 host evidence at `b34ab401` is 77.7123% (78,149 / 100,562); close the 2,301-line numeric gap and compiler-grounded function/body/deferred/macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -901,6 +905,20 @@ instrumentable source regions with exact-SHA/lane provenance, require positive
 counts for real closure-body regions, and fail closed on missing or stale
 region evidence; it must not accept the shared creation-site line, add an
 exclusion, or lower the threshold.
+
+The next exact committed checkpoint at
+`b34ab401100cf25a3f3d5fd3a138cf34049667b5` also uses schema
+`j2k-changed-line-coverage-v3` and scope `non-accelerator-production`. Its
+detached clean worktree ran the full host test/parity and 411-test repository
+policy matrix, then failed only the genuine coverage gates at 78,149 of
+100,562 measurable lines (77.7123%). This is a gain of 1,690 covered lines
+over `114275eb`; the remaining numeric gap is 2,301 lines. Uncovered
+instrumentable functions fell from 390 to 306, executable bodies from 462 to
+433, and opaque macros from 791 to 666. The 1,490 deferred-body count remained
+unchanged, so compiler-region evidence remains a separate blocker rather than
+something that can be cleared by shared source-line execution. Commits after
+this exact checkpoint, including `a809caeb` and `cef2ba40`, require the next
+detached aggregate run before their gains count as release evidence.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
