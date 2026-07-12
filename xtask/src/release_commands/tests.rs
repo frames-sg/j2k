@@ -4,11 +4,14 @@ use std::collections::BTreeSet;
 
 use super::{
     collect_publish_workflow_crates, has_docs_rs_metadata, has_lib_target, package_name,
-    publish_crate_from_run_line, publish_false, shell_array_values,
+    publish_crate_from_run_line, publish_false, release_cpu, release_integrity, shell_array_values,
     validate_package_gate_partition, validate_publish_script_source,
     validate_publish_workflow_source, validate_release_docs_source,
     validate_unpublished_dependencies, workspace_package_records,
 };
+
+#[cfg(unix)]
+use crate::{command_support::use_test_cargo_program, test_command::RecordingProgram};
 
 #[test]
 fn publish_workflow_parser_collects_only_concrete_package_invocations() {
@@ -191,4 +194,25 @@ fn checked_in_publish_workflow_script_docs_and_partitions_agree() {
     validate_release_docs_source(include_str!("../../../docs/release.md"), &mut errors);
 
     assert!(errors.is_empty(), "release contract drift: {errors:#?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn release_cpu_executes_the_complete_fake_cargo_plan() {
+    let recording = RecordingProgram::new("release-command-test", "");
+    let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+
+    release_cpu().expect("release CPU plan");
+
+    let log = recording.log();
+    assert!(log.starts_with("test --release -p j2k-core -p j2k-codec-math"));
+    assert!(log.contains("-p j2k-native -p j2k -p j2k-tilecodec -p j2k-cli|"));
+    assert_eq!(log.lines().count(), 1);
+}
+
+#[test]
+fn release_integrity_rejects_invalid_modes_before_external_work() {
+    let error = release_integrity(["--unknown".to_string()].into_iter())
+        .expect_err("unknown release-integrity argument");
+    assert!(error.contains("unknown release-integrity argument"));
 }

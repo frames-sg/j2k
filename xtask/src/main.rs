@@ -36,6 +36,8 @@ mod release_status;
 mod semver;
 mod source_audit;
 mod stable_api;
+#[cfg(all(test, unix))]
+mod test_command;
 
 use benchmark_commands::{bench_build, bench_report, j2k_bench_signoff};
 use clone_audit::clone_audit;

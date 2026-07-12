@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    bench_report, best_version_line, one_line, render_benchmark_report, split_semicolon_list,
-    transcode_metal_bench_args, BenchmarkReport,
+    bench_build, bench_report, best_version_line, j2k_bench_signoff, one_line,
+    render_benchmark_report, split_semicolon_list, transcode_metal_bench_args, BenchmarkReport,
 };
+
+#[cfg(unix)]
+use crate::{command_support::use_test_cargo_program, test_command::RecordingProgram};
 
 #[test]
 fn transcode_metal_bench_enables_its_declared_internal_surface() {
@@ -20,6 +23,28 @@ fn transcode_metal_bench_enables_its_declared_internal_surface() {
             "--no-run",
         ]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn benchmark_build_and_signoff_execute_the_complete_fake_cargo_plan() {
+    let recording = RecordingProgram::new(
+        "benchmark-command-test",
+        "if [ \"$1\" = test ]; then printf 'test result: ok. 100 passed; 0 failed;\\n'; fi",
+    );
+    let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+
+    bench_build().expect("benchmark build plan");
+    j2k_bench_signoff().expect("benchmark signoff plan");
+
+    let log = recording.log();
+    assert!(log.contains("bench -p j2k --bench public_api --no-run|"));
+    assert!(log.contains(
+        "bench -p j2k-transcode-metal --bench dct97 --features bench-internals --no-run|"
+    ));
+    assert!(log.contains("test -p j2k-compare --test in_process_parity -- --nocapture|"));
+    assert!(log.contains("test -p j2k-jpeg --features bench-libjpeg-turbo --test libjpeg_turbo_compare -- --nocapture|"));
+    assert_eq!(log.lines().count(), 18);
 }
 
 #[test]

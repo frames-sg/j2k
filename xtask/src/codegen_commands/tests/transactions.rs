@@ -7,8 +7,9 @@ use std::{
 };
 
 use super::super::{
-    ensure_path_absent, remove_file_if_present, snapshot_sidecar_path, with_cleanup_errors,
-    write_snapshot_pair_transactionally, SNAPSHOT_TRANSACTION_NONCE,
+    ensure_path_absent, remove_file_if_present, rollback_snapshot_install, snapshot_sidecar_path,
+    with_cleanup_errors, write_snapshot_pair_transactionally, SnapshotTransactionEntry,
+    SNAPSHOT_TRANSACTION_NONCE,
 };
 
 static TRANSACTION_TEST_SERIAL: Mutex<()> = Mutex::new(());
@@ -172,5 +173,45 @@ fn transaction_file_helpers_distinguish_absent_files_and_cleanup_context() {
         ),
         "primary; rollback/cleanup failures: first; second"
     );
+    fs::remove_dir_all(directory).expect("clean transaction test directory");
+}
+
+#[test]
+fn rollback_removes_partial_installs_restores_both_originals_and_cleans_staging() {
+    let _serial = serial();
+    let directory = transaction_test_directory("rollback");
+    let first_target = directory.join("ordinary.txt");
+    let second_target = directory.join("hidden.txt");
+    let first_staged = directory.join("ordinary.staged");
+    let second_staged = directory.join("hidden.staged");
+    let first_backup = directory.join("ordinary.backup");
+    let second_backup = directory.join("hidden.backup");
+    fs::write(&first_target, "partially installed ordinary").expect("seed partial install");
+    fs::write(&second_staged, "staged hidden").expect("seed remaining staged file");
+    fs::write(&first_backup, "old ordinary").expect("seed ordinary backup");
+    fs::write(&second_backup, "old hidden").expect("seed hidden backup");
+
+    let entries = [
+        SnapshotTransactionEntry {
+            target: first_target.clone(),
+            staged: first_staged.clone(),
+            backup: first_backup,
+            had_original: true,
+        },
+        SnapshotTransactionEntry {
+            target: second_target.clone(),
+            staged: second_staged.clone(),
+            backup: second_backup,
+            had_original: true,
+        },
+    ];
+
+    let errors = rollback_snapshot_install(&entries, 1);
+
+    assert!(errors.is_empty(), "rollback errors: {errors:#?}");
+    assert_eq!(fs::read_to_string(&first_target).unwrap(), "old ordinary");
+    assert_eq!(fs::read_to_string(&second_target).unwrap(), "old hidden");
+    assert!(!first_staged.exists());
+    assert!(!second_staged.exists());
     fs::remove_dir_all(directory).expect("clean transaction test directory");
 }

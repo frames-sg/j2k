@@ -11,6 +11,8 @@ use super::{
 };
 
 mod api_planning;
+#[cfg(unix)]
+mod command_boundaries;
 mod parsing;
 
 #[test]
