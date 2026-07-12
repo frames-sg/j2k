@@ -139,6 +139,23 @@ fn build_script_root_keeps_its_distinct_source_role() {
 }
 
 #[test]
+fn repository_owned_xtask_rust_fixtures_are_explicitly_test_only() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let fixture_paths = [
+        "xtask/tests/fixtures/clone_audit/inline_test_a.rs",
+        "xtask/tests/fixtures/clone_audit/inline_test_b.rs",
+        "xtask/tests/fixtures/clone_audit/production_clone_a.rs",
+        "xtask/tests/fixtures/clone_audit/production_clone_b.rs",
+    ];
+    let changed = BTreeMap::from(fixture_paths.map(|path| (path.to_string(), BTreeSet::from([1]))));
+    let roots = [("xtask/src/main.rs", SourceRole::Production)];
+    let index = SourceIndex::repository_subset(&root, &changed, &roots).unwrap();
+    for path in fixture_paths {
+        assert_eq!(index.file(path).unwrap().role, SourceRole::TestOnly);
+    }
+}
+
+#[test]
 fn unreachable_role_named_directories_fail_closed() {
     let repository = TestRepository::new();
     repository.write("crate/src/lib.rs", "pub fn production() {}\n");
@@ -147,6 +164,8 @@ fn unreachable_role_named_directories_fail_closed() {
         "crate/src/examples/orphan.rs",
         "crate/src/benches/orphan.rs",
         "crate/src/fuzz/orphan.rs",
+        "xtask/tests/fixtures/other/orphan.rs",
+        "xtask/tests/fixtures/clone_audit/nested/orphan.rs",
     ];
     for path in orphan_paths {
         repository.write(path, "fn orphan() {}\n");

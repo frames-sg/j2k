@@ -273,6 +273,9 @@ pub(super) fn classify_unreached_source(root: &Path, path: &str) -> Result<Sourc
     if path == "third_party/block-0.1.6-patched/src/test_utils.rs" {
         return Ok(SourceRole::TestOnly);
     }
+    if is_clone_audit_fixture(path) {
+        return Ok(SourceRole::TestOnly);
+    }
     if path == "crates/j2k-cuda-runtime/src/cuda_oxide_simt_prelude.rs" {
         return Ok(SourceRole::Generated("cuda-shared-simt-prelude"));
     }
@@ -298,6 +301,11 @@ fn has_rust_extension(path: &str) -> bool {
     Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+}
+
+fn is_clone_audit_fixture(path: &str) -> bool {
+    Path::new(path).parent() == Some(Path::new("xtask/tests/fixtures/clone_audit"))
+        && has_rust_extension(path)
 }
 
 #[cfg(test)]
