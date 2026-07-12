@@ -852,8 +852,8 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn environment_flag_and_stage_cache_preserve_the_first_observed_mode() {
-        const FLAG_KEY: &str = "J2K_PROFILE_TEST_BOOLEAN_FLAG";
-        const MODE_KEY: &str = "J2K_PROFILE_TEST_CACHED_STAGE_MODE";
+        const FLAG_KEY: &str = "PROFILE_TEST_BOOLEAN_FLAG";
+        const MODE_KEY: &str = "PROFILE_TEST_CACHED_STAGE_MODE";
 
         std::env::set_var(FLAG_KEY, " enabled ");
         assert!(env_flag_from_env(FLAG_KEY));
