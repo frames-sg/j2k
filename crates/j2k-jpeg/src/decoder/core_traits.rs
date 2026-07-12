@@ -13,6 +13,9 @@ use crate::allocation::{
 };
 use j2k_core::TileRegionScaledDecodeJob;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn jpeg_passthrough_syntax(info: &Info) -> Option<CompressedTransferSyntax> {
     match info.sof_kind {
         SofKind::Baseline8 if info.bit_depth == 8 => Some(CompressedTransferSyntax::JpegBaseline8),

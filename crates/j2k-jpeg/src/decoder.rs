@@ -126,9 +126,9 @@ mod lossless_render;
 /// create a `info → error` cycle (see `info.rs` header note).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodeOutcome {
-    /// The rectangle actually written to the output buffer. For `decode_into`
-    /// this is always `Rect::full(info.dimensions)`; later milestones add
-    /// `decode_region_into` which can return a narrower rect.
+    /// The source-coordinate rectangle represented by the output buffer.
+    /// Full-image decodes return `Rect::full(info.dimensions)` even when the
+    /// requested output is downscaled; region decodes return their source ROI.
     pub decoded: Rect,
     /// Warnings emitted during parse or decode. Empty when the stream is
     /// syntactically clean and every capability was exercised without fallback.

@@ -18,6 +18,9 @@ use super::{
 };
 use crate::allocation::{try_reserve_for_len_with_live_budget, try_resize_filled};
 
+#[cfg(test)]
+mod tests;
+
 struct OwnedLosslessSampledPlanes<P> {
     c0: Vec<P>,
     c1: Vec<P>,
