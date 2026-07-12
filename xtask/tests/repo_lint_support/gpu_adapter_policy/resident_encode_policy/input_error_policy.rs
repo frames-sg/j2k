@@ -11,7 +11,9 @@ fn resident_input_constructor_uses_a_typed_validation_contract() {
         .expect("read resident input contract");
     let input_error = fs::read_to_string(root.join("crates/j2k-types/src/resident/input_error.rs"))
         .expect("read resident input error contract");
-    let input = format!("{input_root}\n{input_error}");
+    let input_tests = fs::read_to_string(root.join("crates/j2k-types/src/resident/tests.rs"))
+        .expect("read resident input contract tests");
+    let input = format!("{input_root}\n{input_error}\n{input_tests}");
     let cuda = fs::read_to_string(root.join("crates/j2k-cuda/src/encode.rs"))
         .expect("read CUDA resident encode boundary");
     let cuda_tests = fs::read_to_string(root.join("crates/j2k-cuda/src/encode/tests/routing.rs"))
