@@ -136,3 +136,6 @@ pub(super) fn run(metadata: &serde_json::Value) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

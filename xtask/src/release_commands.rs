@@ -689,3 +689,6 @@ pub(super) fn package() -> Result<(), String> {
     }
     package_gate::run(&metadata)
 }
+
+#[cfg(test)]
+mod tests;

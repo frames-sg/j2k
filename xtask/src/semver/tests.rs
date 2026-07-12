@@ -10,6 +10,9 @@ use super::{
     SEMVER_BASELINE_PACKAGES, SEMVER_NEW_PACKAGES,
 };
 
+mod api_planning;
+mod parsing;
+
 #[test]
 fn release_type_uses_cargo_pre_one_compatibility_rules() {
     assert_eq!(
