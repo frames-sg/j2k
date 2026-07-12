@@ -9,6 +9,8 @@ use crate::coverage::evaluation::{coverage_violations, evaluate_changed_coverage
 use crate::coverage::model::{CoverageLane, LcovReport};
 use crate::coverage::source_analysis::SourceIndex;
 
+mod non_executable;
+
 fn changed(
     path: &str,
     lines: impl IntoIterator<Item = usize>,
@@ -80,8 +82,9 @@ fn changed_function_without_covered_body_is_a_host_violation() {
     .unwrap();
 
     assert_eq!(result.absent_instrumentable_files, vec![path.to_string()]);
-    assert!(coverage_violations(CoverageLane::Host, &result)[0]
-        .contains("changed instrumentable functions have no covered body"));
+    assert!(coverage_violations(CoverageLane::Host, &result).iter().any(
+        |violation| violation.contains("changed instrumentable functions have no covered body")
+    ));
 }
 
 #[test]
@@ -146,26 +149,6 @@ fn same_line_cfg_test_and_production_code_fails_closed_even_with_positive_da() {
     assert!(coverage_violations(CoverageLane::Host, &result)
         .iter()
         .any(|violation| violation.contains("split test-only and production syntax")));
-}
-
-#[test]
-fn residual_unmeasured_lines_remain_explicit() {
-    let repository = TestRepository::new();
-    let path = "crates/example/src/lib.rs";
-    let source = "pub struct Value {\n    pub field: u32,\n}\n";
-    repository.write(path, source);
-    let index = SourceIndex::single(path, source).unwrap();
-    let result = evaluate_changed_coverage(
-        CoverageLane::Host,
-        repository.root(),
-        &changed(path, [1]),
-        &LcovReport::default(),
-        &index,
-    )
-    .unwrap();
-
-    assert_eq!(result.unmeasured, [(path.to_string(), 1)]);
-    assert_eq!(result.overall.measurable, 0);
 }
 
 #[test]

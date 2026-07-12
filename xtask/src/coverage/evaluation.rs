@@ -166,14 +166,22 @@ impl ChangedFileEvidence<'_> {
             }
 
             instrumentable_lines.insert(line_number);
+            if !self.analysis.executable_lines.contains(&line_number) {
+                if self
+                    .coverage
+                    .and_then(|coverage| coverage.get(&line_number))
+                    .is_none()
+                {
+                    result.unmeasured.push((self.path.to_string(), line_number));
+                }
+                continue;
+            }
             let Some(count) = self
                 .coverage
                 .and_then(|coverage| coverage.get(&line_number))
             else {
                 result.unmeasured.push((self.path.to_string(), line_number));
-                if self.analysis.executable_lines.contains(&line_number) {
-                    record_measurable_line(result, self.path, line_number, 0);
-                }
+                record_measurable_line(result, self.path, line_number, 0);
                 continue;
             };
             record_measurable_line(result, self.path, line_number, *count);

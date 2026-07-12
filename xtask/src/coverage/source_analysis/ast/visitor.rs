@@ -27,7 +27,9 @@ impl<'ast> Visit<'ast> for AstCollector<'_> {
                 attribute.span().start().line
             ));
         }
-        visit::visit_attribute(self, attribute);
+        // Attribute payloads are compile-time metadata. Descending into them
+        // would misclassify literals in `#[doc = "..."]` and similar metadata
+        // as runtime expressions whenever the enclosing item is executable.
     }
 
     fn visit_item(&mut self, item: &'ast Item) {

@@ -197,6 +197,9 @@ impl AstCollector<'_> {
             body_end,
             required_on_host: required,
         });
+        if required {
+            self.executable_lines.insert(body_start);
+        }
     }
 
     fn visit_attributed_node(

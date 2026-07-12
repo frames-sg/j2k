@@ -59,6 +59,8 @@ fn coverage_tooling_stays_split_by_responsibility() {
     let cfg_provenance_tests = read("xtask/src/coverage/tests/cfg_provenance.rs");
     let deferred_body_tests = read("xtask/src/coverage/tests/deferred_bodies.rs");
     let evaluation_tests = read("xtask/src/coverage/tests/evaluation.rs");
+    let non_executable_evaluation_tests =
+        read("xtask/src/coverage/tests/evaluation/non_executable.rs");
     let executable_evidence_tests = read("xtask/src/coverage/tests/executable_evidence.rs");
     let presence_tests = read("xtask/src/coverage/tests/presence.rs");
     let source_tests = read("xtask/src/coverage/tests/source_analysis.rs");
@@ -212,6 +214,11 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "xtask/src/coverage/tests/evaluation.rs",
             evaluation_tests.as_str(),
             250,
+        ),
+        (
+            "xtask/src/coverage/tests/evaluation/non_executable.rs",
+            non_executable_evaluation_tests.as_str(),
+            100,
         ),
         (
             "xtask/src/coverage/tests/executable_evidence.rs",
@@ -464,6 +471,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "mod visitor;",
             "struct AstCollector",
             "fn visit_attributed_node(",
+            "self.executable_lines.insert(body_start)",
         ]),
         PatternCheck::new("coverage executable-span collector", &source_ast_executable).required(
             &[
@@ -483,6 +491,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "Expr::Macro(expression_macro)",
             "Item::Verbatim(_)",
             "unclassified cfg/test attribute",
+            "Attribute payloads are compile-time metadata",
             "fn visit_fn_arg(",
             "fn visit_pat(",
         ]),
@@ -606,11 +615,19 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "fn cargo_fuzz_manifest_only_grants_reachable_targets_the_fuzz_role()",
         ]),
         PatternCheck::new("coverage evaluation regressions", &evaluation_tests).required(&[
+            "mod non_executable;",
             "fn changed_signature_requires_a_positive_da_record_in_the_function_body()",
             "fn changed_function_without_covered_body_is_a_host_violation()",
-            "fn residual_unmeasured_lines_remain_explicit()",
             "fn registered_shared_accelerator_sources_reach_both_gpu_denominators()",
             "fn generated_and_vendored_sources_have_reviewed_dispositions()",
+        ]),
+        PatternCheck::new(
+            "coverage non-executable-line regressions",
+            &non_executable_evaluation_tests,
+        )
+        .required(&[
+            "fn residual_unmeasured_lines_remain_explicit()",
+            "fn compiler_mapped_documentation_is_not_an_executable_changed_line()",
         ]),
         PatternCheck::new(
             "coverage executable-evidence regressions",
