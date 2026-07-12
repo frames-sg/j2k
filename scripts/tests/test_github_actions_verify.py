@@ -362,6 +362,7 @@ class WorkflowVerificationTests(unittest.TestCase):
 class ReleaseVerificationTests(unittest.TestCase):
     def test_post_freeze_candidate_verifies_ci_and_gpu_without_a_tag(self) -> None:
         api = FakeApi()
+        api.add("/private-vulnerability-reporting", {"enabled": True})
         workflow_metadata(api, "ci.yml", 88)
         api.add(
             "/actions/workflows/88/runs",
@@ -404,8 +405,41 @@ class ReleaseVerificationTests(unittest.TestCase):
             "post-freeze candidate status must not require a release tag",
         )
 
+    def test_post_freeze_candidate_requires_private_vulnerability_reporting(self) -> None:
+        cases = (
+            ({"enabled": False}, "not enabled"),
+            ({"enabled": "yes"}, "must be a boolean"),
+            (
+                verifier.VerificationError("GitHub API request failed with HTTP 403"),
+                "HTTP 403",
+            ),
+        )
+        for response, expected_error in cases:
+            with self.subTest(expected_error=expected_error):
+                api = FakeApi()
+                api.add("/private-vulnerability-reporting", response)
+                with self.assertRaisesRegex(
+                    verifier.VerificationError, expected_error
+                ):
+                    verifier.verify_candidate_evidence(
+                        api,  # type: ignore[arg-type]
+                        candidate_sha=SHA,
+                        ci_workflow="ci.yml",
+                        aggregate_job=verifier.RELEASE_CANDIDATE_JOB,
+                        gpu_workflow="gpu-validation.yml",
+                        cuda_job=verifier.CUDA_JOB,
+                        metal_job=verifier.METAL_JOB,
+                        ci_branch="main",
+                    )
+                self.assertEqual(
+                    api.calls,
+                    [("/private-vulnerability-reporting", ())],
+                    "candidate verification must stop before accepting CI/GPU evidence",
+                )
+
     def test_annotated_tag_is_peeled_and_ci_and_gpu_runs_are_exact(self) -> None:
         api = FakeApi()
+        api.add("/private-vulnerability-reporting", {"enabled": True})
         api.add("/releases/tags/v0.7.0", None)
         api.add(
             "/git/ref/tags/v0.7.0",
@@ -475,6 +509,7 @@ class ReleaseVerificationTests(unittest.TestCase):
             )
 
         annotated = FakeApi()
+        annotated.add("/private-vulnerability-reporting", {"enabled": True})
         annotated.add("/releases/tags/v0.7.0", None)
         annotated.add(
             "/git/ref/tags/v0.7.0",
@@ -527,6 +562,25 @@ class ReleaseVerificationTests(unittest.TestCase):
                 "https://github.com/attacker/frames-sg/j2k",
                 "https://github.com/attacker",
                 "frames-sg/j2k",
+            )
+
+    def test_private_vulnerability_reporting_must_be_enabled(self) -> None:
+        enabled = FakeApi()
+        enabled.add("/private-vulnerability-reporting", {"enabled": True})
+        verifier.require_private_vulnerability_reporting(enabled)  # type: ignore[arg-type]
+
+        disabled = FakeApi()
+        disabled.add("/private-vulnerability-reporting", {"enabled": False})
+        with self.assertRaisesRegex(verifier.VerificationError, "not enabled"):
+            verifier.require_private_vulnerability_reporting(  # type: ignore[arg-type]
+                disabled
+            )
+
+        malformed = FakeApi()
+        malformed.add("/private-vulnerability-reporting", {"enabled": "yes"})
+        with self.assertRaisesRegex(verifier.VerificationError, "must be a boolean"):
+            verifier.require_private_vulnerability_reporting(  # type: ignore[arg-type]
+                malformed
             )
 
     def test_existing_github_release_in_any_state_is_rejected(self) -> None:

@@ -95,6 +95,17 @@ jobs:
           components: clippy
       - run: cargo xtask clippy
 
+  clippy-strict:
+    name: Strict Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+          components: clippy
+      - run: cargo xtask clippy-strict
+
   panic-surface:
     runs-on: ubuntu-latest
     steps:
@@ -104,6 +115,21 @@ jobs:
           toolchain: stable
           components: clippy
       - run: cargo xtask panic-surface
+
+  clone-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: cargo xtask clone-audit
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: j2k-production-clone-audit
+          path: target/clone-audit/report/jscpd-report.json
+          if-no-files-found: error
 
   comparator-parity:
     runs-on: ubuntu-latest
@@ -152,6 +178,13 @@ jobs:
         with:
           toolchain: "1.96"
       - run: cargo install cargo-semver-checks --version 0.48.0 --locked
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: nightly-2026-06-28
+          targets: aarch64-apple-darwin
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
+        with:
+          tool: cargo-public-api@0.52.0
       - run: cargo xtask semver
 
   docs:
@@ -172,7 +205,8 @@ jobs:
           toolchain: stable
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-06-28
+          targets: aarch64-apple-darwin
       - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
         with:
           tool: cargo-public-api@0.52.0
@@ -215,7 +249,8 @@ jobs:
           toolchain: stable
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-06-28
+          targets: aarch64-apple-darwin
       - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
         with:
           tool: cargo-public-api@0.52.0
@@ -381,7 +416,7 @@ jobs:
           toolchain: stable
       - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov@0.8.7
       - run: cargo xtask coverage host
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -412,7 +447,9 @@ jobs:
       - diff-check
       - secret-scan
       - clippy
+      - clippy-strict
       - panic-surface
+      - clone-audit
       - comparator-parity
       - semver
       - docs

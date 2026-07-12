@@ -3,9 +3,10 @@
 use std::fs;
 
 use super::{
-    architecture_doc_dependency_edges, assert_file_pattern_checks, cargo_metadata_workspace_edges,
-    cargo_public_api_required, const_array_block, format_edge, repo_root, rust_sources,
-    xtask_sources, FilePatternCheck,
+    architecture_doc_dependency_edges, assert_file_pattern_checks, assert_pattern_checks,
+    cargo_metadata_workspace_edges, cargo_public_api_required, const_array_block, format_edge,
+    repo_root, rust_sources, stable_api_snapshot_sources, xtask_sources, FilePatternCheck,
+    PatternCheck,
 };
 
 #[test]
@@ -168,7 +169,7 @@ fn public_crates_do_not_reexport_j2k_native() {
 }
 
 #[test]
-fn native_decode_error_mappers_use_the_shared_classification() {
+fn native_decode_error_boundaries_preserve_owned_sources_and_shared_classification() {
     let forbidden_native_matches = [
         "NativeDecodeError::Format",
         "NativeDecodeError::Marker",
@@ -179,35 +180,101 @@ fn native_decode_error_mappers_use_the_shared_classification() {
     let root = repo_root();
     assert_file_pattern_checks(
         root,
-        &[FilePatternCheck::new("crates/j2k-native/src/error.rs")
-            .named("native decode error classification")
-            .required(&[
-                "pub enum DecodeErrorClass",
-                "pub const fn classify(&self)",
-                "direct_plan_unsupported_what(reason)",
-            ])],
+        &[
+            FilePatternCheck::new("crates/j2k-native/src/error.rs")
+                .named("native decode error classification")
+                .required(&[
+                    "pub enum DecodeErrorClass",
+                    "pub const fn classify(&self)",
+                    "direct_plan_unsupported_what(reason)",
+                ]),
+            FilePatternCheck::new("crates/j2k/src/error.rs")
+                .named("facade native decode error mapper")
+                .required(&[
+                    "pub(crate) fn from_native_decode_error(error: NativeDecodeError)",
+                    "match error.classify()",
+                    "Self::NativeDecode",
+                    "source: NativeBackendError::decode(error)",
+                ]),
+        ],
     );
 
-    for path in [
-        "crates/j2k/src/error.rs",
-        "crates/j2k-cuda/src/error.rs",
-        "crates/j2k-metal/src/error.rs",
+    let facade = fs::read_to_string(root.join("crates/j2k/src/error.rs"))
+        .expect("read j2k facade error mapper");
+    let facade_production = facade.split("\n#[cfg(test)]").next().unwrap_or(&facade);
+    for forbidden in forbidden_native_matches {
+        assert!(
+            !facade_production.contains(forbidden),
+            "j2k facade mapper must use DecodeErrorClass instead of native internals: {forbidden}"
+        );
+    }
+
+    for (path, native_source_path) in [
+        (
+            "crates/j2k-cuda/src/error.rs",
+            "crates/j2k-cuda/src/error/native_source.rs",
+        ),
+        (
+            "crates/j2k-metal/src/error.rs",
+            "crates/j2k-metal/src/error/native_source.rs",
+        ),
     ] {
         let source =
             fs::read_to_string(root.join(path)).unwrap_or_else(|err| panic!("read {path}: {err}"));
         let production = source.split("\n#[cfg(test)]").next().unwrap_or(&source);
+        let native_source = fs::read_to_string(root.join(native_source_path))
+            .unwrap_or_else(|err| panic!("read {native_source_path}: {err}"));
         assert!(
-            production.contains("NativeDecodeErrorClass")
-                && production.contains("error.classify()"),
-            "{path} must consume j2k_native::DecodeErrorClass"
+            production.contains("NativeDecode {")
+                && production.contains("source: NativeBackendError")
+                && production.contains("source: NativeBackendError::decode(error)")
+                && native_source.contains("pub struct NativeBackendError")
+                && native_source.contains("source.classify()")
+                && native_source.contains("DecodeErrorClass::InputTooShort")
+                && native_source.contains("DecodeErrorClass::InputTruncatedAt")
+                && native_source.contains("DecodeErrorClass::Unsupported")
+                && native_source.contains("impl core::error::Error for NativeBackendError"),
+            "{path} must own opaque native sources and classify them through DecodeErrorClass"
         );
+        assert!(
+            source.contains("fn native_decode_resource_errors_preserve_typed_sources()"),
+            "{path} must retain resource-category parity coverage"
+        );
+        let adapter_boundary = format!("{production}\n{native_source}");
+        for forbidden in ["J2kError::from_native_decode_error", "error.to_string()"] {
+            assert!(
+                !adapter_boundary.contains(forbidden),
+                "{path} must not cross the facade conversion boundary or erase native sources: {forbidden}"
+            );
+        }
         for forbidden in forbidden_native_matches {
             assert!(
-                !production.contains(forbidden),
+                !adapter_boundary.contains(forbidden),
                 "{path} must not match native error internals directly: {forbidden}"
             );
         }
     }
+}
+
+#[test]
+fn facade_backend_errors_require_explicit_classification() {
+    assert_file_pattern_checks(
+        repo_root(),
+        &[FilePatternCheck::new("crates/j2k/src/error.rs")
+            .named("facade backend error classification")
+            .required(&[
+                "pub fn new(kind: BackendErrorKind, message: impl Into<String>)",
+                "pub fn truncated(message: impl Into<String>)",
+                "pub fn not_implemented(message: impl Into<String>)",
+                "pub fn unsupported(message: impl Into<String>)",
+                "pub fn buffer(message: impl Into<String>)",
+                "fn backend_error_kind_drives_codec_classification()",
+            ])
+            .forbidden(&[
+                "impl From<String> for BackendError",
+                "impl From<&str> for BackendError",
+            ])],
+    );
 }
 
 #[test]
@@ -271,14 +338,14 @@ fn obsolete_adaptive_route_policy_model_cannot_return() {
 
     assert_file_pattern_checks(
         root,
-        &[
-            FilePatternCheck::new("crates/j2k/src/adapter/mod.rs")
-                .named("j2k adapter module")
-                .forbidden(&["mod adaptive_route;", "pub mod adaptive_route;"]),
-            FilePatternCheck::new("docs/stable-api-1.0.public-api.txt")
-                .named("stable API snapshot")
-                .forbidden(&["j2k::adapter::adaptive_route"]),
-        ],
+        &[FilePatternCheck::new("crates/j2k/src/adapter/mod.rs")
+            .named("j2k adapter module")
+            .forbidden(&["mod adaptive_route;", "pub mod adaptive_route;"])],
+    );
+    let stable_api = stable_api_snapshot_sources(root);
+    assert_pattern_checks(
+        &[PatternCheck::new("stable API snapshot union", &stable_api)
+            .forbidden(&["j2k::adapter::adaptive_route"])],
     );
 }
 
@@ -344,7 +411,7 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "mod view;",
                     "pub use adapter::encode_stage::{",
                     "pub use context::J2kContext;",
-                    "pub use error::{BackendError, BackendErrorKind, J2kError};",
+                    "pub use error::{BackendError, BackendErrorKind, J2kError, NativeBackendError};",
                     "pub use scratch::J2kScratchPool;",
                     "pub use view::{",
                 ])
@@ -484,12 +551,9 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                 .required(&["mod viewport;", "pub use viewport::{"])
                 .forbidden(&["pub mod viewport;"]),
             FilePatternCheck::new("docs/stable-api-1.0.public-api.txt")
-                .named("stable API snapshot")
+                .named("ordinary stable API snapshot")
                 .forbidden(&[
                     "cuda_dwt53_output_to_j2k_for_test",
-                    "j2k_jpeg::adapter::fast_packet",
-                    "pub mod j2k_jpeg::adapter",
-                    "j2k_jpeg::adapter::",
                     "crate::adapter::DeviceBatchSummary",
                     "pub mod j2k_jpeg::transcode",
                     "j2k_jpeg::transcode::",

@@ -6,6 +6,10 @@ use std::fs;
 
 use super::{assert_pattern_checks, read_source_files, repo_root, PatternCheck};
 
+mod adapter_tests;
+mod owned_output;
+mod support_contracts;
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -51,6 +55,9 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
     let color_convert =
         fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/color_convert.rs"))
             .expect("read JPEG decoder color-convert module");
+    let warning_ownership =
+        fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/warning_ownership.rs"))
+            .expect("read JPEG decoder warning-ownership module");
     let core_traits = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/core_traits.rs"))
         .expect("read JPEG decoder core-traits module");
     let scratch = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/scratch.rs"))
@@ -61,6 +68,17 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
         .expect("read JPEG decoder plan module");
     let routing = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/routing.rs"))
         .expect("read JPEG decoder routing module");
+    let routing_dispatch =
+        fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/routing/dispatch.rs"))
+            .expect("read JPEG decoder output dispatch module");
+    let routing_owned_output =
+        fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/routing/owned_output.rs"))
+            .expect("read JPEG decoder owned-output routing module");
+    let routing_profile =
+        fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/routing/profile.rs"))
+            .expect("read JPEG decoder routing profile module");
+    let routing_sources =
+        format!("{routing}\n{routing_dispatch}\n{routing_owned_output}\n{routing_profile}");
     let rows = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/rows.rs"))
         .expect("read JPEG decoder rows module");
     let tile = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/tile.rs"))
@@ -101,6 +119,31 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
         extended12_root.lines().count() < 40,
         "decoder/extended12.rs must remain a focused module shell"
     );
+    for (path, source, max_lines) in [
+        ("decoder/routing.rs", routing.as_str(), 550usize),
+        (
+            "decoder/routing/dispatch.rs",
+            routing_dispatch.as_str(),
+            320,
+        ),
+        ("decoder/routing/profile.rs", routing_profile.as_str(), 140),
+        (
+            "decoder/routing/owned_output.rs",
+            routing_owned_output.as_str(),
+            140,
+        ),
+        (
+            "decoder/warning_ownership.rs",
+            warning_ownership.as_str(),
+            175,
+        ),
+    ] {
+        assert!(
+            source.lines().count() < max_lines,
+            "crates/j2k-jpeg/src/{path} must stay below {max_lines} lines"
+        );
+        assert!(!source.contains("include!(") && !source.contains("use super::*"));
+    }
     assert!(
         routing.contains("fn decode_lossless_output_format_region_scaled(")
             && routing.contains("self.lossless_plan.as_ref()?;")
@@ -173,6 +216,7 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
             "mod lossless_helpers;",
             "mod lossless_region;",
             "mod color_convert;",
+            "mod warning_ownership;",
             "mod core_traits;",
             "mod scratch;",
             "mod sink_writer;",
@@ -197,11 +241,16 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
             "pub(super) fn build_progressive_plan(",
             "fn build_decode_plan(",
         ]),
-        PatternCheck::new("decoder/routing.rs output ownership", &routing).required(&[
+        PatternCheck::new("decoder routing output ownership", &routing_sources).required(&[
+            "mod dispatch;",
+            "mod profile;",
             "pub fn decode_into(",
             "pub fn decode_request(",
             "pub(super) fn decode_region_into_output_format_with_scratch(",
-            "emit_jpeg_profile_row(",
+            "dispatch_full_output(",
+            "dispatch_region_output(",
+            "struct DecodeProfileRecord",
+            "emit_jpeg_profile_fields(",
         ]),
         PatternCheck::new("decoder/rows.rs row ownership", &rows).required(&[
             "pub fn decode_rows<",
@@ -300,7 +349,6 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
         "lossless render paths must share validation through decoder/lossless_helpers.rs"
     );
     let color_convert_patterns = [
-        "pub(super) fn merged_warnings",
         "pub(super) fn convert_ycbcr8_to_rgb8_in_place",
         "pub(super) fn copy_rgb16_scaled_rect",
     ];
@@ -310,94 +358,12 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
         PatternCheck::new("decoder.rs color-convert helper exclusion", &decoder)
             .forbidden(&color_convert_patterns),
     ]);
-    let scratch_patterns = [
-        "pub(super) fn compute_decode_scratch_bytes",
-        "pub(super) fn compute_lossless_scratch_bytes",
-        "pub(super) fn compute_extended12_planes_scratch_bytes",
-        "pub(super) fn checked_scratch_len",
-        "pub(super) fn checked_usize_product",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder/scratch.rs helpers", &scratch).required(&scratch_patterns),
-        PatternCheck::new("decoder.rs scratch helper exclusion", &decoder)
-            .forbidden(&scratch_patterns),
-    ]);
-    let core_trait_patterns = [
-        "impl ImageCodec for Decoder<'_>",
-        "impl TileBatchDecode for JpegCodec",
-        "pub(super) struct CroppedWriter",
-        "impl<W: ComponentRowWriter + ?Sized> OutputWriter for &mut W",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder/core_traits.rs trait adapters", &core_traits)
-            .required(&core_trait_patterns)
-            .forbidden(&["ComponentWriterAdapter"]),
-        PatternCheck::new("decoder.rs core trait adapter exclusion", &decoder)
-            .forbidden(&core_trait_patterns),
-        PatternCheck::new("decoder.rs component writer adapter exclusion", &decoder)
-            .forbidden(&["ComponentWriterAdapter"]),
-        PatternCheck::new("decoder.rs sink writer re-export", &decoder)
-            .required(&["pub(crate) use self::sink_writer::SinkWriter;"]),
-    ]);
-    let sink_writer_patterns = [
-        "pub(crate) struct SinkWriter",
-        "pub(crate) fn into_rows",
-        "impl<S> InterleavedRgbWriter for SinkWriter<'_, S>",
-        "impl<S> OutputWriter for SinkWriter<'_, S>",
-    ];
-    assert_pattern_checks(&[
-        PatternCheck::new("decoder/sink_writer.rs helpers", &sink_writer)
-            .required(&sink_writer_patterns),
-        PatternCheck::new("decoder.rs sink writer helper exclusion", &decoder)
-            .forbidden(&sink_writer_patterns),
-        PatternCheck::new("bench profile shared sink writer reuse", &bench_support)
-            .required(&[
-                "struct BlackBoxRowSink",
-                "impl RowSink<u8> for BlackBoxRowSink",
-                "SinkWriter::new(&mut sink, rows, dec.backend)",
-            ])
-            .forbidden(&[
-                "struct BenchProfileSinkWriter",
-                "impl InterleavedRgbWriter for BenchProfileSinkWriter",
-                "impl OutputWriter for BenchProfileSinkWriter",
-            ]),
-    ]);
-}
-
-#[test]
-fn jpeg_decoder_owned_outputs_use_decode_request() {
-    let root = repo_root();
-    let decoder = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder.rs"))
-        .expect("read j2k-jpeg decoder");
-    let routing = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/routing.rs"))
-        .expect("read j2k-jpeg decoder routing");
-    let decoder_api = format!("{decoder}\n{routing}");
-    let lib =
-        fs::read_to_string(root.join("crates/j2k-jpeg/src/lib.rs")).expect("read j2k-jpeg lib");
-
-    assert_pattern_checks(&[
-        PatternCheck::new("j2k-jpeg owned-output request API", &decoder_api).required(&[
-            "pub struct DecodeRequest",
-            "pub const fn full(fmt: PixelFormat) -> Self",
-            "pub const fn scaled(fmt: PixelFormat, scale: Downscale) -> Self",
-            "pub const fn region(fmt: PixelFormat, region: Rect) -> Self",
-            "pub const fn region_scaled(fmt: PixelFormat, region: Rect, scale: Downscale) -> Self",
-            "pub fn decode_request(",
-            "fn decode_request_with_scratch(",
-        ]),
-        PatternCheck::new("j2k-jpeg owned-output wrapper removal", &decoder_api).forbidden(&[
-            "pub fn decode(&self, fmt: PixelFormat)",
-            "pub fn decode_scaled(",
-            "pub fn decode_with_scratch(",
-            "pub fn decode_scaled_with_scratch(",
-            "pub fn decode_region(",
-            "pub fn decode_region_scaled(",
-            "pub fn decode_region_with_scratch(",
-            "pub fn decode_region_scaled_with_scratch(",
-        ]),
-        PatternCheck::new("j2k-jpeg DecodeRequest re-export", &lib).required(&[
-            "DecodeOutcome, DecodeRequest",
-            "DecodedTile, Decoder, JpegView",
-        ]),
-    ]);
+    support_contracts::assert_decoder_support_contracts(
+        &decoder,
+        &warning_ownership,
+        &scratch,
+        &core_traits,
+        &sink_writer,
+        &bench_support,
+    );
 }

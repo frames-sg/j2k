@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use super::accelerator_ownership::is_shared_accelerator_path;
+use super::source_analysis::SourceRole;
 
 pub(super) const CHANGED_LINE_THRESHOLD_PERCENT: u64 = 80;
 const HOST_LCOV_PATH: &str = "lcov-host.info";
@@ -11,19 +14,44 @@ const HOST_SUMMARY_PATH: &str = "coverage-host-summary.json";
 const METAL_SUMMARY_PATH: &str = "coverage-metal-summary.json";
 const CUDA_SUMMARY_PATH: &str = "coverage-cuda-summary.json";
 
-const METAL_CRATE_PREFIXES: &[&str] = &[
-    "crates/j2k-metal/",
-    "crates/j2k-metal-support/",
-    "crates/j2k-jpeg-metal/",
-    "crates/j2k-transcode-metal/",
-];
+struct AcceleratorLaneSpec {
+    packages: &'static [AcceleratorPackageSpec],
+}
 
-const CUDA_CRATE_PREFIXES: &[&str] = &[
-    "crates/j2k-cuda-runtime/",
-    "crates/j2k-cuda/",
-    "crates/j2k-jpeg-cuda/",
-    "crates/j2k-transcode-cuda/",
-];
+struct AcceleratorPackageSpec {
+    name: &'static str,
+    source_prefix: &'static str,
+}
+
+const METAL_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
+    packages: &[
+        accelerator_package("j2k-metal-support", "crates/j2k-metal-support/"),
+        accelerator_package("j2k-jpeg-metal", "crates/j2k-jpeg-metal/"),
+        accelerator_package("j2k-metal", "crates/j2k-metal/"),
+        accelerator_package("j2k-transcode-metal", "crates/j2k-transcode-metal/"),
+    ],
+};
+
+const CUDA_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
+    packages: &[
+        accelerator_package("j2k-cuda-runtime", "crates/j2k-cuda-runtime/"),
+        accelerator_package("j2k-jpeg-cuda", "crates/j2k-jpeg-cuda/"),
+        accelerator_package("j2k-cuda", "crates/j2k-cuda/"),
+        accelerator_package("j2k-transcode-cuda", "crates/j2k-transcode-cuda/"),
+    ],
+};
+
+const fn accelerator_package(
+    name: &'static str,
+    source_prefix: &'static str,
+) -> AcceleratorPackageSpec {
+    AcceleratorPackageSpec {
+        name,
+        source_prefix,
+    }
+}
+
+const METAL_VENDOR_PATHS: &[&str] = &["third_party/block-0.1.6-patched/src/lib.rs"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CoverageLane {
@@ -57,11 +85,33 @@ impl CoverageLane {
         }
     }
 
-    pub(super) fn includes_path(self, path: &str) -> bool {
+    pub(super) fn owns_path(self, path: &str) -> bool {
         match self {
-            Self::Host => is_production_rust(path),
-            Self::Metal => is_production_rust(path) && has_any_prefix(path, METAL_CRATE_PREFIXES),
-            Self::Cuda => is_production_rust(path) && has_any_prefix(path, CUDA_CRATE_PREFIXES),
+            Self::Host => true,
+            Self::Metal => {
+                METAL_ACCELERATOR_LANE.owns_path(path)
+                    || is_shared_accelerator_path(path)
+                    || METAL_VENDOR_PATHS.contains(&path)
+            }
+            Self::Cuda => CUDA_ACCELERATOR_LANE.owns_path(path) || is_shared_accelerator_path(path),
+        }
+    }
+
+    pub(super) fn coverage_packages(self) -> impl Iterator<Item = &'static str> {
+        self.accelerator_packages()
+            .iter()
+            .map(|package| package.name)
+    }
+
+    pub(super) fn includes_source(self, path: &str, role: SourceRole) -> bool {
+        role.is_measurable() && self.owns_path(path)
+    }
+
+    const fn accelerator_packages(self) -> &'static [AcceleratorPackageSpec] {
+        match self {
+            Self::Host => &[],
+            Self::Metal => METAL_ACCELERATOR_LANE.packages,
+            Self::Cuda => CUDA_ACCELERATOR_LANE.packages,
         }
     }
 }
@@ -84,6 +134,12 @@ pub(super) struct CoverageCounts {
     pub(super) covered: usize,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct SourceDispositionCounts {
+    pub(super) changed_lines: usize,
+    pub(super) files: BTreeSet<String>,
+}
+
 #[derive(Debug)]
 pub(super) struct ChangedCoverageResult {
     pub(super) overall: CoverageCounts,
@@ -92,7 +148,13 @@ pub(super) struct ChangedCoverageResult {
     pub(super) uncovered: Vec<(String, usize)>,
     pub(super) unmeasured: Vec<(String, usize)>,
     pub(super) exclusions: BTreeMap<&'static str, usize>,
+    pub(super) source_dispositions: BTreeMap<&'static str, SourceDispositionCounts>,
     pub(super) absent_instrumentable_files: Vec<String>,
+    pub(super) changed_functions_without_covered_body: Vec<String>,
+    pub(super) changed_executable_bodies_without_covered_body: Vec<String>,
+    pub(super) changed_deferred_bodies_without_distinct_line_evidence: Vec<String>,
+    pub(super) mixed_test_production_lines: Vec<String>,
+    pub(super) changed_opaque_macros: Vec<String>,
 }
 
 pub(super) fn parse_options(args: impl Iterator<Item = String>) -> Result<CoverageOptions, String> {
@@ -111,7 +173,9 @@ pub(super) fn parse_options(args: impl Iterator<Item = String>) -> Result<Covera
                     "unknown coverage lane `{other}`; expected host, metal, or cuda"
                 ));
             }
-            None => unreachable!("peeked coverage lane"),
+            None => {
+                return Err("coverage lane argument disappeared after lookahead".to_string());
+            }
         };
     }
 
@@ -136,22 +200,16 @@ pub(super) fn parse_options(args: impl Iterator<Item = String>) -> Result<Covera
     Ok(CoverageOptions { lane, base, output })
 }
 
-fn is_production_rust(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
-        && (path.starts_with("xtask/src/")
-            || (path.starts_with("crates/") && path.contains("/src/")))
-        && !path.contains("/tests/")
-        && !path.ends_with("/tests.rs")
-        && !path.ends_with("_tests.rs")
-        && !path.ends_with("/test_helpers.rs")
-}
-
 pub(super) fn is_accelerator_path(path: &str) -> bool {
-    has_any_prefix(path, METAL_CRATE_PREFIXES) || has_any_prefix(path, CUDA_CRATE_PREFIXES)
+    METAL_ACCELERATOR_LANE.owns_path(path)
+        || CUDA_ACCELERATOR_LANE.owns_path(path)
+        || is_shared_accelerator_path(path)
 }
 
-fn has_any_prefix(path: &str, prefixes: &[&str]) -> bool {
-    prefixes.iter().any(|prefix| path.starts_with(prefix))
+impl AcceleratorLaneSpec {
+    fn owns_path(&self, path: &str) -> bool {
+        self.packages
+            .iter()
+            .any(|package| path.starts_with(package.source_prefix))
+    }
 }

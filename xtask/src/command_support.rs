@@ -142,14 +142,17 @@ pub(super) fn command_output_os(program: OsString, args: &[&str]) -> Result<Stri
     process::command_output_os(program, args)
 }
 
-pub(super) fn command_output_os_detailed(
+pub(super) fn command_output_os_detailed_with_env(
     program: OsString,
     args: &[&str],
+    envs: &[(&str, &str)],
 ) -> Result<String, String> {
     let display = format!("{} {}", program.to_string_lossy(), args.join(" "));
-    let output = process::command_output(program, args, process::CommandContext::new())?;
+    let output = process::command_output(program, args, process::CommandContext::new().envs(envs))?;
     if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        return String::from_utf8(output.stdout)
+            .map(|stdout| stdout.trim().to_string())
+            .map_err(|err| format!("`{display}` emitted non-UTF-8 stdout: {err}"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);

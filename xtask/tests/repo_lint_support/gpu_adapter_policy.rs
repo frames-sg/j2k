@@ -4,6 +4,27 @@ use std::fs;
 
 use super::*;
 
+mod cuda_decoder_policy;
+mod cuda_encode_structure_policy;
+mod cuda_encode_test_structure_policy;
+mod cuda_htj2k_runtime_structure_policy;
+mod cuda_profile_policy;
+mod cuda_runtime_safety_policy;
+mod jpeg_allocation_policy;
+mod jpeg_batch_error_policy;
+mod jpeg_fast_packet_routing_policy;
+mod jpeg_generic_scan_policy;
+mod jpeg_metal_plan_owner_policy;
+mod jpeg_metal_surface_access_policy;
+mod jpeg_metal_viewport_structure_policy;
+mod jpeg_plan_cache_policy;
+mod metal_batch_allocation_policy;
+mod metal_plan_cache_policy;
+mod metal_surface_access_policy;
+mod metal_transcode_allocation_policy;
+mod metal_typed_error_policy;
+mod resident_encode_policy;
+
 #[test]
 fn metal_resident_retry_uses_typed_error_classification() {
     let root = repo_root();
@@ -152,86 +173,6 @@ fn gpu_decoder_cpu_host_facades_use_core_blanket_impl() {
 }
 
 #[test]
-fn cuda_decoder_runtime_paths_live_in_focused_modules() {
-    let root = repo_root();
-    let decoder =
-        fs::read_to_string(root.join("crates/j2k-cuda/src/decoder.rs")).expect("read CUDA decoder");
-    let api = fs::read_to_string(root.join("crates/j2k-cuda/src/decoder/api.rs"))
-        .expect("read CUDA decoder API module");
-    let plan = fs::read_to_string(root.join("crates/j2k-cuda/src/decoder/plan.rs"))
-        .expect("read CUDA decoder plan module");
-    let resident = fs::read_to_string(root.join("crates/j2k-cuda/src/decoder/resident.rs"))
-        .expect("read CUDA decoder resident module");
-    let color_batch = fs::read_to_string(root.join("crates/j2k-cuda/src/decoder/color_batch.rs"))
-        .expect("read CUDA decoder color batch module");
-    let profile = fs::read_to_string(root.join("crates/j2k-cuda/src/decoder/profile.rs"))
-        .expect("read CUDA decoder profile module");
-
-    assert!(
-        decoder.lines().count() < 1_500,
-        "j2k-cuda/src/decoder.rs must stay below the post-runtime-split line-count ratchet"
-    );
-    for (module_name, source) in [
-        ("api.rs", &api),
-        ("plan.rs", &plan),
-        ("resident.rs", &resident),
-        ("color_batch.rs", &color_batch),
-        ("profile.rs", &profile),
-    ] {
-        assert!(
-            source.lines().count() < 1_800,
-            "j2k-cuda/src/decoder/{module_name} must stay below the focused-module line-count ratchet"
-        );
-    }
-
-    assert_pattern_checks(&[
-        PatternCheck::new("CUDA decoder shell", &decoder)
-            .required(&[
-                "mod api;",
-                "mod color_batch;",
-                "decoder/profile.rs",
-                "mod plan;",
-                "mod resident;",
-                "pub struct J2kDecoder",
-            ])
-            .forbidden(&[
-                "impl<'a> CpuBackedImageDecode<'a>",
-                "fn build_cuda_htj2k_grayscale_plan_with_profile",
-                "fn decode_cuda_component_plan",
-                "fn decode_color_cuda_resident_surface_with_profile",
-                "fn aggregate_decode_reports",
-            ]),
-        PatternCheck::new("CUDA decoder API module", &api).required(&[
-            "impl<'a> J2kDecoder<'a>",
-            "pub fn new(input: &'a [u8])",
-            "pub fn decode_to_device_with_session",
-            "impl<'a> CpuBackedImageDecode<'a>",
-        ]),
-        PatternCheck::new("CUDA decoder plan module", &plan).required(&[
-            "build_cuda_htj2k_grayscale_plan_with_profile",
-            "build_cuda_htj2k_color_plans_with_profile",
-            "build_cuda_htj2k_color_plans_from_bytes_with_profile",
-        ]),
-        PatternCheck::new("CUDA decoder resident module", &resident).required(&[
-            "decode_to_cuda_resident_surface_impl",
-            "decode_cuda_component_plan",
-            "run_component_cleanup_dequant_batches",
-            "run_color_component_idwt_batches",
-        ]),
-        PatternCheck::new("CUDA decoder color batch module", &color_batch).required(&[
-            "decode_color_cuda_resident_surface_with_profile",
-            "decode_color_cuda_resident_batch_surfaces_with_profile",
-            "prepare_rgb8_mct_batch_store",
-        ]),
-        PatternCheck::new("CUDA decoder profile module", &profile).required(&[
-            "struct CudaDecodeStageTimings",
-            "fn aggregate_decode_reports",
-            "struct CudaIdwtBatchHostTraceRow",
-        ]),
-    ]);
-}
-
-#[test]
 fn jpeg_gpu_encode_host_orchestration_uses_shared_adapter_helper() {
     let root = repo_root();
     let shared = read_source_files(
@@ -240,7 +181,9 @@ fn jpeg_gpu_encode_host_orchestration_uses_shared_adapter_helper() {
             "crates/j2k-jpeg/src/adapter/baseline_encode.rs",
             "crates/j2k-jpeg/src/adapter/baseline_encode/frame.rs",
             "crates/j2k-jpeg/src/adapter/baseline_encode/orchestrate.rs",
+            "crates/j2k-jpeg/src/adapter/baseline_encode/orchestrate/batch.rs",
             "crates/j2k-jpeg/src/adapter/baseline_encode/planning.rs",
+            "crates/j2k-jpeg/src/adapter/baseline_encode/planning/batch.rs",
             "crates/j2k-jpeg/src/adapter/baseline_encode/tables.rs",
             "crates/j2k-jpeg/src/adapter/baseline_encode/types.rs",
             "crates/j2k-jpeg/src/adapter/baseline_encode/validation.rs",
@@ -248,6 +191,9 @@ fn jpeg_gpu_encode_host_orchestration_uses_shared_adapter_helper() {
     );
     let cuda_encode = fs::read_to_string(root.join("crates/j2k-jpeg-cuda/src/encode.rs"))
         .expect("read JPEG CUDA encode host");
+    let cuda_encode_error =
+        fs::read_to_string(root.join("crates/j2k-jpeg-cuda/src/encode/error.rs"))
+            .expect("read JPEG CUDA encode error mapping");
     let metal_encode = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/encode.rs"))
         .expect("read JPEG Metal encode host");
     let metal_adapter =
@@ -266,6 +212,8 @@ fn jpeg_gpu_encode_host_orchestration_uses_shared_adapter_helper() {
             "fn same_source_buffer_batch_end",
             "pub fn encode_jpeg_baseline_gpu_tile",
             "pub fn encode_jpeg_baseline_gpu_batch",
+            "pub fn encode_jpeg_baseline_gpu_tile_with_external_live",
+            "pub fn encode_jpeg_baseline_gpu_batch_with_external_live",
             "while start < tiles.len()",
             "assemble_jpeg_baseline_frame(",
         ]),
@@ -289,11 +237,14 @@ fn jpeg_gpu_encode_host_orchestration_uses_shared_adapter_helper() {
     assert_pattern_checks(&[
         PatternCheck::new("crates/j2k-jpeg-cuda/src/encode.rs", &cuda_encode)
             .required(&[
+                "mod error;",
                 "JpegBaselineGpuEncodeHostAdapter",
-                "encode_jpeg_baseline_gpu_tile(tile, options, &mut adapter)",
-                "encode_jpeg_baseline_gpu_batch(tiles, options, &mut adapter)",
+                "encode_jpeg_baseline_gpu_tile_with_external_live(",
+                "encode_jpeg_baseline_gpu_batch_with_external_live(",
+                "external_live_bytes",
                 "fn encode_tile_entropy(",
                 "fn encode_batch_entropy(",
+                "cuda_gpu_encode_error(error)",
             ])
             .forbidden(&forbidden_host_orchestration),
         PatternCheck::new("JPEG Metal encode API shell", &metal_encode)
@@ -320,6 +271,7 @@ fn jpeg_gpu_encode_host_orchestration_uses_shared_adapter_helper() {
     ]);
     assert!(
         cuda_encode.lines().count() < 310
+            && cuda_encode_error.lines().count() < 100
             && metal_encode.lines().count() < 200
             && metal_adapter.lines().count() < 250,
         "JPEG GPU encode adapters must stay below the post-driver line ratchets"
@@ -329,8 +281,8 @@ fn jpeg_gpu_encode_host_orchestration_uses_shared_adapter_helper() {
 #[test]
 fn metal_backend_session_lifecycle_lives_in_support_crate() {
     let root = repo_root();
-    let support = fs::read_to_string(root.join("crates/j2k-metal-support/src/lib.rs"))
-        .expect("read Metal support crate");
+    let support = fs::read_to_string(root.join("crates/j2k-metal-support/src/runtime.rs"))
+        .expect("read Metal support runtime module");
     let jpeg_metal = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/lib.rs"))
         .expect("read JPEG Metal lib");
     let jpeg_metal_session = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/session.rs"))
@@ -376,8 +328,9 @@ fn jpeg_metal_huffman_derivation_uses_shared_entropy_canonical_tables() {
         .expect("read codec-math JPEG helpers");
     let entropy_huffman = fs::read_to_string(root.join("crates/j2k-jpeg/src/entropy/huffman.rs"))
         .expect("read JPEG entropy Huffman implementation");
-    let fast_packet = fs::read_to_string(root.join("crates/j2k-jpeg/src/adapter/fast_packet.rs"))
-        .expect("read JPEG fast packet adapter");
+    let fast_packet_types =
+        fs::read_to_string(root.join("crates/j2k-jpeg/src/adapter/fast_packet/types.rs"))
+            .expect("read JPEG fast packet type module");
     let metal_abi = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/abi.rs"))
         .expect("read JPEG Metal ABI");
     let cuda_runtime = read_source_files(
@@ -401,9 +354,9 @@ fn jpeg_metal_huffman_derivation_uses_shared_entropy_canonical_tables() {
         "j2k-jpeg entropy must expose and use one shared Annex C canonical Huffman derivation"
     );
     assert!(
-        fast_packet.contains("pub struct JpegCanonicalHuffmanTable")
-            && fast_packet.contains("pub fn derive_canonical(&self)")
-            && fast_packet.contains("derive_canonical_huffman(&raw)?"),
+        fast_packet_types.contains("pub struct JpegCanonicalHuffmanTable")
+            && fast_packet_types.contains("pub fn derive_canonical(&self)")
+            && fast_packet_types.contains("derive_canonical_huffman(&raw)?"),
         "j2k-jpeg adapter must expose backend-facing canonical Huffman derivation"
     );
     assert!(
@@ -421,6 +374,96 @@ fn jpeg_metal_huffman_derivation_uses_shared_entropy_canonical_tables() {
             && !cuda_runtime.contains("let mut code = 0u32"),
         "CUDA JPEG runtime must use shared codec-math canonical Huffman derivation"
     );
+}
+
+#[test]
+fn jpeg_metal_gpu_abi_uploads_are_padding_free() {
+    let root = repo_root();
+    let abi = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/abi.rs"))
+        .expect("read JPEG Metal ABI");
+    let buffers = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/buffers.rs"))
+        .expect("read JPEG Metal buffers");
+    let params =
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/fast_packets/params.rs"))
+            .expect("read JPEG Metal fast-packet params");
+    let status = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/status.rs"))
+        .expect("read JPEG Metal status");
+    let shader = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/shaders_shared.metal"))
+        .expect("read JPEG Metal shared shader ABI");
+
+    assert_pattern_checks(&[
+        PatternCheck::new("JPEG Metal padding-free ABI proof", &abi).required(&[
+            "pub(crate) reserved_tail: u32",
+            "macro_rules! prove_gpu_readback_layout",
+            "let _: [(); core::mem::size_of::<$ty>()] = [(); $offset];",
+            "core::mem::offset_of!($ty, $field)",
+            "$offset + core::mem::size_of::<$field_ty>();",
+            "prove_gpu_readback_layout!(",
+            "JpegEntropyCheckpointHost {",
+            "reserved_tail: u32",
+        ]),
+        PatternCheck::new("JPEG Metal typed upload boundary", &buffers)
+            .required(&[
+                "pub(crate) fn shared_buffer_with_slice<T: GpuAbi>",
+                "let bytes = T::slice_as_bytes(values);",
+            ])
+            .forbidden(&["from_raw_parts(values.as_ptr().cast::<u8>()"]),
+        PatternCheck::new("JPEG Metal checkpoint staging", &params)
+            .required(&[
+                "<u32 as GpuAbi>::slice_as_bytes(restart_offsets)",
+                "checked_count_product(",
+                "let buffer = new_shared_buffer(device, total_bytes)?;",
+                "for (index, checkpoint) in entropy_checkpoints.iter().copied().enumerate()",
+                "JpegEntropyCheckpointHost::as_bytes(&checkpoint)",
+                "checked_copy_bytes_to_buffer_at(",
+            ])
+            .forbidden(&["from_raw_parts("]),
+        PatternCheck::new("JPEG Metal status staging", &status)
+            .required(&[
+                "checked_count_product(",
+                "core::mem::size_of::<JpegDecodeStatus>()",
+                "let buffer = new_shared_buffer(device, bytes)?;",
+                "checked_fill_buffer_u8(&buffer, bytes, 0",
+                "checked_buffer_slice::<JpegDecodeStatus>(",
+            ])
+            .forbidden(&["from_raw_parts("]),
+        PatternCheck::new("JPEG Metal checkpoint shader padding", &shader)
+            .required(&["uint reserved_tail;"]),
+    ]);
+}
+
+#[test]
+fn j2k_metal_ht_uvlc_upload_uses_a_local_padding_free_abi_row() {
+    let root = repo_root();
+    let abi = fs::read_to_string(root.join("crates/j2k-metal/src/compute/abi.rs"))
+        .expect("read J2K Metal ABI");
+    let runtime = fs::read_to_string(root.join("crates/j2k-metal/src/compute/runtime.rs"))
+        .expect("read J2K Metal runtime");
+    let shader = fs::read_to_string(root.join("crates/j2k-metal/src/encode_bitstream_ht.metal"))
+        .expect("read J2K Metal HT encoder shader");
+
+    assert_pattern_checks(&[
+        PatternCheck::new("J2K Metal HT UVLC padding-free upload row", &abi).required(&[
+            "pub(crate) struct J2kHtUvlcEncodeTableEntry",
+            "core::mem::offset_of!(J2kHtUvlcEncodeTableEntry, ext_len)",
+            "core::mem::size_of::<J2kHtUvlcEncodeTableEntry>()",
+            "unsafe impl j2k_core::accelerator::GpuAbi for J2kHtUvlcEncodeTableEntry",
+            "ht_uvlc_upload_rows_match_the_canonical_packed_table",
+            "j2k_native::ht_uvlc_encode_table_bytes()",
+        ]),
+        PatternCheck::new("J2K Metal typed HT UVLC upload", &runtime)
+            .required(&[
+                "(*ht_uvlc_encode_table()).map(J2kHtUvlcEncodeTableEntry::from)",
+                "checked_shared_buffer_with_slice(",
+                "&ht_uvlc_encode_rows",
+            ])
+            .forbidden(&[
+                "ht_uvlc_encode_table_bytes",
+                "checked_shared_buffer_with_bytes",
+            ]),
+        PatternCheck::new("J2K Metal byte-addressed HT UVLC shader ABI", &shader)
+            .required(&["return table[index * 6u + field];"]),
+    ]);
 }
 
 #[test]
@@ -609,7 +652,7 @@ fn jpeg_fast420_profiled_decode_uses_shared_scan_loop() {
             .required(&["fast_tile_profiled_rgb_matches_unprofiled_decode"]),
     ]);
     assert_eq!(
-        fast420.matches("finish_fast_tile_scan(&mut br)").count(),
+        fast420.matches("finish_scan(&mut br, true)").count(),
         1,
         "JPEG fast420 profiled/unprofiled scan paths must not duplicate the scan loop"
     );
@@ -618,8 +661,10 @@ fn jpeg_fast420_profiled_decode_uses_shared_scan_loop() {
 #[test]
 fn cuda_htj2k_compact_jobs_use_shared_planner() {
     let root = repo_root();
-    let htj2k_encode = fs::read_to_string(root.join("crates/j2k-cuda-runtime/src/htj2k_encode.rs"))
-        .expect("read CUDA runtime HTJ2K encode module");
+    let htj2k_encode = fs::read_to_string(
+        root.join("crates/j2k-cuda-runtime/src/htj2k_encode/planning/compact.rs"),
+    )
+    .expect("read CUDA runtime HTJ2K compact planning module");
     let runtime_tests = fs::read_to_string(root.join("crates/j2k-cuda-runtime/src/tests.rs"))
         .expect("read CUDA runtime tests");
 
@@ -632,7 +677,7 @@ fn cuda_htj2k_compact_jobs_use_shared_planner() {
         "impl Htj2kCompactPlanJob for CudaHtj2kEncodeKernelJob",
         "impl Htj2kCompactPlanJob for CudaHtj2kEncodeMultiInputKernelJob",
         "fn htj2k_encode_compact_jobs_impl<J: Htj2kCompactPlanJob>",
-        "htj2k_encode_compact_jobs_impl(statuses, kernel_jobs)",
+        "htj2k_encode_compact_jobs_impl(statuses, kernel_jobs, host_budget)",
     ])]);
     assert_eq!(
         htj2k_encode.matches("let source_end =").count(),
@@ -801,11 +846,6 @@ fn cuda_encode_api_and_resident_types_live_in_focused_modules() {
         .expect("read CUDA encode module");
     let api = fs::read_to_string(root.join("crates/j2k-cuda/src/encode/api.rs"))
         .expect("read CUDA encode API module");
-    let htj2k = fs::read_to_string(root.join("crates/j2k-cuda/src/encode/htj2k.rs"))
-        .expect("read CUDA encode HTJ2K module");
-    let packetization =
-        fs::read_to_string(root.join("crates/j2k-cuda/src/encode/packetization.rs"))
-            .expect("read CUDA encode packetization module");
     let resident = fs::read_to_string(root.join("crates/j2k-cuda/src/encode/resident.rs"))
         .expect("read CUDA encode resident module");
     let stage = fs::read_to_string(root.join("crates/j2k-cuda/src/encode/stage.rs"))
@@ -850,24 +890,14 @@ fn cuda_encode_api_and_resident_types_live_in_focused_modules() {
         encode.lines().count() < 3_000,
         "j2k-cuda encode.rs must stay below the post-split god-file threshold"
     );
-    let packetization_items = [
-        "pub(super) struct CudaHtj2kPacketizationPlan",
-        "pub(super) fn flatten_cuda_htj2k_packetization_job",
-        "pub(super) fn cuda_packetization_packets",
-        "pub(super) fn cuda_packetization_tag_nodes",
-    ];
+    assert!(
+        stage.lines().count() < 1_200,
+        "j2k-cuda encode/stage.rs must stay below its accepted cohesive-adapter threshold"
+    );
     let stage_items = [
         "pub struct CudaEncodeStageAccelerator",
         "pub struct CudaEncodeStageTimings",
         "impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator",
-    ];
-    let htj2k_items = [
-        "pub(super) fn cuda_encode_ht_code_block",
-        "pub(super) fn cuda_encode_htj2k_tile_body",
-        "pub(super) fn cuda_encode_htj2k_device_tile_body",
-        "pub(super) fn cuda_encode_ht_subband",
-        "fn cuda_packetize_tile_body",
-        "pub(super) fn cuda_htj2k_encode_tables",
     ];
     assert_pattern_checks(&[
         PatternCheck::new("CUDA encode focused module shell", &encode).required(&[
@@ -876,14 +906,8 @@ fn cuda_encode_api_and_resident_types_live_in_focused_modules() {
             "pub use self::stage::{CudaEncodeStageAccelerator",
             "mod htj2k;",
         ]),
-        PatternCheck::new("CUDA encode packetization exclusion", &encode)
-            .forbidden(&packetization_items),
         PatternCheck::new("CUDA encode stage exclusion", &encode).forbidden(&stage_items),
-        PatternCheck::new("CUDA encode HTJ2K runtime exclusion", &encode).forbidden(&htj2k_items),
-        PatternCheck::new("CUDA encode packetization ownership", &packetization)
-            .required(&packetization_items),
         PatternCheck::new("CUDA encode stage ownership", &stage).required(&stage_items),
-        PatternCheck::new("CUDA encode HTJ2K runtime ownership", &htj2k).required(&htj2k_items),
     ]);
 }
 
@@ -892,8 +916,12 @@ fn transcode_gpu_auto_threshold_policy_is_documented() {
     let root = repo_root();
     let cuda = fs::read_to_string(root.join("crates/j2k-transcode-cuda/src/lib.rs"))
         .expect("read CUDA transcode adapter");
-    let metal = fs::read_to_string(root.join("crates/j2k-transcode-metal/src/lib.rs"))
+    let metal_root = fs::read_to_string(root.join("crates/j2k-transcode-metal/src/lib.rs"))
         .expect("read Metal transcode adapter");
+    let metal_accelerator =
+        fs::read_to_string(root.join("crates/j2k-transcode-metal/src/accelerator.rs"))
+            .expect("read Metal transcode accelerator");
+    let metal = format!("{metal_root}\n{metal_accelerator}");
     let cuda_readme = fs::read_to_string(root.join("crates/j2k-transcode-cuda/README.md"))
         .expect("read CUDA transcode README");
     let metal_readme = fs::read_to_string(root.join("crates/j2k-transcode-metal/README.md"))
@@ -937,8 +965,15 @@ fn transcode_stage_counters_are_shared_between_gpu_adapters() {
             .expect("read transcode accelerator contracts");
     let cuda = fs::read_to_string(root.join("crates/j2k-transcode-cuda/src/lib.rs"))
         .expect("read CUDA transcode adapter");
-    let metal = fs::read_to_string(root.join("crates/j2k-transcode-metal/src/lib.rs"))
+    let metal_root = fs::read_to_string(root.join("crates/j2k-transcode-metal/src/lib.rs"))
         .expect("read Metal transcode adapter");
+    let metal_accelerator =
+        fs::read_to_string(root.join("crates/j2k-transcode-metal/src/accelerator.rs"))
+            .expect("read Metal transcode accelerator");
+    let metal_dispatch =
+        fs::read_to_string(root.join("crates/j2k-transcode-metal/src/accelerator/dispatch.rs"))
+            .expect("read Metal transcode dispatch implementation");
+    let metal = format!("{metal_root}\n{metal_accelerator}\n{metal_dispatch}");
 
     assert_pattern_checks(&[PatternCheck::new(
         "j2k-transcode accelerator shared counters",
@@ -964,7 +999,6 @@ fn transcode_stage_counters_are_shared_between_gpu_adapters() {
                 "self.counters.record(CounterEvent::",
                 "mode: TranscodeStageDispatchMode",
                 "self.mode.unavailable()",
-                ".recover(error, |error| error.is_recoverable())",
             ])
             .forbidden(&[
                 "reversible_dwt53_attempts: usize",
@@ -977,6 +1011,13 @@ fn transcode_stage_counters_are_shared_between_gpu_adapters() {
                 "MetalTranscodeError::MetalUnavailable | MetalTranscodeError::UnsupportedJob(_)",
             ])]);
     }
+
+    assert_pattern_checks(&[
+        PatternCheck::new("CUDA transcode shared recovery policy", &cuda)
+            .required(&[".recover(error, CudaTranscodeError::is_recoverable)"]),
+        PatternCheck::new("Metal transcode shared recovery policy", &metal)
+            .required(&[".recover(error, MetalTranscodeError::is_recoverable)"]),
+    ]);
 }
 
 #[test]
@@ -1005,7 +1046,8 @@ fn metal_public_error_lives_in_focused_module() {
         PatternCheck::new("j2k-metal error module shell", &lib)
             .required(&[
                 "mod error;",
-                "pub use self::error::{Error, MetalDirectFallbackReason, MetalKernelRetryClass};",
+                "pub use self::error::{",
+                "Error, MetalDirectFallbackReason, MetalKernelRetryClass, NativeBackendError,",
             ])
             .forbidden(&error_items),
         PatternCheck::new("j2k-metal error item ownership", &error).required(&error_items),
@@ -1286,9 +1328,15 @@ fn metal_batch_cpu_fallback_lives_in_focused_module() {
         "fn decode_cpu_full_batch",
         "fn decode_cpu_region_scaled_batch",
         "fn checked_cpu_batch_surface",
+        "fn cpu_batch_error",
         "fn host_surface",
         "decode_tiles_into",
         "decode_tiles_region_scaled_into",
+        "BatchDecodeError::Tile(error)",
+        "BatchDecodeError::Infrastructure(error)",
+        "BufferError::AllocationTooLarge",
+        "BufferError::HostAllocationFailed",
+        "Error::BatchInfrastructure(other)",
     ];
     assert_pattern_checks(&[
         PatternCheck::new("j2k-metal batch CPU fallback module shell", &batch)
@@ -1345,6 +1393,7 @@ fn jpeg_metal_compute_uses_real_focused_modules() {
                 "mod batch_entry;",
                 "mod batch_full;",
                 "mod batch_region;",
+                "mod encode;",
                 "mod fast_packets;",
                 "mod pack_dispatch;",
                 "mod single_decode;",
@@ -1417,6 +1466,11 @@ fn jpeg_metal_compute_uses_real_focused_modules() {
 
     for (relative, max_lines, required_symbol) in [
         (
+            "compute/encode.rs",
+            330,
+            "pub(crate) fn encode_jpeg_baseline_entropy_with_session",
+        ),
+        (
             "compute/batch_entry.rs",
             450,
             "pub(crate) fn decode_full_batch_to_surfaces",
@@ -1468,13 +1522,23 @@ fn jpeg_metal_compute_uses_real_focused_modules() {
         ),
         (
             "compute/batch_full/rgb.rs",
-            750,
+            700,
             "fn finish_fast_subsampled_full_rgb_batch",
         ),
         (
+            "compute/batch_full/rgb_grouped.rs",
+            175,
+            "fn merge_group_results",
+        ),
+        (
             "compute/batch_full/texture.rs",
-            800,
+            750,
             "fn decode_fast_subsampled_full_rgba_fused_texture_batch",
+        ),
+        (
+            "compute/batch_full/texture/staged.rs",
+            250,
+            "fn decode_fast_subsampled_full_rgba_staged_texture_batch",
         ),
         (
             "compute/batch_full/texture_grouped.rs",
@@ -1590,7 +1654,6 @@ fn jpeg_metal_single_decode_uses_request_api() {
                 "pub fn push_tile_request(",
                 "pub fn push_shared_tile_request(",
                 "pub fn submit_tile_request_to_device(",
-                "self.push_shared_tile_request(",
                 "Self::submit_tile_request_to_device(",
                 "MetalDecodeRequest::region_scaled(fmt, roi, scale, backend)",
             ])

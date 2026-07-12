@@ -424,7 +424,7 @@ pub(super) fn profile_contexts(
 pub(super) fn parse_metal_decode_bench_line(line: &str) -> Option<serde_json::Value> {
     const PREFIX: &str = "j2k_metal_decode_bench ";
     let rest = line.strip_prefix(PREFIX)?;
-    let fields = j2k_profile::parse_profile_key_value_fields(rest);
+    let fields = parse_benchmark_fields(rest)?;
     let mut row = serde_json::json!({
         "case": required_field(&fields, "case")?,
         "source": required_field(&fields, "source")?,
@@ -445,7 +445,7 @@ pub(super) fn parse_metal_decode_bench_line(line: &str) -> Option<serde_json::Va
 }
 
 pub(super) fn parse_metal_transcode_profile_line(line: &str) -> Option<serde_json::Value> {
-    let fields = j2k_profile::parse_profile_line(line)?;
+    let fields = j2k_profile::parse_profile_line(line).ok()??;
     if fields.kind() != j2k_profile::ParsedProfileKind::Row
         || fields.get("codec")? != "transcode"
         || fields.get("op")? != "transcode_batch"
@@ -497,7 +497,7 @@ pub(super) fn parse_metal_transcode_profile_line(line: &str) -> Option<serde_jso
 
 pub(super) fn parse_metal_auto_bench_line(line: &str) -> Option<serde_json::Value> {
     const PREFIX: &str = "j2k_metal_encode_auto_bench ";
-    let fields = j2k_profile::parse_profile_key_value_fields(line.strip_prefix(PREFIX)?);
+    let fields = j2k_profile::parse_profile_key_value_fields(line.strip_prefix(PREFIX)?).ok()?;
     let auto_ms = required_field(&fields, "auto_ms")?;
     Some(serde_json::json!({
         "mode": required_field(&fields, "mode")?,
@@ -512,7 +512,7 @@ pub(super) fn parse_metal_auto_bench_line(line: &str) -> Option<serde_json::Valu
 pub(super) fn parse_metal_auto_probe_line(line: &str) -> Option<serde_json::Value> {
     const PREFIX: &str = "j2k_metal_encode_auto_probe ";
     let rest = line.strip_prefix(PREFIX)?;
-    let fields = j2k_profile::parse_profile_key_value_fields(rest);
+    let fields = parse_benchmark_fields(rest)?;
     let mut row = serde_json::json!({
         "mode": required_field(&fields, "mode")?,
         "codec": required_field(&fields, "codec")?,
@@ -531,7 +531,7 @@ pub(super) fn parse_metal_auto_probe_line(line: &str) -> Option<serde_json::Valu
 pub(super) fn parse_metal_stage_bench_line(line: &str) -> Option<serde_json::Value> {
     const PREFIX: &str = "j2k_metal_encode_stage_bench ";
     let rest = line.strip_prefix(PREFIX)?;
-    let fields = j2k_profile::parse_profile_key_value_fields(rest);
+    let fields = parse_benchmark_fields(rest)?;
     let metal_ms = required_field(&fields, "metal_ms")?;
     let mut row = serde_json::json!({
         "stage": required_field(&fields, "stage")?,
@@ -551,7 +551,7 @@ pub(super) fn parse_metal_stage_bench_line(line: &str) -> Option<serde_json::Val
 pub(super) fn parse_metal_resident_bench_line(line: &str) -> Option<serde_json::Value> {
     const PREFIX: &str = "j2k_metal_encode_resident_bench ";
     let rest = line.strip_prefix(PREFIX)?;
-    let fields = j2k_profile::parse_profile_key_value_fields(rest);
+    let fields = parse_benchmark_fields(rest)?;
     let mut row = serde_json::json!({
         "mode": required_field(&fields, "mode")?,
         "codec": required_field(&fields, "codec")?,
@@ -580,6 +580,15 @@ pub(super) fn parse_metal_resident_bench_line(line: &str) -> Option<serde_json::
         row["resident_staging"] = serde_json::Value::String(value.to_string());
     }
     Some(row)
+}
+
+fn parse_benchmark_fields(text: &str) -> Option<Vec<(String, String)>> {
+    let structured_end = [" error=", " dispatch="]
+        .into_iter()
+        .filter_map(|marker| text.find(marker))
+        .min()
+        .unwrap_or(text.len());
+    j2k_profile::parse_profile_key_value_fields(&text[..structured_end]).ok()
 }
 
 pub(super) fn required_field(fields: &[(String, String)], key: &str) -> Option<String> {

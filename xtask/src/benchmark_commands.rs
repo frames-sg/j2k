@@ -112,14 +112,20 @@ pub(super) fn bench_build() -> Result<(), String> {
         "dct53",
         "--no-run",
     ])?;
-    run_cargo(&[
+    run_cargo(transcode_metal_bench_args())
+}
+
+fn transcode_metal_bench_args() -> &'static [&'static str] {
+    &[
         "bench",
         "-p",
         "j2k-transcode-metal",
         "--bench",
         "dct97",
+        "--features",
+        "bench-internals",
         "--no-run",
-    ])
+    ]
 }
 
 pub(super) fn j2k_bench_signoff() -> Result<(), String> {
@@ -356,4 +362,26 @@ fn print_bench_report_help() {
         "usage: cargo xtask bench-report [--command <command>] [--input-source <source>] \
          [--skipped-row <row>]... [--out <path>]"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::transcode_metal_bench_args;
+
+    #[test]
+    fn transcode_metal_bench_enables_its_declared_internal_surface() {
+        assert_eq!(
+            transcode_metal_bench_args(),
+            [
+                "bench",
+                "-p",
+                "j2k-transcode-metal",
+                "--bench",
+                "dct97",
+                "--features",
+                "bench-internals",
+                "--no-run",
+            ]
+        );
+    }
 }

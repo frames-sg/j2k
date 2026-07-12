@@ -17,165 +17,8 @@ fn assert_line_budget(relative_path: &str, source: &str, max_lines: usize) {
     );
 }
 
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "core and batch transcode ownership is enforced as one cohesive stage matrix"
-)]
-fn jpeg_to_htj2k_core_and_batch_stay_split_by_stage() {
-    let core = read("crates/j2k-transcode/src/jpeg_to_htj2k.rs");
-    let validation = read("crates/j2k-transcode/src/jpeg_to_htj2k/validation.rs");
-    let component_plan = read("crates/j2k-transcode/src/jpeg_to_htj2k/component_plan.rs");
-    let float_reference = read("crates/j2k-transcode/src/jpeg_to_htj2k/float_reference.rs");
-    let integer_reference = read("crates/j2k-transcode/src/jpeg_to_htj2k/integer_reference.rs");
-    let single_tile_encode = read("crates/j2k-transcode/src/jpeg_to_htj2k/single_tile_encode.rs");
-    let batch = read("crates/j2k-transcode/src/jpeg_to_htj2k/batch.rs");
-    let batch_prepare = read("crates/j2k-transcode/src/jpeg_to_htj2k/batch/prepare.rs");
-    let batch_transform = read("crates/j2k-transcode/src/jpeg_to_htj2k/batch/transform.rs");
-    let batch_accelerated_storage =
-        read("crates/j2k-transcode/src/jpeg_to_htj2k/batch/accelerated_storage.rs");
-    let batch_storage = read("crates/j2k-transcode/src/jpeg_to_htj2k/batch/storage.rs");
-    let batch_encode = read("crates/j2k-transcode/src/jpeg_to_htj2k/batch/encode.rs");
-    for (path, source, max_lines) in [
-        ("jpeg_to_htj2k.rs", core.as_str(), 400),
-        ("jpeg_to_htj2k/validation.rs", validation.as_str(), 175),
-        (
-            "jpeg_to_htj2k/component_plan.rs",
-            component_plan.as_str(),
-            500,
-        ),
-        (
-            "jpeg_to_htj2k/float_reference.rs",
-            float_reference.as_str(),
-            450,
-        ),
-        (
-            "jpeg_to_htj2k/integer_reference.rs",
-            integer_reference.as_str(),
-            475,
-        ),
-        (
-            "jpeg_to_htj2k/single_tile_encode.rs",
-            single_tile_encode.as_str(),
-            100,
-        ),
-        ("jpeg_to_htj2k/batch.rs", batch.as_str(), 350),
-        (
-            "jpeg_to_htj2k/batch/prepare.rs",
-            batch_prepare.as_str(),
-            325,
-        ),
-        (
-            "jpeg_to_htj2k/batch/transform.rs",
-            batch_transform.as_str(),
-            425,
-        ),
-        (
-            "jpeg_to_htj2k/batch/accelerated_storage.rs",
-            batch_accelerated_storage.as_str(),
-            475,
-        ),
-        (
-            "jpeg_to_htj2k/batch/storage.rs",
-            batch_storage.as_str(),
-            475,
-        ),
-        ("jpeg_to_htj2k/batch/encode.rs", batch_encode.as_str(), 600),
-    ] {
-        assert_line_budget(path, source, max_lines);
-    }
-
-    assert_pattern_checks(&[
-        PatternCheck::new("JPEG-to-HTJ2K facade", &core)
-            .required(&[
-                "mod validation;",
-                "mod component_plan;",
-                "mod float_reference;",
-                "mod integer_reference;",
-                "mod single_tile_encode;",
-            ])
-            .forbidden(&[
-                "fn transcode_component_batch(",
-                "fn integer_direct_wavelet_from_component(",
-                "fn float_direct_wavelet_from_component(",
-            ]),
-        PatternCheck::new("JPEG-to-HTJ2K validation ownership", &validation).required(&[
-            "fn validate_transcode_options(",
-            "fn validate_component_block_grid(",
-            "fn decomposition_levels_for_components(",
-        ]),
-        PatternCheck::new(
-            "JPEG-to-HTJ2K component planning ownership",
-            &component_plan,
-        )
-        .required(&[
-            "fn transcode_component_batch(",
-            "struct ComponentTranscodePlan",
-            "fn component_to_precomputed_htj2k(",
-        ]),
-        PatternCheck::new("JPEG-to-HTJ2K float reference ownership", &float_reference).required(&[
-            "struct ComponentWavelet97",
-            "fn float_direct_97_wavelet_from_component(",
-            "fn float97_reference_coefficients(",
-        ]),
-        PatternCheck::new(
-            "JPEG-to-HTJ2K integer reference ownership",
-            &integer_reference,
-        )
-        .required(&[
-            "struct IntegerWavelet",
-            "fn integer_direct_wavelet_from_component(",
-            "fn integer_reference_coefficients(",
-        ]),
-        PatternCheck::new(
-            "JPEG-to-HTJ2K single-tile encode ownership",
-            &single_tile_encode,
-        )
-        .required(&[
-            "fn encode_component_batch",
-            "record_encode_dispatch_delta(",
-            "timings.htj2k_encode_us = encode_us;",
-        ]),
-        PatternCheck::new("JPEG-to-HTJ2K batch facade", &batch)
-            .required(&[
-                "mod prepare;",
-                "mod transform;",
-                "mod accelerated_storage;",
-                "mod storage;",
-                "mod encode;",
-            ])
-            .forbidden(&[
-                "struct IntegerBatchTile",
-                "fn transform_float97_batch_tiles(",
-                "fn store_integer_batch_wavelet(",
-                "fn encode_float97_batch_tile(",
-            ]),
-        PatternCheck::new("JPEG-to-HTJ2K batch preparation ownership", &batch_prepare).required(&[
-            "struct IntegerBatchTile",
-            "fn prepare_float97_batch_tile(",
-            "fn batch_component_groups(",
-        ]),
-        PatternCheck::new("JPEG-to-HTJ2K batch transform ownership", &batch_transform).required(&[
-            "fn transform_integer_batch_tiles",
-            "fn float97_wavelets_for_batch_group",
-            "fn record_cpu_fallback",
-        ]),
-        PatternCheck::new("accelerated batch storage", &batch_accelerated_storage).required(&[
-            "fn store_compact_preencoded_component(",
-            "fn try_store_grouped_i16_preencoded_float97_batches",
-            "fn try_store_prequantized_float97_batch_group",
-        ]),
-        PatternCheck::new("wavelet batch storage", &batch_storage).required(&[
-            "fn store_integer_batch_wavelet(",
-            "fn store_float97_batch_wavelet(",
-        ]),
-        PatternCheck::new("JPEG-to-HTJ2K batch encode ownership", &batch_encode).required(&[
-            "fn record_encode_dispatch_delta(",
-            "fn encode_float97_precomputed_tiles_batch",
-            "fn encode_float97_batch_tile",
-        ]),
-    ]);
-}
+mod cpu;
+mod metal;
 
 #[test]
 #[expect(
@@ -185,8 +28,19 @@ fn jpeg_to_htj2k_core_and_batch_stay_split_by_stage() {
 fn cuda_and_metal_transcode_backends_stay_split_by_residency_stage() {
     let cuda = read("crates/j2k-transcode-cuda/src/cuda.rs");
     let cuda_transform = read("crates/j2k-transcode-cuda/src/cuda/transform.rs");
+    let cuda_transform_components =
+        read("crates/j2k-transcode-cuda/src/cuda/transform/components.rs");
+    let cuda_transform_staging = read("crates/j2k-transcode-cuda/src/cuda/transform/staging.rs");
     let cuda_resident_dispatch = read("crates/j2k-transcode-cuda/src/cuda/resident_dispatch.rs");
+    let cuda_resident_dispatch_grouped =
+        read("crates/j2k-transcode-cuda/src/cuda/resident_dispatch/grouped.rs");
     let cuda_resident_encode = read("crates/j2k-transcode-cuda/src/cuda/resident_encode.rs");
+    let cuda_resident_encode_orchestration =
+        read("crates/j2k-transcode-cuda/src/cuda/resident_encode/orchestration.rs");
+    let cuda_resident_encode_output =
+        read("crates/j2k-transcode-cuda/src/cuda/resident_encode/output.rs");
+    let cuda_resident_encode_planning =
+        read("crates/j2k-transcode-cuda/src/cuda/resident_encode/planning.rs");
     let metal = read("crates/j2k-transcode-metal/src/metal.rs");
     let metal_runtime = read("crates/j2k-transcode-metal/src/metal/runtime.rs");
     let metal_reversible = read("crates/j2k-transcode-metal/src/metal/reversible.rs");
@@ -204,14 +58,44 @@ fn cuda_and_metal_transcode_backends_stay_split_by_residency_stage() {
             625,
         ),
         (
+            "j2k-transcode-cuda/src/cuda/transform/components.rs",
+            cuda_transform_components.as_str(),
+            425,
+        ),
+        (
+            "j2k-transcode-cuda/src/cuda/transform/staging.rs",
+            cuda_transform_staging.as_str(),
+            425,
+        ),
+        (
             "j2k-transcode-cuda/src/cuda/resident_dispatch.rs",
             cuda_resident_dispatch.as_str(),
             425,
         ),
         (
+            "j2k-transcode-cuda/src/cuda/resident_dispatch/grouped.rs",
+            cuda_resident_dispatch_grouped.as_str(),
+            425,
+        ),
+        (
             "j2k-transcode-cuda/src/cuda/resident_encode.rs",
             cuda_resident_encode.as_str(),
-            850,
+            125,
+        ),
+        (
+            "j2k-transcode-cuda/src/cuda/resident_encode/orchestration.rs",
+            cuda_resident_encode_orchestration.as_str(),
+            425,
+        ),
+        (
+            "j2k-transcode-cuda/src/cuda/resident_encode/output.rs",
+            cuda_resident_encode_output.as_str(),
+            425,
+        ),
+        (
+            "j2k-transcode-cuda/src/cuda/resident_encode/planning.rs",
+            cuda_resident_encode_planning.as_str(),
+            425,
         ),
         ("j2k-transcode-metal/src/metal.rs", metal.as_str(), 125),
         (
@@ -262,18 +146,74 @@ fn cuda_and_metal_transcode_backends_stay_split_by_residency_stage() {
             ])
             .forbidden(&["fn run_dwt97(", "fn encode_resident_subbands("]),
         PatternCheck::new("CUDA transform dispatch ownership", &cuda_transform).required(&[
+            "mod components;",
+            "mod staging;",
             "fn dispatch_reversible_dwt53_batch(",
             "fn dispatch_dwt97_batch(",
             "fn dispatch_htj2k97_preencoded_batch(",
         ]),
+        PatternCheck::new(
+            "CUDA transform component ownership",
+            &cuda_transform_components,
+        )
+        .required(&[
+            "fn preflight_component_allocation_budget(",
+            "fn codeblock_bands_to_components(",
+            "fn component_from_subbands(",
+            "fn account_codeblock_bands(",
+        ]),
+        PatternCheck::new("CUDA transform staging ownership", &cuda_transform_staging).required(&[
+            "fn validate_staging_and_readback_workspace(",
+            "fn preflight_dwt97_conversion_budget(",
+            "fn flatten_f64_blocks_to_f32(",
+        ]),
         PatternCheck::new("CUDA resident dispatch ownership", &cuda_resident_dispatch).required(&[
+            "mod grouped;",
             "fn dispatch_htj2k97_preencoded_i16_batch_with_sink",
-            "fn dispatch_htj2k97_compact_preencoded_i16_batch_groups",
             "fn device_bands_to_preencoded_components",
         ]),
-        PatternCheck::new("CUDA resident encode ownership", &cuda_resident_encode).required(&[
+        PatternCheck::new(
+            "CUDA grouped resident dispatch ownership",
+            &cuda_resident_dispatch_grouped,
+        )
+        .required(&[
+            "fn live_staging_budget<",
+            "fn dispatch_with_sink<",
+            "fn dispatch_htj2k97_compact_preencoded_i16_batch_groups",
+        ]),
+        PatternCheck::new("CUDA resident encode facade", &cuda_resident_encode)
+            .required(&["mod orchestration;", "mod output;", "mod planning;"])
+            .forbidden(&[
+                "fn encode_resident_subbands(",
+                "fn split_resident_subband_blocks(",
+            ]),
+        PatternCheck::new(
+            "CUDA resident encode orchestration ownership",
+            &cuda_resident_encode_orchestration,
+        )
+        .required(&[
             "fn encode_resident_subbands(",
+            "fn encode_resident_compact_subbands(",
+            "fn device_band_groups_to_preencoded_components",
+        ]),
+        PatternCheck::new(
+            "CUDA resident output ownership",
+            &cuda_resident_encode_output,
+        )
+        .required(&[
             "fn assemble_compact_preencoded_components",
+            "fn split_resident_subband_blocks(",
+            "fn split_resident_compact_subband_blocks(",
+        ]),
+        PatternCheck::new(
+            "CUDA resident planning ownership",
+            &cuda_resident_encode_planning,
+        )
+        .required(&[
+            "type ResidentMetadataBudget = HostPhaseBudget",
+            "fn reserve_component_assembly_budget",
+            "fn resident_group_targets",
+            "fn resident_subband_encode_plan",
         ]),
         PatternCheck::new("Metal transcode facade", &metal)
             .required(&[
@@ -282,6 +222,7 @@ fn cuda_and_metal_transcode_backends_stay_split_by_residency_stage() {
                 "mod irreversible;",
                 "mod projection;",
                 "mod resident;",
+                "mod codeblock_output;",
                 "mod geometry;",
                 "mod buffers;",
             ])

@@ -46,6 +46,10 @@ fn metal_compute_runtime_registry_is_split_from_compute_god_file() {
         root.join("crates/j2k-metal/src/compute/resident_codestream/tier2_packetization.rs"),
     )
     .expect("read Metal compute resident codestream tier-2 packetization module");
+    let resident_codestream_tier2_tests = fs::read_to_string(
+        root.join("crates/j2k-metal/src/compute/resident_codestream/tier2_packetization/tests.rs"),
+    )
+    .expect("read Metal compute resident codestream tier-2 packetization tests");
     let resident_codestream_ht_cleanup = fs::read_to_string(
         root.join("crates/j2k-metal/src/compute/resident_codestream/ht_cleanup.rs"),
     )
@@ -69,6 +73,16 @@ fn metal_compute_runtime_registry_is_split_from_compute_god_file() {
     assert!(
         resident_codestream_tier2.lines().count() < 500,
         "tier2_packetization.rs must stay below its post-extraction line-count ratchet"
+    );
+    assert!(
+        resident_codestream_tier2_tests.lines().count() < 200,
+        "tier2_packetization/tests.rs must stay below its focused-test line-count ratchet"
+    );
+    assert!(
+        resident_codestream_tier2.contains("#[cfg(test)]\nmod tests;")
+            && !resident_codestream_tier2
+                .contains("fn tier2_metadata_plan_honors_exact_aggregate_cap"),
+        "Tier-2 packetization regression tests must remain in their focused test module"
     );
     assert!(
         resident_codestream.contains("mod ht_cleanup;")
@@ -173,6 +187,10 @@ fn metal_compute_runtime_registry_is_split_from_compute_god_file() {
         ("compute/lossless_prepare/single.rs", 200),
         ("compute/decode_dispatch.rs", 100),
         ("compute/decode_dispatch/classic_cleanup.rs", 750),
+        (
+            "compute/decode_dispatch/classic_cleanup/distinct_allocation.rs",
+            100,
+        ),
         ("compute/decode_dispatch/classic_subband.rs", 450),
         ("compute/decode_dispatch/ht_distinct.rs", 250),
         ("compute/decode_dispatch/ht_subband.rs", 300),
@@ -256,6 +274,10 @@ fn metal_direct_plan_types_live_in_focused_module() {
     let grayscale_execute =
         fs::read_to_string(root.join("crates/j2k-metal/src/compute/direct_grayscale_execute.rs"))
             .expect("read Metal direct grayscale executor module");
+    let grayscale_allocation = fs::read_to_string(
+        root.join("crates/j2k-metal/src/compute/direct_grayscale_execute/allocation.rs"),
+    )
+    .expect("read Metal direct grayscale allocation module");
     let grayscale_component = fs::read_to_string(
         root.join("crates/j2k-metal/src/compute/direct_grayscale_execute/component_plane.rs"),
     )
@@ -322,6 +344,7 @@ fn metal_direct_plan_types_live_in_focused_module() {
     assert_pattern_checks(&[
         PatternCheck::new("Metal direct grayscale execution shell", &grayscale_execute)
             .required(&[
+                "mod allocation;",
                 "mod component_plane;",
                 "mod single;",
                 "pub(in crate::compute) use self::component_plane::{",
@@ -329,12 +352,20 @@ fn metal_direct_plan_types_live_in_focused_module() {
                 "encode_prepared_direct_component_plane_in_command_buffer",
                 "upload_cpu_decoded_coefficients",
                 "DirectComponentPlaneRequest",
+                "use self::allocation::{allocate_direct_execution_metadata, DirectExecutionMetadata};",
                 "pub(in crate::compute) use self::single::encode_prepared_direct_grayscale_plan_in_command_buffer;",
             ])
             .forbidden(&[
                 "pub(in crate::compute) use self::component_plane::*;",
                 "pub(in crate::compute) use self::single::*;",
+                "fn allocate_direct_execution_metadata(",
                 "fn encode_prepared_direct_component_plane_in_command_buffer(",
+            ]),
+        PatternCheck::new("Metal direct execution allocation owner", &grayscale_allocation)
+            .required(&[
+                "pub(super) struct DirectExecutionMetadata",
+                "pub(super) fn allocate_direct_execution_metadata(",
+                "direct_execution_resources_honor_exact_cap_and_one_byte_over",
             ]),
         PatternCheck::new(
             "Metal repeated grayscale execution shell",
@@ -361,6 +392,11 @@ fn metal_direct_plan_types_live_in_focused_module() {
             "compute/direct_grayscale_execute.rs",
             &grayscale_execute,
             500,
+        ),
+        (
+            "compute/direct_grayscale_execute/allocation.rs",
+            &grayscale_allocation,
+            150,
         ),
         (
             "compute/direct_grayscale_execute/single.rs",

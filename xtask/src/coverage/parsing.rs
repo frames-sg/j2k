@@ -9,6 +9,26 @@ use crate::process::{self, CommandContext};
 
 use super::model::LcovReport;
 
+pub(super) fn ensure_no_untracked_rust_sources() -> Result<(), String> {
+    let untracked = git_output(&["ls-files", "--others", "--exclude-standard", "--", "*.rs"])?;
+    validate_no_untracked_rust_sources(&untracked)
+}
+
+pub(super) fn validate_no_untracked_rust_sources(untracked: &str) -> Result<(), String> {
+    let paths = untracked
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "changed-line coverage cannot classify untracked Rust sources; add or stage them before running the gate:\n- {}",
+        paths.join("\n- ")
+    ))
+}
+
 pub(super) fn resolve_diff_base(explicit: Option<&str>) -> Result<String, String> {
     if let Some(base) = explicit {
         verify_git_revision(base)?;

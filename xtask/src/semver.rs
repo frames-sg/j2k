@@ -2,6 +2,8 @@
 
 //! Release-version and reviewed public-API compatibility gates.
 
+mod review;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -12,8 +14,13 @@ use std::{
 };
 
 use crate::process::{self, cargo, CommandContext};
+use crate::stable_api::{
+    collect_package_apis, verify_cargo_public_api_version, CARGO_PUBLIC_API_VERSION,
+    HIDDEN_API_SNAPSHOT, PUBLIC_API_SNAPSHOT, PUBLIC_API_TARGET, PUBLIC_API_TOOLCHAIN,
+};
 
 const CARGO_SEMVER_CHECKS_VERSION: &str = "0.48.0";
+const SEMVER_TOOLCHAIN: &str = "1.96";
 const SEMVER_BASELINE_VERSION: &str = "0.6.2";
 const SEMVER_BASELINE_TAG: &str = "v0.6.2";
 const SEMVER_BASELINE_COMMIT: &str = "55ee746e1b49f7309e4d030cc01a69d580173920";
@@ -135,6 +142,7 @@ struct PackageApiDiff {
     candidate_count: usize,
     added: BTreeSet<String>,
     removed: BTreeSet<String>,
+    hidden: BTreeSet<String>,
 }
 
 impl PackageApiDiff {
@@ -145,19 +153,10 @@ impl PackageApiDiff {
     fn removed_fingerprint(&self) -> String {
         fingerprint(&self.removed)
     }
-}
 
-#[derive(Debug)]
-struct ReviewEntry {
-    removed_fingerprint: Option<String>,
-    added_fingerprint: Option<String>,
-    rationale: String,
-}
-
-#[derive(Debug)]
-struct ReviewConfig {
-    candidate_version: String,
-    reviews: BTreeMap<String, ReviewEntry>,
+    fn hidden_fingerprint(&self) -> String {
+        fingerprint(&self.hidden)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -173,7 +172,7 @@ pub(crate) fn semver(
     let options = parse_options(args)?;
     require_macos()?;
     verify_baseline_tag()?;
-    verify_tool_versions(cargo_public_api_version, options.write_report)?;
+    verify_tool_versions(cargo_public_api_version)?;
     validate_package_partition(stable_packages)?;
 
     let versions = workspace_package_versions()?;
@@ -181,15 +180,81 @@ pub(crate) fn semver(
     let baseline = Version::parse(SEMVER_BASELINE_VERSION)?;
     let baseline_snapshot = baseline_api_snapshot(cargo_public_api_version)?;
     let baseline_apis = parse_api_snapshot(&baseline_snapshot)?;
-    let current_snapshot = current_api_snapshot(cargo_public_api_version)?;
-    let snapshot_apis = parse_api_snapshot(&current_snapshot)?;
-    let current_apis = if options.write_report {
-        collect_current_apis(stable_packages)?
-    } else {
-        snapshot_apis.clone()
-    };
-    let stale_snapshot_packages = snapshot_drift(stable_packages, &snapshot_apis, &current_apis);
+    validate_snapshot_scope(
+        "published 0.6.2 ordinary snapshot",
+        SEMVER_BASELINE_PACKAGES,
+        &baseline_apis,
+    )?;
+    let ordinary_snapshot = current_api_snapshot(
+        PUBLIC_API_SNAPSHOT,
+        SnapshotKind::Ordinary,
+        cargo_public_api_version,
+    )?;
+    let hidden_snapshot = current_api_snapshot(
+        HIDDEN_API_SNAPSHOT,
+        SnapshotKind::Hidden,
+        cargo_public_api_version,
+    )?;
+    let snapshot_apis = parse_api_snapshot(&ordinary_snapshot)?;
+    let snapshot_hidden_apis = parse_api_snapshot(&hidden_snapshot)?;
+    validate_snapshot_scope(
+        "candidate ordinary snapshot",
+        stable_packages,
+        &snapshot_apis,
+    )?;
+    validate_snapshot_scope(
+        "candidate rustdoc-hidden snapshot",
+        stable_packages,
+        &snapshot_hidden_apis,
+    )?;
+    let live_inventories = collect_package_apis(stable_packages)?;
+    let current_apis = live_inventories
+        .iter()
+        .map(|(package, inventory)| (package.clone(), inventory.ordinary.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let current_hidden_apis = live_inventories
+        .iter()
+        .map(|(package, inventory)| (package.clone(), inventory.hidden.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let stale_ordinary_packages = snapshot_drift(stable_packages, &snapshot_apis, &current_apis);
+    let stale_hidden_packages =
+        snapshot_drift(stable_packages, &snapshot_hidden_apis, &current_hidden_apis);
 
+    let diffs = build_package_diffs(
+        stable_packages,
+        &versions,
+        baseline,
+        &baseline_apis,
+        &current_apis,
+        &current_hidden_apis,
+    )?;
+
+    if !stale_ordinary_packages.is_empty() || !stale_hidden_packages.is_empty() {
+        return Err(format!(
+            "committed stable API snapshots are stale; ordinary packages: \
+             {stale_ordinary_packages:?}; rustdoc-hidden packages: {stale_hidden_packages:?}; \
+             run `cargo xtask stable-api --write` and review both inventory diffs before \
+             regenerating the semver report"
+        ));
+    }
+
+    let report = render_report(&candidate_version, &diffs, cargo_public_api_version);
+    verify_or_write_report(options, &report)?;
+
+    let review_config = review::load_review_config()?;
+    review::validate_reviews(&review_config, &candidate_version, &diffs)?;
+    run_semver_checks(&diffs)?;
+    Ok(())
+}
+
+fn build_package_diffs(
+    stable_packages: &[&str],
+    versions: &BTreeMap<String, String>,
+    baseline: Version,
+    baseline_apis: &BTreeMap<String, BTreeSet<String>>,
+    current_apis: &BTreeMap<String, BTreeSet<String>>,
+    current_hidden_apis: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<Vec<PackageApiDiff>, String> {
     let baseline_set = SEMVER_BASELINE_PACKAGES
         .iter()
         .copied()
@@ -202,6 +267,9 @@ pub(crate) fn semver(
         let candidate = versions
             .get(*package)
             .ok_or_else(|| format!("workspace metadata is missing stable package `{package}`"))?;
+        let hidden = current_hidden_apis.get(*package).cloned().ok_or_else(|| {
+            format!("current rustdoc-hidden API inventory is missing stable package `{package}`")
+        })?;
         if baseline_set.contains(package) {
             let baseline_api = baseline_apis.get(*package).ok_or_else(|| {
                 format!(
@@ -217,32 +285,22 @@ pub(crate) fn semver(
                 candidate_count: current.len(),
                 added: current.difference(baseline_api).cloned().collect(),
                 removed: baseline_api.difference(&current).cloned().collect(),
+                hidden,
             });
-        } else {
-            diffs.push(PackageApiDiff {
-                package: (*package).to_string(),
-                candidate_version: candidate.clone(),
-                release_type: None,
-                baseline_count: 0,
-                candidate_count: current.len(),
-                added: current,
-                removed: BTreeSet::new(),
-            });
+            continue;
         }
+        diffs.push(PackageApiDiff {
+            package: (*package).to_string(),
+            candidate_version: candidate.clone(),
+            release_type: None,
+            baseline_count: 0,
+            candidate_count: current.len(),
+            added: current,
+            removed: BTreeSet::new(),
+            hidden,
+        });
     }
-
-    let report = render_report(&candidate_version, &diffs, cargo_public_api_version);
-    verify_or_write_report(options, &report)?;
-    if !stale_snapshot_packages.is_empty() {
-        return Err(format!(
-            "wrote {API_DIFF_REPORT} from the current workspace, but docs/stable-api-1.0.public-api.txt is stale for packages {stale_snapshot_packages:?}; run `cargo xtask stable-api --write` on macOS with cargo-public-api 0.52.0 and review that diff before treating the API report as verified"
-        ));
-    }
-
-    let review_config = load_review_config()?;
-    validate_reviews(&review_config, &candidate_version, &diffs)?;
-    run_semver_checks(&diffs)?;
-    Ok(())
+    Ok(diffs)
 }
 
 fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> {
@@ -287,15 +345,24 @@ fn verify_baseline_tag() -> Result<(), String> {
     }
 }
 
-fn verify_tool_versions(
-    cargo_public_api_version: &str,
-    require_public_api_binary: bool,
-) -> Result<(), String> {
-    let toolchain = env::var("J2K_SEMVER_TOOLCHAIN").unwrap_or_else(|_| "1.96".to_string());
-    let toolchain_arg = format!("+{toolchain}");
+fn verify_tool_versions(cargo_public_api_version: &str) -> Result<(), String> {
+    if cargo_public_api_version != CARGO_PUBLIC_API_VERSION {
+        return Err(format!(
+            "semver requested cargo-public-api {cargo_public_api_version}, but the stable API \
+             collector is pinned to {CARGO_PUBLIC_API_VERSION}"
+        ));
+    }
+    if env::var_os("J2K_SEMVER_TOOLCHAIN").is_some() {
+        return Err(format!(
+            "J2K_SEMVER_TOOLCHAIN overrides are not accepted; semver is pinned to Rust \
+             {SEMVER_TOOLCHAIN}"
+        ));
+    }
+    let args = semver_cargo_args(["semver-checks", "--version"]);
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
     let semver_version = capture_command(
-        OsString::from("cargo"),
-        &[toolchain_arg.as_str(), "semver-checks", "--version"],
+        OsString::from("rustup"),
+        &args,
         &[],
         "detect cargo-semver-checks",
     )?;
@@ -304,22 +371,15 @@ fn verify_tool_versions(
         "cargo-semver-checks",
         CARGO_SEMVER_CHECKS_VERSION,
     )?;
+    verify_cargo_public_api_version()
+}
 
-    if !require_public_api_binary {
-        return Ok(());
-    }
-
-    let public_api_version = capture_command(
-        cargo(),
-        &["public-api", "--version"],
-        &[],
-        "detect cargo-public-api",
-    )?;
-    require_version_token(
-        &public_api_version,
-        "cargo-public-api",
-        cargo_public_api_version,
-    )
+fn semver_cargo_args<'a>(args: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    ["run", SEMVER_TOOLCHAIN, "cargo"]
+        .into_iter()
+        .chain(args)
+        .map(str::to_string)
+        .collect()
 }
 
 fn require_version_token(output: &str, tool: &str, expected: &str) -> Result<(), String> {
@@ -425,8 +485,7 @@ fn baseline_api_snapshot(cargo_public_api_version: &str) -> Result<String, Strin
         &[],
         "read tagged public API snapshot",
     )?;
-    let expected_generator = format!("Generator: `cargo-public-api {cargo_public_api_version}`.");
-    if snapshot.contains(&expected_generator) {
+    if snapshot_uses_generator(&snapshot, cargo_public_api_version) {
         Ok(snapshot)
     } else {
         Err(format!(
@@ -435,70 +494,109 @@ fn baseline_api_snapshot(cargo_public_api_version: &str) -> Result<String, Strin
     }
 }
 
-fn current_api_snapshot(cargo_public_api_version: &str) -> Result<String, String> {
-    let path = "docs/stable-api-1.0.public-api.txt";
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SnapshotKind {
+    Ordinary,
+    Hidden,
+}
+
+impl SnapshotKind {
+    const fn header(self) -> &'static str {
+        match self {
+            Self::Ordinary => "# J2K 1.0 Public API Snapshot",
+            Self::Hidden => "# J2K 1.0 Rustdoc-Hidden Public API Snapshot",
+        }
+    }
+}
+
+fn current_api_snapshot(
+    path: &str,
+    kind: SnapshotKind,
+    cargo_public_api_version: &str,
+) -> Result<String, String> {
     let snapshot = fs::read_to_string(path).map_err(|err| format!("read {path}: {err}"))?;
-    let expected_generator = format!("Generator: `cargo-public-api {cargo_public_api_version}`.");
-    if snapshot.contains(&expected_generator) {
+    if current_snapshot_uses_generation_contract(&snapshot, kind, cargo_public_api_version) {
         Ok(snapshot)
     } else {
         Err(format!(
-            "{path} was not generated by cargo-public-api {cargo_public_api_version}"
+            "{path} does not record the pinned cargo-public-api {cargo_public_api_version}, \
+             rustdoc toolchain {PUBLIC_API_TOOLCHAIN}, and target {PUBLIC_API_TARGET} contract"
         ))
     }
 }
 
-fn collect_current_apis(
-    stable_packages: &[&str],
-) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
-    let mut current = BTreeMap::new();
-    for package in stable_packages {
-        eprintln!("collecting current public API for `{package}`");
-        current.insert((*package).to_string(), current_public_api(package)?);
-    }
-    Ok(current)
+fn snapshot_uses_generator(snapshot: &str, cargo_public_api_version: &str) -> bool {
+    let expected = format!("Generator: `cargo-public-api {cargo_public_api_version}`.");
+    let mut lines = snapshot.lines();
+    lines.next() == Some("# J2K 1.0 Public API Snapshot")
+        && exact_metadata_line(&lines.take(9).collect::<Vec<_>>(), "Generator:", &expected)
 }
 
-fn snapshot_drift<'a>(
-    stable_packages: &[&'a str],
+fn current_snapshot_uses_generation_contract(
+    snapshot: &str,
+    kind: SnapshotKind,
+    cargo_public_api_version: &str,
+) -> bool {
+    let generator = format!("Generator: `cargo-public-api {cargo_public_api_version}`.");
+    let toolchain = format!("Rustdoc toolchain: `{PUBLIC_API_TOOLCHAIN}`.");
+    let target = format!("Target: `{PUBLIC_API_TARGET}`.");
+    let mut lines = snapshot.lines();
+    if lines.next() != Some(kind.header()) {
+        return false;
+    }
+    let metadata = lines.take(24).collect::<Vec<_>>();
+    exact_metadata_line(&metadata, "Generator:", &generator)
+        && exact_metadata_line(&metadata, "Rustdoc toolchain:", &toolchain)
+        && exact_metadata_line(&metadata, "Target:", &target)
+}
+
+fn exact_metadata_line(lines: &[&str], prefix: &str, expected: &str) -> bool {
+    let mut matching = lines
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with(prefix));
+    matching.next() == Some(expected) && matching.next().is_none()
+}
+
+fn snapshot_drift(
+    stable_packages: &[&str],
     snapshot_apis: &BTreeMap<String, BTreeSet<String>>,
     current_apis: &BTreeMap<String, BTreeSet<String>>,
-) -> Vec<&'a str> {
-    stable_packages
+) -> Vec<String> {
+    let expected = stable_packages.iter().copied().collect::<BTreeSet<_>>();
+    let mut drift = stable_packages
         .iter()
         .copied()
         .filter(|package| snapshot_apis.get(*package) != current_apis.get(*package))
-        .collect()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    drift.extend(
+        snapshot_apis
+            .keys()
+            .filter(|package| !expected.contains(package.as_str()))
+            .map(|package| format!("unexpected:{package}")),
+    );
+    drift
 }
 
-fn current_public_api(package: &str) -> Result<BTreeSet<String>, String> {
-    let output = capture_command(
-        cargo(),
-        &[
-            "public-api",
-            "-p",
-            package,
-            "--all-features",
-            "-sss",
-            "--color",
-            "never",
-        ],
-        &[],
-        &format!("generate current public API for {package}"),
-    )?;
-    let api = output
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
+fn validate_snapshot_scope(
+    label: &str,
+    expected_packages: &[&str],
+    snapshot_apis: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<(), String> {
+    let expected = expected_packages.iter().copied().collect::<BTreeSet<_>>();
+    let actual = snapshot_apis
+        .keys()
+        .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    if api.is_empty() {
-        Err(format!(
-            "cargo-public-api returned no public items for stable package `{package}`"
-        ))
-    } else {
-        Ok(api)
+    if expected == actual {
+        return Ok(());
     }
+    let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
+    let unexpected = actual.difference(&expected).copied().collect::<Vec<_>>();
+    Err(format!(
+        "{label} package scope drifted; missing: {missing:?}; unexpected: {unexpected:?}"
+    ))
 }
 
 fn parse_api_snapshot(snapshot: &str) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
@@ -510,29 +608,49 @@ fn parse_api_snapshot(snapshot: &str) -> Result<BTreeMap<String, BTreeSet<String
             .strip_prefix("## `")
             .and_then(|rest| rest.strip_suffix('`'))
         {
+            if in_api {
+                return Err(
+                    "public API snapshot starts a package heading inside a text fence".to_string(),
+                );
+            }
             package = Some(name.to_string());
-            in_api = false;
             continue;
         }
         if line == "```text" {
+            if in_api {
+                return Err("public API snapshot contains nested text fences".to_string());
+            }
+            let name = package.as_ref().ok_or_else(|| {
+                "public API snapshot contains a text fence before a package heading".to_string()
+            })?;
+            if sections.insert(name.clone(), BTreeSet::new()).is_some() {
+                return Err(format!(
+                    "public API snapshot contains duplicate API section for `{name}`"
+                ));
+            }
             in_api = true;
             continue;
         }
         if line == "```" {
+            if !in_api {
+                return Err("public API snapshot contains an unmatched closing fence".to_string());
+            }
             in_api = false;
             continue;
         }
         if in_api && !line.is_empty() {
-            let name = package.as_ref().ok_or_else(|| {
-                "public API snapshot contains a text fence before a package heading".to_string()
-            })?;
+            let name = package
+                .as_ref()
+                .expect("an API fence cannot open without a package heading");
             sections
-                .entry(name.clone())
-                .or_default()
+                .get_mut(name)
+                .expect("an open API fence must have an initialized package section")
                 .insert(line.to_string());
         }
     }
-    if sections.is_empty() {
+    if in_api {
+        Err("public API snapshot ends inside a text fence".to_string())
+    } else if sections.is_empty() {
         Err("public API snapshot did not contain package API sections".to_string())
     } else {
         Ok(sections)
@@ -571,7 +689,7 @@ fn render_report(
     writeln!(&mut out).unwrap();
     writeln!(
         &mut out,
-        "This report is generated by `cargo xtask semver --write-report`. Normal `cargo xtask semver` regenerates it in memory and fails if this committed file is stale. Breaking fingerprints require a matching rationale in `{API_REVIEW_CONFIG}`; report regeneration never updates that review config."
+        "This report is generated by `cargo xtask semver --write-report`. Normal `cargo xtask semver` regenerates it in memory and fails if this committed file is stale. Every ordinary added/removed fingerprint and every full rustdoc-hidden candidate-inventory fingerprint requires an exact reviewed entry in `{API_REVIEW_CONFIG}`; report regeneration never updates that review config."
     )
     .unwrap();
     writeln!(&mut out).unwrap();
@@ -588,7 +706,7 @@ fn render_report(
     writeln!(&mut out, "- Candidate version: `{candidate_version}`").unwrap();
     writeln!(
         &mut out,
-        "- Tool pins: `cargo-semver-checks {CARGO_SEMVER_CHECKS_VERSION}`, `cargo-public-api {cargo_public_api_version}`"
+        "- Tool pins: Rust `{SEMVER_TOOLCHAIN}`, `cargo-semver-checks {CARGO_SEMVER_CHECKS_VERSION}`, `cargo-public-api {cargo_public_api_version}`, rustdoc `{PUBLIC_API_TOOLCHAIN}`, target `{PUBLIC_API_TARGET}`"
     )
     .unwrap();
     writeln!(&mut out).unwrap();
@@ -596,12 +714,12 @@ fn render_report(
     writeln!(&mut out).unwrap();
     writeln!(
         &mut out,
-        "| Package | Baseline | Candidate | Computed release type | Added | Removed/changed | Removed fingerprint | Added fingerprint |"
+        "| Package | Baseline | Candidate | Computed release type | Added | Removed/changed | Removed fingerprint | Added fingerprint | Rustdoc-hidden items | Hidden inventory fingerprint |"
     )
     .unwrap();
     writeln!(
         &mut out,
-        "| --- | --- | --- | --- | ---: | ---: | --- | --- |"
+        "| --- | --- | --- | --- | ---: | ---: | --- | --- | ---: | --- |"
     )
     .unwrap();
     for diff in diffs {
@@ -613,13 +731,15 @@ fn render_report(
         let release_type = diff.release_type.map_or("new", ReleaseType::as_str);
         writeln!(
             &mut out,
-            "| `{}` | `{baseline}` | `{}` | `{release_type}` | {} | {} | `{}` | `{}` |",
+            "| `{}` | `{baseline}` | `{}` | `{release_type}` | {} | {} | `{}` | `{}` | {} | `{}` |",
             diff.package,
             diff.candidate_version,
             diff.added.len(),
             diff.removed.len(),
             diff.removed_fingerprint(),
             diff.added_fingerprint(),
+            diff.hidden.len(),
+            diff.hidden_fingerprint(),
         )
         .unwrap();
     }
@@ -634,11 +754,13 @@ fn render_report(
     for diff in diffs.iter().filter(|diff| diff.release_type.is_none()) {
         writeln!(
             &mut out,
-            "- `{}` `{}`: {} public API items; fingerprint `{}`.",
+            "- `{}` `{}`: {} ordinary public API items, fingerprint `{}`; {} rustdoc-hidden public API items, full-inventory fingerprint `{}`.",
             diff.package,
             diff.candidate_version,
             diff.candidate_count,
-            diff.added_fingerprint()
+            diff.added_fingerprint(),
+            diff.hidden.len(),
+            diff.hidden_fingerprint()
         )
         .unwrap();
     }
@@ -651,12 +773,14 @@ fn render_report(
         writeln!(&mut out).unwrap();
         writeln!(
             &mut out,
-            "Baseline items: {}. Candidate items: {}. Computed release type: `{}`.",
+            "Baseline items: {}. Candidate items: {}. Computed release type: `{}`. Rustdoc-hidden candidate items: {}. Full hidden-inventory fingerprint: `{}`.",
             diff.baseline_count,
             diff.candidate_count,
             diff.release_type
                 .expect("published diff release type")
-                .as_str()
+                .as_str(),
+            diff.hidden.len(),
+            diff.hidden_fingerprint()
         )
         .unwrap();
         render_diff_items(
@@ -715,252 +839,23 @@ fn verify_or_write_report(options: Options, rendered: &str) -> Result<(), String
     }
 }
 
-fn load_review_config() -> Result<ReviewConfig, String> {
-    let source = fs::read_to_string(API_REVIEW_CONFIG)
-        .map_err(|err| format!("read {API_REVIEW_CONFIG}: {err}"))?;
-    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&source)
-        .map_err(|err| format!("parse {API_REVIEW_CONFIG}: {err}"))?;
-    parse_review_config(&value)
-}
-
-fn parse_review_config(value: &serde_yaml_ng::Value) -> Result<ReviewConfig, String> {
-    let root = value
-        .as_mapping()
-        .ok_or_else(|| "API review config root must be a mapping".to_string())?;
-    reject_unknown_keys(
-        root,
-        &[
-            "version",
-            "baseline_tag",
-            "baseline_version",
-            "candidate_version",
-            "reviews",
-        ],
-        "API review config",
-    )?;
-    if required_u64(root, "version")? != 1 {
-        return Err("API review config version must be 1".to_string());
-    }
-    require_exact(root, "baseline_tag", SEMVER_BASELINE_TAG)?;
-    require_exact(root, "baseline_version", SEMVER_BASELINE_VERSION)?;
-    let candidate_version = required_string(root, "candidate_version")?.to_string();
-    let review_values = required_value(root, "reviews")?
-        .as_mapping()
-        .ok_or_else(|| "API review config `reviews` must be a mapping".to_string())?;
-    let mut reviews = BTreeMap::new();
-    for (package, value) in review_values {
-        let package = package
-            .as_str()
-            .ok_or_else(|| "API review package keys must be strings".to_string())?;
-        let entry = value
-            .as_mapping()
-            .ok_or_else(|| format!("API review for `{package}` must be a mapping"))?;
-        reject_unknown_keys(
-            entry,
-            &["removed_fingerprint", "added_fingerprint", "rationale"],
-            &format!("API review for `{package}`"),
-        )?;
-        let removed_fingerprint = optional_string(entry, "removed_fingerprint")?;
-        let added_fingerprint = optional_string(entry, "added_fingerprint")?;
-        if removed_fingerprint.is_none() && added_fingerprint.is_none() {
-            return Err(format!(
-                "API review for `{package}` must declare a removed or added fingerprint"
-            ));
-        }
-        let rationale = required_string(entry, "rationale")?.trim().to_string();
-        if rationale.len() < 20 {
-            return Err(format!(
-                "API review rationale for `{package}` must be at least 20 characters"
-            ));
-        }
-        if reviews
-            .insert(
-                package.to_string(),
-                ReviewEntry {
-                    removed_fingerprint,
-                    added_fingerprint,
-                    rationale,
-                },
-            )
-            .is_some()
-        {
-            return Err(format!("duplicate API review for `{package}`"));
-        }
-    }
-    Ok(ReviewConfig {
-        candidate_version,
-        reviews,
-    })
-}
-
-fn validate_reviews(
-    config: &ReviewConfig,
-    candidate_version: &str,
-    diffs: &[PackageApiDiff],
-) -> Result<(), String> {
-    let mut errors = Vec::new();
-    if config.candidate_version != candidate_version {
-        errors.push(format!(
-            "review config candidate {} does not match workspace candidate {candidate_version}",
-            config.candidate_version
-        ));
-    }
-    let by_package = diffs
-        .iter()
-        .map(|diff| (diff.package.as_str(), diff))
-        .collect::<BTreeMap<_, _>>();
-    for diff in diffs {
-        if diff.removed.is_empty() {
-            continue;
-        }
-        let Some(review) = config.reviews.get(&diff.package) else {
-            errors.push(format!(
-                "`{}` has {} removed/changed API items with fingerprint {} but no review entry",
-                diff.package,
-                diff.removed.len(),
-                diff.removed_fingerprint()
-            ));
-            continue;
-        };
-        if review.removed_fingerprint.as_deref() != Some(diff.removed_fingerprint().as_str()) {
-            errors.push(format!(
-                "`{}` removed/changed fingerprint is {}, but its review records {:?}",
-                diff.package,
-                diff.removed_fingerprint(),
-                review.removed_fingerprint
-            ));
-        }
-    }
-    for (package, review) in &config.reviews {
-        let Some(diff) = by_package.get(package.as_str()) else {
-            errors.push(format!(
-                "review config contains unknown package `{package}`"
-            ));
-            continue;
-        };
-        if let Some(expected) = &review.removed_fingerprint {
-            let actual = diff.removed_fingerprint();
-            if expected != &actual {
-                errors.push(format!(
-                    "`{package}` reviewed removed fingerprint {expected} is stale; actual is {actual}"
-                ));
-            }
-        }
-        if let Some(expected) = &review.added_fingerprint {
-            let actual = diff.added_fingerprint();
-            if expected != &actual {
-                errors.push(format!(
-                    "`{package}` reviewed added fingerprint {expected} is stale; actual is {actual}"
-                ));
-            }
-        }
-        if review.rationale.trim().len() < 20 {
-            errors.push(format!("`{package}` review rationale is too short"));
-        }
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "unreviewed or stale public API changes:\n- {}\nReview {API_DIFF_REPORT}, then update {API_REVIEW_CONFIG} with the exact generated fingerprint and a package-specific rationale.",
-            errors.join("\n- ")
-        ))
-    }
-}
-
-fn required_value<'a>(
-    mapping: &'a serde_yaml_ng::Mapping,
-    key: &str,
-) -> Result<&'a serde_yaml_ng::Value, String> {
-    mapping
-        .get(serde_yaml_ng::Value::String(key.to_string()))
-        .ok_or_else(|| format!("API review config is missing `{key}`"))
-}
-
-fn required_string<'a>(mapping: &'a serde_yaml_ng::Mapping, key: &str) -> Result<&'a str, String> {
-    required_value(mapping, key)?
-        .as_str()
-        .ok_or_else(|| format!("API review config `{key}` must be a string"))
-}
-
-fn optional_string(mapping: &serde_yaml_ng::Mapping, key: &str) -> Result<Option<String>, String> {
-    mapping
-        .get(serde_yaml_ng::Value::String(key.to_string()))
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| format!("API review config `{key}` must be a string"))
-        })
-        .transpose()
-}
-
-fn required_u64(mapping: &serde_yaml_ng::Mapping, key: &str) -> Result<u64, String> {
-    required_value(mapping, key)?
-        .as_u64()
-        .ok_or_else(|| format!("API review config `{key}` must be an unsigned integer"))
-}
-
-fn require_exact(
-    mapping: &serde_yaml_ng::Mapping,
-    key: &str,
-    expected: &str,
-) -> Result<(), String> {
-    let actual = required_string(mapping, key)?;
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(format!(
-            "API review config `{key}` must be `{expected}`, found `{actual}`"
-        ))
-    }
-}
-
-fn reject_unknown_keys(
-    mapping: &serde_yaml_ng::Mapping,
-    allowed: &[&str],
-    context: &str,
-) -> Result<(), String> {
-    let allowed = allowed.iter().copied().collect::<BTreeSet<_>>();
-    let unknown = mapping
-        .keys()
-        .map(|key| {
-            key.as_str()
-                .ok_or_else(|| format!("{context} keys must be strings"))
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter(|key| !allowed.contains(key))
-        .collect::<Vec<_>>();
-    if unknown.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("{context} contains unknown keys: {unknown:?}"))
-    }
-}
-
 fn run_semver_checks(diffs: &[PackageApiDiff]) -> Result<(), String> {
-    let toolchain = env::var("J2K_SEMVER_TOOLCHAIN").unwrap_or_else(|_| "1.96".to_string());
-    let toolchain_arg = format!("+{toolchain}");
     for diff in diffs.iter().filter(|diff| diff.release_type.is_some()) {
         let release_type = diff.release_type.expect("published diff release type");
-        process::run_command(
-            OsString::from("cargo"),
-            &[
-                toolchain_arg.as_str(),
-                "semver-checks",
-                "check-release",
-                "--package",
-                diff.package.as_str(),
-                "--baseline-version",
-                SEMVER_BASELINE_VERSION,
-                "--release-type",
-                release_type.as_str(),
-                "--color",
-                "never",
-            ],
-            CommandContext::new(),
-        )?;
+        let args = semver_cargo_args([
+            "semver-checks",
+            "check-release",
+            "--package",
+            diff.package.as_str(),
+            "--baseline-version",
+            SEMVER_BASELINE_VERSION,
+            "--release-type",
+            release_type.as_str(),
+            "--color",
+            "never",
+        ]);
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        process::run_command(OsString::from("rustup"), &args, CommandContext::new())?;
     }
     Ok(())
 }
@@ -974,193 +869,25 @@ fn capture_command(
     let program = program.as_ref();
     eprintln!("+ {} {}", program.to_string_lossy(), args.join(" "));
     let output = process::command_output(program, args, CommandContext::new().envs(envs))?;
+    if output.status.success() {
+        return String::from_utf8(output.stdout)
+            .map(|stdout| stdout.trim().to_string())
+            .map_err(|error| {
+                format!(
+                    "{} emitted non-UTF-8 stdout while attempting to {label}: {error}",
+                    program.to_string_lossy()
+                )
+            });
+    }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if output.status.success() {
-        Ok(stdout.trim().to_string())
-    } else {
-        Err(format!(
-            "{} exited with {} while attempting to {label}:\n{}",
-            program.to_string_lossy(),
-            output.status,
-            format!("{stdout}\n{stderr}").trim()
-        ))
-    }
+    Err(format!(
+        "{} exited with {} while attempting to {label}:\n{}",
+        program.to_string_lossy(),
+        output.status,
+        format!("{stdout}\n{stderr}").trim()
+    ))
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    use super::{
-        computed_release_type, fingerprint, parse_api_snapshot, parse_options, parse_review_config,
-        validate_package_partition, validate_reviews, PackageApiDiff, ReleaseType, ReviewConfig,
-        ReviewEntry, Version, SEMVER_BASELINE_PACKAGES, SEMVER_NEW_PACKAGES,
-    };
-
-    #[test]
-    fn release_type_uses_cargo_pre_one_compatibility_rules() {
-        assert_eq!(
-            computed_release_type(
-                Version::parse("0.6.2").unwrap(),
-                Version::parse("0.7.0").unwrap()
-            )
-            .unwrap(),
-            ReleaseType::Major
-        );
-        assert_eq!(
-            computed_release_type(
-                Version::parse("1.6.2").unwrap(),
-                Version::parse("1.7.0").unwrap()
-            )
-            .unwrap(),
-            ReleaseType::Minor
-        );
-        assert_eq!(
-            computed_release_type(
-                Version::parse("1.6.2").unwrap(),
-                Version::parse("1.6.3").unwrap()
-            )
-            .unwrap(),
-            ReleaseType::Patch
-        );
-        assert_eq!(
-            computed_release_type(
-                Version::parse("0.6.2").unwrap(),
-                Version::parse("0.6.3").unwrap()
-            )
-            .unwrap(),
-            ReleaseType::Minor
-        );
-        assert_eq!(
-            computed_release_type(
-                Version::parse("0.0.2").unwrap(),
-                Version::parse("0.0.3").unwrap()
-            )
-            .unwrap(),
-            ReleaseType::Major
-        );
-        assert!(computed_release_type(
-            Version::parse("0.7.0").unwrap(),
-            Version::parse("0.6.2").unwrap()
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn package_partition_lists_new_packages_explicitly() {
-        let mut stable = SEMVER_BASELINE_PACKAGES.to_vec();
-        stable.extend_from_slice(SEMVER_NEW_PACKAGES);
-        assert!(validate_package_partition(&stable).is_ok());
-        stable.pop();
-        assert!(validate_package_partition(&stable).is_err());
-    }
-
-    #[test]
-    fn parses_snapshot_sections_as_sets() {
-        let snapshot = "## `alpha`\n\n```text\npub fn alpha::b()\npub fn alpha::a()\n```\n\n## `beta`\n\n```text\npub struct beta::B\n```\n";
-        let parsed = parse_api_snapshot(snapshot).unwrap();
-        assert_eq!(
-            parsed["alpha"].iter().cloned().collect::<Vec<_>>(),
-            ["pub fn alpha::a()", "pub fn alpha::b()"]
-        );
-        assert_eq!(parsed["beta"].len(), 1);
-    }
-
-    #[test]
-    fn fingerprints_are_order_independent_and_empty_is_none() {
-        let first = ["b".to_string(), "a".to_string()]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let second = ["a".to_string(), "b".to_string()]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        assert_eq!(fingerprint(&first), fingerprint(&second));
-        assert_eq!(fingerprint(&BTreeSet::new()), "none");
-    }
-
-    #[test]
-    fn report_regeneration_flag_is_explicit() {
-        assert!(!parse_options(std::iter::empty()).unwrap().write_report);
-        assert!(
-            parse_options(["--write-report".to_string()].into_iter())
-                .unwrap()
-                .write_report
-        );
-        assert!(parse_options(["--write".to_string()].into_iter()).is_err());
-    }
-
-    #[test]
-    fn parses_review_config_and_rejects_unknown_fields() {
-        let source = "\
-version: 1
-baseline_tag: v0.6.2
-baseline_version: 0.6.2
-candidate_version: 0.7.0
-reviews:
-  alpha:
-    removed_fingerprint: 'fnv1a64:1234'
-    rationale: 'Intentional reviewed compatibility change.'
-";
-        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(source).unwrap();
-        let parsed = parse_review_config(&value).unwrap();
-        assert_eq!(parsed.candidate_version, "0.7.0");
-        assert_eq!(parsed.reviews.len(), 1);
-
-        let invalid = source.replace("rationale:", "unknown: nope\n    rationale:");
-        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&invalid).unwrap();
-        assert!(parse_review_config(&value).is_err());
-    }
-
-    #[test]
-    fn unreviewed_and_stale_breaking_fingerprints_fail() {
-        let removed = ["pub fn alpha::old()".to_string()]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let added = ["pub fn alpha::new()".to_string()]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let diff = PackageApiDiff {
-            package: "alpha".to_string(),
-            candidate_version: "0.7.0".to_string(),
-            release_type: Some(ReleaseType::Major),
-            baseline_count: 1,
-            candidate_count: 1,
-            added,
-            removed,
-        };
-        let empty = ReviewConfig {
-            candidate_version: "0.7.0".to_string(),
-            reviews: BTreeMap::new(),
-        };
-        assert!(validate_reviews(&empty, "0.7.0", &[diff]).is_err());
-
-        let removed = ["pub fn alpha::old()".to_string()]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let diff = PackageApiDiff {
-            package: "alpha".to_string(),
-            candidate_version: "0.7.0".to_string(),
-            release_type: Some(ReleaseType::Major),
-            baseline_count: 1,
-            candidate_count: 0,
-            added: BTreeSet::new(),
-            removed,
-        };
-        let reviews = [(
-            "alpha".to_string(),
-            ReviewEntry {
-                removed_fingerprint: Some("fnv1a64:stale".to_string()),
-                added_fingerprint: None,
-                rationale: "Intentional reviewed compatibility change.".to_string(),
-            },
-        )]
-        .into_iter()
-        .collect();
-        let stale = ReviewConfig {
-            candidate_version: "0.7.0".to_string(),
-            reviews,
-        };
-        assert!(validate_reviews(&stale, "0.7.0", &[diff]).is_err());
-    }
-}
+mod tests;

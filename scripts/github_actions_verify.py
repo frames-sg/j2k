@@ -460,6 +460,22 @@ def verify_repository_origin(
         )
 
 
+def require_private_vulnerability_reporting(api: GitHubApi) -> None:
+    """Require the repository's authenticated private-reporting setting."""
+
+    setting = _dict(
+        api.get_json("/private-vulnerability-reporting"),
+        "private vulnerability reporting setting",
+    )
+    enabled = _boolean(
+        setting.get("enabled"), "private vulnerability reporting enabled"
+    )
+    if not enabled:
+        raise VerificationError(
+            "repository private vulnerability reporting is not enabled"
+        )
+
+
 def require_github_release_absent(api: GitHubApi, tag: str) -> None:
     """Require publication to start before any GitHub Release exists for the tag."""
 
@@ -583,6 +599,7 @@ def verify_candidate_evidence(
 ) -> tuple[int, int]:
     """Verify all post-freeze release evidence for one exact commit SHA."""
 
+    require_private_vulnerability_reporting(api)
     expected_sha = normalize_sha(candidate_sha, "candidate SHA")
     ci_run = verify_workflow_run(
         api,
@@ -719,7 +736,8 @@ def run_command(args: argparse.Namespace) -> None:
             ci_branch=args.ci_branch,
         )
         print(
-            f"verified origin, absent GitHub Release, annotated tag {args.tag}, "
+            "verified origin, private vulnerability reporting, absent GitHub Release, "
+            f"annotated tag {args.tag}, "
             "and exact-SHA evidence "
             f"(CI run {ci_run}, GPU run {gpu_run})"
         )
@@ -736,7 +754,8 @@ def run_command(args: argparse.Namespace) -> None:
             ci_branch=args.ci_branch,
         )
         print(
-            f"verified exact-SHA release candidate {args.candidate_sha.lower()} "
+            "verified private vulnerability reporting and exact-SHA release candidate "
+            f"{args.candidate_sha.lower()} "
             f"(CI run {ci_run}, GPU run {gpu_run})"
         )
         return

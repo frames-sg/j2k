@@ -4,41 +4,89 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+use syn::{Attribute, Item};
+
 const CUDA_SIMT_EVIDENCE: &[EvidenceTest] = &[
-    EvidenceTest {
-        path: "crates/j2k-cuda-runtime/src/tests.rs",
-        name: "cuda_oxide_copy_u8_matches_builtin_copy_and_cpu_when_required",
-    },
-    EvidenceTest {
-        path: "crates/j2k-cuda/tests/htj2k_encode_parity.rs",
-        name: "cuda_facade_byte_matches_native_across_matrix_when_required",
-    },
-    EvidenceTest {
-        path: "crates/j2k-transcode-cuda/tests/jpeg_to_htj2k.rs",
-        name: "ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path",
-    },
+    supplemental_evidence(
+        "crates/j2k-cuda-runtime/src/tests.rs",
+        "cuda_oxide_copy_u8_matches_builtin_copy_and_cpu_when_required",
+    ),
+    supplemental_evidence(
+        "crates/j2k-cuda/tests/htj2k_encode_parity.rs",
+        "cuda_facade_byte_matches_native_across_matrix_when_required",
+    ),
+    supplemental_evidence(
+        "crates/j2k-transcode-cuda/tests/jpeg_to_htj2k.rs",
+        "ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path",
+    ),
+    primary_evidence(
+        "crates/j2k-cuda-runtime/src/tests.rs",
+        "kernel_module_names_cover_htj2k_decode_and_encode_stages",
+    ),
 ];
 
-const CUDA_SCAFFOLD_EVIDENCE: &[EvidenceTest] = &[EvidenceTest {
-    path: "crates/j2k-cuda-runtime/src/tests.rs",
-    name: "kernel_module_names_cover_htj2k_decode_and_encode_stages",
-}];
+const CUDA_SCAFFOLD_EVIDENCE: &[EvidenceTest] = &[primary_evidence(
+    "crates/j2k-cuda-runtime/src/tests.rs",
+    "kernel_module_names_cover_htj2k_decode_and_encode_stages",
+)];
 
-const CUDA_FFI_EVIDENCE: &[EvidenceTest] = &[EvidenceTest {
-    path: "crates/j2k-cuda-runtime/src/tests.rs",
-    name: "runtime_raii_primitives_smoke_when_required",
-}];
+const CUDA_FFI_EVIDENCE: &[EvidenceTest] = &[primary_evidence(
+    "crates/j2k-cuda-runtime/src/tests.rs",
+    "runtime_raii_primitives_smoke_when_required",
+)];
 
 const METAL_SHADER_EVIDENCE: &[EvidenceTest] = &[
-    EvidenceTest {
-        path: "crates/j2k-metal/tests/shader_integrity.rs",
-        name: "metal_kernels_are_wired_to_host_pipelines",
-    },
-    EvidenceTest {
-        path: "crates/j2k-metal/tests/device.rs",
-        name: "full_classic_grayscale_decode_to_metal_matches_host_decode",
-    },
+    primary_evidence(
+        "crates/j2k-metal/tests/shader_integrity.rs",
+        "metal_kernels_are_wired_to_host_pipelines",
+    ),
+    supplemental_evidence(
+        "crates/j2k-metal/tests/device.rs",
+        "full_classic_grayscale_decode_to_metal_matches_host_decode",
+    ),
 ];
+
+const GENERATED_DWT_EVIDENCE: &[EvidenceTest] = &[
+    primary_evidence(
+        "crates/j2k-codec-math/tests/generated_freshness.rs",
+        "metal_dwt97_fragment_matches_rust_constants",
+    ),
+    primary_evidence(
+        "crates/j2k-codec-math/tests/generated_freshness.rs",
+        "rust_dwt97_fragment_matches_rust_constants",
+    ),
+];
+
+const VENDORED_BLOCK_EVIDENCE: &[EvidenceTest] = &[
+    primary_evidence(
+        "xtask/tests/repo_lint_support/dependency_policy.rs",
+        "patched_block_dependency_has_pinned_provenance_and_documented_abi_delta",
+    ),
+    supplemental_evidence(
+        "crates/j2k-metal-support/src/tests.rs",
+        "commit_and_wait_accepts_unlabeled_command_buffer",
+    ),
+    supplemental_evidence(
+        "crates/j2k-metal-support/src/tests.rs",
+        "buffer_readback_copies_typed_shared_buffer_values",
+    ),
+];
+
+const fn primary_evidence(path: &'static str, name: &'static str) -> EvidenceTest {
+    EvidenceTest {
+        path,
+        name,
+        class: EvidenceClass::Primary,
+    }
+}
+
+const fn supplemental_evidence(path: &'static str, name: &'static str) -> EvidenceTest {
+    EvidenceTest {
+        path,
+        name,
+        class: EvidenceClass::Supplemental,
+    }
+}
 
 pub(super) const COVERAGE_EXCLUSIONS: &[CoverageExclusion] = &[
     CoverageExclusion {
@@ -91,12 +139,35 @@ pub(super) const COVERAGE_EXCLUSIONS: &[CoverageExclusion] = &[
         },
         evidence: METAL_SHADER_EVIDENCE,
     },
+    CoverageExclusion {
+        id: "generated-codec-math-fragment",
+        reason: "generated DWT constants have no executable coverage region and are freshness-checked against their canonical Rust source",
+        matcher: ExclusionMatcher::WholeFile {
+            path: "crates/j2k-codec-math/generated/dwt97_constants.rs",
+        },
+        evidence: GENERATED_DWT_EVIDENCE,
+    },
+    CoverageExclusion {
+        id: "vendored-block-ffi-binding",
+        reason: "the reviewed patched block dependency is outside workspace instrumentation; real Metal tests exercise its callback and lifecycle boundary",
+        matcher: ExclusionMatcher::WholeFile {
+            path: "third_party/block-0.1.6-patched/src/lib.rs",
+        },
+        evidence: VENDORED_BLOCK_EVIDENCE,
+    },
 ];
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct EvidenceTest {
     pub(super) path: &'static str,
     pub(super) name: &'static str,
+    class: EvidenceClass,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EvidenceClass {
+    Primary,
+    Supplemental,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -208,6 +279,7 @@ pub(super) fn validate_exclusion_policy(root: &Path) -> Result<(), String> {
                 exclusion.id
             ));
         }
+        require_primary_evidence(exclusion)?;
         for evidence in exclusion.evidence {
             let source = fs::read_to_string(root.join(evidence.path)).map_err(|err| {
                 format!(
@@ -215,16 +287,149 @@ pub(super) fn validate_exclusion_policy(root: &Path) -> Result<(), String> {
                     exclusion.id, evidence.path
                 )
             })?;
-            if !source.contains(&format!("fn {}(", evidence.name)) {
-                return Err(format!(
-                    "coverage exclusion `{}` evidence test `{}::{}` is missing",
-                    exclusion.id, evidence.path, evidence.name
-                ));
-            }
+            validate_evidence_test_source(evidence.path, evidence.name, evidence.class, &source)
+                .map_err(|error| {
+                    format!(
+                        "coverage exclusion `{}` has invalid evidence test `{}::{}`: {error}",
+                        exclusion.id, evidence.path, evidence.name
+                    )
+                })?;
         }
         validate_exclusion_matcher(root, exclusion)?;
     }
     Ok(())
+}
+
+fn require_primary_evidence(exclusion: &CoverageExclusion) -> Result<(), String> {
+    if exclusion
+        .evidence
+        .iter()
+        .any(|evidence| evidence.class == EvidenceClass::Primary)
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "coverage exclusion `{}` needs at least one unconditional primary evidence test",
+        exclusion.id
+    ))
+}
+
+#[derive(Default)]
+struct EvidenceSymbolMatches {
+    count: usize,
+    direct_test: bool,
+    ignored_or_should_panic: bool,
+    conditional: bool,
+}
+
+fn validate_evidence_test_source(
+    path: &str,
+    name: &str,
+    expected_class: EvidenceClass,
+    source: &str,
+) -> Result<(), String> {
+    let file = syn::parse_file(source)
+        .map_err(|error| format!("failed to parse evidence source `{path}`: {error}"))?;
+    let mut matches = EvidenceSymbolMatches::default();
+    collect_evidence_symbols(
+        &file.items,
+        name,
+        enclosing_cfg_is_conditional(&file.attrs),
+        &mut matches,
+    );
+    match matches.count {
+        0 => return Err("no matching Rust function symbol exists".to_string()),
+        1 => {}
+        count => {
+            return Err(format!(
+                "{count} matching Rust function symbols are ambiguous"
+            ))
+        }
+    }
+    if !matches.direct_test {
+        return Err("matching function is not directly annotated with #[test]".to_string());
+    }
+    if matches.ignored_or_should_panic {
+        return Err(
+            "coverage evidence tests must not be ignored or use #[should_panic]".to_string(),
+        );
+    }
+    let observed_class = if matches.conditional {
+        EvidenceClass::Supplemental
+    } else {
+        EvidenceClass::Primary
+    };
+    if observed_class != expected_class {
+        return Err(format!(
+            "matching function is {} but registered as {} evidence",
+            evidence_class_description(observed_class),
+            evidence_class_description(expected_class)
+        ));
+    }
+    Ok(())
+}
+
+fn collect_evidence_symbols(
+    items: &[Item],
+    expected_name: &str,
+    inherited_conditional: bool,
+    matches: &mut EvidenceSymbolMatches,
+) {
+    for item in items {
+        match item {
+            Item::Fn(function) if function.sig.ident == expected_name => {
+                matches.count += 1;
+                matches.direct_test |= function
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute.path().is_ident("test"));
+                matches.ignored_or_should_panic |= function.attrs.iter().any(|attribute| {
+                    attribute.path().is_ident("ignore") || attribute.path().is_ident("should_panic")
+                });
+                matches.conditional |= inherited_conditional
+                    || function
+                        .attrs
+                        .iter()
+                        .any(attribute_is_conditional_compilation);
+            }
+            Item::Mod(module) => {
+                if let Some((_, nested)) = &module.content {
+                    collect_evidence_symbols(
+                        nested,
+                        expected_name,
+                        inherited_conditional || enclosing_cfg_is_conditional(&module.attrs),
+                        matches,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn enclosing_cfg_is_conditional(attributes: &[Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("cfg_attr")
+            || (attribute.path().is_ident("cfg") && !is_exact_cfg_test(attribute))
+    })
+}
+
+fn attribute_is_conditional_compilation(attribute: &Attribute) -> bool {
+    attribute.path().is_ident("cfg") || attribute.path().is_ident("cfg_attr")
+}
+
+fn is_exact_cfg_test(attribute: &Attribute) -> bool {
+    attribute.path().is_ident("cfg")
+        && attribute
+            .parse_args::<syn::Path>()
+            .is_ok_and(|path| path.is_ident("test"))
+}
+
+const fn evidence_class_description(class: EvidenceClass) -> &'static str {
+    match class {
+        EvidenceClass::Primary => "unconditional primary",
+        EvidenceClass::Supplemental => "conditionally compiled supplemental",
+    }
 }
 
 fn validate_exclusion_matcher(root: &Path, exclusion: &CoverageExclusion) -> Result<(), String> {
@@ -297,3 +502,6 @@ fn collect_rust_files(directory: &Path, root: &Path) -> Result<Vec<String>, Stri
     }
     Ok(files)
 }
+
+#[cfg(test)]
+mod tests;

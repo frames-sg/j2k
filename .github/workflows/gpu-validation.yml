@@ -73,7 +73,7 @@ jobs:
           cargo install cargo-deny --locked
       - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov@0.8.7
       - run: cargo xtask typos
       - run: cargo xtask deny
       - run: cargo xtask coverage host
@@ -94,7 +94,7 @@ jobs:
           toolchain: stable
       - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov@0.8.7
       - name: Run fail-closed Metal release validation
         run: cargo xtask release-metal
       - name: Collect changed-line Metal host coverage
@@ -140,7 +140,7 @@ jobs:
           toolchain: stable
       - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov@0.8.7
       - name: Assert CUDA runtime gate is set
         run: |
           test -n "${J2K_REQUIRE_CUDA_RUNTIME:-}" || { echo "J2K_REQUIRE_CUDA_RUNTIME not set — parity tests would silently skip"; exit 1; }

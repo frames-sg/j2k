@@ -134,6 +134,8 @@ fn ci_workflow_has_read_only_permissions_and_gpu_path_policy() {
             "def verify_workflow_run(",
             "def peel_annotated_tag(",
             "def verify_repository_origin(",
+            "def require_private_vulnerability_reporting(",
+            "/private-vulnerability-reporting",
             "def require_github_release_absent(",
             "def verify_candidate_evidence(",
             "def verify_release_evidence(",
@@ -174,6 +176,7 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
     let publish = fs::read_to_string(root.join(".github/workflows/publish.yml"))
         .expect("read publish workflow");
     let aggregate = workflow_job(&ci, "release-candidate");
+    let strict_clippy = workflow_job(&ci, "clippy-strict");
     let diff_check = workflow_job(&ci, "diff-check");
     let secret_scan = workflow_job(&ci, "secret-scan");
     let codec_math_codegen = workflow_job(&ci, "codec-math-codegen");
@@ -187,6 +190,8 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
     let verifier_tests =
         fs::read_to_string(root.join("scripts/tests/test_github_actions_verify.py"))
             .expect("read GitHub Actions verifier tests");
+    let verifier = fs::read_to_string(root.join("scripts/github_actions_verify.py"))
+        .expect("read GitHub Actions verifier");
     let crates_io_version = fs::read_to_string(root.join("scripts/crates_io_version.py"))
         .expect("read crates.io version verifier");
     let crates_io_version_tests =
@@ -203,7 +208,9 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "diff-check",
             "secret-scan",
             "clippy",
+            "clippy-strict",
             "panic-surface",
+            "clone-audit",
             "comparator-parity",
             "semver",
             "docs",
@@ -227,6 +234,11 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "coverage",
             "deny",
             "REQUIRED_RESULTS: ${{ toJSON(needs) }}",
+        ]),
+        PatternCheck::new("CI authoritative strict Clippy gate", strict_clippy).required(&[
+            "runs-on: ubuntu-latest",
+            "components: clippy",
+            "cargo xtask clippy-strict",
         ]),
         PatternCheck::new("CI submitted-delta whitespace gate", diff_check).required(&[
             "fetch-depth: 0",
@@ -259,7 +271,8 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
         ]),
         PatternCheck::new("CI normal and strict repository policy gate", repo_lint).required(&[
             "runs-on: macos-latest",
-            "toolchain: nightly",
+            "toolchain: nightly-2026-06-28",
+            "targets: aarch64-apple-darwin",
             "cargo-public-api@0.52.0",
             "cargo install cargo-public-api --version 0.52.0 --locked",
             "Run normal and strict repository policy",
@@ -284,6 +297,11 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
                 "Metal validation on Apple Silicon",
             ])
             .forbidden(&["verify-release", "--tag"]),
+        PatternCheck::new("candidate private-reporting prerequisite", &verifier).required(&[
+            "def verify_candidate_evidence(",
+            "require_private_vulnerability_reporting(api)",
+            "api.get_json(\"/private-vulnerability-reporting\")",
+        ]),
         PatternCheck::new("publish workflow exact-SHA policy", &publish)
             .required(&[
                 "actions: read",
@@ -307,6 +325,8 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "candidate_sha=\"$(git rev-parse HEAD)\"",
             "origin_url=\"$(git remote get-url origin)\"",
             "cargo xtask release-integrity",
+            "Verify final publish metadata",
+            "cargo xtask release-integrity --publish",
             "Verify every crates.io target version before publication",
             "scripts/publish-crate.sh --preflight-all",
         ]),
@@ -317,9 +337,11 @@ fn release_candidate_and_publish_evidence_are_fail_closed() {
             "test_incomplete_skipped_missing_and_stale_evidence_is_rejected",
             "test_annotated_tag_is_peeled",
             "test_post_freeze_candidate_verifies_ci_and_gpu_without_a_tag",
+            "test_post_freeze_candidate_requires_private_vulnerability_reporting",
             "test_verify_candidate_parser_smoke",
             "test_verify_release_parser_requires_origin_context",
             "test_repository_origin_is_exact_and_credential_free",
+            "test_private_vulnerability_reporting_must_be_enabled",
             "test_existing_github_release_in_any_state_is_rejected",
             "test_missing_token_fails_closed",
             "test_http_failure_does_not_expose_token",

@@ -239,9 +239,9 @@ fn jpeg_metal_resident_private_tile_hides_raw_keepalive_resources() {
     let root = repo_root();
     let surface = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/surface.rs"))
         .expect("read JPEG Metal surface module");
-    let texture_tests =
-        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/tests/textures.rs"))
-            .expect("read JPEG Metal texture tests");
+    let residency_tests =
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/tests/textures/residency.rs"))
+            .expect("read JPEG Metal texture residency tests");
 
     assert_pattern_checks(&[
         PatternCheck::new(
@@ -274,12 +274,47 @@ fn jpeg_metal_resident_private_tile_hides_raw_keepalive_resources() {
         ]),
         PatternCheck::new(
             "JPEG Metal resident private tile regressions",
-            &texture_tests,
+            &residency_tests,
         )
         .required(&[
             "let raw_buffer = unsafe { tile.buffer() };",
             "let handed_off = tile.clone().into_buffer();",
             "assert_eq!(tile.dimensions(), (16, 16));",
+        ]),
+    ]);
+}
+
+#[test]
+fn jpeg_metal_viewport_cache_invalid_state_is_fallible() {
+    let root = repo_root();
+    let viewport_cache =
+        fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/compute/viewport_cache.rs"))
+            .expect("read JPEG Metal viewport cache module");
+    let production = viewport_cache
+        .split("#[cfg(all(test, target_os = \"macos\"))]\nmod tests")
+        .next()
+        .expect("viewport cache production source");
+
+    assert_pattern_checks(&[
+        PatternCheck::new("fallible JPEG Metal viewport cache invariants", production)
+            .required(&[
+                "fn checked_output_stride(",
+                "fn checked_pack_output_format(",
+                "fn required_plane<'a>(",
+                "required_plane(self.plane1, \"Cb\")?",
+                "required_plane(self.plane2, \"Cr\")?",
+                "slot.as_ref().ok_or_else(|| Error::MetalKernel",
+            ])
+            .forbidden(&[".expect(", "unreachable!(", "panic!("]),
+        PatternCheck::new(
+            "JPEG Metal viewport cache invariant regressions",
+            &viewport_cache,
+        )
+        .required(&[
+            "fn viewport_cache_helpers_surface_invalid_state_without_panicking()",
+            "checked_output_stride(too_wide, \"test stride\")",
+            "checked_pack_output_format(PixelFormat::Gray16)",
+            "required_plane(missing, \"Cb\")",
         ]),
     ]);
 }

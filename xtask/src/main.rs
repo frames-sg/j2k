@@ -16,6 +16,7 @@ mod adoption_materialize;
 #[cfg(feature = "adoption")]
 mod adoption_report;
 mod benchmark_commands;
+mod clone_audit;
 mod codegen_commands;
 mod command_support;
 mod coverage;
@@ -33,9 +34,12 @@ mod quality_commands;
 mod release_commands;
 mod release_status;
 mod semver;
+mod source_audit;
+mod stable_api;
 
 use benchmark_commands::{bench_build, bench_report, j2k_bench_signoff};
-use codegen_commands::{codec_math_codegen, stable_api, CARGO_PUBLIC_API_VERSION};
+use clone_audit::clone_audit;
+use codegen_commands::{codec_math_codegen, stable_api};
 #[cfg(test)]
 use command_support::passed_test_count;
 use panic_surface::panic_surface;
@@ -44,6 +48,7 @@ use quality_commands::{
     miri, nextest, no_std, repo_lint, test, typos, verify_unsafe_audit,
 };
 use release_commands::{package, release_cpu, release_integrity, STABLE_SEMVER_PACKAGES};
+use stable_api::CARGO_PUBLIC_API_VERSION;
 
 fn main() -> ExitCode {
     match run() {
@@ -102,12 +107,13 @@ fn run() -> Result<(), String> {
         "deny" => deny(),
         "miri" => miri(),
         "machete" => machete(),
+        "clone-audit" => clone_audit(env::args().skip(2)),
         "panic-surface" => panic_surface(),
         "no-std" => no_std(),
         "unsafe-audit" => verify_unsafe_audit(),
         "downstream-smoke" => downstream_smoke(),
         "repo-lint" => repo_lint(env::args().skip(2)),
-        "release-integrity" => release_integrity(),
+        "release-integrity" => release_integrity(env::args().skip(2)),
         "release-status" => release_status::release_status(env::args().skip(2)),
         "release-cpu" => release_cpu(),
         "release-cuda" => cuda::release_cuda(),
@@ -154,12 +160,13 @@ fn print_help() {
            deny          run cargo-deny\n\
            miri          run selected CPU/no_std crates under Miri\n\
            machete       run cargo-machete unused-dependency scan\n\
-           panic-surface run the production-library unwrap/expect ratchet\n\
+           clone-audit   stage source-aware production Rust and run pinned jscpd\n\
+           panic-surface run production-library unwrap/expect and explicit panic-macro ratchets\n\
            no-std        check no_std-compatible codec crates\n\
            unsafe-audit  verify docs/unsafe-audit.md lists unsafe Rust sources\n\
            downstream-smoke run facade and transcode examples used by integration docs\n\
            repo-lint     run repository policy checks owned by xtask [--strict]\n\
-           release-integrity validate publish membership, docs.rs metadata, workflow order, and release docs\n\
+           release-integrity validate offline release metadata; --publish requires final dated/signoff state\n\
            release-status verify one frozen SHA's CI aggregate and both GPU jobs [--sha SHA] [--repository owner/name]\n\
            release-cpu   run release-mode CPU codec tests\n\
            release-cuda  run fail-closed release-mode CUDA validation on Linux x86_64\n\

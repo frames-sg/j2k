@@ -1,0 +1,292 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+use super::build_outputs::BuildOutputEvidence;
+use super::model::CoverageLane;
+
+mod ast;
+mod audit;
+mod cfg_eval;
+mod graph;
+mod module_resolver;
+mod node_attrs;
+mod test_lines;
+mod workspace;
+
+use ast::analyze_source;
+pub(crate) use audit::{analyze_test_only_syntax, SourceAuditSyntax, SourceAuditTestSpan};
+use cfg_eval::CoverageCfgContext;
+use graph::{module_reachability, ReachKind};
+#[cfg(test)]
+use workspace::discover_manifest_fuzz_source_roots;
+use workspace::{
+    classify_unreached_source, discover_source_roots, read_source, CoverageCfgContexts, SourceRoot,
+};
+
+pub(super) const GENERATED_DWT_DISPOSITION: &str = "generated-codec-math-fragment";
+pub(super) const VENDORED_BLOCK_DISPOSITION: &str = "vendored-block-ffi-binding";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SourceRole {
+    Production,
+    BuildScript,
+    TestOnly,
+    TestTarget,
+    ExampleBenchFuzz,
+    Generated(&'static str),
+    VendoredReviewed(&'static str),
+}
+
+impl SourceRole {
+    pub(super) const fn disposition(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::BuildScript => "build-script",
+            Self::TestOnly => "syntax-test-only",
+            Self::TestTarget => "test-target",
+            Self::ExampleBenchFuzz => "example-bench-fuzz",
+            Self::Generated(id) | Self::VendoredReviewed(id) => id,
+        }
+    }
+
+    pub(super) const fn is_measurable(self) -> bool {
+        matches!(self, Self::Production | Self::BuildScript)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct FunctionSpan {
+    pub(super) name: String,
+    pub(super) start: usize,
+    pub(super) end: usize,
+    pub(super) body_start: usize,
+    pub(super) body_end: usize,
+    pub(super) required_on_host: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ExecutableBodySpan {
+    pub(super) label: String,
+    pub(super) start: usize,
+    pub(super) end: usize,
+    pub(super) evidence: DeferredBodyEvidence,
+    pub(super) required_on_host: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DeferredBodyEvidence {
+    DistinctLines { start: usize, end: usize },
+    SharedCreationLine,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TestOnlySpan {
+    pub(super) start_line: usize,
+    pub(super) start_column: usize,
+    pub(super) end_line: usize,
+    pub(super) end_column: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TestOnlyLineDisposition {
+    Production,
+    TestOnly,
+    Mixed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct OpaqueMacroSpan {
+    pub(super) label: String,
+    pub(super) start: usize,
+    pub(super) end: usize,
+    pub(super) required_on_host: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SourceFileAnalysis {
+    pub(super) role: SourceRole,
+    pub(super) test_only_lines: BTreeSet<usize>,
+    pub(super) test_only_spans: Vec<TestOnlySpan>,
+    pub(super) executable_lines: BTreeSet<usize>,
+    pub(super) functions: Vec<FunctionSpan>,
+    pub(super) executable_bodies: Vec<ExecutableBodySpan>,
+    pub(super) opaque_macros: Vec<OpaqueMacroSpan>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct SourceIndex {
+    files: BTreeMap<String, SourceFileAnalysis>,
+}
+
+impl SourceIndex {
+    pub(super) fn build(
+        root: &Path,
+        lane: CoverageLane,
+        changed: &BTreeMap<String, BTreeSet<usize>>,
+        build_output_evidence: &BuildOutputEvidence,
+    ) -> Result<Self, String> {
+        let (roots, contexts) = discover_source_roots(root, lane, changed, build_output_evidence)?;
+        Self::build_from_roots(root, lane, changed, &roots, &contexts)
+    }
+
+    fn build_from_roots(
+        root: &Path,
+        lane: CoverageLane,
+        changed: &BTreeMap<String, BTreeSet<usize>>,
+        roots: &[SourceRoot],
+        contexts: &CoverageCfgContexts,
+    ) -> Result<Self, String> {
+        let states = module_reachability(root, roots, contexts)?;
+        let mut files = BTreeMap::new();
+        for (path, state) in &states {
+            let role = state.role();
+            let analysis = if role.is_measurable() {
+                let source = read_source(root, path)?;
+                let kind = if role == SourceRole::BuildScript {
+                    ReachKind::BuildScript
+                } else {
+                    ReachKind::Production
+                };
+                let parsed = analyze_source(
+                    root,
+                    path,
+                    &source,
+                    kind,
+                    state.required_on_host(),
+                    contexts.get(state.package()?)?,
+                )?;
+                SourceFileAnalysis {
+                    role,
+                    test_only_lines: parsed.test_only_lines,
+                    test_only_spans: parsed.test_only_spans,
+                    executable_lines: parsed.executable_lines,
+                    functions: parsed.functions,
+                    executable_bodies: parsed.executable_bodies,
+                    opaque_macros: parsed.opaque_macros,
+                }
+            } else {
+                SourceFileAnalysis {
+                    role,
+                    test_only_lines: BTreeSet::new(),
+                    test_only_spans: Vec::new(),
+                    executable_lines: BTreeSet::new(),
+                    functions: Vec::new(),
+                    executable_bodies: Vec::new(),
+                    opaque_macros: Vec::new(),
+                }
+            };
+            files.insert(path.clone(), analysis);
+        }
+
+        for path in changed.keys().filter(|path| lane.owns_path(path)) {
+            if files.contains_key(path) {
+                continue;
+            }
+            let role = classify_unreached_source(root, path)?;
+            files.insert(
+                path.clone(),
+                SourceFileAnalysis {
+                    role,
+                    test_only_lines: BTreeSet::new(),
+                    test_only_spans: Vec::new(),
+                    executable_lines: BTreeSet::new(),
+                    functions: Vec::new(),
+                    executable_bodies: Vec::new(),
+                    opaque_macros: Vec::new(),
+                },
+            );
+        }
+
+        Ok(Self { files })
+    }
+
+    pub(super) fn file(&self, path: &str) -> Result<&SourceFileAnalysis, String> {
+        self.files
+            .get(path)
+            .ok_or_else(|| format!("changed Rust source `{path}` has no fail-closed source role"))
+    }
+
+    #[cfg(test)]
+    pub(super) fn single(path: &str, source: &str) -> Result<Self, String> {
+        Self::single_with_custom_cfg(path, source, [])
+    }
+
+    #[cfg(test)]
+    pub(super) fn single_with_custom_cfg(
+        path: &str,
+        source: &str,
+        custom_flags: impl IntoIterator<Item = (&'static str, bool)>,
+    ) -> Result<Self, String> {
+        let context = CoverageCfgContext::synthetic(custom_flags);
+        let parsed = analyze_source(
+            Path::new("."),
+            path,
+            source,
+            ReachKind::Production,
+            true,
+            &context,
+        )?;
+        Ok(Self {
+            files: BTreeMap::from([(
+                path.to_string(),
+                SourceFileAnalysis {
+                    role: SourceRole::Production,
+                    test_only_lines: parsed.test_only_lines,
+                    test_only_spans: parsed.test_only_spans,
+                    executable_lines: parsed.executable_lines,
+                    functions: parsed.functions,
+                    executable_bodies: parsed.executable_bodies,
+                    opaque_macros: parsed.opaque_macros,
+                },
+            )]),
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn repository_subset(
+        root: &Path,
+        changed: &BTreeMap<String, BTreeSet<usize>>,
+        roots: &[(&str, SourceRole)],
+    ) -> Result<Self, String> {
+        let package = "coverage-source-analysis-test";
+        let roots = roots
+            .iter()
+            .map(|(path, role)| {
+                let kind = match role {
+                    SourceRole::Production => ReachKind::Production,
+                    SourceRole::BuildScript => ReachKind::BuildScript,
+                    SourceRole::TestTarget => ReachKind::TestTarget,
+                    SourceRole::ExampleBenchFuzz => ReachKind::ExampleBenchFuzz,
+                    other => {
+                        return Err(format!(
+                            "repository_subset root `{path}` has invalid role {other:?}"
+                        ));
+                    }
+                };
+                Ok(SourceRoot {
+                    package: package.to_string(),
+                    path: (*path).to_string(),
+                    kind,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let contexts = CoverageCfgContexts::synthetic(package, CoverageCfgContext::synthetic([]));
+        Self::build_from_roots(root, CoverageLane::Host, changed, &roots, &contexts)
+    }
+
+    #[cfg(test)]
+    pub(super) fn repository_manifest_fuzz_subset(
+        root: &Path,
+        changed: &BTreeMap<String, BTreeSet<usize>>,
+    ) -> Result<Self, String> {
+        let roots = discover_manifest_fuzz_source_roots(root, changed)?;
+        let packages = roots
+            .iter()
+            .map(|root| root.package.clone())
+            .collect::<BTreeSet<_>>();
+        let contexts = CoverageCfgContexts::synthetic_packages(&packages);
+        Self::build_from_roots(root, CoverageLane::Host, changed, &roots, &contexts)
+    }
+}

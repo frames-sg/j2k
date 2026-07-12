@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -6,6 +6,12 @@ use crate::command_support::{
     command_output_os, ensure_clean_worktree, run_cargo, workspace_version,
 };
 use crate::process::cargo;
+
+mod release_integrity_policy;
+
+use release_integrity_policy::{
+    validate_changelog_state, validate_patch_provenance, ReleaseIntegrityMode,
+};
 
 const PUBLISHABLE_PACKAGES: &[&str] = &[
     "j2k-core",
@@ -103,7 +109,8 @@ pub(super) const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
     clippy::too_many_lines,
     reason = "release integrity evaluates the complete package policy before reporting aggregated failures"
 )]
-pub(super) fn release_integrity() -> Result<(), String> {
+pub(super) fn release_integrity(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mode = ReleaseIntegrityMode::parse(args)?;
     let metadata = cargo_metadata()?;
     let workspace_version = workspace_version()?;
     let publishable_set = str_set(PUBLISHABLE_PACKAGES);
@@ -113,41 +120,17 @@ pub(super) fn release_integrity() -> Result<(), String> {
 
     validate_package_gate_partition(&mut errors);
 
-    let packages = metadata
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "cargo metadata did not contain a packages array".to_string())?;
-    let workspace_members = metadata
-        .get("workspace_members")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "cargo metadata did not contain a workspace_members array".to_string())?
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .map(str::to_string)
-        .collect::<BTreeSet<_>>();
+    let workspace_packages = workspace_package_records(&metadata)?;
     let mut workspace_names = BTreeSet::new();
 
-    let unpublished_members = packages
+    let unpublished_members = workspace_packages
         .iter()
-        .filter(|package| {
-            package
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|id| workspace_members.contains(id))
-                && publish_false(package)
-        })
-        .filter_map(|package| package.get("name").and_then(serde_json::Value::as_str))
-        .collect::<BTreeSet<_>>();
+        .copied()
+        .filter(|package| publish_false(package))
+        .map(package_name)
+        .collect::<Result<BTreeSet<_>, _>>()?;
 
-    for package in packages {
-        let id = package
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        if !workspace_members.contains(id) {
-            continue;
-        }
-
+    for package in workspace_packages {
         let name = package_name(package)?;
         workspace_names.insert(name.to_string());
         let listed_publishable = publishable_set.contains(name);
@@ -169,12 +152,12 @@ pub(super) fn release_integrity() -> Result<(), String> {
             continue;
         }
 
-        validate_unpublished_dependencies(name, package, &unpublished_members, &mut errors);
+        validate_unpublished_dependencies(name, package, &unpublished_members, &mut errors)?;
 
         let version = package
             .get("version")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
+            .ok_or_else(|| format!("cargo metadata package `{name}` has no string version"))?;
         if version != workspace_version {
             errors.push(format!(
                 "`{name}` version {version} does not match workspace version {workspace_version}"
@@ -235,6 +218,7 @@ pub(super) fn release_integrity() -> Result<(), String> {
     validate_publish_workflow(&mut errors)?;
     validate_publish_script(&mut errors)?;
     validate_release_docs(&mut errors)?;
+    validate_release_metadata(&workspace_version, mode, &mut errors)?;
 
     if errors.is_empty() {
         Ok(())
@@ -246,33 +230,112 @@ pub(super) fn release_integrity() -> Result<(), String> {
     }
 }
 
+fn workspace_package_records(
+    metadata: &serde_json::Value,
+) -> Result<Vec<&serde_json::Value>, String> {
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "cargo metadata did not contain a packages array".to_string())?;
+    let mut packages_by_id = BTreeMap::new();
+    for (index, package) in packages.iter().enumerate() {
+        let id = package
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("cargo metadata packages[{index}] has no string id"))?;
+        if packages_by_id.insert(id, package).is_some() {
+            return Err(format!(
+                "cargo metadata contains duplicate package id `{id}`"
+            ));
+        }
+    }
+
+    let members = metadata
+        .get("workspace_members")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "cargo metadata did not contain a workspace_members array".to_string())?;
+    let mut seen_members = BTreeSet::new();
+    let mut workspace_packages = Vec::new();
+    workspace_packages
+        .try_reserve_exact(members.len())
+        .map_err(|error| format!("reserve workspace package metadata: {error}"))?;
+    for (index, member) in members.iter().enumerate() {
+        let id = member
+            .as_str()
+            .ok_or_else(|| format!("cargo metadata workspace_members[{index}] is not a string"))?;
+        if !seen_members.insert(id) {
+            return Err(format!(
+                "cargo metadata workspace_members contains duplicate id `{id}`"
+            ));
+        }
+        let package = packages_by_id.get(id).copied().ok_or_else(|| {
+            format!("cargo metadata workspace member `{id}` has no package record")
+        })?;
+        workspace_packages.push(package);
+    }
+    Ok(workspace_packages)
+}
+
+fn validate_release_metadata(
+    workspace_version: &str,
+    mode: ReleaseIntegrityMode,
+    errors: &mut Vec<String>,
+) -> Result<(), String> {
+    let changelog_path = Path::new("CHANGELOG.md");
+    let changelog = fs::read_to_string(changelog_path)
+        .map_err(|err| format!("failed to read {}: {err}", changelog_path.display()))?;
+    if let Err(error) = validate_changelog_state(&changelog, workspace_version, mode) {
+        errors.push(format!("{}: {error}", changelog_path.display()));
+    }
+
+    if mode == ReleaseIntegrityMode::Publish {
+        let provenance_path = Path::new("third_party/block-0.1.6-patched/PATCH_PROVENANCE.md");
+        let provenance = fs::read_to_string(provenance_path)
+            .map_err(|err| format!("failed to read {}: {err}", provenance_path.display()))?;
+        if let Err(error) = validate_patch_provenance(&provenance) {
+            errors.push(format!("{}: {error}", provenance_path.display()));
+        }
+    }
+    Ok(())
+}
+
 fn validate_unpublished_dependencies(
     name: &str,
     package: &serde_json::Value,
     unpublished_members: &BTreeSet<&str>,
     errors: &mut Vec<String>,
-) {
+) -> Result<(), String> {
     let dependencies = package
         .get("dependencies")
         .and_then(serde_json::Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    for dependency in dependencies {
+        .ok_or_else(|| format!("cargo metadata package `{name}` has no dependencies array"))?;
+    for (index, dependency) in dependencies.iter().enumerate() {
         let dep_name = dependency
             .get("name")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                format!("cargo metadata package `{name}` dependency[{index}] has no string name")
+            })?;
         if !unpublished_members.contains(dep_name) {
             continue;
         }
-        let kind = dependency
-            .get("kind")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("normal");
+        let kind = match dependency.get("kind") {
+            None | Some(serde_json::Value::Null) => "normal",
+            Some(serde_json::Value::String(kind)) => kind,
+            Some(_) => {
+                return Err(format!(
+                    "cargo metadata package `{name}` dependency `{dep_name}` has invalid kind"
+                ));
+            }
+        };
         let req = dependency
             .get("req")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("*");
+            .ok_or_else(|| {
+                format!(
+                    "cargo metadata package `{name}` dependency `{dep_name}` has no string requirement"
+                )
+            })?;
         if kind != "dev" {
             errors.push(format!(
                 "`{name}` has a {kind} dependency on unpublished crate `{dep_name}`; \
@@ -285,6 +348,7 @@ fn validate_unpublished_dependencies(
             ));
         }
     }
+    Ok(())
 }
 
 fn cargo_metadata() -> Result<serde_json::Value, String> {
@@ -352,6 +416,7 @@ fn validate_publish_workflow(errors: &mut Vec<String>) -> Result<(), String> {
     for required in [
         "--origin-url \"${origin_url}\"",
         "--server-url \"${GITHUB_SERVER_URL}\"",
+        "cargo xtask release-integrity --publish",
         "scripts/publish-crate.sh --preflight-all",
     ] {
         if !workflow_source.contains(required) {
@@ -482,6 +547,18 @@ fn validate_publish_script(errors: &mut Vec<String>) -> Result<(), String> {
     for required in [
         "scripts/crates_io_version.py verify-set",
         "scripts/crates_io_version.py state",
+        "cargo xtask release-integrity --publish",
+        "workspace_repository",
+        "normalize_repository_identity",
+        "git config --get-all remote.origin.url",
+        "git remote get-url --all origin",
+        "git ls-remote --tags origin",
+        "git show-ref --verify --quiet \"refs/tags/${expected_tag}\"",
+        "git cat-file -t \"refs/tags/${expected_tag}\"",
+        "refs/tags/${expected_tag}^{}",
+        "refs/tags/${expected_tag}^{commit}",
+        "HEAD^{commit}",
+        "git status --porcelain=v1 --untracked-files=all",
         "cargo package -p \"$crate\" --no-verify",
         "cargo publish -p \"$crate\" --dry-run",
     ] {
@@ -542,6 +619,7 @@ fn validate_release_docs(errors: &mut Vec<String>) -> Result<(), String> {
     }
     for required in [
         "cargo xtask release-integrity",
+        "cargo xtask release-integrity --publish",
         "cargo package --no-verify",
         "already-published prefix",
         "Only an exact HTTP 404",

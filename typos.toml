@@ -5,6 +5,9 @@ extend-exclude = [
     "corpus/conformance",
 ]
 
+[default]
+extend-ignore-re = ["fnv1a64:[0-9a-f]+"]
+
 [default.extend-words]
 APPn = "APPn"
 flate = "flate"

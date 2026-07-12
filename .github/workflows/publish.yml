@@ -54,6 +54,9 @@ jobs:
             --metal-job "Metal validation on Apple Silicon"
       - name: Verify release metadata integrity
         run: cargo xtask release-integrity
+      - name: Verify final publish metadata
+        if: ${{ github.event_name == 'push' }}
+        run: cargo xtask release-integrity --publish
       - name: Verify every crates.io target version before publication
         if: ${{ github.event_name == 'push' }}
         run: scripts/publish-crate.sh --preflight-all

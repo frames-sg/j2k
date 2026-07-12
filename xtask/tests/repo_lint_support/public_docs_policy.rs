@@ -24,7 +24,7 @@ fn supported_j2k_env_vars_are_documented() {
                 .required(&["docs/env-vars.md"]),
             FilePatternCheck::new("docs/env-vars.md")
                 .named("supported environment-variable reference")
-                .required(&["| `J2K_SEMVER_TOOLCHAIN` | Rust toolchain used by `cargo xtask semver`. | `1.96` | Test/CI |"])
+                .required(&["| `J2K_SEMVER_TOOLCHAIN` | Rejected by `cargo xtask semver`; Rust `1.96` is pinned in source and CI. | Must not be set | Test/CI |"])
                 .forbidden(&["J2K_JPEG_METAL_SPLIT_FAST420_BATCH"]),
         ],
     );
@@ -623,7 +623,7 @@ fn metal_consistency_cleanup_keeps_names_status_buffers_and_marker_sizes_single_
 fn metal_raw_buffer_contents_access_stays_confined_to_checked_helpers() {
     let root = repo_root();
     let allowed = BTreeSet::from([
-        "crates/j2k-metal-support/src/lib.rs",
+        "crates/j2k-metal-support/src/buffer_access.rs",
         "crates/j2k-metal/src/compute/direct_buffers.rs",
         "crates/j2k-jpeg-metal/src/buffers.rs",
     ]);

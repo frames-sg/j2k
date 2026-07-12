@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{collections::BTreeSet, fs, path::Path, process::Command};
+use std::{collections::BTreeSet, fs, path::Path};
 
-use super::{assert_file_pattern_checks, repo_root, FilePatternCheck};
+use super::{assert_file_pattern_checks, repo_root, sha256_hex, FilePatternCheck};
 
 #[test]
 fn conformance_manifest_hashes_and_generator_cover_committed_fixtures() {
@@ -122,30 +122,6 @@ fn assert_committed_conformance_files_are_listed(dir: &Path, listed_files: &BTre
             "conformance fixture {filename} is missing from manifest.json"
         );
     }
-}
-
-fn sha256_hex(path: &Path) -> String {
-    let output = Command::new("sha256sum")
-        .arg(path)
-        .output()
-        .or_else(|_| {
-            Command::new("shasum")
-                .args(["-a", "256"])
-                .arg(path)
-                .output()
-        })
-        .unwrap_or_else(|err| panic!("hash {}: {err}", path.display()));
-    assert!(
-        output.status.success(),
-        "hash command failed for {}: {}",
-        path.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .next()
-        .unwrap_or_else(|| panic!("missing hash output for {}", path.display()))
-        .to_string()
 }
 
 #[test]

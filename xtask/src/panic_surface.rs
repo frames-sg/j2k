@@ -6,8 +6,12 @@ use std::process::Command;
 
 use crate::process::cargo;
 
-const PANIC_SURFACE_UNWRAP_USED_BASELINE: usize = 17;
-const PANIC_SURFACE_EXPECT_USED_BASELINE: usize = 106;
+mod source_inventory;
+
+use source_inventory::enforce_panic_macro_inventory;
+
+const PANIC_SURFACE_UNWRAP_USED_BASELINE: usize = 16;
+const PANIC_SURFACE_EXPECT_USED_BASELINE: usize = 50;
 const PANIC_SURFACE_DEV_ONLY_FEATURES: &[(&str, &str)] = &[
     ("j2k-jpeg", "bench-internals"),
     ("j2k-jpeg", "bench-libjpeg-turbo"),
@@ -37,6 +41,11 @@ pub(super) fn panic_surface() -> Result<(), String> {
     let metadata = String::from_utf8(metadata.stdout)
         .map_err(|error| format!("cargo metadata stdout is not UTF-8: {error}"))?;
     let selection = parse_panic_surface_selection(&metadata, PANIC_SURFACE_DEV_ONLY_FEATURES)?;
+    let repository_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| "xtask manifest directory has no repository parent".to_string())?;
+    let macro_inventory =
+        enforce_panic_macro_inventory(&metadata, &selection.packages, repository_root)?;
     let args = panic_surface_clippy_args(&selection);
 
     let output = Command::new(cargo())
@@ -69,8 +78,8 @@ pub(super) fn panic_surface() -> Result<(), String> {
     }
 
     println!(
-        "panic-surface ratchet across {} publishable library packages: clippy::unwrap_used {unwrap_used_count}/{PANIC_SURFACE_UNWRAP_USED_BASELINE}, clippy::expect_used {expect_used_count}/{PANIC_SURFACE_EXPECT_USED_BASELINE}",
-        selection.packages.len()
+        "panic-surface ratchet across {} publishable library packages: clippy::unwrap_used {unwrap_used_count}/{PANIC_SURFACE_UNWRAP_USED_BASELINE}, clippy::expect_used {expect_used_count}/{PANIC_SURFACE_EXPECT_USED_BASELINE}; explicit production macros: {macro_inventory}",
+        selection.packages.len(),
     );
     Ok(())
 }

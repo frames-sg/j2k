@@ -28,6 +28,7 @@ fn braced_export_names<'a>(source: &'a str, prefix: &str) -> BTreeSet<&'a str> {
 fn transcode_accelerator_contracts_preserve_root_and_compatibility_paths() {
     let root = read("crates/j2k-transcode/src/lib.rs");
     let contracts = read("crates/j2k-transcode/src/accelerator_contracts.rs");
+    let error = read("crates/j2k-transcode/src/transcode_stage_error.rs");
     assert!(
         root.lines().count() < 250,
         "j2k-transcode/src/lib.rs must stay below its public-contract boundary ratchet"
@@ -43,7 +44,8 @@ fn transcode_accelerator_contracts_preserve_root_and_compatibility_paths() {
                 "pub struct DctGridToReversibleDwt53Job",
                 "pub struct ReversibleDwt53FirstLevel",
                 "pub struct Dwt97BatchStageTimings",
-                "pub enum TranscodeStageError",
+                "mod transcode_stage_error;",
+                "pub use transcode_stage_error::TranscodeStageError;",
             ])
             .forbidden(&[
                 "include!(\"accelerator.rs\")",
@@ -55,13 +57,29 @@ fn transcode_accelerator_contracts_preserve_root_and_compatibility_paths() {
             .required(&[
                 "pub trait DctToWaveletStageAccelerator",
                 "pub struct DctToWaveletStageCounters",
-                "impl fmt::Display for TranscodeStageError",
+                "TranscodeStageError::Unsupported(REVERSIBLE_DWT53_UNSUPPORTED_GRID)",
             ])
             .forbidden(&[
                 "allow(dead_code)",
                 "expect(dead_code)",
                 "feature = \"dev-support\"",
                 "include!(",
+                "impl From<&'static str> for TranscodeStageError",
+            ]),
+        PatternCheck::new("typed transcode stage error", &error)
+            .required(&[
+                "#[non_exhaustive]\npub enum TranscodeStageError",
+                "source: Box<dyn Error + Send + Sync + 'static>",
+                "DeviceMemoryCapExceeded {",
+                "DeviceAllocationFailed {",
+                "impl fmt::Display for TranscodeStageError",
+                "impl Error for TranscodeStageError",
+                "Self::Backend { source, .. } => Some(source.as_ref())",
+            ])
+            .forbidden(&[
+                "Backend(String)",
+                "#[derive(Debug, Clone, PartialEq, Eq)]",
+                "source.to_string()",
             ]),
     ]);
 

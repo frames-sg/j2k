@@ -112,17 +112,24 @@ fn cuda_trace_export_is_non_clobbering_and_documented() {
     assert_file_pattern_checks(
         repo_root(),
         &[
-            FilePatternCheck::new("crates/j2k-cuda/src/profile.rs")
-                .named("CUDA profile module")
+            FilePatternCheck::new("crates/j2k-cuda/src/profile/trace.rs")
+                .named("CUDA profile trace writer")
                 .required(&[
                     "OpenOptions::new().write(true).create_new(true).open(path)",
                     "fn write_trace_file",
-                    "emit_trace_write_failure(\"cuda_htj2k_trace\"",
-                    "emit_trace_write_failure(\"cuda_htj2k_encode_trace\"",
-                    "(\"trace_path\", trace_path.as_ref())",
-                    "(\"error\", error.as_str())",
+                    "emit_trace_write_error(\"cuda_htj2k_trace_write\"",
+                    "emit_trace_write_error(\"cuda_htj2k_encode_trace_write\"",
+                    "std::io::ErrorKind::AlreadyExists",
+                    "CUDA trace path already exists",
                 ])
                 .forbidden(&["std::fs::write(&trace_path"]),
+            FilePatternCheck::new("crates/j2k-cuda/src/profile/tests.rs")
+                .named("CUDA trace non-clobber regression")
+                .required(&[
+                    "write_trace_file(&path, trace)",
+                    "write_trace_file(&path, \"replace\")",
+                    "ErrorKind::AlreadyExists",
+                ]),
             FilePatternCheck::new("docs/env-vars.md")
                 .named("environment variable docs")
                 .required(&[
