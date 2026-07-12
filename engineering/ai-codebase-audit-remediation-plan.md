@@ -62,7 +62,7 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `cef2ba40`. No push, release tag, crate
+  before this ledger refresh is `0d3139b5`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -81,18 +81,23 @@ the issue sections below; this capsule is only the current continuation state.
   covered macro invocations no longer fail merely because the AST treats the
   invocation as opaque (`d717f7c8`). Release/semver, adoption runner/artifact
   generation, benchmark/codegen, compare, transcode, JP2 metadata, typed
-  stage-error, native SOT parsing, and JPEG decoder boundaries now have focused
-  behavior tests through `cef2ba40`. The exact detached host run at
-  `b34ab401` completed the full host matrix and failed the real gate at
-  77.7123% (78,149 / 100,562), leaving a 2,301-line numeric gap plus 306
-  uncovered functions, 433 uncovered executable bodies, 1,490 one-line
-  deferred closure bodies, and 666 uncovered opaque macros. That exact run
-  passed repo-lint 411/411 with one established ignore. The later `cef2ba40`
-  JPEG tile tranche is not included in those aggregate numbers; its focused
-  LLVM evidence reached 99.29% for `decoder/tile.rs` and 94.63% for the
-  implicated fast-420 row source. Root owns the coverage proof, settled
-  aggregate gates, ledger, and exact-SHA handoff; delegated owners are bounded
-  to facade, JPEG planning/rendering, and coverage-tool behavior tests.
+  stage-error, native SOT parsing, JPEG decoder boundaries, facade contracts,
+  coverage-tool policies, and JPEG planning/lossless routes now have focused
+  behavior tests through `53c101f4`. Compiler-region coverage evidence landed
+  in `f1d4b6fa`; `0d3139b5` then made dependency-macro expansion records an
+  explicit out-of-repository disposition without hiding repository regions.
+  The exact detached host run at `0d3139b5` completed the full host matrix and
+  411-test repository policy suite, generated schema-v4 LCOV and LLVM region
+  artifacts, and failed the real gate at 78.3307% (79,009 / 100,866). Reaching
+  80% requires 1,684 additional covered lines. The report has 292 uncovered
+  functions, 429 uncovered executable bodies, 485 compiler-instrumented
+  same-line deferred bodies with zero counts, 172 compiler-noninstrumentable
+  deferred bodies recorded without false failure, and 660 uncovered opaque
+  macros. This replaces the former 1,490-body line-only ambiguity with
+  compiler-grounded outcomes. All subagents are stopped; root alone owns the
+  remaining coverage proof, settled aggregate gates, ledger, and exact-SHA
+  handoff. Interrupted adoption-test work remains preserved and unstaged and
+  is not part of this exact checkpoint.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -405,7 +410,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v3 host evidence at `b34ab401` is 77.7123% (78,149 / 100,562); close the 2,301-line numeric gap and compiler-grounded function/body/deferred/macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `0d3139b5` is 78.3307% (79,009 / 100,866); close the 1,684-line numeric gap plus 292 function, 429 body, 485 zero-count deferred-region, and 660 opaque-macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -919,6 +924,30 @@ unchanged, so compiler-region evidence remains a separate blocker rather than
 something that can be cleared by shared source-line execution. Commits after
 this exact checkpoint, including `a809caeb` and `cef2ba40`, require the next
 detached aggregate run before their gains count as release evidence.
+
+The exact compiler-region checkpoint at
+`0d3139b54a254c5b2785f8dff058de5fc14d2748` uses schema
+`j2k-changed-line-coverage-v4`, scope `non-accelerator-production`, and paired
+`lcov-host.info` plus `coverage-host-regions.json` artifacts generated from one
+unique current-build target. The detached worktree completed the full host
+test/parity matrix and the 411-test repository policy suite with one
+established ignore. It then failed the genuine coverage gates at 79,009 of
+100,866 measurable lines (78.3307%); the exact integer requirement is 80,693,
+so the remaining numeric gap is 1,684 covered lines. Compared with
+`b34ab401`, this is 860 more covered lines against 304 more measurable lines.
+
+The same report records 292 changed functions without a covered body, 429
+multiline executable bodies without a covered body, 485 same-line deferred
+bodies with real compiler code regions but zero execution counts, and 660
+opaque macros. Another 172 same-line deferred bodies have no nested LLVM code
+region and are recorded as compiler-noninstrumentable rather than being
+misclassified as uncovered or forced into source reformatting. The former
+1,490-item line-only ambiguity is therefore closed as a tooling defect. The
+first schema-v4 exact attempt also exposed three dependency/toolchain macro
+source paths in LLVM function expansion metadata; `0d3139b5` regression-tests
+the narrow disposition that ignores only out-of-repository expansion regions,
+still requires repository file evidence, and rejects relative path escapes.
+No threshold, exclusion, or line-count ratchet was changed.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
