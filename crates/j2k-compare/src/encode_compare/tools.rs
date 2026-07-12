@@ -343,3 +343,6 @@ pub(super) fn selected_encoders_label(tools: &[EncoderTool]) -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
+
+#[cfg(all(test, unix))]
+mod tests;

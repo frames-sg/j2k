@@ -695,3 +695,6 @@ pub(super) fn mixed_input_digest(mixed_batch: &MixedImageBatch, batch_size: usiz
 pub(super) fn mixed_case_at(mixed_batch: &MixedImageBatch, index: usize) -> &ImageCase {
     &mixed_batch.cases[index % mixed_batch.cases.len()]
 }
+
+#[cfg(test)]
+mod tests;

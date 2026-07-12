@@ -269,3 +269,6 @@ pub(super) fn decode_encoded_output(path: &Path, case: &ImageCase) -> Result<Vec
         .map_err(|error| error.to_string())?;
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests;

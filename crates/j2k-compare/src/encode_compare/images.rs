@@ -467,3 +467,6 @@ pub(super) fn pnm_extension(components: u8) -> Result<&'static str, String> {
         other => Err(format!("unsupported component count {other}")),
     }
 }
+
+#[cfg(test)]
+mod tests;
