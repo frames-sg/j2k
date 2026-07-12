@@ -52,6 +52,8 @@ mod resident_batches;
 #[cfg(target_os = "macos")]
 mod resident_buffers;
 #[cfg(target_os = "macos")]
+mod resident_schedule;
+#[cfg(target_os = "macos")]
 mod routing;
 mod stage_validation;
 mod stats_inflight;

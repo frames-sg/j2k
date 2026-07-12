@@ -10,7 +10,6 @@ use super::{
     J2kLosslessEncodeOptions, MetalEncodedJ2k, MetalLosslessBufferEncodeBatchOutcome,
     MetalLosslessBufferEncodeOutcome, MetalLosslessEncodeResidency, MetalLosslessEncodeStageStats,
     ResidentLosslessBufferEncodeMetadata, SubmittedResidentLosslessMetalBufferEncodeBatch,
-    SubmittedResidentLosslessMetalBufferEncodeBatchKind,
 };
 
 #[cfg(target_os = "macos")]
@@ -59,150 +58,101 @@ pub(super) fn wait_submitted_resident_lossless_buffer_encode_batch(
 }
 
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "wait and harvest preserve chunk outcome and timing order"
-)]
 fn wait_submitted_resident_lossless_buffer_encode_batch_once(
     submitted: &mut SubmittedResidentLosslessMetalBufferEncodeBatch,
 ) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
-    let outcome_count = match &submitted.kind {
-        SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty => 0,
-        SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(chunks) => chunks
-            .iter()
-            .try_fold(0usize, |total, chunk| {
-                total.checked_add(chunk.metadatas.len())
-            })
-            .ok_or(j2k_core::BatchInfrastructureError::AllocationTooLarge {
-                what: "J2K Metal resident encode outcome collection",
-                requested: usize::MAX,
-                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-            })?,
-    };
+    let outcome_count = submitted.pipeline.as_ref().map_or(
+        0,
+        super::resident_schedule::SubmittedResidentLosslessChunkPipeline::total_tiles,
+    );
     let mut outcome_budget = crate::batch_allocation::BatchMetadataBudget::new(
         "J2K Metal resident encode outcome collection",
     );
     let mut outcomes =
         outcome_budget.try_vec(outcome_count, "J2K Metal resident encode outcome slots")?;
-    match std::mem::replace(
-        &mut submitted.kind,
-        SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty,
-    ) {
-        SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty => {}
-        SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(chunks) => {
-            if submitted.options.validation == J2kEncodeValidation::External
-                && submitted.options.block_coding_mode == J2kBlockCodingMode::HighThroughput
-                && chunks.len() > 1
-            {
-                let wait_started = compute::metal_profile_stages_enabled().then(Instant::now);
-                let mut chunk_budget = crate::batch_allocation::BatchMetadataBudget::new(
-                    "J2K Metal resident encode chunk wait plan",
-                );
-                let mut chunk_metadatas = chunk_budget.try_vec(
-                    chunks.len(),
-                    "J2K Metal resident encode chunk metadata groups",
-                )?;
-                let mut pending_batches = chunk_budget
-                    .try_vec(chunks.len(), "J2K Metal resident encode pending batches")?;
-                for chunk in chunks {
-                    chunk_metadatas.push((
-                        chunk.metadatas,
-                        chunk.prepare_durations,
-                        chunk.batch_started,
-                    ));
-                    pending_batches.push(chunk.pending);
-                }
-                let batches = compute::wait_resident_lossless_codestream_batches(pending_batches)?;
-                if let Some(started) = wait_started {
-                    let elapsed = started.elapsed();
-                    submitted.stats.stage_stats.codestream_wait_duration = submitted
-                        .stats
-                        .stage_stats
-                        .codestream_wait_duration
-                        .saturating_add(elapsed);
-                    submitted.stats.stage_stats.sync_wait_duration = submitted
-                        .stats
-                        .stage_stats
-                        .sync_wait_duration
-                        .saturating_add(elapsed);
-                }
-                for ((metadatas, prepare_durations, batch_started), batch) in
-                    chunk_metadatas.into_iter().zip(batches)
-                {
-                    if compute::metal_profile_stages_enabled() {
-                        submitted
-                            .stats
-                            .stage_stats
-                            .add_assign(MetalLosslessEncodeStageStats::from(batch.stage_stats));
-                    }
-                    let codestreams = batch.codestreams;
-                    let batch_duration = duration_share(batch_started.elapsed(), codestreams.len());
-                    for ((metadata, prepare_duration), codestream) in metadatas
-                        .into_iter()
-                        .zip(prepare_durations)
-                        .zip(codestreams)
-                    {
-                        let finished = finished_resident_lossless_buffer_encode(
-                            metadata,
-                            codestream,
-                            prepare_duration.saturating_add(batch_duration),
-                        )?;
-                        outcomes.push(validate_finished_resident_lossless_buffer_encode(
-                            finished,
-                            submitted.options,
-                            &submitted.session,
-                        )?);
-                    }
-                }
-            } else {
-                for chunk in chunks {
-                    let wait_started = compute::metal_profile_stages_enabled().then(Instant::now);
-                    let batch = compute::wait_resident_lossless_codestream_batch(chunk.pending)?;
-                    if let Some(started) = wait_started {
-                        let elapsed = started.elapsed();
-                        submitted.stats.stage_stats.codestream_wait_duration = submitted
-                            .stats
-                            .stage_stats
-                            .codestream_wait_duration
-                            .saturating_add(elapsed);
-                        submitted.stats.stage_stats.sync_wait_duration = submitted
-                            .stats
-                            .stage_stats
-                            .sync_wait_duration
-                            .saturating_add(elapsed);
-                        submitted
-                            .stats
-                            .stage_stats
-                            .add_assign(MetalLosslessEncodeStageStats::from(batch.stage_stats));
-                    }
-                    let codestreams = batch.codestreams;
-                    let batch_duration =
-                        duration_share(chunk.batch_started.elapsed(), codestreams.len());
-                    for ((metadata, prepare_duration), codestream) in chunk
-                        .metadatas
-                        .into_iter()
-                        .zip(chunk.prepare_durations)
-                        .zip(codestreams)
-                    {
-                        let finished = finished_resident_lossless_buffer_encode(
-                            metadata,
-                            codestream,
-                            prepare_duration.saturating_add(batch_duration),
-                        )?;
-                        outcomes.push(validate_finished_resident_lossless_buffer_encode(
-                            finished,
-                            submitted.options,
-                            &submitted.session,
-                        )?);
-                    }
-                }
-            }
+    if let Some(mut pipeline) = submitted.pipeline.take() {
+        while let Some(chunk) = pipeline.take_active() {
+            let tile_count = chunk.metadatas.len();
+            super::resident_schedule::SubmittedResidentLosslessChunkPipeline::record_active_completed(
+                tile_count,
+            );
+            wait_and_harvest_resident_chunk(submitted, chunk, &mut outcomes)?;
+            pipeline.submit_next(&submitted.session, &mut submitted.stats)?;
         }
+    }
+    if outcomes.len() != outcome_count {
+        return Err(crate::Error::MetalKernel {
+            message: "J2K Metal resident encode produced an unexpected outcome count".to_string(),
+        });
     }
     submitted.stats.encode_wall_duration = submitted.encode_started.elapsed();
     Ok(MetalLosslessBufferEncodeBatchOutcome {
         outcomes,
         stats: submitted.stats,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn wait_and_harvest_resident_chunk(
+    submitted: &mut SubmittedResidentLosslessMetalBufferEncodeBatch,
+    chunk: super::SubmittedResidentLosslessMetalBufferEncodeChunk,
+    outcomes: &mut Vec<MetalLosslessBufferEncodeOutcome>,
+) -> Result<(), crate::Error> {
+    let wait_started = compute::metal_profile_stages_enabled().then(Instant::now);
+    let batch = compute::wait_resident_lossless_codestream_batch(chunk.pending)?;
+    if let Some(started) = wait_started {
+        let elapsed = started.elapsed();
+        submitted.stats.stage_stats.codestream_wait_duration = submitted
+            .stats
+            .stage_stats
+            .codestream_wait_duration
+            .saturating_add(elapsed);
+        submitted.stats.stage_stats.sync_wait_duration = submitted
+            .stats
+            .stage_stats
+            .sync_wait_duration
+            .saturating_add(elapsed);
+        submitted
+            .stats
+            .stage_stats
+            .add_assign(MetalLosslessEncodeStageStats::from(batch.stage_stats));
+    }
+    validate_resident_chunk_result_counts(
+        chunk.metadatas.len(),
+        chunk.prepare_durations.len(),
+        batch.codestreams.len(),
+    )?;
+    let batch_duration = duration_share(chunk.batch_started.elapsed(), batch.codestreams.len());
+    for ((metadata, prepare_duration), codestream) in chunk
+        .metadatas
+        .into_iter()
+        .zip(chunk.prepare_durations)
+        .zip(batch.codestreams)
+    {
+        let finished = finished_resident_lossless_buffer_encode(
+            metadata,
+            codestream,
+            prepare_duration.saturating_add(batch_duration),
+        )?;
+        outcomes.push(validate_finished_resident_lossless_buffer_encode(
+            finished,
+            submitted.options,
+            &submitted.session,
+        )?);
+    }
+    Ok(())
+}
+
+fn validate_resident_chunk_result_counts(
+    metadata_count: usize,
+    prepare_duration_count: usize,
+    codestream_count: usize,
+) -> Result<(), crate::Error> {
+    if metadata_count == prepare_duration_count && metadata_count == codestream_count {
+        return Ok(());
+    }
+    Err(crate::Error::MetalKernel {
+        message: "J2K Metal resident chunk result count does not match submitted tiles".to_string(),
     })
 }
 
@@ -289,4 +239,20 @@ fn validate_finished_resident_lossless_buffer_encode(
         gpu_duration,
         validation_duration,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_resident_chunk_result_counts;
+
+    #[test]
+    fn resident_chunk_result_counts_must_match_before_zip() {
+        assert!(validate_resident_chunk_result_counts(2, 2, 2).is_ok());
+        for counts in [(2, 1, 2), (2, 2, 1), (1, 2, 2)] {
+            assert!(
+                validate_resident_chunk_result_counts(counts.0, counts.1, counts.2).is_err(),
+                "accepted mismatched resident counts {counts:?}"
+            );
+        }
+    }
 }

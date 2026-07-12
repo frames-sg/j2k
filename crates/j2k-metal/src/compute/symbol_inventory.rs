@@ -116,8 +116,8 @@ macro_rules! wire_compute_symbols {
         #[cfg(target_os = "macos")]
         pub(crate) use crate::compute::resident_tier1::{
             wait_resident_lossless_codestream, wait_resident_lossless_codestream_batch,
-            wait_resident_lossless_codestream_batches, J2kLosslessCodestreamAssemblyJob,
-            J2kLosslessCodestreamBlockCodingMode, J2kLosslessDeviceBatchPrepareItem,
+            J2kLosslessCodestreamAssemblyJob, J2kLosslessCodestreamBlockCodingMode,
+            J2kLosslessDeviceBatchPrepareItem,
             J2kLosslessDeviceCodeBlock, J2kLosslessDevicePrepareJob,
             J2kPendingResidentLosslessCodestreamBatch, J2kPreparedLosslessDeviceCodeBlocks,
             J2kResidentLosslessHtCodeBlocks, J2kResidentLosslessTier1CodeBlocks,
