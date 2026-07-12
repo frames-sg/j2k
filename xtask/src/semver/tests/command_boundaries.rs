@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{collections::BTreeSet, ffi::OsString, path::Path};
+use std::{collections::BTreeSet, ffi::OsString, fs, path::Path};
 
 use super::super::{
-    baseline_api_snapshot, capture_command, current_api_snapshot, require_macos, semver,
-    verify_baseline_tag, workspace_package_versions, SnapshotKind, CARGO_PUBLIC_API_VERSION,
-    HIDDEN_API_SNAPSHOT, PUBLIC_API_SNAPSHOT,
+    baseline_api_snapshot, capture_command, current_api_snapshot, require_macos, run_semver_checks,
+    semver, verify_baseline_tag, verify_or_write_report, workspace_package_versions, Options,
+    SnapshotKind, API_DIFF_REPORT, CARGO_PUBLIC_API_VERSION, HIDDEN_API_SNAPSHOT,
+    PUBLIC_API_SNAPSHOT,
 };
 
 fn workspace_path(relative: &str) -> String {
@@ -77,6 +78,30 @@ fn committed_semver_inputs_match_the_pinned_workspace_contract() {
     let versions = workspace_package_versions().expect("workspace package versions");
     assert_eq!(versions.get("j2k").map(String::as_str), Some("0.7.0"));
     assert!(versions.keys().collect::<BTreeSet<_>>().len() > 10);
+}
+
+#[test]
+fn report_verification_is_workspace_anchored_and_empty_checks_are_a_noop() {
+    let committed =
+        fs::read_to_string(workspace_path(API_DIFF_REPORT)).expect("read committed semver report");
+    assert_eq!(
+        verify_or_write_report(
+            Options {
+                write_report: false,
+            },
+            &committed,
+        ),
+        Ok(())
+    );
+    let error = verify_or_write_report(
+        Options {
+            write_report: false,
+        },
+        "stale report",
+    )
+    .expect_err("stale semver report");
+    assert!(error.contains("is stale"));
+    assert_eq!(run_semver_checks(&[]), Ok(()));
 }
 
 #[cfg(target_os = "macos")]

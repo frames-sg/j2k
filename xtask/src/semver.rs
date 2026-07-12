@@ -809,13 +809,16 @@ fn render_diff_items(out: &mut String, heading: &str, items: &BTreeSet<String>) 
 }
 
 fn verify_or_write_report(options: Options, rendered: &str) -> Result<(), String> {
-    let path = Path::new(API_DIFF_REPORT);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| "xtask manifest directory has no workspace parent".to_string())?
+        .join(API_DIFF_REPORT);
     if options.write_report {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|err| format!("create {}: {err}", parent.display()))?;
         }
-        fs::write(path, rendered).map_err(|err| format!("write {}: {err}", path.display()))?;
+        fs::write(&path, rendered).map_err(|err| format!("write {}: {err}", path.display()))?;
         eprintln!(
             "wrote {}; review its diff before editing {API_REVIEW_CONFIG}",
             path.display()
@@ -823,7 +826,7 @@ fn verify_or_write_report(options: Options, rendered: &str) -> Result<(), String
         return Ok(());
     }
 
-    let committed = fs::read_to_string(path).map_err(|err| {
+    let committed = fs::read_to_string(&path).map_err(|err| {
         format!(
             "read {}: {err}; run `cargo xtask semver --write-report` and review the generated diff",
             path.display()
