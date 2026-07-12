@@ -54,56 +54,14 @@ pub(super) fn run_lane(
 
 fn run_host_coverage(lcov_path: &Path, target_dir: &Path) -> Result<(), String> {
     let output = path_arg(lcov_path)?;
-    run_llvm_cov(
-        &[
-            "llvm-cov",
-            "--include-build-script",
-            "--workspace",
-            "--all-features",
-            "--lib",
-            "--bins",
-            "--tests",
-            "--no-fail-fast",
-            "--coverage-host-only",
-            "--lcov",
-            "--output-path",
-            &output,
-        ],
-        &[],
-        target_dir,
-    )
+    run_llvm_cov(&host_coverage_args(&output), &[], target_dir)
 }
 
 fn run_metal_coverage(lcov_path: &Path, target_dir: &Path) -> Result<(), String> {
-    let args = package_coverage_args(
-        &[
-            "llvm-cov",
-            "--include-build-script",
-            "--no-report",
-            "--no-clean",
-            "--all-features",
-            "--lib",
-            "--bins",
-            "--tests",
-            "--no-fail-fast",
-        ],
-        CoverageLane::Metal,
-    );
+    let args = accelerator_coverage_args(CoverageLane::Metal)?;
     run_llvm_cov(&args, METAL_COVERAGE_ENV, target_dir)?;
     run_llvm_cov(
-        &[
-            "llvm-cov",
-            "--include-build-script",
-            "--no-report",
-            "--no-clean",
-            "--all-features",
-            "--lib",
-            "-p",
-            "j2k-metal",
-            "--",
-            "--ignored",
-            "--test-threads=1",
-        ],
+        metal_hardware_coverage_args(),
         METAL_COVERAGE_ENV,
         target_dir,
     )?;
@@ -111,22 +69,63 @@ fn run_metal_coverage(lcov_path: &Path, target_dir: &Path) -> Result<(), String>
 }
 
 fn run_cuda_coverage(lcov_path: &Path, target_dir: &Path) -> Result<(), String> {
-    let args = package_coverage_args(
-        &[
-            "llvm-cov",
-            "--include-build-script",
-            "--no-report",
-            "--no-clean",
-            "--all-features",
-            "--lib",
-            "--tests",
-            "--no-fail-fast",
-            "--coverage-host-only",
-        ],
-        CoverageLane::Cuda,
-    );
+    let args = accelerator_coverage_args(CoverageLane::Cuda)?;
     run_llvm_cov(&args, CUDA_COVERAGE_ENV, target_dir)?;
     report_lcov(lcov_path, CUDA_COVERAGE_ENV, target_dir)
+}
+
+fn host_coverage_args(output: &str) -> Vec<&str> {
+    vec![
+        "llvm-cov",
+        "--include-build-script",
+        "--workspace",
+        "--all-features",
+        "--lib",
+        "--bins",
+        "--tests",
+        "--no-fail-fast",
+        "--coverage-host-only",
+        "--lcov",
+        "--output-path",
+        output,
+    ]
+}
+
+fn accelerator_coverage_args(lane: CoverageLane) -> Result<Vec<&'static str>, String> {
+    let mut base = vec![
+        "llvm-cov",
+        "--include-build-script",
+        "--no-report",
+        "--no-clean",
+        "--all-features",
+        "--lib",
+        "--tests",
+        "--no-fail-fast",
+    ];
+    match lane {
+        CoverageLane::Metal => base.insert(6, "--bins"),
+        CoverageLane::Cuda => base.push("--coverage-host-only"),
+        CoverageLane::Host => {
+            return Err("host coverage cannot use accelerator package selection".to_string());
+        }
+    }
+    Ok(package_coverage_args(&base, lane))
+}
+
+const fn metal_hardware_coverage_args() -> &'static [&'static str] {
+    &[
+        "llvm-cov",
+        "--include-build-script",
+        "--no-report",
+        "--no-clean",
+        "--all-features",
+        "--lib",
+        "-p",
+        "j2k-metal",
+        "--",
+        "--ignored",
+        "--test-threads=1",
+    ]
 }
 
 fn package_coverage_args(base: &[&'static str], lane: CoverageLane) -> Vec<&'static str> {
@@ -143,18 +142,18 @@ fn package_coverage_args(base: &[&'static str], lane: CoverageLane) -> Vec<&'sta
 
 fn report_lcov(lcov_path: &Path, envs: &[(&str, &str)], target_dir: &Path) -> Result<(), String> {
     let output = path_arg(lcov_path)?;
-    run_llvm_cov(
-        &[
-            "llvm-cov",
-            "report",
-            "--include-build-script",
-            "--lcov",
-            "--output-path",
-            &output,
-        ],
-        envs,
-        target_dir,
-    )
+    run_llvm_cov(&report_lcov_args(&output), envs, target_dir)
+}
+
+fn report_lcov_args(output: &str) -> Vec<&str> {
+    vec![
+        "llvm-cov",
+        "report",
+        "--include-build-script",
+        "--lcov",
+        "--output-path",
+        output,
+    ]
 }
 
 fn coverage_tool_version() -> Result<String, String> {
@@ -232,8 +231,9 @@ mod tests {
     };
 
     use super::{
-        current_build_env, package_coverage_args, parse_coverage_tool_version, CoverageLane,
-        METAL_COVERAGE_ENV,
+        accelerator_coverage_args, current_build_env, host_coverage_args,
+        metal_hardware_coverage_args, package_coverage_args, parse_coverage_tool_version,
+        report_lcov_args, CoverageLane, CUDA_COVERAGE_ENV, METAL_COVERAGE_ENV,
     };
 
     #[test]
@@ -287,5 +287,103 @@ mod tests {
             Ok("0.8.7")
         );
         assert!(parse_coverage_tool_version("warning: rust 1.90\n").is_err());
+    }
+
+    #[test]
+    fn host_command_captures_the_complete_workspace_and_writes_lcov() {
+        assert_eq!(
+            host_coverage_args("host.info"),
+            [
+                "llvm-cov",
+                "--include-build-script",
+                "--workspace",
+                "--all-features",
+                "--lib",
+                "--bins",
+                "--tests",
+                "--no-fail-fast",
+                "--coverage-host-only",
+                "--lcov",
+                "--output-path",
+                "host.info",
+            ]
+        );
+    }
+
+    #[test]
+    fn accelerator_commands_preserve_lane_specific_execution_contracts() {
+        assert!(accelerator_coverage_args(CoverageLane::Host).is_err());
+        let metal = accelerator_coverage_args(CoverageLane::Metal).unwrap();
+        assert!(metal.contains(&"--bins"));
+        assert!(!metal.contains(&"--coverage-host-only"));
+        assert!(metal.contains(&"--no-report") && metal.contains(&"--no-clean"));
+
+        let cuda = accelerator_coverage_args(CoverageLane::Cuda).unwrap();
+        assert!(!cuda.contains(&"--bins"));
+        assert!(cuda.contains(&"--coverage-host-only"));
+        assert!(cuda.contains(&"--no-report") && cuda.contains(&"--no-clean"));
+
+        for (lane, args) in [(CoverageLane::Metal, metal), (CoverageLane::Cuda, cuda)] {
+            let package_values = args
+                .windows(2)
+                .filter_map(|pair| (pair[0] == "-p").then_some(pair[1]))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                package_values.len(),
+                package_values.iter().collect::<BTreeSet<_>>().len(),
+                "{lane:?} command contains duplicate package selections"
+            );
+        }
+    }
+
+    #[test]
+    fn metal_hardware_and_report_commands_cannot_drop_required_flags() {
+        assert_eq!(
+            metal_hardware_coverage_args(),
+            [
+                "llvm-cov",
+                "--include-build-script",
+                "--no-report",
+                "--no-clean",
+                "--all-features",
+                "--lib",
+                "-p",
+                "j2k-metal",
+                "--",
+                "--ignored",
+                "--test-threads=1",
+            ]
+        );
+        assert_eq!(
+            report_lcov_args("lane.info"),
+            [
+                "llvm-cov",
+                "report",
+                "--include-build-script",
+                "--lcov",
+                "--output-path",
+                "lane.info",
+            ]
+        );
+    }
+
+    #[test]
+    fn accelerator_environments_require_real_serial_hardware_execution() {
+        assert_eq!(
+            METAL_COVERAGE_ENV,
+            &[
+                ("J2K_REQUIRE_METAL_RUNTIME", "1"),
+                ("RUST_TEST_THREADS", "1")
+            ]
+        );
+        assert_eq!(
+            CUDA_COVERAGE_ENV,
+            &[
+                ("J2K_REQUIRE_CUDA_RUNTIME", "1"),
+                ("J2K_REQUIRE_CUDA_OXIDE_BUILD", "1"),
+                ("J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE", "1"),
+                ("RUST_TEST_THREADS", "1"),
+            ]
+        );
     }
 }

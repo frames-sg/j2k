@@ -5,6 +5,8 @@ use super::{
     CoverageExclusion, EvidenceClass, EvidenceTest, ExclusionMatcher,
 };
 
+mod matchers;
+
 #[test]
 fn evidence_resolution_ignores_comments_and_string_literals() {
     let spoofed = r#"

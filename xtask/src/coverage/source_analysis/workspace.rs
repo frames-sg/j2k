@@ -13,6 +13,8 @@ use super::cfg_eval::CoverageCfgContext;
 use super::graph::ReachKind;
 use super::{SourceRole, GENERATED_DWT_DISPOSITION, VENDORED_BLOCK_DISPOSITION};
 mod fuzz_manifests;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct SourceRoot {
