@@ -62,7 +62,7 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `4b80bd5c`. No push, release tag, crate
+  before this ledger refresh is `1692982e`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -96,15 +96,20 @@ the issue sections below; this capsule is only the current continuation state.
   child-process tranche exercises package preflight, stable API generation,
   semver comparison, external quality commands, no-std, Miri, and fuzz plans;
   it also fixes semver report lookup so package-cwd execution remains rooted at
-  the workspace (`4b80bd5c`). Its clean exact-SHA
+  the workspace (`4b80bd5c`). Codec-math Rust and Metal fragments now use the
+  same rollback-capable generated-pair transaction as stable API snapshots,
+  with that file-lifecycle owner split from the command facade (`787d3be4`). A
+  pre-evaluation exact attempt then exposed the existing repo-policy size
+  ratchet; codegen policy ownership was split without raising it (`1692982e`).
+  The clean exact-SHA
   host run completed the full host matrix and 411-test repository policy suite,
   generated schema-v4 LCOV and LLVM region artifacts, and failed the real gate
-  at 77.8153% (65,066 / 83,616). Reaching the exact 80% boundary of 66,893
-  requires 1,827 additional covered executable lines. The report has 239
-  uncovered functions, 424 uncovered executable bodies, 470
+  at 77.8276% (65,081 / 83,622). Reaching the exact 80% boundary of 66,898
+  requires 1,817 additional covered executable lines. The report has 239
+  uncovered functions, 426 uncovered executable bodies, 467
   compiler-instrumented same-line deferred bodies with zero counts, 172
   compiler-noninstrumentable deferred bodies recorded without false failure,
-  and 583 uncovered opaque macros. The earlier first attempt at `00983dd9` was
+  and 582 uncovered opaque macros. The earlier first attempt at `00983dd9` was
   correctly discarded after stale ignored coverage JSON caused two
   repository-text policies to fail; generated artifacts remain ignored and are
   moved to Trash after each recorded checkpoint. All subagents are stopped; root
@@ -424,7 +429,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `4b80bd5c` is 77.8153% (65,066 / 83,616); close the 1,827-line numeric gap plus 239 function, 424 body, 470 zero-count deferred-region, and 583 opaque-macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `1692982e` is 77.8276% (65,081 / 83,622); close the 1,817-line numeric gap plus 239 function, 426 body, 467 zero-count deferred-region, and 582 opaque-macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -1051,6 +1056,42 @@ encoding (128), compare decode/comparator paths (125/124), and native decode
 store (123). Select the next cohesive behavior tranche from this report; do not
 run another full coverage matrix until it compiles, passes focused tests, and
 is committed.
+
+The transactional codegen checkpoint at
+`1692982e8bd5b49032d93925b98b83c871fc6596` retains schema
+`j2k-changed-line-coverage-v4`. A child-process regression first reproduced the
+mixed generated-state defect: when the Rust codec-math fragment could not be
+replaced, the Metal fragment had already been overwritten. `787d3be4` routes
+both fragments through the rollback-capable two-file transaction and extracts
+that file-lifecycle owner from the command/rendering facade. The 240 xtask unit
+tests, three orchestration tests, focused stable-API and structure policies,
+strict all-target/all-feature Clippy, formatting, and the real codec-math
+freshness check passed before commit.
+
+The first exact attempt after that commit passed the host tests but stopped
+before coverage evaluation when the complete repository policy suite found
+that `xtask_main_structure_policy.rs` exceeded its existing 300-line split
+ratchet. The policy was restored by extracting its codegen ownership axis into
+a 35-line module; the parent returned to 271 lines and no threshold changed
+(`1692982e`). Focused policy tests and strict Clippy passed before retrying.
+
+The clean exact retry completed the full host matrix and all 411 repository
+policies with one established ignore, then failed only the genuine coverage
+gates at 65,081 of 83,622 executable lines (77.8276%). The exact 80% boundary
+is 66,898, leaving 1,817 lines. Relative to `4b80bd5c`, this is 15 additional
+covered lines against six additional measurable lines. The report records 239
+changed functions without a covered body, 426 multiline executable bodies,
+467 zero-count deferred compiler regions, 172 compiler-noninstrumentable
+deferred bodies, 582 opaque macros, four absent instrumentable files, and no
+mixed production/test lines.
+
+The old 176-line monolithic codegen hotspot is now partitioned between the
+command/rendering facade (83 uncovered lines) and transaction owner (84). The
+largest remaining exact misses are JPEG fixture builders (338), native
+tile-part handling (170), Metal orchestration (165), release commands (152),
+semver (137), native packet-header encoding (128), compare decode/comparators
+(125/124), and native decode store (123). Select the next cohesive behavior
+tranche from this exact report and commit it before another full coverage run.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
