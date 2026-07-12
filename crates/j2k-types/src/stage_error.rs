@@ -251,7 +251,7 @@ impl PartialEq for J2kEncodeStageError {
             ) => {
                 left_backend == right_backend
                     && left_operation == right_operation
-                    && core::ptr::eq(left_source.as_ref(), right_source.as_ref())
+                    && core::ptr::eq(left_source, right_source)
             }
             _ => false,
         }
@@ -262,7 +262,10 @@ impl Eq for J2kEncodeStageError {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use alloc::string::ToString;
+    use core::{error::Error, fmt};
+
+    use super::{J2kEncodeStageError, J2kEncodeStageErrorKind};
 
     #[derive(Debug)]
     struct TestBackendError;
@@ -324,5 +327,77 @@ mod tests {
         assert!(Error::source(&error)
             .and_then(|source| source.downcast_ref::<TestBackendError>())
             .is_some());
+    }
+
+    #[test]
+    fn every_stage_category_has_stable_display_text() {
+        let cases = [
+            (
+                J2kEncodeStageError::invalid_request("dimensions"),
+                "invalid stage request: dimensions",
+            ),
+            (
+                J2kEncodeStageError::unsupported("sampling"),
+                "unsupported stage request: sampling",
+            ),
+            (
+                J2kEncodeStageError::arithmetic_overflow("coefficient count"),
+                "stage arithmetic overflow: coefficient count",
+            ),
+            (
+                J2kEncodeStageError::memory_cap_exceeded("workspace", 9, 8),
+                "workspace requires 9 live host bytes, exceeding the 8-byte cap",
+            ),
+            (
+                J2kEncodeStageError::host_allocation_failed("workspace", 9),
+                "host allocation failed for 9 bytes while allocating workspace",
+            ),
+            (
+                J2kEncodeStageError::internal_invariant("result count"),
+                "encode-stage invariant failed: result count",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+
+        let backend = J2kEncodeStageError::backend("cuda", "dispatch", TestBackendError);
+        assert_eq!(backend.to_string(), "cuda dispatch failed: backend fixture");
+    }
+
+    #[test]
+    fn equality_compares_typed_payloads_and_backend_source_identity() {
+        assert_eq!(
+            J2kEncodeStageError::invalid_request("dimensions"),
+            J2kEncodeStageError::invalid_request("dimensions")
+        );
+        assert_ne!(
+            J2kEncodeStageError::invalid_request("dimensions"),
+            J2kEncodeStageError::unsupported("dimensions")
+        );
+        assert_eq!(
+            J2kEncodeStageError::memory_cap_exceeded("workspace", 9, 8),
+            J2kEncodeStageError::memory_cap_exceeded("workspace", 9, 8)
+        );
+        assert_ne!(
+            J2kEncodeStageError::memory_cap_exceeded("workspace", 9, 8),
+            J2kEncodeStageError::memory_cap_exceeded("workspace", 10, 8)
+        );
+        assert_eq!(
+            J2kEncodeStageError::host_allocation_failed("workspace", 9),
+            J2kEncodeStageError::host_allocation_failed("workspace", 9)
+        );
+        assert_ne!(
+            J2kEncodeStageError::host_allocation_failed("workspace", 9),
+            J2kEncodeStageError::host_allocation_failed("workspace", 10)
+        );
+
+        let backend = J2kEncodeStageError::backend("cuda", "dispatch", TestBackendError);
+        assert_eq!(backend, backend);
+        assert_ne!(
+            backend,
+            J2kEncodeStageError::backend("cuda", "dispatch", TestBackendError)
+        );
     }
 }
