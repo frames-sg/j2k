@@ -871,6 +871,36 @@ impl<const N: usize> core::ops::DerefMut for SimdBuffer<N> {
 }
 
 #[cfg(test)]
+mod simd_operator_tests {
+    use super::{dispatch, f32x8, Level, SIMD_WIDTH};
+
+    #[test]
+    fn assignment_operators_preserve_each_lane_for_active_simd_level() {
+        let left = [1.0, -2.0, 3.5, -4.5, 5.25, -6.25, 7.75, -8.75];
+        let right = [8.0, 7.0, -6.0, -5.0, 4.0, 3.0, -2.0, -1.0];
+        let mut output = [0.0; SIMD_WIDTH];
+
+        dispatch!(Level::new(), simd => {
+            let mut value = f32x8::from_slice(simd, &left);
+            value += f32x8::from_slice(simd, &right);
+            value -= f32x8::splat(simd, 1.0);
+            value *= 0.5;
+            value /= 2.0;
+            value.store(&mut output);
+        });
+
+        let expected: [f32; SIMD_WIDTH] =
+            core::array::from_fn(|index| (left[index] + right[index] - 1.0) / 4.0);
+        for (index, (actual, expected)) in output.into_iter().zip(expected).enumerate() {
+            assert!(
+                (actual - expected).abs() <= f32::EPSILON,
+                "lane {index}: expected {expected}, got {actual}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod integer_tests {
     use super::{bit_width_u32, bit_width_u64, ceil_log2_u32, SimdBuffer};
 
