@@ -261,17 +261,51 @@ fn path_arg(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::path::Path;
 
     use crate::coverage::accelerator_ownership::{
         shared_accelerator_packages, shared_accelerator_sources,
     };
+    use crate::process::use_test_cargo_program;
+    use crate::test_command::RecordingProgram;
 
     use super::{
         accelerator_coverage_args, current_build_env, host_coverage_args,
         metal_hardware_coverage_args, package_coverage_args, parse_coverage_tool_version,
-        report_compiler_regions_args, report_lcov_args, CoverageLane, CUDA_COVERAGE_ENV,
+        report_compiler_regions_args, report_lcov_args, run_lane, CoverageLane, CUDA_COVERAGE_ENV,
         METAL_COVERAGE_ENV,
     };
+
+    #[test]
+    fn lane_orchestrators_execute_complete_hermetic_cargo_plans() {
+        let recording = RecordingProgram::new(
+            "coverage-lane-command-test",
+            "if [ \"$1\" = llvm-cov ] && [ \"$2\" = --version ]; then printf 'cargo-llvm-cov 0.8.7\\n'; fi",
+        );
+        let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask manifest has workspace parent");
+
+        for lane in [CoverageLane::Host, CoverageLane::Metal, CoverageLane::Cuda] {
+            let result = run_lane(
+                root,
+                lane,
+                &root.join(format!("target/test-{}.info", lane.name())),
+                &root.join(format!("target/test-{}-regions.json", lane.name())),
+            )
+            .expect("hermetic coverage lane");
+            assert_eq!(result.cargo_llvm_cov_version, "0.8.7");
+        }
+
+        let log = recording.log();
+        assert!(log.contains("llvm-cov --version|"));
+        assert!(log.contains("--workspace --all-features --lib --bins --tests"));
+        assert!(log.contains("-p j2k-metal -- --ignored --test-threads=1"));
+        assert!(log.contains("-p j2k-cuda-runtime"));
+        assert!(log.contains("llvm-cov report --include-build-script --lcov"));
+        assert!(log.contains("llvm-cov report --include-build-script --json"));
+    }
 
     #[test]
     fn llvm_cov_commands_share_unique_target_and_build_directory() {

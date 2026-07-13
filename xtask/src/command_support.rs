@@ -6,43 +6,7 @@ use std::process::Command;
 use crate::process::{self, cargo};
 
 #[cfg(all(test, unix))]
-use std::sync::{Mutex, MutexGuard};
-
-#[cfg(all(test, unix))]
-static TEST_CARGO_PROGRAM: Mutex<Option<OsString>> = Mutex::new(None);
-#[cfg(all(test, unix))]
-static TEST_CARGO_SERIAL: Mutex<()> = Mutex::new(());
-
-fn support_cargo() -> OsString {
-    #[cfg(all(test, unix))]
-    if let Some(program) = TEST_CARGO_PROGRAM
-        .lock()
-        .expect("test Cargo program lock")
-        .clone()
-    {
-        return program;
-    }
-    cargo()
-}
-
-#[cfg(all(test, unix))]
-pub(super) struct TestCargoProgramGuard {
-    _serial: MutexGuard<'static, ()>,
-}
-
-#[cfg(all(test, unix))]
-pub(super) fn use_test_cargo_program(program: OsString) -> TestCargoProgramGuard {
-    let serial = TEST_CARGO_SERIAL.lock().expect("test Cargo serial lock");
-    *TEST_CARGO_PROGRAM.lock().expect("test Cargo program lock") = Some(program);
-    TestCargoProgramGuard { _serial: serial }
-}
-
-#[cfg(all(test, unix))]
-impl Drop for TestCargoProgramGuard {
-    fn drop(&mut self) {
-        *TEST_CARGO_PROGRAM.lock().expect("test Cargo program lock") = None;
-    }
-}
+pub(super) use crate::process::use_test_cargo_program;
 
 pub(super) fn ensure_clean_worktree() -> Result<(), String> {
     let status = process::command_output_os(OsString::from("git"), &["status", "--porcelain"])?;
@@ -60,7 +24,7 @@ pub(super) fn run_cargo(args: &[&str]) -> Result<(), String> {
 }
 
 pub(super) fn run_cargo_with_env(args: &[&str], envs: &[(&str, &str)]) -> Result<(), String> {
-    run_program(support_cargo(), args, envs)
+    run_program(cargo(), args, envs)
 }
 
 pub(super) fn run_cargo_test_with_pass_floor(
@@ -83,11 +47,11 @@ pub(super) fn run_cargo_test_with_pass_floor(
     };
     eprintln!(
         "+ {display_prefix}{} {}",
-        support_cargo().to_string_lossy(),
+        cargo().to_string_lossy(),
         test_args.join(" ")
     );
 
-    let cargo = support_cargo();
+    let cargo = cargo();
     let mut command = Command::new(&cargo);
     command.args(&test_args);
     for (key, value) in envs {

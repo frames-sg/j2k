@@ -372,6 +372,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
                 "fn shared_accelerator_source_owners_drive_lane_package_selection()",
                 "fn coverage_tool_version_parser_requires_named_record()",
                 "fn llvm_cov_commands_share_unique_target_and_build_directory()",
+                "fn lane_orchestrators_execute_complete_hermetic_cargo_plans()",
                 "--include-build-script",
                 "fn run_llvm_cov(",
             ])
