@@ -89,15 +89,9 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
         let plane0_host = checked_buffer_slice::<f32>(&plane0_buffer, len, "inverse MCT plane 0")?;
         let plane1_host = checked_buffer_slice::<f32>(&plane1_buffer, len, "inverse MCT plane 1")?;
         let plane2_host = checked_buffer_slice::<f32>(&plane2_buffer, len, "inverse MCT plane 2")?;
-        for (dst, sample) in plane0.iter_mut().zip(plane0_host.iter().copied()) {
-            *dst = sample - addend0;
-        }
-        for (dst, sample) in plane1.iter_mut().zip(plane1_host.iter().copied()) {
-            *dst = sample - addend1;
-        }
-        for (dst, sample) in plane2.iter_mut().zip(plane2_host.iter().copied()) {
-            *dst = sample - addend2;
-        }
+        plane0.copy_from_slice(&plane0_host);
+        plane1.copy_from_slice(&plane1_host);
+        plane2.copy_from_slice(&plane2_host);
         Ok(vec![plane0_buffer, plane1_buffer, plane2_buffer])
     })
 }
