@@ -6,7 +6,6 @@ use super::*;
 #[path = "tests/ledger.rs"]
 mod ledger;
 
-#[cfg(target_os = "macos")]
 const BASELINE_420: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_420_16x16.jpg");
 #[cfg(target_os = "macos")]
 const BASELINE_422: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_422_16x8.jpg");
@@ -164,17 +163,26 @@ fn public_session_diagnostics_report_default_empty_limits() {
 
 #[cfg(not(target_os = "macos"))]
 #[test]
-fn non_macos_auto_and_metal_plan_resolution_stays_unparsed() {
+fn non_macos_auto_stays_unparsed_but_explicit_metal_is_inspected() {
     let mut session = SessionState::default();
-    for backend in [BackendRequest::Auto, BackendRequest::Metal] {
-        let plan = session
-            .resolve_jpeg_plan(b"not a jpeg", backend)
-            .expect("non-macOS plan stays unparsed");
-        assert_eq!(plan.shape, batch::BatchShape::unknown());
-        assert!(plan.fast_packet.is_none());
-    }
-    assert_eq!(session.jpeg_plan_cache_diagnostics().entries, 0);
-    assert_eq!(session.jpeg_plan_cache_diagnostics().misses, 0);
+    let auto = session
+        .resolve_jpeg_plan(b"not a jpeg", BackendRequest::Auto)
+        .expect("non-macOS Auto plan stays unparsed");
+    assert_eq!(auto.shape, batch::BatchShape::unknown());
+    assert!(auto.fast_packet.is_none());
+
+    let metal = session
+        .resolve_jpeg_plan(BASELINE_420, BackendRequest::Metal)
+        .expect("explicit Metal plan is inspected before host availability");
+    assert_eq!(metal.shape.sampling_family, batch::SamplingFamily::Fast420);
+    assert!(metal
+        .fast_packet
+        .as_ref()
+        .is_some_and(|packet| packet.fast420().is_some()));
+
+    let diagnostics = session.jpeg_plan_cache_diagnostics();
+    assert_eq!(diagnostics.entries, 1);
+    assert_eq!(diagnostics.misses, 1);
 }
 
 #[cfg(target_os = "macos")]

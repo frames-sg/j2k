@@ -125,13 +125,7 @@ fn release_critical_orchestrators_run_from_the_workspace_without_real_cargo() {
         "stable-api under canonical CI warning flags",
     );
     let output = harness.run(&["semver"]);
-    assert!(!output.status.success(), "synthetic API must fail semver");
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("committed stable API snapshots are stale"),
-        "semver must reach live snapshot comparison: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_semver_fails_at_expected_boundary(&output);
 
     let log = harness.log();
     assert!(log.contains("fmt --all -- --check|"));
@@ -155,6 +149,21 @@ fn assert_stable_api_fails_at_expected_boundary(output: &Output, context: &str) 
     assert!(
         stderr.contains(expected_error),
         "{context} must reach its platform's stable-API boundary: {stderr}"
+    );
+}
+
+fn assert_semver_fails_at_expected_boundary(output: &Output) {
+    assert!(!output.status.success(), "synthetic API must fail semver");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let expected_error = if cfg!(target_os = "macos") {
+        "committed stable API snapshots are stale"
+    } else {
+        "semver/API review must run on macOS so Metal public APIs are included"
+    };
+    assert!(
+        stderr.contains(expected_error),
+        "semver must reach its platform's API-review boundary: {stderr}"
     );
 }
 

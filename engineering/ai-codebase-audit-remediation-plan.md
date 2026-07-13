@@ -68,10 +68,10 @@ the issue sections below; this capsule is only the current continuation state.
   `rc/0.7.0-candidate` and draft
   [PR #50](https://github.com/frames-sg/j2k/pull/50) target `main`. Hosted CI
   invalidated `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`,
-  and `a3307c18`;
+  `a3307c18`, and `bca8ad58`;
   the complete causes and local corrections are recorded in the hosted RC
   checkpoint below.
-  The commit containing the fourth hosted correction checkpoint below is the
+  The commit containing the fifth hosted correction checkpoint below is the
   only eligible replacement candidate and still requires clean-tree exact-SHA
   reruns plus hosted, Metal, and CUDA verification. An
   isolated RC worktree preserves the 0.7 fixes while the
@@ -443,6 +443,39 @@ the issue sections below; this capsule is only the current continuation state.
   candidate evidence. The concurrent GPU-path-policy failure was the expected
   fail-closed result before exact GPU completion. The commit containing this
   checkpoint must restart the complete exact-SHA matrix.
+- Fifth hosted RC correction checkpoint (2026-07-13): candidate `bca8ad58`
+  was pushed to PR #50 and checked by hosted CI run `29285703375`, secret-scan
+  run `29285703161`, and GPU run `29285705096`. Secret scanning passed. Hosted
+  formatting, ordinary and strict Clippy, stable API, package, publish
+  integrity, comparator, no-std, repository policy, dependency, Miri, docs,
+  panic, clone, unsafe, fuzz, and codegen gates were green before cancellation.
+  Two Linux-only test roots invalidate the candidate:
+  - five ordinary Linux jobs and the coverage job's workspace-test phase found
+    that `SessionState` deliberately skipped JPEG plan inspection for every
+    non-macOS request. A valid explicit Metal 4:2:0 request therefore appeared
+    to lack a fast packet and returned `UnsupportedMetalRequest` instead of
+    reaching the intended `MetalUnavailable` boundary. Explicit Metal requests
+    now receive the same capability inspection on every host, while non-macOS
+    `Auto` remains an uninspected CPU route. The hosted failure is the red
+    regression; focused macOS session/routing tests pass, and on a private
+    Linux verifier the new session regression, the previously failing valid
+    request, and the existing unsupported-shape request all pass. Strict
+    JPEG-Metal/xtask all-target/all-feature Clippy passes on both hosts;
+  - the coverage job also exposed that the hermetic semver orchestration test
+    required macOS's stale-snapshot endpoint even on Linux, where production
+    correctly fails earlier because Metal-inclusive API review is macOS-only.
+    The assertion now requires the exact host-appropriate fail-closed boundary,
+    matching the stable-API assertion beside it. The focused test passes on
+    both macOS and the private Linux verifier; production semver behavior is
+    unchanged.
+  Coverage never reached measurement or produced coverage artifacts because
+  those two tests failed first, so this checkpoint does not justify another
+  broad coverage or test-generation tranche. CI and GPU runs were cancelled as
+  soon as tracked corrections became necessary; their partial results are not
+  candidate evidence. The concurrent GPU-path-policy failure was the expected
+  fail-closed result before exact GPU completion. `bca8ad58` is invalidated;
+  the commit containing this checkpoint must restart the complete exact-SHA
+  matrix.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -626,17 +659,13 @@ the issue sections below; this capsule is only the current continuation state.
   behavior/policy tests pass. The typo gate passes after correcting one
   identifier and narrowly excluding generated `fnv1a64:` fingerprints. The
   combined panic and typo gates rerun on settled source.
-- Next serialized gates after the coverage-tool commit:
-  1. preserve the already frozen API, provenance, dependency, changelog, and
-     release documentation evidence while reconciling it to the new commit;
-  2. resolve or explicitly re-scope the genuine Metal 80% coverage blocker
-     without threshold changes or execution-only tests, then rerun clone,
-     packaging, uncontended performance, stable/hidden API, semver, dependency,
-     corpus, and publish-mode integrity gates on the settled committed source;
-  3. enable and verify private vulnerability reporting, then commit a clean
-     candidate SHA;
-  4. with explicit push authorization, move `origin/main` to that exact SHA and
-     run exact-SHA hosted CI plus Metal and CUDA hardware validation.
+- Next serialized gates after the fifth hosted correction commit:
+  1. repeat the exact clean local freeze gates without another broad coverage
+     or test-generation tranche;
+  2. push the replacement SHA to the existing RC branch and run exact-SHA
+     hosted CI plus Metal and CUDA hardware validation;
+  3. enable and verify private vulnerability reporting before accepting the
+     release-status verdict or moving `origin/main` through review.
 - External release blocker: GitHub private vulnerability reporting is disabled
   (CONTACT-001). The dated candidate SHA and its exact local/hosted/hardware
   evidence do not yet exist. A tag is deliberately outside this verified-RC
@@ -860,8 +889,8 @@ The rubric was checked against current primary or first-party sources on
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
 | PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
-| FINAL-001 | P1 | in progress | all above | Hosted defects through `a3307c18` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
-| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`, and `a3307c18` are invalidated. The commit containing the fourth hosted correction checkpoint must repeat the clean exact local gates before push and external verification. |
+| FINAL-001 | P1 | in progress | all above | Hosted defects through `bca8ad58` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
+| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`, `a3307c18`, and `bca8ad58` are invalidated. The commit containing the fifth hosted correction checkpoint must repeat the clean exact local gates before push and external verification. |
 | TAG-001 | P3 | deferred outside verified-RC endpoint | RC-001 | Annotated tag and guarded publication require separate authorization |
 
 ## 6. Phase 0 — reconcile the worktree

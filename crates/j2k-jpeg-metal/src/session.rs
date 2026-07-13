@@ -507,15 +507,8 @@ impl SessionState {
 }
 
 const fn uses_inspected_metal_plan(backend: BackendRequest) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        matches!(backend, BackendRequest::Auto | BackendRequest::Metal)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = backend;
-        false
-    }
+    matches!(backend, BackendRequest::Metal)
+        || (cfg!(target_os = "macos") && matches!(backend, BackendRequest::Auto))
 }
 
 #[derive(Clone, Default)]
