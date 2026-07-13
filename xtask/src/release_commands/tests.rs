@@ -11,6 +11,8 @@ use super::{
 };
 
 #[cfg(unix)]
+mod file_boundaries;
+#[cfg(unix)]
 mod integrity;
 #[cfg(unix)]
 mod orchestration;

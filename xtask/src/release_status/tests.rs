@@ -8,6 +8,9 @@ use super::{parse_options, repository_from_remote, resolve_repository, select_to
 use super::release_status;
 
 #[cfg(unix)]
+mod boundary_errors;
+
+#[cfg(unix)]
 const WORKSPACE_CHILD_ENV: &str = "XTASK_TEST_RELEASE_STATUS_WORKSPACE_CHILD";
 
 #[test]

@@ -158,3 +158,19 @@ fn release_integrity_rejects_non_json_cargo_metadata() {
 
     assert!(error.contains("failed to parse cargo metadata"));
 }
+
+#[test]
+fn release_integrity_rejects_publishable_packages_without_versions() {
+    let mut metadata = complete_publishable_metadata();
+    metadata["packages"][0]
+        .as_object_mut()
+        .expect("package record")
+        .remove("version");
+    let recording = metadata_program("release-integrity-missing-version", &metadata);
+    let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+
+    let error = release_integrity(std::iter::empty())
+        .expect_err("publishable package without a version must reject");
+
+    assert!(error.contains("cargo metadata package `j2k-core` has no string version"));
+}
