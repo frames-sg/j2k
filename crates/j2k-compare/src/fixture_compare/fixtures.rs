@@ -458,3 +458,6 @@ pub(super) fn encode_lossless(
         .map_err(|error| error.to_string())?
         .codestream)
 }
+
+#[cfg(test)]
+mod tests;
