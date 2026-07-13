@@ -62,7 +62,7 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `61693664`. No push, release tag, crate
+  before this ledger refresh is `ee519412`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -105,14 +105,17 @@ the issue sections below; this capsule is only the current continuation state.
   records dominated the apparent fixture-builder gap. Compiler regions now own
   covered/zero line evidence, while lines absent from the compiler's code-region
   model are explicitly recorded as noninstrumentable (`5887efd7`, `61693664`).
-  The clean exact-SHA
-  host run completed the full host matrix and 411-test repository policy suite,
-  generated schema-v4 LCOV and LLVM region artifacts, and passed the numeric
-  gate at 87.1294% (65,117 / 74,736). COV-001 remains open on 239
+  Coverage-lane orchestration now executes complete hermetic Host, Metal, and
+  CUDA plans through one thread-local RAII Cargo test seam; the initial global
+  seam's cross-test leak was reproduced and corrected before commit
+  (`ee519412`). The clean exact-SHA host run completed the full host matrix and
+  411-test repository policy suite, generated schema-v4 LCOV and LLVM region
+  artifacts, and passed the numeric gate at 87.2133% (65,178 / 74,734).
+  COV-001 remains open on 230
   uncovered functions, 426 uncovered multiline executable bodies, 467
   compiler-instrumented same-line deferred bodies with zero counts, 172
   compiler-noninstrumentable deferred bodies recorded without false failure,
-  8,936 compiler-noninstrumentable source lines, and 582 uncovered opaque
+  8,936 compiler-noninstrumentable source lines, and 578 uncovered opaque
   macros. The earlier first attempt at `00983dd9` was
   correctly discarded after stale ignored coverage JSON caused two
   repository-text policies to fail; generated artifacts remain ignored and are
@@ -433,7 +436,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `61693664` passes the numeric gate at 87.1294% (65,117 / 74,736); close 239 function, 426 body, 467 zero-count deferred-region, and 582 opaque-macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `ee519412` passes the numeric gate at 87.2133% (65,178 / 74,734); close 230 function, 426 body, 467 zero-count deferred-region, and 578 opaque-macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -1142,6 +1145,39 @@ parsing/compiler parsing plus compare paths (10 each). Opaque misses are led by
 release commands (30), semver review (15), Metal/CUDA (14 each), and compare
 comparators (13). Select the next cohesive behavior tranche from these exact
 owners and commit it before another full coverage run.
+
+The coverage-lane orchestration checkpoint at
+`ee519412b5714efffb4a456c76ad91e8cd383f21` replaces the duplicated
+command-support Cargo test override with one process-boundary seam and executes
+the complete Host, Metal, and CUDA lane plans hermetically. The first global
+override implementation reproduced a parallel-test leak: the semver metadata
+test consumed the fake Cargo output while 244 other xtask tests passed. The
+final RAII override is thread-local, supports nested restoration, is statically
+thread-bound, and has a direct isolation regression. The lane test, existing
+quality/release/benchmark/command-support tests, all 246 xtask unit tests,
+coverage ownership policy, strict xtask Clippy, formatting, and diff checks
+passed before commit.
+
+The single clean exact run at `ee519412` completed the full host correctness
+and parity matrix and all 411 repository policies with one established ignore.
+Numeric coverage improved to 65,178 of 74,734 measurable lines (87.2133%). The
+lane tranche closed all nine prior `coverage/lane.rs` function-body misses and
+reduced opaque misses by four. Strict evidence gates remain: 230 functions, 426
+multiline executable bodies, 467 zero-count deferred compiler regions, 172
+compiler-noninstrumentable deferred bodies, 578 opaque macros, four absent
+instrumentable files, and no mixed production/test lines. The report records
+9,556 uncovered lines, 31,872 residual unmeasured lines, and 8,936
+compiler-noninstrumentable source lines.
+
+The next function owners are JPEG benchmark support (8), Metal orchestration
+(7), release status (5), then several four-function owners. The largest line,
+deferred-body, and opaque owners are otherwise materially unchanged: Metal
+(150 lines), release commands (108 lines/30 opaque macros), compare
+comparators (104 lines/13 opaque macros), native tile-part handling (103
+lines), compare decode (14 deferred bodies), and semver review/native
+multitile input (12 deferred bodies each). Choose the next tranche from this
+exact evidence; do not rerun the full workspace until that focused change is
+compiled, tested, and committed.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
