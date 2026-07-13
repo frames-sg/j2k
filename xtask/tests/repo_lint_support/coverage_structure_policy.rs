@@ -459,9 +459,9 @@ fn coverage_tooling_stays_split_by_responsibility() {
                 "changed_opaque_macros",
                 "source_dispositions",
                 "pub(super) fn coverage_violations(",
-                "classify_path(path).is_some()",
+                "audited_zero_body_findings(lane, result)",
                 "changed critical-path lines",
-                "critical instrumentable files are absent",
+                "critical executable bodies are absent",
                 "fn meets_threshold(",
             ])
             .forbidden(&[
@@ -726,7 +726,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
         )
         .required(&[
             "fn changed_uncalled_closure_requires_coverage_in_its_own_body()",
-            "fn changed_opaque_macro_definition_and_invocation_are_audited_fail_closed()",
+            "fn changed_opaque_macro_definition_and_invocation_are_audited_without_blanket_failure()",
             "fn cfg_test_macro_remains_test_only()",
         ]),
         PatternCheck::new("coverage deferred-body regressions", &deferred_body_tests).required(&[

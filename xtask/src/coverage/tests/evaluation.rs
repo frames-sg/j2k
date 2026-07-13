@@ -88,7 +88,7 @@ fn changed_function_without_covered_body_is_a_critical_audit_finding() {
     assert_eq!(result.absent_instrumentable_files, vec![path.to_string()]);
     assert!(coverage_violations(CoverageLane::Host, &result)
         .iter()
-        .any(|violation| violation.contains("absent from the host LCOV artifact")));
+        .any(|violation| violation.contains("critical executable bodies are absent")));
     assert_eq!(
         audited_zero_body_findings(CoverageLane::Host, &result)[0].audit,
         ZeroBodyAudit::Critical(CriticalPathClass::PublicApi)

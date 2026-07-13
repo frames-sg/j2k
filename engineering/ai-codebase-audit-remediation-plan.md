@@ -501,7 +501,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | complete | REC-001 | Independent review approved all 33 ordinary/hidden schema-2 entries after adding the missing j2k-profile migration mappings; stable API and full semver verification pass with exact fingerprints |
-| COV-001 | P2 | in progress | METAL-001 | Schema-v5 source policy at `fa6ac2b3` preserves the 80% overall and accelerator gates, adds an 80% critical-path gate plus absent-critical-file failure, and audits zero-body findings as critical evidence or justified residuals; exact candidate host/Metal/CUDA artifacts remain |
+| COV-001 | P2 | in progress | METAL-001 | Schema-v5 preserves the 80% overall, accelerator, and critical-path gates; exact host evidence is 88.59% overall and 87.70% critical, while the final policy correction limits absent-file failure to missing critical executable bodies and retains noninstrumentable type/macro shells as audited evidence; a clean exact host rerun plus Metal/CUDA artifacts remain |
 | TESTARCH-001 | P3 | accepted post-0.7 | COV-001 | Consolidate reusable CPU/Auto/Metal/CUDA behavioral contracts after 0.7; exact per-backend parity and hardware lanes remain mandatory for this RC |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
@@ -1593,7 +1593,9 @@ hardware-only, trivial, low-risk tooling, and structurally unreachable package-
 graph findings incorrectly, and that a high overall percentage could mask a
 critical-path deficit. Schema v5 now records an independent critical-path
 numerator/denominator and a reasoned audit row for every zero-body finding.
-Critical files absent from LCOV remain hard failures. Five focused policy
+Critical executable bodies absent from LCOV remain hard failures. Files that
+contain only noninstrumentable type, module, re-export, constant, or opaque-
+macro definitions remain explicit evidence rather than blanket failures. Five focused policy
 tests, all 103 coverage tests, all 281 xtask unit tests, all 414 active
 repository policies with one established ignore, formatting, diff checks, and
 strict all-target xtask Clippy pass. COV-001 is source-complete and waits only
@@ -1616,6 +1618,28 @@ Focused re-verification after recording this direction passed all five critical-
 path policy tests, all 103 coverage-tool tests, the coverage responsibility
 policy, warning-denied all-target xtask Clippy, formatting, and diff checks.
 No full workspace or exact coverage run was started.
+
+The first frozen host run at
+`6cf9ef81a34039bb208b0307cc45815492e9eccd` completed the full host test and
+repository-policy matrix and measured 66,421 of 74,976 changed executable
+lines (88.59%) plus 55,021 of 62,738 critical-path lines (87.70%). It exposed
+one policy contradiction rather than a behavioral coverage gap: four files
+were absent from LCOV because they contain only module/re-export declarations,
+public data shapes, static tables, constants, or opaque macros, yet the
+absent-file check failed every critical path indiscriminately. The four files
+were `j2k-codec-math`'s facade, `j2k-core`'s facade, the native direct-plan data
+shapes, and the native MQ table. Their executable consumers are covered; none
+contains a missing changed executable body.
+
+Red-green policy tests now prove both sides of the intended boundary: an
+absent changed function or closure remains a hard critical-behavior failure,
+while a module-scope opaque macro or definition-only shell stays in the
+schema-v5 zero-body audit without independently failing the host lane. The 57
+focused coverage tests and the coverage ownership policy pass. This correction
+does not lower any threshold, exclude measurable lines, add line-execution
+tests, or begin another coverage tranche. Because it changes tracked policy,
+the candidate SHA must be advanced and the exact host evidence rerun once from
+the clean committed tree.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
