@@ -175,7 +175,10 @@ pub mod ycbcr {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+
     use super::*;
+    use alloc::string::ToString;
 
     #[test]
     fn zigzag_is_a_permutation_of_one_block() {
@@ -220,6 +223,23 @@ mod tests {
         assert_eq!(
             derive_canonical_huffman(&bits, 2),
             Err(CanonicalHuffmanError::BitsValuesLenMismatch)
+        );
+    }
+
+    #[test]
+    fn canonical_huffman_error_display_is_stable() {
+        let errors = [
+            CanonicalHuffmanError::BitsExceedTableCapacity,
+            CanonicalHuffmanError::BitsValuesLenMismatch,
+            CanonicalHuffmanError::CodeOverflow,
+        ];
+        assert_eq!(
+            errors.map(|error| error.to_string()),
+            [
+                "BITS exceed table capacity",
+                "BITS do not match HUFFVAL length",
+                "canonical code overflow",
+            ]
         );
     }
 
