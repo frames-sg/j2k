@@ -1740,3 +1740,6 @@ unsafe fn colsum_eight(near: &[u8], curr: &[u8], sample_offset: usize) -> uint16
     let curr16 = vmovl_u8(unsafe { vld1_u8(curr.as_ptr().add(sample_offset)) });
     vaddq_u16(vaddq_u16(curr16, curr16), vaddq_u16(curr16, near16))
 }
+
+#[cfg(test)]
+mod top_only_tests;

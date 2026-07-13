@@ -88,6 +88,9 @@ fn jpeg_simd_backends_share_safe_row_normalization() {
         .expect("read JPEG x86 backend");
     let neon = fs::read_to_string(root.join("crates/j2k-jpeg/src/backend/neon.rs"))
         .expect("read JPEG NEON backend");
+    let neon_top_only =
+        fs::read_to_string(root.join("crates/j2k-jpeg/src/backend/neon/top_only_tests.rs"))
+            .expect("read JPEG NEON top-only tests");
 
     assert_pattern_checks(&[
         PatternCheck::new("JPEG SIMD normalization module", &backend).required(&["mod row_pair;"]),
@@ -104,13 +107,24 @@ fn jpeg_simd_backends_share_safe_row_normalization() {
             "fill_rgb_row_pair_from_420_avx2(request, &mut scratch)",
         ]),
         PatternCheck::new("NEON normalized row boundary", &neon).required(&[
+            "mod top_only_tests;",
             "normalize_ycbcr_row(y_row, cb_row, cr_row, dst)",
             "let Some(request) = normalize_simd_row_pair(request) else",
             "fill_rgb_row_pair_from_420_neon(request)",
+        ]),
+        PatternCheck::new("NEON top-only row parity", &neon_top_only).required(&[
+            "fn cropped_top_only_neon_matches_scalar_across_alignment_and_partial_chunks()",
+            "fn top_only_neon_tail_matches_scalar_for_partial_and_full_chunks()",
+            "scalar::fill_rgb_row_pair_from_420_cropped(",
+            "scalar::fill_rgb_row_pair_from_420(",
         ]),
     ]);
     assert!(
         row_pair.lines().count() < 130,
         "JPEG SIMD row normalization must remain focused"
+    );
+    assert!(
+        neon_top_only.lines().count() < 125,
+        "JPEG NEON top-only parity tests must stay below their focused 125-line ratchet"
     );
 }
