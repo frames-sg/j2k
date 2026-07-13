@@ -62,18 +62,17 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `24252a28`. No push, release tag, crate
+  before this ledger refresh is `fa6ac2b3`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
   or publication.
-- Current objective: preserve the 80% changed-line gate, replace the blanket
-  host zero-body failure with a fail-closed audited residual/critical-path
-  policy, then proceed directly to API, provenance, documentation, and exact-
-  SHA candidate verification. No further broad coverage tranches are
-  authorized. Preserve idiomatic Rust ownership, typed errors, fallible
-  allocation, transactional mutation, and actual allocator-capacity
-  accounting.
+- Current objective: freeze API, provenance, and release documentation, resolve
+  every locally actionable gate, then prepare and verify one exact candidate
+  SHA. The 80% overall, accelerator, and critical-path coverage policy is
+  source-complete; no further broad coverage tranches are authorized. Preserve
+  idiomatic Rust ownership, typed errors, fallible allocation, transactional
+  mutation, and actual allocator-capacity accounting.
 - Immediate continuation point (2026-07-12): direct CPU coefficient owners are
   fallibly budgeted (`59055081`); the Metal resident pool ceiling is derived
   from its real default working set (`c901602c`); and resident encoding now
@@ -328,8 +327,7 @@ the issue sections below; this capsule is only the current continuation state.
   identifier and narrowly excluding generated `fnv1a64:` fingerprints. The
   combined panic and typo gates rerun on settled source.
 - Next serialized gates after the source and tooling phase commits:
-  1. finish compiler-grounded one-line closure evidence and add behavior tests
-     until every source-body proof and the real 80% host gate pass;
+  1. freeze API, provenance, dependency, and release documentation evidence;
   2. rerun clone, packaging, paired Metal performance, stable/hidden API,
      semver, dependency, corpus, and publish-mode integrity gates on the settled
      committed source;
@@ -456,7 +454,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `83258e11` passes the numeric gate at 88.4592% (66,125 / 74,752); close 135 function, 415 body, 424 zero-count deferred-region, and 485 opaque-macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Schema-v5 source policy at `fa6ac2b3` preserves the 80% overall and accelerator gates, adds an 80% critical-path gate plus absent-critical-file failure, and audits zero-body findings as critical evidence or justified residuals; exact candidate host/Metal/CUDA artifacts remain |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -917,6 +915,19 @@ conservatively in both polarities. It pins cargo-llvm-cov 0.8.7 and report
 schema v2. COV-001 remains in progress until the split modules, policy
 regressions, and frozen-candidate host/Metal/CUDA artifacts pass. No current
 percentage is candidate evidence.
+
+The 2026-07-12 schema-v5 policy supersedes only the blanket zero-body failure.
+The overall changed-line and accelerator-host thresholds remain 80%; a separate
+80% aggregate now covers codec correctness, ownership/resource lifecycle,
+public API, parser, safety, security, stable-API, semver, coverage, and release-
+integrity paths. A critical instrumentable file missing from its lane artifact
+still fails closed. Function, executable-body, deferred-region, and opaque-
+macro zero findings remain enumerated in `zero_body_audit`; each row records
+either its critical class or an explicit unreachable, hardware-only, trivial,
+or low-risk-tooling disposition and reason. The relevant five classifier
+tests, all 103 coverage tests, all 414 active repository policies with one
+established ignore, formatting, and warning-denied xtask Clippy pass at
+`fa6ac2b3`. The policy does not add a coverage exclusion or raise a threshold.
 
 The 2026-07-12 nonterminal external-test-module failure was a stale hard-coded
 line in the real-source regression after `backend/mod.rs` gained a production
@@ -1516,6 +1527,19 @@ gate but replaces blanket zero-body failure with fail-closed critical-path
 requirements plus explicit unreachable, hardware-only, trivial, and low-risk
 tooling residual dispositions. No further broad coverage tranche is permitted;
 the next full run is exact-SHA candidate verification.
+
+The replacement policy is committed at
+`fa6ac2b364532b92d116e3df443e7ac734c5a3bd`. Red tests first proved that the
+old classifier treated parser, ownership, public-API, security, safety,
+hardware-only, trivial, low-risk tooling, and structurally unreachable package-
+graph findings incorrectly, and that a high overall percentage could mask a
+critical-path deficit. Schema v5 now records an independent critical-path
+numerator/denominator and a reasoned audit row for every zero-body finding.
+Critical files absent from LCOV remain hard failures. Five focused policy
+tests, all 103 coverage tests, all 281 xtask unit tests, all 414 active
+repository policies with one established ignore, formatting, diff checks, and
+strict all-target xtask Clippy pass. COV-001 is source-complete and waits only
+for frozen exact-SHA host, Metal, and CUDA evidence.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
