@@ -193,15 +193,13 @@ fn idwt_required_region_propagation_uses_shared_native_helper() {
             "pub struct J2kRequiredBandRegion",
             "mod region_tests;",
         ]),
-        PatternCheck::new("j2k-native direct ROI region contracts", &direct_roi_tests).required(
-            &[
-                "fn expanded_within_rect_clamps_each_edge_in_absolute_coordinates()",
-                "fn expanded_within_rect_saturates_overflow_before_clamping()",
-                "fn union_returns_the_commutative_bounding_envelope()",
-                "fn to_rect_preserves_non_empty_empty_and_maximum_coordinates()",
-                "fn from_required_region_matches_the_explicit_rect_conversion()",
-            ],
-        ),
+        PatternCheck::new("j2k-native direct ROI region contracts", &direct_roi_tests).required(&[
+            "fn expanded_within_rect_clamps_each_edge_in_absolute_coordinates()",
+            "fn expanded_within_rect_saturates_overflow_before_clamping()",
+            "fn union_returns_the_commutative_bounding_envelope()",
+            "fn to_rect_preserves_non_empty_empty_and_maximum_coordinates()",
+            "fn from_required_region_matches_the_explicit_rect_conversion()",
+        ]),
     ]);
     assert!(
         direct_roi_tests.lines().count() < 100,
