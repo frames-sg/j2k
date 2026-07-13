@@ -49,6 +49,35 @@ fn jpeg_benchmark_simd_helpers_keep_safe_target_feature_boundaries() {
 }
 
 #[test]
+fn jpeg_benchmark_support_has_direct_behavior_contracts() {
+    let root = repo_root();
+    let bench_support = fs::read_to_string(root.join("crates/j2k-jpeg/src/bench_support.rs"))
+        .expect("read JPEG bench support");
+    let contracts =
+        fs::read_to_string(root.join("crates/j2k-jpeg/src/bench_support/contract_tests.rs"))
+            .expect("read JPEG bench support contracts");
+
+    assert_pattern_checks(&[
+        PatternCheck::new("JPEG bench support test ownership", &bench_support)
+            .required(&["mod contract_tests;"]),
+        PatternCheck::new("JPEG bench support behavior contracts", &contracts).required(&[
+            "fn profile_and_dispatch_accessors_preserve_exact_accounting()",
+            "fn deterministic_scratch_helpers_match_their_reference_paths()",
+            "stats.scalar_chunks()",
+            "stats.neon_tail_chunks()",
+            "profile.finish_ns()",
+            "BenchRgb420RowPairScratch::new(17)",
+            "BenchUpsampleH2V2Scratch::new(9)",
+            "BenchColorRowScratch::new(17)",
+        ]),
+    ]);
+    assert!(
+        contracts.lines().count() < 100,
+        "JPEG bench support contracts must stay below their focused 100-line ratchet"
+    );
+}
+
+#[test]
 fn jpeg_simd_backends_share_safe_row_normalization() {
     let root = repo_root();
     let backend = fs::read_to_string(root.join("crates/j2k-jpeg/src/backend/mod.rs"))

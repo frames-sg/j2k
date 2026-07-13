@@ -407,6 +407,9 @@ mod avx2_dispatch_tests {
     }
 }
 
+#[cfg(test)]
+mod contract_tests;
+
 /// Pre-allocated scratch for the 4:2:0 RGB row-pair microbench. Stores two
 /// luma rows, three chroma rows per plane, and two packed RGB output rows.
 #[doc(hidden)]
