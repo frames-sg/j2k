@@ -603,31 +603,66 @@ fn release_status_command_boundary_has_a_hermetic_regression() {
 fn cuda_xtask_owns_complete_compile_and_runtime_policy() {
     assert_file_pattern_checks(
         repo_root(),
-        &[FilePatternCheck::new("xtask/src/cuda.rs")
-            .named("CUDA xtask policy")
-            .required(&[
-                "CUDA_RELEASE_ENV",
-                "J2K_REQUIRE_CUDA_RUNTIME",
-                "J2K_REQUIRE_CUDA_OXIDE_BUILD",
-                "J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE",
-                "RUST_TEST_THREADS",
-                "nvidia-smi",
-                "release-cuda requires Linux x86_64",
-                "j2k-cuda-runtime",
-                "j2k-jpeg-cuda",
-                "j2k-cuda",
-                "j2k-transcode-cuda",
-                "HTJ2K_ENCODE_PARITY_TESTS",
-                "TRANSCODE_PARITY_TESTS",
-                "validate_exact_inventory",
-                "validate_exact_named_run",
-                "J2K_GPU_TEST_SKIPPED",
-                "skipping cuda",
-                "passed zero tests",
-                "was partial",
-            ])
-            .forbidden(&["minimum_passed", "executed-count floor"])],
+        &[
+            FilePatternCheck::new("xtask/src/cuda.rs")
+                .named("CUDA xtask policy")
+                .required(&[
+                    "CUDA_RELEASE_ENV",
+                    "J2K_REQUIRE_CUDA_RUNTIME",
+                    "J2K_REQUIRE_CUDA_OXIDE_BUILD",
+                    "J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE",
+                    "RUST_TEST_THREADS",
+                    "nvidia-smi",
+                    "release-cuda requires Linux x86_64",
+                    "j2k-cuda-runtime",
+                    "j2k-jpeg-cuda",
+                    "j2k-cuda",
+                    "j2k-transcode-cuda",
+                    "HTJ2K_ENCODE_PARITY_TESTS",
+                    "TRANSCODE_PARITY_TESTS",
+                    "fn run_release_cuda(",
+                    "validate_exact_inventory",
+                    "validate_exact_named_run",
+                    "J2K_GPU_TEST_SKIPPED",
+                    "skipping cuda",
+                    "passed zero tests",
+                    "was partial",
+                    "mod test_support;",
+                    "mod tests;",
+                ])
+                .forbidden(&["minimum_passed", "executed-count floor"]),
+            FilePatternCheck::new("xtask/src/cuda/tests.rs")
+                .named("CUDA xtask command regressions")
+                .required(&[
+                    "fn cuda_release_executes_the_complete_hermetic_command_plan()",
+                    "fn cuda_device_override_is_nested_transactional_and_fail_closed()",
+                    "fn exact_inventory_and_captured_cargo_report_subprocess_failures()",
+                    "use_test_cargo_program",
+                    "RecordingProgram",
+                ]),
+            FilePatternCheck::new("xtask/src/cuda/test_support.rs")
+                .named("CUDA xtask test process boundary")
+                .required(&[
+                    "thread_local!",
+                    "PhantomData<Rc<()>>",
+                    "impl Drop for TestNvidiaSmiProgramGuard",
+                ])
+                .forbidden(&["Mutex"]),
+        ],
     );
+
+    for (relative, max_lines) in [
+        ("xtask/src/cuda.rs", 525),
+        ("xtask/src/cuda/tests.rs", 325),
+        ("xtask/src/cuda/test_support.rs", 75),
+    ] {
+        let source = fs::read_to_string(repo_root().join(relative))
+            .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+        assert!(
+            source.lines().count() < max_lines,
+            "{relative} must stay below its focused {max_lines}-line ownership ratchet"
+        );
+    }
 }
 
 #[test]
