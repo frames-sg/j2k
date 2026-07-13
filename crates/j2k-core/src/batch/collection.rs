@@ -268,3 +268,6 @@ fn batch_host_allocation_error(
         bytes: error.requested_bytes(),
     }
 }
+
+#[cfg(test)]
+mod tests;
