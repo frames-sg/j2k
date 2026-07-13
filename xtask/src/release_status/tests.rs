@@ -2,7 +2,10 @@
 
 use std::ffi::OsStr;
 
-use super::{parse_options, repository_from_remote, resolve_repository, select_token_env};
+use super::{
+    parse_options, repository_from_remote, resolve_repository, select_token_env,
+    validate_repository,
+};
 
 #[cfg(unix)]
 use super::release_status;
@@ -101,10 +104,21 @@ fn common_remote_url_forms_are_supported_fail_closed() {
     for remote in [
         "",
         "https://github.com/only-owner",
+        "host:owner/repo",
         "owner/repo/extra",
         "owner/repo?ref=x",
     ] {
         assert!(repository_from_remote(remote).is_err(), "accepted {remote}");
+    }
+}
+
+#[test]
+fn repository_components_reject_reserved_and_git_suffixed_names() {
+    for repository in ["./repo", "../repo", "owner/.", "owner/..", "owner/repo.git"] {
+        assert!(
+            validate_repository(repository).is_err(),
+            "accepted reserved repository component {repository:?}"
+        );
     }
 }
 
