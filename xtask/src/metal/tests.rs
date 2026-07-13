@@ -42,7 +42,7 @@ printf '%s\n' 'test ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_an
 printf '%s\n' 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k-metal "*)
-printf '%s\n' 'test encode::tests::stage_validation::metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips ... ok'
+printf '%s\n' 'test encode::tests::metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips ... ok'
 printf '%s\n' 'test result: ok. 150 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k "*)

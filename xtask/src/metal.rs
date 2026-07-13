@@ -39,8 +39,8 @@ const J2K_METAL_REQUIRED_IGNORED_TESTS: &[&str] = &[
     "direct::tests::classic_direct_plan_store_plane_matches_native_decode",
     "direct::tests::classic_direct_plan_sub_band_decode_produces_nonzero_coefficients",
     "direct::tests::ht_direct_plan_sub_band_decode_produces_nonzero_coefficients",
-    "encode::tests::routing::auto_htj2k_padded_private_gray8_single_host_output_stays_cpu",
-    "encode::tests::routing::auto_htj2k_padded_private_rgb8_single_host_output_stays_cpu",
+    "encode::tests::auto_htj2k_padded_private_gray8_single_host_output_stays_cpu",
+    "encode::tests::auto_htj2k_padded_private_rgb8_single_host_output_stays_cpu",
 ];
 
 struct MetalTestSuite {
@@ -68,7 +68,7 @@ const METAL_TEST_SUITES: &[MetalTestSuite] = &[
         package: "j2k-metal",
         minimum_passed: 150,
         required_test:
-            "encode::tests::stage_validation::metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips",
+            "encode::tests::metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips",
     },
     MetalTestSuite {
         label: "transcode Metal runtime",

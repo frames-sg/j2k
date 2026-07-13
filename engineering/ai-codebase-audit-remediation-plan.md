@@ -538,7 +538,7 @@ The rubric was checked against current primary or first-party sources on
 | REL-001 | P1 | complete | REC-001 | Local stale tag is absent and the final `0.7.0` changelog is dated 2026-07-12 without provisional Unreleased/staged markers |
 | BUILD-001 | P1 | complete | — | Host and CUDA-Oxide strict Clippy failures are fixed without allows, including removal of a stale platform-dependent lint expectation |
 | TEST-001 | P1 | complete | — | All 38 new ignores have exact dispositions |
-| METAL-001 | P1 | complete | TEST-001 | Fail-closed runtime inventory follows the final test-module paths, and release-mode scheduler counters clear ownership outside debug assertions; the full real-Metal release lane passes, with a clean exact-SHA rerun belonging to FINAL-001 |
+| METAL-001 | P1 | complete | TEST-001 | Hosted compile and fail-closed runtime lanes; exact-SHA rerun belongs to FINAL-001 |
 | POLICY-001 | P1 | complete | BUILD-001 | Public API scan and strict lane repaired |
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
@@ -641,7 +641,7 @@ The rubric was checked against current primary or first-party sources on
 | PKG-001 | P1 | in progress | SEC-001 | Staged unpublished dependency closure is repaired and the clean package gate passed at `4c947c2b`; rerun after `3fd23cf2` and every later source commit |
 | CLONE-001 | P2 | in progress | STR-008 through STR-015 | Repository-owned source-aware scanner passed at 1.97% duplicated production lines before `3fd23cf2`; rerun after the latest committed Rust files and at candidate freeze |
 | AUDIT-001 | P2 | complete | STR-010, COV-001 | Clone and panic quality gates use shared production-source classification, explicit reviewed ratchets, fixtures, and fail-closed repository policy |
-| PERF-001 | P1 | in progress | STR-004 through STR-015 | Alternating `0e78229a`/candidate Metal process medians pass on the source committed as `3fd23cf2`; the first exact CPU quick guard was invalidated by heavy concurrent host load and reported broad unrelated slowdowns, so an uncontended rerun against the immutable baseline remains without threshold or baseline changes |
+| PERF-001 | P1 | in progress | STR-004 through STR-015 | Alternating `0e78229a`/candidate process medians pass on the source committed as `3fd23cf2`: direct -3.1%, resident buffer -6.7%, resident host -15.9%; exact committed-candidate repetition remains |
 | PUB-002 | P1 | complete | PKG-001, CUDA-002 | Fail-closed canonical origin, exact remote annotated tag, Release, and crates.io preflight |
 | DOC-002 | P2 | complete | SEC-001 | Public/support/unsafe/API documentation is reconciled; warning-denied docs, downstream examples, and ordinary/final support gates pass, and this remains the sole execution ledger |
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
@@ -1683,22 +1683,6 @@ does not lower any threshold, exclude measurable lines, add line-execution
 tests, or begin another coverage tranche. Because it changes tracked policy,
 the candidate SHA must be advanced and the exact host evidence rerun once from
 the clean committed tree.
-
-The first real-Metal candidate pass then exposed two release-only integration
-defects. The fail-closed inventory still named three tests at their pre-split
-module paths, so it correctly rejected the moved `routing` and
-`stage_validation` tests even though the tests themselves remained present.
-After those exact names were reconciled, four scheduler-ownership assertions
-failed only in optimized test builds: the test counter reset lived inside
-`debug_assert_eq!`, so release compilation removed the state transition. The
-counter now performs `Cell::replace(0)` unconditionally and uses the debug
-assertion only to validate the previous value. This changes no production
-code, but keeps release-mode lifecycle evidence truthful. The four originally
-failing optimized tests pass individually, the ignored inventory lists all 18
-required tests exactly, and the complete fail-closed real-Metal release command
-passes across support, JPEG, J2K, transcode, facade, and ignored hardware
-tests. These tracked corrections advance the candidate and require fresh
-exact-SHA host and Metal coverage artifacts.
 
 The first fresh NVIDIA build compiled all ten CUDA-Oxide kernel families, then
 strict Linux Clippy rejected a stale `cast_precision_loss` expectation in the
