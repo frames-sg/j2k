@@ -62,7 +62,7 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `b88dfad0`. No push, release tag, crate
+  before this ledger refresh is `1bf896f6`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -110,16 +110,17 @@ the issue sections below; this capsule is only the current continuation state.
   seam's cross-test leak was reproduced and corrected before commit
   (`ee519412`). Focused Metal, release-status, release-command, JPEG benchmark,
   native ROI, compare-command, transcode-metrics, native-SIMD, coverage-model,
-  and decode-trait tranches are committed through `b88dfad0`.
+  decode-trait, cache-statistics, codec-math, compare-row, native-reuse, JPEG
+  NEON, and CUDA-command tranches are committed through `1bf896f6`.
   The compare tranche corrected a real staging leak by attempting output
   cleanup even when input cleanup fails. The exact-SHA host run completed the
   full host matrix and 413-test repository policy suite, generated schema-v4
-  LCOV and LLVM region artifacts, and passed the numeric gate at 87.8427%
-  (65,658 / 74,745). COV-001 remains open on 179
-  uncovered functions, 422 uncovered multiline executable bodies, 458
+  LCOV and LLVM region artifacts, and passed the numeric gate at 88.0825%
+  (65,839 / 74,747). COV-001 remains open on 162
+  uncovered functions, 422 uncovered multiline executable bodies, 450
   compiler-instrumented same-line deferred bodies with zero counts, 172
   compiler-noninstrumentable deferred bodies recorded without false failure,
-  8,936 compiler-noninstrumentable source lines, and 533 uncovered opaque
+  8,936 compiler-noninstrumentable source lines, and 518 uncovered opaque
   macros. The earlier first attempt at `00983dd9` was
   correctly discarded after stale ignored coverage JSON caused two
   repository-text policies to fail; generated artifacts remain ignored and are
@@ -440,7 +441,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `b88dfad0` passes the numeric gate at 87.8427% (65,658 / 74,745); close 179 function, 422 body, 458 zero-count deferred-region, and 533 opaque-macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `1bf896f6` passes the numeric gate at 88.0825% (65,839 / 74,747); close 162 function, 422 body, 450 zero-count deferred-region, and 518 opaque-macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -1311,6 +1312,45 @@ reuse, and native tile metadata. Native tile-part handling (103), JPEG NEON
 subband, and JPEG fast-420 owners (68 each) remain the leading uncovered-line
 targets. Choose the next focused owner from this evidence before another exact
 matrix.
+
+The next exact-selected batch closed the final four-function command and SIMD
+leaders plus several small contract owners. `CacheStats` constructors now prove
+their defaulted and explicit counter fields (`79a39e28`). Canonical JPEG Huffman
+errors exercise every display variant without adding allocation to the no-std
+production path (`4030a310`). Compare mixed-skip rows now prove their 29-column
+corpus contract, while the successful OpenJPEG memory-seek callback reaches its
+true sentinel (`a4b229aa`). Native reused-channel release tests prove actual
+nested capacity, zero retained channel bytes, preservation of unrelated IDWT,
+ROI, and debug state, and typed capacity classification (`a7a07ace`). Apple
+NEON top-only cropped and tail paths match scalar output across alignment,
+partial-chunk, and remainder boundaries, with a focused policy ratchet
+(`491fadea`). CUDA release orchestration now mirrors the Metal split: the real
+platform wrapper delegates to a portable post-gate runner, and hermetic tests
+execute all 16 release commands, nested fail-closed device probes, exact
+inventory mismatch, and captured subprocess failure. The device override is
+thread-local, nested, RAII-restored, and non-`Send`; source, test, and process-
+boundary modules have explicit line ratchets (`1bf896f6`). No real CUDA device
+or private host was accessed in this host tranche.
+
+The exact host run at
+`1bf896f6f67be6a9de7f316f0b96dbc763393ecc` completed the full host correctness
+and parity matrix and all 413 repository policies with one established ignore.
+Numeric coverage rose by 181 covered lines against two additional measurable
+lines, to 65,839 of 74,747 (88.0825%). The tranche closed 17 function misses,
+eight zero-count deferred regions, 15 opaque macros, and 179 uncovered lines;
+the multiline-body count did not move. COV-001 remains open on 162 functions,
+422 multiline bodies, 450 zero-count deferred regions, 172 explicitly recorded
+compiler-noninstrumentable deferred bodies, 518 opaque macros, four absent
+instrumentable files, and no mixed production/test lines. The report records
+8,908 uncovered lines and 31,885 residual unmeasured lines. Native tile metadata
+is the only remaining four-function owner. The next three-function tier is
+transcode error mapping and grid errors, profile emission, native HT benchmark
+adapters, native precomputed/coefficient APIs, JPEG sink writers and routing
+profiles, and fast-packet error classification. The largest uncovered-line
+owners are native tile-part handling (103), semver orchestration (73), native
+Tier-1/subband and JPEG fast-420 (68 each), coverage orchestration (67), and
+facade resolved-component recode (66). Select isolated owners from this exact
+evidence before another full matrix.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
