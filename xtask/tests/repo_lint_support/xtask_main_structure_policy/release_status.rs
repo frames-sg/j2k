@@ -27,6 +27,7 @@ pub(super) fn assert_ownership_and_focus() {
         PatternCheck::new("release-status command regressions", &tests).required(&[
             "mod boundary_errors;",
             "options_reject_missing_values_duplicates_help_and_unknown_arguments",
+            "repository_components_reject_reserved_and_git_suffixed_names",
             "release_status_derives_remote_and_executes_exact_verifier_contract",
         ]),
         PatternCheck::new("release-status boundary regressions", &boundary_tests).required(&[

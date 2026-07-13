@@ -8,6 +8,7 @@ use super::{assert_pattern_checks, read_source_files, repo_root, PatternCheck};
 
 mod adapter_tests;
 mod owned_output;
+mod profile_contract;
 mod support_contracts;
 
 #[test]
@@ -17,6 +18,7 @@ mod support_contracts;
 )]
 fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
     let root = repo_root();
+    profile_contract::assert_policy(root);
     let decoder = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder.rs"))
         .expect("read JPEG decoder module");
     let view = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/view.rs"))
@@ -74,11 +76,7 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
     let routing_owned_output =
         fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/routing/owned_output.rs"))
             .expect("read JPEG decoder owned-output routing module");
-    let routing_profile =
-        fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/routing/profile.rs"))
-            .expect("read JPEG decoder routing profile module");
-    let routing_sources =
-        format!("{routing}\n{routing_dispatch}\n{routing_owned_output}\n{routing_profile}");
+    let routing_sources = format!("{routing}\n{routing_dispatch}\n{routing_owned_output}");
     let rows = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/rows.rs"))
         .expect("read JPEG decoder rows module");
     let tile = fs::read_to_string(root.join("crates/j2k-jpeg/src/decoder/tile.rs"))
@@ -126,7 +124,6 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
             routing_dispatch.as_str(),
             320,
         ),
-        ("decoder/routing/profile.rs", routing_profile.as_str(), 140),
         (
             "decoder/routing/owned_output.rs",
             routing_owned_output.as_str(),
@@ -249,8 +246,6 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
             "pub(super) fn decode_region_into_output_format_with_scratch(",
             "dispatch_full_output(",
             "dispatch_region_output(",
-            "struct DecodeProfileRecord",
-            "emit_jpeg_profile_fields(",
         ]),
         PatternCheck::new("decoder/rows.rs row ownership", &rows).required(&[
             "pub fn decode_rows<",
