@@ -10,6 +10,7 @@ mod codegen;
 mod lint_policy;
 mod release_commands;
 mod release_integrity;
+mod release_status;
 
 fn read(relative_path: &str) -> String {
     fs::read_to_string(repo_root().join(relative_path))
@@ -23,8 +24,6 @@ struct XtaskSources {
     panic_surface: String,
     quality: String,
     release: String,
-    release_status: String,
-    release_status_tests: String,
     semver: String,
     semver_review: String,
     semver_tests: String,
@@ -48,8 +47,6 @@ impl XtaskSources {
             panic_surface: read("xtask/src/panic_surface.rs"),
             quality: read("xtask/src/quality_commands.rs"),
             release: read("xtask/src/release_commands.rs"),
-            release_status: read("xtask/src/release_status.rs"),
-            release_status_tests: read("xtask/src/release_status/tests.rs"),
             semver: read("xtask/src/semver.rs"),
             semver_review: read("xtask/src/semver/review.rs"),
             semver_tests: read("xtask/src/semver/tests.rs"),
@@ -109,16 +106,6 @@ fn assert_modules_stay_focused(sources: &XtaskSources) {
             "xtask/src/release_commands.rs",
             sources.release.as_str(),
             800,
-        ),
-        (
-            "xtask/src/release_status.rs",
-            sources.release_status.as_str(),
-            350,
-        ),
-        (
-            "xtask/src/release_status/tests.rs",
-            sources.release_status_tests.as_str(),
-            225,
         ),
         ("xtask/src/semver.rs", sources.semver.as_str(), 900),
         (
@@ -281,11 +268,6 @@ fn assert_dispatcher_and_command_ownership(sources: &XtaskSources) {
             "pub(super) fn release_cpu()",
             "pub(super) fn package()",
         ]),
-        PatternCheck::new(
-            "xtask release-status test ownership",
-            &sources.release_status,
-        )
-        .required(&["#[cfg(test)]", "mod tests;"]),
     ]);
 }
 
@@ -298,4 +280,5 @@ fn xtask_dispatcher_stays_split_by_command_family() {
     release_commands::assert_regressions_stay_focused();
     release_integrity::assert_ownership(&sources);
     release_integrity::assert_regressions(&sources);
+    release_status::assert_ownership_and_focus();
 }

@@ -266,6 +266,10 @@ const REPO_LINT_POLICY_LINE_LIMITS: &[(&str, usize)] = &[
             "xtask/tests/repo_lint_support/xtask_main_structure_policy/release_integrity.rs",
             100,
         ),
+        (
+            "xtask/tests/repo_lint_support/xtask_main_structure_policy/release_status.rs",
+            75,
+        ),
 ];
 
 #[test]
