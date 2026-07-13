@@ -236,3 +236,49 @@ impl AcceleratorLaneSpec {
             .any(|package| path.starts_with(package.source_prefix))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{accelerator_package, CoverageLane};
+
+    #[test]
+    fn accelerator_package_preserves_registry_metadata() {
+        let package = accelerator_package(
+            std::hint::black_box("j2k-test-accelerator"),
+            std::hint::black_box("crates/j2k-test-accelerator/"),
+        );
+
+        assert_eq!(package.name, "j2k-test-accelerator");
+        assert_eq!(package.source_prefix, "crates/j2k-test-accelerator/");
+    }
+
+    #[test]
+    fn coverage_lane_artifacts_are_lane_specific() {
+        let cases = [
+            (
+                CoverageLane::Host,
+                "lcov-host.info",
+                "coverage-host-summary.json",
+                "coverage-host-regions.json",
+            ),
+            (
+                CoverageLane::Metal,
+                "lcov-metal.info",
+                "coverage-metal-summary.json",
+                "coverage-metal-regions.json",
+            ),
+            (
+                CoverageLane::Cuda,
+                "lcov-cuda.info",
+                "coverage-cuda-summary.json",
+                "coverage-cuda-regions.json",
+            ),
+        ];
+
+        for (lane, lcov, summary, compiler_regions) in cases {
+            assert_eq!(lane.lcov_path(), lcov);
+            assert_eq!(lane.summary_path(), summary);
+            assert_eq!(lane.compiler_regions_path(), compiler_regions);
+        }
+    }
+}

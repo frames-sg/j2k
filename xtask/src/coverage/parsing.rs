@@ -189,3 +189,54 @@ pub(super) fn normalize_coverage_path(path: &str, root: &Path) -> Result<String,
 fn normalize_lcov_path(path: &str, root: &Path) -> Result<String, String> {
     normalize_coverage_path(path, root)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ensure_no_untracked_rust_sources, git_output, resolve_diff_base,
+        validate_no_untracked_rust_sources, verify_git_revision,
+    };
+
+    const MISSING_REVISION: &str = "j2k-coverage-test-revision-that-does-not-exist";
+
+    #[test]
+    fn coverage_preflight_matches_gits_untracked_rust_inventory() {
+        let untracked =
+            git_output(&["ls-files", "--others", "--exclude-standard", "--", "*.rs"]).unwrap();
+
+        assert_eq!(
+            ensure_no_untracked_rust_sources(),
+            validate_no_untracked_rust_sources(&untracked)
+        );
+    }
+
+    #[test]
+    fn explicit_diff_base_requires_a_commit_revision() {
+        assert_eq!(resolve_diff_base(Some("HEAD")).unwrap(), "HEAD");
+
+        let error = resolve_diff_base(Some(MISSING_REVISION)).unwrap_err();
+        assert!(error.contains("git rev-parse --verify"));
+        assert!(error.contains(MISSING_REVISION));
+    }
+
+    #[test]
+    fn revision_verification_accepts_head_and_rejects_missing_names() {
+        verify_git_revision("HEAD").unwrap();
+
+        let error = verify_git_revision(MISSING_REVISION).unwrap_err();
+        assert!(error.contains("git rev-parse --verify"));
+        assert!(error.contains(MISSING_REVISION));
+    }
+
+    #[test]
+    fn git_output_trims_stdout_and_reports_command_failures() {
+        let head = git_output(&["rev-parse", "HEAD"]).unwrap();
+        assert!(!head.is_empty());
+        assert!(head.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+        let error = git_output(&["rev-parse", "--verify", MISSING_REVISION]).unwrap_err();
+        assert!(error.contains("git rev-parse --verify"));
+        assert!(error.contains(MISSING_REVISION));
+        assert!(error.contains("exited with"));
+    }
+}
