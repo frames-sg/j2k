@@ -62,7 +62,8 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `fa6ac2b3`. No push, release tag, crate
+  before this ledger refresh is `fa6ac2b3`; the reconciled documentation and
+  clean-tree checkpoint is `2c10ddc4`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -143,6 +144,19 @@ the issue sections below; this capsule is only the current continuation state.
   production code.
   The next coverage execution is the frozen candidate verification run, not a
   new coverage-development tranche.
+- 0.7 testing-architecture checkpoint (2026-07-12): Burn's backend-generic
+  architecture and real-hardware support are the direction for j2k's test
+  boundaries, while Burn ONNX's full-pipeline numerical validation is the
+  direction for behavioral evidence. This is an architectural inference from
+  the official [Burn backend design](https://github.com/tracel-ai/burn),
+  [Burn release history](https://github.com/tracel-ai/burn/releases), and
+  [Burn ONNX model-validation contract](https://github.com/tracel-ai/burn-onnx),
+  not a claim that their coverage policy is identical to j2k's. For 0.7,
+  preserve exact CPU, Auto, Metal, and CUDA parity and hardware lanes, plus the
+  80% overall, accelerator, and critical-path gates. Do not create tests merely
+  to execute formatters, trivial accessors, unreachable guards, or test-only
+  seams. The reusable cross-backend contract suite is accepted post-0.7 work
+  unless candidate evidence discovers a missing release-critical behavior.
 - API, provenance, and documentation freeze checkpoint (2026-07-12):
   `cargo xtask stable-api` regenerated both ordinary and rustdoc-hidden
   inventories in memory for all 17 packages and found the committed snapshots
@@ -472,6 +486,7 @@ The rubric was checked against current primary or first-party sources on
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
 | COV-001 | P2 | in progress | METAL-001 | Schema-v5 source policy at `fa6ac2b3` preserves the 80% overall and accelerator gates, adds an 80% critical-path gate plus absent-critical-file failure, and audits zero-body findings as critical evidence or justified residuals; exact candidate host/Metal/CUDA artifacts remain |
+| TESTARCH-001 | P3 | accepted post-0.7 | COV-001 | Consolidate reusable CPU/Auto/Metal/CUDA behavioral contracts after 0.7; exact per-backend parity and hardware lanes remain mandatory for this RC |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -1557,6 +1572,24 @@ tests, all 103 coverage tests, all 281 xtask unit tests, all 414 active
 repository policies with one established ignore, formatting, diff checks, and
 strict all-target xtask Clippy pass. COV-001 is source-complete and waits only
 for frozen exact-SHA host, Metal, and CUDA evidence.
+
+The bounded 2026-07-12 value audit reviewed the recent coverage-driven tests
+from profile diagnostics (`873428e5`) through the final focused policy owners
+(`24252a28`). No exact duplicate or tautological test was found, so no test was
+removed or reorganized. The retained cases assert independently observable
+behavior: typed cap-versus-allocation errors, transactional mutation and
+post-failure reuse, owned payload lifetimes, fixture and manifest parsing,
+backend routing and output parity, pixel-row conversion, public CLI and
+diagnostic contracts, and fail-closed release orchestration. Test-local setup
+helpers are scoped to their owners and are not production abstractions. This
+audit does not authorize another coverage or test-generation tranche. Future
+zero-body findings remain evidence rows; only missing behavior in parser,
+safety, ownership, correctness, security, public-API, or exact backend parity
+paths can require a pre-RC test change.
+Focused re-verification after recording this direction passed all five critical-
+path policy tests, all 103 coverage-tool tests, the coverage responsibility
+policy, warning-denied all-target xtask Clippy, formatting, and diff checks.
+No full workspace or exact coverage run was started.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
