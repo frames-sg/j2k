@@ -62,7 +62,10 @@ pub(crate) struct MetalRuntime {
     pub(super) idwt_interleave_batched: ComputePipelineState,
     pub(super) idwt_reversible53_horizontal_batched: ComputePipelineState,
     pub(super) idwt_reversible53_vertical_batched: ComputePipelineState,
-    pub(super) idwt_irreversible97_single_decomposition: ComputePipelineState,
+    pub(super) idwt_irreversible97_horizontal_scale: ComputePipelineState,
+    pub(super) idwt_irreversible97_vertical_scale: ComputePipelineState,
+    pub(super) idwt_irreversible97_horizontal_step: ComputePipelineState,
+    pub(super) idwt_irreversible97_vertical_step: ComputePipelineState,
     pub(super) fdwt53_horizontal: ComputePipelineState,
     pub(super) fdwt53_vertical: ComputePipelineState,
     pub(super) fdwt53_horizontal_batched: ComputePipelineState,
@@ -184,9 +187,14 @@ impl MetalRuntime {
             idwt_reversible53_vertical_batched: pipeline(
                 "j2k_idwt_reversible53_vertical_pass_batched",
             )?,
-            idwt_irreversible97_single_decomposition: pipeline(
-                "j2k_idwt_irreversible97_single_decomposition",
+            idwt_irreversible97_horizontal_scale: pipeline(
+                "j2k_idwt_irreversible97_horizontal_scale",
             )?,
+            idwt_irreversible97_vertical_scale: pipeline("j2k_idwt_irreversible97_vertical_scale")?,
+            idwt_irreversible97_horizontal_step: pipeline(
+                "j2k_idwt_irreversible97_horizontal_step",
+            )?,
+            idwt_irreversible97_vertical_step: pipeline("j2k_idwt_irreversible97_vertical_step")?,
             fdwt53_horizontal: pipeline("j2k_forward_dwt53_horizontal")?,
             fdwt53_vertical: pipeline("j2k_forward_dwt53_vertical")?,
             fdwt53_horizontal_batched: pipeline("j2k_forward_dwt53_horizontal_batched")?,
