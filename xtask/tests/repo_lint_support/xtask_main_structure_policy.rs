@@ -23,6 +23,8 @@ struct XtaskSources {
     panic_surface: String,
     quality: String,
     release: String,
+    release_status: String,
+    release_status_tests: String,
     semver: String,
     semver_review: String,
     semver_tests: String,
@@ -34,6 +36,7 @@ struct XtaskSources {
     release_integrity_changelog_tests: String,
     release_integrity_metadata_tests: String,
     release_integrity_provenance_tests: String,
+    release_integrity_provenance_boundary_tests: String,
 }
 
 impl XtaskSources {
@@ -45,6 +48,8 @@ impl XtaskSources {
             panic_surface: read("xtask/src/panic_surface.rs"),
             quality: read("xtask/src/quality_commands.rs"),
             release: read("xtask/src/release_commands.rs"),
+            release_status: read("xtask/src/release_status.rs"),
+            release_status_tests: read("xtask/src/release_status/tests.rs"),
             semver: read("xtask/src/semver.rs"),
             semver_review: read("xtask/src/semver/review.rs"),
             semver_tests: read("xtask/src/semver/tests.rs"),
@@ -69,6 +74,9 @@ impl XtaskSources {
             ),
             release_integrity_provenance_tests: read(
                 "xtask/src/release_commands/release_integrity_policy/tests/provenance.rs",
+            ),
+            release_integrity_provenance_boundary_tests: read(
+                "xtask/src/release_commands/release_integrity_policy/tests/provenance_boundaries.rs",
             ),
         }
     }
@@ -101,6 +109,16 @@ fn assert_modules_stay_focused(sources: &XtaskSources) {
             "xtask/src/release_commands.rs",
             sources.release.as_str(),
             800,
+        ),
+        (
+            "xtask/src/release_status.rs",
+            sources.release_status.as_str(),
+            350,
+        ),
+        (
+            "xtask/src/release_status/tests.rs",
+            sources.release_status_tests.as_str(),
+            225,
         ),
         ("xtask/src/semver.rs", sources.semver.as_str(), 900),
         (
@@ -147,6 +165,11 @@ fn assert_modules_stay_focused(sources: &XtaskSources) {
         (
             "xtask/src/release_commands/release_integrity_policy/tests/provenance.rs",
             sources.release_integrity_provenance_tests.as_str(),
+            75,
+        ),
+        (
+            "xtask/src/release_commands/release_integrity_policy/tests/provenance_boundaries.rs",
+            sources.release_integrity_provenance_boundary_tests.as_str(),
             75,
         ),
     ] {
@@ -258,6 +281,11 @@ fn assert_dispatcher_and_command_ownership(sources: &XtaskSources) {
             "pub(super) fn release_cpu()",
             "pub(super) fn package()",
         ]),
+        PatternCheck::new(
+            "xtask release-status test ownership",
+            &sources.release_status,
+        )
+        .required(&["#[cfg(test)]", "mod tests;"]),
     ]);
 }
 

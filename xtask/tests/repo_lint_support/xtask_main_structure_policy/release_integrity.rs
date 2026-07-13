@@ -46,6 +46,7 @@ pub(super) fn assert_regressions(sources: &XtaskSources) {
         sources.release_integrity_changelog_tests.as_str(),
         sources.release_integrity_metadata_tests.as_str(),
         sources.release_integrity_provenance_tests.as_str(),
+        sources.release_integrity_provenance_boundary_tests.as_str(),
     ]
     .join("\n");
     assert_pattern_checks(&[PatternCheck::new(
@@ -67,5 +68,7 @@ pub(super) fn assert_regressions(sources: &XtaskSources) {
         "html_comment_approval",
         "raw_html_approval",
         "div_html_approval",
+        "patch_provenance_requires_one_bounded_release_approval_section",
+        "patch_provenance_rejects_ambiguous_reviewer_placeholders",
     ])]);
 }
