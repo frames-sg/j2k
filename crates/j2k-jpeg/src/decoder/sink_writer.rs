@@ -82,3 +82,6 @@ where
         self.sink.write_row(y, &self.rows.top_row)
     }
 }
+
+#[cfg(test)]
+mod tests;
