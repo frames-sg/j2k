@@ -181,6 +181,16 @@ the issue sections below; this capsule is only the current continuation state.
   A read-only GitHub API check on 2026-07-12 confirms private vulnerability
   reporting is still disabled; CONTACT-001 therefore remains a real external
   blocker rather than a stale ledger note.
+- Candidate verification checkpoint (2026-07-12): the first dated candidate
+  `65318d56` passed clean-tree publish integrity, packaging, the canonical local
+  CI matrix, strict Clippy, clone audit at 1.97%, normal and strict repository
+  policy, release CPU, no-std, Miri, and benchmark compilation. The typo gate
+  then rejected a two-letter substring inside the historical backticked commit id
+  `cef2ba40`. Because the object id is immutable evidence, the correction adds
+  a narrow 8-or-40-hex backticked Git-id exclusion rather than a word-level
+  allowance; a red-then-green repository-policy regression owns that scope.
+  This tracked correction invalidates `65318d56`; commit it and select a new
+  exact candidate SHA before resuming the remaining gates.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,

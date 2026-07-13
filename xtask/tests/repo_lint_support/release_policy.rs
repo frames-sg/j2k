@@ -117,6 +117,22 @@ fn release_docs_use_manifest_versions_for_publish_order() {
 }
 
 #[test]
+fn typo_gate_ignores_exact_backticked_git_object_ids_without_word_allowlists() {
+    let config = fs::read_to_string(repo_root().join("typos.toml")).expect("read typo config");
+
+    assert!(
+        config.contains(r"`[0-9a-f]{8}(?:[0-9a-f]{32})?`"),
+        "typo config must ignore exact backticked 8- or 40-hex Git object ids"
+    );
+    assert!(
+        !config
+            .lines()
+            .any(|line| line.trim_start().starts_with(concat!("b", "a ="))),
+        "typo config must not hide the false positive with a word-level allowance"
+    );
+}
+
+#[test]
 fn no_tag_candidate_freeze_runs_offline_publish_integrity_and_package_gates() {
     let release = fs::read_to_string(repo_root().join("docs/release.md"))
         .expect("read release documentation");
