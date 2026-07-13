@@ -46,7 +46,7 @@ mod tier1;
 pub(crate) use self::allocation::DecodeAllocationBudget;
 use self::direct_plan::collect_classic_code_block_data;
 pub(crate) use self::direct_plan::{build_direct_color_plan, build_direct_grayscale_plan};
-use self::store::{apply_sign_shift, component_unsigned_level_shift, store};
+use self::store::{apply_sign_shift_after_mct, component_unsigned_level_shift, store};
 use self::subband::{code_block_required_by_index, decode_component_tile_bit_planes};
 #[cfg(all(test, feature = "parallel"))]
 use self::subband::{
@@ -138,7 +138,7 @@ pub(crate) fn decode<'a>(
     if tiles[0].mct {
         let stage_start = profile::profile_now(profile_enabled);
         mct::apply_inverse(tile_ctx, &tiles[0].component_infos, header, ht_decoder)?;
-        apply_sign_shift(tile_ctx, &header.component_infos);
+        apply_sign_shift_after_mct(tile_ctx, &header.component_infos);
         profile_timings.mct_us += profile::elapsed_us(stage_start);
     }
 

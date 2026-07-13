@@ -5,12 +5,15 @@ use super::{
     J2kStoreComponentJob, OutputRegion, ResolutionTile, Result, Tile, TileDecodeContext,
 };
 
-pub(super) fn apply_sign_shift(
+pub(super) fn apply_sign_shift_after_mct(
     tile_ctx: &mut TileDecodeContext,
     component_infos: &[ComponentInfo],
 ) {
-    for (channel_data, component_info) in
-        tile_ctx.channel_data.iter_mut().zip(component_infos.iter())
+    for (channel_data, component_info) in tile_ctx
+        .channel_data
+        .iter_mut()
+        .zip(component_infos)
+        .skip(3)
     {
         if let Some(samples) = channel_data.integer_container.as_mut() {
             let addend = component_unsigned_level_shift_i64(component_info);
