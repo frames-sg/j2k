@@ -317,7 +317,7 @@ fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
         PatternCheck::new("Metal hardware coverage", metal_job)
             .required(&[
                 "fetch-depth: 0",
-                "tool: cargo-llvm-cov@0.8.7",
+                "scripts/ensure-cargo-llvm-cov.sh",
                 "cargo xtask coverage metal",
                 "name: j2k-metal-coverage",
                 "lcov-metal.info",
@@ -328,7 +328,7 @@ fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
         PatternCheck::new("CUDA hardware coverage", cuda_job)
             .required(&[
                 "fetch-depth: 0",
-                "tool: cargo-llvm-cov@0.8.7",
+                "scripts/ensure-cargo-llvm-cov.sh",
                 "cargo xtask coverage cuda",
                 "name: j2k-cuda-coverage",
                 "lcov-cuda.info",
@@ -336,6 +336,37 @@ fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
                 "if-no-files-found: error",
             ])
             .forbidden(&["continue-on-error"]),
+    ]);
+}
+
+#[test]
+fn self_hosted_coverage_tool_bootstrap_is_pinned_and_non_privileged() {
+    let root = repo_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/gpu-validation.yml"))
+        .expect("read GPU validation workflow");
+    let bootstrap = fs::read_to_string(root.join("scripts/ensure-cargo-llvm-cov.sh"))
+        .expect("read self-hosted coverage-tool bootstrap");
+
+    for job_name in [
+        "linux-ci",
+        "metal-apple-silicon",
+        "cuda-x86_64-compatibility",
+    ] {
+        let job = workflow_job(&workflow, job_name);
+        assert_pattern_checks(&[PatternCheck::new("self-hosted coverage bootstrap", job)
+            .required(&["scripts/ensure-cargo-llvm-cov.sh"])
+            .forbidden(&["taiki-e/install-action@"])]);
+    }
+
+    assert_pattern_checks(&[
+        PatternCheck::new("self-hosted coverage-tool bootstrap", &bootstrap)
+            .required(&[
+                "cargo-llvm-cov 0.8.7",
+                "cargo llvm-cov --version",
+                "cargo install cargo-llvm-cov --version 0.8.7 --locked --force",
+                "RUSTFLAGS=",
+            ])
+            .forbidden(&["sudo", "apt-get", "brew install"]),
     ]);
 }
 
