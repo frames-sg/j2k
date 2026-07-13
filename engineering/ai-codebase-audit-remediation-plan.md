@@ -62,8 +62,9 @@ but are not yet promoted to final exact-candidate evidence.
 Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
-- Release state: **blocked** and unfrozen. The 0.7/0.7.1 separation series is
-  settled through `82fe82a2`. An isolated RC worktree preserves the 0.7 fixes while the
+- Release state: **blocked** and unfrozen. The 0.7/0.7.1 separation and focused
+  reconciliation are settled through `321f7673`. An isolated RC worktree
+  preserves the 0.7 fixes while the
   shared `main` worktree contains a separate, uncommitted user-owned ML/CUDA
   change set that appeared during NVIDIA verification and must not be discarded
   or silently folded into 0.7. No push, release tag, crate
@@ -205,13 +206,16 @@ the issue sections below; this capsule is only the current continuation state.
   clean-tree staged package gate also passes: all package
   inventories were inspected, independent crates completed publish dry runs,
   and dependent crates packaged against staged local patches without publishing.
-  A read-only GitHub API check on 2026-07-12 confirms private vulnerability
+  A read-only GitHub API check on 2026-07-13 confirms private vulnerability
   reporting is still disabled; CONTACT-001 therefore remains a real external
   blocker rather than a stale ledger note. After the coverage-tool correction
   committed as `3a0089ff`, `cargo xtask stable-api` again matched all 17
   ordinary and rustdoc-hidden inventories, `cargo xtask semver` passed every
   reviewed package comparison, and final public-support plus publish-mode
-  release-integrity remained green without regenerating evidence.
+  release-integrity remained green without regenerating evidence. After the
+  0.7/0.7.1 scope split, both commands pass again on the reduced source tree at
+  `321f7673`; the Metal deferral therefore introduces no public-API snapshot or
+  reviewed-semver drift.
 - Candidate verification checkpoint (2026-07-12): the dated candidate advanced
   through the typo-policy, coverage-policy, Metal release-scheduler, and Linux
   lint corrections to `4317d434`. Publish integrity, packaging, local CI,
