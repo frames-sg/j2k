@@ -102,3 +102,6 @@ pub fn ht_uvlc_encode_table() -> &'static [HtUvlcTableEntry; 75] {
 pub fn ht_uvlc_encode_table_bytes() -> &'static [u8] {
     &j2c::ht_encode_tables::HT_UVLC_ENCODE_TABLE_BYTES
 }
+
+#[cfg(test)]
+mod tests;
