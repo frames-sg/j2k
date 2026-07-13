@@ -2,8 +2,9 @@
 
 //! Validated CUDA JPEG decode resource upload and kernel launch.
 
+mod decode_workspace;
+use self::decode_workspace::{subsampled_workspace_plan, CudaJpegSubsampledWorkspacePlan};
 use super::{
-    decode_workspace::{subsampled_workspace_plan, CudaJpegSubsampledWorkspacePlan},
     jpeg_rgb8_kernel, CudaJpeg420Params, CudaJpegDecodeStatus, CudaJpegRgb8DecodePlan,
     CudaJpegRgb8ValidatedPlan,
 };

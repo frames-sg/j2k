@@ -5,8 +5,6 @@ mod abi_tests;
 mod decode;
 #[cfg(feature = "cuda-oxide-jpeg-decode")]
 mod decode_launch;
-#[cfg(feature = "cuda-oxide-jpeg-decode")]
-mod decode_workspace;
 mod diagnostics;
 #[cfg(feature = "cuda-oxide-jpeg-decode")]
 mod diagnostics_allocation;

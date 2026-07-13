@@ -2,7 +2,7 @@
 
 //! Device-resident component workspace for cross-MCU chroma interpolation.
 
-use super::{CudaJpeg420Params, CudaJpegRgb8Sampling};
+use super::super::{CudaJpeg420Params, CudaJpegRgb8Sampling};
 use crate::{error::CudaError, kernels::CudaLaunchGeometry};
 
 const CONVERSION_THREADS: u32 = 256;

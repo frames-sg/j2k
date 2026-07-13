@@ -201,7 +201,15 @@ the issue sections below; this capsule is only the current continuation state.
   green: 50 library, 7 encode, and 41 host-surface tests, including new 4:2:0
   row/column, 4:2:2 multi-MCU, and odd-dimension parity cases; affected strict Clippy also
   passes. Commit this correction, select a new SHA, and restart the exact CUDA
-  lane from a fresh clean bundle.
+  lane from a fresh clean bundle. The first exact host coverage attempt on
+  `dddc1313` then passed every displayed workspace and repository-policy target
+  except the CUDA JPEG structural ratchet: adding the workspace as a root child
+  made the facade 61 lines against its existing `<60` ceiling. The workspace is
+  now nested under its launch owner, leaving the facade at 59 lines, the launch
+  owner at 248, and the structural-policy owner at 149 without raising any
+  ceiling. Both the red structural regression and the workspace behavior test
+  pass; this tracked ownership correction requires one new candidate SHA and
+  one fresh exact host/CUDA run.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
