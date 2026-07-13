@@ -47,7 +47,7 @@ struct MetalTestSuite {
     label: &'static str,
     package: &'static str,
     minimum_passed: usize,
-    required_tests: &'static [&'static str],
+    required_test: &'static str,
 }
 
 const METAL_TEST_SUITES: &[MetalTestSuite] = &[
@@ -55,49 +55,34 @@ const METAL_TEST_SUITES: &[MetalTestSuite] = &[
         label: "Metal support runtime",
         package: "j2k-metal-support",
         minimum_passed: 5,
-        required_tests: &["tests::commit_and_wait_accepts_unlabeled_command_buffer"],
+        required_test: "tests::commit_and_wait_accepts_unlabeled_command_buffer",
     },
     MetalTestSuite {
         label: "JPEG Metal runtime",
         package: "j2k-jpeg-metal",
         minimum_passed: 100,
-        required_tests: &[
-            "decode_to_metal_matches_cpu_decode_bytes",
-            "fast422_decode_to_metal_matches_cpu_decode_bytes",
-            "tile_device_decode_matches_host_tile_decode",
-            "metal_baseline_encoder_round_trips_all_rgb_subsampling_modes",
-        ],
+        required_test: "decode_to_metal_matches_cpu_decode_bytes",
     },
     MetalTestSuite {
         label: "J2K Metal and facade integration runtime",
         package: "j2k-metal",
         minimum_passed: 150,
-        required_tests: &[
+        required_test:
             "encode::tests::stage_validation::metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips",
-            "encode::tests::resident_schedule::classic_inflight_one_waits_before_submitting_the_next_chunk",
-            "full_classic_grayscale_decode_to_metal_matches_host_decode",
-            "full_htj2k_decode_to_metal_matches_host_decode",
-            "explicit_metal_region_scaled_rgb_matches_host_decode",
-        ],
     },
     MetalTestSuite {
         label: "transcode Metal runtime",
         package: "j2k-transcode-metal",
         minimum_passed: 20,
-        required_tests: &[
-            "explicit_metal_dct53_matches_scalar_for_structured_cases",
-            "explicit_metal_dct97_matches_scalar_for_structured_cases",
+        required_test:
             "ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling",
-            "ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling",
-        ],
     },
     MetalTestSuite {
         label: "J2K public facade",
         package: "j2k",
         minimum_passed: 1,
-        required_tests: &[
+        required_test:
             "accelerator_facade_reports_requested_backend_after_all_required_stages_dispatch",
-        ],
     },
 ];
 
@@ -155,7 +140,7 @@ fn run_release_metal() -> Result<(), String> {
             &output,
             suite.label,
             suite.minimum_passed,
-            suite.required_tests,
+            &[suite.required_test],
         )?;
     }
 

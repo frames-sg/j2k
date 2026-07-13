@@ -97,7 +97,7 @@ jobs:
           tool: cargo-llvm-cov@0.8.7
       - name: Run fail-closed Metal release validation
         run: cargo xtask release-metal
-      - name: Collect audited Metal host coverage evidence
+      - name: Collect changed-line Metal host coverage
         run: cargo xtask coverage metal
       - name: Upload Metal coverage evidence
         if: always()

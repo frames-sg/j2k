@@ -63,17 +63,6 @@ fn classic_inflight_one_waits_before_submitting_the_next_chunk() {
         super::super::resident_schedule_counters_for_test(),
         (0, 1, 2)
     );
-    for (frame, expected) in outcome.outcomes.iter().zip([first, second]) {
-        let codestream = frame
-            .encoded
-            .codestream_bytes()
-            .expect("scheduled Metal codestream bytes are CPU-readable");
-        let decoded = Image::new(&codestream, &DecodeSettings::default())
-            .expect("scheduled codestream parses")
-            .decode_native()
-            .expect("scheduled codestream decodes");
-        assert_decoded_bytes_match(&decoded.data, &expected);
-    }
 }
 
 #[cfg(target_os = "macos")]

@@ -73,10 +73,8 @@ the issue sections below; this capsule is only the current continuation state.
   or publication.
 - Current objective: freeze API, provenance, and release documentation, resolve
   every locally actionable gate, then prepare and verify one exact candidate
-  SHA. Host and CUDA retain their 80% changed-line gates. Metal line coverage
-  is audited evidence; exact CPU/Auto/Metal parity, lossless round-trip,
-  scheduler/ownership, typed-error, and real-hardware runtime checks are the
-  Metal release gate. No further broad coverage tranches are authorized. Preserve
+  SHA. The 80% overall, accelerator, and critical-path coverage policy is
+  source-complete; no further broad coverage tranches are authorized. Preserve
   idiomatic Rust ownership, typed errors, fallible allocation, transactional
   mutation, and actual allocator-capacity accounting.
 - Immediate continuation point (2026-07-12): direct CPU coefficient owners are
@@ -155,11 +153,9 @@ the issue sections below; this capsule is only the current continuation state.
   now preserve compatible accumulation flags and collapse lexical parent
   components without permitting repository-root escape. All 105 focused
   coverage tests, strict xtask Clippy, formatting, and strict repository policy
-  pass. The live Metal rerun reached schema-v5 evaluation and recorded 72.2102%
+  pass. The live Metal rerun reaches schema-v5 evaluation and records 72.2102%
   overall/accelerator coverage (24,046 / 33,300) and 72.3885% critical coverage
-  (24,046 / 33,218). That percentage is now retained as schema-v6 audited
-  evidence rather than a Metal release blocker; the behavioral/hardware gate
-  remains fail closed. The
+  (24,046 / 33,218), so the unchanged 80% gates remain genuinely red. The
   report records 1,214 zero-body findings as audited evidence, including the
   benchmark support path as low-risk tooling; it does not turn that residual
   into an absent-file release failure. Per the explicit 0.7 decision, do not
@@ -172,10 +168,8 @@ the issue sections below; this capsule is only the current continuation state.
   [Burn release history](https://github.com/tracel-ai/burn/releases), and
   [Burn ONNX model-validation contract](https://github.com/tracel-ai/burn-onnx),
   not a claim that their coverage policy is identical to j2k's. For 0.7,
-  preserve exact CPU, Auto, Metal, and CUDA parity and hardware lanes. Host and
-  CUDA retain the 80% changed-line gates; Metal records the same measurements
-  as evidence without turning optimized line execution into its release
-  criterion. Do not create tests merely
+  preserve exact CPU, Auto, Metal, and CUDA parity and hardware lanes, plus the
+  80% overall, accelerator, and critical-path gates. Do not create tests merely
   to execute formatters, trivial accessors, unreachable guards, or test-only
   seams. The reusable cross-backend contract suite is accepted post-0.7 work
   unless candidate evidence discovers a missing release-critical behavior.
@@ -549,7 +543,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | complete | REC-001 | Independent review approved all 33 ordinary/hidden schema-2 entries after adding the missing j2k-profile migration mappings; stable API and full semver verification pass with exact fingerprints |
-| COV-001 | P2 | in progress | METAL-001 | Schema v6 retains the 80% Host/CUDA numeric gates and records the complete Metal changed-line/critical-path result as audited evidence. Exact host evidence at `954b2d74` is 88.59% overall and 87.70% critical; the prior Metal result is 72.21% overall/accelerator and 72.39% critical. Metal acceptance is exact parity, round-trip, ownership/scheduler, typed-error, and non-skipping Apple Silicon runtime behavior. No broad execution-only test tranche is authorized; focused verification, CUDA, and final exact-SHA artifacts remain. |
+| COV-001 | P2 | in progress | METAL-001 | Schema-v5 preserves the 80% overall, accelerator, and critical-path gates; exact host evidence at `954b2d74` is 88.59% overall and 87.70% critical. Compatible pinned-tool accumulation and lexical LLVM source-path normalization are focused-test/policy green. The complete Metal evaluator now records zero-body residuals without blanket absent-file failure, but the genuine numeric gates remain red at 72.21% overall/accelerator and 72.39% critical. No broad execution-only test tranche is authorized; CUDA and final exact-SHA artifacts remain. |
 | TESTARCH-001 | P3 | accepted post-0.7 | COV-001 | Consolidate reusable CPU/Auto/Metal/CUDA behavioral contracts after 0.7; exact per-backend parity and hardware lanes remain mandatory for this RC |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
@@ -1002,10 +996,7 @@ baseline set. No API snapshot or generated report changed during verification.
 Measure modified host-side Rust in Metal and CUDA crates. Do not exclude entire
 adapter crates.
 
-- Require at least 80% changed-path coverage for measurable Host and CUDA Rust.
-- Record the Metal denominator and findings as audited evidence; require exact
-  parity, round-trip, ownership, typed-error, and real-hardware behavior instead
-  of a Metal line-percentage threshold.
+- Require at least 80% changed-path coverage for measurable Rust.
 - Allow only line-level, documented exclusions for generated kernels, shader
   bodies, or FFI-only code.
 - Map each exclusion to a named hardware or integration test.
@@ -1038,18 +1029,6 @@ or low-risk-tooling disposition and reason. The relevant five classifier
 tests, all 103 coverage tests, all 414 active repository policies with one
 established ignore, formatting, and warning-denied xtask Clippy pass at
 `fa6ac2b3`. The policy does not add a coverage exclusion or raise a threshold.
-
-The 2026-07-13 schema-v6 release decision narrows the numeric policy only for
-Metal. Host and CUDA still fail below 80%. Metal still emits the complete LCOV,
-compiler-region, changed-line, critical-path, zero-body, and exclusion audit,
-and it still fails for missing critical executable bodies or mixed
-production/test syntax. Its percentages are evidence rather than acceptance.
-Acceptance instead comes from `cargo xtask release-metal`, whose named
-sentinels cover CPU/Metal decode bytes, Auto routing, lossless input
-round-trips across the resident scheduler, scalar/Metal transform parity,
-typed failure behavior, ownership, and exact non-skipping Apple Silicon
-runtime execution. This is not an exclusion and does not authorize broad test
-generation.
 
 The 2026-07-12 nonterminal external-test-module failure was a stale hard-coded
 line in the real-source regression after `backend/mod.rs` gained a production

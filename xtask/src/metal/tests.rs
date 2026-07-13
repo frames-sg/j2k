@@ -35,24 +35,14 @@ printf '%s\n' 'test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 fil
 ;;
 *" -p j2k-jpeg-metal "*)
 printf '%s\n' 'test decode_to_metal_matches_cpu_decode_bytes ... ok'
-printf '%s\n' 'test fast422_decode_to_metal_matches_cpu_decode_bytes ... ok'
-printf '%s\n' 'test tile_device_decode_matches_host_tile_decode ... ok'
-printf '%s\n' 'test metal_baseline_encoder_round_trips_all_rgb_subsampling_modes ... ok'
 printf '%s\n' 'test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k-transcode-metal "*)
-printf '%s\n' 'test explicit_metal_dct53_matches_scalar_for_structured_cases ... ok'
-printf '%s\n' 'test explicit_metal_dct97_matches_scalar_for_structured_cases ... ok'
 printf '%s\n' 'test ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling ... ok'
-printf '%s\n' 'test ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling ... ok'
 printf '%s\n' 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k-metal "*)
 printf '%s\n' 'test encode::tests::stage_validation::metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips ... ok'
-printf '%s\n' 'test encode::tests::resident_schedule::classic_inflight_one_waits_before_submitting_the_next_chunk ... ok'
-printf '%s\n' 'test full_classic_grayscale_decode_to_metal_matches_host_decode ... ok'
-printf '%s\n' 'test full_htj2k_decode_to_metal_matches_host_decode ... ok'
-printf '%s\n' 'test explicit_metal_region_scaled_rgb_matches_host_decode ... ok'
 printf '%s\n' 'test result: ok. 150 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k "*)

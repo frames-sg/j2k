@@ -5,11 +5,6 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [0.7.0] - 2026-07-12
 
-- Makes the Metal release gate behavior-based: changed-line results remain
-  audited evidence, while release acceptance requires exact CPU/Auto/Metal
-  parity, lossless input round-trips, scheduler/ownership invariants, typed
-  failures, and fail-closed Apple Silicon runtime validation. Host and CUDA
-  retain their 80% changed-line gates.
 - Moves the test-only `corpus_validation`, `dct53_1d`, and `dct53_multilevel`
   modules out of the shipped `j2k-transcode` library into test support files.
 - Internal: consolidates duplicated test fixtures/helpers into

@@ -105,18 +105,6 @@ impl CoverageLane {
         }
     }
 
-    pub(super) const fn enforces_line_threshold(self) -> bool {
-        !matches!(self, Self::Metal)
-    }
-
-    pub(super) const fn line_threshold_mode(self) -> &'static str {
-        if self.enforces_line_threshold() {
-            "release-gate"
-        } else {
-            "audited-evidence"
-        }
-    }
-
     pub(super) fn owns_path(self, path: &str) -> bool {
         match self {
             Self::Host => !is_accelerator_path(path),

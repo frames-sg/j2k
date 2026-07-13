@@ -214,17 +214,13 @@ After the candidate is frozen and committed, hosted CI must pass for exactly
 - hosted macOS Metal compilation and pure tests via `cargo xtask metal-compile`
 
 Changed-line coverage includes production Rust across CPU and accelerator
-crates. Host and CUDA lanes enforce the 80% changed-line threshold. Metal line
-coverage is retained as an audited artifact, not a release percentage: its
-release gate is exact CPU/Auto/Metal output parity, lossless input round-trip,
-typed failure behavior, ownership/scheduler checks, and real-hardware runtime
-validation. This prevents broad CPU execution from masquerading as Metal
-evidence without requiring tests whose only purpose is to execute optimized
-implementation lines. GPU-heavy changes also need self-hosted
-`gpu-validation` evidence. The Metal job delegates to `cargo xtask
-release-metal`, which requires macOS, forces the strict runtime gate, rejects
-GPU skip markers, checks named parity/runtime sentinels and count floors, and
-runs the exact declared ignored hardware-test inventory.
+crates. The hosted lane separately enforces the 80% threshold for changed
+accelerator-host lines so broad CPU coverage cannot mask untested routing,
+validation, allocation, or error-classification logic. GPU-heavy changes also
+need self-hosted `gpu-validation` evidence. The Metal job delegates to
+`cargo xtask release-metal`, which requires macOS, forces the strict runtime
+gate, rejects GPU skip markers, checks named runtime sentinels and count floors,
+and runs the exact declared ignored hardware-test inventory.
 
 Benchmark compilation is a release build-health gate, not a performance
 regression threshold. A release may claim performance only when the relevant
@@ -270,9 +266,7 @@ or another publishable dependency path remains tracked maintenance debt.
 CUDA validation requires a self-hosted CUDA environment for runtime and NVIDIA performance evidence. CUDA paths use J2K-owned CUDA kernels, cuda-runtime integration, and CUDA device memory surfaces for supported shapes. NVIDIA performance claims require recorded self-hosted benchmark output.
 
 Whole accelerator crates are not coverage exclusions. The changed-line
-denominator covers executable production and required build-script Rust; the
-Metal percentage is reported as audited evidence while CUDA retains its 80%
-numeric release gate.
+denominator covers executable production and required build-script Rust.
 Syntax-level `#[cfg(test)]` code, Cargo test targets, and example/bench/fuzz
 targets are reported as separate non-production source dispositions rather than
 being mislabeled as uncovered production.

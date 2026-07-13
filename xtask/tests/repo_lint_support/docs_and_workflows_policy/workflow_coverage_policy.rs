@@ -272,8 +272,7 @@ fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() 
                 "enclosing_cfg_is_conditional",
                 "accelerator host lines",
                 "--include-build-script",
-                "j2k-changed-line-coverage-v6",
-                "audited-evidence",
+                "j2k-changed-line-coverage-v5",
                 "head_sha",
                 "lane_scope",
                 "changed_functions_without_covered_body",
@@ -319,7 +318,6 @@ fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
             .required(&[
                 "fetch-depth: 0",
                 "tool: cargo-llvm-cov@0.8.7",
-                "Collect audited Metal host coverage evidence",
                 "cargo xtask coverage metal",
                 "name: j2k-metal-coverage",
                 "lcov-metal.info",
