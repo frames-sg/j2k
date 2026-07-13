@@ -6,7 +6,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use crate::process::cargo;
+use crate::process::{cargo, retry_executable_busy};
 
 use super::options::AdoptionBenchmarkOptions;
 use super::summary::{AdoptionStep, StepStatus};
@@ -589,8 +589,7 @@ pub(super) fn run_logged_owned(
     if let Some(target_dir) = target_dir {
         command.env("CARGO_TARGET_DIR", target_dir);
     }
-    let status = command
-        .status()
+    let status = retry_executable_busy(|| command.status())
         .map_err(|err| format!("failed to start `{}`: {err}", program.to_string_lossy()))?;
     if !status.success() {
         return Err(format!(

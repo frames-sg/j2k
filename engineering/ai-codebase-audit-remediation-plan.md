@@ -68,10 +68,10 @@ the issue sections below; this capsule is only the current continuation state.
   `rc/0.7.0-candidate` and draft
   [PR #50](https://github.com/frames-sg/j2k/pull/50) target `main`. Hosted CI
   invalidated `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`,
-  `a3307c18`, `bca8ad58`, and `d3de41ce`;
+  `a3307c18`, `bca8ad58`, `d3de41ce`, and `a4786571`;
   the complete causes and local corrections are recorded in the hosted RC
   checkpoint below.
-  The commit containing the sixth hosted correction checkpoint below is the
+  The commit containing the seventh hosted correction checkpoint below is the
   only eligible replacement candidate and still requires clean-tree exact-SHA
   reruns plus hosted, Metal, and CUDA verification. An
   isolated RC worktree preserves the 0.7 fixes while the
@@ -502,6 +502,33 @@ the issue sections below; this capsule is only the current continuation state.
   evidence. The concurrent GPU-path-policy failure was the expected fail-closed
   result before exact GPU completion. `d3de41ce` is invalidated; the commit
   containing this checkpoint must restart the complete exact-SHA matrix.
+- Seventh hosted RC correction checkpoint (2026-07-13): candidate `a4786571`
+  was pushed to PR #50 and checked by hosted CI run `29287581083`, secret-scan
+  run `29287580902`, and GPU run `29287596461`. Secret scanning passed, and 21
+  hosted jobs were green when the Ubuntu stable x86_64 workspace test failed.
+  Atomic publication narrowed but did not eliminate the runner-filesystem race:
+  the same comparator version regression reached its later Kakadu probe and
+  received `ExecutableFileBusy` instead of the expected no-version fallback.
+  The failure invalidates the candidate; remaining CI and GPU work was
+  cancelled, and its partial results are not candidate evidence.
+
+  Process-launch owners now apply one typed, bounded retry policy only to
+  `std::io::ErrorKind::ExecutableFileBusy`. The comparator uses it for encoder
+  and version-command starts; xtask's shared command status/output boundary and
+  adoption logged-process boundary use the same local policy. Eight
+  exponentially increasing waits permit nine total attempts over at most 255
+  milliseconds. A non-busy start error returns after one attempt, and a busy
+  error that outlives the bound remains visible. Deterministic regressions prove
+  success-after-busy, immediate permanent-error propagation, and bounded
+  exhaustion in both process owners. On the private Linux verifier, both
+  policy regressions pass, as do 20 consecutive executions of each formerly
+  failing behavior test and strict all-target, all-feature
+  `j2k-compare`/`xtask` Clippy. Locally, all 75 comparator library tests, five
+  adoption process tests, two shared-process tests, and the same strict Clippy
+  scope pass. Core codec behavior, public codec APIs, coverage thresholds, and
+  hardware scope are unchanged. The commit containing this checkpoint must
+  restart the complete exact-SHA matrix without another broad local coverage
+  tranche.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -685,7 +712,7 @@ the issue sections below; this capsule is only the current continuation state.
   behavior/policy tests pass. The typo gate passes after correcting one
   identifier and narrowly excluding generated `fnv1a64:` fingerprints. The
   combined panic and typo gates rerun on settled source.
-- Next serialized gates after the sixth hosted correction commit:
+- Next serialized gates after the seventh hosted correction commit:
   1. repeat the exact clean local freeze gates without another broad coverage
      or test-generation tranche;
   2. push the replacement SHA to the existing RC branch and run exact-SHA
@@ -915,8 +942,8 @@ The rubric was checked against current primary or first-party sources on
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
 | PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
-| FINAL-001 | P1 | in progress | all above | Hosted defects through `d3de41ce` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
-| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`, `a3307c18`, `bca8ad58`, and `d3de41ce` are invalidated. The commit containing the sixth hosted correction checkpoint must repeat the clean exact local gates before push and external verification. |
+| FINAL-001 | P1 | in progress | all above | Hosted defects through `a4786571` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
+| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`, `a3307c18`, `bca8ad58`, `d3de41ce`, and `a4786571` are invalidated. The commit containing the seventh hosted correction checkpoint must repeat the clean exact local gates before push and external verification. |
 | TAG-001 | P3 | deferred outside verified-RC endpoint | RC-001 | Annotated tag and guarded publication require separate authorization |
 
 ## 6. Phase 0 — reconcile the worktree

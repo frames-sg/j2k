@@ -1,8 +1,11 @@
 use std::{
     env,
     ffi::{OsStr, OsString},
+    io,
     path::Path,
     process::{Command, Output},
+    thread,
+    time::Duration,
 };
 
 #[cfg(all(test, unix))]
@@ -11,6 +14,24 @@ use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 #[cfg(all(test, unix))]
 thread_local! {
     static TEST_CARGO_PROGRAM: RefCell<Option<OsString>> = const { RefCell::new(None) };
+}
+
+const EXECUTABLE_BUSY_RETRY_DELAYS: [u64; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
+
+pub(crate) fn retry_executable_busy<T>(mut start: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    for delay_ms in EXECUTABLE_BUSY_RETRY_DELAYS {
+        match start() {
+            Err(error) if is_executable_busy(&error) => {
+                thread::sleep(Duration::from_millis(delay_ms));
+            }
+            result => return result,
+        }
+    }
+    start()
+}
+
+fn is_executable_busy(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::ExecutableFileBusy
 }
 
 /// Path to the cargo binary driving this xtask invocation.
@@ -86,8 +107,8 @@ pub(crate) fn run_command(
     let program = program.as_ref();
     let display = display_command(program, args, context);
     eprintln!("+ {display}");
-    let status = configured_command(program, args, context)
-        .status()
+    let mut command = configured_command(program, args, context);
+    let status = retry_executable_busy(|| command.status())
         .map_err(|err| format!("failed to start `{}`: {err}", program.to_string_lossy()))?;
     if status.success() {
         Ok(())
@@ -114,8 +135,8 @@ pub(crate) fn command_output(
     context: CommandContext<'_>,
 ) -> Result<Output, String> {
     let program = program.as_ref();
-    configured_command(program, args, context)
-        .output()
+    let mut command = configured_command(program, args, context);
+    retry_executable_busy(|| command.output())
         .map_err(|err| format!("failed to start `{}`: {err}", program.to_string_lossy()))
 }
 
@@ -188,8 +209,44 @@ fn display_command(program: &OsStr, args: &[&str], context: CommandContext<'_>) 
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{cargo, use_test_cargo_program};
-    use std::ffi::OsString;
+    use super::{
+        cargo, retry_executable_busy, use_test_cargo_program, EXECUTABLE_BUSY_RETRY_DELAYS,
+    };
+    use std::{ffi::OsString, io};
+
+    #[test]
+    fn executable_busy_retry_is_bounded_and_preserves_other_start_errors() {
+        let mut transient_attempts = 0;
+        let value = retry_executable_busy(|| {
+            transient_attempts += 1;
+            if transient_attempts < 3 {
+                Err(io::Error::from(io::ErrorKind::ExecutableFileBusy))
+            } else {
+                Ok("started")
+            }
+        })
+        .expect("transient executable-busy error is retried");
+        assert_eq!(value, "started");
+        assert_eq!(transient_attempts, 3);
+
+        let mut permanent_attempts = 0;
+        let error = retry_executable_busy::<()>(|| {
+            permanent_attempts += 1;
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))
+        })
+        .expect_err("non-transient start error is preserved");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(permanent_attempts, 1);
+
+        let mut exhausted_attempts = 0;
+        let error = retry_executable_busy::<()>(|| {
+            exhausted_attempts += 1;
+            Err(io::Error::from(io::ErrorKind::ExecutableFileBusy))
+        })
+        .expect_err("persistent executable-busy error remains visible");
+        assert_eq!(error.kind(), io::ErrorKind::ExecutableFileBusy);
+        assert_eq!(exhausted_attempts, EXECUTABLE_BUSY_RETRY_DELAYS.len() + 1);
+    }
 
     #[test]
     fn cargo_test_override_is_thread_local_nested_and_transactional() {

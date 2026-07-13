@@ -1,9 +1,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::{io, thread, time::Duration};
+
 use super::{
     common, include_kakadu_encoder, Command, EncoderKind, EncoderTool, ImageCase, Path, PathBuf,
     Stdio,
 };
+
+const EXECUTABLE_BUSY_RETRY_DELAYS: [u64; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
+
+fn start_with_executable_busy_retry<T>(mut start: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    for delay_ms in EXECUTABLE_BUSY_RETRY_DELAYS {
+        match start() {
+            Err(error) if is_executable_busy(&error) => {
+                thread::sleep(Duration::from_millis(delay_ms));
+            }
+            result => return result,
+        }
+    }
+    start()
+}
+
+fn is_executable_busy(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::ExecutableFileBusy
+}
 
 pub(super) fn all_encoder_tools() -> Result<Vec<EncoderTool>, String> {
     let current = std::env::current_exe().map_err(|error| format!("current_exe: {error}"))?;
@@ -205,10 +225,8 @@ pub(super) fn run_encoder_once(
                 .arg("-");
         }
     }
-    let status = command
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let status = start_with_executable_busy_retry(|| command.status())
         .map_err(|error| format!("start {}: {error}", tool.kind.label()))?;
     if !status.success() {
         return Err(format!(
@@ -285,10 +303,9 @@ pub(super) fn command_version_label(tool: &EncoderTool) -> Result<String, String
         EncoderKind::Kakadu => &[&["-usage"], &["-h"]],
     };
     for args in arg_sets {
-        let output = Command::new(&tool.program)
-            .args(*args)
-            .output()
-            .map_err(|error| format!("{}:{error}", tool.kind.label()))?;
+        let output =
+            start_with_executable_busy_retry(|| Command::new(&tool.program).args(*args).output())
+                .map_err(|error| format!("{}:{error}", tool.kind.label()))?;
         let mut text = String::new();
         text.push_str(&String::from_utf8_lossy(&output.stdout));
         text.push_str(&String::from_utf8_lossy(&output.stderr));
