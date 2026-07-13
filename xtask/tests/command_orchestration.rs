@@ -120,6 +120,22 @@ fn release_critical_orchestrators_run_from_the_workspace_without_real_cargo() {
         "stable-api must reach snapshot comparison: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let output = harness.run_with_env(
+        &["stable-api"],
+        &[
+            ("RUSTFLAGS", "-D warnings"),
+            ("RUSTDOCFLAGS", "-D warnings"),
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "synthetic API must not replace snapshots under CI warning flags"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("stable API snapshots are stale"),
+        "stable-api must accept canonical CI warning flags and reach snapshot comparison: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let output = harness.run(&["semver"]);
     assert!(!output.status.success(), "synthetic API must fail semver");
     assert!(

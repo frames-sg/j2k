@@ -77,9 +77,12 @@ pub(super) fn collect_package_apis(
 }
 
 pub(super) fn validate_public_api_environment() -> Result<(), String> {
-    validate_public_api_environment_keys(
-        env::vars_os().map(|(key, _)| key.to_string_lossy().into_owned()),
-    )
+    validate_public_api_environment_entries(env::vars_os().map(|(key, value)| {
+        (
+            key.to_string_lossy().into_owned(),
+            value.to_string_lossy().into_owned(),
+        )
+    }))
 }
 
 fn collect_package_api(package: &str) -> Result<PackageApiInventory, String> {
@@ -161,17 +164,31 @@ fn validate_cargo_public_api_version_output(output: &str) -> Result<(), String> 
     }
 }
 
+#[cfg(test)]
 fn validate_public_api_environment_keys<I, S>(keys: I) -> Result<(), String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let conflicts = keys
+    validate_public_api_environment_entries(keys.into_iter().map(|key| (key, "<set>")))
+}
+
+fn validate_public_api_environment_entries<I, K, V>(entries: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    let conflicts = entries
         .into_iter()
-        .filter_map(|key| {
+        .filter_map(|(key, value)| {
             let key = key.as_ref();
-            (FORBIDDEN_ENV_VARS.contains(&key)
-                || key.starts_with("CARGO_TARGET_") && key.ends_with("_RUSTFLAGS"))
+            let value = value.as_ref();
+            let canonical_ci_warning_flags =
+                matches!(key, "RUSTFLAGS" | "RUSTDOCFLAGS") && value == ORDINARY_RUSTDOCFLAGS;
+            (!canonical_ci_warning_flags
+                && (FORBIDDEN_ENV_VARS.contains(&key)
+                    || key.starts_with("CARGO_TARGET_") && key.ends_with("_RUSTFLAGS")))
             .then(|| key.to_string())
         })
         .collect::<BTreeSet<_>>();
@@ -198,9 +215,9 @@ fn public_api_line_set(output: &str) -> BTreeSet<String> {
 mod tests {
     use super::{
         public_api_cargo_args, public_api_line_set, split_hidden_api,
-        validate_cargo_public_api_version_output, validate_public_api_environment_keys,
-        CARGO_PUBLIC_API_VERSION, HIDDEN_API_SNAPSHOT, PUBLIC_API_SNAPSHOT, PUBLIC_API_TARGET,
-        PUBLIC_API_TOOLCHAIN,
+        validate_cargo_public_api_version_output, validate_public_api_environment_entries,
+        validate_public_api_environment_keys, CARGO_PUBLIC_API_VERSION, HIDDEN_API_SNAPSHOT,
+        PUBLIC_API_SNAPSHOT, PUBLIC_API_TARGET, PUBLIC_API_TOOLCHAIN,
     };
 
     #[test]
@@ -298,6 +315,26 @@ mod tests {
             assert!(
                 validate_public_api_environment_keys([key]).is_err(),
                 "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn environment_guard_accepts_ci_warning_denials_but_rejects_other_flag_values() {
+        assert!(validate_public_api_environment_entries([
+            ("RUSTFLAGS", "-D warnings"),
+            ("RUSTDOCFLAGS", "-D warnings"),
+        ])
+        .is_ok());
+
+        for (key, value) in [
+            ("RUSTFLAGS", "--cfg unstable_api"),
+            ("RUSTDOCFLAGS", "--document-hidden-items"),
+            ("RUSTDOCFLAGS", "-D warnings --document-hidden-items"),
+        ] {
+            assert!(
+                validate_public_api_environment_entries([(key, value)]).is_err(),
+                "{key}={value}"
             );
         }
     }

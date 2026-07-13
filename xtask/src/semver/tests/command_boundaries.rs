@@ -3,10 +3,10 @@
 use std::{collections::BTreeSet, ffi::OsString, fs, path::Path};
 
 use super::super::{
-    baseline_api_snapshot, capture_command, current_api_snapshot, require_macos, run_semver_checks,
-    semver, verify_baseline_tag, verify_or_write_report, workspace_package_versions, Options,
+    capture_command, current_api_snapshot, require_macos, run_semver_checks, semver,
+    validate_baseline_revision, verify_or_write_report, workspace_package_versions, Options,
     SnapshotKind, API_DIFF_REPORT, CARGO_PUBLIC_API_VERSION, HIDDEN_API_SNAPSHOT,
-    PUBLIC_API_SNAPSHOT,
+    PUBLIC_API_SNAPSHOT, SEMVER_BASELINE_COMMIT,
 };
 
 fn workspace_path(relative: &str) -> String {
@@ -55,11 +55,7 @@ fn command_capture_preserves_success_failure_and_non_utf8_diagnostics() {
 }
 
 #[test]
-fn committed_semver_inputs_match_the_pinned_workspace_contract() {
-    verify_baseline_tag().expect("pinned baseline tag");
-    let baseline = baseline_api_snapshot(CARGO_PUBLIC_API_VERSION).expect("baseline API snapshot");
-    assert!(baseline.starts_with("# J2K 1.0 Public API Snapshot"));
-
+fn committed_candidate_semver_inputs_match_the_pinned_workspace_contract() {
     let ordinary = current_api_snapshot(
         &workspace_path(PUBLIC_API_SNAPSHOT),
         SnapshotKind::Ordinary,
@@ -78,6 +74,14 @@ fn committed_semver_inputs_match_the_pinned_workspace_contract() {
     let versions = workspace_package_versions().expect("workspace package versions");
     assert_eq!(versions.get("j2k").map(String::as_str), Some("0.7.0"));
     assert!(versions.keys().collect::<BTreeSet<_>>().len() > 10);
+}
+
+#[test]
+fn baseline_revision_validation_accepts_only_the_pinned_commit() {
+    assert_eq!(validate_baseline_revision(SEMVER_BASELINE_COMMIT), Ok(()));
+    let error = validate_baseline_revision("0000000000000000000000000000000000000000")
+        .expect_err("mismatched baseline revision");
+    assert!(error.contains(SEMVER_BASELINE_COMMIT));
 }
 
 #[test]

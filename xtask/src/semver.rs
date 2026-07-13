@@ -171,8 +171,8 @@ pub(crate) fn semver(
 ) -> Result<(), String> {
     let options = parse_options(args)?;
     require_macos()?;
-    verify_baseline_tag()?;
     verify_tool_versions(cargo_public_api_version)?;
+    verify_baseline_tag()?;
     validate_package_partition(stable_packages)?;
 
     let versions = workspace_package_versions()?;
@@ -335,12 +335,15 @@ fn verify_baseline_tag() -> Result<(), String> {
         &[],
         "resolve semver baseline tag",
     )?;
-    if revision.trim() == SEMVER_BASELINE_COMMIT {
+    validate_baseline_revision(revision.trim())
+}
+
+fn validate_baseline_revision(revision: &str) -> Result<(), String> {
+    if revision == SEMVER_BASELINE_COMMIT {
         Ok(())
     } else {
         Err(format!(
-            "{SEMVER_BASELINE_TAG} must peel to {SEMVER_BASELINE_COMMIT}, found `{}`",
-            revision.trim()
+            "{SEMVER_BASELINE_TAG} must peel to {SEMVER_BASELINE_COMMIT}, found `{revision}`"
         ))
     }
 }
