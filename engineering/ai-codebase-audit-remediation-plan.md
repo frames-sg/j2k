@@ -169,10 +169,11 @@ the issue sections below; this capsule is only the current continuation state.
   report, review rationales, and per-package comparisons. Pre-candidate
   `release-integrity`, ordinary and
   final `public-support`, `unsafe-audit`, warning-denied workspace/public-crate
-  docs, and downstream facade/transcode examples pass. Publish-mode integrity
-  fails only because the real `0.7.0` date and patched-`block` reviewer/date are
-  not yet supplied. Those values must not be inferred. The local `v0.7.0` tag
-  remains absent. The clean-tree staged package gate also passes: all package
+  docs, and downstream facade/transcode examples pass. `greg` approved the
+  hash-pinned patched-`block` ABI-only delta on 2026-07-12; publish-mode
+  integrity now fails only because the real `0.7.0` date is not yet supplied.
+  That date must not be inferred. The local `v0.7.0` tag remains absent. The
+  clean-tree staged package gate also passes: all package
   inventories were inspected, independent crates completed publish dry runs,
   and dependent crates packaged against staged local patches without publishing.
   A read-only GitHub API check on 2026-07-12 confirms private vulnerability
@@ -370,8 +371,7 @@ the issue sections below; this capsule is only the current continuation state.
      run publish-mode offline integrity, and commit a clean candidate SHA;
   4. run exact-SHA hosted CI plus Metal and CUDA hardware validation.
 - External release blockers: GitHub private vulnerability reporting is disabled
-  (CONTACT-001); patched `block 0.1.6` provenance reviewer/date is pending
-  (PROV-001); release date and candidate SHA do not yet exist. A tag is
+  (CONTACT-001); the release date and candidate SHA do not yet exist. A tag is
   deliberately outside this verified-RC endpoint.
 - CUDA handoff: the maintainer supplied a private WSL/NVIDIA host with RTX 4070
   SUPER, CUDA 13.2, Rust 1.96, and libclang 18. Keep login/address out of tracked
@@ -589,7 +589,7 @@ The rubric was checked against current primary or first-party sources on
 | PUB-002 | P1 | complete | PKG-001, CUDA-002 | Fail-closed canonical origin, exact remote annotated tag, Release, and crates.io preflight |
 | DOC-002 | P2 | complete | SEC-001 | Public/support/unsafe/API documentation is reconciled; warning-denied docs, downstream examples, and ordinary/final support gates pass, and this remains the sole execution ledger |
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
-| PROV-001 | P1 | blocked on maintainer input | DOC-002 | Record release signoff identity and date |
+| PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
 | FINAL-001 | P1 | in progress | all above | Clean local release matrix |
 | RC-001 | P1 | pending | FINAL-001 | Immutable exact-SHA candidate |
@@ -708,7 +708,7 @@ are current.
 | `.github/workflows` | CI-001, COV-001, PUB-001, CUDA-002 | Exact-SHA, source-aware, fail-closed host/GPU/publication orchestration |
 | `docs`, `engineering`, and `CHANGELOG.md` | DOC-001/002, REC-001, REL-001, SEM-001, CLONE-001, PERF-001 | Canonical handoff, honest staged-release/API/unsafe/performance documentation, and final evidence placeholders |
 | `scripts` | CI-001, PUB-001, REL-001 | Checked publication and workflow support scripts |
-| `third_party/block-0.1.6-patched/PATCH_PROVENANCE.md` | PROV-001, METALDEP-001 | Hash-pinned ABI-delta provenance; maintainer identity/date signoff remains external |
+| `third_party/block-0.1.6-patched/PATCH_PROVENANCE.md` | PROV-001, METALDEP-001 | Hash-pinned ABI-only delta approved by `greg` on 2026-07-12 |
 | root Cargo/config/release files | COV-001, CLONE-001, REC-001, REL-001, DOC-002, CONTACT-001, POLICY-001, METALDEP-001 | Dependency/tooling pins, source classification, ignores, release metadata, contact policy, and patch scope |
 
 Moving-tree reconciliation snapshot on 2026-07-12 after independent review: 65
@@ -6831,7 +6831,7 @@ Metal public API. Migration acceptance requires exact device behavior, ABI,
 autorelease/ownership, public-API, benchmark, and package-resolution parity;
 the local patch must not be silently removed or described as protecting
 published consumers. Maintainer reviewer/date signoff for the vendored ABI
-delta remains PROV-001, not METALDEP-001.
+delta is recorded under PROV-001, not METALDEP-001.
 
 ### Public contracts verified by the documentation audit
 

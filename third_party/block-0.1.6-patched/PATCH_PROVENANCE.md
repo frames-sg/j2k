@@ -25,10 +25,10 @@ pins this document and recomputes the patched local source digest offline.
 
 ## Release approval
 
-- Reviewer identity: `PENDING`
-- Approval date: `PENDING`
+- Reviewer identity: `greg`
+- Approval date: `2026-07-12`
 
-These structured fields are deliberately incomplete. The release integrity
-gate rejects placeholders and requires a real reviewer identity plus a
-calendar-valid approval date before publication. Maintainers must record the
-actual values after review; do not prefill or guess them.
+These structured fields record the maintainer who reviewed the pinned source
+and documented ABI-only delta for the 0.7 release candidate. The release
+integrity gate rejects placeholders and requires a real reviewer identity plus
+a calendar-valid approval date before publication.
