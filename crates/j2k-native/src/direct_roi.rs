@@ -102,6 +102,9 @@ impl From<J2kRequiredBandRegion> for J2kRect {
     }
 }
 
+#[cfg(test)]
+mod region_tests;
+
 /// Required input windows for one direct-plan IDWT step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct J2kIdwtRequiredInputWindows {

@@ -173,6 +173,9 @@ fn idwt_required_region_propagation_uses_shared_native_helper() {
     let root = repo_root();
     let direct_roi = fs::read_to_string(root.join("crates/j2k-native/src/direct_roi.rs"))
         .expect("read native direct ROI helper");
+    let direct_roi_tests =
+        fs::read_to_string(root.join("crates/j2k-native/src/direct_roi/region_tests.rs"))
+            .expect("read native direct ROI helper tests");
     let native_roi = fs::read_to_string(root.join("crates/j2k-native/src/j2c/roi.rs"))
         .expect("read native ROI planner");
     let cuda_direct =
@@ -188,8 +191,22 @@ fn idwt_required_region_propagation_uses_shared_native_helper() {
             "pub fn idwt_required_input_window_for_rects",
             "pub const fn idwt_required_output_margin",
             "pub struct J2kRequiredBandRegion",
+            "mod region_tests;",
         ]),
+        PatternCheck::new("j2k-native direct ROI region contracts", &direct_roi_tests).required(
+            &[
+                "fn expanded_within_rect_clamps_each_edge_in_absolute_coordinates()",
+                "fn expanded_within_rect_saturates_overflow_before_clamping()",
+                "fn union_returns_the_commutative_bounding_envelope()",
+                "fn to_rect_preserves_non_empty_empty_and_maximum_coordinates()",
+                "fn from_required_region_matches_the_explicit_rect_conversion()",
+            ],
+        ),
     ]);
+    assert!(
+        direct_roi_tests.lines().count() < 100,
+        "native direct ROI region contracts must stay below their focused 100-line ratchet"
+    );
 
     for (relative, source) in [
         (
