@@ -67,11 +67,12 @@ the issue sections below; this capsule is only the current continuation state.
   reconciliation are settled through `321f7673`. The candidate branch
   `rc/0.7.0-candidate` and draft
   [PR #50](https://github.com/frames-sg/j2k/pull/50) target `main`. Hosted CI
-  invalidated `8013f18a`, `938a9c63`, and `a4f6d0f8`; the complete causes and
-  local corrections are recorded in the hosted RC checkpoint below. The commit
-  containing this checkpoint is the only eligible replacement candidate and
-  still requires clean-tree local release gates plus hosted, Metal, and CUDA
-  verification for that exact SHA. An isolated RC worktree
+  invalidated `8013f18a`, `938a9c63`, `a4f6d0f8`, and `b3856331`; the complete
+  causes and local corrections are recorded in the hosted RC checkpoint below.
+  Corrections are committed through `6a1b89b2`; the commit containing this
+  checkpoint is the only eligible replacement candidate and still requires
+  clean-tree local release gates plus hosted, Metal, and CUDA verification for
+  that exact SHA. An isolated RC worktree
   preserves the 0.7 fixes while the
   shared `main` worktree contains a separate, uncommitted user-owned ML/CUDA
   change set that appeared during NVIDIA verification and must not be discarded
@@ -317,6 +318,48 @@ the issue sections below; this capsule is only the current continuation state.
   Metal, and CUDA workflows only after committing and pushing the exact
   replacement SHA; do not reuse evidence from `8013f18a`, `938a9c63`, or
   `a4f6d0f8`.
+- Second hosted RC correction checkpoint (2026-07-13): corrected candidate
+  `b3856331` was pushed to PR #50. Its secret-scan workflow passed, and the
+  exact-SHA CUDA workflow proved that the new non-privileged pinned coverage
+  bootstrap works on the real runner before that workflow was cancelled once
+  hosted CI established that tracked corrections were required. The hosted
+  stable-API, semver, package, release-integrity, no-std, strict-Clippy,
+  clone-audit, panic-surface, unsafe-audit, fuzz, codec-math, dependency-policy,
+  Metal compile/pure-test, benchmark-build, and macOS release-CPU jobs passed.
+  The expected GPU-path policy remained red because the corresponding GPU run
+  had not completed; it may be rerun only after the next exact-SHA GPU workflow
+  is green. Four actionable roots invalidated `b3856331`:
+  - semver test-only macOS imports were unconditional, so warning-denied Linux
+    Clippy, ordinary tests, and host coverage stopped at the same unused-import
+    diagnostic. Commit `898d0162` target-gates those imports. Both native and
+    x86_64-Linux strict xtask Clippy pass, as do all 25 focused semver tests;
+  - the portable `j2k-metal::NativeBackendError` had duplicate cfg-selected
+    declarations, and the non-macOS declaration lacked the public type's docs.
+    Commit `898d0162` gives the public type one documented declaration with
+    cfg-selected private storage. Warning-denied/missing-docs x86_64-Linux docs
+    and strict all-target/all-feature Clippy pass;
+  - the hermetic release-command integration harness delegated the semver
+    baseline tag lookup to the ambient checkout. Ordinary macOS test jobs are
+    intentionally shallow, so they failed before reaching the synthetic API
+    comparison. Commit `898d0162` supplies the pinned baseline commit and a
+    complete synthetic baseline inventory inside the fake-Git boundary. The
+    real semver command remains unchanged and still runs in a full-history job;
+    all four command-orchestration tests pass;
+  - Ubuntu's Grok 10.0.5 CLI corrupts or zero-fills reduced single-component
+    PGM output after the first eight-row strip. Primary-source inspection and a
+    local exact-version build proved that thread pinning does not repair it;
+    Grok's split-component flag selects its complete single-component row
+    writer. Commit `6a1b89b2` applies that compatibility flag only to the two
+    reduced-grayscale comparator calls. The focused and full Grok parity suites
+    pass against both 10.0.5 and 20.3.2 (2/2 and 12/12 respectively), while RGB,
+    full-resolution, and region contracts remain unchanged.
+  On the integrated corrections, all 416 active repository policies pass with
+  the established single ignore, warning-denied workspace/public-crate docs
+  pass, and the complete local comparator signoff passes: 9 in-process
+  OpenJPEG/Grok, 7 OpenJPEG CLI, 12 Grok CLI, and 1 libjpeg-turbo tests. The
+  Windows release-CPU job also completed successfully, closing the final
+  outstanding `b3856331` job without another failure root. No `b3856331` result
+  is final-candidate evidence.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -734,8 +777,8 @@ The rubric was checked against current primary or first-party sources on
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
 | PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
-| FINAL-001 | P1 | in progress | all above | Focused correction gates are green; replacement-SHA hosted and hardware matrices remain |
-| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, and `a4f6d0f8` are invalidated and the commit containing this checkpoint is the corrected candidate awaiting exact external evidence |
+| FINAL-001 | P1 | in progress | all above | Hosted defects through `b3856331` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
+| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, and `b3856331` are invalidated. Corrections are committed through `6a1b89b2`; the commit containing this checkpoint must pass the clean exact local gates before push and external verification. |
 | TAG-001 | P3 | deferred outside verified-RC endpoint | RC-001 | Annotated tag and guarded publication require separate authorization |
 
 ## 6. Phase 0 — reconcile the worktree
