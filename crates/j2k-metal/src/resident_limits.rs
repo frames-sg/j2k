@@ -3,17 +3,25 @@
 /// Default resident chunk used to size warm private-buffer retention.
 pub(crate) const DEFAULT_RESIDENT_CHUNK_TILES: usize = 512;
 
+#[cfg(test)]
 const MAX_RESIDENT_COMPONENTS: usize = 3;
+#[cfg(test)]
 const PRIVATE_COMPONENT_PLANES_PER_TILE: usize = MAX_RESIDENT_COMPONENTS;
+#[cfg(test)]
 const PRIVATE_DWT_SCRATCH_PER_COMPONENT: usize = 1;
+#[cfg(test)]
 const MAX_PRIVATE_BUFFERS_PER_RESIDENT_TILE: usize =
     PRIVATE_COMPONENT_PLANES_PER_TILE + MAX_RESIDENT_COMPONENTS * PRIVATE_DWT_SCRATCH_PER_COMPONENT;
 
+#[cfg(test)]
 const BASE_PRIVATE_BUFFERS_PER_RESIDENT_BATCH: usize = 7;
+#[cfg(test)]
 const CLASSIC_SPLIT_TOKEN_PRIVATE_BUFFERS_PER_BATCH: usize = 4;
+#[cfg(test)]
 const MAX_PRIVATE_BUFFERS_PER_RESIDENT_BATCH: usize =
     BASE_PRIVATE_BUFFERS_PER_RESIDENT_BATCH + CLASSIC_SPLIT_TOKEN_PRIVATE_BUFFERS_PER_BATCH;
 
+#[cfg(test)]
 pub(crate) const DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS: usize = DEFAULT_RESIDENT_CHUNK_TILES
     * MAX_PRIVATE_BUFFERS_PER_RESIDENT_TILE
     + MAX_PRIVATE_BUFFERS_PER_RESIDENT_BATCH;
@@ -29,6 +37,9 @@ mod tests {
     fn private_pool_record_limit_covers_default_resident_chunk_working_set() {
         assert_eq!(DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS, 3_083);
         assert_eq!(RESIDENT_PRIVATE_POOL_BUFFER_LIMIT, 4_096);
-        assert!(RESIDENT_PRIVATE_POOL_BUFFER_LIMIT >= DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS);
+        assert!(
+            std::hint::black_box(RESIDENT_PRIVATE_POOL_BUFFER_LIMIT)
+                >= DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS
+        );
     }
 }

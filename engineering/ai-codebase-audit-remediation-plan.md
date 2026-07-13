@@ -1,6 +1,6 @@
 # j2k 0.7 Full Remediation and Release Runbook
 
-Last updated: 2026-07-12
+Last updated: 2026-07-13
 
 This is the canonical execution record for the 0.7 quality sweep. Git history
 preserves the previous audit diary; do not create competing fixed, new, or
@@ -62,8 +62,8 @@ but are not yet promoted to final exact-candidate evidence.
 Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
-- Release state: **blocked** and unfrozen. The latest settled implementation
-  commit is `3a0089ff`. An isolated RC worktree preserves the candidate fixes while the
+- Release state: **blocked** and unfrozen. The 0.7/0.7.1 separation series is
+  settled through `82fe82a2`. An isolated RC worktree preserves the 0.7 fixes while the
   shared `main` worktree contains a separate, uncommitted user-owned ML/CUDA
   change set that appeared during NVIDIA verification and must not be discarded
   or silently folded into 0.7. No push, release tag, crate
@@ -71,17 +71,26 @@ the issue sections below; this capsule is only the current continuation state.
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
   or publication.
-- Current objective: freeze API, provenance, and release documentation, resolve
-  every locally actionable gate, then prepare and verify one exact candidate
-  SHA. The 80% overall, accelerator, and critical-path coverage policy is
-  source-complete; no further broad coverage tranches are authorized. Preserve
-  idiomatic Rust ownership, typed errors, fallible allocation, transactional
-  mutation, and actual allocator-capacity accounting.
-- Immediate continuation point (2026-07-12): direct CPU coefficient owners are
-  fallibly budgeted (`59055081`); the Metal resident pool ceiling is derived
-  from its real default working set (`c901602c`); and resident encoding now
-  submits at most the configured in-flight chunk count with transactional range
-  validation and failure stop (`3c2d1793`). Host/Metal/CUDA coverage ownership
+- Current objective: finish 0.7.0 only, freeze its API, provenance, and release
+  documentation, resolve every locally actionable gate, then prepare and verify
+  one exact candidate SHA. The 80% overall, accelerator, and critical-path
+  coverage policy is source-complete; no further broad coverage tranches are
+  authorized. Preserve idiomatic Rust ownership, typed errors, fallible
+  allocation, transactional mutation, and actual allocator-capacity accounting.
+- 0.7/0.7.1 scope split (2026-07-13): the recent Metal direct-coefficient
+  accounting, resident-pool ceiling, in-flight scheduler, scheduler-evidence,
+  and candidate-policy changes are not part of 0.7.0. Their exact combined tree
+  is preserved at `f30cda9062b3265958c12263df154d92496dd0de` on local branch
+  `wip/0.7.1-metal-optimizations`. The RC branch explicitly reverts those five
+  changes in `7c15b514`, `31409c32`, `361b6a6e`, `1cff40a4`, and `82fe82a2`.
+  No branch, tag, crate, or release artifact has been pushed or published. The
+  reduced Metal tree compiles, its focused batch and compute behavior tests
+  pass, strict all-target/all-feature Clippy passes, and the resident/buffer-pool
+  policy tests pass. The pre-split Metal coverage and performance results are
+  historical only and must not be used as exact-candidate evidence. Continue
+  directly with reduced-tree API/semver reconciliation and the remaining 0.7
+  gates; do not resume broad Metal test generation or performance work.
+- Immediate continuation point (2026-07-13): Host/Metal/CUDA coverage ownership
   is partitioned with schema v3 and exact-SHA/lane provenance (`f3823de9`), and
   covered macro invocations no longer fail merely because the AST treats the
   invocation as opaque (`d717f7c8`). Release/semver, adoption runner/artifact
@@ -153,13 +162,15 @@ the issue sections below; this capsule is only the current continuation state.
   now preserve compatible accumulation flags and collapse lexical parent
   components without permitting repository-root escape. All 105 focused
   coverage tests, strict xtask Clippy, formatting, and strict repository policy
-  pass. The live Metal rerun reaches schema-v5 evaluation and records 72.2102%
-  overall/accelerator coverage (24,046 / 33,300) and 72.3885% critical coverage
-  (24,046 / 33,218), so the unchanged 80% gates remain genuinely red. The
+  pass. The pre-split Metal rerun reached schema-v5 evaluation and recorded
+  72.2102% overall/accelerator coverage (24,046 / 33,300) and 72.3885% critical
+  coverage (24,046 / 33,218). The
   report records 1,214 zero-body findings as audited evidence, including the
   benchmark support path as low-risk tooling; it does not turn that residual
   into an absent-file release failure. Per the explicit 0.7 decision, do not
-  begin another broad test-generation tranche or add execution-only tests.
+  begin another broad test-generation tranche or add execution-only tests. The
+  2026-07-13 scope split invalidates these percentages as candidate evidence;
+  only the next exact reduced-tree run may determine the remaining coverage gap.
 - 0.7 testing-architecture checkpoint (2026-07-12): Burn's backend-generic
   architecture and real-hardware support are the direction for j2k's test
   boundaries, while Burn ONNX's full-pipeline numerical validation is the
@@ -529,7 +540,7 @@ The rubric was checked against current primary or first-party sources on
   repairing them. That supports the independent unsafe-boundary, input,
   dependency, fuzz, and hardware-path checks in the release matrix.
 
-## 5. Live task dashboard (updated 2026-07-12)
+## 5. Live task dashboard (updated 2026-07-13)
 
 | ID | Severity | Status | Depends on | Outcome |
 |---|---:|---|---|---|
@@ -543,7 +554,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | complete | REC-001 | Independent review approved all 33 ordinary/hidden schema-2 entries after adding the missing j2k-profile migration mappings; stable API and full semver verification pass with exact fingerprints |
-| COV-001 | P2 | in progress | METAL-001 | Schema-v5 preserves the 80% overall, accelerator, and critical-path gates; exact host evidence at `954b2d74` is 88.59% overall and 87.70% critical. Compatible pinned-tool accumulation and lexical LLVM source-path normalization are focused-test/policy green. The complete Metal evaluator now records zero-body residuals without blanket absent-file failure, but the genuine numeric gates remain red at 72.21% overall/accelerator and 72.39% critical. No broad execution-only test tranche is authorized; CUDA and final exact-SHA artifacts remain. |
+| COV-001 | P2 | in progress | METAL-001 | Schema-v5 preserves the 80% overall, accelerator, and critical-path gates; exact host evidence at `954b2d74` is 88.59% overall and 87.70% critical. Compatible pinned-tool accumulation and lexical LLVM source-path normalization are focused-test/policy green. Zero-body residuals are audited without blanket absent-file failure. The pre-split Metal percentages are invalidated by the 0.7/0.7.1 scope split; the next exact reduced-tree run must identify any remaining numeric gap. No broad execution-only test tranche is authorized; CUDA and final exact-SHA artifacts remain. |
 | TESTARCH-001 | P3 | accepted post-0.7 | COV-001 | Consolidate reusable CPU/Auto/Metal/CUDA behavioral contracts after 0.7; exact per-backend parity and hardware lanes remain mandatory for this RC |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
