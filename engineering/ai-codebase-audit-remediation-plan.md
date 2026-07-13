@@ -62,7 +62,7 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `1692982e`. No push, release tag, crate
+  before this ledger refresh is `61693664`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -101,15 +101,19 @@ the issue sections below; this capsule is only the current continuation state.
   with that file-lifecycle owner split from the command facade (`787d3be4`). A
   pre-evaluation exact attempt then exposed the existing repo-policy size
   ratchet; codegen policy ownership was split without raising it (`1692982e`).
+  Exact evidence then proved that multiline syntax interiors without LCOV line
+  records dominated the apparent fixture-builder gap. Compiler regions now own
+  covered/zero line evidence, while lines absent from the compiler's code-region
+  model are explicitly recorded as noninstrumentable (`5887efd7`, `61693664`).
   The clean exact-SHA
   host run completed the full host matrix and 411-test repository policy suite,
-  generated schema-v4 LCOV and LLVM region artifacts, and failed the real gate
-  at 77.8276% (65,081 / 83,622). Reaching the exact 80% boundary of 66,898
-  requires 1,817 additional covered executable lines. The report has 239
-  uncovered functions, 426 uncovered executable bodies, 467
+  generated schema-v4 LCOV and LLVM region artifacts, and passed the numeric
+  gate at 87.1294% (65,117 / 74,736). COV-001 remains open on 239
+  uncovered functions, 426 uncovered multiline executable bodies, 467
   compiler-instrumented same-line deferred bodies with zero counts, 172
   compiler-noninstrumentable deferred bodies recorded without false failure,
-  and 582 uncovered opaque macros. The earlier first attempt at `00983dd9` was
+  8,936 compiler-noninstrumentable source lines, and 582 uncovered opaque
+  macros. The earlier first attempt at `00983dd9` was
   correctly discarded after stale ignored coverage JSON caused two
   repository-text policies to fail; generated artifacts remain ignored and are
   moved to Trash after each recorded checkpoint. All subagents are stopped; root
@@ -429,7 +433,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `1692982e` is 77.8276% (65,081 / 83,622); close the 1,817-line numeric gap plus 239 function, 426 body, 467 zero-count deferred-region, and 582 opaque-macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `61693664` passes the numeric gate at 87.1294% (65,117 / 74,736); close 239 function, 426 body, 467 zero-count deferred-region, and 582 opaque-macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -1092,6 +1096,52 @@ tile-part handling (170), Metal orchestration (165), release commands (152),
 semver (137), native packet-header encoding (128), compare decode/comparators
 (125/124), and native decode store (123). Select the next cohesive behavior
 tranche from this exact report and commit it before another full coverage run.
+
+The compiler-line evidence checkpoint at
+`61693664a5267f5c9957489a1232630934ccb519` retains schema
+`j2k-changed-line-coverage-v4` and closes the numeric 80% gate. Package-only
+LLVM coverage first showed that the 3,478-line JPEG fixture builder had only six
+zero-count mapped lines even though the changed-line evaluator reported 338.
+The exact artifact then localized 333 of those reports to syntax lines with no
+LCOV `DA` record. `5887efd7` added most-specific compiler-region ownership for
+missing line records, preserving nested zero-count regions and fail-closed
+behavior when the compiler file record is absent. JSON parsing, line evidence,
+and their tests were split at real ownership boundaries rather than raising the
+existing 350/180/100-line ratchets.
+
+The first exact run at `5887efd7` completed the full host and 411-policy matrix
+but remained at 65,114 of 83,663 lines (77.8289%). Its retained evidence proved
+that the builder had 333 changed syntax lines with neither `DA` records nor
+compiler code regions, versus only five genuine zero-count mapped lines.
+`61693664` therefore records compiler-noninstrumentable source lines explicitly
+and removes only those compiler-proven non-code lines from the denominator.
+Zero-count regions remain uncovered, and a missing compiler file record still
+uses the original fail-closed path. The 244 xtask unit tests, focused coverage
+policy, strict all-target/all-feature Clippy, and formatting passed before the
+commit.
+
+The clean exact run at `61693664` completed the full host matrix and all 411
+repository policies with one established ignore. Changed-line coverage is
+65,117 of 74,736 measurable lines (87.1294%), so the numeric threshold is now
+green without changing the 80% threshold or adding an exclusion. The report
+records 8,936 compiler-noninstrumentable source lines, 172
+compiler-noninstrumentable deferred bodies, four absent instrumentable files,
+and no mixed production/test lines. COV-001 remains in progress because its
+strict behavioral gates still report 239 functions without a covered body, 426
+multiline executable bodies, 467 zero-count deferred compiler regions, and 582
+opaque macros.
+
+The largest genuine uncovered-line owners are Metal orchestration (150),
+release commands (108), compare comparators (104), native tile-part handling
+(103), release status and JPEG NEON (93 each), semver (73), coverage lane
+orchestration (72), and CUDA orchestration (69). Function-body misses are led
+by coverage lane (9), JPEG benchmark support (8), Metal (7), and release status
+(5). Deferred-body misses are led by compare decode (14), semver review and
+native multitile input (12 each), benchmark commands (11), and coverage
+parsing/compiler parsing plus compare paths (10 each). Opaque misses are led by
+release commands (30), semver review (15), Metal/CUDA (14 each), and compare
+comparators (13). Select the next cohesive behavior tranche from these exact
+owners and commit it before another full coverage run.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
