@@ -396,6 +396,9 @@ impl ContextCapacityBudget {
 }
 
 #[cfg(test)]
+mod ownership_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         checked_combined_context_bytes, reset_integer_samples, reset_simd_samples,
