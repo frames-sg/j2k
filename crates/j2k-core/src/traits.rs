@@ -860,3 +860,6 @@ pub trait TileDecompress {
         out: &mut [u8],
     ) -> Result<usize, Self::Error>;
 }
+
+#[cfg(test)]
+mod tests;

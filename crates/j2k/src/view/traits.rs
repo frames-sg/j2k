@@ -178,3 +178,6 @@ impl TileBatchDecode for J2kCodec {
         decoder.decode_region_scaled_into(pool, out, stride, fmt, roi, scale)
     }
 }
+
+#[cfg(test)]
+mod tests;

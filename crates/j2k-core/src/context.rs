@@ -88,3 +88,6 @@ impl<C: CodecContext> DecoderContext<C> {
         self.codec
     }
 }
+
+#[cfg(test)]
+mod tests;
