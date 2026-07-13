@@ -67,9 +67,10 @@ the issue sections below; this capsule is only the current continuation state.
   reconciliation are settled through `321f7673`. The candidate branch
   `rc/0.7.0-candidate` and draft
   [PR #50](https://github.com/frames-sg/j2k/pull/50) target `main`. Hosted CI
-  invalidated `8013f18a`, `938a9c63`, `a4f6d0f8`, and `b3856331`; the complete
-  causes and local corrections are recorded in the hosted RC checkpoint below.
-  Corrections are committed through `6a1b89b2`; the commit containing this
+  invalidated `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, and `93df11a7`;
+  the complete causes and local corrections are recorded in the hosted RC
+  checkpoint below.
+  Corrections are committed through `59301ac4`; the commit containing this
   checkpoint is the only eligible replacement candidate and still requires
   clean-tree local release gates plus hosted, Metal, and CUDA verification for
   that exact SHA. An isolated RC worktree
@@ -360,6 +361,52 @@ the issue sections below; this capsule is only the current continuation state.
   Windows release-CPU job also completed successfully, closing the final
   outstanding `b3856331` job without another failure root. No `b3856331` result
   is final-candidate evidence.
+- Third hosted RC correction checkpoint (2026-07-13): replacement candidate
+  `93df11a7` was pushed to PR #50 and checked by hosted CI run `29281204693`.
+  Secret scanning passed, the Grok 10 compatibility correction passed all
+  12 comparator cases, and stable API, semver, package, publish integrity,
+  release CPU, strict Clippy, docs, no-std, Miri, policy, dependency, fuzz,
+  benchmark-build, and hosted Metal compile/pure-test jobs were green. The
+  exact GPU workflow was cancelled once tracked corrections became necessary;
+  its partial result is not candidate evidence. Three distinct roots invalidate
+  `93df11a7`:
+  - the 0.7 viewport ownership refactor made explicit-Metal capability
+    validation macOS-only. Five Linux test jobs therefore returned host
+    unavailability before rejecting an unsupported grayscale request. Commit
+    `59301ac4` restores the platform-independent fast-packet/capability
+    validation boundary while keeping execution target-gated. The existing
+    behavior regression passes, all 222 JPEG-Metal library tests pass on
+    Apple Silicon, strict package Clippy passes, and warning-denied
+    x86_64-Linux all-target/all-feature compilation succeeds;
+  - the hermetic stable-API orchestration test always expected macOS's later
+    stale-snapshot comparison. During Linux coverage, production correctly
+    failed earlier because Metal-inclusive snapshots may only be generated on
+    macOS. Commit `59301ac4` makes the test require the exact host-appropriate
+    fail-closed boundary without changing the real stable-API command. All four
+    command-orchestration tests and focused strict Clippy pass. The coverage
+    job did not report a numeric or critical-path shortfall; it stopped on this
+    test failure, so no new broad coverage tranche is justified;
+  - Ubuntu Noble provides only `libturbojpeg.pc`, but the comparator build
+    script required both that package and an unrelated `libjpeg.pc`, suppressing
+    the mandatory comparator. Noble's TurboJPEG 2.1.5 also lacks the newer
+    `tj3*` ABI used by the existing harness. Commit `59301ac4` probes only the
+    API it links, selects the 2.x or 3.x ABI from the package version, and keeps
+    the legacy decoder plus lossless region transform in focused owners. Every
+    foreign handle and returned buffer is null-checked and RAII-released, and
+    sizes and crop geometry are checked before conversion or allocation. A
+    forced-2.1.5 clean-target comparator passes 1/1; native 3.x plus the
+    legacy-versus-current full, grayscale, scaled, region, scaled-region, and
+    prepared-output contract passes 2/2; both strict all-target/all-feature
+    Clippy configurations and the build-script tests pass. The official Noble
+    library exports all referenced legacy symbols; actual Noble ELF execution
+    remains owned by the next hosted comparator job.
+  The complete repository policy suite initially rejected a blanket
+  `dead_code` test allowance; that suppression was removed rather than
+  registered. The focused policy rerun passes. Two new FFI source paths are in
+  the exact unsafe inventory, `unsafe-audit` passes, and the production clone
+  audit remains green at 1.97%. The next commit containing this checkpoint must
+  be treated as a new candidate and rerun from a clean tree; no `93df11a7`
+  result is final-candidate evidence.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -769,7 +816,7 @@ The rubric was checked against current primary or first-party sources on
 | TOOL-001 | P3 | complete | DUP-001 | Adoption report model/render split |
 | CUDA-002 | P1 | complete | SEC-001 | One exact named release-cuda gate with zero skip markers |
 | PKG-001 | P1 | in progress | SEC-001 | Staged unpublished dependency closure is repaired and the clean package gate passed at `4c947c2b`; rerun after `3fd23cf2` and every later source commit |
-| CLONE-001 | P2 | in progress | STR-008 through STR-015 | Repository-owned source-aware scanner passed at 1.97% duplicated production lines before `3fd23cf2`; rerun after the latest committed Rust files and at candidate freeze |
+| CLONE-001 | P2 | complete | STR-008 through STR-015 | Repository-owned source-aware scanner passes after `59301ac4` across 1,192 staged Rust sources at 1.97% duplicated production lines; exact candidate verification still repeats the gate under FINAL-001 |
 | AUDIT-001 | P2 | complete | STR-010, COV-001 | Clone and panic quality gates use shared production-source classification, explicit reviewed ratchets, fixtures, and fail-closed repository policy |
 | PERF-001 | P1 | in progress | STR-004 through STR-015 | Alternating `0e78229a`/candidate process medians pass on the source committed as `3fd23cf2`: direct -3.1%, resident buffer -6.7%, resident host -15.9%; exact committed-candidate repetition remains |
 | PUB-002 | P1 | complete | PKG-001, CUDA-002 | Fail-closed canonical origin, exact remote annotated tag, Release, and crates.io preflight |
@@ -777,8 +824,8 @@ The rubric was checked against current primary or first-party sources on
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
 | PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
-| FINAL-001 | P1 | in progress | all above | Hosted defects through `b3856331` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
-| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, and `b3856331` are invalidated. Corrections are committed through `6a1b89b2`; the commit containing this checkpoint must pass the clean exact local gates before push and external verification. |
+| FINAL-001 | P1 | in progress | all above | Hosted defects through `93df11a7` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
+| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, and `93df11a7` are invalidated. Corrections are committed through `59301ac4`; the commit containing this checkpoint must pass the clean exact local gates before push and external verification. |
 | TAG-001 | P3 | deferred outside verified-RC endpoint | RC-001 | Annotated tag and guarded publication require separate authorization |
 
 ## 6. Phase 0 — reconcile the worktree
