@@ -88,6 +88,7 @@ fn summary_document(input: &CoverageSummaryInput<'_>) -> serde_json::Value {
         "changed_executable_bodies_without_covered_body": result.changed_executable_bodies_without_covered_body,
         "changed_deferred_bodies_without_covered_compiler_region": result.changed_deferred_bodies_without_covered_compiler_region,
         "compiler_noninstrumentable_deferred_bodies": result.compiler_noninstrumentable_deferred_bodies,
+        "compiler_noninstrumentable_lines": result.compiler_noninstrumentable_lines,
         "mixed_test_production_lines": result.mixed_test_production_lines,
         "changed_opaque_macros": result.changed_opaque_macros,
         "source_dispositions": source_dispositions,
@@ -149,6 +150,7 @@ mod tests {
             changed_executable_bodies_without_covered_body: Vec::new(),
             changed_deferred_bodies_without_covered_compiler_region: Vec::new(),
             compiler_noninstrumentable_deferred_bodies: Vec::new(),
+            compiler_noninstrumentable_lines: vec!["crates/demo/src/lib.rs:7".to_string()],
             mixed_test_production_lines: Vec::new(),
             changed_opaque_macros: Vec::new(),
         };
@@ -171,5 +173,9 @@ mod tests {
             "2222222222222222222222222222222222222222"
         );
         assert_eq!(document["lane_scope"], "non-accelerator-production");
+        assert_eq!(
+            document["compiler_noninstrumentable_lines"],
+            serde_json::json!(["crates/demo/src/lib.rs:7"])
+        );
     }
 }

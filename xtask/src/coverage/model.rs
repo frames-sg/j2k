@@ -175,6 +175,7 @@ pub(super) struct ChangedCoverageResult {
     pub(super) changed_executable_bodies_without_covered_body: Vec<String>,
     pub(super) changed_deferred_bodies_without_covered_compiler_region: Vec<String>,
     pub(super) compiler_noninstrumentable_deferred_bodies: Vec<String>,
+    pub(super) compiler_noninstrumentable_lines: Vec<String>,
     pub(super) mixed_test_production_lines: Vec<String>,
     pub(super) changed_opaque_macros: Vec<String>,
 }

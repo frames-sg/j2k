@@ -51,6 +51,7 @@ pub(super) fn evaluate_changed_coverage(
         changed_executable_bodies_without_covered_body: Vec::new(),
         changed_deferred_bodies_without_covered_compiler_region: Vec::new(),
         compiler_noninstrumentable_deferred_bodies: Vec::new(),
+        compiler_noninstrumentable_lines: Vec::new(),
         mixed_test_production_lines: Vec::new(),
         changed_opaque_macros: Vec::new(),
     };
@@ -73,6 +74,7 @@ pub(super) fn evaluate_changed_coverage(
         .changed_deferred_bodies_without_covered_compiler_region
         .sort();
     result.compiler_noninstrumentable_deferred_bodies.sort();
+    result.compiler_noninstrumentable_lines.sort();
     result.mixed_test_production_lines.sort();
     result.changed_opaque_macros.sort();
     Ok(result)
@@ -192,7 +194,13 @@ impl ChangedFileEvidence<'_> {
                         record_measurable_line(result, self.path, line_number, 0);
                         continue;
                     }
-                    Some(CompilerRegionEvidence::NonInstrumentable) | None => {}
+                    Some(CompilerRegionEvidence::NonInstrumentable) => {
+                        result
+                            .compiler_noninstrumentable_lines
+                            .push(format!("{}:{line_number}", self.path));
+                        continue;
+                    }
+                    None => {}
                 }
                 result.unmeasured.push((self.path.to_string(), line_number));
                 record_measurable_line(result, self.path, line_number, 0);
