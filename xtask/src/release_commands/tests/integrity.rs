@@ -3,7 +3,7 @@
 use super::super::{release_integrity, PUBLISHABLE_PACKAGES};
 use crate::{command_support::use_test_cargo_program, test_command::RecordingProgram};
 
-const WORKSPACE_CHILD_ENV: &str = "J2K_RELEASE_INTEGRITY_WORKSPACE_CHILD";
+const WORKSPACE_CHILD_ENV: &str = "XTASK_TEST_RELEASE_INTEGRITY_WORKSPACE_CHILD";
 
 fn run_test_from_workspace(test_name: &str, recording: &RecordingProgram) {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
