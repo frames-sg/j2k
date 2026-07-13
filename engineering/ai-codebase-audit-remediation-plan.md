@@ -68,10 +68,10 @@ the issue sections below; this capsule is only the current continuation state.
   `rc/0.7.0-candidate` and draft
   [PR #50](https://github.com/frames-sg/j2k/pull/50) target `main`. Hosted CI
   invalidated `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`,
-  `a3307c18`, and `bca8ad58`;
+  `a3307c18`, `bca8ad58`, and `d3de41ce`;
   the complete causes and local corrections are recorded in the hosted RC
   checkpoint below.
-  The commit containing the fifth hosted correction checkpoint below is the
+  The commit containing the sixth hosted correction checkpoint below is the
   only eligible replacement candidate and still requires clean-tree exact-SHA
   reruns plus hosted, Metal, and CUDA verification. An
   isolated RC worktree preserves the 0.7 fixes while the
@@ -476,6 +476,32 @@ the issue sections below; this capsule is only the current continuation state.
   fail-closed result before exact GPU completion. `bca8ad58` is invalidated;
   the commit containing this checkpoint must restart the complete exact-SHA
   matrix.
+- Sixth hosted RC correction checkpoint (2026-07-13): candidate `d3de41ce`
+  was pushed to PR #50 and checked by hosted CI run `29286867116`, secret-scan
+  run `29286867036`, and GPU run `29286892788`. Secret scanning passed. Hosted
+  formatting, diff hygiene, ordinary and strict Clippy, stable API, package,
+  publish integrity, changed-line coverage, public support, docs, Miri,
+  codec-math, unsafe, panic, clone, fuzz-build, and workflow-verifier gates were
+  green before cancellation. Two Linux test-fixture races invalidate the
+  candidate:
+  - the pinned Ubuntu x86_64 Rust 1.96 job failed the comparator version-command
+    regression when the just-written fake Grok script returned `Text file busy
+    (os error 26)` instead of its version line;
+  - the Ubuntu Noble aarch64 stable job reached the same `ETXTBSY` boundary in
+    the adoption-benchmark logged-process regression when starting its
+    just-written recording script.
+  Both fixtures now write and chmod a staging pathname, close it, and publish
+  the executable with an atomic rename. The exact formerly failing tests pass
+  on a private x86_64 Linux verifier; the complete 74-test comparator library,
+  the five focused adoption process tests, and warning-denied all-target,
+  all-feature `j2k-compare`/`xtask` Clippy pass locally. Strict focused Clippy
+  also passes on the Linux verifier. This changes test-fixture construction
+  only: production behavior, release policy, coverage thresholds, and hardware
+  scope are unchanged. CI and GPU runs were cancelled as soon as the tracked
+  correction became necessary; their partial results are not candidate
+  evidence. The concurrent GPU-path-policy failure was the expected fail-closed
+  result before exact GPU completion. `d3de41ce` is invalidated; the commit
+  containing this checkpoint must restart the complete exact-SHA matrix.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -659,7 +685,7 @@ the issue sections below; this capsule is only the current continuation state.
   behavior/policy tests pass. The typo gate passes after correcting one
   identifier and narrowly excluding generated `fnv1a64:` fingerprints. The
   combined panic and typo gates rerun on settled source.
-- Next serialized gates after the fifth hosted correction commit:
+- Next serialized gates after the sixth hosted correction commit:
   1. repeat the exact clean local freeze gates without another broad coverage
      or test-generation tranche;
   2. push the replacement SHA to the existing RC branch and run exact-SHA
@@ -889,8 +915,8 @@ The rubric was checked against current primary or first-party sources on
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
 | PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
-| FINAL-001 | P1 | in progress | all above | Hosted defects through `bca8ad58` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
-| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`, `a3307c18`, and `bca8ad58` are invalidated. The commit containing the fifth hosted correction checkpoint must repeat the clean exact local gates before push and external verification. |
+| FINAL-001 | P1 | in progress | all above | Hosted defects through `d3de41ce` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
+| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`, `a3307c18`, `bca8ad58`, and `d3de41ce` are invalidated. The commit containing the sixth hosted correction checkpoint must repeat the clean exact local gates before push and external verification. |
 | TAG-001 | P3 | deferred outside verified-RC endpoint | RC-001 | Annotated tag and guarded publication require separate authorization |
 
 ## 6. Phase 0 — reconcile the worktree

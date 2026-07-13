@@ -27,12 +27,14 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn executable(path: &Path, source: &str) {
-    fs::write(path, source).expect("write fake executable");
-    let mut permissions = fs::metadata(path)
+    let staging = path.with_extension("staging");
+    fs::write(&staging, source).expect("write staged fake executable");
+    let mut permissions = fs::metadata(&staging)
         .expect("fake executable metadata")
         .permissions();
     permissions.set_mode(0o700);
-    fs::set_permissions(path, permissions).expect("make fake executable runnable");
+    fs::set_permissions(&staging, permissions).expect("make staged fake executable runnable");
+    fs::rename(staging, path).expect("publish closed fake executable");
 }
 
 fn image_case(root: &Path) -> ImageCase {
