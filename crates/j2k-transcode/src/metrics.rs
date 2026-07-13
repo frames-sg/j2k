@@ -281,7 +281,8 @@ mod tests {
     use core::mem::size_of;
 
     use super::{
-        checked_histogram_live_capacity, error_metrics_i32, ErrorHistogramBucket, MetricsError,
+        cap_overflow, checked_histogram_live_capacity, error_metrics_i32, ErrorHistogramBucket,
+        MetricsError, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
     };
 
     #[test]
@@ -311,6 +312,49 @@ mod tests {
 
         assert_eq!(buckets, [(0, 1), (1, 1), (2, 1), (3, 1)]);
         Ok(())
+    }
+
+    #[test]
+    fn histogram_length_and_empty_contracts_cover_both_states() -> Result<(), MetricsError> {
+        let empty = error_metrics_i32(&[], &[])?.absolute_error_histogram;
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+
+        let populated = error_metrics_i32(&[2, 5, 9], &[2, 3, 6])?.absolute_error_histogram;
+        assert!(!populated.is_empty());
+        assert_eq!(populated.len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn metrics_error_display_and_overflow_contracts_are_stable() {
+        let errors = [
+            MetricsError::LengthMismatch {
+                actual: 3,
+                expected: 2,
+            },
+            MetricsError::MemoryCapExceeded {
+                requested: 17,
+                cap: 16,
+            },
+            MetricsError::HostAllocationFailed { bytes: 32 },
+        ];
+        assert_eq!(
+            errors.map(|error| error.to_string()),
+            [
+                "metric input lengths differ: actual 3, expected 2",
+                "metrics host workspace requires 17 bytes, exceeding the 16-byte cap",
+                "metrics host allocation failed for 32 bytes",
+            ]
+        );
+
+        assert_eq!(
+            cap_overflow(),
+            MetricsError::MemoryCapExceeded {
+                requested: usize::MAX,
+                cap: DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            }
+        );
     }
 
     #[test]
