@@ -98,3 +98,6 @@ impl CodecError for FastPacketError {
         matches!(self, Self::Decode(error) if error.is_buffer_error())
     }
 }
+
+#[cfg(test)]
+mod tests;
