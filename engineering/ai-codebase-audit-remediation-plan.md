@@ -62,7 +62,7 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `ff1ed71c`. No push, release tag, crate
+  before this ledger refresh is `581f48bc`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -110,12 +110,12 @@ the issue sections below; this capsule is only the current continuation state.
   seam's cross-test leak was reproduced and corrected before commit
   (`ee519412`). The clean exact-SHA host run completed the full host matrix and
   411-test repository policy suite, generated schema-v4 LCOV and LLVM region
-  artifacts, and passed the numeric gate at 87.3732% (65,301 / 74,738).
-  COV-001 remains open on 223
+  artifacts, and passed the numeric gate at 87.4629% (65,368 / 74,738).
+  COV-001 remains open on 218
   uncovered functions, 426 uncovered multiline executable bodies, 463
   compiler-instrumented same-line deferred bodies with zero counts, 172
   compiler-noninstrumentable deferred bodies recorded without false failure,
-  8,936 compiler-noninstrumentable source lines, and 570 uncovered opaque
+  8,936 compiler-noninstrumentable source lines, and 567 uncovered opaque
   macros. The earlier first attempt at `00983dd9` was
   correctly discarded after stale ignored coverage JSON caused two
   repository-text policies to fail; generated artifacts remain ignored and are
@@ -436,7 +436,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `ff1ed71c` passes the numeric gate at 87.3732% (65,301 / 74,738); close 223 function, 426 body, 463 zero-count deferred-region, and 570 opaque-macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `581f48bc` passes the numeric gate at 87.4629% (65,368 / 74,738); close 218 function, 426 body, 463 zero-count deferred-region, and 567 opaque-macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -1203,6 +1203,30 @@ host-command function owner is release status (5 functions/93 uncovered
 lines); JPEG benchmark support leads with eight functions but is not exercised
 by the host lane's deliberate non-benchmark target set. Release commands lead
 genuine uncovered lines and opaque macros at 108 and 30 respectively.
+
+The release-status command checkpoint at
+`581f48bcc16af8f05778c46c987d0020504fe934` executes the real xtask binary in
+an isolated child process with fake Python and remote-origin boundaries. It
+proves explicit and remote-derived repository selection, both supported token
+environment names, exact SHA normalization, and help/error behavior without
+network access or token-value logging. Production release-status code required
+no change. The focused regression, the complete four-test orchestration suite,
+all four release-status units, focused repository policy, strict xtask Clippy,
+formatting, and diff checks passed before commit.
+
+The single clean exact run at `581f48bc` completed the full host matrix and the
+expanded 412-test repository policy suite with one established ignore. Child
+process profiles merged into the host artifact: all five release-status
+function misses closed, along with 67 uncovered lines and three opaque macros.
+Numeric coverage is 65,368 of 74,738 (87.4629%). COV-001 remains open on 218
+functions, 426 multiline bodies, 463 zero-count deferred regions, 172
+compiler-noninstrumentable deferred bodies, 567 opaque macros, four absent
+instrumentable files, and no mixed lines. JPEG benchmark support now leads
+function misses at eight; the next shared tier contains several four-function
+owners, including core traits, JPEG NEON, native ROI/reuse/metadata/math,
+transcode metrics, facade view traits, coverage model/parsing, and CUDA
+orchestration. Release commands remain the largest uncovered-line and opaque
+owner at 108 and 30.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
