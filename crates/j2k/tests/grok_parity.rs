@@ -14,6 +14,10 @@ use std::{
     },
 };
 
+// Grok 10's normal reduced grayscale PNM path emits only its first strip;
+// split-PNM selects its complete single-component writer.
+const GROK_QUARTER_GRAY_ARGS: &[&str] = &["-r", "2", "-s"];
+
 #[test]
 fn classic_gray_full_decode_matches_grok() {
     let Some(path) = grok_decompress_bin() else {
@@ -148,7 +152,13 @@ fn classic_gray_scaled_decode_matches_grok_reduce() {
         )
         .expect("j2k scaled decode");
 
-    let expected = decode_with_grok(&path, "grok_scaled_gray", &jp2, ".pgm", &["-r", "2"]);
+    let expected = decode_with_grok(
+        &path,
+        "grok_scaled_gray",
+        &jp2,
+        ".pgm",
+        GROK_QUARTER_GRAY_ARGS,
+    );
     assert_eq!(out, expected);
 }
 
@@ -253,7 +263,13 @@ fn ht_gray_scaled_decode_matches_grok_reduce() {
         )
         .expect("j2k scaled decode");
 
-    let expected = decode_with_grok(&path, "grok_scaled_ht_gray", &jph, ".pgm", &["-r", "2"]);
+    let expected = decode_with_grok(
+        &path,
+        "grok_scaled_ht_gray",
+        &jph,
+        ".pgm",
+        GROK_QUARTER_GRAY_ARGS,
+    );
     assert_eq!(out, expected);
 }
 
