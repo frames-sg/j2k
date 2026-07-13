@@ -65,14 +65,13 @@ the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The 0.7/0.7.1 separation and focused
   reconciliation are settled through `321f7673`. The candidate branch
-  `rc/0.7.0-candidate` was pushed at `8013f18a` and draft
-  [PR #50](https://github.com/frames-sg/j2k/pull/50) targets `main`. Hosted CI
-  rejected that SHA before release: Linux found missing non-macOS cfg
-  boundaries, the panic audit inherited CI's warning denial instead of counting
-  its ratchet, and current nightly renamed `AtomicUsize::fetch_update` to
-  `try_update`. Focused corrections are green locally and are included in the
-  replacement candidate commit containing this checkpoint; only the branch tip
-  at or after that commit can supply exact-SHA evidence. An isolated RC worktree
+  `rc/0.7.0-candidate` and draft
+  [PR #50](https://github.com/frames-sg/j2k/pull/50) target `main`. Hosted CI
+  invalidated `8013f18a`, `938a9c63`, and `a4f6d0f8`; the complete causes and
+  local corrections are recorded in the hosted RC checkpoint below. The commit
+  containing this checkpoint is the only eligible replacement candidate and
+  still requires clean-tree local release gates plus hosted, Metal, and CUDA
+  verification for that exact SHA. An isolated RC worktree
   preserves the 0.7 fixes while the
   shared `main` worktree contains a separate, uncommitted user-owned ML/CUDA
   change set that appeared during NVIDIA verification and must not be discarded
@@ -276,9 +275,48 @@ the issue sections below; this capsule is only the current continuation state.
   GPU run was cancelled, the inventory was reconciled to the existing focused
   modules without changing test behavior or minimum counts, its command/policy
   tests pass, and the complete release-Metal lane is green with all 18 required
-  ignored tests. The branch tip containing this checkpoint is the replacement
-  candidate; dispatch and verify hosted, Metal, and CUDA workflows for exactly
-  that SHA and do not reuse the `8013f18a` or `938a9c63` runs.
+  ignored tests. Candidate `a4f6d0f8` then passed the exact clean local Metal
+  release lane, publish-mode release integrity, and package construction. Its
+  CUDA workflow stopped before repository code because the generic coverage
+  installer tried passworded `sudo` to add absent `jq`, even though the runner
+  already had exact `cargo-llvm-cov 0.8.7`; that run was cancelled. One shared
+  non-privileged bootstrap now verifies and reuses the exact installed tool or
+  falls back to pinned `cargo install --locked --force`, and policy requires all
+  three self-hosted jobs to use it without the generic installer. The branch tip
+  containing this checkpoint also corrects every failure harvested from the
+  completed `a4f6d0f8` hosted matrix:
+  - Linux warning-denied all-target builds now place Metal-only imports,
+    diagnostics, retained fields, tests, allocation accounting, and native
+    error constructors behind their semantic target boundaries while preserving
+    each portable facade and public type shape. Both x86_64 and aarch64 Linux
+    strict builds, native macOS strict Clippy, focused docs, and the Metal,
+    JPEG-Metal, and transcode-Metal behavior suites pass.
+  - stable-API collection permits only the canonical CI values
+    `RUSTFLAGS=-D warnings` and `RUSTDOCFLAGS=-D warnings`; all other API-affecting
+    overrides remain fail-closed. The exact ordinary/hidden 17-package inventory
+    and reviewed semver command pass.
+  - the compare shim supports the installed Grok 10.x ABI as well as the existing
+    Grok 20.x ABI and rejects unknown major versions. Strict C compilation against
+    both header families, package tests, strict Clippy, and comparator signoff
+    pass; hosted Ubuntu still owns the final installed-library confirmation.
+  - shallow ordinary CI tests no longer confuse the semver command's required
+    baseline-tag proof with hermetic candidate-input tests. The real command
+    still requires `v0.6.2` to peel to its pinned commit. The Metal release
+    fixture names the moved stage-validation test without reducing its required
+    count.
+  - irreversible 9/7 SIMD parity retains the scalar reference with an explicit
+    eight-ULP maximum instead of target-specific bit strings; reversible 5/3
+    remains bit-exact. Default, no-default-feature, and full native tests pass.
+  - generated codec-math freshness compares exact line contents while accepting
+    LF or CRLF checkouts, with a regression that still rejects changed content.
+    This closes the final Windows-only failure without refreshing generated
+    evidence.
+  All 286 xtask unit tests, 416 active repository policies with the established
+  single ignore, focused codec-math and transcode-Metal suites, formatting, and
+  strict focused Clippy pass on the integrated tree. Dispatch and verify hosted,
+  Metal, and CUDA workflows only after committing and pushing the exact
+  replacement SHA; do not reuse evidence from `8013f18a`, `938a9c63`, or
+  `a4f6d0f8`.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -697,7 +735,7 @@ The rubric was checked against current primary or first-party sources on
 | PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
 | FINAL-001 | P1 | in progress | all above | Focused correction gates are green; replacement-SHA hosted and hardware matrices remain |
-| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a` and `938a9c63` are invalidated and the commit containing this checkpoint is the corrected candidate awaiting exact external evidence |
+| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, and `a4f6d0f8` are invalidated and the commit containing this checkpoint is the corrected candidate awaiting exact external evidence |
 | TAG-001 | P3 | deferred outside verified-RC endpoint | RC-001 | Annotated tag and guarded publication require separate authorization |
 
 ## 6. Phase 0 — reconcile the worktree
