@@ -18,28 +18,17 @@ pub(crate) const DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS: usize = DEFAULT_R
     * MAX_PRIVATE_BUFFERS_PER_RESIDENT_TILE
     + MAX_PRIVATE_BUFFERS_PER_RESIDENT_BATCH;
 
-const fn private_pool_record_limit(working_set: usize) -> usize {
-    working_set.next_power_of_two()
-}
-
-/// Power-of-two structural ceiling above the default resident working set.
-pub(crate) const RESIDENT_PRIVATE_POOL_BUFFER_LIMIT: usize =
-    private_pool_record_limit(DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS);
+/// Structural record ceiling above the largest admitted resident working set.
+pub(crate) const RESIDENT_PRIVATE_POOL_BUFFER_LIMIT: usize = 4_096;
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        private_pool_record_limit, DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS,
-        RESIDENT_PRIVATE_POOL_BUFFER_LIMIT,
-    };
+    use super::{DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS, RESIDENT_PRIVATE_POOL_BUFFER_LIMIT};
 
     #[test]
     fn private_pool_record_limit_covers_default_resident_chunk_working_set() {
         assert_eq!(DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS, 3_083);
         assert_eq!(RESIDENT_PRIVATE_POOL_BUFFER_LIMIT, 4_096);
-        assert_eq!(
-            private_pool_record_limit(std::hint::black_box(3_083)),
-            4_096
-        );
+        assert!(RESIDENT_PRIVATE_POOL_BUFFER_LIMIT >= DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS);
     }
 }

@@ -74,8 +74,7 @@ fn metal_buffer_pools_use_flat_fallible_actual_byte_ledgers() {
                 "BASE_PRIVATE_BUFFERS_PER_RESIDENT_BATCH: usize = 7",
                 "CLASSIC_SPLIT_TOKEN_PRIVATE_BUFFERS_PER_BATCH: usize = 4",
                 "DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS",
-                "fn private_pool_record_limit(working_set: usize)",
-                "private_pool_record_limit(DEFAULT_RESIDENT_PRIVATE_WORKING_SET_BUFFERS)",
+                "RESIDENT_PRIVATE_POOL_BUFFER_LIMIT: usize = 4_096",
             ])
             .forbidden(&["Vec", "HashMap", "unsafe"]),
         PatternCheck::new("Metal default resident retention shape", &encode_config).required(&[
