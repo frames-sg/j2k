@@ -19,6 +19,37 @@ fn assert_line_budget(relative_path: &str, source: &str, max_lines: usize) {
     );
 }
 
+fn assert_module_boundary(relative_path: &str, source: &str, max_lines: usize) {
+    assert_line_budget(relative_path, source, max_lines);
+    assert!(
+        !source.contains("use super::*"),
+        "crates/j2k-compare/src/{relative_path} must keep explicit module imports"
+    );
+    assert!(
+        !source.contains("include!("),
+        "crates/j2k-compare/src/{relative_path} must remain a real Rust module"
+    );
+}
+
+fn assert_comparator_contracts(comparators: &str, comparator_tests: &str) {
+    assert_pattern_checks(&[
+        PatternCheck::new("fixture comparator cleanup ownership", comparators).required(&[
+            "fn cleanup_cli_staging(",
+            "let input_cleanup = cleanup_cli_temp(",
+            "let output_cleanup = cleanup_cli_temp(",
+            "staged input cleanup failed:",
+            "staged output cleanup failed:",
+        ]),
+        PatternCheck::new("fixture comparator command regressions", comparator_tests).required(&[
+            "fn staging_cleanup_reports_both_failures_after_attempting_both_paths()",
+            "fn comparator_commands_decode_and_report_process_errors()",
+            "fn comparator_cleanup_attempts_output_after_input_failure()",
+            "output cleanup must still run after input cleanup fails",
+            "thread_local!",
+        ]),
+    ]);
+}
+
 #[test]
 fn fixture_compare_stays_split_by_responsibility() {
     let shell = read("crates/j2k-compare/src/fixture_compare.rs");
@@ -54,15 +85,7 @@ fn fixture_compare_stays_split_by_responsibility() {
         ("fixture_compare/rows.rs", rows.as_str(), 350),
         ("fixture_compare/types.rs", types.as_str(), 400),
     ] {
-        assert_line_budget(path, source, max_lines);
-        assert!(
-            !source.contains("use super::*"),
-            "crates/j2k-compare/src/{path} must keep explicit module imports"
-        );
-        assert!(
-            !source.contains("include!("),
-            "crates/j2k-compare/src/{path} must remain a real Rust module"
-        );
+        assert_module_boundary(path, source, max_lines);
     }
 
     assert_pattern_checks(&[
@@ -119,20 +142,6 @@ fn fixture_compare_stays_split_by_responsibility() {
             "pub(super) fn decode_method_label",
             "pub(super) fn crop_interleaved",
         ]),
-        PatternCheck::new("fixture comparator cleanup ownership", &comparators).required(&[
-            "fn cleanup_cli_staging(",
-            "let input_cleanup = cleanup_cli_temp(",
-            "let output_cleanup = cleanup_cli_temp(",
-            "staged input cleanup failed:",
-            "staged output cleanup failed:",
-        ]),
-        PatternCheck::new("fixture comparator command regressions", &comparator_tests).required(&[
-            "fn staging_cleanup_reports_both_failures_after_attempting_both_paths()",
-            "fn comparator_commands_decode_and_report_process_errors()",
-            "fn comparator_cleanup_attempts_output_after_input_failure()",
-            "output cleanup must still run after input cleanup fails",
-            "thread_local!",
-        ]),
         PatternCheck::new("fixture_compare type ownership", &types).required(&[
             "pub(super) struct FixtureCase",
             "pub(super) struct Measurement",
@@ -140,4 +149,5 @@ fn fixture_compare_stays_split_by_responsibility() {
             "pub(super) struct MetadataContext",
         ]),
     ]);
+    assert_comparator_contracts(&comparators, &comparator_tests);
 }
