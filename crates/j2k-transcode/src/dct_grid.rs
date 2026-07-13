@@ -257,7 +257,11 @@ pub(crate) fn validate_dct_block_grid(
 
 #[cfg(test)]
 mod tests {
-    use super::{high_len, idct8_basis, low_len, validate_dct_block_grid};
+    use std::error::Error as _;
+
+    use super::{
+        high_len, idct8_basis, low_len, validate_dct_block_grid, DctGridError, DctTransformError,
+    };
 
     #[test]
     fn band_lengths_split_even_and_odd_samples() {
@@ -291,5 +295,65 @@ mod tests {
     fn rejects_zero_image_extent() {
         assert!(validate_dct_block_grid(1, 1, 1, 0, 8).is_err());
         assert!(validate_dct_block_grid(1, 1, 1, 8, 0).is_err());
+    }
+
+    #[test]
+    fn transform_error_conversion_display_and_sources_preserve_typed_context() {
+        let grid =
+            validate_dct_block_grid(1, 2, 1, 16, 8).expect_err("block count mismatch must fail");
+        let cases = [
+            (
+                DctTransformError::from(grid),
+                "DCT grid has 1 blocks for 2x1 grid covering requested 16x8 samples",
+            ),
+            (
+                DctTransformError::InvalidSamplePlaneDimensions {
+                    width: 0,
+                    height: 8,
+                },
+                "sample plane dimensions must be non-zero, got 0x8",
+            ),
+            (
+                DctTransformError::SamplePlaneLengthMismatch {
+                    sample_count: 7,
+                    width: 2,
+                    height: 4,
+                },
+                "sample plane has 7 values for declared 2x4 dimensions",
+            ),
+            (
+                DctTransformError::SymbolicWeightIndexOutOfRange {
+                    sample_len: 5,
+                    output_index: 3,
+                    high_pass: true,
+                },
+                "symbolic 5/3 row 3 is outside the high-pass extent for 5 samples",
+            ),
+            (
+                DctTransformError::MemoryCapExceeded {
+                    requested: 17,
+                    cap: 16,
+                },
+                "DCT transform workspace requires 17 bytes, exceeding the 16-byte cap",
+            ),
+            (
+                DctTransformError::HostAllocationFailed { bytes: 32 },
+                "DCT transform host allocation failed for 32 bytes",
+            ),
+        ];
+
+        for (index, (error, expected)) in cases.into_iter().enumerate() {
+            assert_eq!(error.to_string(), expected);
+            if index == 0 {
+                assert_eq!(
+                    error
+                        .source()
+                        .and_then(|source| source.downcast_ref::<DctGridError>()),
+                    Some(&grid)
+                );
+            } else {
+                assert!(error.source().is_none());
+            }
+        }
     }
 }
