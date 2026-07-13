@@ -5,6 +5,9 @@ use std::path::Path;
 
 use super::support::TestRepository;
 use crate::coverage::accelerator_ownership::shared_accelerator_sources;
+use crate::coverage::critical_path_policy::{
+    audited_zero_body_findings, CriticalPathClass, ZeroBodyAudit,
+};
 use crate::coverage::evaluation::{coverage_violations, evaluate_changed_coverage};
 use crate::coverage::model::{CoverageLane, LcovReport};
 use crate::coverage::source_analysis::SourceIndex;
@@ -67,7 +70,7 @@ pub fn calculate() -> u32 {
 }
 
 #[test]
-fn changed_function_without_covered_body_is_a_host_violation() {
+fn changed_function_without_covered_body_is_a_critical_audit_finding() {
     let repository = TestRepository::new();
     let path = "crates/example/src/lib.rs";
     let source = "pub unsafe fn changed() {\n    let _value = 1;\n}\n";
@@ -83,9 +86,13 @@ fn changed_function_without_covered_body_is_a_host_violation() {
     .unwrap();
 
     assert_eq!(result.absent_instrumentable_files, vec![path.to_string()]);
-    assert!(coverage_violations(CoverageLane::Host, &result).iter().any(
-        |violation| violation.contains("changed instrumentable functions have no covered body")
-    ));
+    assert!(coverage_violations(CoverageLane::Host, &result)
+        .iter()
+        .any(|violation| violation.contains("absent from the host LCOV artifact")));
+    assert_eq!(
+        audited_zero_body_findings(CoverageLane::Host, &result)[0].audit,
+        ZeroBodyAudit::Critical(CriticalPathClass::PublicApi)
+    );
 }
 
 #[test]

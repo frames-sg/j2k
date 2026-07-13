@@ -14,6 +14,7 @@ use super::source_analysis::SourceRole;
 
 mod attributes;
 mod cfg_provenance;
+mod critical_path_policy;
 mod deferred_bodies;
 mod evaluation;
 mod executable_evidence;
@@ -22,9 +23,13 @@ mod source_analysis;
 mod source_roles;
 mod support;
 
-fn synthetic_result(measurable: usize, covered: usize) -> ChangedCoverageResult {
+pub(super) fn synthetic_result(measurable: usize, covered: usize) -> ChangedCoverageResult {
     ChangedCoverageResult {
         overall: CoverageCounts {
+            measurable,
+            covered,
+        },
+        critical: CoverageCounts {
             measurable,
             covered,
         },

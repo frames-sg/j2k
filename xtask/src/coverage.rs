@@ -6,6 +6,7 @@ use std::fs;
 mod accelerator_ownership;
 mod build_outputs;
 mod compiler_regions;
+mod critical_path_policy;
 mod evaluation;
 mod exclusion_policy;
 mod lane;

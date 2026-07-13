@@ -272,7 +272,7 @@ fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() 
                 "enclosing_cfg_is_conditional",
                 "accelerator host lines",
                 "--include-build-script",
-                "j2k-changed-line-coverage-v4",
+                "j2k-changed-line-coverage-v5",
                 "head_sha",
                 "lane_scope",
                 "changed_functions_without_covered_body",

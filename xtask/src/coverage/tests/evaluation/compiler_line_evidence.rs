@@ -45,6 +45,8 @@ fn covered_compiler_region_owns_multiline_expression_lines_without_da_records() 
 
     assert_eq!(result.overall.measurable, 1);
     assert_eq!(result.overall.covered, 1);
+    assert_eq!(result.critical.measurable, 1);
+    assert_eq!(result.critical.covered, 1);
     assert!(result.uncovered.is_empty());
     assert!(result.unmeasured.is_empty());
     assert!(coverage_violations(CoverageLane::Host, &result).is_empty());

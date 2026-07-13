@@ -5,6 +5,7 @@ use std::path::Path;
 
 use serde_json::json;
 
+use super::critical_path_policy::{audited_zero_body_findings, ZeroBodyAudit};
 use super::evaluation::coverage_percent;
 use super::exclusion_policy::COVERAGE_EXCLUSIONS;
 use super::model::{ChangedCoverageResult, CoverageLane, CHANGED_LINE_THRESHOLD_PERCENT};
@@ -58,8 +59,27 @@ fn summary_document(input: &CoverageSummaryInput<'_>) -> serde_json::Value {
             )
         })
         .collect::<std::collections::BTreeMap<_, _>>();
+    let zero_body_audit = audited_zero_body_findings(input.lane, result)
+        .into_iter()
+        .map(|entry| match entry.audit {
+            ZeroBodyAudit::Critical(class) => json!({
+                "kind": entry.kind.id(),
+                "finding": entry.finding,
+                "status": "critical-path-evidence",
+                "critical_class": class.id(),
+                "reason": class.reason(),
+            }),
+            ZeroBodyAudit::Residual(disposition) => json!({
+                "kind": entry.kind.id(),
+                "finding": entry.finding,
+                "status": "audited-residual",
+                "disposition": disposition.id(),
+                "reason": disposition.reason(),
+            }),
+        })
+        .collect::<Vec<_>>();
     let document = json!({
-        "schema": "j2k-changed-line-coverage-v4",
+        "schema": "j2k-changed-line-coverage-v5",
         "lane": input.lane.name(),
         "lane_scope": input.lane.scope_name(),
         "status": if input.violations.is_empty() { "passed" } else { "failed" },
@@ -76,6 +96,11 @@ fn summary_document(input: &CoverageSummaryInput<'_>) -> serde_json::Value {
             "covered_lines": result.overall.covered,
             "coverage_percent": coverage_percent(&result.overall),
         },
+        "critical_paths": {
+            "measurable_lines": result.critical.measurable,
+            "covered_lines": result.critical.covered,
+            "coverage_percent": coverage_percent(&result.critical),
+        },
         "accelerator_host_rust": {
             "measurable_lines": result.accelerator.measurable,
             "covered_lines": result.accelerator.covered,
@@ -91,6 +116,7 @@ fn summary_document(input: &CoverageSummaryInput<'_>) -> serde_json::Value {
         "compiler_noninstrumentable_lines": result.compiler_noninstrumentable_lines,
         "mixed_test_production_lines": result.mixed_test_production_lines,
         "changed_opaque_macros": result.changed_opaque_macros,
+        "zero_body_audit": zero_body_audit,
         "source_dispositions": source_dispositions,
         "narrow_exclusions": exclusions,
         "violations": input.violations,
@@ -107,12 +133,21 @@ pub(super) fn print_summary(
         .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}%"));
     let accelerator_percent = coverage_percent(&result.accelerator)
         .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}%"));
+    let critical_percent = coverage_percent(&result.critical)
+        .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}%"));
     eprintln!(
         "{} changed-line coverage: {} ({} / {} measurable lines)",
         lane.name(),
         percent,
         result.overall.covered,
         result.overall.measurable
+    );
+    eprintln!(
+        "{} critical-path coverage: {} ({} / {} measurable lines)",
+        lane.name(),
+        critical_percent,
+        result.critical.covered,
+        result.critical.measurable
     );
     eprintln!(
         "{} accelerator host coverage: {} ({} / {} measurable lines)",
@@ -139,6 +174,10 @@ mod tests {
                 measurable: 5,
                 covered: 4,
             },
+            critical: CoverageCounts {
+                measurable: 5,
+                covered: 4,
+            },
             accelerator: CoverageCounts::default(),
             changed_files: BTreeSet::new(),
             uncovered: Vec::new(),
@@ -146,7 +185,9 @@ mod tests {
             exclusions: BTreeMap::new(),
             source_dispositions: BTreeMap::new(),
             absent_instrumentable_files: Vec::new(),
-            changed_functions_without_covered_body: Vec::new(),
+            changed_functions_without_covered_body: vec![
+                "xtask/src/perf_guard.rs::j2k_perf_guard@170".to_string(),
+            ],
             changed_executable_bodies_without_covered_body: Vec::new(),
             changed_deferred_bodies_without_covered_compiler_region: Vec::new(),
             compiler_noninstrumentable_deferred_bodies: Vec::new(),
@@ -167,7 +208,7 @@ mod tests {
             violations: &[],
         });
 
-        assert_eq!(document["schema"], "j2k-changed-line-coverage-v4");
+        assert_eq!(document["schema"], "j2k-changed-line-coverage-v5");
         assert_eq!(
             document["head_sha"],
             "2222222222222222222222222222222222222222"
@@ -176,6 +217,11 @@ mod tests {
         assert_eq!(
             document["compiler_noninstrumentable_lines"],
             serde_json::json!(["crates/demo/src/lib.rs:7"])
+        );
+        assert_eq!(document["critical_paths"]["coverage_percent"], 80.0);
+        assert_eq!(
+            document["zero_body_audit"][0]["disposition"],
+            "low-risk-tooling"
         );
     }
 }

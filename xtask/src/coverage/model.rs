@@ -164,6 +164,7 @@ pub(super) struct SourceDispositionCounts {
 #[derive(Debug)]
 pub(super) struct ChangedCoverageResult {
     pub(super) overall: CoverageCounts,
+    pub(super) critical: CoverageCounts,
     pub(super) accelerator: CoverageCounts,
     pub(super) changed_files: BTreeSet<String>,
     pub(super) uncovered: Vec<(String, usize)>,

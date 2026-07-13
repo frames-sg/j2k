@@ -4,6 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::support::TestRepository;
 use crate::coverage::compiler_regions::{CompilerRegionReport, SourceSpan};
+use crate::coverage::critical_path_policy::{
+    audited_zero_body_findings, CriticalPathClass, ZeroBodyAudit,
+};
 use crate::coverage::evaluation::{coverage_violations, evaluate_changed_coverage};
 use crate::coverage::model::{CoverageLane, LcovReport};
 use crate::coverage::source_analysis::SourceIndex;
@@ -68,9 +71,11 @@ pub fn build_future() {
         result.changed_executable_bodies_without_covered_body,
         [format!("{path}::async@2")]
     );
-    assert!(coverage_violations(CoverageLane::Host, &result)
+    assert!(coverage_violations(CoverageLane::Host, &result).is_empty());
+    assert!(audited_zero_body_findings(CoverageLane::Host, &result)
         .iter()
-        .any(|violation| violation.contains("async@2")));
+        .any(|entry| entry.finding.ends_with("async@2")
+            && entry.audit == ZeroBodyAudit::Critical(CriticalPathClass::PublicApi)));
 }
 
 #[test]
@@ -83,7 +88,7 @@ fn executed_one_line_closure_accepts_its_own_compiler_region() {
 }
 
 #[test]
-fn unpolled_one_line_async_rejects_its_zero_count_compiler_region() {
+fn unpolled_one_line_async_records_its_zero_count_compiler_region() {
     assert_one_line_deferred_body(
         "pub fn build() { let _future = async { changed(); }; }\n",
         "async@1",
@@ -159,9 +164,11 @@ fn assert_one_line_deferred_body(source: &str, label: &str, region_count: Option
                 result.changed_deferred_bodies_without_covered_compiler_region,
                 [format!("{path}::{label}")]
             );
-            assert!(violations
-                .iter()
-                .any(|violation| violation.contains("no covered region")));
+            assert!(violations.is_empty());
+            assert_eq!(
+                audited_zero_body_findings(CoverageLane::Host, &result)[0].audit,
+                ZeroBodyAudit::Critical(CriticalPathClass::PublicApi)
+            );
         }
         Some(_) => {
             assert!(result

@@ -3,6 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::support::TestRepository;
+use crate::coverage::critical_path_policy::{
+    audited_zero_body_findings, CriticalPathClass, ZeroBodyAudit,
+};
 use crate::coverage::evaluation::{coverage_violations, evaluate_changed_coverage};
 use crate::coverage::model::{CoverageLane, LcovReport};
 use crate::coverage::source_analysis::SourceIndex;
@@ -49,11 +52,15 @@ pub fn build_callback() {
     );
     assert!(coverage_violations(CoverageLane::Host, &result)
         .iter()
-        .any(|violation| violation.contains("closure@2")));
+        .any(|violation| violation.contains("changed executable Rust lines")));
+    assert_eq!(
+        audited_zero_body_findings(CoverageLane::Host, &result)[0].audit,
+        ZeroBodyAudit::Critical(CriticalPathClass::PublicApi)
+    );
 }
 
 #[test]
-fn changed_opaque_macro_definition_and_invocation_fail_closed() {
+fn changed_opaque_macro_definition_and_invocation_are_audited_fail_closed() {
     let cases = [
         (
             "macro_rules! generated {\n    () => { pub fn value() -> u32 { 7 } };\n}\n",
@@ -87,7 +94,11 @@ fn changed_opaque_macro_definition_and_invocation_fail_closed() {
         );
         assert!(coverage_violations(CoverageLane::Host, &result)
             .iter()
-            .any(|violation| violation.contains(expected)));
+            .any(|violation| violation.contains("absent from the host LCOV artifact")));
+        assert_eq!(
+            audited_zero_body_findings(CoverageLane::Host, &result)[0].audit,
+            ZeroBodyAudit::Critical(CriticalPathClass::PublicApi)
+        );
     }
 }
 

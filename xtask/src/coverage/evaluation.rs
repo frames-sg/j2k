@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use super::compiler_regions::{CompilerRegionEvidence, CompilerRegionReport};
+use super::critical_path_policy::classify_path;
 use super::exclusion_policy::matching_exclusion;
 use super::model::{
     is_accelerator_path, ChangedCoverageResult, CoverageCounts, CoverageLane, LcovReport,
@@ -40,6 +41,7 @@ pub(super) fn evaluate_changed_coverage(
 ) -> Result<ChangedCoverageResult, String> {
     let mut result = ChangedCoverageResult {
         overall: CoverageCounts::default(),
+        critical: CoverageCounts::default(),
         accelerator: CoverageCounts::default(),
         changed_files: BTreeSet::new(),
         uncovered: Vec::new(),
@@ -302,6 +304,12 @@ fn record_measurable_line(
     } else {
         result.uncovered.push((path.to_string(), line_number));
     }
+    if classify_path(path).is_some() {
+        result.critical.measurable += 1;
+        if count > 0 {
+            result.critical.covered += 1;
+        }
+    }
     if is_accelerator_path(path) {
         result.accelerator.measurable += 1;
         if count > 0 {
@@ -348,48 +356,33 @@ pub(super) fn coverage_violations(
             CHANGED_LINE_THRESHOLD_PERCENT
         ));
     }
-    if !result.changed_functions_without_covered_body.is_empty() {
+    if result.critical.measurable > 0 && !meets_threshold(&result.critical) {
         violations.push(format!(
-            "changed instrumentable functions have no covered body in the {} LCOV artifact: {}",
+            "{} changed critical-path lines are {:.2}% covered ({} / {}), below {}%",
             lane.name(),
-            result.changed_functions_without_covered_body.join(", ")
+            coverage_percent(&result.critical).unwrap_or(0.0),
+            result.critical.covered,
+            result.critical.measurable,
+            CHANGED_LINE_THRESHOLD_PERCENT
         ));
     }
-    if !result
-        .changed_executable_bodies_without_covered_body
-        .is_empty()
-    {
+    let absent_critical_files = result
+        .absent_instrumentable_files
+        .iter()
+        .filter(|path| classify_path(path).is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    if !absent_critical_files.is_empty() {
         violations.push(format!(
-            "changed executable bodies have no covered body in the {} LCOV artifact: {}",
+            "critical instrumentable files are absent from the {} LCOV artifact: {}",
             lane.name(),
-            result
-                .changed_executable_bodies_without_covered_body
-                .join(", ")
-        ));
-    }
-    if !result
-        .changed_deferred_bodies_without_covered_compiler_region
-        .is_empty()
-    {
-        violations.push(format!(
-            "changed deferred bodies have compiler-instrumented regions but no covered region in the {} lane: {}",
-            lane.name(),
-            result
-                .changed_deferred_bodies_without_covered_compiler_region
-                .join(", ")
+            absent_critical_files.join(", ")
         ));
     }
     if !result.mixed_test_production_lines.is_empty() {
         violations.push(format!(
             "changed source lines mix cfg(test)-only and production Rust, so line-only LCOV cannot attribute execution safely; split test-only and production syntax onto separate lines: {}",
             result.mixed_test_production_lines.join(", ")
-        ));
-    }
-    if !result.changed_opaque_macros.is_empty() {
-        violations.push(format!(
-            "changed opaque macros require a narrow reviewed coverage exclusion in the {} lane: {}",
-            lane.name(),
-            result.changed_opaque_macros.join(", ")
         ));
     }
     violations

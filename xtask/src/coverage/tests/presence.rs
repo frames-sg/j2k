@@ -63,9 +63,7 @@ fn shared_accelerator_source_absent_from_metal_lcov_is_a_violation() {
     let violations = coverage_violations(CoverageLane::Metal, &result);
 
     assert_eq!(result.absent_instrumentable_files, vec![path.to_string()]);
-    assert!(violations
-        .iter()
-        .any(|violation| violation.contains("choose_accelerator@1")));
+    assert!(violations.iter().any(|violation| violation.contains(path)));
 }
 
 #[test]

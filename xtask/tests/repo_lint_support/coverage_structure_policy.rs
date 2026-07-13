@@ -27,6 +27,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
     let compiler_region_tests = read("xtask/src/coverage/compiler_regions/tests.rs");
     let compiler_region_line_tests =
         read("xtask/src/coverage/compiler_regions/tests/line_evidence.rs");
+    let critical_path_policy = read("xtask/src/coverage/critical_path_policy.rs");
     let model = read("xtask/src/coverage/model.rs");
     let lane = read("xtask/src/coverage/lane.rs");
     let parsing = read("xtask/src/coverage/parsing.rs");
@@ -60,6 +61,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
     let tests = read("xtask/src/coverage/tests.rs");
     let attribute_tests = read("xtask/src/coverage/tests/attributes.rs");
     let cfg_provenance_tests = read("xtask/src/coverage/tests/cfg_provenance.rs");
+    let critical_path_tests = read("xtask/src/coverage/tests/critical_path_policy.rs");
     let deferred_body_tests = read("xtask/src/coverage/tests/deferred_bodies.rs");
     let evaluation_tests = read("xtask/src/coverage/tests/evaluation.rs");
     let non_executable_evaluation_tests =
@@ -113,6 +115,11 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "xtask/src/coverage/compiler_regions/tests/line_evidence.rs",
             compiler_region_line_tests.as_str(),
             100,
+        ),
+        (
+            "xtask/src/coverage/critical_path_policy.rs",
+            critical_path_policy.as_str(),
+            350,
         ),
         ("xtask/src/coverage/model.rs", model.as_str(), 600),
         ("xtask/src/coverage/lane.rs", lane.as_str(), 600),
@@ -221,6 +228,11 @@ fn coverage_tooling_stays_split_by_responsibility() {
             100,
         ),
         (
+            "xtask/src/coverage/tests/critical_path_policy.rs",
+            critical_path_tests.as_str(),
+            125,
+        ),
+        (
             "xtask/src/coverage/tests/deferred_bodies.rs",
             deferred_body_tests.as_str(),
             200,
@@ -291,6 +303,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
                 "mod accelerator_ownership;",
                 "mod build_outputs;",
                 "mod compiler_regions;",
+                "mod critical_path_policy;",
                 "mod evaluation;",
                 "mod exclusion_policy;",
                 "mod lane;",
@@ -321,6 +334,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "pub(super) fn coverage_packages(",
             "pub(super) struct CoverageOptions",
             "pub(super) struct ChangedCoverageResult",
+            "pub(super) critical: CoverageCounts",
             "pub(super) fn parse_options(",
         ]),
         PatternCheck::new("coverage build-output cfg ownership", &build_outputs).required(&[
@@ -445,6 +459,9 @@ fn coverage_tooling_stays_split_by_responsibility() {
                 "changed_opaque_macros",
                 "source_dispositions",
                 "pub(super) fn coverage_violations(",
+                "classify_path(path).is_some()",
+                "changed critical-path lines",
+                "critical instrumentable files are absent",
                 "fn meets_threshold(",
             ])
             .forbidden(&[
@@ -454,7 +471,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
         PatternCheck::new("coverage summary ownership", &summary).required(&[
             "pub(super) fn write_summary(",
             "pub(super) fn print_summary(",
-            "j2k-changed-line-coverage-v4",
+            "j2k-changed-line-coverage-v5",
             "head_sha",
             "lane_scope",
             "cargo_llvm_cov_version",
@@ -467,8 +484,36 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "compiler_regions_artifact",
             "mixed_test_production_lines",
             "changed_opaque_macros",
+            "critical_paths",
+            "zero_body_audit",
             "accelerator_host_rust",
             "narrow_exclusions",
+        ]),
+        PatternCheck::new(
+            "coverage critical-path and residual ownership",
+            &critical_path_policy,
+        )
+        .required(&[
+            "pub(super) enum CriticalPathClass",
+            "pub(super) enum ResidualDisposition",
+            "pub(super) enum ZeroBodyAudit",
+            "pub(super) fn classify_path(",
+            "pub(super) fn audited_zero_body_findings(",
+            "Self::Unreachable => \"unreachable\"",
+            "Self::HardwareOnly => \"hardware-only\"",
+            "Self::Trivial => \"trivial\"",
+            "Self::LowRiskTooling => \"low-risk-tooling\"",
+        ]),
+        PatternCheck::new(
+            "coverage critical-path policy regressions",
+            &critical_path_tests,
+        )
+        .required(&[
+            "fn critical_path_threshold_cannot_be_masked_by_low_risk_tooling_coverage()",
+            "fn low_risk_tooling_absence_is_an_audited_residual_not_a_critical_failure()",
+            "fn critical_path_classification_covers_release_risk_boundaries()",
+            "fn zero_body_audit_records_each_approved_residual_disposition()",
+            "fn critical_zero_body_findings_remain_in_the_audit_without_individual_failure()",
         ]),
         PatternCheck::new("coverage exclusion policy ownership", &exclusions).required(&[
             "pub(super) const COVERAGE_EXCLUSIONS",
@@ -663,7 +708,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
         PatternCheck::new("coverage evaluation regressions", &evaluation_tests).required(&[
             "mod non_executable;",
             "fn changed_signature_requires_a_positive_da_record_in_the_function_body()",
-            "fn changed_function_without_covered_body_is_a_host_violation()",
+            "fn changed_function_without_covered_body_is_a_critical_audit_finding()",
             "fn registered_shared_accelerator_sources_reach_both_gpu_denominators()",
             "fn generated_and_vendored_sources_have_reviewed_dispositions()",
         ]),
@@ -681,12 +726,12 @@ fn coverage_tooling_stays_split_by_responsibility() {
         )
         .required(&[
             "fn changed_uncalled_closure_requires_coverage_in_its_own_body()",
-            "fn changed_opaque_macro_definition_and_invocation_fail_closed()",
+            "fn changed_opaque_macro_definition_and_invocation_are_audited_fail_closed()",
             "fn cfg_test_macro_remains_test_only()",
         ]),
         PatternCheck::new("coverage deferred-body regressions", &deferred_body_tests).required(&[
             "fn executed_one_line_closure_accepts_its_own_compiler_region()",
-            "fn unpolled_one_line_async_rejects_its_zero_count_compiler_region()",
+            "fn unpolled_one_line_async_records_its_zero_count_compiler_region()",
             "fn body_without_a_compiler_region_is_recorded_as_noninstrumentable()",
         ]),
         PatternCheck::new("coverage presence regressions", &presence_tests).required(&[
