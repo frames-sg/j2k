@@ -3,6 +3,7 @@
 //! Validated CUDA JPEG decode resource upload and kernel launch.
 
 use super::{
+    decode_workspace::{subsampled_workspace_plan, CudaJpegSubsampledWorkspacePlan},
     jpeg_rgb8_kernel, CudaJpeg420Params, CudaJpegDecodeStatus, CudaJpegRgb8DecodePlan,
     CudaJpegRgb8ValidatedPlan,
 };
@@ -76,6 +77,14 @@ struct CudaJpegDecodeRgb8Launch<'a> {
     status: &'a CudaDeviceBuffer,
 }
 
+#[derive(Clone, Copy)]
+struct CudaJpegSubsampledConversionLaunch<'a> {
+    plan: CudaJpegSubsampledWorkspacePlan,
+    workspace: &'a CudaDeviceBuffer,
+    output: &'a CudaDeviceBuffer,
+    params: CudaJpeg420Params,
+}
+
 impl CudaContext {
     #[expect(
         clippy::similar_names,
@@ -92,6 +101,14 @@ impl CudaContext {
         // validated extent, including pitched row padding, before any kernel
         // can produce a successful output.
         self.memset_d8(output, 0, validated.output_len)?;
+        let workspace_plan = subsampled_workspace_plan(plan.sampling, validated.params)?;
+        let workspace = workspace_plan
+            .map(|workspace| self.allocate(workspace.byte_len))
+            .transpose()?;
+        if let (Some(workspace_plan), Some(workspace)) = (workspace_plan, workspace.as_ref()) {
+            self.memset_d8(workspace, 0, workspace_plan.byte_len)?;
+        }
+        let decode_output = workspace.as_ref().unwrap_or(output);
         let (kernel, kernel_name) = jpeg_rgb8_kernel(plan.sampling);
         let entropy = self.upload(plan.entropy_bytes)?;
         let y_quant = self.upload(u16_slice_as_bytes(&plan.y_quant))?;
@@ -124,13 +141,21 @@ impl CudaContext {
             kernel,
             geometry: validated.geometry,
             entropy: &entropy,
-            output,
+            output: decode_output,
             params: validated.params,
             quant,
             huffman,
             checkpoints: &checkpoints,
             status: &status_buffer,
         })?;
+        if let (Some(workspace_plan), Some(workspace)) = (workspace_plan, workspace.as_ref()) {
+            self.launch_jpeg_subsampled_conversion(CudaJpegSubsampledConversionLaunch {
+                plan: workspace_plan,
+                workspace,
+                output,
+                params: validated.params,
+            })?;
+        }
         status_buffer.copy_to_host(cuda_jpeg_decode_statuses_as_bytes_mut(&mut statuses))?;
         for status in statuses {
             if status.code != 0 {
@@ -141,10 +166,11 @@ impl CudaContext {
                 });
             }
         }
+        let kernel_dispatches = if workspace.is_some() { 2 } else { 1 };
         Ok(CudaExecutionStats {
-            kernel_dispatches: 1,
+            kernel_dispatches,
             copy_kernel_dispatches: 0,
-            decode_kernel_dispatches: 1,
+            decode_kernel_dispatches: kernel_dispatches,
             hardware_decode: false,
         })
     }
@@ -193,6 +219,23 @@ impl CudaContext {
             status_ptr
         );
         self.launch_kernel(function, geometry, &mut kernel_params)
+    }
+
+    fn launch_jpeg_subsampled_conversion(
+        &self,
+        launch: CudaJpegSubsampledConversionLaunch<'_>,
+    ) -> Result<(), CudaError> {
+        let function = self.jpeg_rgb8_kernel_function(CudaKernel::JpegSubsampledPlanesToRgb8)?;
+        let mut workspace_ptr = launch.workspace.device_ptr();
+        let mut output_ptr = launch.output.device_ptr();
+        let mut params = launch.params;
+        let mut sampling = launch.plan.sampling_code;
+        let mut kernel_params = cuda_kernel_params!(workspace_ptr, output_ptr, params, sampling);
+        self.launch_kernel(
+            function,
+            launch.plan.conversion_geometry,
+            &mut kernel_params,
+        )
     }
 
     fn jpeg_rgb8_kernel_function(

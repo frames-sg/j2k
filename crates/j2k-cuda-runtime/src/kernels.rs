@@ -82,6 +82,14 @@ pub(crate) enum CudaKernel {
             reason = "variant is used only by the JPEG decode kernel feature"
         )
     )]
+    JpegSubsampledPlanesToRgb8,
+    #[cfg_attr(
+        all(not(feature = "cuda-oxide-jpeg-decode"), not(test)),
+        expect(
+            dead_code,
+            reason = "variant is used only by the JPEG decode kernel feature"
+        )
+    )]
     JpegEntropySync420,
     #[cfg_attr(
         all(not(feature = "cuda-oxide-jpeg-decode"), not(test)),
@@ -317,6 +325,7 @@ impl CudaKernel {
                 Self::JpegDecodeFast420Rgb8
                     | Self::JpegDecodeFast422Rgb8
                     | Self::JpegDecodeFast444Rgb8
+                    | Self::JpegSubsampledPlanesToRgb8
             )
     }
 
@@ -396,6 +405,7 @@ impl CudaKernel {
             Self::JpegDecodeFast420Rgb8 => b"j2k_jpeg_decode_fast420_rgb8\0",
             Self::JpegDecodeFast422Rgb8 => b"j2k_jpeg_decode_fast422_rgb8\0",
             Self::JpegDecodeFast444Rgb8 => b"j2k_jpeg_decode_fast444_rgb8\0",
+            Self::JpegSubsampledPlanesToRgb8 => b"j2k_jpeg_subsampled_planes_to_rgb8\0",
             Self::JpegEntropySync420 => b"j2k_jpeg_entropy_sync420\0",
             Self::JpegEntropyOverflow420 => b"j2k_jpeg_entropy_overflow420\0",
             Self::JpegEncodeBaselineEntropy => b"j2k_jpeg_encode_baseline_entropy\0",
@@ -738,6 +748,10 @@ mod tests {
             b"j2k_jpeg_decode_fast444_rgb8\0"
         );
         assert_eq!(
+            CudaKernel::JpegSubsampledPlanesToRgb8.entrypoint(),
+            b"j2k_jpeg_subsampled_planes_to_rgb8\0"
+        );
+        assert_eq!(
             CudaKernel::JpegEntropySync420.entrypoint(),
             b"j2k_jpeg_entropy_sync420\0"
         );
@@ -757,6 +771,7 @@ mod tests {
             CudaKernel::JpegDecodeFast420Rgb8,
             CudaKernel::JpegDecodeFast422Rgb8,
             CudaKernel::JpegDecodeFast444Rgb8,
+            CudaKernel::JpegSubsampledPlanesToRgb8,
             CudaKernel::JpegEntropySync420,
             CudaKernel::JpegEntropyOverflow420,
         ];

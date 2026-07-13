@@ -37,6 +37,7 @@ const CUDA_OXIDE_TRANSCODE_EXTRA_SOURCES: &[&str] = &[
     "simt/src/quantization.rs",
     "simt/src/reversible53.rs",
 ];
+const CUDA_OXIDE_JPEG_DECODE_EXTRA_SOURCES: &[&str] = &["simt/src/component_planes.rs"];
 
 fn main() {
     emit_build_script_metadata();
@@ -102,6 +103,9 @@ fn emit_build_script_metadata() {
     println!("cargo:rerun-if-changed=src/cuda_oxide_jpeg_decode/src/main.rs");
     println!("cargo:rerun-if-changed=src/cuda_oxide_jpeg_decode/simt/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_jpeg_decode/simt/src/main.rs");
+    for relative in CUDA_OXIDE_JPEG_DECODE_EXTRA_SOURCES {
+        println!("cargo:rerun-if-changed=src/cuda_oxide_jpeg_decode/{relative}");
+    }
     println!("cargo:rerun-if-changed=src/cuda_oxide_jpeg_encode/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_jpeg_encode/rust-toolchain.toml");
     println!("cargo:rerun-if-changed=src/cuda_oxide_jpeg_encode/src/main.rs");
@@ -451,6 +455,8 @@ fn cuda_oxide_extra_sources(source_dir: &Path) -> &'static [&'static str] {
         CUDA_OXIDE_J2K_ENCODE_EXTRA_SOURCES
     } else if source_dir == Path::new("src/cuda_oxide_transcode") {
         CUDA_OXIDE_TRANSCODE_EXTRA_SOURCES
+    } else if source_dir == Path::new("src/cuda_oxide_jpeg_decode") {
+        CUDA_OXIDE_JPEG_DECODE_EXTRA_SOURCES
     } else {
         &[]
     }

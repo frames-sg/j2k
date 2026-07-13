@@ -52,18 +52,21 @@ defense in depth, and reports every device-side defensive rejection; exact
 final-tree verification is still in progress. The release remains blocked on
 source-aware coverage and clean-tree packaging, genuine API
 and dependency-provenance review, private vulnerability reporting, the clean
-matrix, and exact-SHA hosted/GPU evidence. CUDA resource-lifetime and
-architecture implementation is source-complete; its remaining work is frozen
-NVIDIA and exact-candidate proof rather than additional unowned source edits.
+matrix, and exact-SHA hosted/GPU evidence. The first frozen NVIDIA lane exposed
+and reproduced one JPEG host-accounting deadlock plus cross-MCU subsampled
+chroma drift; their focused fixes are green but not yet committed or promoted
+to exact-candidate evidence.
 
 ## 2. Handoff capsule
 
 Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
-- Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `fa6ac2b3`; the reconciled documentation and
-  clean-tree checkpoint is `2c10ddc4`. No push, release tag, crate
+- Release state: **blocked** and unfrozen. The latest settled source commit is
+  `4317d434`. An isolated RC worktree preserves the candidate fixes while the
+  shared `main` worktree contains a separate, uncommitted user-owned ML/CUDA
+  change set that appeared during NVIDIA verification and must not be discarded
+  or silently folded into 0.7. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -181,16 +184,24 @@ the issue sections below; this capsule is only the current continuation state.
   A read-only GitHub API check on 2026-07-12 confirms private vulnerability
   reporting is still disabled; CONTACT-001 therefore remains a real external
   blocker rather than a stale ledger note.
-- Candidate verification checkpoint (2026-07-12): the first dated candidate
-  `65318d56` passed clean-tree publish integrity, packaging, the canonical local
-  CI matrix, strict Clippy, clone audit at 1.97%, normal and strict repository
-  policy, release CPU, no-std, Miri, and benchmark compilation. The typo gate
-  then rejected a two-letter substring inside the historical backticked commit id
-  `cef2ba40`. Because the object id is immutable evidence, the correction adds
-  a narrow 8-or-40-hex backticked Git-id exclusion rather than a word-level
-  allowance; a red-then-green repository-policy regression owns that scope.
-  This tracked correction invalidates `65318d56`; commit it and select a new
-  exact candidate SHA before resuming the remaining gates.
+- Candidate verification checkpoint (2026-07-12): the dated candidate advanced
+  through the typo-policy, coverage-policy, Metal release-scheduler, and Linux
+  lint corrections to `4317d434`. Publish integrity, packaging, local CI,
+  strict Clippy, clone audit at 1.97%, repository policy, release CPU, no-std,
+  Miri, benchmark compilation, Metal release, and the focused CUDA strict-lint
+  stages have passed on predecessor or current checkpoints as recorded below;
+  all must be repeated on the eventual exact SHA. The current NVIDIA run then
+  exposed a real recursive host-accounting lock and image-local chroma
+  interpolation at checkpoint/MCU boundaries. The existing concurrency and
+  parity regressions failed first on hardware. Reusing the already-held
+  external-owner guard removes the recursive lock; subsampled JPEG decode now
+  writes bounded device component planes and performs one image-wide conversion
+  dispatch, preserving checkpoint-parallel entropy decode while matching CPU
+  interpolation across row and column boundaries. Real-GPU focused results are
+  green: 50 library, 7 encode, and 41 host-surface tests, including new 4:2:0
+  row/column, 4:2:2 multi-MCU, and odd-dimension parity cases; affected strict Clippy also
+  passes. Commit this correction, select a new SHA, and restart the exact CUDA
+  lane from a fresh clean bundle.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -525,7 +536,7 @@ The rubric was checked against current primary or first-party sources on
 | JPEGCACHE-001 | P1 | in progress | ALLOC-001, ALLOC-008, ALLOC-018, ERR-015 | One neutral 8-entry/64-MiB inspect-once cache is integrated under clone-shared cache, queue, pinned-staging, result, and CPU-fallback ledgers; package/policy gates pass and frozen hardware evidence remains |
 | METALPOOL-001 | P1 | complete | ALLOC-018, SAFE-001 | Commit `3fd23cf2` uses separate flat private/shared `VecDeque` pools and move-only once-validated capacity owners; default private working-set reuse, full Metal gates, and alternating direct/resident performance comparisons pass |
 | CUDAPOOL-001 | P1 | complete | ALLOC-001, CUDAERR-001 | CUDA buffer pools apply shared actual-byte/count/bucket limits, deterministic completed-buffer eviction, deferred safety accounting, and clone-shared high-water diagnostics; strict RTX 4070 SUPER retention tests passed |
-| CUDAPIN-001 | P1 | in progress | ALLOC-001, CUDAPOOL-001, CUDAERR-001 | Context-authoritative page-locked staging pre-reserves growth, external owners use unlocked full-headroom RAII replacement transactions, and exact retention/quarantine/compound errors pass local race and package gates; frozen NVIDIA evidence remains |
+| CUDAPIN-001 | P1 | in progress | ALLOC-001, CUDAPOOL-001, CUDAERR-001 | Context-authoritative page-locked staging pre-reserves growth and external owners use full-headroom RAII replacement transactions; NVIDIA exposed a recursive diagnostics lock after successful replacement, the existing race test reproduced it, and the focused guard-reuse fix passes, while clean exact-SHA NVIDIA evidence remains |
 | CUDAHANDLE-001 | P2 | complete | CUDAPIN-001, CUDAERR-001 | One typed boundary validates device allocations and every context/module/function/event/stream out-parameter; successful-null function lookup unloads its module |
 | METALALLOC-001 | P1 | complete | SAFE-001 | Metal coefficient transcode uses checked aggregate phase plans, fallible actual-capacity host ownership, checked device construction, typed sources, and linear sparse weights; full local package and policy gates pass |
 | PROFILE-001 | P2 | in progress | ALLOC-003, AUDIT-001 | Source-complete typed limits, transactional fallible ownership, move-only summaries, shared diagnostics, and bounded typed callers; frozen API/semver review and final matrix remain |
@@ -593,6 +604,7 @@ The rubric was checked against current primary or first-party sources on
 | JPEGCOR-001 | P2 | complete | STR-012A | Fixed ordered-dither rounding; stored and live libjpeg-turbo output now matches byte-for-byte |
 | JPEGCOR-002 | P2 | complete | JPEGCOR-001 | Metal 4:2:2 interpolation now matches the CPU/libjpeg ordered-rounding contract across all routes |
 | JPEGCOR-003 | P2 | complete | ALLOC-012 | TIFF `JPEGTables` normalization enforces duplicate policy over every DQT/DHT definition, preserves default byte parity, and rejects malformed/conflicting later tables |
+| JPEGCOR-004 | P1 | in progress | CUDA-002, CUDAPIN-001 | Real CUDA proved 4:2:0/4:2:2 fancy upsampling was incorrectly clamped at MCU boundaries; bounded component-plane decode plus image-wide conversion passes horizontal, vertical, corner, odd-edge, restart, caller-buffer, and CPU-parity regressions, with a clean exact-SHA CUDA release rerun remaining |
 | TOOL-001 | P3 | complete | DUP-001 | Adoption report model/render split |
 | CUDA-002 | P1 | complete | SEC-001 | One exact named release-cuda gate with zero skip markers |
 | PKG-001 | P1 | in progress | SEC-001 | Staged unpublished dependency closure is repaired and the clean package gate passed at `4c947c2b`; rerun after `3fd23cf2` and every later source commit |
