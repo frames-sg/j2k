@@ -462,7 +462,7 @@ The rubric was checked against current primary or first-party sources on
 | ID | Severity | Status | Depends on | Outcome |
 |---|---:|---|---|---|
 | DOC-001 | P1 | complete | — | Canonical runbook replaces stale diary |
-| REC-001 | P1 | in progress | DOC-001 | Every dirty file is explained and tested |
+| REC-001 | P1 | complete | DOC-001 | Original dirty-tree work is reconciled into reviewable tested phase commits; the current worktree is clean and the ledger records each remaining blocker |
 | REL-001 | P1 | in progress | REC-001 | Local stale tag removed; staged changelog/docs pending |
 | BUILD-001 | P1 | complete | — | Known Clippy failures fixed without allows |
 | TEST-001 | P1 | complete | — | All 38 new ignores have exact dispositions |
@@ -6870,7 +6870,7 @@ source-freeze documentation gate still owns the final rerun.
 - Enable GitHub private vulnerability reporting and verify the external form,
   or publish a maintainer-approved private contact; then align both
   `SECURITY.md` and `CODE_OF_CONDUCT.md` to the working channel.
-  The 2026-07-10 read-only recheck
+  The 2026-07-12 read-only recheck
   `gh api repos/frames-sg/j2k/private-vulnerability-reporting --jq .enabled`
   returned `false`; GitHub's [private-reporting
   documentation](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/report-privately)
@@ -6886,9 +6886,6 @@ source-freeze documentation gate still owns the final rerun.
   update every staged-document reference that still says the notes are under
   `Unreleased`. Do not guess the date early; a later change creates a new
   candidate.
-- Regenerate stable API and reviewed semver artifacts after the final structural
-  source freeze; the pre-STR snapshot is not candidate proof.
-- Rerun unsafe inventory after every final source move.
 - Re-run all documentation gates and visual checks on the frozen candidate.
 - Do not re-create a second documentation plan.
 
