@@ -62,7 +62,7 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `1bf896f6`. No push, release tag, crate
+  before this ledger refresh is `873428e5`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
@@ -111,24 +111,27 @@ the issue sections below; this capsule is only the current continuation state.
   (`ee519412`). Focused Metal, release-status, release-command, JPEG benchmark,
   native ROI, compare-command, transcode-metrics, native-SIMD, coverage-model,
   decode-trait, cache-statistics, codec-math, compare-row, native-reuse, JPEG
-  NEON, and CUDA-command tranches are committed through `1bf896f6`.
+  NEON, CUDA-command, DCT-error, transform-mapping, native tile-metadata, and
+  profile-emission tranches are committed through `873428e5`.
   The compare tranche corrected a real staging leak by attempting output
   cleanup even when input cleanup fails. The exact-SHA host run completed the
   full host matrix and 413-test repository policy suite, generated schema-v4
-  LCOV and LLVM region artifacts, and passed the numeric gate at 88.0825%
-  (65,839 / 74,747). COV-001 remains open on 162
-  uncovered functions, 422 uncovered multiline executable bodies, 450
+  LCOV and LLVM region artifacts, and passed the numeric gate at 88.1681%
+  (65,903 / 74,747). COV-001 remains open on 149
+  uncovered functions, 420 uncovered multiline executable bodies, 450
   compiler-instrumented same-line deferred bodies with zero counts, 172
   compiler-noninstrumentable deferred bodies recorded without false failure,
-  8,936 compiler-noninstrumentable source lines, and 518 uncovered opaque
+  8,938 compiler-noninstrumentable source lines, and 511 uncovered opaque
   macros. The earlier first attempt at `00983dd9` was
   correctly discarded after stale ignored coverage JSON caused two
   repository-text policies to fail; generated artifacts remain ignored and are
-  moved to Trash after each recorded checkpoint. All subagents are stopped; root
-  alone owns the remaining coverage proof, settled aggregate gates, ledger,
-  and exact-SHA handoff. The next tranche must be selected from this exact
-  report, remain behavior-focused, compile, pass focused tests, and be committed
-  before another full coverage matrix is started.
+  moved to Trash after each recorded checkpoint. The bounded tranche agents
+  have finished; root owns integration, policy verification, the ledger,
+  commits, exact coverage, and exact-SHA handoff. The next exact-selected
+  owners are release-status/release-command closure paths, the two comparator
+  CLI usage paths, and one isolated JPEG sink-writer owner. Each must remain
+  behavior-focused, compile, pass focused tests, and be committed before
+  another full coverage matrix is started.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -441,7 +444,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
-| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `1bf896f6` passes the numeric gate at 88.0825% (65,839 / 74,747); close 162 function, 422 body, 450 zero-count deferred-region, and 518 opaque-macro proofs without exclusions or threshold changes |
+| COV-001 | P2 | in progress | METAL-001 | Exact schema-v4 host evidence at `873428e5` passes the numeric gate at 88.1681% (65,903 / 74,747); close 149 function, 420 body, 450 zero-count deferred-region, and 511 opaque-macro proofs without exclusions or threshold changes |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |
 | ALLOC-003 | P1 | complete | — | Native parse/tile, ROI/direct-plan, Tier-1, recode, postprocess, output, and reusable context owners share one actual-capacity decode budget |
@@ -1351,6 +1354,36 @@ owners are native tile-part handling (103), semver orchestration (73), native
 Tier-1/subband and JPEG fast-420 (68 each), coverage orchestration (67), and
 facade resolved-component recode (66). Select isolated owners from this exact
 evidence before another full matrix.
+
+The next bounded tranche added typed DCT transform conversion/display/source
+coverage (`23d4e779`), exercised the complete 5/3 and 9/7 JPEG-to-HTJ2K error
+mapping without changing production classification (`20f22657`), proved
+fallible tile-metadata clones and transactional actual-capacity replacement
+ownership (`a061fc87`), and installed a test-only thread-local, nested,
+RAII-restored, non-`Send` profile diagnostic sink to execute row and error
+emission without changing release behavior (`873428e5`). Focused and package
+tests, workspace formatting, strict package Clippy, and the relevant profile
+policies passed before the commits.
+
+The exact host run at
+`873428e59c4a5ec6bdd2a3030154d2f5797d40d2` then completed the full host
+correctness/parity matrix and all 413 repository policies with one established
+ignore. Numeric coverage rose by 64 covered lines with no additional measurable
+lines, to 65,903 of 74,747 (88.1681%). The tranche closed 13 function misses,
+two multiline-body misses, and seven opaque macros; deferred-region proof did
+not move. COV-001 remains open on 149 functions, 420 multiline bodies, 450
+zero-count deferred regions, 172 explicitly recorded compiler-
+noninstrumentable deferred bodies, 511 opaque macros, four absent
+instrumentable files, and no mixed production/test lines. The report records
+8,844 uncovered lines, 31,888 residual unmeasured lines, and 8,938 compiler-
+noninstrumentable source lines. The next isolated function leaders are JPEG
+fast-packet error classification, JPEG routing profiles, JPEG sink writers,
+native HT benchmark adapters, native precomputed 5/3 APIs, and native
+coefficient-source accessors at three functions each. Release command/status
+still has 78 uncovered lines and three uncovered closure bodies, while the two
+comparator CLI usage functions remain uncovered. These exact findings define
+the next bounded parallel tranche; do not start another full matrix until it
+is integrated and committed.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
