@@ -480,6 +480,8 @@ pub(super) fn try_clone_quantization_info(
 #[cfg(test)]
 mod accounting_tests;
 #[cfg(test)]
+mod ownership_tests;
+#[cfg(test)]
 mod tests {
     use alloc::vec;
 
