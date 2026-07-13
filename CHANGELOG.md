@@ -318,6 +318,25 @@ below identify supported replacements and changes with no compatibility shim.
   bounded `ProfileField` construction as every other numeric metric. JPEG CPU,
   Metal, and CUDA profile callers no longer preformat owned field strings and
   report field-construction failures through `emit_profile_error`.
+  The remaining removed rustdoc-hidden helpers migrate as follows:
+  `GPU_ROUTE_PROFILE_ENV` is no longer exported; use the documented
+  `J2K_GPU_ROUTE_PROFILE` key with `profile_stage_mode_from_env` or
+  `StageModeCache::mode_from_env`. Replace `env_flag_from_value` with a
+  `ProfileStageMode::Rows` match on `profile_stage_mode_from_value`,
+  `gpu_route_profile_stage_mode_from_value` with
+  `profile_stage_mode_from_value`, `gpu_route_profile_mode_enabled` with an
+  explicit comparison to `ProfileStageMode::Disabled`, and
+  `gpu_route_profile_stage_mode` with the same environment-key APIs. Replace
+  `gpu_route_summary_labels` and `gpu_route_profile_summary` with caller-owned,
+  fallible `SummaryLabel` values and `ProfileSummary::counts_only`; there is no
+  specialized public GPU-route summary constructor. `format_profile_row` has
+  no generic string-row replacement: use `emit_profile_row_now` or typed
+  `ProfileField` emission, and use `format_profile_key_value_fields` only when
+  serializing fields without the row prefix. Replace
+  `emit_profile_row_u128_now` with fallible `format_profile_row_u128` followed
+  by `emit_profile_line`. Replace `record_timing_summary_str` with
+  `emit_profile_row_with_timing_summary` for thread-local summaries, or filter
+  the caller-owned fields before fallible `ProfileSummary::record_str`.
 - Removes the redundant `cuda-oxide-*` passthrough features from `j2k-cuda`
   and `j2k-transcode-cuda`; enable `cuda-runtime` instead, which already
   activates the underlying kernel families.

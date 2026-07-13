@@ -160,10 +160,14 @@ the issue sections below; this capsule is only the current continuation state.
 - API, provenance, and documentation freeze checkpoint (2026-07-12):
   `cargo xtask stable-api` regenerated both ordinary and rustdoc-hidden
   inventories in memory for all 17 packages and found the committed snapshots
-  current. `cargo xtask semver` verified the pinned baseline, tools, package
-  partition, live inventories, snapshots, and committed report before stopping
-  at the first of 33 explicit maintainer-review `PENDING` rationales; no stale
-  local API artifact was found. Pre-candidate `release-integrity`, ordinary and
+  current. An independent package-by-package review approved 32 entries and
+  rejected the hidden `j2k-profile` entry until ten removed legacy helpers had
+  explicit replacement or no-replacement migration notes. The changelog now
+  records those mappings, the reviewer approved the repaired entry, and all 33
+  schema-2 rationales are final. `cargo xtask semver` then passed the pinned
+  baseline, tools, package partition, live inventories, snapshots, committed
+  report, review rationales, and per-package comparisons. Pre-candidate
+  `release-integrity`, ordinary and
   final `public-support`, `unsafe-audit`, warning-denied workspace/public-crate
   docs, and downstream facade/transcode examples pass. Publish-mode integrity
   fails only because the real `0.7.0` date and patched-`block` reviewer/date are
@@ -367,9 +371,8 @@ the issue sections below; this capsule is only the current continuation state.
   4. run exact-SHA hosted CI plus Metal and CUDA hardware validation.
 - External release blockers: GitHub private vulnerability reporting is disabled
   (CONTACT-001); patched `block 0.1.6` provenance reviewer/date is pending
-  (PROV-001); all 33 `PENDING` API rationales still require real maintainer
-  review; release date and candidate SHA do not yet exist. A tag is deliberately
-  outside this verified-RC endpoint.
+  (PROV-001); release date and candidate SHA do not yet exist. A tag is
+  deliberately outside this verified-RC endpoint.
 - CUDA handoff: the maintainer supplied a private WSL/NVIDIA host with RTX 4070
   SUPER, CUDA 13.2, Rust 1.96, and libclang 18. Keep login/address out of tracked
   files. The repaired GPU ABI source passed a supporting `sm_89` build and
@@ -484,7 +487,7 @@ The rubric was checked against current primary or first-party sources on
 | POLICY-001 | P1 | complete | BUILD-001 | Public API scan and strict lane repaired |
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
-| SEM-001 | P1 | blocked on maintainer review | REC-001 | Frozen-source ordinary/hidden snapshots and reviewed diff are regenerated; exact fingerprints are recorded and the fail-closed PENDING rationales await real approval |
+| SEM-001 | P1 | complete | REC-001 | Independent review approved all 33 ordinary/hidden schema-2 entries after adding the missing j2k-profile migration mappings; stable API and full semver verification pass with exact fingerprints |
 | COV-001 | P2 | in progress | METAL-001 | Schema-v5 source policy at `fa6ac2b3` preserves the 80% overall and accelerator gates, adds an 80% critical-path gate plus absent-critical-file failure, and audits zero-body findings as critical evidence or justified residuals; exact candidate host/Metal/CUDA artifacts remain |
 | TESTARCH-001 | P3 | accepted post-0.7 | COV-001 | Consolidate reusable CPU/Auto/Metal/CUDA behavioral contracts after 0.7; exact per-backend parity and hardware lanes remain mandatory for this RC |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
@@ -921,6 +924,16 @@ For every stable publishable package:
 List first-published 0.7 packages separately instead of inventing a baseline.
 Normal semver verification must fail when the report is stale. Report
 regeneration must be an explicit command.
+
+The 2026-07-12 freeze review checked every schema-2 ordinary and hidden entry
+against the generated report, committed snapshots, source, changelog, and
+`v0.6.2`. It initially rejected only `j2k-profile.hidden_rationale`: ten removed
+rustdoc-hidden helpers lacked explicit migration mappings. The changelog now
+maps each helper to the bounded/fallible replacement or states that no
+specialized compatibility replacement remains. The independent reviewer then
+approved all 33 entries. `cargo xtask stable-api` and `cargo xtask semver` pass
+for the complete 17-package ordinary/hidden inventory and published-package
+baseline set. No API snapshot or generated report changed during verification.
 
 ### COV-001 — accelerator coverage
 
