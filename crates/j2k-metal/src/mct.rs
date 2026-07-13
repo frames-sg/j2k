@@ -53,6 +53,7 @@ mod tests {
     use super::MetalMctDecoder;
     use j2k_native::{
         encode, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecoder, Image,
+        J2kInverseMctJob, J2kWaveletTransform,
     };
 
     #[cfg(target_os = "macos")]
@@ -78,6 +79,41 @@ mod tests {
             ..EncodeOptions::default()
         };
         encode(&pixels, 2, 2, 3, 8, false, &options).expect("encode irreversible rgb8")
+    }
+
+    #[test]
+    fn metal_inverse_mct_job_applies_addends_exactly_once() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
+        let mut plane0 = vec![0.0; 9];
+        let mut plane1 = vec![0.0; 9];
+        let mut plane2 = vec![0.0; 9];
+        let mut decoder = MetalMctDecoder::default();
+        let handled = decoder
+            .decode_inverse_mct(J2kInverseMctJob {
+                transform: J2kWaveletTransform::Reversible53,
+                plane0: &mut plane0,
+                plane1: &mut plane1,
+                plane2: &mut plane2,
+                addend0: 17.0,
+                addend1: 31.0,
+                addend2: 47.0,
+            })
+            .expect("Metal inverse MCT job");
+
+        #[cfg(target_os = "macos")]
+        assert!(handled);
+        #[cfg(not(target_os = "macos"))]
+        assert!(!handled);
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(plane0, vec![17.0; 9]);
+            assert_eq!(plane1, vec![31.0; 9]);
+            assert_eq!(plane2, vec![47.0; 9]);
+        }
     }
 
     #[test]
