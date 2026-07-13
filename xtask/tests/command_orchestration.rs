@@ -6,6 +6,7 @@
 mod support;
 
 use std::fs;
+use std::process::Output;
 
 use support::{assert_success, Harness};
 
@@ -111,15 +112,7 @@ fn release_critical_orchestrators_run_from_the_workspace_without_real_cargo() {
         );
     }
     let output = harness.run(&["stable-api"]);
-    assert!(
-        !output.status.success(),
-        "synthetic API must not replace snapshots"
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("stable API snapshots are stale"),
-        "stable-api must reach snapshot comparison: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_stable_api_fails_at_expected_boundary(&output, "stable-api");
     let output = harness.run_with_env(
         &["stable-api"],
         &[
@@ -127,14 +120,9 @@ fn release_critical_orchestrators_run_from_the_workspace_without_real_cargo() {
             ("RUSTDOCFLAGS", "-D warnings"),
         ],
     );
-    assert!(
-        !output.status.success(),
-        "synthetic API must not replace snapshots under CI warning flags"
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("stable API snapshots are stale"),
-        "stable-api must accept canonical CI warning flags and reach snapshot comparison: {}",
-        String::from_utf8_lossy(&output.stderr)
+    assert_stable_api_fails_at_expected_boundary(
+        &output,
+        "stable-api under canonical CI warning flags",
     );
     let output = harness.run(&["semver"]);
     assert!(!output.status.success(), "synthetic API must fail semver");
@@ -153,6 +141,21 @@ fn release_critical_orchestrators_run_from_the_workspace_without_real_cargo() {
     assert!(log.contains("package -p j2k-core --list|"));
     assert!(log.contains("publish -p j2k-core --dry-run|"));
     assert!(log.contains("package -p j2k-cli --no-verify"));
+}
+
+fn assert_stable_api_fails_at_expected_boundary(output: &Output, context: &str) {
+    assert!(!output.status.success(), "{context} must fail closed");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let expected_error = if cfg!(target_os = "macos") {
+        "stable API snapshots are stale"
+    } else {
+        "stable-api snapshot must be generated on macOS so target-gated Metal APIs are included"
+    };
+    assert!(
+        stderr.contains(expected_error),
+        "{context} must reach its platform's stable-API boundary: {stderr}"
+    );
 }
 
 #[test]

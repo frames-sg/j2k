@@ -21,7 +21,7 @@ path = "src/lib.rs"
 [features]
 scalar-only  = []   # retained for fuzz/reference decode until native SIMD backends land
 # Opt-in for the comparison benches only: probes pkg-config for
-# libturbojpeg/libjpeg and emits link directives. Off by default so library
+# libturbojpeg and emits link directives. Off by default so library
 # consumers never link a system JPEG.
 bench-libjpeg-turbo = []
 bench-internals = []

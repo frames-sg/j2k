@@ -3,7 +3,7 @@
 #[cfg(has_libjpeg_turbo)]
 use j2k_jpeg::{Downscale, Rect};
 
-#[cfg(has_libjpeg_turbo)]
+#[cfg(all(has_libjpeg_turbo, has_libjpeg_turbo_v3))]
 mod imp {
     use super::{Downscale, Rect};
     use std::ffi::{c_char, c_int, c_void, CStr};
@@ -311,6 +311,10 @@ mod imp {
         c_int::try_from(value).map_err(|_| format!("value {value} does not fit into c_int"))
     }
 }
+
+#[cfg(all(has_libjpeg_turbo, not(has_libjpeg_turbo_v3)))]
+#[path = "libjpeg_turbo_v2.rs"]
+mod imp;
 
 #[cfg(not(has_libjpeg_turbo))]
 mod imp {
