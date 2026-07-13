@@ -180,7 +180,17 @@ fn explicit_metal_reversible_dct53_matches_rayon_for_structured_cases() {
     let mut expected_accelerator = RayonReversibleDwt53Accelerator::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
-    for (width, height) in [(8, 8), (13, 11), (16, 16)] {
+    for (width, height) in [
+        (1, 1),
+        (1, 2),
+        (2, 1),
+        (2, 2),
+        (8, 8),
+        (13, 11),
+        (13, 12),
+        (12, 11),
+        (16, 16),
+    ] {
         let job = DctGridToReversibleDwt53Job {
             dequantized_blocks: &blocks,
             block_cols: 2,
@@ -205,7 +215,7 @@ fn explicit_metal_reversible_dct53_matches_rayon_for_structured_cases() {
         assert_reversible_eq(&actual, &expected, width, height);
     }
 
-    assert_eq!(accelerator.reversible_dwt53_dispatches(), 3);
+    assert_eq!(accelerator.reversible_dwt53_dispatches(), 9);
 }
 
 #[cfg(target_os = "macos")]
@@ -223,7 +233,7 @@ fn explicit_metal_reversible_dct53_batch_matches_rayon_for_structured_cases() {
     ];
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
-    for (width, height) in [(8, 8), (13, 11), (16, 16)] {
+    for (width, height) in [(8, 8), (13, 11), (13, 12), (12, 11), (16, 16)] {
         let jobs: Vec<_> = batch_blocks
             .iter()
             .map(|blocks| DctGridToReversibleDwt53Job {
@@ -260,7 +270,7 @@ fn explicit_metal_reversible_dct53_batch_matches_rayon_for_structured_cases() {
         }
     }
 
-    assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 3);
+    assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 5);
 }
 
 #[test]
