@@ -30,7 +30,7 @@ impl DecodeProfileRecord {
 
     fn emit_full(self, outcome: &DecodeOutcome) {
         let output_bytes = self.stride.saturating_mul(self.output_rect.h as usize);
-        emit_jpeg_profile_fields("jpeg_decode_full_fields", "decode", "cpu", || {
+        emit_decode_profile_fields("jpeg_decode_full_fields", "decode", "cpu", || {
             Ok([
                 ProfileField::label("mode", "full")?,
                 ProfileField::label("fmt", output_format_profile_name(self.fmt))?,
@@ -61,7 +61,7 @@ impl DecodeProfileRecord {
         } else {
             "region_scaled"
         };
-        emit_jpeg_profile_fields("jpeg_decode_region_fields", "decode", "cpu", || {
+        emit_decode_profile_fields("jpeg_decode_region_fields", "decode", "cpu", || {
             Ok([
                 ProfileField::label("mode", mode)?,
                 ProfileField::label("fmt", output_format_profile_name(self.fmt))?,
@@ -89,3 +89,24 @@ impl DecodeProfileRecord {
         });
     }
 }
+
+fn emit_decode_profile_fields<const N: usize>(
+    operation: &'static str,
+    op: &str,
+    path: &str,
+    build: impl FnOnce() -> j2k_profile::ProfileResult<[ProfileField; N]>,
+) {
+    #[cfg(test)]
+    let build = match test_support::try_capture(operation, op, path, build) {
+        Ok(()) => return,
+        Err(build) => build,
+    };
+
+    emit_jpeg_profile_fields(operation, op, path, build);
+}
+
+#[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
+mod tests;
