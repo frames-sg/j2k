@@ -62,16 +62,18 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit
-  before this ledger refresh is `83258e11`. No push, release tag, crate
+  before this ledger refresh is `24252a28`. No push, release tag, crate
   publication, or externally visible release action has been made. The local
   `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
   movement through the normal reviewed workflow; it does not authorize tagging
   or publication.
-- Current objective: close the remaining host changed-line and source-body
-  coverage proof without exclusions or threshold changes, then rerun the
-  clean-tree clone, package, API, dependency, corpus, performance, and release
-  gates. Preserve idiomatic Rust ownership, typed errors, fallible allocation,
-  transactional mutation, and actual allocator-capacity accounting.
+- Current objective: preserve the 80% changed-line gate, replace the blanket
+  host zero-body failure with a fail-closed audited residual/critical-path
+  policy, then proceed directly to API, provenance, documentation, and exact-
+  SHA candidate verification. No further broad coverage tranches are
+  authorized. Preserve idiomatic Rust ownership, typed errors, fallible
+  allocation, transactional mutation, and actual allocator-capacity
+  accounting.
 - Immediate continuation point (2026-07-12): direct CPU coefficient owners are
   fallibly budgeted (`59055081`); the Metal resident pool ceiling is derived
   from its real default working set (`c901602c`); and resident encoding now
@@ -114,30 +116,34 @@ the issue sections below; this capsule is only the current continuation state.
   NEON, CUDA-command, DCT-error, transform-mapping, native tile-metadata, and
   profile-emission, comparator-usage, JPEG sink-row, release-orchestration, and
   release-policy, compare-manifest, fast-packet-error, and release-boundary
-  tranches plus compare decode, JPEG routing profile, and their policy owners
-  are committed through `83258e11`.
+  tranches plus compare decode, JPEG routing profile, core batch allocation
+  error classification, compare fixture construction, native HT adapter
+  ownership, and their policy owners are committed through `24252a28`.
   The compare tranche corrected a real staging leak by attempting output
-  cleanup even when input cleanup fails. The exact-SHA host run completed the
-  full host matrix and 413-test repository policy suite, generated schema-v4
-  LCOV and LLVM region artifacts, and passed the numeric gate at 88.4592%
-  (66,125 / 74,752). COV-001 remains open on 135
-  uncovered functions, 415 uncovered multiline executable bodies, 424
+  cleanup even when input cleanup fails. The final broad host run completed the
+  full host matrix and 414 active repository policies with one established
+  ignore, generated schema-v4 LCOV and LLVM region artifacts, and passed the
+  numeric gate at 88.6036% (66,233 / 74,752). Its legacy blanket gate reported
+  127 uncovered functions, 415 uncovered multiline executable bodies, 416
   compiler-instrumented same-line deferred bodies with zero counts, 172
   compiler-noninstrumentable deferred bodies recorded without false failure,
-  8,938 compiler-noninstrumentable source lines, and 485 uncovered opaque
-  macros. The earlier first attempt at `00983dd9` was
+  8,938 compiler-noninstrumentable source lines, and 478 uncovered opaque
+  macros. Per the 2026-07-12 release decision, those zero-body findings are no
+  longer broad test-tranche targets: they must be classified into required
+  safety/correctness/ownership/public-API/parser/security proof or explicit
+  unreachable, hardware-only, trivial, or low-risk-tooling residuals. The
+  earlier first attempt at `00983dd9` was
   correctly discarded after stale ignored coverage JSON caused two
   repository-text policies to fail; generated artifacts remain ignored and are
   moved to Trash after each recorded checkpoint. The bounded tranche agents
   have finished; root owns integration, policy verification, the ledger,
-  commits, exact coverage, and exact-SHA handoff. The next exact-selected
-  owners are j2k-core batch collection errors, compare fixture tooling, and one
-  isolated native HT benchmark adapter. Remaining release residuals are
+  commits, exact coverage, and exact-SHA handoff. The final broad selected
+  owners are complete. Remaining release residuals are
   invariant guards or the two package-graph closures that are structurally
   unreachable after validated map construction; they must not drive distorted
   production code.
-  Each owner must remain behavior-focused, compile, pass focused tests, and be
-  committed before another full coverage matrix is started.
+  The next coverage execution is the frozen candidate verification run, not a
+  new coverage-development tranche.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -1480,6 +1486,36 @@ do not add production seams merely to execute them. The next exact-selected
 owners are j2k-core batch collection errors, compare fixture tooling, and native
 HT benchmark adapters; do not start another full matrix until they are
 integrated and committed.
+
+The final broad coverage tranche added exact typed cap-versus-allocator error
+classification for the shared batch collector (`0d2b9ccb`), covered fixture
+classification, construction, directory traversal, metadata, mixed grouping,
+and generated encoder failures (`4210ef78`), and proved that the native HT
+benchmark adapter owns its payload, rejects overflowing segment metadata, and
+fails short output transactionally (`63a5efaf`). Focused repository policies
+own each new test module without raising a line ceiling (`24252a28`). The
+focused tests, all 414 active repository policies with one established ignore,
+formatting, diff checks, and warning-denied Clippy for all four affected
+packages passed before the exact run.
+
+The exact host run at
+`24252a28b93fccccb128c40d7daa067f0f016e55` completed the full host
+correctness/parity matrix and the same repository-policy suite. Numeric
+changed-line coverage rose by 108 covered lines with no denominator change, to
+66,233 of 74,752 (88.6036%). The tranche closed eight function misses, eight
+zero-count deferred regions, seven opaque macros, and 108 uncovered lines;
+multiline-body, compiler-noninstrumentable, absent-file, and mixed-line counts
+did not regress. The legacy zero-body gate then reported 127 functions, 415
+multiline bodies, 416 compiler-instrumented deferred regions, and 478 opaque
+macros; the report also records 8,519 uncovered lines, 172 explicitly recorded
+compiler-noninstrumentable deferred bodies, 8,938 compiler-
+noninstrumentable source lines, four absent instrumentable files, and no mixed
+production/test lines. This is the final broad coverage-development run. Per
+the release decision made immediately afterward, COV-001 keeps the 80% numeric
+gate but replaces blanket zero-body failure with fail-closed critical-path
+requirements plus explicit unreachable, hardware-only, trivial, and low-risk
+tooling residual dispositions. No further broad coverage tranche is permitted;
+the next full run is exact-SHA candidate verification.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
