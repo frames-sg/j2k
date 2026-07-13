@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::{
+    fmt::Write as _,
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -51,12 +52,16 @@ impl Harness {
             make_executable(&program, "fake external tool");
         }
         let git = root.join("git");
+        let baseline_snapshot = root.join("stable-api-0.6.2.public-api.txt");
+        fs::write(&baseline_snapshot, synthetic_baseline_snapshot())
+            .expect("write synthetic baseline API snapshot");
         let real_git = find_program("git");
         fs::write(
             &git,
             format!(
-                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nif [ \"$1\" = status ]; then exit 0; fi\nif [ \"$1\" = config ] && [ \"$2\" = --get ] && [ \"$3\" = remote.origin.url ]; then printf '%s\\n' 'git@example.invalid:frames-sg/j2k.git'; exit 0; fi\nexec \"{}\" \"$@\"\n",
+                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nif [ \"$1\" = status ]; then exit 0; fi\nif [ \"$1\" = config ] && [ \"$2\" = --get ] && [ \"$3\" = remote.origin.url ]; then printf '%s\\n' 'git@example.invalid:frames-sg/j2k.git'; exit 0; fi\nif [ \"$1\" = rev-parse ] && [ \"$2\" = 'v0.6.2^{{commit}}' ]; then printf '%s\\n' '55ee746e1b49f7309e4d030cc01a69d580173920'; exit 0; fi\nif [ \"$1\" = show ] && [ \"$2\" = 'v0.6.2:docs/stable-api-1.0.public-api.txt' ]; then exec cat '{}'; fi\nexec \"{}\" \"$@\"\n",
                 log.display(),
+                baseline_snapshot.display(),
                 real_git.display()
             ),
         )
@@ -180,4 +185,34 @@ fn make_executable(path: &Path, label: &str) {
     let mut permissions = fs::metadata(path).expect(label).permissions();
     permissions.set_mode(0o700);
     fs::set_permissions(path, permissions).expect(label);
+}
+
+fn synthetic_baseline_snapshot() -> String {
+    let mut snapshot =
+        String::from("# J2K 1.0 Public API Snapshot\n\nGenerator: `cargo-public-api 0.52.0`.\n\n");
+    for package in [
+        "j2k",
+        "j2k-core",
+        "j2k-jpeg",
+        "j2k-tilecodec",
+        "j2k-jpeg-metal",
+        "j2k-metal",
+        "j2k-jpeg-cuda",
+        "j2k-cuda",
+        "j2k-transcode",
+        "j2k-transcode-cuda",
+        "j2k-metal-support",
+        "j2k-transcode-metal",
+        "j2k-native",
+        "j2k-types",
+        "j2k-cuda-runtime",
+        "j2k-profile",
+    ] {
+        writeln!(
+            snapshot,
+            "## `{package}`\n\n```text\npub struct SyntheticBaseline\n```\n"
+        )
+        .expect("writing to a String cannot fail");
+    }
+    snapshot
 }

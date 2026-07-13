@@ -9,15 +9,11 @@ use j2k_native::{DecodeError, DecodeErrorClass, EncodeError};
 /// [`core::error::Error::source`] without becoming part of this crate's public
 /// type signatures. Classify the enclosing [`crate::Error`] through
 /// [`j2k_core::CodecError`].
-#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, PartialEq, Eq)]
 pub struct NativeBackendError {
+    #[cfg(any(test, target_os = "macos"))]
     source: NativeBackendErrorSource,
-}
-
-#[cfg(not(any(test, target_os = "macos")))]
-#[derive(Debug, PartialEq, Eq)]
-pub struct NativeBackendError {
+    #[cfg(not(any(test, target_os = "macos")))]
     source: core::convert::Infallible,
 }
 

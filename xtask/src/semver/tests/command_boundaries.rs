@@ -3,11 +3,12 @@
 use std::{collections::BTreeSet, ffi::OsString, fs, path::Path};
 
 use super::super::{
-    capture_command, current_api_snapshot, require_macos, run_semver_checks, semver,
-    validate_baseline_revision, verify_or_write_report, workspace_package_versions, Options,
-    SnapshotKind, API_DIFF_REPORT, CARGO_PUBLIC_API_VERSION, HIDDEN_API_SNAPSHOT,
-    PUBLIC_API_SNAPSHOT, SEMVER_BASELINE_COMMIT,
+    capture_command, current_api_snapshot, run_semver_checks, validate_baseline_revision,
+    verify_or_write_report, workspace_package_versions, Options, SnapshotKind, API_DIFF_REPORT,
+    CARGO_PUBLIC_API_VERSION, HIDDEN_API_SNAPSHOT, PUBLIC_API_SNAPSHOT, SEMVER_BASELINE_COMMIT,
 };
+#[cfg(target_os = "macos")]
+use super::super::{require_macos, semver};
 
 fn workspace_path(relative: &str) -> String {
     Path::new(env!("CARGO_MANIFEST_DIR"))
