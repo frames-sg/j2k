@@ -11,6 +11,10 @@ use super::{
 };
 
 #[cfg(unix)]
+mod integrity;
+mod validation;
+
+#[cfg(unix)]
 use crate::{command_support::use_test_cargo_program, test_command::RecordingProgram};
 
 #[test]

@@ -8,6 +8,7 @@ use super::{assert_pattern_checks, repo_root, PatternCheck};
 
 mod codegen;
 mod lint_policy;
+mod release_commands;
 mod release_integrity;
 
 fn read(relative_path: &str) -> String {
@@ -266,6 +267,7 @@ fn xtask_dispatcher_stays_split_by_command_family() {
     assert_modules_stay_focused(&sources);
     assert_dispatcher_and_command_ownership(&sources);
     codegen::assert_ownership_and_focus();
+    release_commands::assert_regressions_stay_focused();
     release_integrity::assert_ownership(&sources);
     release_integrity::assert_regressions(&sources);
 }
