@@ -133,6 +133,9 @@ impl From<MetricsError> for JpegToHtj2kError {
 }
 
 #[cfg(test)]
+mod transform_mapping_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         map_encode_error, Htj2kEncodeError, Htj2kEncodeErrorKind, JpegToHtj2kError, MetricsError,
