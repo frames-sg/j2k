@@ -95,7 +95,10 @@ pub(crate) fn metal_compile() -> Result<(), String> {
                 .to_string(),
         );
     }
+    run_metal_compile()
+}
 
+fn run_metal_compile() -> Result<(), String> {
     let mut clippy_args = vec!["clippy", "--all-targets", "--all-features"];
     append_packages(&mut clippy_args);
     clippy_args.extend_from_slice(&["--", "-D", "warnings"]);
@@ -124,6 +127,10 @@ pub(crate) fn metal_compile() -> Result<(), String> {
 /// Runs every required Metal runtime suite and rejects all evidence of skipping.
 pub(crate) fn release_metal() -> Result<(), String> {
     require_macos("release-metal")?;
+    run_release_metal()
+}
+
+fn run_release_metal() -> Result<(), String> {
     validate_required_ignored_inventory()?;
 
     for suite in METAL_TEST_SUITES {
@@ -337,64 +344,4 @@ fn passed_rust_tests(output: &str) -> BTreeSet<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        listed_rust_tests, passed_rust_tests, reject_skip_markers, runtime_suite_args,
-        validate_exact_ignored_run, J2K_METAL_REQUIRED_IGNORED_TESTS,
-    };
-
-    #[test]
-    fn parses_listed_and_passed_rust_tests() {
-        let listed = "alpha::works: test\nbeta::works: test\n";
-        assert_eq!(
-            listed_rust_tests(listed).into_iter().collect::<Vec<_>>(),
-            ["alpha::works", "beta::works"]
-        );
-
-        let passed = "test alpha::works ... ok\ntest beta::works ... ok\n";
-        assert_eq!(
-            passed_rust_tests(passed).into_iter().collect::<Vec<_>>(),
-            ["alpha::works", "beta::works"]
-        );
-    }
-
-    #[test]
-    fn skip_marker_is_always_a_release_failure() {
-        let err = reject_skip_markers(
-            "J2K_GPU_TEST_SKIPPED gate=J2K_REQUIRE_METAL_RUNTIME",
-            "Metal",
-        )
-        .expect_err("skip marker must fail");
-        assert!(err.contains("must fail rather than skip"));
-    }
-
-    #[test]
-    fn exact_ignored_validation_rejects_zero_tests() {
-        let err = validate_exact_ignored_run(
-            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out",
-        )
-        .expect_err("zero selected tests must fail");
-        assert!(err.contains("passed 0 tests"));
-    }
-
-    #[test]
-    fn ignored_inventory_is_unique_and_has_expected_size() {
-        let unique = J2K_METAL_REQUIRED_IGNORED_TESTS
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(unique.len(), 18);
-        assert_eq!(unique.len(), J2K_METAL_REQUIRED_IGNORED_TESTS.len());
-    }
-
-    #[test]
-    fn runtime_gate_excludes_benchmark_targets() {
-        let args = runtime_suite_args("j2k-metal");
-        assert!(args.contains(&"--lib"));
-        assert!(args.contains(&"--bins"));
-        assert!(args.contains(&"--tests"));
-        assert!(args.contains(&"--examples"));
-        assert!(!args.contains(&"--all-targets"));
-        assert!(!args.contains(&"--benches"));
-    }
-}
+mod tests;

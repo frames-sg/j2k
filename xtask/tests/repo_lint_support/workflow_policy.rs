@@ -517,32 +517,59 @@ fn metal_gpu_validation_job_fails_closed_and_stays_metal_focused() {
 
 #[test]
 fn metal_xtask_owns_complete_compile_and_runtime_policy() {
+    let root = repo_root();
     assert_file_pattern_checks(
-        repo_root(),
-        &[FilePatternCheck::new("xtask/src/metal.rs")
-            .named("Metal xtask policy")
-            .required(&[
-                "METAL_COMPILE_PACKAGES",
-                "j2k-metal-support",
-                "j2k-jpeg-metal",
-                "j2k-metal",
-                "j2k-transcode-metal",
-                "J2K public facade",
-                "J2K_REQUIRE_METAL_RUNTIME",
-                "RUST_TEST_THREADS",
-                "J2K_GPU_TEST_SKIPPED",
-                "J2K_METAL_REQUIRED_IGNORED_TESTS",
-                "validate_required_ignored_inventory",
-                "validate_exact_ignored_run",
-                "passed != J2K_METAL_REQUIRED_IGNORED_TESTS.len()",
-                "metal-compile requires J2K_REQUIRE_METAL_RUNTIME to be unset",
-                "refusing to report Metal success without the required platform",
-            ])
-            .forbidden(&[
-                "skipping Metal release tests",
-                "J2K_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS",
-            ])],
+        root,
+        &[
+            FilePatternCheck::new("xtask/src/metal.rs")
+                .named("Metal xtask policy")
+                .required(&[
+                    "METAL_COMPILE_PACKAGES",
+                    "j2k-metal-support",
+                    "j2k-jpeg-metal",
+                    "j2k-metal",
+                    "j2k-transcode-metal",
+                    "J2K public facade",
+                    "J2K_REQUIRE_METAL_RUNTIME",
+                    "RUST_TEST_THREADS",
+                    "J2K_GPU_TEST_SKIPPED",
+                    "J2K_METAL_REQUIRED_IGNORED_TESTS",
+                    "fn run_metal_compile()",
+                    "fn run_release_metal()",
+                    "validate_required_ignored_inventory",
+                    "validate_exact_ignored_run",
+                    "passed != J2K_METAL_REQUIRED_IGNORED_TESTS.len()",
+                    "metal-compile requires J2K_REQUIRE_METAL_RUNTIME to be unset",
+                    "refusing to report Metal success without the required platform",
+                    "mod tests;",
+                ])
+                .forbidden(&[
+                    "skipping Metal release tests",
+                    "J2K_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS",
+                ]),
+            FilePatternCheck::new("xtask/src/metal/tests.rs")
+                .named("Metal xtask command regressions")
+                .required(&[
+                    "fn metal_commands_execute_complete_hermetic_compile_and_release_plans()",
+                    "use_test_cargo_program",
+                    "RecordingProgram",
+                    "--ignored --list",
+                    "--ignored --show-output",
+                ]),
+        ],
     );
+
+    for (relative, max_lines) in [
+        ("xtask/src/metal.rs", 400),
+        ("xtask/src/metal/tests.rs", 200),
+    ] {
+        let source = fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+        assert!(
+            source.lines().count() < max_lines,
+            "{relative} must stay below its focused {max_lines}-line ownership ratchet"
+        );
+    }
 }
 
 #[test]
