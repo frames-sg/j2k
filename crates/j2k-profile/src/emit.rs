@@ -4,6 +4,10 @@ use crate::{ProfileField, ProfileResult, ProfileStageMode};
 
 /// Emits a preformatted profile row to stderr.
 pub fn emit_profile_line(row: impl AsRef<str>) {
+    #[cfg(test)]
+    if test_support::capture(format_args!("{}", row.as_ref())) {
+        return;
+    }
     std::eprintln!("{}", row.as_ref());
 }
 
@@ -150,5 +154,17 @@ fn emit_formatted(operation: &'static str, result: ProfileResult<String>) {
 
 /// Emits a profile-construction failure without changing codec success.
 pub fn emit_profile_error<E: std::fmt::Display + ?Sized>(operation: &str, error: &E) {
+    #[cfg(test)]
+    if test_support::capture(format_args!(
+        "j2k_profile_error operation={operation} error={error}"
+    )) {
+        return;
+    }
     std::eprintln!("j2k_profile_error operation={operation} error={error}");
 }
+
+#[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
+mod tests;
