@@ -162,9 +162,36 @@ fn mixed_labels_skip_labels_blockers_and_rows_have_direct_owners() {
         operation_class: OperationClass::Full,
     };
     assert_eq!(
-        mixed_external_group_distinct_inputs_label(&[mixed]),
+        mixed_external_group_distinct_inputs_label(std::slice::from_ref(&mixed)),
         "external_mixed_gray8_full:2"
     );
+
+    let mixed_row = super::rows::mixed_skip_row(
+        BenchmarkMode::Capability,
+        DecoderKind::OpenJpeg,
+        &mixed,
+        2,
+        4,
+        "synthetic-mixed-skip",
+    );
+    let mixed_columns = mixed_row.split('\t').collect::<Vec<_>>();
+    assert_eq!(mixed_columns.len(), 29);
+    assert_eq!(
+        &mixed_columns[..10],
+        [
+            "openjpeg",
+            "external_mixed_gray8_full",
+            "capability",
+            "skipped",
+            "external:mixed",
+            "natural-image",
+            "unit-corpus",
+            "cc0",
+            "unit-fixture",
+            "covered",
+        ]
+    );
+    assert_eq!(mixed_columns.last(), Some(&"synthetic-mixed-skip"));
 
     let skipped = skipped_comparators_label(BenchmarkMode::Capability, &[gray.clone()]);
     assert!(skipped.contains("openjpeg:openjpeg-htj2k-roi-scaled-noncomparable"));

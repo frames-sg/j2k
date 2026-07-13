@@ -513,9 +513,9 @@ mod tests {
     use j2k_core::Rect;
 
     use super::{
-        bool_false, checked_component_sample_len, checked_decode_area, checked_output_len,
-        component_precision, drop_memory_stream, read_memory, seek_memory, skip_memory,
-        validate_component_count, MemoryStream, MAX_EXTERNAL_OUTPUT_BYTES,
+        bool_false, bool_true, checked_component_sample_len, checked_decode_area,
+        checked_output_len, component_precision, drop_memory_stream, read_memory, seek_memory,
+        skip_memory, validate_component_count, MemoryStream, MAX_EXTERNAL_OUTPUT_BYTES,
     };
     use openjpeg_sys::{opj_image, opj_image_comp, COLOR_SPACE};
 
@@ -620,8 +620,9 @@ mod tests {
         unsafe {
             assert_eq!(read_memory(null, 0, user_data), 0);
             assert_eq!(read_memory(null, 1, user_data), usize::MAX);
+            assert_eq!(seek_memory(1, user_data), bool_true());
         }
-        assert_eq!(stream.offset, 0);
+        assert_eq!(stream.offset, 1);
     }
 
     #[test]
