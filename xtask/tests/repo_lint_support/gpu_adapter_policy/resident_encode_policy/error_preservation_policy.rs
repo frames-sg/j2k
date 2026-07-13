@@ -14,10 +14,10 @@ fn resident_metal_batch_preparation_propagates_typed_errors_directly() {
 
     assert_pattern_checks(&[
         PatternCheck::new("resident Metal batch preparation", &source)
-            .required(&["prepare_planned_resident_lossless_tiles_batch(planned, session)?"])
+            .required(&["prepare_planned_resident_lossless_tiles_batch(chunk_planned, session)?"])
             .forbidden(&[
-                "prepare_planned_resident_lossless_tiles_batch(planned, session).map_err",
-                "source.to_string()",
+                "resident {family_name} batch encode failed",
+                "prepare_planned_resident_lossless_tiles_batch(chunk_planned, session).map_err",
             ]),
     ]);
 }

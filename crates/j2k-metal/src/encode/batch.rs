@@ -16,6 +16,7 @@ use super::{
     SubmittedJ2kLosslessMetalBufferEncodeBatch, SubmittedJ2kLosslessMetalBufferEncodeBatchState,
     SubmittedJ2kLosslessMetalEncodeBatch, SubmittedJ2kLosslessMetalEncodeBatchState,
     SubmittedResidentLosslessMetalBufferEncodeBatch,
+    SubmittedResidentLosslessMetalBufferEncodeBatchKind,
 };
 
 #[cfg(target_os = "macos")]
@@ -257,7 +258,7 @@ fn try_submit_resident_lossless_tiles_to_metal_buffer_batch(
             encode_started: Instant::now(),
             tiles: Vec::new(),
             staging,
-            pipeline: None,
+            kind: SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty,
         }));
     }
 
@@ -297,7 +298,7 @@ fn try_submit_resident_lossless_tiles_to_metal_buffer_batch(
         stats.stage_stats.plan_duration = started.elapsed();
     }
     let encode_started = Instant::now();
-    let pipeline = submit_planned_resident_lossless_tiles(
+    let kind = submit_planned_resident_lossless_tiles(
         planned,
         session,
         stats.effective_inflight_tiles,
@@ -317,7 +318,7 @@ fn try_submit_resident_lossless_tiles_to_metal_buffer_batch(
         encode_started,
         tiles: owned_tiles,
         staging,
-        pipeline,
+        kind,
     }))
 }
 

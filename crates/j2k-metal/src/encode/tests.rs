@@ -46,7 +46,6 @@ mod kernels;
 mod layouts;
 mod resident_batches;
 mod resident_buffers;
-mod resident_schedule;
 mod routing;
 mod stage_validation;
 mod stats_inflight;

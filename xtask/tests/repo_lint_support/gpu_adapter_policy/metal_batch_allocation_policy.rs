@@ -115,7 +115,6 @@ fn remediated_metal_batch_paths_do_not_regress_to_infallible_collections() {
         "crates/j2k-metal/src/decoder/direct_paths.rs",
         "crates/j2k-metal/src/encode/batch.rs",
         "crates/j2k-metal/src/encode/packet_plan.rs",
-        "crates/j2k-metal/src/encode/resident_schedule.rs",
         "crates/j2k-metal/src/encode/resident_submit.rs",
         "crates/j2k-metal/src/encode/resident_wait.rs",
         "crates/j2k-metal/src/encode/submitted.rs",

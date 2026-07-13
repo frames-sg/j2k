@@ -10,7 +10,6 @@ const MODULE_LIMITS: &[(&str, usize)] = &[
     ("resident_hybrid.rs", 200),
     ("resident_plan.rs", 110),
     ("resident_prepare.rs", 130),
-    ("resident_schedule.rs", 300),
     ("resident_submit.rs", 350),
     ("resident_validation.rs", 130),
     ("resident_wait.rs", 310),
@@ -55,19 +54,12 @@ const FUNCTION_OWNERS: &[(&str, &[&str])] = &[
         &["prepare_planned_resident_lossless_tiles_batch"],
     ),
     (
-        "resident_schedule.rs",
+        "resident_submit.rs",
         &[
             "submit_planned_resident_lossless_tiles",
-            "submit_planned_resident_ht_lossless_tiles_batch",
-            "submit_planned_resident_classic_lossless_tiles_batch",
-            "validate_chunk_ranges",
-            "submit_next",
-            "take_active",
+            "submit_planned_resident_lossless_tiles_chunked",
+            "duration_share",
         ],
-    ),
-    (
-        "resident_submit.rs",
-        &["submit_resident_lossless_chunk", "duration_share"],
     ),
     (
         "resident_validation.rs",
@@ -81,8 +73,6 @@ const FUNCTION_OWNERS: &[(&str, &[&str])] = &[
         &[
             "wait_submitted_resident_lossless_buffer_encode_batch",
             "wait_submitted_resident_lossless_buffer_encode_batch_once",
-            "wait_and_harvest_resident_chunk",
-            "validate_resident_chunk_result_counts",
             "finished_resident_lossless_buffer_encode",
             "validate_finished_resident_lossless_buffer_encode",
         ],
@@ -236,24 +226,15 @@ fn public_cfg_docs_and_metal_command_order_are_pinned() {
     assert_in_order(
         &submit,
         &[
-            "prepare_planned_resident_lossless_tiles_batch(planned, session)?;",
-            "let pending = match family {",
+            "prepare_planned_resident_lossless_tiles_batch(chunk_planned, session)",
+            "let pending = submit_chunk(session, batch_items)?;",
         ],
     );
     let wait = read_source(&root.join("resident_wait.rs"));
     assert_in_order(
         &wait,
         &[
-            "while let Some(chunk) = pipeline.take_active()",
-            "SubmittedResidentLosslessChunkPipeline::record_active_completed(",
-            "wait_and_harvest_resident_chunk(submitted, chunk, &mut outcomes)?;",
-            "pipeline.submit_next(&submitted.session, &mut submitted.stats)?;",
-        ],
-    );
-    assert_in_order(
-        &wait,
-        &[
-            "compute::wait_resident_lossless_codestream_batch(chunk.pending)?;",
+            "compute::wait_resident_lossless_codestream_batches",
             "finished_resident_lossless_buffer_encode(",
             "validate_finished_resident_lossless_buffer_encode(",
         ],

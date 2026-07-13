@@ -8,7 +8,6 @@ use j2k_native::J2kPacketizationPacketDescriptor;
 use crate::compute;
 
 use super::{
-    resident_schedule::SubmittedResidentLosslessChunkPipeline,
     submitted::OwnedMetalLosslessEncodeTile, LosslessDeviceEncodePlan, MetalEncodeInputStaging,
     MetalEncodedJ2k, MetalLosslessEncodeBatchStats,
 };
@@ -65,7 +64,12 @@ pub(super) struct SubmittedResidentLosslessMetalBufferEncodeBatch {
     pub(super) encode_started: Instant,
     pub(super) tiles: Vec<OwnedMetalLosslessEncodeTile>,
     pub(super) staging: MetalEncodeInputStaging,
-    pub(super) pipeline: Option<SubmittedResidentLosslessChunkPipeline>,
+    pub(super) kind: SubmittedResidentLosslessMetalBufferEncodeBatchKind,
+}
+
+pub(super) enum SubmittedResidentLosslessMetalBufferEncodeBatchKind {
+    Empty,
+    Chunks(Vec<SubmittedResidentLosslessMetalBufferEncodeChunk>),
 }
 
 pub(super) struct SubmittedResidentLosslessMetalBufferEncodeChunk {
