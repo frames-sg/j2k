@@ -55,7 +55,7 @@ impl Harness {
         fs::write(
             &git,
             format!(
-                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nif [ \"$1\" = status ]; then exit 0; fi\nexec \"{}\" \"$@\"\n",
+                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nif [ \"$1\" = status ]; then exit 0; fi\nif [ \"$1\" = config ] && [ \"$2\" = --get ] && [ \"$3\" = remote.origin.url ]; then printf '%s\\n' 'git@example.invalid:frames-sg/j2k.git'; exit 0; fi\nexec \"{}\" \"$@\"\n",
                 log.display(),
                 real_git.display()
             ),
@@ -72,6 +72,16 @@ impl Harness {
         )
         .expect("write fake rustup");
         make_executable(&rustup, "fake rustup");
+        let python = root.join("python3");
+        fs::write(
+            &python,
+            format!(
+                "#!/bin/sh\nprintf 'python3 %s\\n' \"$*\" >> '{}'\n",
+                log.display()
+            ),
+        )
+        .expect("write fake Python");
+        make_executable(&python, "fake Python");
         let path = format!(
             "{}:{}",
             root.display(),
@@ -109,6 +119,9 @@ impl Harness {
             "CARGO_ENCODED_RUSTDOCFLAGS",
             "CARGO_ENCODED_RUSTFLAGS",
             "DOCS_RS",
+            "GH_TOKEN",
+            "GITHUB_REPOSITORY",
+            "GITHUB_TOKEN",
             "MACOSX_DEPLOYMENT_TARGET",
             "RUSTC",
             "RUSTC_BOOTSTRAP",

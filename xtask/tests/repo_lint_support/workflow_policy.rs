@@ -573,6 +573,33 @@ fn metal_xtask_owns_complete_compile_and_runtime_policy() {
 }
 
 #[test]
+fn release_status_command_boundary_has_a_hermetic_regression() {
+    assert_file_pattern_checks(
+        repo_root(),
+        &[
+            FilePatternCheck::new("xtask/tests/command_orchestration.rs")
+                .named("release-status command regression")
+                .required(&[
+                    "fn release_status_executes_exact_sha_verification_without_exposing_tokens()",
+                    "release-status with explicit repository",
+                    "release-status with remote-derived repository",
+                    "--token-env GH_TOKEN",
+                    "--token-env GITHUB_TOKEN",
+                    "token values reached command log",
+                ]),
+            FilePatternCheck::new("xtask/tests/command_orchestration/support.rs")
+                .named("release-status isolated process boundaries")
+                .required(&[
+                    "remote.origin.url",
+                    "git@example.invalid:frames-sg/j2k.git",
+                    "fake Python",
+                    "GITHUB_REPOSITORY",
+                ]),
+        ],
+    );
+}
+
+#[test]
 fn cuda_xtask_owns_complete_compile_and_runtime_policy() {
     assert_file_pattern_checks(
         repo_root(),

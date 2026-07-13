@@ -10,6 +10,64 @@ use std::fs;
 use support::{assert_success, Harness};
 
 #[test]
+fn release_status_executes_exact_sha_verification_without_exposing_tokens() {
+    let harness = Harness::new();
+    let explicit_sha = "A".repeat(40);
+    let remote_sha = "B".repeat(40);
+
+    assert_success(
+        &harness.run_with_env(
+            &[
+                "release-status",
+                "--sha",
+                &explicit_sha,
+                "--repository",
+                "frames-sg/j2k",
+            ],
+            &[("GH_TOKEN", "present")],
+        ),
+        "release-status with explicit repository",
+    );
+    assert_success(
+        &harness.run_with_env(
+            &["release-status", "--sha", &remote_sha],
+            &[("GITHUB_TOKEN", "present")],
+        ),
+        "release-status with remote-derived repository",
+    );
+
+    let help = harness.run(&["release-status", "--help"]);
+    assert!(
+        !help.status.success(),
+        "help must preserve task error handling"
+    );
+    assert!(String::from_utf8_lossy(&help.stderr).contains(
+        "usage: cargo xtask release-status --sha <40-hex-commit> [--repository owner/name]"
+    ));
+
+    let log = harness.log();
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.starts_with("python3 "))
+            .count(),
+        2
+    );
+    assert!(log.contains("git config --get remote.origin.url"));
+    assert!(log.contains(&format!(
+        "--candidate-sha {}",
+        explicit_sha.to_ascii_lowercase()
+    )));
+    assert!(log.contains(&format!(
+        "--candidate-sha {}",
+        remote_sha.to_ascii_lowercase()
+    )));
+    assert!(log.contains("--repository frames-sg/j2k"));
+    assert!(log.contains("--token-env GH_TOKEN"));
+    assert!(log.contains("--token-env GITHUB_TOKEN"));
+    assert!(!log.contains("present"), "token values reached command log");
+}
+
+#[test]
 fn release_critical_orchestrators_run_from_the_workspace_without_real_cargo() {
     let harness = Harness::new();
 
