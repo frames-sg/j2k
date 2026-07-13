@@ -10,14 +10,17 @@ pub(crate) use j2k_core::{
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
     use core::mem::size_of;
 
     use j2k_core::{AdapterErrorKind, AdapterErrorParts, BatchInfrastructureError};
 
     use super::{checked_count_product, BatchMetadataBudget, BatchMetadataRequest};
+    #[cfg(target_os = "macos")]
     use crate::abi::JpegEntropyCheckpointHost;
     use crate::Error;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn jpeg_entropy_checkpoint_plan_honors_exact_cap_and_one_byte_over() {
         let tile_count = 2;

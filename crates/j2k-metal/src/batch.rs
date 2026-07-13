@@ -16,12 +16,13 @@ mod execute;
 mod heuristics;
 use self::cpu::decode_cpu_host_batch;
 use self::execute::process_batch;
+#[cfg(all(test, target_os = "macos"))]
+use self::heuristics::GroupedRequests;
 #[cfg(test)]
 use self::heuristics::{
     auto_region_scaled_direct_metal_min_dim, can_decode_requests_as_repeated_region_scaled_batch,
-    profile_route_label, same_input_bytes, BatchRoute, GroupedRequests,
-    AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT, AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM,
-    AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT,
+    profile_route_label, same_input_bytes, BatchRoute, AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT,
+    AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM, AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT,
     AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM,
 };
 use self::heuristics::{

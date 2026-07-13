@@ -5,7 +5,9 @@ use j2k_core::{
 use j2k_jpeg::{DecodeRequest, Decoder as CpuDecoder, DecoderContext as JpegDecoderContext};
 #[cfg(target_os = "macos")]
 use j2k_jpeg_metal::JpegTileBatch;
-use j2k_jpeg_metal::{Codec, MetalDecodeRequest, MetalSession, ScratchPool};
+#[cfg(target_os = "macos")]
+use j2k_jpeg_metal::MetalDecodeRequest;
+use j2k_jpeg_metal::{Codec, MetalSession, ScratchPool};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 const BASELINE_420_RESTART: &[u8] =

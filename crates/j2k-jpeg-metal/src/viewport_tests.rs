@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use crate::viewport::decode_viewport_region_cpu_to_surface;
+#[cfg(target_os = "macos")]
 use crate::viewport::{
     choose_resizable_metal_viewport_strategy, compose_viewport_hybrid,
     compose_viewport_to_resizable_metal_buffer_with_session,
@@ -14,9 +16,8 @@ use crate::viewport::{
 };
 use crate::viewport::{
     choose_viewport_surface_strategy, compose_viewport_cpu, decode_viewport_region_cpu,
-    decode_viewport_region_cpu_to_surface, decode_viewport_to_surface,
-    is_contiguous_viewport_workload, suggest_viewport_workload, viewport_source_bounds,
-    ViewportSurfaceStrategy, ViewportTile, ViewportWorkload,
+    decode_viewport_to_surface, is_contiguous_viewport_workload, suggest_viewport_workload,
+    viewport_source_bounds, ViewportSurfaceStrategy, ViewportTile, ViewportWorkload,
 };
 #[cfg(target_os = "macos")]
 use crate::{

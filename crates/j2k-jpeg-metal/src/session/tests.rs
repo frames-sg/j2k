@@ -6,8 +6,11 @@ use super::*;
 #[path = "tests/ledger.rs"]
 mod ledger;
 
+#[cfg(target_os = "macos")]
 const BASELINE_420: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_420_16x16.jpg");
+#[cfg(target_os = "macos")]
 const BASELINE_422: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_422_16x8.jpg");
+#[cfg(target_os = "macos")]
 const BASELINE_444: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_444_8x8.jpg");
 
 #[cfg(target_os = "macos")]

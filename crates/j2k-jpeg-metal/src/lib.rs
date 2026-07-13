@@ -395,13 +395,6 @@ pub(crate) fn decode_compatible_batch(
     Ok(None)
 }
 
-#[cfg_attr(
-    not(target_os = "macos"),
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "the non-Metal branch preserves the cross-platform session result contract"
-    )
-)]
 pub(crate) fn decode_compatible_batch_with_session(
     requests: &[batch::QueuedRequest],
     session: &mut session::SessionState,

@@ -117,12 +117,12 @@ impl PlanOwnerLedger {
         self.retained_bytes
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) const fn host_byte_limit(&self) -> usize {
         self.host_byte_limit
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) const fn set_host_byte_limit(&mut self, limit: usize) {
         self.host_byte_limit = limit;
     }

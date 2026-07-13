@@ -2,13 +2,16 @@
 
 mod native_source;
 
-use j2k::{BackendError, BackendErrorKind, J2kError};
+use j2k::J2kError;
+#[cfg(target_os = "macos")]
+use j2k::{BackendError, BackendErrorKind};
 use j2k_core::{
     adapter_error_is_buffer_error, adapter_error_is_not_implemented, adapter_error_is_truncated,
     adapter_error_is_unsupported, AdapterErrorKind, AdapterErrorParts, BackendRequest,
     BatchInfrastructureError, BufferError, CodecError,
 };
 use j2k_metal_support::MetalSupportError;
+#[cfg(any(test, target_os = "macos"))]
 use j2k_native::{DecodeError as NativeDecodeError, EncodeError as NativeEncodeError};
 
 pub use native_source::NativeBackendError;
@@ -155,6 +158,7 @@ pub enum MetalKernelRetryClass {
 }
 
 impl MetalKernelRetryClass {
+    #[cfg(target_os = "macos")]
     fn applies_to(self, requested: Self) -> bool {
         self == requested
             || matches!(
@@ -168,6 +172,7 @@ impl MetalKernelRetryClass {
 }
 
 impl Error {
+    #[cfg(target_os = "macos")]
     pub(crate) fn is_conservative_retry_candidate(&self, requested: MetalKernelRetryClass) -> bool {
         match self {
             Self::MetalKernelRetryable { retry_class, .. } => retry_class.applies_to(requested),
@@ -175,6 +180,7 @@ impl Error {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn is_direct_fallback(&self) -> bool {
         matches!(self, Self::MetalDirectFallback { .. })
     }
@@ -240,6 +246,7 @@ impl CodecError for Error {
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn native_decode_error(error: NativeDecodeError) -> Error {
     Error::NativeDecode {
         context: "native JPEG 2000 backend failed",
@@ -247,6 +254,7 @@ pub(crate) fn native_decode_error(error: NativeDecodeError) -> Error {
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn native_encode_error(operation: &'static str, source: NativeEncodeError) -> Error {
     Error::NativeEncode {
         operation,
@@ -254,6 +262,7 @@ pub(crate) fn native_encode_error(operation: &'static str, source: NativeEncodeE
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn metal_kernel_support_error(
     message: impl Into<String>,
     source: MetalSupportError,
@@ -264,6 +273,7 @@ pub(crate) fn metal_kernel_support_error(
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn metal_runtime_support_error(source: &MetalSupportError) -> Error {
     if source.is_unavailable() {
         Error::MetalUnavailable
@@ -275,6 +285,7 @@ pub(crate) fn metal_runtime_support_error(source: &MetalSupportError) -> Error {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn adapter_backend_error(message: impl Into<String>) -> J2kError {
     J2kError::Backend(BackendError::new(BackendErrorKind::Other, message))
 }

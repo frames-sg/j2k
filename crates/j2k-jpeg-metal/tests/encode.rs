@@ -1,5 +1,7 @@
 use j2k_core::CodecError;
-use j2k_jpeg::{DecodeRequest, JpegBackend, JpegEncodeError, JpegSubsampling};
+#[cfg(target_os = "macos")]
+use j2k_jpeg::DecodeRequest;
+use j2k_jpeg::{JpegBackend, JpegEncodeError, JpegSubsampling};
 
 struct EncodeClassificationCase {
     error: JpegEncodeError,

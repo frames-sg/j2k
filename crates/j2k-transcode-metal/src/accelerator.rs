@@ -8,7 +8,10 @@ use j2k_transcode::{
 
 #[cfg(target_os = "macos")]
 use crate::metal;
-use crate::{MetalTranscodeError, MetalTranscodeSession};
+#[cfg(target_os = "macos")]
+use crate::MetalTranscodeError;
+#[cfg(target_os = "macos")]
+use crate::MetalTranscodeSession;
 
 mod dispatch;
 
@@ -255,6 +258,7 @@ impl MetalDctToWaveletStageAccelerator {
         self.last_dwt97_batch_stage_timings
     }
 
+    #[cfg(target_os = "macos")]
     fn recover<T>(&self, error: MetalTranscodeError) -> Result<Option<T>, TranscodeStageError> {
         self.mode
             .recover(error, MetalTranscodeError::is_recoverable)

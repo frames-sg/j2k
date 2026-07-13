@@ -9,7 +9,9 @@ use super::surface::{allocate_cpu_surface, upload_surface};
 use super::J2kDecoder;
 #[cfg(target_os = "macos")]
 use crate::error::adapter_backend_error;
-use crate::{routing, Error, MetalBackendSession, Surface};
+#[cfg(target_os = "macos")]
+use crate::MetalBackendSession;
+use crate::{routing, Error, Surface};
 
 impl J2kDecoder<'_> {
     pub(super) fn decode_to_cpu_surface(&mut self, fmt: PixelFormat) -> Result<Surface, Error> {

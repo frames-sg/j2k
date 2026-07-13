@@ -131,7 +131,8 @@ impl<'a> Decoder<'a> {
                 return self.batch_shape;
             }
         }
-        let _ = backend;
+        #[cfg(not(target_os = "macos"))]
+        let _ = (self, backend);
         batch::BatchShape::unknown()
     }
 

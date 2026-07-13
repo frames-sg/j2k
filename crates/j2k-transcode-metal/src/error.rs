@@ -60,6 +60,7 @@ pub enum MetalTranscodeError {
 
 impl MetalTranscodeError {
     /// Whether Auto mode may recover from this error by using scalar fallback.
+    #[cfg(any(test, target_os = "macos"))]
     pub(crate) const fn is_recoverable(&self) -> bool {
         matches!(self, Self::MetalUnavailable | Self::UnsupportedJob(_))
     }
@@ -75,6 +76,7 @@ impl MetalTranscodeError {
         })
     }
 
+    #[cfg(any(test, target_os = "macos"))]
     pub(crate) const fn support(operation: &'static str, source: MetalSupportError) -> Self {
         Self::MetalSupport { operation, source }
     }

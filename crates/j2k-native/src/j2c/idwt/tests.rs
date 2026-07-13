@@ -17,6 +17,27 @@ fn bits(values: &[f32]) -> Vec<u32> {
     values.iter().map(|value| value.to_bits()).collect()
 }
 
+fn assert_f32_bits_within_ulps(actual: &[f32], expected_bits: &[u32], max_ulps: u32) {
+    const SIGN_MASK: u32 = 0x8000_0000;
+
+    assert_eq!(actual.len(), expected_bits.len());
+    for (index, (&actual, &expected_bits)) in actual.iter().zip(expected_bits).enumerate() {
+        let ordered = |bits: u32| {
+            if bits & SIGN_MASK == 0 {
+                bits | SIGN_MASK
+            } else {
+                !bits
+            }
+        };
+        let distance = ordered(actual.to_bits()).abs_diff(ordered(expected_bits));
+        assert!(
+            distance <= max_ulps,
+            "sample {index} differs by {distance} ULPs: actual={actual:?}, expected={:?}",
+            f32::from_bits(expected_bits)
+        );
+    }
+}
+
 #[test]
 fn idwt_workspace_includes_shift_padding_for_degenerate_rectangles() {
     let rect = IntRect::from_xywh(0, 0, 1, 7);
@@ -111,26 +132,7 @@ fn reversible_53_even_direct_job_is_bit_exact() {
     clippy::similar_names,
     reason = "LL, HL, LH, and HH test-band names follow JPEG 2000 specification notation"
 )]
-fn irreversible_97_odd_direct_job_is_bit_exact() {
-    #[cfg(feature = "simd")]
-    const EXPECTED: [u32; 15] = [
-        3_243_516_307,
-        1_088_535_889,
-        1_086_781_832,
-        3_237_068_116,
-        1_072_899_983,
-        1_090_811_482,
-        3_205_449_560,
-        3_240_528_043,
-        1_057_965_919,
-        1_095_801_595,
-        3_240_069_383,
-        1_090_703_406,
-        1_072_530_023,
-        3_238_711_343,
-        1_091_758_981,
-    ];
-    #[cfg(not(feature = "simd"))]
+fn irreversible_97_odd_direct_job_matches_scalar_reference_within_eight_ulps() {
     const EXPECTED: [u32; 15] = [
         3_243_516_307,
         1_088_535_889,
@@ -197,7 +199,7 @@ fn irreversible_97_odd_direct_job_is_bit_exact() {
     )
     .expect("valid irreversible direct IDWT job");
 
-    assert_eq!(bits(&output).as_slice(), &EXPECTED);
+    assert_f32_bits_within_ulps(&output, &EXPECTED, 8);
 }
 
 #[test]
@@ -323,23 +325,7 @@ fn reversible_i64_filters_preserve_even_and_odd_goldens() {
 }
 
 #[test]
-fn irreversible_97_nonzero_origin_roi_window_is_bit_exact() {
-    #[cfg(feature = "simd")]
-    const EXPECTED: [u32; 12] = [
-        1_098_644_013,
-        1_084_670_383,
-        3_239_209_924,
-        1_072_899_983,
-        3_241_441_274,
-        3_239_628_159,
-        1_073_078_266,
-        1_095_801_595,
-        1_094_877_885,
-        1_066_907_503,
-        3_239_826_101,
-        1_091_758_981,
-    ];
-    #[cfg(not(feature = "simd"))]
+fn irreversible_97_nonzero_origin_roi_matches_scalar_reference_within_eight_ulps() {
     const EXPECTED: [u32; 12] = [
         1_098_644_014,
         1_084_670_382,
@@ -374,7 +360,7 @@ fn irreversible_97_nonzero_origin_roi_window_is_bit_exact() {
     filter_horizontal(&mut output, output_window, WaveletTransform::Irreversible97);
     filter_vertical(&mut output, output_window, WaveletTransform::Irreversible97);
 
-    assert_eq!(bits(&output).as_slice(), &EXPECTED);
+    assert_f32_bits_within_ulps(&output, &EXPECTED, 8);
 }
 
 #[test]

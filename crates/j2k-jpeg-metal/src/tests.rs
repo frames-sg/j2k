@@ -1,5 +1,7 @@
 use super::*;
-use j2k_core::{CodecError, DeviceSurface, ImageDecode, ImageDecodeDevice};
+use j2k_core::CodecError;
+#[cfg(target_os = "macos")]
+use j2k_core::{DeviceSurface, ImageDecode, ImageDecodeDevice};
 
 #[cfg(target_os = "macos")]
 fn patterned_index_byte(index: usize) -> u8 {
@@ -393,12 +395,12 @@ fn assert_reusable_rgba_texture_tiles(
     }
 }
 
-#[cfg(target_os = "macos")]
-use j2k_jpeg::adapter::build_fast422_packet;
 use j2k_jpeg::adapter::{
-    build_fast420_packet, build_fast444_packet, build_gray_packet, JpegFast420PacketV1,
-    JpegFast422PacketV1, JpegFast444PacketV1, JpegHuffmanTable,
+    build_fast420_packet, build_fast444_packet, JpegFast420PacketV1, JpegFast422PacketV1,
+    JpegFast444PacketV1,
 };
+#[cfg(target_os = "macos")]
+use j2k_jpeg::adapter::{build_fast422_packet, build_gray_packet, JpegHuffmanTable};
 #[cfg(target_os = "macos")]
 use j2k_jpeg::{
     encode_jpeg_baseline, DecodeRequest, JpegBackend, JpegEncodeOptions, JpegSamples,
@@ -411,6 +413,7 @@ const BASELINE_420_RESTART: &[u8] =
 #[cfg(target_os = "macos")]
 const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
 const BASELINE_444: &[u8] = include_bytes!("../fixtures/jpeg/baseline_444_8x8.jpg");
+#[cfg(target_os = "macos")]
 const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
 
 #[test]

@@ -37,10 +37,10 @@ fn explicit_metal_reports_unavailable_on_non_macos() {
     });
 
     #[cfg(not(target_os = "macos"))]
-    assert_eq!(
+    assert!(matches!(
         result.expect_err("explicit Metal is unavailable off macOS"),
         TranscodeStageError::DeviceUnavailable
-    );
+    ));
 
     #[cfg(target_os = "macos")]
     let _ = result;

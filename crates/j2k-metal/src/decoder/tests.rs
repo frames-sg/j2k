@@ -12,7 +12,9 @@ use metal::Device;
 #[cfg(target_os = "macos")]
 use super::is_direct_runtime_fallback_error;
 use super::surface::upload_surface;
-use super::{DecodeOperation, J2kDecoder, MetalDecodeRequest};
+#[cfg(target_os = "macos")]
+use super::J2kDecoder;
+use super::{DecodeOperation, MetalDecodeRequest};
 use crate::{batch, Error, Storage, Surface, SurfaceResidency};
 #[cfg(target_os = "macos")]
 use crate::{hybrid, MetalBackendSession, MetalDirectFallbackReason};

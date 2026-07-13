@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(any(test, target_os = "macos"))]
 use j2k_native::{DecodeError, DecodeErrorClass, EncodeError};
 
 /// Opaque, Metal-adapter-owned source for native codec failures.
@@ -8,17 +9,26 @@ use j2k_native::{DecodeError, DecodeErrorClass, EncodeError};
 /// [`core::error::Error::source`] without becoming part of this crate's public
 /// type signatures. Classify the enclosing [`crate::Error`] through
 /// [`j2k_core::CodecError`].
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, PartialEq, Eq)]
 pub struct NativeBackendError {
     source: NativeBackendErrorSource,
 }
 
+#[cfg(not(any(test, target_os = "macos")))]
+#[derive(Debug, PartialEq, Eq)]
+pub struct NativeBackendError {
+    source: core::convert::Infallible,
+}
+
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, PartialEq, Eq)]
 enum NativeBackendErrorSource {
     Decode(DecodeError),
     Encode(EncodeError),
 }
 
+#[cfg(any(test, target_os = "macos"))]
 impl NativeBackendError {
     pub(crate) const fn decode(source: DecodeError) -> Self {
         Self {
@@ -55,6 +65,18 @@ impl NativeBackendError {
     }
 }
 
+#[cfg(not(any(test, target_os = "macos")))]
+impl NativeBackendError {
+    pub(crate) fn is_decode_truncated(&self) -> bool {
+        match self.source {}
+    }
+
+    pub(crate) fn is_unsupported(&self) -> bool {
+        match self.source {}
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
 impl core::fmt::Display for NativeBackendError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match &self.source {
@@ -64,6 +86,14 @@ impl core::fmt::Display for NativeBackendError {
     }
 }
 
+#[cfg(not(any(test, target_os = "macos")))]
+impl core::fmt::Display for NativeBackendError {
+    fn fmt(&self, _formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.source {}
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
 impl core::error::Error for NativeBackendError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         Some(match &self.source {
@@ -72,3 +102,6 @@ impl core::error::Error for NativeBackendError {
         })
     }
 }
+
+#[cfg(not(any(test, target_os = "macos")))]
+impl core::error::Error for NativeBackendError {}

@@ -43,6 +43,7 @@ pub(super) fn bounded_sparse_weight_budget(
     Ok(requested)
 }
 
+#[cfg(target_os = "macos")]
 pub(super) fn metal_sparse_weight_budget(
     sample_len: usize,
     max_taps_per_row: usize,

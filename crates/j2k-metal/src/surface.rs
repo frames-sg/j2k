@@ -272,10 +272,12 @@ mod tests {
         let surface = host_surface(vec![1, 2], 0);
         let cloned = surface.clone();
 
-        let (Storage::Host(original), Storage::Host(clone)) = (&surface.storage, &cloned.storage)
-        else {
-            panic!("host surface clone must preserve host storage");
-        };
-        assert!(std::sync::Arc::ptr_eq(original, clone));
+        match (&surface.storage, &cloned.storage) {
+            (Storage::Host(original), Storage::Host(clone)) => {
+                assert!(std::sync::Arc::ptr_eq(original, clone));
+            }
+            #[cfg(target_os = "macos")]
+            _ => panic!("host surface clone must preserve host storage"),
+        }
     }
 }

@@ -399,7 +399,7 @@ where
         self.access_clock
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.entry_host_bytes = 0;

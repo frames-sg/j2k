@@ -1,6 +1,18 @@
 use j2k_codec_math::dwt;
 
 #[test]
+fn generated_source_comparison_ignores_only_line_endings() {
+    assert!(generated_source_matches(
+        "alpha\r\nbeta\r\n",
+        "alpha\nbeta\n"
+    ));
+    assert!(!generated_source_matches(
+        "alpha\r\ngamma\r\n",
+        "alpha\nbeta\n"
+    ));
+}
+
+#[test]
 fn metal_dwt97_fragment_matches_rust_constants() {
     let expected = [
         "// Generated from crates/j2k-codec-math/src/dwt.rs.".to_string(),
@@ -45,7 +57,13 @@ fn metal_dwt97_fragment_matches_rust_constants() {
     .join("\n")
         + "\n";
 
-    assert_eq!(include_str!("../generated/dwt97_constants.metal"), expected);
+    assert!(
+        generated_source_matches(
+            include_str!("../generated/dwt97_constants.metal"),
+            &expected
+        ),
+        "generated Metal constants differ from the Rust source constants"
+    );
 }
 
 #[test]
@@ -93,9 +111,16 @@ fn rust_dwt97_fragment_matches_rust_constants() {
     .join("\n")
         + "\n";
 
-    assert_eq!(include_str!("../generated/dwt97_constants.rs"), expected);
+    assert!(
+        generated_source_matches(include_str!("../generated/dwt97_constants.rs"), &expected),
+        "generated Rust constants differ from the source constants"
+    );
 }
 
 fn compact_f32(value: f32) -> String {
     format!("{value:?}")
+}
+
+fn generated_source_matches(actual: &str, expected: &str) -> bool {
+    actual.replace("\r\n", "\n") == expected.replace("\r\n", "\n")
 }

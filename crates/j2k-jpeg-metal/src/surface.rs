@@ -92,6 +92,13 @@ impl Surface {
         self.storage_bytes()
     }
 
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "the host-only branch preserves the fallible Metal readback contract"
+        )
+    )]
     fn storage_bytes(&self) -> Result<Cow<'_, [u8]>, Error> {
         match &self.storage {
             Storage::Host(bytes) => Ok(Cow::Borrowed(bytes.as_slice())),
@@ -928,10 +935,12 @@ mod surface_access_tests {
         };
         let cloned = surface.clone();
 
-        let (Storage::Host(original), Storage::Host(shared)) = (&surface.storage, &cloned.storage)
-        else {
+        #[cfg(target_os = "macos")]
+        let (Storage::Host(original), Storage::Host(shared)) = (&surface.storage, &cloned.storage) else {
             panic!("host surfaces must remain host-backed after clone");
         };
+        #[cfg(not(target_os = "macos"))]
+        let (Storage::Host(original), Storage::Host(shared)) = (&surface.storage, &cloned.storage);
         assert!(Arc::ptr_eq(original, shared));
         assert_eq!(original.capacity(), shared.capacity());
     }
