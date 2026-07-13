@@ -29,6 +29,7 @@ fn fixture_compare_stays_split_by_responsibility() {
     let measurement = read("crates/j2k-compare/src/fixture_compare/measurement.rs");
     let decode = read("crates/j2k-compare/src/fixture_compare/decode.rs");
     let comparators = read("crates/j2k-compare/src/fixture_compare/comparators.rs");
+    let comparator_tests = read("crates/j2k-compare/src/fixture_compare/comparators/tests.rs");
     let gates = read("crates/j2k-compare/src/fixture_compare/gates.rs");
     let manifest = read("crates/j2k-compare/src/fixture_compare/manifest.rs");
     let rows = read("crates/j2k-compare/src/fixture_compare/rows.rs");
@@ -43,6 +44,11 @@ fn fixture_compare_stays_split_by_responsibility() {
         ("fixture_compare/measurement.rs", measurement.as_str(), 250),
         ("fixture_compare/decode.rs", decode.as_str(), 650),
         ("fixture_compare/comparators.rs", comparators.as_str(), 350),
+        (
+            "fixture_compare/comparators/tests.rs",
+            comparator_tests.as_str(),
+            350,
+        ),
         ("fixture_compare/gates.rs", gates.as_str(), 400),
         ("fixture_compare/manifest.rs", manifest.as_str(), 325),
         ("fixture_compare/rows.rs", rows.as_str(), 350),
@@ -112,6 +118,20 @@ fn fixture_compare_stays_split_by_responsibility() {
             "pub(super) fn decode_external_once",
             "pub(super) fn decode_method_label",
             "pub(super) fn crop_interleaved",
+        ]),
+        PatternCheck::new("fixture comparator cleanup ownership", &comparators).required(&[
+            "fn cleanup_cli_staging(",
+            "let input_cleanup = cleanup_cli_temp(",
+            "let output_cleanup = cleanup_cli_temp(",
+            "staged input cleanup failed:",
+            "staged output cleanup failed:",
+        ]),
+        PatternCheck::new("fixture comparator command regressions", &comparator_tests).required(&[
+            "fn staging_cleanup_reports_both_failures_after_attempting_both_paths()",
+            "fn comparator_commands_decode_and_report_process_errors()",
+            "fn comparator_cleanup_attempts_output_after_input_failure()",
+            "output cleanup must still run after input cleanup fails",
+            "thread_local!",
         ]),
         PatternCheck::new("fixture_compare type ownership", &types).required(&[
             "pub(super) struct FixtureCase",

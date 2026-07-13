@@ -66,8 +66,7 @@ pub(super) fn decode_openjph_once(case: &FixtureCase, input: &[u8]) -> Result<Ve
         }
         read_cli_pnm_output("OpenJPH", &output_path, case.format)
     })();
-    cleanup_cli_temp(&input_path, result.is_ok())?;
-    cleanup_cli_temp(&output_path, result.is_ok())?;
+    cleanup_cli_staging(&input_path, &output_path, result.is_ok())?;
     result
 }
 
@@ -119,8 +118,7 @@ pub(super) fn decode_kakadu_once(case: &FixtureCase, input: &[u8]) -> Result<Vec
         }
         read_cli_pnm_output("Kakadu", &output_path, case.format)
     })();
-    cleanup_cli_temp(&input_path, result.is_ok())?;
-    cleanup_cli_temp(&output_path, result.is_ok())?;
+    cleanup_cli_staging(&input_path, &output_path, result.is_ok())?;
     result
 }
 
@@ -192,6 +190,22 @@ fn cleanup_cli_temp(path: &Path, fail_on_cleanup_error: bool) -> Result<(), Stri
     }
 }
 
+fn cleanup_cli_staging(
+    input_path: &Path,
+    output_path: &Path,
+    fail_on_cleanup_error: bool,
+) -> Result<(), String> {
+    let input_cleanup = cleanup_cli_temp(input_path, fail_on_cleanup_error);
+    let output_cleanup = cleanup_cli_temp(output_path, fail_on_cleanup_error);
+    match (input_cleanup, output_cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(input_error), Err(output_error)) => Err(format!(
+            "staged input cleanup failed: {input_error}; staged output cleanup failed: {output_error}"
+        )),
+    }
+}
+
 fn openjph_input_extension(container: Container) -> &'static str {
     match container {
         Container::RawCodestream => "j2c",
@@ -229,10 +243,14 @@ fn read_cli_pnm_output(
     }
 }
 
-fn openjph_expand_program() -> Option<&'static PathBuf> {
+fn openjph_expand_program() -> Option<PathBuf> {
+    #[cfg(all(test, unix))]
+    if let Some(program) = tests::test_openjph_program() {
+        return Some(program);
+    }
     OPENJPH_EXPAND_PROGRAM
         .get_or_init(discover_openjph_expand_program)
-        .as_ref()
+        .clone()
 }
 
 fn discover_openjph_expand_program() -> Option<PathBuf> {
@@ -252,10 +270,14 @@ fn command_is_runnable(program: &Path) -> bool {
     Command::new(program).output().is_ok()
 }
 
-fn kakadu_expand_program() -> Option<&'static PathBuf> {
+fn kakadu_expand_program() -> Option<PathBuf> {
+    #[cfg(all(test, unix))]
+    if let Some(program) = tests::test_kakadu_program() {
+        return Some(program);
+    }
     KAKADU_EXPAND_PROGRAM
         .get_or_init(discover_kakadu_expand_program)
-        .as_ref()
+        .clone()
 }
 
 fn discover_kakadu_expand_program() -> Option<PathBuf> {
