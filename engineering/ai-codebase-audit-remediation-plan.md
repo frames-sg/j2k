@@ -154,7 +154,12 @@ the issue sections below; this capsule is only the current continuation state.
   docs, and downstream facade/transcode examples pass. Publish-mode integrity
   fails only because the real `0.7.0` date and patched-`block` reviewer/date are
   not yet supplied. Those values must not be inferred. The local `v0.7.0` tag
-  remains absent.
+  remains absent. The clean-tree staged package gate also passes: all package
+  inventories were inspected, independent crates completed publish dry runs,
+  and dependent crates packaged against staged local patches without publishing.
+  A read-only GitHub API check on 2026-07-12 confirms private vulnerability
+  reporting is still disabled; CONTACT-001 therefore remains a real external
+  blocker rather than a stale ledger note.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
