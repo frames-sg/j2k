@@ -179,6 +179,14 @@ fn generated_decode_cases() -> Vec<DecodeBenchCase> {
             source: "generated".to_string(),
         });
         cases.push(DecodeBenchCase {
+            id: format!("generated_classic_irreversible97_gray8_{dim}"),
+            bytes: encode_classic_irreversible(&gray, dim, dim, 1),
+            fmt: PixelFormat::Gray8,
+            codec: "j2k-irreversible97".to_string(),
+            container: "raw-codestream".to_string(),
+            source: "generated".to_string(),
+        });
+        cases.push(DecodeBenchCase {
             id: format!("generated_htj2k_gray8_{dim}"),
             bytes: encode_ht(&gray, dim, dim, 1),
             fmt: PixelFormat::Gray8,
@@ -202,6 +210,15 @@ fn generated_decode_cases() -> Vec<DecodeBenchCase> {
 fn encode_classic(pixels: &[u8], width: u32, height: u32, components: u16) -> Vec<u8> {
     let options = encode_options();
     encode(pixels, width, height, components, 8, false, &options).expect("encode classic fixture")
+}
+
+fn encode_classic_irreversible(pixels: &[u8], width: u32, height: u32, components: u16) -> Vec<u8> {
+    let options = EncodeOptions {
+        reversible: false,
+        ..encode_options()
+    };
+    encode(pixels, width, height, components, 8, false, &options)
+        .expect("encode irreversible classic fixture")
 }
 
 fn encode_ht(pixels: &[u8], width: u32, height: u32, components: u16) -> Vec<u8> {

@@ -5,14 +5,14 @@ use super::{
     copied_slice_buffer, decode_classic_status_error, decode_idwt_status_error,
     decode_mct_status_error, dispatch_1d_pipeline, dispatch_2d_pipeline, dispatch_3d_pipeline,
     dispatch_ht_cleanup_batched_in_command_buffer, dispatch_ht_cleanup_batched_in_encoder,
-    dispatch_ht_cleanup_repeated_batched_in_command_buffer, dispatch_single_thread,
-    hybrid_stage_signpost, j2k_u32_param, label_compute_encoder, new_command_buffer,
-    new_compute_command_encoder, new_shared_buffer, prepared_ht_buffer, size_of,
-    take_classic_coefficients_scratch_buffer, take_classic_states_scratch_buffer, with_runtime,
-    zeroed_shared_buffer, Buffer, CommandBufferRef, ComputeCommandEncoderRef,
-    DirectIdwtCommandBuffers, DirectScratchBuffer, DirectStatusCheck, Error, HtCodeBlockDecodeJob,
-    HtRepeatedCleanupDispatch, J2kClassicCleanupBatchJob, J2kClassicRepeatedBatchParams,
-    J2kClassicSegment, J2kClassicStatus, J2kGrayStoreParams, J2kHtCleanupBatchJob,
+    dispatch_ht_cleanup_repeated_batched_in_command_buffer, hybrid_stage_signpost, j2k_u32_param,
+    label_compute_encoder, new_command_buffer, new_compute_command_encoder, new_shared_buffer,
+    prepared_ht_buffer, size_of, take_classic_coefficients_scratch_buffer,
+    take_classic_states_scratch_buffer, with_runtime, zeroed_shared_buffer, Buffer,
+    CommandBufferRef, ComputeCommandEncoderRef, DirectIdwtCommandBuffers, DirectScratchBuffer,
+    DirectStatusCheck, Error, HtCodeBlockDecodeJob, HtRepeatedCleanupDispatch,
+    J2kClassicCleanupBatchJob, J2kClassicRepeatedBatchParams, J2kClassicSegment, J2kClassicStatus,
+    J2kGrayStoreParams, J2kHtCleanupBatchJob, J2kIdwt97StepParams,
     J2kIdwtSingleDecompositionParams, J2kIdwtStatus, J2kInverseMctJob, J2kInverseMctParams,
     J2kMctStatus, J2kRepeatedGrayStoreParams, J2kRepeatedIdwtSingleDecompositionParams,
     J2kRepeatedStoreParams, J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kStoreParams,
@@ -60,6 +60,8 @@ pub(in crate::compute) use self::ht_subband::{
     encode_repeated_ht_sub_band_to_buffer_in_command_buffer, ht_batch_output_word_count,
     ht_output_word_count, required_ht_output_len,
 };
+#[cfg(test)]
+pub(crate) use self::idwt::decode_irreversible97_staged_single_decomposition_idwt;
 pub(crate) use self::idwt::{
     decode_irreversible97_single_decomposition_idwt, decode_reversible53_single_decomposition_idwt,
 };

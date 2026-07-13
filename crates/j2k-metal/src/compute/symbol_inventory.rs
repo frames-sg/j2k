@@ -19,7 +19,8 @@ macro_rules! wire_compute_symbols {
             J2kForwardDwt53BatchedParams, J2kForwardDwt53Params, J2kForwardIctParams,
             J2kForwardRctParams, J2kGrayStoreParams, J2kHtCleanupBatchJob, J2kHtCleanupParams,
             J2kHtEncodeBatchJob, J2kHtEncodeParams, J2kHtEncodeStatus, J2kHtRepeatedBatchParams,
-            J2kHtStatus, J2kIdwtSingleDecompositionParams, J2kIdwtStatus, J2kInverseMctParams,
+            J2kHtStatus, J2kIdwt97StepParams, J2kIdwtSingleDecompositionParams, J2kIdwtStatus,
+            J2kInverseMctParams,
             J2kLosslessCodestreamAssemblyParams, J2kLosslessCoefficientJob,
             J2kLosslessDeinterleaveParams, J2kMctRgb8PackParams, J2kMctStatus, J2kPackParams,
             J2kPacketBlock, J2kPacketDescriptor, J2kPacketEncodeParams, J2kPacketEncodeStatus,
@@ -138,6 +139,8 @@ macro_rules! wire_compute_symbols {
             classic_batch_uses_plain_fast_path, classic_repeated_uses_plain_fast_path,
             repeated_gray_store_is_contiguous_full_surface,
         };
+        #[cfg(all(target_os = "macos", test))]
+        pub(crate) use crate::compute::decode_dispatch::decode_irreversible97_staged_single_decomposition_idwt;
         #[cfg(target_os = "macos")]
         pub(crate) use crate::compute::decode_dispatch::{
             decode_inverse_mct, decode_irreversible97_single_decomposition_idwt,

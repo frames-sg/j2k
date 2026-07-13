@@ -62,6 +62,13 @@ struct J2kIdwtStatus {
     uint reserved1;
 };
 
+struct J2kIdwt97StepParams {
+    float coefficient;
+    uint parity;
+    uint reserved0;
+    uint reserved1;
+};
+
 constant uint J2K_IDWT_STATUS_OK = 0;
 constant uint J2K_IDWT_STATUS_FAIL = 1;
 
@@ -428,186 +435,90 @@ kernel void j2k_idwt_reversible53_vertical_pass_batched(
     }
 }
 
-kernel void j2k_idwt_irreversible97_single_decomposition(
-    device const float *ll [[buffer(0)]],
-    device const float *hl [[buffer(1)]],
-    device const float *lh [[buffer(2)]],
-    device const float *hh [[buffer(3)]],
-    device float *out [[buffer(4)]],
-    constant J2kIdwtSingleDecompositionParams &params [[buffer(5)]],
-    device J2kIdwtStatus *status [[buffer(6)]],
-    uint gid [[thread_position_in_grid]]
+kernel void j2k_idwt_irreversible97_horizontal_scale(
+    device float *out [[buffer(0)]],
+    constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
+    uint2 gid [[thread_position_in_grid]]
 ) {
-    if (gid != 0u) {
+    if (gid.x >= params.width || gid.y >= params.height) {
         return;
     }
 
-    status->code = J2K_IDWT_STATUS_OK;
-    status->detail = 0u;
-    status->reserved0 = 0u;
-    status->reserved1 = 0u;
-
-    if (params.width == 0u || params.height == 0u) {
-        status->code = J2K_IDWT_STATUS_FAIL;
-        status->detail = 1u;
-        return;
-    }
-
-    const float NEG_ALPHA = CODEC_MATH_IDWT97_NEG_ALPHA;
-    const float NEG_BETA = CODEC_MATH_IDWT97_NEG_BETA;
-    const float NEG_GAMMA = CODEC_MATH_IDWT97_NEG_GAMMA;
-    const float NEG_DELTA = CODEC_MATH_IDWT97_NEG_DELTA;
     const float KAPPA = CODEC_MATH_DWT97_KAPPA;
     const float INV_KAPPA = CODEC_MATH_DWT97_INV_KAPPA;
-
-    const uint low_x_parity = params.x0 & 1u;
-    const uint low_y_parity = params.y0 & 1u;
-
-    for (uint local_y = 0u; local_y < params.height; ++local_y) {
-        const uint global_y = params.y0 + params.output_y + local_y;
-        const bool low_y = (global_y & 1u) == low_y_parity;
-        const uint full_band_y = low_y ? low_index(global_y, params.y0) : high_index(global_y, params.y0);
-
-        for (uint local_x = 0u; local_x < params.width; ++local_x) {
-            const uint global_x = params.x0 + params.output_x + local_x;
-            const bool low_x = (global_x & 1u) == low_x_parity;
-            const uint full_band_x = low_x ? low_index(global_x, params.x0) : high_index(global_x, params.x0);
-            const uint out_idx = local_y * params.width + local_x;
-
-            if (low_y && low_x) {
-                const uint band_x = full_band_x - params.ll_x;
-                const uint band_y = full_band_y - params.ll_y;
-                out[out_idx] = (band_x < params.ll_width && band_y < params.ll_height)
-                    ? ll[band_y * params.ll_width + band_x]
-                    : 0.0f;
-            } else if (low_y) {
-                const uint band_x = full_band_x - params.hl_x;
-                const uint band_y = full_band_y - params.hl_y;
-                out[out_idx] = (band_x < params.hl_width && band_y < params.hl_height)
-                    ? hl[band_y * params.hl_width + band_x]
-                    : 0.0f;
-            } else if (low_x) {
-                const uint band_x = full_band_x - params.lh_x;
-                const uint band_y = full_band_y - params.lh_y;
-                out[out_idx] = (band_x < params.lh_width && band_y < params.lh_height)
-                    ? lh[band_y * params.lh_width + band_x]
-                    : 0.0f;
-            } else {
-                const uint band_x = full_band_x - params.hh_x;
-                const uint band_y = full_band_y - params.hh_y;
-                out[out_idx] = (band_x < params.hh_width && band_y < params.hh_height)
-                    ? hh[band_y * params.hh_width + band_x]
-                    : 0.0f;
-            }
-        }
-    }
+    float sample = out[gid.y * params.width + gid.x];
 
     if (params.width == 1u) {
         if (((params.x0 + params.output_x) & 1u) != 0u) {
-            for (uint row = 0u; row < params.height; ++row) {
-                out[row * params.width] *= 0.5f;
-            }
+            sample *= 0.5f;
         }
     } else {
         const uint first_even_x = (params.x0 + params.output_x) & 1u;
-        const uint first_odd_x = 1u - first_even_x;
-        const float k0 = first_even_x == 0u ? KAPPA : INV_KAPPA;
-        const float k1 = first_even_x == 0u ? INV_KAPPA : KAPPA;
-
-        for (uint row = 0u; row < params.height; ++row) {
-            device float *row_ptr = out + row * params.width;
-
-            for (uint x = 0u; x + 1u < params.width; x += 2u) {
-                row_ptr[x] *= k0;
-                row_ptr[x + 1u] *= k1;
-            }
-            if ((params.width & 1u) != 0u) {
-                row_ptr[params.width - 1u] *= k0;
-            }
-
-            irreversible97_horizontal_step(row_ptr, params.width, first_even_x, NEG_DELTA);
-            irreversible97_horizontal_step(row_ptr, params.width, first_odd_x, NEG_GAMMA);
-            irreversible97_horizontal_step(row_ptr, params.width, first_even_x, NEG_BETA);
-            irreversible97_horizontal_step(row_ptr, params.width, first_odd_x, NEG_ALPHA);
-        }
+        sample *= (gid.x & 1u) == first_even_x ? KAPPA : INV_KAPPA;
     }
 
-    if (params.height == 1u) {
-        if (((params.y0 + params.output_y) & 1u) != 0u) {
-            for (uint col = 0u; col < params.width; ++col) {
-                out[col] *= 0.5f;
-            }
-        }
+    out[gid.y * params.width + gid.x] = sample;
+}
+
+kernel void j2k_idwt_irreversible97_vertical_scale(
+    device float *out [[buffer(0)]],
+    constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
         return;
     }
 
-    const uint first_even_y = (params.y0 + params.output_y) & 1u;
-    const uint first_odd_y = 1u - first_even_y;
-    const float k0 = first_even_y == 0u ? KAPPA : INV_KAPPA;
-    const float k1 = first_even_y == 0u ? INV_KAPPA : KAPPA;
+    const float KAPPA = CODEC_MATH_DWT97_KAPPA;
+    const float INV_KAPPA = CODEC_MATH_DWT97_INV_KAPPA;
+    float sample = out[gid.y * params.width + gid.x];
 
-    for (uint row = 0u; row + 1u < params.height; row += 2u) {
-        for (uint col = 0u; col < params.width; ++col) {
-            out[row * params.width + col] *= k0;
-            out[(row + 1u) * params.width + col] *= k1;
+    if (params.height == 1u) {
+        if (((params.y0 + params.output_y) & 1u) != 0u) {
+            sample *= 0.5f;
         }
-    }
-    if ((params.height & 1u) != 0u) {
-        const uint row = params.height - 1u;
-        for (uint col = 0u; col < params.width; ++col) {
-            out[row * params.width + col] *= k0;
-        }
+    } else {
+        const uint first_even_y = (params.y0 + params.output_y) & 1u;
+        sample *= (gid.y & 1u) == first_even_y ? KAPPA : INV_KAPPA;
     }
 
-    for (uint row = first_even_y; row < params.height; row += 2u) {
-        const uint row_above = periodic_symmetric_extension_left_u32(row, 1u);
-        const uint row_below = periodic_symmetric_extension_right_u32(row, 1u, params.height);
-        for (uint col = 0u; col < params.width; ++col) {
-            const uint idx = row * params.width + col;
-            out[idx] = fma(
-                out[row_above * params.width + col] + out[row_below * params.width + col],
-                NEG_DELTA,
-                out[idx]
-            );
-        }
+    out[gid.y * params.width + gid.x] = sample;
+}
+
+kernel void j2k_idwt_irreversible97_horizontal_step(
+    device float *out [[buffer(0)]],
+    constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
+    constant J2kIdwt97StepParams &step [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height || params.width <= 1u
+        || (gid.x & 1u) != step.parity) {
+        return;
     }
 
-    for (uint row = first_odd_y; row < params.height; row += 2u) {
-        const uint row_above = periodic_symmetric_extension_left_u32(row, 1u);
-        const uint row_below = periodic_symmetric_extension_right_u32(row, 1u, params.height);
-        for (uint col = 0u; col < params.width; ++col) {
-            const uint idx = row * params.width + col;
-            out[idx] = fma(
-                out[row_above * params.width + col] + out[row_below * params.width + col],
-                NEG_GAMMA,
-                out[idx]
-            );
-        }
+    const uint left = periodic_symmetric_extension_left_u32(gid.x, 1u);
+    const uint right = periodic_symmetric_extension_right_u32(gid.x, 1u, params.width);
+    const uint idx = gid.y * params.width + gid.x;
+    out[idx] = fma(out[gid.y * params.width + left] + out[gid.y * params.width + right],
+                   step.coefficient,
+                   out[idx]);
+}
+
+kernel void j2k_idwt_irreversible97_vertical_step(
+    device float *out [[buffer(0)]],
+    constant J2kIdwtSingleDecompositionParams &params [[buffer(1)]],
+    constant J2kIdwt97StepParams &step [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height || params.height <= 1u
+        || (gid.y & 1u) != step.parity) {
+        return;
     }
 
-    for (uint row = first_even_y; row < params.height; row += 2u) {
-        const uint row_above = periodic_symmetric_extension_left_u32(row, 1u);
-        const uint row_below = periodic_symmetric_extension_right_u32(row, 1u, params.height);
-        for (uint col = 0u; col < params.width; ++col) {
-            const uint idx = row * params.width + col;
-            out[idx] = fma(
-                out[row_above * params.width + col] + out[row_below * params.width + col],
-                NEG_BETA,
-                out[idx]
-            );
-        }
-    }
-
-    for (uint row = first_odd_y; row < params.height; row += 2u) {
-        const uint row_above = periodic_symmetric_extension_left_u32(row, 1u);
-        const uint row_below = periodic_symmetric_extension_right_u32(row, 1u, params.height);
-        for (uint col = 0u; col < params.width; ++col) {
-            const uint idx = row * params.width + col;
-            out[idx] = fma(
-                out[row_above * params.width + col] + out[row_below * params.width + col],
-                NEG_ALPHA,
-                out[idx]
-            );
-        }
-    }
+    const uint above = periodic_symmetric_extension_left_u32(gid.y, 1u);
+    const uint below = periodic_symmetric_extension_right_u32(gid.y, 1u, params.height);
+    const uint idx = gid.y * params.width + gid.x;
+    out[idx] = fma(out[above * params.width + gid.x] + out[below * params.width + gid.x],
+                   step.coefficient,
+                   out[idx]);
 }

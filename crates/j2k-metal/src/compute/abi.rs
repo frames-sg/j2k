@@ -264,6 +264,16 @@ pub(crate) struct J2kIdwtStatus {
 }
 
 #[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct J2kIdwt97StepParams {
+    pub(crate) coefficient: f32,
+    pub(crate) parity: u32,
+    pub(crate) _reserved0: u32,
+    pub(crate) _reserved1: u32,
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) const J2K_MCT_STATUS_OK: u32 = 0;
 #[cfg(target_os = "macos")]
 pub(crate) const J2K_MCT_STATUS_FAIL: u32 = 1;
@@ -988,6 +998,7 @@ impl_gpu_readback_abi!(
     J2kIdwtSingleDecompositionParams,
     J2kRepeatedIdwtSingleDecompositionParams,
     J2kIdwtStatus,
+    J2kIdwt97StepParams,
     J2kInverseMctParams,
     J2kForwardRctParams,
     J2kForwardIctParams,

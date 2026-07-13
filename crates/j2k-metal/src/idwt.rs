@@ -217,6 +217,212 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn staged_irreversible_idwt_matches_native_odd_geometry() {
+        const EXPECTED_BITS: [u32; 15] = [
+            3_243_516_307,
+            1_088_535_889,
+            1_086_781_832,
+            3_237_068_116,
+            1_072_899_983,
+            1_090_811_482,
+            3_205_449_560,
+            3_240_528_043,
+            1_057_965_919,
+            1_095_801_595,
+            3_240_069_383,
+            1_090_703_406,
+            1_072_530_023,
+            3_238_711_343,
+            1_091_758_981,
+        ];
+        if !should_run_metal_runtime() {
+            return;
+        }
+        let rect = j2k_native::J2kRect {
+            x0: 0,
+            y0: 0,
+            x1: 5,
+            y1: 3,
+        };
+        let ll = [0.5, -1.25, 2.0, 3.5, -4.25, 5.75];
+        let hl = [6.5, -7.0, 8.25, -9.5];
+        let lh = [10.0, -11.5, 12.75];
+        let hh = [-13.0, 14.25];
+        let job = j2k_native::J2kSingleDecompositionIdwtJob {
+            rect,
+            transform: j2k_native::J2kWaveletTransform::Irreversible97,
+            ll: j2k_native::J2kIdwtBand {
+                rect: j2k_native::J2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 3,
+                    y1: 2,
+                },
+                coefficients: &ll,
+            },
+            hl: j2k_native::J2kIdwtBand {
+                rect: j2k_native::J2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 2,
+                    y1: 2,
+                },
+                coefficients: &hl,
+            },
+            lh: j2k_native::J2kIdwtBand {
+                rect: j2k_native::J2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 3,
+                    y1: 1,
+                },
+                coefficients: &lh,
+            },
+            hh: j2k_native::J2kIdwtBand {
+                rect: j2k_native::J2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 2,
+                    y1: 1,
+                },
+                coefficients: &hh,
+            },
+        };
+        let mut actual = vec![0.0; EXPECTED_BITS.len()];
+
+        crate::compute::decode_irreversible97_staged_single_decomposition_idwt(job, &mut actual)
+            .expect("staged irreversible Metal IDWT");
+
+        for (index, (actual, expected_bits)) in actual.iter().zip(EXPECTED_BITS).enumerate() {
+            let expected = f32::from_bits(expected_bits);
+            assert!(
+                (actual - expected).abs() <= 2.0e-5,
+                "sample {index}: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn staged_irreversible_idwt_preserves_degenerate_origin_scaling() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
+        let coefficient = [8.0];
+        for (x0, y0, expected) in [(0, 0, 8.0_f32), (1, 0, 4.0), (0, 1, 4.0), (1, 1, 2.0)] {
+            let rect = j2k_native::J2kRect {
+                x0,
+                y0,
+                x1: x0 + 1,
+                y1: y0 + 1,
+            };
+            let band = j2k_native::J2kIdwtBand {
+                rect: j2k_native::J2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 1,
+                    y1: 1,
+                },
+                coefficients: &coefficient,
+            };
+            let job = j2k_native::J2kSingleDecompositionIdwtJob {
+                rect,
+                transform: j2k_native::J2kWaveletTransform::Irreversible97,
+                ll: band,
+                hl: band,
+                lh: band,
+                hh: band,
+            };
+            let mut actual = [0.0];
+
+            crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
+                job,
+                &mut actual,
+            )
+            .expect("degenerate staged irreversible Metal IDWT");
+
+            assert_eq!(
+                actual[0].to_bits(),
+                expected.to_bits(),
+                "origin ({x0}, {y0})"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "performance guard harness; run explicitly with --ignored --nocapture"]
+    fn metal_irreversible_idwt_perf_guard() {
+        const WIDTH: u32 = 1023;
+        const HEIGHT: u32 = 767;
+        const ITERS: usize = 11;
+        if !should_run_metal_runtime() {
+            return;
+        }
+        let low_width = WIDTH.div_ceil(2);
+        let low_height = HEIGHT.div_ceil(2);
+        let high_width = WIDTH / 2;
+        let high_height = HEIGHT / 2;
+        let make_band = |width: u32, height: u32, seed: u32| {
+            (0..width * height)
+                .map(|index| {
+                    let value = index.wrapping_mul(37).wrapping_add(seed * 101) % 4093;
+                    (f32::from(u16::try_from(value).expect("pattern value fits u16")) - 2046.0)
+                        * 0.03125
+                })
+                .collect::<Vec<_>>()
+        };
+        let ll = make_band(low_width, low_height, 1);
+        let hl = make_band(high_width, low_height, 2);
+        let lh = make_band(low_width, high_height, 3);
+        let hh = make_band(high_width, high_height, 4);
+        let rect = j2k_native::J2kRect {
+            x0: 0,
+            y0: 0,
+            x1: WIDTH,
+            y1: HEIGHT,
+        };
+        let band = |x1, y1, coefficients| j2k_native::J2kIdwtBand {
+            rect: j2k_native::J2kRect {
+                x0: 0,
+                y0: 0,
+                x1,
+                y1,
+            },
+            coefficients,
+        };
+        let job = j2k_native::J2kSingleDecompositionIdwtJob {
+            rect,
+            transform: j2k_native::J2kWaveletTransform::Irreversible97,
+            ll: band(low_width, low_height, &ll),
+            hl: band(high_width, low_height, &hl),
+            lh: band(low_width, high_height, &lh),
+            hh: band(high_width, high_height, &hh),
+        };
+        let mut output = vec![0.0; WIDTH as usize * HEIGHT as usize];
+        crate::compute::decode_irreversible97_staged_single_decomposition_idwt(job, &mut output)
+            .expect("warm irreversible Metal IDWT");
+        let mut samples = Vec::with_capacity(ITERS);
+        for _ in 0..ITERS {
+            let started = std::time::Instant::now();
+            crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
+                job,
+                &mut output,
+            )
+            .expect("measured irreversible Metal IDWT");
+            samples.push(started.elapsed());
+        }
+        samples.sort_unstable();
+        let median = samples[ITERS / 2];
+        println!(
+            "j2k_metal_idwt97_perf mode=staged size={WIDTH}x{HEIGHT} median_ms={:.3}",
+            median.as_secs_f64() * 1_000.0
+        );
+    }
+
     struct CpuOnlyCodeBlockDecoder;
 
     impl HtCodeBlockDecoder for CpuOnlyCodeBlockDecoder {}
