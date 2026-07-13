@@ -9,6 +9,7 @@ use crate::coverage::evaluation::{coverage_violations, evaluate_changed_coverage
 use crate::coverage::model::{CoverageLane, LcovReport};
 use crate::coverage::source_analysis::SourceIndex;
 
+mod compiler_line_evidence;
 mod non_executable;
 
 fn changed(

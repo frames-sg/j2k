@@ -4,6 +4,8 @@ use std::path::Path;
 
 use super::{parse_compiler_regions, CompilerRegionEvidence, SourceSpan};
 
+mod line_evidence;
+
 const ROOT: &str = "/workspace/j2k";
 
 #[test]

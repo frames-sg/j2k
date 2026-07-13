@@ -23,7 +23,10 @@ fn coverage_tooling_stays_split_by_responsibility() {
     let build_output_target = read("xtask/src/coverage/build_outputs/target.rs");
     let build_output_tests = read("xtask/src/coverage/build_outputs/tests.rs");
     let compiler_regions = read("xtask/src/coverage/compiler_regions.rs");
+    let compiler_region_parsing = read("xtask/src/coverage/compiler_regions/parsing.rs");
     let compiler_region_tests = read("xtask/src/coverage/compiler_regions/tests.rs");
+    let compiler_region_line_tests =
+        read("xtask/src/coverage/compiler_regions/tests/line_evidence.rs");
     let model = read("xtask/src/coverage/model.rs");
     let lane = read("xtask/src/coverage/lane.rs");
     let parsing = read("xtask/src/coverage/parsing.rs");
@@ -61,6 +64,8 @@ fn coverage_tooling_stays_split_by_responsibility() {
     let evaluation_tests = read("xtask/src/coverage/tests/evaluation.rs");
     let non_executable_evaluation_tests =
         read("xtask/src/coverage/tests/evaluation/non_executable.rs");
+    let compiler_line_evaluation_tests =
+        read("xtask/src/coverage/tests/evaluation/compiler_line_evidence.rs");
     let executable_evidence_tests = read("xtask/src/coverage/tests/executable_evidence.rs");
     let presence_tests = read("xtask/src/coverage/tests/presence.rs");
     let source_tests = read("xtask/src/coverage/tests/source_analysis.rs");
@@ -92,12 +97,22 @@ fn coverage_tooling_stays_split_by_responsibility() {
         (
             "xtask/src/coverage/compiler_regions.rs",
             compiler_regions.as_str(),
-            350,
+            200,
+        ),
+        (
+            "xtask/src/coverage/compiler_regions/parsing.rs",
+            compiler_region_parsing.as_str(),
+            250,
         ),
         (
             "xtask/src/coverage/compiler_regions/tests.rs",
             compiler_region_tests.as_str(),
             180,
+        ),
+        (
+            "xtask/src/coverage/compiler_regions/tests/line_evidence.rs",
+            compiler_region_line_tests.as_str(),
+            100,
         ),
         ("xtask/src/coverage/model.rs", model.as_str(), 600),
         ("xtask/src/coverage/lane.rs", lane.as_str(), 600),
@@ -218,6 +233,11 @@ fn coverage_tooling_stays_split_by_responsibility() {
         (
             "xtask/src/coverage/tests/evaluation/non_executable.rs",
             non_executable_evaluation_tests.as_str(),
+            100,
+        ),
+        (
+            "xtask/src/coverage/tests/evaluation/compiler_line_evidence.rs",
+            compiler_line_evaluation_tests.as_str(),
             100,
         ),
         (
@@ -366,13 +386,22 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "fn normalize_lcov_path(",
         ]),
         PatternCheck::new("compiler region evidence ownership", &compiler_regions).required(&[
-            "llvm.coverage.json.export",
+            "mod parsing;",
+            "pub(super) use parsing::parse_compiler_regions;",
             "pub(super) struct CompilerRegionReport",
             "pub(super) fn evidence_for(",
+            "pub(super) fn evidence_for_line(",
             "CompilerRegionEvidence::NonInstrumentable",
-            "pub(super) fn parse_compiler_regions(",
-            "must contain exactly 8 integer fields",
             "mod tests;",
+        ]),
+        PatternCheck::new(
+            "compiler region JSON parsing ownership",
+            &compiler_region_parsing,
+        )
+        .required(&[
+            "llvm.coverage.json.export",
+            "pub(in crate::coverage) fn parse_compiler_regions(",
+            "must contain exactly 8 integer fields",
         ]),
         PatternCheck::new(
             "compiler region evidence regressions",
@@ -385,11 +414,25 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "fn malformed_or_unrelated_reports_fail_closed()",
             "fn dependency_macro_expansion_regions_are_ignored_without_hiding_repository_regions()",
         ]),
+        PatternCheck::new(
+            "compiler line evidence regressions",
+            &compiler_region_line_tests,
+        )
+        .required(&["fn line_evidence_uses_the_most_specific_intersecting_region()"]),
+        PatternCheck::new(
+            "compiler line evaluation regressions",
+            &compiler_line_evaluation_tests,
+        )
+        .required(&[
+            "fn covered_compiler_region_owns_multiline_expression_lines_without_da_records()",
+            "fn zero_compiler_region_keeps_an_executable_line_without_da_uncovered()",
+        ]),
         PatternCheck::new("coverage changed-line evaluation ownership", &evaluation)
             .required(&[
                 "pub(super) fn evaluate_changed_coverage(",
                 "struct ChangedFileEvidence<'a>",
                 "fn evaluate_changed_lines(",
+                "evidence_for_line(self.path, line_number)",
                 "fn record_missing_body_evidence(",
                 "self.body_is_covered(function.body_start, function.body_end)",
                 "changed_functions_without_covered_body",

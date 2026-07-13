@@ -180,6 +180,20 @@ impl ChangedFileEvidence<'_> {
                 .coverage
                 .and_then(|coverage| coverage.get(&line_number))
             else {
+                match self
+                    .compiler_regions
+                    .evidence_for_line(self.path, line_number)
+                {
+                    Some(CompilerRegionEvidence::Covered) => {
+                        record_measurable_line(result, self.path, line_number, 1);
+                        continue;
+                    }
+                    Some(CompilerRegionEvidence::Uncovered) => {
+                        record_measurable_line(result, self.path, line_number, 0);
+                        continue;
+                    }
+                    Some(CompilerRegionEvidence::NonInstrumentable) | None => {}
+                }
                 result.unmeasured.push((self.path.to_string(), line_number));
                 record_measurable_line(result, self.path, line_number, 0);
                 continue;
