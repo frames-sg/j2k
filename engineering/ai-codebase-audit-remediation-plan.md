@@ -270,10 +270,15 @@ the issue sections below; this capsule is only the current continuation state.
   strict Clippy and all 259 package/integration tests pass, the allocation's 11
   behavior tests pass, panic-surface reports 16/16 unwrap and 46/50 expect, and
   all 415 active repository policies pass with the established single ignore.
-  These results are local correction evidence only. The branch tip containing
-  this checkpoint is the replacement candidate; dispatch and verify hosted,
-  Metal, and CUDA workflows for exactly that SHA and do not reuse the
-  `8013f18a` run.
+  The first replacement `938a9c63` was pushed and dispatched, but the local
+  exact release-Metal command then correctly rejected stale fail-closed names
+  for two ignored routing tests and one required stage-validation test. That
+  GPU run was cancelled, the inventory was reconciled to the existing focused
+  modules without changing test behavior or minimum counts, its command/policy
+  tests pass, and the complete release-Metal lane is green with all 18 required
+  ignored tests. The branch tip containing this checkpoint is the replacement
+  candidate; dispatch and verify hosted, Metal, and CUDA workflows for exactly
+  that SHA and do not reuse the `8013f18a` or `938a9c63` runs.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -692,7 +697,7 @@ The rubric was checked against current primary or first-party sources on
 | PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
 | FINAL-001 | P1 | in progress | all above | Focused correction gates are green; replacement-SHA hosted and hardware matrices remain |
-| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a` is invalidated and the commit containing this checkpoint is the corrected candidate awaiting exact external evidence |
+| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a` and `938a9c63` are invalidated and the commit containing this checkpoint is the corrected candidate awaiting exact external evidence |
 | TAG-001 | P3 | deferred outside verified-RC endpoint | RC-001 | Annotated tag and guarded publication require separate authorization |
 
 ## 6. Phase 0 — reconcile the worktree
