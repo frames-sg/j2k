@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{CodecContext, DecoderContext};
+use super::{CacheStats, CodecContext, DecoderContext};
 
 #[derive(Debug, PartialEq, Eq)]
 struct SeededContext {
@@ -26,4 +26,26 @@ fn new_constructs_the_codec_context_from_its_default() {
     let context = DecoderContext::<SeededContext>::new();
 
     assert_eq!(context.codec().retained_entries, 7);
+}
+
+#[test]
+fn cache_stats_constructors_preserve_explicit_and_defaulted_counters() {
+    assert_eq!(
+        CacheStats::new(3, 5),
+        CacheStats {
+            hits: 3,
+            misses: 5,
+            occupied_slots: 0,
+            evictions: 0,
+        }
+    );
+    assert_eq!(
+        CacheStats::with_slots(8, 13, 21, 34),
+        CacheStats {
+            hits: 8,
+            misses: 13,
+            occupied_slots: 21,
+            evictions: 34,
+        }
+    );
 }
