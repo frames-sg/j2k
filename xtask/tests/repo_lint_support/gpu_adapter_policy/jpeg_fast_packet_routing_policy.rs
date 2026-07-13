@@ -2,12 +2,12 @@
 //! Single-family, typed-failure JPEG Metal fast-packet routing policy.
 use super::*;
 
+mod error_contract;
+
 #[test]
 fn jpeg_metal_fast_packet_selection_builds_and_caches_one_typed_family() {
     let root = repo_root();
-    let packet_error =
-        fs::read_to_string(root.join("crates/j2k-jpeg/src/adapter/fast_packet/error.rs"))
-            .expect("read JPEG fast-packet error source");
+    error_contract::assert_policy(root);
     let selection = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/fast_packets.rs"))
         .expect("read JPEG Metal fast-packet selection");
     let metal_error = fs::read_to_string(root.join("crates/j2k-jpeg-metal/src/error.rs"))
@@ -23,14 +23,6 @@ fn jpeg_metal_fast_packet_selection_builds_and_caches_one_typed_family() {
         .expect("read JPEG Metal batch source");
 
     assert_pattern_checks(&[
-        PatternCheck::new("typed JPEG fast-packet failure", &packet_error).required(&[
-            "#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]",
-            "Decode(#[from] JpegError)",
-            "pub const fn is_capability_mismatch(&self) -> bool",
-            "Self::UnsupportedSampling",
-            "Self::EntropyMarkerUnsupported { .. }",
-            "impl CodecError for FastPacketError",
-        ]),
         PatternCheck::new("single-family JPEG Metal packet selection", &selection)
             .required(&[
                 "SharedJpegFastPacket",

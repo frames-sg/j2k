@@ -6,6 +6,8 @@ use std::fs;
 
 use super::{assert_pattern_checks, repo_root, PatternCheck};
 
+mod manifest;
+
 fn read(relative_path: &str) -> String {
     fs::read_to_string(repo_root().join(relative_path))
         .unwrap_or_else(|error| panic!("read {relative_path}: {error}"))
@@ -62,7 +64,6 @@ fn fixture_compare_stays_split_by_responsibility() {
     let comparators = read("crates/j2k-compare/src/fixture_compare/comparators.rs");
     let comparator_tests = read("crates/j2k-compare/src/fixture_compare/comparators/tests.rs");
     let gates = read("crates/j2k-compare/src/fixture_compare/gates.rs");
-    let manifest = read("crates/j2k-compare/src/fixture_compare/manifest.rs");
     let rows = read("crates/j2k-compare/src/fixture_compare/rows.rs");
     let types = read("crates/j2k-compare/src/fixture_compare/types.rs");
 
@@ -81,7 +82,6 @@ fn fixture_compare_stays_split_by_responsibility() {
             350,
         ),
         ("fixture_compare/gates.rs", gates.as_str(), 400),
-        ("fixture_compare/manifest.rs", manifest.as_str(), 325),
         ("fixture_compare/rows.rs", rows.as_str(), 350),
         ("fixture_compare/types.rs", types.as_str(), 400),
     ] {
@@ -150,4 +150,5 @@ fn fixture_compare_stays_split_by_responsibility() {
         ]),
     ]);
     assert_comparator_contracts(&comparators, &comparator_tests);
+    manifest::assert_contract();
 }
