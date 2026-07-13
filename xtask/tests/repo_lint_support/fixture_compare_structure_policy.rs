@@ -7,6 +7,7 @@ use std::fs;
 use super::{assert_pattern_checks, repo_root, PatternCheck};
 
 mod decode;
+mod fixtures;
 mod manifest;
 
 fn read(relative_path: &str) -> String {
@@ -57,7 +58,6 @@ fn assert_comparator_contracts(comparators: &str, comparator_tests: &str) {
 fn fixture_compare_stays_split_by_responsibility() {
     let shell = read("crates/j2k-compare/src/fixture_compare.rs");
     let cli = read("crates/j2k-compare/src/fixture_compare/cli.rs");
-    let fixtures = read("crates/j2k-compare/src/fixture_compare/fixtures.rs");
     let metadata = read("crates/j2k-compare/src/fixture_compare/metadata.rs");
     let validation = read("crates/j2k-compare/src/fixture_compare/validation.rs");
     let measurement = read("crates/j2k-compare/src/fixture_compare/measurement.rs");
@@ -70,7 +70,6 @@ fn fixture_compare_stays_split_by_responsibility() {
     for (path, source, max_lines) in [
         ("fixture_compare.rs", shell.as_str(), 250),
         ("fixture_compare/cli.rs", cli.as_str(), 200),
-        ("fixture_compare/fixtures.rs", fixtures.as_str(), 525),
         ("fixture_compare/metadata.rs", metadata.as_str(), 500),
         ("fixture_compare/validation.rs", validation.as_str(), 250),
         ("fixture_compare/measurement.rs", measurement.as_str(), 250),
@@ -113,12 +112,6 @@ fn fixture_compare_stays_split_by_responsibility() {
             "pub(super) fn validate_comparator_gates",
             "pub(super) fn filter_cases_for_mode",
         ]),
-        PatternCheck::new("fixture_compare fixture ownership", &fixtures).required(&[
-            "pub(super) fn all_fixture_cases",
-            "pub(super) fn fixture_cases",
-            "pub(super) fn load_external_fixture_cases",
-            "pub(super) fn encode_lossless",
-        ]),
         PatternCheck::new("fixture_compare metadata ownership", &metadata).required(&[
             "pub(super) fn emit_metadata",
             "pub(super) fn external_unique_input_count",
@@ -144,5 +137,6 @@ fn fixture_compare_stays_split_by_responsibility() {
     ]);
     assert_comparator_contracts(&comparators, &comparator_tests);
     decode::assert_contract();
+    fixtures::assert_contract();
     manifest::assert_contract();
 }

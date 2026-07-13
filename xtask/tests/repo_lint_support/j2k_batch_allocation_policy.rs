@@ -173,6 +173,9 @@ fn shared_batch_collection_exposes_only_fallible_typed_integrity_paths() {
     let root = repo_root();
     let collection = fs::read_to_string(root.join("crates/j2k-core/src/batch/collection.rs"))
         .expect("read shared batch collection");
+    let collection_tests =
+        fs::read_to_string(root.join("crates/j2k-core/src/batch/collection/tests.rs"))
+            .expect("read shared batch collection tests");
     let exports = fs::read_to_string(root.join("crates/j2k-core/src/batch.rs"))
         .expect("read shared batch exports");
 
@@ -195,7 +198,25 @@ fn shared_batch_collection_exposes_only_fallible_typed_integrity_paths() {
         PatternCheck::new("fallible shared batch exports", &exports)
             .required(&["try_collect_indexed_batch_results"])
             .forbidden(&["\n    collect_indexed_batch_results,"]),
+        PatternCheck::new(
+            "shared batch allocation error regressions",
+            &collection_tests,
+        )
+        .required(&[
+            "fn collection_byte_overflow_is_a_saturated_cap_error()",
+            "fn impossible_ordered_capacity_is_an_allocator_error_not_a_cap_error()",
+            "BatchInfrastructureError::AllocationTooLarge",
+            "BatchInfrastructureError::HostAllocationFailed",
+        ]),
     ]);
+    assert!(
+        collection.lines().count() < 300,
+        "shared batch collection must stay below its production line-count ratchet"
+    );
+    assert!(
+        collection_tests.lines().count() < 100,
+        "shared batch collection tests must stay below their focused line-count ratchet"
+    );
 }
 
 #[test]

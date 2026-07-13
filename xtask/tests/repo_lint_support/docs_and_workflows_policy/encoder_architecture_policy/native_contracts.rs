@@ -114,3 +114,30 @@ fn native_adapter_exports_are_doc_hidden() {
             .required(&["pub struct DecodeSettings", "pub struct Image"]),
     ]);
 }
+
+#[test]
+fn native_ht_adapter_benchmark_state_has_focused_ownership_regressions() {
+    let root = repo_root();
+    let production = fs::read_to_string(root.join("crates/j2k-native/src/ht_adapter.rs"))
+        .expect("read j2k-native HT adapter module");
+    let tests = fs::read_to_string(root.join("crates/j2k-native/src/ht_adapter/tests.rs"))
+        .expect("read j2k-native HT adapter tests");
+
+    assert_pattern_checks(&[
+        PatternCheck::new("j2k-native HT adapter test ownership", &production)
+            .required(&["#[cfg(test)]\nmod tests;"]),
+        PatternCheck::new("j2k-native HT adapter ownership regressions", &tests).required(&[
+            "fn prepared_state_owns_inputs_and_decodes_exact_sigprop_output()",
+            "fn short_output_fails_transactionally_and_state_remains_usable()",
+            "fn overflowing_segment_metadata_is_rejected_before_state_construction()",
+        ]),
+    ]);
+    assert!(
+        production.lines().count() < 125,
+        "j2k-native HT adapter must stay below its focused production line-count ratchet"
+    );
+    assert!(
+        tests.lines().count() < 100,
+        "j2k-native HT adapter tests must stay below their focused line-count ratchet"
+    );
+}
