@@ -384,10 +384,6 @@ fn assert_dwt97_bands_close(
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "small deterministic fixture indices are exactly representable as f32"
-)]
 fn dwt97_fixture_blocks(scale: f32) -> [f32; 64] {
     let mut blocks = [0.0f32; 64];
     for (index, value) in DWT97_FIXTURE_VALUES {

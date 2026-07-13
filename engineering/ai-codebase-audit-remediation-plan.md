@@ -494,7 +494,7 @@ The rubric was checked against current primary or first-party sources on
 | DOC-001 | P1 | complete | — | Canonical runbook replaces stale diary |
 | REC-001 | P1 | complete | DOC-001 | Original dirty-tree work is reconciled into reviewable tested phase commits; the current worktree is clean and the ledger records each remaining blocker |
 | REL-001 | P1 | complete | REC-001 | Local stale tag is absent and the final `0.7.0` changelog is dated 2026-07-12 without provisional Unreleased/staged markers |
-| BUILD-001 | P1 | complete | — | Known Clippy failures fixed without allows |
+| BUILD-001 | P1 | complete | — | Host and CUDA-Oxide strict Clippy failures are fixed without allows, including removal of a stale platform-dependent lint expectation |
 | TEST-001 | P1 | complete | — | All 38 new ignores have exact dispositions |
 | METAL-001 | P1 | complete | TEST-001 | Fail-closed runtime inventory follows the final test-module paths, and release-mode scheduler counters clear ownership outside debug assertions; the full real-Metal release lane passes, with a clean exact-SHA rerun belonging to FINAL-001 |
 | POLICY-001 | P1 | complete | BUILD-001 | Public API scan and strict lane repaired |
@@ -1656,6 +1656,17 @@ required tests exactly, and the complete fail-closed real-Metal release command
 passes across support, JPEG, J2K, transcode, facade, and ignored hardware
 tests. These tracked corrections advance the candidate and require fresh
 exact-SHA host and Metal coverage artifacts.
+
+The first fresh NVIDIA build compiled all ten CUDA-Oxide kernel families, then
+strict Linux Clippy rejected a stale `cast_precision_loss` expectation in the
+transcode fixture builder. The helper already uses the lossless
+`f32::from(i16)` conversion, so no such lint is emitted on that target. The
+obsolete expectation is removed instead of adding an allow or weakening
+warnings. The CUDA host required an untracked, user-local extraction of its
+distribution's pinned LLVM runtime and resource headers for bindgen; no global
+package was installed, and no host detail or path is recorded in tracked
+configuration. A fresh exact-SHA bundle rerun remains required after this
+tracked correction.
 
 ## 8. Phase 2 — safety, duplication, and dead code
 
