@@ -170,9 +170,9 @@ the issue sections below; this capsule is only the current continuation state.
   `release-integrity`, ordinary and
   final `public-support`, `unsafe-audit`, warning-denied workspace/public-crate
   docs, and downstream facade/transcode examples pass. `greg` approved the
-  hash-pinned patched-`block` ABI-only delta on 2026-07-12; publish-mode
-  integrity now fails only because the real `0.7.0` date is not yet supplied.
-  That date must not be inferred. The local `v0.7.0` tag remains absent. The
+  hash-pinned patched-`block` ABI-only delta on 2026-07-12. The maintainer then
+  selected 2026-07-12 as the `0.7.0` release date, and the changelog is now in
+  final candidate form. The local `v0.7.0` tag remains absent. The
   clean-tree staged package gate also passes: all package
   inventories were inspected, independent crates completed publish dry runs,
   and dependent crates packaged against staged local patches without publishing.
@@ -370,9 +370,10 @@ the issue sections below; this capsule is only the current continuation state.
   3. obtain maintainer API/provenance/security approval, date the changelog,
      run publish-mode offline integrity, and commit a clean candidate SHA;
   4. run exact-SHA hosted CI plus Metal and CUDA hardware validation.
-- External release blockers: GitHub private vulnerability reporting is disabled
-  (CONTACT-001); the release date and candidate SHA do not yet exist. A tag is
-  deliberately outside this verified-RC endpoint.
+- External release blocker: GitHub private vulnerability reporting is disabled
+  (CONTACT-001). The dated candidate SHA and its exact local/hosted/hardware
+  evidence do not yet exist. A tag is deliberately outside this verified-RC
+  endpoint.
 - CUDA handoff: the maintainer supplied a private WSL/NVIDIA host with RTX 4070
   SUPER, CUDA 13.2, Rust 1.96, and libclang 18. Keep login/address out of tracked
   files. The repaired GPU ABI source passed a supporting `sm_89` build and
@@ -480,7 +481,7 @@ The rubric was checked against current primary or first-party sources on
 |---|---:|---|---|---|
 | DOC-001 | P1 | complete | — | Canonical runbook replaces stale diary |
 | REC-001 | P1 | complete | DOC-001 | Original dirty-tree work is reconciled into reviewable tested phase commits; the current worktree is clean and the ledger records each remaining blocker |
-| REL-001 | P1 | in progress | REC-001 | Local stale tag removed; staged changelog/docs pending |
+| REL-001 | P1 | complete | REC-001 | Local stale tag is absent and the final `0.7.0` changelog is dated 2026-07-12 without provisional Unreleased/staged markers |
 | BUILD-001 | P1 | complete | — | Known Clippy failures fixed without allows |
 | TEST-001 | P1 | complete | — | All 38 new ignores have exact dispositions |
 | METAL-001 | P1 | complete | TEST-001 | Hosted compile and fail-closed runtime lanes; exact-SHA rerun belongs to FINAL-001 |

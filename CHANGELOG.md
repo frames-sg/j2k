@@ -3,14 +3,7 @@
 This changelog tracks the current staged release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
-
-Staged workspace version: `0.7.0`.
-
-No `0.7.0` release has been published. As the final release-preparation edit
-before candidate freeze, replace this heading with
-`## [0.7.0] - YYYY-MM-DD` using the actual intended tag date. If that date or
-any release note changes later, freeze and validate a new candidate SHA.
+## [0.7.0] - 2026-07-12
 
 - Moves the test-only `corpus_validation`, `dct53_1d`, and `dct53_multilevel`
   modules out of the shipped `j2k-transcode` library into test support files.
