@@ -17,14 +17,13 @@ use crate::{error::native_decode_error, Error};
 
 use super::{
     checked_coefficient_len, hybrid_stage_signpost, packed_cpu_decode_coefficients,
-    packed_cpu_decode_coefficients_in, packed_cpu_decode_output_len,
-    record_hybrid_cpu_decode_inputs, record_hybrid_cpu_decode_worker_init,
-    required_classic_output_len, required_ht_output_len, CpuTier1DecodeSubstageCounters,
-    J2kClassicCleanupBatchJob, J2kClassicSegment, J2kHtCleanupBatchJob, PreparedClassicSubBand,
-    PreparedClassicSubBandGroup, PreparedDirectGrayscalePlan, PreparedHtSubBand,
-    PreparedHtSubBandGroup, HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK,
-    J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES, J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS,
-    J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
+    packed_cpu_decode_output_len, record_hybrid_cpu_decode_inputs,
+    record_hybrid_cpu_decode_worker_init, required_classic_output_len, required_ht_output_len,
+    CpuTier1DecodeSubstageCounters, J2kClassicCleanupBatchJob, J2kClassicSegment,
+    J2kHtCleanupBatchJob, PreparedClassicSubBand, PreparedClassicSubBandGroup,
+    PreparedDirectGrayscalePlan, PreparedHtSubBand, PreparedHtSubBandGroup,
+    HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK, J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES,
+    J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS, J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
     J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS, J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT,
     SIGNPOST_DECODE_HYBRID_CPU_TIER1,
 };
@@ -46,7 +45,7 @@ pub(super) fn decode_prepared_classic_sub_band_on_cpu_profile(
         sub_band.height,
         "classic J2K MetalDirect hybrid sub-band size overflow",
     )?;
-    let mut output = packed_cpu_decode_coefficients(1, len)?;
+    let mut output = vec![0.0_f32; len];
     if let Some(counters) = profile_counters {
         let mut scratch = ClassicCpuDecodeScratch::default();
         decode_prepared_classic_jobs_on_cpu_with_scratch_profiled(
@@ -73,7 +72,7 @@ pub(super) fn decode_prepared_classic_sub_band_group_on_cpu_profile(
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<Vec<f32>, Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
-    let mut output = packed_cpu_decode_coefficients(1, group.total_coefficients)?;
+    let mut output = vec![0.0_f32; group.total_coefficients];
     if let Some(counters) = profile_counters {
         let mut scratch = ClassicCpuDecodeScratch::default();
         decode_prepared_classic_jobs_on_cpu_with_scratch_profiled(
@@ -289,7 +288,7 @@ pub(super) fn decode_prepared_ht_sub_band_on_cpu_profile(
         sub_band.height,
         "HTJ2K MetalDirect hybrid sub-band size overflow",
     )?;
-    let mut output = packed_cpu_decode_coefficients(1, len)?;
+    let mut output = vec![0.0_f32; len];
     if let Some(counters) = profile_counters {
         let mut workspace = HtCodeBlockDecodeWorkspace::default();
         decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
@@ -310,7 +309,7 @@ pub(super) fn decode_prepared_ht_sub_band_group_on_cpu_profile(
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<Vec<f32>, Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
-    let mut output = packed_cpu_decode_coefficients(1, group.total_coefficients)?;
+    let mut output = vec![0.0_f32; group.total_coefficients];
     if let Some(counters) = profile_counters {
         let mut workspace = HtCodeBlockDecodeWorkspace::default();
         decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
@@ -458,7 +457,6 @@ pub(super) struct HtCpuDecodeInput<'a> {
 fn decode_classic_inputs_on_cpu_parallel(
     inputs: &[ClassicCpuDecodeInput<'_>],
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
-    budget: &mut crate::batch_allocation::BatchMetadataBudget,
 ) -> Result<Vec<f32>, Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     record_hybrid_cpu_decode_inputs(inputs.len());
@@ -469,7 +467,7 @@ fn decode_classic_inputs_on_cpu_parallel(
     else {
         return Ok(Vec::new());
     };
-    let mut coefficients = packed_cpu_decode_coefficients_in(budget, inputs.len(), output_len)?;
+    let mut coefficients = packed_cpu_decode_coefficients(inputs.len(), output_len)?;
     coefficients
         .par_chunks_mut(output_len)
         .zip(inputs.par_iter())
@@ -506,7 +504,6 @@ fn decode_classic_inputs_on_cpu_parallel(
 fn decode_ht_inputs_on_cpu_parallel(
     inputs: &[HtCpuDecodeInput<'_>],
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
-    budget: &mut crate::batch_allocation::BatchMetadataBudget,
 ) -> Result<Vec<f32>, Error> {
     let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     record_hybrid_cpu_decode_inputs(inputs.len());
@@ -517,7 +514,7 @@ fn decode_ht_inputs_on_cpu_parallel(
     else {
         return Ok(Vec::new());
     };
-    let mut coefficients = packed_cpu_decode_coefficients_in(budget, inputs.len(), output_len)?;
+    let mut coefficients = packed_cpu_decode_coefficients(inputs.len(), output_len)?;
     coefficients
         .par_chunks_mut(output_len)
         .zip(inputs.par_iter())
@@ -555,22 +552,16 @@ pub(super) fn decode_classic_inputs_on_cpu_with_plan_cache(
     inputs: &[ClassicCpuDecodeInput<'_>],
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<Vec<f32>, Error> {
-    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
-        "classic J2K MetalDirect hybrid CPU Tier-1 coefficients",
-    );
     if inputs.len() != 1 {
-        return decode_classic_inputs_on_cpu_parallel(inputs, profile_counters, &mut budget);
+        return decode_classic_inputs_on_cpu_parallel(inputs, profile_counters);
     }
 
     let output_len = inputs[0].output_len;
-    if let Some(coefficients) =
-        plan.cached_cpu_tier1_coefficients(&mut budget, step_idx, output_len)?
-    {
+    if let Some(coefficients) = plan.cached_cpu_tier1_coefficients(step_idx, output_len)? {
         return Ok(coefficients);
     }
 
-    let coefficients =
-        decode_classic_inputs_on_cpu_parallel(inputs, profile_counters, &mut budget)?;
+    let coefficients = decode_classic_inputs_on_cpu_parallel(inputs, profile_counters)?;
     plan.store_cpu_tier1_coefficients(step_idx, output_len, coefficients)
 }
 
@@ -580,20 +571,15 @@ pub(super) fn decode_ht_inputs_on_cpu_with_plan_cache(
     inputs: &[HtCpuDecodeInput<'_>],
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<Vec<f32>, Error> {
-    let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
-        "HTJ2K MetalDirect hybrid CPU Tier-1 coefficients",
-    );
     if inputs.len() != 1 {
-        return decode_ht_inputs_on_cpu_parallel(inputs, profile_counters, &mut budget);
+        return decode_ht_inputs_on_cpu_parallel(inputs, profile_counters);
     }
 
     let output_len = inputs[0].output_len;
-    if let Some(coefficients) =
-        plan.cached_cpu_tier1_coefficients(&mut budget, step_idx, output_len)?
-    {
+    if let Some(coefficients) = plan.cached_cpu_tier1_coefficients(step_idx, output_len)? {
         return Ok(coefficients);
     }
 
-    let coefficients = decode_ht_inputs_on_cpu_parallel(inputs, profile_counters, &mut budget)?;
+    let coefficients = decode_ht_inputs_on_cpu_parallel(inputs, profile_counters)?;
     plan.store_cpu_tier1_coefficients(step_idx, output_len, coefficients)
 }

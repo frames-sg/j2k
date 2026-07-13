@@ -42,7 +42,6 @@ impl Default for CpuTier1CoefficientCache {
 impl PreparedDirectGrayscalePlan {
     pub(super) fn cached_cpu_tier1_coefficients(
         &self,
-        budget: &mut crate::batch_allocation::BatchMetadataBudget,
         step_idx: usize,
         output_len: usize,
     ) -> Result<Option<Vec<f32>>, Error> {
@@ -50,7 +49,21 @@ impl PreparedDirectGrayscalePlan {
             step_idx,
             output_len,
         };
-        self.cpu_tier1_cache.cached_coefficients(key, budget)
+        let state = self
+            .cpu_tier1_cache
+            .state
+            .lock()
+            .map_err(|_| Error::MetalStatePoisoned {
+                state: "hybrid CPU Tier-1 coefficient cache",
+            })?;
+        if !state.retention_enabled {
+            return Ok(None);
+        }
+        Ok(state
+            .entries
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| entry.coefficients.to_vec()))
     }
 
     pub(super) fn store_cpu_tier1_coefficients(
@@ -130,34 +143,6 @@ impl PreparedDirectGrayscalePlan {
 }
 
 impl CpuTier1CoefficientCache {
-    fn cached_coefficients(
-        &self,
-        key: CpuTier1CoefficientCacheKey,
-        budget: &mut crate::batch_allocation::BatchMetadataBudget,
-    ) -> Result<Option<Vec<f32>>, Error> {
-        let state = self.state.lock().map_err(|_| Error::MetalStatePoisoned {
-            state: "hybrid CPU Tier-1 coefficient cache",
-        })?;
-        if !state.retention_enabled {
-            return Ok(None);
-        }
-        let coefficients = state
-            .entries
-            .iter()
-            .find(|entry| entry.key == key)
-            .map(|entry| entry.coefficients.clone());
-        drop(state);
-        let Some(coefficients) = coefficients else {
-            return Ok(None);
-        };
-        let mut copied = budget.try_vec(
-            coefficients.len(),
-            "J2K MetalDirect hybrid CPU Tier-1 cache-hit coefficients",
-        )?;
-        copied.extend_from_slice(&coefficients);
-        Ok(Some(copied))
-    }
-
     pub(super) fn retained_cache_bytes(&self) -> Result<usize, &'static str> {
         let state = self
             .state
@@ -179,55 +164,5 @@ impl CpuTier1CoefficientCache {
                 .and_then(|bytes| bytes.checked_add(2 * size_of::<usize>()))
                 .ok_or("prepared-plan CPU Tier-1 aggregate byte overflow")
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use core::mem::size_of;
-    use std::sync::Arc;
-
-    use j2k_core::BatchInfrastructureError;
-
-    use super::{
-        CpuTier1CoefficientCache, CpuTier1CoefficientCacheEntry, CpuTier1CoefficientCacheKey,
-    };
-    use crate::{batch_allocation::BatchMetadataBudget, Error};
-
-    #[test]
-    fn cache_hit_copy_rejects_insufficient_caller_budget() {
-        let cache = CpuTier1CoefficientCache::default();
-        let key = CpuTier1CoefficientCacheKey {
-            step_idx: 3,
-            output_len: 2,
-        };
-        cache
-            .state
-            .lock()
-            .expect("cache lock")
-            .entries
-            .push(CpuTier1CoefficientCacheEntry {
-                key,
-                coefficients: Arc::from([1.0_f32, 2.0_f32]),
-            });
-        let required = 2 * size_of::<f32>();
-        let mut budget = BatchMetadataBudget::with_cap(
-            "J2K MetalDirect hybrid CPU Tier-1 coefficients",
-            required - 1,
-        );
-
-        let error = cache
-            .cached_coefficients(key, &mut budget)
-            .expect_err("cache-hit copy must honor caller budget");
-
-        assert!(matches!(
-            error,
-            Error::BatchInfrastructure(BatchInfrastructureError::AllocationTooLarge {
-                requested,
-                cap,
-                ..
-            }) if requested == required && cap == required - 1
-        ));
-        assert_eq!(budget.live_bytes(), 0);
     }
 }

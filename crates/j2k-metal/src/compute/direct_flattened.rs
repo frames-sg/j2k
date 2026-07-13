@@ -398,11 +398,9 @@ fn decode_flattened_cpu_tier1_buckets(
         budget.try_vec(specs.len(), "J2K Metal flattened Tier-1 cache targets")?;
     for spec in specs {
         if let Some(cache_plan) = spec.cache_plan {
-            if let Some(coefficients) = cache_plan.cached_cpu_tier1_coefficients(
-                &mut budget,
-                spec.key.step_idx,
-                spec.output_len,
-            )? {
+            if let Some(coefficients) =
+                cache_plan.cached_cpu_tier1_coefficients(spec.key.step_idx, spec.output_len)?
+            {
                 buckets.push(coefficients);
                 cache_targets.push(None);
                 continue;
@@ -411,8 +409,7 @@ fn decode_flattened_cpu_tier1_buckets(
         } else {
             cache_targets.push(None);
         }
-        buckets.push(packed_cpu_decode_coefficients_in(
-            &mut budget,
+        buckets.push(packed_cpu_decode_coefficients(
             spec.inputs.len(),
             spec.output_len,
         )?);
@@ -607,29 +604,19 @@ pub(super) fn packed_cpu_decode_coefficients(
     count: usize,
     output_len: usize,
 ) -> Result<Vec<f32>, Error> {
+    let total_len = count.checked_mul(output_len).ok_or(
+        j2k_core::BatchInfrastructureError::AllocationTooLarge {
+            what: "J2K MetalDirect hybrid packed coefficients",
+            requested: usize::MAX,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        },
+    )?;
     let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
         "J2K MetalDirect hybrid packed coefficients",
     );
-    packed_cpu_decode_coefficients_in(&mut budget, count, output_len)
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn packed_cpu_decode_coefficients_in(
-    budget: &mut crate::batch_allocation::BatchMetadataBudget,
-    count: usize,
-    output_len: usize,
-) -> Result<Vec<f32>, Error> {
-    let total_len = crate::batch_allocation::checked_count_product(
-        count,
-        output_len,
-        "J2K MetalDirect hybrid packed coefficients",
-    )?;
     Ok(budget.try_filled(
         total_len,
         0.0_f32,
         "J2K MetalDirect hybrid packed coefficient values",
     )?)
 }
-
-#[cfg(test)]
-mod tests;
