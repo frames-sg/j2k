@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use crate::process::{self, CommandContext};
 
@@ -179,11 +179,30 @@ pub(super) fn normalize_coverage_path(path: &str, root: &Path) -> Result<String,
     } else {
         path.strip_prefix("./").unwrap_or(path)
     };
-    Ok(relative
-        .components()
-        .map(|part| part.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/"))
+    let mut normalized = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part.to_string_lossy()),
+            Component::ParentDir => {
+                if normalized.pop().is_none() {
+                    return Err(format!(
+                        "coverage source {} resolves outside repository root {}",
+                        path.display(),
+                        root.display()
+                    ));
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "coverage source {} could not be normalized relative to repository root {}",
+                    path.display(),
+                    root.display()
+                ));
+            }
+        }
+    }
+    Ok(normalized.join("/"))
 }
 
 fn normalize_lcov_path(path: &str, root: &Path) -> Result<String, String> {
@@ -193,11 +212,25 @@ fn normalize_lcov_path(path: &str, root: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_no_untracked_rust_sources, git_output, resolve_diff_base,
+        ensure_no_untracked_rust_sources, git_output, normalize_coverage_path, resolve_diff_base,
         validate_no_untracked_rust_sources, verify_git_revision,
     };
+    use std::path::Path;
 
     const MISSING_REVISION: &str = "j2k-coverage-test-revision-that-does-not-exist";
+
+    #[test]
+    fn coverage_paths_collapse_lexical_parents_without_escaping_the_repository() {
+        let root = Path::new("/workspace/j2k");
+        assert_eq!(
+            normalize_coverage_path(
+                "/workspace/j2k/crates/demo/src/bin/../../benches/support.rs",
+                root,
+            ),
+            Ok("crates/demo/benches/support.rs".to_string())
+        );
+        assert!(normalize_coverage_path("/workspace/j2k/../../outside.rs", root).is_err());
+    }
 
     #[test]
     fn coverage_preflight_matches_gits_untracked_rust_inventory() {

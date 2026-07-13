@@ -54,8 +54,8 @@ source-aware coverage and clean-tree packaging, genuine API
 and dependency-provenance review, private vulnerability reporting, the clean
 matrix, and exact-SHA hosted/GPU evidence. The first frozen NVIDIA lane exposed
 and reproduced one JPEG host-accounting deadlock plus cross-MCU subsampled
-chroma drift; their focused fixes are green but not yet committed or promoted
-to exact-candidate evidence.
+chroma drift; their focused fixes are committed through `954b2d74` and green,
+but are not yet promoted to final exact-candidate evidence.
 
 ## 2. Handoff capsule
 
@@ -63,7 +63,7 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The latest settled source commit is
-  `4317d434`. An isolated RC worktree preserves the candidate fixes while the
+  `dda2e4f2`. An isolated RC worktree preserves the candidate fixes while the
   shared `main` worktree contains a separate, uncommitted user-owned ML/CUDA
   change set that appeared during NVIDIA verification and must not be discarded
   or silently folded into 0.7. No push, release tag, crate
@@ -145,8 +145,21 @@ the issue sections below; this capsule is only the current continuation state.
   invariant guards or the two package-graph closures that are structurally
   unreachable after validated map construction; they must not drive distorted
   production code.
-  The next coverage execution is the frozen candidate verification run, not a
-  new coverage-development tranche.
+  Exact host coverage at `954b2d74` passes at 88.5921% overall and 87.7028%
+  critical. The first complete Metal evaluation then exposed two coverage-tool
+  orchestration defects: pinned `cargo-llvm-cov 0.8.7` rejects `--no-report`
+  with `--no-clean`, and LLVM reports a binary-owned benchmark support module
+  through a lexical `src/bin/../../benches` path. Focused red-green regressions
+  now preserve compatible accumulation flags and collapse lexical parent
+  components without permitting repository-root escape. All 105 focused
+  coverage tests, strict xtask Clippy, formatting, and strict repository policy
+  pass. The live Metal rerun reaches schema-v5 evaluation and records 72.2102%
+  overall/accelerator coverage (24,046 / 33,300) and 72.3885% critical coverage
+  (24,046 / 33,218), so the unchanged 80% gates remain genuinely red. The
+  report records 1,214 zero-body findings as audited evidence, including the
+  benchmark support path as low-risk tooling; it does not turn that residual
+  into an absent-file release failure. Per the explicit 0.7 decision, do not
+  begin another broad test-generation tranche or add execution-only tests.
 - 0.7 testing-architecture checkpoint (2026-07-12): Burn's backend-generic
   architecture and real-hardware support are the direction for j2k's test
   boundaries, while Burn ONNX's full-pipeline numerical validation is the
@@ -199,17 +212,20 @@ the issue sections below; this capsule is only the current continuation state.
   dispatch, preserving checkpoint-parallel entropy decode while matching CPU
   interpolation across row and column boundaries. Real-GPU focused results are
   green: 50 library, 7 encode, and 41 host-surface tests, including new 4:2:0
-  row/column, 4:2:2 multi-MCU, and odd-dimension parity cases; affected strict Clippy also
-  passes. Commit this correction, select a new SHA, and restart the exact CUDA
-  lane from a fresh clean bundle. The first exact host coverage attempt on
+  row/column, 4:2:2 multi-MCU, and odd-dimension parity cases; affected strict
+  Clippy also passes. The lock and parity corrections are committed as
+  `8f3c4da1` and `dddc1313`. The first exact host coverage attempt on
   `dddc1313` then passed every displayed workspace and repository-policy target
   except the CUDA JPEG structural ratchet: adding the workspace as a root child
   made the facade 61 lines against its existing `<60` ceiling. The workspace is
   now nested under its launch owner, leaving the facade at 59 lines, the launch
   owner at 248, and the structural-policy owner at 149 without raising any
   ceiling. Both the red structural regression and the workspace behavior test
-  pass; this tracked ownership correction requires one new candidate SHA and
-  one fresh exact host/CUDA run.
+  pass; the ownership correction is committed as `954b2d74`. Exact host
+  coverage and the full Metal release lane pass there. The fresh CUDA release
+  run was stopped after the subsequent tracked coverage-tool correction
+  invalidated that SHA, so final host/Metal/CUDA evidence must use the next
+  settled candidate.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -393,14 +409,17 @@ the issue sections below; this capsule is only the current continuation state.
   behavior/policy tests pass. The typo gate passes after correcting one
   identifier and narrowly excluding generated `fnv1a64:` fingerprints. The
   combined panic and typo gates rerun on settled source.
-- Next serialized gates after the source and tooling phase commits:
-  1. freeze API, provenance, dependency, and release documentation evidence;
-  2. rerun clone, packaging, paired Metal performance, stable/hidden API,
-     semver, dependency, corpus, and publish-mode integrity gates on the settled
-     committed source;
-  3. obtain maintainer API/provenance/security approval, date the changelog,
-     run publish-mode offline integrity, and commit a clean candidate SHA;
-  4. run exact-SHA hosted CI plus Metal and CUDA hardware validation.
+- Next serialized gates after the coverage-tool commit:
+  1. preserve the already frozen API, provenance, dependency, changelog, and
+     release documentation evidence while reconciling it to the new commit;
+  2. resolve or explicitly re-scope the genuine Metal 80% coverage blocker
+     without threshold changes or execution-only tests, then rerun clone,
+     packaging, uncontended performance, stable/hidden API, semver, dependency,
+     corpus, and publish-mode integrity gates on the settled committed source;
+  3. enable and verify private vulnerability reporting, then commit a clean
+     candidate SHA;
+  4. with explicit push authorization, move `origin/main` to that exact SHA and
+     run exact-SHA hosted CI plus Metal and CUDA hardware validation.
 - External release blocker: GitHub private vulnerability reporting is disabled
   (CONTACT-001). The dated candidate SHA and its exact local/hosted/hardware
   evidence do not yet exist. A tag is deliberately outside this verified-RC
@@ -520,7 +539,7 @@ The rubric was checked against current primary or first-party sources on
 | CI-001 | P1 | complete | METAL-001 | Shared exact-SHA workflow verifier fails closed unless private vulnerability reporting is enabled |
 | PUB-001 | P1 | complete | CI-001, POLICY-001 | Candidate aggregate requires both ordinary and authoritative strict Clippy without replacing either gate |
 | SEM-001 | P1 | complete | REC-001 | Independent review approved all 33 ordinary/hidden schema-2 entries after adding the missing j2k-profile migration mappings; stable API and full semver verification pass with exact fingerprints |
-| COV-001 | P2 | in progress | METAL-001 | Schema-v5 preserves the 80% overall, accelerator, and critical-path gates; exact host evidence is 88.59% overall and 87.70% critical, while the final policy correction limits absent-file failure to missing critical executable bodies and retains noninstrumentable type/macro shells as audited evidence; a clean exact host rerun plus Metal/CUDA artifacts remain |
+| COV-001 | P2 | in progress | METAL-001 | Schema-v5 preserves the 80% overall, accelerator, and critical-path gates; exact host evidence at `954b2d74` is 88.59% overall and 87.70% critical. Compatible pinned-tool accumulation and lexical LLVM source-path normalization are focused-test/policy green. The complete Metal evaluator now records zero-body residuals without blanket absent-file failure, but the genuine numeric gates remain red at 72.21% overall/accelerator and 72.39% critical. No broad execution-only test tranche is authorized; CUDA and final exact-SHA artifacts remain. |
 | TESTARCH-001 | P3 | accepted post-0.7 | COV-001 | Consolidate reusable CPU/Auto/Metal/CUDA behavioral contracts after 0.7; exact per-backend parity and hardware lanes remain mandatory for this RC |
 | ALLOC-001 | P2 | in progress | SEC-007 | Context-wide CUDA external/pinned/provisional authority, transactional actual-capacity phase ownership, and policy ratchets pass local gates; frozen NVIDIA and final combined-tree evidence remain |
 | ALLOC-002 | P1 | in progress | STR-014 | Source-complete no-byte resident J2K descriptor and fail-closed whole-tile route; frozen-source NVIDIA parity remains |

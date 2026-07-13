@@ -110,16 +110,14 @@ fn host_coverage_args(output: &str) -> Vec<&str> {
 fn accelerator_coverage_args(lane: CoverageLane) -> Result<Vec<&'static str>, String> {
     let mut base = vec![
         "llvm-cov",
-        "--include-build-script",
         "--no-report",
-        "--no-clean",
         "--all-features",
         "--lib",
         "--tests",
         "--no-fail-fast",
     ];
     match lane {
-        CoverageLane::Metal => base.insert(6, "--bins"),
+        CoverageLane::Metal => base.insert(5, "--bins"),
         CoverageLane::Cuda => base.push("--coverage-host-only"),
         CoverageLane::Host => {
             return Err("host coverage cannot use accelerator package selection".to_string());
@@ -132,7 +130,6 @@ const fn metal_hardware_coverage_args() -> &'static [&'static str] {
     &[
         "llvm-cov",
         "--include-build-script",
-        "--no-report",
         "--no-clean",
         "--all-features",
         "--lib",
@@ -387,12 +384,14 @@ mod tests {
         let metal = accelerator_coverage_args(CoverageLane::Metal).unwrap();
         assert!(metal.contains(&"--bins"));
         assert!(!metal.contains(&"--coverage-host-only"));
-        assert!(metal.contains(&"--no-report") && metal.contains(&"--no-clean"));
+        assert!(metal.contains(&"--no-report") && !metal.contains(&"--no-clean"));
+        assert!(!metal.contains(&"--include-build-script"));
 
         let cuda = accelerator_coverage_args(CoverageLane::Cuda).unwrap();
         assert!(!cuda.contains(&"--bins"));
         assert!(cuda.contains(&"--coverage-host-only"));
-        assert!(cuda.contains(&"--no-report") && cuda.contains(&"--no-clean"));
+        assert!(cuda.contains(&"--no-report") && !cuda.contains(&"--no-clean"));
+        assert!(!cuda.contains(&"--include-build-script"));
 
         for (lane, args) in [(CoverageLane::Metal, metal), (CoverageLane::Cuda, cuda)] {
             let package_values = args
@@ -414,7 +413,6 @@ mod tests {
             [
                 "llvm-cov",
                 "--include-build-script",
-                "--no-report",
                 "--no-clean",
                 "--all-features",
                 "--lib",
