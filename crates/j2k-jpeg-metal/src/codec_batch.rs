@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect, TileBatchDecodeSubmit};
+use j2k_core::TileBatchDecodeSubmit;
+#[cfg(target_os = "macos")]
+use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
 use j2k_jpeg::{DecoderContext as CpuDecoderContext, ScratchPool as CpuScratchPool};
 
 #[cfg(target_os = "macos")]
 use j2k_jpeg::Decoder as CpuDecoder;
 
-use crate::{batch, session, Codec, Error, MetalDecodeRequest, MetalSession};
+use crate::{batch, Codec, Error, MetalDecodeRequest, MetalSession};
 
 #[cfg(target_os = "macos")]
 use crate::{
     compute,
     plan_owner_ledger::{preflight_collective_metadata, PlanOwnerLedger},
-    scaled_dims, Decoder, JpegMetalResidentBatchReport, MetalBackendSession,
+    scaled_dims, session, Decoder, JpegMetalResidentBatchReport, MetalBackendSession,
     MetalBatchOutputBuffer, MetalBatchTextureOutput, MetalTextureTile, Surface,
 };
 

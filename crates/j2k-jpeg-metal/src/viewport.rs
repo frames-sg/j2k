@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
+#[cfg(target_os = "macos")]
+use j2k_core::PixelFormat;
+use j2k_core::{BackendRequest, Downscale, Rect};
 use j2k_jpeg::{Decoder as CpuDecoder, Rect as JpegRect, ScratchPool};
 
-use crate::{fast_packets::JpegFastPackets, Error, Surface};
+#[cfg(target_os = "macos")]
+use crate::fast_packets::JpegFastPackets;
+use crate::{Error, Surface};
 
 mod cpu;
 mod model;
@@ -18,7 +22,9 @@ use self::cpu::compose_viewport_cpu_to_surface;
 use self::cpu::cpu_viewport_allocation_budget_with_cap;
 #[cfg(test)]
 pub(crate) use self::cpu::decode_viewport_region_cpu;
-pub(crate) use self::cpu::{decode_viewport_region_cpu_to_surface, validate_viewport_tile_count};
+pub(crate) use self::cpu::decode_viewport_region_cpu_to_surface;
+#[cfg(target_os = "macos")]
+pub(crate) use self::cpu::validate_viewport_tile_count;
 pub use self::model::{
     is_contiguous_viewport_workload, suggest_viewport_workload, viewport_source_bounds,
     ViewportTile, ViewportWorkload,

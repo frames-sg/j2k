@@ -10,7 +10,9 @@ use crate::{batch::QueuedRequest, Error};
 mod execution;
 mod request_count;
 
-pub(crate) use execution::{batch_execution_budget, preflight_collective_metadata};
+pub(crate) use execution::batch_execution_budget;
+#[cfg(target_os = "macos")]
+pub(crate) use execution::preflight_collective_metadata;
 use request_count::preflight_request_count;
 
 pub(crate) struct PlanOwnerAdmission {

@@ -55,11 +55,14 @@ fn cuda_transcode_simt_modules_are_focused_and_staged() {
         "the staged transcode SIMT source list must exactly match the declared modules"
     );
     assert_pattern_checks(&[
-        PatternCheck::new("CUDA transcode SIMT staging", &build).required(&[
+        PatternCheck::new("CUDA transcode SIMT staging", &build)
+        .required(&[
             "for relative in CUDA_OXIDE_TRANSCODE_EXTRA_SOURCES",
             "for relative in cuda_oxide_extra_sources(source_dir)",
-            "copy_cuda_oxide_file(source_dir, project_dir, Path::new(relative));",
             "source_dir == Path::new(\"src/cuda_oxide_transcode\")",
+        ])
+        .normalized_required(&[
+            "copy_cuda_oxide_file( source_dir, project_dir, Path::new(relative), codec_math_crate_path, );",
         ]),
     ]);
 
@@ -171,11 +174,14 @@ fn cuda_j2k_encode_simt_modules_are_focused_and_staged() {
         "the staged J2K encode SIMT source list must exactly match the declared modules"
     );
     assert_pattern_checks(&[
-        PatternCheck::new("CUDA J2K encode SIMT staging", &build).required(&[
+        PatternCheck::new("CUDA J2K encode SIMT staging", &build)
+        .required(&[
             "for relative in CUDA_OXIDE_J2K_ENCODE_EXTRA_SOURCES",
             "for relative in cuda_oxide_extra_sources(source_dir)",
-            "copy_cuda_oxide_file(source_dir, project_dir, Path::new(relative));",
             "source_dir == Path::new(\"src/cuda_oxide_j2k_encode\")",
+        ])
+        .normalized_required(&[
+            "copy_cuda_oxide_file( source_dir, project_dir, Path::new(relative), codec_math_crate_path, );",
         ]),
     ]);
 

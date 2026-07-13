@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use j2k_core::{BackendRequest, PixelFormat};
+use j2k_core::BackendRequest;
+#[cfg(target_os = "macos")]
+use j2k_core::PixelFormat;
 #[cfg(target_os = "macos")]
 use j2k_jpeg::adapter::JpegPlanCache;
 use j2k_jpeg::Decoder as CpuDecoder;
 
-use super::{
-    is_contiguous_viewport_workload, validate_viewport_workload_budget, viewport_source_bounds,
-    ViewportWorkload,
-};
-use crate::{batch, fast_packets::JpegFastPackets, routing, Error, SharedJpegFastPacket};
+use super::{is_contiguous_viewport_workload, ViewportWorkload};
+#[cfg(target_os = "macos")]
+use super::{validate_viewport_workload_budget, viewport_source_bounds};
+#[cfg(target_os = "macos")]
+use crate::{batch, fast_packets::JpegFastPackets, routing};
+use crate::{Error, SharedJpegFastPacket};
 
 #[cfg(all(target_os = "macos", test))]
 mod resident;
@@ -194,6 +197,7 @@ pub(super) fn has_direct_viewport_packet(decoder: &CpuDecoder<'_>) -> Result<boo
     build_resolved_viewport_packet(decoder, decoder_live_bytes).map(|(packet, _)| packet.is_some())
 }
 
+#[cfg(target_os = "macos")]
 pub(super) fn validate_explicit_metal_viewport_request_with_packets(
     decoder: &CpuDecoder<'_>,
     workload: &ViewportWorkload,

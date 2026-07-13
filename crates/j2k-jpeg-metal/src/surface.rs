@@ -6,17 +6,22 @@ use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard};
 
 use j2k_core::{
-    copy_tight_pixels_to_strided_output, BackendKind, BufferError, DeviceMemoryRange,
-    DeviceSurface, Downscale, PixelFormat, Rect, SurfaceMetadata, SurfaceResidency,
+    copy_tight_pixels_to_strided_output, BackendKind, DeviceMemoryRange, DeviceSurface,
+    PixelFormat, SurfaceMetadata, SurfaceResidency,
 };
+#[cfg(target_os = "macos")]
+use j2k_core::{BufferError, Downscale, Rect};
 
 #[cfg(target_os = "macos")]
 use crate::buffers::{checked_buffer_slice_at, new_shared_buffer};
 #[cfg(target_os = "macos")]
 use crate::error::metal_kernel_support_error;
+use crate::Error;
 #[cfg(target_os = "macos")]
-use crate::{report_required_output_dimensions, JpegMetalResidentBatchReport};
-use crate::{scaled_dims, Error, MetalBackendSession};
+use crate::{
+    report_required_output_dimensions, scaled_dims, JpegMetalResidentBatchReport,
+    MetalBackendSession,
+};
 
 #[cfg(target_os = "macos")]
 use metal::foreign_types::ForeignType;

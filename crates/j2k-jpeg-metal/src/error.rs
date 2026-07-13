@@ -152,6 +152,7 @@ impl CodecError for Error {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn metal_kernel_support_error(
     message: impl Into<String>,
     source: MetalSupportError,
@@ -162,6 +163,7 @@ pub(crate) fn metal_kernel_support_error(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn metal_runtime_support_error(source: &MetalSupportError) -> Error {
     if source.is_unavailable() {
         Error::MetalUnavailable

@@ -205,6 +205,7 @@ impl QueuedRequest {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) const fn plane_mode_hint(&self) -> PlaneModeHint {
         self.shape.plane_mode
     }

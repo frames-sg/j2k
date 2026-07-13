@@ -191,7 +191,7 @@ impl EncodeAllocationLedger {
     fn release(&self, bytes: usize) -> bool {
         let result =
             self.allocation_state
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                     let live = state & LIVE_BYTES_MASK;
                     let sealed = state & SEALED_BIT;
                     live.checked_sub(bytes)

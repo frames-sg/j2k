@@ -17,7 +17,7 @@ item is either complete or explicitly accepted with evidence.
 
 ## 1. Release verdict
 
-Status: **BLOCKED — remediation and pre-candidate verification in progress**
+Status: **BLOCKED — RC correction and exact-SHA verification in progress**
 
 Captured baseline:
 
@@ -50,12 +50,13 @@ pixel, returning bytes from an uninitialized device allocation. The working
 tree now fails those plans before driver work, initializes owned output as
 defense in depth, and reports every device-side defensive rejection; exact
 final-tree verification is still in progress. The release remains blocked on
-source-aware coverage and clean-tree packaging, genuine API
-and dependency-provenance review, private vulnerability reporting, the clean
-matrix, and exact-SHA hosted/GPU evidence. The first frozen NVIDIA lane exposed
-and reproduced one JPEG host-accounting deadlock plus cross-MCU subsampled
-chroma drift; their focused fixes are committed through `954b2d74` and green,
-but are not yet promoted to final exact-candidate evidence.
+private vulnerability reporting and hosted/Metal/CUDA evidence for a clean
+replacement RC SHA. API, semver, dependency
+provenance, package staging, the source-aware coverage policy, and the reduced
+0.7 Metal scope are reconciled. The first frozen NVIDIA lane exposed and
+reproduced one JPEG host-accounting deadlock plus cross-MCU subsampled chroma
+drift; their focused fixes are committed through `954b2d74` and green, but are
+not yet promoted to final exact-candidate evidence.
 
 ## 2. Handoff capsule
 
@@ -63,13 +64,21 @@ Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
 - Release state: **blocked** and unfrozen. The 0.7/0.7.1 separation and focused
-  reconciliation are settled through `321f7673`. An isolated RC worktree
+  reconciliation are settled through `321f7673`. The candidate branch
+  `rc/0.7.0-candidate` was pushed at `8013f18a` and draft
+  [PR #50](https://github.com/frames-sg/j2k/pull/50) targets `main`. Hosted CI
+  rejected that SHA before release: Linux found missing non-macOS cfg
+  boundaries, the panic audit inherited CI's warning denial instead of counting
+  its ratchet, and current nightly renamed `AtomicUsize::fetch_update` to
+  `try_update`. Focused corrections are green locally and are included in the
+  replacement candidate commit containing this checkpoint; only the branch tip
+  at or after that commit can supply exact-SHA evidence. An isolated RC worktree
   preserves the 0.7 fixes while the
   shared `main` worktree contains a separate, uncommitted user-owned ML/CUDA
   change set that appeared during NVIDIA verification and must not be discarded
-  or silently folded into 0.7. No push, release tag, crate
-  publication, or externally visible release action has been made. The local
-  `v0.7.0` tag remains absent. The approved plan authorizes later exact-SHA
+  or silently folded into 0.7. No release tag, crate publication, merge, or
+  origin/main movement has occurred. The local and remote `v0.7.0` tag remains
+  absent. The approved plan authorizes exact-SHA branch/PR validation and later
   movement through the normal reviewed workflow; it does not authorize tagging
   or publication.
 - Current objective: finish 0.7.0 only, freeze its API, provenance, and release
@@ -84,11 +93,12 @@ the issue sections below; this capsule is only the current continuation state.
   is preserved at `f30cda9062b3265958c12263df154d92496dd0de` on local branch
   `wip/0.7.1-metal-optimizations`. The RC branch explicitly reverts those five
   changes in `7c15b514`, `31409c32`, `361b6a6e`, `1cff40a4`, and `82fe82a2`.
-  No branch, tag, crate, or release artifact has been pushed or published. The
-  reduced Metal tree compiles, its focused batch and compute behavior tests
-  pass, strict all-target/all-feature Clippy passes, and the resident/buffer-pool
-  policy tests pass. The pre-split Metal coverage and performance results are
-  historical only and must not be used as exact-candidate evidence. Continue
+  The preservation branch remains local; only the reduced 0.7 candidate branch
+  has been pushed for review. No tag, crate, or release artifact has been
+  published. The reduced Metal tree compiles, its focused batch and compute
+  behavior tests pass, strict all-target/all-feature Clippy passes, and the
+  resident/buffer-pool policy tests pass. The pre-split Metal coverage and
+  performance results are historical only and must not be used as exact-candidate evidence. Continue
   directly with reduced-tree API/semver reconciliation and the remaining 0.7
   gates; do not resume broad Metal test generation or performance work.
 - Immediate continuation point (2026-07-13): Host/Metal/CUDA coverage ownership
@@ -245,6 +255,25 @@ the issue sections below; this capsule is only the current continuation state.
   run was stopped after the subsequent tracked coverage-tool correction
   invalidated that SHA, so final host/Metal/CUDA evidence must use the next
   settled candidate.
+- Hosted RC correction checkpoint (2026-07-13): PR #50's first hosted run
+  checked out exact head `8013f18a` and correctly failed the GPU-path policy
+  because no exact-SHA GPU workflow existed yet. Independent hosted failures
+  exposed three candidate defects: macOS-only JPEG Metal exports and owner
+  fields were reachable on Linux, four CUDA build-script environment assumptions
+  used `expect`, and current nightly diagnoses `AtomicUsize::fetch_update` as
+  deprecated. Red-green corrections now gate Metal-only imports, exports,
+  fields, and helpers at the ownership boundary; collect Cargo build context
+  through typed `Result` initialization; migrate the allocation ledger to the
+  behavior-equivalent `try_update`; and make panic-surface clear inherited
+  warning-denial flags while retaining its own lint warnings and unchanged
+  ratchets. Both Linux targets compile with warnings denied, Apple Silicon Metal
+  strict Clippy and all 259 package/integration tests pass, the allocation's 11
+  behavior tests pass, panic-surface reports 16/16 unwrap and 46/50 expect, and
+  all 415 active repository policies pass with the established single ignore.
+  These results are local correction evidence only. The branch tip containing
+  this checkpoint is the replacement candidate; dispatch and verify hosted,
+  Metal, and CUDA workflows for exactly that SHA and do not reuse the
+  `8013f18a` run.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -662,8 +691,8 @@ The rubric was checked against current primary or first-party sources on
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
 | PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
-| FINAL-001 | P1 | in progress | all above | Clean local release matrix |
-| RC-001 | P1 | pending | FINAL-001 | Immutable exact-SHA candidate |
+| FINAL-001 | P1 | in progress | all above | Focused correction gates are green; replacement-SHA hosted and hardware matrices remain |
+| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a` is invalidated and the commit containing this checkpoint is the corrected candidate awaiting exact external evidence |
 | TAG-001 | P3 | deferred outside verified-RC endpoint | RC-001 | Annotated tag and guarded publication require separate authorization |
 
 ## 6. Phase 0 — reconcile the worktree
@@ -7028,17 +7057,13 @@ source-freeze documentation gate still owns the final rerun.
   documentation](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/report-privately)
   says the public submission form works only when this repository setting is
   enabled.
-- Record the release maintainer's name/handle and approval date for provenance.
 - The packaged downstream-consumer resolution check is complete: without the
   workspace patch it resolves `metal 0.33.0 -> block 0.1.6`. Retain the
   maintained-binding migration as an owned post-0.7 task unless the dependency
   is replaced before freeze.
-- As the final release-preparation edit before candidate freeze, replace the
-  changelog's real `Unreleased` heading with the dated `0.7.0` heading and
-  update every staged-document reference that still says the notes are under
-  `Unreleased`. Do not guess the date early; a later change creates a new
-  candidate.
-- Re-run all documentation gates and visual checks on the frozen candidate.
+- The provenance reviewer/date and dated `0.7.0` changelog preparation are
+  complete. Re-run all documentation gates and visual checks on the corrected
+  frozen candidate.
 - Do not re-create a second documentation plan.
 
 ## 12. Required verification matrix

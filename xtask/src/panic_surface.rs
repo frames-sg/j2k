@@ -46,10 +46,8 @@ pub(super) fn panic_surface() -> Result<(), String> {
         .ok_or_else(|| "xtask manifest directory has no repository parent".to_string())?;
     let macro_inventory =
         enforce_panic_macro_inventory(&metadata, &selection.packages, repository_root)?;
-    let args = panic_surface_clippy_args(&selection);
 
-    let output = Command::new(cargo())
-        .args(args)
+    let output = panic_surface_clippy_command(&selection)
         .output()
         .map_err(|err| format!("failed to run cargo clippy panic-surface gate: {err}"))?;
 
@@ -348,6 +346,15 @@ fn panic_surface_clippy_args(selection: &PanicSurfaceSelection) -> Vec<OsString>
     args
 }
 
+fn panic_surface_clippy_command(selection: &PanicSurfaceSelection) -> Command {
+    let mut command = Command::new(cargo());
+    command
+        .args(panic_surface_clippy_args(selection))
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS");
+    command
+}
+
 fn parse_panic_surface_output(stdout: &str) -> Result<(usize, usize), String> {
     let mut unwrap_used_count = 0usize;
     let mut expect_used_count = 0usize;
@@ -422,9 +429,27 @@ mod tests {
     use std::ffi::OsStr;
 
     use super::{
-        panic_surface_clippy_args, parse_panic_surface_output, parse_panic_surface_selection,
-        PanicSurfaceSelection,
+        panic_surface_clippy_args, panic_surface_clippy_command, parse_panic_surface_output,
+        parse_panic_surface_selection, PanicSurfaceSelection,
     };
+
+    #[test]
+    fn panic_surface_clippy_command_clears_inherited_warning_denials() {
+        let selection = PanicSurfaceSelection {
+            packages: vec!["codec".to_string()],
+            features: Vec::new(),
+        };
+
+        let command = panic_surface_clippy_command(&selection);
+        let environment = command.get_envs().collect::<Vec<_>>();
+
+        assert!(environment
+            .iter()
+            .any(|(key, value)| *key == OsStr::new("RUSTFLAGS") && value.is_none()));
+        assert!(environment.iter().any(|(key, value)| {
+            *key == OsStr::new("CARGO_ENCODED_RUSTFLAGS") && value.is_none()
+        }));
+    }
 
     #[test]
     fn panic_surface_selection_excludes_non_publishable_support_and_dev_features() {

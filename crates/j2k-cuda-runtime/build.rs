@@ -1,5 +1,7 @@
 use std::env;
+use std::error::Error;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -39,11 +41,33 @@ const CUDA_OXIDE_TRANSCODE_EXTRA_SOURCES: &[&str] = &[
 ];
 const CUDA_OXIDE_JPEG_DECODE_EXTRA_SOURCES: &[&str] = &["simt/src/component_planes.rs"];
 
-fn main() {
+struct BuildContext<'a> {
+    out_dir: &'a Path,
+    host: &'a str,
+    codec_math_crate_path: &'a Path,
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
     emit_build_script_metadata();
 
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
-    compile_cuda_oxide_feature_projects(&out_dir);
+    let out_dir = PathBuf::from(
+        env::var_os("OUT_DIR").ok_or_else(|| io::Error::other("Cargo did not provide OUT_DIR"))?,
+    );
+    let host = env::var("HOST")?;
+    let manifest_dir = PathBuf::from(
+        env::var_os("CARGO_MANIFEST_DIR")
+            .ok_or_else(|| io::Error::other("Cargo did not provide CARGO_MANIFEST_DIR"))?,
+    );
+    let crates_dir = manifest_dir.parent().ok_or_else(|| {
+        io::Error::other("j2k-cuda-runtime manifest directory has no crates parent")
+    })?;
+    let codec_math_crate_path = crates_dir.join("j2k-codec-math");
+    compile_cuda_oxide_feature_projects(&BuildContext {
+        out_dir: &out_dir,
+        host: &host,
+        codec_math_crate_path: &codec_math_crate_path,
+    });
+    Ok(())
 }
 
 fn emit_build_script_metadata() {
@@ -132,73 +156,73 @@ fn emit_build_script_metadata() {
     }
 }
 
-fn compile_cuda_oxide_feature_projects(out_dir: &Path) {
+fn compile_cuda_oxide_feature_projects(context: &BuildContext<'_>) {
     let require_all_cuda_oxide = env::var_os(REQUIRE_CUDA_OXIDE_BUILD_ENV).is_some();
-    stage_cuda_oxide_shared_prelude(out_dir);
+    stage_cuda_oxide_shared_prelude(context.out_dir);
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_COPY_U8").is_some()
-        && compile_cuda_oxide_copy_u8(out_dir, require_all_cuda_oxide)
+        && compile_cuda_oxide_copy_u8(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_copy_u8_built");
     }
 
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_J2K_ENCODE").is_some()
-        && compile_cuda_oxide_j2k_encode(out_dir, require_all_cuda_oxide)
+        && compile_cuda_oxide_j2k_encode(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_j2k_encode_built");
     }
 
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_J2K_DECODE_STORE").is_some()
-        && compile_cuda_oxide_j2k_decode_store(out_dir, require_all_cuda_oxide)
+        && compile_cuda_oxide_j2k_decode_store(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_j2k_decode_store_built");
     }
 
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_J2K_DEQUANTIZE").is_some()
-        && compile_cuda_oxide_j2k_dequantize(out_dir, require_all_cuda_oxide)
+        && compile_cuda_oxide_j2k_dequantize(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_j2k_dequantize_built");
     }
 
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_J2K_IDWT").is_some()
-        && compile_cuda_oxide_j2k_idwt(out_dir, require_all_cuda_oxide)
+        && compile_cuda_oxide_j2k_idwt(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_j2k_idwt_built");
     }
 
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_HTJ2K_DECODE").is_some()
-        && compile_cuda_oxide_htj2k_decode(out_dir, require_all_cuda_oxide)
+        && compile_cuda_oxide_htj2k_decode(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_htj2k_decode_built");
     }
 
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_HTJ2K_ENCODE").is_some()
-        && compile_cuda_oxide_htj2k_encode(out_dir, require_all_cuda_oxide)
+        && compile_cuda_oxide_htj2k_encode(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_htj2k_encode_built");
     }
 
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_TRANSCODE").is_some()
-        && compile_cuda_oxide_transcode(out_dir, require_all_cuda_oxide)
+        && compile_cuda_oxide_transcode(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_transcode_built");
     }
 
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_JPEG_DECODE").is_some()
-        && compile_cuda_oxide_jpeg_decode(out_dir, require_all_cuda_oxide)
+        && compile_cuda_oxide_jpeg_decode(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_jpeg_decode_built");
     }
 
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_JPEG_ENCODE").is_some()
-        && compile_cuda_oxide_jpeg_encode(out_dir, require_all_cuda_oxide)
+        && compile_cuda_oxide_jpeg_encode(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_jpeg_encode_built");
     }
 }
 
-fn compile_cuda_oxide_copy_u8(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+fn compile_cuda_oxide_copy_u8(context: &BuildContext<'_>, require_cuda_oxide: bool) -> bool {
     compile_cuda_oxide_project(
-        out_dir,
+        context,
         CudaOxideProject {
             source_dir: Path::new("src/cuda_oxide_copy_u8"),
             output_name: "cuda_oxide_copy_u8.ptx",
@@ -209,9 +233,9 @@ fn compile_cuda_oxide_copy_u8(out_dir: &Path, require_cuda_oxide: bool) -> bool 
     )
 }
 
-fn compile_cuda_oxide_j2k_encode(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+fn compile_cuda_oxide_j2k_encode(context: &BuildContext<'_>, require_cuda_oxide: bool) -> bool {
     compile_cuda_oxide_project(
-        out_dir,
+        context,
         CudaOxideProject {
             source_dir: Path::new("src/cuda_oxide_j2k_encode"),
             output_name: "cuda_oxide_j2k_encode.ptx",
@@ -222,9 +246,12 @@ fn compile_cuda_oxide_j2k_encode(out_dir: &Path, require_cuda_oxide: bool) -> bo
     )
 }
 
-fn compile_cuda_oxide_j2k_decode_store(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+fn compile_cuda_oxide_j2k_decode_store(
+    context: &BuildContext<'_>,
+    require_cuda_oxide: bool,
+) -> bool {
     compile_cuda_oxide_project(
-        out_dir,
+        context,
         CudaOxideProject {
             source_dir: Path::new("src/cuda_oxide_j2k_decode_store"),
             output_name: "cuda_oxide_j2k_decode_store.ptx",
@@ -235,9 +262,9 @@ fn compile_cuda_oxide_j2k_decode_store(out_dir: &Path, require_cuda_oxide: bool)
     )
 }
 
-fn compile_cuda_oxide_j2k_dequantize(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+fn compile_cuda_oxide_j2k_dequantize(context: &BuildContext<'_>, require_cuda_oxide: bool) -> bool {
     compile_cuda_oxide_project(
-        out_dir,
+        context,
         CudaOxideProject {
             source_dir: Path::new("src/cuda_oxide_j2k_dequantize"),
             output_name: "cuda_oxide_j2k_dequantize.ptx",
@@ -248,9 +275,9 @@ fn compile_cuda_oxide_j2k_dequantize(out_dir: &Path, require_cuda_oxide: bool) -
     )
 }
 
-fn compile_cuda_oxide_j2k_idwt(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+fn compile_cuda_oxide_j2k_idwt(context: &BuildContext<'_>, require_cuda_oxide: bool) -> bool {
     compile_cuda_oxide_project(
-        out_dir,
+        context,
         CudaOxideProject {
             source_dir: Path::new("src/cuda_oxide_j2k_idwt"),
             output_name: "cuda_oxide_j2k_idwt.ptx",
@@ -261,9 +288,9 @@ fn compile_cuda_oxide_j2k_idwt(out_dir: &Path, require_cuda_oxide: bool) -> bool
     )
 }
 
-fn compile_cuda_oxide_htj2k_decode(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+fn compile_cuda_oxide_htj2k_decode(context: &BuildContext<'_>, require_cuda_oxide: bool) -> bool {
     compile_cuda_oxide_project(
-        out_dir,
+        context,
         CudaOxideProject {
             source_dir: Path::new("src/cuda_oxide_htj2k_decode"),
             output_name: "cuda_oxide_htj2k_decode.ptx",
@@ -274,9 +301,9 @@ fn compile_cuda_oxide_htj2k_decode(out_dir: &Path, require_cuda_oxide: bool) -> 
     )
 }
 
-fn compile_cuda_oxide_htj2k_encode(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+fn compile_cuda_oxide_htj2k_encode(context: &BuildContext<'_>, require_cuda_oxide: bool) -> bool {
     compile_cuda_oxide_project(
-        out_dir,
+        context,
         CudaOxideProject {
             source_dir: Path::new("src/cuda_oxide_htj2k_encode"),
             output_name: "cuda_oxide_htj2k_encode.ptx",
@@ -287,9 +314,9 @@ fn compile_cuda_oxide_htj2k_encode(out_dir: &Path, require_cuda_oxide: bool) -> 
     )
 }
 
-fn compile_cuda_oxide_transcode(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+fn compile_cuda_oxide_transcode(context: &BuildContext<'_>, require_cuda_oxide: bool) -> bool {
     compile_cuda_oxide_project(
-        out_dir,
+        context,
         CudaOxideProject {
             source_dir: Path::new("src/cuda_oxide_transcode"),
             output_name: "cuda_oxide_transcode.ptx",
@@ -300,9 +327,9 @@ fn compile_cuda_oxide_transcode(out_dir: &Path, require_cuda_oxide: bool) -> boo
     )
 }
 
-fn compile_cuda_oxide_jpeg_decode(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+fn compile_cuda_oxide_jpeg_decode(context: &BuildContext<'_>, require_cuda_oxide: bool) -> bool {
     compile_cuda_oxide_project(
-        out_dir,
+        context,
         CudaOxideProject {
             source_dir: Path::new("src/cuda_oxide_jpeg_decode"),
             output_name: "cuda_oxide_jpeg_decode.ptx",
@@ -313,9 +340,9 @@ fn compile_cuda_oxide_jpeg_decode(out_dir: &Path, require_cuda_oxide: bool) -> b
     )
 }
 
-fn compile_cuda_oxide_jpeg_encode(out_dir: &Path, require_cuda_oxide: bool) -> bool {
+fn compile_cuda_oxide_jpeg_encode(context: &BuildContext<'_>, require_cuda_oxide: bool) -> bool {
     compile_cuda_oxide_project(
-        out_dir,
+        context,
         CudaOxideProject {
             source_dir: Path::new("src/cuda_oxide_jpeg_encode"),
             output_name: "cuda_oxide_jpeg_encode.ptx",
@@ -335,26 +362,31 @@ struct CudaOxideProject<'a> {
 }
 
 fn compile_cuda_oxide_project(
-    out_dir: &Path,
+    context: &BuildContext<'_>,
     project: CudaOxideProject<'_>,
     require_cuda_oxide: bool,
 ) -> bool {
-    let output = out_dir.join(project.output_name);
-    let host = env::var("HOST").expect("HOST is set by cargo");
-    if !host.contains("linux") {
+    let output = context.out_dir.join(project.output_name);
+    if !context.host.contains("linux") {
         return skip_cuda_oxide_project(
             &output,
             require_cuda_oxide,
             project.display_name,
             &format!(
-                "{} requires a Linux host; current HOST={host}",
-                project.display_name
+                "{} requires a Linux host; current HOST={}",
+                project.display_name, context.host
             ),
         );
     }
 
-    let project_dir = out_dir.join(project.output_name.trim_end_matches(".ptx"));
-    copy_cuda_oxide_project(project.source_dir, &project_dir);
+    let project_dir = context
+        .out_dir
+        .join(project.output_name.trim_end_matches(".ptx"));
+    copy_cuda_oxide_project(
+        project.source_dir,
+        &project_dir,
+        context.codec_math_crate_path,
+    );
 
     let arch = env::var("J2K_CUDA_OXIDE_ARCH").unwrap_or_else(|_| "sm_80".to_string());
     println!(
@@ -429,24 +461,46 @@ fn skip_cuda_oxide_project(
     false
 }
 
-fn copy_cuda_oxide_project(source_dir: &Path, project_dir: &Path) {
+fn copy_cuda_oxide_project(source_dir: &Path, project_dir: &Path, codec_math_crate_path: &Path) {
     copy_cuda_oxide_file_as(
         source_dir,
         project_dir,
         Path::new("Cargo.toml.in"),
         Path::new("Cargo.toml"),
+        codec_math_crate_path,
     );
-    copy_cuda_oxide_file(source_dir, project_dir, Path::new("rust-toolchain.toml"));
-    copy_cuda_oxide_file(source_dir, project_dir, Path::new("src/main.rs"));
+    copy_cuda_oxide_file(
+        source_dir,
+        project_dir,
+        Path::new("rust-toolchain.toml"),
+        codec_math_crate_path,
+    );
+    copy_cuda_oxide_file(
+        source_dir,
+        project_dir,
+        Path::new("src/main.rs"),
+        codec_math_crate_path,
+    );
     copy_cuda_oxide_file_as(
         source_dir,
         project_dir,
         Path::new("simt/Cargo.toml.in"),
         Path::new("simt/Cargo.toml"),
+        codec_math_crate_path,
     );
-    copy_cuda_oxide_file(source_dir, project_dir, Path::new("simt/src/main.rs"));
+    copy_cuda_oxide_file(
+        source_dir,
+        project_dir,
+        Path::new("simt/src/main.rs"),
+        codec_math_crate_path,
+    );
     for relative in cuda_oxide_extra_sources(source_dir) {
-        copy_cuda_oxide_file(source_dir, project_dir, Path::new(relative));
+        copy_cuda_oxide_file(
+            source_dir,
+            project_dir,
+            Path::new(relative),
+            codec_math_crate_path,
+        );
     }
 }
 
@@ -474,8 +528,19 @@ fn stage_cuda_oxide_shared_prelude(out_dir: &Path) {
     });
 }
 
-fn copy_cuda_oxide_file(source_dir: &Path, project_dir: &Path, relative: &Path) {
-    copy_cuda_oxide_file_as(source_dir, project_dir, relative, relative);
+fn copy_cuda_oxide_file(
+    source_dir: &Path,
+    project_dir: &Path,
+    relative: &Path,
+    codec_math_crate_path: &Path,
+) {
+    copy_cuda_oxide_file_as(
+        source_dir,
+        project_dir,
+        relative,
+        relative,
+        codec_math_crate_path,
+    );
 }
 
 fn copy_cuda_oxide_file_as(
@@ -483,6 +548,7 @@ fn copy_cuda_oxide_file_as(
     project_dir: &Path,
     source_relative: &Path,
     dest_relative: &Path,
+    codec_math_crate_path: &Path,
 ) {
     let source = source_dir.join(source_relative);
     let dest = project_dir.join(dest_relative);
@@ -507,7 +573,7 @@ fn copy_cuda_oxide_file_as(
         });
         let rendered = source_text.replace(
             "__J2K_CODEC_MATH_PATH__",
-            &codec_math_crate_path().to_string_lossy(),
+            &codec_math_crate_path.to_string_lossy(),
         );
         fs::write(&dest, rendered).unwrap_or_else(|error| {
             panic!(
@@ -525,14 +591,4 @@ fn copy_cuda_oxide_file_as(
             )
         });
     }
-}
-
-fn codec_math_crate_path() -> PathBuf {
-    let manifest_dir = PathBuf::from(
-        env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
-    );
-    manifest_dir
-        .parent()
-        .expect("j2k-cuda-runtime lives under crates/")
-        .join("j2k-codec-math")
 }

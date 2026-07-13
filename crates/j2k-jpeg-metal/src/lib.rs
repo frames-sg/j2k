@@ -68,9 +68,10 @@ pub(crate) use resident_batch::report_required_output_dimensions;
 pub use resident_batch::JpegMetalResidentBatchReport;
 pub use session::{MetalBackendSession, MetalSession};
 pub(crate) use surface::Storage;
+pub use surface::Surface;
+#[cfg(target_os = "macos")]
 pub use surface::{
     MetalBatchOutputBuffer, MetalBatchTextureOutput, MetalTextureTile, ResidentPrivateJpegTile,
-    Surface,
 };
 pub use tile_batch::JpegTileBatch;
 pub use viewport::{

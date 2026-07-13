@@ -2,10 +2,13 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use j2k_core::{BackendKind, BackendRequest};
+#[cfg(target_os = "macos")]
+use j2k_core::BackendKind;
+use j2k_core::BackendRequest;
 use j2k_jpeg::adapter::{
     JpegCachedPlan, JpegPlanCache, JpegPlanCacheDiagnostics, SharedJpegFastPacket, SharedJpegInput,
 };
+#[cfg(target_os = "macos")]
 use j2k_jpeg::Decoder as CpuDecoder;
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{MetalRuntimeSession, MetalSupportError};
@@ -306,6 +309,7 @@ impl SessionState {
             .map_err(Error::from)
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn resolve_jpeg_plan_with_decoder_and_external_live<'a>(
         &mut self,
         input: &'a [u8],

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(target_os = "macos")]
+pub(crate) use j2k_core::try_batch_reserve_for_push as try_reserve_for_push;
 pub(crate) use j2k_core::{
     checked_batch_count_product as checked_count_product,
-    checked_batch_count_sum as checked_count_sum,
-    try_batch_reserve_for_push as try_reserve_for_push,
-    BatchAllocationBudget as BatchMetadataBudget, BatchAllocationRequest as BatchMetadataRequest,
+    checked_batch_count_sum as checked_count_sum, BatchAllocationBudget as BatchMetadataBudget,
+    BatchAllocationRequest as BatchMetadataRequest,
 };
 
 #[cfg(test)]
