@@ -70,11 +70,11 @@ the issue sections below; this capsule is only the current continuation state.
   invalidated `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, and `93df11a7`;
   the complete causes and local corrections are recorded in the hosted RC
   checkpoint below.
-  Corrections are committed through `59301ac4`; the commit containing this
-  checkpoint is the only eligible replacement candidate and still requires
-  clean-tree local release gates plus hosted, Metal, and CUDA verification for
-  that exact SHA. An isolated RC worktree
-  preserves the 0.7 fixes while the
+  Corrections and their release-ledger reconciliation are committed through
+  `b4b09f97`; the final commit containing the local source-freeze checkpoint
+  below is the only eligible replacement candidate and still requires
+  clean-tree exact-SHA reruns plus hosted, Metal, and CUDA verification. An
+  isolated RC worktree preserves the 0.7 fixes while the
   shared `main` worktree contains a separate, uncommitted user-owned ML/CUDA
   change set that appeared during NVIDIA verification and must not be discarded
   or silently folded into 0.7. No release tag, crate publication, merge, or
@@ -407,6 +407,24 @@ the issue sections below; this capsule is only the current continuation state.
   audit remains green at 1.97%. The next commit containing this checkpoint must
   be treated as a new candidate and rerun from a clean tree; no `93df11a7`
   result is final-candidate evidence.
+- Final local source-freeze checkpoint (2026-07-13): clean commit `b4b09f97`
+  passes the complete Apple Silicon `release-metal` command, including all 18
+  fail-closed runtime tests, the 222-test JPEG-Metal library suite, and the
+  CPU/OpenJPEG correctness corpus. Stable API, the reviewed 0.6.2-to-0.7
+  semver matrix, publish-mode release integrity, package construction,
+  warning-denied documentation, and comparator signoff all pass. Comparator
+  signoff covers 9 in-process OpenJPEG/Grok contracts, 7 OpenJPEG CLI cases,
+  12 Grok CLI cases, and both current and legacy libjpeg-turbo ABI contracts.
+  Formatting and diff hygiene pass; all 416 active repository policies pass
+  with the established single ignore; unsafe inventory, typo, panic-surface,
+  and clone audits pass, with 1.97% duplicated production lines across 1,192
+  staged Rust sources. No broad coverage or test-generation tranche was run.
+  This checkpoint is a tracked documentation change, so `b4b09f97` is
+  supporting source-tree evidence rather than the final candidate. The commit
+  containing this checkpoint must repeat the exact local freeze gates before
+  push. Hosted changed-line coverage remains the next authoritative coverage
+  measurement, and actual Ubuntu Noble comparator execution remains owned by
+  that exact hosted run.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -825,7 +843,7 @@ The rubric was checked against current primary or first-party sources on
 | PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
 | FINAL-001 | P1 | in progress | all above | Hosted defects through `93df11a7` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
-| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, and `93df11a7` are invalidated. Corrections are committed through `59301ac4`; the commit containing this checkpoint must pass the clean exact local gates before push and external verification. |
+| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, and `93df11a7` are invalidated. Corrections and the local source-freeze evidence are committed through `b4b09f97`; the commit containing the final checkpoint must repeat the clean exact local gates before push and external verification. |
 | TAG-001 | P3 | deferred outside verified-RC endpoint | RC-001 | Annotated tag and guarded publication require separate authorization |
 
 ## 6. Phase 0 — reconcile the worktree
