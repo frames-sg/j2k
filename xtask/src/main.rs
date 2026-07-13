@@ -174,7 +174,7 @@ fn print_help() {
            release-cuda  run fail-closed release-mode CUDA validation on Linux x86_64\n\
            metal-compile compile all Metal targets and run default/pure tests on hosted macOS\n\
            release-metal run fail-closed release-mode Metal hardware validation on macOS\n\
-           coverage      enforce >=80% changed executable Rust coverage [host|metal|cuda] [--base REV]\n\
+           coverage      measure changed executable Rust coverage; enforce >=80% for host/CUDA and audit Metal beside its hardware parity gate [host|metal|cuda] [--base REV]\n\
            package       construct all staged packages from a clean worktree and publish-dry-run registry-independent crates"
     );
 }

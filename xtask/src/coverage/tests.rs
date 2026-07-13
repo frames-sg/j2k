@@ -111,6 +111,12 @@ fn eighty_percent_changed_line_coverage_passes_exactly() {
 }
 
 #[test]
+fn metal_line_percentages_are_audited_without_overriding_hardware_parity() {
+    let result = synthetic_result(100, 72);
+    assert!(coverage_violations(CoverageLane::Metal, &result).is_empty());
+}
+
+#[test]
 fn accelerator_threshold_cannot_be_masked_by_cpu_coverage() {
     let mut result = synthetic_result(100, 99);
     result.accelerator = CoverageCounts {
