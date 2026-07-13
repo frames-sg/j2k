@@ -172,7 +172,9 @@ the issue sections below; this capsule is only the current continuation state.
   docs, and downstream facade/transcode examples pass. `greg` approved the
   hash-pinned patched-`block` ABI-only delta on 2026-07-12. The maintainer then
   selected 2026-07-12 as the `0.7.0` release date, and the changelog is now in
-  final candidate form. The local `v0.7.0` tag remains absent. The
+  final candidate form. README, release-policy, and stable-API status text now
+  distinguish the dated local candidate from the still-published `0.6.x` line
+  and the remaining exact-SHA gates. The local `v0.7.0` tag remains absent. The
   clean-tree staged package gate also passes: all package
   inventories were inspected, independent crates completed publish dry runs,
   and dependent crates packaged against staged local patches without publishing.

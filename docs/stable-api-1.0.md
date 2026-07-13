@@ -69,8 +69,9 @@ The snapshots record the staged workspace's public items and the CLI exit-code
 contract expectations. Manual prose in this file must not duplicate that
 inventory. The published-baseline comparison belongs in the generated
 [`0.7.0` reviewed API report](../engineering/reviewed-public-api-diff-0.7.0.md).
-All generated artifacts remain provisional until they are regenerated and
-verified after final source freeze.
+The ordinary and rustdoc-hidden artifacts were regenerated and verified after
+final source freeze; release authorization still requires the exact-SHA local,
+hosted, and hardware gates.
 
 The published stable contract is the `0.6.x` line. The workspace's `0.7.0`
 inventory is a staged semver-review target whose changes remain unreleased; it

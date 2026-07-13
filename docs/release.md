@@ -7,7 +7,7 @@ The repository is staged for the `j2k` public crate release. Runtime backend sel
 | Version | Distribution state | Security support |
 | --- | --- | --- |
 | `0.6.x` | Latest publicly published crates and documentation. | Supported. |
-| `0.7.0` | Staged workspace target, not a frozen release candidate. Release notes use `Unreleased` during remediation and a dated `0.7.0` heading only at candidate freeze. | Not yet published or security-supported. |
+| `0.7.0` | Dated local candidate awaiting exact-SHA local, hosted, Metal, and CUDA verification. | Not yet published or security-supported. |
 | `<0.6` | Historical releases. | Unsupported. |
 
 The workspace version records the staged package target; it does not by itself
@@ -23,7 +23,9 @@ API. It does not claim source compatibility with `0.6.x`. The
 [`CHANGELOG`](../CHANGELOG.md) provides migration notes, and the
 [reviewed API report](../engineering/reviewed-public-api-diff-0.7.0.md)
 records the current additions, removals, and changed signatures. That report is
-provisional until it is regenerated and verified after final source freeze.
+provisional until it is regenerated and verified after final source freeze;
+for this candidate it has been regenerated, independently reviewed, and
+verified.
 
 ## Candidate freeze and exact-SHA evidence
 
@@ -66,7 +68,8 @@ maintainer create an annotated `v<workspace-version>` tag that peels to
 `RC_SHA`. Push that tag explicitly; do not use `--follow-tags`, move an existing
 release tag, or treat a GitHub Pages deployment as release evidence.
 
-Before final candidate freeze, replace both `PENDING` values in the patched `block`
+Before final candidate freeze, complete both structured fields in the patched
+`block`
 [release approval record](../third_party/block-0.1.6-patched/PATCH_PROVENANCE.md)
 with the actual reviewer identity and review date. The date must be a
 calendar-valid `YYYY-MM-DD`; never infer either value from commit metadata.
@@ -239,10 +242,10 @@ The workspace resolves `metal v0.33.0` and patches its transitive `block v0.1.6`
 through `third_party/block-0.1.6-patched` to mitigate the dependency's
 future-incompatibility warning. The
 [patch provenance record](../third_party/block-0.1.6-patched/PATCH_PROVENANCE.md)
-pins the source digests and documents the limited ABI spelling changes. It is
-not release signoff: the release remains blocked until the maintainer records a
-real reviewer identity and approval date. Validate the patch with
-lockfile-strict metadata plus the normal Metal build and runtime gates. Remove
+pins the source digests, documents the limited ABI spelling changes, and records
+the candidate's maintainer approval. That approval alone is not release signoff
+and does not replace validation with lockfile-strict metadata plus the normal
+Metal build and runtime gates. Remove
 it only after the resolved `metal` dependency no longer uses the affected crate
 or an approved replacement is adopted, and record that removal in the release
 notes. Do not downgrade or merely silence the warning.
