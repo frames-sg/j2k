@@ -3,9 +3,16 @@
 use super::{assert_module_stays_focused, assert_pattern_checks, read, PatternCheck};
 
 pub(super) fn assert_ownership_and_focus() {
+    let policy =
+        read("xtask/tests/repo_lint_support/xtask_main_structure_policy/release_status.rs");
     let production = read("xtask/src/release_status.rs");
     let tests = read("xtask/src/release_status/tests.rs");
 
+    assert_module_stays_focused(
+        "xtask/tests/repo_lint_support/xtask_main_structure_policy/release_status.rs",
+        &policy,
+        75,
+    );
     assert_module_stays_focused("xtask/src/release_status.rs", &production, 350);
     assert_module_stays_focused("xtask/src/release_status/tests.rs", &tests, 225);
     assert_pattern_checks(&[
