@@ -26,11 +26,11 @@ fn run_test_from_workspace(test_name: &str, recording: &RecordingProgram) {
     );
 }
 
-fn metadata_program(label: &str, metadata: &serde_json::Value) -> RecordingProgram {
+pub(super) fn metadata_program(label: &str, metadata: &serde_json::Value) -> RecordingProgram {
     RecordingProgram::new(label, &format!("printf '%s\\n' '{metadata}'"))
 }
 
-fn complete_publishable_metadata() -> serde_json::Value {
+pub(super) fn complete_publishable_metadata() -> serde_json::Value {
     let workspace_version = include_str!("../../../../Cargo.toml")
         .lines()
         .find_map(|line| {

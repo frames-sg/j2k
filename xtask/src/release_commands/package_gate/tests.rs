@@ -4,6 +4,11 @@ use std::collections::BTreeMap;
 
 use super::{package_gate_plan, PUBLISHABLE_PACKAGES, REGISTRY_INDEPENDENT_PACKAGES};
 
+#[cfg(unix)]
+use super::run;
+#[cfg(unix)]
+use crate::{command_support::use_test_cargo_program, test_command::RecordingProgram};
+
 fn workspace_metadata(dependencies: &[(&str, &[&str])]) -> serde_json::Value {
     let dependencies = dependencies
         .iter()
@@ -137,4 +142,39 @@ fn package_gate_ignores_registry_and_non_normal_dependencies() {
         .find(|step| step.package == "j2k-native")
         .expect("native step");
     assert!(native.patches.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn package_gate_executes_registry_and_staged_steps_with_dependency_patches() {
+    let metadata = workspace_metadata(&[
+        ("j2k-native", &["j2k-core"]),
+        ("j2k", &["j2k-native"]),
+        ("j2k-cli", &["j2k"]),
+    ]);
+    let recording = RecordingProgram::new("package-gate-command-test", "");
+    let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+
+    run(&metadata).expect("hermetic package gate");
+
+    let log = recording.log();
+    let lines = log.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), PUBLISHABLE_PACKAGES.len());
+    assert!(lines[0].starts_with("publish -p j2k-core --dry-run|"));
+    assert!(lines[3].starts_with("publish -p j2k-codec-math --dry-run|"));
+    let native = lines
+        .iter()
+        .find(|line| line.starts_with("package -p j2k-native --no-verify"))
+        .expect("native staged package command");
+    assert!(native.contains("patch.crates-io.j2k-core.path=\"/workspace/j2k-core\""));
+    let cli = lines
+        .iter()
+        .find(|line| line.starts_with("package -p j2k-cli --no-verify"))
+        .expect("CLI staged package command");
+    for dependency in ["j2k", "j2k-core", "j2k-native"] {
+        assert!(
+            cli.contains(&format!("patch.crates-io.{dependency}.path=")),
+            "missing {dependency} patch in {cli}"
+        );
+    }
 }

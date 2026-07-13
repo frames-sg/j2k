@@ -12,6 +12,8 @@ use super::{
 
 #[cfg(unix)]
 mod integrity;
+#[cfg(unix)]
+mod orchestration;
 mod validation;
 
 #[cfg(unix)]
