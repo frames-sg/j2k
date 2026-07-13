@@ -225,7 +225,8 @@ fn record_submitted_chunk(_tile_count: usize) {}
 
 #[cfg(test)]
 fn record_completed_chunk(tile_count: usize) {
-    PENDING_TILES.with(|pending| debug_assert_eq!(pending.replace(0), tile_count));
+    let previous = PENDING_TILES.with(|pending| pending.replace(0));
+    debug_assert_eq!(previous, tile_count);
 }
 
 #[cfg(not(test))]
