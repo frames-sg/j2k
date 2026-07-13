@@ -67,13 +67,13 @@ the issue sections below; this capsule is only the current continuation state.
   reconciliation are settled through `321f7673`. The candidate branch
   `rc/0.7.0-candidate` and draft
   [PR #50](https://github.com/frames-sg/j2k/pull/50) target `main`. Hosted CI
-  invalidated `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, and `93df11a7`;
+  invalidated `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`,
+  and `a3307c18`;
   the complete causes and local corrections are recorded in the hosted RC
   checkpoint below.
-  Corrections and their release-ledger reconciliation are committed through
-  `b4b09f97`; the final commit containing the local source-freeze checkpoint
-  below is the only eligible replacement candidate and still requires
-  clean-tree exact-SHA reruns plus hosted, Metal, and CUDA verification. An
+  The commit containing the fourth hosted correction checkpoint below is the
+  only eligible replacement candidate and still requires clean-tree exact-SHA
+  reruns plus hosted, Metal, and CUDA verification. An
   isolated RC worktree preserves the 0.7 fixes while the
   shared `main` worktree contains a separate, uncommitted user-owned ML/CUDA
   change set that appeared during NVIDIA verification and must not be discarded
@@ -425,6 +425,24 @@ the issue sections below; this capsule is only the current continuation state.
   push. Hosted changed-line coverage remains the next authoritative coverage
   measurement, and actual Ubuntu Noble comparator execution remains owned by
   that exact hosted run.
+- Fourth hosted RC correction checkpoint (2026-07-13): candidate `a3307c18`
+  was pushed to PR #50 and checked by hosted CI run `29283514473`, secret-scan
+  run `29283514185`, and GPU run `29283520293`. Secret scanning passed. The
+  ordinary workspace Clippy job found that the build-script integration test
+  kept `main` reachable through a no-effect underscore binding, which Rust
+  1.96 correctly rejects under the repository lint set. Strict Clippy did not
+  cover that test-target configuration. The build-script entrypoint is now
+  compiled only outside `cfg(test)`, so the included test module exercises the
+  version and package-probe contracts without a fake reference; the actual
+  Cargo build-script entrypoint and production behavior are unchanged. No lint
+  allowance or policy exception was added. The exact failed workspace Clippy
+  command, focused all-target/all-feature JPEG Clippy, both build-script tests,
+  both current/legacy libjpeg-turbo contracts, formatting, and all 416 active
+  repository policies pass locally. CI and GPU runs were cancelled as soon as
+  this tracked correction became necessary; their partial results are not
+  candidate evidence. The concurrent GPU-path-policy failure was the expected
+  fail-closed result before exact GPU completion. The commit containing this
+  checkpoint must restart the complete exact-SHA matrix.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -842,8 +860,8 @@ The rubric was checked against current primary or first-party sources on
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
 | PROV-001 | P1 | complete | DOC-002 | `greg` reviewed the hash-pinned `block 0.1.6` ABI-only delta and approved it on 2026-07-12; the focused provenance and release-integrity checks pass |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
-| FINAL-001 | P1 | in progress | all above | Hosted defects through `93df11a7` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
-| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, and `93df11a7` are invalidated. Corrections and the local source-freeze evidence are committed through `b4b09f97`; the commit containing the final checkpoint must repeat the clean exact local gates before push and external verification. |
+| FINAL-001 | P1 | in progress | all above | Hosted defects through `a3307c18` have focused green corrections; clean replacement-SHA local, hosted, and hardware matrices remain |
+| RC-001 | P1 | in progress | FINAL-001 | Draft PR #50 exists; `8013f18a`, `938a9c63`, `a4f6d0f8`, `b3856331`, `93df11a7`, and `a3307c18` are invalidated. The commit containing the fourth hosted correction checkpoint must repeat the clean exact local gates before push and external verification. |
 | TAG-001 | P3 | deferred outside verified-RC endpoint | RC-001 | Annotated tag and guarded publication require separate authorization |
 
 ## 6. Phase 0 — reconcile the worktree

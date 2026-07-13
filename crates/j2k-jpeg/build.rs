@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(not(test))]
 use std::env;
+#[cfg(not(test))]
 use std::process::Command;
 
 const LIBJPEG_TURBO_PKG_CONFIG_ARGS: [&str; 2] = ["--libs", "libturbojpeg"];
+#[cfg(not(test))]
 const LIBJPEG_TURBO_VERSION_ARGS: [&str; 2] = ["--modversion", "libturbojpeg"];
 
 fn is_v3(version: &[u8]) -> bool {
@@ -14,6 +17,7 @@ fn is_v3(version: &[u8]) -> bool {
         .is_some_and(|major| major >= 3)
 }
 
+#[cfg(not(test))]
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(has_libjpeg_turbo)");
     println!("cargo:rustc-check-cfg=cfg(has_libjpeg_turbo_v3)");
@@ -59,7 +63,6 @@ fn main() {
 mod tests {
     #[test]
     fn turbojpeg_major_version_selects_the_supported_ffi() {
-        let _entrypoint: fn() = super::main;
         assert!(!super::is_v3(b"2.1.5\n"));
         assert!(super::is_v3(b"3.0.0\n"));
         assert!(super::is_v3(b"3.1.4.1\n"));
