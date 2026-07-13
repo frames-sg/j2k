@@ -143,6 +143,18 @@ the issue sections below; this capsule is only the current continuation state.
   production code.
   The next coverage execution is the frozen candidate verification run, not a
   new coverage-development tranche.
+- API, provenance, and documentation freeze checkpoint (2026-07-12):
+  `cargo xtask stable-api` regenerated both ordinary and rustdoc-hidden
+  inventories in memory for all 17 packages and found the committed snapshots
+  current. `cargo xtask semver` verified the pinned baseline, tools, package
+  partition, live inventories, snapshots, and committed report before stopping
+  at the first of 33 explicit maintainer-review `PENDING` rationales; no stale
+  local API artifact was found. Pre-candidate `release-integrity`, ordinary and
+  final `public-support`, `unsafe-audit`, warning-denied workspace/public-crate
+  docs, and downstream facade/transcode examples pass. Publish-mode integrity
+  fails only because the real `0.7.0` date and patched-`block` reviewer/date are
+  not yet supplied. Those values must not be inferred. The local `v0.7.0` tag
+  remains absent.
 - Independent architecture closure in the follow-up:
   - the 1,079-line JPEG encoder is a 148-line facade over API, allocation,
     sample-plane, transform, profiling, and test owners. Shared baseline entropy,
@@ -552,7 +564,7 @@ The rubric was checked against current primary or first-party sources on
 | AUDIT-001 | P2 | complete | STR-010, COV-001 | Clone and panic quality gates use shared production-source classification, explicit reviewed ratchets, fixtures, and fail-closed repository policy |
 | PERF-001 | P1 | in progress | STR-004 through STR-015 | Alternating `0e78229a`/candidate process medians pass on the source committed as `3fd23cf2`: direct -3.1%, resident buffer -6.7%, resident host -15.9%; exact committed-candidate repetition remains |
 | PUB-002 | P1 | complete | PKG-001, CUDA-002 | Fail-closed canonical origin, exact remote annotated tag, Release, and crates.io preflight |
-| DOC-002 | P2 | in progress | SEC-001 | Reconcile public claims and keep this as the only plan |
+| DOC-002 | P2 | complete | SEC-001 | Public/support/unsafe/API documentation is reconciled; warning-denied docs, downstream examples, and ordinary/final support gates pass, and this remains the sole execution ledger |
 | CONTACT-001 | P1 | blocked on maintainer action | DOC-002 | Publish and verify a working private vulnerability/conduct-reporting channel |
 | PROV-001 | P1 | blocked on maintainer input | DOC-002 | Record release signoff identity and date |
 | METALDEP-001 | P3 | complete | PKG-001 | Packaged Metal contents exclude the workspace patch, a standalone downstream graph resolves registry `metal 0.33.0 -> block 0.1.6`, and the maintained-binding migration has an explicit owner/trigger |
