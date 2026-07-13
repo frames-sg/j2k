@@ -15,14 +15,21 @@ pub(super) fn fixture_manifest_from_env() -> Result<Option<FixtureManifest>, Str
     let Some(path) = std::env::var_os("J2K_FIXTURE_COMPARE_MANIFEST").map(PathBuf::from) else {
         return Ok(None);
     };
-    let text = std::fs::read_to_string(&path).map_err(|error| {
+    let relocation_roots = external_input_dirs();
+    fixture_manifest_from_path(&path, &relocation_roots).map(Some)
+}
+
+fn fixture_manifest_from_path(
+    path: &Path,
+    relocation_roots: &[PathBuf],
+) -> Result<FixtureManifest, String> {
+    let text = std::fs::read_to_string(path).map_err(|error| {
         format!(
             "read J2K_FIXTURE_COMPARE_MANIFEST {}: {error}",
             path.display()
         )
     })?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
-    let relocation_roots = external_input_dirs();
     let mut lines = text.lines().filter(|line| !line.trim().is_empty());
     let header = lines
         .next()
@@ -49,9 +56,9 @@ pub(super) fn fixture_manifest_from_env() -> Result<Option<FixtureManifest>, Str
         let canonical_path = canonicalize_manifest_row_path(
             raw_path,
             base,
-            &relocation_roots,
+            relocation_roots,
             "fixture manifest",
-            &path,
+            path,
             row_number,
         )?;
         let corpus_category =
@@ -109,7 +116,7 @@ pub(super) fn fixture_manifest_from_env() -> Result<Option<FixtureManifest>, Str
         }
     }
 
-    Ok(Some(FixtureManifest { entries }))
+    Ok(FixtureManifest { entries })
 }
 
 pub(super) fn external_fixture_metadata(
@@ -258,3 +265,6 @@ pub(super) fn parse_manifest_container(
 pub(super) fn external_corpus_category(path: &Path) -> String {
     crate::common::infer_corpus_category(path).to_string()
 }
+
+#[cfg(test)]
+mod tests;
