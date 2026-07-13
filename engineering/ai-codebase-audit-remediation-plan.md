@@ -62,8 +62,8 @@ but are not yet promoted to final exact-candidate evidence.
 Update this section whenever a task changes state. Detailed history belongs in
 the issue sections below; this capsule is only the current continuation state.
 
-- Release state: **blocked** and unfrozen. The latest settled source commit is
-  `dda2e4f2`. An isolated RC worktree preserves the candidate fixes while the
+- Release state: **blocked** and unfrozen. The latest settled implementation
+  commit is `3a0089ff`. An isolated RC worktree preserves the candidate fixes while the
   shared `main` worktree contains a separate, uncommitted user-owned ML/CUDA
   change set that appeared during NVIDIA verification and must not be discarded
   or silently folded into 0.7. No push, release tag, crate
@@ -196,7 +196,11 @@ the issue sections below; this capsule is only the current continuation state.
   and dependent crates packaged against staged local patches without publishing.
   A read-only GitHub API check on 2026-07-12 confirms private vulnerability
   reporting is still disabled; CONTACT-001 therefore remains a real external
-  blocker rather than a stale ledger note.
+  blocker rather than a stale ledger note. After the coverage-tool correction
+  committed as `3a0089ff`, `cargo xtask stable-api` again matched all 17
+  ordinary and rustdoc-hidden inventories, `cargo xtask semver` passed every
+  reviewed package comparison, and final public-support plus publish-mode
+  release-integrity remained green without regenerating evidence.
 - Candidate verification checkpoint (2026-07-12): the dated candidate advanced
   through the typo-policy, coverage-policy, Metal release-scheduler, and Linux
   lint corrections to `4317d434`. Publish integrity, packaging, local CI,
