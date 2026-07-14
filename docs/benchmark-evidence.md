@@ -240,6 +240,96 @@ cargo test -p j2k-cuda-runtime --lib \
 The validation host also needed its linker search path to include the local
 LLVM/libffi runtime used by cuda-oxide.
 
+## Metal Irreversible 9/7 Heatmap Experiment - 2026-07-13
+
+This local experiment used Apple's GPU performance heat maps to test whether
+the staged irreversible 9/7 IDWT should be replaced by full-axis
+threadgroup-memory kernels. The prototype was rejected and removed because it
+failed the targeted performance gate. The capture and dispersion harness at
+`c35b7d43` remains as permanent diagnostic infrastructure.
+
+Environment:
+
+- Machine: MacBook Pro `Mac16,8`, Apple M4 Pro, 48 GB
+- OS: macOS 26.5 build `25F71`
+- Xcode: 26.6 build `17F113`
+- Metal toolchain: `com.apple.dt.toolchain.Metal.32023.883`, component build
+  `17F109`
+- Baseline and retained source: `c35b7d43`
+- Profile: Cargo `release-bench`, isolated baseline/candidate target
+  directories, with no concurrent Cargo, CUDA, Metal, Criterion, or heavy
+  build workload
+
+The captured 1023 x 767 staged transform exposed the runtime-generated Metal
+source in Xcode. Profile GPU Trace reported 214.21 us total GPU time, one
+command buffer, one compute encoder, 11 dispatches, and 12.01 MiB of buffers.
+The four horizontal lifting dispatches accounted for 37.02% of GPU time, the
+four vertical lifting dispatches 36.43%, vertical scale 9.12%, horizontal
+scale 8.87%, and interleave 8.55%. The scale and lifting passes therefore
+accounted for 91.44% of captured GPU time.
+
+The trace reported 73.87% Occupancy Manager target, an 87.12% Compute Shader
+Launch limiter, and a 32.09% Last Level Cache limiter with 31.94% utilization.
+The staged pipelines used 12-14 allocated registers and spilled zero bytes.
+Those counters supported prototyping dispatch fusion; they did not establish
+that fusion would be faster.
+
+The prototype used one threadgroup per row or column, dynamic threadgroup
+memory, and separate horizontal and vertical kernels. Forced staged/fused
+tests matched within the existing irreversible tolerance across degenerate,
+odd/even, origin-parity, and 1023 x 767 cases. A pipeline-relative sweep then
+tested 1, 2, 4, 8, 16, and 32 SIMD groups per threadgroup:
+
+| SIMD groups | Threads on M4 Pro | Exploratory median | IQR |
+| ---: | ---: | ---: | ---: |
+| 1 | 32 | 1.658 ms | 0.227 ms |
+| 2 | 64 | 1.563 ms | 0.360 ms |
+| 4 | 128 | 1.437 ms | 0.298 ms |
+| 8 | 256 | 1.667 ms | 0.256 ms |
+| 16 | 512 | 1.686 ms | 0.207 ms |
+| 32 | 1024 | 1.745 ms | 0.701 ms |
+
+Because the 128-thread exploratory row appeared promising, it was remeasured
+in five alternating baseline/candidate processes with eleven warmed samples
+per process. Each cell reports process median / IQR:
+
+| Process | Staged baseline | 128-thread fused prototype |
+| ---: | ---: | ---: |
+| 1 | 1.422 / 0.381 ms | 1.641 / 0.300 ms |
+| 2 | 1.467 / 0.262 ms | 1.649 / 0.557 ms |
+| 3 | 1.629 / 0.261 ms | 1.677 / 0.288 ms |
+| 4 | 1.383 / 0.354 ms | 1.459 / 0.378 ms |
+| 5 | 1.324 / 0.410 ms | 1.646 / 0.373 ms |
+
+The median of process medians regressed from 1.422 ms to 1.646 ms (+15.75%).
+The initial maximum-thread configuration also regressed, from 1.550 ms to
+1.936 ms (+24.90%). Both miss the required 5% improvement by a wide margin.
+The kernel prototype and its temporary routing/tests were therefore removed.
+The end-to-end 512/1024 decode rows were not run because the targeted gate had
+already required rejection; no routing or performance claim changed.
+
+Changed-line coverage could not be reported. The canonical command
+`cargo xtask coverage metal --base HEAD^` failed before compiling coverage
+tests because the repository's Metal lane supplied `cargo-llvm-cov 0.8.7`
+with mutually incompatible `--no-report` and `--no-clean` options. The manual
+capture body is also intentionally skipped when coverage instrumentation is
+active so a coverage run cannot create a GPU trace. Package tests and strict
+Clippy passed, but this experiment therefore has no changed-line percentage.
+
+The permanent guard can be rerun with:
+
+```bash
+J2K_REQUIRE_METAL_RUNTIME=1 CARGO_TARGET_DIR=<isolated-target> \
+  cargo test -p j2k-metal metal_irreversible_idwt_perf_guard \
+  --profile release-bench --locked -- \
+  --ignored --nocapture --test-threads=1
+```
+
+The ignored GPU-capture test additionally requires `MTL_CAPTURE_ENABLED=1`
+and an absolute, nonexistent `.gputrace` path in
+`J2K_METAL_CAPTURE_PATH`. Captured timings are diagnostic only and are not
+used for acceptance.
+
 ## Metal Status
 
 Metal acceleration is selective. Public claims should say Metal-accelerated
