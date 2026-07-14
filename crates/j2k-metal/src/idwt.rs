@@ -420,7 +420,7 @@ mod tests {
             }
         }
 
-        fn output(&self) -> Vec<f32> {
+        fn output() -> Vec<f32> {
             vec![
                 0.0;
                 IRREVERSIBLE_IDWT_PERF_WIDTH as usize * IRREVERSIBLE_IDWT_PERF_HEIGHT as usize
@@ -451,6 +451,10 @@ mod tests {
         if !should_run_metal_runtime() {
             return;
         }
+        if std::env::var_os("CARGO_LLVM_COV_TARGET_DIR").is_some() {
+            println!("skipping GPU capture while the Metal coverage lane is instrumented");
+            return;
+        }
         assert_eq!(
             std::env::var("MTL_CAPTURE_ENABLED").as_deref(),
             Ok("1"),
@@ -476,7 +480,7 @@ mod tests {
         );
 
         let fixture = IrreversibleIdwtPerfFixture::new();
-        let mut output = fixture.output();
+        let mut output = IrreversibleIdwtPerfFixture::output();
         let device = j2k_metal_support::system_default_device().expect("Metal capture device");
         crate::compute::with_isolated_runtime_for_device_for_test(&device, || {
             crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
@@ -523,7 +527,7 @@ mod tests {
             return;
         }
         let fixture = IrreversibleIdwtPerfFixture::new();
-        let mut output = fixture.output();
+        let mut output = IrreversibleIdwtPerfFixture::output();
         crate::compute::decode_irreversible97_staged_single_decomposition_idwt(
             fixture.job(),
             &mut output,
@@ -550,7 +554,7 @@ mod tests {
             median.as_secs_f64() * 1_000.0,
             p25.as_secs_f64() * 1_000.0,
             p75.as_secs_f64() * 1_000.0,
-            (p75 - p25).as_secs_f64() * 1_000.0
+            p75.saturating_sub(p25).as_secs_f64() * 1_000.0
         );
     }
 
