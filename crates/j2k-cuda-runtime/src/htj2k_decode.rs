@@ -4,7 +4,7 @@ mod api;
 mod completion;
 mod context_validation;
 mod launch;
-mod output_regions;
+pub(crate) mod output_regions;
 mod planning;
 mod queued;
 mod status;

@@ -12,6 +12,7 @@ members = [
     "crates/j2k-jpeg-metal",
     "crates/j2k-metal",
     "crates/j2k-metal-support",
+    "crates/j2k-ml",
     "crates/j2k-native",
     "crates/j2k-profile",
     "crates/j2k-test-support",
@@ -63,6 +64,14 @@ serde_json = "1"
 serde_yaml_ng = "0.10"
 syn = "2.0.117"
 toml = "1.1.2"
+burn-core = { version = "0.21.0", default-features = false, features = ["dataset", "std"] }
+burn-autodiff = { version = "0.21.0", default-features = false, features = ["std"] }
+burn-flex = { version = "0.21.0", default-features = false, features = ["std"] }
+burn-wgpu = { version = "0.21.0", default-features = false, features = ["fusion", "metal", "std"] }
+burn-cuda = { version = "0.21.0", default-features = false, features = ["fusion", "std"] }
+burn-cubecl = { version = "0.21.0", default-features = false, features = ["fusion", "std"] }
+burn-fusion = { version = "0.21.0", default-features = false, features = ["std"] }
+burn-ir = { version = "0.21.0", default-features = false, features = ["std"] }
 
 [patch.crates-io]
 # `metal 0.33.0` still depends on `block 0.1.6`. The crates.io copy declares

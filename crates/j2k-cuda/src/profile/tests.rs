@@ -18,11 +18,12 @@ use crate::SurfaceResidency;
 fn finalize_decode_total_us_includes_cpu_and_cuda_stages() {
     let mut report = decode_report();
     report.total_us = 3;
+    report.detail.status_d2h_us = 11;
 
     finalize_decode_total_us(&mut report);
 
-    assert_eq!(report.total_us, 55);
-    assert_eq!(report.detail.stage_sum_us, 55);
+    assert_eq!(report.total_us, 66);
+    assert_eq!(report.detail.stage_sum_us, 66);
 }
 
 #[test]
@@ -65,14 +66,17 @@ fn profile_field_build_failure_is_diagnostic_only() {
 
 #[test]
 fn decode_trace_json_contains_ordered_stage_spans() {
-    let trace = chrome_trace_json("decode", &decode_report()).expect("bounded decode trace");
+    let mut report = decode_report();
+    report.detail.status_d2h_us = 11;
+    let trace = chrome_trace_json("decode", &report).expect("bounded decode trace");
 
     assert!(trace.starts_with("{\"traceEvents\":["));
     assert!(trace.contains("\"name\":\"parse\",\"cat\":\"decode\",\"ph\":\"X\""));
     assert!(trace.contains("\"name\":\"ht_cleanup\",\"cat\":\"decode\",\"ph\":\"X\""));
+    assert!(trace.contains("\"name\":\"status_d2h\",\"cat\":\"decode\",\"ph\":\"X\""));
     assert!(trace.contains("\"name\":\"store\",\"cat\":\"decode\",\"ph\":\"X\""));
     assert!(trace.contains("\"ts\":0,\"dur\":1"));
-    assert!(trace.contains("\"ts\":39,\"dur\":10"));
+    assert!(trace.contains("\"ts\":50,\"dur\":10"));
     assert!(trace.ends_with("]}"));
 }
 
@@ -161,12 +165,15 @@ fn decode_report() -> CudaHtj2kProfileReport {
         h2d_us: 4,
         ht_cleanup_us: 5,
         ht_refine_us: 6,
+        classic_tier1_us: 0,
         dequant_us: 7,
         idwt_us: 8,
         mct_us: 9,
         store_us: 10,
         total_us: 55,
         block_count: 1,
+        classic_block_count: 0,
+        ht_block_count: 1,
         payload_bytes: 2,
         dispatch_count: 3,
         residency: SurfaceResidency::CudaResidentDecode,

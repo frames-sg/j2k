@@ -10,8 +10,10 @@ const CUDA_OXIDE_FEATURE_ENV_VARS: &[&str] = &[
     "CARGO_FEATURE_CUDA_OXIDE_COPY_U8",
     "CARGO_FEATURE_CUDA_OXIDE_J2K_ENCODE",
     "CARGO_FEATURE_CUDA_OXIDE_J2K_DECODE_STORE",
+    "CARGO_FEATURE_CUDA_OXIDE_J2K_CLASSIC_DECODE",
     "CARGO_FEATURE_CUDA_OXIDE_J2K_DEQUANTIZE",
     "CARGO_FEATURE_CUDA_OXIDE_J2K_IDWT",
+    "CARGO_FEATURE_CUDA_OXIDE_J2K_ML",
     "CARGO_FEATURE_CUDA_OXIDE_HTJ2K_DECODE",
     "CARGO_FEATURE_CUDA_OXIDE_HTJ2K_ENCODE",
     "CARGO_FEATURE_CUDA_OXIDE_TRANSCODE",
@@ -94,6 +96,11 @@ fn emit_build_script_metadata() {
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_decode_store/src/main.rs");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_decode_store/simt/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_decode_store/simt/src/main.rs");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_classic_decode/Cargo.toml.in");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_classic_decode/rust-toolchain.toml");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_classic_decode/src/main.rs");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_classic_decode/simt/Cargo.toml.in");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_classic_decode/simt/src/main.rs");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_dequantize/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_dequantize/rust-toolchain.toml");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_dequantize/src/main.rs");
@@ -104,6 +111,11 @@ fn emit_build_script_metadata() {
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_idwt/src/main.rs");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_idwt/simt/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_idwt/simt/src/main.rs");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_ml/Cargo.toml.in");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_ml/rust-toolchain.toml");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_ml/src/main.rs");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_ml/simt/Cargo.toml.in");
+    println!("cargo:rerun-if-changed=src/cuda_oxide_j2k_ml/simt/src/main.rs");
     println!("cargo:rerun-if-changed=src/cuda_oxide_htj2k_decode/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_htj2k_decode/rust-toolchain.toml");
     println!("cargo:rerun-if-changed=src/cuda_oxide_htj2k_decode/src/main.rs");
@@ -140,8 +152,10 @@ fn emit_build_script_metadata() {
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_copy_u8_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_encode_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_decode_store_built)");
+    println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_classic_decode_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_dequantize_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_idwt_built)");
+    println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_ml_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_htj2k_decode_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_htj2k_encode_built)");
     println!("cargo:rustc-check-cfg=cfg(j2k_cuda_oxide_transcode_built)");
@@ -177,6 +191,12 @@ fn compile_cuda_oxide_feature_projects(context: &BuildContext<'_>) {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_j2k_decode_store_built");
     }
 
+    if env::var_os("CARGO_FEATURE_CUDA_OXIDE_J2K_CLASSIC_DECODE").is_some()
+        && compile_cuda_oxide_j2k_classic_decode(context, require_all_cuda_oxide)
+    {
+        println!("cargo:rustc-cfg=j2k_cuda_oxide_j2k_classic_decode_built");
+    }
+
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_J2K_DEQUANTIZE").is_some()
         && compile_cuda_oxide_j2k_dequantize(context, require_all_cuda_oxide)
     {
@@ -187,6 +207,12 @@ fn compile_cuda_oxide_feature_projects(context: &BuildContext<'_>) {
         && compile_cuda_oxide_j2k_idwt(context, require_all_cuda_oxide)
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_j2k_idwt_built");
+    }
+
+    if env::var_os("CARGO_FEATURE_CUDA_OXIDE_J2K_ML").is_some()
+        && compile_cuda_oxide_j2k_ml(context, require_all_cuda_oxide)
+    {
+        println!("cargo:rustc-cfg=j2k_cuda_oxide_j2k_ml_built");
     }
 
     if env::var_os("CARGO_FEATURE_CUDA_OXIDE_HTJ2K_DECODE").is_some()
@@ -283,6 +309,35 @@ fn compile_cuda_oxide_j2k_idwt(context: &BuildContext<'_>, require_cuda_oxide: b
             output_name: "cuda_oxide_j2k_idwt.ptx",
             artifact_name: "j2k_cuda_oxide_j2k_idwt.ptx",
             display_name: "cuda-oxide J2K IDWT",
+        },
+        require_cuda_oxide,
+    )
+}
+
+fn compile_cuda_oxide_j2k_classic_decode(
+    context: &BuildContext<'_>,
+    require_cuda_oxide: bool,
+) -> bool {
+    compile_cuda_oxide_project(
+        context,
+        CudaOxideProject {
+            source_dir: Path::new("src/cuda_oxide_j2k_classic_decode"),
+            output_name: "cuda_oxide_j2k_classic_decode.ptx",
+            artifact_name: "j2k_cuda_oxide_j2k_classic_decode.ptx",
+            display_name: "cuda-oxide classic J2K decode",
+        },
+        require_cuda_oxide,
+    )
+}
+
+fn compile_cuda_oxide_j2k_ml(context: &BuildContext<'_>, require_cuda_oxide: bool) -> bool {
+    compile_cuda_oxide_project(
+        context,
+        CudaOxideProject {
+            source_dir: Path::new("src/cuda_oxide_j2k_ml"),
+            output_name: "cuda_oxide_j2k_ml.ptx",
+            artifact_name: "j2k_cuda_oxide_j2k_ml.ptx",
+            display_name: "cuda-oxide j2k-ml",
         },
         require_cuda_oxide,
     )

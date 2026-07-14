@@ -269,13 +269,13 @@ pub(crate) struct CudaHtj2kDecodeTableResourceInner {
     pub(crate) uvlc_table1: CudaDeviceBuffer,
 }
 
-/// Device-resident HTJ2K decode payload plus shared lookup tables reused across sub-band dispatches.
+/// Device-resident J2K decode payload with optional HTJ2K lookup tables.
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaHtj2kDecodeResources {
     pub(crate) payload: CudaHtj2kDecodePayload,
     pub(crate) payload_len: usize,
-    pub(crate) tables: CudaHtj2kDecodeTableResources,
+    pub(crate) tables: Option<CudaHtj2kDecodeTableResources>,
 }
 
 #[derive(Debug)]
@@ -320,7 +320,7 @@ pub(super) struct ValidatedHtj2kKernelJobs {
 }
 
 impl CudaHtj2kDecodePayload {
-    pub(super) fn buffer(&self) -> Result<&CudaDeviceBuffer, CudaError> {
+    pub(crate) fn buffer(&self) -> Result<&CudaDeviceBuffer, CudaError> {
         match self {
             Self::Owned(buffer) => Ok(buffer),
             Self::Pooled(buffer) => pooled_device_buffer(buffer),
@@ -330,13 +330,19 @@ impl CudaHtj2kDecodePayload {
 
 pub(super) fn htj2k_decode_kernel_tables(
     resources: &CudaHtj2kDecodeResources,
-) -> Htj2kDecodeKernelTables<'_> {
-    Htj2kDecodeKernelTables {
-        vlc_table0: &resources.tables.inner.vlc_table0,
-        vlc_table1: &resources.tables.inner.vlc_table1,
-        uvlc_table0: &resources.tables.inner.uvlc_table0,
-        uvlc_table1: &resources.tables.inner.uvlc_table1,
-    }
+) -> Result<Htj2kDecodeKernelTables<'_>, CudaError> {
+    let tables = resources
+        .tables
+        .as_ref()
+        .ok_or_else(|| CudaError::InvalidArgument {
+            message: "HTJ2K decode requires resident lookup tables".to_string(),
+        })?;
+    Ok(Htj2kDecodeKernelTables {
+        vlc_table0: &tables.inner.vlc_table0,
+        vlc_table1: &tables.inner.vlc_table1,
+        uvlc_table0: &tables.inner.uvlc_table0,
+        uvlc_table1: &tables.inner.uvlc_table1,
+    })
 }
 
 pub(crate) const HTJ2K_STATUS_OK: u32 = 0;

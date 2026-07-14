@@ -33,6 +33,7 @@ const METAL_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
         accelerator_package("j2k-jpeg-metal", "crates/j2k-jpeg-metal/"),
         accelerator_package("j2k-metal", "crates/j2k-metal/"),
         accelerator_package("j2k-transcode-metal", "crates/j2k-transcode-metal/"),
+        accelerator_package("j2k-ml", "crates/j2k-ml/src/metal.rs"),
     ],
 };
 
@@ -42,6 +43,7 @@ const CUDA_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
         accelerator_package("j2k-jpeg-cuda", "crates/j2k-jpeg-cuda/"),
         accelerator_package("j2k-cuda", "crates/j2k-cuda/"),
         accelerator_package("j2k-transcode-cuda", "crates/j2k-transcode-cuda/"),
+        accelerator_package("j2k-ml", "crates/j2k-ml/src/cuda.rs"),
     ],
 };
 
@@ -132,6 +134,13 @@ impl CoverageLane {
         self.accelerator_packages()
             .iter()
             .map(|package| package.name)
+    }
+
+    #[cfg(test)]
+    pub(super) fn accelerator_source_prefixes(self) -> impl Iterator<Item = &'static str> {
+        self.accelerator_packages()
+            .iter()
+            .map(|package| package.source_prefix)
     }
 
     pub(super) fn includes_source(self, path: &str, role: SourceRole) -> bool {

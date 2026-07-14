@@ -1,7 +1,7 @@
 use j2k_core::PixelFormat;
 use j2k_native::{
-    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kRect,
-    J2kWaveletTransform,
+    J2kCodeBlockSegment, J2kCodeBlockStyle, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
+    J2kDirectIdwtStep, J2kDirectStoreStep, J2kRect, J2kSubBandType, J2kWaveletTransform,
 };
 
 use crate::{allocation::HostPhaseBudget, Error};
@@ -9,9 +9,7 @@ use crate::{allocation::HostPhaseBudget, Error};
 mod required_regions;
 use self::required_regions::required_regions_for_direct_plan;
 
-const CLASSIC_J2K_NOT_CUDA_HTJ2K: &str =
-    "strict CUDA codestream decode only accepts HTJ2K direct-plan subbands";
-const EMPTY_HTJ2K_PLAN: &str = "strict CUDA HTJ2K plan contains no HT code blocks";
+const EMPTY_CUDA_PLAN: &str = "strict CUDA plan contains no entropy code blocks";
 const MIXED_TRANSFORMS_UNSUPPORTED: &str = "strict CUDA HTJ2K plan contains mixed DWT transforms";
 const PLAN_PAYLOAD_TOO_LARGE: &str = "strict CUDA HTJ2K plan payload is too large";
 const PLAN_BLOCK_LENGTH_MISMATCH: &str =
@@ -20,6 +18,13 @@ const PLAN_OUTPUT_RECT_MISMATCH: &str =
     "strict CUDA HTJ2K plan store does not fit the requested output rectangle";
 const ROI_MAXSHIFT_UNSUPPORTED: &str =
     "strict CUDA HTJ2K plan does not support ROI maxshift decode";
+const CLASSIC_PLAN_INVALID: &str = "strict CUDA classic Tier-1 plan is invalid";
+
+pub(crate) const J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES: u32 = 1 << 0;
+pub(crate) const J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS: u32 = 1 << 1;
+pub(crate) const J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT: u32 = 1 << 2;
+pub(crate) const J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS: u32 = 1 << 3;
+pub(crate) const J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS: u32 = 1 << 4;
 
 /// CUDA-side DWT transform selector for a flat HTJ2K plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +105,51 @@ pub(crate) struct CudaHtj2kSubband {
     /// First code-block index for this sub-band.
     pub(crate) code_block_start: u32,
     /// Number of code blocks for this sub-band.
+    pub(crate) code_block_count: u32,
+}
+
+/// Flat classic JPEG 2000 code-block metadata consumed by CUDA kernels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub(crate) struct CudaClassicCodeBlock {
+    pub(crate) subband_index: u32,
+    pub(crate) payload_offset: u64,
+    pub(crate) payload_len: u32,
+    pub(crate) segment_start: u32,
+    pub(crate) segment_count: u32,
+    pub(crate) output_x: u32,
+    pub(crate) output_y: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) output_stride: u32,
+    pub(crate) missing_bit_planes: u8,
+    pub(crate) number_of_coding_passes: u8,
+    pub(crate) total_bitplanes: u8,
+    pub(crate) sub_band_type: u8,
+    pub(crate) style_flags: u32,
+    pub(crate) strict: bool,
+    pub(crate) dequantization_step: f32,
+}
+
+/// Flat classic JPEG 2000 segment metadata consumed by CUDA kernels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub(crate) struct CudaClassicSegment {
+    pub(crate) data_offset: u32,
+    pub(crate) data_length: u32,
+    pub(crate) start_coding_pass: u8,
+    pub(crate) end_coding_pass: u8,
+    pub(crate) use_arithmetic: bool,
+}
+
+/// Flat classic JPEG 2000 sub-band geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub(crate) struct CudaClassicSubband {
+    pub(crate) band_id: CudaHtj2kBandId,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) code_block_start: u32,
     pub(crate) code_block_count: u32,
 }
 
@@ -221,6 +271,9 @@ pub(crate) struct CudaHtj2kDecodePlan {
     transform: CudaHtj2kTransform,
     payload: Vec<u8>,
     code_blocks: Vec<CudaHtj2kCodeBlock>,
+    classic_code_blocks: Vec<CudaClassicCodeBlock>,
+    classic_segments: Vec<CudaClassicSegment>,
+    classic_subbands: Vec<CudaClassicSubband>,
     #[cfg_attr(
         not(feature = "cuda-runtime"),
         expect(
@@ -270,12 +323,17 @@ impl CudaHtj2kDecodePlan {
         let mut host_budget = HostPhaseBudget::new("CUDA direct-plan owner graph");
         let mut payload = host_budget.try_vec_with_capacity(capacity_hint.payload_bytes)?;
         let mut code_blocks = host_budget.try_vec_with_capacity(capacity_hint.code_blocks)?;
+        let mut classic_code_blocks =
+            host_budget.try_vec_with_capacity(capacity_hint.classic_code_blocks)?;
+        let mut classic_segments =
+            host_budget.try_vec_with_capacity(capacity_hint.classic_segments)?;
+        let mut classic_subbands =
+            host_budget.try_vec_with_capacity(capacity_hint.classic_subbands)?;
         let mut subbands = host_budget.try_vec_with_capacity(capacity_hint.subbands)?;
         let mut idwt_steps = host_budget.try_vec_with_capacity(capacity_hint.idwt_steps)?;
         let mut store_steps = host_budget.try_vec_with_capacity(capacity_hint.store_steps)?;
         let retained_plan_capacity = host_budget.live_bytes();
         let mut transform = None;
-        let mut saw_classic = false;
         let required_regions = if output_origin == (0, 0) && output_dimensions == plan.dimensions {
             None
         } else {
@@ -382,7 +440,95 @@ impl CudaHtj2kDecodePlan {
                         code_block_count,
                     });
                 }
-                J2kDirectGrayscaleStep::ClassicSubBand(_) => saw_classic = true,
+                J2kDirectGrayscaleStep::ClassicSubBand(subband) => {
+                    let subband_index = u32::try_from(classic_subbands.len()).map_err(|_| {
+                        Error::UnsupportedCudaRequest {
+                            reason: PLAN_PAYLOAD_TOO_LARGE,
+                        }
+                    })?;
+                    let code_block_start =
+                        u32::try_from(classic_code_blocks.len()).map_err(|_| {
+                            Error::UnsupportedCudaRequest {
+                                reason: PLAN_PAYLOAD_TOO_LARGE,
+                            }
+                        })?;
+                    for job in &subband.jobs {
+                        if let Some(required_regions) = &required_regions {
+                            if !required_regions
+                                .get(subband.band_id)
+                                .is_some_and(|required| {
+                                    required.intersects(
+                                        job.output_x,
+                                        job.output_y,
+                                        job.width,
+                                        job.height,
+                                    )
+                                })
+                            {
+                                continue;
+                            }
+                        }
+                        validate_classic_job(job)?;
+                        let payload_offset = u64::try_from(payload.len()).map_err(|_| {
+                            Error::UnsupportedCudaRequest {
+                                reason: PLAN_PAYLOAD_TOO_LARGE,
+                            }
+                        })?;
+                        let payload_len = u32::try_from(job.data.len()).map_err(|_| {
+                            Error::UnsupportedCudaRequest {
+                                reason: PLAN_PAYLOAD_TOO_LARGE,
+                            }
+                        })?;
+                        let segment_start =
+                            u32::try_from(classic_segments.len()).map_err(|_| {
+                                Error::UnsupportedCudaRequest {
+                                    reason: PLAN_PAYLOAD_TOO_LARGE,
+                                }
+                            })?;
+                        let output_stride = u32::try_from(job.output_stride).map_err(|_| {
+                            Error::UnsupportedCudaRequest {
+                                reason: PLAN_PAYLOAD_TOO_LARGE,
+                            }
+                        })?;
+                        payload.extend_from_slice(&job.data);
+                        classic_segments.extend(job.segments.iter().map(convert_classic_segment));
+                        classic_code_blocks.push(CudaClassicCodeBlock {
+                            subband_index,
+                            payload_offset,
+                            payload_len,
+                            segment_start,
+                            segment_count: u32::try_from(job.segments.len()).map_err(|_| {
+                                Error::UnsupportedCudaRequest {
+                                    reason: PLAN_PAYLOAD_TOO_LARGE,
+                                }
+                            })?,
+                            output_x: job.output_x,
+                            output_y: job.output_y,
+                            width: job.width,
+                            height: job.height,
+                            output_stride,
+                            missing_bit_planes: job.missing_bit_planes,
+                            number_of_coding_passes: job.number_of_coding_passes,
+                            total_bitplanes: job.total_bitplanes,
+                            sub_band_type: classic_subband_type(job.sub_band_type),
+                            style_flags: classic_style_flags(job.style),
+                            strict: job.strict,
+                            dequantization_step: job.dequantization_step,
+                        });
+                    }
+                    classic_subbands.push(CudaClassicSubband {
+                        band_id: subband.band_id,
+                        width: subband.width,
+                        height: subband.height,
+                        code_block_start,
+                        code_block_count: u32::try_from(
+                            classic_code_blocks.len() - code_block_start as usize,
+                        )
+                        .map_err(|_| Error::UnsupportedCudaRequest {
+                            reason: PLAN_PAYLOAD_TOO_LARGE,
+                        })?,
+                    });
+                }
                 J2kDirectGrayscaleStep::Idwt(step) => {
                     let step_transform = CudaHtj2kTransform::from_native(step.transform);
                     match transform {
@@ -402,14 +548,9 @@ impl CudaHtj2kDecodePlan {
             }
         }
 
-        if saw_classic {
+        if code_blocks.is_empty() && classic_code_blocks.is_empty() {
             return Err(Error::UnsupportedCudaRequest {
-                reason: CLASSIC_J2K_NOT_CUDA_HTJ2K,
-            });
-        }
-        if code_blocks.is_empty() {
-            return Err(Error::UnsupportedCudaRequest {
-                reason: EMPTY_HTJ2K_PLAN,
+                reason: EMPTY_CUDA_PLAN,
             });
         }
 
@@ -421,6 +562,9 @@ impl CudaHtj2kDecodePlan {
             transform: transform.unwrap_or(CudaHtj2kTransform::Reversible53),
             payload,
             code_blocks,
+            classic_code_blocks,
+            classic_segments,
+            classic_subbands,
             subbands,
             idwt_steps,
             store_steps,
@@ -519,6 +663,15 @@ impl CudaHtj2kDecodePlan {
                         reason: PLAN_PAYLOAD_TOO_LARGE,
                     })?;
         }
+        for block in &mut self.classic_code_blocks {
+            block.payload_offset =
+                block
+                    .payload_offset
+                    .checked_add(base)
+                    .ok_or(Error::UnsupportedCudaRequest {
+                        reason: PLAN_PAYLOAD_TOO_LARGE,
+                    })?;
+        }
         if shared_payload.is_empty() {
             *shared_payload = core::mem::take(&mut self.payload);
         } else {
@@ -532,6 +685,9 @@ impl CudaHtj2kDecodePlan {
     pub(crate) fn account_host_owners(&self, budget: &mut HostPhaseBudget) -> Result<(), Error> {
         budget.account_vec(&self.payload)?;
         budget.account_vec(&self.code_blocks)?;
+        budget.account_vec(&self.classic_code_blocks)?;
+        budget.account_vec(&self.classic_segments)?;
+        budget.account_vec(&self.classic_subbands)?;
         budget.account_vec(&self.subbands)?;
         budget.account_vec(&self.idwt_steps)?;
         budget.account_vec(&self.store_steps)?;
@@ -555,12 +711,38 @@ impl CudaHtj2kDecodePlan {
                         reason: PLAN_PAYLOAD_TOO_LARGE,
                     })?;
         }
+        for block in &mut self.classic_code_blocks {
+            block.payload_offset =
+                block
+                    .payload_offset
+                    .checked_add(base)
+                    .ok_or(Error::UnsupportedCudaRequest {
+                        reason: PLAN_PAYLOAD_TOO_LARGE,
+                    })?;
+        }
         Ok(())
     }
 
     /// Flat code-block metadata.
     pub(crate) fn code_blocks(&self) -> &[CudaHtj2kCodeBlock] {
         &self.code_blocks
+    }
+
+    pub(crate) fn classic_code_blocks(&self) -> &[CudaClassicCodeBlock] {
+        &self.classic_code_blocks
+    }
+
+    pub(crate) fn classic_segments(&self) -> &[CudaClassicSegment] {
+        &self.classic_segments
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn classic_subbands(&self) -> &[CudaClassicSubband] {
+        &self.classic_subbands
+    }
+
+    pub(crate) fn block_count(&self) -> usize {
+        self.code_blocks.len() + self.classic_code_blocks.len()
     }
 
     /// Flat sub-band metadata.
@@ -588,7 +770,7 @@ impl CudaHtj2kDecodePlan {
         expect(dead_code, reason = "dispatch hint accessor supports CUDA plan tests")
     )]
     pub(crate) fn dispatch_count_hint(&self) -> usize {
-        self.code_blocks.len()
+        self.block_count()
     }
 }
 
@@ -597,6 +779,9 @@ struct CudaPlanCapacityHint {
     payload_bytes: usize,
     code_blocks: usize,
     subbands: usize,
+    classic_code_blocks: usize,
+    classic_segments: usize,
+    classic_subbands: usize,
     idwt_steps: usize,
     store_steps: usize,
 }
@@ -620,7 +805,28 @@ fn cuda_plan_capacity_hint(plan: &J2kDirectGrayscalePlan) -> Result<CudaPlanCapa
                     )?;
                 }
             }
-            J2kDirectGrayscaleStep::ClassicSubBand(_) => {}
+            J2kDirectGrayscaleStep::ClassicSubBand(subband) => {
+                hint.classic_subbands = hint.classic_subbands.saturating_add(1);
+                hint.classic_code_blocks = hint
+                    .classic_code_blocks
+                    .checked_add(subband.jobs.len())
+                    .ok_or(Error::UnsupportedCudaRequest {
+                        reason: PLAN_PAYLOAD_TOO_LARGE,
+                    })?;
+                for job in &subband.jobs {
+                    hint.payload_bytes = hint.payload_bytes.checked_add(job.data.len()).ok_or(
+                        Error::UnsupportedCudaRequest {
+                            reason: PLAN_PAYLOAD_TOO_LARGE,
+                        },
+                    )?;
+                    hint.classic_segments = hint
+                        .classic_segments
+                        .checked_add(job.segments.len())
+                        .ok_or(Error::UnsupportedCudaRequest {
+                        reason: PLAN_PAYLOAD_TOO_LARGE,
+                    })?;
+                }
+            }
             J2kDirectGrayscaleStep::Idwt(_) => {
                 hint.idwt_steps = hint.idwt_steps.saturating_add(1);
             }
@@ -630,6 +836,80 @@ fn cuda_plan_capacity_hint(plan: &J2kDirectGrayscalePlan) -> Result<CudaPlanCapa
         }
     }
     Ok(hint)
+}
+
+fn validate_classic_job(job: &j2k_native::J2kOwnedCodeBlockBatchJob) -> Result<(), Error> {
+    if job.roi_shift != 0
+        || !(1..=64).contains(&job.width)
+        || !(1..=64).contains(&job.height)
+        || !(1..=31).contains(&job.total_bitplanes)
+        || job.missing_bit_planes >= job.total_bitplanes
+    {
+        return Err(Error::UnsupportedCudaRequest {
+            reason: CLASSIC_PLAN_INVALID,
+        });
+    }
+    let coded_bitplanes = job.total_bitplanes - job.missing_bit_planes;
+    let max_passes = 1 + 3 * (coded_bitplanes - 1);
+    if job.number_of_coding_passes > max_passes {
+        return Err(Error::UnsupportedCudaRequest {
+            reason: CLASSIC_PLAN_INVALID,
+        });
+    }
+    let mut expected_pass = 0u8;
+    let mut expected_offset = 0u32;
+    for segment in &job.segments {
+        if segment.start_coding_pass != expected_pass
+            || segment.end_coding_pass < segment.start_coding_pass
+            || segment.data_offset != expected_offset
+        {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: CLASSIC_PLAN_INVALID,
+            });
+        }
+        expected_pass = segment.end_coding_pass;
+        expected_offset = segment.data_offset.checked_add(segment.data_length).ok_or(
+            Error::UnsupportedCudaRequest {
+                reason: CLASSIC_PLAN_INVALID,
+            },
+        )?;
+    }
+    if expected_pass != job.number_of_coding_passes
+        || usize::try_from(expected_offset).ok() != Some(job.data.len())
+    {
+        return Err(Error::UnsupportedCudaRequest {
+            reason: CLASSIC_PLAN_INVALID,
+        });
+    }
+    Ok(())
+}
+
+fn convert_classic_segment(segment: &J2kCodeBlockSegment) -> CudaClassicSegment {
+    CudaClassicSegment {
+        data_offset: segment.data_offset,
+        data_length: segment.data_length,
+        start_coding_pass: segment.start_coding_pass,
+        end_coding_pass: segment.end_coding_pass,
+        use_arithmetic: segment.use_arithmetic,
+    }
+}
+
+fn classic_subband_type(value: J2kSubBandType) -> u8 {
+    match value {
+        J2kSubBandType::LowLow => 0,
+        J2kSubBandType::HighLow => 1,
+        J2kSubBandType::LowHigh => 2,
+        J2kSubBandType::HighHigh => 3,
+    }
+}
+
+fn classic_style_flags(style: J2kCodeBlockStyle) -> u32 {
+    (u32::from(style.reset_context_probabilities) * J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES)
+        | (u32::from(style.termination_on_each_pass) * J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS)
+        | (u32::from(style.vertically_causal_context) * J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT)
+        | (u32::from(style.segmentation_symbols) * J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS)
+        | (u32::from(style.selective_arithmetic_coding_bypass)
+            * J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS)
 }
 
 fn convert_idwt_step(step: J2kDirectIdwtStep) -> CudaHtj2kIdwtStep {

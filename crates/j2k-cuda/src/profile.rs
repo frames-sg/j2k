@@ -7,7 +7,7 @@ use crate::SurfaceResidency;
 mod emit;
 mod trace;
 
-/// Detailed route-overhead timings for strict CUDA HTJ2K decode.
+/// Detailed route-overhead timings for strict CUDA JPEG 2000 decode.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 #[doc(hidden)]
@@ -24,14 +24,16 @@ pub struct CudaHtj2kDecodeProfileDetail {
     /// payload bytes plus decode metadata. Metadata-only job upload is not
     /// split out until the CUDA runtime exposes separate timings.
     pub payload_upload_us: u128,
-    /// CUDA decode job upload time, reserved as zero until split runtime timings exist.
+    /// CUDA decode job and segment metadata upload time.
     pub job_upload_us: u128,
-    /// CUDA status download time, reserved as zero until split runtime timings exist.
+    /// CUDA status download time.
     pub status_d2h_us: u128,
     /// CUDA output download time, reserved as zero until split runtime timings exist.
     pub output_d2h_us: u128,
     /// HT cleanup/refinement CUDA dispatch count.
     pub ht_dispatch_count: usize,
+    /// Classic Tier-1 CUDA dispatch count.
+    pub classic_dispatch_count: usize,
     /// Dequantization CUDA dispatch count.
     pub dequant_dispatch_count: usize,
     /// Inverse DWT CUDA dispatch count.
@@ -50,7 +52,7 @@ impl CudaHtj2kDecodeProfileDetail {
     }
 }
 
-/// Structured stage timings for a strict CUDA HTJ2K operation.
+/// Structured stage timings for a strict CUDA JPEG 2000 or HTJ2K operation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 #[doc(hidden)]
@@ -67,6 +69,8 @@ pub struct CudaHtj2kProfileReport {
     pub ht_cleanup_us: u128,
     /// HT refinement kernel time.
     pub ht_refine_us: u128,
+    /// Classic Tier-1 kernel time.
+    pub classic_tier1_us: u128,
     /// Dequantization kernel time.
     pub dequant_us: u128,
     /// Inverse DWT kernel time.
@@ -79,8 +83,12 @@ pub struct CudaHtj2kProfileReport {
     ///
     /// End-to-end wall time is reported in `detail.wall_total_us`.
     pub total_us: u128,
-    /// Number of HTJ2K code blocks in the flat plan.
+    /// Total number of entropy code blocks in the flat plan.
     pub block_count: usize,
+    /// Number of classic Tier-1 code blocks in the flat plan.
+    pub classic_block_count: usize,
+    /// Number of HTJ2K code blocks in the flat plan.
+    pub ht_block_count: usize,
     /// Number of compressed payload bytes uploaded to CUDA.
     pub payload_bytes: usize,
     /// Number of CUDA kernel dispatches.

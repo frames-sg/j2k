@@ -26,6 +26,7 @@ pub(crate) mod j2k_container_allocation_policy;
 pub(crate) mod j2k_decode_structure_policy;
 pub(crate) mod j2k_encode_validation_policy;
 pub(crate) mod j2k_error_source_policy;
+pub(crate) mod j2k_ml_policy;
 pub(crate) mod j2k_scratch_allocation_policy;
 pub(crate) mod jpeg_batch_allocation_policy;
 pub(crate) mod jpeg_dct_reemit_policy;

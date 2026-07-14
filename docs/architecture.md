@@ -24,6 +24,7 @@ still-image correctness. Keep row-level status synchronized with
 | `j2k-cuda-runtime` | CUDA engine | CUDA Driver API integration, J2K-owned kernel modules, launch orchestration, and CUDA memory helpers shared by CUDA adapters. |
 | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, route policy, and CUDA device memory integration for supported paths. |
 | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal runtime integration for supported paths. |
+| `j2k-ml` | experimental integration | Independent Burn tensor decode integration; unpublished during the 0.7 cycle. |
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared contracts. |
 | `j2k-cli` | CLI | Command-line inspection and JPEG-to-HTJ2K smoke transcode entry point. |
 | `j2k-test-support`, `j2k-transcode-test-support` | dev helper | Shared fixture, benchmark input, and transcode oracle helpers for tests, benches, and examples. |
@@ -58,6 +59,7 @@ j2k-compare -> j2k-core, j2k, j2k-native, j2k-test-support
 j2k-transcode -> j2k-codec-math, j2k-core, j2k, j2k-native, j2k-jpeg, j2k-profile
 j2k-metal-support -> j2k-core
 j2k-cuda-runtime -> j2k-codec-math, j2k-core
+j2k-ml -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-metal
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal, j2k-metal-support, j2k-transcode
 j2k-transcode-cuda -> j2k-core, j2k-cuda-runtime, j2k-native, j2k-transcode
 j2k-cli -> j2k, j2k-jpeg, j2k-transcode

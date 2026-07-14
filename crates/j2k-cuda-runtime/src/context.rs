@@ -14,6 +14,7 @@ use crate::{
 
 mod band_transfer;
 mod compact;
+mod creation;
 mod device;
 mod host_budget;
 mod inner;
@@ -22,6 +23,7 @@ mod kernel_dispatch;
 mod lifecycle;
 mod operations;
 mod pinned_host;
+mod pointer;
 mod resource_creation;
 #[cfg(test)]
 mod test_kernels;
@@ -55,7 +57,14 @@ impl CudaContext {
     #[doc(hidden)]
     #[must_use]
     pub fn is_same_context(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
+        self.inner.context == other.inner.context
+    }
+
+    /// Device ordinal associated with this context.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn device_ordinal(&self) -> usize {
+        self.inner.device_ordinal
     }
 
     /// Dequantize HTJ2K cleanup outputs using the metadata buffer already held

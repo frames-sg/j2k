@@ -15,6 +15,10 @@ use metal::Buffer;
 use crate::error::metal_kernel_support_error;
 use crate::Error;
 
+mod readback;
+
+pub use self::readback::download_surfaces_packed;
+
 #[derive(Clone)]
 pub(crate) enum Storage {
     Host(Arc<Vec<u8>>),

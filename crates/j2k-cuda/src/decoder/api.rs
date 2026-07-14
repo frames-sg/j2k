@@ -175,6 +175,29 @@ impl<'a> J2kDecoder<'a> {
         self.decode_to_surface_impl(session, fmt, BackendRequest::Cuda)
     }
 
+    /// Strictly decode a geometry request into a CUDA-backed surface using an
+    /// existing backend session.
+    #[doc(hidden)]
+    pub fn decode_request_to_device_with_session(
+        &mut self,
+        fmt: PixelFormat,
+        request: DeviceDecodeRequest,
+        session: &mut CudaSession,
+    ) -> Result<Surface, Error> {
+        match request {
+            DeviceDecodeRequest::Full => self.decode_to_device_with_session(fmt, session),
+            DeviceDecodeRequest::Region { roi } => {
+                self.decode_region_to_device_with_session(fmt, roi, session)
+            }
+            DeviceDecodeRequest::Scaled { scale } => {
+                self.decode_scaled_to_device_with_session(fmt, scale, session)
+            }
+            DeviceDecodeRequest::RegionScaled { roi, scale } => {
+                self.decode_region_scaled_to_device_with_session(fmt, roi, scale, session)
+            }
+        }
+    }
+
     /// Strictly decode a full HTJ2K image into a CUDA-backed surface and return
     /// a structured profile report for CPU planning and CUDA stages.
     #[doc(hidden)]

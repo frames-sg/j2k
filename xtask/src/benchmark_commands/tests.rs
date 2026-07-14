@@ -42,9 +42,10 @@ fn benchmark_build_and_signoff_execute_the_complete_fake_cargo_plan() {
     assert!(log.contains(
         "bench -p j2k-transcode-metal --bench dct97 --features bench-internals --no-run|"
     ));
+    assert!(log.contains("bench -p j2k-ml --bench tensor_decode --features cpu --no-run|"));
     assert!(log.contains("test -p j2k-compare --test in_process_parity -- --nocapture|"));
     assert!(log.contains("test -p j2k-jpeg --features bench-libjpeg-turbo --test libjpeg_turbo_compare -- --nocapture|"));
-    assert_eq!(log.lines().count(), 18);
+    assert_eq!(log.lines().count(), 19);
 }
 
 #[test]

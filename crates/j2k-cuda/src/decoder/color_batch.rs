@@ -150,7 +150,15 @@ pub(super) fn decode_color_cuda_resident_surface_with_plans_profile(
     let context = session.cuda_context()?;
     let pool = session.decode_buffer_pool()?;
     let table_upload_start = profile::profile_now(collect_stage_timings);
-    let table_resources = session.htj2k_decode_table_resources()?;
+    let table_resources = if color
+        .components
+        .iter()
+        .all(|plan| plan.subbands().is_empty())
+    {
+        None
+    } else {
+        Some(session.htj2k_decode_table_resources()?)
+    };
     let table_upload_us = profile::elapsed_us(table_upload_start);
     color.report.h2d_us = color.report.h2d_us.saturating_add(table_upload_us);
     color.report.detail.table_upload_us = color
@@ -159,9 +167,11 @@ pub(super) fn decode_color_cuda_resident_surface_with_plans_profile(
         .table_upload_us
         .saturating_add(table_upload_us);
     let payload_upload_start = profile::profile_now(collect_stage_timings);
-    let decode_resources = context
-        .upload_htj2k_decode_resources_with_tables(&color.payload, &table_resources)
-        .map_err(cuda_error)?;
+    let decode_resources = match table_resources.as_ref() {
+        Some(tables) => context.upload_htj2k_decode_resources_with_tables(&color.payload, tables),
+        None => context.upload_j2k_decode_payload(&color.payload),
+    }
+    .map_err(cuda_error)?;
     let payload_upload_us = profile::elapsed_us(payload_upload_start);
     profile::add_payload_resource_upload_us(&mut color.report, payload_upload_us);
     let mut host_budget = HostPhaseBudget::new("j2k CUDA color decode execution graph");
@@ -240,16 +250,27 @@ pub(super) fn decode_color_cuda_resident_batch_surfaces_with_profile(
     let context = session.cuda_context()?;
     let pool = session.decode_batch_buffer_pool()?;
     let table_upload_start = profile::profile_now(collect_stage_timings);
-    let table_resources = session.htj2k_decode_table_resources()?;
+    let table_resources = if colors.iter().all(|color| {
+        color
+            .components
+            .iter()
+            .all(|plan| plan.subbands().is_empty())
+    }) {
+        None
+    } else {
+        Some(session.htj2k_decode_table_resources()?)
+    };
     let table_upload_us = profile::elapsed_us(table_upload_start);
     let payload_upload_start = profile::profile_now(collect_stage_timings);
-    let decode_resources = context
-        .upload_htj2k_decode_resources_with_tables_and_pool(
+    let decode_resources = match table_resources.as_ref() {
+        Some(tables) => context.upload_htj2k_decode_resources_with_tables_and_pool(
             &shared_payload,
-            &table_resources,
+            tables,
             &pool,
-        )
-        .map_err(cuda_error)?;
+        ),
+        None => context.upload_j2k_decode_payload_with_pool(&shared_payload, &pool),
+    }
+    .map_err(cuda_error)?;
     let payload_upload_us = profile::elapsed_us(payload_upload_start);
     drop(shared_payload);
 

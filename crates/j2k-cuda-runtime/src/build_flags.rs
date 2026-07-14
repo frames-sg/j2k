@@ -82,6 +82,13 @@ cuda_oxide_ptx_guard!(
     j2k_cuda_oxide_j2k_decode_store_built
 );
 cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-j2k-classic-decode",
+    ensure_cuda_oxide_j2k_classic_decode_ptx_built,
+    CUDA_OXIDE_J2K_CLASSIC_DECODE_PTX_BUILT,
+    "cuda-oxide classic J2K decode",
+    j2k_cuda_oxide_j2k_classic_decode_built
+);
+cuda_oxide_ptx_guard!(
     feature = "cuda-oxide-j2k-dequantize",
     ensure_cuda_oxide_j2k_dequantize_ptx_built,
     CUDA_OXIDE_J2K_DEQUANTIZE_PTX_BUILT,
@@ -94,6 +101,13 @@ cuda_oxide_ptx_guard!(
     CUDA_OXIDE_J2K_IDWT_PTX_BUILT,
     "cuda-oxide J2K IDWT",
     j2k_cuda_oxide_j2k_idwt_built
+);
+cuda_oxide_ptx_guard!(
+    feature = "cuda-oxide-j2k-ml",
+    ensure_cuda_oxide_j2k_ml_ptx_built,
+    CUDA_OXIDE_J2K_ML_PTX_BUILT,
+    "cuda-oxide j2k-ml",
+    j2k_cuda_oxide_j2k_ml_built
 );
 cuda_oxide_ptx_guard!(
     feature = "cuda-oxide-transcode",

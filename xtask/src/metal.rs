@@ -19,6 +19,7 @@ const METAL_COMPILE_PACKAGES: &[&str] = &[
     "j2k-jpeg-metal",
     "j2k-metal",
     "j2k-transcode-metal",
+    "j2k-ml",
     "j2k",
 ];
 
@@ -76,6 +77,12 @@ const METAL_TEST_SUITES: &[MetalTestSuite] = &[
         minimum_passed: 20,
         required_test:
             "ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling",
+    },
+    MetalTestSuite {
+        label: "Burn J2K Metal tensor integration",
+        package: "j2k-ml",
+        minimum_passed: 4,
+        required_test: "strict_metal_staged_decode_reports_route_and_pixels",
     },
     MetalTestSuite {
         label: "J2K public facade",

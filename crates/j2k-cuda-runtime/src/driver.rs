@@ -33,7 +33,15 @@ pub(crate) type CuCtxCreate = unsafe extern "C" fn(*mut CuContext, c_uint, CuDev
 
 pub(crate) type CuCtxDestroy = unsafe extern "C" fn(CuContext) -> CuResult;
 
+pub(crate) type CuDevicePrimaryCtxRetain =
+    unsafe extern "C" fn(*mut CuContext, CuDevice) -> CuResult;
+
+pub(crate) type CuDevicePrimaryCtxRelease = unsafe extern "C" fn(CuDevice) -> CuResult;
+
 pub(crate) type CuCtxSetCurrent = unsafe extern "C" fn(CuContext) -> CuResult;
+
+pub(crate) type CuPointerGetAttribute =
+    unsafe extern "C" fn(*mut c_void, c_int, CuDevicePtr) -> CuResult;
 
 pub(crate) type CuMemAlloc = unsafe extern "C" fn(*mut CuDevicePtr, usize) -> CuResult;
 
@@ -105,7 +113,10 @@ pub(crate) struct Driver {
     pub(crate) cu_device_get: CuDeviceGet,
     pub(crate) cu_ctx_create: CuCtxCreate,
     pub(crate) cu_ctx_destroy: CuCtxDestroy,
+    pub(crate) cu_device_primary_ctx_retain: CuDevicePrimaryCtxRetain,
+    pub(crate) cu_device_primary_ctx_release: CuDevicePrimaryCtxRelease,
     pub(crate) cu_ctx_set_current: CuCtxSetCurrent,
+    pub(crate) cu_pointer_get_attribute: CuPointerGetAttribute,
     pub(crate) cu_mem_alloc: CuMemAlloc,
     pub(crate) cu_mem_free: CuMemFree,
     pub(crate) cu_mem_host_alloc: CuMemHostAlloc,
@@ -174,7 +185,13 @@ impl Driver {
             cu_device_get: load_symbol(&library, b"cuDeviceGet\0")?,
             cu_ctx_create: load_symbol(&library, b"cuCtxCreate_v2\0")?,
             cu_ctx_destroy: load_symbol(&library, b"cuCtxDestroy_v2\0")?,
+            cu_device_primary_ctx_retain: load_symbol(&library, b"cuDevicePrimaryCtxRetain\0")?,
+            cu_device_primary_ctx_release: load_symbol(
+                &library,
+                b"cuDevicePrimaryCtxRelease_v2\0",
+            )?,
             cu_ctx_set_current: load_symbol(&library, b"cuCtxSetCurrent\0")?,
+            cu_pointer_get_attribute: load_symbol(&library, b"cuPointerGetAttribute\0")?,
             cu_mem_alloc: load_symbol(&library, b"cuMemAlloc_v2\0")?,
             cu_mem_free: load_symbol(&library, b"cuMemFree_v2\0")?,
             cu_mem_host_alloc: load_symbol(&library, b"cuMemHostAlloc\0")?,

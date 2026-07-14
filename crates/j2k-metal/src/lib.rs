@@ -63,6 +63,7 @@ pub use self::error::{
     Error, MetalDirectFallbackReason, MetalKernelRetryClass, NativeBackendError,
 };
 pub use self::session::{MetalBackendSession, MetalSession};
+pub use self::surface::download_surfaces_packed;
 pub(crate) use self::surface::Storage;
 pub use self::surface::Surface;
 pub use self::tile_batch::MetalTileBatch;

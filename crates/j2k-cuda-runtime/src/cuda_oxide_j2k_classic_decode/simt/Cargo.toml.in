@@ -1,0 +1,14 @@
+[package]
+name = "j2k_cuda_oxide_j2k_classic_decode"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+resolver = "2"
+
+[dependencies]
+cuda-core = { git = "https://github.com/NVlabs/cuda-oxide.git", rev = "a9f964a956f397dd0b3c8db88a3ca5824186c261" }
+cuda-device = { git = "https://github.com/NVlabs/cuda-oxide.git", rev = "a9f964a956f397dd0b3c8db88a3ca5824186c261" }
+cuda-host = { git = "https://github.com/NVlabs/cuda-oxide.git", rev = "a9f964a956f397dd0b3c8db88a3ca5824186c261" }
+j2k-codec-math = { path = "__J2K_CODEC_MATH_PATH__" }
+

@@ -45,6 +45,10 @@ printf '%s\n' 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 fi
 printf '%s\n' 'test encode::tests::stage_validation::metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips ... ok'
 printf '%s\n' 'test result: ok. 150 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
+*" -p j2k-ml "*)
+printf '%s\n' 'test strict_metal_staged_decode_reports_route_and_pixels ... ok'
+printf '%s\n' 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+;;
 *" -p j2k "*)
 printf '%s\n' 'test accelerator_facade_reports_requested_backend_after_all_required_stages_dispatch ... ok'
 printf '%s\n' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
@@ -70,7 +74,7 @@ fn metal_commands_execute_complete_hermetic_compile_and_release_plans() {
     }
 
     let log = recording.log();
-    assert_eq!(log.lines().count(), 10);
+    assert_eq!(log.lines().count(), 11);
     assert!(log.contains("clippy --all-targets --all-features"));
     assert!(log.contains("test --release --all-features --lib --bins --tests"));
     assert!(log.contains("test --release --all-features --doc"));
@@ -79,6 +83,7 @@ fn metal_commands_execute_complete_hermetic_compile_and_release_plans() {
     assert!(log.contains("-p j2k-metal-support"));
     assert!(log.contains("-p j2k-jpeg-metal"));
     assert!(log.contains("-p j2k-transcode-metal"));
+    assert!(log.contains("-p j2k-ml"));
 }
 
 #[test]

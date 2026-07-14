@@ -79,7 +79,21 @@ impl CudaContext {
         Ok(CudaHtj2kDecodeResources {
             payload: CudaHtj2kDecodePayload::Owned(self.upload_pinned(payload)?),
             payload_len: payload.len(),
-            tables: tables.clone(),
+            tables: Some(tables.clone()),
+        })
+    }
+
+    /// Upload a classic-only J2K payload without HTJ2K lookup tables.
+    #[doc(hidden)]
+    pub fn upload_j2k_decode_payload(
+        &self,
+        payload: &[u8],
+    ) -> Result<CudaHtj2kDecodeResources, CudaError> {
+        self.inner.set_current()?;
+        Ok(CudaHtj2kDecodeResources {
+            payload: CudaHtj2kDecodePayload::Owned(self.upload_pinned(payload)?),
+            payload_len: payload.len(),
+            tables: None,
         })
     }
 
@@ -101,7 +115,27 @@ impl CudaContext {
         Ok(CudaHtj2kDecodeResources {
             payload: CudaHtj2kDecodePayload::Pooled(pool.upload_pinned(payload)?),
             payload_len: payload.len(),
-            tables: tables.clone(),
+            tables: Some(tables.clone()),
+        })
+    }
+
+    /// Upload a classic-only J2K payload into a pooled buffer without HTJ2K lookup tables.
+    #[doc(hidden)]
+    pub fn upload_j2k_decode_payload_with_pool(
+        &self,
+        payload: &[u8],
+        pool: &CudaBufferPool,
+    ) -> Result<CudaHtj2kDecodeResources, CudaError> {
+        if !pool.is_owned_by(self) {
+            return Err(CudaError::InvalidArgument {
+                message: "J2K decode payload pool must belong to the upload context".to_string(),
+            });
+        }
+        self.inner.set_current()?;
+        Ok(CudaHtj2kDecodeResources {
+            payload: CudaHtj2kDecodePayload::Pooled(pool.upload_pinned(payload)?),
+            payload_len: payload.len(),
+            tables: None,
         })
     }
 

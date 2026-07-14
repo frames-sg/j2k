@@ -1,4 +1,7 @@
 use crate::{
+    classic_decode::{
+        CudaClassicKernelJob, CudaClassicKernelSegment, CudaClassicKernelTables, CudaClassicStatus,
+    },
     error::CudaError,
     htj2k_decode::{
         CudaHtj2kCleanupMultiKernelJob, CudaHtj2kCodeBlockKernelJob, CudaHtj2kDequantizeKernelJob,
@@ -79,6 +82,7 @@ gpu_ref_bytes! {
     store_rgb16_job_as_bytes: CudaJ2kStoreRgb16Job;
     store_rgb16_mct_job_as_bytes: CudaJ2kStoreRgb16MctJob;
     idwt_job_as_bytes: CudaJ2kIdwtJob;
+    classic_tables_as_bytes: CudaClassicKernelTables;
 }
 
 gpu_slice_bytes! {
@@ -112,6 +116,8 @@ gpu_slice_bytes! {
     htj2k_cleanup_multi_jobs_as_bytes: CudaHtj2kCleanupMultiKernelJob;
     htj2k_dequantize_jobs_as_bytes: CudaHtj2kDequantizeKernelJob;
     idwt_multi_jobs_as_bytes: CudaJ2kIdwtMultiKernelJob;
+    classic_jobs_as_bytes: CudaClassicKernelJob;
+    classic_segments_as_bytes: CudaClassicKernelSegment;
 }
 
 gpu_slice_bytes_mut! {
@@ -128,6 +134,7 @@ gpu_slice_bytes_mut! {
     htj2k_encode_statuses_as_bytes_mut: CudaHtj2kEncodeStatus;
     htj2k_packetization_statuses_as_bytes_mut: CudaHtj2kPacketizationStatus;
     htj2k_statuses_as_bytes_mut: CudaHtj2kStatus;
+    classic_statuses_as_bytes_mut: CudaClassicStatus;
 }
 
 pub(crate) fn htj2k_encode_statuses_byte_len(count: usize) -> Result<usize, CudaError> {

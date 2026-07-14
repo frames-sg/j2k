@@ -25,6 +25,7 @@ cuda-runtime = [
     "j2k-cuda-runtime/cuda-oxide-copy-u8",
     "j2k-cuda-runtime/cuda-oxide-j2k-encode",
     "j2k-cuda-runtime/cuda-oxide-j2k-decode-store",
+    "j2k-cuda-runtime/cuda-oxide-j2k-classic-decode",
     "j2k-cuda-runtime/cuda-oxide-j2k-dequantize",
     "j2k-cuda-runtime/cuda-oxide-j2k-idwt",
     "j2k-cuda-runtime/cuda-oxide-htj2k-decode",

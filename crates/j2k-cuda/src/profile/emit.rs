@@ -56,10 +56,12 @@ pub(crate) fn finalize_decode_total_us(report: &mut CudaHtj2kProfileReport) {
         report.h2d_us,
         report.ht_cleanup_us,
         report.ht_refine_us,
+        report.classic_tier1_us,
         report.dequant_us,
         report.idwt_us,
         report.mct_us,
         report.store_us,
+        report.detail.status_d2h_us,
     ]
     .into_iter()
     .fold(0u128, u128::saturating_add);
@@ -76,12 +78,15 @@ pub(crate) fn emit_htj2k_profile_row(path: &str, report: &CudaHtj2kProfileReport
             ProfileField::metric("h2d_us", report.h2d_us)?,
             ProfileField::metric("ht_cleanup_us", report.ht_cleanup_us)?,
             ProfileField::metric("ht_refine_us", report.ht_refine_us)?,
+            ProfileField::metric("classic_tier1_us", report.classic_tier1_us)?,
             ProfileField::metric("dequant_us", report.dequant_us)?,
             ProfileField::metric("idwt_us", report.idwt_us)?,
             ProfileField::metric("mct_us", report.mct_us)?,
             ProfileField::metric("store_us", report.store_us)?,
             ProfileField::metric("total_us", report.total_us)?,
             ProfileField::metric("block_count", report.block_count)?,
+            ProfileField::metric("classic_block_count", report.classic_block_count)?,
+            ProfileField::metric("ht_block_count", report.ht_block_count)?,
             ProfileField::metric("payload_bytes", report.payload_bytes)?,
             ProfileField::metric("dispatch_count", report.dispatch_count)?,
             ProfileField::label("residency", DebugValue(report.residency))?,
@@ -93,6 +98,10 @@ pub(crate) fn emit_htj2k_profile_row(path: &str, report: &CudaHtj2kProfileReport
             ProfileField::metric("status_d2h_us", report.detail.status_d2h_us)?,
             ProfileField::metric("output_d2h_us", report.detail.output_d2h_us)?,
             ProfileField::metric("ht_dispatch_count", report.detail.ht_dispatch_count)?,
+            ProfileField::metric(
+                "classic_dispatch_count",
+                report.detail.classic_dispatch_count,
+            )?,
             ProfileField::metric(
                 "dequant_dispatch_count",
                 report.detail.dequant_dispatch_count,

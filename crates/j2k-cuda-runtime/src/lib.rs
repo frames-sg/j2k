@@ -54,6 +54,7 @@ macro_rules! impl_cuda_htj2k_encoded_status_accessors {
 mod allocation;
 mod build_flags;
 mod bytes;
+mod classic_decode;
 mod context;
 mod driver;
 mod error;
@@ -66,11 +67,16 @@ mod j2k_encode;
 mod jpeg;
 mod kernels;
 mod memory;
+mod ml;
 #[cfg(test)]
 mod tests;
 mod transcode;
 
 pub use build_flags::transcode_kernels_built;
+pub use classic_decode::{
+    CudaClassicCodeBlockJob, CudaClassicDecodeStageTimings, CudaClassicDecodeTarget,
+    CudaClassicSegment, CudaClassicStatus,
+};
 #[cfg(test)]
 pub(crate) use context::CudaKernelName;
 pub use context::{
@@ -122,10 +128,11 @@ pub use jpeg::{
 pub use memory::{
     CudaBufferPool, CudaBufferPoolDiagnostics, CudaBufferPoolLimits, CudaBufferPoolTakeTrace,
     CudaDeviceBuffer, CudaDeviceBufferRange, CudaDeviceBufferView, CudaDeviceBufferViewMut,
-    CudaPinnedUploadOperationGuard, CudaPinnedUploadStagingCheckout,
-    CudaPinnedUploadStagingPoolDiagnostics, CudaPinnedUploadStagingPoolLimits,
-    CudaPooledDeviceBuffer,
+    CudaExternalDeviceBufferViewMut, CudaPinnedUploadOperationGuard,
+    CudaPinnedUploadStagingCheckout, CudaPinnedUploadStagingPoolDiagnostics,
+    CudaPinnedUploadStagingPoolLimits, CudaPooledDeviceBuffer,
 };
+pub use ml::{CudaJ2kMlKernelConfig, CudaJ2kMlLayout, CudaJ2kMlNormalization, CudaJ2kMlSample};
 pub use transcode::{
     CudaDwt97BatchGeometry, CudaDwt97BatchWithPoolRequest, CudaHtj2k97CodeblockBands,
     CudaHtj2k97CodeblockBatchWithPoolRequest, CudaHtj2k97DeviceCodeblockBands,

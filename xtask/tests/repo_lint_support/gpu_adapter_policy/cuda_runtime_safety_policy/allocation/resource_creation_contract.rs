@@ -11,7 +11,7 @@ pub(super) fn assert_policy(root: &Path) {
     };
     let validation = read("crates/j2k-cuda-runtime/src/context/resource_creation.rs");
     let memory = read("crates/j2k-cuda-runtime/src/memory.rs");
-    let device = read("crates/j2k-cuda-runtime/src/context/device.rs");
+    let context_creation = read("crates/j2k-cuda-runtime/src/context/creation.rs");
     let events = read("crates/j2k-cuda-runtime/src/execution/events.rs");
     let kernel_cache = read("crates/j2k-cuda-runtime/src/context/kernel_cache.rs");
     let kernel_tests = read("crates/j2k-cuda-runtime/src/context/kernel_cache/tests.rs");
@@ -31,8 +31,9 @@ pub(super) fn assert_policy(root: &Path) {
             "cu_mem_alloc)(&raw mut ptr, len)",
             "validate_device_allocation(ptr, len)",
         ]),
-        PatternCheck::new("CUDA context promotion", &device).required(&[
+        PatternCheck::new("CUDA context promotion", &context_creation).required(&[
             "cu_ctx_create)(&raw mut context, 0, device)",
+            "cu_device_primary_ctx_retain)(&raw mut context, device)",
             "validate_resource_handle(",
             "CUDA returned a null context after successful creation",
         ]),

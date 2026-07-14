@@ -17,6 +17,8 @@ fn cuda_htj2k_decode_bench_exposes_gray_rgb_rgba_rows() {
         "j2k_cuda_htj2k_roi_scaled_decode",
         "j2k_cuda_htj2k_tile_batch_decode",
         "j2k_cuda_htj2k_external_mixed_tile_batch_decode",
+        "j2k_cuda_classic_full_tile_decode",
+        "j2k_cuda_classic_tile_batch_decode",
         "cpu_external_mixed_",
         "cuda_external_mixed_",
         "BATCH_SIZES",
@@ -24,6 +26,7 @@ fn cuda_htj2k_decode_bench_exposes_gray_rgb_rgba_rows() {
         "J2K_CUDA_DECODE_BATCH_SIZES",
         "J2K_CUDA_DECODE_CASE_BATCH_SIZES",
         "J2K_CUDA_DECODE_SAMPLE_SIZE",
+        "J2K_CUDA_DECODE_MEASUREMENT_SECONDS",
         "J2K_CUDA_DECODE_FORMATS",
         "J2K_CUDA_DECODE_INPUT_DIRS",
         "J2K_CUDA_DECODE_MANIFEST",
@@ -31,13 +34,17 @@ fn cuda_htj2k_decode_bench_exposes_gray_rgb_rgba_rows() {
         "J2K_REQUIRE_CUDA_BENCH",
         "j2k_cuda_decode_batch_sizes",
         "j2k_cuda_decode_case_batch_sizes",
+        "j2k_cuda_decode_classic_batch_sizes",
         "j2k_cuda_decode_mixed_batch_sizes",
         "j2k_cuda_decode_sample_size",
+        "j2k_cuda_decode_measurement_seconds",
         "j2k_cuda_decode_batch_policy",
         "j2k_cuda_decode_mixed_large_batch_policy",
         "j2k_cuda_decode_mixed_large_batch_tile_pixels",
         "mixed_external_cases_for_batch",
         "j2k_cuda_decode_io_policy",
+        "j2k_cuda_decode_session_policy",
+        "steady_state_route_warmed",
         "j2k_cuda_decode_external_case_count",
         "j2k_cuda_decode_external_fixture_count",
         "j2k_cuda_decode_external_skipped_non_htj2k_count",
@@ -57,16 +64,71 @@ fn cuda_htj2k_decode_bench_exposes_gray_rgb_rgba_rows() {
 }
 
 #[test]
+fn cuda_classic_decode_bench_obeys_generated_and_format_filters() {
+    let bench = include_str!("../benches/htj2k_decode.rs");
+    let main = extract_function_body(bench, "fn bench_htj2k_decode");
+    assert!(main.contains("let classic = classic_decode_case_if_enabled();"));
+    assert!(main.contains("if let Some(classic) = classic.as_ref()"));
+    assert!(main.contains("emit_input_metadata(&corpus, classic.as_ref())"));
+
+    let selection = extract_function_body(bench, "fn classic_decode_case_if_enabled");
+    assert!(selection.contains("include_generated_decode_cases()"));
+    assert!(selection.contains("enabled_decode_cases().contains(&\"rgb8\")"));
+
+    let metadata = extract_function_body(bench, "fn emit_input_metadata");
+    assert!(metadata.contains("j2k_cuda_decode_classic_batch_sizes"));
+    assert!(metadata.contains("corpus.cases.len() + usize::from(classic.is_some())"));
+    assert_eq!(
+        bench
+            .matches(".measurement_time(decode_measurement_time())")
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn cuda_htj2k_decode_bench_reuses_session_in_timed_cuda_rows() {
     let bench = include_str!("../benches/htj2k_decode.rs");
 
-    assert!(
+    assert_eq!(
         bench
             .matches("let mut session = CudaSession::default();")
-            .count()
-            >= 6,
-        "CUDA decode benchmarks must create reusable sessions outside timed iterations"
+            .count(),
+        2,
+        "only CUDA availability detection and the route-warmup helper may create sessions"
     );
+
+    let warm_helper = extract_function_body(bench, "fn warm_cuda_session");
+    assert!(
+        warm_helper.contains("let mut session = CudaSession::default();")
+            && warm_helper.contains("warm(&mut session)")
+            && warm_helper.contains("session"),
+        "CUDA decode benchmark warmup helper must return the session it warmed"
+    );
+
+    for function in [
+        "fn bench_classic_full_tile",
+        "fn bench_classic_tile_batch",
+        "fn bench_full_tile",
+        "fn bench_roi",
+        "fn bench_scaled",
+        "fn bench_roi_scaled",
+        "fn bench_tile_batch",
+        "fn bench_mixed_external_tile_batch",
+    ] {
+        let body = extract_function_body(bench, function);
+        assert!(
+            !body.contains("CudaSession::default()"),
+            "{function} must capture a session created before Criterion's sample callback"
+        );
+        let warmup = body
+            .find("warm_cuda_session(")
+            .unwrap_or_else(|| panic!("{function} must warm its CUDA route"));
+        assert!(
+            body[warmup..].contains("b.iter("),
+            "{function} must warm CUDA before its timed iteration"
+        );
+    }
 
     for forbidden in [
         ".decode_to_device(case.fmt, BackendRequest::Cuda)",
@@ -87,10 +149,18 @@ fn cuda_htj2k_decode_bench_reuses_session_in_timed_cuda_rows() {
         ".submit_region_scaled_to_device(",
     ] {
         assert!(
-            bench.contains(expected),
-            "CUDA decode benchmark is missing reusable-session path `{expected}`"
+            bench.matches(expected).count() >= 2,
+            "CUDA decode benchmark must use `{expected}` for warmup and measurement"
         );
     }
+
+    assert!(
+        bench
+            .matches("J2kDecoder::decode_batch_to_device_with_session(")
+            .count()
+            >= 6,
+        "CUDA batch rows must warm and measure through the same batch entrypoint"
+    );
 }
 
 #[test]
@@ -211,6 +281,8 @@ fn cuda_runtime_exposes_steady_state_async_decode_helpers() {
     for expected in [
         "pub fn synchronize(&self) -> Result<(), CudaError>",
         "pub fn time_default_stream_named_us_if",
+        "pub struct CudaClassicDecodeStageTimings",
+        "decode_classic_codeblocks_multi_with_resources_and_pool_timed",
         concat!(
             "pub un",
             "safe fn decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool"
@@ -247,6 +319,7 @@ fn read_cuda_runtime_sources() -> String {
         "memory/pinned_staging.rs",
         "memory/pinned_staging/operations.rs",
         "memory/pool.rs",
+        "classic_decode.rs",
         "htj2k_decode.rs",
         "htj2k_decode/api.rs",
         "htj2k_decode/completion.rs",

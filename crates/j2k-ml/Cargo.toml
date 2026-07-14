@@ -1,0 +1,69 @@
+[package]
+name = "j2k-ml"
+description = "Independent Burn tensor integration for JPEG 2000 and HTJ2K"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+readme = "README.md"
+
+[features]
+default = []
+cpu = []
+cuda = [
+    "cpu",
+    "dep:burn-cuda",
+    "dep:burn-cubecl",
+    "dep:burn-fusion",
+    "dep:burn-ir",
+    "dep:j2k-cuda",
+    "dep:j2k-cuda-runtime",
+]
+metal = ["cpu", "dep:burn-wgpu", "dep:j2k-metal"]
+
+[dependencies]
+burn-core = { workspace = true }
+burn-cuda = { workspace = true, optional = true }
+burn-cubecl = { workspace = true, optional = true }
+burn-fusion = { workspace = true, optional = true }
+burn-ir = { workspace = true, optional = true }
+burn-wgpu = { workspace = true, optional = true }
+j2k = { path = "../j2k", version = "=0.7.0" }
+j2k-cuda = { path = "../j2k-cuda", version = "=0.7.0", features = ["cuda-runtime"], optional = true }
+j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.7.0", features = ["cuda-oxide-j2k-ml"], optional = true }
+j2k-metal = { path = "../j2k-metal", version = "=0.7.0", optional = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+burn-autodiff = { workspace = true }
+burn-flex = { workspace = true }
+criterion = { workspace = true }
+j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
+
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+undocumented_unsafe_blocks = "warn"
+
+[[test]]
+name = "metal"
+required-features = ["metal"]
+
+[[test]]
+name = "cuda"
+required-features = ["cuda"]
+
+[[bench]]
+name = "tensor_decode"
+harness = false
+test = false
+required-features = ["cpu"]

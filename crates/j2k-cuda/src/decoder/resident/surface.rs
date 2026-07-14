@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    cuda_error, profile, BackendKind, CudaError, CudaHtj2kDecodePlan, CudaHtj2kProfileReport,
-    CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaSession, CudaSurfaceStats, Error, PixelFormat,
-    Storage, Surface, SurfaceResidency, CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
+    cuda_error, profile, BackendKind, CudaError, CudaHtj2kDecodePlan,
+    CudaHtj2kDecodeTableResources, CudaHtj2kProfileReport, CudaJ2kStoreGray16Job,
+    CudaJ2kStoreGray8Job, CudaSession, CudaSurfaceStats, Error, PixelFormat, Storage, Surface,
+    SurfaceResidency, CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
 };
 use super::buffer_access::pooled_cuda_buffer;
 use super::component::decode_cuda_component_plan;
@@ -18,9 +19,8 @@ pub(super) fn decode_grayscale_cuda_resident_surface_with_plan_profile(
     collect_stage_timings: bool,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     let context = session.cuda_context()?;
-    let table_upload_start = profile::profile_now(collect_stage_timings);
-    let table_resources = session.htj2k_decode_table_resources()?;
-    let table_upload_us = profile::elapsed_us(table_upload_start);
+    let (table_resources, table_upload_us) =
+        decode_table_resources(session, plan, collect_stage_timings)?;
     report.h2d_us = report.h2d_us.saturating_add(table_upload_us);
     report.detail.table_upload_us = report
         .detail
@@ -30,7 +30,7 @@ pub(super) fn decode_grayscale_cuda_resident_surface_with_plan_profile(
     let component = decode_cuda_component_plan(
         &context,
         plan,
-        &table_resources,
+        table_resources.as_ref(),
         &pool,
         collect_stage_timings,
     )?;
@@ -116,4 +116,19 @@ pub(super) fn decode_grayscale_cuda_resident_surface_with_plan_profile(
         storage: Storage::Cuda(surface_buffer),
     };
     Ok((surface, report.clone()))
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn decode_table_resources(
+    session: &mut CudaSession,
+    plan: &CudaHtj2kDecodePlan,
+    collect_stage_timings: bool,
+) -> Result<(Option<CudaHtj2kDecodeTableResources>, u128), Error> {
+    let started = profile::profile_now(collect_stage_timings);
+    let tables = if plan.subbands().is_empty() {
+        None
+    } else {
+        Some(session.htj2k_decode_table_resources()?)
+    };
+    Ok((tables, profile::elapsed_us(started)))
 }

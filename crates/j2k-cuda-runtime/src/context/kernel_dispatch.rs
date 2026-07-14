@@ -14,6 +14,8 @@ use crate::build_flags::ensure_cuda_oxide_j2k_dequantize_ptx_built;
 use crate::build_flags::ensure_cuda_oxide_j2k_encode_ptx_built;
 #[cfg(feature = "cuda-oxide-j2k-idwt")]
 use crate::build_flags::ensure_cuda_oxide_j2k_idwt_ptx_built;
+#[cfg(feature = "cuda-oxide-j2k-ml")]
+use crate::build_flags::ensure_cuda_oxide_j2k_ml_ptx_built;
 #[cfg(feature = "cuda-oxide-jpeg-decode")]
 use crate::build_flags::ensure_cuda_oxide_jpeg_decode_ptx_built;
 #[cfg(feature = "cuda-oxide-jpeg-encode")]
@@ -26,7 +28,27 @@ use super::inner::ContextInner;
 #[cfg(j2k_cuda_oxide_enabled)]
 use super::kernel_cache::CompiledKernelKey;
 
+mod classic;
+
 impl ContextInner {
+    #[cfg(feature = "cuda-oxide-j2k-ml")]
+    pub(crate) fn cuda_oxide_j2k_ml_kernel_function(&self) -> Result<CuFunction, CudaError> {
+        ensure_cuda_oxide_j2k_ml_ptx_built()?;
+        self.kernel_function_from_key(CompiledKernelKey::CudaOxideJ2kMl)
+    }
+
+    #[cfg(not(feature = "cuda-oxide-j2k-ml"))]
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled method preserves the enabled dispatch interface"
+    )]
+    pub(crate) fn cuda_oxide_j2k_ml_kernel_function(&self) -> Result<CuFunction, CudaError> {
+        Err(Self::cuda_oxide_feature_missing(
+            "j2k-ml",
+            "cuda-oxide-j2k-ml",
+        ))
+    }
+
     #[cfg(feature = "cuda-oxide-copy-u8")]
     pub(crate) fn cuda_oxide_copy_u8_kernel_function(&self) -> Result<CuFunction, CudaError> {
         ensure_cuda_oxide_copy_u8_ptx_built()?;

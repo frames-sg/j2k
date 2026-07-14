@@ -11,4 +11,5 @@ crates/j2k-transcode-cuda/ @frames-sg/j2k-maintainers
 crates/j2k-metal-support/ @frames-sg/j2k-maintainers
 crates/j2k-jpeg-metal/ @frames-sg/j2k-maintainers
 crates/j2k-metal/ @frames-sg/j2k-maintainers
+crates/j2k-ml/ @frames-sg/j2k-maintainers
 crates/j2k-transcode-metal/ @frames-sg/j2k-maintainers

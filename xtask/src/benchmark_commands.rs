@@ -51,6 +51,27 @@ pub(super) fn bench_build() -> Result<(), String> {
         "bench-libjpeg-turbo",
         "--no-run",
     ])?;
+    bench_build_accelerators()?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "j2k-tilecodec",
+        "--bench",
+        "compare",
+        "--no-run",
+    ])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "j2k-transcode",
+        "--bench",
+        "dct53",
+        "--no-run",
+    ])?;
+    run_cargo(transcode_metal_bench_args())
+}
+
+fn bench_build_accelerators() -> Result<(), String> {
     run_cargo(&["bench", "-p", "j2k-jpeg-metal", "--no-run"])?;
     run_cargo(&[
         "bench",
@@ -95,20 +116,13 @@ pub(super) fn bench_build() -> Result<(), String> {
     run_cargo(&[
         "bench",
         "-p",
-        "j2k-tilecodec",
+        "j2k-ml",
         "--bench",
-        "compare",
+        "tensor_decode",
+        "--features",
+        "cpu",
         "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "j2k-transcode",
-        "--bench",
-        "dct53",
-        "--no-run",
-    ])?;
-    run_cargo(transcode_metal_bench_args())
+    ])
 }
 
 fn transcode_metal_bench_args() -> &'static [&'static str] {

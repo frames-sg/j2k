@@ -235,6 +235,87 @@ pub struct CudaDeviceBufferViewMut<'a, T> {
     pub(crate) _marker: std::marker::PhantomData<&'a mut T>,
 }
 
+/// Lifetime-bound mutable view of CUDA memory owned by another runtime.
+///
+/// This value never frees the allocation. Its lifetime is tied to an exclusive
+/// borrow of the external runtime's managed-resource guard.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct CudaExternalDeviceBufferViewMut<'a> {
+    context: CudaContext,
+    ptr: CuDevicePtr,
+    len: usize,
+    _exclusive: std::marker::PhantomData<&'a mut ()>,
+}
+
+impl<'a> CudaExternalDeviceBufferViewMut<'a> {
+    /// Construct a non-owning external device-buffer view.
+    ///
+    /// # Safety
+    ///
+    /// `ptr..ptr+len` must be a live CUDA allocation range represented by
+    /// `_managed_owner`. The exclusive owner borrow must exclude every
+    /// overlapping host or device mutation for this view's lifetime. The
+    /// allocation must remain valid and must not be freed by the caller until
+    /// the view is dropped.
+    pub unsafe fn from_raw_parts<Owner>(
+        context: &CudaContext,
+        ptr: u64,
+        len: usize,
+        required_alignment: usize,
+        _managed_owner: &'a mut Owner,
+    ) -> Result<Self, CudaError> {
+        if len == 0 {
+            return Err(CudaError::InvalidArgument {
+                message: "external CUDA buffer must not be empty".to_string(),
+            });
+        }
+        if ptr == 0 {
+            return Err(CudaError::InvalidArgument {
+                message: "external CUDA buffer pointer must not be null".to_string(),
+            });
+        }
+        if required_alignment == 0 || !required_alignment.is_power_of_two() {
+            return Err(CudaError::InvalidArgument {
+                message: "external CUDA buffer alignment must be a nonzero power of two"
+                    .to_string(),
+            });
+        }
+        if !ptr.is_multiple_of(required_alignment as u64) {
+            return Err(CudaError::InvalidArgument {
+                message: format!(
+                    "external CUDA buffer pointer {ptr:#x} is not aligned to {required_alignment} bytes"
+                ),
+            });
+        }
+        let len_u64 = u64::try_from(len).map_err(|_| CudaError::LengthTooLarge { len })?;
+        ptr.checked_add(len_u64)
+            .ok_or(CudaError::LengthTooLarge { len })?;
+        context.inner.validate_pointer_context(ptr)?;
+        Ok(Self {
+            context: context.clone(),
+            ptr,
+            len,
+            _exclusive: std::marker::PhantomData,
+        })
+    }
+
+    /// Context that owns the external allocation.
+    pub fn context(&self) -> &CudaContext {
+        &self.context
+    }
+
+    /// Raw device pointer.
+    pub fn device_ptr(&self) -> u64 {
+        self.ptr
+    }
+
+    /// External allocation range length in bytes.
+    pub fn byte_len(&self) -> usize {
+        self.len
+    }
+}
+
 impl<T> CudaDeviceBufferViewMut<'_, T> {
     /// Raw CUDA device pointer value for kernel argument binding.
     pub fn device_ptr(&self) -> u64 {

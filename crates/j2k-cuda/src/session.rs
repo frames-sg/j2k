@@ -45,6 +45,16 @@ pub struct CudaSession {
 }
 
 impl CudaSession {
+    /// Create a session bound to an existing CUDA context.
+    #[cfg(feature = "cuda-runtime")]
+    #[doc(hidden)]
+    pub fn with_context(context: CudaContext) -> Self {
+        Self {
+            context: Some(context),
+            ..Self::default()
+        }
+    }
+
     /// Number of submissions recorded by this session.
     pub fn submissions(&self) -> u64 {
         self.submissions

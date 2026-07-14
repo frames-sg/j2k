@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
+    classic_decode::{
+        CudaClassicKernelJob, CudaClassicKernelSegment, CudaClassicKernelTables, CudaClassicStatus,
+    },
     htj2k_decode::{
         CudaHtj2kCleanupMultiKernelJob, CudaHtj2kCodeBlockKernelJob, CudaHtj2kDequantizeKernelJob,
         CudaHtj2kStatus,
@@ -287,6 +290,46 @@ impl_cuda_gpu_abi! {
         reserved0: u32,
         reserved1: u32,
     },
+    CudaClassicKernelJob {
+        output_ptr: u64,
+        coded_offset: u32,
+        coded_len: u32,
+        segment_offset: u32,
+        segment_count: u32,
+        scratch_offset: u32,
+        width: u32,
+        height: u32,
+        output_stride: u32,
+        output_offset: u32,
+        missing_msbs: u32,
+        total_bitplanes: u32,
+        number_of_coding_passes: u32,
+        sub_band_type: u32,
+        style_flags: u32,
+        strict: u32,
+        dequantization_step: f32,
+    },
+    CudaClassicKernelSegment {
+        data_offset: u32,
+        data_length: u32,
+        start_coding_pass: u32,
+        end_coding_pass: u32,
+        use_arithmetic: u32,
+    },
+    CudaClassicKernelTables {
+        mq_qe: [u32; 47],
+        mq_transitions: [u32; 47],
+        sign_contexts: [u16; 256],
+        zero_contexts_ll_lh: [u8; 256],
+        zero_contexts_hl: [u8; 256],
+        zero_contexts_hh: [u8; 256],
+    },
+    CudaClassicStatus {
+        code: u32,
+        detail: u32,
+        reserved0: u32,
+        reserved1: u32,
+    },
     CudaJ2kRect {
         x0: u32,
         y0: u32,
@@ -424,6 +467,19 @@ mod tests {
         );
         assert_eq!(size_of::<CudaHtj2kDequantizeKernelJob>(), 40);
         assert_eq!(offset_of!(CudaHtj2kDequantizeKernelJob, reserved_tail), 36);
+        assert_eq!(size_of::<CudaClassicKernelJob>(), 72);
+        assert_eq!(offset_of!(CudaClassicKernelJob, dequantization_step), 68);
+        assert_eq!(size_of::<CudaClassicKernelSegment>(), 20);
+        assert_eq!(size_of::<CudaClassicKernelTables>(), 1_656);
+        assert_eq!(offset_of!(CudaClassicKernelTables, mq_transitions), 188);
+        assert_eq!(offset_of!(CudaClassicKernelTables, sign_contexts), 376);
+        assert_eq!(
+            offset_of!(CudaClassicKernelTables, zero_contexts_ll_lh),
+            888
+        );
+        assert_eq!(offset_of!(CudaClassicKernelTables, zero_contexts_hl), 1_144);
+        assert_eq!(offset_of!(CudaClassicKernelTables, zero_contexts_hh), 1_400);
+        assert_eq!(size_of::<CudaClassicStatus>(), 16);
         assert_eq!(size_of::<CudaJ2kIdwtMultiKernelJob>(), 128);
         assert_eq!(offset_of!(CudaJ2kIdwtMultiKernelJob, reserved_tail), 124);
         assert_eq!(size_of::<CudaJ2kStoreRgb8MctBatchJob>(), 128);

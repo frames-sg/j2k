@@ -27,8 +27,12 @@ impl CudaHtj2kDecodeTableResources {
 }
 
 impl CudaHtj2kDecodeResources {
-    pub(super) fn is_owned_by(&self, context: &CudaContext) -> Result<bool, CudaError> {
-        Ok(self.payload.is_owned_by(context)? && self.tables.is_owned_by(context))
+    pub(crate) fn is_owned_by(&self, context: &CudaContext) -> Result<bool, CudaError> {
+        Ok(self.payload.is_owned_by(context)?
+            && self
+                .tables
+                .as_ref()
+                .is_none_or(|tables| tables.is_owned_by(context)))
     }
 }
 

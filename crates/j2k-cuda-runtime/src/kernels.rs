@@ -16,6 +16,14 @@ pub(crate) enum CudaKernel {
         )
     )]
     CopyU8,
+    #[cfg_attr(
+        not(feature = "cuda-oxide-j2k-ml"),
+        expect(
+            dead_code,
+            reason = "variant is used only by the j2k-ml kernel feature"
+        )
+    )]
+    J2kMlConvert,
     J2kDeinterleaveToF32,
     J2kDeinterleaveStridedToF32,
     J2kForwardRct,
@@ -30,6 +38,7 @@ pub(crate) enum CudaKernel {
     Htj2kDecodeCodeblocksMulti,
     Htj2kDecodeCodeblocksMultiCleanupOnly,
     Htj2kDecodeCodeblocksMultiCleanupDequantize,
+    J2kClassicDecodeCodeblocksMulti,
     J2kDequantizeHtj2kCodeblocks,
     J2kDequantizeHtj2kCodeblocksMulti,
     J2kDequantizeHtj2kCleanupJobsMulti,
@@ -225,6 +234,17 @@ impl CudaKernel {
         )
     }
 
+    #[cfg_attr(
+        not(feature = "cuda-oxide-j2k-classic-decode"),
+        expect(
+            dead_code,
+            reason = "classifier is used only by the classic J2K decode feature"
+        )
+    )]
+    pub(crate) fn is_j2k_classic_decode_stage(self) -> bool {
+        matches!(self, Self::J2kClassicDecodeCodeblocksMulti)
+    }
+
     pub(crate) fn is_htj2k_encode_codeblock_stage(self) -> bool {
         matches!(
             self,
@@ -353,6 +373,7 @@ impl CudaKernel {
     pub(crate) fn entrypoint(self) -> &'static [u8] {
         match self {
             Self::CopyU8 => b"j2k_copy_u8\0",
+            Self::J2kMlConvert => b"j2k_ml_convert\0",
             Self::J2kDeinterleaveToF32 => b"j2k_deinterleave_to_f32\0",
             Self::J2kDeinterleaveStridedToF32 => b"j2k_deinterleave_strided_to_f32\0",
             Self::J2kForwardRct => b"j2k_forward_rct\0",
@@ -371,6 +392,7 @@ impl CudaKernel {
             Self::Htj2kDecodeCodeblocksMultiCleanupDequantize => {
                 b"j2k_htj2k_decode_codeblocks_multi_cleanup_dequantize\0"
             }
+            Self::J2kClassicDecodeCodeblocksMulti => b"j2k_decode_classic_codeblocks_multi\0",
             Self::J2kDequantizeHtj2kCodeblocks => b"j2k_dequantize_htj2k_codeblocks\0",
             Self::J2kDequantizeHtj2kCodeblocksMulti => b"j2k_dequantize_htj2k_codeblocks_multi\0",
             Self::J2kDequantizeHtj2kCleanupJobsMulti => {
@@ -456,9 +478,17 @@ const CUDA_OXIDE_COPY_U8_PTX: &[u8] =
 #[cfg(feature = "cuda-oxide-j2k-encode")]
 const CUDA_OXIDE_J2K_ENCODE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_j2k_encode.ptx"));
+#[cfg(feature = "cuda-oxide-j2k-ml")]
+const CUDA_OXIDE_J2K_ML_PTX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_j2k_ml.ptx"));
 #[cfg(feature = "cuda-oxide-j2k-decode-store")]
 const CUDA_OXIDE_J2K_DECODE_STORE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_j2k_decode_store.ptx"));
+#[cfg(feature = "cuda-oxide-j2k-classic-decode")]
+const CUDA_OXIDE_J2K_CLASSIC_DECODE_PTX: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/cuda_oxide_j2k_classic_decode.ptx"
+));
 #[cfg(feature = "cuda-oxide-j2k-dequantize")]
 const CUDA_OXIDE_J2K_DEQUANTIZE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_j2k_dequantize.ptx"));
@@ -482,6 +512,7 @@ const CUDA_OXIDE_JPEG_ENCODE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cuda_oxide_jpeg_encode.ptx"));
 const HTJ2K_DECODE_CODEBLOCK_THREADS: usize = 32;
 const HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA: c_uint = 32;
+const CLASSIC_DECODE_CODEBLOCK_THREADS_CUDA: c_uint = 32;
 const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
 const HTJ2K_ENCODE_CODEBLOCK_THREADS_CUDA: c_uint = 128;
 
@@ -567,6 +598,13 @@ pub(crate) fn htj2k_codeblock_sample_launch_geometry(
     CudaLaunchGeometry::new((jobs, 1, 1), (COPY_U8_THREADS_CUDA, 1, 1))
 }
 
+pub(crate) fn j2k_classic_codeblock_launch_geometry(
+    job_count: usize,
+) -> Option<CudaLaunchGeometry> {
+    let jobs = c_uint::try_from(job_count).ok()?;
+    CudaLaunchGeometry::new((jobs, 1, 1), (CLASSIC_DECODE_CODEBLOCK_THREADS_CUDA, 1, 1))
+}
+
 pub(crate) fn j2k_store_batch_launch_geometry(
     max_pixels: usize,
     job_count: usize,
@@ -614,6 +652,11 @@ pub(crate) fn cuda_oxide_copy_u8_ptx() -> &'static [u8] {
     CUDA_OXIDE_COPY_U8_PTX
 }
 
+#[cfg(feature = "cuda-oxide-j2k-ml")]
+pub(crate) fn cuda_oxide_j2k_ml_ptx() -> &'static [u8] {
+    CUDA_OXIDE_J2K_ML_PTX
+}
+
 #[cfg(feature = "cuda-oxide-j2k-encode")]
 pub(crate) fn cuda_oxide_j2k_encode_ptx() -> &'static [u8] {
     CUDA_OXIDE_J2K_ENCODE_PTX
@@ -622,6 +665,11 @@ pub(crate) fn cuda_oxide_j2k_encode_ptx() -> &'static [u8] {
 #[cfg(feature = "cuda-oxide-j2k-decode-store")]
 pub(crate) fn cuda_oxide_j2k_decode_store_ptx() -> &'static [u8] {
     CUDA_OXIDE_J2K_DECODE_STORE_PTX
+}
+
+#[cfg(feature = "cuda-oxide-j2k-classic-decode")]
+pub(crate) fn cuda_oxide_j2k_classic_decode_ptx() -> &'static [u8] {
+    CUDA_OXIDE_J2K_CLASSIC_DECODE_PTX
 }
 
 #[cfg(feature = "cuda-oxide-j2k-dequantize")]
@@ -825,6 +873,54 @@ mod tests {
         let large_geometry = htj2k_codeblock_launch_geometry(2_048).expect("large geometry");
         assert_eq!(large_geometry.grid(), (64, 1, 1));
         assert_eq!(large_geometry.block(), (32, 1, 1));
+    }
+
+    #[test]
+    fn classic_decode_geometry_and_device_stride_share_a_classic_owned_constant() {
+        let geometry = j2k_classic_codeblock_launch_geometry(3).expect("classic geometry");
+        assert_eq!(geometry.grid(), (3, 1, 1));
+        assert_eq!(geometry.block(), (32, 1, 1));
+
+        let host = include_str!("kernels.rs");
+        let geometry_source = host
+            .split("pub(crate) fn j2k_classic_codeblock_launch_geometry")
+            .nth(1)
+            .expect("classic geometry source")
+            .split('}')
+            .next()
+            .expect("classic geometry body");
+        assert!(geometry_source.contains("CLASSIC_DECODE_CODEBLOCK_THREADS_CUDA"));
+        assert!(!geometry_source.contains("HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA"));
+
+        let device = include_str!("cuda_oxide_j2k_classic_decode/simt/src/main.rs");
+        let entrypoint = device
+            .split("pub unsafe fn j2k_decode_classic_codeblocks_multi")
+            .nth(1)
+            .expect("classic device entrypoint");
+        assert!(device.contains("const CLASSIC_DECODE_THREADS: u32 = 32;"));
+        assert!(entrypoint.contains("index += CLASSIC_DECODE_THREADS"));
+        assert!(entrypoint.contains("sample += CLASSIC_DECODE_THREADS"));
+        assert!(!entrypoint.contains("index += 32"));
+        assert!(!entrypoint.contains("sample += 32"));
+    }
+
+    #[test]
+    fn classic_device_validates_job_before_using_job_dimensions() {
+        let device = include_str!("cuda_oxide_j2k_classic_decode/simt/src/main.rs");
+        let entrypoint = device
+            .split("pub unsafe fn j2k_decode_classic_codeblocks_multi")
+            .nth(1)
+            .expect("classic device entrypoint");
+        let validation = entrypoint
+            .find("validate_job_header(")
+            .expect("early device job validation");
+        let coefficient_count = entrypoint
+            .find("let coefficient_count")
+            .expect("coefficient count");
+        assert!(validation < coefficient_count);
+        assert!(device.contains("segment.end_coding_pass > job.number_of_coding_passes"));
+        assert!(entrypoint.contains("job.output_offset as usize"));
+        assert!(entrypoint.contains("y as usize * job.output_stride as usize"));
     }
 
     #[test]

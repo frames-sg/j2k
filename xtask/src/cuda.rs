@@ -45,6 +45,12 @@ const TRANSCODE_PARITY_TESTS: &[&str] = &[
     "ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path",
 ];
 
+const ML_CUDA_TESTS: &[&str] = &[
+    "direct_cuda_decode_reports_route_and_exact_pixels",
+    "direct_cuda_matches_portable_u16_float_batch_and_autodiff_lifting",
+    "retained_primary_context_matches_cubecl_device_context",
+];
+
 struct CudaRuntimeSuite {
     label: &'static str,
     package: &'static str,
@@ -114,6 +120,10 @@ const CUDA_CLIPPY_SUITES: &[CudaClippySuite] = &[
         package: "j2k-cuda",
         features: "cuda-profiling",
     },
+    CudaClippySuite {
+        package: "j2k-ml",
+        features: "cuda",
+    },
 ];
 
 struct ExactCudaSuite {
@@ -125,6 +135,13 @@ struct ExactCudaSuite {
 }
 
 const EXACT_CUDA_SUITES: &[ExactCudaSuite] = &[
+    ExactCudaSuite {
+        label: "Burn J2K CUDA direct tensor integration",
+        package: "j2k-ml",
+        features: "cuda",
+        test_targets: &["cuda"],
+        required_tests: ML_CUDA_TESTS,
+    },
     ExactCudaSuite {
         label: "HTJ2K encode CUDA parity inventory",
         package: "j2k-cuda",

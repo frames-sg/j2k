@@ -10,9 +10,17 @@ use crate::{
 use super::host_budget::SharedCudaHostBudget;
 use super::{CompiledKernel, CompiledKernelKey, ContextResourceLifecycle};
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ContextOwnership {
+    Owned,
+    RetainedPrimary { device: crate::driver::CuDevice },
+}
+
 pub(crate) struct ContextInner {
     pub(crate) driver: Driver,
     pub(crate) context: CuContext,
+    pub(crate) ownership: ContextOwnership,
+    pub(crate) device_ordinal: usize,
     pub(crate) modules: Mutex<HashMap<CompiledKernelKey, CompiledKernel>>,
     pub(crate) pinned_upload_operation: Mutex<()>,
     pub(crate) pinned_upload_staging: Mutex<PinnedUploadStagingPool>,
@@ -46,10 +54,18 @@ impl Drop for ContextInner {
                     let _ = unsafe { (self.driver.cu_module_unload)(compiled.module) };
                 }
             }
-            // SAFETY: context was created by this ContextInner and cached
-            // resources are either already released or left for context-wide
-            // destruction after a failed/uncertain completion state.
-            let _ = unsafe { (self.driver.cu_ctx_destroy)(self.context) };
+            match self.ownership {
+                ContextOwnership::Owned => {
+                    // SAFETY: this ContextInner owns the context returned by
+                    // cuCtxCreate_v2 and releases it exactly once.
+                    let _ = unsafe { (self.driver.cu_ctx_destroy)(self.context) };
+                }
+                ContextOwnership::RetainedPrimary { device } => {
+                    // SAFETY: this balances the successful primary-context
+                    // retain used to construct this ContextInner.
+                    let _ = unsafe { (self.driver.cu_device_primary_ctx_release)(device) };
+                }
+            }
             self.host_budget.clear_pinned_after_context_drop();
         }
     }

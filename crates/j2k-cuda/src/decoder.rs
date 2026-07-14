@@ -16,8 +16,9 @@ use j2k_core::{
 };
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::{
-    CudaBufferPool, CudaBufferPoolTakeTrace, CudaContext, CudaDeviceBuffer, CudaError,
-    CudaExecutionStats, CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeResources,
+    CudaBufferPool, CudaBufferPoolTakeTrace, CudaClassicCodeBlockJob, CudaClassicDecodeTarget,
+    CudaClassicSegment, CudaContext, CudaDeviceBuffer, CudaError, CudaExecutionStats,
+    CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeResources,
     CudaHtj2kDecodeTableResources, CudaHtj2kDequantizeTarget, CudaJ2kIdwtJob, CudaJ2kIdwtTarget,
     CudaJ2kRect, CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaPooledDeviceBuffer,
     CudaQueuedExecution, CudaQueuedHtj2kCleanup,
@@ -113,8 +114,17 @@ struct CudaPendingDequantBand {
 }
 
 #[cfg(feature = "cuda-runtime")]
+struct CudaPendingClassicBand {
+    band_index: usize,
+    jobs: Vec<CudaClassicCodeBlockJob>,
+    segments: Vec<CudaClassicSegment>,
+    output_words: usize,
+}
+
+#[cfg(feature = "cuda-runtime")]
 struct CudaComponentDecodeWork {
     bands: Vec<CudaCoefficientBand>,
+    pending_classic_bands: Vec<CudaPendingClassicBand>,
     pending_dequant_bands: Vec<CudaPendingDequantBand>,
     store: CudaHtj2kStoreStep,
     dispatches: usize,
@@ -390,14 +400,20 @@ mod tests {
         let mut report = crate::CudaHtj2kProfileReport::default();
         let timings = CudaDecodeStageTimings {
             h2d: 17,
+            table_upload: 7,
+            job_upload: 10,
             status_d2h: 5,
+            classic_tier1: 11,
             ..CudaDecodeStageTimings::default()
         };
 
         timings.add_to_report(&mut report);
 
         assert_eq!(report.h2d_us, 17);
+        assert_eq!(report.detail.table_upload_us, 7);
+        assert_eq!(report.detail.job_upload_us, 10);
         assert_eq!(report.detail.status_d2h_us, 5);
+        assert_eq!(report.classic_tier1_us, 11);
     }
 
     fn cuda_runtime_gate() -> bool {

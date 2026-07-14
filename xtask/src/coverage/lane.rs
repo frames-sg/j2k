@@ -332,7 +332,9 @@ mod tests {
             let args = package_coverage_args(&[], lane);
             for package in lane.coverage_packages() {
                 assert!(args.windows(2).any(|pair| pair == ["-p", package]));
-                assert!(lane.owns_path(&format!("crates/{package}/src/lib.rs")));
+            }
+            for prefix in lane.accelerator_source_prefixes() {
+                assert!(lane.owns_path(prefix));
             }
         }
     }

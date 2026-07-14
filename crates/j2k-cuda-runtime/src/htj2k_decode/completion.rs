@@ -103,7 +103,7 @@ impl CudaContext {
         }
         self.inner.set_current()?;
         let (decode_kernel, decode_kernel_name) = htj2k_decode_multi_kernel_for_jobs(&kernel_jobs);
-        let tables = htj2k_decode_kernel_tables(resources);
+        let tables = htj2k_decode_kernel_tables(resources)?;
 
         let mut host_budget = HostPhaseBudget::with_live_bytes(
             "CUDA queued HTJ2K cleanup metadata",
@@ -168,7 +168,7 @@ impl CudaContext {
             host_budget.try_vec_filled(kernel_jobs.len(), CudaHtj2kStatus::default())?;
         let jobs_buffer = pool.upload(htj2k_cleanup_multi_jobs_as_bytes(kernel_jobs))?;
         let status_buffer = pool.take(htj2k_statuses_byte_len(kernel_jobs.len())?)?;
-        let tables = htj2k_decode_kernel_tables(resources);
+        let tables = htj2k_decode_kernel_tables(resources)?;
         let payload_buffer = resources.payload.buffer()?;
         let jobs_device_buffer = pooled_device_buffer(&jobs_buffer)?;
         let status_device_buffer = pooled_device_buffer(&status_buffer)?;
@@ -202,13 +202,13 @@ impl CudaContext {
         }
         // A successful synchronous device-to-host copy completes the
         // preceding default-stream cleanup launch.
+        let status_d2h_us = status_d2h_start.map_or(0, |start| start.elapsed().as_micros());
         let release_result = pending_pool_reuse
             .take()
             .ok_or_else(|| CudaError::StatePoisoned {
                 message: "HTJ2K cleanup pool guard disappeared before release".to_string(),
             })?
             .release();
-        let status_d2h_us = status_d2h_start.map_or(0, |start| start.elapsed().as_micros());
         let execution = select_status_release_result(
             CudaExecutionStats {
                 kernel_dispatches: 1,
@@ -469,7 +469,7 @@ impl CudaContext {
         job_count: usize,
         collect_stage_timings: bool,
     ) -> Result<u128, CudaError> {
-        let tables = htj2k_decode_kernel_tables(resources);
+        let tables = htj2k_decode_kernel_tables(resources)?;
         if collect_stage_timings {
             let ((), ht_cleanup_us) =
                 self.time_default_stream_named_us("j2k.htj2k.decode.cleanup", || {
@@ -502,5 +502,23 @@ impl CudaContext {
             })?;
         }
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ht_status_timing_excludes_pool_release() {
+        let source = include_str!("completion.rs");
+        let status_copy = source
+            .find("status_buffer.copy_to_host")
+            .expect("HT status copy");
+        let status_timing = source
+            .find("let status_d2h_us")
+            .expect("HT status timing result");
+        let pool_release = source
+            .find("let release_result = pending_pool_reuse")
+            .expect("HT pool release");
+        assert!(status_copy < status_timing && status_timing < pool_release);
     }
 }

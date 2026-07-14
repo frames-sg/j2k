@@ -2,7 +2,7 @@
 
 use super::CudaHtj2kCodeBlockJob;
 use crate::{allocation::HostPhaseBudget, error::CudaError};
-use sweep::{validate_disjoint_output_regions, Htj2kOutputRect, Htj2kOutputRegion};
+pub(crate) use sweep::{validate_disjoint_output_regions, Htj2kOutputRect, Htj2kOutputRegion};
 
 mod sweep;
 

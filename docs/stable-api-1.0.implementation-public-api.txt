@@ -1024,6 +1024,7 @@ pub fn j2k_metal::benchmark_group_region_scaled_requests(&[alloc::sync::Arc<[u8]
 pub fn j2k_metal::benchmark_overwrite_private_buffer_with_bytes(&j2k_metal::MetalBackendSession, &metal::buffer::Buffer, &[u8]) -> core::result::Result<(), j2k_metal::Error>
 pub fn j2k_metal::benchmark_private_buffer_with_bytes(&j2k_metal::MetalBackendSession, &[u8]) -> core::result::Result<metal::buffer::Buffer, j2k_metal::Error>
 pub fn j2k_metal::benchmark_region_scaled_direct_plan_prepare(&[u8], j2k_core::pixel::PixelFormat, j2k_core::types::Rect, j2k_core::scale::Downscale) -> core::result::Result<(), j2k_metal::Error>
+pub fn j2k_metal::download_surfaces_packed(&j2k_metal::MetalBackendSession, &[&j2k_metal::Surface]) -> core::result::Result<alloc::vec::Vec<u8>, j2k_metal::Error>
 pub fn j2k_metal::encode_lossless_batch_with_report(j2k_metal::MetalLosslessEncodeBatchRequest<'_, '_>, &j2k::encode::contracts::J2kLosslessEncodeOptions, &j2k_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<j2k_metal::MetalLosslessEncodeOutcome>, j2k_metal::Error>
 pub j2k_metal::BenchmarkGroupedRequests::batch_count: usize
 pub j2k_metal::BenchmarkGroupedRequests::max_batch_len: usize
@@ -1419,6 +1420,7 @@ pub fn j2k_cuda::CudaHtj2kProfileReport::new() -> Self
 pub fn j2k_cuda::CudaSession::backend_kind(&self) -> j2k_core::backend::BackendKind
 pub fn j2k_cuda::CudaSession::execution_stats(&self) -> j2k_core::accelerator::ExecutionStats
 pub fn j2k_cuda::CudaSession::record_submit(&mut self)
+pub fn j2k_cuda::CudaSession::with_context(j2k_cuda_runtime::context::CudaContext) -> Self
 pub fn j2k_cuda::CudaSurface<'_>::stats(&self) -> j2k_cuda::CudaSurfaceStats
 pub fn j2k_cuda::CudaSurfaceStats::copy_kernel_dispatches(self) -> usize
 pub fn j2k_cuda::CudaSurfaceStats::decode_kernel_dispatches(self) -> usize
@@ -1431,6 +1433,7 @@ pub fn j2k_cuda::Error::is_unsupported(&self) -> bool
 pub fn j2k_cuda::Error::source_codec_error(&self) -> core::option::Option<&dyn j2k_core::error::CodecError>
 pub fn j2k_cuda::J2kDecoder<'a>::cpu_decoder_mut(&mut self) -> &mut Self::Cpu
 pub fn j2k_cuda::J2kDecoder<'a>::decode_batch_to_device_with_session_and_profile(&[&[u8]], j2k_core::pixel::PixelFormat, &mut j2k_cuda::CudaSession) -> core::result::Result<(alloc::vec::Vec<j2k_cuda::Surface>, j2k_cuda::CudaHtj2kProfileReport), j2k_cuda::Error>
+pub fn j2k_cuda::J2kDecoder<'a>::decode_request_to_device_with_session(&mut self, j2k_core::pixel::PixelFormat, j2k::adapter::device_plan::DeviceDecodeRequest, &mut j2k_cuda::CudaSession) -> core::result::Result<j2k_cuda::Surface, j2k_cuda::Error>
 pub fn j2k_cuda::J2kDecoder<'a>::decode_to_device_with_session_and_profile(&mut self, j2k_core::pixel::PixelFormat, &mut j2k_cuda::CudaSession) -> core::result::Result<(j2k_cuda::Surface, j2k_cuda::CudaHtj2kProfileReport), j2k_cuda::Error>
 pub fn j2k_cuda::J2kDecoder<'a>::from_cpu_view(Self::View) -> core::result::Result<Self, Self::Error>
 pub fn j2k_cuda::J2kDecoder<'a>::inspect_cpu(&'a [u8]) -> core::result::Result<j2k_core::types::Info, Self::Error>
@@ -2780,6 +2783,7 @@ impl j2k_cuda_runtime::CudaQueuedExecution
 impl j2k_cuda_runtime::CudaQueuedHtj2kCleanup
 impl j2k_cuda_runtime::CudaResidentDwt53Output
 impl j2k_cuda_runtime::CudaResidentDwt97Output
+impl<'a> j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'a>
 impl<T> j2k_cuda_runtime::CudaDeviceBufferView<'_, T>
 impl<T> j2k_cuda_runtime::CudaDeviceBufferViewMut<'_, T>
 pub const fn j2k_cuda_runtime::CudaExternalHostOwner::bytes(&self) -> usize
@@ -2806,6 +2810,9 @@ pub const j2k_cuda_runtime::CudaJpegEntropyCheckpoint::NAME: &'static str
 pub const j2k_cuda_runtime::CudaJpegEntropyOverflowState::NAME: &'static str
 pub const j2k_cuda_runtime::CudaJpegEntropySyncState::NAME: &'static str
 pub const j2k_cuda_runtime::CudaJpegHuffmanTable::NAME: &'static str
+pub enum j2k_cuda_runtime::CudaJ2kMlLayout
+pub enum j2k_cuda_runtime::CudaJ2kMlNormalization
+pub enum j2k_cuda_runtime::CudaJ2kMlSample
 pub enum j2k_cuda_runtime::CudaJpegBaselineEncodeFormat
 pub enum j2k_cuda_runtime::CudaJpegRgb8Sampling
 pub fn j2k_cuda_runtime::CudaBufferPool::best_fit_with_limits(j2k_cuda_runtime::CudaContext, j2k_cuda_runtime::CudaBufferPoolLimits) -> Self
@@ -2827,6 +2834,7 @@ pub fn j2k_cuda_runtime::CudaContext::decode_jpeg_rgb8_owned(&self, &j2k_cuda_ru
 pub fn j2k_cuda_runtime::CudaContext::decode_jpeg_rgb8_owned_into(&self, &j2k_cuda_runtime::CudaJpegRgb8DecodePlan<'_>, &j2k_cuda_runtime::CudaDeviceBuffer, usize) -> core::result::Result<j2k_cuda_runtime::CudaExecutionStats, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::decode_jpeg_rgb8_owned_into_with_external_live(&self, &j2k_cuda_runtime::CudaJpegRgb8DecodePlan<'_>, &j2k_cuda_runtime::CudaDeviceBuffer, usize, usize) -> core::result::Result<j2k_cuda_runtime::CudaExecutionStats, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::decode_jpeg_rgb8_owned_with_external_live(&self, &j2k_cuda_runtime::CudaJpegRgb8DecodePlan<'_>, usize) -> core::result::Result<j2k_cuda_runtime::CudaKernelOutput, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaContext::device_ordinal(&self) -> usize
 pub fn j2k_cuda_runtime::CudaContext::diagnose_jpeg_420_entropy_self_sync(&self, &j2k_cuda_runtime::CudaJpegChunkedEntropyPlan<'_>) -> core::result::Result<j2k_cuda_runtime::CudaJpegChunkedEntropyReport, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::diagnose_jpeg_420_entropy_self_sync_with_external_live(&self, &j2k_cuda_runtime::CudaJpegChunkedEntropyPlan<'_>, usize) -> core::result::Result<j2k_cuda_runtime::CudaJpegChunkedEntropyReport, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::diagnose_jpeg_420_entropy_self_sync_with_pinned_upload_operation(&self, &j2k_cuda_runtime::CudaJpegChunkedEntropyPlan<'_>, usize, &j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'_>) -> core::result::Result<j2k_cuda_runtime::CudaJpegChunkedEntropyReport, j2k_cuda_runtime::CudaError>
@@ -2867,6 +2875,7 @@ pub fn j2k_cuda_runtime::CudaContext::j2k_inverse_dwt_single_device_untimed_with
 pub fn j2k_cuda_runtime::CudaContext::j2k_inverse_dwt_single_device_with_pool(&self, &j2k_cuda_runtime::CudaDeviceBuffer, &j2k_cuda_runtime::CudaDeviceBuffer, &j2k_cuda_runtime::CudaDeviceBuffer, &j2k_cuda_runtime::CudaDeviceBuffer, j2k_cuda_runtime::CudaJ2kIdwtJob, &j2k_cuda_runtime::CudaBufferPool) -> core::result::Result<j2k_cuda_runtime::CudaPooledKernelOutput, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::j2k_inverse_dwt_single_output_bytes(&self, &j2k_cuda_runtime::CudaDeviceBuffer, &j2k_cuda_runtime::CudaDeviceBuffer, &j2k_cuda_runtime::CudaDeviceBuffer, &j2k_cuda_runtime::CudaDeviceBuffer, j2k_cuda_runtime::CudaJ2kIdwtJob) -> core::result::Result<usize, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::j2k_inverse_mct_device(&self, &j2k_cuda_runtime::CudaDeviceBuffer, &j2k_cuda_runtime::CudaDeviceBuffer, &j2k_cuda_runtime::CudaDeviceBuffer, j2k_cuda_runtime::CudaJ2kInverseMctJob) -> core::result::Result<j2k_cuda_runtime::CudaExecutionStats, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaContext::j2k_ml_convert_into_external(&self, u64, usize, &mut j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'_>, j2k_cuda_runtime::CudaJ2kMlKernelConfig) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::j2k_quantize_subband(&self, &[f32], j2k_cuda_runtime::CudaJ2kQuantizeJob) -> core::result::Result<j2k_cuda_runtime::CudaJ2kQuantizedSubband, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::j2k_quantize_subband_region_resident(&self, &j2k_cuda_runtime::CudaDeviceBuffer, j2k_cuda_runtime::CudaJ2kQuantizeSubbandRegionJob) -> core::result::Result<j2k_cuda_runtime::CudaJ2kResidentQuantizedSubband, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::j2k_quantize_subband_resident(&self, &j2k_cuda_runtime::CudaDeviceBuffer, usize, j2k_cuda_runtime::CudaJ2kQuantizeJob) -> core::result::Result<j2k_cuda_runtime::CudaJ2kResidentQuantizedSubband, j2k_cuda_runtime::CudaError>
@@ -2917,6 +2926,9 @@ pub fn j2k_cuda_runtime::CudaDwt97Output::execution(&self) -> j2k_cuda_runtime::
 pub fn j2k_cuda_runtime::CudaDwt97Output::levels(&self) -> &[j2k_cuda_runtime::CudaDwt53LevelShape]
 pub fn j2k_cuda_runtime::CudaDwt97Output::ll_dimensions(&self) -> (u32, u32)
 pub fn j2k_cuda_runtime::CudaDwt97Output::transformed(&self) -> &[f32]
+pub fn j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'a>::byte_len(&self) -> usize
+pub fn j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'a>::context(&self) -> &j2k_cuda_runtime::CudaContext
+pub fn j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'a>::device_ptr(&self) -> u64
 pub fn j2k_cuda_runtime::CudaExternalHostOwner::context_live_bytes(&self) -> core::result::Result<usize, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaExternalHostOwner::context_live_bytes_excluding(&self, usize) -> core::result::Result<usize, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaExternalHostOwner::drop(&mut self)
@@ -3230,6 +3242,23 @@ pub j2k_cuda_runtime::CudaJ2kInverseMctJob::addend1: f32
 pub j2k_cuda_runtime::CudaJ2kInverseMctJob::addend2: f32
 pub j2k_cuda_runtime::CudaJ2kInverseMctJob::irreversible97: u32
 pub j2k_cuda_runtime::CudaJ2kInverseMctJob::len: u32
+pub j2k_cuda_runtime::CudaJ2kMlKernelConfig::channels: u32
+pub j2k_cuda_runtime::CudaJ2kMlKernelConfig::destination_offset_elements: usize
+pub j2k_cuda_runtime::CudaJ2kMlKernelConfig::height: u32
+pub j2k_cuda_runtime::CudaJ2kMlKernelConfig::layout: j2k_cuda_runtime::CudaJ2kMlLayout
+pub j2k_cuda_runtime::CudaJ2kMlKernelConfig::normalization: j2k_cuda_runtime::CudaJ2kMlNormalization
+pub j2k_cuda_runtime::CudaJ2kMlKernelConfig::sample: j2k_cuda_runtime::CudaJ2kMlSample
+pub j2k_cuda_runtime::CudaJ2kMlKernelConfig::width: u32
+pub j2k_cuda_runtime::CudaJ2kMlLayout::ChannelsFirst
+pub j2k_cuda_runtime::CudaJ2kMlLayout::ChannelsLast
+pub j2k_cuda_runtime::CudaJ2kMlNormalization::Integer
+pub j2k_cuda_runtime::CudaJ2kMlNormalization::MeanStd
+pub j2k_cuda_runtime::CudaJ2kMlNormalization::MeanStd::mean: [f32; 4]
+pub j2k_cuda_runtime::CudaJ2kMlNormalization::MeanStd::std: [f32; 4]
+pub j2k_cuda_runtime::CudaJ2kMlNormalization::Raw
+pub j2k_cuda_runtime::CudaJ2kMlNormalization::Unit
+pub j2k_cuda_runtime::CudaJ2kMlSample::U16
+pub j2k_cuda_runtime::CudaJ2kMlSample::U8
 pub j2k_cuda_runtime::CudaJ2kQuantizeJob::range_bits: u8
 pub j2k_cuda_runtime::CudaJ2kQuantizeJob::reversible: bool
 pub j2k_cuda_runtime::CudaJ2kQuantizeJob::step_exponent: u16
@@ -3477,6 +3506,7 @@ pub struct j2k_cuda_runtime::CudaDwt97BatchGeometry
 pub struct j2k_cuda_runtime::CudaDwt97BatchStageTimings
 pub struct j2k_cuda_runtime::CudaDwt97BatchWithPoolRequest<'a>
 pub struct j2k_cuda_runtime::CudaDwt97Output
+pub struct j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'a>
 pub struct j2k_cuda_runtime::CudaExternalHostOwner
 pub struct j2k_cuda_runtime::CudaExternalHostReservation<'a>
 pub struct j2k_cuda_runtime::CudaHtj2k97CodeblockBands
@@ -3507,6 +3537,7 @@ pub struct j2k_cuda_runtime::CudaHtj2kPacketizationStageTimings
 pub struct j2k_cuda_runtime::CudaHtj2kPacketizedTile
 pub struct j2k_cuda_runtime::CudaJ2kDeinterleavedComponents
 pub struct j2k_cuda_runtime::CudaJ2kIdwtTarget<'a>
+pub struct j2k_cuda_runtime::CudaJ2kMlKernelConfig
 pub struct j2k_cuda_runtime::CudaJ2kQuantizeJob
 pub struct j2k_cuda_runtime::CudaJ2kQuantizeSubbandRegionJob
 pub struct j2k_cuda_runtime::CudaJ2kQuantizedSubband
@@ -3541,6 +3572,7 @@ pub unsafe fn j2k_cuda_runtime::CudaContext::j2k_inverse_dwt_batch_device_enqueu
 pub unsafe fn j2k_cuda_runtime::CudaContext::j2k_inverse_dwt_batch_sequence_enqueue_with_pool(&self, &[&[j2k_cuda_runtime::CudaJ2kIdwtTarget<'_>]], &j2k_cuda_runtime::CudaBufferPool) -> core::result::Result<j2k_cuda_runtime::CudaQueuedExecution, j2k_cuda_runtime::CudaError>
 pub unsafe fn j2k_cuda_runtime::CudaContext::j2k_inverse_dwt_batch_sequence_enqueue_with_pool_and_live_host_bytes(&self, &[&[j2k_cuda_runtime::CudaJ2kIdwtTarget<'_>]], &j2k_cuda_runtime::CudaBufferPool, usize) -> core::result::Result<j2k_cuda_runtime::CudaQueuedExecution, j2k_cuda_runtime::CudaError>
 pub unsafe fn j2k_cuda_runtime::CudaContext::submit_default_stream_named<T>(&self, &str, impl core::ops::function::FnMut() -> core::result::Result<T, j2k_cuda_runtime::CudaError>) -> core::result::Result<T, j2k_cuda_runtime::CudaError>
+pub unsafe fn j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'a>::from_raw_parts<Owner>(&j2k_cuda_runtime::CudaContext, u64, usize, usize, &'a mut Owner) -> core::result::Result<Self, j2k_cuda_runtime::CudaError>
 pub unsafe fn j2k_cuda_runtime::CudaQueuedExecution::release_pool_reuse_after_completion(&mut self) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
 ```
 

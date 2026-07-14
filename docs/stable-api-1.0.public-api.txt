@@ -3781,6 +3781,7 @@ pub fn j2k_cuda_runtime::CudaContext::allocate(&self, usize) -> core::result::Re
 pub fn j2k_cuda_runtime::CudaContext::best_fit_buffer_pool(&self) -> j2k_cuda_runtime::CudaBufferPool
 pub fn j2k_cuda_runtime::CudaContext::buffer_pool(&self) -> j2k_cuda_runtime::CudaBufferPool
 pub fn j2k_cuda_runtime::CudaContext::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_cuda_runtime::CudaContext::retain_primary(usize) -> core::result::Result<Self, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::synchronize(&self) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::system_default() -> core::result::Result<Self, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::upload(&self, &[u8]) -> core::result::Result<j2k_cuda_runtime::CudaDeviceBuffer, j2k_cuda_runtime::CudaError>
