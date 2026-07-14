@@ -74,6 +74,18 @@ part of `cargo xtask release-cuda`. Both release lanes set the repository's
 fail-closed runtime gates, so missing hardware or skipped accelerator work is a
 failure.
 
+Linux AArch64 test and benchmark builds use Burn's NdArray backend. In this
+repository's Burn 0.21 all-feature build, Flex selects `gemm-f16` 0.19 and its
+debug AArch64 assembly is compiled without the FP16 target-feature gating that
+the selected runner requires ([issue
+#31](https://github.com/sarah-quinones/gemm/issues/31)). Upstream has a gating
+fix under review ([pull request
+#43](https://github.com/sarah-quinones/gemm/pull/43)). This substitution is
+test-only; the generic `j2k-ml` library API and its release dependencies do not
+select either CPU backend. Criterion group names include `flex` or
+`ndarray_arm_linux`; results from those groups are not cross-backend
+comparisons.
+
 Run `cargo bench -p j2k-ml --bench tensor_decode --features cpu` for the
 portable staged cases. Add `metal` on macOS or `cuda` on a Linux CUDA runner to
 include the accelerator routes. Benchmark IDs and throughput record compact

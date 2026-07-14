@@ -67,6 +67,7 @@ toml = "1.1.2"
 burn-core = { version = "0.21.0", default-features = false, features = ["dataset", "std"] }
 burn-autodiff = { version = "0.21.0", default-features = false, features = ["std"] }
 burn-flex = { version = "0.21.0", default-features = false, features = ["std"] }
+burn-ndarray = { version = "0.21.0", default-features = false, features = ["std"] }
 burn-wgpu = { version = "0.21.0", default-features = false, features = ["fusion", "metal", "std"] }
 burn-cuda = { version = "0.21.0", default-features = false, features = ["fusion", "std"] }
 burn-cubecl = { version = "0.21.0", default-features = false, features = ["fusion", "std"] }

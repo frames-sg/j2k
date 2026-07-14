@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use burn_core::tensor::backend::Backend;
-use burn_flex::{Flex, FlexDevice};
+#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+use burn_flex::{Flex as CpuBackend, FlexDevice as CpuDevice};
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+use burn_ndarray::{NdArray as CpuBackend, NdArrayDevice::Cpu as CpuDevice};
 use criterion::{BenchmarkId, Criterion, Throughput};
 use j2k::{DeviceDecodeRequest, Downscale, Rect};
 use j2k_ml::{cpu, TensorDecodeOptions, TensorInput};
@@ -10,6 +13,11 @@ use j2k_test_support::htj2k_gray8_large_fixture;
 use j2k_test_support::{classic_j2k_gray8_fixture, openhtj2k_refinement_fixture};
 
 const BATCH_SIZES: &[usize] = &[1, 8, 32];
+#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+const CPU_STAGED_BENCHMARK_GROUP: &str = "j2k_ml_decode_to_ready_tensor_cpu_staged_flex";
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+const CPU_STAGED_BENCHMARK_GROUP: &str =
+    "j2k_ml_decode_to_ready_tensor_cpu_staged_ndarray_arm_linux";
 
 fn main() {
     let mut criterion = Criterion::default().configure_from_args();
@@ -25,7 +33,7 @@ fn bench_cpu_staged(criterion: &mut Criterion) {
     let gray8 = classic_j2k_gray8_fixture(128, 128);
     let gray16 = openhtj2k_refinement_fixture();
     let options = TensorDecodeOptions::default();
-    let mut group = criterion.benchmark_group("j2k_ml_decode_to_ready_tensor_cpu_staged");
+    let mut group = criterion.benchmark_group(CPU_STAGED_BENCHMARK_GROUP);
 
     for (label, encoded) in [("gray8", gray8.as_slice()), ("gray16", gray16)] {
         let item_bytes = compact_item_bytes(encoded);
@@ -38,13 +46,13 @@ fn bench_cpu_staged(criterion: &mut Criterion) {
                 &inputs,
                 |bencher, inputs| {
                     bencher.iter(|| {
-                        let decoded = cpu::decode_float_batch::<Flex>(
+                        let decoded = cpu::decode_float_batch::<CpuBackend>(
                             std::hint::black_box(inputs),
                             &options,
-                            &FlexDevice,
+                            &CpuDevice,
                         )
                         .expect("CPU-staged tensor decode");
-                        Flex::sync(&FlexDevice).expect("sync Flex");
+                        CpuBackend::sync(&CpuDevice).expect("sync CPU backend");
                         std::hint::black_box(decoded.tensor)
                     });
                 },
@@ -67,13 +75,13 @@ fn bench_cpu_staged(criterion: &mut Criterion) {
     group.throughput(Throughput::Bytes(compact_bytes));
     group.bench_function("roi_tiles_8/compact_upload_bytes_8192", |bencher| {
         bencher.iter(|| {
-            let decoded = cpu::decode_float_batch::<Flex>(
+            let decoded = cpu::decode_float_batch::<CpuBackend>(
                 std::hint::black_box(&inputs),
                 &options,
-                &FlexDevice,
+                &CpuDevice,
             )
             .expect("CPU-staged ROI batch");
-            Flex::sync(&FlexDevice).expect("sync Flex");
+            CpuBackend::sync(&CpuDevice).expect("sync CPU backend");
             std::hint::black_box(decoded.tensor)
         });
     });

@@ -32,6 +32,30 @@ fn j2k_ml_stays_independent_experimental_and_explicitly_feature_gated() {
 }
 
 #[test]
+fn j2k_ml_uses_a_portable_arm_linux_test_backend() {
+    assert_file_pattern_checks(
+        repo_root(),
+        &[
+            FilePatternCheck::new("crates/j2k-ml/Cargo.toml")
+                .named("j2k-ml target-specific test backends")
+                .required(&[
+                    "target.'cfg(all(target_arch = \"aarch64\", target_os = \"linux\"))'.dev-dependencies",
+                    "burn-ndarray = { workspace = true }",
+                    "target.'cfg(not(all(target_arch = \"aarch64\", target_os = \"linux\")))'.dev-dependencies",
+                    "burn-flex = { workspace = true }",
+                ]),
+            FilePatternCheck::new("docs/j2k-ml.md")
+                .named("j2k-ml ARM backend rationale")
+                .required(&[
+                    "Linux AArch64",
+                    "https://github.com/sarah-quinones/gemm/issues/31",
+                    "https://github.com/sarah-quinones/gemm/pull/43",
+                ]),
+        ],
+    );
+}
+
+#[test]
 fn j2k_ml_accelerator_transfer_contracts_are_source_enforced() {
     let root = repo_root();
     let cuda =

@@ -5,7 +5,10 @@
 use burn_autodiff::Autodiff;
 use burn_core::tensor::Tensor;
 use burn_cuda::{Cuda, CudaDevice};
+#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
 use burn_flex::{Flex, FlexDevice};
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+use burn_ndarray::{NdArray as Flex, NdArrayDevice::Cpu as FlexDevice};
 use j2k::{DeviceDecodeRequest, Downscale, Rect};
 use j2k_ml::{
     cpu, cuda, FloatNormalization, TensorDecodeError, TensorDecodeOptions, TensorInput,
@@ -52,8 +55,8 @@ fn retained_primary_context_matches_cubecl_device_context() {
 }
 
 #[test]
-fn direct_cuda_matches_portable_u16_float_batch_and_autodiff_lifting() {
-    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA tensor parity") {
+fn direct_cuda_u16_matches_portable_and_batches() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA u16 tensor parity") {
         return;
     }
     let device = CudaDevice::default();
@@ -104,7 +107,14 @@ fn direct_cuda_matches_portable_u16_float_batch_and_autodiff_lifting() {
             .expect("direct u16 batch data"),
         expected_u16_batch
     );
+}
 
+#[test]
+fn direct_cuda_float_matches_portable_full_batch_and_roi() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA float tensor parity") {
+        return;
+    }
+    let device = CudaDevice::default();
     let encoded = htj2k_gray8_fixture(4, 3);
     for layout in [TensorLayout::ChannelsFirst, TensorLayout::ChannelsLast] {
         for normalization in [
@@ -186,7 +196,23 @@ fn direct_cuda_matches_portable_u16_float_batch_and_autodiff_lifting() {
     {
         assert!((actual - expected).abs() <= 1.0e-6);
     }
+}
 
+#[test]
+fn direct_cuda_reports_batch_mismatch_and_lifts_to_autodiff() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA tensor contracts") {
+        return;
+    }
+    let device = CudaDevice::default();
+    let encoded = htj2k_gray8_fixture(4, 3);
+    let options = TensorDecodeOptions {
+        layout: TensorLayout::ChannelsLast,
+        normalization: FloatNormalization::MeanStd {
+            mean: vec![0.25],
+            std: vec![0.5],
+        },
+        ..TensorDecodeOptions::default()
+    };
     let mismatch = htj2k_gray8_fixture(5, 3);
     let error = cuda::decode_u8_batch(
         &[TensorInput::full(&encoded), TensorInput::full(&mismatch)],

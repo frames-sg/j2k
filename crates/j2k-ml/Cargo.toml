@@ -38,9 +38,14 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 burn-autodiff = { workspace = true }
-burn-flex = { workspace = true }
 criterion = { workspace = true }
 j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
+
+[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dev-dependencies]
+burn-ndarray = { workspace = true }
+
+[target.'cfg(not(all(target_arch = "aarch64", target_os = "linux")))'.dev-dependencies]
+burn-flex = { workspace = true }
 
 [lints.rust]
 unsafe_code = "allow"

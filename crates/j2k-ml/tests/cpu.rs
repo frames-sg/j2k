@@ -6,7 +6,10 @@ use burn_core::{
     data::dataloader::batcher::Batcher,
     tensor::{backend::Backend, DType},
 };
+#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
 use burn_flex::{Flex, FlexDevice};
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+use burn_ndarray::{NdArray as Flex, NdArrayDevice::Cpu as FlexDevice};
 use j2k::{
     encode_j2k_lossless, wrap_j2k_codestream, DeviceDecodeRequest, Downscale, J2kBlockCodingMode,
     J2kEncodeValidation, J2kFileWrapOptions, J2kLosslessEncodeOptions, J2kLosslessSamples, Rect,
@@ -344,6 +347,94 @@ fn batch_uses_one_rank_four_tensor_and_preserves_input_order() {
     );
     assert_eq!(batch.decoded.len(), 2);
     assert_eq!(batch.warnings.len(), 2);
+}
+
+#[test]
+fn u16_batch_preserves_values_dtype_and_order() {
+    let first_samples = [0u16, 1, 4096, u16::MAX];
+    let second_samples = [32_768u16, 17, 255, 1024];
+    let first = encode_gray16(&first_samples, 2, 2);
+    let second = encode_gray16(&second_samples, 2, 2);
+    let batch = cpu::decode_u16_batch::<Flex>(
+        &[TensorInput::full(&first), TensorInput::full(&second)],
+        &TensorDecodeOptions::default(),
+        &FlexDevice,
+    )
+    .expect("decode u16 batch");
+
+    assert_eq!(batch.tensor.dims(), [2, 1, 2, 2]);
+    let data = batch.tensor.into_data();
+    assert_eq!(data.dtype, DType::U16);
+    assert_eq!(
+        data.into_vec::<u16>().expect("u16 data"),
+        first_samples
+            .into_iter()
+            .chain(second_samples)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn float_batch_mean_std_broadcasts_in_both_layouts() {
+    let (encoded, pixels) = htj2k_rgb8_fixture_with_pixels(2, 1);
+    let mean = [0.1f32, 0.2, 0.3];
+    let std = [0.5f32, 0.25, 2.0];
+
+    for layout in [TensorLayout::ChannelsFirst, TensorLayout::ChannelsLast] {
+        let options = TensorDecodeOptions {
+            layout,
+            channels: ChannelSelection::Rgb,
+            normalization: FloatNormalization::MeanStd {
+                mean: mean.to_vec(),
+                std: std.to_vec(),
+            },
+        };
+        let batch = cpu::decode_float_batch::<Flex>(
+            &[TensorInput::full(&encoded), TensorInput::full(&encoded)],
+            &options,
+            &FlexDevice,
+        )
+        .expect("decode normalized float batch");
+
+        assert_eq!(
+            batch.tensor.dims(),
+            match layout {
+                TensorLayout::ChannelsFirst => [2, 3, 1, 2],
+                TensorLayout::ChannelsLast => [2, 1, 2, 3],
+            }
+        );
+        let actual = batch
+            .tensor
+            .into_data()
+            .into_vec::<f32>()
+            .expect("f32 data");
+        let expected_image = match layout {
+            TensorLayout::ChannelsFirst => (0..3)
+                .flat_map(|channel| {
+                    pixels.iter().skip(channel).step_by(3).map(move |pixel| {
+                        (f32::from(*pixel) / 255.0 - mean[channel]) / std[channel]
+                    })
+                })
+                .collect::<Vec<_>>(),
+            TensorLayout::ChannelsLast => pixels
+                .iter()
+                .enumerate()
+                .map(|(index, pixel)| {
+                    let channel = index % 3;
+                    (f32::from(*pixel) / 255.0 - mean[channel]) / std[channel]
+                })
+                .collect::<Vec<_>>(),
+        };
+        let expected = expected_image
+            .iter()
+            .copied()
+            .chain(expected_image.iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!((actual - expected).abs() <= 1.0e-6);
+        }
+    }
 }
 
 #[test]
