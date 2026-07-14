@@ -2,14 +2,19 @@
 
 //! Strict J2K Metal decode followed by a compact staged Burn Metal upload.
 
+// The non-macOS Metal session is intentionally a zero-sized compatibility
+// stub. Keep these private helper signatures identical across targets.
+#![cfg_attr(not(target_os = "macos"), allow(clippy::trivially_copy_pass_by_ref))]
+
 use burn_core::tensor::{DType, FloatDType, Int, Tensor};
 use burn_wgpu::{Wgpu, WgpuDevice};
 use j2k::{
     BackendRequest, DeviceDecodePlan, DeviceDecodeRequest, J2kDecodeWarning, J2kDecoder, Rect,
 };
+#[cfg(target_os = "macos")]
+use j2k_metal::download_surfaces_packed;
 use j2k_metal::{
-    download_surfaces_packed, J2kDecoder as MetalDecoder, MetalBackendSession, MetalDecodeRequest,
-    Surface, SurfaceResidency,
+    J2kDecoder as MetalDecoder, MetalBackendSession, MetalDecodeRequest, Surface, SurfaceResidency,
 };
 
 use crate::cpu::{
