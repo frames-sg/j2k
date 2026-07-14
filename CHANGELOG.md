@@ -3,6 +3,21 @@
 This changelog tracks the current staged release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+Staged workspace version: `0.7.1`.
+
+- Adds CUDA classic JPEG 2000 Tier-1 code-block decoding with shared host/device
+  MQ and context tables, batched resident submission, bounded host accounting,
+  and explicit CUDA ABI and unsafe-boundary inventories.
+- Improves Metal decode residency with dynamic pool ceilings and enforced
+  inflight limits, fixes irreversible inverse-MCT addends, fuses native inverse
+  MCT output handling, and uses a staged irreversible 9/7 IDWT implementation.
+- Adds hardened CUDA and Metal profiling/capture controls and documents their
+  benchmark-only environment variables.
+- Adds the unpublished experimental `j2k-ml` workspace crate with CPU and Metal
+  validation paths and an optional CUDA-Oxide kernel route.
+
 ## [0.7.0] - 2026-07-12
 
 - Moves the test-only `corpus_validation`, `dct53_1d`, and `dct53_multilevel`

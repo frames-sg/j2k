@@ -1,44 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    cuda_error, profile, CudaBufferPool, CudaClassicCodeBlockJob, CudaClassicSegment,
-    CudaCoefficientBand, CudaComponentDecodeWork, CudaDecodeStageTimings, CudaDecodedComponent,
-    CudaHtj2kCodeBlockJob, CudaHtj2kDecodePlan, CudaHtj2kDecodeResources,
-    CudaHtj2kDecodeTableResources, CudaPendingClassicBand, CudaPendingDequantBand, Error,
-    CUDA_HTJ2K_KERNELS_NOT_READY, CUDA_HTJ2K_PLAN_INVARIANT_FAILED, CUDA_HTJ2K_STORE_UNSUPPORTED,
+    cuda_error, profile, CudaBufferPool, CudaCoefficientBand, CudaComponentDecodeWork,
+    CudaDecodeStageTimings, CudaDecodedComponent, CudaHtj2kDecodePlan, CudaHtj2kDecodeResources,
+    CudaHtj2kDecodeTableResources, CudaPendingDequantBand, Error, CUDA_HTJ2K_KERNELS_NOT_READY,
+    CUDA_HTJ2K_PLAN_INVARIANT_FAILED, CUDA_HTJ2K_STORE_UNSUPPORTED,
 };
 use super::cleanup_dequant::run_component_cleanup_dequant_batches;
 use super::idwt::run_cuda_component_idwt_steps;
 use crate::allocation::{checked_cuda_element_count, host_allocation_error, HostPhaseBudget};
 
 #[cfg(feature = "cuda-runtime")]
-pub(in crate::decoder) fn cuda_code_block_job_from_plan_block(
-    block: &crate::CudaHtj2kCodeBlock,
-    subband_width: u32,
-) -> Result<CudaHtj2kCodeBlockJob, Error> {
-    let output_offset = block
-        .output_y
-        .checked_mul(subband_width)
-        .and_then(|base| base.checked_add(block.output_x))
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-        })?;
-    Ok(CudaHtj2kCodeBlockJob {
-        payload_offset: block.payload_offset,
-        width: block.width,
-        height: block.height,
-        payload_len: block.payload_len,
-        cleanup_length: block.cleanup_length,
-        refinement_length: block.refinement_length,
-        missing_bit_planes: block.missing_bit_planes,
-        num_bitplanes: block.num_bitplanes,
-        number_of_coding_passes: block.number_of_coding_passes,
-        output_stride: block.output_stride,
-        output_offset,
-        dequantization_step: block.dequantization_step,
-        stripe_causal: block.stripe_causal != 0,
-    })
-}
+mod classic;
+#[cfg(feature = "cuda-runtime")]
+use classic::append_classic_subbands;
+#[cfg(feature = "cuda-runtime")]
+mod ht;
+#[cfg(feature = "cuda-runtime")]
+pub(in crate::decoder) use ht::cuda_code_block_job_from_plan_block;
 
 #[cfg(feature = "cuda-runtime")]
 pub(super) fn decode_cuda_component_plan(
@@ -201,135 +180,6 @@ pub(in crate::decoder) fn decode_cuda_component_subbands_with_resources(
         dispatches,
         decode_dispatches,
         timings,
-    })
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn append_classic_subbands(
-    context: &j2k_cuda_runtime::CudaContext,
-    plan: &CudaHtj2kDecodePlan,
-    pool: &CudaBufferPool,
-    collect_stage_timings: bool,
-    host_budget: &mut HostPhaseBudget,
-    bands: &mut Vec<CudaCoefficientBand>,
-    pending_bands: &mut Vec<CudaPendingClassicBand>,
-) -> Result<u128, Error> {
-    let mut allocate_us = 0u128;
-    for subband in plan.classic_subbands() {
-        let start = subband.code_block_start as usize;
-        let end = start.checked_add(subband.code_block_count as usize).ok_or(
-            Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            },
-        )?;
-        let code_blocks =
-            plan.classic_code_blocks()
-                .get(start..end)
-                .ok_or(Error::UnsupportedCudaRequest {
-                    reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-                })?;
-        let segment_start = code_blocks
-            .first()
-            .map_or(0, |block| block.segment_start as usize);
-        let segment_base =
-            u32::try_from(segment_start).map_err(|_| Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?;
-        let segment_end = code_blocks.last().map_or(segment_start, |block| {
-            block.segment_start as usize + block.segment_count as usize
-        });
-        let plan_segments = plan
-            .classic_segments()
-            .get(segment_start..segment_end)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?;
-        let segments = host_budget.try_collect_results_exact(
-            plan_segments
-                .iter()
-                .map(|segment| Ok::<_, Error>(cuda_classic_segment_from_plan(segment))),
-        )?;
-        let jobs = host_budget.try_collect_results_exact(
-            code_blocks
-                .iter()
-                .map(|block| cuda_classic_job_from_plan(block, subband.width, segment_base)),
-        )?;
-        let output_words = checked_cuda_element_count(subband.width, subband.height).ok_or(
-            Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_KERNELS_NOT_READY,
-            },
-        )?;
-        let allocate_start = profile::profile_now(collect_stage_timings);
-        let buffer = context
-            .allocate_classic_coefficients_with_pool(output_words, pool)
-            .map_err(cuda_error)?;
-        allocate_us = allocate_us.saturating_add(profile::elapsed_us(allocate_start));
-        let band_index = bands.len();
-        bands.push(CudaCoefficientBand {
-            band_id: subband.band_id,
-            buffer,
-        });
-        if !jobs.is_empty() {
-            pending_bands.push(CudaPendingClassicBand {
-                band_index,
-                jobs,
-                segments,
-                output_words,
-            });
-        }
-    }
-    Ok(allocate_us)
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_classic_segment_from_plan(
-    segment: &crate::direct_plan::CudaClassicSegment,
-) -> CudaClassicSegment {
-    CudaClassicSegment {
-        data_offset: segment.data_offset,
-        data_length: segment.data_length,
-        start_coding_pass: u32::from(segment.start_coding_pass),
-        end_coding_pass: u32::from(segment.end_coding_pass),
-        use_arithmetic: segment.use_arithmetic,
-    }
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn cuda_classic_job_from_plan(
-    block: &crate::direct_plan::CudaClassicCodeBlock,
-    subband_width: u32,
-    segment_base: u32,
-) -> Result<CudaClassicCodeBlockJob, Error> {
-    let output_offset = block
-        .output_y
-        .checked_mul(subband_width)
-        .and_then(|base| base.checked_add(block.output_x))
-        .ok_or(Error::UnsupportedCudaRequest {
-            reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-        })?;
-    let segment_start =
-        block
-            .segment_start
-            .checked_sub(segment_base)
-            .ok_or(Error::UnsupportedCudaRequest {
-                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
-            })?;
-    Ok(CudaClassicCodeBlockJob {
-        payload_offset: block.payload_offset,
-        payload_len: block.payload_len,
-        segment_start,
-        segment_count: block.segment_count,
-        width: block.width,
-        height: block.height,
-        output_stride: block.output_stride,
-        output_offset,
-        missing_bitplanes: u32::from(block.missing_bit_planes),
-        total_bitplanes: u32::from(block.total_bitplanes),
-        number_of_coding_passes: u32::from(block.number_of_coding_passes),
-        sub_band_type: u32::from(block.sub_band_type),
-        style_flags: block.style_flags,
-        strict: block.strict,
-        dequantization_step: block.dequantization_step,
     })
 }
 

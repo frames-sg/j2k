@@ -97,10 +97,8 @@ const REPO_LINT_POLICY_LINE_LIMITS: &[(&str, usize)] = &[
             "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_decoder_policy/color_runtime.rs",
             150,
         ),
-        (
-            "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_decoder_policy/resident_leaf_structure.rs",
-            75,
-        ),
+        ("xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_decoder_policy/resident_leaf_structure.rs", 75),
+        ("xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_decoder_policy/resident_leaf_structure/classic.rs", 50),
         (
             "xtask/tests/repo_lint_support/gpu_adapter_policy/cuda_runtime_safety_policy.rs",
             200,
@@ -351,6 +349,7 @@ fn docs_and_workflows_policy_children_stay_split_by_responsibility() {
         ("structural_ratchets/lint_ratchets.rs", 150),
         ("duplication_policy.rs", 625),
         ("duplication_policy/cache_identity.rs", 100),
+        ("duplication_policy/classic_mq.rs", 75),
         ("encoder_architecture_policy.rs", 700),
         ("encoder_architecture_policy/native_contracts.rs", 150),
         ("decoder_fixture_policy.rs", 475),

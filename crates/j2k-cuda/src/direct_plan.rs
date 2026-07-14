@@ -273,6 +273,13 @@ pub(crate) struct CudaHtj2kDecodePlan {
     code_blocks: Vec<CudaHtj2kCodeBlock>,
     classic_code_blocks: Vec<CudaClassicCodeBlock>,
     classic_segments: Vec<CudaClassicSegment>,
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "classic subband metadata is consumed only by CUDA decode routes"
+        )
+    )]
     classic_subbands: Vec<CudaClassicSubband>,
     #[cfg_attr(
         not(feature = "cuda-runtime"),
@@ -728,10 +735,24 @@ impl CudaHtj2kDecodePlan {
         &self.code_blocks
     }
 
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "classic block metadata is consumed only by CUDA decode routes"
+        )
+    )]
     pub(crate) fn classic_code_blocks(&self) -> &[CudaClassicCodeBlock] {
         &self.classic_code_blocks
     }
 
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "classic segment metadata is consumed only by CUDA decode routes"
+        )
+    )]
     pub(crate) fn classic_segments(&self) -> &[CudaClassicSegment] {
         &self.classic_segments
     }
@@ -741,6 +762,13 @@ impl CudaHtj2kDecodePlan {
         &self.classic_subbands
     }
 
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
+            reason = "combined block counts are consumed only by CUDA decode routes"
+        )
+    )]
     pub(crate) fn block_count(&self) -> usize {
         self.code_blocks.len() + self.classic_code_blocks.len()
     }

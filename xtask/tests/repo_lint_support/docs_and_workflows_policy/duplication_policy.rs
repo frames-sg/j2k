@@ -8,31 +8,7 @@ use crate::repo_lint_support::{
 };
 
 mod cache_identity;
-
-#[test]
-fn mq_qe_table_is_shared_by_encoder_and_decoder() {
-    let root = repo_root();
-    assert_file_pattern_checks(
-        root,
-        &[
-            FilePatternCheck::new("crates/j2k-native/src/j2c/mq.rs")
-                .named("native MQ table module")
-                .required(&[
-                    "pub(crate) struct QeData",
-                    "pub(crate) static QE_TABLE: [QeData; 47]",
-                    "Shared MQ arithmetic-coder probability table",
-                ]),
-            FilePatternCheck::new("crates/j2k-native/src/j2c/arithmetic_decoder.rs")
-                .named("native arithmetic decoder")
-                .required(&["use super::mq::QE_TABLE;"])
-                .forbidden(&["struct QeData", "static QE_TABLE"]),
-            FilePatternCheck::new("crates/j2k-native/src/j2c/arithmetic_encoder.rs")
-                .named("native arithmetic encoder")
-                .required(&["use super::mq::QE_TABLE;"])
-                .forbidden(&["struct QeData", "static QE_TABLE"]),
-        ],
-    );
-}
+mod classic_mq;
 
 #[test]
 fn component_plane_metadata_accessors_are_shared() {

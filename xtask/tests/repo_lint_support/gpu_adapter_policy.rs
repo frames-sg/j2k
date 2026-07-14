@@ -717,6 +717,7 @@ fn cuda_oxide_simt_helpers_use_shared_prelude() {
     ]);
     assert_pattern_checks(&[
         PatternCheck::new("CUDA runtime SIMT prelude build dependency", &build_script).required(&[
+            "cargo:rerun-if-changed=../j2k-codec-math/src/classic.rs",
             "cargo:rerun-if-changed=src/cuda_oxide_simt_prelude.rs",
             "stage_cuda_oxide_shared_prelude(context.out_dir);",
             "out_dir.join(\"cuda_oxide_simt_prelude.rs\")",

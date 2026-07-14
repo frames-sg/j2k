@@ -81,7 +81,7 @@ fn assert_resident_pipeline_ownership(sources: &CudaDecoderSources) {
             "fn decode_cuda_component_plan",
             "fn decode_cuda_component_subbands_with_resources",
             "fn finish_cuda_component_decode",
-            "fn cuda_code_block_job_from_plan_block",
+            "mod ht;",
         ])
         .forbidden(&[
             "fn run_component_cleanup_dequant_batches",

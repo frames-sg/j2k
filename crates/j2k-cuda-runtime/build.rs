@@ -74,6 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn emit_build_script_metadata() {
     println!("cargo:rerun-if-changed=../j2k-codec-math/src/lib.rs");
+    println!("cargo:rerun-if-changed=../j2k-codec-math/src/classic.rs");
     println!("cargo:rerun-if-changed=../j2k-codec-math/src/dwt.rs");
     println!("cargo:rerun-if-changed=../j2k-codec-math/src/jpeg.rs");
     println!("cargo:rerun-if-changed=../j2k-codec-math/src/mct.rs");

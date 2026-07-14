@@ -36,7 +36,10 @@ JP2/JPH still-image correctness. The living support boundary is
 The APIs are general codec APIs. Whole-slide imaging and DICOM tile workloads
 are the main public examples and benchmark fixtures because they stress
 large tiled images, strict color handling, and high-throughput GPU paths, but
-the decoder, encoder, and transcode crates are not WSI-only.
+the decoder, encoder, and transcode crates are not WSI-only. The
+[digital-pathology workflow audit](docs/digital-pathology-workflow-audit.md)
+defines the container, indexing, color, memory, and validation responsibilities
+that remain outside the codec layer.
 
 ## Why J2K exists
 

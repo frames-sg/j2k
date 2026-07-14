@@ -28,7 +28,7 @@ members = [
 exclude = ["third_party/block-0.1.6-patched"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 edition      = "2021"
 rust-version = "1.96"
 license      = "MIT OR Apache-2.0"

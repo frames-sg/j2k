@@ -1,11 +1,16 @@
 # Release Policy
 
-The `j2k` 0.7.0 public crate release is published. Runtime backend selection defaults to `Auto`; CPU remains the portable baseline while supported device paths are selected only with validation and benchmark evidence.
+The `j2k` 0.7.0 public crate release is published, while workspace version
+0.7.1 is a local pre-candidate under `Unreleased`.
+Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
+while supported device paths are selected only with validation and benchmark
+evidence.
 
 ## Release status
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
+| `0.7.1` | Local pre-candidate; not published. | Not yet supported as a release. |
 | `0.7.0` | Latest publicly published crates and documentation. | Supported. |
 | `0.6.x` | Previous published release line. | Supported for security fixes during the 0.7 transition. |
 | `<0.6` | Historical releases. | Unsupported. |
@@ -43,7 +48,7 @@ candidate SHA, and rerun the local and exact-SHA evidence.
 
 During remediation, the changelog keeps a real `## [Unreleased]` heading and a
 structured staged-version line. As the final release-preparation edit before
-candidate freeze, replace that heading with `## [0.7.0] - YYYY-MM-DD` using the
+candidate freeze, replace that heading with `## [0.7.1] - YYYY-MM-DD` using the
 actual intended tag date and update every staged-document reference that still
 says the notes are under `Unreleased`. Do not guess the date early. Any later
 date or note change creates a new candidate and requires the exact-SHA gates

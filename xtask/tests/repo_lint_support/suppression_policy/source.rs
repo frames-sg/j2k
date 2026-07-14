@@ -39,6 +39,10 @@ const REVIEWED_ALLOWS: &[(&str, &str)] = &[
         "static_mut_refs",
     ),
     (
+        "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_classic_decode/simt/src/main.rs",
+        "static_mut_refs",
+    ),
+    (
         "crates/j2k-cuda-runtime/src/cuda_oxide_j2k_ml/simt/src/main.rs",
         "clippy::too_many_arguments",
     ),

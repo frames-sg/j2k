@@ -195,6 +195,7 @@ fn metal_compute_runtime_registry_is_split_from_compute_god_file() {
         ("compute/decode_dispatch/ht_distinct.rs", 250),
         ("compute/decode_dispatch/ht_subband.rs", 300),
         ("compute/decode_dispatch/idwt.rs", 550),
+        ("compute/decode_dispatch/idwt/irreversible.rs", 325),
         ("compute/decode_dispatch/mct.rs", 250),
         ("compute/decode_dispatch/store.rs", 400),
     ] {
