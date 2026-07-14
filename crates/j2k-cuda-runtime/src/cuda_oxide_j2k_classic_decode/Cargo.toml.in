@@ -13,4 +13,3 @@ artifact-name = "j2k_cuda_oxide_j2k_classic_decode"
 
 [workspace]
 resolver = "2"
-
