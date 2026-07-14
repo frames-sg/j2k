@@ -73,7 +73,6 @@ fn is_ownership_path(path: &str) -> bool {
     .iter()
     .any(|marker| path.contains(marker))
         || [
-            "/batch.rs",
             "/session.rs",
             "/surface.rs",
             "/buffer.rs",

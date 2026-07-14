@@ -86,6 +86,7 @@ fn accelerator_critical_paths_exclude_broad_compute_and_diagnostic_internals() {
         classify_path("crates/j2k-metal/src/compute/tier1_encode.rs"),
         None
     );
+    assert_eq!(classify_path("crates/j2k-metal/src/encode/batch.rs"), None);
     assert_eq!(
         classify_path("crates/j2k-metal/src/compute/resident_tier1/counter_validation/validate.rs"),
         None
