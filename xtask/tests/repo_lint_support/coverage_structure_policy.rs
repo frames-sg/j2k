@@ -28,6 +28,13 @@ fn coverage_tooling_stays_split_by_responsibility() {
     let compiler_region_line_tests =
         read("xtask/src/coverage/compiler_regions/tests/line_evidence.rs");
     let critical_path_policy = read("xtask/src/coverage/critical_path_policy.rs");
+    let critical_path_classification =
+        read("xtask/src/coverage/critical_path_policy/classification.rs");
+    let critical_path_policy_modules = [
+        critical_path_policy.as_str(),
+        critical_path_classification.as_str(),
+    ]
+    .join("\n");
     let model = read("xtask/src/coverage/model.rs");
     let lane = read("xtask/src/coverage/lane.rs");
     let parsing = read("xtask/src/coverage/parsing.rs");
@@ -62,6 +69,13 @@ fn coverage_tooling_stays_split_by_responsibility() {
     let attribute_tests = read("xtask/src/coverage/tests/attributes.rs");
     let cfg_provenance_tests = read("xtask/src/coverage/tests/cfg_provenance.rs");
     let critical_path_tests = read("xtask/src/coverage/tests/critical_path_policy.rs");
+    let critical_path_release_gate_tests =
+        read("xtask/src/coverage/tests/critical_path_policy/release_gates.rs");
+    let critical_path_test_modules = [
+        critical_path_tests.as_str(),
+        critical_path_release_gate_tests.as_str(),
+    ]
+    .join("\n");
     let deferred_body_tests = read("xtask/src/coverage/tests/deferred_bodies.rs");
     let evaluation_tests = read("xtask/src/coverage/tests/evaluation.rs");
     let non_executable_evaluation_tests =
@@ -120,6 +134,11 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "xtask/src/coverage/critical_path_policy.rs",
             critical_path_policy.as_str(),
             350,
+        ),
+        (
+            "xtask/src/coverage/critical_path_policy/classification.rs",
+            critical_path_classification.as_str(),
+            175,
         ),
         ("xtask/src/coverage/model.rs", model.as_str(), 600),
         ("xtask/src/coverage/lane.rs", lane.as_str(), 600),
@@ -231,6 +250,11 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "xtask/src/coverage/tests/critical_path_policy.rs",
             critical_path_tests.as_str(),
             125,
+        ),
+        (
+            "xtask/src/coverage/tests/critical_path_policy/release_gates.rs",
+            critical_path_release_gate_tests.as_str(),
+            150,
         ),
         (
             "xtask/src/coverage/tests/deferred_bodies.rs",
@@ -460,6 +484,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
                 "source_dispositions",
                 "pub(super) fn coverage_violations(",
                 "audited_zero_body_findings(lane, result)",
+                "lane.enforces_overall_changed_lines()",
                 "changed critical-path lines",
                 "critical executable bodies are absent",
                 "fn meets_threshold(",
@@ -471,7 +496,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
         PatternCheck::new("coverage summary ownership", &summary).required(&[
             "pub(super) fn write_summary(",
             "pub(super) fn print_summary(",
-            "j2k-changed-line-coverage-v5",
+            "j2k-changed-line-coverage-v6",
             "head_sha",
             "lane_scope",
             "cargo_llvm_cov_version",
@@ -491,13 +516,13 @@ fn coverage_tooling_stays_split_by_responsibility() {
         ]),
         PatternCheck::new(
             "coverage critical-path and residual ownership",
-            &critical_path_policy,
+            &critical_path_policy_modules,
         )
         .required(&[
             "pub(super) enum CriticalPathClass",
             "pub(super) enum ResidualDisposition",
             "pub(super) enum ZeroBodyAudit",
-            "pub(super) fn classify_path(",
+            "pub(in crate::coverage) fn classify_path(",
             "pub(super) fn audited_zero_body_findings(",
             "Self::Unreachable => \"unreachable\"",
             "Self::HardwareOnly => \"hardware-only\"",
@@ -506,12 +531,15 @@ fn coverage_tooling_stays_split_by_responsibility() {
         ]),
         PatternCheck::new(
             "coverage critical-path policy regressions",
-            &critical_path_tests,
+            &critical_path_test_modules,
         )
         .required(&[
             "fn critical_path_threshold_cannot_be_masked_by_low_risk_tooling_coverage()",
+            "fn accelerator_lane_uses_raw_implementation_coverage_as_audit_evidence()",
+            "fn host_lane_keeps_the_overall_changed_line_gate()",
             "fn low_risk_tooling_absence_is_an_audited_residual_not_a_critical_failure()",
             "fn critical_path_classification_covers_release_risk_boundaries()",
+            "fn accelerator_critical_paths_exclude_broad_compute_and_diagnostic_internals()",
             "fn zero_body_audit_records_each_approved_residual_disposition()",
             "fn critical_zero_body_findings_remain_in_the_audit_without_individual_failure()",
         ]),

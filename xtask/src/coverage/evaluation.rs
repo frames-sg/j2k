@@ -338,23 +338,13 @@ pub(super) fn coverage_violations(
     result: &ChangedCoverageResult,
 ) -> Vec<String> {
     let mut violations = Vec::new();
-    if !meets_threshold(&result.overall) {
+    if lane.enforces_overall_changed_lines() && !meets_threshold(&result.overall) {
         violations.push(format!(
             "{} changed executable Rust lines are {:.2}% covered ({} / {}), below {}%",
             lane.name(),
             coverage_percent(&result.overall).unwrap_or(0.0),
             result.overall.covered,
             result.overall.measurable,
-            CHANGED_LINE_THRESHOLD_PERCENT
-        ));
-    }
-    if result.accelerator.measurable > 0 && !meets_threshold(&result.accelerator) {
-        violations.push(format!(
-            "{} changed accelerator host lines are {:.2}% covered ({} / {}), below {}%",
-            lane.name(),
-            coverage_percent(&result.accelerator).unwrap_or(0.0),
-            result.accelerator.covered,
-            result.accelerator.measurable,
             CHANGED_LINE_THRESHOLD_PERCENT
         ));
     }

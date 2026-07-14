@@ -79,7 +79,7 @@ fn summary_document(input: &CoverageSummaryInput<'_>) -> serde_json::Value {
         })
         .collect::<Vec<_>>();
     let document = json!({
-        "schema": "j2k-changed-line-coverage-v5",
+        "schema": "j2k-changed-line-coverage-v6",
         "lane": input.lane.name(),
         "lane_scope": input.lane.scope_name(),
         "status": if input.violations.is_empty() { "passed" } else { "failed" },
@@ -87,6 +87,12 @@ fn summary_document(input: &CoverageSummaryInput<'_>) -> serde_json::Value {
         "merge_base": input.merge_base,
         "head_sha": input.head_sha,
         "threshold_percent": CHANGED_LINE_THRESHOLD_PERCENT,
+        "enforcement": {
+            "line_gate_scope": input.lane.line_gate_scope(),
+            "overall_changed_lines": input.lane.enforces_overall_changed_lines(),
+            "critical_paths": true,
+            "raw_accelerator_host_lines": false,
+        },
         "cargo_llvm_cov_version": input.cargo_llvm_cov_version,
         "lcov_artifact": input.lcov_path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
         "compiler_regions_artifact": input.compiler_regions_path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
@@ -208,7 +214,7 @@ mod tests {
             violations: &[],
         });
 
-        assert_eq!(document["schema"], "j2k-changed-line-coverage-v5");
+        assert_eq!(document["schema"], "j2k-changed-line-coverage-v6");
         assert_eq!(
             document["head_sha"],
             "2222222222222222222222222222222222222222"
@@ -219,6 +225,8 @@ mod tests {
             serde_json::json!(["crates/demo/src/lib.rs:7"])
         );
         assert_eq!(document["critical_paths"]["coverage_percent"], 80.0);
+        assert_eq!(document["enforcement"]["overall_changed_lines"], true);
+        assert_eq!(document["enforcement"]["critical_paths"], true);
         assert_eq!(
             document["zero_body_audit"][0]["disposition"],
             "low-risk-tooling"

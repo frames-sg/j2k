@@ -105,6 +105,17 @@ impl CoverageLane {
         }
     }
 
+    pub(super) const fn enforces_overall_changed_lines(self) -> bool {
+        matches!(self, Self::Host)
+    }
+
+    pub(super) const fn line_gate_scope(self) -> &'static str {
+        match self {
+            Self::Host => "all-changed-production-rust",
+            Self::Metal | Self::Cuda => "release-critical-host-rust",
+        }
+    }
+
     pub(super) fn owns_path(self, path: &str) -> bool {
         match self {
             Self::Host => !is_accelerator_path(path),

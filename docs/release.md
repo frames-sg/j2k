@@ -213,11 +213,15 @@ After the candidate is frozen and committed, hosted CI must pass for exactly
 - coverage via `cargo xtask coverage`
 - hosted macOS Metal compilation and pure tests via `cargo xtask metal-compile`
 
-Changed-line coverage includes production Rust across CPU and accelerator
-crates. The hosted lane separately enforces the 80% threshold for changed
-accelerator-host lines so broad CPU coverage cannot mask untested routing,
-validation, allocation, or error-classification logic. GPU-heavy changes also
-need self-hosted `gpu-validation` evidence. The Metal job delegates to
+Changed-line coverage records production Rust across CPU and accelerator
+crates. The host lane enforces 80% across all changed production Rust and an
+independent 80% release-critical gate. Accelerator lanes report raw host-Rust
+coverage as audit evidence and enforce 80% for release-critical routing,
+validation, allocation, ownership, public-API, parser, security, and error
+boundaries. Broad accelerator implementation correctness is enforced by exact
+CPU/backend output parity and fail-closed hardware suites, not by tests written
+only to execute lines. GPU-heavy changes therefore require self-hosted
+`gpu-validation` evidence. The Metal job delegates to
 `cargo xtask release-metal`, which requires macOS, forces the strict runtime
 gate, rejects GPU skip markers, checks named runtime sentinels and count floors,
 and runs the exact declared ignored hardware-test inventory.

@@ -111,17 +111,17 @@ fn eighty_percent_changed_line_coverage_passes_exactly() {
 }
 
 #[test]
-fn accelerator_threshold_cannot_be_masked_by_cpu_coverage() {
+fn accelerator_critical_threshold_cannot_be_masked_by_raw_coverage() {
     let mut result = synthetic_result(100, 99);
-    result.accelerator = CoverageCounts {
+    result.critical = CoverageCounts {
         measurable: 5,
         covered: 3,
     };
 
-    let violations = coverage_violations(CoverageLane::Host, &result);
+    let violations = coverage_violations(CoverageLane::Metal, &result);
 
     assert_eq!(violations.len(), 1);
-    assert!(violations[0].contains("accelerator host lines"));
+    assert!(violations[0].contains("critical-path lines"));
 }
 
 #[test]
