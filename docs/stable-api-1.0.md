@@ -65,19 +65,16 @@ taken from the ambient Cargo process: both passes execute through the pinned
 `rustup run` toolchain. `cargo xtask semver`
 uses Rust `1.96` and does not accept the former `J2K_SEMVER_TOOLCHAIN` override.
 
-The snapshots record the staged workspace's public items and the CLI exit-code
+The snapshots record the published workspace's public items and the CLI exit-code
 contract expectations. Manual prose in this file must not duplicate that
 inventory. The published-baseline comparison belongs in the generated
 [`0.7.0` reviewed API report](../engineering/reviewed-public-api-diff-0.7.0.md).
 The ordinary and rustdoc-hidden artifacts were regenerated and verified after
-final source freeze; release authorization still requires the exact-SHA local,
-hosted, and hardware gates.
+final source freeze and passed the exact-SHA local, hosted, and hardware gates.
 
-The published stable contract is the `0.6.x` line. The workspace's `0.7.0`
-inventory is a staged semver-review target whose changes remain unreleased; it
-must not be presented as a published API until the release completes. Version
-`0.7.0` intentionally contracts parts of the published pre-1.0 `0.6.2` API and
-does not claim source compatibility with `0.6.x`.
+The published stable contract is the `0.7.x` line. Version `0.7.0`
+intentionally contracts parts of the pre-1.0 `0.6.2` API and does not claim
+source compatibility with `0.6.x`.
 
 ## Stability tiers
 
@@ -91,9 +88,7 @@ does not claim source compatibility with `0.6.x`.
 - Adapter and transcode crates are semver-gated published libraries, but their
   supported runtime shapes remain limited by feature gates, hardware
   availability, and `docs/public-support.md`.
-- `j2k-codec-math` is included in the staged `0.7.0` semver inventory but is
-  not yet published. Its presence here is a release-review target, not
-  a claim that a public crates.io baseline already exists.
+- `j2k-codec-math` is included in the published `0.7.0` semver inventory.
 - Unpublished tooling: test support, comparators, and xtask automation helpers.
 
 Patch releases preserve the active `0.x` public contract. Before `1.0`, a minor

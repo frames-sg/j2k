@@ -8,9 +8,8 @@
 
 **Docs & guides:** <https://frames-sg.github.io/j2k/>
 
-**Release status:** `0.6.x` is the latest published and security-supported
-line. The workspace has a dated `0.7.0` candidate under exact-SHA validation;
-see the [candidate notes](CHANGELOG.md) and [release policy](docs/release.md).
+**Release status:** `0.7.0` is published and security-supported. See the
+[release notes](CHANGELOG.md) and [release policy](docs/release.md).
 
 **Safe public Rust APIs, audited unsafe boundaries, and vendor-independent JPEG 2000 / HTJ2K.**
 

@@ -1,31 +1,28 @@
 # Release Policy
 
-The repository is staged for the `j2k` public crate release. Runtime backend selection defaults to `Auto`; CPU remains the portable baseline while supported device paths are selected only with validation and benchmark evidence.
+The `j2k` 0.7.0 public crate release is published. Runtime backend selection defaults to `Auto`; CPU remains the portable baseline while supported device paths are selected only with validation and benchmark evidence.
 
 ## Release status
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
-| `0.6.x` | Latest publicly published crates and documentation. | Supported. |
-| `0.7.0` | Dated local candidate awaiting exact-SHA local, hosted, Metal, and CUDA verification. | Not yet published or security-supported. |
+| `0.7.0` | Latest publicly published crates and documentation. | Supported. |
+| `0.6.x` | Previous published release line. | Supported for security fixes during the 0.7 transition. |
 | `<0.6` | Historical releases. | Unsupported. |
 
-The workspace version records the staged package target; it does not by itself
-mean that `0.7.0` has shipped. GitHub Pages is served directly from `main/docs`,
-so pushing a frozen candidate to `main` also deploys its staged documentation
-before the release tag and crates exist. Those pages must continue to identify
-`0.6.x` as published and `0.7.0` as staged; a hosted page is not publication
-evidence. After the tag and crates are published, update the site status in a
-separate post-release commit.
+Version `0.7.0` was published from annotated tag `v0.7.0`, which peels to the
+exact locally, hosted-CI, Metal, and CUDA verified release commit. GitHub Pages
+is served directly from `main/docs`; this post-release state is documentation,
+while the tag and crates.io records remain the publication evidence.
 
 Version `0.7.0` intentionally contracts parts of the published pre-1.0 `0.6.2`
 API. It does not claim source compatibility with `0.6.x`. The
 [`CHANGELOG`](../CHANGELOG.md) provides migration notes, and the
 [reviewed API report](../engineering/reviewed-public-api-diff-0.7.0.md)
-records the current additions, removals, and changed signatures. That report is
-provisional until it is regenerated and verified after final source freeze;
-for this candidate it has been regenerated, independently reviewed, and
-verified.
+records the additions, removals, and changed signatures. That report was
+regenerated, independently reviewed, and verified for the published tag.
+Any report prepared for a future release remains provisional until it is
+regenerated and verified after that release's final source freeze.
 
 ## Candidate freeze and exact-SHA evidence
 
