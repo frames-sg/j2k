@@ -8,7 +8,7 @@
 
 **Docs & guides:** <https://frames-sg.github.io/j2k/>
 
-**Release status:** `0.7.0` is published and security-supported. See the
+**Release status:** `0.7.1` is published and security-supported. See the
 [release notes](CHANGELOG.md) and [release policy](docs/release.md).
 
 **Safe public Rust APIs, audited unsafe boundaries, and vendor-independent JPEG 2000 / HTJ2K.**

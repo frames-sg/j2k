@@ -4,7 +4,13 @@
 
 // The non-macOS Metal session is intentionally a zero-sized compatibility
 // stub. Keep these private helper signatures identical across targets.
-#![cfg_attr(not(target_os = "macos"), allow(clippy::trivially_copy_pass_by_ref))]
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the non-macOS Metal compatibility session is intentionally zero-sized"
+    )
+)]
 
 use burn_core::tensor::{DType, FloatDType, Int, Tensor};
 use burn_wgpu::{Wgpu, WgpuDevice};

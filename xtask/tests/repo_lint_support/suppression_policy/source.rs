@@ -7,6 +7,10 @@ use crate::repo_lint_support::{repo_root, rust_sources};
 
 const REVIEWED_ALLOWS: &[(&str, &str)] = &[
     (
+        "crates/j2k-ml/src/metal.rs",
+        "clippy::trivially_copy_pass_by_ref",
+    ),
+    (
         "crates/j2k-cuda-runtime/src/cuda_oxide_htj2k_encode/simt/src/main.rs",
         "clippy::manual_div_ceil",
     ),

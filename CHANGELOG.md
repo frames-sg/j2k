@@ -1,15 +1,16 @@
 # Changelog
 
-This changelog tracks the current staged release line. Historical phase notes
+This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
-
-Staged workspace version: `0.7.1`.
+## [0.7.1] - 2026-07-14
 
 - Adds CUDA classic JPEG 2000 Tier-1 code-block decoding with shared host/device
   MQ and context tables, batched resident submission, bounded host accounting,
   and explicit CUDA ABI and unsafe-boundary inventories.
+- Adds an opaque, zero-copy Metal resident-image contract with checked layout
+  and device identity, submission-owned input and output lifetimes, safe
+  decoder-to-encoder handoff, and explicit unsafe raw-buffer interop.
 - Improves Metal decode residency with dynamic pool ceilings and enforced
   inflight limits, fixes irreversible inverse-MCT addends, fuses native inverse
   MCT output handling, and uses a staged irreversible 9/7 IDWT implementation.

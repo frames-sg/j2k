@@ -2,7 +2,7 @@
 
 Audit date: 2026-07-14
 
-Audited workspace: local `0.7.1` pre-candidate
+Audited workspace: `0.7.1` release candidate
 
 ## Decision
 

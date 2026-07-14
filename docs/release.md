@@ -1,7 +1,6 @@
 # Release Policy
 
-The `j2k` 0.7.0 public crate release is published, while workspace version
-0.7.1 is a local pre-candidate under `Unreleased`.
+The `j2k` 0.7.1 public crate release is published and security-supported.
 Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
 while supported device paths are selected only with validation and benchmark
 evidence.
@@ -10,17 +9,17 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
-| `0.7.1` | Local pre-candidate; not published. | Not yet supported as a release. |
-| `0.7.0` | Latest publicly published crates and documentation. | Supported. |
+| `0.7.1` | Latest publicly published crates and documentation. | Supported. |
+| `0.7.0` | Previous published release line. | Supported. |
 | `0.6.x` | Previous published release line. | Supported for security fixes during the 0.7 transition. |
 | `<0.6` | Historical releases. | Unsupported. |
 
-Version `0.7.0` was published from annotated tag `v0.7.0`, which peels to the
+Version `0.7.1` was published from annotated tag `v0.7.1`, which peels to the
 exact locally, hosted-CI, Metal, and CUDA verified release commit. GitHub Pages
 is served directly from `main/docs`; this post-release state is documentation,
 while the tag and crates.io records remain the publication evidence.
 
-Version `0.7.0` intentionally contracts parts of the published pre-1.0 `0.6.2`
+Version `0.7.1` intentionally contracts parts of the published pre-1.0 `0.6.2`
 API. It does not claim source compatibility with `0.6.x`. The
 [`CHANGELOG`](../CHANGELOG.md) provides migration notes, and the
 [reviewed API report](../engineering/reviewed-public-api-diff-0.7.1.md)
