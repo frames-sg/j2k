@@ -912,9 +912,10 @@ pub fn j2k_jpeg_metal::MetalSession::peak_collective_host_bytes(&self) -> core::
 pub fn j2k_jpeg_metal::ResidentPrivateJpegTile::byte_offset(&self) -> usize
 pub fn j2k_jpeg_metal::ResidentPrivateJpegTile::clone(&self) -> Self
 pub fn j2k_jpeg_metal::ResidentPrivateJpegTile::dimensions(&self) -> (u32, u32)
-pub fn j2k_jpeg_metal::ResidentPrivateJpegTile::into_buffer(self) -> metal::buffer::Buffer
+pub fn j2k_jpeg_metal::ResidentPrivateJpegTile::into_resident_image(self) -> j2k_metal_support::resident::ResidentMetalImage
 pub fn j2k_jpeg_metal::ResidentPrivateJpegTile::pitch_bytes(&self) -> usize
 pub fn j2k_jpeg_metal::ResidentPrivateJpegTile::pixel_format(&self) -> j2k_core::pixel::PixelFormat
+pub fn j2k_jpeg_metal::ResidentPrivateJpegTile::resident_image(&self) -> &j2k_metal_support::resident::ResidentMetalImage
 pub fn j2k_jpeg_metal::Surface::backend_kind(&self) -> j2k_core::backend::BackendKind
 pub fn j2k_jpeg_metal::Surface::byte_len(&self) -> usize
 pub fn j2k_jpeg_metal::Surface::dimensions(&self) -> (u32, u32)
@@ -944,6 +945,7 @@ pub type j2k_jpeg_metal::Decoder<'a>::Session = j2k_jpeg_metal::MetalSession
 pub type j2k_jpeg_metal::Decoder<'a>::SubmittedSurface = j2k_jpeg_metal::batch::MetalSubmission
 pub type j2k_jpeg_metal::Decoder<'a>::View = j2k_jpeg::decoder::view::JpegView<'a>
 pub unsafe fn j2k_jpeg_metal::ResidentPrivateJpegTile::buffer(&self) -> &metal::buffer::BufferRef
+pub unsafe fn j2k_jpeg_metal::ResidentPrivateJpegTile::into_buffer(self) -> metal::buffer::Buffer
 ```
 
 ## `j2k-metal`
@@ -1456,6 +1458,7 @@ pub fn j2k_cuda::encode_lossless_from_cuda_buffer_to_cuda_buffer_with_report(j2k
 pub fn j2k_cuda::encode_lossless_from_cuda_buffer_with_report(j2k_cuda::CudaLosslessEncodeTile<'_>, &j2k::encode::contracts::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<j2k_cuda::CudaLosslessEncodeOutcome, j2k_cuda::Error>
 pub fn j2k_cuda::encode_lossless_from_cuda_buffers_to_cuda_buffers_with_report(&[j2k_cuda::CudaLosslessEncodeTile<'_>], &j2k::encode::contracts::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_cuda::CudaLosslessBufferEncodeOutcome>, j2k_cuda::Error>
 pub fn j2k_cuda::encode_lossless_from_cuda_buffers_with_report(&[j2k_cuda::CudaLosslessEncodeTile<'_>], &j2k::encode::contracts::J2kLosslessEncodeOptions, &mut j2k_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<j2k_cuda::CudaLosslessEncodeOutcome>, j2k_cuda::Error>
+pub j2k_cuda::CudaHtj2kDecodeProfileDetail::classic_dispatch_count: usize
 pub j2k_cuda::CudaHtj2kDecodeProfileDetail::dequant_dispatch_count: usize
 pub j2k_cuda::CudaHtj2kDecodeProfileDetail::ht_dispatch_count: usize
 pub j2k_cuda::CudaHtj2kDecodeProfileDetail::idwt_dispatch_count: usize
@@ -1481,11 +1484,14 @@ pub j2k_cuda::CudaHtj2kEncodeProfileReport::packetize_us: u128
 pub j2k_cuda::CudaHtj2kEncodeProfileReport::quantize_us: u128
 pub j2k_cuda::CudaHtj2kEncodeProfileReport::total_us: u128
 pub j2k_cuda::CudaHtj2kProfileReport::block_count: usize
+pub j2k_cuda::CudaHtj2kProfileReport::classic_block_count: usize
+pub j2k_cuda::CudaHtj2kProfileReport::classic_tier1_us: u128
 pub j2k_cuda::CudaHtj2kProfileReport::dequant_us: u128
 pub j2k_cuda::CudaHtj2kProfileReport::detail: j2k_cuda::CudaHtj2kDecodeProfileDetail
 pub j2k_cuda::CudaHtj2kProfileReport::dispatch_count: usize
 pub j2k_cuda::CudaHtj2kProfileReport::flatten_us: u128
 pub j2k_cuda::CudaHtj2kProfileReport::h2d_us: u128
+pub j2k_cuda::CudaHtj2kProfileReport::ht_block_count: usize
 pub j2k_cuda::CudaHtj2kProfileReport::ht_cleanup_us: u128
 pub j2k_cuda::CudaHtj2kProfileReport::ht_refine_us: u128
 pub j2k_cuda::CudaHtj2kProfileReport::idwt_us: u128
@@ -2034,6 +2040,7 @@ pub fn j2k_metal_support::FallibleSubmissionQueue<S>::try_finish<O, E>(self, &'s
 pub fn j2k_metal_support::FallibleSubmissionQueue<S>::try_push_with<E>(&mut self, &'static str, impl core::ops::function::FnOnce(usize, usize) -> core::result::Result<S, E>) -> core::result::Result<usize, E> where E: core::convert::From<j2k_core::batch::BatchInfrastructureError>
 pub fn j2k_metal_support::FallibleSubmissionQueue<S>::with_capacity_hint(usize) -> Self
 pub struct j2k_metal_support::FallibleSubmissionQueue<S>
+pub unsafe fn j2k_metal_support::ResidentMetalImage::from_exclusive_pending_buffer(metal::buffer::Buffer, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
 ```
 
 ## `j2k-transcode-metal`
@@ -2698,6 +2705,7 @@ pub struct j2k_types::J2kResidentHtj2kTileEncodeJob<'a>
 ## `j2k-cuda-runtime`
 
 ```text
+#[repr(C)] pub struct j2k_cuda_runtime::CudaClassicStatus
 #[repr(C)] pub struct j2k_cuda_runtime::CudaHtj2kEncodeStatus
 #[repr(C)] pub struct j2k_cuda_runtime::CudaHtj2kPacketizationBlock
 #[repr(C)] pub struct j2k_cuda_runtime::CudaHtj2kPacketizationStatus
@@ -2729,6 +2737,7 @@ impl core::ops::drop::Drop for j2k_cuda_runtime::CudaExternalHostReservation<'_>
 impl core::ops::drop::Drop for j2k_cuda_runtime::CudaPinnedUploadStagingCheckout<'_, '_>
 impl core::ops::drop::Drop for j2k_cuda_runtime::CudaQueuedExecution
 impl core::ops::drop::Drop for j2k_cuda_runtime::CudaQueuedHtj2kCleanup
+impl j2k_core::accelerator::GpuAbi for j2k_cuda_runtime::CudaClassicStatus
 impl j2k_core::accelerator::GpuAbi for j2k_cuda_runtime::CudaHtj2kEncodeStatus
 impl j2k_core::accelerator::GpuAbi for j2k_cuda_runtime::CudaHtj2kPacketizationBlock
 impl j2k_core::accelerator::GpuAbi for j2k_cuda_runtime::CudaHtj2kPacketizationStatus
@@ -2788,6 +2797,7 @@ impl<T> j2k_cuda_runtime::CudaDeviceBufferView<'_, T>
 impl<T> j2k_cuda_runtime::CudaDeviceBufferViewMut<'_, T>
 pub const fn j2k_cuda_runtime::CudaExternalHostOwner::bytes(&self) -> usize
 pub const fn j2k_cuda_runtime::CudaExternalHostReservation<'_>::external_live_bytes(&self) -> usize
+pub const j2k_cuda_runtime::CudaClassicStatus::NAME: &'static str
 pub const j2k_cuda_runtime::CudaHtj2kEncodeStatus::NAME: &'static str
 pub const j2k_cuda_runtime::CudaHtj2kPacketizationBlock::NAME: &'static str
 pub const j2k_cuda_runtime::CudaHtj2kPacketizationStatus::NAME: &'static str
@@ -2822,9 +2832,12 @@ pub fn j2k_cuda_runtime::CudaBufferPool::upload_i16(&self, &[i16]) -> core::resu
 pub fn j2k_cuda_runtime::CudaBufferPool::upload_i16_pinned(&self, &[i16]) -> core::result::Result<j2k_cuda_runtime::CudaPooledDeviceBuffer, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaBufferPool::with_limits(j2k_cuda_runtime::CudaContext, j2k_cuda_runtime::CudaBufferPoolLimits) -> Self
 pub fn j2k_cuda_runtime::CudaBufferPoolLimits::default() -> Self
+pub fn j2k_cuda_runtime::CudaContext::allocate_classic_coefficients_with_pool(&self, usize, &j2k_cuda_runtime::CudaBufferPool) -> core::result::Result<j2k_cuda_runtime::CudaPooledDeviceBuffer, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::allocate_htj2k_codeblock_coefficients_with_pool(&self, &[j2k_cuda_runtime::CudaHtj2kCodeBlockJob], usize, &j2k_cuda_runtime::CudaBufferPool) -> core::result::Result<j2k_cuda_runtime::CudaPooledHtj2kDecodeOutput, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::begin_pinned_upload_operation(&self) -> core::result::Result<j2k_cuda_runtime::CudaPinnedUploadOperationGuard<'_>, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::copy_with_kernel(&self, &[u8]) -> core::result::Result<j2k_cuda_runtime::CudaKernelOutput, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaContext::decode_classic_codeblocks_multi_with_resources_and_pool(&self, &j2k_cuda_runtime::CudaHtj2kDecodeResources, &[j2k_cuda_runtime::CudaClassicDecodeTarget<'_>], &j2k_cuda_runtime::CudaBufferPool, usize) -> core::result::Result<alloc::vec::Vec<j2k_cuda_runtime::CudaClassicStatus>, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaContext::decode_classic_codeblocks_multi_with_resources_and_pool_timed(&self, &j2k_cuda_runtime::CudaHtj2kDecodeResources, &[j2k_cuda_runtime::CudaClassicDecodeTarget<'_>], &j2k_cuda_runtime::CudaBufferPool, usize, bool) -> core::result::Result<(alloc::vec::Vec<j2k_cuda_runtime::CudaClassicStatus>, j2k_cuda_runtime::CudaClassicDecodeStageTimings), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::decode_htj2k_codeblocks(&self, &[u8], &[j2k_cuda_runtime::CudaHtj2kCodeBlockJob], j2k_cuda_runtime::CudaHtj2kDecodeTables<'_>, usize) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kDecodeOutput, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::decode_htj2k_codeblocks_cleanup_dequantize_multi_with_resources_and_pool_timed(&self, &j2k_cuda_runtime::CudaHtj2kDecodeResources, &[j2k_cuda_runtime::CudaHtj2kCleanupTarget<'_>], &j2k_cuda_runtime::CudaBufferPool, bool) -> core::result::Result<(j2k_cuda_runtime::CudaExecutionStats, j2k_cuda_runtime::CudaHtj2kDecodeStageTimings), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::decode_htj2k_codeblocks_cleanup_dequantize_multi_with_resources_and_pool_timed_and_live_host_bytes(&self, &j2k_cuda_runtime::CudaHtj2kDecodeResources, &[j2k_cuda_runtime::CudaHtj2kCleanupTarget<'_>], &j2k_cuda_runtime::CudaBufferPool, bool, usize) -> core::result::Result<(j2k_cuda_runtime::CudaExecutionStats, j2k_cuda_runtime::CudaHtj2kDecodeStageTimings), j2k_cuda_runtime::CudaError>
@@ -2908,6 +2921,8 @@ pub fn j2k_cuda_runtime::CudaContext::upload_htj2k_decode_resources_with_tables(
 pub fn j2k_cuda_runtime::CudaContext::upload_htj2k_decode_resources_with_tables_and_pool(&self, &[u8], &j2k_cuda_runtime::CudaHtj2kDecodeTableResources, &j2k_cuda_runtime::CudaBufferPool) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kDecodeResources, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::upload_htj2k_decode_table_resources(&self, j2k_cuda_runtime::CudaHtj2kDecodeTables<'_>) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kDecodeTableResources, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::upload_htj2k_encode_resources(&self, j2k_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kEncodeResources, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaContext::upload_j2k_decode_payload(&self, &[u8]) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kDecodeResources, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaContext::upload_j2k_decode_payload_with_pool(&self, &[u8], &j2k_cuda_runtime::CudaBufferPool) -> core::result::Result<j2k_cuda_runtime::CudaHtj2kDecodeResources, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::validate_jpeg_output_buffer_context(&self, &j2k_cuda_runtime::CudaDeviceBuffer) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::with_nvtx_range<T>(&self, &str, impl core::ops::function::FnOnce() -> core::result::Result<T, j2k_cuda_runtime::CudaError>) -> core::result::Result<T, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaDeviceBuffer::typed_view<T>(&self) -> core::result::Result<j2k_cuda_runtime::CudaDeviceBufferView<'_, T>, j2k_cuda_runtime::CudaError>
@@ -3079,6 +3094,36 @@ pub j2k_cuda_runtime::CudaBufferPoolTakeTrace::free_count_before: usize
 pub j2k_cuda_runtime::CudaBufferPoolTakeTrace::requested_len: usize
 pub j2k_cuda_runtime::CudaBufferPoolTakeTrace::reused: bool
 pub j2k_cuda_runtime::CudaBufferPoolTakeTrace::scanned_count: usize
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::dequantization_step: f32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::height: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::missing_bitplanes: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::number_of_coding_passes: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::output_offset: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::output_stride: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::payload_len: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::payload_offset: u64
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::segment_count: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::segment_start: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::strict: bool
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::style_flags: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::sub_band_type: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::total_bitplanes: u32
+pub j2k_cuda_runtime::CudaClassicCodeBlockJob::width: u32
+pub j2k_cuda_runtime::CudaClassicDecodeStageTimings::job_upload_us: u128
+pub j2k_cuda_runtime::CudaClassicDecodeStageTimings::kernel_us: u128
+pub j2k_cuda_runtime::CudaClassicDecodeStageTimings::status_d2h_us: u128
+pub j2k_cuda_runtime::CudaClassicDecodeStageTimings::table_upload_us: u128
+pub j2k_cuda_runtime::CudaClassicDecodeTarget::coefficients: &'a j2k_cuda_runtime::CudaDeviceBuffer
+pub j2k_cuda_runtime::CudaClassicDecodeTarget::jobs: &'a [j2k_cuda_runtime::CudaClassicCodeBlockJob]
+pub j2k_cuda_runtime::CudaClassicDecodeTarget::output_words: usize
+pub j2k_cuda_runtime::CudaClassicDecodeTarget::segments: &'a [j2k_cuda_runtime::CudaClassicSegment]
+pub j2k_cuda_runtime::CudaClassicSegment::data_length: u32
+pub j2k_cuda_runtime::CudaClassicSegment::data_offset: u32
+pub j2k_cuda_runtime::CudaClassicSegment::end_coding_pass: u32
+pub j2k_cuda_runtime::CudaClassicSegment::start_coding_pass: u32
+pub j2k_cuda_runtime::CudaClassicSegment::use_arithmetic: bool
+pub j2k_cuda_runtime::CudaClassicStatus::code: u32
+pub j2k_cuda_runtime::CudaClassicStatus::detail: u32
 pub j2k_cuda_runtime::CudaDeviceBufferRange::len: usize
 pub j2k_cuda_runtime::CudaDeviceBufferRange::offset: usize
 pub j2k_cuda_runtime::CudaDwt53LevelShape::height: u32
@@ -3497,6 +3542,10 @@ pub j2k_cuda_runtime::CudaTranscodeReversible53Bands::low_width: usize
 pub struct j2k_cuda_runtime::CudaBufferPoolDiagnostics
 pub struct j2k_cuda_runtime::CudaBufferPoolLimits
 pub struct j2k_cuda_runtime::CudaBufferPoolTakeTrace
+pub struct j2k_cuda_runtime::CudaClassicCodeBlockJob
+pub struct j2k_cuda_runtime::CudaClassicDecodeStageTimings
+pub struct j2k_cuda_runtime::CudaClassicDecodeTarget<'a>
+pub struct j2k_cuda_runtime::CudaClassicSegment
 pub struct j2k_cuda_runtime::CudaDeviceBufferRange
 pub struct j2k_cuda_runtime::CudaDeviceBufferView<'a, T>
 pub struct j2k_cuda_runtime::CudaDeviceBufferViewMut<'a, T>

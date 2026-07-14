@@ -256,9 +256,11 @@ fn jpeg_metal_resident_private_tile_hides_raw_keepalive_resources() {
             "pub fn dimensions(&self) -> (u32, u32)",
             "pub fn pixel_format(&self) -> PixelFormat",
             "pub fn pitch_bytes(&self) -> usize",
+            "pub fn resident_image(&self) -> &ResidentMetalImage",
+            "pub fn into_resident_image(self) -> ResidentMetalImage",
             "pub unsafe fn buffer(&self) -> &BufferRef",
             "pub(crate) fn buffer_trusted(&self) -> &BufferRef",
-            "pub fn into_buffer(self) -> Buffer",
+            "pub unsafe fn into_buffer(self) -> Buffer",
             "every clone of this tile",
             "No surviving tile offers safe host readback",
             "normal Metal synchronization remains each",
@@ -272,6 +274,7 @@ fn jpeg_metal_resident_private_tile_hides_raw_keepalive_resources() {
             "pub status_buffer: Buffer",
             "pub command_buffer: CommandBuffer",
             "pub fn buffer(&self) -> &BufferRef",
+            "pub fn into_buffer(self) -> Buffer",
         ]),
         PatternCheck::new(
             "JPEG Metal resident private tile regressions",
@@ -279,7 +282,8 @@ fn jpeg_metal_resident_private_tile_hides_raw_keepalive_resources() {
         )
         .required(&[
             "let raw_buffer = unsafe { tile.buffer() };",
-            "let handed_off = tile.clone().into_buffer();",
+            "let handed_off = tile.clone().into_resident_image();",
+            "let resident = tile.resident_image();",
             "assert_eq!(tile.dimensions(), (16, 16));",
         ]),
     ]);

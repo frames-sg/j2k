@@ -23,7 +23,7 @@ while the tag and crates.io records remain the publication evidence.
 Version `0.7.0` intentionally contracts parts of the published pre-1.0 `0.6.2`
 API. It does not claim source compatibility with `0.6.x`. The
 [`CHANGELOG`](../CHANGELOG.md) provides migration notes, and the
-[reviewed API report](../engineering/reviewed-public-api-diff-0.7.0.md)
+[reviewed API report](../engineering/reviewed-public-api-diff-0.7.1.md)
 records the additions, removals, and changed signatures. That report was
 regenerated, independently reviewed, and verified for the published tag.
 Any report prepared for a future release remains provisional until it is

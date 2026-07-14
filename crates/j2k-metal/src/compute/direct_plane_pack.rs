@@ -201,7 +201,7 @@ pub(super) fn encode_plane_stage_to_surface_in_command_buffer(
     dispatch_2d_pipeline(&encoder, pipeline, stage.dims);
     encoder.end_encoding();
 
-    Ok(Surface::from_metal_buffer(out_buffer, stage.dims, fmt))
+    Surface::from_metal_buffer(out_buffer, stage.dims, fmt)
 }
 
 #[cfg(target_os = "macos")]
@@ -256,11 +256,7 @@ pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
     encoder.end_encoding();
     drop(signpost);
 
-    Ok(Surface::from_metal_buffer(
-        out_buffer,
-        dims,
-        PixelFormat::Rgb8,
-    ))
+    Surface::from_metal_buffer(out_buffer, dims, PixelFormat::Rgb8)
 }
 
 #[cfg(target_os = "macos")]
@@ -350,7 +346,7 @@ pub(super) fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
             dims,
             PixelFormat::Rgb8,
             index * surface_bytes,
-        ));
+        )?);
     }
     Ok(surfaces)
 }
@@ -478,7 +474,7 @@ pub(super) fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
             dims,
             PixelFormat::Rgb8,
             index * surface_bytes,
-        ));
+        )?);
     }
     Ok(surfaces)
 }

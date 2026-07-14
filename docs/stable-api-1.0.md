@@ -52,7 +52,7 @@ The generated 0.7 semver report compares the ordinary inventory with 0.6.2 and
 also records each package's complete hidden-inventory count and fingerprint.
 Every semver invocation collects both live passes, compares both committed
 companions, and requires exact ordinary added/removed fingerprints plus the
-hidden count/fingerprint in `engineering/public-api-review-0.7.0.yml`.
+hidden count/fingerprint in `engineering/public-api-review-0.7.1.yml`.
 Nonempty hidden inventories also require a package-specific hidden rationale.
 Consequently, additions and removals remain blocked until the snapshots,
 report, and review evidence are updated together and their diffs are reviewed.
@@ -68,7 +68,7 @@ uses Rust `1.96` and does not accept the former `J2K_SEMVER_TOOLCHAIN` override.
 The snapshots record the published workspace's public items and the CLI exit-code
 contract expectations. Manual prose in this file must not duplicate that
 inventory. The published-baseline comparison belongs in the generated
-[`0.7.0` reviewed API report](../engineering/reviewed-public-api-diff-0.7.0.md).
+[`0.7.1` reviewed API report](../engineering/reviewed-public-api-diff-0.7.1.md).
 The ordinary and rustdoc-hidden artifacts were regenerated and verified after
 final source freeze and passed the exact-SHA local, hosted, and hardware gates.
 

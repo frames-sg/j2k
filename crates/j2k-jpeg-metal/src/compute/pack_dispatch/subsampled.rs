@@ -132,7 +132,7 @@ pub(in crate::compute) fn encode_fast_subsampled_region_batch_item<P: FastSubsam
     pack_encoder.end_encoding();
 
     Ok(BatchedDecodeItem {
-        surface: Surface::from_metal_buffer(out_buffer, (roi.w, roi.h), fmt),
+        surface: Surface::from_metal_buffer(out_buffer, (roi.w, roi.h), fmt)?,
         status_buffer: status_buffer.clone(),
         decode_threads,
         _decode_resources: vec![
@@ -281,7 +281,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_batch_item<P: FastSubsam
             (params.scaled_width, params.scaled_height),
             fmt,
         ),
-    };
+    }?;
 
     Ok(BatchedDecodeItem {
         surface,
@@ -443,7 +443,7 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_region_batch_item<
     pack_encoder.end_encoding();
 
     Ok(BatchedDecodeItem {
-        surface: Surface::from_metal_buffer(out_buffer, (scaled_roi.w, scaled_roi.h), fmt),
+        surface: Surface::from_metal_buffer(out_buffer, (scaled_roi.w, scaled_roi.h), fmt)?,
         status_buffer: status_buffer.clone(),
         decode_threads,
         _decode_resources: vec![
@@ -536,7 +536,7 @@ pub(in crate::compute) fn encode_fast_subsampled_batch_item<P: FastSubsampledMet
         dispatch_2d_pipeline(&pack_encoder, pack_pipeline, packet.dimensions());
         pack_encoder.end_encoding();
         Surface::from_metal_buffer(out_buffer, packet.dimensions(), fmt)
-    };
+    }?;
 
     Ok(BatchedDecodeItem {
         surface,

@@ -11,6 +11,8 @@ use j2k_core::{
 };
 #[cfg(target_os = "macos")]
 use j2k_core::{BufferError, Downscale, Rect};
+#[cfg(target_os = "macos")]
+use j2k_metal_support::{MetalImageLayout, ResidentMetalImage};
 
 #[cfg(target_os = "macos")]
 use crate::buffers::{checked_buffer_slice_at, new_shared_buffer};
@@ -36,7 +38,8 @@ pub(crate) enum Storage {
     Host(Arc<Vec<u8>>),
     #[cfg(target_os = "macos")]
     Metal {
-        buffer: Buffer,
+        resident: Option<ResidentMetalImage>,
+        reusable_buffer: Option<Buffer>,
         offset: usize,
         access_gate: Option<Arc<Mutex<()>>>,
     },
@@ -104,7 +107,8 @@ impl Surface {
             Storage::Host(bytes) => Ok(Cow::Borrowed(bytes.as_slice())),
             #[cfg(target_os = "macos")]
             Storage::Metal {
-                buffer,
+                resident,
+                reusable_buffer,
                 offset,
                 access_gate,
             } => {
@@ -115,6 +119,18 @@ impl Surface {
                     None => None,
                 };
                 let len = self.byte_len();
+                let buffer = match (resident, reusable_buffer) {
+                    (Some(image), None) => {
+                        // SAFETY: completed resident surfaces are read only.
+                        unsafe { image.raw_buffer() }
+                    }
+                    (None, Some(buffer)) => buffer,
+                    _ => {
+                        return Err(Error::MetalKernel {
+                            message: "JPEG Metal surface storage invariant failed".to_string(),
+                        })
+                    }
+                };
                 checked_buffer_slice_at::<u8>(buffer, *offset, len, "surface bytes").map(Cow::Owned)
             }
         }
@@ -145,8 +161,50 @@ impl Surface {
     #[cfg(target_os = "macos")]
     pub(crate) fn metal_buffer_trusted(&self) -> Option<(&Buffer, usize)> {
         match &self.storage {
-            Storage::Metal { buffer, offset, .. } => Some((buffer, *offset)),
-            Storage::Host(_) => None,
+            Storage::Metal {
+                resident: Some(image),
+                reusable_buffer: None,
+                offset,
+                ..
+            } => {
+                // SAFETY: backend code binds this private handle under the
+                // immutable resident-image contract.
+                Some((unsafe { image.raw_buffer() }, *offset))
+            }
+            Storage::Metal {
+                resident: None,
+                reusable_buffer: Some(buffer),
+                offset,
+                ..
+            } => Some((buffer, *offset)),
+            Storage::Metal { .. } | Storage::Host(_) => None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    /// Borrow the immutable resident image for a completed, non-reusable surface.
+    pub fn resident_metal_image(&self) -> Option<&ResidentMetalImage> {
+        match &self.storage {
+            Storage::Metal {
+                resident: Some(image),
+                ..
+            } => Some(image),
+            Storage::Host(_) | Storage::Metal { .. } => None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    /// Consume this surface and return its immutable resident image.
+    ///
+    /// Reusable batch-output surfaces return `None` because their backing
+    /// allocation remains intentionally mutable behind an access gate.
+    pub fn into_resident_metal_image(self) -> Option<ResidentMetalImage> {
+        match self.storage {
+            Storage::Metal {
+                resident: Some(image),
+                ..
+            } => Some(image),
+            Storage::Host(_) | Storage::Metal { .. } => None,
         }
     }
 
@@ -155,7 +213,7 @@ impl Surface {
         buffer: Buffer,
         dimensions: (u32, u32),
         fmt: PixelFormat,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         Self::from_metal_buffer_offset(buffer, dimensions, fmt, 0)
     }
 
@@ -165,19 +223,49 @@ impl Surface {
         dimensions: (u32, u32),
         fmt: PixelFormat,
         offset: usize,
-    ) -> Self {
-        Self {
-            backend: BackendKind::Metal,
-            residency: SurfaceResidency::MetalResidentDecode,
+    ) -> Result<Self, Error> {
+        Self::from_owned_metal_buffer_offset(
+            buffer,
             dimensions,
             fmt,
-            pitch_bytes: dimensions.0 as usize * fmt.bytes_per_pixel(),
+            offset,
+            SurfaceResidency::MetalResidentDecode,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn from_owned_metal_buffer_offset(
+        buffer: Buffer,
+        dimensions: (u32, u32),
+        fmt: PixelFormat,
+        offset: usize,
+        residency: SurfaceResidency,
+    ) -> Result<Self, Error> {
+        let pitch_bytes = usize::try_from(dimensions.0)
+            .ok()
+            .and_then(|width| width.checked_mul(fmt.bytes_per_pixel()))
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal surface pitch overflows usize".to_string(),
+            })?;
+        let layout = MetalImageLayout::new(offset, dimensions, pitch_bytes, fmt)
+            .map_err(|source| metal_kernel_support_error("JPEG Metal surface layout", source))?;
+        // SAFETY: these crate-private constructors are used by producer paths
+        // that retain and complete the sole writer before exposing a surface.
+        let image = unsafe { ResidentMetalImage::from_exclusive_pending_buffer(buffer, layout) }
+            .map_err(|source| metal_kernel_support_error("JPEG Metal resident surface", source))?;
+        Ok(Self {
+            backend: BackendKind::Metal,
+            residency,
+            dimensions,
+            fmt,
+            pitch_bytes,
             storage: Storage::Metal {
-                buffer,
+                resident: Some(image),
+                reusable_buffer: None,
                 offset,
                 access_gate: None,
             },
-        }
+        })
     }
 
     #[cfg(target_os = "macos")]
@@ -185,7 +273,7 @@ impl Surface {
         buffer: Buffer,
         dimensions: (u32, u32),
         fmt: PixelFormat,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         Self::from_cpu_staged_metal_buffer_offset(buffer, dimensions, fmt, 0)
     }
 
@@ -195,19 +283,14 @@ impl Surface {
         dimensions: (u32, u32),
         fmt: PixelFormat,
         offset: usize,
-    ) -> Self {
-        Self {
-            backend: BackendKind::Metal,
-            residency: SurfaceResidency::CpuStagedMetalUpload,
+    ) -> Result<Self, Error> {
+        Self::from_owned_metal_buffer_offset(
+            buffer,
             dimensions,
             fmt,
-            pitch_bytes: dimensions.0 as usize * fmt.bytes_per_pixel(),
-            storage: Storage::Metal {
-                buffer,
-                offset,
-                access_gate: None,
-            },
-        }
+            offset,
+            SurfaceResidency::CpuStagedMetalUpload,
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -224,7 +307,8 @@ impl Surface {
             fmt,
             pitch_bytes: dimensions.0 as usize * fmt.bytes_per_pixel(),
             storage: Storage::Metal {
-                buffer: output.buffer.clone(),
+                resident: None,
+                reusable_buffer: Some(output.buffer.clone()),
                 offset,
                 access_gate: Some(Arc::clone(&output.access_gate)),
             },
@@ -258,12 +342,15 @@ impl DeviceSurface for Surface {
         match &self.storage {
             Storage::Host(_) => None,
             #[cfg(target_os = "macos")]
-            Storage::Metal { buffer, offset, .. } => Some(DeviceMemoryRange::new(
-                BackendKind::Metal,
-                u64::try_from(buffer.as_ptr() as usize).ok()?,
-                *offset,
-                self.byte_len(),
-            )),
+            Storage::Metal { .. } => {
+                let (buffer, offset) = self.metal_buffer_trusted()?;
+                Some(DeviceMemoryRange::new(
+                    BackendKind::Metal,
+                    u64::try_from(buffer.as_ptr() as usize).ok()?,
+                    offset,
+                    self.byte_len(),
+                ))
+            }
         }
     }
 }
@@ -271,11 +358,7 @@ impl DeviceSurface for Surface {
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
 pub struct ResidentPrivateJpegTile {
-    buffer: Buffer,
-    byte_offset: usize,
-    dimensions: (u32, u32),
-    pixel_format: PixelFormat,
-    pitch_bytes: usize,
+    image: ResidentMetalImage,
     // Keep the producer resources alive for the lifetime of every tile clone.
     status_buffer: Buffer,
     command_buffer: CommandBuffer,
@@ -291,36 +374,51 @@ impl ResidentPrivateJpegTile {
         pitch_bytes: usize,
         status_buffer: Buffer,
         command_buffer: CommandBuffer,
-    ) -> Self {
-        Self {
-            buffer,
-            byte_offset,
-            dimensions,
-            pixel_format,
-            pitch_bytes,
+    ) -> Result<Self, Error> {
+        let layout = MetalImageLayout::new(byte_offset, dimensions, pitch_bytes, pixel_format)
+            .map_err(|source| {
+                metal_kernel_support_error("JPEG private resident tile layout", source)
+            })?;
+        // SAFETY: both private-tile producers wait for the command buffer and
+        // validate its status before constructing this wrapper.
+        let image = unsafe { ResidentMetalImage::from_completed_buffer(buffer, layout) }.map_err(
+            |source| metal_kernel_support_error("JPEG private resident tile adoption", source),
+        )?;
+        Ok(Self {
+            image,
             status_buffer,
             command_buffer,
-        }
+        })
     }
 
     /// Byte offset of the first decoded pixel in the backing buffer.
     pub fn byte_offset(&self) -> usize {
-        self.byte_offset
+        self.image.byte_offset()
     }
 
     /// Dimensions of the decoded tile.
     pub fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
+        self.image.dimensions()
     }
 
     /// Pixel format of the decoded tile.
     pub fn pixel_format(&self) -> PixelFormat {
-        self.pixel_format
+        self.image.pixel_format()
     }
 
     /// Number of bytes between consecutive decoded rows.
     pub fn pitch_bytes(&self) -> usize {
-        self.pitch_bytes
+        self.image.pitch_bytes()
+    }
+
+    /// Borrow the common immutable resident image.
+    pub fn resident_image(&self) -> &ResidentMetalImage {
+        &self.image
+    }
+
+    /// Consume the private tile and return the common resident image.
+    pub fn into_resident_image(self) -> ResidentMetalImage {
+        self.image
     }
 
     /// Return the raw private Metal output buffer.
@@ -337,18 +435,24 @@ impl ResidentPrivateJpegTile {
     }
 
     pub(crate) fn buffer_trusted(&self) -> &BufferRef {
-        self.buffer.as_ref()
+        // SAFETY: this crate-private accessor is used only for read-only Metal
+        // binding after the producer has completed.
+        unsafe { self.image.raw_buffer() }.as_ref()
     }
 
     /// Consume this wrapper and transfer ownership of its decoded buffer.
+    ///
+    /// # Safety
     ///
     /// The producer command has already completed. Other tile clones, and
     /// buffers obtained by consuming them, can still refer to the same Metal
     /// allocation. No surviving tile offers safe host readback, and borrowed
     /// raw access remains unsafe; normal Metal synchronization remains each
     /// buffer recipient's responsibility after a handoff.
-    pub fn into_buffer(self) -> Buffer {
-        self.buffer
+    #[deprecated(note = "use into_resident_image; raw Metal handles require unsafe interop")]
+    pub unsafe fn into_buffer(self) -> Buffer {
+        // SAFETY: the caller accepts the raw-handle synchronization contract.
+        unsafe { self.image.raw_buffer() }.to_owned()
     }
 
     #[cfg(test)]
@@ -361,11 +465,7 @@ impl ResidentPrivateJpegTile {
 impl Clone for ResidentPrivateJpegTile {
     fn clone(&self) -> Self {
         Self {
-            buffer: self.buffer.clone(),
-            byte_offset: self.byte_offset,
-            dimensions: self.dimensions,
-            pixel_format: self.pixel_format,
-            pitch_bytes: self.pitch_bytes,
+            image: self.image.clone(),
             status_buffer: self.status_buffer.clone(),
             command_buffer: self.command_buffer.clone(),
         }

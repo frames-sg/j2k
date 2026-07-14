@@ -211,7 +211,11 @@ fn public_cfg_docs_and_metal_command_order_are_pinned() {
     ] {
         assert!(batch.contains(documented_api));
     }
-    assert_eq!(batch.matches("#[cfg(target_os = \"macos\")]").count(), 11);
+    assert_eq!(batch.matches("#[cfg(target_os = \"macos\")]").count(), 12);
+
+    let types = read_source(&root.join("types.rs"));
+    assert!(types.contains("pub fn from_resident("));
+    assert!(types.contains("Device identity is checked against the encode session"));
 
     let unavailable = read_source(&root.join("unavailable.rs"));
     assert_eq!(

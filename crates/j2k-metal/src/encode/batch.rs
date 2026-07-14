@@ -25,6 +25,7 @@ pub fn submit_lossless_batch(
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
 ) -> Result<SubmittedJ2kLosslessMetalEncodeBatch, crate::Error> {
+    validate_resident_tile_devices(request.tiles, session)?;
     submit_lossless_tiles(
         request.tiles,
         *options,
@@ -41,6 +42,7 @@ pub fn submit_lossless_batch_to_metal(
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
 ) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
+    validate_resident_tile_devices(request.tiles, session)?;
     submit_lossless_tiles_to_metal_buffer_batch(
         request.tiles,
         *options,
@@ -58,6 +60,7 @@ pub fn encode_lossless_batch_with_report(
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
 ) -> Result<Vec<MetalLosslessEncodeOutcome>, crate::Error> {
+    validate_resident_tile_devices(request.tiles, session)?;
     encode_lossless_tiles_with_report(
         request.tiles,
         *options,
@@ -65,6 +68,17 @@ pub fn encode_lossless_batch_with_report(
         request.staging,
         request.config,
     )
+}
+
+#[cfg(target_os = "macos")]
+fn validate_resident_tile_devices(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    session: &crate::MetalBackendSession,
+) -> Result<(), crate::Error> {
+    for &tile in tiles {
+        tile.validate_device(session.device())?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

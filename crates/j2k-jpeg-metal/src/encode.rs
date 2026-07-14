@@ -12,6 +12,8 @@ use metal::{Buffer, BufferRef};
 mod adapter;
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod allocation;
+#[cfg(target_os = "macos")]
+mod resident_tile;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]
@@ -98,6 +100,22 @@ impl<'a> JpegBaselineMetalEncodeTile<'a> {
     pub(crate) fn buffer_trusted(&self) -> &'a Buffer {
         self.buffer
     }
+
+    fn validate_device(&self, device: &metal::DeviceRef) -> Result<(), crate::Error> {
+        let image_registry_id = self.buffer.device().registry_id();
+        let requested_registry_id = device.registry_id();
+        if image_registry_id == requested_registry_id {
+            Ok(())
+        } else {
+            Err(crate::error::metal_kernel_support_error(
+                "JPEG input belongs to a different Metal device",
+                j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch {
+                    image_registry_id,
+                    requested_registry_id,
+                },
+            ))
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -114,6 +132,7 @@ pub fn encode_jpeg_baseline_from_metal_buffer(
     options: JpegEncodeOptions,
     session: &crate::MetalBackendSession,
 ) -> Result<EncodedJpeg, crate::Error> {
+    tile.validate_device(session.device())?;
     let mut adapter = MetalJpegBaselineEncodeAdapter { session };
     encode_jpeg_baseline_gpu_tile(tile, options, &mut adapter)
 }
@@ -129,6 +148,9 @@ pub fn encode_jpeg_baseline_batch_from_metal_buffers(
     options: JpegEncodeOptions,
     session: &crate::MetalBackendSession,
 ) -> Result<Vec<EncodedJpeg>, crate::Error> {
+    for tile in tiles {
+        tile.validate_device(session.device())?;
+    }
     let mut adapter = MetalJpegBaselineEncodeAdapter { session };
     encode_jpeg_baseline_gpu_batch(tiles, options, &mut adapter)
 }

@@ -285,7 +285,7 @@ pub(in crate::compute) fn encode_repeated_gray_store_to_surfaces_in_command_buff
             dims,
             fmt,
             instance_idx * surface_bytes,
-        ));
+        )?);
     }
     Ok(surfaces)
 }
@@ -326,5 +326,5 @@ pub(in crate::compute) fn encode_gray_store_to_surface_in_encoder(
     );
     dispatch_2d_pipeline(encoder, pipeline, (params.copy_width, params.copy_height));
 
-    Ok(Surface::from_metal_buffer(out_buffer, dims, fmt))
+    Surface::from_metal_buffer(out_buffer, dims, fmt)
 }

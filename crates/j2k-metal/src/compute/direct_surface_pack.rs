@@ -144,7 +144,7 @@ pub(super) fn encode_gray_plane_to_surface_in_encoder_with_offset(
     );
     dispatch_2d_pipeline(encoder, pipeline, dims);
 
-    Ok(Surface::from_metal_buffer(out_buffer, dims, fmt))
+    Surface::from_metal_buffer(out_buffer, dims, fmt)
 }
 
 #[cfg(target_os = "macos")]
@@ -213,7 +213,7 @@ pub(super) fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
             dims,
             fmt,
             instance_idx * surface_bytes,
-        ));
+        )?);
     }
     Ok(surfaces)
 }

@@ -66,7 +66,7 @@ pub(crate) fn decode_private_rgb8_tile_with_session(
             PixelFormat::Rgb8,
             MTLResourceOptions::StorageModePrivate,
         )? {
-            return Ok(private_jpeg_tile_from_fast_rgb_buffer(decoded));
+            return private_jpeg_tile_from_fast_rgb_buffer(decoded);
         }
         if let Some(decoded) = decode_fast420_to_rgb_buffer(
             runtime,
@@ -75,7 +75,7 @@ pub(crate) fn decode_private_rgb8_tile_with_session(
             PixelFormat::Rgb8,
             MTLResourceOptions::StorageModePrivate,
         )? {
-            return Ok(private_jpeg_tile_from_fast_rgb_buffer(decoded));
+            return private_jpeg_tile_from_fast_rgb_buffer(decoded);
         }
         Err(Error::UnsupportedMetalRequest {
             reason:

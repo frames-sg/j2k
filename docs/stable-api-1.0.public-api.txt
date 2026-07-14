@@ -1054,6 +1054,14 @@ impl j2k_codec_math::dwt::Dwt53LinearTap
 pub const fn j2k_codec_math::dwt::Dwt53LinearTap::sample_index(self) -> usize
 pub const fn j2k_codec_math::dwt::Dwt53LinearTap::weight(self) -> f64
 pub const fn j2k_codec_math::dwt::max_decomposition_levels(u32, u32) -> u8
+pub const j2k_codec_math::classic::MQ_QE_VALUES: [u32; 47]
+pub const j2k_codec_math::classic::MQ_STATES: [j2k_codec_math::classic::ClassicMqState; 47]
+pub const j2k_codec_math::classic::PACKED_MQ_TRANSITION_VALUES: [u32; 47]
+pub const j2k_codec_math::classic::PACKED_SIGN_CONTEXT_LOOKUP: [u16; 256]
+pub const j2k_codec_math::classic::SIGN_CONTEXT_LOOKUP: [(u8, u8); 256]
+pub const j2k_codec_math::classic::ZERO_CTX_HH_LOOKUP: [u8; 256]
+pub const j2k_codec_math::classic::ZERO_CTX_HL_LOOKUP: [u8; 256]
+pub const j2k_codec_math::classic::ZERO_CTX_LL_LH_LOOKUP: [u8; 256]
 pub const j2k_codec_math::dwt::DWT53_MAX_HIGH_LINEAR_TAPS: usize
 pub const j2k_codec_math::dwt::DWT53_MAX_LINEAR_TAPS: usize
 pub const j2k_codec_math::dwt::DWT97_ALPHA_F32: f32
@@ -1113,6 +1121,10 @@ pub fn j2k_codec_math::dwt::Dwt53LinearRow::taps(&self) -> &[j2k_codec_math::dwt
 pub fn j2k_codec_math::dwt::linearized_dwt53_row(usize, j2k_codec_math::dwt::Dwt53Band, usize) -> core::option::Option<j2k_codec_math::dwt::Dwt53LinearRow>
 pub fn j2k_codec_math::jpeg::CanonicalHuffmanError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_codec_math::jpeg::derive_canonical_huffman(&[u8; 16], usize) -> core::result::Result<j2k_codec_math::jpeg::CanonicalHuffmanDerivation, j2k_codec_math::jpeg::CanonicalHuffmanError>
+pub j2k_codec_math::classic::ClassicMqState::nlps: u8
+pub j2k_codec_math::classic::ClassicMqState::nmps: u8
+pub j2k_codec_math::classic::ClassicMqState::qe: u32
+pub j2k_codec_math::classic::ClassicMqState::switch: bool
 pub j2k_codec_math::dwt::Dwt53Band::High
 pub j2k_codec_math::dwt::Dwt53Band::Low
 pub j2k_codec_math::jpeg::CanonicalHuffmanDerivation::huffcode: [u16; 256]
@@ -1125,12 +1137,14 @@ pub j2k_codec_math::jpeg::CanonicalHuffmanError::BitsExceedTableCapacity
 pub j2k_codec_math::jpeg::CanonicalHuffmanError::BitsValuesLenMismatch
 pub j2k_codec_math::jpeg::CanonicalHuffmanError::CodeOverflow
 pub mod j2k_codec_math
+pub mod j2k_codec_math::classic
 pub mod j2k_codec_math::dwt
 pub mod j2k_codec_math::generated
 pub mod j2k_codec_math::jpeg
 pub mod j2k_codec_math::jpeg::idct
 pub mod j2k_codec_math::jpeg::ycbcr
 pub mod j2k_codec_math::mct
+pub struct j2k_codec_math::classic::ClassicMqState
 pub struct j2k_codec_math::dwt::Dwt53LinearRow
 pub struct j2k_codec_math::dwt::Dwt53LinearTap
 pub struct j2k_codec_math::jpeg::CanonicalHuffmanDerivation
@@ -1804,6 +1818,7 @@ pub fn j2k_jpeg_metal::Decoder<'a>::into_inner(self) -> j2k_jpeg::decoder::Decod
 pub fn j2k_jpeg_metal::Decoder<'a>::new(&'a [u8]) -> core::result::Result<Self, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::byte_offset(&self) -> usize
 pub fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::dimensions(&self) -> (u32, u32)
+pub fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::from_resident(&'a j2k_metal_support::resident::ResidentMetalImage, (u32, u32)) -> Self
 pub fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::output_dimensions(&self) -> (u32, u32)
 pub fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::pitch_bytes(&self) -> usize
 pub fn j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'a>::pixel_format(&self) -> j2k_core::pixel::PixelFormat
@@ -1845,8 +1860,10 @@ pub fn j2k_jpeg_metal::MetalTextureTile::dimensions(&self) -> (u32, u32)
 pub fn j2k_jpeg_metal::MetalTextureTile::pixel_format(&self) -> j2k_core::pixel::PixelFormat
 pub fn j2k_jpeg_metal::Surface::as_bytes(&self) -> core::result::Result<alloc::borrow::Cow<'_, [u8]>, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::Surface::download_into(&self, &mut [u8], usize) -> core::result::Result<(), j2k_jpeg_metal::Error>
+pub fn j2k_jpeg_metal::Surface::into_resident_metal_image(self) -> core::option::Option<j2k_metal_support::resident::ResidentMetalImage>
 pub fn j2k_jpeg_metal::Surface::pitch_bytes(&self) -> usize
 pub fn j2k_jpeg_metal::Surface::residency(&self) -> j2k_core::accelerator::SurfaceResidency
+pub fn j2k_jpeg_metal::Surface::resident_metal_image(&self) -> core::option::Option<&j2k_metal_support::resident::ResidentMetalImage>
 pub fn j2k_jpeg_metal::choose_viewport_surface_strategy(&j2k_jpeg_metal::ViewportWorkload, j2k_core::backend::BackendRequest) -> core::result::Result<j2k_jpeg_metal::ViewportSurfaceStrategy, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::encode_jpeg_baseline_batch_from_metal_buffers(&[j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'_>], j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::baseline_encode_contract::EncodedJpeg>, j2k_jpeg_metal::Error>
 pub fn j2k_jpeg_metal::encode_jpeg_baseline_from_metal_buffer(j2k_jpeg_metal::JpegBaselineMetalEncodeTile<'_>, j2k_jpeg::baseline_encode_contract::JpegEncodeOptions, &j2k_jpeg_metal::MetalBackendSession) -> core::result::Result<j2k_jpeg::baseline_encode_contract::EncodedJpeg, j2k_jpeg_metal::Error>
@@ -1994,6 +2011,7 @@ pub fn j2k_metal::MetalEncodedJ2k::to_encoded_j2k(&self) -> core::result::Result
 pub fn j2k_metal::MetalEncodedJ2k::width(&self) -> u32
 pub fn j2k_metal::MetalLosslessEncodeTile<'a>::byte_offset(self) -> usize
 pub fn j2k_metal::MetalLosslessEncodeTile<'a>::dimensions(self) -> (u32, u32)
+pub fn j2k_metal::MetalLosslessEncodeTile<'a>::from_resident(&'a j2k_metal_support::resident::ResidentMetalImage, (u32, u32)) -> Self
 pub fn j2k_metal::MetalLosslessEncodeTile<'a>::output_dimensions(self) -> (u32, u32)
 pub fn j2k_metal::MetalLosslessEncodeTile<'a>::pitch_bytes(self) -> usize
 pub fn j2k_metal::MetalLosslessEncodeTile<'a>::pixel_format(self) -> j2k_core::pixel::PixelFormat
@@ -2013,8 +2031,10 @@ pub fn j2k_metal::NativeBackendError::fmt(&self, &mut core::fmt::Formatter<'_>) 
 pub fn j2k_metal::NativeBackendError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn j2k_metal::Surface::as_bytes(&self) -> core::result::Result<alloc::borrow::Cow<'_, [u8]>, j2k_metal::Error>
 pub fn j2k_metal::Surface::download_into(&self, &mut [u8], usize) -> core::result::Result<(), j2k_metal::Error>
+pub fn j2k_metal::Surface::into_resident_metal_image(self) -> core::option::Option<j2k_metal_support::resident::ResidentMetalImage>
 pub fn j2k_metal::Surface::pitch_bytes(&self) -> usize
 pub fn j2k_metal::Surface::residency(&self) -> j2k_core::accelerator::SurfaceResidency
+pub fn j2k_metal::Surface::resident_metal_image(&self) -> core::option::Option<&j2k_metal_support::resident::ResidentMetalImage>
 pub fn j2k_metal::submit_lossless_batch(j2k_metal::MetalLosslessEncodeBatchRequest<'_, '_>, &j2k::encode::contracts::J2kLosslessEncodeOptions, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::SubmittedJ2kLosslessMetalEncodeBatch, j2k_metal::Error>
 pub fn j2k_metal::submit_lossless_batch_to_metal(j2k_metal::MetalLosslessEncodeBatchRequest<'_, '_>, &j2k::encode::contracts::J2kLosslessEncodeOptions, &j2k_metal::MetalBackendSession) -> core::result::Result<j2k_metal::SubmittedJ2kLosslessMetalBufferEncodeBatch, j2k_metal::Error>
 pub fn j2k_metal::validate_lossless_roundtrip_on_metal(j2k::encode::samples::J2kLosslessSamples<'_>, &[u8]) -> core::result::Result<(), j2k_metal::Error>
@@ -2439,6 +2459,7 @@ pub fn j2k_transcode::TranscodeStageError::source(&self) -> core::option::Option
 pub fn j2k_transcode::TranscodeStageProcessor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_transcode::dct8x8_blocks_then_dwt53_float(&[[[f64; 8]; 8]], usize, usize, usize, usize) -> core::result::Result<j2k_transcode::Dwt53TwoDimensional<f64>, j2k_transcode::DctTransformError>
 pub fn j2k_transcode::dct8x8_blocks_then_dwt97_float(&[[[f64; 8]; 8]], usize, usize, usize, usize) -> core::result::Result<j2k_transcode::Dwt97TwoDimensional<f64>, j2k_transcode::DctTransformError>
+pub fn j2k_transcode::dct8x8_blocks_then_dwt97_float_with_scratch(&[[[f64; 8]; 8]], usize, usize, usize, usize, &mut j2k_transcode::Dct97GridScratch) -> core::result::Result<j2k_transcode::Dwt97TwoDimensional<f64>, j2k_transcode::DctTransformError>
 pub fn j2k_transcode::dct8x8_blocks_to_dwt53_float_linear(&[[[f64; 8]; 8]], usize, usize, usize, usize) -> core::result::Result<j2k_transcode::Dwt53TwoDimensional<f64>, j2k_transcode::DctTransformError>
 pub fn j2k_transcode::htj2k97_subband_delta(j2k_transcode::Htj2k97CodeBlockOptions, j2k_types::J2kSubBandType) -> f64
 pub fn j2k_transcode::htj2k97_subband_total_bitplanes(j2k_transcode::Htj2k97CodeBlockOptions, j2k_types::J2kSubBandType) -> u8
@@ -2681,6 +2702,7 @@ pub j2k_transcode::TranscodeStageProcessor::Hybrid
 pub j2k_transcode::TranscodeStageProcessor::Metal
 pub mod j2k_transcode
 pub struct j2k_transcode::CpuOnlyDctToWaveletStageAccelerator
+pub struct j2k_transcode::Dct97GridScratch
 pub struct j2k_transcode::DctGridError
 pub struct j2k_transcode::DctGridI16ToHtj2k97CodeBlockBatch<'a, 'j>
 pub struct j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'a>
@@ -2812,15 +2834,33 @@ pub struct j2k_transcode_cuda::CudaRuntimeFailure
 #[non_exhaustive] pub enum j2k_metal_support::MetalSupportError
 #[non_exhaustive] pub struct j2k_metal_support::MetalRouteProfileLabels
 impl core::error::Error for j2k_metal_support::MetalSupportError
+impl core::fmt::Debug for j2k_metal_support::ResidentMetalImage
+impl core::fmt::Debug for j2k_metal_support::SubmittedMetalImages
 impl core::fmt::Display for j2k_metal_support::MetalCommandEncoderKind
 impl core::fmt::Display for j2k_metal_support::MetalSupportError
+impl core::ops::drop::Drop for j2k_metal_support::SubmittedMetalImages
+impl j2k_core::traits::DeviceSubmission for j2k_metal_support::SubmittedMetalImages
+impl j2k_metal_support::MetalImageLayout
 impl j2k_metal_support::MetalPipelineLoader
 impl j2k_metal_support::MetalRouteProfileLabels
 impl j2k_metal_support::MetalSupportError
+impl j2k_metal_support::ResidentMetalImage
+impl j2k_metal_support::SubmittedMetalImages
 impl<R, E> core::clone::Clone for j2k_metal_support::MetalRuntimeSession<R, E>
 impl<R, E> j2k_metal_support::MetalRuntimeSession<R, E>
+pub const fn j2k_metal_support::MetalImageLayout::byte_len(self) -> usize
+pub const fn j2k_metal_support::MetalImageLayout::byte_offset(self) -> usize
+pub const fn j2k_metal_support::MetalImageLayout::dimensions(self) -> (u32, u32)
+pub const fn j2k_metal_support::MetalImageLayout::pitch_bytes(self) -> usize
+pub const fn j2k_metal_support::MetalImageLayout::pixel_format(self) -> j2k_core::pixel::PixelFormat
 pub const fn j2k_metal_support::MetalRouteProfileLabels::new(&'static str, &'static str) -> Self
 pub const fn j2k_metal_support::MetalSupportError::is_unavailable(&self) -> bool
+pub const fn j2k_metal_support::ResidentMetalImage::byte_len(&self) -> usize
+pub const fn j2k_metal_support::ResidentMetalImage::byte_offset(&self) -> usize
+pub const fn j2k_metal_support::ResidentMetalImage::dimensions(&self) -> (u32, u32)
+pub const fn j2k_metal_support::ResidentMetalImage::layout(&self) -> j2k_metal_support::MetalImageLayout
+pub const fn j2k_metal_support::ResidentMetalImage::pitch_bytes(&self) -> usize
+pub const fn j2k_metal_support::ResidentMetalImage::pixel_format(&self) -> j2k_core::pixel::PixelFormat
 pub const fn j2k_metal_support::cpu_host_route() -> j2k_metal_support::MetalRouteProfileLabels
 pub const fn j2k_metal_support::metal_kernel_route() -> j2k_metal_support::MetalRouteProfileLabels
 pub const fn j2k_metal_support::metal_unavailable_route() -> j2k_metal_support::MetalRouteProfileLabels
@@ -2830,6 +2870,7 @@ pub const fn j2k_metal_support::reject_explicit_metal_route(&'static str) -> j2k
 pub const fn j2k_metal_support::reject_unsupported_backend_route() -> j2k_metal_support::MetalRouteProfileLabels
 pub const fn j2k_metal_support::two_d_threads_per_group(u64, u64) -> metal::types::MTLSize
 pub fn j2k_metal_support::MetalCommandEncoderKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_metal_support::MetalImageLayout::new(usize, (u32, u32), usize, j2k_core::pixel::PixelFormat) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::MetalPipelineLoader::library(&self) -> &metal::library::Library
 pub fn j2k_metal_support::MetalPipelineLoader::new(&metal::device::DeviceRef, &str) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::MetalPipelineLoader::pipeline(&self, &str) -> core::result::Result<metal::pipeline::compute::ComputePipelineState, j2k_metal_support::MetalSupportError>
@@ -2842,6 +2883,13 @@ pub fn j2k_metal_support::MetalRuntimeSession<R, E>::runtime_initialized(&self) 
 pub fn j2k_metal_support::MetalRuntimeSession<R, E>::runtime_result(&self) -> core::option::Option<&core::result::Result<R, E>>
 pub fn j2k_metal_support::MetalRuntimeSession<R, E>::system_default() -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::MetalSupportError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_metal_support::ResidentMetalImage::device_registry_id(&self) -> u64
+pub fn j2k_metal_support::ResidentMetalImage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_metal_support::ResidentMetalImage::validate_device(&self, &metal::device::DeviceRef) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::ResidentMetalImage::view(&self, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
+pub fn j2k_metal_support::SubmittedMetalImages::drop(&mut self)
+pub fn j2k_metal_support::SubmittedMetalImages::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_metal_support::SubmittedMetalImages::wait(self) -> core::result::Result<Self::Output, Self::Error>
 pub fn j2k_metal_support::checked_blit_command_encoder(&metal::commandbuffer::CommandBufferRef) -> core::result::Result<metal::encoder::BlitCommandEncoder, j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::checked_command_buffer(&metal::commandqueue::CommandQueueRef) -> core::result::Result<metal::commandbuffer::CommandBuffer, j2k_metal_support::MetalSupportError>
 pub fn j2k_metal_support::checked_command_queue(&metal::device::DeviceRef) -> core::result::Result<metal::commandqueue::CommandQueue, j2k_metal_support::MetalSupportError>
@@ -2902,6 +2950,11 @@ pub j2k_metal_support::MetalSupportError::CommandEncoderUnavailable::kind: j2k_m
 pub j2k_metal_support::MetalSupportError::CommandQueue
 pub j2k_metal_support::MetalSupportError::CommandQueue::message: alloc::string::String
 pub j2k_metal_support::MetalSupportError::CommandQueueUnavailable
+pub j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch
+pub j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch::image_registry_id: u64
+pub j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch::requested_registry_id: u64
+pub j2k_metal_support::MetalSupportError::MetalImageLayout
+pub j2k_metal_support::MetalSupportError::MetalImageLayout::reason: &'static str
 pub j2k_metal_support::MetalSupportError::MetalUnavailable
 pub j2k_metal_support::MetalSupportError::PipelineFunction
 pub j2k_metal_support::MetalSupportError::PipelineFunction::function_name: alloc::string::String
@@ -2925,8 +2978,16 @@ pub j2k_metal_support::MetalSupportError::TextureDescriptorInvalid
 pub j2k_metal_support::MetalSupportError::TextureDescriptorInvalid::reason: &'static str
 pub j2k_metal_support::MetalSupportError::TextureDescriptorUnavailable
 pub mod j2k_metal_support
+pub struct j2k_metal_support::MetalImageLayout
 pub struct j2k_metal_support::MetalPipelineLoader
 pub struct j2k_metal_support::MetalRuntimeSession<R, E>
+pub struct j2k_metal_support::ResidentMetalImage
+pub struct j2k_metal_support::SubmittedMetalImages
+pub type j2k_metal_support::SubmittedMetalImages::Error = j2k_metal_support::MetalSupportError
+pub type j2k_metal_support::SubmittedMetalImages::Output = alloc::vec::Vec<j2k_metal_support::ResidentMetalImage>
+pub unsafe fn j2k_metal_support::ResidentMetalImage::from_completed_buffer(metal::buffer::Buffer, j2k_metal_support::MetalImageLayout) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
+pub unsafe fn j2k_metal_support::ResidentMetalImage::raw_buffer(&self) -> &metal::buffer::Buffer
+pub unsafe fn j2k_metal_support::SubmittedMetalImages::from_uncommitted(&metal::device::DeviceRef, metal::commandbuffer::CommandBuffer, alloc::vec::Vec<(metal::buffer::Buffer, j2k_metal_support::MetalImageLayout)>, alloc::vec::Vec<j2k_metal_support::ResidentMetalImage>) -> core::result::Result<Self, j2k_metal_support::MetalSupportError>
 pub unsafe fn j2k_metal_support::checked_buffer_fill_bytes(&metal::buffer::Buffer, usize, usize, u8) -> core::result::Result<(), j2k_metal_support::MetalSupportError>
 pub unsafe fn j2k_metal_support::checked_buffer_read<T: j2k_core::accelerator::GpuAbi>(&metal::buffer::Buffer, usize) -> core::result::Result<T, j2k_metal_support::MetalSupportError>
 pub unsafe fn j2k_metal_support::checked_buffer_read_vec<T: j2k_core::accelerator::GpuAbi>(&metal::buffer::Buffer, usize, usize) -> core::result::Result<alloc::vec::Vec<T>, j2k_metal_support::MetalSupportError>

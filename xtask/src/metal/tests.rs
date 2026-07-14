@@ -6,12 +6,13 @@ use crate::test_command::RecordingProgram;
 use super::{
     listed_rust_tests, metal_compile, passed_rust_tests, reject_skip_markers, release_metal,
     run_metal_compile, run_release_metal, runtime_suite_args, validate_exact_ignored_run,
-    J2K_METAL_REQUIRED_IGNORED_TESTS,
+    J2K_METAL_REQUIRED_IGNORED_TESTS, METAL_OPTIONAL_IGNORED_TESTS,
 };
 
 fn recording_metal_cargo() -> RecordingProgram {
     let listed = J2K_METAL_REQUIRED_IGNORED_TESTS
         .iter()
+        .chain(METAL_OPTIONAL_IGNORED_TESTS)
         .map(|name| format!("printf '%s\\n' '{name}: test'"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -20,6 +21,7 @@ fn recording_metal_cargo() -> RecordingProgram {
         .map(|name| format!("printf '%s\\n' 'test {name} ... ok'"))
         .collect::<Vec<_>>()
         .join("\n");
+    let passed_count = J2K_METAL_REQUIRED_IGNORED_TESTS.len();
     let script = format!(
         r#"case " $* " in
 *" --list "*)
@@ -27,7 +29,7 @@ fn recording_metal_cargo() -> RecordingProgram {
 ;;
 *" --ignored "*)
 {passed}
-printf '%s\n' 'test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+printf '%s\n' 'test result: ok. {passed_count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
 *" -p j2k-metal-support "*)
 printf '%s\n' 'test tests::commit_and_wait_accepts_unlabeled_command_buffer ... ok'
@@ -80,6 +82,7 @@ fn metal_commands_execute_complete_hermetic_compile_and_release_plans() {
     assert!(log.contains("test --release --all-features --doc"));
     assert!(log.contains("--ignored --list"));
     assert!(log.contains("--ignored --show-output"));
+    assert!(log.contains("--skip idwt::tests::metal_irreversible_idwt_gpu_capture"));
     assert!(log.contains("-p j2k-metal-support"));
     assert!(log.contains("-p j2k-jpeg-metal"));
     assert!(log.contains("-p j2k-transcode-metal"));
@@ -122,12 +125,19 @@ fn exact_ignored_validation_rejects_zero_tests() {
 
 #[test]
 fn ignored_inventory_is_unique_and_has_expected_size() {
-    let unique = J2K_METAL_REQUIRED_IGNORED_TESTS
+    let required = J2K_METAL_REQUIRED_IGNORED_TESTS
         .iter()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(unique.len(), 18);
-    assert_eq!(unique.len(), J2K_METAL_REQUIRED_IGNORED_TESTS.len());
+    let optional = METAL_OPTIONAL_IGNORED_TESTS
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(required.len(), 19);
+    assert_eq!(optional.len(), 1);
+    assert_eq!(required.len(), J2K_METAL_REQUIRED_IGNORED_TESTS.len());
+    assert_eq!(optional.len(), METAL_OPTIONAL_IGNORED_TESTS.len());
+    assert!(required.is_disjoint(&optional));
 }
 
 #[test]

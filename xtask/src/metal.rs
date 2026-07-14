@@ -42,7 +42,13 @@ const J2K_METAL_REQUIRED_IGNORED_TESTS: &[&str] = &[
     "direct::tests::ht_direct_plan_sub_band_decode_produces_nonzero_coefficients",
     "encode::tests::routing::auto_htj2k_padded_private_gray8_single_host_output_stays_cpu",
     "encode::tests::routing::auto_htj2k_padded_private_rgb8_single_host_output_stays_cpu",
+    "idwt::tests::metal_irreversible_idwt_perf_guard",
 ];
+
+// Capture requires an explicit output path and must never be folded into the
+// unattended release run. It remains inventoried so a new ignored test cannot
+// silently escape the fail-closed classification.
+const METAL_OPTIONAL_IGNORED_TESTS: &[&str] = &["idwt::tests::metal_irreversible_idwt_gpu_capture"];
 
 struct MetalTestSuite {
     label: &'static str,
@@ -151,7 +157,7 @@ fn run_release_metal() -> Result<(), String> {
         )?;
     }
 
-    let ignored_args = [
+    let mut ignored_args = vec![
         "test",
         "--release",
         "-p",
@@ -161,6 +167,9 @@ fn run_release_metal() -> Result<(), String> {
         "--ignored",
         "--show-output",
     ];
+    for optional_test in METAL_OPTIONAL_IGNORED_TESTS {
+        ignored_args.extend_from_slice(&["--skip", optional_test]);
+    }
     let output = run_cargo_captured(
         &ignored_args,
         METAL_RUNTIME_ENV,
@@ -212,6 +221,7 @@ fn validate_required_ignored_inventory() -> Result<(), String> {
     let actual = listed_rust_tests(&output);
     let expected = J2K_METAL_REQUIRED_IGNORED_TESTS
         .iter()
+        .chain(METAL_OPTIONAL_IGNORED_TESTS)
         .map(|name| (*name).to_string())
         .collect::<BTreeSet<_>>();
     if actual == expected {

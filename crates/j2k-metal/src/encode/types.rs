@@ -4,6 +4,8 @@ use j2k::EncodedJ2k;
 #[cfg(target_os = "macos")]
 use j2k_core::PixelFormat;
 #[cfg(target_os = "macos")]
+use j2k_metal_support::ResidentMetalImage;
+#[cfg(target_os = "macos")]
 use metal::Buffer;
 use std::time::Duration;
 
@@ -77,6 +79,43 @@ impl<'a> MetalLosslessEncodeTile<'a> {
             output_width: output_dimensions.0,
             output_height: output_dimensions.1,
             format,
+        }
+    }
+
+    /// Describe a validated resident image to the lossless encoder.
+    ///
+    /// Device identity is checked against the encode session before Metal work
+    /// is submitted. The resident owner is retained by deferred submissions.
+    #[must_use]
+    pub fn from_resident(image: &'a ResidentMetalImage, output_dimensions: (u32, u32)) -> Self {
+        let layout = image.layout();
+        Self {
+            // SAFETY: the resident image remains borrowed by this tile and the
+            // handle is used only for read-only backend binding.
+            buffer: unsafe { image.raw_buffer() },
+            byte_offset: layout.byte_offset(),
+            width: layout.dimensions().0,
+            height: layout.dimensions().1,
+            pitch_bytes: layout.pitch_bytes(),
+            output_width: output_dimensions.0,
+            output_height: output_dimensions.1,
+            format: layout.pixel_format(),
+        }
+    }
+
+    pub(super) fn validate_device(self, device: &metal::DeviceRef) -> Result<(), crate::Error> {
+        let image_registry_id = self.buffer.device().registry_id();
+        let requested_registry_id = device.registry_id();
+        if image_registry_id == requested_registry_id {
+            Ok(())
+        } else {
+            Err(crate::error::metal_kernel_support_error(
+                "J2K input belongs to a different Metal device",
+                j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch {
+                    image_registry_id,
+                    requested_registry_id,
+                },
+            ))
         }
     }
 

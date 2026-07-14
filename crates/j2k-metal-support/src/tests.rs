@@ -21,6 +21,7 @@ use crate::{
     },
     system_default_device, two_d_threads_per_group, MetalCommandEncoderKind, MetalSupportError,
 };
+mod resident;
 
 #[derive(Clone, Copy)]
 struct ZeroSizedAbi;

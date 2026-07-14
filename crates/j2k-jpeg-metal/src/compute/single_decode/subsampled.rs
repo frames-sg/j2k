@@ -60,7 +60,7 @@ fn try_decode_fast_subsampled_to_surface<P: FastSubsampledMetal>(
         decoded.buffer,
         decoded.dimensions,
         fmt,
-    )))
+    )?))
 }
 
 #[cfg(target_os = "macos")]
@@ -417,7 +417,7 @@ fn try_decode_fast_subsampled_scaled_region_to_surface<P: FastSubsampledMetal>(
         out_buffer,
         (scaled_roi.w, scaled_roi.h),
         fmt,
-    )))
+    )?))
 }
 
 #[cfg(target_os = "macos")]

@@ -870,18 +870,7 @@ pub(crate) fn upload_surface(
             {
                 let device = Device::system_default().ok_or(Error::MetalUnavailable)?;
                 let buffer = buffers::new_shared_buffer_with_data(&device, &bytes)?;
-                Ok(Surface {
-                    backend: BackendKind::Metal,
-                    residency: SurfaceResidency::CpuStagedMetalUpload,
-                    dimensions,
-                    fmt,
-                    pitch_bytes,
-                    storage: Storage::Metal {
-                        buffer,
-                        offset: 0,
-                        access_gate: None,
-                    },
-                })
+                Surface::from_cpu_staged_metal_buffer(buffer, dimensions, fmt)
             }
             #[cfg(not(target_os = "macos"))]
             {

@@ -533,12 +533,14 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                 ]),
             FilePatternCheck::new("crates/j2k-transcode/src/dct97_2d.rs")
                 .named("j2k-transcode 9/7 scratch API")
+                .required(&[
+                    "pub struct Dct97GridScratch",
+                    "pub fn dct8x8_blocks_then_dwt97_float_with_scratch",
+                ])
                 .forbidden(&[
                     "Dct97GridError",
-                    "pub struct Dct97GridScratch",
                     "pub fn max_abs_diff",
                     "pub fn spatial_sample_capacity",
-                    "pub fn dct8x8_blocks_then_dwt97_float_with_scratch",
                 ]),
             FilePatternCheck::new("crates/j2k-transcode/src/jpeg_to_htj2k.rs")
                 .named("j2k-transcode transcoder scratch API")
@@ -552,6 +554,10 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                 .forbidden(&["pub mod viewport;"]),
             FilePatternCheck::new("docs/stable-api-1.0.public-api.txt")
                 .named("ordinary stable API snapshot")
+                .required(&[
+                    "pub struct j2k_transcode::Dct97GridScratch",
+                    "pub fn j2k_transcode::dct8x8_blocks_then_dwt97_float_with_scratch",
+                ])
                 .forbidden(&[
                     "cuda_dwt53_output_to_j2k_for_test",
                     "crate::adapter::DeviceBatchSummary",
@@ -705,7 +711,6 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "j2k_transcode::Dct53GridScratch::weight_row_capacity",
                     "j2k_transcode::Dct97GridScratch::spatial_sample_capacity",
                     "j2k_transcode::Dct53GridScratch",
-                    "j2k_transcode::Dct97GridScratch",
                     "j2k_transcode::Dwt53TwoDimensional<f64>::max_abs_diff",
                     "j2k_transcode::Dwt97TwoDimensional<f64>::max_abs_diff",
                     "j2k_transcode::Dct53GridError",
@@ -714,7 +719,6 @@ fn accidental_test_and_adapter_internals_stay_out_of_public_api() {
                     "j2k_transcode::dct8x8_to_dwt53_float_linear",
                     "j2k_transcode::idct8x8_then_dwt53_float",
                     "j2k_transcode::dct8x8_blocks_to_dwt53_float_linear_with_scratch",
-                    "j2k_transcode::dct8x8_blocks_then_dwt97_float_with_scratch",
                     "JpegToHtj2kTranscoder::dct_block_scratch_capacity",
                     "JpegToHtj2kTranscoder::integer_idct_block_scratch_capacity",
                     "pub fn j2k::J2kDecoder<'a>::parse(&'a [u8]) -> core::result::Result<Self::View, Self::Error>",

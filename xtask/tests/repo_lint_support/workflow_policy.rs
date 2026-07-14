@@ -534,6 +534,7 @@ fn metal_xtask_owns_complete_compile_and_runtime_policy() {
                     "RUST_TEST_THREADS",
                     "J2K_GPU_TEST_SKIPPED",
                     "J2K_METAL_REQUIRED_IGNORED_TESTS",
+                    "METAL_OPTIONAL_IGNORED_TESTS",
                     "fn run_metal_compile()",
                     "fn run_release_metal()",
                     "validate_required_ignored_inventory",

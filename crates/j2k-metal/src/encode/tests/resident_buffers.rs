@@ -18,18 +18,17 @@ fn metal_buffer_lossless_encode_pads_edge_tile_on_device() {
     let session = crate::MetalBackendSession::new(device);
     let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &pixels)
         .expect("upload test pixels");
+    let layout = j2k_metal_support::MetalImageLayout::new(0, (7, 5), 7 * 3, PixelFormat::Rgb8)
+        .expect("valid resident J2K layout");
+    // SAFETY: the upload completed synchronously and the raw buffer is moved
+    // into the immutable resident owner without a surviving writable alias.
+    let resident =
+        unsafe { j2k_metal_support::ResidentMetalImage::from_completed_buffer(buffer, layout) }
+            .expect("resident J2K input");
+    assert_eq!(resident.dimensions(), (7, 5));
 
     let encoded = super::super::encode_lossless_from_metal_buffer(
-        super::super::MetalLosslessEncodeTile {
-            buffer: &buffer,
-            byte_offset: 0,
-            width: 7,
-            height: 5,
-            pitch_bytes: 7 * 3,
-            output_width: 8,
-            output_height: 8,
-            format: PixelFormat::Rgb8,
-        },
+        super::super::MetalLosslessEncodeTile::from_resident(&resident, (8, 8)),
         &lossless_options! {
             backend: EncodeBackendPreference::RequireDevice,
         },

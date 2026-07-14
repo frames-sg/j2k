@@ -65,18 +65,11 @@ pub(super) fn upload_surface_to_metal_with_device(
     fmt: PixelFormat,
     device: &metal::DeviceRef,
 ) -> Result<Surface, Error> {
-    let pitch_bytes = dimensions.0 as usize * fmt.bytes_per_pixel();
     let buffer =
         j2k_metal_support::checked_shared_buffer_with_bytes(device, bytes).map_err(|source| {
             crate::error::metal_kernel_support_error("J2K Metal surface upload", source)
         })?;
-    Ok(Surface {
-        backend: BackendKind::Metal,
-        residency: SurfaceResidency::CpuStagedMetalUpload,
-        dimensions,
-        fmt,
-        pitch_bytes,
-        byte_offset: 0,
-        storage: Storage::Metal(buffer),
-    })
+    let mut surface = Surface::from_metal_buffer(buffer, dimensions, fmt)?;
+    surface.residency = SurfaceResidency::CpuStagedMetalUpload;
+    Ok(surface)
 }

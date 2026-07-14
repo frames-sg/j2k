@@ -191,6 +191,7 @@ pub struct Dwt97TwoDimensional<T> {
 
 pub use dct53_2d::{dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear};
 pub use dct97_2d::dct8x8_blocks_then_dwt97_float;
+pub use dct97_2d::{dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch};
 pub use dct_grid::{DctGridError, DctTransformError};
 pub use htj2k97_codeblock_error::{Htj2k97CodeBlockAxis, Htj2k97CodeBlockOptionsError};
 pub use htj2k97_codeblock_oracle::{
