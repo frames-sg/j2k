@@ -85,6 +85,25 @@ fn deny_paste_advisory_ignore_has_review_metadata() {
 }
 
 #[test]
+fn deny_bincode_advisory_ignore_and_license_exceptions_are_scoped() {
+    assert_file_pattern_checks(
+        repo_root(),
+        &[FilePatternCheck::new("deny.toml")
+            .named("deny.toml burn dependency policy")
+            .required(&[
+                "RUSTSEC-2025-0141",
+                "Review-by: 2027-01-31",
+                "https://rustsec.org/advisories/RUSTSEC-2025-0141.html",
+                "https://github.com/tracel-ai/burn/tree/v0.21.0/crates/burn-core",
+                "{ crate = \"colored@3.1.1\", allow = [\"MPL-2.0\"] }",
+                "{ crate = \"hexf-parse@0.2.1\", allow = [\"CC0-1.0\"] }",
+                "{ crate = \"option-ext@0.2.0\", allow = [\"MPL-2.0\"] }",
+                "{ crate = \"xxhash-rust@0.8.16\", allow = [\"BSL-1.0\"] }",
+            ])],
+    );
+}
+
+#[test]
 fn unsafe_audit_rows_include_invariants_and_regression_guards() {
     let audit =
         fs::read_to_string(repo_root().join("docs/unsafe-audit.md")).expect("read unsafe audit");
