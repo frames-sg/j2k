@@ -85,6 +85,8 @@ fn bench_cuda_routes(criterion: &mut Criterion) {
     use burn_cuda::{Cuda, CudaDevice};
     use j2k_ml::cuda;
 
+    type CudaBackend = Cuda;
+
     let gray8 = htj2k_gray8_large_fixture(128, 128);
     let gray16 = openhtj2k_refinement_fixture();
     let options = TensorDecodeOptions::default();
@@ -105,13 +107,13 @@ fn bench_cuda_routes(criterion: &mut Criterion) {
                 &inputs,
                 |bencher, inputs| {
                     bencher.iter(|| {
-                        let decoded = cpu::decode_float_batch::<Cuda>(
+                        let decoded = cpu::decode_float_batch::<CudaBackend>(
                             std::hint::black_box(inputs),
                             &options,
                             &device,
                         )
                         .expect("CUDA-staged baseline");
-                        Cuda::sync(&device).expect("sync CUDA");
+                        CudaBackend::sync(&device).expect("sync CUDA");
                         std::hint::black_box(decoded.tensor)
                     });
                 },
@@ -127,7 +129,7 @@ fn bench_cuda_routes(criterion: &mut Criterion) {
                             &device,
                         )
                         .expect("CUDA-direct tensor decode");
-                        Cuda::sync(&device).expect("sync CUDA");
+                        CudaBackend::sync(&device).expect("sync CUDA");
                         std::hint::black_box(decoded.tensor)
                     });
                 },
@@ -151,9 +153,10 @@ fn bench_cuda_routes(criterion: &mut Criterion) {
         "roi_tiles_8/staged_baseline_compact_upload_bytes_8192",
         |bencher| {
             bencher.iter(|| {
-                let decoded = cpu::decode_float_batch::<Cuda>(&roi_inputs, &options, &device)
-                    .expect("CUDA ROI baseline");
-                Cuda::sync(&device).expect("sync CUDA");
+                let decoded =
+                    cpu::decode_float_batch::<CudaBackend>(&roi_inputs, &options, &device)
+                        .expect("CUDA ROI baseline");
+                CudaBackend::sync(&device).expect("sync CUDA");
                 std::hint::black_box(decoded.tensor)
             });
         },
@@ -162,7 +165,7 @@ fn bench_cuda_routes(criterion: &mut Criterion) {
         bencher.iter(|| {
             let decoded = cuda::decode_float_batch(&roi_inputs, &options, &device)
                 .expect("CUDA-direct ROI decode");
-            Cuda::sync(&device).expect("sync CUDA");
+            CudaBackend::sync(&device).expect("sync CUDA");
             std::hint::black_box(decoded.tensor)
         });
     });
