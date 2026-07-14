@@ -144,6 +144,40 @@ const fn packed_sign_contexts() -> [u16; 256] {
 /// Packed sign context in the low byte and XOR bit in the high byte.
 pub const PACKED_SIGN_CONTEXT_LOOKUP: [u16; 256] = packed_sign_contexts();
 
+#[cfg(test)]
+mod tests {
+    use core::hint::black_box;
+
+    use super::*;
+
+    #[test]
+    fn device_tables_match_their_structured_sources_at_runtime() {
+        let build_qe: fn() -> [u32; 47] = mq_qe_values;
+        let build_transitions: fn() -> [u32; 47] = packed_mq_transitions;
+        let build_sign_contexts: fn() -> [u16; 256] = packed_sign_contexts;
+
+        let qe = black_box(build_qe)();
+        let transitions = black_box(build_transitions)();
+        let sign_contexts = black_box(build_sign_contexts)();
+
+        for (index, state) in MQ_STATES.iter().copied().enumerate() {
+            assert_eq!(qe[index], state.qe);
+            assert_eq!(
+                transitions[index],
+                u32::from(state.nmps)
+                    | (u32::from(state.nlps) << 8)
+                    | (u32::from(state.switch) << 16)
+            );
+        }
+        for (index, (context, xor)) in SIGN_CONTEXT_LOOKUP.iter().copied().enumerate() {
+            assert_eq!(
+                sign_contexts[index],
+                u16::from(context) | (u16::from(xor) << 8)
+            );
+        }
+    }
+}
+
 /// Zero-coding contexts for LL and LH sub-bands.
 #[rustfmt::skip]
 pub const ZERO_CTX_LL_LH_LOOKUP: [u8; 256] = [
