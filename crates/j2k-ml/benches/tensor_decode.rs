@@ -4,13 +4,16 @@ use burn_core::tensor::backend::Backend;
 #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
 use burn_flex::{Flex as CpuBackend, FlexDevice as CpuDevice};
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-use burn_ndarray::{NdArray as CpuBackend, NdArrayDevice::Cpu as CpuDevice};
+use burn_ndarray::NdArrayDevice::Cpu as CpuDevice;
 use criterion::{BenchmarkId, Criterion, Throughput};
 use j2k::{DeviceDecodeRequest, Downscale, Rect};
 use j2k_ml::{cpu, TensorDecodeOptions, TensorInput};
 #[cfg(all(feature = "cuda", not(target_os = "macos")))]
 use j2k_test_support::htj2k_gray8_large_fixture;
 use j2k_test_support::{classic_j2k_gray8_fixture, openhtj2k_refinement_fixture};
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+type CpuBackend = burn_ndarray::NdArray<f32, i64, i8>;
 
 const BATCH_SIZES: &[usize] = &[1, 8, 32];
 #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]

@@ -8,7 +8,7 @@ use burn_cuda::{Cuda, CudaDevice};
 #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
 use burn_flex::{Flex, FlexDevice};
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-use burn_ndarray::{NdArray as Flex, NdArrayDevice::Cpu as FlexDevice};
+use burn_ndarray::NdArrayDevice::Cpu as FlexDevice;
 use j2k::{DeviceDecodeRequest, Downscale, Rect};
 use j2k_ml::{
     cpu, cuda, FloatNormalization, TensorDecodeError, TensorDecodeOptions, TensorInput,
@@ -18,6 +18,9 @@ use j2k_test_support::{
     cuda_runtime_and_strict_oxide_gate, htj2k_gray8_fixture, htj2k_gray8_large_fixture,
     openhtj2k_refinement_fixture,
 };
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+type Flex = burn_ndarray::NdArray<f32, i64, i8>;
 
 #[test]
 fn direct_cuda_decode_reports_route_and_exact_pixels() {

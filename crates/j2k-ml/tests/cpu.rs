@@ -9,7 +9,7 @@ use burn_core::{
 #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
 use burn_flex::{Flex, FlexDevice};
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-use burn_ndarray::{NdArray as Flex, NdArrayDevice::Cpu as FlexDevice};
+use burn_ndarray::NdArrayDevice::Cpu as FlexDevice;
 use j2k::{
     encode_j2k_lossless, wrap_j2k_codestream, DeviceDecodeRequest, Downscale, J2kBlockCodingMode,
     J2kEncodeValidation, J2kFileWrapOptions, J2kLosslessEncodeOptions, J2kLosslessSamples, Rect,
@@ -23,6 +23,9 @@ use j2k_test_support::{
     classic_j2k_gray8_fixture, htj2k_gray8_fixture, htj2k_gray8_large_fixture,
     htj2k_rgb8_fixture_with_pixels,
 };
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+type Flex = burn_ndarray::NdArray<f32, i64, i8>;
 
 #[test]
 fn decodes_gray_u8_to_default_chw_tensor() {
