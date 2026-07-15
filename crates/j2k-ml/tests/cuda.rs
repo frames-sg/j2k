@@ -3,13 +3,18 @@
 #![cfg(all(feature = "cuda", not(target_os = "macos")))]
 
 use burn_autodiff::Autodiff;
-use burn_core::tensor::Tensor;
+use burn_core::tensor::{DType, Shape, Tensor};
+use burn_cubecl::{
+    cubecl::{cuda::CudaRuntime, Runtime},
+    ops::numeric::empty_device_contiguous_dtype,
+};
 use burn_cuda::{Cuda, CudaDevice};
 #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
 use burn_flex::{Flex, FlexDevice};
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 use burn_ndarray::NdArrayDevice::Cpu as FlexDevice;
 use j2k::{DeviceDecodeRequest, Downscale, Rect};
+use j2k_cuda_runtime::{CudaContext, CudaExternalDeviceBufferViewMut};
 use j2k_ml::{
     cpu, cuda, FloatNormalization, TensorDecodeError, TensorDecodeOptions, TensorInput,
     TensorLayout, TensorRoute,
@@ -47,14 +52,37 @@ fn direct_cuda_decode_reports_route_and_exact_pixels() {
 }
 
 #[test]
-fn retained_primary_context_matches_cubecl_device_context() {
-    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA primary context") {
+fn cubecl_stream_ordered_allocation_is_accessible_to_j2k_primary_context() {
+    if !cuda_runtime_and_strict_oxide_gate("j2k-ml CUDA CubeCL allocation interop") {
         return;
     }
-    let first = j2k_cuda_runtime::CudaContext::retain_primary(0).expect("retain primary");
-    let second = j2k_cuda_runtime::CudaContext::retain_primary(0).expect("retain primary again");
-    assert!(first.is_same_context(&second));
-    assert_eq!(first.device_ordinal(), 0);
+    let device = CudaDevice::default();
+    let context = CudaContext::retain_primary(device.index).expect("retain primary context");
+    let client = CudaRuntime::client(&device);
+    let cube =
+        empty_device_contiguous_dtype(client, device.clone(), Shape::from(vec![16]), DType::U8);
+    burn_cubecl::cubecl::future::block_on(cube.client.sync())
+        .expect("complete CubeCL stream-ordered allocation");
+    let mut resource = cube
+        .client
+        .get_resource(cube.handle.clone())
+        .expect("CubeCL managed resource");
+    let raw = resource.resource();
+
+    // SAFETY: `resource` is CubeCL's exclusive managed-resource guard for the
+    // live allocation, whose stream-ordered creation completed above.
+    let view = unsafe {
+        CudaExternalDeviceBufferViewMut::from_raw_parts(
+            &context,
+            raw.ptr,
+            16,
+            DType::U8.size(),
+            &mut resource,
+        )
+    }
+    .expect("adopt CubeCL stream-ordered allocation");
+    assert_eq!(view.byte_len(), 16);
+    assert_eq!(view.context().device_ordinal(), device.index);
 }
 
 #[test]

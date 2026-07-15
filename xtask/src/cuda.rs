@@ -50,7 +50,7 @@ const ML_CUDA_TESTS: &[&str] = &[
     "direct_cuda_u16_matches_portable_and_batches",
     "direct_cuda_float_matches_portable_full_batch_and_roi",
     "direct_cuda_reports_batch_mismatch_and_lifts_to_autodiff",
-    "retained_primary_context_matches_cubecl_device_context",
+    "cubecl_stream_ordered_allocation_is_accessible_to_j2k_primary_context",
 ];
 
 struct CudaRuntimeSuite {

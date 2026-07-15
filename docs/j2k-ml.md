@@ -39,10 +39,12 @@ for permutation, F32 conversion, and normalization. It works with any Burn
 The `cuda` feature targets Burn's default fused CUDA backend. It retains the
 same CUDA primary context used by CubeCL, allocates through Burn/CubeCL, holds
 the managed allocation guard while J2K writes, and registers the completed
-allocation through public Burn fusion APIs. A Rust `cuda-oxide` kernel fuses
-layout conversion, integer-to-F32 conversion, and normalization. There is no
-decoded-pixel device-to-host readback, tensor host upload, CUDA C, NVCC, or C
-wrapper. Unsupported formats, devices, and direct paths fail with
+allocation through public Burn fusion APIs. CubeCL 0.10 creates allocations on
+a nonblocking stream but exposes no stream/event interop handle, so this route
+completes that stream before J2K's default-stream access. A Rust `cuda-oxide`
+kernel fuses layout conversion, integer-to-F32 conversion, and normalization.
+There is no decoded-pixel device-to-host readback, tensor host upload, CUDA C,
+NVCC, or C wrapper. Unsupported formats, devices, and direct paths fail with
 `CudaDirect`; they never fall back to CPU.
 
 The `metal` feature requests strict resident J2K Metal decode. Native Metal

@@ -257,7 +257,9 @@ impl<'a> CudaExternalDeviceBufferViewMut<'a> {
     /// `_managed_owner`. The exclusive owner borrow must exclude every
     /// overlapping host or device mutation for this view's lifetime. The
     /// allocation must remain valid and must not be freed by the caller until
-    /// the view is dropped.
+    /// the view is dropped. Any stream-ordered allocation operation must have
+    /// completed, or have been ordered before j2k's default-stream access,
+    /// before this constructor is called.
     pub unsafe fn from_raw_parts<Owner>(
         context: &CudaContext,
         ptr: u64,
@@ -281,6 +283,10 @@ impl<'a> CudaExternalDeviceBufferViewMut<'a> {
                     .to_string(),
             });
         }
+        let len_u64 = u64::try_from(len).map_err(|_| CudaError::LengthTooLarge { len })?;
+        ptr.checked_add(len_u64)
+            .ok_or(CudaError::LengthTooLarge { len })?;
+        let ptr = context.inner.resolve_pointer_for_context(ptr)?;
         if !ptr.is_multiple_of(required_alignment as u64) {
             return Err(CudaError::InvalidArgument {
                 message: format!(
@@ -288,10 +294,8 @@ impl<'a> CudaExternalDeviceBufferViewMut<'a> {
                 ),
             });
         }
-        let len_u64 = u64::try_from(len).map_err(|_| CudaError::LengthTooLarge { len })?;
         ptr.checked_add(len_u64)
             .ok_or(CudaError::LengthTooLarge { len })?;
-        context.inner.validate_pointer_context(ptr)?;
         Ok(Self {
             context: context.clone(),
             ptr,

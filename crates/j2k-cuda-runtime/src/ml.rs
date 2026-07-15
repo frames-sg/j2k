@@ -131,7 +131,7 @@ impl CudaContext {
                 message: "j2k-ml CUDA source pointer is misaligned".to_string(),
             });
         }
-        self.inner.validate_pointer_context(source_ptr)?;
+        self.inner.resolve_pointer_for_context(source_ptr)?;
 
         let output_width = match config.normalization {
             CudaJ2kMlNormalization::Integer => config.sample.byte_width(),

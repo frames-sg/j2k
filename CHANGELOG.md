@@ -17,7 +17,8 @@ and stale roadmap entries have been removed from the public documentation set.
 - Adds hardened CUDA and Metal profiling/capture controls and documents their
   benchmark-only environment variables.
 - Adds the unpublished experimental `j2k-ml` workspace crate with CPU and Metal
-  validation paths and an optional CUDA-Oxide kernel route.
+  validation paths and an optional CUDA-Oxide kernel route, including checked
+  adoption and stream-order completion for CubeCL memory-pool allocations.
 
 ## [0.7.0] - 2026-07-12
 

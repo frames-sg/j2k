@@ -413,6 +413,12 @@ fn fill_cube_tensor<const D: usize>(
     let shape = Shape::from(shape.to_vec());
     let client = CudaRuntime::client(device);
     let cube = empty_device_contiguous_dtype(client, device.clone(), shape, dtype);
+    // CubeCL 0.10 allocates on a nonblocking stream with cuMemAllocAsync,
+    // while j2k launches its conversion on the CUDA default stream. CubeCL
+    // does not currently expose a stream or event interop primitive, so its
+    // stream must complete before j2k may safely write the allocation.
+    burn_cubecl::cubecl::future::block_on(cube.client.sync())
+        .map_err(|error| strict(format!("CubeCL CUDA allocation handoff failed: {error}")))?;
     let handle_len =
         usize::try_from(cube.handle.size_in_used()).map_err(|_| TensorDecodeError::SizeOverflow)?;
     if handle_len != logical_len {
