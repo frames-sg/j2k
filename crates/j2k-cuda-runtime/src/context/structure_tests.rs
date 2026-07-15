@@ -24,6 +24,11 @@ const MODULES: &[(&str, &str, usize)] = &[
     ("context/lifecycle.rs", include_str!("lifecycle.rs"), 175),
     ("context/operations.rs", include_str!("operations.rs"), 100),
     ("context/pointer.rs", include_str!("pointer.rs"), 50),
+    (
+        "context/pointer/stream_ordered.rs",
+        include_str!("pointer/stream_ordered.rs"),
+        150,
+    ),
     ("context/pinned_host.rs", include_str!("pinned_host.rs"), 75),
     (
         "context/test_kernels.rs",
