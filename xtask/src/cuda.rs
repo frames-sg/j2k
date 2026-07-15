@@ -47,7 +47,9 @@ const TRANSCODE_PARITY_TESTS: &[&str] = &[
 
 const ML_CUDA_TESTS: &[&str] = &[
     "direct_cuda_decode_reports_route_and_exact_pixels",
-    "direct_cuda_matches_portable_u16_float_batch_and_autodiff_lifting",
+    "direct_cuda_u16_matches_portable_and_batches",
+    "direct_cuda_float_matches_portable_full_batch_and_roi",
+    "direct_cuda_reports_batch_mismatch_and_lifts_to_autodiff",
     "retained_primary_context_matches_cubecl_device_context",
 ];
 
