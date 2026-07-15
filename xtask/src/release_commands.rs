@@ -435,6 +435,18 @@ fn validate_publish_workflow_source(
             ));
         }
     }
+    let checkout_count = workflow_source.matches("uses: actions/checkout@").count();
+    let explicit_ref_count = workflow_source.matches("ref: ${{ github.ref }}").count();
+    let full_history_count = workflow_source.matches("fetch-depth: 0").count();
+    if checkout_count == 0
+        || explicit_ref_count != checkout_count
+        || full_history_count != checkout_count
+    {
+        errors.push(format!(
+            "{} must bind all {checkout_count} checkout steps to the triggering ref with full tag history; found {explicit_ref_count} explicit refs and {full_history_count} full-history fetches",
+            workflow_path.display()
+        ));
+    }
     let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(workflow_source)
         .map_err(|err| format!("failed to parse {}: {err}", workflow_path.display()))?;
     let mut crates = Vec::new();

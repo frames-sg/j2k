@@ -204,6 +204,22 @@ fn checked_in_publish_workflow_script_docs_and_partitions_agree() {
     assert!(errors.is_empty(), "release contract drift: {errors:#?}");
 }
 
+#[test]
+fn publish_workflow_rejects_checkout_that_can_peel_an_annotated_tag() {
+    let workflow = include_str!("../../../.github/workflows/publish.yml").replacen(
+        "          ref: ${{ github.ref }}\n",
+        "",
+        1,
+    );
+    let mut errors = Vec::new();
+
+    validate_publish_workflow_source(&workflow, &mut errors).expect("parse publish workflow");
+
+    assert!(errors
+        .iter()
+        .any(|error| error.contains("bind all 19 checkout steps to the triggering ref")));
+}
+
 #[cfg(unix)]
 #[test]
 fn release_cpu_executes_the_complete_fake_cargo_plan() {
