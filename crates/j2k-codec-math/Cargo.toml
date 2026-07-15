@@ -9,6 +9,7 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
+links = "j2k_codec_math"
 
 [package.metadata.docs.rs]
 all-features = true

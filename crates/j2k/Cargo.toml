@@ -19,16 +19,16 @@ name = "j2k"
 path = "src/lib.rs"
 
 [dependencies]
-j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.1" }
-j2k-core = { path = "../j2k-core", version = "=0.7.1" }
-j2k-native = { path = "../j2k-native", version = "=0.7.1" }
-j2k-types = { path = "../j2k-types", version = "=0.7.1" }
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.7.2" }
+j2k-core = { path = "../j2k-core", version = "=0.7.2" }
+j2k-native = { path = "../j2k-native", version = "=0.7.2" }
+j2k-types = { path = "../j2k-types", version = "=0.7.2" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
-j2k-native = { path = "../j2k-native", version = "=0.7.1" }
+j2k-native = { path = "../j2k-native", version = "=0.7.2" }
 j2k-test-support = { path = "../j2k-test-support" }
 
 [[bench]]

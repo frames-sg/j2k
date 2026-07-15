@@ -30,10 +30,10 @@ burn-cubecl = { workspace = true, optional = true }
 burn-fusion = { workspace = true, optional = true }
 burn-ir = { workspace = true, optional = true }
 burn-wgpu = { workspace = true, optional = true }
-j2k = { path = "../j2k", version = "=0.7.1" }
-j2k-cuda = { path = "../j2k-cuda", version = "=0.7.1", features = ["cuda-runtime"], optional = true }
-j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.7.1", features = ["cuda-oxide-j2k-ml"], optional = true }
-j2k-metal = { path = "../j2k-metal", version = "=0.7.1", optional = true }
+j2k = { path = "../j2k", version = "=0.7.2" }
+j2k-cuda = { path = "../j2k-cuda", version = "=0.7.2", features = ["cuda-runtime"], optional = true }
+j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.7.2", features = ["cuda-oxide-j2k-ml"], optional = true }
+j2k-metal = { path = "../j2k-metal", version = "=0.7.2", optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

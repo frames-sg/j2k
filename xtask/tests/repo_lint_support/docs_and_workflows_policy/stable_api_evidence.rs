@@ -15,9 +15,9 @@ struct SummaryEvidence {
 #[test]
 fn reviewed_api_diff_artifacts_cover_every_ordinary_and_hidden_fingerprint() {
     let root = repo_root();
-    let report = fs::read_to_string(root.join("engineering/reviewed-public-api-diff-0.7.1.md"))
+    let report = fs::read_to_string(root.join("engineering/reviewed-public-api-diff-0.7.2.md"))
         .expect("read reviewed API diff report");
-    let config_source = fs::read_to_string(root.join("engineering/public-api-review-0.7.1.yml"))
+    let config_source = fs::read_to_string(root.join("engineering/public-api-review-0.7.2.yml"))
         .expect("read public API review config");
     let config: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(&config_source).expect("parse public API review config");
@@ -31,7 +31,7 @@ fn reviewed_api_diff_artifacts_cover_every_ordinary_and_hidden_fingerprint() {
         config
             .get("candidate_version")
             .and_then(serde_yaml_ng::Value::as_str),
-        Some("0.7.1")
+        Some("0.7.2")
     );
     let reviews = config
         .get("reviews")
@@ -55,7 +55,7 @@ fn reviewed_api_diff_artifacts_cover_every_ordinary_and_hidden_fingerprint() {
         ]),
         PatternCheck::new("reviewed API diff new-package classification", &report).required(&[
             "## New packages without a 0.6.2 registry baseline",
-            "`j2k-codec-math` `0.7.1`",
+            "`j2k-codec-math` `0.7.2`",
         ]),
     ]);
 }

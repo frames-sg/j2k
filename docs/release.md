@@ -1,6 +1,6 @@
 # Release Policy
 
-The `j2k` 0.7.1 public crate release is published and security-supported.
+The `j2k` 0.7.2 public crate release is published and security-supported.
 Runtime backend selection defaults to `Auto`; CPU remains the portable baseline
 while supported device paths are selected only with validation and benchmark
 evidence.
@@ -9,20 +9,22 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
-| `0.7.1` | Latest publicly published crates and documentation. | Supported. |
+| `0.7.2` | Latest publicly published crates and documentation. | Supported. |
+| `0.7.1` | Previous published release line. | Supported. |
 | `0.7.0` | Previous published release line. | Supported. |
 | `0.6.x` | Previous published release line. | Supported for security fixes during the 0.7 transition. |
 | `<0.6` | Historical releases. | Unsupported. |
 
-Version `0.7.1` was published from annotated tag `v0.7.1`, which peels to the
+Version `0.7.2` is published from annotated tag `v0.7.2`, which peels to the
 exact locally, hosted-CI, Metal, and CUDA verified release commit. GitHub Pages
 is served directly from `main/docs`; this post-release state is documentation,
 while the tag and crates.io records remain the publication evidence.
 
-Version `0.7.1` intentionally contracts parts of the published pre-1.0 `0.6.2`
+Version `0.7.2` retains the API contract introduced by `0.7.1`, which
+intentionally contracts parts of the published pre-1.0 `0.6.2`
 API. It does not claim source compatibility with `0.6.x`. The
 [`CHANGELOG`](../CHANGELOG.md) provides migration notes, and the
-[reviewed API report](../engineering/reviewed-public-api-diff-0.7.1.md)
+[reviewed API report](../engineering/reviewed-public-api-diff-0.7.2.md)
 records the additions, removals, and changed signatures. That report was
 regenerated, independently reviewed, and verified for the published tag.
 Any report prepared for a future release remains provisional until it is
@@ -47,7 +49,7 @@ candidate SHA, and rerun the local and exact-SHA evidence.
 
 During remediation, the changelog keeps a real `## [Unreleased]` heading and a
 structured staged-version line. As the final release-preparation edit before
-candidate freeze, replace that heading with `## [0.7.1] - YYYY-MM-DD` using the
+candidate freeze, replace that heading with `## [<workspace-version>] - YYYY-MM-DD` using the
 actual intended tag date and update every staged-document reference that still
 says the notes are under `Unreleased`. Do not guess the date early. Any later
 date or note change creates a new candidate and requires the exact-SHA gates

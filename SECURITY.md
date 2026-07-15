@@ -4,8 +4,9 @@
 
 | Version | Status |
 | --- | --- |
-| `0.7.1` workspace | Local pre-candidate under `Unreleased`; not published or security-supported as a release |
-| `0.7.0` | Latest published and security-supported release |
+| `0.7.2` | Latest published and security-supported release |
+| `0.7.1` | Previous published release line; security-supported |
+| `0.7.0` | Previous published release line; security-supported |
 | `0.6.x` | Supported for security fixes during the 0.7 transition |
 | Earlier than `0.6` | Unsupported |
 

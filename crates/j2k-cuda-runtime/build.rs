@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const REQUIRE_CUDA_OXIDE_BUILD_ENV: &str = "J2K_REQUIRE_CUDA_OXIDE_BUILD";
+const CODEC_MATH_MANIFEST_DIR_ENV: &str = "DEP_J2K_CODEC_MATH_MANIFEST_DIR";
 const CUDA_OXIDE_FEATURE_ENV_VARS: &[&str] = &[
     "CARGO_FEATURE_CUDA_OXIDE_COPY_U8",
     "CARGO_FEATURE_CUDA_OXIDE_J2K_ENCODE",
@@ -50,8 +51,6 @@ struct BuildContext<'a> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    emit_build_script_metadata();
-
     let out_dir = PathBuf::from(
         env::var_os("OUT_DIR").ok_or_else(|| io::Error::other("Cargo did not provide OUT_DIR"))?,
     );
@@ -60,10 +59,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         env::var_os("CARGO_MANIFEST_DIR")
             .ok_or_else(|| io::Error::other("Cargo did not provide CARGO_MANIFEST_DIR"))?,
     );
-    let crates_dir = manifest_dir.parent().ok_or_else(|| {
-        io::Error::other("j2k-cuda-runtime manifest directory has no crates parent")
-    })?;
-    let codec_math_crate_path = crates_dir.join("j2k-codec-math");
+    let codec_math_crate_path = codec_math_crate_path(&manifest_dir)?;
+    emit_build_script_metadata(&codec_math_crate_path);
     compile_cuda_oxide_feature_projects(&BuildContext {
         out_dir: &out_dir,
         host: &host,
@@ -72,12 +69,35 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn emit_build_script_metadata() {
-    println!("cargo:rerun-if-changed=../j2k-codec-math/src/lib.rs");
-    println!("cargo:rerun-if-changed=../j2k-codec-math/src/classic.rs");
-    println!("cargo:rerun-if-changed=../j2k-codec-math/src/dwt.rs");
-    println!("cargo:rerun-if-changed=../j2k-codec-math/src/jpeg.rs");
-    println!("cargo:rerun-if-changed=../j2k-codec-math/src/mct.rs");
+fn codec_math_crate_path(manifest_dir: &Path) -> Result<PathBuf, io::Error> {
+    if let Some(path) = env::var_os(CODEC_MATH_MANIFEST_DIR_ENV) {
+        let path = PathBuf::from(path);
+        if path.join("Cargo.toml").is_file() {
+            return Ok(path);
+        }
+        return Err(io::Error::other(format!(
+            "{CODEC_MATH_MANIFEST_DIR_ENV} does not identify a j2k-codec-math crate: {}",
+            path.display()
+        )));
+    }
+
+    let workspace_path = manifest_dir
+        .parent()
+        .ok_or_else(|| {
+            io::Error::other("j2k-cuda-runtime manifest directory has no crates parent")
+        })?
+        .join("j2k-codec-math");
+    if workspace_path.join("Cargo.toml").is_file() {
+        return Ok(workspace_path);
+    }
+    Err(io::Error::other(format!(
+        "Cargo did not provide {CODEC_MATH_MANIFEST_DIR_ENV} and no workspace j2k-codec-math crate exists at {}",
+        workspace_path.display()
+    )))
+}
+
+fn emit_build_script_metadata(codec_math_crate_path: &Path) {
+    emit_codec_math_rerun_inputs(codec_math_crate_path);
     println!("cargo:rerun-if-changed=src/cuda_oxide_simt_prelude.rs");
     println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/Cargo.toml.in");
     println!("cargo:rerun-if-changed=src/cuda_oxide_copy_u8/rust-toolchain.toml");
@@ -168,6 +188,21 @@ fn emit_build_script_metadata() {
         .any(|feature| env::var_os(feature).is_some())
     {
         println!("cargo:rustc-cfg=j2k_cuda_oxide_enabled");
+    }
+}
+
+fn emit_codec_math_rerun_inputs(codec_math_crate_path: &Path) {
+    for relative in [
+        "src/lib.rs",
+        "src/classic.rs",
+        "src/dwt.rs",
+        "src/jpeg.rs",
+        "src/mct.rs",
+    ] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            codec_math_crate_path.join(relative).display()
+        );
     }
 }
 

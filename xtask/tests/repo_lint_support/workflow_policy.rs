@@ -68,6 +68,25 @@ fn ci_fuzz_run_budgets_are_nontrivial() {
 }
 
 #[test]
+fn cuda_runtime_resolves_codec_math_from_packaged_build_metadata() {
+    let root = repo_root();
+    let codec_math_manifest = fs::read_to_string(root.join("crates/j2k-codec-math/Cargo.toml"))
+        .expect("read codec-math manifest");
+    let codec_math_build = fs::read_to_string(root.join("crates/j2k-codec-math/build.rs"))
+        .expect("read codec-math build script");
+    let runtime_manifest = fs::read_to_string(root.join("crates/j2k-cuda-runtime/Cargo.toml"))
+        .expect("read CUDA runtime manifest");
+    let runtime_build = fs::read_to_string(root.join("crates/j2k-cuda-runtime/build.rs"))
+        .expect("read CUDA runtime build script");
+
+    assert!(codec_math_manifest.contains("links = \"j2k_codec_math\""));
+    assert!(codec_math_build.contains("cargo::metadata=manifest_dir="));
+    assert!(runtime_manifest.contains("[build-dependencies]"));
+    assert!(runtime_build.contains("DEP_J2K_CODEC_MATH_MANIFEST_DIR"));
+    assert!(runtime_build.contains("codec_math_crate_path(&manifest_dir)?"));
+}
+
+#[test]
 fn deny_paste_advisory_ignore_has_review_metadata() {
     assert_file_pattern_checks(
         repo_root(),

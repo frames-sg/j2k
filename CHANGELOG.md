@@ -3,6 +3,12 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [0.7.2] - 2026-07-15
+
+- Fixes strict CUDA Oxide builds from crates.io by resolving the packaged
+  `j2k-codec-math` source through Cargo build metadata instead of assuming the
+  unpublished workspace directory layout.
+
 ## [0.7.1] - 2026-07-14
 
 - Adds CUDA classic JPEG 2000 Tier-1 code-block decoding with shared host/device
