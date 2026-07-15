@@ -252,6 +252,26 @@ pub fn wait_for_completion(command_buffer: &CommandBufferRef) -> Result<(), Meta
     ensure_completed(command_buffer)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandBufferCompletion {
+    Completed,
+    Incomplete,
+    Failed,
+}
+
+pub(crate) const fn classify_command_buffer_status(
+    status: MTLCommandBufferStatus,
+) -> CommandBufferCompletion {
+    match status {
+        MTLCommandBufferStatus::Completed => CommandBufferCompletion::Completed,
+        MTLCommandBufferStatus::Error => CommandBufferCompletion::Failed,
+        MTLCommandBufferStatus::NotEnqueued
+        | MTLCommandBufferStatus::Enqueued
+        | MTLCommandBufferStatus::Committed
+        | MTLCommandBufferStatus::Scheduled => CommandBufferCompletion::Incomplete,
+    }
+}
+
 /// Surface a failed command buffer after the caller has already synchronized it.
 ///
 /// # Errors
@@ -260,12 +280,13 @@ pub fn wait_for_completion(command_buffer: &CommandBufferRef) -> Result<(), Meta
 /// [`MTLCommandBufferStatus::Completed`].
 pub fn ensure_completed(command_buffer: &CommandBufferRef) -> Result<(), MetalSupportError> {
     let status = command_buffer.status();
-    if status == MTLCommandBufferStatus::Completed {
-        Ok(())
-    } else {
-        Err(MetalSupportError::CommandBuffer {
-            label: "unlabeled".to_string(),
-            status: format!("{status:?}"),
-        })
+    match classify_command_buffer_status(status) {
+        CommandBufferCompletion::Completed => Ok(()),
+        CommandBufferCompletion::Incomplete | CommandBufferCompletion::Failed => {
+            Err(MetalSupportError::CommandBuffer {
+                label: "unlabeled".to_string(),
+                status: format!("{status:?}"),
+            })
+        }
     }
 }

@@ -92,6 +92,10 @@ fn remediated_metal_batch_paths_do_not_regress_to_infallible_collections() {
         "crates/j2k-jpeg-metal/src/lib.rs",
         "crates/j2k-jpeg-metal/src/session.rs",
         "crates/j2k-jpeg-metal/src/surface.rs",
+        "crates/j2k-jpeg-metal/src/surface/batch_buffer.rs",
+        "crates/j2k-jpeg-metal/src/surface/batch_texture.rs",
+        "crates/j2k-jpeg-metal/src/surface/resident_tile.rs",
+        "crates/j2k-jpeg-metal/src/surface/texture_tile.rs",
         "crates/j2k-jpeg-metal/src/tile_batch.rs",
         "crates/j2k-jpeg-metal/src/compute/batch_entry.rs",
         "crates/j2k-jpeg-metal/src/compute/batch_plan.rs",
@@ -334,7 +338,10 @@ fn jpeg_viewport_and_texture_owners_keep_aggregate_move_only_contracts() {
         root,
         &["crates/j2k-jpeg-metal/src/compute/viewport_compose.rs"],
     );
-    let texture_output = read_source_files(root, &["crates/j2k-jpeg-metal/src/surface.rs"]);
+    let texture_output = read_source_files(
+        root,
+        &["crates/j2k-jpeg-metal/src/surface/batch_texture.rs"],
+    );
 
     assert_pattern_checks(&[
         PatternCheck::new("move-only aggregate viewport ownership", &viewport)

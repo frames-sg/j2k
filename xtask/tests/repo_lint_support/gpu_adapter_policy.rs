@@ -805,14 +805,32 @@ fn backend_surfaces_use_core_metadata_and_residency() {
                     "pub struct MetalBatchTextureOutput",
                 ]),
             FilePatternCheck::new("crates/j2k-jpeg-metal/src/surface.rs")
-                .named("JPEG Metal surface module")
+                .named("JPEG Metal surface facade")
                 .required(&[
                     "pub struct Surface",
+                    "mod resident_tile;",
+                    "mod batch_buffer;",
+                    "mod batch_texture;",
+                    "mod texture_tile;",
+                    "pub use resident_tile::ResidentPrivateJpegTile;",
+                    "pub use batch_buffer::MetalBatchOutputBuffer;",
+                    "pub use batch_texture::MetalBatchTextureOutput;",
+                    "pub use texture_tile::MetalTextureTile;",
+                ])
+                .forbidden(&[
                     "pub struct MetalBatchOutputBuffer",
                     "pub struct MetalBatchTextureOutput",
                     "pub struct MetalTextureTile",
                     "pub struct ResidentPrivateJpegTile",
                 ]),
+            FilePatternCheck::new("crates/j2k-jpeg-metal/src/surface/resident_tile.rs")
+                .required(&["pub struct ResidentPrivateJpegTile"]),
+            FilePatternCheck::new("crates/j2k-jpeg-metal/src/surface/batch_buffer.rs")
+                .required(&["pub struct MetalBatchOutputBuffer"]),
+            FilePatternCheck::new("crates/j2k-jpeg-metal/src/surface/batch_texture.rs")
+                .required(&["pub struct MetalBatchTextureOutput"]),
+            FilePatternCheck::new("crates/j2k-jpeg-metal/src/surface/texture_tile.rs")
+                .required(&["pub struct MetalTextureTile"]),
         ],
     );
 

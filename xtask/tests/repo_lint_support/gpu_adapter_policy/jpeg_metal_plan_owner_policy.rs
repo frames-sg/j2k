@@ -72,6 +72,10 @@ impl PlanOwnerSources {
                     "crates/j2k-jpeg-metal/src/batch/grouping.rs",
                     "crates/j2k-jpeg-metal/src/lib.rs",
                     "crates/j2k-jpeg-metal/src/surface.rs",
+                    "crates/j2k-jpeg-metal/src/surface/batch_buffer.rs",
+                    "crates/j2k-jpeg-metal/src/surface/batch_texture.rs",
+                    "crates/j2k-jpeg-metal/src/surface/resident_tile.rs",
+                    "crates/j2k-jpeg-metal/src/surface/texture_tile.rs",
                 ],
             ),
         }

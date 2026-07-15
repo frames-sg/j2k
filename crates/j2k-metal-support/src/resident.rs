@@ -369,7 +369,9 @@ impl DeviceSubmission for SubmittedMetalImages {
 
 impl Drop for SubmittedMetalImages {
     fn drop(&mut self) {
-        let _ = self.complete();
+        if let Err(error) = self.complete() {
+            log::error!("Metal image submission failed while being dropped: {error}");
+        }
     }
 }
 
