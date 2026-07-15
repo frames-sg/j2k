@@ -3,6 +3,11 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [0.7.3] - 2026-07-15
+
+- Fixes invalid TLM `Stlm` descriptors in CPU and Metal codestream writers so
+  HTJ2K RPCL output is accepted by conforming external decoders.
+
 ## [0.7.2] - 2026-07-15
 
 - Fixes strict CUDA Oxide builds from crates.io by resolving the packaged

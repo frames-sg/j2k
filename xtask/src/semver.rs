@@ -24,8 +24,8 @@ const SEMVER_TOOLCHAIN: &str = "1.96";
 const SEMVER_BASELINE_VERSION: &str = "0.6.2";
 const SEMVER_BASELINE_TAG: &str = "v0.6.2";
 const SEMVER_BASELINE_COMMIT: &str = "55ee746e1b49f7309e4d030cc01a69d580173920";
-const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.7.2.md";
-const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.7.2.yml";
+const API_DIFF_REPORT: &str = "engineering/reviewed-public-api-diff-0.7.3.md";
+const API_REVIEW_CONFIG: &str = "engineering/public-api-review-0.7.3.yml";
 
 const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k",

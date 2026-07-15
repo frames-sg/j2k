@@ -473,7 +473,8 @@ fn write_tlm_marker(out: &mut Vec<u8>, tile_index: u16, tile_part_length: u32) {
     write_marker(out, markers::TLM);
     out.extend_from_slice(&10u16.to_be_bytes());
     out.push(0);
-    out.push(0x22);
+    // ST=2 selects 16-bit tile indices; SP=1 selects 32-bit tile-part lengths.
+    out.push(0x60);
     out.extend_from_slice(&tile_index.to_be_bytes());
     out.extend_from_slice(&tile_part_length.to_be_bytes());
 }
