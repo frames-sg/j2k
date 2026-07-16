@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Public JPEG 2000 Part 1 and HTJ2K Part 15 CPU codec facade.
+//! Pure-Rust JPEG 2000 Part 1 and HTJ2K Part 15 codec APIs.
 //!
 //! This crate provides inspection, decode, encode, lossless J2K-to-HTJ2K
 //! recoding, still-image container wrapping, and device-decode planning. Shared

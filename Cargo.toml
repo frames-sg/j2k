@@ -33,7 +33,7 @@ edition      = "2021"
 rust-version = "1.96"
 license      = "MIT OR Apache-2.0"
 repository   = "https://github.com/frames-sg/j2k"
-homepage     = "https://github.com/frames-sg/j2k"
+homepage     = "https://frames-sg.github.io/j2k/rust-jpeg2000-codec/"
 keywords     = ["jpeg", "jpeg2000", "htj2k", "gpu", "transcode"]
 categories   = ["multimedia::images", "multimedia::encoding", "compression"]
 

@@ -834,3 +834,37 @@ fn packaged_rust_sources_do_not_include_files_outside_their_crate() {
     "package source include paths must stay inside their crate so packaged tests/benches/examples are not dead: {escaping:?}"
 );
 }
+
+#[test]
+fn public_search_metadata_routes_generic_queries_to_one_landing_page() {
+    let root = repo_root();
+    let read = |relative: &str| {
+        let path = root.join(relative);
+        fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
+    };
+
+    let root_readme = read("README.md");
+    let workspace_manifest = read("Cargo.toml");
+    let crate_manifest = read("crates/j2k/Cargo.toml");
+    let crate_readme = read("crates/j2k/README.md");
+    let crate_lib = read("crates/j2k/src/lib.rs");
+    let home = read("docs/index.html");
+    let landing = read("docs/rust-jpeg2000-codec/index.html");
+    let sitemap = read("docs/sitemap.xml");
+
+    assert!(root_readme.starts_with("# J2K — Pure-Rust JPEG 2000 and HTJ2K Codec\n"));
+    assert!(root_readme.contains("[Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)"));
+    assert!(workspace_manifest
+        .contains("homepage     = \"https://frames-sg.github.io/j2k/rust-jpeg2000-codec/\""));
+    assert!(crate_manifest.contains("description = \"Pure-Rust JPEG 2000"));
+    assert!(crate_manifest.contains("homepage.workspace = true"));
+    assert!(crate_readme.contains("[Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)"));
+    assert!(crate_lib.contains("//! Pure-Rust JPEG 2000"));
+    assert!(landing.contains("<title>Pure-Rust JPEG 2000 Codec — J2K</title>"));
+    assert!(landing.contains("<h1>Pure-Rust JPEG 2000 Codec</h1>"));
+    assert!(landing.contains(
+        "<link rel=\"canonical\" href=\"https://frames-sg.github.io/j2k/rust-jpeg2000-codec/\">"
+    ));
+    assert!(!home.contains("<title>J2K: Rust JPEG 2000 / HTJ2K Codec</title>"));
+    assert!(sitemap.contains("<loc>https://frames-sg.github.io/j2k/rust-jpeg2000-codec/</loc>\n    <priority>1.0</priority>"));
+}
