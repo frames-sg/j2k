@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
-    jscpd_args, stage_production_sources, validate_clone_config, validate_jscpd_report,
-    JSCPD_PACKAGE,
+    jscpd_args, stage_production_sources, stage_test_sources, validate_clone_config,
+    validate_jscpd_report, validate_test_clone_config, JSCPD_PACKAGE,
 };
 
 const INLINE_TEST_FIXTURE: &str = include_str!("../../tests/fixtures/clone_audit/inline_test_a.rs");
@@ -17,6 +17,8 @@ fn repository_clone_config_is_pinned_and_source_staging_owned() {
         .parent()
         .expect("xtask manifest parent");
     validate_clone_config(&root.join(".jscpd.json")).expect("valid repository clone config");
+    validate_test_clone_config(&root.join(".jscpd-tests.json"))
+        .expect("valid repository test clone config");
 }
 
 #[test]
@@ -72,6 +74,84 @@ fn staged_clone_sources_preserve_paths_and_remove_inline_tests() {
     );
 
     fs::remove_dir_all(temp).expect("remove clone-audit test directory");
+}
+
+#[test]
+fn test_clone_stage_includes_inline_and_physical_test_support() {
+    let temp = temp_dir("test-stage");
+    let root = temp.join("repo");
+    let source_path = root.join("crates/fixture/src/lib.rs");
+    let test_path = root.join("crates/fixture/tests/integration.rs");
+    fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source parent");
+    fs::create_dir_all(test_path.parent().expect("test parent")).expect("create test parent");
+    fs::write(&source_path, INLINE_TEST_FIXTURE).expect("write inline fixture");
+    fs::write(
+        &test_path,
+        "#[test]\nfn physical_test() { assert_eq!(1, 1); }\n",
+    )
+    .expect("write physical fixture");
+    let stage = temp.join("stage");
+
+    let summary = stage_test_sources(&root, &stage).expect("stage test sources");
+    let inline = fs::read_to_string(stage.join("crates/fixture/src/lib.rs"))
+        .expect("read staged inline tests");
+    let physical = fs::read_to_string(stage.join("crates/fixture/tests/integration.rs"))
+        .expect("read staged physical test");
+
+    assert_eq!(summary.files, 2);
+    assert!(inline.contains("repeated_test_clone"));
+    assert!(!inline.contains("alpha_production_value"));
+    assert!(physical.contains("physical_test"));
+
+    fs::remove_dir_all(temp).expect("remove test clone-audit directory");
+}
+
+#[test]
+fn test_clone_stage_rejects_a_stage_root_that_is_not_a_directory() {
+    let temp = temp_dir("test-stage-parent-error");
+    let root = temp.join("repo");
+    let source_path = root.join("crates/fixture/src/lib.rs");
+    fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source parent");
+    fs::write(&source_path, INLINE_TEST_FIXTURE).expect("write inline fixture");
+    let stage = temp.join("stage");
+    fs::write(&stage, "not a directory").expect("write blocking stage file");
+
+    let error = stage_test_sources(&root, &stage).expect_err("stage parent must fail closed");
+    assert!(error.contains("create test clone-audit stage"));
+
+    fs::remove_dir_all(temp).expect("remove test clone-audit directory");
+}
+
+#[test]
+fn test_clone_stage_reports_staged_source_write_failures() {
+    let temp = temp_dir("test-stage-write-error");
+    let root = temp.join("repo");
+    let relative = Path::new("crates/fixture/src/lib.rs");
+    let source_path = root.join(relative);
+    fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source parent");
+    fs::write(&source_path, INLINE_TEST_FIXTURE).expect("write inline fixture");
+    let stage = temp.join("stage");
+    fs::create_dir_all(stage.join(relative)).expect("create blocking staged directory");
+
+    let error = stage_test_sources(&root, &stage).expect_err("source write must fail closed");
+    assert!(error.contains("write staged test clone-audit source"));
+
+    fs::remove_dir_all(temp).expect("remove test clone-audit directory");
+}
+
+#[test]
+fn test_clone_stage_rejects_a_repository_without_test_sources() {
+    let temp = temp_dir("test-stage-empty");
+    let root = temp.join("repo");
+    let source_path = root.join("crates/fixture/src/lib.rs");
+    fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source parent");
+    fs::write(&source_path, "pub fn production_only() {}\n").expect("write production fixture");
+
+    let error = stage_test_sources(&root, &temp.join("stage"))
+        .expect_err("empty test stage must fail closed");
+    assert!(error.contains("found no eligible sources"));
+
+    fs::remove_dir_all(temp).expect("remove test clone-audit directory");
 }
 
 #[test]

@@ -15,8 +15,20 @@ pub(crate) fn production_rust_sources(
     repository_root: &Path,
     scopes: &[PathBuf],
 ) -> Result<Vec<ProductionRustSource>, String> {
+    let mut sources = auditable_rust_sources(repository_root, scopes)?;
+    sources.retain(|source| is_production_rust_path(&source.relative));
+    if sources.is_empty() {
+        return Err("production Rust source audit found no eligible sources".to_string());
+    }
+    Ok(sources)
+}
+
+pub(crate) fn auditable_rust_sources(
+    repository_root: &Path,
+    scopes: &[PathBuf],
+) -> Result<Vec<ProductionRustSource>, String> {
     if scopes.is_empty() {
-        return Err("production Rust source audit requires at least one scope".to_string());
+        return Err("Rust source audit requires at least one scope".to_string());
     }
     let mut sources = BTreeMap::new();
     for scope in scopes {
@@ -30,7 +42,7 @@ pub(crate) fn production_rust_sources(
         collect_rust_sources(repository_root, scope, &mut sources)?;
     }
     if sources.is_empty() {
-        return Err("production Rust source audit found no eligible sources".to_string());
+        return Err("Rust source audit found no eligible sources".to_string());
     }
     Ok(sources.into_values().collect())
 }
@@ -70,6 +82,14 @@ fn collect_rust_sources(
             ));
         }
         if file_type.is_dir() {
+            if entry.file_name().to_str().is_some_and(|name| {
+                matches!(
+                    name,
+                    "benches" | "examples" | "fuzz" | "generated" | "target"
+                )
+            }) {
+                continue;
+            }
             collect_rust_sources(repository_root, &path, sources)?;
             continue;
         }
@@ -86,7 +106,7 @@ fn collect_rust_sources(
                 )
             })?
             .to_path_buf();
-        if !is_production_rust_path(&relative) {
+        if !is_auditable_rust_path(&relative) {
             continue;
         }
         let source = ProductionRustSource {
@@ -103,15 +123,25 @@ fn collect_rust_sources(
     Ok(())
 }
 
-fn is_production_rust_path(relative: &Path) -> bool {
-    let components = relative
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(value) => value.to_str(),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+fn is_auditable_rust_path(relative: &Path) -> bool {
+    let components = normal_components(relative);
     if components.first() != Some(&"crates") || components.len() < 3 {
+        return false;
+    }
+    if components.iter().any(|component| {
+        matches!(
+            *component,
+            "benches" | "examples" | "fuzz" | "generated" | "target"
+        )
+    }) {
+        return false;
+    }
+    relative.file_name() != Some(OsStr::new("build.rs"))
+}
+
+pub(crate) fn is_production_rust_path(relative: &Path) -> bool {
+    let components = normal_components(relative);
+    if !is_auditable_rust_path(relative) {
         return false;
     }
     if matches!(
@@ -120,19 +150,10 @@ fn is_production_rust_path(relative: &Path) -> bool {
     ) {
         return false;
     }
-    if components.iter().any(|component| {
-        matches!(
-            *component,
-            "benches"
-                | "examples"
-                | "fuzz"
-                | "generated"
-                | "target"
-                | "tests"
-                | "test_helpers"
-                | "test_support"
-        )
-    }) {
+    if components
+        .iter()
+        .any(|component| matches!(*component, "tests" | "test_helpers" | "test_support"))
+    {
         return false;
     }
     let Some(file_name) = relative.file_name().and_then(OsStr::to_str) else {
@@ -141,13 +162,22 @@ fn is_production_rust_path(relative: &Path) -> bool {
     let Some(stem) = file_name.strip_suffix(".rs") else {
         return false;
     };
-    file_name != "build.rs"
-        && stem != "tests"
+    stem != "tests"
         && stem != "test_helpers"
         && stem != "test_support"
         && !stem.starts_with("test_")
         && !stem.ends_with("_test")
         && !stem.ends_with("_tests")
+}
+
+fn normal_components(relative: &Path) -> Vec<&str> {
+    relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]

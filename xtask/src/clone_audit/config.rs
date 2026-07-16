@@ -3,11 +3,50 @@
 use std::fs;
 use std::path::Path;
 
-use super::REPORT_RELATIVE;
+use super::{REPORT_RELATIVE, TEST_REPORT_RELATIVE};
 
-pub(super) const DUPLICATED_LINE_THRESHOLD: f64 = 3.34;
+pub(super) const DUPLICATED_LINE_THRESHOLD: f64 = 2.01;
+pub(super) const TEST_DUPLICATED_LINE_THRESHOLD: f64 = 4.14;
 
 pub(super) fn validate_clone_config(path: &Path) -> Result<(), String> {
+    validate_config(
+        path,
+        DUPLICATED_LINE_THRESHOLD,
+        REPORT_RELATIVE,
+        &[
+            "**/benches/**",
+            "**/examples/**",
+            "**/fuzz/**",
+            "**/generated/**",
+            "**/tests/**",
+            "**/*_tests.rs",
+            "**/tests.rs",
+            "**/test_*.rs",
+            "**/*_test.rs",
+            "**/test_helpers.rs",
+            "**/test_support.rs",
+            "**/build.rs",
+            "**/j2k-test-support/**",
+            "**/j2k-transcode-test-support/**",
+        ],
+    )
+}
+
+pub(super) fn validate_test_clone_config(path: &Path) -> Result<(), String> {
+    validate_config(
+        path,
+        TEST_DUPLICATED_LINE_THRESHOLD,
+        TEST_REPORT_RELATIVE,
+        &[],
+    )
+}
+
+fn validate_config(
+    path: &Path,
+    threshold: f64,
+    output: &str,
+    ignore: &[&str],
+) -> Result<(), String> {
     let source = fs::read_to_string(path)
         .map_err(|error| format!("read clone-audit config {}: {error}", path.display()))?;
     let config = serde_json::from_str::<serde_json::Value>(&source)
@@ -28,36 +67,17 @@ pub(super) fn validate_clone_config(path: &Path) -> Result<(), String> {
             "threshold",
         ],
     )?;
-    require_number(&config, "threshold", DUPLICATED_LINE_THRESHOLD)?;
+    require_number(&config, "threshold", threshold)?;
     require_number(&config, "minLines", 20.0)?;
     require_number(&config, "minTokens", 50.0)?;
     require_number(&config, "maxLines", 20_000.0)?;
     require_string(&config, "maxSize", "2mb")?;
     require_string(&config, "mode", "mild")?;
-    require_string(&config, "output", REPORT_RELATIVE)?;
+    require_string(&config, "output", output)?;
     require_bool(&config, "gitignore", false)?;
     require_string_array(&config, "format", &["rust"])?;
     require_string_array(&config, "reporters", &["console", "json"])?;
-    require_string_array(
-        &config,
-        "ignore",
-        &[
-            "**/benches/**",
-            "**/examples/**",
-            "**/fuzz/**",
-            "**/generated/**",
-            "**/tests/**",
-            "**/*_tests.rs",
-            "**/tests.rs",
-            "**/test_*.rs",
-            "**/*_test.rs",
-            "**/test_helpers.rs",
-            "**/test_support.rs",
-            "**/build.rs",
-            "**/j2k-test-support/**",
-            "**/j2k-transcode-test-support/**",
-        ],
-    )?;
+    require_string_array(&config, "ignore", ignore)?;
     Ok(())
 }
 
