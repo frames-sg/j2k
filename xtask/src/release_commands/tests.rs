@@ -3,9 +3,8 @@
 use std::collections::BTreeSet;
 
 use super::{
-    collect_publish_workflow_crates, has_docs_rs_metadata, has_lib_target, package_name,
-    publish_crate_from_run_line, publish_false, release_cpu, release_integrity, shell_array_values,
-    validate_package_gate_partition, validate_publish_script_source,
+    has_docs_rs_metadata, has_lib_target, package_name, publish_false, release_cpu,
+    release_integrity, validate_package_gate_partition, validate_publish_script_source,
     validate_publish_workflow_source, validate_release_docs_source,
     validate_unpublished_dependencies, workspace_package_records,
 };
@@ -20,49 +19,6 @@ mod validation;
 
 #[cfg(unix)]
 use crate::{command_support::use_test_cargo_program, test_command::RecordingProgram};
-
-#[test]
-fn publish_workflow_parser_collects_only_concrete_package_invocations() {
-    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(
-        "jobs:\n  publish:\n    steps:\n      - run: |\n          scripts/publish-crate.sh --preflight-all\n          scripts/publish-crate.sh 'j2k-core'\n      - run: scripts/publish-crate.sh \"j2k-native\"\n",
-    )
-    .expect("workflow YAML");
-    let mut crates = Vec::new();
-
-    collect_publish_workflow_crates(&workflow, &mut crates);
-
-    assert_eq!(crates, ["j2k-core", "j2k-native"]);
-    assert_eq!(
-        publish_crate_from_run_line("prefix scripts/publish-crate.sh 'j2k' suffix"),
-        Some("j2k".to_string())
-    );
-    assert_eq!(publish_crate_from_run_line("cargo publish"), None);
-    assert_eq!(
-        publish_crate_from_run_line("scripts/publish-crate.sh --preflight-all"),
-        None
-    );
-}
-
-#[test]
-fn shell_array_parser_handles_comments_quotes_empty_lines_and_unclosed_arrays() {
-    let script = r#"
-publishable_crates=(
-  "j2k-core" 'j2k-native' # staged crates
-
-  j2k
-)
-"#;
-    assert_eq!(
-        shell_array_values(script, "publishable_crates"),
-        Some(vec![
-            "j2k-core".to_string(),
-            "j2k-native".to_string(),
-            "j2k".to_string(),
-        ])
-    );
-    assert_eq!(shell_array_values(script, "missing"), None);
-    assert_eq!(shell_array_values("values=(\none\n", "values"), None);
-}
 
 #[test]
 fn release_metadata_shape_helpers_fail_closed() {
@@ -197,8 +153,7 @@ fn checked_in_publish_workflow_script_docs_and_partitions_agree() {
     validate_publish_script_source(
         include_str!("../../../scripts/publish-crate.sh"),
         &mut errors,
-    )
-    .expect("parse publish script");
+    );
     validate_release_docs_source(include_str!("../../../docs/release.md"), &mut errors);
 
     assert!(errors.is_empty(), "release contract drift: {errors:#?}");
@@ -217,7 +172,7 @@ fn publish_workflow_rejects_checkout_that_can_peel_an_annotated_tag() {
 
     assert!(errors
         .iter()
-        .any(|error| error.contains("bind all 19 checkout steps to the triggering ref")));
+        .any(|error| error.contains("bind all 2 checkout steps to the triggering ref")));
 }
 
 #[cfg(unix)]

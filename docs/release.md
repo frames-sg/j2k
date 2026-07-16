@@ -85,15 +85,20 @@ prerequisite.
 
 ## Versions and publish order
 
-Release scripts must use manifest versions. Do not publish from stale hard-coded crate/version pairs.
+[`release-crates.json`](../release-crates.json) is the ordered release manifest
+and source of truth for release-integrity, package construction, registry
+recovery, and publication. Release scripts must use manifest versions and must
+not publish from stale hard-coded crate/version pairs.
 
 Real publishes must run from tag `v<workspace.package.version>`. All
 publishable crates must share that workspace version. If a crate version is
 already on crates.io, the publish script fails by default; set
 `CRATES_IO_ALLOW_PUBLISHED_RERUN=true` only for an intentional idempotent
 rerun. A valid partial retry may contain only an already-published prefix of
-the dependency-ordered list below; a published crate after an available crate
-is inconsistent state and fails closed.
+the dependency-ordered list below, and every published `.crate` SHA-256 must
+match the archive packaged locally from the exact tag. A published crate after
+an available crate, or any checksum mismatch, is inconsistent state and fails
+closed.
 
 Publish in this order:
 
@@ -138,21 +143,26 @@ dependencies are not yet available from crates.io. The four
 registry-independent packages (`j2k-core`, `j2k-profile`, `j2k-types`, and
 `j2k-codec-math`) run
 `cargo publish --dry-run`, including Cargo's package verification build. Manual
-publish-workflow dry runs use the same split; listing alone is not package
-construction.
+publish-workflow runs remain dry-run-only: they validate the manifest and
+construct every local archive without receiving the crates.io token.
 
-Before the first real publish job, the hosted preflight verifies that the
-checkout `origin` is the exact workflow repository, no draft, prerelease, or
-published GitHub Release exists for the tag, and every target crate version has
-a determinate crates.io state. Only an exact HTTP 404 means a version is
-available; authentication errors, rate limits, server failures, timeouts, and
-malformed responses stop publication. On an intentional partial retry,
-`CRATES_IO_ALLOW_PUBLISHED_RERUN=true` permits the already-published prefix and
-the per-crate jobs skip that prefix without moving the tag.
-`CRATES_IO_PUBLISH_ATTEMPTS` must be a positive decimal integer;
-`CRATES_IO_RATE_LIMIT_RETRY_SECONDS` and `CRATES_IO_INDEX_SETTLE_SECONDS` must
-be nonnegative decimal integers. Invalid release-control values stop the script
-before any registry operation.
+Before publication, the hosted preflight verifies that the checkout `origin` is
+the exact workflow repository, no draft, prerelease, or published GitHub
+Release exists for the tag, every target crate version has a determinate
+crates.io state, and all archives package locally. Only an exact HTTP 404 means
+a version is available; authentication errors, authorization failures,
+malformed responses, and checksum mismatches stop publication. On an
+intentional partial retry, `CRATES_IO_ALLOW_PUBLISHED_RERUN=true` permits only
+the checksum-matched already-published prefix without moving the tag.
+
+After `crates-io-publish` environment approval, one runner repeats the canonical
+tag and prefix proof, packages all 18 archives, and publishes the remaining
+manifest entries sequentially with `cargo publish --locked -p <crate>`. Cargo's
+verification build stays enabled. There are no unconditional registry sleeps;
+only retryable transport, HTTP 429, or server failures are retried with bounded
+5, 15, and 30 second delays. The publisher re-queries and checksum-validates the
+entire prefix before each retry. Authentication, authorization, package
+verification, manifest, version, and checksum failures are never retried.
 
 Run this before publishing:
 
@@ -165,9 +175,9 @@ cargo xtask public-support --final
 
 The codec-math codegen gate verifies generated Rust and Metal fragments against
 the Rust source of truth. The integrity gate parses lockfile-strict cargo
-metadata with `cargo metadata --locked --no-deps`, manifests,
-`.github/workflows/publish.yml`, and this release document. It fails if a
-publishable workspace crate is missing from publish order, docs.rs metadata,
+metadata with `cargo metadata --locked --no-deps`, `release-crates.json`,
+manifests, `.github/workflows/publish.yml`, and this release document. It fails if a
+publishable workspace crate is missing from the dependency-ordered manifest, docs.rs metadata,
 semver/doc gates, or release docs, or if a workspace crate is neither
 publishable nor explicitly `publish = false`.
 

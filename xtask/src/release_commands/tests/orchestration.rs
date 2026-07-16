@@ -67,6 +67,14 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
             "scripts/publish-crate.sh",
             include_str!("../../../../scripts/publish-crate.sh"),
         ),
+        (
+            "scripts/publish_release.py",
+            include_str!("../../../../scripts/publish_release.py"),
+        ),
+        (
+            "release-crates.json",
+            include_str!("../../../../release-crates.json"),
+        ),
     ] {
         std::fs::write(release_root.join(path), source).expect("write release contract fixture");
     }
