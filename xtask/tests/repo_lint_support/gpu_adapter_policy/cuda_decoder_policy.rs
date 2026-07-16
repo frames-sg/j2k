@@ -6,11 +6,10 @@ use super::super::{assert_pattern_checks, repo_root, PatternCheck};
 
 mod architecture;
 mod color_runtime;
+mod direct_plan;
 mod resident_leaf_structure;
 
 struct CudaDecoderSources {
-    direct_plan: String,
-    direct_plan_required_regions: String,
     decoder: String,
     api: String,
     plan: String,
@@ -40,10 +39,6 @@ impl CudaDecoderSources {
                 .unwrap_or_else(|error| panic!("read {relative}: {error}"))
         };
         Self {
-            direct_plan: read("crates/j2k-cuda/src/direct_plan.rs"),
-            direct_plan_required_regions: read(
-                "crates/j2k-cuda/src/direct_plan/required_regions.rs",
-            ),
             decoder: read("crates/j2k-cuda/src/decoder.rs"),
             api: read("crates/j2k-cuda/src/decoder/api.rs"),
             plan: read("crates/j2k-cuda/src/decoder/plan.rs"),
@@ -71,54 +66,6 @@ impl CudaDecoderSources {
             profile: read("crates/j2k-cuda/src/decoder/profile.rs"),
         }
     }
-}
-
-#[test]
-fn cuda_direct_decode_plan_remains_move_only() {
-    let sources = CudaDecoderSources::read();
-    assert_pattern_checks(&[
-        PatternCheck::new("CUDA direct decode plan", &sources.direct_plan)
-            .required(&[
-                "mod required_regions;",
-                "HostPhaseBudget::new(\"CUDA direct-plan owner graph\")",
-                "host_budget.live_bytes()",
-                "append_payload_to_shared_with_budget(",
-                "account_host_owners(",
-                "The plan is move-only because its payload",
-                "#[derive(Debug)]\npub(crate) struct CudaHtj2kDecodePlan",
-            ])
-            .forbidden(&[
-                "#[derive(Debug, Clone)]\npub(crate) struct CudaHtj2kDecodePlan",
-                "HashMap",
-            ]),
-        PatternCheck::new(
-            "CUDA direct-plan required regions",
-            &sources.direct_plan_required_regions,
-        )
-        .required(&[
-            "struct RequiredBandRegions",
-            "try_vec_with_capacity(capacity, REQUIRED_REGIONS)?",
-            "binary_search_by_key",
-            "try_vec_reserve(&mut required.entries, 1, REQUIRED_REGIONS)?",
-            "entries.capacity()",
-            "direct_plan_actual_capacities_accept_exact_cap_and_reject_one_over",
-        ])
-        .forbidden(&["HashMap", ".entry("]),
-        PatternCheck::new(
-            "CUDA color direct-plan owner graph",
-            &sources.plan_color_owners,
-        )
-        .required(&[
-            "fn flatten_cuda_color_components(",
-            "fn color_owner_graph_budget(",
-            "append_payload_to_shared_with_budget(",
-            "component.account_host_owners(",
-        ]),
-    ]);
-    assert!(
-        sources.direct_plan_required_regions.lines().count() < 250,
-        "CUDA direct-plan required-region owner must stay focused"
-    );
 }
 
 #[test]
