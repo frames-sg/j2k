@@ -9,6 +9,7 @@ use crate::repo_lint_support::{
 
 mod cache_identity;
 mod classic_mq;
+mod pass_through;
 
 #[test]
 fn component_plane_metadata_accessors_are_shared() {

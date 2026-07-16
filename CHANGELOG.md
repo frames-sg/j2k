@@ -3,6 +3,30 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+Staged workspace version: `0.7.4`.
+
+- Compatibility exception: this candidate is an explicitly source-incompatible
+  `0.7.x` patch. It is staged only; it has not been published or tagged.
+- Removes the pass-through `j2k_core::DecoderContext<C>` type and its
+  `j2k::DecoderContext` re-export. Construct and pass the concrete context
+  directly: `J2kContext::new()` (or `Default`) for `j2k`, and
+  `j2k_jpeg::DecoderContext::new()` (or `Default`) for JPEG. Batch trait
+  implementations now receive `&mut Self::Context`; call `CodecContext::clear`
+  and `CodecContext::cache_stats` on that concrete value.
+- Removes `try_collect_ordered_batch_results`. Migrate to
+  `try_collect_ordered_batch_results_with_limits`, passing the previous
+  retained-byte and maximum-retained-byte pair for both its aggregate and
+  collection limit pairs.
+- Removes the five forwarding accessors on
+  `J2kResidentHtj2kTileEncodeJob`. Read the validated input directly through
+  `job.input.width()`, `height()`, `num_components()`, `bit_depth()`, and
+  `signed()`.
+- Internal: removes pass-through decode, encode, allocation, crop, recode,
+  coverage-normalization, fixture, cache-key, progression, and GPU-routing
+  layers while retaining codec-specific scratch-pool types.
+
 ## [0.7.3] - 2026-07-15
 
 - Fixes invalid TLM `Stlm` descriptors in CPU and Metal codestream writers so

@@ -1,6 +1,6 @@
 use j2k_core::{
-    BackendRequest, CodecError, DecoderContext, DeviceSubmission, DeviceSurface, Downscale,
-    ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeDevice,
+    BackendRequest, CodecError, DeviceSubmission, DeviceSurface, Downscale, ImageDecode,
+    ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeDevice,
     TileBatchDecodeManyDevice,
 };
 use j2k_cuda::{Codec, CudaSession, Error, J2kDecoder, SurfaceResidency};
@@ -1372,7 +1372,7 @@ fn tile_batch_region_cuda_surface_matches_host_when_cuda_runtime_required() {
         w: 2,
         h: 3,
     };
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
     let surface = Codec::decode_tile_region_to_device(
         &mut ctx,
@@ -1423,7 +1423,7 @@ fn tile_batch_region_scaled_cuda_surface_matches_host_when_cuda_runtime_required
     };
     let scale = Downscale::Half;
     let scaled = roi.scaled_covering(scale);
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
     let surface = Codec::decode_tile_region_scaled_to_device(
         &mut ctx,
@@ -1464,7 +1464,7 @@ fn tile_batch_region_scaled_cuda_surface_matches_host_when_cuda_runtime_required
 #[test]
 fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes() {
     let bytes = fixture_ht_gray8();
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
     let inputs = [bytes.as_slice(), bytes.as_slice()];
 
@@ -1494,7 +1494,7 @@ fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes() {
 #[test]
 fn decode_tiles_to_device_cpu_preserves_host_residency() {
     let bytes = fixture_ht_gray8();
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
     let inputs = [bytes.as_slice(), bytes.as_slice()];
 
@@ -1521,7 +1521,7 @@ fn decode_tiles_to_device_explicit_cuda_rgb8_batch_matches_host_bytes() {
     let first = fixture_ht_rgb8_pattern(32, 32, 17);
     let second = fixture_ht_rgb8_pattern(32, 32, 29);
     let inputs = [first.as_slice(), second.as_slice()];
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
 
     let surfaces = match Codec::decode_tiles_to_device(
@@ -1570,7 +1570,7 @@ fn decode_tiles_to_device_explicit_cuda_mixed_classic_ht_batch_matches_host_byte
     let classic = fixture_classic(32, 32, 3, true);
     let ht = fixture_ht_rgb8_pattern(32, 32, 29);
     let inputs = [classic.as_slice(), ht.as_slice()];
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
 
     let surfaces = Codec::decode_tiles_to_device(
@@ -1609,7 +1609,7 @@ fn decode_tiles_to_device_explicit_cuda_mixed_grayscale_batch_matches_host_bytes
     let classic = fixture_classic(8, 8, 1, true);
     let ht = fixture_ht_gray8();
     let inputs = [classic.as_slice(), ht.as_slice()];
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
 
     let surfaces = Codec::decode_tiles_to_device(
@@ -1647,7 +1647,7 @@ fn decode_tiles_to_device_explicit_cuda_rgba8_batch_matches_host_bytes() {
     let first = fixture_ht_rgb8_pattern(32, 32, 31);
     let second = fixture_ht_rgb8_pattern(32, 32, 47);
     let inputs = [first.as_slice(), second.as_slice()];
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
 
     let surfaces = match Codec::decode_tiles_to_device(
@@ -1691,7 +1691,7 @@ fn decode_tiles_to_device_explicit_cuda_rgba8_batch_matches_host_bytes() {
 #[test]
 fn decode_tiles_to_device_explicit_cuda_returns_cuda_surfaces_or_clear_unavailable_error() {
     let bytes = fixture_ht_gray8();
-    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+    let mut ctx = j2k_cuda::J2kContext::default();
     let mut pool = j2k_cuda::J2kScratchPool::new();
     let inputs = [bytes.as_slice(), bytes.as_slice()];
 

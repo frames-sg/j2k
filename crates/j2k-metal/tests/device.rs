@@ -430,7 +430,7 @@ fn tile_full_grayscale_device_path_uses_metal_direct() {
     }
 
     let bytes = fixture_gray8();
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut pool = J2kScratchPool::new();
     let surface = Codec::decode_tile_to_device(
         &mut ctx,
@@ -658,7 +658,7 @@ fn submitted_full_grayscale_tiles_flush_as_one_device_batch() {
     }
 
     let bytes = fixture_gray8();
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
 
@@ -711,7 +711,7 @@ fn submitted_auto_512_grayscale_tiles_flush_as_one_metal_batch() {
     }
 
     let bytes = fixture_gray8_sized(512, 512);
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
 
@@ -755,7 +755,7 @@ fn submitted_distinct_full_grayscale_tiles_flush_as_one_device_batch() {
 
     let classic_bytes = fixture_gray8();
     let reversed_bytes = fixture_gray8_reversed();
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
 
@@ -823,7 +823,7 @@ fn submitted_full_rgb_tiles_flush_as_one_device_batch() {
     }
 
     let bytes = fixture_direct_rgb8();
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
 
@@ -881,7 +881,7 @@ fn submitted_distinct_full_rgb_tiles_stay_resident_when_batch_route_falls_back()
     ];
     assert_ne!(rgb_tiles[0], rgb_tiles[1], "RGB batch fixtures must differ");
     assert_ne!(rgb_tiles[1], rgb_tiles[2], "RGB batch fixtures must differ");
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
 
@@ -1008,7 +1008,7 @@ fn tile_batch_decode_many_device_preserves_full_tile_order() {
 
     let classic_bytes = fixture_gray8();
     let reversed_bytes = fixture_gray8_reversed();
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut pool = J2kScratchPool::new();
     let inputs = [classic_bytes.as_slice(), reversed_bytes.as_slice()];
 
@@ -1148,7 +1148,7 @@ fn submitted_distinct_region_scaled_htj2k_grayscale_tiles_flush_as_one_device_ba
     };
     let scale = Downscale::Half;
     let scaled = roi.scaled_covering(scale);
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
 
@@ -1244,7 +1244,7 @@ fn submitted_distinct_region_scaled_htj2k_gray16_tiles_flush_as_one_device_batch
     };
     let scale = Downscale::Half;
     let scaled = roi.scaled_covering(scale);
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
 
@@ -1322,7 +1322,7 @@ fn submitted_auto_region_scaled_grayscale_keeps_short_batch_on_cpu() {
         h: 256,
     };
     let scale = Downscale::Quarter;
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
     let submissions = (0..16)
@@ -1362,7 +1362,7 @@ fn submitted_auto_region_scaled_rgb_tiles_flush_as_one_cpu_batch() {
         h: 1,
     };
     let scale = Downscale::None;
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
     let submissions = (0..3)
@@ -1425,7 +1425,7 @@ fn submitted_auto_region_scaled_grayscale_batch64_uses_one_metal_batch() {
     };
     let scale = Downscale::Quarter;
     let scaled = roi.scaled_covering(scale);
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
     let submissions = (0..64)
@@ -1489,7 +1489,7 @@ fn submitted_auto_region_scaled_ht_grayscale_1024_batch16_uses_one_metal_batch()
     };
     let scale = Downscale::Quarter;
     let scaled = roi.scaled_covering(scale);
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
     let submissions = (0..16)
@@ -1553,7 +1553,7 @@ fn submitted_auto_region_scaled_rgb_1024_batch16_uses_hybrid_metal() {
     };
     let scale = Downscale::Quarter;
     let scaled = roi.scaled_covering(scale);
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
     let submissions = (0..16)
@@ -1625,7 +1625,7 @@ fn submitted_auto_region_scaled_ht_grayscale_batch16_is_not_order_dependent() {
     };
     let scale = Downscale::Quarter;
     let large_scaled = large_roi.scaled_covering(scale);
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut session = MetalSession::default();
     let mut pool = J2kScratchPool::new();
 
@@ -2531,7 +2531,7 @@ fn invalid_region_reports_error_instead_of_panicking() {
 #[test]
 fn explicit_metal_tile_unsupported_rgba16_is_rejected() {
     let bytes = fixture_rgb12();
-    let mut ctx = j2k_core::DecoderContext::<J2kContext>::new();
+    let mut ctx = J2kContext::default();
     let mut pool = J2kScratchPool::new();
 
     let result = Codec::decode_tile_to_device(

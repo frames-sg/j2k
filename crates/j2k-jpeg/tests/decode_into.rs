@@ -68,7 +68,7 @@ use fixtures::{
 };
 use j2k_test_support as fixtures;
 use j2k_test_support::{
-    crop_interleaved_u16, crop_interleaved_u8, project_scaled_interleaved_u16,
+    crop_interleaved_bytes, crop_interleaved_u16, project_scaled_interleaved_u16,
     project_scaled_interleaved_u8, rgb8_to_rgba8, scaled_rect_covering, PixelRect,
 };
 
@@ -1770,11 +1770,11 @@ fn decode_region_into_rgb8_crops_constant_app14_rgb_pixels() {
 }
 
 fn crop_rgb(full: &[u8], width: u32, roi: Rect) -> Vec<u8> {
-    crop_interleaved_u8(full, width as usize, 3, pixel_rect(roi))
+    crop_interleaved_bytes(full, width as usize, 3, pixel_rect(roi))
 }
 
 fn crop_gray(full: &[u8], width: u32, roi: Rect) -> Vec<u8> {
-    crop_interleaved_u8(full, width as usize, 1, pixel_rect(roi))
+    crop_interleaved_bytes(full, width as usize, 1, pixel_rect(roi))
 }
 
 fn crop_gray16(full: &[u16], width: u32, roi: Rect) -> Vec<u16> {

@@ -6,9 +6,7 @@ use alloc::vec::Vec;
 use std::sync::Arc;
 
 pub use j2k_core::TileBatchOptions;
-use j2k_core::{
-    BatchResultSlot, DecodeOutcome, DecoderContext, PixelFormat, Rect, TileBatchDecode,
-};
+use j2k_core::{BatchResultSlot, DecodeOutcome, PixelFormat, Rect, TileBatchDecode};
 
 use crate::{J2kCodec, J2kContext, J2kDecodeWarning, J2kError, J2kScratchPool};
 
@@ -55,12 +53,12 @@ type BatchOutcome = DecodeOutcome<J2kDecodeWarning>;
 type J2kBatchResultSlot = BatchResultSlot<BatchOutcome, J2kError>;
 
 /// One-shot parse-plus-decode of an independent J2K/HTJ2K tile into the
-/// caller's buffer, reusing both caller-owned [`DecoderContext`] and
+/// caller's buffer, reusing both caller-owned [`J2kContext`] and
 /// caller-owned [`J2kScratchPool`].
 #[doc(hidden)]
 pub fn decode_tile_into_in_context(
     bytes: &[u8],
-    ctx: &mut DecoderContext<J2kContext>,
+    ctx: &mut J2kContext,
     pool: &mut J2kScratchPool,
     output: TileDecodeOutput<'_>,
 ) -> Result<BatchOutcome, J2kError> {
@@ -69,12 +67,12 @@ pub fn decode_tile_into_in_context(
 }
 
 /// One-shot parse-plus-ROI-decode of an independent J2K/HTJ2K tile into the
-/// caller's buffer, reusing both caller-owned [`DecoderContext`] and
+/// caller's buffer, reusing both caller-owned [`J2kContext`] and
 /// caller-owned [`J2kScratchPool`].
 #[doc(hidden)]
 pub fn decode_tile_region_into_in_context(
     bytes: &[u8],
-    ctx: &mut DecoderContext<J2kContext>,
+    ctx: &mut J2kContext,
     pool: &mut J2kScratchPool,
     output: TileDecodeOutput<'_>,
     roi: Rect,
@@ -84,12 +82,12 @@ pub fn decode_tile_region_into_in_context(
 }
 
 /// One-shot parse-plus-scaled-decode of an independent J2K/HTJ2K tile into the
-/// caller's buffer, reusing both caller-owned [`DecoderContext`] and
+/// caller's buffer, reusing both caller-owned [`J2kContext`] and
 /// caller-owned [`J2kScratchPool`].
 #[doc(hidden)]
 pub fn decode_tile_scaled_into_in_context(
     bytes: &[u8],
-    ctx: &mut DecoderContext<J2kContext>,
+    ctx: &mut J2kContext,
     pool: &mut J2kScratchPool,
     output: TileDecodeOutput<'_>,
     scale: j2k_core::Downscale,
@@ -99,12 +97,12 @@ pub fn decode_tile_scaled_into_in_context(
 }
 
 /// One-shot parse-plus-ROI-scaled-decode of an independent J2K/HTJ2K tile
-/// into the caller's buffer, reusing both caller-owned [`DecoderContext`] and
+/// into the caller's buffer, reusing both caller-owned [`J2kContext`] and
 /// caller-owned [`J2kScratchPool`].
 #[doc(hidden)]
 pub fn decode_tile_region_scaled_into_in_context(
     bytes: &[u8],
-    ctx: &mut DecoderContext<J2kContext>,
+    ctx: &mut J2kContext,
     pool: &mut J2kScratchPool,
     output: TileDecodeOutput<'_>,
     roi: Rect,

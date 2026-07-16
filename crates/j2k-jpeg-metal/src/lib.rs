@@ -206,7 +206,7 @@ impl TileBatchDecodeSubmit for Codec {
     type SubmittedSurface = batch::MetalSubmission;
 
     fn submit_tile_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -223,7 +223,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_region_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -241,7 +241,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_scaled_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -259,7 +259,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_region_scaled_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         request: TileRegionScaledDeviceDecodeRequest<'_>,
@@ -293,7 +293,7 @@ impl TileBatchDecodeManyDevice for Codec {
     type DeviceSurface = Surface;
 
     fn decode_tiles_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         inputs: &[&[u8]],
         fmt: PixelFormat,

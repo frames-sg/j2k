@@ -198,7 +198,6 @@ fn jpeg_decoder_view_and_output_format_live_in_focused_modules() {
         "pub(super) fn downscale_profile_name",
         "pub(super) fn jpeg_downscale",
         "pub(super) fn output_format_from_parts",
-        "pub(super) fn allocate_output_buffer",
         "pub(super) fn scaled_dimensions",
         "pub(super) fn scaled_rect_covering",
         "pub(super) fn checked_output_geometry",

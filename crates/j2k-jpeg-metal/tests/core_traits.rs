@@ -169,7 +169,7 @@ fn codec_many_device_decode_batches_full_tiles_to_metal_surfaces() {
         return;
     }
 
-    let mut ctx = j2k_core::DecoderContext::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = ScratchPool::new();
     let inputs = [BASELINE_420, BASELINE_422];
 

@@ -493,7 +493,7 @@ fn build_region_scaled_direct_color_plan_cached_with_cache(
     scale: Downscale,
     cache: RegionScaledColorPlanCache<'_>,
 ) -> Result<Arc<crate::compute::PreparedDirectColorPlan>, Error> {
-    let cache_key = region_scaled_color_plan_cache_key(input, fmt, roi, scale);
+    let cache_key = PreparedPlanCacheKey::region_scaled_color(input, fmt, roi, scale);
     if let Some(plan) = cache.get(cache_key)? {
         return Ok(plan);
     }
@@ -530,15 +530,6 @@ fn store_region_scaled_direct_color_plan_with_session(
                 state: "session region-scaled color prepared-plan cache",
             })?;
     evict_one_region_scaled_color_plan_if_needed(&mut guard, key, plan)
-}
-
-fn region_scaled_color_plan_cache_key(
-    input: &[u8],
-    fmt: PixelFormat,
-    roi: Rect,
-    scale: Downscale,
-) -> PreparedPlanCacheKey<'_> {
-    PreparedPlanCacheKey::region_scaled_color(input, fmt, roi, scale)
 }
 
 fn cached_region_scaled_direct_color_plan(

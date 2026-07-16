@@ -2,11 +2,11 @@ use j2k_core::{
     copy_tight_pixels_to_strided_output, strided_output_len, submit_ready_device,
     validate_cuda_surface_backend_request, validate_strided_output_buffer, BackendCapabilities,
     BackendKind, BackendRequest, BufferError, CodecContext, CodecError, CpuFeatures,
-    DecoderContext, DeviceSubmission, DeviceSubmitSession, DeviceSurface, Downscale,
-    HostAllocationBudget, ImageCodec, ImageDecode, ImageDecodeDevice, ImageDecodeSubmit,
-    PassthroughCandidate, PassthroughDecision, PassthroughRejectReason, PassthroughRequirements,
-    PixelFormat, PixelLayout, ReadySubmission, Rect, SampleType, ScratchPool,
-    TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit, TileBatchOptions,
+    DeviceSubmission, DeviceSubmitSession, DeviceSurface, Downscale, HostAllocationBudget,
+    ImageCodec, ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PassthroughCandidate,
+    PassthroughDecision, PassthroughRejectReason, PassthroughRequirements, PixelFormat,
+    PixelLayout, ReadySubmission, Rect, SampleType, ScratchPool, TileBatchDecodeDevice,
+    TileBatchDecodeManyDevice, TileBatchDecodeSubmit, TileBatchOptions,
     TileRegionScaledDeviceDecodeRequest,
 };
 use j2k_core::{
@@ -519,8 +519,15 @@ fn fallible_batch_collector_reports_integrity_errors_without_panicking() {
 fn ordered_slot_collector_returns_tile_error_before_allocation_preflight() {
     let results = vec![Some(Ok::<u8, &str>(0)), Some(Err("tile failure"))];
 
-    let error = j2k_core::try_collect_ordered_batch_results(2, results, usize::MAX, 0)
-        .expect_err("existing tile error wins before output allocation");
+    let error = j2k_core::try_collect_ordered_batch_results_with_limits(
+        2,
+        results,
+        usize::MAX,
+        0,
+        usize::MAX,
+        0,
+    )
+    .expect_err("existing tile error wins before output allocation");
 
     assert!(matches!(
         error,
@@ -538,13 +545,22 @@ fn ordered_slot_collector_preserves_order_and_rejects_missing_slots() {
     let exact_cap = results.capacity()
         * core::mem::size_of::<j2k_core::BatchResultSlot<u16, &str>>()
         + 2 * core::mem::size_of::<u16>();
-    let ordered = j2k_core::try_collect_ordered_batch_results(2, results, 0, exact_cap)
-        .expect("exact-cap ordered slots");
+    let ordered = j2k_core::try_collect_ordered_batch_results_with_limits(
+        2, results, 0, exact_cap, 0, exact_cap,
+    )
+    .expect("exact-cap ordered slots");
     assert_eq!(ordered, [7, 9]);
 
     let missing = vec![Some(Ok::<u16, &str>(7)), None];
-    let error = j2k_core::try_collect_ordered_batch_results(2, missing, 0, usize::MAX)
-        .expect_err("missing ordered slot");
+    let error = j2k_core::try_collect_ordered_batch_results_with_limits(
+        2,
+        missing,
+        0,
+        usize::MAX,
+        0,
+        usize::MAX,
+    )
+    .expect_err("missing ordered slot");
     assert!(matches!(
         error,
         j2k_core::BatchDecodeError::Infrastructure(
@@ -907,7 +923,7 @@ impl TileBatchDecodeSubmit for DummyCodec {
     type SubmittedSurface = ReadySubmission<DummySurface, DummyError>;
 
     fn submit_tile_to_device(
-        _ctx: &mut DecoderContext<Self::Context>,
+        _ctx: &mut Self::Context,
         session: &mut Self::Session,
         _pool: &mut Self::Pool,
         input: &[u8],
@@ -925,7 +941,7 @@ impl TileBatchDecodeSubmit for DummyCodec {
     }
 
     fn submit_tile_region_to_device(
-        _ctx: &mut DecoderContext<Self::Context>,
+        _ctx: &mut Self::Context,
         session: &mut Self::Session,
         _pool: &mut Self::Pool,
         _input: &[u8],
@@ -943,7 +959,7 @@ impl TileBatchDecodeSubmit for DummyCodec {
     }
 
     fn submit_tile_scaled_to_device(
-        _ctx: &mut DecoderContext<Self::Context>,
+        _ctx: &mut Self::Context,
         session: &mut Self::Session,
         _pool: &mut Self::Pool,
         input: &[u8],
@@ -963,7 +979,7 @@ impl TileBatchDecodeSubmit for DummyCodec {
     }
 
     fn submit_tile_region_scaled_to_device(
-        _ctx: &mut DecoderContext<Self::Context>,
+        _ctx: &mut Self::Context,
         session: &mut Self::Session,
         _pool: &mut Self::Pool,
         request: TileRegionScaledDeviceDecodeRequest<'_>,
@@ -1024,7 +1040,7 @@ fn image_decode_device_defaults_wait_on_submit_calls() {
 
 #[test]
 fn tile_batch_decode_device_defaults_wait_on_submit_calls() {
-    let mut ctx = DecoderContext::<DummyContext>::new();
+    let mut ctx = DummyContext;
     let mut pool = DummyPool;
 
     let surface = DummyCodec::decode_tile_to_device(
@@ -1046,7 +1062,7 @@ impl TileBatchDecodeManyDevice for DummyCodec {
     type DeviceSurface = DummySurface;
 
     fn decode_tiles_to_device(
-        _ctx: &mut DecoderContext<Self::Context>,
+        _ctx: &mut Self::Context,
         _pool: &mut Self::Pool,
         inputs: &[&[u8]],
         fmt: PixelFormat,
@@ -1073,7 +1089,7 @@ impl TileBatchDecodeManyDevice for DummyCodec {
 
 #[test]
 fn tile_batch_decode_many_device_returns_ordered_surfaces() {
-    let mut ctx = DecoderContext::<DummyContext>::new();
+    let mut ctx = DummyContext;
     let mut pool = DummyPool;
     let inputs: [&[u8]; 2] = [b"abc".as_slice(), b"abcdef".as_slice()];
 

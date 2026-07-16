@@ -117,37 +117,5 @@ pub struct J2kResidentHtj2kTileEncodeJob<'a> {
     pub quantization_steps: &'a [(u16, u16)],
 }
 
-impl J2kResidentHtj2kTileEncodeJob<'_> {
-    /// Tile width in samples.
-    #[must_use]
-    pub const fn width(self) -> u32 {
-        self.input.width()
-    }
-
-    /// Tile height in samples.
-    #[must_use]
-    pub const fn height(self) -> u32 {
-        self.input.height()
-    }
-
-    /// Number of interleaved image components.
-    #[must_use]
-    pub const fn num_components(self) -> u16 {
-        self.input.num_components()
-    }
-
-    /// Source component bit depth.
-    #[must_use]
-    pub const fn bit_depth(self) -> u8 {
-        self.input.bit_depth()
-    }
-
-    /// Whether source component samples are signed.
-    #[must_use]
-    pub const fn signed(self) -> bool {
-        self.input.signed()
-    }
-}
-
 #[cfg(test)]
 mod tests;

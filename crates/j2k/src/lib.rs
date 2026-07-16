@@ -34,7 +34,7 @@ pub use scratch::J2kScratchPool;
 mod adapter;
 pub use adapter::device_plan::{DeviceDecodePlan, DeviceDecodeRequest};
 #[doc(hidden)]
-pub use adapter::encode_stage::{
+pub use j2k_types::{
     CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
     IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales, J2kCodeBlockSegment,
     J2kCodeBlockStyle, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
@@ -104,9 +104,9 @@ pub use parse::{extract_j2k_codestream_payload, J2kCodestreamPayload};
 
 pub use j2k_core::{
     BackendKind, BackendRequest, BufferError, CodecError, CompressedPayloadKind,
-    CompressedTransferSyntax, DecodeOutcome, DecodeRowsError, DecoderContext, Downscale,
-    ImageCodec, ImageDecode, ImageDecodeRows, PassthroughCandidate, PassthroughDecision,
-    PassthroughRejectReason, PassthroughRequirements, PixelFormat, Rect, RowSink, TileBatchDecode,
+    CompressedTransferSyntax, DecodeOutcome, DecodeRowsError, Downscale, ImageCodec, ImageDecode,
+    ImageDecodeRows, PassthroughCandidate, PassthroughDecision, PassthroughRejectReason,
+    PassthroughRequirements, PixelFormat, Rect, RowSink, TileBatchDecode,
 };
 
 pub(crate) mod parse;

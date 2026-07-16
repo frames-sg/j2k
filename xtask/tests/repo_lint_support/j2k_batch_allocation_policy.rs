@@ -183,7 +183,7 @@ fn shared_batch_collection_exposes_only_fallible_typed_integrity_paths() {
         PatternCheck::new("fallible shared batch collectors", &collection)
             .required(&[
                 "pub fn try_collect_indexed_batch_results",
-                "pub fn try_collect_ordered_batch_results",
+                "pub fn try_collect_ordered_batch_results_with_limits",
                 "BatchInfrastructureError::ResultIndexOutOfBounds",
                 "BatchInfrastructureError::DuplicateResult",
                 "BatchInfrastructureError::MissingResult",

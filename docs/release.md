@@ -9,6 +9,7 @@ evidence.
 
 | Version | Distribution state | Security support |
 | --- | --- | --- |
+| `0.7.4` | Staged source-incompatible candidate; not published or tagged. | Not yet a published release line. |
 | `0.7.3` | Latest publicly published crates and documentation. | Supported. |
 | `0.7.2` | Previous published release line. | Supported. |
 | `0.7.1` | Previous published release line. | Supported. |
@@ -30,6 +31,13 @@ records the additions, removals, and changed signatures. That report was
 regenerated, independently reviewed, and verified for the published tag.
 Any report prepared for a future release remains provisional until it is
 regenerated and verified after that release's final source freeze.
+
+The staged `0.7.4` candidate is an explicit source-compatibility exception to
+the normal patch policy. Its wrapper-removal migrations are recorded under
+`Unreleased` in the [`CHANGELOG`](../CHANGELOG.md), and its provisional reviewed
+API evidence is compared directly with the published `v0.7.3` baseline. This
+staging statement does not authorize publication or assert that the candidate
+has passed exact-SHA release gates.
 
 ## Candidate freeze and exact-SHA evidence
 

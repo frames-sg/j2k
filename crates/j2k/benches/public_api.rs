@@ -3,11 +3,10 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use j2k::{
     decode_tiles_region_scaled_into, encode_j2k_lossless, recode_j2k_to_htj2k_lossless,
-    wrap_j2k_codestream, CpuDecodeParallelism, DecoderContext, Downscale, EncodeBackendPreference,
-    ImageDecodeRows, J2kBlockCodingMode, J2kCodec, J2kContext, J2kDecoder, J2kEncodeValidation,
-    J2kFileWrapOptions, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kScratchPool,
-    J2kToHtj2kOptions, PixelFormat, Rect, RowSink, TileBatchDecode, TileBatchOptions,
-    TileRegionScaledDecodeJob,
+    wrap_j2k_codestream, CpuDecodeParallelism, Downscale, EncodeBackendPreference, ImageDecodeRows,
+    J2kBlockCodingMode, J2kCodec, J2kContext, J2kDecoder, J2kEncodeValidation, J2kFileWrapOptions,
+    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kScratchPool, J2kToHtj2kOptions, PixelFormat,
+    Rect, RowSink, TileBatchDecode, TileBatchOptions, TileRegionScaledDecodeJob,
 };
 use j2k_test_support::{patterned_gray8, patterned_rgb8};
 
@@ -490,7 +489,7 @@ fn bench_tile_batch(c: &mut Criterion) {
 
     group.bench_function("gray8_repeated_batch_16", |b| {
         b.iter(|| {
-            let mut ctx = DecoderContext::<J2kContext>::default();
+            let mut ctx = J2kContext::default();
             let mut pool = J2kScratchPool::new();
             for _ in 0..BATCH_SIZE {
                 <J2kCodec as TileBatchDecode>::decode_tile(
@@ -509,7 +508,7 @@ fn bench_tile_batch(c: &mut Criterion) {
 
     group.bench_function("htj2k_gray8_repeated_batch_16", |b| {
         b.iter(|| {
-            let mut ctx = DecoderContext::<J2kContext>::default();
+            let mut ctx = J2kContext::default();
             let mut pool = J2kScratchPool::new();
             for _ in 0..BATCH_SIZE {
                 <J2kCodec as TileBatchDecode>::decode_tile(
@@ -528,7 +527,7 @@ fn bench_tile_batch(c: &mut Criterion) {
 
     group.bench_function("gray8_distinct_batch_16", |b| {
         b.iter(|| {
-            let mut ctx = DecoderContext::<J2kContext>::default();
+            let mut ctx = J2kContext::default();
             let mut pool = J2kScratchPool::new();
             for codestream in &distinct {
                 <J2kCodec as TileBatchDecode>::decode_tile(
@@ -547,7 +546,7 @@ fn bench_tile_batch(c: &mut Criterion) {
 
     group.bench_function("htj2k_gray8_distinct_batch_16", |b| {
         b.iter(|| {
-            let mut ctx = DecoderContext::<J2kContext>::default();
+            let mut ctx = J2kContext::default();
             let mut pool = J2kScratchPool::new();
             for codestream in &ht_distinct {
                 <J2kCodec as TileBatchDecode>::decode_tile(

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
-use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
+use j2k_core::{BackendRequest, PixelFormat};
 #[cfg(target_os = "macos")]
 use j2k_native::{
     DecodeSettings as NativeDecodeSettings, Image as NativeImage, J2kDirectGrayscalePlan,
@@ -212,29 +212,6 @@ impl J2kDecoder<'_> {
         }
 
         Ok(None)
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(super) fn decode_region_scaled_direct_to_surface(
-        &mut self,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-    ) -> Result<Option<Surface>, Error> {
-        crate::hybrid::decode_region_scaled_direct_to_surface(self.bytes, fmt, roi, scale)
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(super) fn decode_region_scaled_direct_to_surface_with_session(
-        &mut self,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        session: &MetalBackendSession,
-    ) -> Result<Option<Surface>, Error> {
-        crate::hybrid::decode_region_scaled_direct_to_surface_with_session(
-            self.bytes, fmt, roi, scale, session,
-        )
     }
 
     #[cfg(target_os = "macos")]

@@ -3,13 +3,12 @@
 
 use super::super::allocation::{checked_add_bytes, checked_element_bytes, host_allocation_failed};
 use super::super::{
-    encode_forward_dwt, forward_mct, profile, public_packetization_progression_order,
-    try_deinterleave_to_f32, try_encode_forward_ict, try_encode_forward_rct,
-    validate_deinterleaved_components, BlockCodingMode, EncodeComponentSampleInfo, EncodeOptions,
-    EncodeRoiRegion, ForwardDwtRequest, J2kDeinterleaveToF32Job, J2kEncodeStageAccelerator,
-    J2kHtj2kTileEncodeJob, J2kResidentEncodeInput, J2kResidentHtj2kTileEncodeJob,
-    NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession,
-    ResidentHtj2kEncodeError, Vec,
+    encode_forward_dwt, forward_mct, profile, try_deinterleave_to_f32, try_encode_forward_ict,
+    try_encode_forward_rct, validate_deinterleaved_components, BlockCodingMode,
+    EncodeComponentSampleInfo, EncodeOptions, EncodeRoiRegion, ForwardDwtRequest,
+    J2kDeinterleaveToF32Job, J2kEncodeStageAccelerator, J2kHtj2kTileEncodeJob,
+    J2kResidentEncodeInput, J2kResidentHtj2kTileEncodeJob, NativeEncodePipelineError,
+    NativeEncodePipelineResult, NativeEncodeSession, ResidentHtj2kEncodeError, Vec,
 };
 use super::coefficient_source::{validate_component_sampling_dwt_geometry, OwnedDwtComponent};
 use super::ownership::{
@@ -169,7 +168,7 @@ fn resident_htj2k_tile_job<'a>(
         guard_bits: plan.guard_bits,
         code_block_width: plan.cb_width,
         code_block_height: plan.cb_height,
-        progression_order: public_packetization_progression_order(options.progression_order),
+        progression_order: options.progression_order.packetization_order(),
         component_sampling: &plan.params.component_sampling,
         quantization_steps: &plan.quant_params,
     }

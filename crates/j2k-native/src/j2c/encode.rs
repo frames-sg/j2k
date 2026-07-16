@@ -133,7 +133,7 @@ mod packet_plan;
 use self::packet_plan::{
     count_compact_code_blocks, ordered_prepared_resolution_packets_for_session,
     packet_descriptors_for_order_for_session, packetization_requires_scalar,
-    packetize_resolution_packets_with_options_for_session, public_packetization_progression_order,
+    packetize_resolution_packets_with_options_for_session,
     split_component_resolution_packets_by_precinct_for_session,
 };
 mod rate_control;

@@ -6,7 +6,7 @@ use super::{
     internal_sub_band_type, ordered_prepared_resolution_packets_for_session,
     packet_descriptors_for_order_for_session, packet_encode, packetization_requires_scalar,
     packetize_resolution_packets_with_options_for_session,
-    prepare_precomputed_htj2k97_image_for_batch, public_packetization_progression_order, quantize,
+    prepare_precomputed_htj2k97_image_for_batch, quantize,
     split_component_resolution_packets_by_precinct_for_session, validate_band_len,
     validate_component_sample_info, validate_irreversible_quantization_profile,
     validate_precinct_exponents_for_options, write_single_tile_packetized_codestream_for_session,

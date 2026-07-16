@@ -1,0 +1,123 @@
+version: 2
+baseline_tag: v0.7.3
+baseline_version: 0.7.3
+candidate_version: "0.7.4"
+reviews:
+  j2k:
+    removed_fingerprint: "fnv1a64:2bb387c8d09725f1"
+    added_fingerprint: "none"
+    hidden_count: 100
+    hidden_fingerprint: "fnv1a64:41827cac381efc6f"
+    rationale: "Reviewed the intentional removal of the pass-through j2k::DecoderContext re-export; callers now construct and pass J2kContext directly as documented in the changelog."
+    hidden_rationale: "Reviewed the complete hidden j2k inventory: batch decode implementations and in-context facade functions now accept J2kContext directly, with codec behavior and the remaining context contract unchanged."
+  j2k-core:
+    removed_fingerprint: "fnv1a64:e3cc7ab60eb765cd"
+    added_fingerprint: "fnv1a64:166af8cd2f5d3fbd"
+    hidden_count: 141
+    hidden_fingerprint: "fnv1a64:d4ca6ced92ff6406"
+    rationale: "Reviewed the complete core contraction: the generic DecoderContext forwarding owner is removed, every TileBatchDecode context parameter uses the concrete associated Context, and the ordered collector requires explicit aggregate and collection limits."
+    hidden_rationale: "Reviewed the complete hidden j2k-core inventory, including removal of the legacy ordered collector while its bounded with-limits replacement remains available and direct associated-context signatures preserve the decode trait behavior."
+  j2k-codec-math:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the j2k-codec-math inventory against its published 0.7.3 baseline; no ordinary or hidden public API items changed."
+  j2k-jpeg:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 550
+    hidden_fingerprint: "fnv1a64:d2bd76732f32e066"
+    rationale: "Reviewed the ordinary j2k-jpeg inventory against 0.7.3; its documented public API is unchanged."
+    hidden_rationale: "Reviewed the complete hidden j2k-jpeg inventory: JpegCodec batch methods now receive the existing concrete j2k_jpeg::DecoderContext directly, without changing decode behavior or error contracts."
+  j2k-tilecodec:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 32
+    hidden_fingerprint: "fnv1a64:eb677842559d9b0e"
+    rationale: "Reviewed the ordinary j2k-tilecodec inventory against 0.7.3; no public API items changed."
+    hidden_rationale: "Reviewed the complete hidden j2k-tilecodec inventory; its codec, scratch, and source-preserving error boundaries are unchanged from the published baseline."
+  j2k-jpeg-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 83
+    hidden_fingerprint: "fnv1a64:8c83730972447ab6"
+    rationale: "Reviewed the ordinary j2k-jpeg-metal inventory against 0.7.3; no documented public API items changed."
+    hidden_rationale: "Reviewed the complete hidden JPEG Metal inventory: batch and submit paths accept j2k_jpeg::DecoderContext directly, while resident-image ownership, session lifetime, and typed Metal error contracts remain unchanged."
+  j2k-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 287
+    hidden_fingerprint: "fnv1a64:8ebd9cdd986dadbf"
+    rationale: "Reviewed the ordinary j2k-metal inventory against 0.7.3; no documented public API items changed."
+    hidden_rationale: "Reviewed the complete hidden J2K Metal inventory: device batch and submit methods use the concrete associated context directly, with resident ownership, session lifecycle, fallback, and typed error semantics unchanged."
+  j2k-jpeg-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 124
+    hidden_fingerprint: "fnv1a64:0b31ccb3e7974bc4"
+    rationale: "Reviewed the ordinary j2k-jpeg-cuda inventory against 0.7.3; no documented public API items changed."
+    hidden_rationale: "Reviewed the complete hidden JPEG CUDA inventory: batch and submit methods receive the associated concrete context directly, while session-bound execution, allocation accounting, and typed CUDA failures remain unchanged."
+  j2k-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 171
+    hidden_fingerprint: "fnv1a64:56bd9f23e4d2c9fb"
+    rationale: "Reviewed the ordinary j2k-cuda inventory against 0.7.3; no documented public API items changed."
+    hidden_rationale: "Reviewed the complete hidden J2K CUDA inventory: device batch and submit methods use the concrete associated context directly, while resident decode, encode stages, session lifecycle, and typed runtime failures remain unchanged."
+  j2k-transcode:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 455
+    hidden_fingerprint: "fnv1a64:fdd61f6fdda4a9ab"
+    rationale: "Reviewed the ordinary j2k-transcode inventory against 0.7.3; no public API items changed."
+    hidden_rationale: "Reviewed the complete hidden j2k-transcode inventory; transform, packetization, resident handoff, accounting, and typed source-preserving error boundaries are unchanged from 0.7.3."
+  j2k-transcode-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 17
+    hidden_fingerprint: "fnv1a64:3e3e69d35c4a62a5"
+    rationale: "Reviewed the ordinary j2k-transcode-cuda inventory against 0.7.3; no public API items changed."
+    hidden_rationale: "Reviewed the complete hidden CUDA transcode inventory; accelerator routing, resident handoff, allocation caps, and source-preserving runtime errors are unchanged from 0.7.3."
+  j2k-metal-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 11
+    hidden_fingerprint: "fnv1a64:671e50d4d121b419"
+    rationale: "Reviewed the ordinary j2k-metal-support inventory against 0.7.3; no public API items changed."
+    hidden_rationale: "Reviewed the complete hidden Metal support inventory; checked allocation, command, completion, buffer ownership, and audited unsafe boundaries are unchanged from the published baseline."
+  j2k-transcode-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 49
+    hidden_fingerprint: "fnv1a64:5bf8a22a33753a2d"
+    rationale: "Reviewed the ordinary j2k-transcode-metal inventory against 0.7.3; no public API items changed."
+    hidden_rationale: "Reviewed the complete hidden Metal transcode inventory; transform, buffer, code-block, resident handoff, fallback, and typed source-chain contracts are unchanged from 0.7.3."
+  j2k-native:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 535
+    hidden_fingerprint: "fnv1a64:7c931c0e7c4eb27b"
+    rationale: "Reviewed the ordinary j2k-native inventory against 0.7.3; no public API items changed."
+    hidden_rationale: "Reviewed the complete hidden native inventory; decode, encode, resident, allocation-accounting, and typed validation and invariant boundaries are unchanged from the published baseline."
+  j2k-types:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 54
+    hidden_fingerprint: "fnv1a64:4b30413a7bfffeb5"
+    rationale: "Reviewed the ordinary j2k-types inventory against 0.7.3; its documented public API is unchanged."
+    hidden_rationale: "Reviewed the complete hidden j2k-types inventory: five forwarding resident-job accessors are removed, and callers use the existing public job.input methods for width, height, component count, bit depth, and signedness."
+  j2k-cuda-runtime:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 918
+    hidden_fingerprint: "fnv1a64:61e8d94589aa373a"
+    rationale: "Reviewed the ordinary j2k-cuda-runtime inventory against 0.7.3; no public API items changed."
+    hidden_rationale: "Reviewed the complete hidden CUDA runtime inventory; asynchronous cleanup, kernel ABI, pooled allocation, execution, and lifecycle-sensitive unsafe boundaries are unchanged from the published baseline."
+  j2k-profile:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 117
+    hidden_fingerprint: "fnv1a64:a1546f56ae38f2e3"
+    rationale: "Reviewed the ordinary j2k-profile inventory against 0.7.3; its documented surface remains the crate module root only."
+    hidden_rationale: "Reviewed the complete hidden profiling inventory; bounded capture, move-only ownership, fallible controls, and every callable profiling surface are unchanged from the published baseline."

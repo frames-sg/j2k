@@ -203,7 +203,8 @@ transcode crates, and backend encode-stage adapter SPI.
 
 Codec contracts include `ImageDecode`, `decode_region_scaled_into`,
 `decode_rows`, `TileBatchDecode`, `DeviceSurface`, `ScratchPool`, and
-`DecoderContext`. `BackendRequest::Auto` may return CPU output.
+the concrete `J2kContext` and `j2k_jpeg::DecoderContext` types.
+`BackendRequest::Auto` may return CPU output.
 `BackendRequest::Metal` and `BackendRequest::Cuda` are strict and fail for
 unsupported shapes.
 

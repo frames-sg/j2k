@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_core::{
-    BackendRequest, CodecError, DecoderContext, DeviceSurface, Downscale, ImageDecode,
-    ImageDecodeDevice, PixelFormat, Rect, TileBatchDecodeDevice,
+    BackendRequest, CodecError, DeviceSurface, Downscale, ImageDecode, ImageDecodeDevice,
+    PixelFormat, Rect, TileBatchDecodeDevice,
 };
 use j2k_jpeg::DecodeRequest;
 use j2k_jpeg_cuda::{Codec, Decoder};
@@ -52,7 +52,7 @@ fn tile_batch_region_scaled_auto_surface_matches_host_decode() {
     };
     let scale = Downscale::Quarter;
     let scaled = roi.scaled_covering(scale);
-    let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = j2k_jpeg::ScratchPool::new();
     let surface = Codec::decode_tile_region_scaled_to_device(
         &mut ctx,
@@ -92,7 +92,7 @@ fn tile_batch_region_scaled_cuda_surface_fails_without_owned_cuda_path() {
         h: 10,
     };
     let scale = Downscale::Quarter;
-    let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = j2k_jpeg::ScratchPool::new();
     let error = Codec::decode_tile_region_scaled_to_device(
         &mut ctx,
@@ -115,7 +115,7 @@ fn tile_batch_region_cuda_surface_fails_without_owned_cuda_path() {
         w: 10,
         h: 10,
     };
-    let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = j2k_jpeg::ScratchPool::new();
 
     let error = Codec::decode_tile_region_to_device(
@@ -134,7 +134,7 @@ fn tile_batch_region_cuda_surface_fails_without_owned_cuda_path() {
 
 #[test]
 fn tile_batch_scaled_cuda_surface_fails_without_owned_cuda_path() {
-    let mut ctx = DecoderContext::<j2k_jpeg::DecoderContext>::new();
+    let mut ctx = j2k_jpeg::DecoderContext::default();
     let mut pool = j2k_jpeg::ScratchPool::new();
 
     let error = Codec::decode_tile_scaled_to_device(

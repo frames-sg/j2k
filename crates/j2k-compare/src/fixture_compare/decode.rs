@@ -6,10 +6,10 @@ use super::{
     decode_tile_scaled_into_in_context, decode_tiles_into, decode_tiles_region_into,
     decode_tiles_region_scaled_into, decode_tiles_scaled_into, grok,
     is_openjpeg_region_scaled_noncomparable, openjpeg, reduce_factor, tile_batch_worker_count,
-    BatchInputs, BenchmarkMode, CpuDecodeParallelism, DecoderContext, DecoderKind, FixtureCase,
-    J2kContext, J2kScratchPool, MixedFixtureBatch, NonZeroUsize, Operation, OperationClass,
-    PixelFormat, Rect, TileBatchOptions, TileDecodeJob, TileRegionDecodeJob,
-    TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    BatchInputs, BenchmarkMode, CpuDecodeParallelism, DecoderKind, FixtureCase, J2kContext,
+    J2kScratchPool, MixedFixtureBatch, NonZeroUsize, Operation, OperationClass, PixelFormat, Rect,
+    TileBatchOptions, TileDecodeJob, TileRegionDecodeJob, TileRegionScaledDecodeJob,
+    TileScaledDecodeJob,
 };
 
 pub(super) fn decode_batch(
@@ -218,9 +218,8 @@ pub(super) fn decode_j2k_mixed_batch(
 
 pub(super) fn decode_j2k_single_case(case: &FixtureCase, input: &[u8]) -> Result<Vec<u8>, String> {
     let mut output = vec![0_u8; case.output_len()];
-    let mut ctx = DecoderContext::<J2kContext>::new();
-    ctx.codec_mut()
-        .set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    let mut ctx = J2kContext::new();
+    ctx.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
     let mut pool = J2kScratchPool::new();
     match case.operation {
         Operation::Full => decode_tile_into_in_context(

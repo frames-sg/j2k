@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::review::{parse_review_config, validate_reviews, ReviewConfig, ReviewEntry};
 use super::{
     computed_release_type, current_snapshot_uses_generation_contract, fingerprint,
-    parse_api_snapshot, parse_options, render_report, semver_cargo_args, snapshot_uses_generator,
-    validate_package_partition, PackageApiDiff, ReleaseType, SnapshotKind, Version,
-    SEMVER_BASELINE_PACKAGES, SEMVER_NEW_PACKAGES,
+    parse_api_snapshot, parse_options, render_report, semver_cargo_args, semver_check_release_type,
+    snapshot_uses_generator, validate_package_partition, PackageApiDiff, ReleaseType, SnapshotKind,
+    Version, SEMVER_BASELINE_PACKAGES, SEMVER_NEW_PACKAGES,
 };
 
 mod api_planning;
@@ -157,6 +157,25 @@ fn semver_checks_commands_use_the_pinned_rustup_toolchain() {
 }
 
 #[test]
+fn source_incompatible_patch_exception_is_scoped_to_0_7_4() {
+    let mut diff = PackageApiDiff {
+        package: "alpha".to_string(),
+        candidate_version: "0.7.4".to_string(),
+        release_type: Some(ReleaseType::Minor),
+        baseline_count: 1,
+        candidate_count: 0,
+        added: BTreeSet::new(),
+        removed: ["pub fn alpha::removed()".to_string()]
+            .into_iter()
+            .collect(),
+        hidden: BTreeSet::new(),
+    };
+    assert_eq!(semver_check_release_type(&diff), ReleaseType::Major);
+    diff.candidate_version = "0.7.5".to_string();
+    assert_eq!(semver_check_release_type(&diff), ReleaseType::Minor);
+}
+
+#[test]
 fn report_has_one_published_details_section_and_hidden_evidence() {
     let diff = PackageApiDiff {
         package: "alpha".to_string(),
@@ -178,9 +197,9 @@ fn report_has_one_published_details_section_and_hidden_evidence() {
 fn parses_review_config_and_rejects_unknown_fields() {
     let source = "\
 version: 2
-baseline_tag: v0.6.2
-baseline_version: 0.6.2
-candidate_version: 0.7.0
+baseline_tag: v0.7.3
+baseline_version: 0.7.3
+candidate_version: 0.7.4
 reviews:
   alpha:
     removed_fingerprint: 'fnv1a64:1234'
@@ -192,7 +211,7 @@ reviews:
 ";
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(source).unwrap();
     let parsed = parse_review_config(&value).unwrap();
-    assert_eq!(parsed.candidate_version, "0.7.0");
+    assert_eq!(parsed.candidate_version, "0.7.4");
     assert_eq!(parsed.reviews.len(), 1);
 
     let invalid = source.replacen("    rationale:", "    unknown: nope\n    rationale:", 1);

@@ -48,46 +48,5 @@ pub trait CodecContext: Default + Send {
     }
 }
 
-/// Wrapper that owns codec context state for repeated decode calls.
-#[derive(Debug, Default)]
-pub struct DecoderContext<C: CodecContext> {
-    codec: C,
-}
-
-impl<C: CodecContext> DecoderContext<C> {
-    /// Construct an empty decoder context.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            codec: C::default(),
-        }
-    }
-
-    /// Borrow the codec-specific context.
-    pub fn codec(&self) -> &C {
-        &self.codec
-    }
-
-    /// Mutably borrow the codec-specific context.
-    pub fn codec_mut(&mut self) -> &mut C {
-        &mut self.codec
-    }
-
-    /// Clear cached codec state.
-    pub fn clear(&mut self) {
-        self.codec.clear();
-    }
-
-    /// Return cache counters from the codec-specific context.
-    pub fn cache_stats(&self) -> CacheStats {
-        self.codec.cache_stats()
-    }
-
-    /// Consume the wrapper and return the codec-specific context.
-    pub fn into_inner(self) -> C {
-        self.codec
-    }
-}
-
 #[cfg(test)]
 mod tests;

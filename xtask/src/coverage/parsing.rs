@@ -135,7 +135,7 @@ pub(super) fn parse_lcov(input: &str, root: &Path) -> Result<LcovReport, String>
 
     for line in input.lines() {
         if let Some(path) = line.strip_prefix("SF:") {
-            current_path = Some(normalize_lcov_path(path, root)?);
+            current_path = Some(normalize_coverage_path(path, root)?);
             continue;
         }
         let Some(data) = line.strip_prefix("DA:") else {
@@ -203,10 +203,6 @@ pub(super) fn normalize_coverage_path(path: &str, root: &Path) -> Result<String,
         }
     }
     Ok(normalized.join("/"))
-}
-
-fn normalize_lcov_path(path: &str, root: &Path) -> Result<String, String> {
-    normalize_coverage_path(path, root)
 }
 
 #[cfg(test)]

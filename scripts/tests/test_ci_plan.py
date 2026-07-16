@@ -106,8 +106,8 @@ class ClassificationTests(unittest.TestCase):
         for path in (
             "docs/stable-api-1.0.public-api.txt",
             "docs/stable-api-1.0.implementation-public-api.txt",
-            "engineering/public-api-review-0.7.3.yml",
-            "engineering/reviewed-public-api-diff-0.7.3.md",
+            "engineering/public-api-review-0.7.4.yml",
+            "engineering/reviewed-public-api-diff-0.7.4.md",
         ):
             with self.subTest(path=path):
                 plan = self.classify(path)

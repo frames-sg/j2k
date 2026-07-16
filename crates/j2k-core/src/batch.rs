@@ -13,8 +13,7 @@ pub use allocation::{
     try_batch_reserve_to, BatchAllocationBudget, BatchAllocationRequest,
 };
 pub use collection::{
-    try_collect_indexed_batch_results, try_collect_ordered_batch_results,
-    try_collect_ordered_batch_results_with_limits,
+    try_collect_indexed_batch_results, try_collect_ordered_batch_results_with_limits,
 };
 
 /// Worker configuration for CPU tile batches.

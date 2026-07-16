@@ -22,51 +22,6 @@ pub const JPEG_BASELINE_420_RESTART_32X16: &[u8] =
 pub const JPEG_BASELINE_420_RESTART_32X16_RGB: &[u8] =
     include_bytes!("../fixtures/conformance/baseline_420_restart_32x16.rgb");
 
-/// A 16x16 baseline JPEG with 4:2:0 sampling.
-pub fn jpeg_baseline_420_16x16() -> Vec<u8> {
-    JPEG_BASELINE_420_16X16.to_vec()
-}
-
-/// An 8x8 grayscale baseline JPEG.
-pub fn jpeg_grayscale_8x8() -> Vec<u8> {
-    JPEG_GRAYSCALE_8X8.to_vec()
-}
-
-/// An 8x8 baseline JPEG with 4:4:4 sampling.
-pub fn jpeg_baseline_444_8x8() -> Vec<u8> {
-    JPEG_BASELINE_444_8X8.to_vec()
-}
-
-/// Reference RGB pixels for [`jpeg_baseline_444_8x8`].
-pub fn jpeg_baseline_444_8x8_rgb() -> Vec<u8> {
-    JPEG_BASELINE_444_8X8_RGB.to_vec()
-}
-
-/// A 16x8 baseline JPEG with 4:2:2 sampling.
-pub fn jpeg_baseline_422_16x8() -> Vec<u8> {
-    JPEG_BASELINE_422_16X8.to_vec()
-}
-
-/// Reference RGB pixels for [`jpeg_baseline_422_16x8`].
-pub fn jpeg_baseline_422_16x8_rgb() -> Vec<u8> {
-    JPEG_BASELINE_422_16X8_RGB.to_vec()
-}
-
-/// A 32x16 baseline JPEG with 4:2:0 sampling and restart coding.
-pub fn jpeg_baseline_420_restart_32x16() -> Vec<u8> {
-    JPEG_BASELINE_420_RESTART_32X16.to_vec()
-}
-
-/// Reference RGB pixels for [`jpeg_baseline_420_restart_32x16`].
-pub fn jpeg_baseline_420_restart_32x16_rgb() -> Vec<u8> {
-    JPEG_BASELINE_420_RESTART_32X16_RGB.to_vec()
-}
-
-/// Minimal grayscale JPEG used by CLI tests.
-pub fn minimal_gray8_jpeg() -> Vec<u8> {
-    jpeg_grayscale_8x8()
-}
-
 /// Minimal grayscale JPEG with caller-provided dimensions and one entropy byte.
 ///
 /// This is intentionally not a complete image for large dimensions; tests use

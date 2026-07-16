@@ -80,12 +80,12 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
     }
     std::fs::write(
         release_root.join("Cargo.toml"),
-        "[workspace.package]\nversion = \"0.7.3\"\n",
+        "[workspace.package]\nversion = \"0.7.4\"\n",
     )
     .expect("write workspace manifest fixture");
     std::fs::write(
         release_root.join("CHANGELOG.md"),
-        "# Changelog\n\n## [0.7.3] - 2026-07-15\n",
+        "# Changelog\n\n## [0.7.4] - 2026-07-16\n",
     )
     .expect("write finalized changelog fixture");
     std::fs::write(

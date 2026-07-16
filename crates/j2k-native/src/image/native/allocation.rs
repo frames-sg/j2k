@@ -37,14 +37,6 @@ impl NativeOutputBudget {
         })
     }
 
-    pub(in crate::image) fn for_component_pack(
-        retained_image_bytes: usize,
-        components: &[ComponentData],
-        component_owner_capacity: usize,
-    ) -> Result<Self> {
-        Self::for_decoded_channels(retained_image_bytes, components, component_owner_capacity)
-    }
-
     pub(super) fn for_raw_bitmap_with_decoded_channels(
         retained_image_bytes: usize,
         components: &[ComponentData],
@@ -79,7 +71,7 @@ impl NativeOutputBudget {
         packed: &DecodedNativeComponents,
     ) -> Result<()> {
         let mut budget =
-            Self::for_component_pack(retained_image_bytes, components, component_owner_capacity)?;
+            Self::for_decoded_channels(retained_image_bytes, components, component_owner_capacity)?;
         budget.include_elements::<NativeComponentPlane>(packed.planes.capacity())?;
         for plane in &packed.planes {
             budget.include_elements::<u8>(plane.data.capacity())?;
@@ -94,7 +86,7 @@ impl NativeOutputBudget {
         packed: &DecodedComponents<'_>,
     ) -> Result<usize> {
         let mut peak_budget =
-            Self::for_component_pack(retained_image_bytes, components, component_owner_capacity)?;
+            Self::for_decoded_channels(retained_image_bytes, components, component_owner_capacity)?;
         peak_budget.include_elements::<ComponentPlane<'_>>(packed.planes.capacity())?;
         peak_budget.include_color_space(&packed.color_space)?;
 
@@ -143,7 +135,7 @@ impl NativeOutputBudget {
         packed: &Bitmap,
     ) -> Result<()> {
         let mut budget =
-            Self::for_component_pack(retained_image_bytes, components, component_owner_capacity)?;
+            Self::for_decoded_channels(retained_image_bytes, components, component_owner_capacity)?;
         budget.include_elements::<u8>(packed.data.capacity())?;
         budget.include_color_space(&packed.color_space)
     }

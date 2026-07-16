@@ -35,7 +35,7 @@ impl<'a> J2kDecoder<'a> {
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
         if matches!(backend, BackendRequest::Cuda) {
-            return self.decode_to_cuda_resident_surface_impl(session, fmt);
+            return decode_to_cuda_resident_surface_impl(self, session, fmt);
         }
         let dims = self.inner.info().dimensions;
         let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
@@ -55,42 +55,6 @@ impl<'a> J2kDecoder<'a> {
         wrap_surface(out, dims, fmt, backend, session)
     }
 
-    fn decode_to_cuda_resident_surface_impl(
-        &mut self,
-        session: &mut CudaSession,
-        fmt: PixelFormat,
-    ) -> Result<Surface, Error> {
-        decode_to_cuda_resident_surface_impl(self, session, fmt)
-    }
-
-    fn decode_region_to_cuda_resident_surface_impl(
-        &mut self,
-        session: &mut CudaSession,
-        fmt: PixelFormat,
-        roi: Rect,
-    ) -> Result<Surface, Error> {
-        decode_region_to_cuda_resident_surface_impl(self, session, fmt, roi)
-    }
-
-    fn decode_scaled_to_cuda_resident_surface_impl(
-        &mut self,
-        session: &mut CudaSession,
-        fmt: PixelFormat,
-        scale: Downscale,
-    ) -> Result<Surface, Error> {
-        decode_scaled_to_cuda_resident_surface_impl(self, session, fmt, scale)
-    }
-
-    fn decode_region_scaled_to_cuda_resident_surface_impl(
-        &mut self,
-        session: &mut CudaSession,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-    ) -> Result<Surface, Error> {
-        decode_region_scaled_to_cuda_resident_surface_impl(self, session, fmt, roi, scale)
-    }
-
     fn decode_region_to_surface_impl(
         &mut self,
         session: &mut CudaSession,
@@ -100,7 +64,7 @@ impl<'a> J2kDecoder<'a> {
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
         if matches!(backend, BackendRequest::Cuda) {
-            return self.decode_region_to_cuda_resident_surface_impl(session, fmt, roi);
+            return decode_region_to_cuda_resident_surface_impl(self, session, fmt, roi);
         }
         let plan = DeviceDecodePlan::for_image(
             self.inner.info().dimensions,
@@ -122,7 +86,7 @@ impl<'a> J2kDecoder<'a> {
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
         if matches!(backend, BackendRequest::Cuda) {
-            return self.decode_scaled_to_cuda_resident_surface_impl(session, fmt, scale);
+            return decode_scaled_to_cuda_resident_surface_impl(self, session, fmt, scale);
         }
         let dims = DeviceDecodePlan::for_image(
             self.inner.info().dimensions,
@@ -145,8 +109,9 @@ impl<'a> J2kDecoder<'a> {
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
         if matches!(backend, BackendRequest::Cuda) {
-            return self
-                .decode_region_scaled_to_cuda_resident_surface_impl(session, fmt, roi, scale);
+            return decode_region_scaled_to_cuda_resident_surface_impl(
+                self, session, fmt, roi, scale,
+            );
         }
         let plan = DeviceDecodePlan::for_image(
             self.inner.info().dimensions,

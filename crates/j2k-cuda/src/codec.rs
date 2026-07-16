@@ -22,7 +22,7 @@ use crate::{CudaSession, Error, J2kDecoder, Surface};
 pub struct Codec;
 
 struct RegionScaledSurfaceRequest<'a> {
-    ctx: &'a mut j2k_core::DecoderContext<CpuJ2kContext>,
+    ctx: &'a mut CpuJ2kContext,
     session: &'a mut CudaSession,
     pool: &'a mut CpuJ2kScratchPool,
     input: &'a [u8],
@@ -66,7 +66,7 @@ impl Codec {
     }
 
     fn decode_tile_to_surface_impl(
-        ctx: &mut j2k_core::DecoderContext<CpuJ2kContext>,
+        ctx: &mut CpuJ2kContext,
         session: &mut CudaSession,
         pool: &mut CpuJ2kScratchPool,
         input: &[u8],
@@ -85,7 +85,7 @@ impl Codec {
     }
 
     fn decode_tile_region_to_surface_impl(
-        ctx: &mut j2k_core::DecoderContext<CpuJ2kContext>,
+        ctx: &mut CpuJ2kContext,
         session: &mut CudaSession,
         pool: &mut CpuJ2kScratchPool,
         input: &[u8],
@@ -109,7 +109,7 @@ impl Codec {
     }
 
     fn decode_tile_scaled_to_surface_impl(
-        ctx: &mut j2k_core::DecoderContext<CpuJ2kContext>,
+        ctx: &mut CpuJ2kContext,
         session: &mut CudaSession,
         pool: &mut CpuJ2kScratchPool,
         input: &[u8],
@@ -193,7 +193,7 @@ impl TileBatchDecodeSubmit for Codec {
     type SubmittedSurface = ReadySubmission<Surface, Error>;
 
     fn submit_tile_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -207,7 +207,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_region_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -222,7 +222,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_scaled_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -237,7 +237,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_region_scaled_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         request: TileRegionScaledDeviceDecodeRequest<'_>,
@@ -277,7 +277,7 @@ impl TileBatchDecodeManyDevice for Codec {
     type DeviceSurface = Surface;
 
     fn decode_tiles_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         inputs: &[&[u8]],
         fmt: PixelFormat,
@@ -304,7 +304,7 @@ impl TileBatchDecodeManyDevice for Codec {
 
 #[cfg(all(test, feature = "cuda-runtime"))]
 mod tests {
-    use j2k_core::{BackendRequest, DecoderContext, PixelFormat, TileBatchDecodeManyDevice};
+    use j2k_core::{BackendRequest, PixelFormat, TileBatchDecodeManyDevice};
     use j2k_test_support::{cuda_runtime_required, htj2k_rgb8_pattern_fixture};
 
     use super::{Codec, CpuJ2kContext, CpuJ2kScratchPool};
@@ -318,7 +318,7 @@ mod tests {
         testing_reset_cuda_htj2k_batch_decode_calls();
         let fixture = rgb8_htj2k_fixture(32, 32);
         let inputs = [fixture.as_slice(), fixture.as_slice()];
-        let mut ctx = DecoderContext::<CpuJ2kContext>::new();
+        let mut ctx = CpuJ2kContext::default();
         let mut pool = CpuJ2kScratchPool::new();
 
         let result = Codec::decode_tiles_to_device(

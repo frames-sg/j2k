@@ -52,14 +52,14 @@ impl Harness {
             make_executable(&program, "fake external tool");
         }
         let git = root.join("git");
-        let baseline_snapshot = root.join("stable-api-0.6.2.public-api.txt");
+        let baseline_snapshot = root.join("stable-api-0.7.3.public-api.txt");
         fs::write(&baseline_snapshot, synthetic_baseline_snapshot())
             .expect("write synthetic baseline API snapshot");
         let real_git = find_program("git");
         fs::write(
             &git,
             format!(
-                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nif [ \"$1\" = status ]; then exit 0; fi\nif [ \"$1\" = config ] && [ \"$2\" = --get ] && [ \"$3\" = remote.origin.url ]; then printf '%s\\n' 'git@example.invalid:frames-sg/j2k.git'; exit 0; fi\nif [ \"$1\" = rev-parse ] && [ \"$2\" = 'v0.6.2^{{commit}}' ]; then printf '%s\\n' '55ee746e1b49f7309e4d030cc01a69d580173920'; exit 0; fi\nif [ \"$1\" = show ] && [ \"$2\" = 'v0.6.2:docs/stable-api-1.0.public-api.txt' ]; then exec cat '{}'; fi\nexec \"{}\" \"$@\"\n",
+                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nif [ \"$1\" = status ]; then exit 0; fi\nif [ \"$1\" = config ] && [ \"$2\" = --get ] && [ \"$3\" = remote.origin.url ]; then printf '%s\\n' 'git@example.invalid:frames-sg/j2k.git'; exit 0; fi\nif [ \"$1\" = rev-parse ] && [ \"$2\" = 'v0.7.3^{{commit}}' ]; then printf '%s\\n' '494eebc3ef20895d331da86221b1d8c4bd4cabf8'; exit 0; fi\nif [ \"$1\" = show ] && [ \"$2\" = 'v0.7.3:docs/stable-api-1.0.public-api.txt' ]; then exec cat '{}'; fi\nexec \"{}\" \"$@\"\n",
                 log.display(),
                 baseline_snapshot.display(),
                 real_git.display()
@@ -193,6 +193,7 @@ fn synthetic_baseline_snapshot() -> String {
     for package in [
         "j2k",
         "j2k-core",
+        "j2k-codec-math",
         "j2k-jpeg",
         "j2k-tilecodec",
         "j2k-jpeg-metal",

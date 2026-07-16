@@ -4,11 +4,10 @@
 
 use j2k_jpeg::{DecodeRequest, Decoder, Downscale, PixelFormat, Rect};
 use j2k_test_support::{
-    crop_interleaved_bytes, crop_interleaved_u8, restart_coded_grayscale_jpeg,
-    scaled_rect_covering, PixelRect, JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB,
-    JPEG_BASELINE_420_RESTART_32X16, JPEG_BASELINE_420_RESTART_32X16_RGB, JPEG_BASELINE_422_16X8,
-    JPEG_BASELINE_422_16X8_RGB, JPEG_BASELINE_444_8X8, JPEG_BASELINE_444_8X8_RGB,
-    JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY,
+    crop_interleaved_bytes, restart_coded_grayscale_jpeg, scaled_rect_covering, PixelRect,
+    JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB, JPEG_BASELINE_420_RESTART_32X16,
+    JPEG_BASELINE_420_RESTART_32X16_RGB, JPEG_BASELINE_422_16X8, JPEG_BASELINE_422_16X8_RGB,
+    JPEG_BASELINE_444_8X8, JPEG_BASELINE_444_8X8_RGB, JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY,
 };
 
 const BASELINE_420_JPG: &[u8] = JPEG_BASELINE_420_16X16;
@@ -233,7 +232,7 @@ fn crop_rgb8(full: &[u8], width: usize, roi: Rect) -> Vec<u8> {
 }
 
 fn crop_gray8(full: &[u8], width: usize, roi: Rect) -> Vec<u8> {
-    crop_interleaved_u8(full, width, 1, pixel_rect(roi))
+    crop_interleaved_bytes(full, width, 1, pixel_rect(roi))
 }
 
 fn scaled_rect_covering_half(roi: Rect) -> Rect {

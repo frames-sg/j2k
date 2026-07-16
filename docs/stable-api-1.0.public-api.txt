@@ -540,7 +540,6 @@ pub use j2k::CompressedPayloadKind
 pub use j2k::CompressedTransferSyntax
 pub use j2k::DecodeOutcome
 pub use j2k::DecodeRowsError
-pub use j2k::DecoderContext
 pub use j2k::Downscale
 pub use j2k::ImageCodec
 pub use j2k::ImageDecode
@@ -591,7 +590,6 @@ impl j2k_core::accelerator::ExecutionStats
 impl j2k_core::accelerator::SurfaceMetadata
 impl j2k_core::accelerator::SurfaceResidency
 impl<'a> j2k_core::PassthroughCandidate<'a>
-impl<C: j2k_core::CodecContext> j2k_core::DecoderContext<C>
 impl<E: core::error::Error + 'static> core::error::Error for j2k_core::BatchDecodeError<E>
 impl<E: core::error::Error + 'static> core::error::Error for j2k_core::TileBatchError<E>
 impl<E: core::fmt::Display> core::fmt::Display for j2k_core::BatchDecodeError<E>
@@ -672,12 +670,6 @@ pub fn j2k_core::CodecError::is_truncated(&self) -> bool
 pub fn j2k_core::CodecError::is_unsupported(&self) -> bool
 pub fn j2k_core::CpuFeatures::detect() -> Self
 pub fn j2k_core::DecodeOutcome<W>::new(j2k_core::Rect, alloc::vec::Vec<W>) -> Self
-pub fn j2k_core::DecoderContext<C>::cache_stats(&self) -> j2k_core::CacheStats
-pub fn j2k_core::DecoderContext<C>::clear(&mut self)
-pub fn j2k_core::DecoderContext<C>::codec(&self) -> &C
-pub fn j2k_core::DecoderContext<C>::codec_mut(&mut self) -> &mut C
-pub fn j2k_core::DecoderContext<C>::into_inner(self) -> C
-pub fn j2k_core::DecoderContext<C>::new() -> Self
 pub fn j2k_core::DeviceSubmission::wait(self) -> core::result::Result<Self::Output, Self::Error>
 pub fn j2k_core::DeviceSurface::backend_kind(&self) -> j2k_core::BackendKind
 pub fn j2k_core::DeviceSurface::byte_len(&self) -> usize
@@ -710,19 +702,19 @@ pub fn j2k_core::Rect::scaled_covering(&self, j2k_core::Downscale) -> Self
 pub fn j2k_core::RowSink::write_row(&mut self, u32, &[S]) -> core::result::Result<(), Self::Error>
 pub fn j2k_core::ScratchPool::bytes_allocated(&self) -> usize
 pub fn j2k_core::ScratchPool::reset(&mut self)
-pub fn j2k_core::TileBatchDecode::decode_tile(&mut j2k_core::DecoderContext<Self::Context>, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::PixelFormat) -> core::result::Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error>
-pub fn j2k_core::TileBatchDecode::decode_tile_region(&mut j2k_core::DecoderContext<Self::Context>, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::PixelFormat, j2k_core::Rect) -> core::result::Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error>
-pub fn j2k_core::TileBatchDecode::decode_tile_region_scaled(&mut j2k_core::DecoderContext<Self::Context>, &mut Self::Pool, j2k_core::PixelFormat, j2k_core::TileRegionScaledDecodeJob<'_, '_>) -> core::result::Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error>
-pub fn j2k_core::TileBatchDecode::decode_tile_scaled(&mut j2k_core::DecoderContext<Self::Context>, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::PixelFormat, j2k_core::Downscale) -> core::result::Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error>
-pub fn j2k_core::TileBatchDecodeDevice::decode_tile_region_scaled_to_device(&mut j2k_core::DecoderContext<<Self as j2k_core::TileBatchDecodeDevice>::Context>, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::Rect, j2k_core::Downscale, j2k_core::BackendRequest) -> core::result::Result<<Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface, Self::Error> where Self: j2k_core::TileBatchDecodeSubmit<Context = <Self as j2k_core::TileBatchDecodeDevice>::Context, DeviceSurface = <Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface>
-pub fn j2k_core::TileBatchDecodeDevice::decode_tile_region_to_device(&mut j2k_core::DecoderContext<<Self as j2k_core::TileBatchDecodeDevice>::Context>, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::Rect, j2k_core::BackendRequest) -> core::result::Result<<Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface, Self::Error> where Self: j2k_core::TileBatchDecodeSubmit<Context = <Self as j2k_core::TileBatchDecodeDevice>::Context, DeviceSurface = <Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface>
-pub fn j2k_core::TileBatchDecodeDevice::decode_tile_scaled_to_device(&mut j2k_core::DecoderContext<<Self as j2k_core::TileBatchDecodeDevice>::Context>, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::Downscale, j2k_core::BackendRequest) -> core::result::Result<<Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface, Self::Error> where Self: j2k_core::TileBatchDecodeSubmit<Context = <Self as j2k_core::TileBatchDecodeDevice>::Context, DeviceSurface = <Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface>
-pub fn j2k_core::TileBatchDecodeDevice::decode_tile_to_device(&mut j2k_core::DecoderContext<<Self as j2k_core::TileBatchDecodeDevice>::Context>, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::BackendRequest) -> core::result::Result<<Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface, Self::Error> where Self: j2k_core::TileBatchDecodeSubmit<Context = <Self as j2k_core::TileBatchDecodeDevice>::Context, DeviceSurface = <Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface>
-pub fn j2k_core::TileBatchDecodeManyDevice::decode_tiles_to_device(&mut j2k_core::DecoderContext<Self::Context>, &mut Self::Pool, &[&[u8]], j2k_core::PixelFormat, j2k_core::BackendRequest) -> core::result::Result<alloc::vec::Vec<Self::DeviceSurface>, Self::Error>
-pub fn j2k_core::TileBatchDecodeSubmit::submit_tile_region_scaled_to_device(&mut j2k_core::DecoderContext<Self::Context>, &mut Self::Session, &mut Self::Pool, j2k_core::TileRegionScaledDeviceDecodeRequest<'_>) -> core::result::Result<Self::SubmittedSurface, Self::Error>
-pub fn j2k_core::TileBatchDecodeSubmit::submit_tile_region_to_device(&mut j2k_core::DecoderContext<Self::Context>, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::Rect, j2k_core::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
-pub fn j2k_core::TileBatchDecodeSubmit::submit_tile_scaled_to_device(&mut j2k_core::DecoderContext<Self::Context>, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::Downscale, j2k_core::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
-pub fn j2k_core::TileBatchDecodeSubmit::submit_tile_to_device(&mut j2k_core::DecoderContext<Self::Context>, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
+pub fn j2k_core::TileBatchDecode::decode_tile(&mut Self::Context, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::PixelFormat) -> core::result::Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error>
+pub fn j2k_core::TileBatchDecode::decode_tile_region(&mut Self::Context, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::PixelFormat, j2k_core::Rect) -> core::result::Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error>
+pub fn j2k_core::TileBatchDecode::decode_tile_region_scaled(&mut Self::Context, &mut Self::Pool, j2k_core::PixelFormat, j2k_core::TileRegionScaledDecodeJob<'_, '_>) -> core::result::Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error>
+pub fn j2k_core::TileBatchDecode::decode_tile_scaled(&mut Self::Context, &mut Self::Pool, &[u8], &mut [u8], usize, j2k_core::PixelFormat, j2k_core::Downscale) -> core::result::Result<j2k_core::DecodeOutcome<Self::Warning>, Self::Error>
+pub fn j2k_core::TileBatchDecodeDevice::decode_tile_region_scaled_to_device(&mut <Self as j2k_core::TileBatchDecodeDevice>::Context, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::Rect, j2k_core::Downscale, j2k_core::BackendRequest) -> core::result::Result<<Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface, Self::Error> where Self: j2k_core::TileBatchDecodeSubmit<Context = <Self as j2k_core::TileBatchDecodeDevice>::Context, DeviceSurface = <Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface>
+pub fn j2k_core::TileBatchDecodeDevice::decode_tile_region_to_device(&mut <Self as j2k_core::TileBatchDecodeDevice>::Context, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::Rect, j2k_core::BackendRequest) -> core::result::Result<<Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface, Self::Error> where Self: j2k_core::TileBatchDecodeSubmit<Context = <Self as j2k_core::TileBatchDecodeDevice>::Context, DeviceSurface = <Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface>
+pub fn j2k_core::TileBatchDecodeDevice::decode_tile_scaled_to_device(&mut <Self as j2k_core::TileBatchDecodeDevice>::Context, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::Downscale, j2k_core::BackendRequest) -> core::result::Result<<Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface, Self::Error> where Self: j2k_core::TileBatchDecodeSubmit<Context = <Self as j2k_core::TileBatchDecodeDevice>::Context, DeviceSurface = <Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface>
+pub fn j2k_core::TileBatchDecodeDevice::decode_tile_to_device(&mut <Self as j2k_core::TileBatchDecodeDevice>::Context, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::BackendRequest) -> core::result::Result<<Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface, Self::Error> where Self: j2k_core::TileBatchDecodeSubmit<Context = <Self as j2k_core::TileBatchDecodeDevice>::Context, DeviceSurface = <Self as j2k_core::TileBatchDecodeDevice>::DeviceSurface>
+pub fn j2k_core::TileBatchDecodeManyDevice::decode_tiles_to_device(&mut Self::Context, &mut Self::Pool, &[&[u8]], j2k_core::PixelFormat, j2k_core::BackendRequest) -> core::result::Result<alloc::vec::Vec<Self::DeviceSurface>, Self::Error>
+pub fn j2k_core::TileBatchDecodeSubmit::submit_tile_region_scaled_to_device(&mut Self::Context, &mut Self::Session, &mut Self::Pool, j2k_core::TileRegionScaledDeviceDecodeRequest<'_>) -> core::result::Result<Self::SubmittedSurface, Self::Error>
+pub fn j2k_core::TileBatchDecodeSubmit::submit_tile_region_to_device(&mut Self::Context, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::Rect, j2k_core::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
+pub fn j2k_core::TileBatchDecodeSubmit::submit_tile_scaled_to_device(&mut Self::Context, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::Downscale, j2k_core::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
+pub fn j2k_core::TileBatchDecodeSubmit::submit_tile_to_device(&mut Self::Context, &mut Self::Session, &mut Self::Pool, &[u8], j2k_core::PixelFormat, j2k_core::BackendRequest) -> core::result::Result<Self::SubmittedSurface, Self::Error>
 pub fn j2k_core::TileBatchError<E>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_core::TileBatchError<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn j2k_core::TileDecompress::decompress_into(&mut Self::Pool, &[u8], &mut [u8]) -> core::result::Result<usize, Self::Error>
@@ -979,7 +971,6 @@ pub struct j2k_core::CacheStats
 pub struct j2k_core::CodedUnitLayout
 pub struct j2k_core::CpuFeatures
 pub struct j2k_core::DecodeOutcome<W>
-pub struct j2k_core::DecoderContext<C: j2k_core::CodecContext>
 pub struct j2k_core::DeviceMemoryRange
 pub struct j2k_core::ExecutionStats
 pub struct j2k_core::Info

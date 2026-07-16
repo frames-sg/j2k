@@ -1,6 +1,5 @@
 use j2k_core::{
-    CodedUnitLayout, DecoderContext as CoreDecoderContext, Downscale, ImageDecode, ImageDecodeRows,
-    PixelFormat, RowSink, TileBatchDecode,
+    CodedUnitLayout, Downscale, ImageDecode, ImageDecodeRows, PixelFormat, RowSink, TileBatchDecode,
 };
 use j2k_jpeg::{Decoder, DecoderContext, JpegCodec, JpegError, ScratchPool};
 use j2k_test_support::{JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_RESTART_32X16};
@@ -78,7 +77,7 @@ fn row_and_tile_core_traits_are_callable() {
 
     let mut out = vec![0u8; 16 * 16 * 3];
     let mut pool = ScratchPool::new();
-    let mut ctx = CoreDecoderContext::<DecoderContext>::new();
+    let mut ctx = DecoderContext::new();
     JpegCodec::decode_tile_scaled(
         &mut ctx,
         &mut pool,

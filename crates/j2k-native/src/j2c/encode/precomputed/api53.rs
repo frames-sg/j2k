@@ -59,7 +59,15 @@ pub fn encode_precomputed_j2k_53_with_mct_and_accelerator(
     use_mct: bool,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> crate::EncodeResult<Vec<u8>> {
-    encode_precomputed_53_with_mct_and_accelerator(image, options, use_mct, false, accelerator)
+    encode_precomputed_53_with_component_sample_info_and_accelerator_with_cap(
+        image,
+        options,
+        use_mct,
+        false,
+        &[],
+        accelerator,
+        crate::DEFAULT_MAX_CODEC_BYTES,
+    )
 }
 
 /// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
@@ -124,7 +132,15 @@ pub fn encode_precomputed_htj2k_53_with_mct_and_accelerator(
     use_mct: bool,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> crate::EncodeResult<Vec<u8>> {
-    encode_precomputed_53_with_mct_and_accelerator(image, options, use_mct, true, accelerator)
+    encode_precomputed_53_with_component_sample_info_and_accelerator_with_cap(
+        image,
+        options,
+        use_mct,
+        true,
+        &[],
+        accelerator,
+        crate::DEFAULT_MAX_CODEC_BYTES,
+    )
 }
 
 pub(in crate::j2c) fn encode_precomputed_htj2k_53_with_mct_and_retained_owner<O: ?Sized>(
@@ -147,42 +163,6 @@ pub(in crate::j2c) fn encode_precomputed_htj2k_53_with_mct_and_retained_owner<O:
         &mut accelerator,
     )
     .map_err(NativeEncodePipelineError::into_encode_error)
-}
-
-pub(super) fn encode_precomputed_53_with_mct_and_accelerator(
-    image: &PrecomputedHtj2k53Image,
-    options: &EncodeOptions,
-    use_mct: bool,
-    use_ht_block_coding: bool,
-    accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> crate::EncodeResult<Vec<u8>> {
-    encode_precomputed_53_with_component_sample_info_and_accelerator(
-        image,
-        options,
-        use_mct,
-        use_ht_block_coding,
-        &[],
-        accelerator,
-    )
-}
-
-pub(in crate::j2c::encode) fn encode_precomputed_53_with_component_sample_info_and_accelerator(
-    image: &PrecomputedHtj2k53Image,
-    options: &EncodeOptions,
-    use_mct: bool,
-    use_ht_block_coding: bool,
-    component_sample_info: &[EncodeComponentSampleInfo],
-    accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> crate::EncodeResult<Vec<u8>> {
-    encode_precomputed_53_with_component_sample_info_and_accelerator_with_cap(
-        image,
-        options,
-        use_mct,
-        use_ht_block_coding,
-        component_sample_info,
-        accelerator,
-        crate::DEFAULT_MAX_CODEC_BYTES,
-    )
 }
 
 pub(super) fn encode_precomputed_53_with_component_sample_info_and_accelerator_with_cap(

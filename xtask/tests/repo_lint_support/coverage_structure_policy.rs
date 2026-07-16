@@ -422,7 +422,7 @@ fn coverage_tooling_stays_split_by_responsibility() {
             "pub(super) fn git_output(",
             "pub(super) fn parse_changed_lines(",
             "pub(super) fn parse_lcov(",
-            "fn normalize_lcov_path(",
+            "pub(super) fn normalize_coverage_path(",
         ]),
         PatternCheck::new("compiler region evidence ownership", &compiler_regions).required(&[
             "mod parsing;",

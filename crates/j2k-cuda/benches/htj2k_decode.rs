@@ -9,8 +9,8 @@ use std::{
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use j2k_core::{
-    BackendKind, BackendRequest, DecoderContext, DeviceSubmission, DeviceSurface, Downscale,
-    ImageDecode, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeManyDevice,
+    BackendKind, BackendRequest, DeviceSubmission, DeviceSurface, Downscale, ImageDecode,
+    ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeManyDevice,
 };
 use j2k_cuda::{Codec, CudaSession, J2kDecoder, SurfaceResidency};
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
@@ -140,7 +140,7 @@ fn bench_classic_tile_batch(c: &mut Criterion, case: &DecodeBenchCase) {
             &inputs,
             |b, inputs| {
                 b.iter(|| {
-                    let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+                    let mut ctx = j2k_cuda::J2kContext::default();
                     let mut pool = j2k_cuda::J2kScratchPool::new();
                     let surfaces = Codec::decode_tiles_to_device(
                         &mut ctx,
@@ -424,7 +424,7 @@ fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
                 &inputs,
                 |b, inputs| {
                     b.iter(|| {
-                        let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+                        let mut ctx = j2k_cuda::J2kContext::default();
                         let mut pool = j2k_cuda::J2kScratchPool::new();
                         let surfaces = Codec::decode_tiles_to_device(
                             &mut ctx,
@@ -503,7 +503,7 @@ fn bench_mixed_external_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase])
                 &inputs,
                 |b, inputs| {
                     b.iter(|| {
-                        let mut ctx = DecoderContext::<j2k_cuda::J2kContext>::new();
+                        let mut ctx = j2k_cuda::J2kContext::default();
                         let mut pool = j2k_cuda::J2kScratchPool::new();
                         let surfaces = Codec::decode_tiles_to_device(
                             &mut ctx,

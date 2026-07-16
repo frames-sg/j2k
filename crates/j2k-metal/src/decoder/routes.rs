@@ -100,7 +100,9 @@ impl J2kDecoder<'_> {
         scale: Downscale,
         plan: DeviceDecodePlan,
     ) -> Result<Surface, Error> {
-        if let Some(surface) = self.decode_region_scaled_direct_to_surface(fmt, roi, scale)? {
+        if let Some(surface) =
+            crate::hybrid::decode_region_scaled_direct_to_surface(self.bytes, fmt, roi, scale)?
+        {
             return Ok(surface);
         }
         crate::compute::decode_region_scaled_to_surface(
@@ -161,9 +163,9 @@ impl J2kDecoder<'_> {
         plan: DeviceDecodePlan,
         session: &MetalBackendSession,
     ) -> Result<Surface, Error> {
-        if let Some(surface) =
-            self.decode_region_scaled_direct_to_surface_with_session(fmt, roi, scale, session)?
-        {
+        if let Some(surface) = crate::hybrid::decode_region_scaled_direct_to_surface_with_session(
+            self.bytes, fmt, roi, scale, session,
+        )? {
             return Ok(surface);
         }
         crate::compute::with_runtime_for_session(session, |_| {

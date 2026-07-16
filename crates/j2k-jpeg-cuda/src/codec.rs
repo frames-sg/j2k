@@ -27,7 +27,7 @@ use crate::{CudaSession, Error, Surface};
 pub struct Codec;
 
 struct RegionScaledSurfaceRequest<'a> {
-    ctx: &'a mut j2k_core::DecoderContext<CpuDecoderContext>,
+    ctx: &'a mut CpuDecoderContext,
     session: &'a mut CudaSession,
     pool: &'a mut CpuScratchPool,
     input: &'a [u8],
@@ -134,7 +134,7 @@ impl Codec {
         backend: BackendRequest,
         session: &mut CudaSession,
     ) -> Result<CudaJpegBatch<Surface>, Error> {
-        let mut ctx = j2k_core::DecoderContext::<CpuDecoderContext>::new();
+        let mut ctx = CpuDecoderContext::default();
         let mut pool = CpuScratchPool::new();
         Self::decode_tiles_to_device_with_session_in_context(
             &mut ctx, &mut pool, inputs, fmt, backend, session,
@@ -142,7 +142,7 @@ impl Codec {
     }
 
     fn decode_tiles_to_device_with_session_in_context(
-        ctx: &mut j2k_core::DecoderContext<CpuDecoderContext>,
+        ctx: &mut CpuDecoderContext,
         pool: &mut CpuScratchPool,
         inputs: &[&[u8]],
         fmt: PixelFormat,
@@ -164,7 +164,7 @@ impl Codec {
     }
 
     fn decode_tile_to_surface_impl(
-        ctx: &mut j2k_core::DecoderContext<CpuDecoderContext>,
+        ctx: &mut CpuDecoderContext,
         session: &mut CudaSession,
         pool: &mut CpuScratchPool,
         input: &[u8],
@@ -177,8 +177,7 @@ impl Codec {
             fmt,
             op: JpegDecodeOp::Full,
         };
-        let decoder =
-            CpuDecoder::from_view_in_context(j2k_jpeg::JpegView::parse(input)?, ctx.codec_mut())?;
+        let decoder = CpuDecoder::from_view_in_context(j2k_jpeg::JpegView::parse(input)?, ctx)?;
         let resolved = JpegResolvedDecode::from_capabilities(
             JpegCapabilityReport::for_decoder(&decoder, request.capability()),
             request,
@@ -196,7 +195,7 @@ impl Codec {
     }
 
     fn decode_tile_region_to_surface_impl(
-        ctx: &mut j2k_core::DecoderContext<CpuDecoderContext>,
+        ctx: &mut CpuDecoderContext,
         session: &mut CudaSession,
         pool: &mut CpuScratchPool,
         input: &[u8],
@@ -214,7 +213,7 @@ impl Codec {
         let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         decode_tile_region_into_in_context(
             input,
-            ctx.codec_mut(),
+            ctx,
             pool,
             j2k_jpeg::TileDecodeOutput {
                 out: &mut out,
@@ -227,7 +226,7 @@ impl Codec {
     }
 
     fn decode_tile_scaled_to_surface_impl(
-        ctx: &mut j2k_core::DecoderContext<CpuDecoderContext>,
+        ctx: &mut CpuDecoderContext,
         session: &mut CudaSession,
         pool: &mut CpuScratchPool,
         input: &[u8],
@@ -249,7 +248,7 @@ impl Codec {
         let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         decode_tile_scaled_into_in_context(
             input,
-            ctx.codec_mut(),
+            ctx,
             pool,
             j2k_jpeg::TileDecodeOutput {
                 out: &mut out,
@@ -287,7 +286,7 @@ impl Codec {
         let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         decode_tile_region_scaled_into_in_context(
             input,
-            ctx.codec_mut(),
+            ctx,
             pool,
             j2k_jpeg::TileDecodeOutput {
                 out: &mut out,
@@ -322,7 +321,7 @@ impl TileBatchDecodeSubmit for Codec {
     type SubmittedSurface = ReadySubmission<Surface, Error>;
 
     fn submit_tile_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -336,7 +335,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_region_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -351,7 +350,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_scaled_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         input: &[u8],
@@ -366,7 +365,7 @@ impl TileBatchDecodeSubmit for Codec {
     }
 
     fn submit_tile_region_scaled_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         session: &mut Self::Session,
         pool: &mut Self::Pool,
         request: TileRegionScaledDeviceDecodeRequest<'_>,
@@ -406,7 +405,7 @@ impl TileBatchDecodeManyDevice for Codec {
     type DeviceSurface = Surface;
 
     fn decode_tiles_to_device(
-        ctx: &mut j2k_core::DecoderContext<Self::Context>,
+        ctx: &mut Self::Context,
         pool: &mut Self::Pool,
         inputs: &[&[u8]],
         fmt: PixelFormat,

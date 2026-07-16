@@ -25,10 +25,7 @@ pub use cuda::{
     cuda_runtime_required, cuda_strict_oxide_gate, cuda_strict_oxide_required,
 };
 pub use fixtures::{
-    baseline_grayscale_jpeg, jpeg_baseline_420_16x16, jpeg_baseline_420_restart_32x16,
-    jpeg_baseline_420_restart_32x16_rgb, jpeg_baseline_422_16x8, jpeg_baseline_422_16x8_rgb,
-    jpeg_baseline_444_8x8, jpeg_baseline_444_8x8_rgb, jpeg_grayscale_8x8, minimal_baseline_jpeg,
-    minimal_baseline_jpeg_with_restart_interval, minimal_gray8_jpeg,
+    baseline_grayscale_jpeg, minimal_baseline_jpeg, minimal_baseline_jpeg_with_restart_interval,
     minimal_grayscale_jpeg_with_dimensions, minimal_j2k_codestream, minimal_jp2,
     openhtj2k_refinement_fixture, openhtj2k_refinement_odd_fixture,
     openhtj2k_refinement_odd_pixels, openhtj2k_refinement_pixels, restart_coded_grayscale_jpeg,
@@ -57,10 +54,9 @@ pub use manifest::{
 pub use metal::{metal_device_unavailable_is_skip, metal_runtime_gate, metal_runtime_required};
 pub use metal_shader::{host_compiles_metal_pipeline, metal_kernel_names, unwired_metal_kernels};
 pub use pixels::{
-    crop_interleaved_bytes, crop_interleaved_u16, crop_interleaved_u8,
-    project_scaled_interleaved_u16, project_scaled_interleaved_u8, rgb16le_to_rgba16le,
-    rgb16ne_to_opaque_rgba16ne, rgb8_to_rgba8, scaled_rect_covering, u16_samples_to_le_bytes,
-    PixelRect,
+    crop_interleaved_bytes, crop_interleaved_u16, project_scaled_interleaved_u16,
+    project_scaled_interleaved_u8, rgb16le_to_rgba16le, rgb16ne_to_opaque_rgba16ne, rgb8_to_rgba8,
+    scaled_rect_covering, u16_samples_to_le_bytes, PixelRect,
 };
 
 /// Generates deterministic RGB8 pixels for tests and benches.

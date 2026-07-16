@@ -351,6 +351,7 @@ fn docs_and_workflows_policy_children_stay_split_by_responsibility() {
         ("duplication_policy.rs", 625),
         ("duplication_policy/cache_identity.rs", 100),
         ("duplication_policy/classic_mq.rs", 75),
+        ("duplication_policy/pass_through.rs", 175),
         ("encoder_architecture_policy.rs", 700),
         ("encoder_architecture_policy/native_contracts.rs", 150),
         ("decoder_fixture_policy.rs", 475),
