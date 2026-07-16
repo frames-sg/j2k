@@ -2,15 +2,25 @@
 
 //! Portable decode into any Burn backend.
 
-use burn_core::tensor::{backend::Backend, DType, FloatDType, Int, Tensor, TensorData};
+use burn_core::tensor::{backend::Backend, DType, FloatDType, Int, Tensor};
 use j2k::{
     DecodeOutcome, DeviceDecodePlan, DeviceDecodeRequest, J2kDecodeWarning, J2kDecoder,
     J2kScratchPool, PixelFormat,
 };
 
 use crate::{
-    ChannelSelection, FloatNormalization, TensorBatchDecode, TensorDecode, TensorDecodeError,
-    TensorDecodeOptions, TensorInput, TensorLayout, TensorRoute,
+    ChannelSelection, TensorBatchDecode, TensorDecode, TensorDecodeError, TensorDecodeOptions,
+    TensorInput, TensorRoute,
+};
+
+mod materialization;
+
+use materialization::{integer_tensor_3, integer_tensor_4};
+#[cfg(feature = "metal")]
+pub(crate) use materialization::{integer_tensor_3_from_bytes, integer_tensor_4_from_bytes};
+pub(crate) use materialization::{
+    normalize_3, normalize_4, validate_normalization_channels, validate_normalization_values,
+    SampleWidth,
 };
 
 #[derive(Debug)]
@@ -18,35 +28,6 @@ struct PackedImage {
     bytes: Vec<u8>,
     shape: [usize; 3],
     outcome: DecodeOutcome<J2kDecodeWarning>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum SampleWidth {
-    U8,
-    U16,
-}
-
-impl SampleWidth {
-    pub(crate) const fn bytes(self) -> usize {
-        match self {
-            Self::U8 => 1,
-            Self::U16 => 2,
-        }
-    }
-
-    pub(crate) const fn dtype(self) -> DType {
-        match self {
-            Self::U8 => DType::U8,
-            Self::U16 => DType::U16,
-        }
-    }
-
-    const fn unit_denominator(self) -> f32 {
-        match self {
-            Self::U8 => 255.0,
-            Self::U16 => 65_535.0,
-        }
-    }
 }
 
 /// Decode one image into a rank-3 U8 tensor.
@@ -278,208 +259,6 @@ pub(crate) fn pixel_format(channels: usize, width: SampleWidth) -> PixelFormat {
         (3, SampleWidth::U16) => PixelFormat::Rgb16,
         (4, SampleWidth::U16) => PixelFormat::Rgba16,
         _ => unreachable!("channel selection is confined to 1, 3, or 4"),
-    }
-}
-
-fn integer_tensor_3<B: Backend>(
-    packed: &PackedImage,
-    layout: TensorLayout,
-    device: &B::Device,
-    dtype: DType,
-) -> Tensor<B, 3, Int> {
-    integer_tensor_3_from_bytes(packed.bytes.clone(), packed.shape, layout, device, dtype)
-}
-
-pub(crate) fn integer_tensor_3_from_bytes<B: Backend>(
-    bytes: Vec<u8>,
-    shape: [usize; 3],
-    layout: TensorLayout,
-    device: &B::Device,
-    dtype: DType,
-) -> Tensor<B, 3, Int> {
-    let tensor = match dtype {
-        DType::U8 => Tensor::from_data(TensorData::new(bytes, shape), (device, DType::U8)),
-        DType::U16 => Tensor::from_data(
-            TensorData::new(bytes_to_u16(&bytes), shape),
-            (device, DType::U16),
-        ),
-        _ => unreachable!("portable integer decode only uses U8 or U16"),
-    };
-    match layout {
-        TensorLayout::ChannelsFirst => tensor.permute([2, 0, 1]),
-        TensorLayout::ChannelsLast => tensor,
-    }
-}
-
-fn integer_tensor_4<B: Backend>(
-    packed: &PackedBatch,
-    layout: TensorLayout,
-    device: &B::Device,
-    dtype: DType,
-) -> Tensor<B, 4, Int> {
-    integer_tensor_4_from_bytes(
-        packed.bytes.clone(),
-        packed.outcomes.len(),
-        packed.shape,
-        layout,
-        device,
-        dtype,
-    )
-}
-
-pub(crate) fn integer_tensor_4_from_bytes<B: Backend>(
-    bytes: Vec<u8>,
-    batch: usize,
-    item_shape: [usize; 3],
-    layout: TensorLayout,
-    device: &B::Device,
-    dtype: DType,
-) -> Tensor<B, 4, Int> {
-    let shape = [batch, item_shape[0], item_shape[1], item_shape[2]];
-    let tensor = match dtype {
-        DType::U8 => Tensor::from_data(TensorData::new(bytes, shape), (device, DType::U8)),
-        DType::U16 => Tensor::from_data(
-            TensorData::new(bytes_to_u16(&bytes), shape),
-            (device, DType::U16),
-        ),
-        _ => unreachable!("portable integer decode only uses U8 or U16"),
-    };
-    match layout {
-        TensorLayout::ChannelsFirst => tensor.permute([0, 3, 1, 2]),
-        TensorLayout::ChannelsLast => tensor,
-    }
-}
-
-fn bytes_to_u16(bytes: &[u8]) -> Vec<u16> {
-    bytes
-        .chunks_exact(2)
-        .map(|sample| u16::from_ne_bytes([sample[0], sample[1]]))
-        .collect()
-}
-
-pub(crate) fn validate_normalization_values(
-    normalization: &FloatNormalization,
-) -> Result<(), TensorDecodeError> {
-    let FloatNormalization::MeanStd { mean, std } = normalization else {
-        return Ok(());
-    };
-    if mean.iter().chain(std).any(|value| !value.is_finite()) {
-        return Err(invalid_normalization("mean and std values must be finite"));
-    }
-    if std.contains(&0.0) {
-        return Err(invalid_normalization("standard deviations must be nonzero"));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_normalization_channels(
-    normalization: &FloatNormalization,
-    channels: usize,
-) -> Result<(), TensorDecodeError> {
-    let FloatNormalization::MeanStd { mean, std } = normalization else {
-        return Ok(());
-    };
-    if mean.len() != channels || std.len() != channels {
-        return Err(invalid_normalization(format!(
-            "mean and std must each contain {channels} values; got {} and {}",
-            mean.len(),
-            std.len()
-        )));
-    }
-    Ok(())
-}
-
-fn invalid_normalization(message: impl Into<String>) -> TensorDecodeError {
-    TensorDecodeError::InvalidNormalization {
-        message: message.into(),
-    }
-}
-
-pub(crate) fn normalize_3<B: Backend>(
-    tensor: Tensor<B, 3>,
-    normalization: &FloatNormalization,
-    layout: TensorLayout,
-    channels: usize,
-    width: SampleWidth,
-    device: &B::Device,
-) -> Tensor<B, 3> {
-    match normalization {
-        FloatNormalization::Raw => tensor,
-        FloatNormalization::Unit => tensor.div_scalar(width.unit_denominator()),
-        FloatNormalization::MeanStd { mean, std } => {
-            let unit = tensor.div_scalar(width.unit_denominator());
-            let (mean, std) = match layout {
-                TensorLayout::ChannelsFirst => (
-                    Tensor::<B, 1>::from_data(
-                        TensorData::new(mean.clone(), [channels]),
-                        (device, DType::F32),
-                    )
-                    .reshape([channels, 1, 1]),
-                    Tensor::<B, 1>::from_data(
-                        TensorData::new(std.clone(), [channels]),
-                        (device, DType::F32),
-                    )
-                    .reshape([channels, 1, 1]),
-                ),
-                TensorLayout::ChannelsLast => (
-                    Tensor::<B, 1>::from_data(
-                        TensorData::new(mean.clone(), [channels]),
-                        (device, DType::F32),
-                    )
-                    .reshape([1, 1, channels]),
-                    Tensor::<B, 1>::from_data(
-                        TensorData::new(std.clone(), [channels]),
-                        (device, DType::F32),
-                    )
-                    .reshape([1, 1, channels]),
-                ),
-            };
-            unit.sub(mean).div(std)
-        }
-    }
-}
-
-pub(crate) fn normalize_4<B: Backend>(
-    tensor: Tensor<B, 4>,
-    normalization: &FloatNormalization,
-    layout: TensorLayout,
-    channels: usize,
-    width: SampleWidth,
-    device: &B::Device,
-) -> Tensor<B, 4> {
-    match normalization {
-        FloatNormalization::Raw => tensor,
-        FloatNormalization::Unit => tensor.div_scalar(width.unit_denominator()),
-        FloatNormalization::MeanStd { mean, std } => {
-            let unit = tensor.div_scalar(width.unit_denominator());
-            let (mean, std) = match layout {
-                TensorLayout::ChannelsFirst => (
-                    Tensor::<B, 1>::from_data(
-                        TensorData::new(mean.clone(), [channels]),
-                        (device, DType::F32),
-                    )
-                    .reshape([1, channels, 1, 1]),
-                    Tensor::<B, 1>::from_data(
-                        TensorData::new(std.clone(), [channels]),
-                        (device, DType::F32),
-                    )
-                    .reshape([1, channels, 1, 1]),
-                ),
-                TensorLayout::ChannelsLast => (
-                    Tensor::<B, 1>::from_data(
-                        TensorData::new(mean.clone(), [channels]),
-                        (device, DType::F32),
-                    )
-                    .reshape([1, 1, 1, channels]),
-                    Tensor::<B, 1>::from_data(
-                        TensorData::new(std.clone(), [channels]),
-                        (device, DType::F32),
-                    )
-                    .reshape([1, 1, 1, channels]),
-                ),
-            };
-            unit.sub(mean).div(std)
-        }
     }
 }
 
