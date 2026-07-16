@@ -78,6 +78,7 @@ override it.
 | `J2K_REQUIRE_METAL_RUNTIME` | Runs runtime-only Metal tests and makes them require a usable Metal runtime instead of default-skipping. | Skip runtime-only Metal paths | Test/CI |
 | `J2K_REQUIRE_CUDA_BENCH` | Makes CUDA benchmark probes fail instead of skip when CUDA is unavailable or does not dispatch. | Skip unavailable CUDA benchmark paths | Benchmark |
 | `J2K_REQUIRE_METAL_BENCH` | Makes Metal benchmark probes fail instead of skip when Metal is unavailable or does not dispatch. | Skip unavailable Metal benchmark paths | Benchmark |
+| `J2K_GPU_CACHE_ENV` | Internal CI fingerprint of the accelerator driver/runtime and compiler environment, included in the GPU dependency-cache key. The GPU validation workflow computes this value; operators should not set it manually. | Computed by GPU CI | Test/CI |
 | `J2K_REQUIRE_WSI_ROOT` | Makes external JPEG WSI tests fail if `J2K_WSI_ROOT` is missing or empty. | Skip external WSI tests | Test/CI |
 | `J2K_REQUIRE_TRANSCODE_WSI_ROOT` | Makes transcode corpus validation require `J2K_TRANSCODE_WSI_ROOT`. | Skip external transcode WSI corpus | Test/CI |
 | `J2K_REQUIRE_NDPI` | Makes NDPI passthrough tests fail if `J2K_NDPI_PATH` is missing. | Skip NDPI passthrough test | Test/CI |
@@ -95,7 +96,6 @@ override it.
 | `J2K_NDPI_MAX_PAYLOAD_BYTES` | Maximum NDPI tile payload accepted by the passthrough test. | Test default | Test/CI |
 | `J2K_ISO_CONFORMANCE_DIR` | Path to ISO J2K conformance vectors for ignored/external tests. | Not set | Test/CI |
 | `J2K_APERIO_TILE_FIXTURE` | Path to an Aperio J2K tile fixture for the ignored lossless encode test. | Not set | Test/CI |
-| `J2K_STARTER_OPENJPEG_DATA_COMMIT` | Commit pin used by hosted GPU validation when materializing the default OpenJPEG starter corpus. | Workflow pin | Test/CI |
 | `J2K_PARITY_CORPUS_MANIFEST` | Manifest path used by `scripts/parity-corpus-fetch.sh`. | `corpus/wsi-samples/manifest.json` or first script argument | Test/CI |
 | `J2K_PARITY_CORPUS_DIR` | Output directory used by `scripts/parity-corpus-fetch.sh`. | `corpus/wsi-samples` or second script argument | Test/CI |
 | `J2K_PARITY_CORPUS_MAX_BYTES` | Maximum accepted byte size for each downloaded parity-corpus fixture. | `536870912` | Test/CI |
@@ -182,11 +182,10 @@ override it.
 | `J2K_METAL_ENCODE_MANIFEST` | Optional TSV manifest for Metal encode staged PNM sources. Uses `path` and pinned `input_fnv1a64` from `J2K_ENCODE_COMPARE_MANIFEST`. | Not set | Benchmark |
 | `J2K_METAL_ENCODE_INCLUDE_GENERATED` | Set to `0`, `false`, `no`, or `off` to omit generated Metal host-input auto-routing rows when external staged PNM sources are provided. Stage microbenchmarks remain generated component rows. | Generated Metal host-input rows included | Benchmark |
 | `J2K_METAL_ENCODE_RESIDENT_MAX_ESTIMATED_OUTPUT_BYTES` | Maximum raw-byte estimate allowed for a Metal resident host-output encode benchmark row before the row is emitted as a structured memory-budget skip. This protects huge batches from materializing multi-gigabyte host codestream outputs in one benchmark process. | `2147483648` | Benchmark |
-| `J2K_ADOPTION_FIXTURES` | Repository variable or environment override for the CUDA adoption workflow decode fixture directory path-list passed to `cargo run -p xtask --features adoption -- adoption-benchmark --fixtures`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
-| `J2K_ADOPTION_MANIFEST` | Repository variable or environment override for the CUDA adoption workflow decode fixture manifest passed to `--manifest`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
-| `J2K_ADOPTION_ENCODE_FIXTURES` | Repository variable or environment override for the CUDA adoption workflow staged PNM encode fixture directory path-list passed to `--encode-fixtures`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
-| `J2K_ADOPTION_ENCODE_MANIFEST` | Repository variable or environment override for the CUDA adoption workflow staged PNM encode manifest passed to `--encode-manifest`. | Build default public starter corpus when all adoption corpus variables are unset | Benchmark/CI |
-| `J2K_ADOPTION_OUT_DIR` | Output directory used by the CUDA adoption workflow for generated benchmark artifacts and the rendered report. | `target/j2k-adoption-benchmark/cuda-full` | Benchmark/CI |
+| `J2K_ADOPTION_FIXTURES` | Required repository variable or environment override for the manual GPU benchmark workflow decode fixture directory path-list passed to `cargo run -p xtask --features adoption -- adoption-benchmark --fixtures`. | None; adoption runs fail closed when unset | Benchmark/CI |
+| `J2K_ADOPTION_MANIFEST` | Required repository variable or environment override for the manual GPU benchmark workflow decode fixture manifest passed to `--manifest`. | None; adoption runs fail closed when unset | Benchmark/CI |
+| `J2K_ADOPTION_ENCODE_FIXTURES` | Required repository variable or environment override for the manual GPU benchmark workflow staged PNM encode fixture directory path-list passed to `--encode-fixtures`. | None; adoption runs fail closed when unset | Benchmark/CI |
+| `J2K_ADOPTION_ENCODE_MANIFEST` | Required repository variable or environment override for the manual GPU benchmark workflow staged PNM encode manifest passed to `--encode-manifest`. | None; adoption runs fail closed when unset | Benchmark/CI |
 | `J2K_CUDA_PROFILE_BATCH_SIZE` | Batch size for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
 | `J2K_CUDA_PROFILE_ITERATIONS` | Iteration count for the CUDA HTJ2K decode profile example. | Example default | Benchmark |
 

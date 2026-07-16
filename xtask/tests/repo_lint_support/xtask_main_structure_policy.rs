@@ -210,7 +210,7 @@ fn assert_dispatcher_and_command_ownership(sources: &XtaskSources) {
                 "fn release_integrity(",
             ]),
         PatternCheck::new("xtask benchmark command ownership", &sources.benchmark).required(&[
-            "pub(super) fn bench_build()",
+            "pub(super) fn bench_build(args:",
             "pub(super) fn j2k_bench_signoff()",
             "pub(super) fn bench_report(",
             "fn render_benchmark_report(",

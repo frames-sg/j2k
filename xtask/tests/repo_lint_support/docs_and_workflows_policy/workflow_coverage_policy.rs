@@ -96,8 +96,8 @@ fn benchmark_targets_are_not_test_targets() {
 #[test]
 fn xtask_exposes_nextest_machete_and_strict_clippy_gates() {
     let xtask = xtask_sources(repo_root());
-    let workflow =
-        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/full-validation.yml"))
+        .expect("read full validation workflow");
     let strict_clippy_job = workflow_job(&workflow, "clippy-strict");
     let release_candidate_job = workflow_job(&workflow, "release-candidate");
     let help_section = xtask
@@ -187,8 +187,8 @@ fn xtask_fuzz_build_checks_every_fuzz_manifest() {
 fn ci_coverage_job_is_a_required_gate() {
     const INSTALL_ACTION_SHA: &str = "91534edaf9fd796a162759d80d49cdff574bff2c";
 
-    let workflow =
-        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/full-validation.yml"))
+        .expect("read full validation workflow");
     let coverage_job = workflow_job(&workflow, "coverage");
 
     let install_action = format!("taiki-e/install-action@{INSTALL_ACTION_SHA}");
@@ -250,7 +250,7 @@ fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() 
                     "coverage-*-summary.json",
                     "coverage-*-regions.json",
                 ]),
-            FilePatternCheck::new(".github/workflows/ci.yml")
+            FilePatternCheck::new(".github/workflows/full-validation.yml")
                 .named("host coverage artifacts")
                 .required(&["coverage-host-regions.json"]),
             FilePatternCheck::new(".github/workflows/gpu-validation.yml")
@@ -303,8 +303,8 @@ fn coverage_measures_accelerator_host_rust_with_narrow_test_backed_exclusions() 
 fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/gpu-validation.yml"))
         .expect("read GPU validation workflow");
-    let metal_job = workflow_job(&workflow, "metal-apple-silicon");
-    let cuda_job = workflow_job(&workflow, "cuda-x86_64-compatibility");
+    let metal_job = workflow_job(&workflow, "metal-full");
+    let cuda_job = workflow_job(&workflow, "cuda-full");
 
     assert_pattern_checks(&[
         PatternCheck::new("GPU coverage baseline", &workflow).required(&[
@@ -320,7 +320,7 @@ fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
                 "fetch-depth: 0",
                 "scripts/ensure-cargo-llvm-cov.sh",
                 "cargo xtask coverage metal",
-                "name: j2k-metal-coverage",
+                "name: j2k-metal-full-coverage-${{ github.sha }}",
                 "lcov-metal.info",
                 "coverage-metal-summary.json",
                 "if-no-files-found: error",
@@ -331,7 +331,7 @@ fn self_hosted_accelerator_jobs_publish_distinct_coverage_evidence() {
                 "fetch-depth: 0",
                 "scripts/ensure-cargo-llvm-cov.sh",
                 "cargo xtask coverage cuda",
-                "name: j2k-cuda-coverage",
+                "name: j2k-cuda-full-coverage-${{ github.sha }}",
                 "lcov-cuda.info",
                 "coverage-cuda-summary.json",
                 "if-no-files-found: error",
@@ -348,11 +348,7 @@ fn self_hosted_coverage_tool_bootstrap_is_pinned_and_non_privileged() {
     let bootstrap = fs::read_to_string(root.join("scripts/ensure-cargo-llvm-cov.sh"))
         .expect("read self-hosted coverage-tool bootstrap");
 
-    for job_name in [
-        "linux-ci",
-        "metal-apple-silicon",
-        "cuda-x86_64-compatibility",
-    ] {
+    for job_name in ["metal-full", "cuda-full"] {
         let job = workflow_job(&workflow, job_name);
         assert_pattern_checks(&[PatternCheck::new("self-hosted coverage bootstrap", job)
             .required(&["scripts/ensure-cargo-llvm-cov.sh"])

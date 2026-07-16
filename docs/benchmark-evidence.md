@@ -38,7 +38,8 @@ Pinned rerun commands:
 
 ```bash
 cargo xtask bench-build
-cargo xtask j2k-perf-guard --baseline-ref 29143c8e --quick
+cargo xtask j2k-perf-guard --lane host \
+  --baseline-ref 29143c8e1f00bbbe9cf5ab37b3cea882f6d52139 --quick
 ```
 
 Historical result: both commands passed. The quick guard compared the then-current

@@ -9,8 +9,8 @@ use crate::repo_lint_support::{
 #[test]
 fn ci_stable_api_jobs_pin_inputs_and_never_write() {
     let root = repo_root();
-    let workflow =
-        fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let workflow = fs::read_to_string(root.join(".github/workflows/full-validation.yml"))
+        .expect("read full validation workflow");
     let stable_api_job = workflow_job(&workflow, "stable-api");
     let semver_job = workflow_job(&workflow, "semver");
     let release_candidate_job = workflow_job(&workflow, "release-candidate");

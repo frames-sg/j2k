@@ -33,10 +33,12 @@ fn ci_workflow_keeps_docs_and_benchmark_compile_gates() {
     let xtask = xtask_sources(root);
     assert_file_pattern_checks(
         root,
-        &[FilePatternCheck::new(".github/workflows/ci.yml")
-            .named("CI workflow docs and benchmark compile gates")
-            .required(&["cargo xtask doc", "cargo xtask bench-build"])
-            .forbidden(&["macos-13"])],
+        &[
+            FilePatternCheck::new(".github/workflows/full-validation.yml")
+                .named("CI workflow docs and benchmark compile gates")
+                .required(&["cargo xtask doc", "cargo xtask bench-build --lane host"])
+                .forbidden(&["macos-13"]),
+        ],
     );
     assert_pattern_checks(&[
         PatternCheck::new("xtask benchmark compile gate", &xtask).required(&[

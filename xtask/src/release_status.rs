@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 
 use crate::process::{self, CommandContext};
 
-const CI_WORKFLOW: &str = "ci.yml";
+const CI_WORKFLOW: &str = "full-validation.yml";
 const CI_BRANCH: &str = "main";
 const RELEASE_CANDIDATE_JOB: &str = "Release candidate aggregate";
 const GPU_WORKFLOW: &str = "gpu-validation.yml";
-const CUDA_JOB: &str = "CUDA API compatibility on x86_64";
-const METAL_JOB: &str = "Metal validation on Apple Silicon";
+const CUDA_JOB: &str = "CUDA full release validation";
+const METAL_JOB: &str = "Metal full release validation";
 
 #[derive(Debug, Eq, PartialEq)]
 struct Options {

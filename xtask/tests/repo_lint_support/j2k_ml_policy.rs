@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::fs;
+use std::{fs, process::Command};
 
 use super::{
     assert_file_pattern_checks, assert_pattern_checks, repo_root, FilePatternCheck, PatternCheck,
@@ -99,6 +99,57 @@ fn j2k_ml_stays_independent_experimental_and_explicitly_feature_gated() {
                     "not an official Tracel or Burn crate",
                 ]),
         ],
+    );
+}
+
+#[test]
+fn j2k_ml_quick_metal_feature_graph_excludes_cuda() {
+    let output = Command::new("cargo")
+        .args([
+            "tree",
+            "--locked",
+            "-p",
+            "j2k-ml",
+            "--no-default-features",
+            "--features",
+            "metal",
+            "-e",
+            "features",
+            "--prefix",
+            "none",
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("resolve the j2k-ml Metal feature graph");
+    assert!(
+        output.status.success(),
+        "j2k-ml Metal feature resolution failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let graph = String::from_utf8(output.stdout).expect("Cargo feature graph is UTF-8");
+    assert!(
+        graph.starts_with("j2k-ml v"),
+        "Cargo feature graph must be rooted at j2k-ml:\n{graph}"
+    );
+    for forbidden in ["j2k-cuda", "j2k-cuda-runtime", "burn-cuda"] {
+        assert!(
+            !graph.contains(forbidden),
+            "j2k-ml's Metal-only feature graph unexpectedly contains {forbidden}:\n{graph}"
+        );
+    }
+
+    let manifest = fs::read_to_string(repo_root().join("crates/j2k-ml/Cargo.toml"))
+        .expect("read j2k-ml manifest");
+    let metal_feature = manifest
+        .split("metal = [")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .expect("j2k-ml metal feature declaration");
+    assert!(
+        !metal_feature.contains("cuda"),
+        "j2k-ml's Metal feature must not enable CUDA: {metal_feature}"
     );
 }
 

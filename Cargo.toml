@@ -107,3 +107,8 @@ opt-level     = 3
 inherits  = "release"
 debug     = true
 strip     = "none"
+
+[profile.gpu-quick]
+inherits      = "release"
+lto           = false
+codegen-units = 16

@@ -8,6 +8,7 @@ use super::{
     run_metal_compile, run_release_metal, runtime_suite_args, validate_exact_ignored_run,
     J2K_METAL_REQUIRED_IGNORED_TESTS, METAL_OPTIONAL_IGNORED_TESTS,
 };
+use crate::gpu_validation::ValidationMode;
 
 fn recording_metal_cargo() -> RecordingProgram {
     let listed = J2K_METAL_REQUIRED_IGNORED_TESTS
@@ -67,12 +68,12 @@ fn metal_commands_execute_complete_hermetic_compile_and_release_plans() {
 
     if cfg!(target_os = "macos") {
         metal_compile().expect("hermetic Metal compile plan");
-        release_metal().expect("hermetic Metal release plan");
+        release_metal(std::iter::empty()).expect("hermetic Metal release plan");
     } else {
         run_metal_compile().expect("platform-independent Metal compile plan");
-        run_release_metal().expect("platform-independent Metal release plan");
+        run_release_metal(ValidationMode::Full).expect("platform-independent Metal release plan");
         assert!(metal_compile().is_err());
-        assert!(release_metal().is_err());
+        assert!(release_metal(std::iter::empty()).is_err());
     }
 
     let log = recording.log();
@@ -87,6 +88,26 @@ fn metal_commands_execute_complete_hermetic_compile_and_release_plans() {
     assert!(log.contains("-p j2k-jpeg-metal"));
     assert!(log.contains("-p j2k-transcode-metal"));
     assert!(log.contains("-p j2k-ml"));
+}
+
+#[test]
+fn metal_quick_preserves_every_runtime_and_ignored_inventory_gate() {
+    let recording = recording_metal_cargo();
+    let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+
+    run_release_metal(ValidationMode::Quick).expect("quick Metal command plan");
+
+    let log = recording.log();
+    assert_eq!(log.lines().count(), 9);
+    assert!(log.lines().all(|line| line.contains("--profile gpu-quick")));
+    assert_eq!(log.matches("clippy --profile gpu-quick").count(), 1);
+    assert!(!log.contains("--all-features"));
+    assert!(!log.contains("cuda"));
+    assert!(log.contains("--features j2k-ml/metal"));
+    assert!(log.contains("-p j2k-ml --features metal"));
+    assert!(log.contains("--ignored --list"));
+    assert!(log.contains("--ignored --show-output"));
+    assert!(!log.contains("--release"));
 }
 
 #[test]
@@ -142,11 +163,25 @@ fn ignored_inventory_is_unique_and_has_expected_size() {
 
 #[test]
 fn runtime_gate_excludes_benchmark_targets() {
-    let args = runtime_suite_args("j2k-metal");
+    let args = runtime_suite_args("j2k-metal", ValidationMode::Full);
     assert!(args.contains(&"--lib"));
     assert!(args.contains(&"--bins"));
     assert!(args.contains(&"--tests"));
     assert!(args.contains(&"--examples"));
     assert!(!args.contains(&"--all-targets"));
     assert!(!args.contains(&"--benches"));
+}
+
+#[test]
+fn quick_metal_runtime_uses_fast_profile_without_weakening_target_scope() {
+    let args = runtime_suite_args("j2k-metal", ValidationMode::Quick);
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--profile", "gpu-quick"]));
+    assert!(!args.contains(&"--release"));
+    assert!(!args.contains(&"--all-features"));
+    assert!(args.contains(&"--lib"));
+    assert!(args.contains(&"--bins"));
+    assert!(args.contains(&"--tests"));
+    assert!(args.contains(&"--examples"));
 }

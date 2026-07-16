@@ -4,7 +4,14 @@
 
 use std::{collections::BTreeSet, env, ffi::OsString};
 
+use crate::gpu_validation::ValidationMode;
 use crate::process::{self, cargo, CommandContext};
+
+mod quick;
+mod test_output;
+
+use quick::quick_runtime_args;
+use test_output::{successful_test_summaries, TestSummary};
 
 const CUDA_RELEASE_ENV: &[(&str, &str)] = &[
     ("J2K_REQUIRE_CUDA_RUNTIME", "1"),
@@ -167,32 +174,51 @@ const EXACT_CUDA_SUITES: &[ExactCudaSuite] = &[
 ];
 
 /// Runs the complete release-mode CUDA validation policy on a real Linux `x86_64` device.
-pub(crate) fn release_cuda() -> Result<(), String> {
-    run_release_cuda(env::consts::OS, env::consts::ARCH)
+pub(crate) fn release_cuda(args: impl Iterator<Item = String>) -> Result<(), String> {
+    run_release_cuda(
+        env::consts::OS,
+        env::consts::ARCH,
+        ValidationMode::parse(args)?,
+    )
 }
 
-fn run_release_cuda(os: &str, arch: &str) -> Result<(), String> {
+fn run_release_cuda(os: &str, arch: &str, mode: ValidationMode) -> Result<(), String> {
     require_cuda_host(os, arch)?;
     require_cuda_device()?;
 
-    for suite in CUDA_CLIPPY_SUITES {
-        let args = clippy_suite_args(suite);
-        let label = format!("{} CUDA Clippy", suite.package);
-        let output = run_cargo_captured(&args, CUDA_RELEASE_ENV, &label)?;
-        reject_cuda_skip_markers(&output, &label)?;
-    }
+    match mode {
+        ValidationMode::Full => {
+            for suite in CUDA_CLIPPY_SUITES {
+                let args = clippy_suite_args(suite);
+                let label = format!("{} CUDA Clippy", suite.package);
+                let output = run_cargo_captured(&args, CUDA_RELEASE_ENV, &label)?;
+                reject_cuda_skip_markers(&output, &label)?;
+            }
 
-    for suite in CUDA_RUNTIME_SUITES {
-        let args = runtime_suite_args(suite);
-        let output = run_cargo_captured(&args, CUDA_RELEASE_ENV, suite.label)?;
-        validate_complete_test_run(&output, suite.label)?;
-    }
+            for suite in CUDA_RUNTIME_SUITES {
+                let args = runtime_suite_args(suite, mode);
+                let output = run_cargo_captured(&args, CUDA_RELEASE_ENV, suite.label)?;
+                validate_complete_test_run(&output, suite.label)?;
+            }
 
-    for suite in EXACT_CUDA_SUITES {
-        validate_exact_inventory(suite)?;
-        let args = exact_suite_args(suite, false);
-        let output = run_cargo_captured(&args, CUDA_RELEASE_ENV, suite.label)?;
-        validate_exact_named_run(&output, suite.label, suite.required_tests)?;
+            for suite in EXACT_CUDA_SUITES {
+                validate_exact_inventory(suite, mode)?;
+                let args = exact_suite_args(suite, false, mode);
+                let output = run_cargo_captured(&args, CUDA_RELEASE_ENV, suite.label)?;
+                validate_exact_named_run(&output, suite.label, suite.required_tests)?;
+            }
+        }
+        ValidationMode::Quick => {
+            let output = run_cargo_captured(
+                &quick_runtime_args(),
+                CUDA_RELEASE_ENV,
+                "quick CUDA production-feature runtime",
+            )?;
+            validate_complete_test_run(&output, "quick CUDA production-feature runtime")?;
+            for suite in EXACT_CUDA_SUITES {
+                validate_required_named_tests(&output, suite.label, suite.required_tests)?;
+            }
+        }
     }
 
     Ok(())
@@ -268,29 +294,23 @@ fn clippy_suite_args(suite: &CudaClippySuite) -> Vec<&'static str> {
     ]
 }
 
-fn runtime_suite_args(suite: &CudaRuntimeSuite) -> Vec<&'static str> {
-    let mut args = vec![
-        "test",
-        "--release",
-        "-p",
-        suite.package,
-        "--features",
-        suite.features,
-    ];
+fn runtime_suite_args(suite: &CudaRuntimeSuite, mode: ValidationMode) -> Vec<&'static str> {
+    let mut args = vec!["test"];
+    args.extend_from_slice(mode.cargo_profile_args());
+    args.extend_from_slice(&["-p", suite.package, "--features", suite.features]);
     args.extend_from_slice(CUDA_RUNTIME_TEST_TARGETS);
     args.extend_from_slice(&["--", "--show-output"]);
     args
 }
 
-fn exact_suite_args(suite: &ExactCudaSuite, list_only: bool) -> Vec<&'static str> {
-    let mut args = vec![
-        "test",
-        "--release",
-        "-p",
-        suite.package,
-        "--features",
-        suite.features,
-    ];
+fn exact_suite_args(
+    suite: &ExactCudaSuite,
+    list_only: bool,
+    mode: ValidationMode,
+) -> Vec<&'static str> {
+    let mut args = vec!["test"];
+    args.extend_from_slice(mode.cargo_profile_args());
+    args.extend_from_slice(&["-p", suite.package, "--features", suite.features]);
     for target in suite.test_targets {
         args.extend_from_slice(&["--test", target]);
     }
@@ -299,8 +319,8 @@ fn exact_suite_args(suite: &ExactCudaSuite, list_only: bool) -> Vec<&'static str
     args
 }
 
-fn validate_exact_inventory(suite: &ExactCudaSuite) -> Result<(), String> {
-    let args = exact_suite_args(suite, true);
+fn validate_exact_inventory(suite: &ExactCudaSuite, mode: ValidationMode) -> Result<(), String> {
+    let args = exact_suite_args(suite, true, mode);
     let label = format!("list {}", suite.label);
     let output = run_cargo_captured(&args, CUDA_RELEASE_ENV, &label)?;
     reject_cuda_skip_markers(&output, &label)?;
@@ -366,6 +386,23 @@ fn validate_exact_named_run(
         ));
     }
     Ok(())
+}
+
+fn validate_required_named_tests(
+    output: &str,
+    label: &str,
+    required_tests: &[&str],
+) -> Result<(), String> {
+    let actual = passed_rust_tests(output);
+    let expected = expected_test_set(required_tests);
+    let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} required-test mismatch; missing: {missing:?}"
+        ))
+    }
 }
 
 fn expected_test_set(tests: &[&str]) -> BTreeSet<String> {
@@ -449,64 +486,6 @@ fn passed_rust_tests(output: &str) -> BTreeSet<String> {
             rest.strip_suffix(" ... ok").map(str::to_string)
         })
         .collect()
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct TestSummary {
-    passed: usize,
-    failed: usize,
-    ignored: usize,
-    measured: usize,
-    filtered_out: usize,
-}
-
-impl TestSummary {
-    fn parse(line: &str) -> Option<Self> {
-        let counts = line.trim().strip_prefix("test result: ok.")?;
-        let mut fields = counts.split(';').map(str::trim);
-        let passed = parse_count(fields.next()?, "passed")?;
-        let failed = parse_count(fields.next()?, "failed")?;
-        let ignored = parse_count(fields.next()?, "ignored")?;
-        let measured = parse_count(fields.next()?, "measured")?;
-        let filtered_out = parse_count(fields.next()?, "filtered out")?;
-        if fields
-            .next()
-            .is_some_and(|timing| !timing.starts_with("finished in "))
-            || fields.next().is_some()
-        {
-            return None;
-        }
-        Some(Self {
-            passed,
-            failed,
-            ignored,
-            measured,
-            filtered_out,
-        })
-    }
-
-    const fn add(self, other: Self) -> Self {
-        Self {
-            passed: self.passed + other.passed,
-            failed: self.failed + other.failed,
-            ignored: self.ignored + other.ignored,
-            measured: self.measured + other.measured,
-            filtered_out: self.filtered_out + other.filtered_out,
-        }
-    }
-}
-
-fn parse_count(field: &str, suffix: &str) -> Option<usize> {
-    field
-        .strip_suffix(suffix)?
-        .trim()
-        .trim_end_matches('.')
-        .parse()
-        .ok()
-}
-
-fn successful_test_summaries(output: &str) -> Vec<TestSummary> {
-    output.lines().filter_map(TestSummary::parse).collect()
 }
 
 #[cfg(all(test, unix))]

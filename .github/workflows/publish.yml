@@ -51,12 +51,12 @@ jobs:
             --server-url "${GITHUB_SERVER_URL}" \
             --tag "${RELEASE_TAG}" \
             --candidate-sha "${candidate_sha}" \
-            --ci-workflow ci.yml \
+            --ci-workflow full-validation.yml \
             --ci-branch main \
             --aggregate-job "Release candidate aggregate" \
             --gpu-workflow gpu-validation.yml \
-            --cuda-job "CUDA API compatibility on x86_64" \
-            --metal-job "Metal validation on Apple Silicon"
+            --cuda-job "CUDA full release validation" \
+            --metal-job "Metal full release validation"
       - name: Verify release metadata integrity
         run: cargo xtask release-integrity
       - name: Verify final publish metadata

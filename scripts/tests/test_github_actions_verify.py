@@ -129,7 +129,8 @@ class PullRequestPolicyTests(unittest.TestCase):
         decision = verifier.classify_gpu_paths(paths)
 
         self.assertEqual(
-            decision.required_jobs, (verifier.CUDA_JOB, verifier.METAL_JOB)
+            decision.required_jobs,
+            (verifier.CUDA_QUICK_JOB, verifier.METAL_QUICK_JOB),
         )
         self.assertEqual(
             decision.changed_gpu_paths,

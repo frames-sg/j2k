@@ -1,6 +1,8 @@
 # GPU and accelerator surfaces require maintainer review.
 .github/CODEOWNERS @frames-sg/j2k-maintainers
 .github/workflows/ci.yml @frames-sg/j2k-maintainers
+.github/workflows/full-validation.yml @frames-sg/j2k-maintainers
+.github/workflows/gpu-benchmarks.yml @frames-sg/j2k-maintainers
 .github/workflows/gpu-validation.yml @frames-sg/j2k-maintainers
 .github/workflows/publish.yml @frames-sg/j2k-maintainers
 release-crates.json @frames-sg/j2k-maintainers

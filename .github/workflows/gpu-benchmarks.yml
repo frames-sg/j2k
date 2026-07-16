@@ -1,0 +1,249 @@
+name: GPU benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "Accelerator to benchmark"
+        type: choice
+        required: true
+        options: [cuda, metal]
+      suite:
+        description: "Benchmark workload"
+        type: choice
+        required: true
+        default: smoke
+        options: [smoke, criterion, profile, adoption]
+      baseline-ref:
+        description: "Immutable baseline revision for Criterion comparisons"
+        type: string
+        required: true
+        default: "29143c8e1f00bbbe9cf5ab37b3cea882f6d52139"
+      profile-mode:
+        description: "Criterion/profile sampling mode"
+        type: choice
+        required: true
+        default: quick
+        options: [quick, release]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-benchmark-${{ inputs.lane }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  validate-inputs:
+    name: Validate benchmark request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require an immutable baseline
+        env:
+          BASELINE_REF: ${{ inputs.baseline-ref }}
+        run: |
+          if [[ ! "${BASELINE_REF}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "baseline must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+
+  cuda:
+    name: CUDA benchmark (${{ inputs.suite }})
+    needs: [validate-inputs]
+    if: ${{ inputs.lane == 'cuda' }}
+    runs-on: [self-hosted, Linux, X64, cuda]
+    timeout-minutes: 180
+    env:
+      J2K_REQUIRE_CUDA_BENCH: "1"
+      J2K_REQUIRE_CUDA_RUNTIME: "1"
+      J2K_REQUIRE_CUDA_OXIDE_BUILD: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: "1.96"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: benchmark-cuda-${{ runner.os }}-${{ runner.arch }}-1.96
+          cache-bin: false
+          save-if: false
+      - run: bash scripts/configure-cuda-bindgen.sh
+      - name: Capture stable CUDA device metadata
+        env:
+          BASELINE_REF: ${{ inputs.baseline-ref }}
+          PROFILE_MODE: ${{ inputs.profile-mode }}
+          SUITE: ${{ inputs.suite }}
+        run: |
+          mkdir -p target/gpu-benchmark
+          nvidia-smi --query-gpu=uuid,name,driver_version --format=csv,noheader \
+            | tee target/gpu-benchmark/device-before.txt
+          nvidia-smi --query-gpu=uuid,pstate,power.draw,power.limit,clocks.sm --format=csv,noheader \
+            > target/gpu-benchmark/performance-state-before.txt
+          uname -a > target/gpu-benchmark/host.txt
+          rustc -Vv > target/gpu-benchmark/rustc.txt
+          cargo -V > target/gpu-benchmark/cargo.txt
+          nvcc --version > target/gpu-benchmark/nvcc.txt
+          printf 'lane=cuda\nsuite=%s\nbaseline_ref=%s\ncandidate_sha=%s\nprofile_mode=%s\n' \
+            "${SUITE}" "${BASELINE_REF}" "${GITHUB_SHA}" "${PROFILE_MODE}" \
+            > target/gpu-benchmark/suite-parameters.txt
+      - name: Compare CUDA Criterion baseline and candidate
+        if: ${{ inputs.suite == 'smoke' || inputs.suite == 'criterion' }}
+        env:
+          BASELINE_REF: ${{ inputs.baseline-ref }}
+          PROFILE_MODE: ${{ inputs.profile-mode }}
+          SUITE: ${{ inputs.suite }}
+        run: |
+          args=(--lane cuda --baseline-ref "${BASELINE_REF}")
+          if [ "${SUITE}" = smoke ] || [ "${PROFILE_MODE}" = quick ]; then args+=(--quick); fi
+          cargo xtask j2k-perf-guard "${args[@]}"
+      - name: Profile CUDA HTJ2K decode
+        if: ${{ inputs.suite == 'profile' }}
+        env:
+          J2K_CUDA_TRACE: ${{ github.workspace }}/target/gpu-benchmark/cuda-trace.json
+          J2K_PROFILE_STAGES: summary
+          PROFILE_MODE: ${{ inputs.profile-mode }}
+        run: |
+          args=()
+          if [ "${PROFILE_MODE}" = quick ]; then args+=(--quick); fi
+          cargo bench -p j2k-cuda --bench htj2k_decode \
+            --features cuda-runtime,cuda-profiling -- "${args[@]}" \
+            2>&1 | tee target/gpu-benchmark/profile.log
+      - name: Run strict CUDA adoption bundle
+        if: ${{ inputs.suite == 'adoption' }}
+        env:
+          J2K_ADOPTION_FIXTURES: ${{ vars.J2K_ADOPTION_FIXTURES }}
+          J2K_ADOPTION_MANIFEST: ${{ vars.J2K_ADOPTION_MANIFEST }}
+          J2K_ADOPTION_ENCODE_FIXTURES: ${{ vars.J2K_ADOPTION_ENCODE_FIXTURES }}
+          J2K_ADOPTION_ENCODE_MANIFEST: ${{ vars.J2K_ADOPTION_ENCODE_MANIFEST }}
+        run: |
+          : "${J2K_ADOPTION_FIXTURES:?Set J2K_ADOPTION_FIXTURES}"
+          : "${J2K_ADOPTION_MANIFEST:?Set J2K_ADOPTION_MANIFEST}"
+          : "${J2K_ADOPTION_ENCODE_FIXTURES:?Set J2K_ADOPTION_ENCODE_FIXTURES}"
+          : "${J2K_ADOPTION_ENCODE_MANIFEST:?Set J2K_ADOPTION_ENCODE_MANIFEST}"
+          command -v opj_compress
+          command -v grk_compress
+          cargo run -p xtask --features adoption -- adoption-benchmark \
+            --fixtures "${J2K_ADOPTION_FIXTURES}" \
+            --manifest "${J2K_ADOPTION_MANIFEST}" \
+            --encode-fixtures "${J2K_ADOPTION_ENCODE_FIXTURES}" \
+            --encode-manifest "${J2K_ADOPTION_ENCODE_MANIFEST}" \
+            --require-cuda --out-dir target/gpu-benchmark/adoption
+      - name: Require unchanged CUDA device identity
+        if: always()
+        run: |
+          nvidia-smi --query-gpu=uuid,name,driver_version --format=csv,noheader \
+            > target/gpu-benchmark/device-after.txt
+          nvidia-smi --query-gpu=uuid,pstate,power.draw,power.limit,clocks.sm --format=csv,noheader \
+            > target/gpu-benchmark/performance-state-after.txt
+          cmp target/gpu-benchmark/device-before.txt target/gpu-benchmark/device-after.txt
+      - name: Upload CUDA benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cuda-${{ inputs.suite }}-${{ github.sha }}
+          path: |
+            target/gpu-benchmark
+            target/j2k-perf/cuda
+            target/criterion
+          if-no-files-found: warn
+
+  metal:
+    name: Metal benchmark (${{ inputs.suite }})
+    needs: [validate-inputs]
+    if: ${{ inputs.lane == 'metal' }}
+    runs-on: [self-hosted, macOS, ARM64, metal]
+    timeout-minutes: 180
+    env:
+      J2K_REQUIRE_METAL_BENCH: "1"
+      J2K_REQUIRE_METAL_RUNTIME: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: "1.96"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: benchmark-metal-${{ runner.os }}-${{ runner.arch }}-1.96
+          cache-bin: false
+          save-if: false
+      - name: Capture stable Metal device metadata
+        env:
+          BASELINE_REF: ${{ inputs.baseline-ref }}
+          PROFILE_MODE: ${{ inputs.profile-mode }}
+          SUITE: ${{ inputs.suite }}
+        run: |
+          mkdir -p target/gpu-benchmark
+          system_profiler SPDisplaysDataType -json \
+            | tee target/gpu-benchmark/device-before.json
+          pmset -g therm > target/gpu-benchmark/performance-state-before.txt || true
+          uname -a > target/gpu-benchmark/host.txt
+          sw_vers > target/gpu-benchmark/macos.txt
+          xcrun metal --version > target/gpu-benchmark/metal-compiler.txt
+          rustc -Vv > target/gpu-benchmark/rustc.txt
+          cargo -V > target/gpu-benchmark/cargo.txt
+          printf 'lane=metal\nsuite=%s\nbaseline_ref=%s\ncandidate_sha=%s\nprofile_mode=%s\n' \
+            "${SUITE}" "${BASELINE_REF}" "${GITHUB_SHA}" "${PROFILE_MODE}" \
+            > target/gpu-benchmark/suite-parameters.txt
+      - name: Compare Metal Criterion baseline and candidate
+        if: ${{ inputs.suite == 'smoke' || inputs.suite == 'criterion' }}
+        env:
+          BASELINE_REF: ${{ inputs.baseline-ref }}
+          PROFILE_MODE: ${{ inputs.profile-mode }}
+          SUITE: ${{ inputs.suite }}
+        run: |
+          args=(--lane metal --baseline-ref "${BASELINE_REF}")
+          if [ "${SUITE}" = smoke ] || [ "${PROFILE_MODE}" = quick ]; then args+=(--quick); fi
+          cargo xtask j2k-perf-guard "${args[@]}"
+      - name: Profile Metal Criterion routes
+        if: ${{ inputs.suite == 'profile' }}
+        env:
+          PROFILE_MODE: ${{ inputs.profile-mode }}
+        run: |
+          args=()
+          if [ "${PROFILE_MODE}" = quick ]; then args+=(--quick); fi
+          cargo bench -p j2k-jpeg-metal --bench compare -- "${args[@]}" \
+            2>&1 | tee target/gpu-benchmark/profile.log
+      - name: Run strict Metal adoption bundle
+        if: ${{ inputs.suite == 'adoption' }}
+        env:
+          J2K_ADOPTION_FIXTURES: ${{ vars.J2K_ADOPTION_FIXTURES }}
+          J2K_ADOPTION_MANIFEST: ${{ vars.J2K_ADOPTION_MANIFEST }}
+          J2K_ADOPTION_ENCODE_FIXTURES: ${{ vars.J2K_ADOPTION_ENCODE_FIXTURES }}
+          J2K_ADOPTION_ENCODE_MANIFEST: ${{ vars.J2K_ADOPTION_ENCODE_MANIFEST }}
+        run: |
+          : "${J2K_ADOPTION_FIXTURES:?Set J2K_ADOPTION_FIXTURES}"
+          : "${J2K_ADOPTION_MANIFEST:?Set J2K_ADOPTION_MANIFEST}"
+          : "${J2K_ADOPTION_ENCODE_FIXTURES:?Set J2K_ADOPTION_ENCODE_FIXTURES}"
+          : "${J2K_ADOPTION_ENCODE_MANIFEST:?Set J2K_ADOPTION_ENCODE_MANIFEST}"
+          command -v opj_compress
+          command -v grk_compress
+          cargo run -p xtask --features adoption -- adoption-benchmark \
+            --fixtures "${J2K_ADOPTION_FIXTURES}" \
+            --manifest "${J2K_ADOPTION_MANIFEST}" \
+            --encode-fixtures "${J2K_ADOPTION_ENCODE_FIXTURES}" \
+            --encode-manifest "${J2K_ADOPTION_ENCODE_MANIFEST}" \
+            --require-metal --out-dir target/gpu-benchmark/adoption
+      - name: Require unchanged Metal device identity
+        if: always()
+        run: |
+          system_profiler SPDisplaysDataType -json > target/gpu-benchmark/device-after.json
+          pmset -g therm > target/gpu-benchmark/performance-state-after.txt || true
+          cmp target/gpu-benchmark/device-before.json target/gpu-benchmark/device-after.json
+      - name: Upload Metal benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: metal-${{ inputs.suite }}-${{ github.sha }}
+          path: |
+            target/gpu-benchmark
+            target/j2k-perf/metal
+            target/criterion
+          if-no-files-found: warn
