@@ -1,11 +1,12 @@
 [package]
 name        = "j2k"
-description = "Safe public JPEG 2000 and HTJ2K CPU codec APIs with optional CUDA and Metal adapters"
+description = "Pure-Rust JPEG 2000 and HTJ2K codec APIs with optional CUDA and Metal adapters"
 version.workspace = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace = true
+homepage.workspace = true
 keywords.workspace     = true
 categories.workspace   = true
 readme                 = "README.md"

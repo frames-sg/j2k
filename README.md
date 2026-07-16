@@ -1,4 +1,4 @@
-# J2K
+# J2K — Pure-Rust JPEG 2000 and HTJ2K Codec
 
 [![crates.io](https://img.shields.io/crates/v/j2k.svg)](https://crates.io/crates/j2k)
 [![docs.rs](https://img.shields.io/docsrs/j2k)](https://docs.rs/j2k)
@@ -6,7 +6,7 @@
 [![downloads](https://img.shields.io/crates/d/j2k.svg)](https://crates.io/crates/j2k)
 [![license](https://img.shields.io/crates/l/j2k.svg)](#license)
 
-**Docs & guides:** <https://frames-sg.github.io/j2k/>
+**Docs & guides:** [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/)
 
 **Release status:** `0.7.3` is published and security-supported. See the
 [release notes](CHANGELOG.md) and [release policy](docs/release.md).
