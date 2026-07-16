@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    CudaClassicCodeBlock, CudaClassicSegment, CudaClassicSubband, CudaHtj2kCodeBlock,
-    CudaHtj2kDecodePlan, CudaHtj2kIdwtStep, CudaHtj2kStoreStep, CudaHtj2kSubband,
-    CudaHtj2kTransform, Error, HostPhaseBudget, PixelFormat, PLAN_PAYLOAD_TOO_LARGE,
+    CudaClassicCodeBlock, CudaClassicSegment, CudaHtj2kCodeBlock, CudaHtj2kDecodePlan, Error,
+    HostPhaseBudget, PLAN_PAYLOAD_TOO_LARGE,
+};
+#[cfg(feature = "cuda-runtime")]
+use super::{
+    CudaClassicSubband, CudaHtj2kIdwtStep, CudaHtj2kStoreStep, CudaHtj2kSubband,
+    CudaHtj2kTransform, PixelFormat,
 };
 
 impl CudaHtj2kDecodePlan {
