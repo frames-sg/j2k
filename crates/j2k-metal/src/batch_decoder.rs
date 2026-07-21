@@ -3,12 +3,16 @@
 #[cfg(all(test, target_os = "macos"))]
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+use j2k::DecodeRequest;
 #[cfg(any(test, target_os = "macos"))]
-use j2k::BatchLayout;
+use j2k::{BatchColor, BatchLayout};
 use j2k::{
     BatchDecodeOptions, BatchGroupInfo, EncodedImage, IndexedBatchError, J2kDecodeWarning,
     PreparedBatch, PreparedBatchGroup, PreparedImage,
 };
+#[cfg(target_os = "macos")]
+use j2k_core::DeviceSubmission;
 #[cfg(any(test, target_os = "macos"))]
 use j2k_core::PixelFormat;
 use j2k_core::Rect;
