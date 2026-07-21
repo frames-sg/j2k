@@ -132,10 +132,14 @@ fn coverage_lanes_partition_host_and_accelerator_production_rust() {
     assert!(!CoverageLane::Host
         .includes_source("crates/j2k-metal/src/error.rs", SourceRole::Production));
     assert!(!CoverageLane::Host
+        .includes_source("crates/j2k-ml/src/cuda/interop.rs", SourceRole::Production));
+    assert!(!CoverageLane::Host
         .includes_source("crates/j2k-core/src/accelerator.rs", SourceRole::Production));
     assert!(
         CoverageLane::Cuda.includes_source("crates/j2k-cuda/src/error.rs", SourceRole::Production)
     );
+    assert!(CoverageLane::Cuda
+        .includes_source("crates/j2k-ml/src/cuda/interop.rs", SourceRole::Production));
     assert!(CoverageLane::Metal
         .includes_source("crates/j2k-metal/src/error.rs", SourceRole::Production));
     assert!(CoverageLane::Cuda

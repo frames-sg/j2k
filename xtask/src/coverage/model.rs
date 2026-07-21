@@ -47,6 +47,8 @@ const CUDA_ACCELERATOR_LANE: AcceleratorLaneSpec = AcceleratorLaneSpec {
     ],
 };
 
+const ML_CUDA_MODULE_PREFIX: &str = "crates/j2k-ml/src/cuda/";
+
 const fn accelerator_package(
     name: &'static str,
     source_prefix: &'static str,
@@ -126,7 +128,11 @@ impl CoverageLane {
                     || is_shared_accelerator_path(path)
                     || METAL_VENDOR_PATHS.contains(&path)
             }
-            Self::Cuda => CUDA_ACCELERATOR_LANE.owns_path(path) || is_shared_accelerator_path(path),
+            Self::Cuda => {
+                CUDA_ACCELERATOR_LANE.owns_path(path)
+                    || path.starts_with(ML_CUDA_MODULE_PREFIX)
+                    || is_shared_accelerator_path(path)
+            }
         }
     }
 
@@ -247,6 +253,7 @@ pub(super) fn parse_options(args: impl Iterator<Item = String>) -> Result<Covera
 pub(super) fn is_accelerator_path(path: &str) -> bool {
     METAL_ACCELERATOR_LANE.owns_path(path)
         || CUDA_ACCELERATOR_LANE.owns_path(path)
+        || path.starts_with(ML_CUDA_MODULE_PREFIX)
         || is_shared_accelerator_path(path)
 }
 

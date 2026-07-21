@@ -27,7 +27,7 @@ fn mq_qe_table_is_shared_by_encoder_decoder_and_cuda() {
                 .named("native arithmetic encoder")
                 .required(&["use super::mq::QE_TABLE;"])
                 .forbidden(&["struct QeData", "static QE_TABLE"]),
-            FilePatternCheck::new("crates/j2k-cuda-runtime/src/classic_decode.rs")
+            FilePatternCheck::new("crates/j2k-cuda-runtime/src/classic_decode/abi.rs")
                 .named("CUDA classic Tier-1 table consumer")
                 .required(&[
                     "MQ_QE_VALUES, PACKED_MQ_TRANSITION_VALUES, PACKED_SIGN_CONTEXT_LOOKUP",

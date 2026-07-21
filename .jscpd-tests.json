@@ -1,0 +1,13 @@
+{
+  "threshold": 4.14,
+  "minLines": 20,
+  "minTokens": 50,
+  "maxLines": 20000,
+  "maxSize": "2mb",
+  "mode": "mild",
+  "format": ["rust"],
+  "reporters": ["console", "json"],
+  "output": "target/clone-audit/test-report",
+  "gitignore": false,
+  "ignore": []
+}

@@ -8,6 +8,7 @@ use crate::repo_lint_support::{
 };
 
 mod lint_ratchets;
+mod living_audit;
 
 #[test]
 fn large_test_files_stay_split_by_axis() {

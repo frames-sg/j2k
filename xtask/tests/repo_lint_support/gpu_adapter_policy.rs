@@ -9,6 +9,7 @@ mod cuda_encode_structure_policy;
 mod cuda_encode_test_structure_policy;
 mod cuda_htj2k_runtime_structure_policy;
 mod cuda_profile_policy;
+mod cuda_registry_structure_policy;
 mod cuda_runtime_safety_policy;
 mod jpeg_allocation_policy;
 mod jpeg_batch_error_policy;

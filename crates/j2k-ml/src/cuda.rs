@@ -2,36 +2,34 @@
 
 //! Strict decode directly into Burn's default fused CUDA backend.
 
-use burn_core::tensor::{DType, Int, Shape, Tensor, TensorPrimitive};
-use burn_cubecl::cubecl::{cuda::CudaRuntime, Runtime};
-use burn_cubecl::{ops::numeric::empty_device_contiguous_dtype, CubeBackend};
+use burn_core::tensor::{DType, Int, Tensor};
 use burn_cuda::{Cuda, CudaDevice};
-use burn_fusion::{get_client, stream::OperationStreams, NoOp};
-use burn_ir::{BackendIr, InitOperationIr, OperationIr};
 use j2k::{DeviceDecodePlan, J2kDecodeWarning, Rect};
 use j2k_cuda::{CudaSession, J2kDecoder as CudaDecoder, Surface};
-use j2k_cuda_runtime::{
-    CudaContext, CudaExternalDeviceBufferViewMut, CudaJ2kMlKernelConfig, CudaJ2kMlLayout,
-    CudaJ2kMlNormalization, CudaJ2kMlSample,
-};
+use j2k_cuda_runtime::{CudaContext, CudaExternalDeviceBufferViewMut};
 
 use crate::cpu::{
     ensure_dtype, pixel_format, selected_channels, validate_normalization_channels,
     validate_normalization_values, SampleWidth,
 };
 use crate::{
-    FloatNormalization, TensorBatchDecode, TensorDecode, TensorDecodeError, TensorDecodeOptions,
-    TensorInput, TensorLayout, TensorRoute,
+    TensorBatchDecode, TensorDecode, TensorDecodeError, TensorDecodeOptions, TensorInput,
+    TensorRoute,
 };
 
-type InnerCuda = CubeBackend<CudaRuntime, f32, i32, u8>;
+mod config;
+mod interop;
+
+use config::{kernel_config, tensor_shape_3, tensor_shape_4};
+use interop::{fill_float_tensor, fill_int_tensor};
+
 type CudaTensor<const D: usize> = Tensor<Cuda, D>;
 type CudaIntTensor<const D: usize> = Tensor<Cuda, D, Int>;
 
 #[derive(Debug, Clone)]
 struct PlannedImage<'a> {
     input: TensorInput<'a>,
-    shape: [usize; 3],
+    pub(super) shape: [usize; 3],
     decoded: Rect,
 }
 
@@ -325,204 +323,14 @@ fn validate_surface(
     Ok(())
 }
 
-fn kernel_config(
-    plan: &PlannedImage<'_>,
-    options: &TensorDecodeOptions,
-    width: SampleWidth,
-    integer_output: bool,
-    index: usize,
-    item_elements: usize,
-) -> Result<CudaJ2kMlKernelConfig, TensorDecodeError> {
-    let sample = match width {
-        SampleWidth::U8 => CudaJ2kMlSample::U8,
-        SampleWidth::U16 => CudaJ2kMlSample::U16,
-    };
-    let layout = match options.layout {
-        TensorLayout::ChannelsFirst => CudaJ2kMlLayout::ChannelsFirst,
-        TensorLayout::ChannelsLast => CudaJ2kMlLayout::ChannelsLast,
-    };
-    let normalization = if integer_output {
-        CudaJ2kMlNormalization::Integer
-    } else {
-        match &options.normalization {
-            FloatNormalization::Raw => CudaJ2kMlNormalization::Raw,
-            FloatNormalization::Unit => CudaJ2kMlNormalization::Unit,
-            FloatNormalization::MeanStd { mean, std } => {
-                let mut means = [0.0; 4];
-                let mut deviations = [1.0; 4];
-                means[..plan.shape[2]].copy_from_slice(mean);
-                deviations[..plan.shape[2]].copy_from_slice(std);
-                CudaJ2kMlNormalization::MeanStd {
-                    mean: means,
-                    std: deviations,
-                }
-            }
-        }
-    };
-    Ok(CudaJ2kMlKernelConfig {
-        width: u32::try_from(plan.shape[1]).map_err(|_| TensorDecodeError::SizeOverflow)?,
-        height: u32::try_from(plan.shape[0]).map_err(|_| TensorDecodeError::SizeOverflow)?,
-        channels: u32::try_from(plan.shape[2]).map_err(|_| TensorDecodeError::SizeOverflow)?,
-        sample,
-        layout,
-        destination_offset_elements: index
-            .checked_mul(item_elements)
-            .ok_or(TensorDecodeError::SizeOverflow)?,
-        normalization,
-    })
-}
-
-fn fill_int_tensor<const D: usize>(
-    shape: [usize; D],
-    dtype: DType,
-    device: &CudaDevice,
-    context: &CudaContext,
-    fill: impl FnOnce(&mut CudaExternalDeviceBufferViewMut<'_>) -> Result<(), TensorDecodeError>,
-) -> Result<Tensor<Cuda, D, Int>, TensorDecodeError> {
-    let cube = fill_cube_tensor(shape, dtype, device, context, fill)?;
-    Ok(register_int_tensor(
-        cube,
-        Shape::from(shape.to_vec()),
-        dtype,
-        device,
-    ))
-}
-
-fn fill_float_tensor<const D: usize>(
-    shape: [usize; D],
-    device: &CudaDevice,
-    context: &CudaContext,
-    fill: impl FnOnce(&mut CudaExternalDeviceBufferViewMut<'_>) -> Result<(), TensorDecodeError>,
-) -> Result<Tensor<Cuda, D>, TensorDecodeError> {
-    let cube = fill_cube_tensor(shape, DType::F32, device, context, fill)?;
-    Ok(register_float_tensor(
-        cube,
-        Shape::from(shape.to_vec()),
-        device,
-    ))
-}
-
-fn fill_cube_tensor<const D: usize>(
-    shape: [usize; D],
-    dtype: DType,
-    device: &CudaDevice,
-    context: &CudaContext,
-    fill: impl FnOnce(&mut CudaExternalDeviceBufferViewMut<'_>) -> Result<(), TensorDecodeError>,
-) -> Result<burn_cubecl::tensor::CubeTensor<CudaRuntime>, TensorDecodeError> {
-    let logical_len = tensor_byte_len(&shape, dtype)?;
-    let shape = Shape::from(shape.to_vec());
-    let client = CudaRuntime::client(device);
-    let cube = empty_device_contiguous_dtype(client, device.clone(), shape, dtype);
-    // CubeCL 0.10 allocates on a nonblocking stream with cuMemAllocAsync,
-    // while j2k launches its conversion on the CUDA default stream. CubeCL
-    // does not currently expose a stream or event interop primitive, so its
-    // stream must complete before j2k may safely write the allocation.
-    burn_cubecl::cubecl::future::block_on(cube.client.sync())
-        .map_err(|error| strict(format!("CubeCL CUDA allocation handoff failed: {error}")))?;
-    let handle_len =
-        usize::try_from(cube.handle.size_in_used()).map_err(|_| TensorDecodeError::SizeOverflow)?;
-    if handle_len != logical_len {
-        return Err(strict(format!(
-            "CubeCL CUDA tensor handle exposes {handle_len} bytes; expected {logical_len}"
-        )));
-    }
-    let mut resource = cube
-        .client
-        .get_resource(cube.handle.clone())
-        .map_err(|error| strict(format!("CubeCL CUDA resource access failed: {error}")))?;
-    let raw = resource.resource();
-    let available = usize::try_from(raw.size).map_err(|_| TensorDecodeError::SizeOverflow)?;
-    if logical_len > available {
-        return Err(strict(format!(
-            "CubeCL CUDA resource exposes {available} bytes for a {logical_len}-byte tensor"
-        )));
-    }
-    let pointer = raw.ptr;
-    // SAFETY: `resource` is CubeCL's managed allocation guard for `pointer`.
-    // Its exclusive borrow is retained by the non-owning view through `fill`,
-    // and the context/length/alignment are validated by the constructor.
-    let mut destination = unsafe {
-        CudaExternalDeviceBufferViewMut::from_raw_parts(
-            context,
-            pointer,
-            logical_len,
-            dtype.size(),
-            &mut resource,
-        )
-    }
-    .map_err(|error| cuda_runtime_error(&error))?;
-    fill(&mut destination)?;
-    drop(destination);
-    drop(resource);
-    Ok(cube)
-}
-
-fn tensor_byte_len(shape: &[usize], dtype: DType) -> Result<usize, TensorDecodeError> {
-    shape
-        .iter()
-        .try_fold(dtype.size(), |size, dim| size.checked_mul(*dim))
-        .ok_or(TensorDecodeError::SizeOverflow)
-}
-
-fn register_int_tensor<const D: usize>(
-    cube: burn_cubecl::tensor::CubeTensor<CudaRuntime>,
-    shape: Shape,
-    dtype: DType,
-    device: &CudaDevice,
-) -> Tensor<Cuda, D, Int> {
-    let fusion = get_client::<InnerCuda>(device);
-    let handle = <InnerCuda as BackendIr>::int_tensor_handle(cube);
-    let desc = InitOperationIr::create(shape, dtype, || fusion.register_tensor_handle(handle));
-    let primitive = fusion
-        .register(
-            OperationStreams::default(),
-            OperationIr::Init(desc),
-            NoOp::<InnerCuda>::new(),
-        )
-        .remove(0);
-    Tensor::<Cuda, D, Int>::from_primitive(primitive)
-}
-
-fn register_float_tensor<const D: usize>(
-    cube: burn_cubecl::tensor::CubeTensor<CudaRuntime>,
-    shape: Shape,
-    device: &CudaDevice,
-) -> Tensor<Cuda, D> {
-    let fusion = get_client::<InnerCuda>(device);
-    let handle = <InnerCuda as BackendIr>::float_tensor_handle(cube);
-    let desc = InitOperationIr::create(shape, DType::F32, || fusion.register_tensor_handle(handle));
-    let primitive = fusion
-        .register(
-            OperationStreams::default(),
-            OperationIr::Init(desc),
-            NoOp::<InnerCuda>::new(),
-        )
-        .remove(0);
-    Tensor::<Cuda, D>::from_primitive(TensorPrimitive::Float(primitive))
-}
-
-fn tensor_shape_3(shape: [usize; 3], layout: TensorLayout) -> [usize; 3] {
-    match layout {
-        TensorLayout::ChannelsFirst => [shape[2], shape[0], shape[1]],
-        TensorLayout::ChannelsLast => shape,
-    }
-}
-
-fn tensor_shape_4(batch: usize, shape: [usize; 3], layout: TensorLayout) -> [usize; 4] {
-    match layout {
-        TensorLayout::ChannelsFirst => [batch, shape[2], shape[0], shape[1]],
-        TensorLayout::ChannelsLast => [batch, shape[0], shape[1], shape[2]],
-    }
-}
-
-fn strict(message: impl Into<String>) -> TensorDecodeError {
+pub(super) fn strict(message: impl Into<String>) -> TensorDecodeError {
     TensorDecodeError::StrictRoute {
         route: TensorRoute::CudaDirect,
         message: message.into(),
     }
 }
 
-fn cuda_runtime_error(error: &j2k_cuda_runtime::CudaError) -> TensorDecodeError {
+pub(super) fn cuda_runtime_error(error: &j2k_cuda_runtime::CudaError) -> TensorDecodeError {
     strict(error.to_string())
 }
 
@@ -559,22 +367,5 @@ fn batch_result<T>(tensor: T, plans: &[PlannedImage<'_>]) -> TensorBatchDecode<T
             .map(|_| vec![J2kDecodeWarning::LenientDecodeMode])
             .collect(),
         route: TensorRoute::CudaDirect,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use burn_core::tensor::DType;
-
-    use super::tensor_byte_len;
-    use crate::TensorDecodeError;
-
-    #[test]
-    fn tensor_byte_length_is_exact_and_overflow_checked_before_cubecl_allocation() {
-        assert_eq!(tensor_byte_len(&[2, 3, 4], DType::U16).unwrap(), 48);
-        assert!(matches!(
-            tensor_byte_len(&[usize::MAX, 2], DType::F32),
-            Err(TensorDecodeError::SizeOverflow)
-        ));
     }
 }

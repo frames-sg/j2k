@@ -127,8 +127,10 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: j2k-production-clone-audit
-          path: target/clone-audit/report/jscpd-report.json
+          name: j2k-clone-audits
+          path: |
+            target/clone-audit/report/jscpd-report.json
+            target/clone-audit/test-report/jscpd-report.json
           if-no-files-found: error
 
   comparator-parity:
