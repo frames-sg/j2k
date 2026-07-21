@@ -10,6 +10,7 @@ mod refinement;
 mod segments;
 mod significance;
 mod state;
+mod stats;
 mod validation;
 
 pub(crate) use benchmark::{
@@ -24,7 +25,8 @@ pub(crate) use segments::{
     HtCodeBlockSegments,
 };
 pub(crate) use significance::sigma_stride;
-pub(crate) use state::{HtBlockDecodeContext, HtBlockDecodeScratch, HtBlockDecodeStats};
+pub(crate) use state::{HtBlockDecodeContext, HtBlockDecodeScratch};
+pub(crate) use stats::HtBlockDecodeStats;
 pub(crate) use validation::decode_segments_validated_with_scratch_for_phase;
 #[cfg(test)]
 pub(crate) use validation::{

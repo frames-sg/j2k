@@ -368,10 +368,10 @@ impl BatchDecoder for CpuBatchDecoder {
         &self,
         images: Vec<PreparedImage>,
     ) -> Result<PreparedBatch, Self::Error> {
-        CpuBatchDecoder::prepare_prepared_images(self, images)
+        Self::prepare_prepared_images(self, images)
     }
 
     fn decode_prepared(&mut self, prepared: &PreparedBatch) -> Result<Self::Output, Self::Error> {
-        CpuBatchDecoder::decode_prepared(self, prepared)
+        Self::decode_prepared(self, prepared)
     }
 }

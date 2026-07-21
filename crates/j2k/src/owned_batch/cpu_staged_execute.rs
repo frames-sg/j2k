@@ -308,6 +308,7 @@ fn execute_staged_tile_entropy(
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let outcome =
                     execute_staged_entropy_job(image, *job, flattened, worker, &mut scratch);
+                drop(scratch);
                 if outcome.is_err() {
                     failed.store(true, Ordering::Release);
                 }

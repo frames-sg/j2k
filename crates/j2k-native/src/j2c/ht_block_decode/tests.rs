@@ -15,10 +15,8 @@ use super::significance::{
     apply_significance_propagation_phase, build_sigma_from_cleanup_phase, sigma_stride,
     SIGPROP_SPREAD_MASKS,
 };
-use super::state::{
-    zeroed_u16_scratch, zeroed_u32_scratch, HtBlockDecodeScratch, HtBlockDecodeStats,
-    NoHtDecodeStats,
-};
+use super::state::{zeroed_u16_scratch, zeroed_u32_scratch, HtBlockDecodeScratch};
+use super::stats::{HtBlockDecodeStats, NoHtDecodeStats};
 use super::validation::{
     decode_combined_validated_with_scratch, decode_segments_validated_with_scratch,
 };

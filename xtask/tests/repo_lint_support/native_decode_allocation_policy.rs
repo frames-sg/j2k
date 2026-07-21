@@ -2,7 +2,7 @@
 
 //! Aggregate native-decode workspace and fallible metadata-growth ratchets.
 
-use std::fs;
+use std::{collections::BTreeSet, fs};
 
 use super::rust_function_policy::FunctionCalls;
 use super::{assert_pattern_checks, repo_root, PatternCheck};
@@ -17,6 +17,61 @@ fn read(relative: &str) -> String {
 
 fn calls(source_name: &str, source: &str, function_name: &str) -> FunctionCalls {
     FunctionCalls::parse(source_name, source, function_name)
+}
+
+fn top_level_type_names(source_name: &str, source: &str) -> BTreeSet<String> {
+    let syntax = syn::parse_file(source)
+        .unwrap_or_else(|error| panic!("parse {source_name} as Rust: {error}"));
+    syntax
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            syn::Item::Enum(item) => Some(item.ident.to_string()),
+            syn::Item::Struct(item) => Some(item.ident.to_string()),
+            syn::Item::Trait(item) => Some(item.ident.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn ht_decode_statistics_are_owned_separately_from_allocation_state() {
+    let module = syn::parse_file(&read("crates/j2k-native/src/j2c/ht_block_decode.rs"))
+        .expect("parse HT block decode module");
+    let modules = module
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(item) if item.content.is_none() => Some(item.ident.to_string()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(modules.contains("state"));
+    assert!(modules.contains("stats"));
+
+    let state = top_level_type_names(
+        "HT allocation state",
+        &read("crates/j2k-native/src/j2c/ht_block_decode/state.rs"),
+    );
+    assert!(state.contains("HtBlockDecodeContext"));
+    assert!(state.contains("HtBlockDecodeScratch"));
+    assert!(state.is_disjoint(&BTreeSet::from([
+        "HtBlockDecodeStats".to_owned(),
+        "HtDecodeObserver".to_owned(),
+        "NoHtDecodeStats".to_owned(),
+        "RecordingHtDecodeStats".to_owned(),
+    ])));
+
+    let stats = top_level_type_names(
+        "HT decode statistics",
+        &read("crates/j2k-native/src/j2c/ht_block_decode/stats.rs"),
+    );
+    assert!(stats.is_superset(&BTreeSet::from([
+        "HtBlockDecodeStats".to_owned(),
+        "HtDecodeObserver".to_owned(),
+        "NoHtDecodeStats".to_owned(),
+        "RecordingHtDecodeStats".to_owned(),
+    ])));
 }
 
 #[test]
